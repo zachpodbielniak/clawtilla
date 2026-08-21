@@ -54,7 +54,9 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/config/clawt-config-schema.h \
 	$(SRCDIR)/config/clawt-secret-ref.h \
 	$(SRCDIR)/config/clawt-config.h \
-	$(SRCDIR)/computer/clawt-mount.h
+	$(SRCDIR)/computer/clawt-mount.h \
+	$(SRCDIR)/link/clawt-link.h \
+	$(SRCDIR)/link/clawt-link-server.h
 
 # ============================================================
 # Library sources
@@ -67,7 +69,9 @@ LIB_SOURCES = \
 	$(SRCDIR)/config/clawt-schema-render.c \
 	$(SRCDIR)/config/clawt-secret-ref.c \
 	$(SRCDIR)/config/clawt-config.c \
-	$(SRCDIR)/computer/clawt-mount.c
+	$(SRCDIR)/computer/clawt-mount.c \
+	$(SRCDIR)/link/clawt-link.c \
+	$(SRCDIR)/link/clawt-link-server.c
 
 # Object files
 LIB_OBJECTS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(LIB_SOURCES))

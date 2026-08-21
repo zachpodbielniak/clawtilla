@@ -37,4 +37,7 @@
 #include "computer/clawt-mount.h"
 #include "config/clawt-config.h"
 
+#include "link/clawt-link.h"
+#include "link/clawt-link-server.h"
+
 #undef CLAWT_INSIDE
