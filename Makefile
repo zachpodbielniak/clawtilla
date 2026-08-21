@@ -428,10 +428,15 @@ $(GIR_FILE): $(LIB_SHARED) $(PUBLIC_HEADERS) | $(OUTDIR)
 		--output=$@ \
 		$(PUBLIC_HEADERS) $(LIB_SOURCES)
 
+# --includedir points at libreclaw's build tree, which is where Lc-1.0.gir
+# is.  The scanner is told about it too; the compiler has to be told
+# separately, and without it the typelib step fails on a .gir the scanner
+# was perfectly happy with.
 $(TYPELIB_FILE): $(GIR_FILE)
 	@if [ -f $< ]; then \
 		echo "Generating typelib..."; \
-		$(GIR_COMPILER) --output=$@ $<; \
+		$(GIR_COMPILER) --includedir=$(LIBRECLAW_OUTDIR) \
+			--output=$@ $<; \
 	fi
 else
 gir:
