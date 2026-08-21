@@ -28,22 +28,6 @@ struct _ClawtProcessRuntime {
 G_DEFINE_FINAL_TYPE(ClawtProcessRuntime, clawt_process_runtime,
                     CLAWT_TYPE_AGENT_RUNTIME)
 
-/*
- * Variables a child always needs, whatever the agent's own environment
- * says.
- *
- * Everything else is dropped.  Inheriting the daemon's environment would
- * be the easy thing and the wrong one: a stray ANTHROPIC_API_KEY reaching a
- * subscription CLI quietly moves it onto pay-as-you-go billing nobody
- * agreed to, and a stray SSH_AUTH_SOCK hands an agent every key in the
- * user's agent.
- */
-static const gchar *const passthrough_env[] = {
-    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TERM", "TZ",
-    "XDG_RUNTIME_DIR", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
-    NULL
-};
-
 ClawtProcessRuntime *
 clawt_process_runtime_new(ClawtAgentConfig *config, const gchar *config_path)
 {
@@ -151,38 +135,17 @@ on_process_exited(GObject *source, GAsyncResult *result, gpointer user_data)
     clawt_agent_runtime_record_exit(CLAWT_AGENT_RUNTIME(self), clean, detail);
 }
 
-/* ── Starting ────────────────────────────────────────────────────── */
-
+/*
+ * Gives the child its environment: the shared allowlist plus whatever the
+ * agent's own `env:` block names.
+ */
 static void
 apply_environment(ClawtProcessRuntime  *self,
                   GSubprocessLauncher  *launcher)
 {
-    gsize i;
+    g_auto(GStrv) environment = clawt_build_child_environment(self->environment);
 
-    /*
-     * A clean slate, then only what was asked for.  See passthrough_env
-     * above for why the daemon's environment is not inherited.
-     */
-    for (i = 0; passthrough_env[i] != NULL; i++) {
-        const gchar *value = g_getenv(passthrough_env[i]);
-
-        if (value != NULL)
-            g_subprocess_launcher_setenv(launcher, passthrough_env[i],
-                                         value, TRUE);
-    }
-
-    if (self->environment == NULL)
-        return;
-
-    {
-        GHashTableIter iter;
-        gpointer key;
-        gpointer value;
-
-        g_hash_table_iter_init(&iter, self->environment);
-        while (g_hash_table_iter_next(&iter, &key, &value))
-            g_subprocess_launcher_setenv(launcher, key, value, TRUE);
-    }
+    g_subprocess_launcher_set_environ(launcher, environment);
 }
 
 static gboolean
@@ -231,6 +194,12 @@ process_runtime_start(ClawtAgentRuntime *runtime, GError **error)
     argv[2] = self->config_path;
     argv[3] = NULL;
 
+    /*
+     * The previous one is released first.  Every restart overwrote this
+     * field while it still held the last run's GSubprocess, so a
+     * long-lived agent that occasionally crashes leaked one per cycle.
+     */
+    g_clear_object(&self->process);
     self->process = g_subprocess_launcher_spawnv(launcher, argv, error);
     if (self->process == NULL) {
         g_prefix_error(error, "starting %s: ", binary);

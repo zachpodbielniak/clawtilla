@@ -180,6 +180,24 @@ gchar *clawt_generate_token(GError **error);
  */
 gboolean clawt_check_socket_path(const gchar *path, GError **error);
 
+/**
+ * clawt_build_child_environment:
+ * @extra: (element-type utf8 utf8) (nullable): variables to add
+ *
+ * Builds the environment a spawned child gets: a fixed allowlist taken
+ * from this process, plus whatever @extra names.
+ *
+ * Never the daemon's environment wholesale.  A stray ANTHROPIC_API_KEY
+ * reaching a subscription CLI quietly moves it onto pay-as-you-go billing
+ * nobody agreed to, and a stray SSH_AUTH_SOCK hands an agent every key in
+ * the user's agent.  Both spawn paths -- the supervised agent process and
+ * a command run on a host computer -- use this, because an allowlist that
+ * covers only one of them protects nothing.
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the environment
+ */
+GStrv clawt_build_child_environment(GHashTable *extra);
+
 gchar *clawt_redact_secrets(const gchar *text);
 
 /**

@@ -74,6 +74,24 @@ gboolean clawt_mount_validate(ClawtMount  *self,
                               GError     **error);
 
 /**
+ * clawt_mount_set_forbidden_sources:
+ * @paths: (array zero-terminated=1) (nullable): directories no mount may
+ *   expose, or %NULL to clear
+ *
+ * Directories that must never be mounted into any computer.
+ *
+ * The daemon's state directory holds every agent's link token and
+ * resolved credentials, so an agent that could read it could read every
+ * other agent's mail and impersonate any of them.  The refusal was
+ * documented from the start and simply never implemented; validation
+ * checked a mount's shape and never what it pointed at.
+ *
+ * Set once by the daemon at startup, because a mount is validated in
+ * several places and each of them needs the same answer.
+ */
+void clawt_mount_set_forbidden_sources(const gchar * const *paths);
+
+/**
  * clawt_mount_resolved_source:
  * @self: a #ClawtMount
  *

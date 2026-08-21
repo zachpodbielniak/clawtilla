@@ -19,6 +19,7 @@ struct _ClawtDesktop {
     ClawtDesktopBackend  resolved;
     gchar               *socket_path;
     gboolean             allow_input;
+    gboolean             allow_spawn;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtDesktop, clawt_desktop, G_TYPE_OBJECT)
@@ -44,6 +45,20 @@ static const gchar *const observing_tools[] = {
  * The tools that act.  Separated because clicking is a different grant from
  * looking, and an observe-only agent is genuinely useful.
  */
+/*
+ * Launching a process is not "acting on the desktop" like clicking is.
+ *
+ * spawn goes straight to the compositor over its own socket, so it never
+ * passes ClawtSandbox: no path check, no sudo block, and under
+ * confine: bwrap it steps outside the sandbox entirely.  An operator who
+ * chose the only mode that genuinely constrains a program would not
+ * expect enabling desktop input to hand back unrestricted process
+ * launching, so it needs saying yes to separately.
+ */
+static const gchar *const spawning_tools[] = {
+    "spawn", "signal_client", NULL
+};
+
 static const gchar *const acting_tools[] = {
     "send_key", "key_press", "key_combo", "send_text", "type_text",
     "send_mouse", "mouse_click", "mouse_double_click", "mouse_down",
@@ -53,7 +68,7 @@ static const gchar *const acting_tools[] = {
     "move_client", "resize_client", "move_resize_window",
     "minimize_window", "unminimize_window", "maximize_window",
     "unmaximize_window", "move_client_to_tag", "set_client_tags",
-    "view_tag", "activate_workspace", "spawn", "signal_client",
+    "view_tag", "activate_workspace",
     NULL
 };
 
@@ -79,6 +94,14 @@ clawt_desktop_set_allow_input(ClawtDesktop *self, gboolean allow)
     g_return_if_fail(CLAWT_IS_DESKTOP(self));
 
     self->allow_input = allow;
+}
+
+void
+clawt_desktop_set_allow_spawn(ClawtDesktop *self, gboolean allow)
+{
+    g_return_if_fail(CLAWT_IS_DESKTOP(self));
+
+    self->allow_spawn = allow;
 }
 
 static gboolean
@@ -232,6 +255,15 @@ clawt_desktop_tool_is_permitted(ClawtDesktop *self, const gchar *tool_name)
     for (i = 0; acting_tools[i] != NULL; i++) {
         if (g_strcmp0(tool_name, acting_tools[i]) == 0)
             return TRUE;
+    }
+
+    /*
+     * Launching or signalling a process needs its own grant, because it
+     * is not confined by anything else clawtilla has.
+     */
+    for (i = 0; spawning_tools[i] != NULL; i++) {
+        if (g_strcmp0(tool_name, spawning_tools[i]) == 0)
+            return self->allow_spawn;
     }
 
     /*

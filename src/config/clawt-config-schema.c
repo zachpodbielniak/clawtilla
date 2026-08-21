@@ -734,6 +734,18 @@ static const ClawtSchemaEntry schema[] = {
   "gowl's MCP socket. Requires gowl built with MCP=1 and modules.mcp\n"
   "enabled in its config.", "0.1.0" },
 
+{ "agents.computer.desktop.allow_spawn", CLAWT_SCHEMA_BOOLEAN,
+  CLAWT_SCHEMA_FLAG_DANGEROUS, "false", NULL,
+  "Whether the agent may launch and signal processes through the\n"
+  "compositor.\n"
+  "\n"
+  "Separate from allow_input, and off by default. The compositor's spawn\n"
+  "tool starts a process through the compositor's own socket, so none of\n"
+  "clawtilla's confinement applies to it -- not the path checks, not the\n"
+  "sudo block, and not bwrap. Turning this on gives the agent a way to\n"
+  "run anything, whatever computer.host.confine says.",
+  "0.1.0" },
+
 { "agents.computer.desktop.allow_input", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "false", NULL,
   "Permit key and pointer injection, not just observation.\n"

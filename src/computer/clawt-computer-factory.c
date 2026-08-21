@@ -144,6 +144,13 @@ clawt_computer_factory_create(ClawtAgentConfig  *agent_config,
             return NULL;
 
         computer = clawt_host_computer_new(agent_id, sandbox);
+        {
+            g_autoptr(GHashTable) env = clawt_agent_config_get_env(agent_config);
+
+            clawt_host_computer_set_environment(CLAWT_HOST_COMPUTER(computer),
+                                                env);
+        }
+
         clawt_host_computer_set_nice(
             CLAWT_HOST_COMPUTER(computer),
             (gint)clawt_agent_config_get_int(agent_config,
@@ -257,6 +264,11 @@ clawt_computer_factory_create_desktop(ClawtAgentConfig *agent_config)
                                                     "computer.desktop.socket");
 
     desktop = clawt_desktop_new(backend, socket_path);
+    clawt_desktop_set_allow_spawn(
+        desktop,
+        clawt_agent_config_get_boolean(agent_config,
+                                       "computer.desktop.allow_spawn"));
+
     clawt_desktop_set_allow_input(
         desktop,
         clawt_agent_config_get_boolean(agent_config,

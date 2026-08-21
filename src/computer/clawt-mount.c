@@ -227,6 +227,52 @@ clawt_mount_resolved_source(ClawtMount *self)
     }
 }
 
+/*
+ * Directories no mount may expose.  Owned here, set by the daemon.
+ */
+static gchar **forbidden_sources;
+
+void
+clawt_mount_set_forbidden_sources(const gchar * const *paths)
+{
+    g_strfreev(forbidden_sources);
+    forbidden_sources = g_strdupv((gchar **)paths);
+}
+
+/*
+ * Whether this mount would expose a directory that must stay private.
+ *
+ * Both directions are checked: mounting the state directory itself is
+ * refused, and so is mounting any parent of it, since a parent exposes
+ * everything below.
+ */
+static gboolean
+source_is_forbidden(const gchar *source, const gchar **which)
+{
+    g_autofree gchar *resolved = clawt_canonicalize_missing(source);
+    gsize i;
+
+    if (resolved == NULL)
+        return FALSE;
+
+    for (i = 0; forbidden_sources != NULL && forbidden_sources[i] != NULL;
+         i++) {
+        g_autofree gchar *guarded =
+            clawt_canonicalize_missing(forbidden_sources[i]);
+
+        if (guarded == NULL)
+            continue;
+
+        if (clawt_path_is_within(resolved, guarded) ||
+            clawt_path_is_within(guarded, resolved)) {
+            *which = forbidden_sources[i];
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
 gboolean
 clawt_mount_validate(ClawtMount *self, GError **error)
 {
@@ -268,6 +314,18 @@ clawt_mount_validate(ClawtMount *self, GError **error)
     if (self->type == CLAWT_MOUNT_TMPFS) {
         /* A tmpfs starts empty, so a source would have nothing to mean. */
         if (self->source != NULL) {
+        const gchar *which = NULL;
+
+        if (source_is_forbidden(self->source, &which)) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_MOUNT,
+                        "'%s' cannot be mounted into a computer: it holds "
+                        "%s, which contains every agent's token and "
+                        "credentials", self->source, which);
+            return FALSE;
+        }
+    }
+
+    if (self->source != NULL) {
             g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_MOUNT,
                                 "a tmpfs mount takes no source");
             return FALSE;

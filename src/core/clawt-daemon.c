@@ -376,15 +376,21 @@ apply_mounts(ClawtDaemon *self, ClawtAgent *agent, ClawtComputer *computer)
      */
     if (self->exchange != NULL &&
         clawt_agent_config_get_boolean(config, "computer.exchange")) {
-        g_autoptr(ClawtMount) mount = clawt_exchange_get_mount(self->exchange);
         g_autoptr(GError) error = NULL;
 
         if (clawt_exchange_prepare(self->exchange, clawt_agent_get_id(agent),
-                                   &error))
-            clawt_computer_add_mount(computer, mount);
-        else
+                                   &error)) {
+            g_autoptr(GPtrArray) exchange_mounts =
+                clawt_exchange_get_mounts(self->exchange,
+                                          clawt_agent_get_id(agent));
+
+            for (i = 0; i < exchange_mounts->len; i++)
+                clawt_computer_add_mount(
+                    computer, g_ptr_array_index(exchange_mounts, i));
+        } else {
             g_warning("agent %s: the exchange is unavailable: %s",
                       clawt_agent_get_id(agent), error->message);
+        }
     }
 }
 
@@ -716,6 +722,20 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
 
     self->link_socket = g_build_filename(self->state_dir, "agents.sock",
                                          NULL);
+
+    /*
+     * Now that the state directory is known, nothing may mount it.  It
+     * holds every agent's token and resolved credentials; an agent that
+     * could read it could read every other agent's mail and connect as
+     * any of them.
+     */
+    {
+        g_autofree gchar *secrets_dir =
+            clawt_config_get_path_value(self->config, "secrets.dir");
+        const gchar *forbidden[] = { self->state_dir, secrets_dir, NULL };
+
+        clawt_mount_set_forbidden_sources(forbidden);
+    }
 
     event_dir = g_build_filename(self->state_dir, "events", NULL);
     transcript_dir = g_build_filename(self->state_dir, "transcripts", NULL);
@@ -1929,6 +1949,24 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
                 request, CLAWT_ERROR_NOT_SUPPORTED,
                 "copying straight between two agents is not supported; "
                 "copy through the exchange directory instead");
+
+        /*
+         * A copy into the exchange goes through the exchange's own rule,
+         * which is what says an agent may write to shared/ and its own
+         * directory and nowhere else.  Skipping it -- as this used to --
+         * let any agent overwrite another's drop-box, the exact thing the
+         * rule exists to prevent.
+         */
+        if (self->exchange != NULL && g_strv_length(dst_parts) == 2 &&
+            g_str_has_prefix(dst_parts[1], CLAWT_EXCHANGE_MOUNT_POINT)) {
+            g_autofree gchar *resolved =
+                clawt_exchange_resolve(self->exchange, dst_parts[0],
+                                       dst_parts[1], TRUE, &error);
+
+            if (resolved == NULL)
+                return clawt_ipc_error_new(request, error->code,
+                                           error->message);
+        }
 
         if (g_strv_length(src_parts) == 2) {
             agent = clawt_agent_manager_get(self->agents, src_parts[0]);

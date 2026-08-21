@@ -69,26 +69,59 @@ clawt_exchange_prepare(ClawtExchange *self, const gchar *agent_id,
     return clawt_ensure_dir(own, 0700, error);
 }
 
-ClawtMount *
-clawt_exchange_get_mount(ClawtExchange *self)
+GPtrArray *
+clawt_exchange_get_mounts(ClawtExchange *self, const gchar *agent_id)
 {
+    GPtrArray *mounts;
     ClawtMount *mount;
 
     g_return_val_if_fail(CLAWT_IS_EXCHANGE(self), NULL);
 
-    mount = clawt_mount_new(self->root, CLAWT_EXCHANGE_MOUNT_POINT);
-    clawt_mount_set_mode(mount, CLAWT_MOUNT_MODE_RW);
-    clawt_mount_set_create(mount, TRUE);
+    mounts = g_ptr_array_new_with_free_func((GDestroyNotify)clawt_mount_free);
 
     /*
+     * The whole exchange, read-only.  Reading across the exchange is
+     * deliberate -- that is how an agent picks up what another left for
+     * it -- and the read-write grants below are layered on top.
+     *
      * Shared relabelling (:z), not private (:Z).  Several containers see
      * this directory at once, and a private label would let whichever one
      * started last make it unreadable to the others -- which is exactly
      * the failure the exchange exists to avoid.
      */
+    mount = clawt_mount_new(self->root, CLAWT_EXCHANGE_MOUNT_POINT);
+    clawt_mount_set_mode(mount, CLAWT_MOUNT_MODE_RO);
+    clawt_mount_set_create(mount, TRUE);
     clawt_mount_set_relabel(mount, CLAWT_RELABEL_SHARED);
+    g_ptr_array_add(mounts, mount);
 
-    return mount;
+    {
+        g_autofree gchar *shared_source = g_build_filename(self->root,
+                                                           "shared", NULL);
+        g_autofree gchar *shared_target =
+            g_build_filename(CLAWT_EXCHANGE_MOUNT_POINT, "shared", NULL);
+
+        mount = clawt_mount_new(shared_source, shared_target);
+        clawt_mount_set_mode(mount, CLAWT_MOUNT_MODE_RW);
+        clawt_mount_set_create(mount, TRUE);
+        clawt_mount_set_relabel(mount, CLAWT_RELABEL_SHARED);
+        g_ptr_array_add(mounts, mount);
+    }
+
+    if (agent_id != NULL) {
+        g_autofree gchar *own_source = g_build_filename(self->root, agent_id,
+                                                        NULL);
+        g_autofree gchar *own_target =
+            g_build_filename(CLAWT_EXCHANGE_MOUNT_POINT, agent_id, NULL);
+
+        mount = clawt_mount_new(own_source, own_target);
+        clawt_mount_set_mode(mount, CLAWT_MOUNT_MODE_RW);
+        clawt_mount_set_create(mount, TRUE);
+        clawt_mount_set_relabel(mount, CLAWT_RELABEL_SHARED);
+        g_ptr_array_add(mounts, mount);
+    }
+
+    return mounts;
 }
 
 gchar *

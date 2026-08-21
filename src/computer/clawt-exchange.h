@@ -63,14 +63,22 @@ gboolean clawt_exchange_prepare(ClawtExchange  *self,
 const gchar *clawt_exchange_get_root(ClawtExchange *self);
 
 /**
- * clawt_exchange_get_mount:
+ * clawt_exchange_get_mounts:
  * @self: a #ClawtExchange
+ * @agent_id: (nullable): whose computer this is
  *
- * The mount that makes the exchange visible inside a computer.
+ * The mounts that make the exchange visible inside a computer.
  *
- * Returns: (transfer full): the mount
+ * Three of them, not one: the whole exchange read-only, then `shared/`
+ * and the agent's own directory read-write on top.  A single read-write
+ * mount of the root made the per-agent write rule unenforceable --
+ * anything in the computer could simply write into another agent's
+ * directory, which is precisely what the rule exists to stop.
+ *
+ * Returns: (transfer full) (element-type ClawtMount): the mounts
  */
-ClawtMount *clawt_exchange_get_mount(ClawtExchange *self);
+GPtrArray *clawt_exchange_get_mounts(ClawtExchange *self,
+                                     const gchar   *agent_id);
 
 /**
  * clawt_exchange_resolve:

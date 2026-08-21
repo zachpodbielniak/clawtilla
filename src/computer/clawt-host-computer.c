@@ -12,6 +12,7 @@
 
 #include <glib/gstdio.h>
 #include <string.h>
+#include <sys/resource.h>
 
 /*
  * How much output one command may return.
@@ -26,6 +27,7 @@ struct _ClawtHostComputer {
     ClawtComputer parent_instance;
 
     ClawtSandbox *sandbox;
+    GHashTable   *environment;
     gint          nice_level;
 };
 
@@ -53,6 +55,17 @@ clawt_host_computer_get_sandbox(ClawtHostComputer *self)
     g_return_val_if_fail(CLAWT_IS_HOST_COMPUTER(self), NULL);
 
     return self->sandbox;
+}
+
+void
+clawt_host_computer_set_environment(ClawtHostComputer *self, GHashTable *env)
+{
+    g_return_if_fail(CLAWT_IS_HOST_COMPUTER(self));
+
+    g_clear_pointer(&self->environment, g_hash_table_unref);
+
+    if (env != NULL)
+        self->environment = g_hash_table_ref(env);
 }
 
 void
@@ -207,6 +220,36 @@ translate_mount_path(ClawtComputer *computer, const gchar *path)
 }
 
 /*
+ * Whether a path falls inside a mount declared read-only.
+ */
+static gboolean
+mount_is_read_only(ClawtComputer *computer, const gchar *path)
+{
+    GPtrArray *mounts = clawt_computer_get_mounts(computer);
+    g_autofree gchar *resolved = clawt_canonicalize_missing(path);
+    gboolean read_only = FALSE;
+    guint i;
+
+    for (i = 0; mounts != NULL && i < mounts->len; i++) {
+        ClawtMount *mount = g_ptr_array_index(mounts, i);
+        g_autofree gchar *source =
+            clawt_canonicalize_missing(clawt_mount_get_source(mount));
+
+        if (source == NULL || !clawt_path_is_within(resolved, source))
+            continue;
+
+        /*
+         * The most specific grant wins, so a read-write mount nested
+         * inside a read-only one -- which is how the exchange gives an
+         * agent its own directory -- still permits writing.
+         */
+        read_only = (clawt_mount_get_mode(mount) == CLAWT_MOUNT_MODE_RO);
+    }
+
+    return read_only;
+}
+
+/*
  * Rewrites every argument that names a mount target.
  *
  * Whole arguments only: rewriting inside a longer string would mean
@@ -228,6 +271,21 @@ translate_argv(ClawtComputer *computer, const gchar * const *argv)
     g_ptr_array_add(out, NULL);
 
     return (GStrv)g_ptr_array_free(g_steal_pointer(&out), FALSE);
+}
+
+/*
+ * Runs in the child between fork and exec.
+ *
+ * Only async-signal-safe calls belong here; setpriority is one.
+ */
+static void
+apply_nice(gpointer user_data)
+{
+    gint level = GPOINTER_TO_INT(user_data);
+
+    if (setpriority(PRIO_PROCESS, 0, level) != 0) {
+        /* Nothing safe to report from here; the parent cannot be told. */
+    }
 }
 
 static ClawtExecResult *
@@ -272,8 +330,32 @@ host_exec(ClawtComputer        *computer,
     wrapped = clawt_sandbox_wrap_argv(self->sandbox,
                                       (const gchar * const *)translated);
 
+    /*
+     * The command gets the same allowlisted environment a supervised
+     * agent process does.  It used to inherit the daemon's, which meant
+     * every secret resolved for any agent -- and the operator's
+     * SSH_AUTH_SOCK -- was readable by any host command an agent chose to
+     * run.  CLAUDE.md forbids exactly this; the rule was applied to the
+     * agent process and not to the path agents actually use.
+     */
     launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE |
                                          G_SUBPROCESS_FLAGS_STDERR_PIPE);
+
+    {
+        g_auto(GStrv) environment =
+            clawt_build_child_environment(self->environment);
+
+        g_subprocess_launcher_set_environ(launcher, environment);
+    }
+
+    /*
+     * The requested niceness is applied in the child.  It was stored and
+     * never used, so an operator asking for nice: 5 got nothing.
+     */
+    if (self->nice_level != 0)
+        g_subprocess_launcher_set_child_setup(launcher, apply_nice,
+                                              GINT_TO_POINTER(self->nice_level),
+                                              NULL);
 
     if (working_dir != NULL) {
         g_autofree gchar *expanded = clawt_expand_path(working_dir);
@@ -389,6 +471,22 @@ host_put_file(ClawtComputer  *computer,
         return FALSE;
     }
 
+    /*
+     * A read-only mount is honoured here.
+     *
+     * On a container or a VM the kernel enforces `mode: ro`; on a host
+     * there is no mount to enforce, so the same configuration was
+     * silently writable -- the host being the more permissive backend for
+     * an identical config, which is exactly the inconsistency mounts are
+     * supposed to avoid.  Argument inspection still cannot stop a program
+     * that opens the file itself; this closes the path clawtilla owns.
+     */
+    if (mount_is_read_only(computer, destination)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFINEMENT,
+                    "'%s' is inside a read-only mount", remote_path);
+        return FALSE;
+    }
+
     if (!g_file_get_contents(local_path, &contents, &length, error))
         return FALSE;
 
@@ -464,6 +562,7 @@ clawt_host_computer_dispose(GObject *object)
 {
     ClawtHostComputer *self = CLAWT_HOST_COMPUTER(object);
 
+    g_clear_pointer(&self->environment, g_hash_table_unref);
     g_clear_object(&self->sandbox);
 
     G_OBJECT_CLASS(clawt_host_computer_parent_class)->dispose(object);

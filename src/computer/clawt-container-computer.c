@@ -294,10 +294,23 @@ container_exec(ClawtComputer        *computer,
     g_autofree gchar *bounded = NULL;
     ClawtExecResult *exec_result;
     const gchar *output;
+    gint exit_status = 0;
     gboolean truncated = FALSE;
 
+    /*
+     * The timeout is not enforced here: podomation's exec runs to
+     * completion over the Podman API and offers no deadline to pass on.
+     * Saying so beats pretending -- an agent that believes a timeout
+     * applies will wait for one that never arrives.  A command that must
+     * be bounded should carry its own `timeout` in the container.
+     */
     (void)timeout_seconds;
-    (void)cancellable;
+
+    if (cancellable != NULL && g_cancellable_is_cancelled(cancellable)) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_CANCELLED,
+                            "the command was cancelled before it started");
+        return NULL;
+    }
 
     /*
      * podomation's exec takes a command line rather than an argv, so the
@@ -337,10 +350,37 @@ container_exec(ClawtComputer        *computer,
         return NULL;
 
     output = g_hash_table_lookup(result, "output");
+
+    /*
+     * The exit status comes from the module rather than being assumed.
+     * It used to be hardcoded to 0, so every command run in a container
+     * -- including one that failed outright -- was recorded as having
+     * succeeded, in the exec result and in the audit trail with it.
+     */
+    {
+        const gchar *status = g_hash_table_lookup(result, "exit_code");
+
+        if (status == NULL)
+            status = g_hash_table_lookup(result, "exit_status");
+
+        if (status != NULL) {
+            exit_status = (gint)g_ascii_strtoll(status, NULL, 10);
+        } else {
+            /*
+             * Said out loud rather than assumed to be success: a module
+             * that does not report one leaves us unable to tell a failure
+             * from a success, and silently calling it 0 is how a failing
+             * command looks fine.
+             */
+            g_warning("container %s: the module reported no exit status; "
+                      "treating the command as failed", self->name);
+            exit_status = -1;
+        }
+    }
     bounded = clawt_computer_truncate_output(output, MAX_OUTPUT_BYTES,
                                              &truncated);
 
-    exec_result = clawt_exec_result_new(0, bounded, "");
+    exec_result = clawt_exec_result_new(exit_status, bounded, "");
     clawt_exec_result_set_truncated(exec_result, truncated);
 
     return exec_result;

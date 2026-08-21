@@ -65,7 +65,7 @@ clawt_sandbox_new(ClawtConfineMode mode, const gchar *root)
     ClawtSandbox *self = g_object_new(CLAWT_TYPE_SANDBOX, NULL);
 
     self->mode = mode;
-    self->root = clawt_expand_path(root);
+    self->root = clawt_canonicalize_missing(root);
 
     return self;
 }
@@ -81,13 +81,21 @@ clawt_sandbox_add_mount_path(ClawtSandbox *self, const gchar *path)
     g_ptr_array_add(self->mount_paths, clawt_canonicalize_missing(path));
 }
 
+/*
+ * Every stored path is canonicalised, because the candidate always is.
+ *
+ * Comparing a realpath()-resolved candidate against an unresolved stored
+ * path means a deny entry that is itself a symlink -- ~/.ssh in a
+ * stow-managed home, say -- never matches its own real target, while the
+ * broader allow entry still does.  The deny then silently loses.
+ */
 void
 clawt_sandbox_add_allow_path(ClawtSandbox *self, const gchar *path)
 {
     g_return_if_fail(CLAWT_IS_SANDBOX(self));
     g_return_if_fail(path != NULL);
 
-    g_ptr_array_add(self->allow_paths, clawt_expand_path(path));
+    g_ptr_array_add(self->allow_paths, clawt_canonicalize_missing(path));
 }
 
 void
@@ -96,7 +104,7 @@ clawt_sandbox_add_deny_path(ClawtSandbox *self, const gchar *path)
     g_return_if_fail(CLAWT_IS_SANDBOX(self));
     g_return_if_fail(path != NULL);
 
-    g_ptr_array_add(self->deny_paths, clawt_expand_path(path));
+    g_ptr_array_add(self->deny_paths, clawt_canonicalize_missing(path));
 }
 
 void
@@ -218,6 +226,15 @@ argument_looks_like_a_path(const gchar *argument)
     if (argument[0] == '-' && strchr(argument, '/') == NULL)
         return FALSE;
 
+    /*
+     * "." and ".." are paths with no separator in them.  Treating them as
+     * ordinary words meant `tar -cf loot.tar ..` was never checked at
+     * all: every argument was in bounds, and the command still archived
+     * the parent of the confined directory.
+     */
+    if (g_strcmp0(argument, "..") == 0 || g_strcmp0(argument, ".") == 0)
+        return TRUE;
+
     return strchr(argument, '/') != NULL || argument[0] == '~';
 }
 
@@ -238,6 +255,27 @@ path_part_of(const gchar *argument)
     return (equals != NULL) ? equals + 1 : argument;
 }
 
+/*
+ * Whether this argument tells a shell that the next one is a command.
+ *
+ * An exact match on "-c" is not enough: a shell accepts bundled short
+ * options, so `bash -lc 'sudo id'` runs the same command and used to
+ * sail straight past this check -- with the payload never tokenised, the
+ * top-level scan could not see the `sudo` inside it either.
+ */
+static gboolean
+is_shell_command_flag(const gchar *argument)
+{
+    if (argument == NULL || argument[0] != '-' || argument[1] == '\0')
+        return FALSE;
+
+    /* A long option: only "--command" means the same thing. */
+    if (argument[1] == '-')
+        return g_strcmp0(argument, "--command") == 0;
+
+    return strchr(argument + 1, 'c') != NULL;
+}
+
 static gboolean
 check_escalation(ClawtSandbox        *self,
                  const gchar * const *argv,
@@ -249,7 +287,18 @@ check_escalation(ClawtSandbox        *self,
         return TRUE;
 
     for (i = 0; argv[i] != NULL; i++) {
-        if (!basename_matches(argv[i], escalation_commands))
+        g_autofree gchar *resolved = NULL;
+
+        /*
+         * The name as written and the name it really resolves to are both
+         * checked.  A symlink called "notsudo" pointing at /usr/bin/sudo
+         * still executes the setuid binary, so matching only the spelling
+         * in argv makes the block trivial to walk around.
+         */
+        resolved = clawt_canonicalize_missing(argv[i]);
+
+        if (!basename_matches(argv[i], escalation_commands) &&
+            !basename_matches(resolved, escalation_commands))
             continue;
 
         /*
@@ -289,11 +338,21 @@ clawt_sandbox_check_argv(ClawtSandbox        *self,
         for (i = 1; argv[i] != NULL; i++) {
             g_auto(GStrv) inner = NULL;
 
-            if (g_strcmp0(argv[i], "-c") != 0 || argv[i + 1] == NULL)
+            if (!is_shell_command_flag(argv[i]) || argv[i + 1] == NULL)
                 continue;
 
-            if (!g_shell_parse_argv(argv[i + 1], NULL, &inner, NULL))
-                continue;
+            if (!g_shell_parse_argv(argv[i + 1], NULL, &inner, NULL)) {
+                /*
+                 * A command string that cannot be tokenised is refused
+                 * rather than skipped.  It used to be waved through, so
+                 * anything with a quirk of quoting bypassed the scan
+                 * entirely by being unparseable.
+                 */
+                g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFINEMENT,
+                            "that shell command could not be read well "
+                            "enough to check: %s", argv[i + 1]);
+                return FALSE;
+            }
 
             if (!clawt_sandbox_check_argv(self,
                                           (const gchar * const *)inner,

@@ -226,7 +226,17 @@ clawt_generate_id(const gchar *prefix)
 gchar *
 clawt_canonicalize_missing(const gchar *path)
 {
-    g_autofree gchar *expanded = clawt_expand_path(path);
+    g_autofree gchar *expanded = NULL;
+
+    /*
+     * NULL in, NULL out.  A sandbox with no root is legitimate --
+     * confine: none has nothing to pin -- and callers pass the root
+     * straight through.
+     */
+    if (path == NULL)
+        return NULL;
+
+    expanded = clawt_expand_path(path);
     g_autofree gchar *remainder = NULL;
     g_autofree gchar *current = g_strdup(expanded);
 
@@ -286,6 +296,46 @@ clawt_path_is_within(const gchar *path, const gchar *root)
            (root_length > 0 && root[root_length - 1] == '/');
 }
 
+
+/*
+ * Variables a child always needs, whatever else it is given.
+ */
+static const gchar *const passthrough_env[] = {
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TERM", "TZ",
+    "XDG_RUNTIME_DIR", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
+    NULL
+};
+
+GStrv
+clawt_build_child_environment(GHashTable *extra)
+{
+    g_autoptr(GPtrArray) out = g_ptr_array_new();
+    gsize i;
+
+    for (i = 0; passthrough_env[i] != NULL; i++) {
+        const gchar *value = g_getenv(passthrough_env[i]);
+
+        if (value != NULL)
+            g_ptr_array_add(out, g_strdup_printf("%s=%s",
+                                                 passthrough_env[i], value));
+    }
+
+    if (extra != NULL) {
+        GHashTableIter iter;
+        gpointer key;
+        gpointer value;
+
+        g_hash_table_iter_init(&iter, extra);
+
+        while (g_hash_table_iter_next(&iter, &key, &value))
+            g_ptr_array_add(out, g_strdup_printf("%s=%s", (const gchar *)key,
+                                                 (const gchar *)value));
+    }
+
+    g_ptr_array_add(out, NULL);
+
+    return (GStrv)g_ptr_array_free(g_steal_pointer(&out), FALSE);
+}
 
 gboolean
 clawt_check_socket_path(const gchar *path, GError **error)

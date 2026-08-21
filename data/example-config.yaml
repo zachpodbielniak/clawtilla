@@ -632,6 +632,17 @@ agents:
         # enabled in its config.
         socket: "$XDG_RUNTIME_DIR/gowl-mcp.sock"
 
+        # Whether the agent may launch and signal processes through the
+        # compositor.
+        #
+        # Separate from allow_input, and off by default. The compositor's spawn
+        # tool starts a process through the compositor's own socket, so none of
+        # clawtilla's confinement applies to it -- not the path checks, not the
+        # sudo block, and not bwrap. Turning this on gives the agent a way to
+        # run anything, whatever computer.host.confine says.
+        # DANGEROUS: read docs/security.org before enabling this.
+        allow_spawn: false
+
         # Permit key and pointer injection, not just observation.
         #
         # With this false the agent can take screenshots and query windows but

@@ -54,6 +54,20 @@ ClawtSandbox *clawt_host_computer_get_sandbox(ClawtHostComputer *self);
  * A runaway build started by an agent should not make the desktop
  * unusable.
  */
+/**
+ * clawt_host_computer_set_environment:
+ * @self: a #ClawtHostComputer
+ * @env: (element-type utf8 utf8) (nullable): variables for the command
+ *
+ * Sets what a command run on this computer gets beyond the allowlist.
+ *
+ * The daemon's own environment is never inherited: a command an agent
+ * runs would otherwise see every secret resolved for every other agent,
+ * and the operator's SSH_AUTH_SOCK with them.
+ */
+void clawt_host_computer_set_environment(ClawtHostComputer *self,
+                                         GHashTable        *env);
+
 void clawt_host_computer_set_nice(ClawtHostComputer *self,
                                   gint               nice_level);
 

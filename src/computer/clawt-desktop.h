@@ -61,6 +61,22 @@ ClawtDesktop *clawt_desktop_new(ClawtDesktopBackend  backend,
 void clawt_desktop_set_allow_input(ClawtDesktop *self, gboolean allow);
 
 /**
+ * clawt_desktop_set_allow_spawn:
+ * @self: a #ClawtDesktop
+ * @allow: whether the agent may launch and signal processes
+ *
+ * Off by default, and separate from @allow_input.
+ *
+ * The compositor's spawn tool starts a process through the compositor's
+ * own socket, so nothing clawtilla has constrains it: not the path
+ * checks, not the sudo block, and not bwrap.  An operator who chose
+ * bwrap -- the one mode that genuinely confines a running program --
+ * would not expect turning on desktop input to hand back unrestricted
+ * process launching.
+ */
+void clawt_desktop_set_allow_spawn(ClawtDesktop *self, gboolean allow);
+
+/**
  * clawt_desktop_resolve_backend:
  * @self: a #ClawtDesktop
  * @error: (out) (optional): return location for a #GError
