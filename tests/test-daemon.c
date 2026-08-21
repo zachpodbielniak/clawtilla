@@ -13,6 +13,7 @@
 
 #include <clawtilla.h>
 
+#include <gio/gunixsocketaddress.h>
 #include <glib/gstdio.h>
 
 typedef struct {
@@ -80,6 +81,19 @@ fixture_teardown(Fixture *fixture)
     if (fixture->daemon != NULL) {
         clawt_daemon_stop(fixture->daemon);
         g_clear_object(&fixture->daemon);
+    }
+
+    /*
+     * Iterate once after stopping.  Closing a GSocketListener finishes
+     * its outstanding accept on the *next* loop iteration, and until that
+     * runs the listener, its sources and its sockets are all still
+     * referenced.  A real daemon iterates anyway; a test that skipped it
+     * would report the whole socket stack as leaked and bury the leaks
+     * that are actually ours.
+     */
+    if (fixture->context != NULL) {
+        while (g_main_context_iteration(fixture->context, FALSE))
+            ;
     }
 
     g_clear_pointer(&fixture->context, g_main_context_unref);
@@ -637,6 +651,78 @@ test_a_broken_reload_keeps_the_old_config(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * A client that disconnects while a read is in flight must not take the
+ * daemon with it.
+ *
+ * The read completes after the client has been dropped from the server's
+ * list, and before the client was reference counted it did so holding a
+ * pointer to freed memory.  ASAN catches this; without the test it went
+ * unnoticed because the suite never iterated the loop after teardown.
+ */
+static void
+test_a_client_vanishing_mid_read_is_survivable(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *socket_path = NULL;
+    g_autoptr(GSocketClient) raw = NULL;
+    g_autoptr(GSocketAddress) address = NULL;
+    g_autoptr(GSocketConnection) connection = NULL;
+    g_autoptr(GError) error = NULL;
+    gint64 deadline;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+
+    g_main_context_push_thread_default(fixture.context);
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    socket_path = g_build_filename(fixture.dir, "daemon.sock", NULL);
+    address = g_unix_socket_address_new(socket_path);
+    raw = g_socket_client_new();
+
+    connection = g_socket_client_connect(raw, G_SOCKET_CONNECTABLE(address),
+                                         NULL, &error);
+    g_assert_no_error(error);
+
+    /* Let the server accept it and start reading. */
+    deadline = g_get_monotonic_time() + (2 * G_USEC_PER_SEC);
+
+    while (clawt_ipc_server_count_clients(
+               clawt_daemon_get_ipc_server(fixture.daemon)) == 0 &&
+           g_get_monotonic_time() < deadline)
+        g_main_context_iteration(fixture.context, FALSE);
+
+    g_assert_cmpuint(clawt_ipc_server_count_clients(
+                         clawt_daemon_get_ipc_server(fixture.daemon)),
+                     ==, 1);
+
+    /* Vanish without saying goodbye. */
+    g_io_stream_close(G_IO_STREAM(connection), NULL, NULL);
+    g_clear_object(&connection);
+
+    deadline = g_get_monotonic_time() + (2 * G_USEC_PER_SEC);
+
+    while (clawt_ipc_server_count_clients(
+               clawt_daemon_get_ipc_server(fixture.daemon)) > 0 &&
+           g_get_monotonic_time() < deadline)
+        g_main_context_iteration(fixture.context, FALSE);
+
+    /* The daemon noticed, dropped it, and is still answering. */
+    g_assert_cmpuint(clawt_ipc_server_count_clients(
+                         clawt_daemon_get_ipc_server(fixture.daemon)),
+                     ==, 0);
+
+    {
+        g_autoptr(JsonNode) reply = request(&fixture, "control.status", NULL);
+
+        g_assert_false(clawt_ipc_frame_is_error(reply));
+    }
+
+    g_main_context_pop_thread_default(fixture.context);
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -670,6 +756,9 @@ main(int argc, char *argv[])
 
     g_test_add_func("/daemon/client-over-socket",
                     test_a_client_can_talk_over_the_socket);
+
+    g_test_add_func("/daemon/client-vanishes-mid-read",
+                    test_a_client_vanishing_mid_read_is_survivable);
 
     g_test_add_func("/daemon/stop-removes-sockets",
                     test_stop_removes_the_sockets);

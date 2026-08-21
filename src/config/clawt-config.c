@@ -76,7 +76,13 @@ node_at_path(YamlNode    *root,
             if (!create)
                 return NULL;
 
-            next = yaml_node_new_mapping(yaml_mapping_new());
+            /*
+             * NULL rather than a fresh mapping: yaml_node_new_mapping()
+             * takes its argument (transfer none) and refs it, so passing
+             * one leaks the caller's ref on every call.  Passing NULL
+             * asks it to make its own.
+             */
+            next = yaml_node_new_mapping(NULL);
             yaml_mapping_set_member(mapping, parts[i], next);
             yaml_node_unref(next);
 
@@ -919,7 +925,7 @@ clawt_config_class_init(ClawtConfigClass *klass)
 static void
 clawt_config_init(ClawtConfig *self)
 {
-    self->root = yaml_node_new_mapping(yaml_mapping_new());
+    self->root = yaml_node_new_mapping(NULL);
     self->agents = g_ptr_array_new_with_free_func(
         (GDestroyNotify)clawt_agent_config_unref);
     self->warnings = g_ptr_array_new_with_free_func(g_free);
@@ -1420,7 +1426,7 @@ clawt_config_add_agent(ClawtConfig *self, const gchar *id, GError **error)
 
     if (agents_node == NULL ||
         yaml_node_get_node_type(agents_node) != YAML_NODE_SEQUENCE) {
-        g_autoptr(YamlNode) fresh = yaml_node_new_sequence(yaml_sequence_new());
+        g_autoptr(YamlNode) fresh = yaml_node_new_sequence(NULL);
 
         yaml_mapping_set_member(yaml_node_get_mapping(self->root),
                                 "agents", fresh);
@@ -1428,7 +1434,7 @@ clawt_config_add_agent(ClawtConfig *self, const gchar *id, GError **error)
         apply_schema_comment(agents_node, "agents");
     }
 
-    entry = yaml_node_new_mapping(yaml_mapping_new());
+    entry = yaml_node_new_mapping(NULL);
     id_node = yaml_node_new_string(id);
     yaml_mapping_set_member(yaml_node_get_mapping(entry), "id", id_node);
 

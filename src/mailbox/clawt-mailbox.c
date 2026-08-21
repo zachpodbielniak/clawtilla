@@ -213,6 +213,17 @@ quarantine_and_recreate(ClawtMailbox *self, GError **error)
         return FALSE;
     }
 
+    /*
+     * The failed handle is closed before reopening.  sqlite3_open leaves
+     * a usable handle even when it fails -- that is how sqlite3_errmsg()
+     * works on it -- so overwriting the pointer would strand the whole
+     * connection, page cache included, for the life of the process.
+     */
+    if (self->db != NULL) {
+        sqlite3_close_v2(self->db);
+        self->db = NULL;
+    }
+
     if (sqlite3_open(self->db_path, &self->db) != SQLITE_OK) {
         set_sqlite_error(error, self->db, "reopening the mailbox");
         return FALSE;
@@ -868,7 +879,19 @@ clawt_mailbox_finalize(GObject *object)
     ClawtMailbox *self = CLAWT_MAILBOX(object);
 
     if (self->db != NULL) {
-        sqlite3_close(self->db);
+        /*
+         * close_v2, not close.  Plain sqlite3_close() refuses with
+         * SQLITE_BUSY when anything is still outstanding and leaves the
+         * whole connection -- page cache included -- allocated.  close_v2
+         * marks it a zombie and frees it once the last statement goes,
+         * which is what we want at teardown.
+         */
+        gint status = sqlite3_close_v2(self->db);
+
+        if (status != SQLITE_OK)
+            g_warning("mailbox %s: its database did not close cleanly: %s",
+                      self->agent_id, sqlite3_errstr(status));
+
         self->db = NULL;
     }
 

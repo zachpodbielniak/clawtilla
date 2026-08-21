@@ -2194,11 +2194,14 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
      * build asking for something this daemon does not have should learn
      * that, not merely that "something went wrong".
      */
-    return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
-                               g_strdup_printf("this daemon does not "
-                                               "understand '%s'",
-                                               kind != NULL ? kind
-                                                            : "(none)"));
+    {
+        g_autofree gchar *message = g_strdup_printf(
+            "this daemon does not understand '%s'",
+            kind != NULL ? kind : "(none)");
+
+        return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
+                                   message);
+    }
 }
 
 static void

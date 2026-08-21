@@ -14,6 +14,8 @@
 
 #include <clawtilla.h>
 
+#include <sqlite3.h>
+
 #include <glib/gstdio.h>
 
 typedef struct {
@@ -534,7 +536,13 @@ test_expired_items_are_purged(void)
     g_assert_cmpuint(clawt_mailbox_purge_expired(fixture.mailbox), ==, 1);
     g_assert_cmpuint(clawt_mailbox_depth(fixture.mailbox), ==, 1);
     g_assert_null(clawt_mailbox_get(fixture.mailbox, stale_id));
-    g_assert_nonnull(clawt_mailbox_get(fixture.mailbox, fresh_id));
+
+    {
+        g_autoptr(ClawtMailboxItem) survivor =
+            clawt_mailbox_get(fixture.mailbox, fresh_id);
+
+        g_assert_nonnull(survivor);
+    }
 
     fixture_teardown(&fixture);
 }
@@ -786,5 +794,19 @@ main(int argc, char *argv[])
     g_test_add_func("/mailbox/hostile-bodies",
                     test_hostile_bodies_are_stored_verbatim);
 
-    return g_test_run();
+    {
+        gint status = g_test_run();
+
+        /*
+         * sqlite allocates page-cache and mutex globals on first use and
+         * releases them only here.  Without this every run reports them
+         * as leaked, which buries the leaks that are ours.  Safe because
+         * a test binary owns its whole process; a library must never do
+         * this, since another user of sqlite in the same process would
+         * find it shut down underneath them.
+         */
+        sqlite3_shutdown();
+
+        return status;
+    }
 }

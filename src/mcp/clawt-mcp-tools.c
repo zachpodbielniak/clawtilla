@@ -944,10 +944,10 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
          * Named plainly, so the agent stops rather than trying three
          * variations of the same call.
          */
-        return make_response(request_id,
-                             g_strdup_printf("You are not permitted to use "
-                                             "%s.", tool_name),
-                             TRUE);
+        g_autofree gchar *message = g_strdup_printf(
+            "You are not permitted to use %s.", tool_name);
+
+        return make_response(request_id, message, TRUE);
     }
 
     if (g_strcmp0(tool_name, "clawtilla_list_agents") == 0)

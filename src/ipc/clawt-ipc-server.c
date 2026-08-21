@@ -26,7 +26,18 @@
  */
 #define MAX_PENDING_BYTES (4 * 1024 * 1024)
 
+/*
+ * Reference counted, because a pending async read outlives the client it
+ * belongs to.
+ *
+ * A client that disconnects mid-read has its connection dropped from the
+ * server's list immediately; the read then completes and hands the
+ * callback a pointer to memory that has already gone.  The callback holds
+ * a reference for exactly as long as the read is outstanding, so the
+ * struct survives to be told the read failed.
+ */
 typedef struct {
+    gint              ref_count;
     ClawtIpcServer   *server;      /* unowned */
     GSocketConnection *connection;
     GDataInputStream *input;
@@ -63,6 +74,9 @@ G_DEFINE_FINAL_TYPE(ClawtIpcServer, clawt_ipc_server, G_TYPE_OBJECT)
 
 static void read_next(Client *client);
 static void flush_pending(Client *client);
+static void client_unref(gpointer data);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(Client, client_unref)
 
 ClawtIpcServer *
 clawt_ipc_server_new(const gchar *socket_path)
@@ -151,6 +165,25 @@ client_free(gpointer data)
     g_free(client);
 }
 
+static Client *
+client_ref(Client *client)
+{
+    client->ref_count++;
+
+    return client;
+}
+
+static void
+client_unref(gpointer data)
+{
+    Client *client = data;
+
+    if (--client->ref_count > 0)
+        return;
+
+    client_free(client);
+}
+
 static void
 client_close(Client *client)
 {
@@ -168,7 +201,7 @@ client_close(Client *client)
 static void
 on_write_done(GObject *source, GAsyncResult *result, gpointer user_data)
 {
-    Client *client = user_data;
+    g_autoptr(Client) client = user_data;
     g_autoptr(GError) error = NULL;
     gsize written = 0;
 
@@ -203,7 +236,7 @@ flush_pending(Client *client)
     g_output_stream_write_all_async(client->output, client->pending->str,
                                     client->pending->len,
                                     G_PRIORITY_DEFAULT, NULL, on_write_done,
-                                    client);
+                                    client_ref(client));
 }
 
 static void
@@ -315,7 +348,7 @@ handle_builtin(ClawtIpcServer *self, Client *client, JsonNode *request,
 static void
 on_line_read(GObject *source, GAsyncResult *result, gpointer user_data)
 {
-    Client *client = user_data;
+    g_autoptr(Client) client = user_data;
     ClawtIpcServer *self = client->server;
     g_autofree gchar *line = NULL;
     g_autoptr(GError) error = NULL;
@@ -395,7 +428,8 @@ read_next(Client *client)
         return;
 
     g_data_input_stream_read_line_async(client->input, G_PRIORITY_DEFAULT,
-                                        NULL, on_line_read, client);
+                                        NULL, on_line_read,
+                                        client_ref(client));
 }
 
 static gboolean
@@ -410,6 +444,7 @@ on_incoming(GSocketService *service, GSocketConnection *connection,
     (void)source;
 
     client = g_new0(Client, 1);
+    client->ref_count = 1;
     client->server = self;
     client->connection = g_object_ref(connection);
     client->input = g_data_input_stream_new(
@@ -424,8 +459,18 @@ on_incoming(GSocketService *service, GSocketConnection *connection,
      * it could only connect at all by being the owner.  A TCP client has
      * proved nothing yet, so it must present the token first.
      */
-    is_unix = G_IS_UNIX_SOCKET_ADDRESS(
-        g_socket_connection_get_local_address(connection, NULL));
+    {
+        /*
+         * get_local_address is (transfer full), so the address has to be
+         * released -- once per connection, which adds up on a daemon that
+         * has been running for a while.
+         */
+        g_autoptr(GSocketAddress) local =
+            g_socket_connection_get_local_address(connection, NULL);
+
+        is_unix = G_IS_UNIX_SOCKET_ADDRESS(local);
+    }
+
     client->authenticated = is_unix;
 
     g_ptr_array_add(self->clients, client);
@@ -690,5 +735,5 @@ clawt_ipc_server_class_init(ClawtIpcServerClass *klass)
 static void
 clawt_ipc_server_init(ClawtIpcServer *self)
 {
-    self->clients = g_ptr_array_new_with_free_func(client_free);
+    self->clients = g_ptr_array_new_with_free_func(client_unref);
 }

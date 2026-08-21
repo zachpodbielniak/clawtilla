@@ -342,7 +342,14 @@ test_container_mount_json_handles_no_mounts(void)
     g_autofree gchar *json = clawt_container_computer_build_mount_json(mounts);
 
     g_assert_cmpstr(json, ==, "[]");
-    g_assert_nonnull(clawt_container_computer_build_mount_json(NULL));
+
+    {
+        /* NULL is accepted and still produces a valid empty array. */
+        g_autofree gchar *from_null =
+            clawt_container_computer_build_mount_json(NULL);
+
+        g_assert_cmpstr(from_null, ==, "[]");
+    }
 }
 
 /* ── VM specification ────────────────────────────────────────────── */
