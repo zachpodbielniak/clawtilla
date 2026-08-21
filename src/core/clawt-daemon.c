@@ -587,6 +587,35 @@ clawt_daemon_quit_idle(gpointer user_data)
     return G_SOURCE_REMOVE;
 }
 
+/*
+ * Drops every component, in reverse dependency order.
+ *
+ * The order matters: the servers hold callbacks into the managers, and
+ * the managers hold references to the config.  Freeing the config first
+ * would leave a live server calling into it.
+ */
+static void
+release_components(ClawtDaemon *self)
+{
+    g_clear_object(&self->plugins);
+    g_clear_object(&self->mcp_tools);
+    g_clear_object(&self->ipc_server);
+    g_clear_object(&self->link_server);
+    g_clear_object(&self->pod_bridge);
+    g_clear_object(&self->router);
+    g_clear_object(&self->guard);
+    g_clear_object(&self->tasks);
+    g_clear_object(&self->rooms);
+    g_clear_object(&self->agents);
+    g_clear_object(&self->exchange);
+    g_clear_object(&self->log);
+    g_clear_object(&self->bus);
+    g_clear_object(&self->config);
+
+    g_clear_pointer(&self->state_dir, g_free);
+    g_clear_pointer(&self->link_socket, g_free);
+}
+
 static gboolean
 on_sweep(gpointer user_data)
 {
@@ -637,6 +666,17 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
 
     if (self->running)
         return TRUE;
+
+    /*
+     * Anything left from a previous start is released first.
+     *
+     * start() used to overwrite every component pointer without freeing
+     * what was there, so a stop-then-start -- or a retry after a start
+     * that failed partway -- orphaned the whole previous generation.  A
+     * standalone daemon exits and never notices; an embedding host that
+     * restarts the fleet in-process leaks it every time.
+     */
+    release_components(self);
 
     if (self->main_context != NULL)
         g_main_context_push_thread_default(self->main_context);
@@ -954,6 +994,17 @@ clawt_daemon_reload(ClawtDaemon *self, GError **error)
     self->config = g_steal_pointer(&reloaded);
 
     configure_limits(self);
+
+    /*
+     * The manager holds its own reference, so it has to be pointed at the
+     * new configuration and then reconciled.  Without both, a reload
+     * changed the daemon's config while the fleet carried on reading the
+     * old one -- an added agent never appeared, a removed one never went
+     * away, and nothing a reload changed ever took effect.
+     */
+    clawt_agent_manager_set_config(self->agents, self->config);
+    clawt_agent_manager_load(self->agents, NULL);
+
     clawt_room_manager_load(self->rooms, self->config);
 
     /*
@@ -1570,6 +1621,15 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         if (room == NULL)
             return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
                                        "no such room");
+
+        /*
+         * Checked rather than passed straight through: without it a
+         * request with no agent named added nobody and reported success,
+         * which is the one answer a caller cannot act on.
+         */
+        if (agent_id == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "which agent should be added?");
 
         clawt_room_add_member(room, agent_id);
         clawt_event_bus_emit(self->bus, "room.changed", room_id);
@@ -2274,21 +2334,7 @@ clawt_daemon_dispose(GObject *object)
     ClawtDaemon *self = CLAWT_DAEMON(object);
 
     clawt_daemon_stop(self);
-
-    g_clear_object(&self->plugins);
-    g_clear_object(&self->mcp_tools);
-    g_clear_object(&self->ipc_server);
-    g_clear_object(&self->link_server);
-    g_clear_object(&self->pod_bridge);
-    g_clear_object(&self->router);
-    g_clear_object(&self->guard);
-    g_clear_object(&self->tasks);
-    g_clear_object(&self->rooms);
-    g_clear_object(&self->agents);
-    g_clear_object(&self->exchange);
-    g_clear_object(&self->log);
-    g_clear_object(&self->bus);
-    g_clear_object(&self->config);
+    release_components(self);
 
     G_OBJECT_CLASS(clawt_daemon_parent_class)->dispose(object);
 }

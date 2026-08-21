@@ -41,6 +41,7 @@ clawt_error_code_to_string(ClawtError code)
     case CLAWT_ERROR_CONFINEMENT:        return "confinement";
     case CLAWT_ERROR_MOUNT:              return "mount";
     case CLAWT_ERROR_MAILBOX_FULL:       return "mailbox-full";
+    case CLAWT_ERROR_MAILBOX_BUSY:       return "mailbox-busy";
     case CLAWT_ERROR_MAILBOX_STATE:      return "mailbox-state";
     case CLAWT_ERROR_PROTOCOL:           return "protocol";
     case CLAWT_ERROR_AUTH:               return "auth";

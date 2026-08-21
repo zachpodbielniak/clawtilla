@@ -60,6 +60,25 @@ ClawtAgentCaps    clawt_agent_get_caps(ClawtAgent *self);
 ClawtAgentConfig *clawt_agent_get_config(ClawtAgent *self);
 
 /**
+ * clawt_agent_set_config:
+ * @self: a #ClawtAgent
+ * @config: (transfer none): the agent's configuration
+ *
+ * Replaces the agent's configuration and recomputes its capabilities.
+ *
+ * Used when the fleet configuration is reloaded: the agent keeps running,
+ * with its runtime, computer and link intact, but its settings come from
+ * the newly parsed file.  The old configuration belongs to a #ClawtConfig
+ * that is about to be freed, so holding on to it is not an option.
+ *
+ * Changes that only take effect at start -- the model, the computer type
+ * -- apply on the agent's next restart, which is deliberate: a reload
+ * that restarted every agent mid-turn would make editing one description
+ * cost the whole fleet's work.
+ */
+void clawt_agent_set_config(ClawtAgent *self, ClawtAgentConfig *config);
+
+/**
  * clawt_agent_get_mailbox:
  * @self: a #ClawtAgent
  *

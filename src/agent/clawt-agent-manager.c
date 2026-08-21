@@ -106,58 +106,131 @@ configure_mailbox(ClawtAgentManager *self,
                              (guint)values[3], (guint)values[4]);
 }
 
+/*
+ * Builds one agent from its configuration.
+ *
+ * Returns: (transfer full): the agent
+ */
+static ClawtAgent *
+build_agent(ClawtAgentManager *self, ClawtAgentConfig *agent_config)
+{
+    const gchar *agent_id = clawt_agent_config_get_id(agent_config);
+    g_autoptr(ClawtMailbox) mailbox = NULL;
+    g_autoptr(GError) mailbox_error = NULL;
+    g_autofree gchar *db_path = NULL;
+    ClawtAgent *agent;
+
+    db_path = g_build_filename(self->state_dir, "agents", agent_id,
+                               "mailbox.db", NULL);
+
+    mailbox = clawt_mailbox_new(agent_id, db_path, &mailbox_error);
+
+    /*
+     * A mailbox that cannot be opened costs that agent, not the fleet.
+     * It becomes a shadow explaining why, and the other nine keep
+     * running.
+     */
+    if (mailbox == NULL)
+        g_warning("agent %s: its mailbox could not be opened: %s",
+                  agent_id, mailbox_error->message);
+    else
+        configure_mailbox(self, agent_config, mailbox);
+
+    agent = clawt_agent_new(agent_config, mailbox);
+
+    if (mailbox == NULL)
+        clawt_agent_mark_shadow(agent, "its mailbox could not be opened");
+
+    g_signal_connect(agent, "state-changed",
+                     G_CALLBACK(on_agent_state_changed), self);
+
+    return agent;
+}
+
+void
+clawt_agent_manager_set_config(ClawtAgentManager *self, ClawtConfig *config)
+{
+    g_return_if_fail(CLAWT_IS_AGENT_MANAGER(self));
+    g_return_if_fail(CLAWT_IS_CONFIG(config));
+
+    if (self->config == config)
+        return;
+
+    g_clear_object(&self->config);
+    self->config = g_object_ref(config);
+}
+
 gboolean
 clawt_agent_manager_load(ClawtAgentManager *self, GError **error)
 {
     GPtrArray *agent_configs;
+    g_autoptr(GHashTable) wanted = NULL;
     guint i;
 
     g_return_val_if_fail(CLAWT_IS_AGENT_MANAGER(self), FALSE);
 
-    g_ptr_array_set_size(self->agents, 0);
-    g_hash_table_remove_all(self->by_id);
+    (void)error;
 
     agent_configs = clawt_config_get_agents(self->config);
+    wanted = g_hash_table_new(g_str_hash, g_str_equal);
 
+    /*
+     * Reconciled against what is already here, never rebuilt.
+     *
+     * This used to empty both containers and construct every agent
+     * afresh, which meant adding one agent destroyed the live object of
+     * every other agent in the fleet -- their runtimes, computers and
+     * links went with them, while the link server carried on holding
+     * connections for agents that no longer existed.  Creating an agent
+     * must not disturb the ones already working.
+     */
     for (i = 0; i < agent_configs->len; i++) {
         ClawtAgentConfig *agent_config = g_ptr_array_index(agent_configs, i);
         const gchar *agent_id = clawt_agent_config_get_id(agent_config);
-        g_autoptr(ClawtMailbox) mailbox = NULL;
-        g_autoptr(GError) mailbox_error = NULL;
-        g_autofree gchar *db_path = NULL;
-        ClawtAgent *agent;
+        ClawtAgent *existing;
 
-        db_path = g_build_filename(self->state_dir, "agents", agent_id,
-                                   "mailbox.db", NULL);
+        g_hash_table_add(wanted, (gpointer)agent_id);
 
-        mailbox = clawt_mailbox_new(agent_id, db_path, &mailbox_error);
+        existing = g_hash_table_lookup(self->by_id, agent_id);
 
-        /*
-         * A mailbox that cannot be opened costs that agent, not the fleet.
-         * It becomes a shadow explaining why, and the other nine keep
-         * running.
-         */
-        if (mailbox == NULL)
-            g_warning("agent %s: its mailbox could not be opened: %s",
-                      agent_id, mailbox_error->message);
-        else
-            configure_mailbox(self, agent_config, mailbox);
+        if (existing != NULL) {
+            /*
+             * The configuration objects belong to the ClawtConfig that
+             * was just loaded, so even an unchanged agent needs the new
+             * one -- the old is about to be freed with its config.
+             */
+            clawt_agent_set_config(existing, agent_config);
+            continue;
+        }
 
-        agent = clawt_agent_new(agent_config, mailbox);
+        {
+            ClawtAgent *agent = build_agent(self, agent_config);
 
-        if (mailbox == NULL)
-            clawt_agent_mark_shadow(agent,
-                                    "its mailbox could not be opened");
+            g_ptr_array_add(self->agents, agent);
+            g_hash_table_insert(self->by_id,
+                                (gpointer)clawt_agent_get_id(agent), agent);
 
-        g_signal_connect(agent, "state-changed",
-                         G_CALLBACK(on_agent_state_changed), self);
+            g_signal_emit(self, signals[SIGNAL_AGENT_ADDED], 0,
+                          clawt_agent_get_id(agent));
+        }
+    }
 
-        g_ptr_array_add(self->agents, agent);
-        g_hash_table_insert(self->by_id, (gpointer)clawt_agent_get_id(agent),
-                            agent);
+    /* Anything no longer in the configuration is stopped and dropped. */
+    for (i = self->agents->len; i > 0; i--) {
+        ClawtAgent *agent = g_ptr_array_index(self->agents, i - 1);
+        const gchar *agent_id = clawt_agent_get_id(agent);
+        g_autofree gchar *removed_id = NULL;
 
-        g_signal_emit(self, signals[SIGNAL_AGENT_ADDED], 0,
-                      clawt_agent_get_id(agent));
+        if (g_hash_table_contains(wanted, agent_id))
+            continue;
+
+        removed_id = g_strdup(agent_id);
+
+        clawt_agent_stop(agent);
+        g_hash_table_remove(self->by_id, agent_id);
+        g_ptr_array_remove_index(self->agents, i - 1);
+
+        g_signal_emit(self, signals[SIGNAL_AGENT_REMOVED], 0, removed_id);
     }
 
     return TRUE;

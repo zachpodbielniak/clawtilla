@@ -245,6 +245,21 @@ on_runtime_exited(ClawtAgentRuntime *runtime,
 }
 
 void
+clawt_agent_set_config(ClawtAgent *self, ClawtAgentConfig *config)
+{
+    g_return_if_fail(CLAWT_IS_AGENT(self));
+    g_return_if_fail(config != NULL);
+
+    if (self->config == config)
+        return;
+
+    g_clear_pointer(&self->config, clawt_agent_config_unref);
+    self->config = clawt_agent_config_ref(config);
+
+    recompute_caps(self);
+}
+
+void
 clawt_agent_set_runtime(ClawtAgent *self, ClawtAgentRuntime *runtime)
 {
     g_return_if_fail(CLAWT_IS_AGENT(self));

@@ -187,6 +187,63 @@ emit_depth_changed(ClawtMailbox *self)
 /* ── Opening ─────────────────────────────────────────────────────── */
 
 /*
+ * How long to wait for another writer before giving up.
+ *
+ * Without this, a lock held by anything else -- a backup, a checkpoint,
+ * somebody running sqlite3 on the file -- makes every write fail
+ * instantly.  Waiting briefly turns almost all of that into a short pause
+ * rather than an error.
+ */
+#define BUSY_TIMEOUT_MS 5000
+
+/*
+ * How long an acknowledged message stays in the queue before the sweep
+ * removes it.
+ *
+ * Long enough that anything inspecting a mailbox shortly after delivery
+ * still sees what happened, short enough that the file does not grow
+ * without bound.  The durable record is the transcript and the event log.
+ */
+#define ACKED_RETENTION_SECONDS (24 * 60 * 60)
+
+static void
+set_busy_timeout(sqlite3 *db)
+{
+    if (db != NULL)
+        sqlite3_busy_timeout(db, BUSY_TIMEOUT_MS);
+}
+
+/*
+ * Runs a mutating statement and confirms it actually happened.
+ *
+ * sqlite3_step() returning SQLITE_BUSY is not a rare event: a second
+ * connection to the same file -- a backup, a checkpoint, somebody running
+ * sqlite3 on the mailbox -- takes a lock and this write is refused.
+ * Ignoring the return value meant the queue reported success while the
+ * row was untouched, which showed up as the same message being leased
+ * twice and as acknowledgements that did not stick.
+ *
+ * Returns: %TRUE if the statement ran to completion
+ */
+static gboolean
+step_write(ClawtMailbox  *self,
+           sqlite3_stmt  *stmt,
+           const gchar   *what,
+           GError       **error)
+{
+    gint status = sqlite3_step(stmt);
+
+    sqlite3_finalize(stmt);
+
+    if (status == SQLITE_DONE)
+        return TRUE;
+
+    set_sqlite_error(error, self->db, what);
+
+    return FALSE;
+}
+
+/*
  * A database that will not open is moved aside and recreated.
  *
  * A corrupt queue should cost the messages in it, not the agent: refusing
@@ -229,6 +286,8 @@ quarantine_and_recreate(ClawtMailbox *self, GError **error)
         return FALSE;
     }
 
+    set_busy_timeout(self->db);
+
     if (sqlite3_exec(self->db, SCHEMA_SQL, NULL, NULL, NULL) != SQLITE_OK) {
         set_sqlite_error(error, self->db, "creating the mailbox schema");
         return FALSE;
@@ -256,7 +315,10 @@ clawt_mailbox_new(const gchar *agent_id, const gchar *db_path, GError **error)
         return NULL;
     }
 
-    if (sqlite3_open(self->db_path, &self->db) != SQLITE_OK ||
+    if (sqlite3_open(self->db_path, &self->db) == SQLITE_OK)
+        set_busy_timeout(self->db);
+
+    if (self->db == NULL ||
         sqlite3_exec(self->db, SCHEMA_SQL, NULL, NULL, NULL) != SQLITE_OK) {
         if (!quarantine_and_recreate(self, error)) {
             g_object_unref(self);
@@ -340,6 +402,19 @@ enforce_capacity(ClawtMailbox *self, GError **error)
         break;
 
     case CLAWT_OVERFLOW_BLOCK_SENDER:
+        /*
+         * A different error from reject, deliberately.  Nothing here
+         * blocks a thread -- a daemon that stalled on a full queue would
+         * stall every other agent with it -- so "block the sender" means
+         * telling the sender to come back, and it has to be
+         * distinguishable from "this was refused" or a caller cannot know
+         * whether retrying is pointless.
+         */
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_MAILBOX_BUSY,
+                    "%s's mailbox is full (%u items); try again shortly",
+                    self->agent_id, self->max_depth);
+        return FALSE;
+
     case CLAWT_OVERFLOW_REJECT:
     default:
         break;
@@ -503,8 +578,18 @@ clawt_mailbox_lease(ClawtMailbox *self, guint lease_seconds)
     sqlite3_bind_text(stmt, 3, clawt_mailbox_item_get_id(item), -1,
                       SQLITE_TRANSIENT);
 
-    sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
+    /*
+     * Nothing is handed out unless the lease is durably recorded.  The
+     * alternative -- returning the item anyway -- means the next caller
+     * leases the same message, and two agents work on it believing they
+     * are the only one.
+     */
+    if (!step_write(self, stmt, "leasing a message", NULL)) {
+        g_warning("mailbox %s: a lease could not be recorded; the message "
+                  "stays queued", self->agent_id);
+        clawt_mailbox_item_free(item);
+        return NULL;
+    }
 
     clawt_mailbox_item_set_state(item, CLAWT_MAILBOX_LEASED);
     clawt_mailbox_item_set_attempts(item,
@@ -566,8 +651,9 @@ clawt_mailbox_ack(ClawtMailbox *self, const gchar *id, GError **error)
 
     sqlite3_bind_int(stmt, 1, CLAWT_MAILBOX_ACKED);
     sqlite3_bind_text(stmt, 2, id, -1, SQLITE_TRANSIENT);
-    sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
+
+    if (!step_write(self, stmt, "acknowledging a message", error))
+        return FALSE;
 
     g_signal_emit(self, signals[SIGNAL_ITEM_ACKED], 0, id);
     emit_depth_changed(self);
@@ -618,8 +704,9 @@ clawt_mailbox_nack(ClawtMailbox  *self,
         sqlite3_bind_int(stmt, 1, CLAWT_MAILBOX_DEAD);
         sqlite3_bind_text(stmt, 2, reason, -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, 3, id, -1, SQLITE_TRANSIENT);
-        sqlite3_step(stmt);
-        sqlite3_finalize(stmt);
+
+        if (!step_write(self, stmt, "dead-lettering a message", error))
+            return FALSE;
 
         /*
          * Dead-lettered, never dropped.  A message that failed five times
@@ -671,8 +758,9 @@ clawt_mailbox_nack(ClawtMailbox  *self,
     sqlite3_bind_int64(stmt, 2, retry_at);
     sqlite3_bind_text(stmt, 3, reason, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 4, id, -1, SQLITE_TRANSIENT);
-    sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
+
+    if (!step_write(self, stmt, "returning a message to the queue", error))
+        return FALSE;
 
     return TRUE;
 }
@@ -706,8 +794,9 @@ clawt_mailbox_requeue(ClawtMailbox *self, const gchar *id, GError **error)
 
     sqlite3_bind_int(stmt, 1, CLAWT_MAILBOX_PENDING);
     sqlite3_bind_text(stmt, 2, id, -1, SQLITE_TRANSIENT);
-    sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
+
+    if (!step_write(self, stmt, "requeueing a message", error))
+        return FALSE;
 
     emit_depth_changed(self);
 
@@ -732,12 +821,23 @@ clawt_mailbox_list(ClawtMailbox *self, ClawtMailboxFilter *filter)
     items = g_ptr_array_new_with_free_func(
         (GDestroyNotify)clawt_mailbox_item_free);
 
+    /*
+     * The deferral clause is built independently of the state clause.
+     * It used to be appended only when a state filter was present, so
+     * listing every state silently included items that are not due yet --
+     * the one combination no caller happened to use.
+     */
     sql = g_strdup_printf(
-        "SELECT " SELECT_COLUMNS " FROM items%s%s"
+        "SELECT " SELECT_COLUMNS " FROM items%s%s%s"
         " ORDER BY priority DESC, created_at ASC%s",
-        filter->state >= 0 ? " WHERE state = ?" : "",
-        (filter->state >= 0 && !filter->include_future)
-            ? " AND (not_before = 0 OR not_before <= strftime('%s','now'))" : "",
+        (filter->state >= 0 || !filter->include_future) ? " WHERE " : "",
+        filter->state >= 0 ? "state = ?" : "",
+        !filter->include_future
+            ? (filter->state >= 0 ? " AND (not_before = 0 OR not_before <="
+                                    " strftime('%s','now'))"
+                                  : "(not_before = 0 OR not_before <="
+                                    " strftime('%s','now'))")
+            : "",
         filter->limit > 0 ? " LIMIT ?" : "");
 
     if (sqlite3_prepare_v2(self->db, sql, -1, &stmt, NULL) != SQLITE_OK)
@@ -822,6 +922,37 @@ clawt_mailbox_purge_expired(ClawtMailbox *self)
         g_info("mailbox %s: %u message(s) expired unread", self->agent_id,
                removed);
         emit_depth_changed(self);
+    }
+
+    /*
+     * Acknowledged messages are reaped too, once they are older than the
+     * retention window.
+     *
+     * A queue only ever added rows before this: an acknowledged item was
+     * left in place for ever, so a busy agent's mailbox.db grew by one
+     * permanent row per message handled and never shrank.  The record of
+     * what was said lives in the room transcript and the event log, which
+     * is where anybody looks for it -- keeping a second copy in the queue
+     * bought nothing.
+     *
+     * Dead letters are deliberately not swept: they are there to be
+     * looked at.
+     */
+    {
+        sqlite3_stmt *acked = NULL;
+        gint64 cutoff = now_seconds() - (gint64)ACKED_RETENTION_SECONDS;
+
+        if (sqlite3_prepare_v2(self->db,
+                "DELETE FROM items WHERE state = ? AND created_at <= ?",
+                -1, &acked, NULL) == SQLITE_OK) {
+            sqlite3_bind_int(acked, 1, CLAWT_MAILBOX_ACKED);
+            sqlite3_bind_int64(acked, 2, cutoff);
+
+            if (sqlite3_step(acked) == SQLITE_DONE)
+                removed += (guint)sqlite3_changes(self->db);
+
+            sqlite3_finalize(acked);
+        }
     }
 
     return removed;

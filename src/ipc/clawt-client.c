@@ -195,6 +195,10 @@ dispatch_event(ClawtClient *self, JsonNode *frame)
     if (payload == NULL || !json_object_has_member(payload, "kind"))
         return;
 
+    if (json_node_get_value_type(json_object_get_member(payload, "kind")) !=
+        G_TYPE_STRING)
+        return;
+
     kind = json_object_get_string_member(payload, "kind");
 
     event = clawt_event_new(kind,
@@ -203,11 +207,15 @@ dispatch_event(ClawtClient *self, JsonNode *frame)
                                                                 "subject")
                                 : NULL);
 
-    if (json_object_has_member(payload, "ts"))
+    if (json_object_has_member(payload, "ts") &&
+        json_node_get_value_type(json_object_get_member(payload, "ts")) ==
+            G_TYPE_INT64)
         clawt_event_set_timestamp(event,
                                   json_object_get_int_member(payload, "ts"));
 
-    if (json_object_has_member(payload, "cursor")) {
+    if (json_object_has_member(payload, "cursor") &&
+        json_node_get_value_type(json_object_get_member(payload, "cursor")) ==
+            G_TYPE_INT64) {
         guint64 cursor =
             (guint64)json_object_get_int_member(payload, "cursor");
 
@@ -221,7 +229,8 @@ dispatch_event(ClawtClient *self, JsonNode *frame)
             self->cursor = cursor;
     }
 
-    if (json_object_has_member(payload, "detail")) {
+    if (json_object_has_member(payload, "detail") &&
+        JSON_NODE_HOLDS_OBJECT(json_object_get_member(payload, "detail"))) {
         JsonObject *detail = json_object_get_object_member(payload, "detail");
         g_autoptr(GList) members = json_object_get_members(detail);
         GList *l;
@@ -373,7 +382,7 @@ try_reconnect(gpointer user_data)
 static void
 on_line_read(GObject *source, GAsyncResult *result, gpointer user_data)
 {
-    ClawtClient *self = user_data;
+    g_autoptr(ClawtClient) self = user_data;
     g_autofree gchar *line = NULL;
     g_autoptr(JsonNode) frame = NULL;
 
@@ -403,8 +412,16 @@ read_next(ClawtClient *self)
     if (self->input == NULL)
         return;
 
+    /*
+     * A reference for the life of the read.  There is always exactly one
+     * outstanding -- every completion re-arms -- so dropping the last
+     * reference to a connected client left GIO holding a pointer to a
+     * freed object, and the next line to arrive read it.  The server's
+     * Client is reference counted for the same reason.
+     */
     g_data_input_stream_read_line_async(self->input, G_PRIORITY_DEFAULT,
-                                        NULL, on_line_read, self);
+                                        NULL, on_line_read,
+                                        g_object_ref(self));
 }
 
 /* ── Connecting ──────────────────────────────────────────────────── */
@@ -588,6 +605,14 @@ clawt_client_disconnect(ClawtClient *self)
     g_clear_object(&self->connection);
     g_clear_object(&self->stream);
     self->output = NULL;
+
+    /*
+     * Outstanding requests are failed, not abandoned.  An async caller
+     * whose GTask is never completed waits for ever -- a spinner that
+     * never stops -- and a synchronous one sat out its full two-minute
+     * timeout before reporting the wrong reason.
+     */
+    fail_all_pending(self, "the connection was closed");
 }
 
 /* ── Requests ────────────────────────────────────────────────────── */
@@ -706,7 +731,12 @@ clawt_client_request(ClawtClient  *self,
 
         g_main_context_iteration(self->context, TRUE);
 
-        /* The table can be rebuilt by a reconnect underneath us. */
+        /*
+         * Looked up again rather than reused: iterating the context can
+         * complete this request, and completing it removes and frees the
+         * slot.  The table itself is never rebuilt -- the entry is what
+         * goes away.
+         */
         pending = g_hash_table_lookup(self->pending, id);
 
         if (pending == NULL)

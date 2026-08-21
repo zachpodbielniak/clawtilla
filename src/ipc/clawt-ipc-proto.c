@@ -124,7 +124,9 @@ clawt_ipc_frame_validate(JsonNode *frame, GError **error)
         return FALSE;
     }
 
-    version = json_object_has_member(object, "v")
+    version = (json_object_has_member(object, "v") &&
+               json_node_get_value_type(json_object_get_member(object, "v")) ==
+                   G_TYPE_INT64)
               ? json_object_get_int_member(object, "v") : 0;
 
     if (version != CLAWT_IPC_VERSION) {
@@ -244,10 +246,19 @@ clawt_ipc_frame_to_error(JsonNode *frame)
 
     object = json_node_get_object(frame);
 
-    if (json_object_has_member(object, "error"))
+    /*
+     * Type-checked like every other read of a peer's frame.  A reply with
+     * "code" as a string is malformed, not a reason to hand json-glib
+     * something it will complain about.
+     */
+    if (json_object_has_member(object, "error") &&
+        json_node_get_value_type(json_object_get_member(object, "error")) ==
+            G_TYPE_STRING)
         message = json_object_get_string_member(object, "error");
 
-    if (json_object_has_member(object, "code"))
+    if (json_object_has_member(object, "code") &&
+        json_node_get_value_type(json_object_get_member(object, "code")) ==
+            G_TYPE_INT64)
         code = (gint)json_object_get_int_member(object, "code");
 
     return g_error_new_literal(CLAWT_ERROR, code, message);

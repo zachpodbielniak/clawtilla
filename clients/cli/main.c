@@ -111,6 +111,38 @@ static const gchar *usage_text =
     "Configuration is read from the path given with -c, otherwise from\n"
     "~/.clawtilla/config.yaml.\n";
 
+/*
+ * Every verb, in one place.
+ *
+ * Used to work out where the global options stop and the subcommand
+ * begins, so it has to list exactly what main() dispatches on -- a verb
+ * missing here would have its arguments handed to the global parser.
+ */
+static const gchar *const verbs[] = {
+    "daemon", "status", "agent", "send", "chat", "mailbox", "room", "task",
+    "computer", "cp", "config", "plugin", "integration", "model", NULL
+};
+
+/*
+ * Returns: the index of the first verb in @argv, or 0 if there is none
+ */
+static gint
+find_verb(gint argc, gchar **argv)
+{
+    gint i;
+
+    for (i = 1; i < argc; i++) {
+        gsize j;
+
+        for (j = 0; verbs[j] != NULL; j++) {
+            if (g_strcmp0(argv[i], verbs[j]) == 0)
+                return i;
+        }
+    }
+
+    return 0;
+}
+
 static void
 print_version(void)
 {
@@ -1056,7 +1088,17 @@ cmd_computer(int argc, char *argv[])
          * The command's own exit status is this process's exit status, so
          * `clawtilla computer exec ... && something` behaves the way a
          * shell user expects.
+         *
+         * A reply without one is a failure rather than a success: reading
+         * a missing member returns 0, and reporting success for a command
+         * whose outcome is unknown is the worst of the options.
          */
+        if (!json_object_has_member(result, "exit")) {
+            g_printerr("clawtilla: the daemon did not report an exit "
+                       "status\n");
+            return EXIT_FAILURE;
+        }
+
         return (gint)json_object_get_int_member(result, "exit");
     }
 
@@ -1071,6 +1113,7 @@ cmd_config(int argc, char *argv[])
 {
     g_autoptr(ClawtClient) client = NULL;
     g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GError) error = NULL;
     const gchar *verb = (argc > 2) ? argv[2] : NULL;
 
     if (verb == NULL) {
@@ -1085,7 +1128,6 @@ cmd_config(int argc, char *argv[])
      */
     if (g_strcmp0(verb, "edit") == 0) {
         g_autofree gchar *path = NULL;
-        g_autofree gchar *command = NULL;
         const gchar *editor = g_getenv("EDITOR");
         gint status = 0;
 
@@ -1096,11 +1138,37 @@ cmd_config(int argc, char *argv[])
         if (editor == NULL)
             editor = "vi";
 
-        command = g_strdup_printf("%s %s", editor, path);
+        /*
+         * Built as an argv rather than a command line.  $EDITOR and the
+         * config path both come from outside this process, and handing
+         * them to a shell means a space or a semicolon in either one runs
+         * something nobody asked for.  $EDITOR is still split on spaces,
+         * because "code --wait" is a normal thing to have in it.
+         */
+        {
+            g_auto(GStrv) editor_argv = NULL;
+            g_autoptr(GPtrArray) spawn_argv = g_ptr_array_new();
+            gsize i;
 
-        if (!g_spawn_command_line_sync(command, NULL, NULL, &status, NULL)) {
-            g_printerr("clawtilla: could not run %s\n", command);
-            return EXIT_FAILURE;
+            if (!g_shell_parse_argv(editor, NULL, &editor_argv, &error)) {
+                g_printerr("clawtilla: $EDITOR (%s) could not be parsed: "
+                           "%s\n", editor, error->message);
+                return EXIT_FAILURE;
+            }
+
+            for (i = 0; editor_argv[i] != NULL; i++)
+                g_ptr_array_add(spawn_argv, editor_argv[i]);
+
+            g_ptr_array_add(spawn_argv, path);
+            g_ptr_array_add(spawn_argv, NULL);
+
+            if (!g_spawn_sync(NULL, (gchar **)spawn_argv->pdata, NULL,
+                              G_SPAWN_SEARCH_PATH | G_SPAWN_CHILD_INHERITS_STDIN,
+                              NULL, NULL, NULL, NULL, &status, &error)) {
+                g_printerr("clawtilla: could not run %s: %s\n", editor,
+                           error->message);
+                return EXIT_FAILURE;
+            }
         }
 
         client = connect_to_daemon();
@@ -1433,16 +1501,59 @@ main(int argc, char *argv[])
     g_option_context_set_description(context, usage_text);
 
     /*
-     * Unknown options are left in argv for the subcommand rather than
-     * rejected here.  Each verb owns its own flags -- `agent create --id`
-     * being the obvious one -- and a global parser that has never heard of
-     * them would reject the command before the verb ever saw it.
+     * Global options are parsed only from what comes BEFORE the verb.
+     *
+     * GOption scans the whole of argv, and it removes what it recognises
+     * wherever it appears.  Letting it see the rest meant a message body
+     * could be eaten -- `clawtilla send bot read --license and summarize`
+     * printed the licence and never sent anything, exit status 0 -- and
+     * that `-s` in the middle of a sentence silently became a socket
+     * override.  Splitting first costs post-verb global flags, which is a
+     * far smaller surprise than a message quietly not being sent.
      */
-    g_option_context_set_ignore_unknown_options(context, TRUE);
+    {
+        gint verb_index = find_verb(argc, argv);
+        gint head_argc = (verb_index > 0) ? verb_index : argc;
+        g_auto(GStrv) head = NULL;
+        gint parsed_argc;
+        gint i;
 
-    if (!g_option_context_parse(context, &argc, &argv, &error)) {
-        g_printerr("clawtilla: %s\n", error->message);
-        return EXIT_FAILURE;
+        head = g_new0(gchar *, (gsize)head_argc + 1);
+
+        for (i = 0; i < head_argc; i++)
+            head[i] = g_strdup(argv[i]);
+
+        parsed_argc = head_argc;
+
+        {
+            gchar **head_argv = head;
+
+            if (!g_option_context_parse(context, &parsed_argc, &head_argv,
+                                        &error)) {
+                g_printerr("clawtilla: %s\n", error->message);
+                return EXIT_FAILURE;
+            }
+        }
+
+        /* Anything left before the verb was not an option we know. */
+        if (parsed_argc > 1 && verb_index > 0) {
+            g_printerr("clawtilla: unexpected argument '%s' before the "
+                       "command\n", head[1]);
+            return EXIT_FAILURE;
+        }
+
+        if (verb_index > 0) {
+            /* Hand the subcommand argv[0] plus the verb and its own args. */
+            gint tail = argc - verb_index;
+
+            for (i = 0; i < tail; i++)
+                argv[i + 1] = argv[verb_index + i];
+
+            argc = tail + 1;
+            argv[argc] = NULL;
+        } else {
+            argc = parsed_argc;
+        }
     }
 
     if (opt_version) {

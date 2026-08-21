@@ -39,13 +39,33 @@ ClawtAgentManager *clawt_agent_manager_new(ClawtConfig *config);
  * @self: a #ClawtAgentManager
  * @error: (out) (optional): return location for a #GError
  *
- * Builds the fleet from the configuration: a mailbox and an agent per
- * entry, shadows included.
+ * Reconciles the fleet against the configuration: agents that are new
+ * are built, agents that are gone are stopped and dropped, and agents
+ * that remain keep running with their settings refreshed.
+ *
+ * Deliberately not a rebuild.  It used to empty the fleet and construct
+ * everything afresh, so adding one agent destroyed the live object --
+ * runtime, computer and link -- of every other agent already working.
  *
  * Returns: %TRUE on success
  */
 gboolean clawt_agent_manager_load(ClawtAgentManager  *self,
                                   GError            **error);
+
+/**
+ * clawt_agent_manager_set_config:
+ * @self: a #ClawtAgentManager
+ * @config: (transfer none): the fleet configuration
+ *
+ * Points the manager at a newly loaded configuration.
+ *
+ * Needed because the manager holds its own reference: without this, a
+ * reload swapped the daemon's configuration while the manager kept
+ * reading the old one for ever, so nothing a reload changed ever reached
+ * the fleet.
+ */
+void clawt_agent_manager_set_config(ClawtAgentManager *self,
+                                    ClawtConfig       *config);
 
 /**
  * clawt_agent_manager_list:

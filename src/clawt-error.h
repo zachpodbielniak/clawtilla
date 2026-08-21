@@ -50,6 +50,7 @@ G_BEGIN_DECLS
  * @CLAWT_ERROR_CONFINEMENT: the path or command is outside what the agent may touch
  * @CLAWT_ERROR_MOUNT: a mount specification is invalid or could not be applied
  * @CLAWT_ERROR_MAILBOX_FULL: the mailbox is at max_depth and the policy is reject
+ * @CLAWT_ERROR_MAILBOX_BUSY: the mailbox is full but the policy says to try again
  * @CLAWT_ERROR_MAILBOX_STATE: the item is not in a state this operation allows
  * @CLAWT_ERROR_PROTOCOL: a malformed or unsupported frame
  * @CLAWT_ERROR_AUTH: authentication or authorisation failed
@@ -95,7 +96,15 @@ typedef enum {
     CLAWT_ERROR_PLUGIN_LOAD,
     CLAWT_ERROR_PLUGIN_ABI,
 
-    CLAWT_ERROR_AI
+    CLAWT_ERROR_AI,
+
+    /*
+     * New codes are appended here, never inserted.  Inserting one
+     * renumbers every code after it, so anything already compiled --
+     * a plugin, a test binary, another build of the library -- reports a
+     * different failure than the one that happened.
+     */
+    CLAWT_ERROR_MAILBOX_BUSY
 } ClawtError;
 
 /**

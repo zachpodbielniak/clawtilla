@@ -123,6 +123,29 @@ state_dot(const gchar *state)
     return dot;
 }
 
+/*
+ * Sets a row's title and subtitle as plain text.
+ *
+ * AdwPreferencesRow:use-markup defaults to TRUE, so a row's title and
+ * subtitle are parsed as Pango markup unless you say otherwise.  Every
+ * string here came from a person or a model -- an agent's description, a
+ * message body, a task prompt -- and two things follow from that.  Text
+ * containing a bare "<" or "&" silently fails to render at all, which is
+ * ordinary English rather than an edge case; and text containing real
+ * markup renders as live styled content, including clickable links.
+ * Neither is acceptable for something an agent wrote.
+ */
+static void
+set_row_text(GtkWidget *row, const gchar *title, const gchar *subtitle)
+{
+    adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row), FALSE);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                  title != NULL ? title : "");
+
+    if (subtitle != NULL)
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
+}
+
 static GtkWidget *
 badge(const gchar *text, const gchar *css_class, const gchar *tooltip)
 {
@@ -145,13 +168,10 @@ agent_row(JsonObject *agent)
     gint64 depth = json_object_has_member(agent, "mailbox_depth")
                    ? json_object_get_int_member(agent, "mailbox_depth") : 0;
 
-    adw_preferences_row_set_title(
-        ADW_PREFERENCES_ROW(row), clawt_json_string(agent, "name",
-                                                    clawt_json_string(agent,
-                                                                      "id",
-                                                                      "?")));
-    adw_action_row_set_subtitle(ADW_ACTION_ROW(row),
-                                clawt_json_string(agent, "description", ""));
+    set_row_text(row,
+                 clawt_json_string(agent, "name",
+                                   clawt_json_string(agent, "id", "?")),
+                 clawt_json_string(agent, "description", ""));
 
     adw_action_row_add_prefix(ADW_ACTION_ROW(row), state_dot(state));
 
@@ -243,10 +263,7 @@ refresh_agents(ClawtWindow *self)
     if (json_array_get_length(agents) == 0) {
         GtkWidget *row = adw_action_row_new();
 
-        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
-                                      "No agents yet");
-        adw_action_row_set_subtitle(ADW_ACTION_ROW(row),
-                                    "Use the + button to add one");
+        set_row_text(row, "No agents yet", "Use the + button to add one");
         gtk_list_box_append(self->sidebar, row);
         return;
     }
@@ -305,6 +322,23 @@ append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
 }
 
 /*
+ * Schedules a scroll that cannot outlive the window.
+ *
+ * A plain g_idle_add(self) runs after the window has been destroyed if
+ * the user closes it in the same turn a message arrives, and the
+ * callback then reads freed memory.  Holding a reference for the life of
+ * the idle costs nothing and removes the race.
+ */
+static gboolean scroll_to_bottom(gpointer user_data);
+
+static void
+queue_scroll(ClawtWindow *self)
+{
+    g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, scroll_to_bottom,
+                    g_object_ref(self), g_object_unref);
+}
+
+/*
  * Scrolls to the bottom, but only when the reader was already there.
  *
  * Yanking somebody down mid-read because a message arrived is the single
@@ -316,7 +350,7 @@ scroll_to_bottom(gpointer user_data)
     ClawtWindow *self = user_data;
     GtkAdjustment *adjustment;
 
-    if (!self->following)
+    if (!self->following || self->transcript_scroll == NULL)
         return G_SOURCE_REMOVE;
 
     adjustment = gtk_scrolled_window_get_vadjustment(self->transcript_scroll);
@@ -370,7 +404,7 @@ load_history(ClawtWindow *self)
     }
 
     self->following = TRUE;
-    g_idle_add(scroll_to_bottom, self);
+    queue_scroll(self);
 }
 
 static void
@@ -402,7 +436,7 @@ on_send(GtkWidget *widget, gpointer user_data)
     gtk_editable_set_text(GTK_EDITABLE(self->entry), "");
 
     self->following = TRUE;
-    g_idle_add(scroll_to_bottom, self);
+    queue_scroll(self);
 }
 
 /* ── Inspector ───────────────────────────────────────────────────── */
@@ -412,9 +446,7 @@ info_row(const gchar *title, const gchar *value)
 {
     GtkWidget *row = adw_action_row_new();
 
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
-    adw_action_row_set_subtitle(ADW_ACTION_ROW(row),
-                                value != NULL ? value : "-");
+    set_row_text(row, title, value != NULL ? value : "-");
 
     return row;
 }
@@ -624,9 +656,7 @@ refresh_mailbox(ClawtWindow *self)
         title = g_strdup_printf("from %s",
                                 clawt_json_string(item, "from", "?"));
 
-        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
-        adw_action_row_set_subtitle(ADW_ACTION_ROW(row),
-                                    clawt_json_string(item, "body", ""));
+        set_row_text(row, title, clawt_json_string(item, "body", ""));
 
         if (clawt_json_string(item, "last_error", NULL) != NULL) {
             GtkWidget *warn = badge("failed", "error",
@@ -743,9 +773,7 @@ refresh_tasks(ClawtWindow *self)
                                 clawt_json_string(task, "origin", "?"),
                                 clawt_json_string(task, "assignee", "?"));
 
-        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
-        adw_action_row_set_subtitle(ADW_ACTION_ROW(row),
-                                    clawt_json_string(task, "prompt", ""));
+        set_row_text(row, title, clawt_json_string(task, "prompt", ""));
         adw_action_row_add_suffix(
             ADW_ACTION_ROW(row),
             badge(clawt_json_string(task, "state", "?"), "dim-label",
@@ -826,7 +854,7 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
             g_strcmp0(from, self->selected_agent) == 0) {
             append_message(self, from != NULL ? from : "?",
                            body != NULL ? body : "", FALSE);
-            g_idle_add(scroll_to_bottom, self);
+            queue_scroll(self);
         }
 
         refresh_agents(self);
@@ -934,9 +962,12 @@ on_provider_changed(GObject *object, GParamSpec *pspec, gpointer user_data)
                             G_LIST_MODEL(g_steal_pointer(&names)));
     adw_combo_row_set_selected(ADW_COMBO_ROW(dialog->model_row), 0);
 
-    if (clawt_json_string(provider, "note", NULL) != NULL)
+    if (clawt_json_string(provider, "note", NULL) != NULL) {
+        adw_preferences_row_set_use_markup(
+            ADW_PREFERENCES_ROW(dialog->provider_row), FALSE);
         adw_action_row_set_subtitle(ADW_ACTION_ROW(dialog->provider_row),
                                     clawt_json_string(provider, "note", ""));
+    }
 }
 
 /* The free-text row appears only when "Something else…" is chosen. */
@@ -1050,7 +1081,8 @@ static void
 on_preview_response(AdwAlertDialog *dialog, gchar *response,
                     gpointer user_data)
 {
-    ClawtWindow *self = user_data;
+    NewAgentDialog *new_agent = user_data;
+    ClawtWindow *self = new_agent->window;
     const gchar *description;
     g_autoptr(JsonNode) reply = NULL;
     g_autoptr(JsonBuilder) builder = NULL;
@@ -1076,6 +1108,13 @@ on_preview_response(AdwAlertDialog *dialog, gchar *response,
 
     clawt_window_toast(self, "Agent created.");
     refresh_agents(self);
+
+    /*
+     * The outer dialog closes here too.  Only the manual path used to,
+     * so designing an agent left the New agent dialog sitting open over
+     * a fleet that already contained it.
+     */
+    adw_dialog_close(new_agent->dialog);
 }
 
 static void
@@ -1125,7 +1164,7 @@ on_design_with_ai(GtkButton *button, gpointer user_data)
         g_object_set_data_full(G_OBJECT(preview), "description",
                                g_strdup(description), g_free);
         g_signal_connect(preview, "response",
-                         G_CALLBACK(on_preview_response), self);
+                         G_CALLBACK(on_preview_response), dialog);
 
         adw_dialog_present(ADW_DIALOG(preview), GTK_WIDGET(self));
     }

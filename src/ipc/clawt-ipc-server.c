@@ -24,7 +24,13 @@
  * while looking healthy. Dropping it is recoverable; running the daemon
  * out of memory is not.
  */
-#define MAX_PENDING_BYTES (4 * 1024 * 1024)
+/*
+ * Comfortably above CLAWT_IPC_MAX_FRAME_BYTES, because a single legal
+ * reply may be that large.  A cap below the largest permitted frame
+ * disconnects a client that is reading perfectly well, and blames it for
+ * not reading.
+ */
+#define MAX_PENDING_BYTES ((CLAWT_IPC_MAX_FRAME_BYTES * 2) + (1024 * 1024))
 
 /*
  * Reference counted, because a pending async read outlives the client it
@@ -45,7 +51,8 @@ typedef struct {
     gboolean          subscribed;
     gboolean          authenticated;
     gboolean          closing;
-    GString          *pending;     /* queued outbound bytes */
+    GString          *pending;     /* queued outbound bytes, not yet sent */
+    GBytes           *writing_bytes; /* the immutable buffer being written */
     gboolean          writing;
 } Client;
 
@@ -160,6 +167,8 @@ client_free(gpointer data)
     if (client->pending != NULL)
         g_string_free(client->pending, TRUE);
 
+    g_clear_pointer(&client->writing_bytes, g_bytes_unref);
+
     g_clear_object(&client->input);
     g_clear_object(&client->connection);
     g_free(client);
@@ -208,6 +217,7 @@ on_write_done(GObject *source, GAsyncResult *result, gpointer user_data)
     if (!g_output_stream_write_all_finish(G_OUTPUT_STREAM(source), result,
                                           &written, &error)) {
         client->writing = FALSE;
+        g_clear_pointer(&client->writing_bytes, g_bytes_unref);
 
         /*
          * A write failure is the ordinary way a client goes away -- the
@@ -219,8 +229,9 @@ on_write_done(GObject *source, GAsyncResult *result, gpointer user_data)
     }
 
     client->writing = FALSE;
-    g_string_erase(client->pending, 0, (gssize)written);
+    g_clear_pointer(&client->writing_bytes, g_bytes_unref);
 
+    /* Anything queued while that write was in flight goes next. */
     if (client->pending->len > 0)
         flush_pending(client);
 }
@@ -228,15 +239,43 @@ on_write_done(GObject *source, GAsyncResult *result, gpointer user_data)
 static void
 flush_pending(Client *client)
 {
+    gsize length = 0;
+
     if (client->writing || client->closing || client->pending->len == 0)
         return;
 
+    /*
+     * The bytes being written are detached from the queue first.
+     *
+     * g_output_stream_write_all_async() keeps the pointer and length it
+     * is given for as long as the write takes, which for a peer that has
+     * stopped reading is many main-loop turns.  Appending to the same
+     * GString in that window can reallocate it, and GIO then reads freed
+     * memory -- sending whatever now occupies it to the peer, which may
+     * be another client's data.  Handing over an immutable copy costs one
+     * memcpy per flush and removes the whole class of problem.
+     */
+    g_clear_pointer(&client->writing_bytes, g_bytes_unref);
+    client->writing_bytes = g_bytes_new(client->pending->str,
+                                        client->pending->len);
+    g_string_truncate(client->pending, 0);
+
     client->writing = TRUE;
 
-    g_output_stream_write_all_async(client->output, client->pending->str,
-                                    client->pending->len,
-                                    G_PRIORITY_DEFAULT, NULL, on_write_done,
-                                    client_ref(client));
+    /*
+     * The pointer and the length are taken before the call, not inside
+     * its argument list: C does not define the order arguments are
+     * evaluated, so passing g_bytes_get_data(..., &length) alongside
+     * `length` can hand over a length read before it was set.
+     */
+    {
+        const guchar *data = g_bytes_get_data(client->writing_bytes,
+                                              &length);
+
+        g_output_stream_write_all_async(client->output, data, length,
+                                        G_PRIORITY_DEFAULT, NULL,
+                                        on_write_done, client_ref(client));
+    }
 }
 
 static void
@@ -249,7 +288,10 @@ client_send(Client *client, JsonNode *frame)
 
     line = clawt_ipc_frame_to_line(frame);
 
-    if (client->pending->len + strlen(line) > MAX_PENDING_BYTES) {
+    if (client->pending->len +
+        (client->writing_bytes != NULL
+             ? g_bytes_get_size(client->writing_bytes) : 0) +
+        strlen(line) > MAX_PENDING_BYTES) {
         g_info("ipc: a client stopped reading; closing its connection");
         client_close(client);
         return;
@@ -397,14 +439,28 @@ on_line_read(GObject *source, GAsyncResult *result, gpointer user_data)
         return;
     }
 
+    /*
+     * The token is checked before anything is dispatched, including the
+     * built-ins.  It used to be checked only in the fall-through path,
+     * and control.subscribe is answered inside handle_builtin() -- so an
+     * unauthenticated TCP peer could subscribe to the whole event stream
+     * without ever saying control.hello.
+     */
+    if (self->tcp_token != NULL && !client->authenticated &&
+        g_strcmp0(clawt_ipc_frame_get_kind(request), "control.hello") != 0) {
+        reply = clawt_ipc_error_new(
+            request, CLAWT_ERROR_AUTH,
+            "say control.hello with a token before anything else");
+        client_send(client, reply);
+        json_node_unref(reply);
+        read_next(client);
+        return;
+    }
+
     reply = handle_builtin(self, client, request, &handled);
 
     if (!handled) {
-        if (self->tcp_token != NULL && !client->authenticated) {
-            reply = clawt_ipc_error_new(
-                request, CLAWT_ERROR_AUTH,
-                "say control.hello with a token before anything else");
-        } else if (self->handler != NULL) {
+        if (self->handler != NULL) {
             reply = self->handler(request, self->handler_data);
         } else {
             reply = clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,

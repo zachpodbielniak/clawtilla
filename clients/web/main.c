@@ -306,9 +306,16 @@ on_send(HtmxRequest *request, GHashTable *params, gpointer user_data)
     htmx_response_set_status(response, 303);
 
     {
-        g_autofree gchar *location = g_strdup_printf("/?agent=%s",
-                                                     agent_id != NULL
-                                                         ? agent_id : "");
+        /*
+         * Percent-encoded, like everything else this client emits.  The
+         * value came from a form post, and splicing it raw into a header
+         * lets any reserved character -- or a control character -- take
+         * the redirect somewhere the user did not ask to go.
+         */
+        g_autofree gchar *escaped =
+            g_uri_escape_string(agent_id != NULL ? agent_id : "", NULL,
+                                FALSE);
+        g_autofree gchar *location = g_strdup_printf("/?agent=%s", escaped);
 
         htmx_response_add_header(response, "Location", location);
     }

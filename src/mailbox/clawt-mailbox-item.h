@@ -91,9 +91,10 @@ void clawt_mailbox_item_set_state(ClawtMailboxItem *self, ClawtMailboxState stat
  * the sender does not: how far a message has come, how many times
  * delivery has been tried, and when it may next be delivered.
  *
- * Timestamps are microseconds since the epoch, matching
- * g_get_real_time(). Zero means unset -- an item with no
- * ~expires_at~ lives until it is delivered or dead-lettered.
+ * Timestamps are SECONDS since the epoch -- g_get_real_time() divided by
+ * G_USEC_PER_SEC -- because they are compared against SQLite's
+ * strftime('%s','now') in the queue's own SQL. Zero means unset: an item
+ * with no expires_at lives until it is delivered or dead-lettered.
  */
 void clawt_mailbox_item_set_depth(ClawtMailboxItem *self, gint depth);
 void clawt_mailbox_item_set_attempts(ClawtMailboxItem *self, gint attempts);
