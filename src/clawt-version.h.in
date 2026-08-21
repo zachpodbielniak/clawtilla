@@ -1,0 +1,20 @@
+/*
+ * clawt-version.h - clawtilla version information
+ *
+ * Copyright (C) 2026
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * This file is part of clawtilla.
+ */
+
+#pragma once
+
+#define CLAWT_VERSION_MAJOR @VERSION_MAJOR@
+#define CLAWT_VERSION_MINOR @VERSION_MINOR@
+#define CLAWT_VERSION_MICRO @VERSION_MICRO@
+
+#define CLAWT_CHECK_VERSION(major, minor, micro) \
+    (CLAWT_VERSION_MAJOR > (major) || \
+     (CLAWT_VERSION_MAJOR == (major) && CLAWT_VERSION_MINOR > (minor)) || \
+     (CLAWT_VERSION_MAJOR == (major) && CLAWT_VERSION_MINOR == (minor) && \
+      CLAWT_VERSION_MICRO >= (micro)))

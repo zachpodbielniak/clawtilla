@@ -1,0 +1,11 @@
+prefix=@PREFIX@
+exec_prefix=${prefix}
+libdir=@LIBDIR@
+includedir=@INCLUDEDIR@
+
+Name: clawtilla
+Description: Daemon and library for orchestrating a fleet of libreclaw agents
+Version: @VERSION@
+Requires: glib-2.0 gobject-2.0 gio-2.0 gio-unix-2.0 gmodule-2.0 libsoup-3.0 json-glib-1.0 sqlite3 libdex-1
+Libs: -L${libdir} -lclawt-1.0
+Cflags: -I${includedir}/clawtilla-1.0

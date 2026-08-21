@@ -1,0 +1,3 @@
+[submodule "deps/libreclaw"]
+	path = deps/libreclaw
+	url = git@git-ssh.podbielniak.com:zachpodbielniak/libreclaw.git

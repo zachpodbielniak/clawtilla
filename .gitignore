@@ -1,0 +1,28 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+*.so.*
+
+# Generated files
+clawtilla-1.0.pc
+# NOTE: data/example-config.yaml and data/default-config.yaml are GENERATED
+# by `make config-files` but are deliberately checked in, so tests can assert
+# they match src/config/clawt-config-schema.c.  Do not ignore them.
+
+# Editor files
+*.swp
+*.swo
+*~
+.nvimlog
+
+# Debug (core dumps only, not src/core/)
+/core
+vgcore.*
+
+# g-ir-scanner scratch files.  It writes these into the project root and
+# only removes them on a clean exit, so any scanner failure leaves them
+# behind -- which a sanitizer build used to cause every time.
+g-ir-cpp-*.c
+tmp-introspect*/

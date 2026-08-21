@@ -1,0 +1,137 @@
+#+title: clawtilla
+#+description: Daemon and library for orchestrating a fleet of libreclaw agents
+#+authors: Zach Podbielniak
+#+categories: software
+#+options: toc:2
+
+* clawtilla
+
+Run a *fleet* of [[file:deps/libreclaw/README.org][libreclaw]] agents instead of one.
+
+One libreclaw process is one agent.  clawtilla is the thing above it: a
+daemon that owns the fleet, gives each agent its own persona, model,
+credentials, integrations and computer, and lets the agents talk to each
+other so one of them can divide work among the rest.
+
+Agents are managed the way chats are.  Each has a durable mailbox, so you
+can message an agent that is switched off and it picks the message up when
+it starts.  Give a chief-of-staff agent an instruction and watch it delegate.
+
+*Library first.*  Everything lives in =libclawt=; the daemon, the CLI, the
+GTK client and the web client are all thin things on top.  An in-process
+host -- GNU Emacs, most immediately -- gets the identical daemon by calling
+=clawt_daemon_new()= and owning the main loop itself, with no socket and no
+second process in the way.
+
+** Status
+
+Early.  The build system, core types and test harness are in place; the
+subsystems are landing in the order listed in [[file:docs/architecture.org][docs/architecture.org]].  The web
+client is deliberately minimal and says so.
+
+** What an agent gets
+
+| Thing | Options |
+|-------+---------|
+| Persona | inline system prompt, or =SOUL.md= / =IDENTITY.md= / … identity files |
+| Model | any provider libreclaw supports, with effort, routing profile and fallbacks |
+| Runtime | a supervised =libreclaw= process (default), or embedded in the daemon |
+| Computer | =none=, =host=, =container= (podman), or =vm= (libvirt or plain QEMU) |
+| Desktop | optional gowl or GNOME control, alongside any computer type |
+| Mounts | host paths shared into the container or VM, plus a shared exchange directory |
+| Mailbox | durable queue with priority, TTL, leases, retry and a dead-letter view |
+| Integrations | matrix, email, webhook, local, cmacs |
+| Credentials | per-agent, by reference -- never literal secrets in the config |
+| Tools | per-agent allow/deny over the orchestration tools |
+
+** Quick start
+
+#+begin_src bash
+git clone --recurse-submodules <url> clawtilla
+cd clawtilla
+make
+#+end_src
+
+#+begin_src bash
+./build/release/clawtilla --generate-config > ~/.clawtilla/config.yaml
+./build/release/clawtillad --foreground
+#+end_src
+
+Then, in another terminal:
+
+#+begin_src bash
+clawtilla agent create --id researcher --model sonnet --computer container
+clawtilla agent start researcher
+clawtilla chat researcher
+#+end_src
+
+See [[file:docs/getting-started.org][docs/getting-started.org]] for the longer version, including the Fedora
+packages to layer in.
+
+** Giving an agent your actual computer
+
+An agent's computer can be the machine clawtilla is running on.  This is the
+most useful and the most dangerous option, so it is deliberately awkward to
+enable by accident:
+
+#+begin_src yaml
+computer:
+  type: host
+  host:
+    confine: bwrap                  # none | workspace | allowlist | bwrap
+    allow_paths: ["~/src"]
+    deny_paths:  ["~/.ssh", "~/.gnupg"]
+    allow_sudo: false
+    confirm_host_control: true      # required; the daemon refuses without it
+#+end_src
+
+=confine: none= additionally requires =daemon.allow_unconfined_host=, so
+handing over the whole machine takes two deliberate acts rather than one
+typo.  What each mode actually prevents -- and what none of them prevent --
+is spelled out in [[file:docs/security.org][docs/security.org]].
+
+** Clients
+
+- =clawtilla= -- the CLI.  Agents, rooms, mailboxes, tasks, computers, config.
+- =clawtillad= -- the daemon.  Everything above is a client of this.
+- =clawtilla-gtk= -- a full GTK4 + libadwaita client.
+- =clawtilla-web= -- a minimal htmx web client.  Intentionally incomplete.
+
+** Documentation
+
+All under [[file:docs/][docs/]], in org-mode:
+
+| File | Covers |
+|------+--------|
+| [[file:docs/getting-started.org][getting-started.org]] | install, first daemon, first agent |
+| [[file:docs/architecture.org][architecture.org]] | object graph, message flow, threading model |
+| [[file:docs/configuration.org][configuration.org]] | every option, with worked examples |
+| [[file:docs/agents.org][agents.org]] | personas, models, runtimes, lifecycle |
+| [[file:docs/mailboxes.org][mailboxes.org]] | queue semantics and how to unstick one |
+| [[file:docs/computers.org][computers.org]] | host, container, VM, desktop, mounts |
+| [[file:docs/orchestration.org][orchestration.org]] | rooms, tasks, chief-of-staff, loop safety |
+| [[file:docs/integrations.org][integrations.org]] | configuring and adding integrations |
+| [[file:docs/plugins.org][plugins.org]] | the plugin ABI and a worked example |
+| [[file:docs/ipc-protocol.org][ipc-protocol.org]] | the client wire format |
+| [[file:docs/clients.org][clients.org]] | CLI, GTK, web, and embedding =libclawt= |
+| [[file:docs/security.org][security.org]] | threat model, secrets, confinement |
+| [[file:docs/development.org][development.org]] | building, style, adding options and tests |
+| [[file:docs/maintenance.org][maintenance.org]] | submodule upgrades, backups, releasing |
+| [[file:docs/troubleshooting.org][troubleshooting.org]] | symptom-first diagnosis |
+
+** Building
+
+#+begin_src bash
+make                  # release, to build/release/
+make DEBUG=1          # debug, to build/debug/
+make test             # hermetic suite: no network, no podman, no libvirt
+make test-integration # the rest
+make help             # every target
+#+end_src
+
+Zero warnings is a rule, not an aspiration.  See [[file:CLAUDE.md][CLAUDE.md]] for the full
+build environment and the rules that are not optional.
+
+** License
+
+AGPL-3.0-or-later.  See [[file:LICENSE][LICENSE]].

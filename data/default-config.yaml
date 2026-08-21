@@ -1,0 +1,14 @@
+# clawtilla default configuration
+#
+# Copy this to ~/.clawtilla/config.yaml and edit as needed.
+#
+# NOTE: this file is generated from src/config/clawt-config-schema.c by
+# `make config-files`.  Edit the schema, not this file.
+
+daemon:
+  state_dir: "~/.clawtilla"
+
+defaults:
+  workspace_root: "~/.clawtilla/agents"
+
+agents: []
