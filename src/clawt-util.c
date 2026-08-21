@@ -11,6 +11,9 @@
 #include "clawt-util.h"
 
 #include <glib/gstdio.h>
+
+#include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -210,6 +213,122 @@ clawt_generate_id(const gchar *prefix)
         return g_strdup_printf("%s-%s%s", prefix, timestamp, random_part);
 
     return g_strdup_printf("%s%s", timestamp, random_part);
+}
+
+/*
+ * Resolves a path as far as it exists.
+ *
+ * realpath() fails outright on a path whose last component does not exist
+ * yet, which is most write targets.  Resolving the deepest existing parent
+ * and re-appending the rest gives the same protection for a file about to
+ * be created: the symlinks and ".." in the parents are still collapsed.
+ */
+gchar *
+clawt_canonicalize_missing(const gchar *path)
+{
+    g_autofree gchar *expanded = clawt_expand_path(path);
+    g_autofree gchar *remainder = NULL;
+    g_autofree gchar *current = g_strdup(expanded);
+
+    while (TRUE) {
+        gchar *real = realpath(current, NULL);
+        g_autofree gchar *parent = NULL;
+        g_autofree gchar *base = NULL;
+
+        if (real != NULL) {
+            gchar *joined = (remainder != NULL)
+                            ? g_build_filename(real, remainder, NULL)
+                            : g_strdup(real);
+            free(real);
+            return joined;
+        }
+
+        parent = g_path_get_dirname(current);
+        base = g_path_get_basename(current);
+
+        /* Reached the top without resolving anything. */
+        if (g_strcmp0(parent, current) == 0)
+            return g_steal_pointer(&expanded);
+
+        {
+            gchar *longer = (remainder != NULL)
+                            ? g_build_filename(base, remainder, NULL)
+                            : g_strdup(base);
+
+            g_free(remainder);
+            remainder = longer;
+        }
+
+        g_free(current);
+        current = g_strdup(parent);
+    }
+}
+
+gboolean
+clawt_path_is_within(const gchar *path, const gchar *root)
+{
+    gsize root_length;
+
+    if (path == NULL || root == NULL)
+        return FALSE;
+
+    root_length = strlen(root);
+
+    if (!g_str_has_prefix(path, root))
+        return FALSE;
+
+    /*
+     * A prefix match is not enough: "/home/zach/srcevil" starts with
+     * "/home/zach/src" and is a different directory entirely.  The next
+     * character has to be a separator, or the strings have to be equal.
+     */
+    return path[root_length] == '\0' || path[root_length] == '/' ||
+           (root_length > 0 && root[root_length - 1] == '/');
+}
+
+
+gchar *
+clawt_generate_token(GError **error)
+{
+    guchar bytes[32];
+    gchar *out;
+    gsize i;
+    FILE *pool;
+    gsize got;
+
+    /*
+     * Read straight from the kernel pool rather than going through any
+     * userspace generator: this value is what stops one local process
+     * claiming another agent's identity.
+     */
+    pool = fopen("/dev/urandom", "rb");
+    if (pool == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                    "could not open /dev/urandom: %s", g_strerror(errno));
+        return NULL;
+    }
+
+    got = fread(bytes, 1, sizeof(bytes), pool);
+    fclose(pool);
+
+    if (got != sizeof(bytes)) {
+        /*
+         * A short read is refused rather than padded.  Quietly using
+         * fewer random bytes than intended is the exact failure mode that
+         * makes a token look strong while being weak.
+         */
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                    "short read from /dev/urandom: wanted %u bytes, got %u",
+                    (guint)sizeof(bytes), (guint)got);
+        return NULL;
+    }
+
+    out = g_malloc(sizeof(bytes) * 2 + 1);
+
+    for (i = 0; i < sizeof(bytes); i++)
+        g_snprintf(out + (i * 2), 3, "%02x", bytes[i]);
+
+    return out;
 }
 
 gchar *

@@ -53,12 +53,18 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/clawt-util.h \
 	$(SRCDIR)/config/clawt-config-schema.h \
 	$(SRCDIR)/config/clawt-secret-ref.h \
+	$(SRCDIR)/core/clawt-event.h \
+	$(SRCDIR)/core/clawt-event-bus.h \
+	$(SRCDIR)/core/clawt-event-log.h \
 	$(SRCDIR)/config/clawt-config.h \
+	$(SRCDIR)/config/clawt-config-render.h \
 	$(SRCDIR)/computer/clawt-mount.h \
+	$(SRCDIR)/computer/clawt-exchange.h \
 	$(SRCDIR)/link/clawt-link.h \
 	$(SRCDIR)/link/clawt-link-server.h \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.h \
 	$(SRCDIR)/mailbox/clawt-mailbox.h \
+	$(SRCDIR)/mailbox/clawt-mailbox-router.h \
 	$(SRCDIR)/agent/clawt-agent-runtime.h \
 	$(SRCDIR)/agent/clawt-process-runtime.h \
 	$(SRCDIR)/agent/clawt-agent.h \
@@ -76,6 +82,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/chat/clawt-message.h \
 	$(SRCDIR)/chat/clawt-loop-guard.h \
 	$(SRCDIR)/chat/clawt-room.h \
+	$(SRCDIR)/chat/clawt-room-manager.h \
 	$(SRCDIR)/task/clawt-task.h \
 	$(SRCDIR)/task/clawt-task-manager.h \
 	$(SRCDIR)/plugin/clawt-param-info.h \
@@ -91,12 +98,18 @@ LIB_SOURCES = \
 	$(SRCDIR)/config/clawt-config-schema.c \
 	$(SRCDIR)/config/clawt-schema-render.c \
 	$(SRCDIR)/config/clawt-secret-ref.c \
+	$(SRCDIR)/core/clawt-event.c \
+	$(SRCDIR)/core/clawt-event-bus.c \
+	$(SRCDIR)/core/clawt-event-log.c \
 	$(SRCDIR)/config/clawt-config.c \
+	$(SRCDIR)/config/clawt-config-render.c \
 	$(SRCDIR)/computer/clawt-mount.c \
+	$(SRCDIR)/computer/clawt-exchange.c \
 	$(SRCDIR)/link/clawt-link.c \
 	$(SRCDIR)/link/clawt-link-server.c \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.c \
 	$(SRCDIR)/mailbox/clawt-mailbox.c \
+	$(SRCDIR)/mailbox/clawt-mailbox-router.c \
 	$(SRCDIR)/agent/clawt-agent-runtime.c \
 	$(SRCDIR)/agent/clawt-process-runtime.c \
 	$(SRCDIR)/agent/clawt-agent.c \
@@ -114,6 +127,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/chat/clawt-message.c \
 	$(SRCDIR)/chat/clawt-loop-guard.c \
 	$(SRCDIR)/chat/clawt-room.c \
+	$(SRCDIR)/chat/clawt-room-manager.c \
 	$(SRCDIR)/task/clawt-task.c \
 	$(SRCDIR)/task/clawt-task-manager.c \
 	$(SRCDIR)/plugin/clawt-param-info.c \

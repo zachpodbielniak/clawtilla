@@ -35,6 +35,7 @@
 #include "config/clawt-config-schema.h"
 #include "config/clawt-secret-ref.h"
 #include "computer/clawt-mount.h"
+#include "computer/clawt-exchange.h"
 #include "computer/clawt-exec-result.h"
 #include "computer/clawt-sandbox.h"
 #include "computer/clawt-computer.h"
@@ -49,13 +50,21 @@
 #include "chat/clawt-message.h"
 #include "chat/clawt-loop-guard.h"
 #include "chat/clawt-room.h"
+#include "chat/clawt-room-manager.h"
+
+#include "mailbox/clawt-mailbox-router.h"
 
 #include "task/clawt-task.h"
 #include "task/clawt-task-manager.h"
 
 #include "plugin/clawt-param-info.h"
 #include "mcp/clawt-mcp-tools.h"
+#include "core/clawt-event.h"
+#include "core/clawt-event-bus.h"
+#include "core/clawt-event-log.h"
+
 #include "config/clawt-config.h"
+#include "config/clawt-config-render.h"
 
 #include "link/clawt-link.h"
 #include "link/clawt-link-server.h"

@@ -106,6 +106,56 @@ gchar *clawt_generate_id(const gchar *prefix);
  *
  * Returns: (transfer full): the redacted text
  */
+/**
+ * clawt_canonicalize_missing:
+ * @path: a path that may not exist yet
+ *
+ * Resolves @path as far as it exists.
+ *
+ * realpath() fails outright on a path whose last component does not exist
+ * yet, which is most write targets.  Resolving the deepest existing
+ * parent and re-appending the rest gives a file about to be created the
+ * same protection: the symlinks and ".." in its parents are collapsed.
+ *
+ * Returns: (transfer full): the resolved path
+ */
+gchar *clawt_canonicalize_missing(const gchar *path);
+
+/**
+ * clawt_path_is_within:
+ * @path: a canonical path
+ * @root: a canonical directory
+ *
+ * Whether @path is @root or sits underneath it.
+ *
+ * A plain prefix test is not enough -- "/home/zach/srcevil" starts with
+ * "/home/zach/src" and is somewhere else entirely -- so the next
+ * character must be a separator.  Every containment check in clawtilla
+ * goes through this one function: two implementations of this test is how
+ * one of them ends up subtly more permissive than the other.
+ *
+ * Returns: %TRUE if @path is contained by @root
+ */
+gboolean clawt_path_is_within(const gchar *path, const gchar *root);
+
+/**
+ * clawt_generate_token:
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Generates a shared secret: 32 bytes from the kernel's random pool,
+ * hex-encoded.
+ *
+ * Deliberately not clawt_generate_id().  Ids are seeded from GLib's
+ * Mersenne Twister and appear in message ids, task ids and log lines, so
+ * anyone who can read a transcript can recover the generator state and
+ * predict the next value.  That is fine for an identifier and useless for
+ * a secret.
+ *
+ * Returns: (transfer full) (nullable): the token, or %NULL if the random
+ *   pool could not be read
+ */
+gchar *clawt_generate_token(GError **error);
+
 gchar *clawt_redact_secrets(const gchar *text);
 
 /**

@@ -136,77 +136,6 @@ clawt_sandbox_is_available(ClawtSandbox *self, GError **error)
     return TRUE;
 }
 
-/*
- * Resolves a path as far as it exists.
- *
- * realpath() fails outright on a path whose last component does not exist
- * yet, which is most write targets.  Resolving the deepest existing parent
- * and re-appending the rest gives the same protection for a file about to
- * be created: the symlinks and ".." in the parents are still collapsed.
- */
-static gchar *
-resolve_as_far_as_possible(const gchar *path)
-{
-    g_autofree gchar *expanded = clawt_expand_path(path);
-    g_autofree gchar *remainder = NULL;
-    g_autofree gchar *current = g_strdup(expanded);
-
-    while (TRUE) {
-        gchar *real = realpath(current, NULL);
-        g_autofree gchar *parent = NULL;
-        g_autofree gchar *base = NULL;
-
-        if (real != NULL) {
-            gchar *joined = (remainder != NULL)
-                            ? g_build_filename(real, remainder, NULL)
-                            : g_strdup(real);
-            free(real);
-            return joined;
-        }
-
-        parent = g_path_get_dirname(current);
-        base = g_path_get_basename(current);
-
-        /* Reached the top without resolving anything. */
-        if (g_strcmp0(parent, current) == 0)
-            return g_steal_pointer(&expanded);
-
-        {
-            gchar *longer = (remainder != NULL)
-                            ? g_build_filename(base, remainder, NULL)
-                            : g_strdup(base);
-
-            g_free(remainder);
-            remainder = longer;
-        }
-
-        g_free(current);
-        current = g_strdup(parent);
-    }
-}
-
-static gboolean
-path_is_within(const gchar *path, const gchar *root)
-{
-    gsize root_length;
-
-    if (path == NULL || root == NULL)
-        return FALSE;
-
-    root_length = strlen(root);
-
-    if (!g_str_has_prefix(path, root))
-        return FALSE;
-
-    /*
-     * A prefix match is not enough: "/home/zach/srcevil" starts with
-     * "/home/zach/src" and is a different directory entirely.  The next
-     * character has to be a separator, or the strings have to be equal.
-     */
-    return path[root_length] == '\0' || path[root_length] == '/' ||
-           (root_length > 0 && root[root_length - 1] == '/');
-}
-
 gboolean
 clawt_sandbox_path_is_allowed(ClawtSandbox *self, const gchar *path)
 {
@@ -221,7 +150,7 @@ clawt_sandbox_path_is_allowed(ClawtSandbox *self, const gchar *path)
     if (self->mode == CLAWT_CONFINE_NONE)
         return TRUE;
 
-    resolved = resolve_as_far_as_possible(path);
+    resolved = clawt_canonicalize_missing(path);
 
     /*
      * Denials are checked first and win outright, so ~/.ssh stays out even
@@ -229,18 +158,18 @@ clawt_sandbox_path_is_allowed(ClawtSandbox *self, const gchar *path)
      * a broad allow silently defeat every specific deny.
      */
     for (i = 0; i < self->deny_paths->len; i++) {
-        if (path_is_within(resolved, g_ptr_array_index(self->deny_paths, i)))
+        if (clawt_path_is_within(resolved, g_ptr_array_index(self->deny_paths, i)))
             return FALSE;
     }
 
-    if (self->root != NULL && path_is_within(resolved, self->root))
+    if (self->root != NULL && clawt_path_is_within(resolved, self->root))
         return TRUE;
 
     if (self->mode == CLAWT_CONFINE_WORKSPACE)
         return FALSE;
 
     for (i = 0; i < self->allow_paths->len; i++) {
-        if (path_is_within(resolved, g_ptr_array_index(self->allow_paths, i)))
+        if (clawt_path_is_within(resolved, g_ptr_array_index(self->allow_paths, i)))
             return TRUE;
     }
 

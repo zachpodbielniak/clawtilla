@@ -707,6 +707,142 @@ clawt_agent_config_get_env(ClawtAgentConfig *self)
     return mapping_to_hash(node_at_path(self->node, "env", FALSE));
 }
 
+void
+clawt_room_spec_free(ClawtRoomSpec *self)
+{
+    if (self == NULL)
+        return;
+
+    g_free(self->id);
+    g_free(self->name);
+    g_strfreev(self->members);
+    g_free(self);
+}
+
+GPtrArray *
+clawt_config_get_rooms(ClawtConfig *self)
+{
+    GPtrArray *out;
+    YamlNode *rooms;
+    YamlSequence *sequence;
+    guint i;
+    guint length;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+
+    out = g_ptr_array_new_with_free_func((GDestroyNotify)clawt_room_spec_free);
+
+    rooms = node_at_path(self->root, "rooms", FALSE);
+    if (rooms == NULL || yaml_node_get_node_type(rooms) != YAML_NODE_SEQUENCE)
+        return out;
+
+    sequence = yaml_node_get_sequence(rooms);
+    length = yaml_sequence_get_length(sequence);
+
+    for (i = 0; i < length; i++) {
+        YamlNode *entry = yaml_sequence_get_element(sequence, i);
+        ClawtRoomSpec *spec;
+        const gchar *id;
+
+        if (entry == NULL ||
+            yaml_node_get_node_type(entry) != YAML_NODE_MAPPING)
+            continue;
+
+        id = member_string(yaml_node_get_mapping(entry), "id");
+        if (id == NULL) {
+            /*
+             * A room with no id cannot be referred to or joined, so it is
+             * skipped with a warning rather than given a generated one --
+             * a room nobody can name is not what the author meant.
+             */
+            g_warning("rooms[%u]: no id, so this room is ignored", i);
+            continue;
+        }
+
+        spec = g_new0(ClawtRoomSpec, 1);
+        spec->id = g_strdup(id);
+        spec->name = g_strdup(member_string(yaml_node_get_mapping(entry),
+                                            "name"));
+        spec->members = node_to_strv(node_at_path(entry, "members", FALSE));
+
+        {
+            YamlNode *node = node_at_path(entry, "require_mention", FALSE);
+
+            /*
+             * Defaults to the schema default rather than to FALSE, so a
+             * room that says nothing behaves the same as the documented
+             * default instead of quietly being the opposite.
+             */
+            spec->require_mention = (node != NULL)
+                ? yaml_node_get_boolean(node)
+                : g_strcmp0(schema_default_for("rooms.require_mention"),
+                            "true") == 0;
+        }
+
+        {
+            YamlNode *node = node_at_path(entry, "max_hops", FALSE);
+
+            spec->max_hops = (node != NULL)
+                ? (guint)yaml_node_get_int(node) : 0;
+        }
+
+        g_ptr_array_add(out, spec);
+    }
+
+    return out;
+}
+
+ClawtSecretRef *
+clawt_agent_config_get_secret(ClawtAgentConfig *self, const gchar *key)
+{
+    YamlNode *node;
+    ClawtSecretBackend default_backend;
+    g_autoptr(GError) error = NULL;
+    ClawtSecretRef *ref;
+
+    g_return_val_if_fail(self != NULL, NULL);
+    g_return_val_if_fail(key != NULL, NULL);
+
+    node = node_at_path(self->node, key, FALSE);
+    if (node == NULL)
+        return NULL;
+
+    default_backend = (ClawtSecretBackend)
+        clawt_config_get_enum(self->config, "secrets.default_backend");
+
+    ref = clawt_secret_ref_parse(node, default_backend, &error);
+    if (ref == NULL && error != NULL) {
+        /*
+         * A malformed reference is a warning, not a hard failure: it
+         * disables one credential rather than the agent, and the message
+         * says which key so it can be fixed without bisecting the file.
+         */
+        g_warning("agent %s: %s: %s", self->id, key, error->message);
+        return NULL;
+    }
+
+    return ref;
+}
+
+gchar *
+clawt_agent_config_get_raw_yaml(ClawtAgentConfig *self, const gchar *key)
+{
+    g_autoptr(YamlGenerator) generator = NULL;
+    YamlNode *node;
+
+    g_return_val_if_fail(self != NULL, NULL);
+    g_return_val_if_fail(key != NULL, NULL);
+
+    node = node_at_path(self->node, key, FALSE);
+    if (node == NULL)
+        return NULL;
+
+    generator = yaml_generator_new();
+    yaml_generator_set_root(generator, node);
+
+    return yaml_generator_to_data(generator, NULL, NULL);
+}
+
 GHashTable *
 clawt_agent_config_get_credentials(ClawtAgentConfig *self)
 {

@@ -271,6 +271,38 @@ gboolean clawt_config_remove_agent(ClawtConfig *self, const gchar *id);
 /* ── One agent's configuration ───────────────────────────────────── */
 
 /**
+ * ClawtRoomSpec:
+ * @id: the room id
+ * @name: (nullable): display name
+ * @members: (array zero-terminated=1) (nullable): agent ids
+ * @require_mention: whether members only respond when named
+ * @max_hops: this room's hop limit, or 0 to use the global one
+ *
+ * One entry from the config's `rooms:` list.
+ */
+typedef struct {
+    gchar    *id;
+    gchar    *name;
+    GStrv     members;
+    gboolean  require_mention;
+    guint     max_hops;
+} ClawtRoomSpec;
+
+void clawt_room_spec_free(ClawtRoomSpec *self);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtRoomSpec, clawt_room_spec_free)
+
+/**
+ * clawt_config_get_rooms:
+ * @self: a #ClawtConfig
+ *
+ * The standing rooms declared in the config.
+ *
+ * Returns: (transfer full) (element-type ClawtRoomSpec): the rooms
+ */
+GPtrArray *clawt_config_get_rooms(ClawtConfig *self);
+
+/**
  * clawt_agent_config_get_id:
  * @self: a #ClawtAgentConfig
  *
@@ -361,6 +393,37 @@ GHashTable *clawt_agent_config_get_env(ClawtAgentConfig *self);
  * Returns: (transfer full) (element-type utf8 ClawtSecretRef): the references
  */
 GHashTable *clawt_agent_config_get_credentials(ClawtAgentConfig *self);
+
+/**
+ * clawt_agent_config_get_secret:
+ * @self: a #ClawtAgentConfig
+ * @key: a dotted path within the agent, e.g. `integrations.matrix.access_token`
+ *
+ * Reads one secret reference from anywhere in the agent's block, for the
+ * places a secret sits beside ordinary settings rather than under
+ * `credentials:`.
+ *
+ * Returns: (transfer full) (nullable): the reference, or %NULL if unset
+ */
+ClawtSecretRef *clawt_agent_config_get_secret(ClawtAgentConfig *self,
+                                              const gchar      *key);
+
+/**
+ * clawt_agent_config_get_raw_yaml:
+ * @self: a #ClawtAgentConfig
+ * @key: a dotted path within the agent
+ *
+ * Serialises a whole subtree back to YAML, unchanged.
+ *
+ * This is how `libreclaw:` passthrough works: clawtilla does not model
+ * libreclaw's every option, so the subtree is copied across verbatim
+ * rather than being flattened through a schema that would silently drop
+ * whatever it has not heard of.
+ *
+ * Returns: (transfer full) (nullable): the YAML, or %NULL if absent
+ */
+gchar *clawt_agent_config_get_raw_yaml(ClawtAgentConfig *self,
+                                       const gchar      *key);
 
 /**
  * clawt_agent_config_is_shadow:
