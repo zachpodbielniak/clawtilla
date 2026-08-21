@@ -520,40 +520,12 @@ test_room_post_reaches_every_member(void)
 
 /* ── Live client over the socket ─────────────────────────────────── */
 
-/*
- * A wrapper rather than casting clawt_client_connect to GThreadFunc:
- * the signatures genuinely differ, and the cast is undefined behaviour
- * that happens to work until it does not.
- */
-typedef struct {
-    ClawtClient *client;
-    gint         done;      /* atomic */
-    gboolean     ok;
-} ConnectJob;
-
-static gpointer
-connect_in_thread(gpointer user_data)
-{
-    ConnectJob *job = user_data;
-    g_autoptr(GError) error = NULL;
-
-    job->ok = clawt_client_connect(job->client, &error);
-
-    if (!job->ok)
-        g_message("connect failed: %s", error->message);
-
-    g_atomic_int_set(&job->done, 1);
-
-    return NULL;
-}
-
 static void
 test_a_client_can_talk_over_the_socket(void)
 {
     Fixture fixture = { 0 };
     g_autoptr(ClawtClient) client = NULL;
     g_autofree gchar *socket_path = NULL;
-    g_autoptr(JsonNode) reply = NULL;
     g_autoptr(GError) error = NULL;
 
     fixture_setup(&fixture, "agents:\n  - id: chief\n");
@@ -566,35 +538,15 @@ test_a_client_can_talk_over_the_socket(void)
     client = clawt_client_new(socket_path);
 
     /*
-     * The connect handshake is synchronous on the client side and served
-     * from the daemon's main context, so the loop has to be pumped while
-     * it happens.  Doing it in a thread keeps the test honest -- this is
-     * exactly the arrangement a real client is in.
+     * No thread.  The client and the daemon share this context, and
+     * connecting pumps it rather than blocking on a read -- which is
+     * exactly what an in-process host needs, and what used to deadlock.
      */
-    {
-        g_autoptr(GThread) thread = NULL;
-        ConnectJob job = { client, 0, FALSE };
-        gint64 deadline = g_get_monotonic_time() + (10 * G_USEC_PER_SEC);
-
-        thread = g_thread_new("connect", connect_in_thread, &job);
-
-        /*
-         * Pumped until the connect thread says it is finished, not for a
-         * fixed number of iterations.  A fixed count passes on a fast
-         * machine and hangs in g_thread_join() on a loaded one, which is
-         * the worst possible failure for a test suite.
-         */
-        while (!g_atomic_int_get(&job.done) &&
-               g_get_monotonic_time() < deadline)
-            g_main_context_iteration(fixture.context, FALSE);
-
-        g_assert_true(g_atomic_int_get(&job.done));
-        g_thread_join(g_steal_pointer(&thread));
-        g_assert_true(job.ok);
-    }
-
+    g_assert_true(clawt_client_connect(client, &error));
+    g_assert_no_error(error);
     g_assert_true(clawt_client_is_connected(client));
 
+    g_main_context_pop_thread_default(fixture.context);
     fixture_teardown(&fixture);
 }
 
@@ -723,6 +675,155 @@ test_a_client_vanishing_mid_read_is_survivable(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * A request made after subscribing must still work.
+ *
+ * This is the sequence every real client follows -- connect, subscribe,
+ * then ask for things -- and it was broken: subscribing started an async
+ * reader, and a synchronous request then read the same stream itself.
+ * The two raced, one got a partial frame, and the client tore down a
+ * healthy connection and reported that the daemon had gone.
+ */
+static void
+test_requests_work_after_subscribing(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtClient) client = NULL;
+    g_autofree gchar *socket_path = NULL;
+    g_autoptr(GError) error = NULL;
+    gboolean resumed = FALSE;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+
+    g_main_context_push_thread_default(fixture.context);
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    socket_path = g_build_filename(fixture.dir, "daemon.sock", NULL);
+    client = clawt_client_new(socket_path);
+
+    g_assert_true(clawt_client_connect(client, &error));
+    g_assert_no_error(error);
+
+    g_assert_true(clawt_client_subscribe(client, 0, &resumed, &error));
+    g_assert_no_error(error);
+    g_assert_true(resumed);
+
+    /* Several in a row: one lucky pass would not prove much. */
+    {
+        guint i;
+
+        for (i = 0; i < 5; i++) {
+            g_autoptr(JsonNode) reply = NULL;
+
+            reply = clawt_client_request(client, "agent.list", NULL, &error);
+
+            g_assert_no_error(error);
+            g_assert_nonnull(reply);
+            g_assert_cmpuint(
+                json_array_get_length(
+                    json_object_get_array_member(json_node_get_object(reply),
+                                                 "agents")),
+                ==, 1);
+        }
+    }
+
+    /* And the connection is still up afterwards. */
+    g_assert_true(clawt_client_is_connected(client));
+
+    g_main_context_pop_thread_default(fixture.context);
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A request with no payload, made while disconnected, fails cleanly.
+ *
+ * It used to unref the %NULL payload, which trips an assertion inside
+ * json-glib -- a confusing way to be told the daemon is not there.
+ */
+static void
+test_a_request_with_no_payload_while_disconnected(void)
+{
+    g_autoptr(ClawtClient) client = clawt_client_new("/nonexistent/d.sock");
+    g_autoptr(GError) error = NULL;
+
+    g_assert_null(clawt_client_request(client, "agent.list", NULL, &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_CONNECTED);
+}
+
+/* The model catalogue reaches a client, grouped by provider. */
+static void
+test_the_model_catalog_is_served(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) reply = NULL;
+    JsonArray *providers;
+    guint i;
+    gboolean saw_claude_code = FALSE;
+
+    fixture_setup(&fixture, NULL);
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    reply = request(&fixture, "model.list", NULL);
+    providers = json_object_get_array_member(payload_of(reply), "providers");
+
+    g_assert_cmpuint(json_array_get_length(providers), >, 0);
+
+    for (i = 0; i < json_array_get_length(providers); i++) {
+        JsonObject *provider = json_array_get_object_element(providers, i);
+        JsonArray *models;
+
+        g_assert_true(json_object_has_member(provider, "label"));
+
+        /*
+         * open_ended must be reported, or a client cannot know to offer a
+         * way to type a model the curated list has not heard of.
+         */
+        g_assert_true(json_object_has_member(provider, "open_ended"));
+
+        models = json_object_get_array_member(provider, "models");
+
+        if (g_strcmp0(json_object_get_string_member(provider, "id"),
+                      "claude-code") == 0) {
+            saw_claude_code = TRUE;
+            g_assert_cmpuint(json_array_get_length(models), >, 0);
+        }
+    }
+
+    g_assert_true(saw_claude_code);
+
+    fixture_teardown(&fixture);
+}
+
+/* An agent created with a provider keeps it. */
+static void
+test_creating_an_agent_records_its_provider(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) created = NULL;
+    ClawtAgentConfig *config;
+
+    fixture_setup(&fixture, NULL);
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    created = request(&fixture, "agent.create",
+                      "{\"id\":\"researcher\",\"provider\":\"ollama\","
+                      "\"model\":\"llama3.3\"}");
+
+    g_assert_false(clawt_ipc_frame_is_error(created));
+
+    config = clawt_config_get_agent(
+        clawt_daemon_get_config(fixture.daemon), "researcher");
+
+    g_assert_nonnull(config);
+    g_assert_cmpstr(clawt_agent_config_get_string(config, "model.provider"),
+                    ==, "ollama");
+    g_assert_cmpstr(clawt_agent_config_get_string(config, "model.model"),
+                    ==, "llama3.3");
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -756,6 +857,14 @@ main(int argc, char *argv[])
 
     g_test_add_func("/daemon/client-over-socket",
                     test_a_client_can_talk_over_the_socket);
+
+    g_test_add_func("/daemon/requests-after-subscribe",
+                    test_requests_work_after_subscribing);
+    g_test_add_func("/daemon/no-payload-while-disconnected",
+                    test_a_request_with_no_payload_while_disconnected);
+    g_test_add_func("/daemon/model-catalog", test_the_model_catalog_is_served);
+    g_test_add_func("/daemon/create-records-provider",
+                    test_creating_an_agent_records_its_provider);
 
     g_test_add_func("/daemon/client-vanishes-mid-read",
                     test_a_client_vanishing_mid_read_is_survivable);

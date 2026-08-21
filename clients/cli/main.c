@@ -1179,6 +1179,52 @@ cmd_config(int argc, char *argv[])
 }
 
 static gint
+cmd_model(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    JsonArray *providers;
+    guint i;
+
+    (void)argc;
+    (void)argv;
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    reply = call(client, "model.list", NULL);
+    if (reply == NULL)
+        return EXIT_FAILURE;
+
+    providers = json_object_get_array_member(json_node_get_object(reply),
+                                             "providers");
+
+    for (i = 0; i < json_array_get_length(providers); i++) {
+        JsonObject *provider = json_array_get_object_element(providers, i);
+        JsonArray *models = json_object_get_array_member(provider, "models");
+        guint j;
+
+        g_print("%s  (%s)\n", member_or(provider, "id", "?"),
+                member_or(provider, "note", ""));
+
+        for (j = 0; j < json_array_get_length(models); j++) {
+            JsonObject *model = json_array_get_object_element(models, j);
+
+            g_print("    %-28s %s\n", member_or(model, "id", "?"),
+                    member_or(model, "note", ""));
+        }
+
+        if (json_object_get_boolean_member(provider, "open_ended"))
+            g_print("    (any other model name this provider accepts)\n");
+
+        g_print("\n");
+    }
+
+    return EXIT_SUCCESS;
+}
+
+static gint
 cmd_integration(int argc, char *argv[])
 {
     g_autoptr(ClawtClient) client = NULL;
@@ -1386,6 +1432,14 @@ main(int argc, char *argv[])
     g_option_context_add_main_entries(context, entries, NULL);
     g_option_context_set_description(context, usage_text);
 
+    /*
+     * Unknown options are left in argv for the subcommand rather than
+     * rejected here.  Each verb owns its own flags -- `agent create --id`
+     * being the obvious one -- and a global parser that has never heard of
+     * them would reject the command before the verb ever saw it.
+     */
+    g_option_context_set_ignore_unknown_options(context, TRUE);
+
     if (!g_option_context_parse(context, &argc, &argv, &error)) {
         g_printerr("clawtilla: %s\n", error->message);
         return EXIT_FAILURE;
@@ -1459,6 +1513,9 @@ main(int argc, char *argv[])
 
     if (g_strcmp0(argv[1], "integration") == 0)
         return cmd_integration(argc, argv);
+
+    if (g_strcmp0(argv[1], "model") == 0)
+        return cmd_model(argc, argv);
 
     g_printerr("clawtilla: unknown command '%s'\n", argv[1]);
     g_printerr("Run 'clawtilla --help' for usage.\n");

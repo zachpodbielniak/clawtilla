@@ -1992,6 +1992,70 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
+    if (g_strcmp0(kind, "model.list") == 0) {
+        const ClawtProviderInfo *catalog;
+        gsize n_providers = 0;
+        gsize i;
+
+        catalog = clawt_model_catalog_get(&n_providers);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "providers");
+        json_builder_begin_array(builder);
+
+        for (i = 0; i < n_providers; i++) {
+            gsize j;
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "id");
+            json_builder_add_string_value(builder, catalog[i].id);
+            json_builder_set_member_name(builder, "label");
+            json_builder_add_string_value(builder, catalog[i].label);
+
+            if (catalog[i].note != NULL) {
+                json_builder_set_member_name(builder, "note");
+                json_builder_add_string_value(builder, catalog[i].note);
+            }
+
+            /*
+             * Passed on so a client knows to offer a way to type a name
+             * that is not listed.  The catalogue is curated and goes
+             * stale; nothing validates against it.
+             */
+            json_builder_set_member_name(builder, "open_ended");
+            json_builder_add_boolean_value(builder, catalog[i].open_ended);
+
+            json_builder_set_member_name(builder, "models");
+            json_builder_begin_array(builder);
+
+            for (j = 0; j < catalog[i].n_models; j++) {
+                json_builder_begin_object(builder);
+                json_builder_set_member_name(builder, "id");
+                json_builder_add_string_value(builder,
+                                              catalog[i].models[j].id);
+                json_builder_set_member_name(builder, "label");
+                json_builder_add_string_value(builder,
+                                              catalog[i].models[j].label);
+
+                if (catalog[i].models[j].note != NULL) {
+                    json_builder_set_member_name(builder, "note");
+                    json_builder_add_string_value(
+                        builder, catalog[i].models[j].note);
+                }
+
+                json_builder_end_object(builder);
+            }
+
+            json_builder_end_array(builder);
+            json_builder_end_object(builder);
+        }
+
+        json_builder_end_array(builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
     if (g_strcmp0(kind, "integration.list") == 0) {
         const ClawtIntegrationInfo *info;
         const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");

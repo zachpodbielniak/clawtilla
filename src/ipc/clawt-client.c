@@ -45,6 +45,18 @@ struct _ClawtClient {
     guint64  cursor;
     guint    request_serial;
 
+    /*
+     * One reader, and a table of what it is still waiting to hand back.
+     *
+     * There used to be no table: a synchronous request read the stream
+     * itself.  That works right up until something starts the async
+     * reader, and then two readers race for the same lines -- one of them
+     * gets a partial frame, decides the daemon has gone, and tears down a
+     * perfectly healthy connection.
+     */
+    GHashTable   *pending;      /* request id -> Pending */
+    GMainContext *context;      /* the context the reader is attached to */
+
     gboolean auto_reconnect;
     guint    reconnect_source_id;
     guint    reconnect_delay;
@@ -63,6 +75,30 @@ static guint signals[N_SIGNALS];
 
 static void read_next(ClawtClient *self);
 static gboolean try_reconnect(gpointer user_data);
+
+/*
+ * One outstanding request.
+ *
+ * A synchronous caller waits on `done` while iterating the context; an
+ * asynchronous one is handed its GTask when the reply lands.
+ */
+typedef struct {
+    JsonNode *reply;        /* the whole frame, not just the payload */
+    GError   *error;
+    gboolean  done;
+    GTask    *task;         /* set for an async request */
+} Pending;
+
+static void
+pending_free(gpointer data)
+{
+    Pending *pending = data;
+
+    g_clear_pointer(&pending->reply, json_node_unref);
+    g_clear_error(&pending->error);
+    g_clear_object(&pending->task);
+    g_free(pending);
+}
 
 gchar *
 clawt_client_default_socket_path(void)
@@ -199,6 +235,82 @@ dispatch_event(ClawtClient *self, JsonNode *frame)
     g_signal_emit(self, signals[SIGNAL_EVENT], 0, event);
 }
 
+/*
+ * Hands a reply to whoever is waiting for it.
+ *
+ * A reply with no waiter is dropped rather than warned about: a caller
+ * that timed out and gave up is entitled to have gone away.
+ */
+static void
+complete_pending(ClawtClient *self, JsonNode *frame)
+{
+    const gchar *id = clawt_ipc_frame_get_id(frame);
+    Pending *pending;
+
+    if (id == NULL)
+        return;
+
+    pending = g_hash_table_lookup(self->pending, id);
+
+    if (pending == NULL)
+        return;
+
+    pending->reply = json_node_ref(frame);
+    pending->done = TRUE;
+
+    if (pending->task != NULL) {
+        g_autoptr(GTask) task = g_steal_pointer(&pending->task);
+
+        if (clawt_ipc_frame_is_error(frame)) {
+            g_task_return_error(task, clawt_ipc_frame_to_error(frame));
+        } else {
+            JsonObject *payload = clawt_ipc_frame_get_payload(frame);
+
+            g_task_return_pointer(
+                task,
+                payload != NULL
+                    ? json_node_init_object(json_node_alloc(), payload)
+                    : json_node_new(JSON_NODE_OBJECT),
+                (GDestroyNotify)json_node_unref);
+        }
+
+        g_hash_table_remove(self->pending, id);
+    }
+}
+
+/*
+ * Fails everything still waiting when the connection goes.
+ *
+ * Without this a synchronous caller would sit out its full timeout after
+ * the daemon had already gone -- two minutes of a frozen window for
+ * something that is already known.
+ */
+static void
+fail_all_pending(ClawtClient *self, const gchar *reason)
+{
+    g_autoptr(GList) ids = g_hash_table_get_keys(self->pending);
+    GList *l;
+
+    for (l = ids; l != NULL; l = l->next) {
+        Pending *pending = g_hash_table_lookup(self->pending, l->data);
+
+        if (pending == NULL || pending->done)
+            continue;
+
+        pending->done = TRUE;
+        pending->error = g_error_new_literal(CLAWT_ERROR,
+                                             CLAWT_ERROR_NOT_CONNECTED,
+                                             reason);
+
+        if (pending->task != NULL) {
+            g_autoptr(GTask) task = g_steal_pointer(&pending->task);
+
+            g_task_return_error(task, g_error_copy(pending->error));
+            g_hash_table_remove(self->pending, l->data);
+        }
+    }
+}
+
 static void
 handle_disconnect(ClawtClient *self)
 {
@@ -209,6 +321,8 @@ handle_disconnect(ClawtClient *self)
     g_clear_object(&self->connection);
     g_clear_object(&self->stream);
     self->output = NULL;
+
+    fail_all_pending(self, "the daemon closed the connection");
 
     g_signal_emit(self, signals[SIGNAL_DISCONNECTED], 0);
 
@@ -273,9 +387,12 @@ on_line_read(GObject *source, GAsyncResult *result, gpointer user_data)
 
     frame = clawt_ipc_frame_from_line(line, NULL);
 
-    if (frame != NULL &&
-        g_strcmp0(clawt_ipc_frame_get_kind(frame), "event") == 0)
-        dispatch_event(self, frame);
+    if (frame != NULL) {
+        if (g_strcmp0(clawt_ipc_frame_get_kind(frame), "event") == 0)
+            dispatch_event(self, frame);
+        else
+            complete_pending(self, frame);
+    }
 
     read_next(self);
 }
@@ -326,13 +443,20 @@ on_socket_client_event(GSocketClient       *client,
                      G_CALLBACK(on_accept_certificate), user_data);
 }
 
+/*
+ * The handshake, over the same reader as everything else.
+ *
+ * It used to read the socket directly, which deadlocks an in-process
+ * client: the daemon that must answer runs on the thread now blocked
+ * waiting for its answer.  Going through the ordinary request path means
+ * the context keeps turning, so a host that embeds the daemon and
+ * connects to it -- cmacs, most of all -- works.
+ */
 static gboolean
 say_hello(ClawtClient *self, GError **error)
 {
-    g_autoptr(JsonNode) request = NULL;
+    g_autoptr(JsonNode) payload = NULL;
     g_autoptr(JsonNode) reply = NULL;
-
-    request = clawt_ipc_request_new("control.hello", "hello");
 
     if (self->token != NULL) {
         g_autoptr(JsonBuilder) builder = json_builder_new();
@@ -342,46 +466,13 @@ say_hello(ClawtClient *self, GError **error)
         json_builder_add_string_value(builder, self->token);
         json_builder_end_object(builder);
 
-        clawt_ipc_frame_set_payload(request, json_builder_get_root(builder));
+        payload = json_builder_get_root(builder);
     }
 
-    if (!send_frame(self, request, error))
-        return FALSE;
+    reply = clawt_client_request(self, "control.hello",
+                                 g_steal_pointer(&payload), error);
 
-    for (;;) {
-        g_autofree gchar *line = NULL;
-        g_autoptr(JsonNode) frame = NULL;
-
-        line = g_data_input_stream_read_line(self->input, NULL, NULL, error);
-
-        if (line == NULL) {
-            if (error != NULL && *error == NULL)
-                g_set_error_literal(error, CLAWT_ERROR,
-                                    CLAWT_ERROR_NOT_CONNECTED,
-                                    "the daemon closed the connection during "
-                                    "the handshake");
-            return FALSE;
-        }
-
-        frame = clawt_ipc_frame_from_line(line, NULL);
-
-        if (frame == NULL)
-            continue;
-
-        if (g_strcmp0(clawt_ipc_frame_get_kind(frame), "event") == 0) {
-            dispatch_event(self, frame);
-            continue;
-        }
-
-        if (clawt_ipc_frame_is_error(frame)) {
-            GError *reported = clawt_ipc_frame_to_error(frame);
-
-            g_propagate_error(error, reported);
-            return FALSE;
-        }
-
-        return TRUE;
-    }
+    return reply != NULL;
 }
 
 gboolean
@@ -453,6 +544,21 @@ clawt_client_connect(ClawtClient *self, GError **error)
                                          G_DATA_STREAM_NEWLINE_TYPE_ANY);
     self->output = g_io_stream_get_output_stream(self->stream);
 
+    /*
+     * The reader starts before the handshake, and the handshake goes
+     * through it like every other request.  One reader owns the stream
+     * for the whole life of the connection; nothing else ever reads it.
+     */
+    if (self->context == NULL) {
+        GMainContext *context = g_main_context_get_thread_default();
+
+        self->context = g_main_context_ref(context != NULL
+                                           ? context
+                                           : g_main_context_default());
+    }
+
+    read_next(self);
+
     if (!say_hello(self, error)) {
         clawt_client_disconnect(self);
         return FALSE;
@@ -486,21 +592,27 @@ clawt_client_disconnect(ClawtClient *self)
 
 /* ── Requests ────────────────────────────────────────────────────── */
 
-JsonNode *
-clawt_client_request(ClawtClient  *self,
-                     const gchar  *kind,
-                     JsonNode     *payload,
-                     GError      **error)
+/*
+ * Registers a request and sends it.
+ *
+ * Returns: (transfer none) (nullable): the pending slot, or %NULL
+ */
+static Pending *
+begin_request(ClawtClient *self, const gchar *kind, JsonNode *payload,
+              gchar **out_id, GError **error)
 {
     g_autoptr(JsonNode) request = NULL;
     g_autofree gchar *id = NULL;
-    gint64 deadline;
-
-    g_return_val_if_fail(CLAWT_IS_CLIENT(self), NULL);
-    g_return_val_if_fail(kind != NULL, NULL);
+    Pending *pending;
 
     if (self->stream == NULL) {
-        json_node_unref(payload);
+        /*
+         * g_clear_pointer, not json_node_unref: the payload is optional
+         * and a plain unref of %NULL trips an assertion inside json-glib,
+         * which is a confusing way to be told you are not connected.
+         */
+        g_clear_pointer(&payload, json_node_unref);
+
         g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_CONNECTED,
                             "not connected to the daemon");
         return NULL;
@@ -512,106 +624,96 @@ clawt_client_request(ClawtClient  *self,
     if (payload != NULL)
         clawt_ipc_frame_set_payload(request, payload);
 
-    if (!send_frame(self, request, error))
+    pending = g_new0(Pending, 1);
+    g_hash_table_insert(self->pending, g_strdup(id), pending);
+
+    if (!send_frame(self, request, error)) {
+        g_hash_table_remove(self->pending, id);
+        return NULL;
+    }
+
+    *out_id = g_steal_pointer(&id);
+
+    return pending;
+}
+
+static JsonNode *
+finish_request(ClawtClient *self, const gchar *id, const gchar *kind,
+               GError **error)
+{
+    Pending *pending = g_hash_table_lookup(self->pending, id);
+    JsonNode *result = NULL;
+
+    if (pending == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                            "the request went missing before it was answered");
+        return NULL;
+    }
+
+    if (pending->error != NULL) {
+        g_propagate_error(error, g_steal_pointer(&pending->error));
+    } else if (!pending->done) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_TIMEOUT,
+                    "the daemon did not answer %s within %d seconds",
+                    kind, REQUEST_TIMEOUT_SECONDS);
+    } else if (clawt_ipc_frame_is_error(pending->reply)) {
+        g_propagate_error(error, clawt_ipc_frame_to_error(pending->reply));
+    } else {
+        JsonObject *payload = clawt_ipc_frame_get_payload(pending->reply);
+
+        result = (payload != NULL)
+                 ? json_node_init_object(json_node_alloc(), payload)
+                 : json_node_new(JSON_NODE_OBJECT);
+    }
+
+    g_hash_table_remove(self->pending, id);
+
+    return result;
+}
+
+JsonNode *
+clawt_client_request(ClawtClient  *self,
+                     const gchar  *kind,
+                     JsonNode     *payload,
+                     GError      **error)
+{
+    g_autofree gchar *id = NULL;
+    Pending *pending;
+    gint64 deadline;
+
+    g_return_val_if_fail(CLAWT_IS_CLIENT(self), NULL);
+    g_return_val_if_fail(kind != NULL, NULL);
+
+    pending = begin_request(self, kind, payload, &id, error);
+
+    if (pending == NULL)
         return NULL;
 
     deadline = g_get_monotonic_time() +
                ((gint64)REQUEST_TIMEOUT_SECONDS * G_USEC_PER_SEC);
 
-    for (;;) {
-        g_autofree gchar *line = NULL;
-        g_autoptr(JsonNode) frame = NULL;
-        g_autoptr(GError) local = NULL;
+    /*
+     * Iterate the context rather than reading the socket.
+     *
+     * The reader is already running there and owns the stream; a second
+     * read here would race it for lines. Iterating also means a caller
+     * inside a main loop -- the GTK client, most of all -- keeps
+     * dispatching everything else while it waits, instead of freezing.
+     */
+    while (!pending->done && g_get_monotonic_time() < deadline) {
+        if (self->stream == NULL)
+            break;
 
-        if (g_get_monotonic_time() > deadline) {
-            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_TIMEOUT,
-                        "the daemon did not answer %s within %d seconds",
-                        kind, REQUEST_TIMEOUT_SECONDS);
-            return NULL;
-        }
+        g_main_context_iteration(self->context, TRUE);
 
-        line = g_data_input_stream_read_line(self->input, NULL, NULL, &local);
+        /* The table can be rebuilt by a reconnect underneath us. */
+        pending = g_hash_table_lookup(self->pending, id);
 
-        if (line == NULL) {
-            handle_disconnect(self);
-            g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_CONNECTED,
-                                local != NULL ? local->message
-                                              : "the daemon closed the "
-                                                "connection");
-            return NULL;
-        }
-
-        frame = clawt_ipc_frame_from_line(line, NULL);
-
-        if (frame == NULL)
-            continue;
-
-        /*
-         * Events that arrive while waiting are still delivered.  Dropping
-         * them would mean a synchronous call silently punched a hole in
-         * the caller's subscription.
-         */
-        if (g_strcmp0(clawt_ipc_frame_get_kind(frame), "event") == 0) {
-            dispatch_event(self, frame);
-            continue;
-        }
-
-        /* Somebody else's reply, on a shared connection. */
-        if (g_strcmp0(clawt_ipc_frame_get_id(frame), id) != 0)
-            continue;
-
-        if (clawt_ipc_frame_is_error(frame)) {
-            GError *reported = clawt_ipc_frame_to_error(frame);
-
-            g_propagate_error(error, reported);
-            return NULL;
-        }
-
-        {
-            JsonObject *reply = clawt_ipc_frame_get_payload(frame);
-
-            if (reply == NULL)
-                return json_node_new(JSON_NODE_OBJECT);
-
-            return json_node_init_object(json_node_alloc(), reply);
-        }
+        if (pending == NULL)
+            break;
     }
-}
 
-typedef struct {
-    gchar    *kind;
-    JsonNode *payload;
-} RequestData;
-
-static void
-request_data_free(gpointer data)
-{
-    RequestData *request = data;
-
-    g_free(request->kind);
-    g_clear_pointer(&request->payload, json_node_unref);
-    g_free(request);
-}
-
-static void
-request_thread(GTask *task, gpointer source, gpointer task_data,
-               GCancellable *cancellable)
-{
-    ClawtClient *self = source;
-    RequestData *request = task_data;
-    g_autoptr(GError) error = NULL;
-    JsonNode *reply;
-
-    (void)cancellable;
-
-    reply = clawt_client_request(self, request->kind,
-                                 g_steal_pointer(&request->payload), &error);
-
-    if (reply == NULL)
-        g_task_return_error(task, g_steal_pointer(&error));
-    else
-        g_task_return_pointer(task, reply,
-                              (GDestroyNotify)json_node_unref);
+    return finish_request(self, id, kind, error);
 }
 
 void
@@ -623,18 +725,37 @@ clawt_client_request_async(ClawtClient         *self,
                            gpointer             user_data)
 {
     g_autoptr(GTask) task = NULL;
-    RequestData *request;
+    g_autofree gchar *id = NULL;
+    g_autoptr(GError) error = NULL;
+    Pending *pending;
 
     g_return_if_fail(CLAWT_IS_CLIENT(self));
     g_return_if_fail(kind != NULL);
 
-    request = g_new0(RequestData, 1);
-    request->kind = g_strdup(kind);
-    request->payload = payload;
-
     task = g_task_new(self, cancellable, callback, user_data);
-    g_task_set_task_data(task, request, request_data_free);
-    g_task_run_in_thread(task, request_thread);
+
+    /*
+     * No thread.  The reply is delivered by the reader that is already
+     * running on this context; handing the whole request to a worker
+     * thread would put a second reader on the same stream, which is the
+     * bug this replaced.
+     */
+    pending = begin_request(self, kind, payload, &id, &error);
+
+    if (pending == NULL) {
+        g_task_return_error(task, g_steal_pointer(&error));
+        return;
+    }
+
+    pending->task = g_object_ref(task);
+
+    /*
+     * A reply that arrived while the request was being registered is
+     * already sitting in the slot; hand it over rather than waiting for a
+     * reader that has nothing left to read.
+     */
+    if (pending->done)
+        complete_pending(self, pending->reply);
 }
 
 JsonNode *
@@ -679,13 +800,6 @@ clawt_client_subscribe(ClawtClient  *self,
                        ? json_object_get_boolean_member(object, "resumed")
                        : TRUE;
 
-    /*
-     * Reading resumes only now: until the subscription is answered, the
-     * synchronous read loop above owns the stream, and a second reader
-     * would race it for lines.
-     */
-    read_next(self);
-
     return TRUE;
 }
 
@@ -705,6 +819,8 @@ clawt_client_finalize(GObject *object)
 {
     ClawtClient *self = CLAWT_CLIENT(object);
 
+    g_clear_pointer(&self->pending, g_hash_table_unref);
+    g_clear_pointer(&self->context, g_main_context_unref);
     g_free(self->socket_path);
     g_free(self->host);
     g_free(self->token);
@@ -744,4 +860,6 @@ static void
 clawt_client_init(ClawtClient *self)
 {
     self->reconnect_delay = RECONNECT_BASE_SECONDS;
+    self->pending = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                          pending_free);
 }

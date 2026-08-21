@@ -847,40 +847,203 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
 
 typedef struct {
     ClawtWindow *window;
+    AdwDialog   *dialog;        /* so it can close itself; see below */
     GtkWidget   *id_entry;
-    GtkWidget   *model_entry;
+    GtkWidget   *provider_row;
+    GtkWidget   *model_row;
+    GtkWidget   *model_entry;   /* for a name not in the catalogue */
     GtkWidget   *computer_row;
     GtkWidget   *describe_entry;
+    JsonNode    *catalog;       /* the reply from model.list */
 } NewAgentDialog;
+
+static void
+new_agent_dialog_free(gpointer data)
+{
+    NewAgentDialog *dialog = data;
+
+    g_clear_pointer(&dialog->catalog, json_node_unref);
+    g_free(dialog);
+}
+
+static JsonObject *
+selected_provider(NewAgentDialog *dialog)
+{
+    JsonArray *providers;
+    guint selected;
+
+    if (dialog->catalog == NULL)
+        return NULL;
+
+    providers = json_object_get_array_member(
+        json_node_get_object(dialog->catalog), "providers");
+    selected = adw_combo_row_get_selected(ADW_COMBO_ROW(dialog->provider_row));
+
+    if (selected >= json_array_get_length(providers))
+        return NULL;
+
+    return json_array_get_object_element(providers, selected);
+}
+
+/*
+ * Rebuilds the model list for whichever provider is selected.
+ *
+ * The models a provider runs are not interchangeable -- "sonnet" means
+ * nothing to Ollama -- so one flat list would offer combinations that
+ * cannot work.
+ */
+static void
+on_provider_changed(GObject *object, GParamSpec *pspec, gpointer user_data)
+{
+    NewAgentDialog *dialog = user_data;
+    JsonObject *provider = selected_provider(dialog);
+    g_autoptr(GtkStringList) names = gtk_string_list_new(NULL);
+    JsonArray *models;
+    guint i;
+
+    (void)object;
+    (void)pspec;
+
+    if (provider == NULL)
+        return;
+
+    models = json_object_get_array_member(provider, "models");
+
+    for (i = 0; i < json_array_get_length(models); i++) {
+        JsonObject *model = json_array_get_object_element(models, i);
+        const gchar *note = clawt_json_string(model, "note", NULL);
+        g_autofree gchar *label = NULL;
+
+        label = (note != NULL)
+                ? g_strdup_printf("%s - %s",
+                                  clawt_json_string(model, "label", "?"),
+                                  note)
+                : g_strdup(clawt_json_string(model, "label", "?"));
+
+        gtk_string_list_append(names, label);
+    }
+
+    /*
+     * The catalogue is curated and goes stale, so every provider also
+     * takes a name typed by hand.  Offering it as the last entry keeps
+     * the common case one click.
+     */
+    gtk_string_list_append(names, "Something else…");
+
+    adw_combo_row_set_model(ADW_COMBO_ROW(dialog->model_row),
+                            G_LIST_MODEL(g_steal_pointer(&names)));
+    adw_combo_row_set_selected(ADW_COMBO_ROW(dialog->model_row), 0);
+
+    if (clawt_json_string(provider, "note", NULL) != NULL)
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(dialog->provider_row),
+                                    clawt_json_string(provider, "note", ""));
+}
+
+/* The free-text row appears only when "Something else…" is chosen. */
+static void
+on_model_changed(GObject *object, GParamSpec *pspec, gpointer user_data)
+{
+    NewAgentDialog *dialog = user_data;
+    JsonObject *provider = selected_provider(dialog);
+    JsonArray *models;
+    guint selected;
+
+    (void)object;
+    (void)pspec;
+
+    if (provider == NULL)
+        return;
+
+    models = json_object_get_array_member(provider, "models");
+    selected = adw_combo_row_get_selected(ADW_COMBO_ROW(dialog->model_row));
+
+    gtk_widget_set_visible(dialog->model_entry,
+                           selected >= json_array_get_length(models));
+}
+
+/*
+ * What the two rows add up to, as a model id.
+ *
+ * Returns: (transfer full) (nullable): the id, or %NULL if nothing was
+ *   chosen
+ */
+static gchar *
+chosen_model(NewAgentDialog *dialog)
+{
+    JsonObject *provider = selected_provider(dialog);
+    JsonArray *models;
+    guint selected;
+
+    if (provider == NULL)
+        return NULL;
+
+    models = json_object_get_array_member(provider, "models");
+    selected = adw_combo_row_get_selected(ADW_COMBO_ROW(dialog->model_row));
+
+    if (selected < json_array_get_length(models))
+        return g_strdup(clawt_json_string(
+            json_array_get_object_element(models, selected), "id", NULL));
+
+    {
+        const gchar *typed = gtk_editable_get_text(
+            GTK_EDITABLE(dialog->model_entry));
+
+        return (typed != NULL && *typed != '\0') ? g_strdup(typed) : NULL;
+    }
+}
 
 static void
 on_create_manually(GtkButton *button, gpointer user_data)
 {
     NewAgentDialog *dialog = user_data;
     ClawtWindow *self = dialog->window;
+    JsonObject *provider = selected_provider(dialog);
     g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *model = NULL;
     static const gchar *const computers[] = { "none", "host", "container",
                                               "vm" };
+    const gchar *agent_id;
     guint selected;
 
+    (void)button;
+
+    agent_id = gtk_editable_get_text(GTK_EDITABLE(dialog->id_entry));
+
+    if (agent_id == NULL || *agent_id == '\0') {
+        clawt_window_toast(self, "An agent needs an id.");
+        return;
+    }
+
+    model = chosen_model(dialog);
     selected = adw_combo_row_get_selected(ADW_COMBO_ROW(dialog->computer_row));
 
     reply = clawt_window_request(
         self, "agent.create",
         clawt_build_payload(
-            "id", gtk_editable_get_text(GTK_EDITABLE(dialog->id_entry)),
-            "model", gtk_editable_get_text(GTK_EDITABLE(dialog->model_entry)),
+            "id", agent_id,
+            "provider", provider != NULL
+                        ? clawt_json_string(provider, "id", NULL) : NULL,
+            "model", model,
             "computer", computers[MIN(selected, 3)],
             NULL));
 
+    /*
+     * The dialog stays open on failure, with the toast explaining why, so
+     * whatever was typed is still there to correct.
+     */
     if (reply == NULL)
         return;
 
     clawt_window_toast(self, "Agent created.");
     refresh_agents(self);
 
-    gtk_window_close(GTK_WINDOW(gtk_widget_get_ancestor(GTK_WIDGET(button),
-                                                        GTK_TYPE_WINDOW)));
+    /*
+     * adw_dialog_close, not gtk_window_close.  An AdwDialog is a widget
+     * inside the window rather than a window of its own, so asking for
+     * its GtkWindow ancestor finds the main window -- which either does
+     * nothing useful or closes the application.
+     */
+    adw_dialog_close(dialog->dialog);
 }
 
 static void
@@ -985,6 +1148,7 @@ on_new_agent(GtkButton *button, gpointer user_data)
     (void)button;
 
     dialog->window = self;
+    dialog->dialog = window;
 
     adw_dialog_set_title(window, "New agent");
     adw_dialog_set_content_width(window, 520);
@@ -999,11 +1163,59 @@ on_new_agent(GtkButton *button, gpointer user_data)
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(manual),
                               dialog->id_entry);
 
-    dialog->model_entry = adw_entry_row_new();
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->model_entry),
+    /*
+     * Provider first, then model: the model list depends on it, and
+     * asking for a model before knowing the provider is how you end up
+     * offering "sonnet" for Ollama.
+     */
+    dialog->provider_row = adw_combo_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->provider_row),
+                                  "Provider");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(manual),
+                              dialog->provider_row);
+
+    dialog->model_row = adw_combo_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->model_row),
                                   "Model");
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(manual),
+                              dialog->model_row);
+
+    dialog->model_entry = adw_entry_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->model_entry),
+                                  "Model name");
+    gtk_widget_set_visible(dialog->model_entry, FALSE);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(manual),
                               dialog->model_entry);
+
+    /* Populate from the daemon, so every client agrees on the list. */
+    {
+        g_autoptr(GtkStringList) provider_names = gtk_string_list_new(NULL);
+
+        dialog->catalog = clawt_window_request(self, "model.list", NULL);
+
+        if (dialog->catalog != NULL) {
+            JsonArray *providers = json_object_get_array_member(
+                json_node_get_object(dialog->catalog), "providers");
+            guint i;
+
+            for (i = 0; i < json_array_get_length(providers); i++)
+                gtk_string_list_append(
+                    provider_names,
+                    clawt_json_string(
+                        json_array_get_object_element(providers, i),
+                        "label", "?"));
+        }
+
+        adw_combo_row_set_model(ADW_COMBO_ROW(dialog->provider_row),
+                                G_LIST_MODEL(g_steal_pointer(&provider_names)));
+    }
+
+    g_signal_connect(dialog->provider_row, "notify::selected",
+                     G_CALLBACK(on_provider_changed), dialog);
+    g_signal_connect(dialog->model_row, "notify::selected",
+                     G_CALLBACK(on_model_changed), dialog);
+
+    on_provider_changed(NULL, NULL, dialog);
 
     dialog->computer_row = adw_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->computer_row),
@@ -1045,7 +1257,8 @@ on_new_agent(GtkButton *button, gpointer user_data)
     adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
                              ADW_PREFERENCES_GROUP(ai));
 
-    g_object_set_data_full(G_OBJECT(window), "dialog", dialog, g_free);
+    g_object_set_data_full(G_OBJECT(window), "dialog", dialog,
+                           new_agent_dialog_free);
     adw_dialog_set_child(window, page);
     adw_dialog_present(window, GTK_WIDGET(self));
 }

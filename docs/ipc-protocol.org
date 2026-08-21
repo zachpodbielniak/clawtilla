@@ -90,10 +90,20 @@ it went into.
 ~stdout~, ~stderr~.  ~computer.status~.  ~computer.copy~ (~src~, ~dst~,
 one side being ~<agent>:<path>~).  ~exchange.list~.
 
-*** config.*, plugin.*, integration.*, design.*
+*** config.*, plugin.*, integration.*, model.*, design.*
 
 ~config.show~, ~config.render~, ~config.validate~; ~plugin.list~;
-~integration.list~, ~integration.health~; ~design.agent~.
+~integration.list~, ~integration.health~; ~model.list~; ~design.agent~.
+
+~model.list~ returns the providers clawtilla knows about, each with its
+models.  It comes from the daemon rather than being built into each
+client so the CLI, the GTK app and the web client cannot disagree about
+what exists.
+
+Each provider carries ~open_ended~.  When it is true the list is a
+starting point rather than the whole truth -- Ollama runs whatever you
+have pulled -- and a client must offer a way to type a name that is not
+listed.  Nothing validates ~model.model~ against the catalogue.
 
 ** Events
 

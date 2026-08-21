@@ -67,6 +67,7 @@
 
 #include "plugin/clawt-plugin-manager.h"
 #include "mcp/clawt-mcp-tools.h"
+#include "ai/clawt-model-catalog.h"
 #include "ai/clawt-agent-designer.h"
 #include "core/clawt-event.h"
 #include "core/clawt-event-bus.h"

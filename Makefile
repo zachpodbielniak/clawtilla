@@ -99,6 +99,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/interfaces/clawt-computer-provider.h \
 	$(SRCDIR)/interfaces/clawt-integration-provider.h \
 	$(SRCDIR)/mcp/clawt-mcp-tools.h \
+	$(SRCDIR)/ai/clawt-model-catalog.h \
 	$(SRCDIR)/ai/clawt-agent-designer.h
 
 # ============================================================
@@ -157,6 +158,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/interfaces/clawt-computer-provider.c \
 	$(SRCDIR)/interfaces/clawt-integration-provider.c \
 	$(SRCDIR)/mcp/clawt-mcp-tools.c \
+	$(SRCDIR)/ai/clawt-model-catalog.c \
 	$(SRCDIR)/ai/clawt-agent-designer.c
 
 # Object files
