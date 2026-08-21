@@ -40,4 +40,7 @@
 #include "link/clawt-link.h"
 #include "link/clawt-link-server.h"
 
+#include "mailbox/clawt-mailbox-item.h"
+#include "mailbox/clawt-mailbox.h"
+
 #undef CLAWT_INSIDE

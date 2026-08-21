@@ -315,7 +315,11 @@ static const ClawtSchemaEntry schema[] = {
 
 { "orchestration.mailbox.backoff_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_PER_AGENT,
   "30", NULL,
-  "Base for the exponential retry backoff, with jitter applied.", "0.1.0" },
+  "Base for the exponential retry backoff, doubling per attempt, with\n"
+  "jitter applied so a dependency that failed for every queued message does\n"
+  "not bring them all back at the same instant.\n"
+  "\n"
+  "0 retries immediately.", "0.1.0" },
 
 /* ── rooms ───────────────────────────────────────────────────────── */
 { "rooms", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,

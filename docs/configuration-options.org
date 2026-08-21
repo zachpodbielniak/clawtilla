@@ -462,7 +462,11 @@ How long an undelivered item lives before it is swept. 0 means forever.
 - Default :: =30=
 - Since :: 0.1.0
 
-Base for the exponential retry backoff, with jitter applied.
+Base for the exponential retry backoff, doubling per attempt, with
+jitter applied so a dependency that failed for every queued message does
+not bring them all back at the same instant.
+
+0 retries immediately.
 
 ** =rooms=
 

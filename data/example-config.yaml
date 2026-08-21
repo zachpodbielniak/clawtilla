@@ -261,7 +261,11 @@ orchestration:
     # How long an undelivered item lives before it is swept. 0 means forever.
     default_ttl_seconds: 604800
 
-    # Base for the exponential retry backoff, with jitter applied.
+    # Base for the exponential retry backoff, doubling per attempt, with
+    # jitter applied so a dependency that failed for every queued message does
+    # not bring them all back at the same instant.
+    #
+    # 0 retries immediately.
     backoff_seconds: 30
 
 # Standing rooms, created at startup if they do not exist.
