@@ -210,6 +210,67 @@ test_dangerous_options_are_flagged_in_output(void)
     g_assert_nonnull(strstr(example, "docs/security.org"));
 }
 
+/*
+ * A generated file must not name the same top-level key twice.
+ *
+ * YAML silently takes the last one, so a duplicate does not fail -- it
+ * discards whatever the user wrote under the first.  The generator did
+ * exactly this with `agents:` once, and nothing noticed until a config
+ * that looked right behaved as though it were empty.
+ */
+static void
+assert_no_duplicate_top_level_keys(const gchar *what, const gchar *contents)
+{
+    g_auto(GStrv) lines = NULL;
+    g_autoptr(GHashTable) seen = NULL;
+    gsize i;
+
+    g_assert_nonnull(contents);
+
+    seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    lines = g_strsplit(contents, "\n", -1);
+
+    for (i = 0; lines[i] != NULL; i++) {
+        const gchar *colon;
+        g_autofree gchar *key = NULL;
+
+        /* Only unindented, uncommented keys are top level. */
+        if (lines[i][0] == '\0' || g_ascii_isspace(lines[i][0]) ||
+            lines[i][0] == '#')
+            continue;
+
+        colon = strchr(lines[i], ':');
+
+        if (colon == NULL)
+            continue;
+
+        key = g_strndup(lines[i], (gsize)(colon - lines[i]));
+
+        if (g_hash_table_contains(seen, key))
+            g_error("%s names '%s' twice; YAML keeps only the last, so "
+                    "everything under the first is silently lost",
+                    what, key);
+
+        g_hash_table_add(seen, g_steal_pointer(&key));
+    }
+}
+
+static void
+test_default_config_has_no_duplicate_keys(void)
+{
+    g_autofree gchar *contents = read_repo_file("data/default-config.yaml");
+
+    assert_no_duplicate_top_level_keys("data/default-config.yaml", contents);
+}
+
+static void
+test_example_config_has_no_duplicate_keys(void)
+{
+    g_autofree gchar *contents = read_repo_file("data/example-config.yaml");
+
+    assert_no_duplicate_top_level_keys("data/example-config.yaml", contents);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -226,6 +287,10 @@ main(int argc, char *argv[])
                     test_every_option_is_documented);
     g_test_add_func("/schema/enum-defaults-valid",
                     test_enum_defaults_are_valid);
+    g_test_add_func("/schema/default-config-no-duplicates",
+                    test_default_config_has_no_duplicate_keys);
+    g_test_add_func("/schema/example-config-no-duplicates",
+                    test_example_config_has_no_duplicate_keys);
     g_test_add_func("/schema/default-config-loads", test_default_config_loads);
     g_test_add_func("/schema/example-config-loads", test_example_config_loads);
     g_test_add_func("/schema/dangerous-flagged",

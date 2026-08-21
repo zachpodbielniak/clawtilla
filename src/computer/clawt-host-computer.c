@@ -73,6 +73,26 @@ static gboolean
 host_provision(ClawtComputer *computer, GError **error)
 {
     ClawtHostComputer *self = CLAWT_HOST_COMPUTER(computer);
+    GPtrArray *mounts;
+    guint i;
+
+    /*
+     * A declared mount is a statement that the agent may reach that
+     * directory.  On a container it becomes a real mount and the kernel
+     * enforces it; on the host there is nothing to enforce it, so the
+     * sources are added to what the sandbox allows.  Without this an
+     * agent is handed an exchange directory it is then refused access
+     * to, which reads as a bug in the confinement rather than as the
+     * mount never having been applied.
+     */
+    mounts = clawt_computer_get_mounts(computer);
+
+    for (i = 0; mounts != NULL && i < mounts->len; i++) {
+        ClawtMount *mount = g_ptr_array_index(mounts, i);
+
+        clawt_sandbox_add_mount_path(self->sandbox,
+                                     clawt_mount_get_source(mount));
+    }
 
     if (!clawt_sandbox_is_available(self->sandbox, error)) {
         clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ERROR,
@@ -138,6 +158,78 @@ on_exec_done(GObject *source, GAsyncResult *result, gpointer user_data)
     g_main_loop_quit(wait->loop);
 }
 
+/*
+ * Translates an in-computer path to where it really is on this machine.
+ *
+ * A host computer has no mount namespace, so a mount is not a mount: it is
+ * a promise that a path inside the agent's world means a directory
+ * outside it.  Nothing enforces that promise for us, so the translation
+ * happens here -- otherwise an agent told its exchange is at
+ * /mnt/clawtilla/exchange would be refused for using the path it was
+ * given, which is a maddening thing to debug.
+ *
+ * The result still goes through the confinement check: this maps a path,
+ * it does not bless one.
+ */
+static gchar *
+translate_mount_path(ClawtComputer *computer, const gchar *path)
+{
+    GPtrArray *mounts;
+    guint i;
+
+    if (path == NULL)
+        return NULL;
+
+    mounts = clawt_computer_get_mounts(computer);
+
+    for (i = 0; mounts != NULL && i < mounts->len; i++) {
+        ClawtMount *mount = g_ptr_array_index(mounts, i);
+        const gchar *target = clawt_mount_get_target(mount);
+        gsize length;
+
+        if (target == NULL || !g_str_has_prefix(path, target))
+            continue;
+
+        length = strlen(target);
+
+        /*
+         * A prefix match is not enough: "/mnt/clawtillax" starts with
+         * "/mnt/clawtilla" and is somewhere else.
+         */
+        if (path[length] != '\0' && path[length] != G_DIR_SEPARATOR)
+            continue;
+
+        return g_build_filename(clawt_mount_get_source(mount),
+                                path + length, NULL);
+    }
+
+    return clawt_expand_path(path);
+}
+
+/*
+ * Rewrites every argument that names a mount target.
+ *
+ * Whole arguments only: rewriting inside a longer string would mean
+ * guessing at quoting and would change text the agent meant literally.
+ */
+static GStrv
+translate_argv(ClawtComputer *computer, const gchar * const *argv)
+{
+    g_autoptr(GPtrArray) out = g_ptr_array_new();
+    gsize i;
+
+    for (i = 0; argv != NULL && argv[i] != NULL; i++) {
+        if (g_path_is_absolute(argv[i]))
+            g_ptr_array_add(out, translate_mount_path(computer, argv[i]));
+        else
+            g_ptr_array_add(out, g_strdup(argv[i]));
+    }
+
+    g_ptr_array_add(out, NULL);
+
+    return (GStrv)g_ptr_array_free(g_steal_pointer(&out), FALSE);
+}
+
 static ClawtExecResult *
 host_exec(ClawtComputer        *computer,
           const gchar * const  *argv,
@@ -149,6 +241,7 @@ host_exec(ClawtComputer        *computer,
     ClawtHostComputer *self = CLAWT_HOST_COMPUTER(computer);
     g_autoptr(GSubprocessLauncher) launcher = NULL;
     g_auto(GStrv) wrapped = NULL;
+    g_auto(GStrv) translated = NULL;
     g_autoptr(GMainContext) context = NULL;
     g_autoptr(GMainLoop) loop = NULL;
     g_autofree gchar *bounded_stdout = NULL;
@@ -160,14 +253,24 @@ host_exec(ClawtComputer        *computer,
     gboolean stderr_truncated = FALSE;
 
     /*
+     * Mount targets are rewritten to where they really are before
+     * anything is checked or run.  On a container the kernel does this;
+     * on the host nothing does, so an agent using the path it was given
+     * would be refused for naming its own exchange directory.
+     */
+    translated = translate_argv(computer, argv);
+
+    /*
      * Checked before anything is spawned.  A command that would reach
      * outside the agent's boundary must never start, not be killed
      * afterwards.
      */
-    if (!clawt_sandbox_check_argv(self->sandbox, argv, error))
+    if (!clawt_sandbox_check_argv(self->sandbox,
+                                  (const gchar * const *)translated, error))
         return NULL;
 
-    wrapped = clawt_sandbox_wrap_argv(self->sandbox, argv);
+    wrapped = clawt_sandbox_wrap_argv(self->sandbox,
+                                      (const gchar * const *)translated);
 
     launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE |
                                          G_SUBPROCESS_FLAGS_STDERR_PIPE);
@@ -276,7 +379,8 @@ host_put_file(ClawtComputer  *computer,
 {
     ClawtHostComputer *self = CLAWT_HOST_COMPUTER(computer);
     g_autofree gchar *contents = NULL;
-    g_autofree gchar *destination = clawt_expand_path(remote_path);
+    g_autofree gchar *destination = translate_mount_path(computer,
+                                                         remote_path);
     gsize length = 0;
 
     if (!clawt_sandbox_path_is_allowed(self->sandbox, destination)) {
@@ -299,7 +403,7 @@ host_get_file(ClawtComputer  *computer,
 {
     ClawtHostComputer *self = CLAWT_HOST_COMPUTER(computer);
     g_autofree gchar *contents = NULL;
-    g_autofree gchar *source = clawt_expand_path(remote_path);
+    g_autofree gchar *source = translate_mount_path(computer, remote_path);
     gsize length = 0;
 
     if (!clawt_sandbox_path_is_allowed(self->sandbox, source)) {
@@ -319,10 +423,33 @@ host_describe(ClawtComputer *computer)
 {
     ClawtHostComputer *self = CLAWT_HOST_COMPUTER(computer);
     g_autofree gchar *confinement = clawt_sandbox_describe(self->sandbox);
+    g_autoptr(GString) out = g_string_new(NULL);
+    GPtrArray *mounts;
+    guint i;
 
-    return g_strdup_printf(
+    g_string_append_printf(
+        out,
         "You can run commands on the machine clawtilla itself is running "
         "on. %s", confinement);
+
+    /*
+     * The mounts are listed by name, because an agent told only what it
+     * may not reach spends turns discovering what it may.
+     */
+    mounts = clawt_computer_get_mounts(computer);
+
+    for (i = 0; mounts != NULL && i < mounts->len; i++) {
+        ClawtMount *mount = g_ptr_array_index(mounts, i);
+
+        if (i == 0)
+            g_string_append(out, "\n\nYou can also reach:");
+
+        g_string_append_printf(out, "\n  %s (%s on this machine)",
+                               clawt_mount_get_target(mount),
+                               clawt_mount_get_source(mount));
+    }
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
 }
 
 static ClawtComputerType

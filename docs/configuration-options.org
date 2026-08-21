@@ -203,6 +203,19 @@ other files without anybody wiring up mounts by hand.
 
 Size cap for the exchange directory. 0 disables the limit.
 
+*** =defaults.libreclaw_binary=
+
+- Type :: path
+- Default :: unset
+- Since :: 0.1.0
+
+Which libreclaw to run for process-runtime agents.
+
+Unset means whatever is on PATH, which is what you want once libreclaw
+is installed. Point it at a build tree while developing against an
+unreleased libreclaw -- otherwise the daemon runs the installed copy
+and the change you are testing is not the one being exercised.
+
 *** =defaults.restart=
 
 - Type :: enum
@@ -773,6 +786,18 @@ none, host, container or vm. Defaults to defaults.computer.
 
 Desktop control is not a type -- it is the desktop block below, and
 works alongside any of these.
+
+*** =agents.computer.exchange=
+
+- Type :: boolean
+- Default :: =true=
+- Since :: 0.1.0
+
+Whether the shared exchange directory is visible to this agent.
+
+On by default, because otherwise every pair of agents that wants to
+hand a file across needs its own hand-wired mount. Turn it off for an
+agent that should not see what the others are passing around.
 
 ** =agents.computer.mounts=
 

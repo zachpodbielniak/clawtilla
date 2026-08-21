@@ -287,6 +287,33 @@ clawt_path_is_within(const gchar *path, const gchar *root)
 }
 
 
+gboolean
+clawt_check_socket_path(const gchar *path, GError **error)
+{
+    gsize length;
+
+    g_return_val_if_fail(path != NULL, FALSE);
+
+    length = strlen(path);
+
+    if (length <= CLAWT_MAX_SOCKET_PATH)
+        return TRUE;
+
+    /*
+     * Refused here, with the number, rather than letting the bind go
+     * ahead.  An over-long path does not fail at bind time -- the socket
+     * simply is not created where it was asked for, and the first sign is
+     * an unrelated ENOENT further down.
+     */
+    g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                "the socket path is %u bytes; the kernel accepts at most "
+                "%d. Put it somewhere shorter, such as under "
+                "$XDG_RUNTIME_DIR: %s",
+                (guint)length, CLAWT_MAX_SOCKET_PATH, path);
+
+    return FALSE;
+}
+
 gchar *
 clawt_generate_token(GError **error)
 {

@@ -284,6 +284,9 @@ clawt_link_server_start(ClawtLinkServer *self, GError **error)
     if (self->service != NULL)
         return TRUE;
 
+    if (!clawt_check_socket_path(self->socket_path, error))
+        return FALSE;
+
     dir = g_path_get_dirname(self->socket_path);
     if (!clawt_ensure_dir(dir, 0700, error))
         return FALSE;

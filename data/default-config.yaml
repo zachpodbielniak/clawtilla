@@ -121,6 +121,14 @@ defaults:
   # Size cap for the exchange directory. 0 disables the limit.
   exchange_max_bytes: 1073741824
 
+  # # Which libreclaw to run for process-runtime agents.
+  # #
+  # # Unset means whatever is on PATH, which is what you want once libreclaw
+  # # is installed. Point it at a build tree while developing against an
+  # # unreleased libreclaw -- otherwise the daemon runs the installed copy
+  # # and the change you are testing is not the one being exercised.
+  # libreclaw_binary: null
+
   # Default restart policy: never, on-failure or always.
   restart: "on-failure"
 
@@ -269,19 +277,6 @@ orchestration:
 # # every member's mailbox. A direct chat is just a room with two members,
 # # so there is one mechanism rather than two.
 # rooms: []
-
-# The fleet.
-#
-# Each entry is one libreclaw agent: its persona, its model, its
-# credentials, its integrations and its computer. This file is the source
-# of truth -- the daemon renders each agent's libreclaw config.yaml into
-# its workspace from what is here, and regenerates it when this changes.
-#
-# An agent whose block cannot be understood becomes a shadow: it is
-# listed, it says why, and it refuses to run. That is what lets a config
-# written by a newer clawtilla round-trip through an older one without
-# losing anything.
-agents: []
 
 # The fleet.  Empty to start with; `clawtilla agent create` or
 # `clawtilla agent new --ai` fills this in.

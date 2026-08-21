@@ -357,6 +357,15 @@ clawt_config_schema_render_default(void)
             g_str_has_prefix(entry->key, "rooms."))
             continue;
 
+        /*
+         * `agents` itself is emitted once at the end, with the worked
+         * example beside it.  Emitting it here too produced a starter
+         * config with the key twice -- and YAML takes the last one, so
+         * anything the user wrote in the first was silently discarded.
+         */
+        if (g_strcmp0(entry->key, "agents") == 0)
+            continue;
+
         commented = ((entry->flags & CLAWT_SCHEMA_FLAG_COMMENTED) != 0) ||
                     ((entry->flags & CLAWT_SCHEMA_FLAG_DANGEROUS) != 0);
 

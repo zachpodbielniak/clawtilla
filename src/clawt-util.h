@@ -156,6 +156,30 @@ gboolean clawt_path_is_within(const gchar *path, const gchar *root);
  */
 gchar *clawt_generate_token(GError **error);
 
+/**
+ * CLAWT_MAX_SOCKET_PATH:
+ *
+ * The longest unix socket path the kernel will accept.
+ *
+ * sockaddr_un.sun_path is 108 bytes on Linux including the terminator.
+ * Exceeding it does not fail where you would expect: the bind appears to
+ * succeed and the socket file is simply not where you asked for it, which
+ * surfaces much later as a confusing "no such file or directory" from
+ * something else entirely.
+ */
+#define CLAWT_MAX_SOCKET_PATH 107
+
+/**
+ * clawt_check_socket_path:
+ * @path: the socket path to bind
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Checks a unix socket path is short enough to bind.
+ *
+ * Returns: %TRUE if the path can be used
+ */
+gboolean clawt_check_socket_path(const gchar *path, GError **error);
+
 gchar *clawt_redact_secrets(const gchar *text);
 
 /**

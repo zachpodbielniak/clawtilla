@@ -152,6 +152,16 @@ static const ClawtSchemaEntry schema[] = {
   "1073741824", NULL,
   "Size cap for the exchange directory. 0 disables the limit.", "0.1.0" },
 
+{ "defaults.libreclaw_binary", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_COMMENTED,
+  NULL, NULL,
+  "Which libreclaw to run for process-runtime agents.\n"
+  "\n"
+  "Unset means whatever is on PATH, which is what you want once libreclaw\n"
+  "is installed. Point it at a build tree while developing against an\n"
+  "unreleased libreclaw -- otherwise the daemon runs the installed copy\n"
+  "and the change you are testing is not the one being exercised.",
+  "0.1.0" },
+
 { "defaults.restart", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   "on-failure", clawt_restart_policy_get_type,
   "Default restart policy: never, on-failure or always.", "0.1.0" },
@@ -488,6 +498,15 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Desktop control is not a type -- it is the desktop block below, and\n"
   "works alongside any of these.", "0.1.0" },
+
+{ "agents.computer.exchange", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "true", NULL,
+  "Whether the shared exchange directory is visible to this agent.\n"
+  "\n"
+  "On by default, because otherwise every pair of agents that wants to\n"
+  "hand a file across needs its own hand-wired mount. Turn it off for an\n"
+  "agent that should not see what the others are passing around.",
+  "0.1.0" },
 
 { "agents.computer.mounts", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,

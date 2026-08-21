@@ -52,6 +52,23 @@ ClawtSandbox *clawt_sandbox_new(ClawtConfineMode  mode,
                                 const gchar      *root);
 
 void clawt_sandbox_add_allow_path(ClawtSandbox *self, const gchar *path);
+
+/**
+ * clawt_sandbox_add_mount_path:
+ * @self: a #ClawtSandbox
+ * @path: a directory the agent's configuration mounts
+ *
+ * Grants a path because the agent's configuration mounts it.
+ *
+ * Kept apart from clawt_sandbox_add_allow_path() because the two mean
+ * different things.  `allow_paths:` is a list that only applies under
+ * `confine: allowlist`; a mount is an explicit grant the operator wrote,
+ * and it applies in every mode.  On a container that mount is real and
+ * the kernel makes it reachable -- a host agent that was refused the same
+ * path would be behaving differently from the identical config on another
+ * backend, which is the kind of inconsistency that costs an afternoon.
+ */
+void clawt_sandbox_add_mount_path(ClawtSandbox *self, const gchar *path);
 void clawt_sandbox_add_deny_path(ClawtSandbox *self, const gchar *path);
 void clawt_sandbox_set_allow_network(ClawtSandbox *self, gboolean allow);
 void clawt_sandbox_set_allow_sudo(ClawtSandbox *self, gboolean allow);

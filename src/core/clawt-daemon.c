@@ -375,7 +375,7 @@ apply_mounts(ClawtDaemon *self, ClawtAgent *agent, ClawtComputer *computer)
      * mount before they can pass a file.
      */
     if (self->exchange != NULL &&
-        clawt_agent_config_get_boolean(config, "computer.exchange") != FALSE) {
+        clawt_agent_config_get_boolean(config, "computer.exchange")) {
         g_autoptr(ClawtMount) mount = clawt_exchange_get_mount(self->exchange);
         g_autoptr(GError) error = NULL;
 
@@ -500,9 +500,21 @@ clawt_daemon_start_agent(ClawtDaemon *self, const gchar *agent_id,
                 clawt_process_runtime_new(config, config_path);
             g_autoptr(GHashTable) env = NULL;
 
-            if (self->libreclaw_binary != NULL)
+            /*
+             * An explicit override wins over the config, so a test or a
+             * host embedding the daemon can point at its own build
+             * without editing anybody's file.
+             */
+            if (self->libreclaw_binary != NULL) {
                 clawt_process_runtime_set_binary(runtime,
                                                  self->libreclaw_binary);
+            } else {
+                g_autofree gchar *configured = clawt_config_get_path_value(
+                    self->config, "defaults.libreclaw_binary");
+
+                if (configured != NULL)
+                    clawt_process_runtime_set_binary(runtime, configured);
+            }
 
             env = clawt_agent_config_get_env(config);
 

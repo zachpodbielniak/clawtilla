@@ -734,6 +734,176 @@ test_container_against_real_podman(void)
     g_assert_true(clawt_pod_bridge_has_module(bridge, "container"));
 }
 
+/*
+ * Removes a directory tree.
+ *
+ * The mount tests create nested directories with files in them, and
+ * g_rmdir on a non-empty directory quietly does nothing -- leaving the
+ * temporary tree behind on every run.
+ */
+static void
+remove_tree(const gchar *path)
+{
+    g_autoptr(GDir) dir = g_dir_open(path, 0, NULL);
+    const gchar *name;
+
+    if (dir == NULL)
+        return;
+
+    while ((name = g_dir_read_name(dir)) != NULL) {
+        g_autofree gchar *child = g_build_filename(path, name, NULL);
+
+        if (g_file_test(child, G_FILE_TEST_IS_DIR))
+            remove_tree(child);
+        else
+            g_unlink(child);
+    }
+
+    g_rmdir(path);
+}
+
+/* ── Mounts on the host ──────────────────────────────────────────── */
+
+/*
+ * A host agent reaches a mount by the path it was given.
+ *
+ * A host computer has no mount namespace, so nothing makes
+ * /mnt/clawtilla/exchange real -- clawtilla has to translate it.  Without
+ * that, an agent told where its exchange is gets refused for using that
+ * exact path, which reads as a bug in the confinement rather than as the
+ * mount never having been applied.
+ */
+static void
+test_host_reaches_a_mount_by_its_target(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-mount-XXXXXX", NULL);
+    g_autofree gchar *workspace = g_build_filename(dir, "work", NULL);
+    g_autofree gchar *shared = g_build_filename(dir, "shared", NULL);
+    g_autofree gchar *file = g_build_filename(shared, "note.txt", NULL);
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(ClawtMount) mount = NULL;
+    g_autoptr(ClawtExecResult) result = NULL;
+    g_autoptr(GError) error = NULL;
+    const gchar *argv[] = { "cat", "/mnt/shared/note.txt", NULL };
+
+    g_mkdir_with_parents(workspace, 0700);
+    g_mkdir_with_parents(shared, 0700);
+    g_file_set_contents(file, "from the host\n", -1, NULL);
+
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_WORKSPACE, workspace);
+    computer = clawt_host_computer_new("agent", sandbox);
+
+    mount = clawt_mount_new(shared, "/mnt/shared");
+    clawt_mount_set_mode(mount, CLAWT_MOUNT_MODE_RW);
+    clawt_computer_add_mount(computer, mount);
+
+    g_assert_true(clawt_computer_start(computer, &error));
+    g_assert_no_error(error);
+
+    result = clawt_computer_exec(computer, argv, NULL, 10, NULL, &error);
+
+    g_assert_no_error(error);
+    g_assert_nonnull(result);
+    g_assert_cmpint(clawt_exec_result_get_exit_status(result), ==, 0);
+    g_assert_nonnull(strstr(clawt_exec_result_get_stdout(result),
+                            "from the host"));
+
+    remove_tree(dir);
+}
+
+/*
+ * A declared mount grants access even under `confine: workspace`.
+ *
+ * Declaring a mount is an explicit grant by whoever wrote the config; on
+ * a container the kernel would make it reachable, and the same config
+ * behaving differently per backend is the kind of inconsistency that
+ * costs an afternoon.
+ */
+static void
+test_a_mount_is_a_grant_in_workspace_mode(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-mount-XXXXXX", NULL);
+    g_autofree gchar *workspace = g_build_filename(dir, "work", NULL);
+    g_autofree gchar *shared = g_build_filename(dir, "shared", NULL);
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+
+    g_mkdir_with_parents(workspace, 0700);
+    g_mkdir_with_parents(shared, 0700);
+
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_WORKSPACE, workspace);
+
+    g_assert_false(clawt_sandbox_path_is_allowed(sandbox, shared));
+
+    clawt_sandbox_add_mount_path(sandbox, shared);
+
+    g_assert_true(clawt_sandbox_path_is_allowed(sandbox, shared));
+
+    /* And nothing else was opened up by it. */
+    g_assert_false(clawt_sandbox_path_is_allowed(sandbox, "/etc/shadow"));
+
+    remove_tree(dir);
+}
+
+/*
+ * A mount target is matched as a whole path component.
+ *
+ * "/mnt/sharedx" starts with "/mnt/shared" and is somewhere else; a
+ * prefix match would rewrite it and hand the agent the wrong directory.
+ */
+static void
+test_a_mount_prefix_is_not_a_match(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-mount-XXXXXX", NULL);
+    g_autofree gchar *workspace = g_build_filename(dir, "work", NULL);
+    g_autofree gchar *shared = g_build_filename(dir, "shared", NULL);
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(ClawtMount) mount = NULL;
+    g_autoptr(GError) error = NULL;
+    const gchar *argv[] = { "cat", "/mnt/sharedx/secret", NULL };
+
+    g_mkdir_with_parents(workspace, 0700);
+    g_mkdir_with_parents(shared, 0700);
+
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_WORKSPACE, workspace);
+    computer = clawt_host_computer_new("agent", sandbox);
+
+    mount = clawt_mount_new(shared, "/mnt/shared");
+    clawt_computer_add_mount(computer, mount);
+    clawt_computer_start(computer, NULL);
+
+    /* Refused, not silently rewritten into the mount. */
+    g_assert_null(clawt_computer_exec(computer, argv, NULL, 10, NULL,
+                                      &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFINEMENT);
+
+    remove_tree(dir);
+}
+
+/*
+ * A socket path longer than the kernel allows is refused with the
+ * number, rather than being bound "successfully" somewhere that does not
+ * exist.
+ */
+static void
+test_an_over_long_socket_path_is_refused(void)
+{
+    g_autoptr(GString) path = g_string_new("/tmp/");
+    g_autoptr(GError) error = NULL;
+
+    while (path->len < 200)
+        g_string_append(path, "clawtilla-");
+
+    g_assert_false(clawt_check_socket_path(path->str, &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID);
+    g_assert_nonnull(strstr(error->message, "107"));
+
+    g_clear_error(&error);
+    g_assert_true(clawt_check_socket_path("/tmp/short.sock", &error));
+    g_assert_no_error(error);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -792,6 +962,15 @@ main(int argc, char *argv[])
 
     g_test_add_func("/computer/integration/container",
                     test_container_against_real_podman);
+
+    g_test_add_func("/computer/host-mount-target",
+                    test_host_reaches_a_mount_by_its_target);
+    g_test_add_func("/computer/mount-is-a-grant",
+                    test_a_mount_is_a_grant_in_workspace_mode);
+    g_test_add_func("/computer/mount-prefix-not-a-match",
+                    test_a_mount_prefix_is_not_a_match);
+    g_test_add_func("/computer/socket-path-length",
+                    test_an_over_long_socket_path_is_refused);
 
     return g_test_run();
 }

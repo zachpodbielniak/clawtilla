@@ -123,6 +123,14 @@ defaults:
   # Size cap for the exchange directory. 0 disables the limit.
   exchange_max_bytes: 1073741824
 
+  # Which libreclaw to run for process-runtime agents.
+  #
+  # Unset means whatever is on PATH, which is what you want once libreclaw
+  # is installed. Point it at a build tree while developing against an
+  # unreleased libreclaw -- otherwise the daemon runs the installed copy
+  # and the change you are testing is not the one being exercised.
+  libreclaw_binary: null
+
   # Default restart policy: never, on-failure or always.
   # Values: never, on-failure, always
   restart: "on-failure"
@@ -421,6 +429,13 @@ agents:
       # works alongside any of these.
       # Values: none, host, container, vm
       type: null
+
+      # Whether the shared exchange directory is visible to this agent.
+      #
+      # On by default, because otherwise every pair of agents that wants to
+      # hand a file across needs its own hand-wired mount. Turn it off for an
+      # agent that should not see what the others are passing around.
+      exchange: true
 
       # Host paths shared into the computer.
       #

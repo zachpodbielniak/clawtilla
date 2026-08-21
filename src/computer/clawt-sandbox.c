@@ -19,6 +19,7 @@ struct _ClawtSandbox {
     ClawtConfineMode  mode;
     gchar            *root;
     GPtrArray        *allow_paths;
+    GPtrArray        *mount_paths;
     GPtrArray        *deny_paths;
     gboolean          allow_network;
     gboolean          allow_sudo;
@@ -67,6 +68,17 @@ clawt_sandbox_new(ClawtConfineMode mode, const gchar *root)
     self->root = clawt_expand_path(root);
 
     return self;
+}
+
+void
+clawt_sandbox_add_mount_path(ClawtSandbox *self, const gchar *path)
+{
+    g_return_if_fail(CLAWT_IS_SANDBOX(self));
+
+    if (path == NULL)
+        return;
+
+    g_ptr_array_add(self->mount_paths, clawt_canonicalize_missing(path));
 }
 
 void
@@ -164,6 +176,18 @@ clawt_sandbox_path_is_allowed(ClawtSandbox *self, const gchar *path)
 
     if (self->root != NULL && clawt_path_is_within(resolved, self->root))
         return TRUE;
+
+    /*
+     * Mounts are honoured in every mode.  Declaring one is an explicit
+     * grant, and on a container the kernel would make it reachable --
+     * refusing it here would mean the same config behaves differently
+     * depending on the backend.
+     */
+    for (i = 0; i < self->mount_paths->len; i++) {
+        if (clawt_path_is_within(resolved,
+                                 g_ptr_array_index(self->mount_paths, i)))
+            return TRUE;
+    }
 
     if (self->mode == CLAWT_CONFINE_WORKSPACE)
         return FALSE;
@@ -482,6 +506,7 @@ clawt_sandbox_finalize(GObject *object)
 
     g_clear_pointer(&self->root, g_free);
     g_clear_pointer(&self->allow_paths, g_ptr_array_unref);
+    g_clear_pointer(&self->mount_paths, g_ptr_array_unref);
     g_clear_pointer(&self->deny_paths, g_ptr_array_unref);
 
     G_OBJECT_CLASS(clawt_sandbox_parent_class)->finalize(object);
@@ -497,6 +522,7 @@ static void
 clawt_sandbox_init(ClawtSandbox *self)
 {
     self->allow_paths = g_ptr_array_new_with_free_func(g_free);
+    self->mount_paths = g_ptr_array_new_with_free_func(g_free);
     self->deny_paths = g_ptr_array_new_with_free_func(g_free);
     self->allow_network = TRUE;
     self->allow_sudo = FALSE;
