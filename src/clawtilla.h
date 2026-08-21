@@ -45,6 +45,13 @@
 #include "computer/clawt-vm-computer.h"
 #include "computer/clawt-desktop.h"
 #include "computer/clawt-computer-factory.h"
+
+#include "chat/clawt-message.h"
+#include "chat/clawt-loop-guard.h"
+#include "chat/clawt-room.h"
+
+#include "task/clawt-task.h"
+#include "task/clawt-task-manager.h"
 #include "config/clawt-config.h"
 
 #include "link/clawt-link.h"

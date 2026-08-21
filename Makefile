@@ -72,7 +72,12 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/computer/clawt-container-computer.h \
 	$(SRCDIR)/computer/clawt-vm-computer.h \
 	$(SRCDIR)/computer/clawt-desktop.h \
-	$(SRCDIR)/computer/clawt-computer-factory.h
+	$(SRCDIR)/computer/clawt-computer-factory.h \
+	$(SRCDIR)/chat/clawt-message.h \
+	$(SRCDIR)/chat/clawt-loop-guard.h \
+	$(SRCDIR)/chat/clawt-room.h \
+	$(SRCDIR)/task/clawt-task.h \
+	$(SRCDIR)/task/clawt-task-manager.h
 
 # ============================================================
 # Library sources
@@ -103,7 +108,12 @@ LIB_SOURCES = \
 	$(SRCDIR)/computer/clawt-container-computer.c \
 	$(SRCDIR)/computer/clawt-vm-computer.c \
 	$(SRCDIR)/computer/clawt-desktop.c \
-	$(SRCDIR)/computer/clawt-computer-factory.c
+	$(SRCDIR)/computer/clawt-computer-factory.c \
+	$(SRCDIR)/chat/clawt-message.c \
+	$(SRCDIR)/chat/clawt-loop-guard.c \
+	$(SRCDIR)/chat/clawt-room.c \
+	$(SRCDIR)/task/clawt-task.c \
+	$(SRCDIR)/task/clawt-task-manager.c
 
 # Object files
 LIB_OBJECTS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(LIB_SOURCES))
