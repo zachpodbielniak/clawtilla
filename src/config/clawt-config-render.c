@@ -342,7 +342,7 @@ render_matrix_channel(GString          *out,
 {
     g_auto(GStrv) rooms = NULL;
 
-    if (!clawt_agent_config_get_boolean(agent, "integrations.matrix.enabled"))
+    if (!clawt_integration_is_enabled(agent, "matrix"))
         return;
 
     g_string_append(out, "  matrix:\n");
@@ -372,7 +372,7 @@ render_email_channel(GString          *out,
 {
     g_auto(GStrv) folders = NULL;
 
-    if (!clawt_agent_config_get_boolean(agent, "integrations.email.enabled"))
+    if (!clawt_integration_is_enabled(agent, "email"))
         return;
 
     g_string_append(out, "  email:\n");
@@ -401,7 +401,7 @@ render_email_channel(GString          *out,
 static void
 render_webhook_channel(GString *out, ClawtAgentConfig *agent)
 {
-    if (!clawt_agent_config_get_boolean(agent, "integrations.webhook.enabled"))
+    if (!clawt_integration_is_enabled(agent, "webhook"))
         return;
 
     g_string_append(out, "  webhook:\n");
@@ -545,12 +545,12 @@ clawt_config_render_agent(ClawtConfig       *config,
      * has no terminal at all, so it is only ever rendered when asked for
      * explicitly.
      */
-    if (clawt_agent_config_get_boolean(agent, "integrations.local")) {
+    if (clawt_integration_is_enabled(agent, "local")) {
         g_string_append(out, "  local:\n");
         append_key_bool(out, 4, "enabled", TRUE);
     }
 
-    if (clawt_agent_config_get_boolean(agent, "integrations.cmacs")) {
+    if (clawt_integration_is_enabled(agent, "cmacs")) {
         g_string_append(out, "  cmacs:\n");
         append_key_bool(out, 4, "enabled", TRUE);
     }

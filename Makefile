@@ -57,6 +57,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/core/clawt-daemon.h \
 	$(SRCDIR)/core/clawt-event-bus.h \
 	$(SRCDIR)/core/clawt-event-log.h \
+	$(SRCDIR)/integration/clawt-integration.h \
 	$(SRCDIR)/config/clawt-config.h \
 	$(SRCDIR)/config/clawt-config-render.h \
 	$(SRCDIR)/computer/clawt-mount.h \
@@ -97,7 +98,8 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/interfaces/clawt-tool-provider.h \
 	$(SRCDIR)/interfaces/clawt-computer-provider.h \
 	$(SRCDIR)/interfaces/clawt-integration-provider.h \
-	$(SRCDIR)/mcp/clawt-mcp-tools.h
+	$(SRCDIR)/mcp/clawt-mcp-tools.h \
+	$(SRCDIR)/ai/clawt-agent-designer.h
 
 # ============================================================
 # Library sources
@@ -113,6 +115,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/clawt-daemon.c \
 	$(SRCDIR)/core/clawt-event-bus.c \
 	$(SRCDIR)/core/clawt-event-log.c \
+	$(SRCDIR)/integration/clawt-integration.c \
 	$(SRCDIR)/config/clawt-config.c \
 	$(SRCDIR)/config/clawt-config-render.c \
 	$(SRCDIR)/computer/clawt-mount.c \
@@ -153,7 +156,8 @@ LIB_SOURCES = \
 	$(SRCDIR)/interfaces/clawt-tool-provider.c \
 	$(SRCDIR)/interfaces/clawt-computer-provider.c \
 	$(SRCDIR)/interfaces/clawt-integration-provider.c \
-	$(SRCDIR)/mcp/clawt-mcp-tools.c
+	$(SRCDIR)/mcp/clawt-mcp-tools.c \
+	$(SRCDIR)/ai/clawt-agent-designer.c
 
 # Object files
 LIB_OBJECTS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(LIB_SOURCES))

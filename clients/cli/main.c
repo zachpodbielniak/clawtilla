@@ -376,6 +376,89 @@ cmd_agent(int argc, char *argv[])
         return EXIT_SUCCESS;
     }
 
+    if (g_strcmp0(verb, "new") == 0) {
+        g_autoptr(GString) description = NULL;
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        gboolean use_ai = FALSE;
+        gboolean commit = FALSE;
+        gint i;
+
+        description = g_string_new(NULL);
+
+        for (i = 3; i < argc; i++) {
+            if (g_strcmp0(argv[i], "--ai") == 0) {
+                use_ai = TRUE;
+                continue;
+            }
+
+            if (g_strcmp0(argv[i], "--commit") == 0) {
+                commit = TRUE;
+                continue;
+            }
+
+            if (description->len > 0)
+                g_string_append_c(description, ' ');
+
+            g_string_append(description, argv[i]);
+        }
+
+        if (!use_ai) {
+            g_printerr("Usage: clawtilla agent new --ai <description>\n");
+            g_printerr("  For a hand-written agent use "
+                       "'clawtilla agent create --id <id>'.\n");
+            return EXIT_FAILURE;
+        }
+
+        if (description->len == 0) {
+            g_printerr("Say what the agent should do, e.g.\n");
+            g_printerr("  clawtilla agent new --ai \"reads my notes and "
+                       "answers questions about them\"\n");
+            return EXIT_FAILURE;
+        }
+
+        g_print("Designing...\n");
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "description");
+        json_builder_add_string_value(builder, description->str);
+        json_builder_set_member_name(builder, "commit");
+        json_builder_add_boolean_value(builder, commit);
+        json_builder_end_object(builder);
+
+        reply = call(client, "design.agent", json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("\n%s\n", member_or(json_node_get_object(reply), "yaml",
+                                     ""));
+
+        if (member_or(json_node_get_object(reply), "notes", NULL) != NULL)
+            g_print("%s\n\n",
+                    json_object_get_string_member(json_node_get_object(reply),
+                                                  "notes"));
+
+        if (commit) {
+            const gchar *id = member_or(json_node_get_object(reply), "id",
+                                        "?");
+
+            g_print("Created %s.\n", id);
+            g_print("Start it with: clawtilla agent start %s\n", id);
+
+            return EXIT_SUCCESS;
+        }
+
+        /*
+         * Shown and not written.  The design is a proposal; adding it is
+         * a second, deliberate step, because the model chose things the
+         * person may not want.
+         */
+        g_print("Nothing has been added yet. To create it:\n");
+        g_print("  clawtilla agent new --ai --commit \"%s\"\n",
+                description->str);
+
+        return EXIT_SUCCESS;
+    }
+
     if (g_strcmp0(verb, "create") == 0) {
         g_autoptr(JsonBuilder) builder = json_builder_new();
         gint i;
@@ -1096,6 +1179,90 @@ cmd_config(int argc, char *argv[])
 }
 
 static gint
+cmd_integration(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verb = (argc > 2) ? argv[2] : "list";
+    const gchar *agent_id = (argc > 3) ? argv[3] : NULL;
+    guint i;
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    if (g_strcmp0(verb, "list") == 0) {
+        JsonArray *integrations;
+
+        reply = call(client, "integration.list",
+                     build_payload("agent", agent_id, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        integrations = json_object_get_array_member(
+            json_node_get_object(reply), "integrations");
+
+        for (i = 0; i < json_array_get_length(integrations); i++) {
+            JsonObject *integration =
+                json_array_get_object_element(integrations, i);
+
+            g_print("%-10s %-4s %s\n", member_or(integration, "id", "?"),
+                    json_object_get_boolean_member(integration, "enabled")
+                        ? "on" : "-",
+                    member_or(integration, "summary", ""));
+        }
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "health") == 0) {
+        JsonArray *checks;
+        gint status = EXIT_SUCCESS;
+
+        if (agent_id == NULL) {
+            g_printerr("Usage: clawtilla integration health <agent> "
+                       "[integration]\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "integration.health",
+                     build_payload("agent", agent_id, "integration",
+                                   argc > 4 ? argv[4] : NULL, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        checks = json_object_get_array_member(json_node_get_object(reply),
+                                              "checks");
+
+        if (json_array_get_length(checks) == 0) {
+            g_print("%s has no integrations enabled.\n", agent_id);
+            return EXIT_SUCCESS;
+        }
+
+        for (i = 0; i < json_array_get_length(checks); i++) {
+            JsonObject *check = json_array_get_object_element(checks, i);
+            gboolean ok = json_object_get_boolean_member(check, "ok");
+
+            g_print("%-10s %s%s%s\n", member_or(check, "id", "?"),
+                    ok ? "ok" : "FAILED", ok ? "" : ": ",
+                    ok ? "" : member_or(check, "error", ""));
+
+            /*
+             * A failing check is a non-zero exit, so this is usable in a
+             * pre-flight script rather than only by eye.
+             */
+            if (!ok)
+                status = EXIT_FAILURE;
+        }
+
+        return status;
+    }
+
+    g_printerr("clawtilla: unknown integration verb '%s'\n", verb);
+    return EXIT_FAILURE;
+}
+
+static gint
 cmd_plugin(int argc, char *argv[])
 {
     g_autoptr(ClawtClient) client = NULL;
@@ -1289,6 +1456,9 @@ main(int argc, char *argv[])
 
     if (g_strcmp0(argv[1], "plugin") == 0)
         return cmd_plugin(argc, argv);
+
+    if (g_strcmp0(argv[1], "integration") == 0)
+        return cmd_integration(argc, argv);
 
     g_printerr("clawtilla: unknown command '%s'\n", argv[1]);
     g_printerr("Run 'clawtilla --help' for usage.\n");

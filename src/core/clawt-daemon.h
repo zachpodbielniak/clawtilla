@@ -18,6 +18,7 @@
 
 #include "clawt-types.h"
 #include "agent/clawt-agent-manager.h"
+#include "ai/clawt-agent-designer.h"
 #include "chat/clawt-loop-guard.h"
 #include "chat/clawt-room-manager.h"
 #include "computer/clawt-exchange.h"

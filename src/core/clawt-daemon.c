@@ -446,6 +446,15 @@ clawt_daemon_start_agent(ClawtDaemon *self, const gchar *agent_id,
 
     config = clawt_agent_get_config(agent);
 
+    /*
+     * Integrations are checked before anything is started.  An agent whose
+     * Matrix block is missing its homeserver starts perfectly cleanly and
+     * then never receives anything, which is a much worse failure than
+     * refusing here with the key named.
+     */
+    if (!clawt_integration_validate(config, error))
+        return FALSE;
+
     if (!clawt_config_write_agent_files(self->config, config,
                                         self->link_socket, &config_path,
                                         error))
@@ -1905,6 +1914,153 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         for (i = 0; i < entries->len; i++)
             json_builder_add_string_value(builder,
                                           g_ptr_array_index(entries, i));
+
+        json_builder_end_array(builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "design.agent") == 0) {
+        const gchar *description = clawt_ipc_payload_string(payload,
+                                                            "description");
+        g_autoptr(ClawtAgentDesigner) designer = NULL;
+        g_autofree gchar *preview = NULL;
+        GHashTable *draft;
+
+        if (description == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "describe what the agent should do");
+
+        designer = clawt_agent_designer_new(self->config);
+
+        if (!clawt_agent_designer_use_configured_provider(designer, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        draft = clawt_agent_designer_design(designer, description, NULL,
+                                            &error);
+
+        if (draft == NULL)
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        preview = clawt_agent_designer_preview(designer);
+
+        /*
+         * Committed here only when asked for.  A design that wrote itself
+         * into the config would mean the model's last word created
+         * something nobody reviewed.
+         */
+        if (clawt_ipc_payload_boolean(payload, "commit", FALSE)) {
+            if (clawt_agent_designer_commit(designer, &error) == NULL)
+                return clawt_ipc_error_new(request, error->code,
+                                           error->message);
+
+            if (!clawt_config_save(self->config, &error))
+                return clawt_ipc_error_new(request, error->code,
+                                           error->message);
+
+            clawt_agent_manager_load(self->agents, NULL);
+            render_all_agents(self);
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "yaml");
+        json_builder_add_string_value(builder, preview);
+        json_builder_set_member_name(builder, "id");
+        json_builder_add_string_value(builder,
+                                      g_hash_table_lookup(draft, "id"));
+        json_builder_set_member_name(builder, "committed");
+        json_builder_add_boolean_value(
+            builder, clawt_ipc_payload_boolean(payload, "commit", FALSE));
+        json_builder_set_member_name(builder, "notes");
+        json_builder_add_string_value(
+            builder, clawt_agent_designer_get_transcript(designer));
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "integration.list") == 0) {
+        const ClawtIntegrationInfo *info;
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        ClawtAgentConfig *agent_config = (agent_id != NULL)
+            ? clawt_config_get_agent(self->config, agent_id) : NULL;
+        gsize n_integrations = 0;
+        gsize i;
+
+        info = clawt_integration_list(&n_integrations);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "integrations");
+        json_builder_begin_array(builder);
+
+        for (i = 0; i < n_integrations; i++) {
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "id");
+            json_builder_add_string_value(builder, info[i].id);
+            json_builder_set_member_name(builder, "summary");
+            json_builder_add_string_value(builder, info[i].summary);
+            json_builder_set_member_name(builder, "enabled");
+            json_builder_add_boolean_value(
+                builder, agent_config != NULL &&
+                         clawt_integration_is_enabled(agent_config,
+                                                      info[i].id));
+            json_builder_end_object(builder);
+        }
+
+        json_builder_end_array(builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "integration.health") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        const gchar *integration = clawt_ipc_payload_string(payload,
+                                                            "integration");
+        ClawtAgentConfig *agent_config = (agent_id != NULL)
+            ? clawt_config_get_agent(self->config, agent_id) : NULL;
+        g_auto(GStrv) enabled = NULL;
+        gsize i;
+
+        if (agent_config == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such agent");
+
+        if (integration != NULL) {
+            enabled = g_new0(gchar *, 2);
+            enabled[0] = g_strdup(integration);
+        } else {
+            enabled = clawt_integration_enabled_for(agent_config);
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "checks");
+        json_builder_begin_array(builder);
+
+        for (i = 0; enabled[i] != NULL; i++) {
+            g_autoptr(GError) check_error = NULL;
+            gboolean ok;
+
+            ok = clawt_integration_health_check(
+                agent_config, enabled[i],
+                (guint)clawt_ipc_payload_int(payload, "timeout", 10),
+                &check_error);
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "id");
+            json_builder_add_string_value(builder, enabled[i]);
+            json_builder_set_member_name(builder, "ok");
+            json_builder_add_boolean_value(builder, ok);
+
+            if (!ok) {
+                json_builder_set_member_name(builder, "error");
+                json_builder_add_string_value(builder,
+                                              check_error->message);
+            }
+
+            json_builder_end_object(builder);
+        }
 
         json_builder_end_array(builder);
         json_builder_end_object(builder);

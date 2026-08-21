@@ -40,8 +40,12 @@ CFLAGS_BASE = $(CSTD) $(WARNINGS) -fPIC
 # A package missing from this list makes pkg-config fail for the WHOLE
 # list at once, which blanks PKG_CFLAGS and surfaces as a misleading
 # "glib.h: No such file or directory".
+#
+# libxml-2.0 is ours rather than libreclaw's: ai-glib's HTML-parsing search
+# providers pull it in, and clawtilla is the first thing here to link
+# AiToolExecutor, which drags them along.  Fedora package: libxml2-devel.
 PKG_DEPS = glib-2.0 gobject-2.0 gio-2.0 gio-unix-2.0 gmodule-2.0 libsoup-3.0 \
-           json-glib-1.0 libcmark sqlite3 libetpan libpq libdex-1
+           json-glib-1.0 libcmark sqlite3 libetpan libpq libdex-1 libxml-2.0
 
 PKG_CFLAGS := $(shell pkg-config --cflags $(PKG_DEPS))
 PKG_LIBS := $(shell pkg-config --libs $(PKG_DEPS))
