@@ -62,7 +62,9 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/agent/clawt-agent-runtime.h \
 	$(SRCDIR)/agent/clawt-process-runtime.h \
 	$(SRCDIR)/agent/clawt-agent.h \
-	$(SRCDIR)/agent/clawt-agent-manager.h
+	$(SRCDIR)/agent/clawt-agent-manager.h \
+	$(SRCDIR)/computer/clawt-exec-result.h \
+	$(SRCDIR)/computer/clawt-sandbox.h
 
 # ============================================================
 # Library sources
@@ -83,7 +85,9 @@ LIB_SOURCES = \
 	$(SRCDIR)/agent/clawt-agent-runtime.c \
 	$(SRCDIR)/agent/clawt-process-runtime.c \
 	$(SRCDIR)/agent/clawt-agent.c \
-	$(SRCDIR)/agent/clawt-agent-manager.c
+	$(SRCDIR)/agent/clawt-agent-manager.c \
+	$(SRCDIR)/computer/clawt-exec-result.c \
+	$(SRCDIR)/computer/clawt-sandbox.c
 
 # Object files
 LIB_OBJECTS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(LIB_SOURCES))

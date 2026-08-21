@@ -35,6 +35,8 @@
 #include "config/clawt-config-schema.h"
 #include "config/clawt-secret-ref.h"
 #include "computer/clawt-mount.h"
+#include "computer/clawt-exec-result.h"
+#include "computer/clawt-sandbox.h"
 #include "config/clawt-config.h"
 
 #include "link/clawt-link.h"
