@@ -58,6 +58,14 @@
 #include "task/clawt-task-manager.h"
 
 #include "plugin/clawt-param-info.h"
+#include "plugin/clawt-plugin.h"
+
+#include "interfaces/clawt-event-handler.h"
+#include "interfaces/clawt-tool-provider.h"
+#include "interfaces/clawt-computer-provider.h"
+#include "interfaces/clawt-integration-provider.h"
+
+#include "plugin/clawt-plugin-manager.h"
 #include "mcp/clawt-mcp-tools.h"
 #include "core/clawt-event.h"
 #include "core/clawt-event-bus.h"

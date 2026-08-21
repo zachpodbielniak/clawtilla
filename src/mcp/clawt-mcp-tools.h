@@ -96,6 +96,22 @@ void clawt_mcp_tools_set_rooms(ClawtMcpTools *self, GHashTable *rooms);
  *
  * Returns: (transfer full): the tool list
  */
+/**
+ * clawt_mcp_tools_set_tool_providers:
+ * @self: a #ClawtMcpTools
+ * @providers: (transfer none) (nullable) (element-type GObject): objects
+ *   implementing #ClawtToolProvider
+ *
+ * Adds plugin-provided tools to what agents are offered.
+ *
+ * Listed alongside the built-in tools rather than in a separate namespace,
+ * because from the agent's side there is no difference: a tool is a tool.
+ * Plugin tools are still subject to the same per-agent allow and deny
+ * lists.
+ */
+void clawt_mcp_tools_set_tool_providers(ClawtMcpTools *self,
+                                        GPtrArray     *providers);
+
 JsonNode *clawt_mcp_tools_list(ClawtMcpTools *self, const gchar *agent_id);
 
 /**

@@ -9,6 +9,7 @@
 
 #include "clawtilla.h"
 #include "mcp/clawt-mcp-tools.h"
+#include "interfaces/clawt-tool-provider.h"
 #include "plugin/clawt-param-info.h"
 
 #include <string.h>
@@ -211,6 +212,8 @@ struct _ClawtMcpTools {
     ClawtLoopGuard    *guard;
     GHashTable        *rooms;   /* room_id -> ClawtRoom, unowned */
 
+    GPtrArray *tool_providers;  /* GObject*, unowned */
+
     ClawtMcpDeliverFunc deliver;
     gpointer            deliver_data;
     GDestroyNotify      deliver_destroy;
@@ -259,6 +262,49 @@ clawt_mcp_tools_set_rooms(ClawtMcpTools *self, GHashTable *rooms)
     self->rooms = rooms;
 }
 
+void
+clawt_mcp_tools_set_tool_providers(ClawtMcpTools *self, GPtrArray *providers)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    g_clear_pointer(&self->tool_providers, g_ptr_array_unref);
+
+    if (providers != NULL)
+        self->tool_providers = g_ptr_array_ref(providers);
+}
+
+/*
+ * Finds which plugin owns a tool name.
+ *
+ * First match wins.  Two plugins claiming one name is a packaging mistake
+ * rather than something to arbitrate, and picking deterministically at
+ * least makes it reproducible.
+ */
+static ClawtToolProvider *
+find_provider(ClawtMcpTools *self, const gchar *tool_name)
+{
+    guint i;
+
+    for (i = 0; self->tool_providers != NULL &&
+                i < self->tool_providers->len; i++) {
+        GObject *object = g_ptr_array_index(self->tool_providers, i);
+        g_auto(GStrv) names = NULL;
+        gsize j;
+
+        if (!CLAWT_IS_TOOL_PROVIDER(object))
+            continue;
+
+        names = clawt_tool_provider_list_tools(CLAWT_TOOL_PROVIDER(object));
+
+        for (j = 0; names != NULL && names[j] != NULL; j++) {
+            if (g_strcmp0(names[j], tool_name) == 0)
+                return CLAWT_TOOL_PROVIDER(object);
+        }
+    }
+
+    return NULL;
+}
+
 /* ── Permissions ─────────────────────────────────────────────────── */
 
 static const ToolDefinition *
@@ -289,7 +335,14 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
     g_return_val_if_fail(CLAWT_IS_MCP_TOOLS(self), FALSE);
 
     tool = find_tool(tool_name);
-    if (tool == NULL)
+
+    /*
+     * A plugin tool has no built-in definition, so it needs no capability
+     * -- but it still goes through the same allow and deny lists below.
+     * A plugin must not be able to hand an agent something its operator
+     * turned off.
+     */
+    if (tool == NULL && find_provider(self, tool_name) == NULL)
         return FALSE;
 
     agent = (self->agents != NULL)
@@ -303,7 +356,7 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
      * permitted however generous its allow list, since offering it would
      * only produce a confident call and a confusing failure.
      */
-    switch (tool->requirement) {
+    switch (tool != NULL ? tool->requirement : NEEDS_NOTHING) {
     case NEEDS_COMPUTER:
         if ((clawt_agent_get_caps(agent) & CLAWT_AGENT_CAPS_COMPUTER) == 0)
             return FALSE;
@@ -376,6 +429,41 @@ clawt_mcp_tools_list(ClawtMcpTools *self, const gchar *agent_id)
         json_builder_add_value(builder, g_steal_pointer(&schema));
 
         json_builder_end_object(builder);
+    }
+
+    for (i = 0; self->tool_providers != NULL &&
+                i < self->tool_providers->len; i++) {
+        GObject *object = g_ptr_array_index(self->tool_providers, i);
+        g_auto(GStrv) names = NULL;
+        gsize j;
+
+        if (!CLAWT_IS_TOOL_PROVIDER(object))
+            continue;
+
+        names = clawt_tool_provider_list_tools(CLAWT_TOOL_PROVIDER(object));
+
+        for (j = 0; names != NULL && names[j] != NULL; j++) {
+            const ClawtParamInfo *params;
+            g_autoptr(JsonNode) schema = NULL;
+            gsize n_params = 0;
+
+            if (!clawt_mcp_tools_is_permitted(self, agent_id, names[j]))
+                continue;
+
+            params = clawt_tool_provider_get_params(
+                CLAWT_TOOL_PROVIDER(object), names[j], &n_params);
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "name");
+            json_builder_add_string_value(builder, names[j]);
+            json_builder_set_member_name(builder, "description");
+            json_builder_add_string_value(builder, "Provided by a plugin.");
+
+            schema = clawt_param_info_to_schema(params, n_params);
+            json_builder_set_member_name(builder, "inputSchema");
+            json_builder_add_value(builder, g_steal_pointer(&schema));
+            json_builder_end_object(builder);
+        }
     }
 
     json_builder_end_array(builder);
@@ -906,8 +994,23 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
     else if (g_strcmp0(tool_name, "clawtilla_mailbox_list") == 0)
         text = tool_mailbox_list(self, agent_id, arguments);
     else {
-        is_error = TRUE;
-        text = g_strdup_printf("%s is not implemented yet.", tool_name);
+        ClawtToolProvider *provider = find_provider(self, tool_name);
+        g_autoptr(GError) provider_error = NULL;
+
+        if (provider == NULL) {
+            is_error = TRUE;
+            text = g_strdup_printf("There is no tool called %s.", tool_name);
+        } else {
+            text = clawt_tool_provider_call(provider, agent_id, tool_name,
+                                            arguments, &provider_error);
+
+            if (text == NULL) {
+                is_error = TRUE;
+                text = g_strdup(provider_error != NULL
+                                ? provider_error->message
+                                : "that tool failed without saying why");
+            }
+        }
     }
 
     return make_response(request_id, text, is_error);
@@ -924,6 +1027,7 @@ clawt_mcp_tools_dispose(GObject *object)
         self->deliver_data = NULL;
     }
 
+    g_clear_pointer(&self->tool_providers, g_ptr_array_unref);
     g_clear_object(&self->agents);
     g_clear_object(&self->tasks);
     g_clear_object(&self->guard);

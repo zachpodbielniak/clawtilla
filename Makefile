@@ -91,6 +91,12 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/task/clawt-task.h \
 	$(SRCDIR)/task/clawt-task-manager.h \
 	$(SRCDIR)/plugin/clawt-param-info.h \
+	$(SRCDIR)/plugin/clawt-plugin.h \
+	$(SRCDIR)/plugin/clawt-plugin-manager.h \
+	$(SRCDIR)/interfaces/clawt-event-handler.h \
+	$(SRCDIR)/interfaces/clawt-tool-provider.h \
+	$(SRCDIR)/interfaces/clawt-computer-provider.h \
+	$(SRCDIR)/interfaces/clawt-integration-provider.h \
 	$(SRCDIR)/mcp/clawt-mcp-tools.h
 
 # ============================================================
@@ -141,6 +147,12 @@ LIB_SOURCES = \
 	$(SRCDIR)/task/clawt-task.c \
 	$(SRCDIR)/task/clawt-task-manager.c \
 	$(SRCDIR)/plugin/clawt-param-info.c \
+	$(SRCDIR)/plugin/clawt-plugin.c \
+	$(SRCDIR)/plugin/clawt-plugin-manager.c \
+	$(SRCDIR)/interfaces/clawt-event-handler.c \
+	$(SRCDIR)/interfaces/clawt-tool-provider.c \
+	$(SRCDIR)/interfaces/clawt-computer-provider.c \
+	$(SRCDIR)/interfaces/clawt-integration-provider.c \
 	$(SRCDIR)/mcp/clawt-mcp-tools.c
 
 # Object files
@@ -321,6 +333,26 @@ plugins: $(LIB_STATIC)
 		fi; \
 	done
 
+# Test fixture plugins.
+#
+# Built as real .so files rather than mocked, because what the tests are
+# actually checking -- the ABI gate, a register function returning the
+# wrong GType, an activate() that fails -- only happens through
+# g_module_open on a genuine module.
+TEST_PLUGIN_SRCDIR = tests/fixtures/plugins
+TEST_PLUGIN_OUTDIR = $(OUTDIR)/test-plugins
+TEST_PLUGIN_SOURCES = $(wildcard $(TEST_PLUGIN_SRCDIR)/*.c)
+TEST_PLUGIN_TARGETS = $(patsubst $(TEST_PLUGIN_SRCDIR)/%.c,\
+	$(TEST_PLUGIN_OUTDIR)/libclawt-plugin-%.so,$(TEST_PLUGIN_SOURCES))
+
+.PHONY: test-plugins
+test-plugins: $(TEST_PLUGIN_TARGETS)
+
+$(TEST_PLUGIN_OUTDIR)/libclawt-plugin-%.so: $(TEST_PLUGIN_SRCDIR)/%.c \
+                                            $(LIB_STATIC)
+	@mkdir -p $(TEST_PLUGIN_OUTDIR)
+	$(CC) $(PLUGIN_CFLAGS) -fPIC $< -o $@ $(PLUGIN_LDFLAGS)
+
 # ============================================================
 # Generated config files and docs tables
 #
@@ -411,7 +443,7 @@ endif
 # Tests
 # ============================================================
 .PHONY: test
-test: $(TEST_BINARIES)
+test: $(TEST_BINARIES) test-plugins plugins
 	@echo "Running tests..."
 	@fail=0; ran=0; \
 	for t in $(TEST_BINARIES); do \
@@ -430,7 +462,7 @@ test: $(TEST_BINARIES)
 	echo "All tests passed."
 
 .PHONY: test-verbose
-test-verbose: $(TEST_BINARIES)
+test-verbose: $(TEST_BINARIES) test-plugins plugins
 	@for t in $(TEST_BINARIES); do \
 		[ -x "$$t" ] || continue; \
 		echo "=== $$(basename $$t) ==="; \

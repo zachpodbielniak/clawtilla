@@ -35,6 +35,7 @@ struct _ClawtDaemon {
     ClawtIpcServer     *ipc_server;
     ClawtMcpTools      *mcp_tools;
     ClawtPodBridge     *pod_bridge;
+    ClawtPluginManager *plugins;
 
     gchar   *libreclaw_binary;
     gchar   *state_dir;
@@ -163,6 +164,13 @@ clawt_daemon_get_loop_guard(ClawtDaemon *self)
 {
     g_return_val_if_fail(CLAWT_IS_DAEMON(self), NULL);
     return self->guard;
+}
+
+ClawtPluginManager *
+clawt_daemon_get_plugins(ClawtDaemon *self)
+{
+    g_return_val_if_fail(CLAWT_IS_DAEMON(self), NULL);
+    return self->plugins;
 }
 
 ClawtMcpTools *
@@ -699,6 +707,34 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
             module_dir = g_strdup(CLAWT_POD_MODULE_DIR);
 
         self->pod_bridge = clawt_pod_bridge_new(module_dir);
+    }
+
+    /*
+     * Plugins load before the listeners open, so a plugin that adds a
+     * computer backend or a tool is in place before the first agent
+     * connects and asks what it can do.
+     */
+    self->plugins = clawt_plugin_manager_new(self->config);
+    clawt_plugin_manager_add_service(self->plugins, "agents",
+                                     G_OBJECT(self->agents));
+    clawt_plugin_manager_add_service(self->plugins, "rooms",
+                                     G_OBJECT(self->rooms));
+    clawt_plugin_manager_add_service(self->plugins, "tasks",
+                                     G_OBJECT(self->tasks));
+    clawt_plugin_manager_add_service(self->plugins, "router",
+                                     G_OBJECT(self->router));
+    clawt_plugin_manager_add_service(self->plugins, "events",
+                                     G_OBJECT(self->bus));
+    clawt_plugin_manager_add_service(self->plugins, "config",
+                                     G_OBJECT(self->config));
+    clawt_plugin_manager_load_all(self->plugins);
+    clawt_plugin_manager_attach_bus(self->plugins, self->bus);
+
+    {
+        g_autoptr(GPtrArray) providers =
+            clawt_plugin_manager_tool_providers(self->plugins);
+
+        clawt_mcp_tools_set_tool_providers(self->mcp_tools, providers);
     }
 
     self->link_server = clawt_link_server_new(self->link_socket);
@@ -1876,6 +1912,44 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
+    if (g_strcmp0(kind, "plugin.list") == 0) {
+        g_autoptr(GPtrArray) plugins = NULL;
+        guint i;
+
+        plugins = clawt_plugin_manager_list(self->plugins);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "plugins");
+        json_builder_begin_array(builder);
+
+        for (i = 0; i < plugins->len; i++) {
+            ClawtPlugin *plugin = g_ptr_array_index(plugins, i);
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "id");
+            json_builder_add_string_value(builder,
+                                          clawt_plugin_get_id(plugin));
+            json_builder_set_member_name(builder, "name");
+            json_builder_add_string_value(builder,
+                                          clawt_plugin_get_name(plugin));
+            json_builder_set_member_name(builder, "version");
+            json_builder_add_string_value(builder,
+                                          clawt_plugin_get_version(plugin));
+            json_builder_set_member_name(builder, "description");
+            json_builder_add_string_value(
+                builder, clawt_plugin_get_description(plugin));
+            json_builder_set_member_name(builder, "active");
+            json_builder_add_boolean_value(builder,
+                                           clawt_plugin_is_active(plugin));
+            json_builder_end_object(builder);
+        }
+
+        json_builder_end_array(builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
     /* ── config ── */
 
     if (g_strcmp0(kind, "config.show") == 0) {
@@ -1966,6 +2040,7 @@ clawt_daemon_dispose(GObject *object)
 
     clawt_daemon_stop(self);
 
+    g_clear_object(&self->plugins);
     g_clear_object(&self->mcp_tools);
     g_clear_object(&self->ipc_server);
     g_clear_object(&self->link_server);

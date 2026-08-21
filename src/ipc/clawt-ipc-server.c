@@ -51,7 +51,7 @@ struct _ClawtIpcServer {
     gchar   *tls_certificate;
     gchar   *tls_key;
 
-    ClawtEventBus *bus;           /* unowned */
+    ClawtEventBus *bus;
     gulong         bus_handler;
 
     ClawtIpcHandler handler;
@@ -465,7 +465,14 @@ clawt_ipc_server_attach_bus(ClawtIpcServer *self, ClawtEventBus *bus)
     if (self->bus != NULL && self->bus_handler != 0)
         g_signal_handler_disconnect(self->bus, self->bus_handler);
 
-    self->bus = bus;
+    /*
+     * A reference rather than a borrowed pointer.  The handler has to be
+     * disconnected at dispose time, and disconnecting from a bus that was
+     * finalized first is a use-after-free -- which is exactly what happens
+     * when a caller's cleanup order differs from the daemon's.
+     */
+    g_clear_object(&self->bus);
+    self->bus = g_object_ref(bus);
     self->bus_handler = g_signal_connect(bus, "event",
                                          G_CALLBACK(on_bus_event), self);
 }
@@ -638,8 +645,9 @@ clawt_ipc_server_dispose(GObject *object)
     if (self->bus != NULL && self->bus_handler != 0) {
         g_signal_handler_disconnect(self->bus, self->bus_handler);
         self->bus_handler = 0;
-        self->bus = NULL;
     }
+
+    g_clear_object(&self->bus);
 
     if (self->handler_destroy != NULL && self->handler_data != NULL) {
         self->handler_destroy(self->handler_data);

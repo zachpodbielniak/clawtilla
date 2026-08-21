@@ -21,7 +21,7 @@ struct _ClawtEventLog {
 
     gchar         *dir;
     gint           retention_days;
-    ClawtEventBus *bus;      /* unowned */
+    ClawtEventBus *bus;
     gulong         handler;
     gchar         *open_day; /* which file the handle below belongs to */
     FILE          *handle;
@@ -173,7 +173,13 @@ clawt_event_log_attach(ClawtEventLog *self, ClawtEventBus *bus)
     if (self->bus != NULL && self->handler != 0)
         g_signal_handler_disconnect(self->bus, self->handler);
 
-    self->bus = bus;
+    /*
+     * A reference rather than a borrowed pointer: the handler must be
+     * disconnected at dispose time, and disconnecting from a bus that was
+     * finalized first is a use-after-free.
+     */
+    g_clear_object(&self->bus);
+    self->bus = g_object_ref(bus);
     self->handler = g_signal_connect(bus, "event",
                                      G_CALLBACK(on_bus_event), self);
 }
@@ -362,8 +368,9 @@ clawt_event_log_dispose(GObject *object)
     if (self->bus != NULL && self->handler != 0) {
         g_signal_handler_disconnect(self->bus, self->handler);
         self->handler = 0;
-        self->bus = NULL;
     }
+
+    g_clear_object(&self->bus);
 
     if (self->handle != NULL) {
         fclose(self->handle);

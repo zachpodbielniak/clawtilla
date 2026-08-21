@@ -1095,6 +1095,50 @@ cmd_config(int argc, char *argv[])
     return EXIT_FAILURE;
 }
 
+static gint
+cmd_plugin(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    JsonArray *plugins;
+    guint i;
+
+    if (argc > 2 && g_strcmp0(argv[2], "list") != 0) {
+        g_printerr("Usage: clawtilla plugin list\n");
+        return EXIT_FAILURE;
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    reply = call(client, "plugin.list", NULL);
+    if (reply == NULL)
+        return EXIT_FAILURE;
+
+    plugins = json_object_get_array_member(json_node_get_object(reply),
+                                           "plugins");
+
+    if (json_array_get_length(plugins) == 0) {
+        g_print("No plugins loaded.\n");
+        g_print("Put libclawt-plugin-<id>.so in "
+                "~/.config/clawtilla/plugins/ or set CLAWT_PLUGIN_PATH.\n");
+        return EXIT_SUCCESS;
+    }
+
+    for (i = 0; i < json_array_get_length(plugins); i++) {
+        JsonObject *plugin = json_array_get_object_element(plugins, i);
+
+        g_print("%-16s %-10s %-8s %s\n", member_or(plugin, "id", "?"),
+                member_or(plugin, "version", "?"),
+                json_object_get_boolean_member(plugin, "active")
+                    ? "active" : "idle",
+                member_or(plugin, "description", ""));
+    }
+
+    return EXIT_SUCCESS;
+}
+
 /* ── daemon control ──────────────────────────────────────────────── */
 
 static gint
@@ -1242,6 +1286,9 @@ main(int argc, char *argv[])
 
     if (g_strcmp0(argv[1], "config") == 0)
         return cmd_config(argc, argv);
+
+    if (g_strcmp0(argv[1], "plugin") == 0)
+        return cmd_plugin(argc, argv);
 
     g_printerr("clawtilla: unknown command '%s'\n", argv[1]);
     g_printerr("Run 'clawtilla --help' for usage.\n");

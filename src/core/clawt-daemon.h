@@ -28,6 +28,7 @@
 #include "link/clawt-link-server.h"
 #include "mailbox/clawt-mailbox-router.h"
 #include "mcp/clawt-mcp-tools.h"
+#include "plugin/clawt-plugin-manager.h"
 #include "task/clawt-task-manager.h"
 
 G_BEGIN_DECLS
@@ -229,6 +230,15 @@ ClawtIpcServer *clawt_daemon_get_ipc_server(ClawtDaemon *self);
  *   clawt_daemon_start()
  */
 ClawtLoopGuard *clawt_daemon_get_loop_guard(ClawtDaemon *self);
+
+/**
+ * clawt_daemon_get_plugins:
+ * @self: a #ClawtDaemon
+ *
+ * Returns: (transfer none) (nullable): the component, or %NULL before
+ *   clawt_daemon_start()
+ */
+ClawtPluginManager *clawt_daemon_get_plugins(ClawtDaemon *self);
 
 /**
  * clawt_daemon_get_mcp_tools:
