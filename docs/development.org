@@ -1,0 +1,194 @@
+#+title: Development
+#+description: Building, style, conventions, and how to add things
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-21 Fri]
+#+updated: [2026-08-21 Fri]
+#+version: 0.1.0
+
+* Development
+
+** Building
+
+#+begin_src bash
+make                    # build/release
+make DEBUG=1            # build/debug, -O0 -g3
+make clean all
+make test
+make test-verbose
+make test-integration   # needs real podman / libvirt / gowl
+make config-files       # regenerate data/*.yaml and the docs table
+make docs-check         # undocumented public API, stale doc references
+#+end_src
+
+Both build types coexist.  ~DEBUG=1~ tests link against debug binaries,
+so ~make DEBUG=1 test~ exercises what you just built rather than a stale
+release tree.
+
+Sanitisers:
+
+#+begin_src bash
+make DEBUG=1 ASAN=1 clean all && make DEBUG=1 ASAN=1 test
+make DEBUG=1 UBSAN=1 clean all && make DEBUG=1 UBSAN=1 test
+#+end_src
+
+GIR is auto-disabled under a sanitiser: ~g-ir-scanner~ runs a dump binary
+linked against the library, and with a sanitizer compiled in but its
+runtime not preloaded that binary aborts, failing the whole build at the
+~.gir~ step.  ~GIR=1~ forces it anyway.
+
+** The three-file build system
+
+Same shape as libreclaw, deliberately.
+
+| File | What is in it |
+|------+---------------|
+| ~config.mk~ | versions, paths, ~PKG_DEPS~, dep blocks, build-type selection |
+| ~rules.mk~ | pattern rules, the test rule, clean targets |
+| ~Makefile~ | source lists, phases, install |
+
+Two details worth knowing:
+
+- object directories are created by *one* stamp target.  Concurrent
+  per-object ~mkdir -p~ under ~make -j~ races on shared parents and
+  intermittently fails with "can't create …o: No such file or directory".
+  The stamp depends on ~Makefile~ and ~config.mk~ so a new source
+  subdirectory re-runs it.
+- test binaries depend on the bundled ~.a~ files, not just link against
+  them.  Without that, a fix in a dep rebuilt its archive but never
+  relinked the tests, and the suite kept exercising the old code -- which
+  looks exactly like the fix not working.
+
+** Code style
+
+- C, ~gnu89~, GCC
+- symbol prefix ~clawt_~ / ~Clawt~ / ~CLAWT_~
+- ~/* */~ comments only
+- four-space indentation, tabs in Makefiles
+- ~UPPERCASE_SNAKE~ for macros, ~PascalCase~ for types,
+  ~lowercase_snake~ for everything else; never ~camelCase~
+- SPDX ~AGPL-3.0-or-later~ on every file
+- GObject Introspection annotations on every public symbol
+
+*** Zero warnings
+
+Builds are warning-free on every target.  Fix warnings in the code, never
+by lowering GCC's verbosity.  A warning is a latent bug.
+
+*** Comments explain why
+
+The code says what it does.  A comment that repeats it earns nothing.
+Comment the decision: why this order, why this bound, what breaks if it
+changes.  Several of the comments in this codebase are there because the
+alternative was tried and produced a bug.
+
+** GObject conventions
+
+- ~G_DECLARE_FINAL_TYPE~ unless it is genuinely meant to be subclassed
+- ~G_DECLARE_DERIVABLE_TYPE~ with a padded vtable for extension points
+- ~G_DEFINE_BOXED_TYPE~ + ~G_DEFINE_AUTOPTR_CLEANUP_FUNC~ for value types
+- ~G_DECLARE_INTERFACE~ for capabilities plugins implement
+- ~g_autoptr~ / ~g_autofree~ everywhere; ~g_steal_pointer~ on return
+
+*** Enum registration is longhand
+
+Eighteen enums, each written out.  A macro looks tidier and does not
+work: braces do not protect commas in the C preprocessor, so the value
+table arrives as fourteen separate arguments.
+
+*** Main contexts
+
+~g_timeout_add_seconds()~ attaches to the *default* context, not the
+thread-default one.  In an embedded daemon that means the timer never
+fires.  Use:
+
+#+begin_src c
+GSource *source = g_timeout_source_new_seconds(interval);
+
+g_source_set_callback(source, on_tick, self, NULL);
+id = g_source_attach(source, context);
+g_source_unref(source);
+#+end_src
+
+Two real bugs came from getting this wrong.
+
+** Adding a configuration option
+
+1. Add an entry to the table in ~src/config/clawt-config-schema.c~: key,
+   type, flags, default, enum type, documentation, ~Since:~.
+2. ~make config-files~.
+3. Read it with ~clawt_config_get_*()~ or ~clawt_agent_config_get_*()~.
+4. Mention it wherever in ~docs/~ it belongs.
+
+Do not hand-edit ~data/*.yaml~ or ~docs/configuration-options.org~.
+~tests/test-config-schema.c~ fails when they have drifted, which is what
+makes this rule enforceable rather than merely written down.
+
+** Adding a test
+
+~tests/test-*.c~, picked up by wildcard.  GTest.
+
+#+begin_src c
+g_test_add_func("/subsystem/what-it-checks", test_function);
+#+end_src
+
+Available at build time: ~CLAWT_TEST_SRCDIR~ (the repo root),
+~CLAWT_TEST_FIXTURES~ (~tests/fixtures~), ~BUILD_OUTDIR~ (the build tree
+matching this test's own build type).
+
+*** Tests stay hermetic
+
+No network, no podman, no libvirt, no gowl.  Anything needing real
+infrastructure goes behind ~CLAWT_TEST_INTEGRATION=1~ and
+~make test-integration~.
+
+*** GTest makes g_warning fatal
+
+When a warning is the *correct* behaviour, expect it rather than
+weakening it:
+
+#+begin_src c
+g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING, "*unknown *");
+/* … */
+g_test_assert_expected_messages();
+#+end_src
+
+*** Test names say what is being asserted
+
+~/mailbox/lease-expiry-returns-to-pending~ tells you what broke from the
+failure line alone.  ~/mailbox/test3~ does not.
+
+** Debugging
+
+#+begin_src bash
+G_MESSAGES_DEBUG=Clawtilla ./build/debug/clawtillad --foreground
+gdb --args ./build/debug/clawtillad --foreground -c /tmp/config.yaml
+G_DEBUG=fatal-warnings gdb --args ./build/debug/tests/test-mailbox
+#+end_src
+
+For a leak or an overflow, ASAN first:
+
+#+begin_src bash
+make DEBUG=1 ASAN=1 clean all
+ASAN_OPTIONS=detect_leaks=1 ./build/debug/tests/test-daemon
+#+end_src
+
+** Upgrading libreclaw
+
+#+begin_src bash
+git -C deps/libreclaw pull --ff-only
+make clean all && make test
+git add deps/libreclaw && git commit
+#+end_src
+
+~make check-submodules~ warns when the checkout is behind the recorded
+gitlink -- the failure it prevents is building against one version and
+shipping a gitlink to another.
+
+** Commits
+
+Conventional Commits.  ~feat~, ~fix~, ~docs~, ~refactor~, ~perf~,
+~test~, ~chore~, ~ci~, ~build~; ~!~ after the type for a breaking change.
+
+Docs ship in the same commit as the code they describe.  A doc written
+"later" is a doc written never.

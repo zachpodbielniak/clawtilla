@@ -87,6 +87,22 @@ struct _ClawtComputerClass {
     gpointer _padding[8];
 };
 
+/**
+ * clawt_computer_provision:
+ * @self: a #ClawtComputer
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The lifecycle, in order: provision creates whatever does not exist
+ * yet, start makes it usable, stop makes it unusable but keeps it, and
+ * teardown destroys it.
+ *
+ * start() provisions first if it has to, so a caller that only ever
+ * calls start() is correct.  teardown() is never called automatically:
+ * destroying an agent's container because the daemon restarted would
+ * lose whatever was in it.
+ *
+ * Returns: %TRUE on success
+ */
 gboolean clawt_computer_provision(ClawtComputer *self, GError **error);
 gboolean clawt_computer_start(ClawtComputer *self, GError **error);
 gboolean clawt_computer_stop(ClawtComputer *self, GError **error);

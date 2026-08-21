@@ -23,13 +23,45 @@ G_BEGIN_DECLS
 
 GType clawt_message_get_type(void) G_GNUC_CONST;
 
+/**
+ * clawt_message_new:
+ * @room_id: where it is being said; an agent id is accepted and resolves
+ *   to the direct room between sender and recipient
+ * @sender_id: who is saying it, or "user" for a person
+ * @body: what is said
+ *
+ * The id and timestamp are generated here, so two messages created in
+ * the same microsecond still sort deterministically.
+ *
+ * Returns: (transfer full): a new #ClawtMessage
+ */
 ClawtMessage *clawt_message_new(const gchar *room_id,
                                 const gchar *sender_id,
                                 const gchar *body);
 
+/**
+ * clawt_message_copy:
+ * @self: a #ClawtMessage
+ *
+ * Returns: (transfer full): a copy
+ */
 ClawtMessage *clawt_message_copy(ClawtMessage *self);
 void          clawt_message_free(ClawtMessage *self);
 
+/**
+ * clawt_message_get_id:
+ * @self: a #ClawtMessage
+ *
+ * The accessors below read what clawt_message_new() and the setters put
+ * there.  Documented as a group rather than one line each; the fields
+ * are described on #ClawtMessage.
+ *
+ * String getters are (transfer none).  Task id, parent id and sender
+ * name are (nullable) -- a message from a person has no sender name, and
+ * one that is not part of delegated work has no task.
+ *
+ * Returns: (transfer none): the message's identifier
+ */
 const gchar *clawt_message_get_id(ClawtMessage *self);
 const gchar *clawt_message_get_room_id(ClawtMessage *self);
 const gchar *clawt_message_get_sender_id(ClawtMessage *self);
@@ -54,6 +86,15 @@ gint         clawt_message_get_depth(ClawtMessage *self);
  */
 const gchar *clawt_message_get_parent_id(ClawtMessage *self);
 
+/**
+ * clawt_message_set_id:
+ * @self: a #ClawtMessage
+ * @id: the identifier
+ *
+ * The setters below exist for reading a message back off disk or off the
+ * wire, where the values are already decided.  A message built in code
+ * gets its id and timestamp from clawt_message_new().
+ */
 void clawt_message_set_id(ClawtMessage *self, const gchar *id);
 void clawt_message_set_sender_name(ClawtMessage *self, const gchar *name);
 void clawt_message_set_task_id(ClawtMessage *self, const gchar *task_id);

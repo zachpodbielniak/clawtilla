@@ -1,0 +1,218 @@
+#+title: Troubleshooting
+#+description: When something does not work, in the order to check it
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-21 Fri]
+#+updated: [2026-08-21 Fri]
+#+version: 0.1.0
+
+* Troubleshooting
+
+** A client cannot reach the daemon
+
+#+begin_example
+clawtilla: could not reach the daemon at … (is clawtillad running?)
+#+end_example
+
+1. Is it running?  ~systemctl --user status clawtilla~, or ~pgrep -x clawtillad~.
+2. Is it on the socket you are asking for?  The daemon logs the path on
+   startup; ~clawtilla -s <path>~ overrides.
+3. Did it fail to start?  ~journalctl --user -u clawtilla -n 50~, or run
+   it in the foreground and watch.
+
+*** "another clawtilla daemon is already listening"
+
+Exactly what it says: something is on that socket.  Find it with
+~pgrep -x clawtillad~.  clawtilla checks before removing a stale socket
+on purpose -- unlinking a live one would leave two daemons quietly
+fighting over one fleet.
+
+*** "the socket path is N bytes; the kernel accepts at most 107"
+
+Unix socket paths are limited.  Put ~daemon.socket~ and
+~daemon.state_dir~ somewhere shorter -- under ~$XDG_RUNTIME_DIR~ for the
+socket.
+
+This is checked up front because an over-long path does not fail at bind
+time: the socket is simply not created where you asked, and the first
+sign is an unrelated ENOENT further down.
+
+** An agent will not start
+
+#+begin_src bash
+clawtilla agent show researcher
+#+end_src
+
+The ~state~ and the ~detail~ beside it are the answer most of the time.
+
+*** state: shadow
+
+Its configuration could not be understood, and the detail says what.
+Common causes: an unknown ~computer.type~, an unknown mount type, a
+missing required field, a duplicate id, a second chief of staff.
+
+The rest of the fleet is running normally; fix the block and reload.
+
+*** "the libreclaw binary is not on PATH"
+
+Install libreclaw, or point at a build tree:
+
+#+begin_src yaml
+defaults:
+  libreclaw_binary: "~/src/libreclaw/build/release/libreclaw"
+#+end_src
+
+*** "integrations.matrix is enabled but … is not set"
+
+An enabled integration is missing a required key.  It is refused rather
+than warned about, because an agent whose Matrix block is incomplete
+starts perfectly cleanly and then never receives anything.
+
+*** "could not resolve <reference>"
+
+A secret reference did not resolve.  The message names it by reference,
+never by value.
+
+- ~{env: NAME}~ -- the variable is not in the *daemon's* environment
+- ~{file: PATH}~ -- check the path and its permissions
+- ~{command: …}~ -- run it by hand; if it prompts, it will hit the
+  ~secrets.command_timeout_seconds~ bound
+
+*** It starts and immediately stops
+
+#+begin_src bash
+clawtilla agent logs researcher
+#+end_src
+
+That is the child's own output.  A config error in the rendered file
+shows up there, not in the daemon's log.
+
+#+begin_src bash
+clawtilla config render researcher
+#+end_src
+
+** The link will not connect
+
+The agent is ~running~ but ~LINK~ stays down.
+
+1. Check the rendered config has the channel:
+   ~clawtilla config render researcher | grep -A5 clawtilla:~
+2. Check the socket in it exists and is 0600.
+3. Check the token file exists at
+   ~<state_dir>/agents/<id>/token~.
+4. Look at ~clawtilla agent logs~ -- the channel logs each attempt.
+
+An agent inside a container needs ~agents.sock~ mounted into it.
+
+The daemon logs a refusal it made:
+
+#+begin_example
+link server: refused a connection claiming to be 'researcher'
+#+end_example
+
+That means the token did not match.  Stop the agent, delete its token
+file, and start it again -- the daemon writes a new one and the child
+reads it at start.
+
+** A mailbox is stuck
+
+[[file:mailboxes.org][mailboxes.org]] has the full sequence.  Briefly:
+
+#+begin_src bash
+clawtilla mailbox list researcher     # is anything waiting?
+clawtilla agent list                  # is the link up?
+clawtilla mailbox dead researcher     # did they fail?
+#+end_src
+
+Items that are all ~leased~ and not progressing mean the agent took
+delivery and stopped.  Restart it: the leases expire and the items come
+back as ~pending~.
+
+** A mount did not work
+
+*** In a container: it is visible but every access is denied
+
+SELinux.  Add ~relabel: shared~ to the mount.  This is the classic
+Silverblue symptom and it reads like a permissions bug rather than a
+labelling one.
+
+*** On a host agent: "is outside what this agent may reach"
+
+Check ~clawtilla computer status <agent>~ -- it lists the mounts the
+agent actually has.  If yours is not there, the mount was not applied;
+if it is there and you are still refused, you are naming a path that is
+not under the target.
+
+Mount targets are matched as whole path components, so ~/mnt/sharedx~ is
+not inside a mount at ~/mnt/shared~.
+
+*** In a VM: the guest does not see it
+
+~virtiofsd~ must be installed on the host, and the guest kernel needs
+virtiofs.  Provisioning checks for ~virtiofsd~ and says so if it is
+missing.
+
+** A command was refused
+
+#+begin_example
+'/etc/shadow' is outside what this agent may reach
+#+end_example
+
+Working as intended.  ~clawtilla computer status <agent>~ says what the
+agent *can* reach.  To widen it, add a mount or an ~allow_paths~ entry --
+not by switching to ~confine: none~.
+
+#+begin_example
+'sudo' is not permitted: this agent runs with allow_sudo: false
+#+end_example
+
+Also intended.
+
+** A VM will not provision
+
+- libvirt backend: ~systemctl --user status libvirtd~ (or the system
+  one, depending on your ~uri~), and check ~virsh -c qemu:///session list~
+  works as your user
+- QEMU backend: check ~qemu-system-x86_64~ and ~qemu-img~ are on PATH
+- either: the base image must exist and be readable
+
+** gowl is unreachable
+
+- gowl must be built with ~MCP=1~ and have ~modules.mcp.enabled: true~
+- the socket defaults to ~$XDG_RUNTIME_DIR/gowl-mcp.sock~; set
+  ~computer.desktop.socket~ if yours differs
+- you must be in the gowl session; there is nothing to connect to from a
+  GNOME one, and the GNOME backend is the fallback for that
+
+** Two agents are talking to each other for ever
+
+They are not -- one of four limits stopped them.  Check which:
+
+#+begin_src bash
+clawtilla task list        # a task failed with a budget reason?
+clawtilla agent logs chief-of-staff
+#+end_src
+
+The refusal names the limit.  If you genuinely need more room, raise
+~orchestration.max_hops~ -- but a fleet that needs more than four hops
+usually has a chief that is delegating in circles rather than dividing.
+
+** The GTK client shows nothing
+
+If it shows a "daemon is not running" page, that is the daemon.  If it
+shows an empty agent list, the fleet really is empty --
+~clawtilla agent list~ from the CLI will agree, because both are asking
+the same daemon.
+
+** Getting more detail
+
+#+begin_src bash
+G_MESSAGES_DEBUG=Clawtilla clawtillad --foreground
+#+end_src
+
+And the event log, which is the durable version of the same thing:
+
+#+begin_src bash
+ls ~/.clawtilla/events/
+tail -f ~/.clawtilla/events/$(date -u +%F).ndjson | yq .
+#+end_src

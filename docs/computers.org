@@ -1,0 +1,315 @@
+#+title: Computers
+#+description: The four backends, host confinement, mount paths and the exchange
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-21 Fri]
+#+updated: [2026-08-21 Fri]
+#+version: 0.1.0
+
+* Computers
+
+A computer is what an agent can run commands on.  Four types, and an
+optional desktop add-on that works alongside any of them.
+
+| Type | What the agent gets | Isolation |
+|------+---------------------+-----------|
+| ~none~ | nothing; chat only | total |
+| ~host~ | the machine clawtilla runs on | confinement, not isolation |
+| ~container~ | a podman container | namespaces |
+| ~vm~ | a libvirt or QEMU virtual machine | a kernel of its own |
+
+** none
+
+The default, and the right starting point.  An agent that answers
+questions does not need a container, and a computer it never uses is a
+surface that can go wrong.
+
+#+begin_src yaml
+computer:
+  type: none
+#+end_src
+
+** host
+
+The agent runs commands on the machine clawtilla itself is on: real
+filesystem, real processes, real network.  The most useful option and the
+most dangerous, so it is explicit and layered.
+
+#+begin_src yaml
+computer:
+  type: host
+  host:
+    confirm_host_control: true      # required; the daemon refuses without it
+    confine: workspace              # none | workspace | allowlist | bwrap
+    root: "~/agents/researcher"
+    allow_paths: ["~/src", "~/Documents/notes"]
+    deny_paths:  ["~/.ssh", "~/.gnupg", "~/.clawtilla/secrets"]
+    allow_network: true
+    allow_sudo: false
+    shell: "/bin/bash"
+    nice: 5
+#+end_src
+
+*** What each confinement mode actually prevents
+
+This section is deliberately blunt, because the difference between
+"confined" and "isolated" is where people get hurt.
+
+**** ~confine: none~
+
+Nothing.  A bare ~GSubprocess~.  The agent can do anything you can.
+
+Requires both ~confirm_host_control: true~ *and*
+~daemon.allow_unconfined_host: true~, so it cannot happen by accident or
+by a single config typo.
+
+**** ~confine: workspace~ (default)
+
+The working directory is pinned to ~root~, and every argument that looks
+like a path is canonicalised with ~realpath()~ and rejected if it escapes.
+Canonicalising first is what closes the ~..~ case and the symlink case
+together, rather than with two tests that can disagree.
+
+*What it does not stop:* a program that constructs a path clawtilla
+cannot see in the argument list.  ~python3 -c "open(chr(47)+'etc/passwd')"~
+reads a file the check never had a chance to notice.  Argument inspection
+is a guard rail, not a wall.
+
+**** ~confine: allowlist~
+
+~root~ plus ~allow_paths~, minus ~deny_paths~, with the same
+canonicalisation.  Denials are checked first and win outright, so
+~~/.ssh~ stays out even when all of ~~~ has been allowed -- the other
+order would let a broad allow silently defeat every specific deny.
+
+Same limitation as ~workspace~: it inspects arguments.
+
+**** ~confine: bwrap~
+
+A real kernel sandbox, via ~bubblewrap~ (already present on Silverblue --
+flatpak depends on it).  Each allowed path becomes a ~--ro-bind~ or
+~--bind~; ~allow_network: false~ becomes ~--unshare-net~; ~/tmp~ is
+private; ~--die-with-parent~ means the sandbox goes when the agent does.
+
+This is the only host mode where a program cannot reach outside by
+constructing a path at runtime, because the paths are genuinely not in
+its namespace.
+
+*If ~bwrap~ is missing the agent starts in ~SHADOW~ and says so.*  It
+does not silently downgrade to unconfined -- a confinement that quietly
+becomes no confinement is worse than none, because you stop checking.
+
+*** sudo
+
+~allow_sudo: false~ blocks ~sudo~, ~pkexec~, ~doas~, ~run0~ and
+~machinectl shell~ at the exec layer, and says so in the agent's
+~describe~ text so it does not spend turns trying.
+
+*** The audit trail
+
+Every host exec is written to the event log: agent, command, exit status.
+Commands run by a *person* through the client are logged too -- an audit
+trail that only covered agents would miss exactly the case somebody would
+want to look up.
+
+*** In the interface
+
+The GTK sidebar shows a red ~HOST~ badge on any agent with host control,
+and the inspector states the confinement mode in words.  This is not
+decoration: an agent that can run commands on the real machine should be
+visibly different from one that cannot, at a glance, in the list.
+
+** container
+
+#+begin_src yaml
+computer:
+  type: container
+  container:
+    image: "fedora:latest"
+    name: "clawt-researcher"      # optional; generated if absent
+    connection: "unix"            # unix | ssh://… | tcp://… | a named connection
+    network: "bridge"
+    keep: false                   # keep the container after the agent stops
+#+end_src
+
+Implemented through podomation's ~container~ module, which speaks the
+Podman REST API directly over a socket -- no libcurl, no libpod, no
+shelling out to the CLI.
+
+** vm
+
+#+begin_src yaml
+computer:
+  type: vm
+  vm:
+    backend: libvirt              # libvirt (default) | qemu
+    domain: "clawt-researcher"
+    uri: "qemu:///session"
+    image: "~/vms/fedora.qcow2"
+    cpus: 2
+    memory_mb: 4096
+    ssh_user: "agent"
+    ssh_key: "~/.ssh/clawt_vm"
+    snapshot_on_start: true
+#+end_src
+
+*** libvirt (default)
+
+podomation's ~vm_virtmanager~ module: the full 22-action surface,
+including snapshots.  ~snapshot_on_start: true~ is worth having -- an
+agent that breaks its VM can be put back rather than rebuilt.
+
+*** qemu (fallback)
+
+Spawns ~qemu-system-*~ directly and drives QMP over a unix socket.  A
+base image plus a qcow2 overlay; guest commands over SSH.  No libvirtd
+required, which matters on a machine where you do not want one.
+
+** Mount paths
+
+Mounts are how files get in and out.
+
+#+begin_src yaml
+computer:
+  type: container
+  mounts:
+    - source: "~/src/projects"
+      target: "/work/projects"
+      mode: rw
+      relabel: shared
+    - source: "~/Documents/notes"
+      target: "/work/notes"
+      mode: ro
+    - type: tmpfs
+      target: "/scratch"
+      size: "512M"
+#+end_src
+
+| Field | Meaning |
+|-------+---------|
+| ~source~ | the host path |
+| ~target~ | where it appears inside the computer; must be absolute |
+| ~mode~ | ~ro~ or ~rw~ |
+| ~type~ | ~bind~ (default), ~volume~, ~virtiofs~, ~9p~ or ~tmpfs~ |
+| ~create~ | create the source directory if it is missing |
+| ~relabel~ | ~none~, ~shared~ (~:z~) or ~private~ (~:Z~) |
+| ~required~ | fail rather than warn when the source is missing |
+| ~size~ | for ~tmpfs~ |
+
+*** SELinux relabelling
+
+On Fedora Silverblue and friends, an unlabelled bind mount is *visible*
+in the container and every access is denied -- a failure that reads like
+a permissions bug rather than a labelling one.  Hence ~relabel~.
+
+~shared~ (~:z~) is almost always what you want.  ~private~ (~:Z~)
+rewrites the host directory's labels exclusively for one container, so
+pointing it at a directory something else also uses will break that other
+user.
+
+*** How each backend applies them
+
+| Backend | What a mount becomes |
+|---------+----------------------|
+| container | mount arguments on the podman ~create~ call |
+| libvirt VM | a virtiofs ~<filesystem>~ device, hot-plugged with ~attach_device~ |
+| QEMU VM | ~-device vhost-user-fs-pci~ plus a ~virtiofsd~ per mount |
+| host | *no kernel mount* -- see below |
+
+*** Mounts on a host computer
+
+A host computer has no mount namespace, so a mount is not a mount: it is
+a promise that a path inside the agent's world means a directory outside
+it.  Nothing enforces that promise for us, so clawtilla does two things:
+
+1. *Translates paths.*  An argument naming a mount target is rewritten to
+   the source before the command runs.  Otherwise an agent told its
+   exchange is at ~/mnt/clawtilla/exchange~ would be refused for using
+   the path it was given, which is a maddening thing to debug.
+2. *Treats the mount as a grant.*  A declared mount is reachable in every
+   confinement mode, including ~workspace~.  On a container the kernel
+   would make it reachable; the same config behaving differently
+   depending on the backend is the kind of inconsistency that costs an
+   afternoon.
+
+Translation matches whole path components, so ~/mnt/sharedx~ is not
+rewritten by a mount at ~/mnt/shared~.
+
+*** What validation catches
+
+- a relative or non-absolute ~target~
+- two mounts whose targets overlap
+- ~target: /~
+- a missing source, with and without ~create:~
+- ~..~ or a symlink escaping in either path
+- a refusal to mount ~daemon.state_dir~ or the secrets directory into any
+  computer -- an agent that could read the state directory could read
+  every other agent's mailbox and token
+
+** The exchange directory
+
+A shared drop-box so agents hand files around without hand-wired mounts.
+
+#+begin_src yaml
+defaults:
+  exchange_dir: "$XDG_DATA_HOME/clawtilla/exchange"
+  exchange_max_bytes: 1073741824
+#+end_src
+
+It is mounted into every computer at ~/mnt/clawtilla/exchange~ unless the
+agent sets ~computer.exchange: false~.
+
+#+begin_example
+exchange/
+  shared/          rw for every agent
+  <agent-id>/      rw for that agent, ro for the others
+#+end_example
+
+Reading is open across the exchange; writing is not.  An agent that could
+overwrite another's drop-box could quietly replace the file that agent
+was about to act on.
+
+Reachable three ways:
+
+#+begin_src bash
+clawtilla cp ~/notes.org researcher:/mnt/clawtilla/exchange/researcher/
+#+end_src
+
+- the ~clawtilla_computer_put_file~ / ~get_file~ / ~exchange_list~ tools
+- drag-and-drop into the GTK computer panel
+
+~exchange_max_bytes~ plus a retention sweep keep it bounded; the sweep
+removes oldest-first and never follows a symlink out of the directory.
+
+** Desktop control
+
+An add-on rather than a separate type:
+
+#+begin_src yaml
+computer:
+  type: host
+  desktop:
+    enabled: true
+    backend: gowl          # gowl | gnome; auto-detected by default
+    socket: "$XDG_RUNTIME_DIR/gowl-mcp.sock"
+    allow_input: true      # false = observe only
+#+end_src
+
+~ClawtGowlDesktop~ connects straight to gowl's MCP socket with mcp-glib.
+~ClawtGnomeDesktop~ spawns ~gnome-desktop-mcp~ over stdio.  Either way the
+endpoint is handed to the agent through its link, so ~describe_desktop~,
+~screenshot_monitor~ and ~send_key~ arrive as ordinary MCP tools.
+
+~allow_input: false~ is a genuinely useful middle ground: the agent can
+see the screen and query the compositor but cannot click or type.  Seeing
+and acting are separate capabilities and clawtilla does not conflate
+them.
+
+gowl needs to be built with ~MCP=1~ and have ~modules.mcp.enabled: true~.
+
+** Adding a backend
+
+Implement ~ClawtComputerProvider~ in a plugin: ~get_type_name~ returns the
+~computer.type~ value you answer to, ~create~ builds the computer.  See
+[[file:plugins.org][plugins.org]].  An unknown ~computer.type~ with no
+provider makes that one agent a shadow rather than failing the daemon.

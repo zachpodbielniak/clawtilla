@@ -41,6 +41,16 @@ G_BEGIN_DECLS
 G_DECLARE_FINAL_TYPE(ClawtLoopGuard, clawt_loop_guard,
                      CLAWT, LOOP_GUARD, GObject)
 
+/**
+ * clawt_loop_guard_new:
+ *
+ * Created with no limits.  Call clawt_loop_guard_set_limits() and
+ * clawt_loop_guard_set_task_budget() before it guards anything -- a
+ * guard with every limit at zero permits everything, which is the safe
+ * default for a constructor and the wrong one for a running fleet.
+ *
+ * Returns: (transfer full): a new #ClawtLoopGuard
+ */
 ClawtLoopGuard *clawt_loop_guard_new(void);
 
 /**

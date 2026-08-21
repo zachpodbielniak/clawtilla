@@ -1,0 +1,206 @@
+#+title: Clients
+#+description: The CLI, the GTK app, the web client, and embedding libclawt
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-21 Fri]
+#+updated: [2026-08-21 Fri]
+#+version: 0.1.0
+
+* Clients
+
+Four front ends, one daemon.  None of them holds state or a transport of
+its own, which is why two of them open at once agree with each other.
+
+** The CLI
+
+#+begin_src bash
+clawtilla [OPTION...]
+clawtilla <command> [ARGS...]
+#+end_src
+
+Global options: ~-c/--config~, ~-s/--socket~, ~-V/--version~,
+~--license~, ~--generate-config~, ~--generate-systemd-service~.
+
+*** Commands
+
+| Command | What it does |
+|---------+--------------|
+| ~daemon~ | run the daemon in the foreground (same code as ~clawtillad~) |
+| ~status~ | version, config path, agent and client counts |
+| ~agent list~ | id, state, queue depth, link, description |
+| ~agent show <id>~ | everything about one agent |
+| ~agent create --id X [--name…] [--model…] [--computer…]~ | |
+| ~agent new --ai "<description>" [--commit]~ | design one by describing it |
+| ~agent rm <id>~ | remove from the config; state stays on disk |
+| ~agent start/stop/restart <id>~ | |
+| ~agent logs <id>~ | the child's recent output |
+| ~agent set <id> <key> <value>~ | e.g. ~model.effort high~ |
+| ~send <target> <message…>~ | to an agent or a room |
+| ~chat <agent>~ | interactive |
+| ~mailbox list/dead/ack/requeue/purge <agent> [item]~ | |
+| ~room list/create/add/history~ | |
+| ~task list/show/cancel~ | |
+| ~computer exec <agent> -- CMD…~ | |
+| ~computer status <agent>~ | |
+| ~cp <src> <dst>~ | either side may be ~<agent>:<path>~ |
+| ~config show/validate/render/edit~ | |
+| ~plugin list~ | |
+| ~integration list/health <agent>~ | |
+
+Subcommands are dispatched on ~argv[1]~ before option parsing, and each
+owns its own option context.  One shared table across a dozen verbs
+collapses into mutually exclusive flags that are each valid for one verb,
+and the ~--help~ output stops being readable.
+
+*** Exit statuses that mean something
+
+- ~computer exec~ exits with the *command's* exit status, so
+  ~clawtilla computer exec … && next-thing~ behaves the way a shell user
+  expects
+- ~integration health~ exits non-zero if any check failed, so it is
+  usable in a pre-flight script
+- a subcommand with no arguments prints usage and exits non-zero
+
+** The GTK client
+
+#+begin_src bash
+clawtilla-gtk [--socket PATH]
+#+end_src
+
+GTK4 and libadwaita.  Agents are presented as chats: a sidebar of who is
+here, a transcript in the middle, and everything else about an agent
+behind a tab rather than a settings dialog somewhere else.
+
+*** The sidebar
+
+Each agent shows a state dot, its description, and badges:
+
+- a *queue badge* when mail is waiting -- a stopped agent with mail looks
+  identical to an idle one otherwise, and that difference is the whole
+  point of durable mailboxes
+- a red *HOST* badge when the agent can run commands on the real machine
+- a *CHIEF* badge on the chief of staff
+
+Colour is never the only signal: the state is in the tooltip and in the
+inspector too.
+
+*** The tabs
+
+| Tab | What it is |
+|-----+------------|
+| Chat | the transcript, with bottom-follow that does not yank you down mid-read |
+| Agent | model, computer, capabilities, credentials by reference, start/stop |
+| Mailbox | what is waiting, with acknowledge |
+| Computer | an exec console showing stdout *and* stderr |
+| Tasks | what has been delegated to whom, and where it got to |
+
+Every control's sensitivity is bound to ~ClawtAgentCaps~, and a disabled
+control says why in its tooltip.  A greyed-out button with no
+explanation is the interface equivalent of a shrug.
+
+Message bodies are rendered as labels, never as Pango markup.  Model
+output arrives from somewhere the user does not control, and treating it
+as markup would let a message rewrite the interface around it.
+
+*** Adding an agent
+
+The ~+~ button offers both paths: fill in id, model and computer by hand,
+or describe what you want and let clawtilla draft it.  *The AI path shows
+the proposed configuration and waits for you to confirm* -- a model's
+proposal becoming an agent without anyone reading it is the kind of
+convenience nobody asks for twice.
+
+*** Adaptive
+
+Below 800px the sidebar becomes a drawer.  Without that the agent list
+eats a phone-sized window and the conversation has nowhere to go.
+
+*** If the daemon is not running
+
+A status page saying so, not an empty window.  An empty window looks like
+a fleet with no agents in it, which is a different problem with a
+different fix.
+
+** The web client
+
+#+begin_src bash
+clawtilla-web [--port 8790] [--socket PATH]
+#+end_src
+
+*This is the one deliberately incomplete surface.*  Agent list,
+transcript and send work.  Mailboxes, tasks, the computer console, agent
+creation and live streaming are TODO, and the page says so rather than
+quietly lacking them -- a web client missing the mailbox panel would look
+like the daemon lacks one.
+
+It has *no authentication*.  Anything that can reach the port drives the
+whole fleet.  It binds to localhost and warns on startup.  Put it behind
+a reverse proxy that can require a login before exposing it.
+
+Everything it renders is escaped: agent names, descriptions and message
+bodies are written by people and models, and an unescaped ~<~ there is
+script injection into whoever opens the page.
+
+** Embedding libclawt
+
+The library is the product; the daemon is one caller.
+
+#+begin_src c
+#include <clawtilla.h>
+
+ClawtDaemon *daemon;
+GMainContext *context = g_main_context_default();
+g_autoptr(GError) error = NULL;
+
+daemon = clawt_daemon_new("~/.clawtilla/config.yaml", context);
+
+if (!clawt_daemon_start(daemon, &error)) {
+    g_warning("clawtilla: %s", error->message);
+    return;
+}
+
+g_signal_connect(daemon, "started", G_CALLBACK(on_started), self);
+#+end_src
+
+No process, no socket.  ~clawt_daemon_start()~ returns once the fleet is
+up; the host's own main loop drives everything from there.
+
+*** Driving it
+
+Two ways.  Component accessors, for anything structural:
+
+#+begin_src c
+ClawtAgentManager *agents = clawt_daemon_get_agents(daemon);
+GPtrArray *list = clawt_agent_manager_list(agents);
+
+ClawtEventBus *bus = clawt_daemon_get_event_bus(daemon);
+g_signal_connect(bus, "event", G_CALLBACK(on_event), self);
+#+end_src
+
+Or the same frames a socket client sends, which keeps a host on exactly
+the surface every other client uses:
+
+#+begin_src c
+g_autoptr(JsonNode) request = clawt_ipc_request_new("agent.list", "1");
+g_autoptr(JsonNode) reply = clawt_daemon_handle_request(daemon, request);
+#+end_src
+
+*** The cmacs case
+
+cmacs already owns a main loop and already has libreclaw embedded.  It
+calls ~clawt_daemon_new(path, NULL)~ -- ~NULL~ meaning the default
+context, which is the one Emacs runs -- then ~clawt_daemon_start()~, and
+connects the bus's ~event~ signal.  Agents become buffers; the sidebar
+becomes a list.  There is no second process, no socket, and no protocol
+in between.
+
+Everything is introspectable (~Clawt-1.0.typelib~), so the elisp side can
+work through GObject Introspection rather than through C.
+
+The two things to know when embedding:
+
+- signal handlers are the host's business.  clawtilla installs none;
+  ~clawtillad~ installs its own.
+- prefer ~runtime.type: embedded~ for agents when there is no
+  ~libreclaw~ binary to run, and read the constraints in
+  [[file:agents.org][agents.org]] first.

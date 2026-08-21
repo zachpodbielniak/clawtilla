@@ -1,0 +1,260 @@
+#+title: Configuration
+#+description: How clawtilla.yaml is structured, with worked examples
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-21 Fri]
+#+updated: [2026-08-21 Fri]
+#+version: 0.1.0
+
+* Configuration
+
+~~/.clawtilla/config.yaml~ by default; ~-c~ overrides it.
+
+The full option reference is generated from the schema and lives in
+[[file:configuration-options.org][configuration-options.org]].  This page
+is the shape of the file and the decisions worth making.
+
+** The schema is the source of truth
+
+Every option clawtilla understands is declared once, in
+~src/config/clawt-config-schema.c~.  From that table come:
+
+- ~data/example-config.yaml~ -- every option, its default, its comment
+- ~data/default-config.yaml~ -- what ~--generate-config~ prints
+- the reference table in ~docs/configuration-options.org~
+- validation, which reports an unknown key with its line number
+
+~make config-files~ regenerates them, and ~tests/test-config-schema.c~
+fails when they have drifted.  That is why the rule is enforceable rather
+than merely written down.
+
+** The shape
+
+#+begin_src yaml
+daemon:         # sockets, state, logging
+defaults:       # what a new agent inherits
+ai_assist:      # the agent designer
+secrets:        # how secret references resolve
+plugins:        # where to look, what to disable
+orchestration:  # limits, the chief of staff, mailbox policy
+rooms:          # standing rooms
+agents:         # the fleet
+#+end_src
+
+** daemon
+
+#+begin_src yaml
+daemon:
+  socket: "$XDG_RUNTIME_DIR/clawtilla/daemon.sock"
+  state_dir: "~/.clawtilla"
+  log_level: info
+  event_log_days: 30
+
+  # Off by default. A TCP listener needs a token; see security.org.
+  # tcp_enabled: false
+  # tcp_address: "127.0.0.1"
+  # tcp_port: 8791
+  # tls_cert: "~/.clawtilla/cert.pem"
+  # tls_key:  "~/.clawtilla/key.pem"
+  # token_file: "~/.clawtilla/token"
+
+  # Required before any agent may use confine: none. See computers.org.
+  # allow_unconfined_host: false
+#+end_src
+
+*Socket paths have a length limit.*  The kernel accepts 107 bytes; a
+longer path does not fail at bind time, it simply is not created where
+you asked.  clawtilla refuses it up front with the number rather than
+letting that happen.
+
+** defaults
+
+What an agent inherits when it does not say otherwise.
+
+#+begin_src yaml
+defaults:
+  provider: "claude-code"
+  model: "sonnet"
+  computer: none
+  workspace_root: "~/agents"
+  exchange_dir: "$XDG_DATA_HOME/clawtilla/exchange"
+  exchange_max_bytes: 1073741824
+  restart: on-failure
+  autostart: true
+
+  # Point at a build tree while developing against an unreleased
+  # libreclaw. Unset means whatever is on PATH.
+  # libreclaw_binary: "~/src/libreclaw/build/release/libreclaw"
+#+end_src
+
+** An agent
+
+#+begin_src yaml
+agents:
+  - id: researcher
+    name: "Researcher"
+    description: "reads code and summarises it"
+    enabled: true
+
+    persona:
+      system_prompt: "You read code carefully and report what you find."
+      identity_files: [SOUL.md, IDENTITY.md, TOOLS.md]
+
+    memory:
+      enabled: true
+      max_lines: 500
+      max_bytes: 65536
+
+    model:
+      provider: claude-code
+      model: sonnet
+      effort: medium
+      fallbacks: [haiku]
+
+    workspace: "~/agents/researcher"
+
+    runtime:
+      type: process          # process | embedded
+      autostart: true
+      restart: on-failure    # never | on-failure | always
+      backoff_seconds: 5
+      max_restarts: 10
+
+    computer:
+      type: container
+      container:
+        image: "fedora:latest"
+      mounts:
+        - source: "~/src"
+          target: "/work/src"
+          mode: rw
+          relabel: shared
+
+    env:
+      PROJECT_ROOT: "/work/src"
+
+    credentials:
+      api_key: {env: ANTHROPIC_API_KEY}
+
+    integrations:
+      matrix:
+        enabled: true
+        homeserver: "https://matrix.example.com"
+        user_id: "@researcher:example.com"
+        access_token: {file: "~/.clawtilla/secrets/researcher-matrix"}
+        rooms: ["!abc:example.com"]
+        require_mention: true
+
+    tools:
+      deny: [clawtilla_spawn_agent]
+
+    mailbox:
+      max_depth: 200
+
+    libreclaw:
+      # Anything here is copied into the rendered config verbatim.
+      session:
+        timeout_minutes: 60
+#+end_src
+
+*** description is load-bearing
+
+Other agents read it when deciding who to delegate to.  Say what the
+agent is for.
+
+*** The libreclaw passthrough
+
+clawtilla does not model every libreclaw option and never will.  The
+~libreclaw:~ block is copied into the rendered file unchanged, last, so
+it wins.  A libreclaw setting clawtilla has never heard of is still
+reachable without waiting for a clawtilla release.
+
+** Secret references
+
+Secrets never appear in the YAML.
+
+#+begin_src yaml
+credentials:
+  api_key:   {env: ANTHROPIC_API_KEY}
+  matrix:    {file: "~/.clawtilla/secrets/matrix-token"}
+  smtp:      {command: "pass show mail/smtp"}
+#+end_src
+
+#+begin_src yaml
+secrets:
+  default_backend: file       # file | env | command
+  dir: "~/.clawtilla/secrets"
+  command_timeout_seconds: 10
+#+end_src
+
+The timeout is not optional in spirit: a locked password manager blocks
+rather than failing, and without a bound so does daemon startup.
+
+Resolved values are written into per-agent credential files at 0600 under
+the agent's state directory, and passed to the child through its
+environment allowlist.  *IPC responses echo the reference, never the
+value* -- so a client can say "a Matrix token is configured" without the
+token crossing the socket or landing in a screenshot.
+
+** Rendering to libreclaw
+
+The daemon renders each agent's ~config.yaml~ into
+~<state_dir>/agents/<id>/config.yaml~ on every start and reload.  It is
+deterministic: same input, same bytes, so rewriting it does not churn
+mtimes or restart agents whose configuration did not change.
+
+It carries a header saying it is generated.  Editing it is lost on the
+next start, silently, which is exactly the kind of thing that costs an
+afternoon.
+
+#+begin_src bash
+clawtilla config render researcher     # see it without writing it
+#+end_src
+
+** Shadow agents
+
+An agent whose block clawtilla cannot understand -- an unknown computer
+type, an unknown mount type, a missing required field, a duplicate id, a
+second chief of staff -- becomes a *shadow*: listed, explaining itself,
+refusing to run.  The rest of the fleet starts normally.
+
+That is what lets a config written by a newer clawtilla round-trip
+through an older one without losing anything, and it means one bad line
+disables one agent rather than causing an outage.
+
+** Comments survive a write
+
+The GTK client and the CLI write this file back.  Both the schema's
+documentation comments *and* your own notes survive the round trip --
+yaml-glib gained comment preservation for exactly this.
+
+Comments are attached by line proximity: the run of comment lines
+immediately above a key belongs to that key, and a trailing comment on
+the same line stays there.  A blank line ends a run.  That is the honest
+limitation of the approach and it is the same one every YAML round-tripper
+has.
+
+** Validation
+
+#+begin_src bash
+clawtilla config validate
+#+end_src
+
+Reports unknown keys with line numbers, malformed values, and every agent
+that would become a shadow, with the reason.
+
+** Editing
+
+#+begin_src bash
+clawtilla config edit          # $EDITOR, then asks the daemon to reload
+clawtilla config show
+#+end_src
+
+Reloading re-reads the file and re-renders every agent, but does *not*
+restart running agents.  A reload that interrupted every agent mid-turn
+would make editing one description cost the whole fleet's work.  Restart
+an agent to pick up its new configuration:
+
+#+begin_src bash
+clawtilla agent restart researcher
+#+end_src

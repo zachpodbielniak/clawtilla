@@ -1,0 +1,210 @@
+#+title: Security
+#+description: The threat model, stated plainly, including what clawtilla does not protect against
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-21 Fri]
+#+updated: [2026-08-21 Fri]
+#+version: 0.1.0
+
+* Security
+
+** What clawtilla assumes
+
+clawtilla is a *single-user* system.  It runs as you, its sockets are
+0600, and everything it can do, you can do.  It is not a multi-tenant
+service and nothing in it is designed to keep one user out of another
+user's fleet.
+
+Within that, the things it does defend are:
+
+- one agent claiming to be another
+- an agent reaching outside what its configuration grants
+- secrets ending up somewhere they get copied
+- a runaway fan-out between agents
+- a plugin quietly gaining more than it was given
+
+** What it does not protect against
+
+Stated first, because the gaps matter more than the guarantees.
+
+*** Argument inspection is not a sandbox
+
+~confine: workspace~ and ~confine: allowlist~ canonicalise every argument
+that looks like a path and refuse the command if it escapes.  That closes
+~..~ and symlinks together.
+
+It does *not* stop a program that constructs a path at runtime:
+
+#+begin_src bash
+python3 -c "print(open(chr(47)+'etc/passwd').read())"
+#+end_src
+
+There is no path in that argument list.  Only ~confine: bwrap~ makes the
+file genuinely unreachable, because the sandbox is in the kernel rather
+than in a string check.
+
+Use ~bwrap~ for anything you would not run yourself.
+
+*** A container is not a VM
+
+A container shares the kernel.  A container escape is a real category of
+bug and clawtilla does nothing about it.  For work you actively distrust,
+use a VM.
+
+*** A model can be talked into things
+
+Nothing here validates an agent's *intentions*.  If an agent has a host
+computer, a message that persuades it to run something destructive will
+be honoured within its confinement.  The limits are on capability, not on
+judgement.
+
+*** Anything with the socket has the fleet
+
+A process running as you can connect to ~daemon.sock~ and do everything a
+client can: read every transcript, run commands on every agent's
+computer, edit the configuration.  The socket's permissions are the whole
+of the access control there.
+
+*** The event log holds message bodies
+
+It is 0600 and secrets are scrubbed, but it is a plaintext record of
+everything said.  It is subject to your backups like anything else.
+
+** Sockets
+
+Two, both 0600, both under directories the daemon creates 0700:
+
+| Socket | Who connects |
+|--------+--------------|
+| ~<state_dir>/agents.sock~ | libreclaw agent processes |
+| ~$XDG_RUNTIME_DIR/clawtilla/daemon.sock~ | clients |
+
+A unix socket rather than a loopback HTTP port, deliberately: a port has
+no owner, is reachable by anything on the machine, and brings DNS
+rebinding with it if a browser is ever involved.
+
+A stale socket from an unclean shutdown is removed only after checking
+nothing is listening on it.  Unlinking a live socket would leave the
+running daemon's agents connected to a path that no longer exists while
+this one silently took over new connections -- two daemons quietly
+fighting over one fleet.
+
+** Agent authentication
+
+The socket keeps other users out.  The *token* stops one of your own
+agents claiming to be another and reading its mail.
+
+Each agent gets a token file at ~<state_dir>/agents/<id>/token~, mode
+0600 in a 0700 directory: 32 bytes from ~/dev/urandom~, hex encoded.
+
+Deliberately not ~clawt_generate_id()~.  Ids are seeded from GLib's
+Mersenne Twister and appear in message ids, task ids and log lines --
+anyone who can read a transcript could recover the generator state and
+predict the next value.  That is fine for an identifier and useless for a
+secret.
+
+The token is created once and then left alone.  Regenerating it on every
+render would lock out an agent that is already connected, since it read
+the file at start and has no reason to look again.
+
+** Secrets
+
+Never in the YAML.  A reference resolves at start time:
+
+#+begin_src yaml
+credentials:
+  api_key: {env: ANTHROPIC_API_KEY}
+  matrix:  {file: "~/.clawtilla/secrets/matrix"}
+  smtp:    {command: "pass show mail/smtp"}
+#+end_src
+
+- resolved values are written to per-agent credential files at 0600, with
+  *no ~.bak~* -- a backup of a credential file is a second copy of the
+  secret nobody asked for, and it outlives the rotation meant to retire it
+- the command backend has a timeout, because a locked password manager
+  blocks rather than fails and would otherwise block daemon startup
+- IPC responses carry the *reference*, never the value: a client can say
+  "a Matrix token is configured" without the token crossing the socket
+- error messages name secrets by reference too
+- the event log scrubs on write, not at display time: transcripts get
+  replayed into every context rebuild, so redacting only when showing
+  them leaves the leak permanent
+
+** The environment allowlist
+
+A child's environment is built from an allowlist, never inherited.  This
+is a security control as much as a hygiene one: a stray API key in the
+daemon's environment leaking into a subscription CLI silently changes how
+it bills.
+
+** Host control
+
+Requires ~confirm_host_control: true~ on the agent.  Unconfined host
+access (~confine: none~) *additionally* requires
+~daemon.allow_unconfined_host: true~, so it cannot happen through one
+config typo.
+
+If ~bwrap~ is requested and missing, the agent starts in ~SHADOW~ with
+the reason.  It never silently downgrades -- a confinement that quietly
+becomes no confinement is worse than none, because you stop checking.
+
+~allow_sudo: false~ blocks ~sudo~, ~pkexec~, ~doas~, ~run0~ and
+~machinectl shell~ at the exec layer.
+
+Every host exec is audited to the event log, including those run by a
+person through a client.
+
+** Tool permissions
+
+Per agent, ~deny~ after ~allow~ so a broad allow cannot re-enable
+something specifically turned off.  Plugin tools obey the same lists.
+
+~clawtilla_spawn_agent~ is off by default: an agent that can create
+agents can create agents that create agents, and the hop limit does not
+apply to that.
+
+** TCP and TLS
+
+Off by default.  When enabled:
+
+- a token is *required*; clawtilla refuses to start a TCP listener without
+  one, because a unix socket is protected by file permissions and a TCP
+  port is protected by nothing
+- without a TLS certificate it warns that the token crosses the network
+  in the clear
+- a client may accept an unvalidated certificate only by asking
+  explicitly, and it warns each time; that disables the check that would
+  notice somebody else answering on that address
+
+** The web client
+
+~clawtilla-web~ has no authentication of its own.  Anything that can reach
+its port drives the whole fleet.  It binds to localhost and says so on
+startup.  Put it behind a reverse proxy that can require a login before
+exposing it anywhere.
+
+Everything it renders from the daemon is escaped: agent names,
+descriptions and message bodies are all written by people or models, and
+an unescaped ~<~ there is script injection into whoever opens the page.
+
+** Plugins
+
+A plugin runs in the daemon's process with the daemon's privileges.
+Loading one is trusting it completely.
+
+What is checked:
+
+- ~clawt_plugin_abi_version~ before anything in the module is called --
+  a mismatched vtable does not fail cleanly, it calls through pointers at
+  wrong offsets
+- that ~clawt_plugin_register()~ returns a ~ClawtPlugin~ subtype
+- that a plugin the core has never heard of can still be disabled by name
+  in the config, so it is never loaded at all
+
+A plugin that fails to load or refuses to activate disables itself and
+nothing else.
+
+** Reporting
+
+Security issues go to the maintainer directly rather than to a public
+issue tracker.

@@ -1,0 +1,231 @@
+#+title: clawtilla architecture
+#+description: The object graph, how a message moves, and why the daemon owns everything
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-21 Fri]
+#+updated: [2026-08-21 Fri]
+#+version: 0.1.0
+
+* Architecture
+
+** The shape of it
+
+#+begin_example
+                    ┌──────────────────────────────────┐
+   clawtilla CLI ──▶│                                  │
+  clawtilla-gtk ──▶ │   ClawtDaemon  (owns everything) │
+  clawtilla-web ──▶ │                                  │
+   cmacs (in-proc) ─┤   config · agents · rooms · tasks│
+                    │   mailboxes · plugins · events   │
+                    └───────┬──────────────────┬───────┘
+                            │                  │
+                   ClawtIpcServer      ClawtLinkServer
+                   (daemon.sock)       (agents.sock)
+                            │                  │
+                        clients            libreclaw
+                                          processes
+#+end_example
+
+Two sockets, deliberately.  Clients speak one protocol on one socket;
+agents speak another on another.  They are not the same audience: a
+client is a person's tool and gets the whole surface, while an agent gets
+exactly the tools its configuration grants it.
+
+** The rule everything else follows
+
+*The daemon owns every transport, every credential and every agent
+process.  Clients hold none of them.*
+
+A client sends typed requests and folds one event stream.  That is what
+makes the CLI, the GTK app, the web client and an in-process cmacs embed
+the same program with different front ends -- and what makes two clients
+open at once agree with each other rather than each having its own idea
+of the fleet.
+
+The temptation is always to let a client do something small itself: edit
+the config file, start one agent, read one mailbox.  Every one of those
+would be a second implementation of a rule the daemon already enforces,
+and the two would drift.
+
+** Objects
+
+*** ClawtDaemon
+
+The assembly.  Owns:
+
+| Component | What it is for |
+|-----------+----------------|
+| ~ClawtConfig~ | the fleet configuration, and the only writer of it |
+| ~ClawtAgentManager~ | the agents, their mailboxes and their state |
+| ~ClawtRoomManager~ | rooms and their persisted transcripts |
+| ~ClawtTaskManager~ | delegated work |
+| ~ClawtMailboxRouter~ | turning a message into deliveries |
+| ~ClawtLoopGuard~ | hop, rate, budget and cycle limits |
+| ~ClawtEventBus~ | what happened, with a resumable cursor |
+| ~ClawtEventLog~ | the same, on disk, secrets scrubbed on write |
+| ~ClawtExchange~ | the shared drop-box agents pass files through |
+| ~ClawtLinkServer~ | where agents dial in |
+| ~ClawtIpcServer~ | where clients connect |
+| ~ClawtMcpTools~ | the tools agents call to work together |
+| ~ClawtPluginManager~ | third-party extensions |
+| ~ClawtPodBridge~ | podomation, for containers and VMs |
+
+~clawt_daemon_new(path, main_context)~ takes a ~GMainContext~.  That
+parameter is what makes embedding work: a host that owns its own loop
+passes its context and gets the identical daemon with no process and no
+socket in between.
+
+*** ClawtAgent
+
+One agent: identity, state, capabilities, and pointers to its runtime,
+computer, mailbox and link.
+
+~ClawtAgentCaps~ is derived from what the agent *has*, not from what its
+config asked for.  A computer that failed to provision leaves the config
+saying ~container~ while the agent has nothing; deriving from the object
+means no interface offers a control the agent cannot honour, and the
+agent is never told it has a tool that is not really there.
+
+*** ClawtAgentRuntime
+
+Abstract.  Two implementations:
+
+- ~ClawtProcessRuntime~ (default) -- a supervised ~libreclaw~ child.  Its
+  own environment, its own credentials, optionally its own container, and
+  an interruptible turn because there is a process to signal.
+- ~ClawtEmbeddedRuntime~ -- an ~LcApp~ inside the daemon, via
+  ~lc_app_new_embedded()~.  Cheaper, and the only option where there is
+  no binary to run.  In exchange it cannot have its own environment or
+  credentials and cannot be interrupted.  ~get_caps~ reports that
+  honestly rather than offering controls that would do nothing.
+
+*** ClawtComputer
+
+Abstract, with ~none~, ~host~, ~container~ and ~vm~ implementations, plus
+an optional desktop add-on.  See [[file:computers.org][computers.org]].
+
+** How a message moves
+
+#+begin_example
+  a person, or an agent's tool call
+              │
+              ▼
+    ClawtMailboxRouter::send
+              │
+       ┌──────┴───────┐
+       │ ClawtLoopGuard│  hops? rate? budget? cycle?    ─── refused here
+       └──────┬───────┘
+              ▼
+      resolve destination     room id, or agent id → the direct room
+              │
+              ▼
+      append to the room's transcript
+              │
+              ▼
+      for each member: post to their ClawtMailbox   (durable, SQLite)
+              │
+              ▼
+      drain to whoever is connected → ClawtLink → the libreclaw process
+#+end_example
+
+Two things about that order matter.
+
+*Loop safety is applied before anything is enqueued.*  A runaway fan-out
+has to be stopped at the source; by delivery time the messages already
+exist and refusing means cleaning up rather than preventing.
+
+*The mailbox is written before delivery is attempted.*  That is why
+messaging a stopped agent works, and why a daemon killed mid-turn does
+not lose the queue.
+
+** Threading and main contexts
+
+clawtilla is single-threaded by design.  Everything runs on one
+~GMainContext~ -- the daemon's own when embedded, the default one when
+standalone.
+
+The one rule that catches people: *~g_timeout_add_seconds()~ attaches to
+the default context, not the thread-default one.*  In an embedded daemon
+that means the timer never fires.  Everything periodic in clawtilla uses
+~g_timeout_source_new_seconds()~ plus ~g_source_attach(source, context)~
+instead.  Two real bugs came from getting this wrong -- exec timeouts and
+secret-command timeouts that silently never fired.
+
+The synchronous client (~clawt_client_request~) blocks on a read.  A
+client that also wants to iterate a main loop -- the GTK app, or a test
+-- runs the request on another thread and pumps the loop meanwhile.
+
+** How clawtilla and libreclaw divide up
+
+| Concern | Whose |
+|---------+-------|
+| One agent's model, session, tools, channels | libreclaw |
+| Which agents exist, and what each one is | clawtilla |
+| An agent's credentials and environment | clawtilla renders, libreclaw consumes |
+| Messages between agents | clawtilla |
+| Messages between an agent and the outside world | libreclaw's channels |
+| Recursion, rate and cost limits across agents | clawtilla |
+| Containers and VMs | clawtilla, via podomation |
+
+~clawtilla.yaml~ is the source of truth.  The daemon renders each agent's
+libreclaw ~config.yaml~ from it, deterministically, on every start and
+reload.  That file carries a header saying so, because the natural thing
+to do with a config file is edit it and every edit there is silently
+lost.
+
+Anything clawtilla does not model passes through: an agent's
+~libreclaw:~ block is copied into the rendered file verbatim, so a
+libreclaw option clawtilla has never heard of is still reachable without
+waiting for a clawtilla release.
+
+** The transport between them
+
+libreclaw gained an ~LcClawtillaChannel~ in 0.26.0.  It dials *out* to
+the daemon's socket.  That direction is deliberate: an agent running in a
+container, a VM or on another host has no reachable port, and giving
+every agent one would mean allocating and tracking a port per agent for
+no benefit.  Dialling out needs nothing but a socket path.
+
+The wire format is libreclaw's existing bridge protocol, so this is a
+transport rather than a second protocol to keep in step.
+
+Authentication is two layers: the socket is 0600, so only the owner can
+connect at all; and each agent presents a token from a file only it and
+the daemon can read, which stops one of your own agents claiming to be
+another and reading its mail.
+
+** Events
+
+Everything that happens is published on ~ClawtEventBus~ with a sequence
+number.  Clients subscribe with a cursor and are told whether the replay
+was complete -- a client that silently receives a partial replay carries
+the hole for the rest of its life and shows stale state it has no way to
+notice.
+
+~ClawtEventLog~ tees the same events to NDJSON on disk, one file per UTC
+day, mode 0600.  Secrets are scrubbed *on write*, not at display time:
+transcripts get replayed into every context rebuild, so redacting only
+when showing them leaves the leak permanent.
+
+** Reading order in the source
+
+#+begin_example
+src/
+  clawt-enums.h        every enum, with the reasoning in the doc comments
+  clawt-error.h        one domain, and what each code means
+  config/              the schema table is the single source of truth
+  link/                agents dial in here
+  ipc/                 clients connect here
+  mailbox/             the durable queue
+  agent/               agents and their runtimes
+  computer/            the four backends, mounts, confinement
+  chat/                rooms, messages, loop safety
+  task/                delegated work
+  mcp/                 the tools agents get
+  core/                events, the log, and ClawtDaemon assembling it all
+  plugin/, interfaces/ third-party extensions
+  ai/                  the agent designer
+#+end_example
+
+That is roughly bottom-up: each layer only knows about the ones above it
+in the list.

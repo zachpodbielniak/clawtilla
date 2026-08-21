@@ -1,0 +1,223 @@
+#+title: Agents
+#+description: Persona, memory, models, runtimes, lifecycle and capabilities
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-21 Fri]
+#+updated: [2026-08-21 Fri]
+#+version: 0.1.0
+
+* Agents
+
+One agent is one libreclaw process (or one ~LcApp~ inside the daemon)
+with its own persona, model, credentials, integrations and computer.
+
+** Identity and persona
+
+#+begin_src yaml
+persona:
+  system_prompt: "You read code carefully and report what you find."
+  identity_files: [SOUL.md, IDENTITY.md, AGENTS.md, TOOLS.md, USER.md]
+#+end_src
+
+~identity_files~ are concatenated into the system prompt by libreclaw,
+resolved relative to the agent's workspace.  Files that do not exist are
+skipped, so a shared list across a fleet is fine.
+
+~description~ is separate and matters more than it looks: it is what
+other agents read when deciding who to delegate to.  "reads code and
+summarises it" is useful; "the researcher agent" is not.
+
+** Memory
+
+#+begin_src yaml
+memory:
+  enabled: true
+  max_lines: 500
+  max_bytes: 65536
+#+end_src
+
+A budget rather than a limit to grow into.  An agent whose memory file
+grows without bound eventually spends its whole context recalling and
+none of it working.
+
+** Models
+
+#+begin_src yaml
+model:
+  provider: claude-code
+  model: opus
+  effort: high              # low | medium | high | xhigh | max
+  routing_profile: default
+  fallbacks: [sonnet, haiku]
+#+end_src
+
+Anything libreclaw supports.  ~fallbacks~ are tried in order when the
+primary is unavailable.
+
+** Workspace
+
+#+begin_src yaml
+workspace: "~/agents/researcher"
+#+end_src
+
+Defaults to ~<defaults.workspace_root>/<id>~.  Scaffolded on first start
+through libreclaw's ~LcHatch~, so a new agent gets its identity files and
+directory layout without you creating them.
+
+** Runtimes
+
+*** process (default)
+
+A supervised ~libreclaw~ child.
+
+#+begin_src yaml
+runtime:
+  type: process
+  autostart: true
+  restart: on-failure       # never | on-failure | always
+  backoff_seconds: 5
+  max_restarts: 10
+#+end_src
+
+The child's environment is built from an *allowlist*, never inherited
+wholesale.  A stray ~ANTHROPIC_API_KEY~ in the daemon's environment must
+not quietly move a subscription CLI onto pay-as-you-go billing nobody
+agreed to.  Add what the agent needs under ~env:~.
+
+To see exactly what a child got:
+
+#+begin_src bash
+tr '\0' '\n' < /proc/$(pgrep -f 'libreclaw -c .*researcher')/environ
+#+end_src
+
+~max_restarts~ exists because an agent that fails instantly and is
+restarted for ever is a busy loop that starves everything else.  Backoff
+doubles on each consecutive failure.
+
+*** embedded
+
+An ~LcApp~ inside the daemon.
+
+#+begin_src yaml
+runtime:
+  type: embedded
+#+end_src
+
+Cheaper than a process, and the only option where there is no binary to
+run -- which is the case when clawtilla is embedded in something else.
+
+The trade is real and clawtilla does not pretend otherwise: an embedded
+agent cannot have its own environment or credentials, cannot be
+sandboxed away from the daemon, and cannot be interrupted, because there
+is no process to signal.  ~ClawtAgentCaps~ reports that, so no interface
+offers a control that would do nothing.
+
+**** Running several embedded agents in one process
+
+Verified constraints, all of which the daemon handles:
+
+- ports must be ~0~ so each gets one assigned, and read back
+- ~session.persist_dir~, ~database.path~ and the skills directory must
+  differ per agent -- sharing a persist dir lets one agent resume
+  another's session, which looks exactly like the model hallucinating a
+  conversation it never had
+- signal handlers are installed only in non-embedded mode, so the daemon
+  owns SIGINT/SIGTERM/SIGHUP
+- OpenTelemetry is process-global, so at most one embedded agent may
+  enable it
+- ~channels.local~ owns fd 0 and 1, so it is never rendered for an
+  embedded agent
+- config errors surface at start, not at construction
+
+** Lifecycle
+
+#+begin_example
+  stopped ──start──▶ starting ──connected──▶ running
+     ▲                   │                      │
+     │                   └───failed─────────────┤
+     │                                          │
+     └──────── stopping ◀────stop───────────────┘
+
+  shadow   — configuration could not be understood; refuses to run
+  degraded — running but something is wrong (its computer, an integration)
+  error    — it failed and the restart policy gave up
+#+end_example
+
+#+begin_src bash
+clawtilla agent start researcher
+clawtilla agent stop researcher
+clawtilla agent restart researcher
+clawtilla agent logs researcher
+#+end_src
+
+Starting an agent, in order:
+
+1. validate its integrations -- an agent whose Matrix block is missing a
+   homeserver starts perfectly cleanly and then never receives anything
+2. resolve its secrets into credential files, and its link token
+3. render its ~config.yaml~
+4. create and start its computer -- before the agent, so it does not
+   spend its first turns discovering it cannot reach one
+5. start the runtime
+6. wait for the link; the backlog drains when it connects
+
+** Capabilities
+
+~ClawtAgentCaps~ is derived from what the agent *has*:
+
+| Flag | Comes from |
+|------+------------|
+| ~tools-mcp~, ~peer-comms~ | being in a fleet at all |
+| ~computer~ | having a computer object that is not ~none~ |
+| ~host-control~ | that computer being a host |
+| ~desktop~, ~desktop-input~ | the desktop add-on, and ~allow_input~ |
+| ~mounts~ | having any |
+| ~streaming~, ~interrupt~ | the runtime |
+| ~effort-levels~ | the model configuration |
+
+Two consequences:
+
+- every GTK control binds its sensitivity to a flag, so nothing offers
+  something that would fail
+- an agent is never told it has a tool that does not exist; a tool it
+  cannot use is not listed
+
+Derived from the *object*, not the config: a computer that failed to
+provision leaves the config saying ~container~ while the agent has
+nothing, and an agent that believes it has a computer it cannot reach
+burns whole turns hunting for it.
+
+** Shadow agents
+
+#+begin_src bash
+clawtilla agent show strange
+#+end_src
+
+#+begin_example
+state:  shadow - unknown computer type 'teleporter'; this build knows
+        none, host, container and vm
+#+end_example
+
+A shadow is listed, explains itself, and refuses to run.  The fleet
+starts without it.
+
+** Creating agents
+
+#+begin_src bash
+clawtilla agent create --id researcher --model sonnet --computer container
+clawtilla agent set researcher model.effort high
+clawtilla agent rm researcher
+#+end_src
+
+~agent rm~ removes the agent from the configuration and leaves its state
+directory -- its mailbox, its transcripts -- on disk.  Removing an agent
+is reversible; deleting its history is not.
+
+Or describe what you want:
+
+#+begin_src bash
+clawtilla agent new --ai "reads my notes and answers questions about them"
+#+end_src
+
+That prints the proposed configuration and stops.  Add ~--commit~ to
+create it.  See [[file:clients.org][clients.org]].

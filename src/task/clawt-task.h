@@ -32,13 +32,46 @@ G_BEGIN_DECLS
 
 GType clawt_task_get_type(void) G_GNUC_CONST;
 
+/**
+ * clawt_task_new:
+ * @origin_agent: who delegated it
+ * @assignee: who is to do it
+ * @prompt: what they are to do
+ *
+ * Creates a task in the ~pending~ state.  Ordinary code goes through
+ * clawt_task_manager_create(), which also enforces the depth limit and
+ * records the parent.
+ *
+ * Returns: (transfer full): a new #ClawtTask
+ */
 ClawtTask *clawt_task_new(const gchar *origin_agent,
                           const gchar *assignee,
                           const gchar *prompt);
 
+/**
+ * clawt_task_copy:
+ * @self: a #ClawtTask
+ *
+ * Returns: (transfer full): a copy
+ */
 ClawtTask *clawt_task_copy(ClawtTask *self);
 void       clawt_task_free(ClawtTask *self);
 
+/**
+ * clawt_task_get_id:
+ * @self: a #ClawtTask
+ *
+ * The accessors below are plain reads of what clawt_task_new() and the
+ * setters put there.  Documented as a group because a line each saying
+ * "returns the assignee" would be noise; the fields themselves are
+ * described on #ClawtTask.
+ *
+ * Every string getter is (transfer none) and may be %NULL for the
+ * optional fields -- room, parent, reason, result and session key are
+ * all absent until something sets them.
+ *
+ * Returns: (transfer none): the task's identifier
+ */
 const gchar   *clawt_task_get_id(ClawtTask *self);
 const gchar   *clawt_task_get_origin(ClawtTask *self);
 const gchar   *clawt_task_get_assignee(ClawtTask *self);
@@ -53,6 +86,15 @@ gint           clawt_task_get_depth(ClawtTask *self);
 gint64         clawt_task_get_created_at(ClawtTask *self);
 gint64         clawt_task_get_finished_at(ClawtTask *self);
 
+/**
+ * clawt_task_set_room:
+ * @self: a #ClawtTask
+ * @room: (nullable): the room this task belongs to
+ *
+ * The setters below all take %NULL to clear the field.  They exist for
+ * the manager and for reading a task back off the wire; ordinary code
+ * goes through #ClawtTaskManager, which enforces the state machine.
+ */
 void clawt_task_set_room(ClawtTask *self, const gchar *room);
 void clawt_task_set_parent_id(ClawtTask *self, const gchar *parent_id);
 void clawt_task_set_reason(ClawtTask *self, const gchar *reason);

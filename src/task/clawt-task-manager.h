@@ -25,6 +25,15 @@ G_BEGIN_DECLS
 G_DECLARE_FINAL_TYPE(ClawtTaskManager, clawt_task_manager,
                      CLAWT, TASK_MANAGER, GObject)
 
+/**
+ * clawt_task_manager_new:
+ *
+ * Tasks live in memory: they are work in flight, and work in flight does
+ * not survive the daemon that was doing it.  What did happen is in the
+ * event log.
+ *
+ * Returns: (transfer full): a new #ClawtTaskManager
+ */
 ClawtTaskManager *clawt_task_manager_new(void);
 
 /**

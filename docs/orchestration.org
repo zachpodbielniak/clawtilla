@@ -1,0 +1,212 @@
+#+title: Orchestration
+#+description: Rooms, tasks, the chief-of-staff pattern, and the limits that stop runaways
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-21 Fri]
+#+updated: [2026-08-21 Fri]
+#+version: 0.1.0
+
+* Orchestration
+
+** Rooms
+
+Agents are managed as chats, so a room is the only mechanism: a direct
+exchange between two agents is a room with two members, and a standup is a
+room with five.  There is no separate "DM" code path to keep in step.
+
+#+begin_src yaml
+rooms:
+  - id: standup
+    name: "Standup"
+    members: [chief-of-staff, researcher, writer]
+    require_mention: false
+    max_hops: 4
+#+end_src
+
+Posting into a room appends to its transcript and enqueues into every
+member's mailbox except the sender's.
+
+~require_mention: true~ means an agent only receives messages that name
+it -- worth having in a busy room, so five agents do not each take a turn
+on every remark.
+
+Transcripts persist to ~<state_dir>/transcripts/<room>.ndjson~, written
+on every message rather than at shutdown.  A daemon that is killed rather
+than stopped is the ordinary case for a service, and a transcript that
+only survives a clean exit is not a transcript.
+
+Removing a room leaves its transcript on disk.  Removing a room from the
+fleet is a configuration change; destroying the record of what was said
+in it is not, and is not recoverable.
+
+** Tasks
+
+A task is a delegated unit of work with an origin, an assignee, a prompt,
+a state and a result.
+
+#+begin_src bash
+clawtilla task list
+clawtilla task show task-01m0k5…
+clawtilla task cancel task-01m0k5…
+#+end_src
+
+States: ~pending~ → ~running~ → ~completed~ / ~failed~ / ~cancelled~ /
+~orphaned~.
+
+Cancelling a task cancels everything it spawned.  Stopping an agent
+orphans its tasks rather than leaving them assigned -- a task whose
+assignee is gone would sit in the list looking like work in progress for
+ever.
+
+** The chief-of-staff pattern, worked through
+
+Name one agent as the chief:
+
+#+begin_src yaml
+orchestration:
+  chief_of_staff: chief-of-staff
+
+agents:
+  - id: chief-of-staff
+    chief_of_staff: true
+    description: "hands work to the others and reports back"
+    model:
+      model: opus
+  - id: researcher
+    description: "reads code and summarises it"
+    computer:
+      type: container
+  - id: writer
+    description: "turns notes into prose"
+#+end_src
+
+The descriptions are load-bearing.  They are what the chief reads when
+deciding who to delegate to, so they should say what an agent is *for*,
+not what it is called.
+
+Now:
+
+#+begin_src bash
+clawtilla send chief-of-staff "summarise this week's commits and write it up"
+#+end_src
+
+What happens:
+
+1. The message is queued into the chief's mailbox and delivered.
+2. The chief calls ~clawtilla_list_agents~ and sees the researcher and
+   the writer, with their descriptions and states.
+3. It calls ~clawtilla_delegate(agent_id: "researcher", task: "…")~ and
+   gets a task id back immediately.
+4. The router enqueues that work into the researcher's mailbox, carrying
+   the task id and a depth of 1.
+5. The researcher works, then calls ~clawtilla_task_complete~ with its
+   result -- or simply replies, in which case the daemon completes the
+   task from the reply, because an agent that only replied would
+   otherwise leave the chief waiting for ever.
+6. The chief polls ~clawtilla_task_status~, gets the result with
+   ~clawtilla_task_result~, and delegates the write-up.
+
+At every step:
+
+#+begin_src bash
+clawtilla task list                # what is in flight
+clawtilla room history standup     # what was said
+clawtilla mailbox list writer      # what is waiting
+#+end_src
+
+** The tools agents get
+
+Served over each agent's link as an MCP endpoint.
+
+| Tool | What it does |
+|------+--------------|
+| ~clawtilla_list_agents~ | who else is here, what for, and whether they are running |
+| ~clawtilla_get_agent~ | one agent in detail |
+| ~clawtilla_message_agent~ | queue a message; returns without waiting |
+| ~clawtilla_ask_agent~ | send and wait for the reply |
+| ~clawtilla_delegate~ | hand over work, get a task id |
+| ~clawtilla_task_status~ / ~_result~ / ~_cancel~ | follow it |
+| ~clawtilla_task_complete~ | report your own assigned task done |
+| ~clawtilla_post_room~, ~_create_room~, ~_room_history~ | rooms |
+| ~clawtilla_mailbox_list~ / ~_read~ / ~_ack~ / ~_reply~ | your own mail |
+| ~clawtilla_computer_exec~, ~_computer_state~ | your computer |
+| plugin tools | whatever a ~ClawtToolProvider~ registers |
+
+*A tool an agent cannot use is not offered at all.*  Listing it and then
+refusing costs the agent a turn to discover something it could have been
+told up front, and teaches it to keep trying.  An agent with no computer
+never sees ~clawtilla_computer_exec~.
+
+Per-agent narrowing:
+
+#+begin_src yaml
+tools:
+  allow: [clawtilla_list_agents, clawtilla_message_agent]
+  deny:  [clawtilla_delegate]
+#+end_src
+
+Deny is applied after allow and wins, so a broad allow cannot quietly
+re-enable something specifically turned off.  Plugin tools obey the same
+lists -- a plugin must not be able to hand an agent something its
+operator turned off.
+
+** Loop safety
+
+Four limits, each answering a different failure.
+
+#+begin_src yaml
+orchestration:
+  max_hops: 4
+  rate_limit_per_minute: 30
+  task_budget_usd: 5.0
+  cycle_window: 20
+#+end_src
+
+*** max_hops
+
+Every message carries a depth.  Delegating increments it.  Past
+~max_hops~ the send is refused with an error the agent can read.
+
+This is what stops A → B → A → B running until somebody notices.
+
+*** rate_limit_per_minute
+
+Per agent.  Catches a fast loop that stays within the hop limit -- an
+agent messaging the same peer thirty times in a minute is not working, it
+is stuck.
+
+*** task_budget_usd
+
+Charged against the *task*, not the agent, so a chief delegating ten
+subtasks is bounded as one piece of work rather than ten.  Exhausting it
+fails the task with the reason recorded.
+
+*** cycle_window
+
+A hash of (sender, room, recent body).  Catches the case the other three
+miss: two agents politely agreeing with each other for ever, each message
+fresh enough to pass the hop count and slow enough to pass the rate
+limit.
+
+*** What happens when one is hit
+
+The send is refused *before* anything is enqueued, and the refusing agent
+gets an error saying which limit and why.  Refusing at the source is what
+stops a runaway fan-out; checking at delivery time would mean the
+messages already exist and cleaning up rather than preventing.
+
+** Rooms, transcripts and branching
+
+~ClawtMessage~ carries a ~parent_id~, so an edit forks a branch rather
+than destroying history.  The transcript keeps both.
+
+** Spawning agents from a tool
+
+~clawtilla_spawn_agent~ exists and is *off by default*.  An agent that
+can create agents can create agents that create agents, and the hop limit
+does not apply to that.  Turn it on per agent, deliberately:
+
+#+begin_src yaml
+tools:
+  allow: [clawtilla_spawn_agent, …]
+#+end_src

@@ -1,0 +1,190 @@
+#+title: Mailboxes
+#+description: Queue semantics, leasing, retry, backpressure and stuck queues
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-21 Fri]
+#+updated: [2026-08-21 Fri]
+#+version: 0.1.0
+
+* Mailboxes
+
+Every agent has a durable mailbox.  That single fact is what makes the
+rest of clawtilla work: you can message an agent that is switched off, a
+chief-of-staff can fan work out faster than the workers drain it, and a
+daemon killed mid-turn does not lose anything.
+
+The store is SQLite in WAL mode at
+~<state_dir>/agents/<id>/mailbox.db~, written only by the daemon.
+
+** What an item carries
+
+| Field | Why it is there |
+|-------+-----------------|
+| ~id~ | a sortable identifier, so listing is in order without a join |
+| ~from~, ~to~ | who sent it, whose box it is in |
+| ~room~ | which conversation, so a reply lands in the same one |
+| ~task_id~ | the delegated task this belongs to |
+| ~reply_to~ | the message being answered |
+| ~subject~, ~body~ | the message |
+| ~priority~ | ~low~, ~normal~, ~high~, ~urgent~ |
+| ~depth~ | how many hops it has travelled, for loop safety |
+| ~created_at~, ~not_before~, ~expires_at~ | when it may be delivered, and until when |
+| ~state~ | ~pending~, ~leased~, ~delivered~, ~acked~, ~failed~, ~dead~ |
+| ~attempts~, ~last_error~ | why it has not gone yet |
+| idempotency key | so a retried tool call does not enqueue twice |
+
+** Ordering
+
+FIFO within a priority band; ~urgent~ jumps ahead of everything.  Ties
+break by ~created_at~.
+
+~not_before~ defers delivery, which is how both "remind me in an hour"
+and retry backoff are expressed -- one mechanism rather than two.
+
+** Leasing
+
+An item handed to a running agent is ~leased~ with a deadline rather than
+deleted.  If the agent dies or the lease expires, it returns to
+~pending~ with ~attempts~ incremented.
+
+That is what makes delivery survive a crash mid-turn without silently
+duplicating work.
+
+*The daemon acknowledges on the agent's behalf once the message reaches
+the socket.*  The lease exists to survive a crash, not to wait for a
+reply: holding it until the agent answers would redeliver every message
+the agent chose not to respond to.
+
+** Retry and dead letters
+
+Exponential backoff with jitter, based on ~backoff_seconds~.  After
+~max_attempts~ the item becomes ~dead~ and lands in the dead-letter view.
+It is never silently dropped.
+
+#+begin_src bash
+clawtilla mailbox dead researcher
+clawtilla mailbox requeue researcher <item-id>    # attempts reset
+#+end_src
+
+~backoff_seconds: 0~ means zero.  It used to mean "substitute 30", which
+made an immediate-retry configuration wait half a minute for no stated
+reason.
+
+** TTL
+
+Items past ~expires_at~ are removed by a periodic sweep and logged.  A
+message with no TTL lives until it is delivered or dead-lettered.
+
+#+begin_src bash
+clawtilla mailbox purge researcher
+#+end_src
+
+** Backpressure
+
+~max_depth~ with one of three policies:
+
+| Policy | What happens when full |
+|--------+------------------------|
+| ~reject~ | the sender gets a real error |
+| ~drop_oldest~ | the oldest pending item is discarded, and the loss is logged |
+| ~block_sender~ | the send fails with a "try again" error rather than blocking a thread |
+
+The sender always finds out.  A silent discard is the one option not
+offered.
+
+Note that a full mailbox does not fail a whole room post: a room of five
+where one member is backed up still reaches the other four, and the
+failure is reported rather than hidden.
+
+** Idempotency
+
+~clawt_mailbox_post()~ takes an optional idempotency key, enforced by a
+partial unique index.  A retried tool call posts once.
+
+** Configuration
+
+#+begin_src yaml
+orchestration:
+  mailbox:
+    max_depth: 1000
+    overflow: reject          # reject | drop_oldest | block_sender
+    max_attempts: 5
+    lease_seconds: 300
+    default_ttl_seconds: 604800
+    backoff_seconds: 5
+#+end_src
+
+Any of these can be overridden per agent under ~agents[].mailbox~.
+
+** Reasoning about a stuck queue
+
+Work through it in this order.
+
+*** 1. Is anything waiting at all?
+
+#+begin_src bash
+clawtilla mailbox list researcher
+#+end_src
+
+A depth of zero means the messages went somewhere else.  Check that you
+sent to the id you think you did, and that the room has the members you
+expect (~clawtilla room list~).
+
+*** 2. Is the agent connected?
+
+#+begin_src bash
+clawtilla agent list
+#+end_src
+
+~LINK: up~ means the agent has dialled in.  If it is running but the link
+is down, the child cannot reach ~agents.sock~ -- check the rendered
+config (~clawtilla config render researcher~) and the agent's log
+(~clawtilla agent logs researcher~).
+
+*** 3. Are the items deferred?
+
+An item with a future ~not_before~ is waiting on purpose: either it was
+scheduled, or it is backing off after failures.  ~attempts~ and
+~last_error~ tell you which.
+
+*** 4. Are they leased and never acknowledged?
+
+A ~leased~ item whose deadline has not passed is in flight.  If they are
+all leased and none is progressing, the agent took delivery and stopped.
+Restart it -- the leases expire and the items return to ~pending~ with
+~attempts~ incremented, so nothing is lost.
+
+*** 5. Are they dead?
+
+#+begin_src bash
+clawtilla mailbox dead researcher
+#+end_src
+
+Each dead item carries the error that killed it.
+
+*** 6. Is the queue full?
+
+A ~max_depth~ hit with ~overflow: reject~ makes senders fail rather than
+the queue grow, so the symptom is at the sending end, not here.
+
+** Corruption
+
+A ~mailbox.db~ that cannot be opened is moved aside and recreated, with a
+warning.  A corrupt queue should cost the messages in it, not the agent --
+and certainly not the fleet.
+
+** In code
+
+#+begin_src c
+gchar *id = clawt_mailbox_post(mailbox, item, &error);
+
+ClawtMailboxItem *item = clawt_mailbox_lease(mailbox, 300);
+clawt_mailbox_ack(mailbox, clawt_mailbox_item_get_id(item), &error);
+clawt_mailbox_nack(mailbox, id, "the link dropped", &error);
+
+guint expired  = clawt_mailbox_purge_expired(mailbox);
+guint returned = clawt_mailbox_reclaim_expired_leases(mailbox);
+#+end_src
+
+Signals: ~item-added~, ~item-leased~, ~item-acked~, ~item-dead-lettered~,
+~depth-changed~.

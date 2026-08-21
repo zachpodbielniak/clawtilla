@@ -1,0 +1,187 @@
+#+title: The IPC protocol
+#+description: Frames, kinds, framing, auth, cursors and versioning
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-21 Fri]
+#+updated: [2026-08-21 Fri]
+#+version: 0.1.0
+
+* The client protocol
+
+What ~clawtilla~, ~clawtilla-gtk~, ~clawtilla-web~ and any other client
+speak to the daemon.
+
+** Framing
+
+Newline-delimited JSON.  One object per line, UTF-8.
+
+A frame is capped at 8 MiB.  The bound is not optional: without it a peer
+that never sends a newline makes the daemon buy memory until it is killed.
+
+** The envelope
+
+#+begin_src json
+{"v": 1, "kind": "agent.list", "id": "r1", "payload": {}}
+#+end_src
+
+| Field | Meaning |
+|-------+---------|
+| ~v~ | protocol version; must match, and both are named when it does not |
+| ~kind~ | what this is |
+| ~id~ | a correlation id the reply repeats back |
+| ~payload~ | the body |
+
+A reply adds ~ok~, and on failure ~code~ (a ~ClawtErrorCode~) and
+~error~ (text a person can act on, with secrets redacted).
+
+#+begin_src json
+{"v":1,"kind":"agent.list","id":"r1","ok":true,"payload":{"agents":[…]}}
+{"v":1,"kind":"agent.start","id":"r2","ok":false,"code":2,
+ "error":"there is no agent called 'ghost'"}
+#+end_src
+
+*A version mismatch names both versions.*  "Protocol error" alone sends
+people looking for a bug when the answer is that one half of the install
+was upgraded and the other was not.
+
+*An unknown kind names itself.*  A client from a newer build should learn
+what is missing, not merely that something failed.
+
+** Kinds
+
+*** control.*
+
+| Kind | Payload | Reply |
+|------+---------+-------|
+| ~control.hello~ | ~token~ (TCP only) | ~version~, ~daemon~ |
+| ~control.status~ | | version, config path, agent and client counts, cursor |
+| ~control.subscribe~ | ~cursor~ | ~cursor~, ~resumed~, then a replay |
+| ~control.reload~ | | |
+| ~control.shutdown~ | | answered before the daemon quits |
+
+*** agent.*
+
+~agent.list~, ~agent.show~, ~agent.start~, ~agent.stop~, ~agent.restart~,
+~agent.logs~, ~agent.create~, ~agent.remove~, ~agent.set~.
+
+An agent object carries id, name, description, state, detail, caps,
+whether it is the chief, whether it is connected, its computer type,
+model, mailbox depth, and its credentials *by reference*.
+
+*** msg.* and room.*
+
+~msg.send~ (~target~, ~body~, ~from~) → ~queued~, the number of mailboxes
+it went into.
+
+~room.list~, ~room.create~, ~room.add~, ~room.history~.
+
+*** mailbox.*
+
+~mailbox.list~, ~mailbox.dead~, ~mailbox.ack~, ~mailbox.requeue~,
+~mailbox.purge~.
+
+*** task.*
+
+~task.list~, ~task.show~, ~task.cancel~.
+
+*** computer.*
+
+~computer.exec~ (~agent~, ~command~, ~cwd~, ~timeout~) → ~exit~,
+~stdout~, ~stderr~.  ~computer.status~.  ~computer.copy~ (~src~, ~dst~,
+one side being ~<agent>:<path>~).  ~exchange.list~.
+
+*** config.*, plugin.*, integration.*, design.*
+
+~config.show~, ~config.render~, ~config.validate~; ~plugin.list~;
+~integration.list~, ~integration.health~; ~design.agent~.
+
+** Events
+
+Subscribers receive:
+
+#+begin_src json
+{"v":1,"kind":"event","payload":{
+   "kind":"agent.started","subject":"researcher",
+   "ts":1755792000000000,"cursor":42,
+   "detail":{"from":"chief-of-staff"}}}
+#+end_src
+
+Event kinds: ~daemon.started~, ~daemon.stopped~, ~daemon.reloaded~,
+~agent.created~, ~agent.removed~, ~agent.changed~, ~agent.started~,
+~agent.stopped~, ~agent.connected~, ~agent.disconnected~, ~message~,
+~mailbox.queued~, ~mailbox.delivered~, ~room.created~, ~room.changed~,
+~task.*~, ~computer.exec~.
+
+** Cursors and resume
+
+Every event has a sequence number.  A client subscribes with the last one
+it saw:
+
+#+begin_src json
+{"v":1,"kind":"control.subscribe","id":"r1","payload":{"cursor":41}}
+{"v":1,"kind":"control.subscribe","id":"r1","ok":true,
+ "payload":{"cursor":57,"resumed":true}}
+#+end_src
+
+~resumed: false~ means the cursor had already fallen out of the daemon's
+buffer and events are missing.  *A client that gets that must re-fetch
+rather than assume it is up to date* -- one that silently accepts a
+partial replay carries the hole for the rest of its life and shows stale
+state it has no way to notice.
+
+Sequence numbers rather than timestamps, because two events in the same
+microsecond are ordinary and a client must not have to guess which of
+them it already has.
+
+** Authentication
+
+Over the unix socket: none.  The socket is 0600, so connecting at all
+proves you are the owner.
+
+Over TCP: ~control.hello~ with a token, before anything else.  The daemon
+refuses to open a TCP listener without a token configured.
+
+** Backpressure
+
+A client that stops reading has its outbound queue capped at 4 MiB and is
+then disconnected.  Otherwise a paused GUI or a suspended terminal grows
+the daemon's memory without bound while looking healthy.  Dropping a
+client is recoverable; running the daemon out of memory is not.
+
+** Robustness
+
+A malformed frame is answered with an error and the connection *stays
+open*.  A client that sent something malformed usually recovers, and
+dropping it would turn a message-level mistake into a session-level one.
+
+An oversized frame does close the connection: at that point the stream is
+no longer trustworthy.
+
+** Versioning
+
+~CLAWT_IPC_VERSION~ increments when the meaning of an existing frame
+changes.  Adding a new kind, or a new optional payload member, does not:
+an older daemon answers an unknown kind with an error naming it, and an
+older client ignores payload members it does not know.
+
+** In code
+
+#+begin_src c
+g_autoptr(ClawtClient) client = clawt_client_new(NULL);
+
+if (!clawt_client_connect(client, &error))
+    return;
+
+clawt_client_set_auto_reconnect(client, TRUE);
+g_signal_connect(client, "event", G_CALLBACK(on_event), self);
+clawt_client_subscribe(client, cursor, &resumed, &error);
+
+reply = clawt_client_request(client, "agent.list", NULL, &error);
+#+end_src
+
+~clawt_client_request()~ is synchronous and dispatches events that arrive
+while it waits, so a blocking call does not punch a hole in the caller's
+subscription.  ~clawt_client_request_async()~ runs it on a thread.
+
+An embedding host can skip the socket entirely and call
+~clawt_daemon_handle_request()~ with the same frames.

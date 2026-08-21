@@ -1,0 +1,210 @@
+#+title: Getting started with clawtilla
+#+description: Install, first daemon, first agent, first conversation
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-21 Fri]
+#+updated: [2026-08-21 Fri]
+#+version: 0.1.0
+
+* Getting started
+
+This gets you from a checkout to two agents talking to each other.  It
+takes about ten minutes, most of which is the first build.
+
+** What you need
+
+clawtilla builds on the bare host.  Everything comes from ~pkg-config~,
+plus GCC and GNU make.
+
+*** Fedora packages
+
+| Package | Why |
+|---------+-----|
+| ~glib2-devel~ | glib, gobject, gio, gio-unix, gmodule |
+| ~libsoup3-devel~ | HTTP, via libreclaw |
+| ~json-glib-devel~ | the wire protocols |
+| ~cmark-devel~ | markdown rendering |
+| ~sqlite-devel~ | the mailbox store |
+| ~libetpan-devel~ | the email integration |
+| ~libpq-devel~ | libreclaw's postgres memory |
+| ~libdex-devel~ | futures |
+| ~libyaml-devel~ | yaml-glib |
+| ~libxml2-devel~ | ai-glib's HTML-parsing search providers |
+| ~gobject-introspection-devel~ | the ~.gir~ / ~.typelib~ step |
+| ~gtk4-devel~ | the GTK client |
+| ~libadwaita-devel~ | the GTK client |
+
+Runtime, only for the features that use them:
+
+| Package | Needed for |
+|---------+------------|
+| ~podman~ | ~computer.type: container~ |
+| ~bubblewrap~ | ~computer.host.confine: bwrap~ |
+| ~libvirt-daemon-kvm~, ~libvirt-client~ | ~computer.vm.backend: libvirt~ |
+| ~qemu-system-x86-core~ (or ~-aarch64-~) | either VM backend |
+| ~qemu-img~ | VM disk creation |
+| ~virtiofsd~ | mount paths into VMs |
+
+On Immutablue / Hyacinth Macaw these are layered into the image rather
+than installed on the host.  ~libadwaita-devel~ and ~libxml2-devel~ are
+the two most likely to be missing from an older image.
+
+** Build
+
+#+begin_src bash
+git clone --recurse-submodules <url> clawtilla
+cd clawtilla
+make
+#+end_src
+
+The first build compiles libreclaw and its five bundled dependencies, so
+it takes a while.  Later builds do not.
+
+#+begin_src bash
+make test
+#+end_src
+
+The suite is hermetic: no network, no podman, no libvirt, no gowl.  If
+something fails here, it is clawtilla and not your machine.
+
+** Your first daemon
+
+#+begin_src bash
+mkdir -p ~/.clawtilla
+./build/release/clawtilla --generate-config > ~/.clawtilla/config.yaml
+./build/release/clawtillad --foreground
+#+end_src
+
+The generated config is a starter: the options worth deciding immediately
+are live, the rest are commented out at their defaults.
+[[file:configuration.org][configuration.org]] documents all of them, and
+~data/example-config.yaml~ has every option with its default and a
+comment.
+
+Leave that running and open another terminal.
+
+** Your first agent
+
+#+begin_src bash
+./build/release/clawtilla agent create --id researcher \
+    --model sonnet --computer none
+./build/release/clawtilla agent list
+#+end_src
+
+An agent with ~--computer none~ is chat-only: no container, no host
+access, nothing to provision.  It is the right thing to start with.
+
+To actually run it, clawtilla needs a ~libreclaw~ binary.  If you have
+not installed one, point at the build tree:
+
+#+begin_src yaml
+defaults:
+  libreclaw_binary: "/path/to/clawtilla/deps/libreclaw/build/release/libreclaw"
+#+end_src
+
+Then:
+
+#+begin_src bash
+./build/release/clawtilla agent start researcher
+./build/release/clawtilla agent list
+#+end_src
+
+~LINK: up~ means the agent dialled back into the daemon and is reachable.
+
+** Your first conversation
+
+#+begin_src bash
+./build/release/clawtilla chat researcher
+#+end_src
+
+Or without the interactive prompt:
+
+#+begin_src bash
+./build/release/clawtilla send researcher "what can you do?"
+#+end_src
+
+*Messaging an agent that is stopped is not an error.*  The message is
+queued in that agent's mailbox and delivered when it next starts.  That
+is the whole point of the mailbox; see [[file:mailboxes.org][mailboxes.org]].
+
+#+begin_src bash
+./build/release/clawtilla agent stop researcher
+./build/release/clawtilla send researcher "look at this when you wake up"
+./build/release/clawtilla mailbox list researcher    # one waiting
+./build/release/clawtilla agent start researcher     # it arrives
+#+end_src
+
+** A fleet that divides its own work
+
+Add a second agent and make one of them the chief of staff:
+
+#+begin_src bash
+./build/release/clawtilla agent create --id chief-of-staff --model opus
+./build/release/clawtilla agent set chief-of-staff chief_of_staff true
+./build/release/clawtilla agent start chief-of-staff
+
+./build/release/clawtilla room create standup --members chief-of-staff,researcher
+./build/release/clawtilla send chief-of-staff \
+    "ask the researcher to summarise this week's commits"
+#+end_src
+
+The chief has the orchestration tools -- ~clawtilla_list_agents~,
+~clawtilla_delegate~, ~clawtilla_task_status~ -- served to it over its
+link.  Watch what it does:
+
+#+begin_src bash
+./build/release/clawtilla task list
+./build/release/clawtilla room history standup
+#+end_src
+
+[[file:orchestration.org][orchestration.org]] works this pattern through
+properly, including the limits that stop two agents talking to each
+other for ever.
+
+** Giving an agent a computer
+
+#+begin_src bash
+./build/release/clawtilla agent create --id builder \
+    --computer container
+./build/release/clawtilla agent start builder
+./build/release/clawtilla computer exec builder -- uname -a
+#+end_src
+
+For host access -- the agent running commands on the machine clawtilla
+itself is on -- read [[file:computers.org][computers.org]] first.  It is
+the most useful and the most dangerous option, and it is deliberately
+awkward to enable by accident.
+
+** The desktop client
+
+#+begin_src bash
+./build/release/clawtilla-gtk
+#+end_src
+
+Same daemon, same fleet.  Everything the CLI can do the GTK client can
+do, and both agree with each other because neither holds any state.
+
+** Running it as a service
+
+#+begin_src bash
+./build/release/clawtilla --generate-systemd-service \
+    > ~/.config/systemd/user/clawtilla.service
+systemctl --user daemon-reload
+systemctl --user enable --now clawtilla
+#+end_src
+
+The agents' sockets live under ~$XDG_RUNTIME_DIR~, which systemd removes
+when your last session ends.  For a fleet that survives logout:
+
+#+begin_src bash
+loginctl enable-linger $USER
+#+end_src
+
+** Where to go next
+
+- [[file:architecture.org][architecture.org]] -- how the pieces fit, and why the daemon owns everything
+- [[file:configuration.org][configuration.org]] -- every option, with worked examples
+- [[file:computers.org][computers.org]] -- containers, VMs, host access and what each confinement mode actually prevents
+- [[file:mailboxes.org][mailboxes.org]] -- queue semantics, and how to reason about a stuck queue
+- [[file:security.org][security.org]] -- the threat model, stated plainly
+- [[file:troubleshooting.org][troubleshooting.org]] -- when something does not work

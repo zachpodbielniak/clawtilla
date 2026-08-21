@@ -1,0 +1,151 @@
+#+title: Maintenance
+#+description: Upgrades, backups, migrations, log rotation and releasing
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-21 Fri]
+#+updated: [2026-08-21 Fri]
+#+version: 0.1.0
+
+* Maintenance
+
+** What lives where
+
+#+begin_example
+~/.clawtilla/                     (daemon.state_dir)
+  config.yaml                     the fleet; the only thing you write by hand
+  agents.sock                     agents dial in here
+  agents/<id>/
+    config.yaml                   GENERATED; rewritten on every start
+    token                         GENERATED once; 0600
+    mailbox.db                    the durable queue
+    credentials/                  GENERATED from secret references; 0600
+    sessions/                     libreclaw session state
+    libreclaw.db                  libreclaw's own database
+  transcripts/<room>.ndjson       what was said
+  events/YYYY-MM-DD.ndjson        what happened
+
+$XDG_DATA_HOME/clawtilla/exchange/   files agents pass around
+$XDG_RUNTIME_DIR/clawtilla/daemon.sock
+#+end_example
+
+** Backing up
+
+Worth keeping:
+
+- ~config.yaml~ -- the only irreplaceable file
+- ~agents/*/mailbox.db~ -- undelivered messages
+- ~transcripts/~ -- the record of what was said
+- whatever your secret references point at
+
+Not worth keeping: anything marked GENERATED, ~sessions/~, ~events/~
+beyond your retention window.
+
+#+begin_src bash
+systemctl --user stop clawtilla
+tar czf clawtilla-backup-$(date -u +%F).tar.gz \
+    -C ~ .clawtilla/config.yaml \
+       .clawtilla/agents/*/mailbox.db \
+       .clawtilla/transcripts
+systemctl --user start clawtilla
+#+end_src
+
+Stopping first matters for the mailboxes: SQLite in WAL mode has a
+~-wal~ file, and copying the ~.db~ alone while the daemon is writing
+gives you a database missing its most recent commits.
+
+** Restoring
+
+Put the files back and start.  Rendered configs, tokens and credential
+files are regenerated.
+
+A token that no longer matches simply means the agent gets a new one on
+its next start.
+
+** Log rotation
+
+The event log rotates itself: one file per UTC day, and files older than
+~daemon.event_log_days~ are swept hourly.  ~0~ keeps everything.
+
+The file currently open is never swept -- deleting it out from under the
+handle would send every subsequent line to a file nothing can find.
+
+Transcripts are not rotated.  They are the record of the conversation and
+clawtilla will not decide on your behalf when a conversation stops
+mattering.
+
+** Upgrading clawtilla
+
+#+begin_src bash
+git pull
+git submodule update --init --recursive
+make clean all && make test
+systemctl --user restart clawtilla
+#+end_src
+
+Configuration is forward and backward compatible by design: an option a
+build does not recognise disables one agent (as a shadow) rather than the
+daemon, so a config written by a newer clawtilla round-trips through an
+older one without losing anything.
+
+** Upgrading libreclaw
+
+#+begin_src bash
+git -C deps/libreclaw pull --ff-only
+make clean all && make test
+git add deps/libreclaw && git commit -m "build: bump libreclaw"
+#+end_src
+
+Agents pick up the new binary on restart.  ~clawtilla agent restart~ one
+at a time to keep the fleet answering.
+
+Note that clawtilla requires libreclaw 0.26.0 or newer: that is where
+~LcClawtillaChannel~ landed, and without it agents have no way to dial
+in.
+
+** Configuration migrations
+
+There is no migration step, and that is deliberate: options are added,
+never silently renamed.  If one ever must change meaning,
+~CLAWT_IPC_VERSION~ and the schema's ~Since:~ fields are where that gets
+recorded.
+
+To see what a build understands:
+
+#+begin_src bash
+clawtilla --generate-config | less
+clawtilla config validate
+#+end_src
+
+** Moving a fleet to another machine
+
+1. Copy ~config.yaml~, the mailboxes and the transcripts.
+2. Recreate whatever the secret references point at -- they are not in
+   the backup and should not be.
+3. Fix any absolute paths in the config: workspaces, mount sources,
+   ~libreclaw_binary~.
+4. ~clawtilla config validate~ before starting.
+
+** Health checks
+
+#+begin_src bash
+clawtilla status
+clawtilla agent list
+clawtilla integration health researcher   # non-zero if anything failed
+#+end_src
+
+The last is meant for a pre-flight script.
+
+** Releasing
+
+1. Bump ~VERSION_*~ in ~config.mk~.
+2. ~make clean all && make clean tests && make test && make docs-check~
+3. ~make DEBUG=1 ASAN=1 clean all && make DEBUG=1 ASAN=1 test~
+4. Check ~data/*.yaml~ and ~docs/configuration-options.org~ are current
+   (~make config-files~ leaves nothing to commit).
+5. Tag, and note the minimum libreclaw version in the release notes.
+
+The version header is generated from ~config.mk~ and depends on it, so
+bumping the version regenerates the header.  Without that dependency the
+library links as the new version while the header still claims the old
+one and ~CLAWT_CHECK_VERSION~ answers wrongly -- which is a bug libreclaw
+actually shipped, and why the dependency is there.

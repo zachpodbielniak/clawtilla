@@ -41,6 +41,19 @@ ClawtMailboxItem *clawt_mailbox_item_new(const gchar *from,
 ClawtMailboxItem *clawt_mailbox_item_copy(ClawtMailboxItem *self);
 void              clawt_mailbox_item_free(ClawtMailboxItem *self);
 
+/**
+ * clawt_mailbox_item_get_id:
+ * @self: a #ClawtMailboxItem
+ *
+ * The accessors below read the item's fields, which are described on
+ * #ClawtMailboxItem.  Documented as a group; a line each would repeat
+ * the field name back.
+ *
+ * String getters are (transfer none), and everything except id, from, to
+ * and body is (nullable): an item carries only what it was given.
+ *
+ * Returns: (transfer none): the item's identifier
+ */
 const gchar *clawt_mailbox_item_get_id(ClawtMailboxItem *self);
 const gchar *clawt_mailbox_item_get_from(ClawtMailboxItem *self);
 const gchar *clawt_mailbox_item_get_to(ClawtMailboxItem *self);
@@ -69,6 +82,19 @@ void clawt_mailbox_item_set_subject(ClawtMailboxItem *self, const gchar *subject
 void clawt_mailbox_item_set_last_error(ClawtMailboxItem *self, const gchar *error);
 void clawt_mailbox_item_set_priority(ClawtMailboxItem *self, ClawtPriority priority);
 void clawt_mailbox_item_set_state(ClawtMailboxItem *self, ClawtMailboxState state);
+/**
+ * clawt_mailbox_item_set_depth:
+ * @self: a #ClawtMailboxItem
+ * @depth: how many hops this message has already travelled
+ *
+ * The setters below are for the router and the store, which know values
+ * the sender does not: how far a message has come, how many times
+ * delivery has been tried, and when it may next be delivered.
+ *
+ * Timestamps are microseconds since the epoch, matching
+ * g_get_real_time(). Zero means unset -- an item with no
+ * ~expires_at~ lives until it is delivered or dead-lettered.
+ */
 void clawt_mailbox_item_set_depth(ClawtMailboxItem *self, gint depth);
 void clawt_mailbox_item_set_attempts(ClawtMailboxItem *self, gint attempts);
 void clawt_mailbox_item_set_created_at(ClawtMailboxItem *self, gint64 when);

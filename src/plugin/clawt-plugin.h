@@ -93,6 +93,19 @@ const gchar *clawt_plugin_get_description(ClawtPlugin *self);
 gboolean clawt_plugin_configure(ClawtPlugin  *self,
                                 GHashTable   *settings,
                                 GError      **error);
+/**
+ * clawt_plugin_activate:
+ * @self: a #ClawtPlugin
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Starts the plugin, after clawt_plugin_configure() has given it its
+ * settings.  Activating twice is a no-op rather than an error.
+ *
+ * A plugin that refuses to activate disables itself and nothing else --
+ * one stale third-party plugin must never keep the daemon down.
+ *
+ * Returns: %TRUE if the plugin is running
+ */
 gboolean clawt_plugin_activate(ClawtPlugin *self, GError **error);
 void     clawt_plugin_deactivate(ClawtPlugin *self);
 gboolean clawt_plugin_is_active(ClawtPlugin *self);

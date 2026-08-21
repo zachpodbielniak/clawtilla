@@ -26,6 +26,19 @@ G_BEGIN_DECLS
 G_DECLARE_FINAL_TYPE(ClawtNullComputer, clawt_null_computer,
                      CLAWT, NULL_COMPUTER, ClawtComputer)
 
+/**
+ * clawt_null_computer_new:
+ * @agent_id: whose computer this is
+ *
+ * A computer that is not one: every operation refuses, politely and with
+ * a reason the agent can act on.
+ *
+ * It exists so the rest of clawtilla never has to check for %NULL before
+ * touching an agent's computer, and so an agent that tries anyway is
+ * told "you have no computer" rather than crashing something.
+ *
+ * Returns: (transfer full): a new #ClawtComputer
+ */
 ClawtComputer *clawt_null_computer_new(const gchar *agent_id);
 
 G_END_DECLS

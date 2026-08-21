@@ -33,6 +33,12 @@ check_public_headers () {
             /^\/\*\*/ { doc = NR }
             /^[a-zA-Z_][a-zA-Z0-9_ *]*\**[a-zA-Z_][a-zA-Z0-9_]*\(/ {
                 if ($0 ~ /^(static|typedef|G_|#)/) next
+
+                # The GType boilerplate every boxed and object type
+                # declares.  gtk-doc generates its entry from the type
+                # itself, and nobody has ever written a useful comment
+                # for one; requiring it would mean 20 identical stubs.
+                if ($0 ~ /_get_type\(void\)/) next
                 if (doc == 0 || NR - doc > 40) {
                     printf "docs-check: %s:%d: exported symbol without a doc comment: %s\n", file, NR, $0
                     bad = 1

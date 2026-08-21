@@ -1,0 +1,227 @@
+#+title: Plugins
+#+description: The ABI, the four interfaces, and a worked plugin
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-21 Fri]
+#+updated: [2026-08-21 Fri]
+#+version: 0.1.0
+
+* Plugins
+
+A plugin is a shared object that extends the daemon: reacting to events,
+adding tools agents can call, adding a computer backend, or adding an
+integration.
+
+*A plugin runs in the daemon's process with the daemon's privileges.*
+Loading one is trusting it completely.
+
+** The contract
+
+Two exported symbols:
+
+#+begin_src c
+G_MODULE_EXPORT const guint clawt_plugin_abi_version =
+    CLAWT_PLUGIN_ABI_VERSION;
+
+G_MODULE_EXPORT GType
+clawt_plugin_register(void)
+{
+    return EXAMPLE_TYPE_PLUGIN;
+}
+#+end_src
+
+The ABI version is checked *before anything in the module is called*.  A
+plugin built against a different vtable layout does not fail cleanly: it
+calls through function pointers at the wrong offsets, and the crash lands
+somewhere unrelated.
+
+~clawt_plugin_register()~ returns a GType derived from ~ClawtPlugin~.
+Returning a type rather than an instance lets the manager construct as
+many as it needs and keeps the plugin free of assumptions about its own
+lifetime.
+
+** The file name is the id
+
+~libclawt-plugin-<id>.so~.  The id is what ~plugins.<id>~ and
+~plugins.disabled~ refer to.
+
+Taking it from the file rather than from the plugin is what makes a
+*disabled* plugin work: the id exists before the module is opened, so a
+disabled plugin's code never runs at all.  Loading it and then not
+activating it would still give it a constructor and a chance to
+misbehave.
+
+** Where they are found
+
+In order; the first plugin with a given id wins, so a user copy shadows
+a system one:
+
+1. ~$CLAWT_PLUGIN_PATH~ (colon-separated)
+2. ~plugins.dirs~ in the configuration
+3. ~$XDG_CONFIG_HOME/clawtilla/plugins~
+4. the compiled-in ~CLAWT_PLUGIN_DIR~
+
+** The vtable
+
+#+begin_src c
+struct _ClawtPluginClass {
+    GObjectClass parent_class;
+
+    const gchar *(*get_name)        (ClawtPlugin *self);
+    const gchar *(*get_version)     (ClawtPlugin *self);
+    const gchar *(*get_description) (ClawtPlugin *self);
+
+    gboolean     (*configure)       (ClawtPlugin *self, GHashTable *settings,
+                                     GError **error);
+    gboolean     (*activate)        (ClawtPlugin *self, GError **error);
+    void         (*deactivate)      (ClawtPlugin *self);
+
+    GObject     *(*create_instance) (ClawtPlugin *self, const gchar *kind,
+                                     GHashTable *params, GError **error);
+};
+#+end_src
+
+** The four interfaces
+
+Detected with ~g_type_is_a()~, so a plugin advertises what it can do
+simply by implementing it.
+
+*** ClawtEventHandler
+
+React to what the fleet does.
+
+#+begin_src c
+gboolean (*handles) (ClawtEventHandler *self, const gchar *kind);
+void     (*handle)  (ClawtEventHandler *self, ClawtEvent *event);
+#+end_src
+
+~handles~ is asked before every dispatch, so a handler interested in one
+kind is not woken for the other forty.  Not implementing it means "give
+me everything" -- the opposite default would make a plugin that forgot
+this silently receive nothing.
+
+*** ClawtToolProvider
+
+Add tools agents can call.
+
+#+begin_src c
+GStrv                 (*list_tools) (ClawtToolProvider *self);
+const ClawtParamInfo *(*get_params) (ClawtToolProvider *self,
+                                     const gchar *tool_name,
+                                     gsize *n_params);
+gchar                *(*call)       (ClawtToolProvider *self,
+                                     const gchar *agent_id,
+                                     const gchar *tool_name,
+                                     JsonObject *arguments,
+                                     GError **error);
+#+end_src
+
+The JSON schema is *generated* from ~get_params~, so a tool cannot
+describe itself one way and accept another.
+
+Plugin tools are listed alongside the built-in ones -- from the agent's
+side there is no difference -- and are subject to the same per-agent
+~allow~ and ~deny~ lists.  A plugin must not be able to hand an agent
+something its operator turned off.
+
+*** ClawtComputerProvider
+
+Add a computer backend: firecracker, a remote host over ssh, someone
+else's cloud.
+
+#+begin_src c
+const gchar   *(*get_type_name) (ClawtComputerProvider *self);
+ClawtComputer *(*create)        (ClawtComputerProvider *self,
+                                 ClawtAgentConfig *config, GError **error);
+#+end_src
+
+An unknown ~computer.type~ with no provider makes that one agent a
+shadow rather than failing the daemon.
+
+*** ClawtIntegrationProvider
+
+Add a way for agents to reach the world.
+
+#+begin_src c
+const gchar *(*get_id)        (ClawtIntegrationProvider *self);
+gboolean     (*validate)      (ClawtIntegrationProvider *self,
+                               ClawtAgentConfig *config, GError **error);
+gchar       *(*render_config) (ClawtIntegrationProvider *self,
+                               ClawtAgentConfig *config,
+                               const gchar *state_dir, GError **error);
+#+end_src
+
+** The service locator
+
+At activate time a plugin reaches the daemon's components by name:
+
+#+begin_src c
+GHashTable *services = clawt_plugin_get_services(plugin);
+GObject *agents = g_hash_table_lookup(services, "agents");
+#+end_src
+
+Available: ~agents~, ~rooms~, ~tasks~, ~router~, ~events~, ~config~.
+
+A locator rather than a constructor argument per component, so adding a
+component to the daemon does not change every plugin's signature.  A
+service that is absent is a reason to do less, not to fail: the same
+plugin may be loaded by a host that does not have one.
+
+** Configuration
+
+#+begin_src yaml
+plugins:
+  enabled: true
+  dirs: ["~/src/my-plugin/build"]
+  disabled: [noisy-plugin]
+
+  example:
+    enabled: true
+    mode: "verbose"
+#+end_src
+
+Both forms disable: ~plugins.disabled~ by name, and
+~plugins.<id>.enabled: false~.  The lookup is *generic*, so a
+third-party plugin the core has never heard of can be turned off the same
+way a bundled one can.  (This is the gap in gst's design, where an
+if/else over known module names means third-party plugins cannot be
+disabled at all.)
+
+Settings under ~plugins.<id>~ arrive in ~configure()~ as strings.
+
+** A worked plugin
+
+~plugins/example/example-plugin.c~ is complete and builds: it implements
+~ClawtEventHandler~ to tally what the fleet does, and ~ClawtToolProvider~
+to offer that tally back to the agents as a tool they can call.  Copy it
+and change the names.
+
+#+begin_src bash
+gcc -shared -fPIC $(pkg-config --cflags clawtilla-1.0) \
+    example-plugin.c -o libclawt-plugin-example.so \
+    $(pkg-config --libs clawtilla-1.0)
+
+cp libclawt-plugin-example.so ~/.config/clawtilla/plugins/
+clawtilla plugin list
+#+end_src
+
+** Failure modes, all tested
+
+| What | What happens |
+|------+--------------|
+| ABI mismatch | refused, with both versions named, before any call |
+| ~clawt_plugin_register~ missing | refused |
+| it returns a non-~ClawtPlugin~ type | refused |
+| ~activate()~ fails | that plugin is disabled; nothing else is affected |
+| misnamed file | refused; the id could not be worked out |
+| two plugins with one id | the first found wins |
+
+One bad plugin never keeps the daemon down.  A daemon that refused to
+start because a third-party plugin was stale would be a poor trade.
+
+** Unloading
+
+Plugins are deactivated on shutdown but the modules are never
+~dlclose()~d.  The GTypes a plugin registered live for the process's
+lifetime, and unmapping the code behind them turns the next type lookup
+into a jump into freed memory.

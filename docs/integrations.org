@@ -1,0 +1,122 @@
+#+title: Integrations
+#+description: Matrix, email, webhooks, local and cmacs; credentials and health
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-21 Fri]
+#+updated: [2026-08-21 Fri]
+#+version: 0.1.0
+
+* Integrations
+
+An integration is how an agent reaches the world outside the fleet.
+libreclaw implements them channel-side; clawtilla's job is declarative
+configuration, credential files, validation and health.
+
+#+begin_src bash
+clawtilla integration list researcher
+clawtilla integration health researcher
+#+end_src
+
+** matrix
+
+#+begin_src yaml
+integrations:
+  matrix:
+    enabled: true
+    homeserver: "https://matrix.example.com"
+    user_id: "@researcher:example.com"
+    access_token: {file: "~/.clawtilla/secrets/researcher-matrix"}
+    rooms: ["!abcdef:example.com"]
+    require_mention: true
+#+end_src
+
+The token is resolved at start and written to
+~<state_dir>/agents/<id>/credentials/matrix_credentials.json~ at 0600.
+It never appears in any rendered YAML.
+
+Bridged networks -- Discord, Signal, anything else with a Matrix bridge
+-- are just rooms, so an agent reaches them without knowing they are
+bridged.
+
+Health check: a TCP connection to the homeserver.
+
+** email
+
+#+begin_src yaml
+integrations:
+  email:
+    enabled: true
+    imap_host: "imap.example.com"
+    imap_port: 993
+    smtp_host: "smtp.example.com"
+    smtp_port: 587
+    username: "agent@example.com"
+    password: {command: "pass show mail/agent"}
+    folders: ["INBOX"]
+#+end_src
+
+The password is written to both ~imap_credentials.json~ and
+~smtp_credentials.json~ at 0600.  libreclaw wants two files; making you
+say the same password twice would be a worse answer than writing it
+twice.
+
+Health check: both directions.  An agent that can read mail but cannot
+send looks like it is ignoring people.
+
+** webhook
+
+#+begin_src yaml
+integrations:
+  webhook:
+    enabled: true
+    port: 9100
+#+end_src
+
+Health check: tries to *bind* the port rather than connect to it.  For a
+listener the failure that matters is the port already being taken, and
+binding then immediately closing is the only way to find that out without
+starting the agent.
+
+Give each agent a different port.
+
+** local
+
+#+begin_src yaml
+integrations:
+  local: true
+#+end_src
+
+stdin and stdout.  Only for an agent you run by hand -- it owns fd 0 and
+1, so two agents with it would fight over the terminal, and an agent
+started by the daemon has no terminal at all.  It is never rendered
+unless asked for explicitly.
+
+** cmacs
+
+#+begin_src yaml
+integrations:
+  cmacs: true
+#+end_src
+
+libreclaw's in-process Emacs integration.
+
+** Validation
+
+Every enabled integration is checked before the agent starts, and a
+missing required key refuses the start with the key named.
+
+That is deliberate.  An agent whose Matrix block is missing its
+homeserver starts perfectly cleanly and then never receives anything --
+a much worse failure than being told which line to fix.
+
+** Adding one
+
+Implement ~ClawtIntegrationProvider~ in a plugin: ~get_id~ returns the
+~integrations.<id>~ key you answer to, ~validate~ checks the settings,
+~render_config~ returns the YAML for the agent's ~channels:~ block.  See
+[[file:plugins.org][plugins.org]].
+
+The built-in five are a declarative table rather than five classes,
+because each is the same shape: validate some keys, resolve some secrets,
+emit a channel block.  Anything that genuinely needs behaviour should be
+a provider.

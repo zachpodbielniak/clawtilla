@@ -25,9 +25,13 @@ second process in the way.
 
 ** Status
 
-Early.  The build system, core types and test harness are in place; the
-subsystems are landing in the order listed in [[file:docs/architecture.org][docs/architecture.org]].  The web
-client is deliberately minimal and says so.
+Complete and working.  The daemon, both agent runtimes, all four computer
+backends, mailboxes, rooms, tasks, the orchestration tools, the plugin
+system, the integrations, the AI agent designer, the CLI and the GTK
+client are all built and tested.
+
+The web client is the one deliberately incomplete surface: agent list,
+transcript and send work, and the page says what does not.
 
 ** What an agent gets
 
