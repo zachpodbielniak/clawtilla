@@ -43,4 +43,9 @@
 #include "mailbox/clawt-mailbox-item.h"
 #include "mailbox/clawt-mailbox.h"
 
+#include "agent/clawt-agent-runtime.h"
+#include "agent/clawt-process-runtime.h"
+#include "agent/clawt-agent.h"
+#include "agent/clawt-agent-manager.h"
+
 #undef CLAWT_INSIDE

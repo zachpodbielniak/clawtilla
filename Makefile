@@ -58,7 +58,11 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/link/clawt-link.h \
 	$(SRCDIR)/link/clawt-link-server.h \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.h \
-	$(SRCDIR)/mailbox/clawt-mailbox.h
+	$(SRCDIR)/mailbox/clawt-mailbox.h \
+	$(SRCDIR)/agent/clawt-agent-runtime.h \
+	$(SRCDIR)/agent/clawt-process-runtime.h \
+	$(SRCDIR)/agent/clawt-agent.h \
+	$(SRCDIR)/agent/clawt-agent-manager.h
 
 # ============================================================
 # Library sources
@@ -75,7 +79,11 @@ LIB_SOURCES = \
 	$(SRCDIR)/link/clawt-link.c \
 	$(SRCDIR)/link/clawt-link-server.c \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.c \
-	$(SRCDIR)/mailbox/clawt-mailbox.c
+	$(SRCDIR)/mailbox/clawt-mailbox.c \
+	$(SRCDIR)/agent/clawt-agent-runtime.c \
+	$(SRCDIR)/agent/clawt-process-runtime.c \
+	$(SRCDIR)/agent/clawt-agent.c \
+	$(SRCDIR)/agent/clawt-agent-manager.c
 
 # Object files
 LIB_OBJECTS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(LIB_SOURCES))

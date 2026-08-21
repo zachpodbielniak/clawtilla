@@ -1,0 +1,27 @@
+#!/bin/sh
+# fake-libreclaw - stands in for a real agent in the runtime tests
+#
+# Copyright (C) 2026
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# The process runtime's job is to launch something, capture its output and
+# notice how it ended.  None of that needs a real agent, a real model or a
+# network, and using one would make the tests slow and flaky for no gain.
+#
+# Behaviour is driven by the environment so a single fixture covers every
+# case the tests need:
+#
+#   FAKE_LIBRECLAW_EXIT_CODE  exit with this status (default 0)
+#   FAKE_LIBRECLAW_SLEEP      stay alive this many seconds first
+#   FAKE_LIBRECLAW_OUTPUT     print this instead of the default line
+
+set -eu
+
+echo "${FAKE_LIBRECLAW_OUTPUT:-fake-libreclaw: started with $*}"
+
+if [ -n "${FAKE_LIBRECLAW_SLEEP:-}" ]
+then
+    sleep "${FAKE_LIBRECLAW_SLEEP}"
+fi
+
+exit "${FAKE_LIBRECLAW_EXIT_CODE:-0}"
