@@ -1,0 +1,797 @@
+/*
+ * test-computer.c - The computer backends
+ *
+ * Copyright (C) 2026
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * This file is part of clawtilla.
+ *
+ * The host backend is exercised for real, since it needs nothing but a
+ * temporary directory.  The container and VM backends are tested through
+ * the specifications they generate -- the mount JSON and the domain XML --
+ * because getting SELinux relabelling or virtiofs shared memory wrong is
+ * silent until a guest cannot see a share, and that deserves a unit test
+ * rather than an integration one.  Anything genuinely needing podman or
+ * libvirtd is behind CLAWT_TEST_INTEGRATION.
+ */
+
+#include <clawtilla.h>
+
+#include <glib/gstdio.h>
+
+static gboolean
+integration_enabled(void)
+{
+    return g_getenv("CLAWT_TEST_INTEGRATION") != NULL;
+}
+
+/* ── No computer ─────────────────────────────────────────────────── */
+
+/*
+ * An explicit refusal, not a silent empty result.  An agent handed nothing
+ * assumes the command produced nothing and carries on; one told it has no
+ * computer stops asking.
+ */
+static void
+test_null_computer_refuses_clearly(void)
+{
+    g_autoptr(ClawtComputer) computer = clawt_null_computer_new("chief");
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *description = NULL;
+    const gchar *argv[] = { "ls", NULL };
+
+    g_assert_cmpint(clawt_computer_get_computer_type(computer), ==,
+                    CLAWT_COMPUTER_NONE);
+    g_assert_null(clawt_computer_exec(computer, argv, NULL, 5, NULL, &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED);
+
+    description = clawt_computer_describe(computer);
+    g_assert_nonnull(strstr(description, "no computer"));
+}
+
+/* ── Host ────────────────────────────────────────────────────────── */
+
+typedef struct {
+    gchar         *root;
+    ClawtSandbox  *sandbox;
+    ClawtComputer *computer;
+} HostFixture;
+
+static void
+host_setup(HostFixture *fixture)
+{
+    fixture->root = g_dir_make_tmp("clawt-hostc-XXXXXX", NULL);
+    fixture->sandbox = clawt_sandbox_new(CLAWT_CONFINE_WORKSPACE,
+                                         fixture->root);
+    fixture->computer = clawt_host_computer_new("chief", fixture->sandbox);
+}
+
+static void
+host_teardown(HostFixture *fixture)
+{
+    g_clear_object(&fixture->computer);
+    g_clear_object(&fixture->sandbox);
+    g_rmdir(fixture->root);
+    g_clear_pointer(&fixture->root, g_free);
+}
+
+static void
+test_host_runs_a_command(void)
+{
+    HostFixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtExecResult) result = NULL;
+    const gchar *argv[] = { "echo", "hello from the host", NULL };
+
+    host_setup(&fixture);
+    g_assert_true(clawt_computer_start(fixture.computer, &error));
+
+    result = clawt_computer_exec(fixture.computer, argv, fixture.root, 10,
+                                 NULL, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(result);
+    g_assert_true(clawt_exec_result_succeeded(result));
+    g_assert_nonnull(strstr(clawt_exec_result_get_stdout(result),
+                            "hello from the host"));
+
+    host_teardown(&fixture);
+}
+
+static void
+test_host_reports_a_failing_command(void)
+{
+    HostFixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtExecResult) result = NULL;
+    const gchar *argv[] = { "sh", "-c", "exit 3", NULL };
+
+    host_setup(&fixture);
+    clawt_computer_start(fixture.computer, &error);
+
+    result = clawt_computer_exec(fixture.computer, argv, NULL, 10, NULL,
+                                 &error);
+    g_assert_nonnull(result);
+    g_assert_false(clawt_exec_result_succeeded(result));
+    g_assert_cmpint(clawt_exec_result_get_exit_status(result), ==, 3);
+
+    host_teardown(&fixture);
+}
+
+/*
+ * A command reaching outside the boundary must never start, not be killed
+ * afterwards.
+ */
+static void
+test_host_refuses_a_command_outside_the_boundary(void)
+{
+    HostFixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtExecResult) result = NULL;
+    const gchar *argv[] = { "cat", "/etc/shadow", NULL };
+
+    host_setup(&fixture);
+    clawt_computer_start(fixture.computer, &error);
+
+    result = clawt_computer_exec(fixture.computer, argv, NULL, 10, NULL,
+                                 &error);
+    g_assert_null(result);
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFINEMENT);
+
+    host_teardown(&fixture);
+}
+
+/* A working directory outside the boundary is refused too. */
+static void
+test_host_refuses_a_working_directory_outside(void)
+{
+    HostFixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtExecResult) result = NULL;
+    const gchar *argv[] = { "pwd", NULL };
+
+    host_setup(&fixture);
+    clawt_computer_start(fixture.computer, &error);
+
+    result = clawt_computer_exec(fixture.computer, argv, "/etc", 10, NULL,
+                                 &error);
+    g_assert_null(result);
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFINEMENT);
+
+    host_teardown(&fixture);
+}
+
+/*
+ * Without a timeout an agent that runs an interactive command by mistake
+ * waits for input that never comes, and the turn never ends.
+ */
+static void
+test_host_times_out_a_hanging_command(void)
+{
+    HostFixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtExecResult) result = NULL;
+    const gchar *argv[] = { "sleep", "30", NULL };
+
+    host_setup(&fixture);
+    clawt_computer_start(fixture.computer, &error);
+
+    result = clawt_computer_exec(fixture.computer, argv, NULL, 1, NULL,
+                                 &error);
+    g_assert_null(result);
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_TIMEOUT);
+
+    host_teardown(&fixture);
+}
+
+/* put_file and get_file go through the same boundary as exec, or an agent
+ * could write anywhere by calling put_file instead of running cp. */
+static void
+test_host_file_transfer_respects_the_boundary(void)
+{
+    HostFixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *source = NULL;
+    g_autofree gchar *inside = NULL;
+
+    host_setup(&fixture);
+
+    source = g_build_filename(fixture.root, "source.txt", NULL);
+    inside = g_build_filename(fixture.root, "copy.txt", NULL);
+    g_file_set_contents(source, "contents", -1, &error);
+
+    g_assert_true(clawt_computer_put_file(fixture.computer, source, inside,
+                                          &error));
+    g_assert_no_error(error);
+
+    g_assert_false(clawt_computer_put_file(fixture.computer, source,
+                                           "/etc/clawtilla-should-not-exist",
+                                           &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFINEMENT);
+    g_clear_error(&error);
+
+    g_assert_false(clawt_computer_get_file(fixture.computer, "/etc/shadow",
+                                           inside, &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFINEMENT);
+
+    g_unlink(source);
+    g_unlink(inside);
+    host_teardown(&fixture);
+}
+
+/*
+ * Unbounded output is a real failure mode: `find /` produces a reply too
+ * large to send and too large to reason about.  Truncation is reported, or
+ * an agent treats a cut-short listing as complete.
+ */
+static void
+test_output_truncation_is_reported(void)
+{
+    g_autofree gchar *big = g_strnfill(2000, 'x');
+    g_autofree gchar *bounded = NULL;
+    gboolean truncated = FALSE;
+
+    bounded = clawt_computer_truncate_output(big, 100, &truncated);
+
+    g_assert_true(truncated);
+    g_assert_nonnull(strstr(bounded, "truncated"));
+    g_assert_cmpuint(strlen(bounded), <, 2000);
+
+    /* Small output is left exactly alone. */
+    {
+        g_autofree gchar *small = NULL;
+        gboolean small_truncated = TRUE;
+
+        small = clawt_computer_truncate_output("short", 100,
+                                               &small_truncated);
+        g_assert_cmpstr(small, ==, "short");
+        g_assert_false(small_truncated);
+    }
+}
+
+static void
+test_host_description_mentions_the_confinement(void)
+{
+    HostFixture fixture = { 0 };
+    g_autofree gchar *description = NULL;
+
+    host_setup(&fixture);
+
+    description = clawt_computer_describe(fixture.computer);
+    g_assert_nonnull(strstr(description, "clawtilla"));
+    g_assert_nonnull(strstr(description, fixture.root));
+
+    host_teardown(&fixture);
+}
+
+/* ── Container specification ─────────────────────────────────────── */
+
+/*
+ * SELinux relabelling is the flag that gets forgotten and then costs an
+ * afternoon: on Silverblue an unlabelled bind mount is visible in the
+ * container while every access is denied.
+ */
+static void
+test_container_mount_json(void)
+{
+    g_autoptr(GPtrArray) mounts = NULL;
+    g_autoptr(ClawtMount) rw = NULL;
+    g_autoptr(ClawtMount) ro = NULL;
+    g_autoptr(ClawtMount) scratch = NULL;
+    g_autofree gchar *json = NULL;
+
+    mounts = g_ptr_array_new_with_free_func((GDestroyNotify)clawt_mount_free);
+
+    rw = clawt_mount_new("/tmp", "/work/tmp");
+    clawt_mount_set_mode(rw, CLAWT_MOUNT_MODE_RW);
+    clawt_mount_set_relabel(rw, CLAWT_RELABEL_SHARED);
+    g_ptr_array_add(mounts, clawt_mount_copy(rw));
+
+    ro = clawt_mount_new("/usr/share", "/work/share");
+    g_ptr_array_add(mounts, clawt_mount_copy(ro));
+
+    scratch = clawt_mount_new(NULL, "/scratch");
+    clawt_mount_set_mount_type(scratch, CLAWT_MOUNT_TMPFS);
+    clawt_mount_set_size(scratch, "512M");
+    g_ptr_array_add(mounts, clawt_mount_copy(scratch));
+
+    json = clawt_container_computer_build_mount_json(mounts);
+
+    /*
+     * Parsed rather than string-matched.  json-glib's spacing is its own
+     * business, and a test that pins it fails on a pretty-printer change
+     * while saying nothing about whether the mounts are right.
+     */
+    {
+        g_autoptr(JsonParser) parser = json_parser_new();
+        g_autoptr(GError) error = NULL;
+        JsonArray *array;
+        JsonObject *first;
+        JsonObject *second;
+        JsonObject *third;
+
+        g_assert_true(json_parser_load_from_data(parser, json, -1, &error));
+        array = json_node_get_array(json_parser_get_root(parser));
+        g_assert_cmpuint(json_array_get_length(array), ==, 3);
+
+        first = json_array_get_object_element(array, 0);
+        g_assert_cmpstr(json_object_get_string_member(first, "destination"),
+                        ==, "/work/tmp");
+        g_assert_cmpstr(json_object_get_string_member(first, "relabel"),
+                        ==, "shared");
+        g_assert_false(json_object_get_boolean_member(first, "read_only"));
+
+        second = json_array_get_object_element(array, 1);
+        g_assert_true(json_object_get_boolean_member(second, "read_only"));
+
+        third = json_array_get_object_element(array, 2);
+        g_assert_cmpstr(json_object_get_string_member(third, "type"),
+                        ==, "tmpfs");
+        g_assert_cmpstr(json_object_get_string_member(third, "size"),
+                        ==, "512M");
+
+        /* A tmpfs has nothing to share from, so it must carry no source. */
+        g_assert_false(json_object_has_member(third, "source"));
+    }
+}
+
+static void
+test_container_mount_json_handles_no_mounts(void)
+{
+    g_autoptr(GPtrArray) mounts =
+        g_ptr_array_new_with_free_func((GDestroyNotify)clawt_mount_free);
+    g_autofree gchar *json = clawt_container_computer_build_mount_json(mounts);
+
+    g_assert_cmpstr(json, ==, "[]");
+    g_assert_nonnull(clawt_container_computer_build_mount_json(NULL));
+}
+
+/* ── VM specification ────────────────────────────────────────────── */
+
+/*
+ * virtiofs needs shared memory backing, and libvirt rejects the device
+ * without it -- with a message that does not obviously point at the cause.
+ */
+static void
+test_vm_domain_xml_includes_shared_memory_for_mounts(void)
+{
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(ClawtMount) mount = NULL;
+    g_autofree gchar *xml = NULL;
+
+    computer = clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_LIBVIRT, NULL);
+    clawt_vm_computer_set_resources(CLAWT_VM_COMPUTER(computer), 4, 4096);
+
+    mount = clawt_mount_new("/tmp", "/work");
+    clawt_mount_set_mount_type(mount, CLAWT_MOUNT_VIRTIOFS);
+    clawt_computer_add_mount(computer, mount);
+
+    xml = clawt_vm_computer_build_domain_xml(CLAWT_VM_COMPUTER(computer));
+
+    g_assert_nonnull(strstr(xml, "<memoryBacking>"));
+    g_assert_nonnull(strstr(xml, "access mode='shared'"));
+    g_assert_nonnull(strstr(xml, "driver type='virtiofs'"));
+    g_assert_nonnull(strstr(xml, "/work"));
+    g_assert_nonnull(strstr(xml, "<vcpu>4</vcpu>"));
+    g_assert_nonnull(strstr(xml, "4096"));
+}
+
+/* A read-only mount must actually say so, or it silently is not. */
+static void
+test_vm_domain_xml_marks_read_only_mounts(void)
+{
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(ClawtMount) mount = NULL;
+    g_autofree gchar *xml = NULL;
+
+    computer = clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_LIBVIRT, NULL);
+
+    mount = clawt_mount_new("/usr/share", "/work/share");
+    clawt_mount_set_mode(mount, CLAWT_MOUNT_MODE_RO);
+    clawt_computer_add_mount(computer, mount);
+
+    xml = clawt_vm_computer_build_domain_xml(CLAWT_VM_COMPUTER(computer));
+
+    g_assert_nonnull(strstr(xml, "<readonly/>"));
+}
+
+/* A directory with an ampersand in its name must not produce invalid XML. */
+static void
+test_vm_domain_xml_escapes_markup(void)
+{
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(ClawtMount) mount = NULL;
+    g_autofree gchar *xml = NULL;
+
+    computer = clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_LIBVIRT, NULL);
+
+    mount = clawt_mount_new("/tmp/rock & roll", "/work/music");
+    clawt_computer_add_mount(computer, mount);
+
+    xml = clawt_vm_computer_build_domain_xml(CLAWT_VM_COMPUTER(computer));
+
+    g_assert_nonnull(strstr(xml, "&amp;"));
+    g_assert_null(strstr(xml, "rock & roll"));
+}
+
+/* Without mounts there is no reason to demand shared memory. */
+static void
+test_vm_domain_xml_omits_shared_memory_without_mounts(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_LIBVIRT, NULL);
+    g_autofree gchar *xml =
+        clawt_vm_computer_build_domain_xml(CLAWT_VM_COMPUTER(computer));
+
+    g_assert_null(strstr(xml, "<memoryBacking>"));
+}
+
+static void
+test_vm_qemu_argv(void)
+{
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(ClawtMount) mount = NULL;
+    g_auto(GStrv) argv = NULL;
+    gboolean saw_qmp = FALSE;
+    gboolean saw_memfd = FALSE;
+    guint i;
+
+    computer = clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_QEMU, NULL);
+    clawt_vm_computer_set_resources(CLAWT_VM_COMPUTER(computer), 2, 1024);
+
+    mount = clawt_mount_new("/tmp", "/work");
+    clawt_computer_add_mount(computer, mount);
+
+    argv = clawt_vm_computer_build_qemu_argv(CLAWT_VM_COMPUTER(computer),
+                                             "/tmp/clawt-qmp.sock");
+
+    g_assert_cmpstr(argv[0], ==, "qemu-system-x86_64");
+
+    for (i = 0; argv[i] != NULL; i++) {
+        if (strstr(argv[i], "/tmp/clawt-qmp.sock") != NULL)
+            saw_qmp = TRUE;
+        if (strstr(argv[i], "memory-backend-memfd") != NULL)
+            saw_memfd = TRUE;
+    }
+
+    g_assert_true(saw_qmp);
+
+    /* Same shared-memory requirement as libvirt, spelled QEMU's way. */
+    g_assert_true(saw_memfd);
+}
+
+/* ── Desktop ─────────────────────────────────────────────────────── */
+
+/*
+ * Observing and acting are separate grants.  An observe-only agent that
+ * could still click would make the distinction meaningless.
+ */
+static void
+test_desktop_observe_only_omits_input_tools(void)
+{
+    g_autoptr(ClawtDesktop) desktop =
+        clawt_desktop_new(CLAWT_DESKTOP_BACKEND_GOWL, "/tmp/nowhere.sock");
+
+    g_assert_true(clawt_desktop_tool_is_permitted(desktop, "describe_desktop"));
+    g_assert_true(clawt_desktop_tool_is_permitted(desktop, "screenshot_monitor"));
+
+    g_assert_false(clawt_desktop_tool_is_permitted(desktop, "send_key"));
+    g_assert_false(clawt_desktop_tool_is_permitted(desktop, "mouse_click"));
+    g_assert_false(clawt_desktop_tool_is_permitted(desktop, "type_text"));
+}
+
+static void
+test_desktop_with_input_permits_acting(void)
+{
+    g_autoptr(ClawtDesktop) desktop =
+        clawt_desktop_new(CLAWT_DESKTOP_BACKEND_GOWL, "/tmp/nowhere.sock");
+
+    clawt_desktop_set_allow_input(desktop, TRUE);
+
+    g_assert_true(clawt_desktop_tool_is_permitted(desktop, "send_key"));
+    g_assert_true(clawt_desktop_tool_is_permitted(desktop, "mouse_click"));
+    g_assert_true(clawt_desktop_tool_is_permitted(desktop, "describe_desktop"));
+}
+
+/*
+ * An unknown tool is refused rather than passed through.  A newer
+ * compositor may add one that injects input, and defaulting to allow would
+ * quietly widen an observe-only grant on upgrade.
+ */
+static void
+test_unknown_desktop_tool_is_refused(void)
+{
+    g_autoptr(ClawtDesktop) desktop =
+        clawt_desktop_new(CLAWT_DESKTOP_BACKEND_GOWL, "/tmp/nowhere.sock");
+
+    clawt_desktop_set_allow_input(desktop, TRUE);
+
+    g_assert_false(clawt_desktop_tool_is_permitted(desktop,
+                                                   "future_invention"));
+}
+
+/* A socket file that exists but answers nothing is not a desktop. */
+static void
+test_dead_gowl_socket_is_not_available(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-gowl-XXXXXX", NULL);
+    g_autofree gchar *path = g_build_filename(dir, "gowl-mcp.sock", NULL);
+    g_autoptr(ClawtDesktop) desktop = NULL;
+    g_autoptr(GError) error = NULL;
+
+    /* A plain file where the socket should be: exists, answers nothing. */
+    g_file_set_contents(path, "", -1, NULL);
+
+    desktop = clawt_desktop_new(CLAWT_DESKTOP_BACKEND_GOWL, path);
+
+    g_assert_false(clawt_desktop_is_available(desktop, &error));
+    g_assert_nonnull(error);
+
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void
+test_desktop_description_states_the_grant(void)
+{
+    g_autoptr(ClawtDesktop) observe =
+        clawt_desktop_new(CLAWT_DESKTOP_BACKEND_GOWL, "/tmp/x.sock");
+    g_autoptr(ClawtDesktop) control =
+        clawt_desktop_new(CLAWT_DESKTOP_BACKEND_GOWL, "/tmp/x.sock");
+    g_autofree gchar *observe_text = NULL;
+    g_autofree gchar *control_text = NULL;
+
+    clawt_desktop_set_allow_input(control, TRUE);
+
+    observe_text = clawt_desktop_describe(observe);
+    control_text = clawt_desktop_describe(control);
+
+    g_assert_nonnull(strstr(observe_text, "cannot send keystrokes"));
+    g_assert_nonnull(strstr(control_text, "real screen"));
+}
+
+/* ── The factory ─────────────────────────────────────────────────── */
+
+static ClawtAgentConfig *
+agent_from_yaml(ClawtConfig **out_config, const gchar *yaml)
+{
+    g_autoptr(GError) error = NULL;
+
+    *out_config = clawt_config_load_from_string(yaml, &error);
+    g_assert_no_error(error);
+
+    return clawt_config_get_agent(*out_config, "chief");
+}
+
+static void
+test_factory_builds_the_configured_backend(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent;
+
+    agent = agent_from_yaml(&config, "agents:\n  - id: chief\n");
+    computer = clawt_computer_factory_create(agent, NULL, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(clawt_computer_get_computer_type(computer), ==,
+                    CLAWT_COMPUTER_NONE);
+}
+
+/* A host computer without the confirmation is refused here as well as at
+ * config load, because the cost of checking twice is nothing. */
+static void
+test_factory_refuses_unconfirmed_host(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent;
+
+    agent = agent_from_yaml(&config,
+        "agents:\n  - id: chief\n    computer:\n      type: host\n");
+
+    computer = clawt_computer_factory_create(agent, NULL, &error);
+
+    g_assert_null(computer);
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED);
+}
+
+static void
+test_factory_builds_a_confirmed_host(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent;
+
+    agent = agent_from_yaml(&config,
+        "agents:\n"
+        "  - id: chief\n"
+        "    computer:\n"
+        "      type: host\n"
+        "      host:\n"
+        "        confirm_host_control: true\n"
+        "        confine: workspace\n");
+
+    computer = clawt_computer_factory_create(agent, NULL, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(clawt_computer_get_computer_type(computer), ==,
+                    CLAWT_COMPUTER_HOST);
+}
+
+/*
+ * A mount written without a type becomes the right one for the backend, so
+ * a user does not have to know that a container wants "bind" and a VM wants
+ * "virtiofs".
+ */
+static void
+test_factory_picks_the_mount_type_for_the_backend(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent;
+    GPtrArray *mounts;
+
+    agent = agent_from_yaml(&config,
+        "agents:\n"
+        "  - id: chief\n"
+        "    computer:\n"
+        "      type: vm\n"
+        "      mounts:\n"
+        "        - source: \"/tmp\"\n"
+        "          target: \"/work\"\n");
+
+    computer = clawt_computer_factory_create(agent, NULL, &error);
+    g_assert_no_error(error);
+
+    mounts = clawt_computer_get_mounts(computer);
+    g_assert_cmpuint(mounts->len, ==, 1);
+    g_assert_cmpint(
+        clawt_mount_get_mount_type(g_ptr_array_index(mounts, 0)), ==,
+        CLAWT_MOUNT_VIRTIOFS);
+}
+
+/*
+ * Mounts on a host computer become its allowlist.  There is nothing to
+ * mount, but somebody writing them plainly means "work with these".
+ */
+static void
+test_factory_treats_host_mounts_as_an_allowlist(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent;
+    ClawtSandbox *sandbox;
+
+    agent = agent_from_yaml(&config,
+        "agents:\n"
+        "  - id: chief\n"
+        "    computer:\n"
+        "      type: host\n"
+        "      host:\n"
+        "        confirm_host_control: true\n"
+        "        confine: allowlist\n"
+        "      mounts:\n"
+        "        - source: \"/tmp\"\n"
+        "          target: \"/work\"\n");
+
+    computer = clawt_computer_factory_create(agent, NULL, &error);
+    g_assert_no_error(error);
+
+    sandbox = clawt_host_computer_get_sandbox(CLAWT_HOST_COMPUTER(computer));
+    g_assert_true(clawt_sandbox_path_is_allowed(sandbox, "/tmp"));
+}
+
+static void
+test_factory_desktop_is_optional(void)
+{
+    g_autoptr(ClawtConfig) without = NULL;
+    g_autoptr(ClawtConfig) with = NULL;
+    g_autoptr(ClawtDesktop) none = NULL;
+    g_autoptr(ClawtDesktop) desktop = NULL;
+
+    none = clawt_computer_factory_create_desktop(
+        agent_from_yaml(&without, "agents:\n  - id: chief\n"));
+    g_assert_null(none);
+
+    desktop = clawt_computer_factory_create_desktop(
+        agent_from_yaml(&with,
+            "agents:\n"
+            "  - id: chief\n"
+            "    computer:\n"
+            "      desktop:\n"
+            "        enabled: true\n"
+            "        allow_input: true\n"));
+
+    g_assert_nonnull(desktop);
+    g_assert_true(clawt_desktop_tool_is_permitted(desktop, "send_key"));
+}
+
+/* ── Integration, only with real infrastructure ──────────────────── */
+
+static void
+test_container_against_real_podman(void)
+{
+    g_autoptr(ClawtPodBridge) bridge = NULL;
+    g_autoptr(GError) error = NULL;
+
+    if (!integration_enabled()) {
+        g_test_skip("set CLAWT_TEST_INTEGRATION=1 to run this against podman");
+        return;
+    }
+
+    bridge = clawt_pod_bridge_new(NULL);
+
+    if (!clawt_pod_bridge_load_module(bridge, "container", &error)) {
+        g_test_skip(error->message);
+        return;
+    }
+
+    g_assert_true(clawt_pod_bridge_has_module(bridge, "container"));
+}
+
+int
+main(int argc, char *argv[])
+{
+    g_test_init(&argc, &argv, NULL);
+
+    g_test_add_func("/computer/null/refuses", test_null_computer_refuses_clearly);
+
+    g_test_add_func("/computer/host/runs", test_host_runs_a_command);
+    g_test_add_func("/computer/host/failure", test_host_reports_a_failing_command);
+    g_test_add_func("/computer/host/outside-boundary",
+                    test_host_refuses_a_command_outside_the_boundary);
+    g_test_add_func("/computer/host/cwd-outside",
+                    test_host_refuses_a_working_directory_outside);
+    g_test_add_func("/computer/host/timeout", test_host_times_out_a_hanging_command);
+    g_test_add_func("/computer/host/file-transfer",
+                    test_host_file_transfer_respects_the_boundary);
+    g_test_add_func("/computer/host/description",
+                    test_host_description_mentions_the_confinement);
+    g_test_add_func("/computer/truncation", test_output_truncation_is_reported);
+
+    g_test_add_func("/computer/container/mount-json", test_container_mount_json);
+    g_test_add_func("/computer/container/no-mounts",
+                    test_container_mount_json_handles_no_mounts);
+
+    g_test_add_func("/computer/vm/shared-memory",
+                    test_vm_domain_xml_includes_shared_memory_for_mounts);
+    g_test_add_func("/computer/vm/read-only",
+                    test_vm_domain_xml_marks_read_only_mounts);
+    g_test_add_func("/computer/vm/escapes-markup",
+                    test_vm_domain_xml_escapes_markup);
+    g_test_add_func("/computer/vm/no-shared-memory-without-mounts",
+                    test_vm_domain_xml_omits_shared_memory_without_mounts);
+    g_test_add_func("/computer/vm/qemu-argv", test_vm_qemu_argv);
+
+    g_test_add_func("/computer/desktop/observe-only",
+                    test_desktop_observe_only_omits_input_tools);
+    g_test_add_func("/computer/desktop/with-input",
+                    test_desktop_with_input_permits_acting);
+    g_test_add_func("/computer/desktop/unknown-tool",
+                    test_unknown_desktop_tool_is_refused);
+    g_test_add_func("/computer/desktop/dead-socket",
+                    test_dead_gowl_socket_is_not_available);
+    g_test_add_func("/computer/desktop/description",
+                    test_desktop_description_states_the_grant);
+
+    g_test_add_func("/computer/factory/default", test_factory_builds_the_configured_backend);
+    g_test_add_func("/computer/factory/unconfirmed-host",
+                    test_factory_refuses_unconfirmed_host);
+    g_test_add_func("/computer/factory/confirmed-host",
+                    test_factory_builds_a_confirmed_host);
+    g_test_add_func("/computer/factory/mount-type",
+                    test_factory_picks_the_mount_type_for_the_backend);
+    g_test_add_func("/computer/factory/host-mounts-allowlist",
+                    test_factory_treats_host_mounts_as_an_allowlist);
+    g_test_add_func("/computer/factory/desktop", test_factory_desktop_is_optional);
+
+    g_test_add_func("/computer/integration/container",
+                    test_container_against_real_podman);
+
+    return g_test_run();
+}

@@ -1,0 +1,264 @@
+/*
+ * clawt-pod-bridge.c - Talking to podomation's modules
+ *
+ * Copyright (C) 2026
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * This file is part of clawtilla.
+ */
+
+#include "clawtilla.h"
+#include "computer/clawt-pod-bridge.h"
+
+#include <podomation.h>
+#include <gmodule.h>
+
+struct _ClawtPodBridge {
+    GObject parent_instance;
+
+    gchar      *module_dir;
+    GHashTable *modules;   /* name -> PodModule* (owned) */
+};
+
+G_DEFINE_FINAL_TYPE(ClawtPodBridge, clawt_pod_bridge, G_TYPE_OBJECT)
+
+ClawtPodBridge *
+clawt_pod_bridge_new(const gchar *module_dir)
+{
+    ClawtPodBridge *self = g_object_new(CLAWT_TYPE_POD_BRIDGE, NULL);
+
+    /*
+     * The build tree's module directory is the default, so an uninstalled
+     * clawtilla works against the modules libreclaw just built rather than
+     * silently finding none.
+     */
+    self->module_dir = (module_dir != NULL)
+                       ? clawt_expand_path(module_dir)
+                       : g_strdup(CLAWT_POD_MODULE_DIR);
+
+    return self;
+}
+
+gboolean
+clawt_pod_bridge_load_module(ClawtPodBridge  *self,
+                             const gchar     *module_name,
+                             GError         **error)
+{
+    g_autofree gchar *path = NULL;
+    GModule *module;
+    GType (*register_func)(void);
+    gpointer symbol = NULL;
+    PodModule *instance;
+    GType module_type;
+
+    g_return_val_if_fail(CLAWT_IS_POD_BRIDGE(self), FALSE);
+    g_return_val_if_fail(module_name != NULL, FALSE);
+
+    if (g_hash_table_contains(self->modules, module_name))
+        return TRUE;
+
+    path = g_strdup_printf("%s/libpod-module-%s.so", self->module_dir,
+                           module_name);
+
+    if (!g_file_test(path, G_FILE_TEST_EXISTS)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                    "the podomation '%s' module is not at %s; this computer "
+                    "backend needs it", module_name, path);
+        return FALSE;
+    }
+
+    module = g_module_open(path, G_MODULE_BIND_LAZY);
+    if (module == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                    "could not load %s: %s", path, g_module_error());
+        return FALSE;
+    }
+
+    if (!g_module_symbol(module, "pod_module_register", &symbol) ||
+        symbol == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                    "%s does not export pod_module_register", path);
+        g_module_close(module);
+        return FALSE;
+    }
+
+    register_func = symbol;
+    module_type = register_func();
+
+    if (!g_type_is_a(module_type, POD_TYPE_MODULE)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                    "%s did not register a podomation module", path);
+        g_module_close(module);
+        return FALSE;
+    }
+
+    /*
+     * Resident, because the GTypes it registered outlive any point at which
+     * we might unload it -- and unloading a module whose types are still
+     * referenced crashes at the next type lookup.
+     */
+    g_module_make_resident(module);
+
+    instance = g_object_new(module_type, NULL);
+    g_hash_table_insert(self->modules, g_strdup(module_name), instance);
+
+    return TRUE;
+}
+
+gboolean
+clawt_pod_bridge_has_module(ClawtPodBridge *self, const gchar *module_name)
+{
+    g_return_val_if_fail(CLAWT_IS_POD_BRIDGE(self), FALSE);
+
+    return g_hash_table_contains(self->modules, module_name);
+}
+
+/*
+ * podomation speaks GVariant dictionaries.  Converting at this boundary
+ * keeps every caller in ordinary C types rather than spreading GVariant
+ * building across the computer backends.
+ */
+static GVariant *
+params_to_variant(GHashTable *params)
+{
+    GVariantBuilder builder;
+    GHashTableIter iter;
+    gpointer key;
+    gpointer value;
+
+    g_variant_builder_init(&builder, G_VARIANT_TYPE("a{sv}"));
+
+    if (params != NULL) {
+        g_hash_table_iter_init(&iter, params);
+        while (g_hash_table_iter_next(&iter, &key, &value)) {
+            if (value == NULL)
+                continue;
+
+            g_variant_builder_add(&builder, "{sv}", (const gchar *)key,
+                                  g_variant_new_string((const gchar *)value));
+        }
+    }
+
+    return g_variant_builder_end(&builder);
+}
+
+static GHashTable *
+variant_to_result(GVariant *variant)
+{
+    GHashTable *out = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                            g_free, g_free);
+    GVariantIter iter;
+    gchar *key;
+    GVariant *value;
+
+    if (variant == NULL ||
+        !g_variant_is_of_type(variant, G_VARIANT_TYPE("a{sv}")))
+        return out;
+
+    g_variant_iter_init(&iter, variant);
+    while (g_variant_iter_next(&iter, "{sv}", &key, &value)) {
+        g_autofree gchar *text = NULL;
+
+        if (g_variant_is_of_type(value, G_VARIANT_TYPE_STRING))
+            text = g_variant_dup_string(value, NULL);
+        else
+            text = g_variant_print(value, FALSE);
+
+        g_hash_table_insert(out, key, g_steal_pointer(&text));
+        g_variant_unref(value);
+    }
+
+    return out;
+}
+
+GHashTable *
+clawt_pod_bridge_call(ClawtPodBridge  *self,
+                      const gchar     *module_name,
+                      const gchar     *action,
+                      GHashTable      *params,
+                      GError         **error)
+{
+    PodModule *module;
+    g_autoptr(GVariant) variant_params = NULL;
+    GVariant *result_variant = NULL;
+    GHashTable *result;
+    gboolean ok;
+
+    g_return_val_if_fail(CLAWT_IS_POD_BRIDGE(self), NULL);
+    g_return_val_if_fail(action != NULL, NULL);
+
+    module = g_hash_table_lookup(self->modules, module_name);
+
+    if (module == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                    "the podomation '%s' module is not loaded", module_name);
+        return NULL;
+    }
+
+    if (!POD_IS_EVENT_HANDLER(module)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                    "the '%s' module handles no actions", module_name);
+        return NULL;
+    }
+
+    variant_params = g_variant_ref_sink(params_to_variant(params));
+
+    ok = pod_event_handler_handle_event(POD_EVENT_HANDLER(module), action,
+                                        NULL, variant_params,
+                                        &result_variant);
+
+    result = variant_to_result(result_variant);
+
+    if (result_variant != NULL)
+        g_variant_unref(result_variant);
+
+    if (!ok) {
+        const gchar *detail = g_hash_table_lookup(result, "error");
+
+        /*
+         * podomation reports failure as a boolean plus an "error" key.
+         * Turning that into a GError here means the backends above never
+         * have to remember to look for it.
+         */
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_COMPUTER_PROVISION,
+                    "%s %s failed: %s", module_name, action,
+                    detail != NULL ? detail : "no reason given");
+
+        g_hash_table_unref(result);
+        return NULL;
+    }
+
+    return result;
+}
+
+const gchar *
+clawt_pod_bridge_get_module_dir(ClawtPodBridge *self)
+{
+    g_return_val_if_fail(CLAWT_IS_POD_BRIDGE(self), NULL);
+
+    return self->module_dir;
+}
+
+static void
+clawt_pod_bridge_finalize(GObject *object)
+{
+    ClawtPodBridge *self = CLAWT_POD_BRIDGE(object);
+
+    g_clear_pointer(&self->modules, g_hash_table_unref);
+    g_clear_pointer(&self->module_dir, g_free);
+
+    G_OBJECT_CLASS(clawt_pod_bridge_parent_class)->finalize(object);
+}
+
+static void
+clawt_pod_bridge_class_init(ClawtPodBridgeClass *klass)
+{
+    G_OBJECT_CLASS(klass)->finalize = clawt_pod_bridge_finalize;
+}
+
+static void
+clawt_pod_bridge_init(ClawtPodBridge *self)
+{
+    self->modules = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                          g_free, g_object_unref);
+}

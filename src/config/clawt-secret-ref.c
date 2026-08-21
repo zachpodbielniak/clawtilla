@@ -196,7 +196,7 @@ typedef struct {
     GSubprocess *proc;
     GMainLoop   *loop;
     gboolean     timed_out;
-    guint        timeout_id;
+    GSource     *timeout_source;
 } CommandWait;
 
 static gboolean
@@ -206,7 +206,6 @@ on_command_timeout(gpointer user_data)
 
     wait->timed_out = TRUE;
     g_subprocess_force_exit(wait->proc);
-    wait->timeout_id = 0;
 
     return G_SOURCE_REMOVE;
 }
@@ -264,18 +263,30 @@ resolve_command(const gchar *locator,
     wait.proc = proc;
     wait.loop = loop;
     wait.timed_out = FALSE;
-    wait.timeout_id = 0;
+    wait.timeout_source = NULL;
 
-    if (timeout_seconds > 0)
-        wait.timeout_id = g_timeout_add_seconds(timeout_seconds,
-                                                on_command_timeout, &wait);
+    /*
+     * Attached to the context we pushed, not added with
+     * g_timeout_add_seconds().  That helper attaches to the DEFAULT main
+     * context, which this loop is not running -- so the timeout would never
+     * fire, and a locked password manager would hang startup exactly as it
+     * would have with no timeout at all.
+     */
+    if (timeout_seconds > 0) {
+        wait.timeout_source = g_timeout_source_new_seconds(timeout_seconds);
+        g_source_set_callback(wait.timeout_source, on_command_timeout,
+                              &wait, NULL);
+        g_source_attach(wait.timeout_source, context);
+    }
 
     g_subprocess_communicate_utf8_async(proc, NULL, NULL,
                                         on_command_done, &wait);
     g_main_loop_run(loop);
 
-    if (wait.timeout_id != 0)
-        g_source_remove(wait.timeout_id);
+    if (wait.timeout_source != NULL) {
+        g_source_destroy(wait.timeout_source);
+        g_source_unref(wait.timeout_source);
+    }
 
     g_main_context_pop_thread_default(context);
 

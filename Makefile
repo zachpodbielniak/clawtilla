@@ -64,7 +64,15 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/agent/clawt-agent.h \
 	$(SRCDIR)/agent/clawt-agent-manager.h \
 	$(SRCDIR)/computer/clawt-exec-result.h \
-	$(SRCDIR)/computer/clawt-sandbox.h
+	$(SRCDIR)/computer/clawt-sandbox.h \
+	$(SRCDIR)/computer/clawt-computer.h \
+	$(SRCDIR)/computer/clawt-null-computer.h \
+	$(SRCDIR)/computer/clawt-host-computer.h \
+	$(SRCDIR)/computer/clawt-pod-bridge.h \
+	$(SRCDIR)/computer/clawt-container-computer.h \
+	$(SRCDIR)/computer/clawt-vm-computer.h \
+	$(SRCDIR)/computer/clawt-desktop.h \
+	$(SRCDIR)/computer/clawt-computer-factory.h
 
 # ============================================================
 # Library sources
@@ -87,7 +95,15 @@ LIB_SOURCES = \
 	$(SRCDIR)/agent/clawt-agent.c \
 	$(SRCDIR)/agent/clawt-agent-manager.c \
 	$(SRCDIR)/computer/clawt-exec-result.c \
-	$(SRCDIR)/computer/clawt-sandbox.c
+	$(SRCDIR)/computer/clawt-sandbox.c \
+	$(SRCDIR)/computer/clawt-computer.c \
+	$(SRCDIR)/computer/clawt-null-computer.c \
+	$(SRCDIR)/computer/clawt-host-computer.c \
+	$(SRCDIR)/computer/clawt-pod-bridge.c \
+	$(SRCDIR)/computer/clawt-container-computer.c \
+	$(SRCDIR)/computer/clawt-vm-computer.c \
+	$(SRCDIR)/computer/clawt-desktop.c \
+	$(SRCDIR)/computer/clawt-computer-factory.c
 
 # Object files
 LIB_OBJECTS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(LIB_SOURCES))
