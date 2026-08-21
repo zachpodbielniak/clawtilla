@@ -30,5 +30,11 @@
 #include "clawt-types.h"
 #include "clawt-enums.h"
 #include "clawt-error.h"
+#include "clawt-util.h"
+
+#include "config/clawt-config-schema.h"
+#include "config/clawt-secret-ref.h"
+#include "computer/clawt-mount.h"
+#include "config/clawt-config.h"
 
 #undef CLAWT_INSIDE

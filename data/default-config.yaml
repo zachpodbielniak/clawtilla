@@ -1,14 +1,300 @@
 # clawtilla default configuration
 #
-# Copy this to ~/.clawtilla/config.yaml and edit as needed.
+# GENERATED FILE -- do not edit.
 #
-# NOTE: this file is generated from src/config/clawt-config-schema.c by
-# `make config-files`.  Edit the schema, not this file.
+# Every option clawtilla understands is declared once, in
+# src/config/clawt-config-schema.c.  This file, its sibling, and the
+# reference table in docs/ are all produced from that table by
+# `make config-files`.  Editing here is lost on the next run, and
+# tests/test-config-schema.c fails when these files have drifted.
+#
+# A starter config.  Copy to ~/.clawtilla/config.yaml and edit.
+#
+# Only the options worth deciding immediately are live here; the rest
+# are commented out at their defaults, so this reads as a set of
+# choices rather than a wall of settings.  data/example-config.yaml
+# documents all of them.
 
+
+# The daemon itself: where it listens, where it keeps state, how loud it is.
+#
+# clawtillad owns every agent process, every credential and every socket.
+# Clients hold no transports of their own -- they send typed commands and
+# fold one event stream. That is what lets the CLI, the GTK app, the web
+# client and an in-process cmacs embed all be the same program.
 daemon:
+
+  # Unix socket the clients connect to.
+  #
+  # Created with mode 0600, and the daemon checks the peer's uid via
+  # SO_PEERCRED. A unix socket is used rather than a loopback HTTP port
+  # because a port has no such notion of who is calling, and any web page
+  # the user visits can reach a loopback port through DNS rebinding.
+  socket: "$XDG_RUNTIME_DIR/clawtilla/daemon.sock"
+
+  # Where agent workspaces, mailboxes, transcripts and credentials live.
+  #
+  # Created 0700. Never mounted into any agent's computer, whatever the
+  # mount configuration says -- an agent that could read this directory
+  # could read every other agent's credentials.
   state_dir: "~/.clawtilla"
 
+  # How much the daemon says: error, warning, info, debug.
+  #
+  # debug logs every frame on every link, which is what you want when an
+  # agent will not connect and noise the rest of the time.
+  log_level: "info"
+
+  # # Also listen on TCP, so clients on other machines can connect.
+  # #
+  # # Off by default. The unix socket is authenticated by the kernel; a TCP
+  # # listener is authenticated by whatever you configure below, so turning
+  # # this on without TLS and a token puts the whole fleet on the network.
+  # tcp_enabled: false
+
+  # # Address to bind when tcp_enabled is true.
+  # tcp_address: "127.0.0.1"
+
+  # # Port to bind when tcp_enabled is true.
+  # tcp_port: 8792
+
+  # # TLS certificate for the TCP listener. Without one, remote clients talk
+  # # in clear text and so do their bearer tokens.
+  # tls_cert: null
+
+  # # TLS private key matching tls_cert.
+  # tls_key: null
+
+  # # File holding the bearer token remote clients must present.
+  # # Ignored for unix socket connections, which the kernel already vouches for.
+  # token_file: null
+
+  # How many days of per-room event logs to keep. 0 disables the sweep.
+  #
+  # The event log is the file you paste into a bug report. Secrets are
+  # scrubbed as it is written, not as it is displayed -- a transcript gets
+  # replayed into every context rebuild, so a leaked key in one would be
+  # permanent.
+  event_log_days: 30
+
+  # # Permit agents to use computer.host.confine: none.
+  # #
+  # # An unconfined host computer means the agent runs commands as you, with
+  # # your files, your keys and your network. That needs to be two deliberate
+  # # acts rather than one typo, so it requires this AND confirm_host_control
+  # # on the agent itself.
+  # # DANGEROUS: read docs/security.org before enabling this.
+  # allow_unconfined_host: false
+
+# What a new agent gets when its own block does not say.
+#
+# Every key here can be overridden per agent.
 defaults:
+
+  # Default AI provider, naming an entry in the agent's libreclaw providers.
+  provider: "claude-code"
+
+  # Default model for new agents.
+  model: "sonnet"
+
+  # Default computer type for new agents: none, host, container or vm.
+  #
+  # none is the default on purpose. An agent that can run commands is a
+  # bigger grant than an agent that can only talk, and it should be asked
+  # for rather than inherited.
+  computer: "none"
+
+  # Where per-agent workspaces are scaffolded.
+  #
+  # Each agent gets a directory here holding its libreclaw config, its
+  # identity files and its MEMORY.md. It is the agent's desk, not the whole
+  # house.
   workspace_root: "~/.clawtilla/agents"
 
+  # Shared drop-box mounted into every computer at /mnt/clawtilla/exchange.
+  #
+  # shared/ is writable by every agent; <agent-id>/ is writable by that
+  # agent and readable by the others. It exists so agents can hand each
+  # other files without anybody wiring up mounts by hand.
+  exchange_dir: "$XDG_DATA_HOME/clawtilla/exchange"
+
+  # Size cap for the exchange directory. 0 disables the limit.
+  exchange_max_bytes: 1073741824
+
+  # Default restart policy: never, on-failure or always.
+  restart: "on-failure"
+
+  # Whether new agents start with the daemon.
+  autostart: false
+
+# The model that helps design new agents.
+#
+# `clawtilla agent new --ai` describes what you want in prose and the
+# model fills in a draft spec through tool calls, shows you the YAML and
+# the workspace files it would create, and only then commits -- through
+# the same code path as manual creation, so there is no second
+# implementation to drift.
+ai_assist:
+
+  # Whether AI-assisted agent creation is offered.
+  enabled: true
+
+  # Provider used for the designer.
+  provider: "claude-code"
+
+  # Model used for the designer. Worth a capable one: it is a short
+  # conversation and the output is a file you live with.
+  model: "opus"
+
+  # Turn cap for the design conversation, so a model that never commits
+  # stops rather than looping.
+  max_turns: 20
+
+# How secret references in this file are resolved.
+#
+# There is deliberately no way to write a literal secret here. Credentials
+# are always a reference:
+#
+#   api_key: {file: ~/.clawtilla/secrets/anthropic}
+#   api_key: {env: ANTHROPIC_API_KEY}
+#   api_key: {command: "pass show clawtilla/anthropic"}
+#
+# Resolved values are written to per-agent credential files at mode 0600
+# and injected into that agent's environment. They never appear in an IPC
+# response, a log line or a transcript.
+secrets:
+
+  # Backend assumed when a reference gives a bare string: file, env or command.
+  default_backend: "file"
+
+  # Directory a bare file reference is resolved against.
+  dir: "~/.clawtilla/secrets"
+
+  # How long a command-backend secret may take before it is an error.
+  #
+  # A password manager that is locked will block forever rather than fail,
+  # and without a timeout so will daemon startup.
+  command_timeout_seconds: 10
+
+# Loadable plugins: event handlers, extra tools, computer backends and
+# integrations.
+#
+# A plugin that fails to load disables itself and nothing else.
+plugins:
+
+  # Whether plugins are scanned for at all.
+  enabled: true
+
+  # # Extra directories to scan, searched before the XDG and system paths.
+  # dirs: []
+
+  # # Plugin ids to skip, by the <id> in libclawt-plugin-<id>.so.
+  # #
+  # # This is a plain list rather than a per-plugin enabled flag so that a
+  # # third-party plugin the core has never heard of can still be turned off.
+  # disabled: []
+
+# How agents talk to each other, and what stops them doing it forever.
+#
+# Bot-to-bot messaging is the point of clawtilla and also the thing most
+# able to run away: two agents that each reply politely will do so until
+# something stops them. Every limit here is that something.
+orchestration:
+
+  # How far a message may travel agent-to-agent before it is refused.
+  #
+  # Every message carries the depth it was sent at. A chief-of-staff
+  # delegating to a worker that asks a specialist is three hops; anything
+  # much beyond that is usually a loop rather than a plan.
+  max_hops: 8
+
+  # Messages one agent may send per minute. 0 disables the limit.
+  rate_limit_per_minute: 30
+
+  # Spend cap for one delegated task and everything it spawns.
+  # 0 disables the cap.
+  task_budget_usd: 5.0
+
+  # How many recent messages per room are remembered for loop detection.
+  #
+  # A message repeating one already in the window is refused. This catches
+  # the case the hop limit does not: two agents alternating the same two
+  # replies, each one a fresh chain.
+  cycle_window: 10
+
+  # # Id of the agent that receives work addressed to the fleet.
+  # #
+  # # At most one agent may hold this. Setting it here is equivalent to
+  # # chief_of_staff: true on that agent, and the daemon refuses to start if
+  # # two agents claim it.
+  # chief_of_staff: null
+
+  # Defaults for every agent's mailbox.
+  #
+  # Each agent has a durable queue, so a message to a stopped agent waits
+  # for it rather than failing. Any of these can be overridden per agent.
+  mailbox:
+
+    # How many undelivered items a mailbox holds before overflow applies.
+    max_depth: 1000
+
+    # What a full mailbox does: reject, drop-oldest or block-sender.
+    #
+    # All three are noisy on purpose. A queue that silently discards is a
+    # queue that loses work nobody notices until much later.
+    overflow: "reject"
+
+    # Delivery attempts before an item is dead-lettered rather than retried.
+    max_attempts: 5
+
+    # How long an agent has to acknowledge an item before it returns to the queue.
+    #
+    # This is what makes delivery survive an agent dying mid-turn: the item
+    # comes back rather than being lost or silently delivered twice.
+    lease_seconds: 300
+
+    # How long an undelivered item lives before it is swept. 0 means forever.
+    default_ttl_seconds: 604800
+
+    # Base for the exponential retry backoff, with jitter applied.
+    backoff_seconds: 30
+
+# # Standing rooms, created at startup if they do not exist.
+# #
+# # A room is a conversation with members. Posting into one enqueues to
+# # every member's mailbox. A direct chat is just a room with two members,
+# # so there is one mechanism rather than two.
+# rooms: []
+
+# The fleet.
+#
+# Each entry is one libreclaw agent: its persona, its model, its
+# credentials, its integrations and its computer. This file is the source
+# of truth -- the daemon renders each agent's libreclaw config.yaml into
+# its workspace from what is here, and regenerates it when this changes.
+#
+# An agent whose block cannot be understood becomes a shadow: it is
+# listed, it says why, and it refuses to run. That is what lets a config
+# written by a newer clawtilla round-trip through an older one without
+# losing anything.
+agents: []
+
+# The fleet.  Empty to start with; `clawtilla agent create` or
+# `clawtilla agent new --ai` fills this in.
+#
+# A minimal agent looks like:
+#
+#   agents:
+#     - id: chief-of-staff
+#       name: "Chief of Staff"
+#       chief_of_staff: true
+#       model:
+#         model: opus
+#       computer:
+#         type: container
+#         mounts:
+#           - source: "~/src"
+#             target: "/work/src"
+#             mode: rw
+#             relabel: shared
 agents: []

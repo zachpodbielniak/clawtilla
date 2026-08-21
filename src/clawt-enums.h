@@ -349,6 +349,25 @@ typedef enum {
 } ClawtTaskState;
 
 /**
+ * ClawtLogLevel:
+ * @CLAWT_LOG_ERROR: only failures
+ * @CLAWT_LOG_WARNING: failures and things that look wrong
+ * @CLAWT_LOG_INFO: the default: lifecycle and routing decisions
+ * @CLAWT_LOG_DEBUG: every frame on every link
+ *
+ * How much the daemon says.
+ *
+ * %CLAWT_LOG_DEBUG is what you want when an agent will not connect, and
+ * noise the rest of the time -- it logs the contents of every link frame.
+ */
+typedef enum {
+    CLAWT_LOG_ERROR = 0,
+    CLAWT_LOG_WARNING,
+    CLAWT_LOG_INFO,
+    CLAWT_LOG_DEBUG
+} ClawtLogLevel;
+
+/**
  * ClawtSecretBackend:
  * @CLAWT_SECRET_BACKEND_FILE: read the value from a file
  * @CLAWT_SECRET_BACKEND_ENV: read the value from the daemon's environment
@@ -382,6 +401,7 @@ GType clawt_priority_get_type(void) G_GNUC_CONST;
 GType clawt_overflow_policy_get_type(void) G_GNUC_CONST;
 GType clawt_task_state_get_type(void) G_GNUC_CONST;
 GType clawt_secret_backend_get_type(void) G_GNUC_CONST;
+GType clawt_log_level_get_type(void) G_GNUC_CONST;
 
 #define CLAWT_TYPE_AGENT_STATE      (clawt_agent_state_get_type())
 #define CLAWT_TYPE_AGENT_CAPS       (clawt_agent_caps_get_type())
@@ -400,6 +420,7 @@ GType clawt_secret_backend_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_OVERFLOW_POLICY  (clawt_overflow_policy_get_type())
 #define CLAWT_TYPE_TASK_STATE       (clawt_task_state_get_type())
 #define CLAWT_TYPE_SECRET_BACKEND   (clawt_secret_backend_get_type())
+#define CLAWT_TYPE_LOG_LEVEL        (clawt_log_level_get_type())
 
 /**
  * clawt_enum_to_nick:

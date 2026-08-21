@@ -1,0 +1,1390 @@
+#+title: Configuration Options
+#+description: Every clawtilla configuration option
+
+* Configuration Options
+
+GENERATED FILE -- do not edit.  Produced from
+=src/config/clawt-config-schema.c= by =make config-files=.
+
+See [[file:configuration.org][configuration.org]] for worked examples and the reasoning
+behind these; this file is the exhaustive list.
+
+** =daemon=
+
+The daemon itself: where it listens, where it keeps state, how loud it is.
+
+clawtillad owns every agent process, every credential and every socket.
+Clients hold no transports of their own -- they send typed commands and
+fold one event stream. That is what lets the CLI, the GTK app, the web
+client and an in-process cmacs embed all be the same program.
+
+*** =daemon.socket=
+
+- Type :: path
+- Default :: =$XDG_RUNTIME_DIR/clawtilla/daemon.sock=
+- Since :: 0.1.0
+
+Unix socket the clients connect to.
+
+Created with mode 0600, and the daemon checks the peer's uid via
+SO_PEERCRED. A unix socket is used rather than a loopback HTTP port
+because a port has no such notion of who is calling, and any web page
+the user visits can reach a loopback port through DNS rebinding.
+
+*** =daemon.state_dir=
+
+- Type :: path
+- Default :: =~/.clawtilla=
+- Since :: 0.1.0
+
+Where agent workspaces, mailboxes, transcripts and credentials live.
+
+Created 0700. Never mounted into any agent's computer, whatever the
+mount configuration says -- an agent that could read this directory
+could read every other agent's credentials.
+
+*** =daemon.log_level=
+
+- Type :: enum
+- Values :: error, warning, info, debug
+- Default :: =info=
+- Since :: 0.1.0
+
+How much the daemon says: error, warning, info, debug.
+
+debug logs every frame on every link, which is what you want when an
+agent will not connect and noise the rest of the time.
+
+*** =daemon.tcp_enabled=
+
+- Type :: boolean
+- Default :: =false=
+- Since :: 0.1.0
+
+Also listen on TCP, so clients on other machines can connect.
+
+Off by default. The unix socket is authenticated by the kernel; a TCP
+listener is authenticated by whatever you configure below, so turning
+this on without TLS and a token puts the whole fleet on the network.
+
+*** =daemon.tcp_address=
+
+- Type :: string
+- Default :: =127.0.0.1=
+- Since :: 0.1.0
+
+Address to bind when tcp_enabled is true.
+
+*** =daemon.tcp_port=
+
+- Type :: integer
+- Default :: =8792=
+- Since :: 0.1.0
+
+Port to bind when tcp_enabled is true.
+
+*** =daemon.tls_cert=
+
+- Type :: path
+- Default :: unset
+- Since :: 0.1.0
+
+TLS certificate for the TCP listener. Without one, remote clients talk
+in clear text and so do their bearer tokens.
+
+*** =daemon.tls_key=
+
+- Type :: path
+- Default :: unset
+- Since :: 0.1.0
+
+TLS private key matching tls_cert.
+
+*** =daemon.token_file=
+
+- Type :: path
+- Default :: unset
+- Since :: 0.1.0
+
+File holding the bearer token remote clients must present.
+Ignored for unix socket connections, which the kernel already vouches for.
+
+*** =daemon.event_log_days=
+
+- Type :: integer
+- Default :: =30=
+- Since :: 0.1.0
+
+How many days of per-room event logs to keep. 0 disables the sweep.
+
+The event log is the file you paste into a bug report. Secrets are
+scrubbed as it is written, not as it is displayed -- a transcript gets
+replayed into every context rebuild, so a leaked key in one would be
+permanent.
+
+*** =daemon.allow_unconfined_host=
+
+- Type :: boolean
+- Default :: =false=
+- Warning :: hands over real authority; see [[file:security.org][security.org]]
+- Since :: 0.1.0
+
+Permit agents to use computer.host.confine: none.
+
+An unconfined host computer means the agent runs commands as you, with
+your files, your keys and your network. That needs to be two deliberate
+acts rather than one typo, so it requires this AND confirm_host_control
+on the agent itself.
+
+** =defaults=
+
+What a new agent gets when its own block does not say.
+
+Every key here can be overridden per agent.
+
+*** =defaults.provider=
+
+- Type :: string
+- Default :: =claude-code=
+- Since :: 0.1.0
+
+Default AI provider, naming an entry in the agent's libreclaw providers.
+
+*** =defaults.model=
+
+- Type :: string
+- Default :: =sonnet=
+- Since :: 0.1.0
+
+Default model for new agents.
+
+*** =defaults.computer=
+
+- Type :: enum
+- Values :: none, host, container, vm
+- Default :: =none=
+- Since :: 0.1.0
+
+Default computer type for new agents: none, host, container or vm.
+
+none is the default on purpose. An agent that can run commands is a
+bigger grant than an agent that can only talk, and it should be asked
+for rather than inherited.
+
+*** =defaults.workspace_root=
+
+- Type :: path
+- Default :: =~/.clawtilla/agents=
+- Since :: 0.1.0
+
+Where per-agent workspaces are scaffolded.
+
+Each agent gets a directory here holding its libreclaw config, its
+identity files and its MEMORY.md. It is the agent's desk, not the whole
+house.
+
+*** =defaults.exchange_dir=
+
+- Type :: path
+- Default :: =$XDG_DATA_HOME/clawtilla/exchange=
+- Since :: 0.1.0
+
+Shared drop-box mounted into every computer at /mnt/clawtilla/exchange.
+
+shared/ is writable by every agent; <agent-id>/ is writable by that
+agent and readable by the others. It exists so agents can hand each
+other files without anybody wiring up mounts by hand.
+
+*** =defaults.exchange_max_bytes=
+
+- Type :: integer
+- Default :: =1073741824=
+- Since :: 0.1.0
+
+Size cap for the exchange directory. 0 disables the limit.
+
+*** =defaults.restart=
+
+- Type :: enum
+- Values :: never, on-failure, always
+- Default :: =on-failure=
+- Since :: 0.1.0
+
+Default restart policy: never, on-failure or always.
+
+*** =defaults.autostart=
+
+- Type :: boolean
+- Default :: =false=
+- Since :: 0.1.0
+
+Whether new agents start with the daemon.
+
+** =ai_assist=
+
+The model that helps design new agents.
+
+`clawtilla agent new --ai` describes what you want in prose and the
+model fills in a draft spec through tool calls, shows you the YAML and
+the workspace files it would create, and only then commits -- through
+the same code path as manual creation, so there is no second
+implementation to drift.
+
+*** =ai_assist.enabled=
+
+- Type :: boolean
+- Default :: =true=
+- Since :: 0.1.0
+
+Whether AI-assisted agent creation is offered.
+
+*** =ai_assist.provider=
+
+- Type :: string
+- Default :: =claude-code=
+- Since :: 0.1.0
+
+Provider used for the designer.
+
+*** =ai_assist.model=
+
+- Type :: string
+- Default :: =opus=
+- Since :: 0.1.0
+
+Model used for the designer. Worth a capable one: it is a short
+conversation and the output is a file you live with.
+
+*** =ai_assist.max_turns=
+
+- Type :: integer
+- Default :: =20=
+- Since :: 0.1.0
+
+Turn cap for the design conversation, so a model that never commits
+stops rather than looping.
+
+** =secrets=
+
+How secret references in this file are resolved.
+
+There is deliberately no way to write a literal secret here. Credentials
+are always a reference:
+
+  api_key: {file: ~/.clawtilla/secrets/anthropic}
+  api_key: {env: ANTHROPIC_API_KEY}
+  api_key: {command: "pass show clawtilla/anthropic"}
+
+Resolved values are written to per-agent credential files at mode 0600
+and injected into that agent's environment. They never appear in an IPC
+response, a log line or a transcript.
+
+*** =secrets.default_backend=
+
+- Type :: enum
+- Values :: file, env, command
+- Default :: =file=
+- Since :: 0.1.0
+
+Backend assumed when a reference gives a bare string: file, env or command.
+
+*** =secrets.dir=
+
+- Type :: path
+- Default :: =~/.clawtilla/secrets=
+- Since :: 0.1.0
+
+Directory a bare file reference is resolved against.
+
+*** =secrets.command_timeout_seconds=
+
+- Type :: integer
+- Default :: =10=
+- Since :: 0.1.0
+
+How long a command-backend secret may take before it is an error.
+
+A password manager that is locked will block forever rather than fail,
+and without a timeout so will daemon startup.
+
+** =plugins=
+
+Loadable plugins: event handlers, extra tools, computer backends and
+integrations.
+
+A plugin that fails to load disables itself and nothing else.
+
+*** =plugins.enabled=
+
+- Type :: boolean
+- Default :: =true=
+- Since :: 0.1.0
+
+Whether plugins are scanned for at all.
+
+*** =plugins.dirs=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.1.0
+
+Extra directories to scan, searched before the XDG and system paths.
+
+*** =plugins.disabled=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.1.0
+
+Plugin ids to skip, by the <id> in libclawt-plugin-<id>.so.
+
+This is a plain list rather than a per-plugin enabled flag so that a
+third-party plugin the core has never heard of can still be turned off.
+
+** =orchestration=
+
+How agents talk to each other, and what stops them doing it forever.
+
+Bot-to-bot messaging is the point of clawtilla and also the thing most
+able to run away: two agents that each reply politely will do so until
+something stops them. Every limit here is that something.
+
+*** =orchestration.max_hops=
+
+- Type :: integer
+- Default :: =8=
+- Since :: 0.1.0
+
+How far a message may travel agent-to-agent before it is refused.
+
+Every message carries the depth it was sent at. A chief-of-staff
+delegating to a worker that asks a specialist is three hops; anything
+much beyond that is usually a loop rather than a plan.
+
+*** =orchestration.rate_limit_per_minute=
+
+- Type :: integer
+- Default :: =30=
+- Since :: 0.1.0
+
+Messages one agent may send per minute. 0 disables the limit.
+
+*** =orchestration.task_budget_usd=
+
+- Type :: number
+- Default :: =5.0=
+- Since :: 0.1.0
+
+Spend cap for one delegated task and everything it spawns.
+0 disables the cap.
+
+*** =orchestration.cycle_window=
+
+- Type :: integer
+- Default :: =10=
+- Since :: 0.1.0
+
+How many recent messages per room are remembered for loop detection.
+
+A message repeating one already in the window is refused. This catches
+the case the hop limit does not: two agents alternating the same two
+replies, each one a fresh chain.
+
+*** =orchestration.chief_of_staff=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+Id of the agent that receives work addressed to the fleet.
+
+At most one agent may hold this. Setting it here is equivalent to
+chief_of_staff: true on that agent, and the daemon refuses to start if
+two agents claim it.
+
+** =orchestration.mailbox=
+
+Defaults for every agent's mailbox.
+
+Each agent has a durable queue, so a message to a stopped agent waits
+for it rather than failing. Any of these can be overridden per agent.
+
+*** =orchestration.mailbox.max_depth=
+
+- Type :: integer
+- Default :: =1000=
+- Since :: 0.1.0
+
+How many undelivered items a mailbox holds before overflow applies.
+
+*** =orchestration.mailbox.overflow=
+
+- Type :: enum
+- Values :: reject, drop-oldest, block-sender
+- Default :: =reject=
+- Since :: 0.1.0
+
+What a full mailbox does: reject, drop-oldest or block-sender.
+
+All three are noisy on purpose. A queue that silently discards is a
+queue that loses work nobody notices until much later.
+
+*** =orchestration.mailbox.max_attempts=
+
+- Type :: integer
+- Default :: =5=
+- Since :: 0.1.0
+
+Delivery attempts before an item is dead-lettered rather than retried.
+
+*** =orchestration.mailbox.lease_seconds=
+
+- Type :: integer
+- Default :: =300=
+- Since :: 0.1.0
+
+How long an agent has to acknowledge an item before it returns to the queue.
+
+This is what makes delivery survive an agent dying mid-turn: the item
+comes back rather than being lost or silently delivered twice.
+
+*** =orchestration.mailbox.default_ttl_seconds=
+
+- Type :: integer
+- Default :: =604800=
+- Since :: 0.1.0
+
+How long an undelivered item lives before it is swept. 0 means forever.
+
+*** =orchestration.mailbox.backoff_seconds=
+
+- Type :: integer
+- Default :: =30=
+- Since :: 0.1.0
+
+Base for the exponential retry backoff, with jitter applied.
+
+** =rooms=
+
+Standing rooms, created at startup if they do not exist.
+
+A room is a conversation with members. Posting into one enqueues to
+every member's mailbox. A direct chat is just a room with two members,
+so there is one mechanism rather than two.
+
+*** =rooms.id=
+
+- Type :: string
+- Default :: unset
+- Required :: yes
+- Since :: 0.1.0
+
+Identifier used to address the room.
+
+*** =rooms.name=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+Display name.
+
+*** =rooms.members=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.1.0
+
+Agent ids in the room. The human is always implicitly a member.
+
+*** =rooms.require_mention=
+
+- Type :: boolean
+- Default :: =false=
+- Since :: 0.1.0
+
+Only deliver messages that name an agent.
+
+Worth turning on for a busy room: without it every agent takes a turn
+on every message, which is expensive and rarely wanted.
+
+*** =rooms.max_hops=
+
+- Type :: integer
+- Default :: unset
+- Since :: 0.1.0
+
+Overrides orchestration.max_hops for this room.
+
+** =agents=
+
+The fleet.
+
+Each entry is one libreclaw agent: its persona, its model, its
+credentials, its integrations and its computer. This file is the source
+of truth -- the daemon renders each agent's libreclaw config.yaml into
+its workspace from what is here, and regenerates it when this changes.
+
+An agent whose block cannot be understood becomes a shadow: it is
+listed, it says why, and it refuses to run. That is what lets a config
+written by a newer clawtilla round-trip through an older one without
+losing anything.
+
+*** =agents.id=
+
+- Type :: string
+- Default :: unset
+- Required :: yes
+- Since :: 0.1.0
+
+Identifier used everywhere else to address this agent. Must be unique.
+
+*** =agents.name=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+Display name shown in the clients and used as the agent's own name.
+
+*** =agents.description=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+One line about what this agent is for.
+
+Other agents see it when they list the fleet, so it is how a
+chief-of-staff decides who to delegate to. Worth writing properly.
+
+*** =agents.enabled=
+
+- Type :: boolean
+- Default :: =true=
+- Since :: 0.1.0
+
+Whether this agent may run at all.
+
+*** =agents.chief_of_staff=
+
+- Type :: boolean
+- Default :: =false=
+- Since :: 0.1.0
+
+Marks the agent that receives work addressed to the fleet.
+At most one agent may hold this.
+
+*** =agents.color=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+Accent colour in the clients, as a hex string.
+
+*** =agents.avatar=
+
+- Type :: path
+- Default :: unset
+- Since :: 0.1.0
+
+Path to an avatar image.
+
+*** =agents.workspace=
+
+- Type :: path
+- Default :: unset
+- Since :: 0.1.0
+
+Workspace directory. Defaults to defaults.workspace_root/<id>.
+Scaffolded on first start if it does not exist.
+
+** =agents.persona=
+
+Who the agent is.
+
+*** =agents.persona.system_prompt=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+System prompt, inline. Mutually exclusive with identity_files.
+
+*** =agents.persona.identity_files=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.1.0
+
+Files in the workspace concatenated into the system prompt, in order.
+
+The convention is SOUL.md for character, IDENTITY.md for role,
+AGENTS.md for how to work with others, TOOLS.md for what it has and
+USER.md for who you are. Splitting them means one can be edited without
+rewriting the rest.
+
+** =agents.memory=
+
+The agent's long-term memory file.
+
+MEMORY.md in the workspace is loaded into the system prompt every turn,
+under a budget. memory/<topic>.md files are read on demand by the agent
+instead, so a large memory does not cost every turn.
+
+*** =agents.memory.enabled=
+
+- Type :: boolean
+- Default :: =true=
+- Since :: 0.1.0
+
+Whether MEMORY.md is loaded into the prompt.
+
+*** =agents.memory.max_lines=
+
+- Type :: integer
+- Default :: =200=
+- Since :: 0.1.0
+
+Line budget for MEMORY.md. Beyond it the file is truncated with a note.
+
+*** =agents.memory.max_bytes=
+
+- Type :: integer
+- Default :: =24000=
+- Since :: 0.1.0
+
+Byte budget for MEMORY.md, applied alongside max_lines.
+
+** =agents.model=
+
+Which model this agent thinks with.
+
+*** =agents.model.provider=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+Provider name. Defaults to defaults.provider.
+
+*** =agents.model.model=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+Model name. Defaults to defaults.model.
+
+*** =agents.model.effort=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+Reasoning effort: low, medium, high, xhigh or max, when the model has one.
+
+*** =agents.model.routing_profile=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+libreclaw smart-routing profile: off, eco, auto, premium or free.
+
+*** =agents.model.fallbacks=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.1.0
+
+Models to fall back to, in order, when the primary is unavailable.
+
+** =agents.runtime=
+
+How this agent's libreclaw instance is hosted.
+
+*** =agents.runtime.type=
+
+- Type :: enum
+- Values :: process, embedded
+- Default :: =process=
+- Since :: 0.1.0
+
+process or embedded.
+
+process supervises a real libreclaw child: crashes stay contained, the
+environment and credentials are genuinely separate, and the agent can
+live inside its own container. embedded runs it inside the daemon,
+which is cheaper and is what an in-process host such as cmacs wants, at
+the cost of sharing a fate with every other embedded agent.
+
+*** =agents.runtime.autostart=
+
+- Type :: boolean
+- Default :: unset
+- Since :: 0.1.0
+
+Start with the daemon. Defaults to defaults.autostart.
+
+*** =agents.runtime.restart=
+
+- Type :: enum
+- Values :: never, on-failure, always
+- Default :: unset
+- Since :: 0.1.0
+
+never, on-failure or always. Defaults to defaults.restart.
+
+*** =agents.runtime.backoff_seconds=
+
+- Type :: integer
+- Default :: =5=
+- Since :: 0.1.0
+
+Base delay before a restart, doubling on each consecutive failure.
+
+*** =agents.runtime.max_restarts=
+
+- Type :: integer
+- Default :: =10=
+- Since :: 0.1.0
+
+Consecutive failures before the agent is left in error rather than
+restarted again. 0 means never give up.
+
+** =agents.computer=
+
+What the agent can run commands on.
+
+*** =agents.computer.type=
+
+- Type :: enum
+- Values :: none, host, container, vm
+- Default :: unset
+- Since :: 0.1.0
+
+none, host, container or vm. Defaults to defaults.computer.
+
+Desktop control is not a type -- it is the desktop block below, and
+works alongside any of these.
+
+** =agents.computer.mounts=
+
+Host paths shared into the computer.
+
+  mounts:
+    - source: "~/src/projects"
+      target: "/work/projects"
+      mode: rw
+      relabel: shared
+
+For a container these become bind mounts; for a VM, virtiofs shares;
+for a host computer they are the confinement allowlist itself.
+
+*** =agents.computer.mounts.source=
+
+- Type :: path
+- Default :: unset
+- Since :: 0.1.0
+
+Host path to share. Not needed for tmpfs.
+
+*** =agents.computer.mounts.target=
+
+- Type :: path
+- Default :: unset
+- Required :: yes
+- Since :: 0.1.0
+
+Absolute path inside the computer. Must not overlap another mount.
+
+*** =agents.computer.mounts.mode=
+
+- Type :: enum
+- Values :: ro, rw
+- Default :: =ro=
+- Since :: 0.1.0
+
+ro or rw. Read-only is the default: an agent that only needs to read
+your notes should not be able to rewrite them.
+
+*** =agents.computer.mounts.type=
+
+- Type :: enum
+- Values :: bind, volume, virtiofs, 9p, tmpfs
+- Default :: =bind=
+- Since :: 0.1.0
+
+bind, volume, virtiofs, 9p or tmpfs.
+
+Usually leave this alone: bind for containers and virtiofs for VMs are
+chosen automatically from the computer type.
+
+*** =agents.computer.mounts.relabel=
+
+- Type :: enum
+- Values :: none, shared, private
+- Default :: =none=
+- Since :: 0.1.0
+
+SELinux relabelling for a container bind mount: none, shared or private.
+
+This matters on Fedora Silverblue and friends, where an unlabelled bind
+mount is visible in the container but every access is denied -- which
+reads like a permissions bug rather than a labelling one. shared (:z)
+is usually what you want. private (:Z) rewrites the host directory's
+labels exclusively for this container, which will break anything else
+using that directory.
+
+*** =agents.computer.mounts.create=
+
+- Type :: boolean
+- Default :: =false=
+- Since :: 0.1.0
+
+Create the source directory if it is missing, rather than failing.
+
+*** =agents.computer.mounts.size=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+Size for a tmpfs mount, e.g. "512M".
+
+*** =agents.computer.mounts.required=
+
+- Type :: boolean
+- Default :: =true=
+- Since :: 0.1.0
+
+Fail to start when the source is missing, rather than warning and
+carrying on without it.
+
+** =agents.computer.host=
+
+Settings for computer.type: host -- the real machine clawtilla runs on.
+
+This is the most useful and the most dangerous backend. Read
+docs/security.org before enabling it: what each confinement mode
+actually prevents, and what none of them do, is spelled out there.
+
+*** =agents.computer.host.confirm_host_control=
+
+- Type :: boolean
+- Default :: =false=
+- Warning :: hands over real authority; see [[file:security.org][security.org]]
+- Since :: 0.1.0
+
+Required before a host computer will start.
+
+There is no default that makes this safe, so there is no default that
+skips it. The daemon refuses to start the agent without it.
+
+*** =agents.computer.host.confine=
+
+- Type :: enum
+- Values :: none, workspace, allowlist, bwrap
+- Default :: =workspace=
+- Since :: 0.1.0
+
+How much of the machine the agent may touch.
+
+  workspace  cwd pinned to root; every path in the command line is
+             canonicalised and rejected if it escapes
+  allowlist  root plus allow_paths, minus deny_paths
+  bwrap      a real kernel sandbox via bubblewrap
+  none       no restriction at all
+
+workspace and allowlist are enforced by inspecting the command before
+running it, which closes '..' and symlink escapes together. They do not
+stop a program that opens paths itself once it is running. Only bwrap
+does, because only bwrap involves the kernel.
+
+If bwrap is asked for and not installed, the agent becomes a shadow with
+that as its reason. It is never silently downgraded.
+
+*** =agents.computer.host.root=
+
+- Type :: path
+- Default :: unset
+- Since :: 0.1.0
+
+Directory the agent works in. Defaults to its workspace.
+
+*** =agents.computer.host.allow_paths=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.1.0
+
+Additional paths reachable under confine: allowlist or bwrap.
+
+*** =agents.computer.host.deny_paths=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.1.0
+
+Paths refused even when they fall inside an allowed one.
+
+Checked after allow_paths, so ~/.ssh stays out even when all of ~ is in.
+
+*** =agents.computer.host.allow_network=
+
+- Type :: boolean
+- Default :: =true=
+- Since :: 0.1.0
+
+Whether the agent's commands can reach the network.
+Only enforceable under confine: bwrap, which unshares the namespace.
+
+*** =agents.computer.host.allow_sudo=
+
+- Type :: boolean
+- Default :: =false=
+- Warning :: hands over real authority; see [[file:security.org][security.org]]
+- Since :: 0.1.0
+
+Permit privilege escalation.
+
+With this false, sudo, pkexec, doas, run0 and machinectl shell are
+refused at the exec layer, including through a shell one-liner, and the
+agent is told so rather than left guessing why its command failed.
+
+*** =agents.computer.host.shell=
+
+- Type :: path
+- Default :: =/bin/sh=
+- Since :: 0.1.0
+
+Shell used for interactive sessions and shell-form commands.
+
+*** =agents.computer.host.nice=
+
+- Type :: integer
+- Default :: =0=
+- Since :: 0.1.0
+
+Scheduling niceness for the agent's commands, so a runaway build does
+not make the desktop unusable.
+
+** =agents.computer.container=
+
+Settings for computer.type: container.
+
+*** =agents.computer.container.image=
+
+- Type :: string
+- Default :: =docker.io/library/debian:stable-slim=
+- Since :: 0.1.0
+
+Image the container is created from.
+
+*** =agents.computer.container.name=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+Container name. Defaults to clawt-<agent-id>.
+
+*** =agents.computer.container.connection=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+Podman connection: a socket path, ssh://user@host/socket, tcp://host:port,
+or a named connection. Defaults to the user's podman socket.
+
+*** =agents.computer.container.network=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+Network to attach to. Leave unset for podman's default.
+
+*** =agents.computer.container.keep=
+
+- Type :: boolean
+- Default :: =false=
+- Since :: 0.1.0
+
+Keep the container when the agent stops, instead of removing it.
+Useful when the agent installs things it should not have to reinstall.
+
+** =agents.computer.vm=
+
+Settings for computer.type: vm.
+
+*** =agents.computer.vm.backend=
+
+- Type :: enum
+- Values :: libvirt, qemu
+- Default :: =libvirt=
+- Since :: 0.1.0
+
+libvirt or qemu.
+
+libvirt is the default and brings snapshots, migration and device
+hotplug with it. qemu drives qemu-system-* directly over QMP and needs
+no libvirtd, at the cost of that surface.
+
+*** =agents.computer.vm.domain=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+libvirt domain name. Defaults to clawt-<agent-id>.
+
+*** =agents.computer.vm.uri=
+
+- Type :: string
+- Default :: =qemu:///session=
+- Since :: 0.1.0
+
+libvirt connection URI. qemu:///system for system-wide VMs.
+
+*** =agents.computer.vm.image=
+
+- Type :: path
+- Default :: unset
+- Since :: 0.1.0
+
+Base disk image. A qcow2 overlay is created on top, so the base is
+never written to and several agents can share one.
+
+*** =agents.computer.vm.cpus=
+
+- Type :: integer
+- Default :: =2=
+- Since :: 0.1.0
+
+Virtual CPUs.
+
+*** =agents.computer.vm.memory_mb=
+
+- Type :: integer
+- Default :: =2048=
+- Since :: 0.1.0
+
+Memory in megabytes.
+
+*** =agents.computer.vm.ssh_user=
+
+- Type :: string
+- Default :: =root=
+- Since :: 0.1.0
+
+User commands are run as inside the guest, over SSH.
+
+*** =agents.computer.vm.ssh_key=
+
+- Type :: path
+- Default :: unset
+- Since :: 0.1.0
+
+Private key used to reach the guest.
+
+*** =agents.computer.vm.snapshot_on_start=
+
+- Type :: boolean
+- Default :: =false=
+- Since :: 0.1.0
+
+Take a snapshot each time the VM starts, so a session can be rolled back.
+libvirt backend only.
+
+** =agents.computer.desktop=
+
+Let the agent see and drive a desktop session.
+
+An add-on rather than a computer type, so it works alongside whichever
+one the agent has. An agent with this can read anything on your screen
+and click anything on it.
+
+*** =agents.computer.desktop.enabled=
+
+- Type :: boolean
+- Default :: =false=
+- Since :: 0.1.0
+
+Whether desktop tools are offered to the agent.
+
+*** =agents.computer.desktop.backend=
+
+- Type :: enum
+- Values :: auto, gowl, gnome
+- Default :: =auto=
+- Since :: 0.1.0
+
+auto, gowl or gnome.
+
+auto tries gowl's MCP socket first and falls back to gnome-desktop-mcp.
+gowl is the better fit where it is available: same tool vocabulary,
+native, and no Python or GNOME Shell extension in the way.
+
+*** =agents.computer.desktop.socket=
+
+- Type :: path
+- Default :: =$XDG_RUNTIME_DIR/gowl-mcp.sock=
+- Since :: 0.1.0
+
+gowl's MCP socket. Requires gowl built with MCP=1 and modules.mcp
+enabled in its config.
+
+*** =agents.computer.desktop.allow_input=
+
+- Type :: boolean
+- Default :: =false=
+- Since :: 0.1.0
+
+Permit key and pointer injection, not just observation.
+
+With this false the agent can take screenshots and query windows but
+cannot act, which is a useful amount of access on its own and a much
+smaller grant.
+
+*** =agents.env=
+
+- Type :: mapping
+- Default :: unset
+- Since :: 0.1.0
+
+Environment variables for this agent's process.
+
+Only these and a small fixed set are passed through. The daemon's own
+environment is not inherited: a stray ANTHROPIC_API_KEY leaking into a
+subscription CLI would quietly move it onto pay-as-you-go billing
+nobody agreed to.
+
+*** =agents.credentials=
+
+- Type :: mapping
+- Default :: unset
+- Since :: 0.1.0
+
+Secret references for this agent, written to credential files at 0600.
+
+  credentials:
+    anthropic_api_key: {env: ANTHROPIC_API_KEY}
+    matrix_token: {file: ~/.clawtilla/secrets/matrix-chief}
+
+Values are never echoed back over IPC; clients see only which keys are
+configured.
+
+** =agents.integrations=
+
+Channels this agent reaches the outside world through.
+
+libreclaw implements all of these; clawtilla renders the configuration,
+writes the credential files and health-checks them.
+
+** =agents.integrations.matrix=
+
+Matrix. Needs homeserver, user_id and an access token.
+
+*** =agents.integrations.matrix.enabled=
+
+- Type :: boolean
+- Default :: =false=
+- Since :: 0.1.0
+
+Whether the Matrix channel is active.
+
+*** =agents.integrations.matrix.homeserver=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+Homeserver base URL.
+
+*** =agents.integrations.matrix.user_id=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+Full Matrix user id, e.g. @agent:example.com.
+
+*** =agents.integrations.matrix.access_token=
+
+- Type :: secret reference
+- Default :: unset
+- Since :: 0.1.0
+
+Access token, as a secret reference.
+
+*** =agents.integrations.matrix.rooms=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.1.0
+
+Room ids to join.
+
+*** =agents.integrations.matrix.require_mention=
+
+- Type :: boolean
+- Default :: =true=
+- Since :: 0.1.0
+
+Only respond when named, so the agent is not a participant in every
+conversation in the room.
+
+** =agents.integrations.email=
+
+Email over IMAP and SMTP.
+
+*** =agents.integrations.email.enabled=
+
+- Type :: boolean
+- Default :: =false=
+- Since :: 0.1.0
+
+Whether the email channel is active.
+
+*** =agents.integrations.email.imap_host=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+IMAP server hostname.
+
+*** =agents.integrations.email.imap_port=
+
+- Type :: integer
+- Default :: =993=
+- Since :: 0.1.0
+
+IMAP port.
+
+*** =agents.integrations.email.smtp_host=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+SMTP server hostname.
+
+*** =agents.integrations.email.smtp_port=
+
+- Type :: integer
+- Default :: =587=
+- Since :: 0.1.0
+
+SMTP port.
+
+*** =agents.integrations.email.username=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+Account username.
+
+*** =agents.integrations.email.password=
+
+- Type :: secret reference
+- Default :: unset
+- Since :: 0.1.0
+
+Account password, as a secret reference.
+
+*** =agents.integrations.email.folders=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.1.0
+
+Folders to watch. Defaults to INBOX.
+
+** =agents.integrations.webhook=
+
+Inbound HTTP webhooks.
+
+*** =agents.integrations.webhook.enabled=
+
+- Type :: boolean
+- Default :: =false=
+- Since :: 0.1.0
+
+Whether the webhook channel is active.
+
+*** =agents.integrations.webhook.port=
+
+- Type :: integer
+- Default :: =0=
+- Since :: 0.1.0
+
+Port to listen on. 0 asks the kernel for a free one, which is what you
+want with several agents: a fixed port means the second agent to start
+fails to bind.
+
+*** =agents.integrations.local=
+
+- Type :: boolean
+- Default :: =false=
+- Since :: 0.1.0
+
+libreclaw's stdin/stdout channel.
+
+At most one agent may have this, and only with runtime.type: process --
+it takes over file descriptors 0 and 1, which an embedded agent would be
+taking from the daemon.
+
+*** =agents.integrations.cmacs=
+
+- Type :: boolean
+- Default :: =false=
+- Since :: 0.1.0
+
+libreclaw's in-process cmacs channel.
+
+** =agents.tools=
+
+Which orchestration tools this agent may call.
+
+The clawtilla_* tools let an agent message its peers, delegate work,
+read its mailbox and drive its computer. A worker usually wants fewer
+of them than a chief-of-staff.
+
+*** =agents.tools.allow=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.1.0
+
+Tool names permitted. Unset means all of them except those needing a
+capability this agent does not have.
+
+*** =agents.tools.deny=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.1.0
+
+Tool names refused. Applied after allow, so a deny always wins.
+
+** =agents.mailbox=
+
+Per-agent overrides of orchestration.mailbox.
+
+*** =agents.libreclaw=
+
+- Type :: mapping
+- Default :: unset
+- Since :: 0.1.0
+
+Merged verbatim into this agent's generated libreclaw config.yaml.
+
+An escape hatch for libreclaw settings clawtilla does not model. What is
+here wins over what clawtilla generates, so it can also be used to
+override something deliberately.

@@ -18,7 +18,12 @@ OBJ_DIRS := $(sort $(dir $(LIB_OBJECTS) $(DAEMON_OBJECTS) $(CLI_OBJECTS) \
 # it is made exactly once before any compilation.
 OBJ_DIRS_STAMP := $(OBJDIR)/.dirs-stamp
 
-$(OBJ_DIRS_STAMP):
+# The stamp depends on the Makefile because OBJ_DIRS is derived from the
+# source lists there.  Without it, adding a source in a new subdirectory
+# compiles against a stamp made before that directory existed, and gcc fails
+# with "can't create ...o: No such file or directory" -- which reads like a
+# permissions problem rather than a missing mkdir.
+$(OBJ_DIRS_STAMP): Makefile config.mk
 	@mkdir -p $(OBJ_DIRS)
 	@touch $@
 

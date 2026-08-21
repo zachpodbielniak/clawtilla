@@ -372,6 +372,26 @@ clawt_secret_backend_get_type(void)
     return g_define_type_id__volatile;
 }
 
+/* Register ClawtLogLevel as a GLib enum type */
+GType
+clawt_log_level_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_LOG_ERROR, "CLAWT_LOG_ERROR", "error" },
+            { CLAWT_LOG_WARNING, "CLAWT_LOG_WARNING", "warning" },
+            { CLAWT_LOG_INFO, "CLAWT_LOG_INFO", "info" },
+            { CLAWT_LOG_DEBUG, "CLAWT_LOG_DEBUG", "debug" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtLogLevel", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
 /* ── Nickname helpers ────────────────────────────────────────────── */
 
 /*

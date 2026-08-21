@@ -49,14 +49,25 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/clawtilla.h \
 	$(SRCDIR)/clawt-types.h \
 	$(SRCDIR)/clawt-enums.h \
-	$(SRCDIR)/clawt-error.h
+	$(SRCDIR)/clawt-error.h \
+	$(SRCDIR)/clawt-util.h \
+	$(SRCDIR)/config/clawt-config-schema.h \
+	$(SRCDIR)/config/clawt-secret-ref.h \
+	$(SRCDIR)/config/clawt-config.h \
+	$(SRCDIR)/computer/clawt-mount.h
 
 # ============================================================
 # Library sources
 # ============================================================
 LIB_SOURCES = \
 	$(SRCDIR)/clawt-enums.c \
-	$(SRCDIR)/clawt-error.c
+	$(SRCDIR)/clawt-error.c \
+	$(SRCDIR)/clawt-util.c \
+	$(SRCDIR)/config/clawt-config-schema.c \
+	$(SRCDIR)/config/clawt-schema-render.c \
+	$(SRCDIR)/config/clawt-secret-ref.c \
+	$(SRCDIR)/config/clawt-config.c \
+	$(SRCDIR)/computer/clawt-mount.c
 
 # Object files
 LIB_OBJECTS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(LIB_SOURCES))
@@ -239,6 +250,10 @@ plugins: $(LIB_STATIC)
 # configuration option.  These files are generated from it and checked in,
 # so a test can assert they have not drifted.
 # ============================================================
+$(GENCONFIG_BIN): $(TOOLSDIR)/clawt-genconfig.c $(LIB_STATIC) | $(OUTDIR)
+	@echo "Building $(notdir $@)..."
+	$(CC) $(CFLAGS) -I$(SRCDIR) $< -o $@ $(LIB_STATIC) $(LDFLAGS)
+
 .PHONY: config-files
 config-files: $(GENCONFIG_BIN)
 	@echo "Regenerating config files and docs tables from the schema..."
