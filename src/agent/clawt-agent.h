@@ -50,7 +50,22 @@ const gchar      *clawt_agent_get_name(ClawtAgent *self);
 const gchar      *clawt_agent_get_description(ClawtAgent *self);
 ClawtAgentState   clawt_agent_get_state(ClawtAgent *self);
 ClawtAgentCaps    clawt_agent_get_caps(ClawtAgent *self);
+
+/**
+ * clawt_agent_get_config:
+ * @self: a #ClawtAgent
+ *
+ * Returns: (transfer none): the agent's configuration
+ */
 ClawtAgentConfig *clawt_agent_get_config(ClawtAgent *self);
+
+/**
+ * clawt_agent_get_mailbox:
+ * @self: a #ClawtAgent
+ *
+ * Returns: (transfer none) (nullable): the agent's queue, or %NULL if it
+ *   could not be opened
+ */
 ClawtMailbox     *clawt_agent_get_mailbox(ClawtAgent *self);
 
 /**
