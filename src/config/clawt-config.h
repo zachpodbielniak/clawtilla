@@ -395,6 +395,30 @@ GHashTable *clawt_agent_config_get_env(ClawtAgentConfig *self);
 GHashTable *clawt_agent_config_get_credentials(ClawtAgentConfig *self);
 
 /**
+ * clawt_agent_config_resolve_credentials:
+ * @self: a #ClawtAgentConfig
+ * @secrets_dir: (nullable): directory a bare file reference resolves against
+ * @timeout_seconds: how long a command backend may take
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Resolves the agent's credentials into environment variables, named
+ * after each key in upper case.
+ *
+ * This is how a provider actually receives its key: `anthropic_api_key`
+ * becomes ANTHROPIC_API_KEY in the child's environment.  The values are
+ * also written to files by clawt_config_write_agent_files(), for anything
+ * that wants a path instead.
+ *
+ * Returns: (transfer full) (element-type utf8 utf8) (nullable): the
+ *   variables, or %NULL if a reference could not be resolved
+ */
+GHashTable *clawt_agent_config_resolve_credentials(
+    ClawtAgentConfig  *self,
+    const gchar       *secrets_dir,
+    guint              timeout_seconds,
+    GError           **error);
+
+/**
  * clawt_agent_config_get_secret:
  * @self: a #ClawtAgentConfig
  * @key: a dotted path within the agent, e.g. `integrations.matrix.access_token`

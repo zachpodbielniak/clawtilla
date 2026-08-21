@@ -300,11 +300,19 @@ clawt_room_manager_get_direct(ClawtRoomManager *self, const gchar *a,
     g_return_val_if_fail(a != NULL, NULL);
     g_return_val_if_fail(b != NULL, NULL);
 
-    /* Sorted, so "a to b" and "b to a" name the same room. */
+    /*
+     * Sorted, so "a to b" and "b to a" name the same room, and joined
+     * with a character an agent id cannot contain.
+     *
+     * Ids may contain '_', so joining with it made "a" + "b_c" and
+     * "a_b" + "c" produce the same room -- two unrelated pairs sharing
+     * one private conversation, neither of them actually a member of the
+     * room they were handed.
+     */
     if (g_strcmp0(a, b) <= 0)
-        room_id = g_strdup_printf("dm_%s_%s", a, b);
+        room_id = g_strdup_printf("dm:%s:%s", a, b);
     else
-        room_id = g_strdup_printf("dm_%s_%s", b, a);
+        room_id = g_strdup_printf("dm:%s:%s", b, a);
 
     room = g_hash_table_lookup(self->rooms, room_id);
     if (room != NULL)

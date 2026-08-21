@@ -29,6 +29,7 @@ struct _ClawtAgent {
 
     ClawtAgentState state;
     ClawtAgentCaps  caps;
+    gint            hop_depth;
     gchar          *status_detail;
 };
 
@@ -242,6 +243,22 @@ on_runtime_exited(ClawtAgentRuntime *runtime,
         set_state(self, CLAWT_AGENT_STATE_STOPPED, detail);
     else
         set_state(self, CLAWT_AGENT_STATE_ERROR, detail);
+}
+
+gint
+clawt_agent_get_hop_depth(ClawtAgent *self)
+{
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), 0);
+
+    return self->hop_depth;
+}
+
+void
+clawt_agent_set_hop_depth(ClawtAgent *self, gint depth)
+{
+    g_return_if_fail(CLAWT_IS_AGENT(self));
+
+    self->hop_depth = depth;
 }
 
 void

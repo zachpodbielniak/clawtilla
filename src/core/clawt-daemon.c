@@ -524,6 +524,42 @@ clawt_daemon_start_agent(ClawtDaemon *self, const gchar *agent_id,
 
             env = clawt_agent_config_get_env(config);
 
+            /*
+             * The agent's resolved credentials go in alongside its own
+             * `env:` block: an API key that never reaches the child is an
+             * agent that cannot talk to its provider.
+             */
+            {
+                g_autofree gchar *secrets_dir =
+                    clawt_config_get_path_value(self->config, "secrets.dir");
+                g_autoptr(GHashTable) credentials = NULL;
+                g_autoptr(GError) secret_error = NULL;
+
+                credentials = clawt_agent_config_resolve_credentials(
+                    config, secrets_dir,
+                    (guint)clawt_config_get_int(
+                        self->config, "secrets.command_timeout_seconds"),
+                    &secret_error);
+
+                if (credentials == NULL) {
+                    clawt_agent_mark_shadow(agent, secret_error->message);
+                    g_propagate_error(error, g_steal_pointer(&secret_error));
+                    return FALSE;
+                }
+
+                {
+                    GHashTableIter iter;
+                    gpointer key;
+                    gpointer value;
+
+                    g_hash_table_iter_init(&iter, credentials);
+
+                    while (g_hash_table_iter_next(&iter, &key, &value))
+                        g_hash_table_insert(env, g_strdup(key),
+                                            g_strdup(value));
+                }
+            }
+
             if (env != NULL)
                 clawt_process_runtime_set_environment(runtime, env);
 
@@ -778,6 +814,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
                                           self->guard);
     clawt_mcp_tools_set_deliver_func(self->mcp_tools, deliver_for_tools,
                                      self, NULL);
+    clawt_mcp_tools_set_room_manager(self->mcp_tools, self->rooms);
 
     {
         g_autofree gchar *module_dir = NULL;

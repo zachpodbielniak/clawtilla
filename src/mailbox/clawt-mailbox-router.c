@@ -258,6 +258,14 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
         }
 
         /*
+         * The agent is told how far this message has come, so anything it
+         * sends in response counts as one hop further.  Without it every
+         * outbound message looked like the first and max_hops could never
+         * be reached.
+         */
+        clawt_agent_set_hop_depth(agent, clawt_mailbox_item_get_depth(item));
+
+        /*
          * Acknowledged on the daemon's behalf as soon as it reaches the
          * socket.  The lease exists to survive a crash mid-turn; holding
          * it until the agent replies would redeliver every message the

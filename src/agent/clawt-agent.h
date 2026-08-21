@@ -163,6 +163,31 @@ void clawt_agent_set_link(ClawtAgent *self,
 ClawtLink *clawt_agent_get_link(ClawtAgent *self);
 
 /**
+ * clawt_agent_get_hop_depth:
+ * @self: a #ClawtAgent
+ *
+ * How far the message this agent is currently handling had already
+ * travelled.
+ *
+ * Anything the agent sends in response is one hop further on.  Without
+ * this the depth had to be guessed, and the guess was always 1 -- which
+ * made max_hops unreachable no matter how long the chain got, since every
+ * message looked like the first.
+ *
+ * Returns: the depth of the message last delivered to this agent
+ */
+gint clawt_agent_get_hop_depth(ClawtAgent *self);
+
+/**
+ * clawt_agent_set_hop_depth:
+ * @self: a #ClawtAgent
+ * @depth: the depth of the message being delivered
+ *
+ * Recorded by the router as it hands a message over.
+ */
+void clawt_agent_set_hop_depth(ClawtAgent *self, gint depth);
+
+/**
  * clawt_agent_start:
  * @self: a #ClawtAgent
  * @error: (out) (optional): return location for a #GError

@@ -9,6 +9,7 @@
 
 #include "clawtilla.h"
 #include "mcp/clawt-mcp-tools.h"
+#include "chat/clawt-room-manager.h"
 #include "interfaces/clawt-tool-provider.h"
 #include "plugin/clawt-param-info.h"
 
@@ -134,9 +135,11 @@ static const ToolDefinition tools[] = {
          NEEDS_PEER_COMMS, message_agent_params),
 
     TOOL("clawtilla_ask_agent",
-         "Ask another agent something and wait for their answer. Use this "
-         "when you cannot continue without the reply; use "
-         "clawtilla_message_agent when you can.",
+         "Ask another agent a question. Their answer arrives as a message "
+         "in your mailbox rather than as the result of this call -- "
+         "nothing here blocks a turn waiting. If you need the answer "
+         "before you can continue, use clawtilla_delegate and check "
+         "clawtilla_task_status.",
          NEEDS_PEER_COMMS, ask_agent_params),
 
     TOOL("clawtilla_delegate",
@@ -210,7 +213,7 @@ struct _ClawtMcpTools {
     ClawtAgentManager *agents;
     ClawtTaskManager  *tasks;
     ClawtLoopGuard    *guard;
-    GHashTable        *rooms;   /* room_id -> ClawtRoom, unowned */
+    ClawtRoomManager  *room_manager;   /* unowned */
 
     GPtrArray *tool_providers;  /* GObject*, unowned */
 
@@ -255,11 +258,12 @@ clawt_mcp_tools_set_deliver_func(ClawtMcpTools       *self,
 }
 
 void
-clawt_mcp_tools_set_rooms(ClawtMcpTools *self, GHashTable *rooms)
+clawt_mcp_tools_set_room_manager(ClawtMcpTools    *self,
+                                 ClawtRoomManager *rooms)
 {
     g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
 
-    self->rooms = rooms;
+    self->room_manager = rooms;
 }
 
 void
@@ -303,6 +307,23 @@ find_provider(ClawtMcpTools *self, const gchar *tool_name)
     }
 
     return NULL;
+}
+
+/*
+ * How far a message sent by this agent has travelled.
+ *
+ * One hop beyond whatever it is replying to.  Every tool used to pass a
+ * literal 1, which made the hop limit unreachable: a chain twenty agents
+ * long still looked like twenty separate first messages.
+ */
+static gint
+outbound_depth(ClawtMcpTools *self, const gchar *agent_id)
+{
+    ClawtAgent *agent = (self->agents != NULL)
+                        ? clawt_agent_manager_get(self->agents, agent_id)
+                        : NULL;
+
+    return (agent != NULL) ? clawt_agent_get_hop_depth(agent) + 1 : 1;
 }
 
 /* ── Permissions ─────────────────────────────────────────────────── */
@@ -536,6 +557,16 @@ argument_int(JsonObject *arguments, const gchar *name, gint64 fallback)
     if (arguments == NULL || !json_object_has_member(arguments, name))
         return fallback;
 
+    /*
+     * Type-checked, like argument_string.  Reading a string member as an
+     * integer returns 0 rather than the caller's fallback, so a model
+     * sending "timeout": "soon" silently got a zero timeout instead of
+     * the documented 120 seconds.
+     */
+    if (json_node_get_value_type(json_object_get_member(arguments, name)) !=
+        G_TYPE_INT64)
+        return fallback;
+
     return json_object_get_int_member(arguments, name);
 }
 
@@ -621,9 +652,17 @@ tool_message_agent(ClawtMcpTools *self,
     const gchar *body = argument_string(arguments, "body");
     g_autoptr(GError) error = NULL;
 
+    /*
+     * clawtilla_ask_agent's schema calls it "message"; both are accepted
+     * so a model following either description works.  The two used to
+     * disagree, which meant every schema-conforming ask_agent call failed.
+     */
+    if (body == NULL)
+        body = argument_string(arguments, "message");
+
     if (target == NULL || body == NULL) {
         *is_error = TRUE;
-        return g_strdup("agent_id and body are both required.");
+        return g_strdup("agent_id and body (or message) are both required.");
     }
 
     if (self->deliver == NULL) {
@@ -631,7 +670,8 @@ tool_message_agent(ClawtMcpTools *self,
         return g_strdup("Messaging is not available.");
     }
 
-    if (!self->deliver(agent_id, target, body, NULL, 1, self->deliver_data,
+    if (!self->deliver(agent_id, target, body, NULL,
+                       outbound_depth(self, agent_id), self->deliver_data,
                        &error)) {
         *is_error = TRUE;
         return g_strdup(error->message);
@@ -680,7 +720,8 @@ tool_delegate(ClawtMcpTools *self,
     clawt_task_set_reason(task, reason);
 
     if (!self->deliver(agent_id, assignee, work, clawt_task_get_id(task),
-                       1, self->deliver_data, &error)) {
+                       outbound_depth(self, agent_id), self->deliver_data,
+                       &error)) {
         /*
          * The task is failed rather than left pending.  A task nobody was
          * ever told about would sit in the list for ever looking like work
@@ -871,6 +912,259 @@ tool_mailbox_list(ClawtMcpTools *self, const gchar *agent_id,
     return g_string_free(g_steal_pointer(&out), FALSE);
 }
 
+
+/* ── Rooms ───────────────────────────────────────────────────────── */
+
+/*
+ * These six were listed in the tool table -- so they appeared in
+ * tools/list, passed the permission checks and were offered to every
+ * agent -- and had no branch in the dispatch below, so calling any of
+ * them answered "there is no tool called that".  An agent cannot work
+ * around a tool that lies about existing.
+ */
+static ClawtRoom *
+room_for(ClawtMcpTools *self, const gchar *room_id)
+{
+    if (self->room_manager == NULL || room_id == NULL)
+        return NULL;
+
+    return clawt_room_manager_get(self->room_manager, room_id);
+}
+
+static gchar *
+tool_post_room(ClawtMcpTools *self, const gchar *agent_id,
+               JsonObject *arguments, gboolean *is_error)
+{
+    const gchar *room_id = argument_string(arguments, "room_id");
+    const gchar *body = argument_string(arguments, "body");
+    g_autoptr(GError) error = NULL;
+
+    if (room_id == NULL || body == NULL) {
+        *is_error = TRUE;
+        return g_strdup("room_id and body are both required.");
+    }
+
+    if (room_for(self, room_id) == NULL) {
+        *is_error = TRUE;
+        return g_strdup_printf("There is no room called '%s'.", room_id);
+    }
+
+    if (self->deliver == NULL) {
+        *is_error = TRUE;
+        return g_strdup("Posting is not available.");
+    }
+
+    if (!self->deliver(agent_id, room_id, body, NULL,
+                       outbound_depth(self, agent_id), self->deliver_data,
+                       &error)) {
+        *is_error = TRUE;
+        return g_strdup(error->message);
+    }
+
+    return g_strdup_printf("Posted to %s.", room_id);
+}
+
+static gchar *
+tool_create_room(ClawtMcpTools *self, JsonObject *arguments,
+                 gboolean *is_error)
+{
+    const gchar *room_id = argument_string(arguments, "room_id");
+    const gchar *members = argument_string(arguments, "members");
+    g_autoptr(GError) error = NULL;
+    ClawtRoom *room;
+
+    if (room_id == NULL || members == NULL) {
+        *is_error = TRUE;
+        return g_strdup("room_id and members are both required.");
+    }
+
+    if (self->room_manager == NULL) {
+        *is_error = TRUE;
+        return g_strdup("Rooms cannot be created from here.");
+    }
+
+    room = clawt_room_manager_create(self->room_manager, room_id, NULL,
+                                     &error);
+
+    if (room == NULL) {
+        *is_error = TRUE;
+        return g_strdup(error->message);
+    }
+
+    {
+        g_auto(GStrv) parts = g_strsplit(members, ",", -1);
+        gsize i;
+
+        for (i = 0; parts[i] != NULL; i++) {
+            const gchar *member = g_strstrip(parts[i]);
+
+            if (*member != '\0')
+                clawt_room_add_member(room, member);
+        }
+    }
+
+    return g_strdup_printf("Created %s.", room_id);
+}
+
+static gchar *
+tool_room_history(ClawtMcpTools *self, JsonObject *arguments,
+                  gboolean *is_error)
+{
+    const gchar *room_id = argument_string(arguments, "room_id");
+    ClawtRoom *room = room_for(self, room_id);
+    g_autoptr(GPtrArray) history = NULL;
+    g_autoptr(GString) out = NULL;
+    guint i;
+
+    if (room == NULL) {
+        *is_error = TRUE;
+        return g_strdup_printf("There is no room called '%s'.",
+                               room_id != NULL ? room_id : "(none)");
+    }
+
+    history = clawt_room_get_history(
+        room, (guint)argument_int(arguments, "limit", 20));
+
+    if (history->len == 0)
+        return g_strdup("Nothing has been said in that room yet.");
+
+    out = g_string_new(NULL);
+
+    for (i = 0; i < history->len; i++) {
+        ClawtMessage *message = g_ptr_array_index(history, i);
+
+        g_string_append_printf(out, "%s: %s\n",
+                               clawt_message_get_sender_id(message),
+                               clawt_message_get_body(message));
+    }
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+/* ── Mailbox ─────────────────────────────────────────────────────── */
+
+static ClawtMailbox *
+mailbox_of(ClawtMcpTools *self, const gchar *agent_id)
+{
+    ClawtAgent *agent = (self->agents != NULL)
+                        ? clawt_agent_manager_get(self->agents, agent_id)
+                        : NULL;
+
+    return (agent != NULL) ? clawt_agent_get_mailbox(agent) : NULL;
+}
+
+static gchar *
+tool_mailbox_read(ClawtMcpTools *self, const gchar *agent_id,
+                  JsonObject *arguments, gboolean *is_error)
+{
+    ClawtMailbox *mailbox = mailbox_of(self, agent_id);
+    const gchar *message_id = argument_string(arguments, "message_id");
+    g_autoptr(ClawtMailboxItem) item = NULL;
+
+    if (mailbox == NULL) {
+        *is_error = TRUE;
+        return g_strdup("You have no mailbox.");
+    }
+
+    if (message_id == NULL) {
+        *is_error = TRUE;
+        return g_strdup("message_id is required.");
+    }
+
+    item = clawt_mailbox_get(mailbox, message_id);
+
+    if (item == NULL) {
+        *is_error = TRUE;
+        return g_strdup_printf("There is no message %s in your mailbox.",
+                               message_id);
+    }
+
+    return g_strdup_printf("From %s%s%s:\n\n%s",
+                           clawt_mailbox_item_get_from(item),
+                           clawt_mailbox_item_get_room(item) != NULL
+                               ? " in " : "",
+                           clawt_mailbox_item_get_room(item) != NULL
+                               ? clawt_mailbox_item_get_room(item) : "",
+                           clawt_mailbox_item_get_body(item));
+}
+
+static gchar *
+tool_mailbox_ack(ClawtMcpTools *self, const gchar *agent_id,
+                 JsonObject *arguments, gboolean *is_error)
+{
+    ClawtMailbox *mailbox = mailbox_of(self, agent_id);
+    const gchar *message_id = argument_string(arguments, "message_id");
+    g_autoptr(GError) error = NULL;
+
+    if (mailbox == NULL) {
+        *is_error = TRUE;
+        return g_strdup("You have no mailbox.");
+    }
+
+    if (message_id == NULL) {
+        *is_error = TRUE;
+        return g_strdup("message_id is required.");
+    }
+
+    if (!clawt_mailbox_ack(mailbox, message_id, &error)) {
+        *is_error = TRUE;
+        return g_strdup(error->message);
+    }
+
+    return g_strdup_printf("%s is dealt with.", message_id);
+}
+
+static gchar *
+tool_mailbox_reply(ClawtMcpTools *self, const gchar *agent_id,
+                   JsonObject *arguments, gboolean *is_error)
+{
+    ClawtMailbox *mailbox = mailbox_of(self, agent_id);
+    const gchar *message_id = argument_string(arguments, "message_id");
+    const gchar *body = argument_string(arguments, "body");
+    g_autoptr(ClawtMailboxItem) item = NULL;
+    g_autoptr(GError) error = NULL;
+
+    if (mailbox == NULL) {
+        *is_error = TRUE;
+        return g_strdup("You have no mailbox.");
+    }
+
+    if (message_id == NULL || body == NULL) {
+        *is_error = TRUE;
+        return g_strdup("message_id and body are both required.");
+    }
+
+    item = clawt_mailbox_get(mailbox, message_id);
+
+    if (item == NULL) {
+        *is_error = TRUE;
+        return g_strdup_printf("There is no message %s in your mailbox.",
+                               message_id);
+    }
+
+    if (self->deliver == NULL) {
+        *is_error = TRUE;
+        return g_strdup("Replying is not available.");
+    }
+
+    if (!self->deliver(agent_id, clawt_mailbox_item_get_from(item), body,
+                       clawt_mailbox_item_get_task_id(item),
+                       outbound_depth(self, agent_id), self->deliver_data,
+                       &error)) {
+        *is_error = TRUE;
+        return g_strdup(error->message);
+    }
+
+    /*
+     * Acknowledged only after the reply is away.  Acknowledging first
+     * would lose the message if the send failed.
+     */
+    clawt_mailbox_ack(mailbox, message_id, NULL);
+
+    return g_strdup_printf("Replied to %s.",
+                           clawt_mailbox_item_get_from(item));
+}
+
 /* ── Dispatch ────────────────────────────────────────────────────── */
 
 JsonNode *
@@ -993,6 +1287,18 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
         text = tool_computer_state(self, agent_id);
     else if (g_strcmp0(tool_name, "clawtilla_mailbox_list") == 0)
         text = tool_mailbox_list(self, agent_id, arguments);
+    else if (g_strcmp0(tool_name, "clawtilla_mailbox_read") == 0)
+        text = tool_mailbox_read(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_mailbox_ack") == 0)
+        text = tool_mailbox_ack(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_mailbox_reply") == 0)
+        text = tool_mailbox_reply(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_post_room") == 0)
+        text = tool_post_room(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_create_room") == 0)
+        text = tool_create_room(self, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_room_history") == 0)
+        text = tool_room_history(self, arguments, &is_error);
     else {
         ClawtToolProvider *provider = find_provider(self, tool_name);
         g_autoptr(GError) provider_error = NULL;

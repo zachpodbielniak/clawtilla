@@ -798,6 +798,54 @@ clawt_config_get_rooms(ClawtConfig *self)
     return out;
 }
 
+GHashTable *
+clawt_agent_config_resolve_credentials(ClawtAgentConfig  *self,
+                                       const gchar       *secrets_dir,
+                                       guint              timeout_seconds,
+                                       GError           **error)
+{
+    g_autoptr(GHashTable) credentials = NULL;
+    GHashTable *out;
+    GHashTableIter iter;
+    gpointer key;
+    gpointer value;
+
+    g_return_val_if_fail(self != NULL, NULL);
+
+    credentials = clawt_agent_config_get_credentials(self);
+    out = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+
+    g_hash_table_iter_init(&iter, credentials);
+
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        g_autofree gchar *resolved = NULL;
+        g_autoptr(GError) local = NULL;
+
+        resolved = clawt_secret_ref_resolve(value, secrets_dir,
+                                            timeout_seconds, &local);
+
+        if (resolved == NULL) {
+            g_autofree gchar *described = clawt_secret_ref_describe(value);
+
+            /*
+             * Named by reference, never by value -- this message reaches
+             * logs and IPC replies.
+             */
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_SECRET,
+                        "credentials.%s: could not resolve %s: %s",
+                        (const gchar *)key, described,
+                        local != NULL ? local->message : "unknown reason");
+            g_hash_table_unref(out);
+            return NULL;
+        }
+
+        g_hash_table_insert(out, g_ascii_strup((const gchar *)key, -1),
+                            g_steal_pointer(&resolved));
+    }
+
+    return out;
+}
+
 ClawtSecretRef *
 clawt_agent_config_get_secret(ClawtAgentConfig *self, const gchar *key)
 {

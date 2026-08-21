@@ -76,11 +76,16 @@ void clawt_mcp_tools_set_deliver_func(ClawtMcpTools       *self,
                                       GDestroyNotify       destroy);
 
 /**
- * clawt_mcp_tools_set_room_lookup:
+ * clawt_mcp_tools_set_room_manager:
  * @self: a #ClawtMcpTools
- * @rooms: (transfer none) (element-type utf8 ClawtRoom): the rooms
+ * @rooms: (transfer none) (nullable): the fleet's rooms
+ *
+ * Lets the room tools look up and create rooms.  Without it
+ * clawtilla_create_room and clawtilla_room_history are listed but
+ * cannot work.
  */
-void clawt_mcp_tools_set_rooms(ClawtMcpTools *self, GHashTable *rooms);
+void clawt_mcp_tools_set_room_manager(ClawtMcpTools    *self,
+                                      ClawtRoomManager *rooms);
 
 /**
  * clawt_mcp_tools_list:

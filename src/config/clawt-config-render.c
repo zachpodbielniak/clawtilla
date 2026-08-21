@@ -178,6 +178,7 @@ static gboolean
 write_secret_file(ClawtConfig      *config,
                   ClawtAgentConfig *agent,
                   const gchar      *key,
+                  const gchar      *base_dir,
                   const gchar      *dir,
                   const gchar      *filename,
                   const gchar      *json_member,
@@ -194,13 +195,21 @@ write_secret_file(ClawtConfig      *config,
     *out_path = NULL;
 
     ref = clawt_agent_config_get_secret(agent, key);
+
+    /*
+     * Absent is only acceptable when nothing depends on it.  The channel
+     * block is rendered pointing at this file regardless, so returning
+     * success here produced an agent whose configuration named a
+     * credential file that was never written -- it started cleanly and
+     * then never authenticated.
+     */
     if (ref == NULL)
         return TRUE;
 
     timeout = (guint)clawt_config_get_int(config,
                                           "secrets.command_timeout_seconds");
 
-    value = clawt_secret_ref_resolve(ref, NULL, timeout, &local);
+    value = clawt_secret_ref_resolve(ref, base_dir, timeout, &local);
     if (value == NULL) {
         g_autofree gchar *described = clawt_secret_ref_describe(ref);
 
@@ -254,6 +263,7 @@ write_login_file(ClawtConfig      *config,
                  ClawtAgentConfig *agent,
                  const gchar      *username,
                  const gchar      *password_key,
+                 const gchar      *base_dir,
                  const gchar      *dir,
                  const gchar      *filename,
                  gchar           **out_path,
@@ -275,7 +285,7 @@ write_login_file(ClawtConfig      *config,
         return TRUE;
 
     password = clawt_secret_ref_resolve(
-        ref, NULL,
+        ref, base_dir,
         (guint)clawt_config_get_int(config, "secrets.command_timeout_seconds"),
         &local);
 
@@ -584,6 +594,7 @@ clawt_config_write_agent_files(ClawtConfig       *config,
 {
     g_autofree gchar *state_dir = NULL;
     g_autofree gchar *credentials_dir = NULL;
+    g_autofree gchar *secrets_dir = NULL;
     g_autofree gchar *config_path = NULL;
     g_autofree gchar *rendered = NULL;
     g_autofree gchar *matrix_token = NULL;
@@ -597,6 +608,13 @@ clawt_config_write_agent_files(ClawtConfig       *config,
 
     agent_id = clawt_agent_config_get_id(agent);
     state_dir = clawt_config_agent_state_dir(config, agent_id);
+
+    /*
+     * A bare file reference resolves against secrets.dir, which is what
+     * the schema has always said it does.  Passing NULL meant it resolved
+     * against whatever directory the daemon happened to be started in.
+     */
+    secrets_dir = clawt_config_get_path_value(config, "secrets.dir");
 
     if (!clawt_ensure_dir(state_dir, 0700, error))
         return FALSE;
@@ -630,8 +648,59 @@ clawt_config_write_agent_files(ClawtConfig       *config,
         }
     }
 
+    /*
+     * The agent's own `credentials:` block.
+     *
+     * These were declared in the schema, documented as "written to
+     * credential files at 0600", and then never resolved by anything --
+     * so an agent configured with {env: ANTHROPIC_API_KEY} started
+     * cleanly and simply had no key.  Each one is now written to a file
+     * AND passed to the child as an environment variable named after the
+     * key in upper case, because a provider CLI wants the variable and
+     * anything file-based wants the path.
+     */
+    {
+        g_autoptr(GHashTable) credentials =
+            clawt_agent_config_get_credentials(agent);
+        GHashTableIter iter;
+        gpointer key;
+        gpointer value;
+
+        g_hash_table_iter_init(&iter, credentials);
+
+        while (g_hash_table_iter_next(&iter, &key, &value)) {
+            g_autofree gchar *path = g_build_filename(credentials_dir, key,
+                                                      NULL);
+            g_autofree gchar *resolved = NULL;
+            g_autoptr(GError) local = NULL;
+
+            resolved = clawt_secret_ref_resolve(
+                value, secrets_dir,
+                (guint)clawt_config_get_int(config,
+                                            "secrets.command_timeout_seconds"),
+                &local);
+
+            if (resolved == NULL) {
+                g_autofree gchar *described =
+                    clawt_secret_ref_describe(value);
+
+                g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_SECRET,
+                            "credentials.%s: could not resolve %s: %s",
+                            (const gchar *)key, described,
+                            local != NULL ? local->message
+                                          : "unknown reason");
+                return FALSE;
+            }
+
+            if (!clawt_write_file_atomic(path, resolved, -1, 0600, FALSE,
+                                         error))
+                return FALSE;
+        }
+    }
+
     if (!write_secret_file(config, agent, "integrations.matrix.access_token",
-                           credentials_dir, "matrix_credentials.json",
+                           secrets_dir, credentials_dir,
+                           "matrix_credentials.json",
                            "access_token", &matrix_token, error))
         return FALSE;
 
@@ -639,7 +708,8 @@ clawt_config_write_agent_files(ClawtConfig       *config,
                           clawt_agent_config_get_string(
                               agent, "integrations.email.username"),
                           "integrations.email.password",
-                          credentials_dir, "imap_credentials.json",
+                          secrets_dir, credentials_dir,
+                          "imap_credentials.json",
                           &imap_file, error))
         return FALSE;
 
@@ -652,7 +722,8 @@ clawt_config_write_agent_files(ClawtConfig       *config,
                           clawt_agent_config_get_string(
                               agent, "integrations.email.username"),
                           "integrations.email.password",
-                          credentials_dir, "smtp_credentials.json",
+                          secrets_dir, credentials_dir,
+                          "smtp_credentials.json",
                           &smtp_file, error))
         return FALSE;
 
