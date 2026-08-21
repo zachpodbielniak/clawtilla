@@ -52,6 +52,9 @@
 
 #include "task/clawt-task.h"
 #include "task/clawt-task-manager.h"
+
+#include "plugin/clawt-param-info.h"
+#include "mcp/clawt-mcp-tools.h"
 #include "config/clawt-config.h"
 
 #include "link/clawt-link.h"

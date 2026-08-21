@@ -63,13 +63,27 @@ recompute_caps(ClawtAgent *self)
 {
     ClawtAgentCaps caps = CLAWT_AGENT_CAPS_NONE;
 
+    /*
+     * Every agent in a fleet is served the orchestration tools over its
+     * link, whichever runtime it uses and whether or not it is running.
+     * These two must not come from the runtime object: a stopped agent
+     * would then be unable to say who its peers are, and messaging a
+     * stopped agent is the whole point of the mailbox.
+     */
+    caps |= CLAWT_AGENT_CAPS_TOOLS_MCP | CLAWT_AGENT_CAPS_PEER_COMMS;
+
     if (self->runtime != NULL)
         caps |= clawt_agent_runtime_get_caps(self->runtime);
 
+    /*
+     * Asked of the computer object, not of the config that requested it.
+     * A computer that failed to provision leaves the config saying
+     * "container" while the agent has nothing, and an agent told it has a
+     * computer it cannot reach burns whole turns hunting for it.
+     */
     if (self->computer != NULL) {
         ClawtComputerType type =
-            (ClawtComputerType)clawt_agent_config_get_enum(self->config,
-                                                           "computer.type");
+            clawt_computer_get_computer_type(self->computer);
 
         if (type != CLAWT_COMPUTER_NONE)
             caps |= CLAWT_AGENT_CAPS_COMPUTER;

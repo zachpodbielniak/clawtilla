@@ -77,7 +77,9 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/chat/clawt-loop-guard.h \
 	$(SRCDIR)/chat/clawt-room.h \
 	$(SRCDIR)/task/clawt-task.h \
-	$(SRCDIR)/task/clawt-task-manager.h
+	$(SRCDIR)/task/clawt-task-manager.h \
+	$(SRCDIR)/plugin/clawt-param-info.h \
+	$(SRCDIR)/mcp/clawt-mcp-tools.h
 
 # ============================================================
 # Library sources
@@ -113,7 +115,9 @@ LIB_SOURCES = \
 	$(SRCDIR)/chat/clawt-loop-guard.c \
 	$(SRCDIR)/chat/clawt-room.c \
 	$(SRCDIR)/task/clawt-task.c \
-	$(SRCDIR)/task/clawt-task-manager.c
+	$(SRCDIR)/task/clawt-task-manager.c \
+	$(SRCDIR)/plugin/clawt-param-info.c \
+	$(SRCDIR)/mcp/clawt-mcp-tools.c
 
 # Object files
 LIB_OBJECTS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(LIB_SOURCES))

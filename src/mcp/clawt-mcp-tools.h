@@ -1,0 +1,130 @@
+/*
+ * clawt-mcp-tools.h - The tools agents use to work together
+ *
+ * Copyright (C) 2026
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * This file is part of clawtilla.
+ *
+ * Served to each agent over its own link as an MCP endpoint.  This is how a
+ * chief-of-staff actually delegates: it calls clawtilla_delegate the way it
+ * would call any other tool, and the daemon does the routing.
+ *
+ * Every call comes back through the daemon on purpose.  Recursion depth,
+ * rate limits, budgets and tool permissions are then enforced in exactly
+ * one place, rather than in each agent's own idea of what is reasonable.
+ */
+
+#pragma once
+
+#if !defined(CLAWT_INSIDE) && !defined(CLAWT_COMPILATION)
+#error "Only <clawtilla.h> can be included directly."
+#endif
+
+#include <glib-object.h>
+#include <json-glib/json-glib.h>
+
+#include "clawt-types.h"
+#include "agent/clawt-agent-manager.h"
+#include "chat/clawt-loop-guard.h"
+#include "chat/clawt-room.h"
+#include "task/clawt-task-manager.h"
+
+G_BEGIN_DECLS
+
+#define CLAWT_TYPE_MCP_TOOLS (clawt_mcp_tools_get_type())
+
+G_DECLARE_FINAL_TYPE(ClawtMcpTools, clawt_mcp_tools,
+                     CLAWT, MCP_TOOLS, GObject)
+
+/**
+ * ClawtMcpDeliverFunc:
+ * @from_agent: who is sending
+ * @target: an agent id or a room id
+ * @body: the message
+ * @task_id: (nullable): the task it belongs to
+ * @depth: how far this message is from the original request
+ * @user_data: data passed when the callback was installed
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Routes a message.  Installed by the daemon, which owns the mailboxes.
+ *
+ * Returns: %TRUE if the message was accepted for delivery
+ */
+typedef gboolean (*ClawtMcpDeliverFunc)(const gchar  *from_agent,
+                                        const gchar  *target,
+                                        const gchar  *body,
+                                        const gchar  *task_id,
+                                        gint          depth,
+                                        gpointer      user_data,
+                                        GError      **error);
+
+ClawtMcpTools *clawt_mcp_tools_new(ClawtAgentManager *agents,
+                                   ClawtTaskManager  *tasks,
+                                   ClawtLoopGuard    *guard);
+
+/**
+ * clawt_mcp_tools_set_deliver_func:
+ * @self: a #ClawtMcpTools
+ * @func: (nullable) (scope notified): how to route a message
+ * @user_data: data for @func
+ * @destroy: (nullable): called when @func is replaced
+ */
+void clawt_mcp_tools_set_deliver_func(ClawtMcpTools       *self,
+                                      ClawtMcpDeliverFunc  func,
+                                      gpointer             user_data,
+                                      GDestroyNotify       destroy);
+
+/**
+ * clawt_mcp_tools_set_room_lookup:
+ * @self: a #ClawtMcpTools
+ * @rooms: (transfer none) (element-type utf8 ClawtRoom): the rooms
+ */
+void clawt_mcp_tools_set_rooms(ClawtMcpTools *self, GHashTable *rooms);
+
+/**
+ * clawt_mcp_tools_list:
+ * @self: a #ClawtMcpTools
+ * @agent_id: the agent asking
+ *
+ * The MCP tools/list reply for one agent, with tools it may not use
+ * omitted entirely.
+ *
+ * Omitted rather than listed-and-refused: an agent that can see a tool will
+ * try it, and a refusal costs a turn to discover something it could have
+ * been told up front.
+ *
+ * Returns: (transfer full): the tool list
+ */
+JsonNode *clawt_mcp_tools_list(ClawtMcpTools *self, const gchar *agent_id);
+
+/**
+ * clawt_mcp_tools_call:
+ * @self: a #ClawtMcpTools
+ * @agent_id: the agent calling
+ * @request: (transfer none): an MCP JSON-RPC request
+ *
+ * Handles one tool call.
+ *
+ * Returns: (transfer full): the JSON-RPC response
+ */
+JsonNode *clawt_mcp_tools_call(ClawtMcpTools *self,
+                               const gchar   *agent_id,
+                               JsonNode      *request);
+
+/**
+ * clawt_mcp_tools_is_permitted:
+ * @self: a #ClawtMcpTools
+ * @agent_id: an agent
+ * @tool_name: a tool
+ *
+ * Whether @agent_id may call @tool_name, applying its allow and deny lists
+ * and the capabilities it actually has.
+ *
+ * Returns: %TRUE if the call is permitted
+ */
+gboolean clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
+                                      const gchar   *agent_id,
+                                      const gchar   *tool_name);
+
+G_END_DECLS

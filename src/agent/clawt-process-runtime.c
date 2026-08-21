@@ -318,19 +318,18 @@ process_runtime_get_pid(ClawtAgentRuntime *runtime)
 }
 
 /*
- * A separate process can do everything: its own environment, its own
- * credentials, its own container, and an interruptible turn -- because
- * there is a process to signal.
+ * What a separate process adds over and above what every agent has: a turn
+ * that can be interrupted, because there is a process to signal.
+ *
+ * Tools and peer messaging are not listed here -- they come from the link
+ * the daemon serves, which does not depend on the runtime.
  */
 static ClawtAgentCaps
 process_runtime_get_caps(ClawtAgentRuntime *runtime)
 {
     (void)runtime;
 
-    return CLAWT_AGENT_CAPS_TOOLS_MCP |
-           CLAWT_AGENT_CAPS_PEER_COMMS |
-           CLAWT_AGENT_CAPS_INTERRUPT |
-           CLAWT_AGENT_CAPS_STREAMING;
+    return CLAWT_AGENT_CAPS_INTERRUPT | CLAWT_AGENT_CAPS_STREAMING;
 }
 
 static void
