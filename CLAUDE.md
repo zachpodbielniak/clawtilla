@@ -236,6 +236,56 @@ the same program.
   `write` and `edit`, and `ai_tool_executor_unregister()` cannot take them
   back because it does not remove built-ins.
 
+### yaml-glib ownership
+
+- `yaml_node_new_mapping()` and `yaml_node_new_sequence()` take their
+  argument **(transfer none)** and ref it. `yaml_node_new_mapping(yaml_mapping_new())`
+  therefore leaks the caller's ref every time. Pass `NULL` and let the node
+  make its own -- that is what the `(nullable)` in the annotation is for.
+
+### sqlite
+
+- Use `sqlite3_close_v2()`, not `sqlite3_close()`. The plain form refuses
+  with `SQLITE_BUSY` when anything is still outstanding and leaves the whole
+  connection -- page cache included -- allocated.
+- `sqlite3_open()` leaves a usable handle **even when it fails** (that is how
+  `sqlite3_errmsg()` works on it). Close it before reopening into the same
+  pointer, or the connection is stranded for the life of the process.
+- sqlite's own globals are released only by `sqlite3_shutdown()`. A test
+  binary may call it at the end of `main()`; a library never may, because
+  another user of sqlite in the same process would find it shut down
+  underneath them.
+
+### Async callbacks own a reference
+
+- Anything handed to `*_async()` must hold a reference to whatever the
+  callback will touch. A client dropped from the server's list while a read
+  is in flight is freed, and the callback then reads it. `ClawtLink` refs
+  itself; the IPC server's `Client` is reference counted for the same
+  reason. Both had this bug and both have a regression test.
+
+### Main contexts
+
+- `g_timeout_add_seconds()` attaches to the **default** context, not the
+  thread-default one. In an embedded daemon that means the timer never
+  fires. Use `g_timeout_source_new_seconds()` + `g_source_attach(source, context)`.
+  Two real bugs came from getting this wrong.
+
+### Unix socket paths
+
+- `sockaddr_un.sun_path` is 108 bytes. A longer path does not fail at bind
+  time -- the socket is simply not created where you asked, and the first
+  sign is an unrelated ENOENT somewhere else. `clawt_check_socket_path()`
+  refuses it up front with the number.
+
+### Tests that use a GSocketService
+
+- Iterate the context after stopping one. Closing a `GSocketListener`
+  finishes its outstanding accept on the *next* loop iteration, and until
+  that runs the listener, its sources and its sockets are all still
+  referenced. A teardown that skips it reports the whole socket stack as
+  leaked and buries the leaks that are actually yours.
+
 ### GLib enum nicknames
 
 - `g_enum_get_value_by_nick()` is case-insensitive in GLib 2.88 and was not
@@ -267,3 +317,5 @@ the same program.
 - Never silently downgrade confinement; a missing `bwrap` is a SHADOW agent
   with a reason, not an unconfined one
 - Never push to main without approval
+- Never leave a generated file naming the same top-level key twice; YAML
+  keeps the last and silently discards everything under the first
