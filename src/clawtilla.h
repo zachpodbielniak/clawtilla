@@ -69,11 +69,18 @@
 #include "link/clawt-link.h"
 #include "link/clawt-link-server.h"
 
+#include "ipc/clawt-ipc-proto.h"
+#include "ipc/clawt-ipc-server.h"
+#include "ipc/clawt-client.h"
+
+#include "core/clawt-daemon.h"
+
 #include "mailbox/clawt-mailbox-item.h"
 #include "mailbox/clawt-mailbox.h"
 
 #include "agent/clawt-agent-runtime.h"
 #include "agent/clawt-process-runtime.h"
+#include "agent/clawt-embedded-runtime.h"
 #include "agent/clawt-agent.h"
 #include "agent/clawt-agent-manager.h"
 

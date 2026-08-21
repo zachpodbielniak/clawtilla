@@ -12,10 +12,6 @@
 
 #include <string.h>
 
-/* Declared in clawt-agent-runtime.c; internal to the agent layer. */
-void clawt_agent_runtime_bind_config(ClawtAgentRuntime *self,
-                                     ClawtAgentConfig  *config);
-
 struct _ClawtProcessRuntime {
     ClawtAgentRuntime parent_instance;
 

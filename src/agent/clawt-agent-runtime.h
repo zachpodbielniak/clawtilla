@@ -166,4 +166,19 @@ void clawt_agent_runtime_record_exit(ClawtAgentRuntime *self,
  */
 ClawtAgentConfig *clawt_agent_runtime_get_config(ClawtAgentRuntime *self);
 
+/**
+ * clawt_agent_runtime_bind_config:
+ * @self: a #ClawtAgentRuntime
+ * @config: (transfer none): the agent's configuration
+ *
+ * For subclasses: records which agent this runtime hosts.  Call it from
+ * the constructor, before anything reads the agent id.
+ *
+ * Declared here rather than forward-declared in each subclass, because it
+ * was in two files and the second copy is how a signature change becomes
+ * a mismatch nobody notices until it crashes.
+ */
+void clawt_agent_runtime_bind_config(ClawtAgentRuntime *self,
+                                     ClawtAgentConfig  *config);
+
 G_END_DECLS

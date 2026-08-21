@@ -420,13 +420,6 @@ clawt_agent_runtime_init(ClawtAgentRuntime *self)
     priv->max_restarts = 10;
 }
 
-/*
- * Internal: subclasses call this from their constructor to record which
- * agent they host.
- */
-void clawt_agent_runtime_bind_config(ClawtAgentRuntime *self,
-                                     ClawtAgentConfig  *config);
-
 void
 clawt_agent_runtime_bind_config(ClawtAgentRuntime *self,
                                 ClawtAgentConfig  *config)

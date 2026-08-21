@@ -13,6 +13,18 @@
 #define CLAWT_VERSION_MINOR @VERSION_MINOR@
 #define CLAWT_VERSION_MICRO @VERSION_MICRO@
 
+/*
+ * The version as text, for anything that reports it to a person or over
+ * the wire.  Built from the numbers above so it cannot drift from them.
+ */
+#define CLAWT_VERSION_STRINGIFY_INNER(x) #x
+#define CLAWT_VERSION_STRINGIFY(x) CLAWT_VERSION_STRINGIFY_INNER(x)
+
+#define CLAWT_VERSION_STRING \
+    CLAWT_VERSION_STRINGIFY(CLAWT_VERSION_MAJOR) "." \
+    CLAWT_VERSION_STRINGIFY(CLAWT_VERSION_MINOR) "." \
+    CLAWT_VERSION_STRINGIFY(CLAWT_VERSION_MICRO)
+
 #define CLAWT_CHECK_VERSION(major, minor, micro) \
     (CLAWT_VERSION_MAJOR > (major) || \
      (CLAWT_VERSION_MAJOR == (major) && CLAWT_VERSION_MINOR > (minor)) || \

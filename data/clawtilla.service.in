@@ -1,0 +1,34 @@
+# clawtilla.service - the clawtilla agent orchestration daemon
+#
+# Copyright (C) 2026
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Install with:
+#   clawtilla --generate-systemd-service > ~/.config/systemd/user/clawtilla.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now clawtilla
+
+[Unit]
+Description=clawtilla agent orchestration daemon
+Documentation=man:clawtillad(1)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=@BINDIR@/clawtillad --foreground --config %h/.clawtilla/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Restarted on failure but not on a clean exit, so `clawtilla` asking the
+# daemon to shut down actually shuts it down rather than starting a fight
+# with systemd.
+Restart=on-failure
+RestartSec=5
+
+# The agents' sockets live under XDG_RUNTIME_DIR, which systemd removes
+# when the user's last session ends unless lingering is enabled.  If you
+# want the fleet to survive logout: loginctl enable-linger $USER
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

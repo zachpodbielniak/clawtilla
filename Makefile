@@ -54,6 +54,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/config/clawt-config-schema.h \
 	$(SRCDIR)/config/clawt-secret-ref.h \
 	$(SRCDIR)/core/clawt-event.h \
+	$(SRCDIR)/core/clawt-daemon.h \
 	$(SRCDIR)/core/clawt-event-bus.h \
 	$(SRCDIR)/core/clawt-event-log.h \
 	$(SRCDIR)/config/clawt-config.h \
@@ -62,11 +63,15 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/computer/clawt-exchange.h \
 	$(SRCDIR)/link/clawt-link.h \
 	$(SRCDIR)/link/clawt-link-server.h \
+	$(SRCDIR)/ipc/clawt-ipc-proto.h \
+	$(SRCDIR)/ipc/clawt-ipc-server.h \
+	$(SRCDIR)/ipc/clawt-client.h \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.h \
 	$(SRCDIR)/mailbox/clawt-mailbox.h \
 	$(SRCDIR)/mailbox/clawt-mailbox-router.h \
 	$(SRCDIR)/agent/clawt-agent-runtime.h \
 	$(SRCDIR)/agent/clawt-process-runtime.h \
+	$(SRCDIR)/agent/clawt-embedded-runtime.h \
 	$(SRCDIR)/agent/clawt-agent.h \
 	$(SRCDIR)/agent/clawt-agent-manager.h \
 	$(SRCDIR)/computer/clawt-exec-result.h \
@@ -99,6 +104,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/config/clawt-schema-render.c \
 	$(SRCDIR)/config/clawt-secret-ref.c \
 	$(SRCDIR)/core/clawt-event.c \
+	$(SRCDIR)/core/clawt-daemon.c \
 	$(SRCDIR)/core/clawt-event-bus.c \
 	$(SRCDIR)/core/clawt-event-log.c \
 	$(SRCDIR)/config/clawt-config.c \
@@ -107,11 +113,15 @@ LIB_SOURCES = \
 	$(SRCDIR)/computer/clawt-exchange.c \
 	$(SRCDIR)/link/clawt-link.c \
 	$(SRCDIR)/link/clawt-link-server.c \
+	$(SRCDIR)/ipc/clawt-ipc-proto.c \
+	$(SRCDIR)/ipc/clawt-ipc-server.c \
+	$(SRCDIR)/ipc/clawt-client.c \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.c \
 	$(SRCDIR)/mailbox/clawt-mailbox.c \
 	$(SRCDIR)/mailbox/clawt-mailbox-router.c \
 	$(SRCDIR)/agent/clawt-agent-runtime.c \
 	$(SRCDIR)/agent/clawt-process-runtime.c \
+	$(SRCDIR)/agent/clawt-embedded-runtime.c \
 	$(SRCDIR)/agent/clawt-agent.c \
 	$(SRCDIR)/agent/clawt-agent-manager.c \
 	$(SRCDIR)/computer/clawt-exec-result.c \
@@ -265,9 +275,13 @@ $(DAEMON_BIN_TARGET): $(DAEMON_SOURCES) $(LIB_STATIC) | $(OUTDIR) $(OUTDIR)/claw
 	@echo "Building $(DAEMON_BIN_NAME)..."
 	$(CC) $(CFLAGS) -I$(DAEMON_SRCDIR) $(DAEMON_SOURCES) -o $@ $(LIB_STATIC) $(LDFLAGS)
 
+# CLAWT_BINDIR is baked in so --generate-systemd-service names the binary
+# this build will actually install, rather than whatever else happens to be
+# on the system when the unit is written.
 $(CLI_BIN_TARGET): $(CLI_SOURCES) $(LIB_STATIC) $(DEFAULT_CONFIG_H) | $(OUTDIR) $(OUTDIR)/clawt-version.h
 	@echo "Building $(CLI_BIN_NAME)..."
-	$(CC) $(CFLAGS) -I$(CLI_SRCDIR) $(CLI_SOURCES) -o $@ $(LIB_STATIC) $(LDFLAGS)
+	$(CC) $(CFLAGS) -I$(CLI_SRCDIR) -DCLAWT_BINDIR='"$(BINDIR)"' \
+		$(CLI_SOURCES) -o $@ $(LIB_STATIC) $(LDFLAGS)
 
 $(WEB_BIN_TARGET): $(WEB_SOURCES) $(LIB_STATIC) | $(OUTDIR) $(OUTDIR)/clawt-version.h
 	@echo "Building $(WEB_BIN_NAME)..."
@@ -367,6 +381,8 @@ $(GIR_FILE): $(LIB_SHARED) $(PUBLIC_HEADERS) | $(OUTDIR)
 		--include=GLib-2.0 \
 		--include=GObject-2.0 \
 		--include=Gio-2.0 \
+		--include=Json-1.0 \
+		--include-uninstalled=$(LIBRECLAW_OUTDIR)/Lc-1.0.gir \
 		--pkg glib-2.0 --pkg gobject-2.0 --pkg gio-2.0 \
 		--pkg json-glib-1.0 --pkg libsoup-3.0 \
 		-I$(SRCDIR) -I$(OUTDIR) \

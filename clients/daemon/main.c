@@ -17,6 +17,8 @@
 
 #include <clawtilla.h>
 
+#include <glib-unix.h>
+
 #include <stdlib.h>
 
 static gboolean opt_foreground = FALSE;
@@ -55,11 +57,41 @@ static const gchar *description_text =
     "Configuration is read from the path given with -c, otherwise from\n"
     "~/.clawtilla/config.yaml.\n";
 
+/*
+ * SIGINT and SIGTERM ask for a clean stop rather than dying where we
+ * stand: agents get stopped, transcripts get flushed and the sockets get
+ * removed, so the next start does not have to clear up after this one.
+ */
+static gboolean
+on_signal(gpointer user_data)
+{
+    g_info("clawtillad: shutting down");
+    clawt_daemon_quit(CLAWT_DAEMON(user_data));
+
+    return G_SOURCE_REMOVE;
+}
+
+/* SIGHUP re-reads the configuration, as a service is expected to. */
+static gboolean
+on_reload_signal(gpointer user_data)
+{
+    g_autoptr(GError) error = NULL;
+
+    if (!clawt_daemon_reload(CLAWT_DAEMON(user_data), &error))
+        g_warning("clawtillad: reload failed, keeping the old config: %s",
+                  error->message);
+    else
+        g_info("clawtillad: configuration reloaded");
+
+    return G_SOURCE_CONTINUE;
+}
+
 int
 main(int argc, char *argv[])
 {
     g_autoptr(GOptionContext) context = NULL;
     g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtDaemon) daemon = NULL;
 
     context = g_option_context_new("- the clawtilla agent orchestration daemon");
     g_option_context_add_main_entries(context, entries, NULL);
@@ -77,6 +109,28 @@ main(int argc, char *argv[])
         return EXIT_SUCCESS;
     }
 
-    g_printerr("clawtillad: the daemon core is not wired up yet\n");
-    return EXIT_FAILURE;
+    daemon = clawt_daemon_new(opt_config_path, NULL);
+
+    /*
+     * Signals are handled here rather than in the library, because a host
+     * that embeds ClawtDaemon owns its own signal handling and would not
+     * thank us for installing ours behind its back.
+     */
+    g_unix_signal_add(SIGINT, on_signal, daemon);
+    g_unix_signal_add(SIGTERM, on_signal, daemon);
+    g_unix_signal_add(SIGHUP, on_reload_signal, daemon);
+
+    if (!opt_foreground) {
+        /*
+         * There is no fork-and-detach here on purpose.  This runs under
+         * systemd --user as a Type=simple service, which wants the process
+         * in the foreground; daemonising ourselves would make systemd
+         * think the service exited immediately.  The flag is accepted so
+         * that scripts written against it keep working, and says so.
+         */
+        g_info("clawtillad: running in the foreground; --foreground is the "
+               "only supported mode under systemd");
+    }
+
+    return clawt_daemon_run(daemon);
 }

@@ -72,7 +72,7 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
                           ClawtMessage        *message,
                           GError             **error)
 {
-    g_autoptr(GPtrArray) members = NULL;
+    GPtrArray *members;  /* unowned: the room keeps its member list */
     ClawtRoom *room;
     const gchar *destination;
     const gchar *sender;
