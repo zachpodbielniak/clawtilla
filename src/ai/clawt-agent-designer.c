@@ -289,6 +289,12 @@ tool_add_integration(AiToolUse *use, GCancellable *cancellable,
 
     (void)cancellable;
 
+    if (id == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "integration is required");
+        return NULL;
+    }
+
     if (clawt_integration_find(id) == NULL) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
                     "'%s' is not an integration clawtilla knows about", id);

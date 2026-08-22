@@ -257,7 +257,11 @@ defaults:
 #+end_src
 
 It is mounted into every computer at ~/mnt/clawtilla/exchange~ unless the
-agent sets ~computer.exchange: false~.
+agent sets ~computer.exchange: false~ -- as three mounts, not one: the
+whole exchange read-only, then ~shared/~ and the agent's own directory
+read-write on top.  A single read-write mount of the root would make the
+write rule below unenforceable, since anything inside the computer could
+simply write into another agent's directory.
 
 #+begin_example
 exchange/
@@ -299,6 +303,13 @@ computer:
 ~ClawtGnomeDesktop~ spawns ~gnome-desktop-mcp~ over stdio.  Either way the
 endpoint is handed to the agent through its link, so ~describe_desktop~,
 ~screenshot_monitor~ and ~send_key~ arrive as ordinary MCP tools.
+
+*Launching a process is separate.*  ~allow_spawn~ is off by default and
+is not covered by ~allow_input~.  The compositor's ~spawn~ tool starts a
+process through the compositor's own socket, so none of clawtilla's
+confinement applies to it -- not the path checks, not the sudo block, and
+not bwrap.  An operator who chose bwrap would not expect enabling desktop
+input to hand back unrestricted process launching.
 
 ~allow_input: false~ is a genuinely useful middle ground: the agent can
 see the screen and query the compositor but cannot click or type.  Seeing

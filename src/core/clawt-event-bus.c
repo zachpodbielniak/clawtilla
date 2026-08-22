@@ -105,9 +105,15 @@ clawt_event_bus_replay(ClawtEventBus *self, guint64 cursor,
          * A cursor of 0 means "give me what you have", which is always
          * honoured in full.  Any other cursor is complete only if the next
          * event after it is still held.
+         *
+         * A cursor at or beyond the newest event has missed nothing by
+         * definition -- including the absurd ones, since a client sending
+         * a negative cursor arrives here as a very large unsigned number
+         * and `cursor + 1` would otherwise wrap to zero.
          */
         *out_complete = (cursor == 0) ||
                         (self->oldest_held == 0) ||
+                        (cursor >= self->cursor) ||
                         (cursor + 1 >= self->oldest_held);
     }
 

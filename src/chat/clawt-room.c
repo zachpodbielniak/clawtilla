@@ -196,7 +196,30 @@ clawt_room_message_is_for(ClawtRoom    *self,
             return TRUE;
     }
 
-    return strstr(body, agent_id) != NULL;
+    /*
+     * A whole word, not a substring: an agent called "bob" was matching
+     * a message that only mentioned "bobby", so require_mention quietly
+     * delivered to somebody nobody had addressed.
+     */
+    {
+        const gchar *found = body;
+        gsize length = strlen(agent_id);
+
+        while ((found = strstr(found, agent_id)) != NULL) {
+            gboolean start_ok = (found == body) ||
+                                !g_ascii_isalnum(found[-1]);
+            gboolean end_ok = (found[length] == '\0') ||
+                              !g_ascii_isalnum(found[length]);
+
+            if (start_ok && end_ok &&
+                found[length] != '_' && found[length] != '-')
+                return TRUE;
+
+            found += length;
+        }
+    }
+
+    return FALSE;
 }
 
 /*

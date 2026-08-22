@@ -49,7 +49,7 @@ struct _ClawtLinkServer {
     gpointer          auth_data;
     GDestroyNotify    auth_destroy;
 
-    guint keepalive_source_id;
+    GSource *keepalive_source;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtLinkServer, clawt_link_server, G_TYPE_OBJECT)
@@ -323,8 +323,15 @@ clawt_link_server_start(ClawtLinkServer *self, GError **error)
     g_signal_connect(self->service, "incoming", G_CALLBACK(on_incoming), self);
     g_socket_service_start(self->service);
 
-    self->keepalive_source_id =
-        g_timeout_add_seconds(KEEPALIVE_INTERVAL_SECONDS, on_keepalive, self);
+    /*
+     * Attached to the thread-default context, which for an embedded
+     * daemon is the host's.  g_timeout_add_seconds() would put it on the
+     * global default, where nothing iterates it -- so a link whose agent
+     * had died was never pinged and never dropped, and messages routed to
+     * it vanished while the agent still showed as connected.
+     */
+    self->keepalive_source = clawt_timeout_add_seconds(
+        KEEPALIVE_INTERVAL_SECONDS, on_keepalive, self);
 
     g_info("link server: listening on %s", self->socket_path);
 
@@ -340,9 +347,9 @@ clawt_link_server_stop(ClawtLinkServer *self)
 
     g_return_if_fail(CLAWT_IS_LINK_SERVER(self));
 
-    if (self->keepalive_source_id != 0) {
-        g_source_remove(self->keepalive_source_id);
-        self->keepalive_source_id = 0;
+    if (self->keepalive_source != NULL) {
+        g_source_destroy(self->keepalive_source);
+        g_clear_pointer(&self->keepalive_source, g_source_unref);
     }
 
     if (self->service != NULL) {

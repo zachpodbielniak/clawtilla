@@ -225,10 +225,17 @@ clawt_loop_guard_check(ClawtLoopGuard  *self,
     if (!check_budget(self, message, error))
         return FALSE;
 
-    if (!check_cycle(self, message, error))
+    /*
+     * Rate before cycle, because the cycle check records as a side
+     * effect.  A message refused on rate used to have its fingerprint
+     * written into the cycle window anyway, so re-sending that same text
+     * later -- legitimately, after the throttle cleared -- was flagged as
+     * going in circles.
+     */
+    if (!check_rate(self, message, error))
         return FALSE;
 
-    if (!check_rate(self, message, error))
+    if (!check_cycle(self, message, error))
         return FALSE;
 
     return TRUE;

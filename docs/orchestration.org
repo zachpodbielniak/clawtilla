@@ -123,7 +123,7 @@ Served over each agent's link as an MCP endpoint.
 | ~clawtilla_list_agents~ | who else is here, what for, and whether they are running |
 | ~clawtilla_get_agent~ | one agent in detail |
 | ~clawtilla_message_agent~ | queue a message; returns without waiting |
-| ~clawtilla_ask_agent~ | send and wait for the reply |
+| ~clawtilla_ask_agent~ | ask a question; the answer arrives in your mailbox |
 | ~clawtilla_delegate~ | hand over work, get a task id |
 | ~clawtilla_task_status~ / ~_result~ / ~_cancel~ | follow it |
 | ~clawtilla_task_complete~ | report your own assigned task done |
@@ -164,7 +164,9 @@ orchestration:
 
 *** max_hops
 
-Every message carries a depth.  Delegating increments it.  Past
+Every message carries a depth.  An agent's outbound messages are stamped
+one hop beyond whatever it is currently handling, so a chain genuinely
+accumulates depth rather than every message looking like the first.  Past
 ~max_hops~ the send is refused with an error the agent can read.
 
 This is what stops A → B → A → B running until somebody notices.

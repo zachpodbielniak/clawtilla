@@ -87,10 +87,16 @@ clawtilla mailbox purge researcher
 |--------+------------------------|
 | ~reject~ | the sender gets a real error |
 | ~drop_oldest~ | the oldest pending item is discarded, and the loss is logged |
-| ~block_sender~ | the send fails with a "try again" error rather than blocking a thread |
+| ~block_sender~ | the send fails with ~CLAWT_ERROR_MAILBOX_BUSY~ -- a distinct, retryable error -- rather than blocking a thread |
 
-The sender always finds out.  A silent discard is the one option not
-offered.
+The sender always finds out, and can tell the two refusals apart:
+~reject~ reports ~mailbox-full~ (do not bother retrying), ~block_sender~
+reports ~mailbox-busy~ (come back shortly).  A silent discard is the one
+option not offered.
+
+Acknowledged messages are swept a day after delivery.  The queue is a
+queue, not an archive -- what was said lives in the room transcript and
+the event log.
 
 Note that a full mailbox does not fail a whole room post: a room of five
 where one member is backed up still reaches the other four, and the

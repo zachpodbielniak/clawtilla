@@ -208,7 +208,7 @@ clawt_agent_manager_load(ClawtAgentManager *self, GError **error)
 
             g_ptr_array_add(self->agents, agent);
             g_hash_table_insert(self->by_id,
-                                (gpointer)clawt_agent_get_id(agent), agent);
+                                g_strdup(clawt_agent_get_id(agent)), agent);
 
             g_signal_emit(self, signals[SIGNAL_AGENT_ADDED], 0,
                           clawt_agent_get_id(agent));
@@ -402,5 +402,12 @@ clawt_agent_manager_init(ClawtAgentManager *self)
      * Keys are borrowed from the agents in the array, which own them and
      * outlive this table -- the array is cleared after it in dispose.
      */
-    self->by_id = g_hash_table_new(g_str_hash, g_str_equal);
+    /*
+     * The keys are owned copies, not pointers into an agent's
+     * configuration.  A reload hands every agent a new ClawtAgentConfig
+     * and frees the old one, so a borrowed id would dangle the moment
+     * the fleet was reconciled.
+     */
+    self->by_id = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                        NULL);
 }

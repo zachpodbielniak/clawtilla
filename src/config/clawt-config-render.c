@@ -54,6 +54,17 @@ append_quoted(GString *out, const gchar *value)
         case '\n':
             g_string_append(out, "\\n");
             break;
+        case '\r':
+            /*
+             * A lone CR is a YAML line break: emitted raw it is folded to
+             * a space on reparse, so a CRLF-authored system prompt came
+             * back subtly different from what was written.
+             */
+            g_string_append(out, "\\r");
+            break;
+        case '\t':
+            g_string_append(out, "\\t");
+            break;
         default:
             g_string_append_c(out, *p);
             break;
@@ -576,6 +587,41 @@ clawt_config_render_agent(ClawtConfig       *config,
      * clawtilla to grow a schema entry for it.
      */
     passthrough = clawt_agent_config_get_raw_yaml(agent, "libreclaw");
+
+    /*
+     * A passthrough block that redeclares a section clawtilla already
+     * rendered would win outright: YAML keeps the last of two identical
+     * top-level keys, so a stray `session:` here silently deleted the
+     * per-agent persist_dir -- and two agents sharing a persist_dir means
+     * one resuming the other's conversation, which reads as the model
+     * hallucinating a history it never had.
+     */
+    if (passthrough != NULL && *passthrough != '\0') {
+        static const gchar *const rendered_sections[] = {
+            "agent:", "ai:", "session:", "database:", "skills:",
+            "channels:", NULL
+        };
+        g_auto(GStrv) lines = g_strsplit(passthrough, "\n", -1);
+        gsize i;
+
+        for (i = 0; lines[i] != NULL; i++) {
+            gsize j;
+
+            for (j = 0; rendered_sections[j] != NULL; j++) {
+                if (!g_str_has_prefix(lines[i], rendered_sections[j]))
+                    continue;
+
+                g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                            "%s: the libreclaw: block redeclares '%s', "
+                            "which clawtilla renders itself; the two would "
+                            "collide and clawtilla's would be discarded",
+                            clawt_agent_config_get_id(agent),
+                            rendered_sections[j]);
+                return NULL;
+            }
+        }
+    }
+
     if (passthrough != NULL && *passthrough != '\0') {
         g_string_append(out,
             "# ── Passthrough from the agent's `libreclaw:` block ──\n");

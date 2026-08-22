@@ -306,6 +306,19 @@ static const gchar *const passthrough_env[] = {
     NULL
 };
 
+GSource *
+clawt_timeout_add_seconds(guint interval, GSourceFunc function,
+                          gpointer data)
+{
+    GSource *source = g_timeout_source_new_seconds(interval);
+    GMainContext *context = g_main_context_get_thread_default();
+
+    g_source_set_callback(source, function, data, NULL);
+    g_source_attach(source, context);
+
+    return source;
+}
+
 GStrv
 clawt_build_child_environment(GHashTable *extra)
 {

@@ -198,6 +198,26 @@ gboolean clawt_check_socket_path(const gchar *path, GError **error);
  */
 GStrv clawt_build_child_environment(GHashTable *extra);
 
+/**
+ * clawt_timeout_add_seconds:
+ * @interval: seconds between calls
+ * @function: (scope notified): what to call
+ * @data: data for @function
+ *
+ * Adds a repeating timer to the *thread-default* main context.
+ *
+ * g_timeout_add_seconds() always uses the global default context, which
+ * for a daemon embedded in another program -- one that runs its own loop
+ * on its own context -- means the timer never fires at all.  That has
+ * silently disabled a keepalive and a restart policy here already, so
+ * every periodic timer in clawtilla goes through this.
+ *
+ * Returns: (transfer full): the source; destroy it to cancel
+ */
+GSource *clawt_timeout_add_seconds(guint       interval,
+                                   GSourceFunc function,
+                                   gpointer    data);
+
 gchar *clawt_redact_secrets(const gchar *text);
 
 /**

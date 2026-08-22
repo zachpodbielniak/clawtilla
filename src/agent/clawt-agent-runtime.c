@@ -21,6 +21,15 @@
  */
 #define LOG_RING_LINES 500
 
+/*
+ * How long an agent must stay up before a later crash counts as a new
+ * problem rather than a continuation of the last one.
+ *
+ * Comfortably past the backoff cap, so an agent thrashing on startup
+ * never clears its streak this way.
+ */
+#define RESTART_STREAK_RESET_SECONDS 300
+
 #define RESTART_BACKOFF_CAP_SECONDS 300
 
 enum {
@@ -40,7 +49,8 @@ typedef struct {
     guint              backoff_seconds;
     guint              max_restarts;
     guint              consecutive_failures;
-    guint              restart_source_id;
+    gint64             started_at;
+    GSource           *restart_source;
 
     gboolean           stopping;
     gchar             *last_error;
@@ -81,6 +91,8 @@ clawt_agent_runtime_start(ClawtAgentRuntime *self, GError **error)
         return FALSE;
     }
 
+    priv->started_at = g_get_monotonic_time();
+
     g_signal_emit(self, signals[SIGNAL_STARTED], 0);
 
     return TRUE;
@@ -102,9 +114,9 @@ clawt_agent_runtime_stop(ClawtAgentRuntime *self)
      */
     priv->stopping = TRUE;
 
-    if (priv->restart_source_id != 0) {
-        g_source_remove(priv->restart_source_id);
-        priv->restart_source_id = 0;
+    if (priv->restart_source != NULL) {
+        g_source_destroy(priv->restart_source);
+        g_clear_pointer(&priv->restart_source, g_source_unref);
     }
 
     klass = CLAWT_AGENT_RUNTIME_GET_CLASS(self);
@@ -250,7 +262,11 @@ on_restart_timeout(gpointer user_data)
     ClawtAgentRuntimePrivate *priv = PRIV(self);
     g_autoptr(GError) error = NULL;
 
-    priv->restart_source_id = 0;
+    /*
+     * The source is finishing; forget it without destroying it, or the
+     * cancel path would later destroy something already gone.
+     */
+    g_clear_pointer(&priv->restart_source, g_source_unref);
 
     if (priv->stopping)
         return G_SOURCE_REMOVE;
@@ -302,6 +318,24 @@ clawt_agent_runtime_record_exit(ClawtAgentRuntime *self,
     if (!should_restart)
         return;
 
+    /*
+     * An agent that stayed up starts a fresh streak.
+     *
+     * The counter is meant to be consecutive failures, and under
+     * `on-failure` the clean-exit reset below is unreachable -- the policy
+     * only restarts when !clean -- so it became a lifetime total.  An
+     * agent that crashed twice months ago and has run happily since would
+     * be permanently benched by one unrelated crash, with a message
+     * claiming it had failed three times "in a row".
+     *
+     * Uptime is the honest signal: a process that ran for a good while
+     * before dying was not failing to start.
+     */
+    if (priv->started_at > 0 &&
+        g_get_monotonic_time() - priv->started_at >
+            ((gint64)RESTART_STREAK_RESET_SECONDS * G_USEC_PER_SEC))
+        priv->consecutive_failures = 0;
+
     if (clean) {
         /*
          * A clean exit under `always` is not a failure, so it does not
@@ -333,8 +367,15 @@ clawt_agent_runtime_record_exit(ClawtAgentRuntime *self,
 
     g_info("agent %s: restarting in %u second(s)", priv->agent_id, delay);
 
-    priv->restart_source_id =
-        g_timeout_add_seconds(delay, on_restart_timeout, self);
+    /*
+     * Thread-default, not the global default: an embedded daemon runs its
+     * own context, and a restart scheduled on a context nobody iterates
+     * simply never happens -- the agent stays down for ever while the
+     * policy says it should have come back.
+     */
+    priv->restart_source = clawt_timeout_add_seconds(delay,
+                                                     on_restart_timeout,
+                                                     self);
 }
 
 /* ── Object lifecycle ────────────────────────────────────────────── */
@@ -346,9 +387,9 @@ clawt_agent_runtime_dispose(GObject *object)
 
     priv->stopping = TRUE;
 
-    if (priv->restart_source_id != 0) {
-        g_source_remove(priv->restart_source_id);
-        priv->restart_source_id = 0;
+    if (priv->restart_source != NULL) {
+        g_source_destroy(priv->restart_source);
+        g_clear_pointer(&priv->restart_source, g_source_unref);
     }
 
     g_clear_pointer(&priv->config, clawt_agent_config_unref);

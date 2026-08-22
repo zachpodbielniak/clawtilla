@@ -824,6 +824,140 @@ test_creating_an_agent_records_its_provider(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * Creating an agent must not disturb the ones already running.
+ *
+ * agent.create used to rebuild the whole fleet, destroying every other
+ * agent's live object -- runtime, computer and link went with it -- while
+ * the link server carried on holding their connections.
+ */
+static void
+test_creating_an_agent_leaves_the_others_alone(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) created = NULL;
+    ClawtAgent *chief_before;
+    ClawtAgent *chief_after;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    chief_before = clawt_agent_manager_get(
+        clawt_daemon_get_agents(fixture.daemon), "chief");
+    g_assert_nonnull(chief_before);
+
+    created = request(&fixture, "agent.create",
+                      "{\"id\":\"researcher\"}");
+    g_assert_false(clawt_ipc_frame_is_error(created));
+
+    chief_after = clawt_agent_manager_get(
+        clawt_daemon_get_agents(fixture.daemon), "chief");
+
+    /* The same object, not a replacement. */
+    g_assert_true(chief_before == chief_after);
+    g_assert_nonnull(clawt_agent_manager_get(
+        clawt_daemon_get_agents(fixture.daemon), "researcher"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A reload has to reach the fleet.
+ *
+ * The manager holds its own reference to the configuration, so a reload
+ * that swapped only the daemon's left the fleet reading the old one for
+ * ever -- an agent added to the file never appeared.
+ */
+static void
+test_reload_reaches_the_fleet(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *yaml = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    g_assert_cmpuint(
+        clawt_agent_manager_list(clawt_daemon_get_agents(fixture.daemon))->len,
+        ==, 1);
+
+    yaml = g_strdup_printf(
+        "daemon:\n  state_dir: \"%s/state\"\n  socket: \"%s/daemon.sock\"\n"
+        "agents:\n  - id: chief\n  - id: researcher\n",
+        fixture.dir, fixture.dir);
+
+    g_file_set_contents(fixture.config_path, yaml, -1, NULL);
+
+    g_assert_true(clawt_daemon_reload(fixture.daemon, NULL));
+
+    g_assert_cmpuint(
+        clawt_agent_manager_list(clawt_daemon_get_agents(fixture.daemon))->len,
+        ==, 2);
+    g_assert_nonnull(clawt_agent_manager_get(
+        clawt_daemon_get_agents(fixture.daemon), "researcher"));
+
+    /* And one removed from the file goes away again. */
+    g_free(yaml);
+    yaml = g_strdup_printf(
+        "daemon:\n  state_dir: \"%s/state\"\n  socket: \"%s/daemon.sock\"\n"
+        "agents:\n  - id: chief\n",
+        fixture.dir, fixture.dir);
+
+    g_file_set_contents(fixture.config_path, yaml, -1, NULL);
+    g_assert_true(clawt_daemon_reload(fixture.daemon, NULL));
+
+    g_assert_null(clawt_agent_manager_get(
+        clawt_daemon_get_agents(fixture.daemon), "researcher"));
+
+    fixture_teardown(&fixture);
+}
+
+/* A mount of the state directory exposes every agent's token. */
+static void
+test_the_state_directory_cannot_be_mounted(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *yaml = NULL;
+    ClawtAgent *agent;
+
+    fixture_setup(&fixture, NULL);
+
+    yaml = g_strdup_printf(
+        "daemon:\n  state_dir: \"%s/state\"\n  socket: \"%s/daemon.sock\"\n"
+        "agents:\n"
+        "  - id: sneaky\n"
+        "    computer:\n"
+        "      type: container\n"
+        "      mounts:\n"
+        "        - source: \"%s/state\"\n"
+        "          target: \"/loot\"\n"
+        "          mode: rw\n",
+        fixture.dir, fixture.dir, fixture.dir);
+
+    g_file_set_contents(fixture.config_path, yaml, -1, NULL);
+
+    g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING, "*");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+    g_test_assert_expected_messages();
+
+    agent = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                    "sneaky");
+
+    /*
+     * Refused at start rather than mounted.  Whether it shadows or simply
+     * fails to start, what matters is that it never gets the directory.
+     */
+    if (agent != NULL) {
+        g_autoptr(GError) error = NULL;
+
+        g_assert_false(clawt_daemon_start_agent(fixture.daemon, "sneaky",
+                                                &error));
+        g_assert_nonnull(error);
+    }
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -857,6 +991,13 @@ main(int argc, char *argv[])
 
     g_test_add_func("/daemon/client-over-socket",
                     test_a_client_can_talk_over_the_socket);
+
+    g_test_add_func("/daemon/create-leaves-others-alone",
+                    test_creating_an_agent_leaves_the_others_alone);
+    g_test_add_func("/daemon/reload-reaches-the-fleet",
+                    test_reload_reaches_the_fleet);
+    g_test_add_func("/daemon/state-dir-cannot-be-mounted",
+                    test_the_state_directory_cannot_be_mounted);
 
     g_test_add_func("/daemon/requests-after-subscribe",
                     test_requests_work_after_subscribing);

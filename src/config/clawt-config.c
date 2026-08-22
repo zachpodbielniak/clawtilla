@@ -262,6 +262,24 @@ agent_validate(ClawtAgentConfig *self)
         return;
     }
 
+    /*
+     * The two persona forms are documented as alternatives and were never
+     * checked, so both were rendered: an agent got its identity files AND
+     * an inline prompt, with nothing saying only one was meant to apply.
+     */
+    if (clawt_agent_config_get_string(self, "persona.system_prompt") != NULL) {
+        g_auto(GStrv) identity =
+            clawt_agent_config_get_string_list(self, "persona.identity_files");
+
+        if (identity != NULL && identity[0] != NULL) {
+            agent_mark_shadow(self,
+                              "persona.system_prompt and "
+                              "persona.identity_files are alternatives; "
+                              "set one or the other");
+            return;
+        }
+    }
+
     computer_type = clawt_agent_config_get_string(self, "computer.type");
     if (computer_type != NULL &&
         !clawt_enum_from_nick(CLAWT_TYPE_COMPUTER_TYPE, computer_type,
