@@ -1703,8 +1703,14 @@ typedef struct {
     AdwDialog    *dialog;
     GtkWidget    *id_entry;
     GtkWidget    *computer_row;
-    GtkWidget    *describe_entry;
-    ModelChooser  models;
+    GtkWidget    *describe_entry;   /* purpose: the one required answer */
+    GtkWidget    *boundaries_entry;
+    GtkWidget    *needs_entry;
+    GtkWidget    *personality_entry;
+    GtkWidget    *projects_entry;
+    GtkWidget    *notes_entry;
+    ModelChooser  models;           /* the model the agent will run */
+    ModelChooser  designer;         /* the model that drafts it */
     ImageChooser  image;
 } NewAgentDialog;
 
@@ -1714,6 +1720,7 @@ new_agent_dialog_free(gpointer data)
     NewAgentDialog *dialog = data;
 
     g_clear_pointer(&dialog->models.catalog, json_node_unref);
+    g_clear_pointer(&dialog->designer.catalog, json_node_unref);
     g_clear_pointer(&dialog->image.catalog, json_node_unref);
     g_free(dialog);
 }
@@ -2186,25 +2193,32 @@ on_preview_response(AdwAlertDialog *dialog, gchar *response,
 {
     NewAgentDialog *new_agent = user_data;
     ClawtWindow *self = new_agent->window;
-    const gchar *description;
+    const gchar *draft = g_object_get_data(G_OBJECT(dialog), "draft");
     g_autoptr(JsonNode) reply = NULL;
-    g_autoptr(JsonBuilder) builder = NULL;
 
-    if (g_strcmp0(response, "create") != 0)
+    if (draft == NULL)
         return;
 
-    description = g_object_get_data(G_OBJECT(dialog), "description");
+    /*
+     * Cancelling drops the draft rather than leaving it on the daemon.
+     * It holds a whole designer, and a person who says no is done with
+     * it.
+     */
+    if (g_strcmp0(response, "create") != 0) {
+        g_autoptr(JsonNode) discarded = clawt_window_request(
+            self, "design.discard", clawt_build_payload("draft", draft, NULL));
 
-    builder = json_builder_new();
-    json_builder_begin_object(builder);
-    json_builder_set_member_name(builder, "description");
-    json_builder_add_string_value(builder, description);
-    json_builder_set_member_name(builder, "commit");
-    json_builder_add_boolean_value(builder, TRUE);
-    json_builder_end_object(builder);
+        (void)discarded;
+        return;
+    }
 
-    reply = clawt_window_request(self, "design.agent",
-                                 json_builder_get_root(builder));
+    /*
+     * Commits the draft that was reviewed.  Re-running the design would
+     * be a fresh conversation producing something else, which makes the
+     * preview a demonstration rather than a decision.
+     */
+    reply = clawt_window_request(self, "design.commit",
+                                 clawt_build_payload("draft", draft, NULL));
 
     if (reply == NULL)
         return;
@@ -2220,52 +2234,118 @@ on_preview_response(AdwAlertDialog *dialog, gchar *response,
     adw_dialog_close(new_agent->dialog);
 }
 
+/* An answer, or NULL when the row was left empty. */
+static const gchar *
+answer_of(GtkWidget *row)
+{
+    const gchar *text = gtk_editable_get_text(GTK_EDITABLE(row));
+
+    return (text != NULL && *text != '\0') ? text : NULL;
+}
+
 static void
 on_design_with_ai(GtkButton *button, gpointer user_data)
 {
     NewAgentDialog *dialog = user_data;
     ClawtWindow *self = dialog->window;
     g_autoptr(JsonNode) reply = NULL;
-    const gchar *description;
+    g_autofree gchar *designer_model = NULL;
+    const gchar *purpose;
 
-    description = gtk_editable_get_text(GTK_EDITABLE(dialog->describe_entry));
+    purpose = answer_of(dialog->describe_entry);
 
-    if (description == NULL || *description == '\0') {
+    if (purpose == NULL) {
         clawt_window_toast(self, "Say what the agent should do first.");
         return;
     }
 
+    /*
+     * Disabled while the model works.  A design takes tens of seconds
+     * and a second click starts a second one, which is billed and
+     * discarded.
+     */
     gtk_widget_set_sensitive(GTK_WIDGET(button), FALSE);
+    gtk_button_set_label(GTK_BUTTON(button), "Designing...");
+
+    designer_model = chooser_model(&dialog->designer);
 
     reply = clawt_window_request(
         self, "design.agent",
-        clawt_build_payload("description", description, "commit", NULL,
-                            NULL));
+        clawt_build_payload(
+            "purpose", purpose,
+            "boundaries", answer_of(dialog->boundaries_entry),
+            "needs", answer_of(dialog->needs_entry),
+            "personality", answer_of(dialog->personality_entry),
+            "projects", answer_of(dialog->projects_entry),
+            "notes", answer_of(dialog->notes_entry),
+            "provider", chooser_provider_id(&dialog->designer),
+            "model", designer_model,
+            NULL));
 
+    gtk_button_set_label(GTK_BUTTON(button), "Design it");
     gtk_widget_set_sensitive(GTK_WIDGET(button), TRUE);
 
     if (reply == NULL)
         return;
 
     /*
-     * The design is shown before anything is written.  A model's proposal
-     * becoming an agent without a person reading it first is exactly the
-     * kind of convenience nobody asks for twice.
+     * The design is shown before anything is written.  A model's
+     * proposal becoming an agent without a person reading it first is
+     * exactly the kind of convenience nobody asks for twice.
      */
     {
-        AdwAlertDialog *preview = ADW_ALERT_DIALOG(
+        JsonObject *result = clawt_payload_of(reply);
+        JsonArray *files = json_object_has_member(result, "files")
+                           ? json_object_get_array_member(result, "files")
+                           : NULL;
+        g_autoptr(GString) body = g_string_new(
+            clawt_json_string(result, "yaml", ""));
+        AdwAlertDialog *preview;
+        guint i;
+
+        /*
+         * The org files are listed rather than shown in full: they run
+         * to hundreds of lines each, and a dialog nobody can read is not
+         * a review.  They are on disk after Create, and
+         * `clawtilla agent edit` opens them.
+         */
+        if (files != NULL && json_array_get_length(files) > 0) {
+            g_string_append(body, "\n\nIt also wrote:\n");
+
+            for (i = 0; i < json_array_get_length(files); i++) {
+                JsonObject *file = json_array_get_object_element(files, i);
+                const gchar *content = clawt_json_string(file, "content", "");
+                gsize lines = 0;
+                const gchar *p;
+
+                for (p = content; *p != '\0'; p++) {
+                    if (*p == '\n')
+                        lines++;
+                }
+
+                g_string_append_printf(body, "  %s  (%" G_GSIZE_FORMAT
+                                             " lines)\n",
+                                       clawt_json_string(file, "name", "?"),
+                                       lines);
+            }
+
+            g_string_append(body,
+                            "\nEdit them after with: clawtilla agent edit ");
+            g_string_append(body, clawt_json_string(result, "id", ""));
+        }
+
+        preview = ADW_ALERT_DIALOG(
             adw_alert_dialog_new("Proposed agent", NULL));
 
-        adw_alert_dialog_set_body(preview,
-                                  clawt_json_string(clawt_payload_of(reply),
-                                                    "yaml", ""));
+        adw_alert_dialog_set_body(preview, body->str);
         adw_alert_dialog_add_response(preview, "cancel", "Cancel");
         adw_alert_dialog_add_response(preview, "create", "Create");
         adw_alert_dialog_set_response_appearance(preview, "create",
                                                  ADW_RESPONSE_SUGGESTED);
 
-        g_object_set_data_full(G_OBJECT(preview), "description",
-                               g_strdup(description), g_free);
+        g_object_set_data_full(
+            G_OBJECT(preview), "draft",
+            g_strdup(clawt_json_string(result, "draft", NULL)), g_free);
         g_signal_connect(preview, "response",
                          G_CALLBACK(on_preview_response), dialog);
 
@@ -2371,14 +2451,66 @@ on_new_agent(GtkButton *button, gpointer user_data)
                                     "By description");
     adw_preferences_group_set_description(
         ADW_PREFERENCES_GROUP(ai),
-        "Describe what you want and clawtilla drafts the configuration. "
-        "You see it before anything is created.");
+        "Answer what you can and clawtilla drafts the configuration and "
+        "the agent's org files. Only the first is required; a blank "
+        "answer becomes a heading to fill in rather than an invention. "
+        "You see everything before anything is created.");
 
-    dialog->describe_entry = adw_entry_row_new();
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->describe_entry),
-                                  "What should it do?");
-    adw_preferences_group_add(ADW_PREFERENCES_GROUP(ai),
-                              dialog->describe_entry);
+    /*
+     * Named questions rather than one box.
+     *
+     * "Describe what you want" asked the person to write a paragraph
+     * that happened to contain everything the model needed, and a
+     * paragraph that leaves out the boundaries produces an agent with
+     * none. Each question asks for one thing once.
+     */
+    {
+        static const struct {
+            const gchar *title;
+            gsize        offset;
+        } questions[] = {
+            { "What should it do?",
+              G_STRUCT_OFFSET(NewAgentDialog, describe_entry) },
+            { "What should it never do?",
+              G_STRUCT_OFFSET(NewAgentDialog, boundaries_entry) },
+            { "What does it need to work on?",
+              G_STRUCT_OFFSET(NewAgentDialog, needs_entry) },
+            { "How should it come across?",
+              G_STRUCT_OFFSET(NewAgentDialog, personality_entry) },
+            { "What is it working on, and where?",
+              G_STRUCT_OFFSET(NewAgentDialog, projects_entry) },
+            { "Anything else it should know?",
+              G_STRUCT_OFFSET(NewAgentDialog, notes_entry) },
+            { NULL, 0 }
+        };
+        gsize i;
+
+        for (i = 0; questions[i].title != NULL; i++) {
+            GtkWidget *row = adw_entry_row_new();
+
+            adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row),
+                                                FALSE);
+            adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                          questions[i].title);
+            adw_preferences_group_add(ADW_PREFERENCES_GROUP(ai), row);
+
+            G_STRUCT_MEMBER(GtkWidget *, dialog, questions[i].offset) = row;
+        }
+    }
+
+    /*
+     * Which model does the designing -- separate from the model the
+     * agent will run on. There is no reason for them to be the same, and
+     * a person will often want their best model to draft an agent that
+     * then runs on a cheap one.
+     */
+    model_chooser_build(&dialog->designer, self, ai, NULL, NULL);
+    adw_preferences_row_set_title(
+        ADW_PREFERENCES_ROW(dialog->designer.provider_row),
+        "Designed by");
+    adw_preferences_row_set_title(
+        ADW_PREFERENCES_ROW(dialog->designer.model_row),
+        "Designer's model");
 
     design = gtk_button_new_with_label("Design it");
     gtk_widget_set_margin_top(design, 12);

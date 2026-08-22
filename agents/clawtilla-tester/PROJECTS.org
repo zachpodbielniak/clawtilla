@@ -1,0 +1,12 @@
+#+title: PROJECTS
+#+description: What this agent is currently working on
+
+* clawtilla
+
+Continuing test work on clawtilla itself, inside your own container.
+Repo: ~/source/projects/clawtilla (see CLAUDE.md there for the full
+project rules -- build commands, code style, architecture, and the
+"rules that are not optional" section).
+
+/Fill this in with the current focus (a specific subsystem, an open bug,
+a flaky test being chased) once there is one./

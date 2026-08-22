@@ -37,12 +37,30 @@ struct _ClawtDaemon {
     ClawtPodBridge     *pod_bridge;
     ClawtPluginManager *plugins;
 
+    /*
+     * Designs waiting to be reviewed.
+     *
+     * design.agent used to run the model, show a preview, and then --
+     * when the person said yes -- run the model *again* with commit set.
+     * The second run is a fresh conversation, so what was created was not
+     * what was reviewed, which is the one thing the preview exists to
+     * guarantee. The designer is kept here between the two steps instead.
+     */
+    GHashTable *drafts;          /* draft id -> ClawtAgentDesigner */
+
     gchar   *libreclaw_binary;
     gchar   *state_dir;
     gchar   *link_socket;
     guint    sweep_source_id;
     gboolean running;
 };
+
+/*
+ * How many designs may sit unreviewed at once.  Small on purpose: a
+ * draft is a step in a conversation somebody is having right now, not
+ * something to accumulate.
+ */
+#define MAX_PENDING_DRAFTS (8)
 
 G_DEFINE_FINAL_TYPE(ClawtDaemon, clawt_daemon, G_TYPE_OBJECT)
 
@@ -693,6 +711,16 @@ static void
 release_components(ClawtDaemon *self)
 {
     g_clear_object(&self->plugins);
+
+    /*
+     * Emptied, not freed: a stopped daemon can be started again, and a
+     * NULL table would crash the first design after it.  It has to
+     * happen before the config goes, because every pending designer
+     * holds a reference to it.
+     */
+    if (self->drafts != NULL)
+        g_hash_table_remove_all(self->drafts);
+
     g_clear_object(&self->mcp_tools);
     g_clear_object(&self->ipc_server);
     g_clear_object(&self->link_server);
@@ -2259,22 +2287,91 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
     }
 
     if (g_strcmp0(kind, "design.agent") == 0) {
+        /*
+         * The questionnaire.
+         *
+         * One free-text box asked the person to write a paragraph that
+         * happened to contain everything the model needed, and a
+         * paragraph that leaves out the boundaries produces an agent
+         * with none.  Named questions ask for each thing once, and an
+         * unanswered one is visibly unanswered rather than silently
+         * absent.
+         */
+        static const struct {
+            const gchar *field;
+            const gchar *question;
+        } questions[] = {
+            { "purpose",     "What should this agent do?" },
+            { "boundaries",  "What should it never do?" },
+            { "needs",       "What does it need to work on: files, "
+                             "commands, the network, nothing?" },
+            { "personality", "How should it come across?" },
+            { "projects",    "What is it working on, and where does that "
+                             "live?" },
+            { "notes",       "Anything else it should know?" },
+            { NULL, NULL }
+        };
         const gchar *description = clawt_ipc_payload_string(payload,
                                                             "description");
+        g_autoptr(GString) brief = g_string_new(NULL);
         g_autoptr(ClawtAgentDesigner) designer = NULL;
         g_autofree gchar *preview = NULL;
+        g_autofree gchar *draft_id = NULL;
         GHashTable *draft;
+        gsize i;
 
-        if (description == NULL)
+        for (i = 0; questions[i].field != NULL; i++) {
+            const gchar *answer = clawt_ipc_payload_string(payload,
+                                                            questions[i].field);
+
+            if (answer == NULL || *answer == '\0')
+                continue;
+
+            g_string_append_printf(brief, "%s\n%s\n\n",
+                                   questions[i].question, answer);
+        }
+
+        /*
+         * The old single-field form still works.  The CLI takes a
+         * sentence, and a client that has not been updated should keep
+         * designing agents rather than start failing.
+         */
+        if (brief->len == 0 && description != NULL && *description != '\0')
+            g_string_append(brief, description);
+
+        if (brief->len == 0)
             return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "describe what the agent should do");
+                                       "answer at least one question, or "
+                                       "send a description");
 
         designer = clawt_agent_designer_new(self->config);
 
-        if (!clawt_agent_designer_use_configured_provider(designer, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
+        /*
+         * The model that designs is chosen per request, falling back to
+         * ai_assist.  The one that drafts an agent and the one that then
+         * runs it have no reason to be the same: a person will often
+         * want their best model for the first and a cheap one for the
+         * second.
+         */
+        if (clawt_ipc_payload_string(payload, "provider") != NULL) {
+            if (!clawt_config_get_boolean(self->config, "ai_assist.enabled"))
+                return clawt_ipc_error_new(
+                    request, CLAWT_ERROR_NOT_SUPPORTED,
+                    "AI-assisted agent creation is turned off; set "
+                    "ai_assist.enabled: true");
 
-        draft = clawt_agent_designer_design(designer, description, NULL,
+            if (!clawt_agent_designer_set_provider_by_name(
+                    designer,
+                    clawt_ipc_payload_string(payload, "provider"),
+                    clawt_ipc_payload_string(payload, "model"), &error))
+                return clawt_ipc_error_new(request, error->code,
+                                           error->message);
+        } else if (!clawt_agent_designer_use_configured_provider(designer,
+                                                                 &error)) {
+            return clawt_ipc_error_new(request, error->code, error->message);
+        }
+
+        draft = clawt_agent_designer_design(designer, brief->str, NULL,
                                             &error);
 
         if (draft == NULL)
@@ -2283,35 +2380,122 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         preview = clawt_agent_designer_preview(designer);
 
         /*
-         * Committed here only when asked for.  A design that wrote itself
-         * into the config would mean the model's last word created
-         * something nobody reviewed.
+         * Kept so design.commit creates exactly what was reviewed.
+         * Bounded, because a client that designs and walks away should
+         * not grow the daemon without limit.
          */
-        if (clawt_ipc_payload_boolean(payload, "commit", FALSE)) {
-            if (clawt_agent_designer_commit(designer, &error) == NULL)
-                return clawt_ipc_error_new(request, error->code,
-                                           error->message);
+        draft_id = clawt_generate_token(NULL);
 
-            if (!clawt_config_save(self->config, &error))
-                return clawt_ipc_error_new(request, error->code,
-                                           error->message);
+        if (draft_id == NULL)
+            draft_id = g_strdup(g_hash_table_lookup(draft, "id"));
 
-            clawt_agent_manager_load(self->agents, NULL);
-            render_all_agents(self);
+        if (g_hash_table_size(self->drafts) >= MAX_PENDING_DRAFTS) {
+            GHashTableIter iter;
+            gpointer oldest = NULL;
+
+            g_hash_table_iter_init(&iter, self->drafts);
+
+            if (g_hash_table_iter_next(&iter, &oldest, NULL))
+                g_hash_table_remove(self->drafts, oldest);
         }
 
+        g_hash_table_insert(self->drafts, g_strdup(draft_id),
+                            g_object_ref(designer));
+
         json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "draft");
+        json_builder_add_string_value(builder, draft_id);
         json_builder_set_member_name(builder, "yaml");
         json_builder_add_string_value(builder, preview);
         json_builder_set_member_name(builder, "id");
         json_builder_add_string_value(builder,
                                       g_hash_table_lookup(draft, "id"));
+
+        /* The org files the model wrote, so a client can show them. */
+        {
+            GHashTable *files = clawt_agent_designer_get_files(designer);
+            g_autoptr(GList) names = g_hash_table_get_keys(files);
+            GList *f;
+
+            names = g_list_sort(names, (GCompareFunc)g_strcmp0);
+
+            json_builder_set_member_name(builder, "files");
+            json_builder_begin_array(builder);
+
+            for (f = names; f != NULL; f = f->next) {
+                json_builder_begin_object(builder);
+                json_builder_set_member_name(builder, "name");
+                json_builder_add_string_value(builder, f->data);
+                json_builder_set_member_name(builder, "content");
+                json_builder_add_string_value(
+                    builder, g_hash_table_lookup(files, f->data));
+                json_builder_end_object(builder);
+            }
+
+            json_builder_end_array(builder);
+        }
+
         json_builder_set_member_name(builder, "committed");
-        json_builder_add_boolean_value(
-            builder, clawt_ipc_payload_boolean(payload, "commit", FALSE));
+        json_builder_add_boolean_value(builder, FALSE);
         json_builder_set_member_name(builder, "notes");
         json_builder_add_string_value(
             builder, clawt_agent_designer_get_transcript(designer));
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "design.commit") == 0) {
+        const gchar *draft_id = clawt_ipc_payload_string(payload, "draft");
+        ClawtAgentDesigner *designer = (draft_id != NULL)
+            ? g_hash_table_lookup(self->drafts, draft_id) : NULL;
+        ClawtAgentConfig *created;
+
+        /*
+         * Creates the design that was reviewed, rather than asking the
+         * model again.  A second run is a fresh conversation and would
+         * produce something else -- which makes the preview a
+         * demonstration rather than a decision.
+         */
+        if (designer == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such draft; design it again");
+
+        created = clawt_agent_designer_commit(designer, &error);
+
+        if (created == NULL) {
+            g_hash_table_remove(self->drafts, draft_id);
+            return clawt_ipc_error_new(request, error->code, error->message);
+        }
+
+        if (!clawt_config_save(self->config, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        clawt_agent_manager_load(self->agents, NULL);
+        render_all_agents(self);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "id");
+        json_builder_add_string_value(builder,
+                                      clawt_agent_config_get_id(created));
+        json_builder_set_member_name(builder, "committed");
+        json_builder_add_boolean_value(builder, TRUE);
+        json_builder_end_object(builder);
+
+        g_hash_table_remove(self->drafts, draft_id);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "design.discard") == 0) {
+        const gchar *draft_id = clawt_ipc_payload_string(payload, "draft");
+
+        if (draft_id != NULL)
+            g_hash_table_remove(self->drafts, draft_id);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "discarded");
+        json_builder_add_boolean_value(builder, TRUE);
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
@@ -2710,6 +2894,7 @@ clawt_daemon_finalize(GObject *object)
 {
     ClawtDaemon *self = CLAWT_DAEMON(object);
 
+    g_clear_pointer(&self->drafts, g_hash_table_unref);
     g_free(self->config_path);
     g_free(self->libreclaw_binary);
     g_free(self->state_dir);
@@ -2743,5 +2928,7 @@ clawt_daemon_class_init(ClawtDaemonClass *klass)
 static void
 clawt_daemon_init(ClawtDaemon *self)
 {
+    self->drafts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                          g_object_unref);
     self->running = FALSE;
 }

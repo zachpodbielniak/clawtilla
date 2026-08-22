@@ -19,6 +19,7 @@ struct _ClawtAgentDesigner {
     AiProvider      *provider;
     AiToolExecutor  *executor;
     GHashTable      *draft;      /* config key -> value */
+    GHashTable      *files;      /* workspace file name -> content */
     gchar           *transcript;
     guint            max_turns;
     gboolean         committed;
@@ -72,14 +73,46 @@ clawt_agent_designer_set_provider(ClawtAgentDesigner *self,
 }
 
 gboolean
+clawt_agent_designer_set_provider_by_name(ClawtAgentDesigner  *self,
+                                          const gchar         *provider_name,
+                                          const gchar         *model,
+                                          GError             **error)
+{
+    g_autoptr(AiConfig) ai_config = NULL;
+    GObject *provider;
+
+    g_return_val_if_fail(CLAWT_IS_AGENT_DESIGNER(self), FALSE);
+
+    if (provider_name == NULL || *provider_name == '\0')
+        provider_name = "claude-code";
+
+    ai_config = ai_config_new();
+
+    if (model != NULL && *model != '\0')
+        ai_config_set_default_model(ai_config, model);
+
+    provider = ai_provider_factory_new_from_string(provider_name, ai_config,
+                                                   error);
+
+    if (provider == NULL) {
+        /*
+         * Named, because the likely cause is a provider spelled wrong
+         * rather than anything broken.
+         */
+        g_prefix_error(error, "AI provider '%s': ", provider_name);
+        return FALSE;
+    }
+
+    clawt_agent_designer_set_provider(self, AI_PROVIDER(provider));
+    g_object_unref(provider);
+
+    return TRUE;
+}
+
+gboolean
 clawt_agent_designer_use_configured_provider(ClawtAgentDesigner  *self,
                                              GError             **error)
 {
-    g_autoptr(AiConfig) ai_config = NULL;
-    const gchar *provider_name;
-    const gchar *model;
-    GObject *provider;
-
     g_return_val_if_fail(CLAWT_IS_AGENT_DESIGNER(self), FALSE);
 
     if (!clawt_config_get_boolean(self->config, "ai_assist.enabled")) {
@@ -89,32 +122,12 @@ clawt_agent_designer_use_configured_provider(ClawtAgentDesigner  *self,
         return FALSE;
     }
 
-    provider_name = clawt_config_get_string(self->config,
-                                            "ai_assist.provider");
-    model = clawt_config_get_string(self->config, "ai_assist.model");
-
-    ai_config = ai_config_new();
-
-    if (model != NULL)
-        ai_config_set_default_model(ai_config, model);
-
-    provider = ai_provider_factory_new_from_string(
-        provider_name != NULL ? provider_name : "claude-code", ai_config,
-        error);
-
-    if (provider == NULL) {
-        /*
-         * Named, because the likely cause is a provider spelled wrong in
-         * the config rather than anything broken.
-         */
-        g_prefix_error(error, "ai_assist.provider '%s': ",
-                       provider_name != NULL ? provider_name
-                                             : "claude-code");
+    if (!clawt_agent_designer_set_provider_by_name(
+            self,
+            clawt_config_get_string(self->config, "ai_assist.provider"),
+            clawt_config_get_string(self->config, "ai_assist.model"),
+            error))
         return FALSE;
-    }
-
-    clawt_agent_designer_set_provider(self, AI_PROVIDER(provider));
-    g_object_unref(provider);
 
     self->max_turns = (guint)clawt_config_get_int(self->config,
                                                   "ai_assist.max_turns");
@@ -128,6 +141,14 @@ clawt_agent_designer_set_max_turns(ClawtAgentDesigner *self, guint max_turns)
     g_return_if_fail(CLAWT_IS_AGENT_DESIGNER(self));
 
     self->max_turns = max_turns;
+}
+
+GHashTable *
+clawt_agent_designer_get_files(ClawtAgentDesigner *self)
+{
+    g_return_val_if_fail(CLAWT_IS_AGENT_DESIGNER(self), NULL);
+
+    return self->files;
 }
 
 GHashTable *
@@ -368,6 +389,72 @@ tool_commit(AiToolUse *use, GCancellable *cancellable, GError **error,
     return g_strdup("Design finished. The draft is ready for review.");
 }
 
+/*
+ * Lets the model draft the agent's org files.
+ *
+ * The configuration says what an agent is; these say who it is, and
+ * a scaffolded SOUL.org full of "/Fill this in./" is exactly the work a
+ * person hoped not to do by hand. Only names in the standard set are
+ * accepted -- a model inventing PROMPT.org would write a file nothing
+ * loads.
+ */
+static gchar *
+tool_write_file(AiToolUse *use, GCancellable *cancellable, GError **error,
+                gpointer user_data)
+{
+    ClawtAgentDesigner *self = user_data;
+    const gchar *name = input_string(use, "file");
+    const gchar *content = input_string(use, "content");
+    const ClawtWorkspaceFile *files;
+    guint n_files = 0;
+    guint i;
+
+    (void)cancellable;
+
+    if (name == NULL || content == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "file and content are both required");
+        return NULL;
+    }
+
+    files = clawt_workspace_files(&n_files);
+
+    for (i = 0; i < n_files; i++) {
+        if (g_strcmp0(files[i].name, name) == 0 && files[i].identity) {
+            g_hash_table_insert(self->files, g_strdup(name),
+                                g_strdup(content));
+            g_signal_emit(self, signals[SIGNAL_DRAFT_CHANGED], 0);
+
+            return g_strdup_printf("%s drafted, %" G_GSIZE_FORMAT
+                                   " characters.", name, strlen(content));
+        }
+    }
+
+    /*
+     * The list is in the error rather than a bare refusal: a model told
+     * only "no" tries another invented name.
+     */
+    {
+        g_autoptr(GString) valid = g_string_new(NULL);
+
+        for (i = 0; i < n_files; i++) {
+            if (!files[i].identity)
+                continue;
+
+            if (valid->len > 0)
+                g_string_append(valid, ", ");
+
+            g_string_append(valid, files[i].name);
+        }
+
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "'%s' is not one of the agent's files; use one of: %s",
+                    name, valid->str);
+    }
+
+    return NULL;
+}
+
 static void
 register_tool(ClawtAgentDesigner *self, const gchar *name,
               const gchar *description, AiToolCallback callback,
@@ -423,6 +510,14 @@ register_tools(ClawtAgentDesigner *self)
         { "deny", "string", "Comma-separated tool names to refuse.", FALSE }
     };
 
+    static const ClawtParamInfo file_params[] = {
+        { "file", "string", "Which file: SOUL.org, IDENTITY.org, USER.org, "
+                            "AGENTS.org, TOOLS.org, TOOL_GOTCHAS.org or "
+                            "PROJECTS.org.", TRUE },
+        { "content", "string", "The whole file, in org-mode. Replaces the "
+                               "scaffolded default.", TRUE }
+    };
+
     static const ClawtParamInfo no_params[] = {
         { NULL, NULL, NULL, FALSE }
     };
@@ -450,6 +545,11 @@ register_tools(ClawtAgentDesigner *self)
     register_tool(self, "set_tools",
                   "Narrow which orchestration tools this agent may use.",
                   tool_set_tools, tools_params, G_N_ELEMENTS(tools_params));
+
+    register_tool(self, "write_file",
+                  "Write one of the agent's org files. These become its "
+                  "system prompt.",
+                  tool_write_file, file_params, G_N_ELEMENTS(file_params));
 
     register_tool(self, "preview",
                   "Show the configuration as it stands.",
@@ -522,23 +622,83 @@ clawt_agent_designer_design(ClawtAgentDesigner *self,
         return NULL;
     }
 
+    /*
+     * Refused before the call, not after it.
+     *
+     * The designer works by handing the model a set of tools and letting
+     * it fill in a draft.  ai-glib's CLI clients drop the tool list on
+     * the floor -- ai_claude_code_client_chat_async() casts the tool
+     * list to void with a comment saying tools are not supported via
+     * the CLI -- so the model gets a system prompt describing tools it
+     * was never
+     * given, hunts for them, and answers in prose.  That surfaced as
+     * "it never called set_identity" after a full round-trip, which
+     * reads like the model being uncooperative rather than the provider
+     * being unable.
+     */
+    if (AI_IS_CLI_CLIENT(self->provider)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                    "%s runs through a command-line tool, which ai-glib "
+                    "cannot pass tool definitions to, and the designer "
+                    "works entirely through tools. Set ai_assist.provider "
+                    "to an API provider -- claude, openai, gemini or grok "
+                    "-- and give it a key. Designing is the only thing "
+                    "this affects; agents themselves run fine on a CLI "
+                    "provider.",
+                    G_OBJECT_TYPE_NAME(self->provider));
+        return NULL;
+    }
+
     system_prompt = g_strdup_printf(
         "You are designing one agent for a clawtilla fleet.\n"
         "\n"
-        "Use the tools to fill in the agent's configuration, then call "
-        "commit. Do not ask questions -- work from what you are given and "
-        "choose sensible defaults for the rest.\n"
+        "clawtilla runs a fleet of agents. Each has a configuration, a\n"
+        "durable mailbox, optionally a computer of its own, and a set of\n"
+        "org files in its workspace that become its system prompt.\n"
         "\n"
-        "Guidance:\n"
-        "- Give the agent a description. Other agents read it when "
-        "deciding who to delegate work to, so say what it is for rather "
+        "Use the tools to fill in the configuration, write the org files,\n"
+        "then call commit. Do not ask questions -- work from the answers\n"
+        "you are given and choose sensible defaults for the rest.\n"
+        "\n"
+        "Configuration:\n"
+        "- Give the agent a description. Other agents read it when\n"
+        "deciding who to delegate work to, so say what it is for rather\n"
         "than what it is called.\n"
-        "- Only give it a computer if the work needs one. An agent that "
+        "- Only give it a computer if the work needs one. An agent that\n"
         "answers questions does not need a container.\n"
-        "- Prefer a container to the host. Host access is for work that "
+        "- Prefer a container to the host. Host access is for work that\n"
         "genuinely has to touch the real machine.\n"
-        "- Do not invent credentials, hostnames or tokens. Enabling an "
+        "- Do not invent credentials, hostnames or tokens. Enabling an\n"
         "integration is enough; the person fills in the rest.\n"
+        "\n"
+        "The org files, written with write_file:\n"
+        "- SOUL.org -- mission, operating parameters, voice. The one file\n"
+        "that decides what this agent does when nobody has told it what\n"
+        "to do. Always write this one.\n"
+        "- IDENTITY.org -- name, role, a self-description in its own\n"
+        "voice, and what it is NOT (name the work that belongs to a\n"
+        "different agent). Always write this one.\n"
+        "- AGENTS.org -- how it works: output format, how it talks to the\n"
+        "rest of the fleet, what it does at the start of a turn.\n"
+        "- TOOLS.org -- only what is specific to this agent. The\n"
+        "orchestration tools, the mailbox and the computer are already\n"
+        "described in the scaffolded default, so do not repeat them; add\n"
+        "the project commands and services this agent in particular\n"
+        "needs. Skip it if there is nothing to add.\n"
+        "- PROJECTS.org -- what it is working on, if the answers say.\n"
+        "- USER.org and TOOL_GOTCHAS.org -- leave these alone unless the\n"
+        "answers tell you something concrete. They are the person's to\n"
+        "fill in, and inventing preferences for them is worse than an\n"
+        "empty heading.\n"
+        "\n"
+        "Write org-mode, not markdown: '*' headings, '~code~', '/italic/',\n"
+        "'*bold*'. Start each file with '#+title:' and '#+description:'.\n"
+        "Address the agent as 'you'. Be specific -- a file that says\n"
+        "'be helpful and accurate' is one nobody needed generated.\n"
+        "\n"
+        "Where an answer did not say, write the heading and leave a short\n"
+        "'/Fill this in./' note rather than inventing detail. A confident\n"
+        "invention is harder to find and fix than a blank.\n"
         "\n"
         "There %s already %u agent(s) in this fleet.",
         clawt_config_get_agents(self->config)->len == 1 ? "is" : "are",
@@ -564,9 +724,18 @@ clawt_agent_designer_design(ClawtAgentDesigner *self,
          * nothing usable.  Saying so is better than returning an empty
          * draft that fails confusingly at commit.
          */
-        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_AI,
-                            "the model did not draft an agent: it never "
-                            "called set_identity");
+        /*
+         * What it said instead is included.  "It never called
+         * set_identity" on its own is unactionable: the reply usually
+         * says why -- a refusal, a question, or a provider that never
+         * offered the tools at all -- and without it the only way to
+         * find out is to reproduce the call by hand.
+         */
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_AI,
+                    "the model did not draft an agent: it never called "
+                    "set_identity. It said: %s",
+                    (self->transcript != NULL && *self->transcript != '\0')
+                    ? self->transcript : "(nothing)");
         return NULL;
     }
 
@@ -614,6 +783,36 @@ clawt_agent_designer_commit(ClawtAgentDesigner *self, GError **error)
                                       g_hash_table_lookup(self->draft, key));
     }
 
+    /*
+     * The drafted files, written before validation so a rollback takes
+     * them with it.  Scaffolding fills in whatever the model did not
+     * write, so a partial draft still produces a complete workspace.
+     */
+    if (!clawt_workspace_scaffold(agent, error)) {
+        clawt_config_remove_agent(self->config, id);
+        return NULL;
+    }
+
+    {
+        g_autoptr(GList) file_names = g_hash_table_get_keys(self->files);
+        GList *f;
+
+        for (f = file_names; f != NULL; f = f->next) {
+            g_autofree gchar *path =
+                clawt_workspace_file_path(agent, f->data);
+            const gchar *content = g_hash_table_lookup(self->files, f->data);
+
+            if (path == NULL)
+                continue;
+
+            if (!clawt_write_file_atomic(path, content, -1, 0600, FALSE,
+                                          error)) {
+                clawt_config_remove_agent(self->config, id);
+                return NULL;
+            }
+        }
+    }
+
     if (!clawt_integration_validate(agent, error)) {
         /*
          * Rolled back rather than left half-created.  An agent that exists
@@ -645,6 +844,7 @@ clawt_agent_designer_finalize(GObject *object)
     ClawtAgentDesigner *self = CLAWT_AGENT_DESIGNER(object);
 
     g_clear_pointer(&self->draft, g_hash_table_unref);
+    g_clear_pointer(&self->files, g_hash_table_unref);
     g_free(self->transcript);
 
     G_OBJECT_CLASS(clawt_agent_designer_parent_class)->finalize(object);
@@ -674,6 +874,8 @@ static void
 clawt_agent_designer_init(ClawtAgentDesigner *self)
 {
     self->draft = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                        g_free);
+    self->files = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                         g_free);
     self->max_turns = 20;
 }

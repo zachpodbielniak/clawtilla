@@ -15,6 +15,8 @@
 
 #include <clawtilla.h>
 
+#include <unistd.h>
+
 /*
  * libreclaw's umbrella header does not pull in its own version macros, so
  * ask for them directly.  Reporting which libreclaw a clawtilla was built
@@ -519,13 +521,43 @@ cmd_agent(int argc, char *argv[])
     }
 
     if (g_strcmp0(verb, "new") == 0) {
-        g_autoptr(GString) description = NULL;
+        /*
+         * The questionnaire.
+         *
+         * One free-text description asked the person to write a
+         * paragraph that happened to contain everything the model
+         * needed, and a paragraph that leaves out the boundaries
+         * produces an agent with none.  Each question asks for one thing
+         * once; only the first is required.
+         */
+        static const struct {
+            const gchar *field;
+            const gchar *prompt;
+            const gchar *hint;
+        } questions[] = {
+            { "purpose", "What should this agent do?",
+              "e.g. reads my notes and answers questions about them" },
+            { "boundaries", "What should it never do?",
+              "e.g. never push to main, never touch production" },
+            { "needs", "What does it need to work on?",
+              "files, commands, the network, or nothing" },
+            { "personality", "How should it come across?",
+              "e.g. terse and blunt; no preamble" },
+            { "projects", "What is it working on, and where?",
+              "e.g. ~/source/projects/foo" },
+            { "notes", "Anything else it should know?", NULL },
+            { NULL, NULL, NULL }
+        };
+        g_autoptr(GString) description = g_string_new(NULL);
         g_autoptr(JsonBuilder) builder = json_builder_new();
+        g_autoptr(GHashTable) answers =
+            g_hash_table_new_full(g_str_hash, g_str_equal, NULL, g_free);
+        const gchar *designer_provider = NULL;
+        const gchar *designer_model = NULL;
         gboolean use_ai = FALSE;
         gboolean commit = FALSE;
         gint i;
-
-        description = g_string_new(NULL);
+        gsize q;
 
         for (i = 3; i < argc; i++) {
             if (g_strcmp0(argv[i], "--ai") == 0) {
@@ -538,20 +570,71 @@ cmd_agent(int argc, char *argv[])
                 continue;
             }
 
+            if (g_strcmp0(argv[i], "--designer") == 0 && i + 1 < argc) {
+                designer_provider = argv[++i];
+                continue;
+            }
+
+            if (g_strcmp0(argv[i], "--designer-model") == 0 && i + 1 < argc) {
+                designer_model = argv[++i];
+                continue;
+            }
+
             if (description->len > 0)
                 g_string_append_c(description, ' ');
 
             g_string_append(description, argv[i]);
         }
 
-        if (!use_ai) {
-            g_printerr("Usage: clawtilla agent new --ai <description>\n");
+        /*
+         * No description means ask.  A person who runs the bare verb is
+         * asking to be walked through it, and an interactive prompt is
+         * how every other tool on their machine handles that.
+         */
+        if (description->len == 0 && isatty(STDIN_FILENO)) {
+            g_print("Designing an agent. Answer what you can; press Enter to "
+                    "skip.\n");
+            g_print("A skipped answer becomes a heading to fill in, not an "
+                    "invention.\n\n");
+
+            for (q = 0; questions[q].field != NULL; q++) {
+                gchar line[1024];
+
+                g_print("%s\n", questions[q].prompt);
+
+                if (questions[q].hint != NULL)
+                    g_print("  (%s)\n", questions[q].hint);
+
+                g_print("> ");
+
+                if (fgets(line, sizeof(line), stdin) == NULL)
+                    break;
+
+                g_strstrip(line);
+                g_print("\n");
+
+                if (*line != '\0')
+                    g_hash_table_insert(answers, (gpointer)questions[q].field,
+                                        g_strdup(line));
+            }
+
+            if (g_hash_table_lookup(answers, "purpose") == NULL) {
+                g_printerr("clawtilla: nothing to design; say what the agent "
+                           "should do.\n");
+                return EXIT_FAILURE;
+            }
+
+            use_ai = TRUE;
+        } else if (!use_ai) {
+            g_printerr("Usage: clawtilla agent new            "
+                       "# ask me the questions\n");
+            g_printerr("       clawtilla agent new --ai <description>\n");
             g_printerr("  For a hand-written agent use "
                        "'clawtilla agent create --id <id>'.\n");
             return EXIT_FAILURE;
         }
 
-        if (description->len == 0) {
+        if (description->len == 0 && g_hash_table_size(answers) == 0) {
             g_printerr("Say what the agent should do, e.g.\n");
             g_printerr("  clawtilla agent new --ai \"reads my notes and "
                        "answers questions about them\"\n");
@@ -561,42 +644,120 @@ cmd_agent(int argc, char *argv[])
         g_print("Designing...\n");
 
         json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "description");
-        json_builder_add_string_value(builder, description->str);
-        json_builder_set_member_name(builder, "commit");
-        json_builder_add_boolean_value(builder, commit);
+
+        for (q = 0; questions[q].field != NULL; q++) {
+            const gchar *answer = g_hash_table_lookup(answers,
+                                                       questions[q].field);
+
+            if (answer == NULL)
+                continue;
+
+            json_builder_set_member_name(builder, questions[q].field);
+            json_builder_add_string_value(builder, answer);
+        }
+
+        if (description->len > 0) {
+            json_builder_set_member_name(builder, "description");
+            json_builder_add_string_value(builder, description->str);
+        }
+
+        if (designer_provider != NULL) {
+            json_builder_set_member_name(builder, "provider");
+            json_builder_add_string_value(builder, designer_provider);
+        }
+
+        if (designer_model != NULL) {
+            json_builder_set_member_name(builder, "model");
+            json_builder_add_string_value(builder, designer_model);
+        }
+
         json_builder_end_object(builder);
 
         reply = call(client, "design.agent", json_builder_get_root(builder));
         if (reply == NULL)
             return EXIT_FAILURE;
 
-        g_print("\n%s\n", member_or(json_node_get_object(reply), "yaml",
-                                     ""));
+        {
+            JsonObject *result = json_node_get_object(reply);
+            const gchar *draft = member_or(result, "draft", NULL);
+            const gchar *id = member_or(result, "id", "?");
+            JsonArray *files = json_object_has_member(result, "files")
+                               ? json_object_get_array_member(result, "files")
+                               : NULL;
 
-        if (member_or(json_node_get_object(reply), "notes", NULL) != NULL)
-            g_print("%s\n\n",
-                    json_object_get_string_member(json_node_get_object(reply),
-                                                  "notes"));
+            g_print("\n%s\n", member_or(result, "yaml", ""));
 
-        if (commit) {
-            const gchar *id = member_or(json_node_get_object(reply), "id",
-                                        "?");
+            if (files != NULL && json_array_get_length(files) > 0) {
+                guint f;
+
+                g_print("It also wrote:\n");
+
+                for (f = 0; f < json_array_get_length(files); f++) {
+                    JsonObject *file = json_array_get_object_element(files, f);
+                    const gchar *content = member_or(file, "content", "");
+                    const gchar *p;
+                    gsize lines = 0;
+
+                    for (p = content; *p != '\0'; p++) {
+                        if (*p == '\n')
+                            lines++;
+                    }
+
+                    g_print("  %-18s %" G_GSIZE_FORMAT " lines\n",
+                            member_or(file, "name", "?"), lines);
+                }
+
+                g_print("\n");
+            }
+
+            if (member_or(result, "notes", NULL) != NULL)
+                g_print("%s\n\n", json_object_get_string_member(result,
+                                                                "notes"));
+
+            /*
+             * Asked rather than assumed, and asked here rather than by
+             * re-running the design: the draft on the daemon is the one
+             * just shown, and committing it creates exactly that.
+             */
+            if (!commit && isatty(STDIN_FILENO)) {
+                gchar line[16];
+
+                g_print("Create it? [y/N] ");
+
+                if (fgets(line, sizeof(line), stdin) != NULL) {
+                    g_strstrip(line);
+                    commit = (g_ascii_strcasecmp(line, "y") == 0 ||
+                              g_ascii_strcasecmp(line, "yes") == 0);
+                }
+            }
+
+            if (!commit || draft == NULL) {
+                g_autoptr(JsonNode) discarded = NULL;
+
+                if (draft != NULL)
+                    discarded = call(client, "design.discard",
+                                     build_payload("draft", draft, NULL));
+
+                g_print("Nothing has been added.\n");
+                return EXIT_SUCCESS;
+            }
+
+            {
+                g_autoptr(JsonNode) created =
+                    call(client, "design.commit",
+                         build_payload("draft", draft, NULL));
+
+                if (created == NULL)
+                    return EXIT_FAILURE;
+
+                id = member_or(json_node_get_object(created), "id", id);
+            }
 
             g_print("Created %s.\n", id);
+            g_print("Read what it thinks it is: clawtilla agent edit %s\n",
+                    id);
             g_print("Start it with: clawtilla agent start %s\n", id);
-
-            return EXIT_SUCCESS;
         }
-
-        /*
-         * Shown and not written.  The design is a proposal; adding it is
-         * a second, deliberate step, because the model chose things the
-         * person may not want.
-         */
-        g_print("Nothing has been added yet. To create it:\n");
-        g_print("  clawtilla agent new --ai --commit \"%s\"\n",
-                description->str);
 
         return EXIT_SUCCESS;
     }

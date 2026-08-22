@@ -69,6 +69,30 @@ void clawt_agent_designer_set_provider(ClawtAgentDesigner *self,
  *
  * Returns: %TRUE if a provider was built
  */
+/**
+ * clawt_agent_designer_set_provider_by_name:
+ * @self: a #ClawtAgentDesigner
+ * @provider_name: (nullable): a provider id from the model catalogue, or
+ *   %NULL for claude-code
+ * @model: (nullable): the model to run, or %NULL for the provider's own
+ *   default
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Chooses which model does the designing.
+ *
+ * Separate from the agent's own model: the one that drafts an agent and
+ * the one that then runs it have no reason to be the same, and a person
+ * will often want their best model for the first and a cheap one for the
+ * second.
+ *
+ * Returns: %TRUE if the provider could be built
+ */
+gboolean clawt_agent_designer_set_provider_by_name(
+    ClawtAgentDesigner  *self,
+    const gchar         *provider_name,
+    const gchar         *model,
+    GError             **error);
+
 gboolean clawt_agent_designer_use_configured_provider(
     ClawtAgentDesigner  *self,
     GError             **error);
@@ -121,6 +145,20 @@ GHashTable *clawt_agent_designer_get_draft(ClawtAgentDesigner *self);
  * Returns: (transfer full): the preview
  */
 gchar *clawt_agent_designer_preview(ClawtAgentDesigner *self);
+
+/**
+ * clawt_agent_designer_get_files:
+ * @self: a #ClawtAgentDesigner
+ *
+ * The workspace files the model drafted, by name.
+ *
+ * Only files the model actually wrote appear. Anything it left alone is
+ * scaffolded from the defaults at commit, so a partial draft still
+ * produces a complete workspace.
+ *
+ * Returns: (transfer none) (element-type utf8 utf8): name to content
+ */
+GHashTable *clawt_agent_designer_get_files(ClawtAgentDesigner *self);
 
 /**
  * clawt_agent_designer_commit:

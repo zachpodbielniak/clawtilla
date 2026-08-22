@@ -122,7 +122,20 @@ one side being ~<agent>:<path>~).  ~exchange.list~.
 
 ~config.show~, ~config.render~, ~config.validate~; ~plugin.list~;
 ~integration.list~, ~integration.health~; ~model.list~; ~image.list~;
-~design.agent~.
+~design.agent~, ~design.commit~, ~design.discard~.
+
+~design.agent~ takes the questionnaire -- ~purpose~ (required),
+~boundaries~, ~needs~, ~personality~, ~projects~, ~notes~ -- plus
+~provider~ and ~model~ naming which model does the designing.  A single
+~description~ is still accepted, so an older client keeps working.  It
+returns ~draft~ (a token), ~yaml~, ~id~, ~files~ (the org files the model
+wrote) and ~notes~.
+
+~design.commit~ (~draft~) creates exactly what was reviewed.  The
+designer is held on the daemon between the two calls rather than the
+model being asked again: a second run is a fresh conversation producing
+something else, which would make the preview a demonstration rather than
+a decision.  ~design.discard~ drops one.  At most eight may be pending.
 
 ~model.list~ returns the providers clawtilla knows about, each with its
 models.  It comes from the daemon rather than being built into each

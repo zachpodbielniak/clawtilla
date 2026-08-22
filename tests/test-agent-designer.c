@@ -15,6 +15,8 @@
 /* ai-glib does not expose the mock through its umbrella header. */
 #include <agent/ai-mock-provider.h>
 
+#include <string.h>
+
 static ClawtConfig *
 make_config(void)
 {
@@ -26,6 +28,18 @@ make_config(void)
     g_assert_no_error(error);
 
     return config;
+}
+
+static gchar *
+read_agent_file(ClawtAgentConfig *agent, const gchar *name)
+{
+    g_autofree gchar *path = clawt_workspace_file_path(agent, name);
+    gchar *contents = NULL;
+
+    if (path == NULL || !g_file_get_contents(path, &contents, NULL, NULL))
+        return NULL;
+
+    return contents;
 }
 
 /* ── The happy path ──────────────────────────────────────────────── */
@@ -332,6 +346,98 @@ test_preview_shows_the_draft(void)
     g_assert_nonnull(strstr(preview, "reads things"));
 }
 
+/*
+ * The model drafts the org files, and commit writes them.
+ *
+ * The configuration says what an agent is; these say who it is, and a
+ * scaffolded SOUL.org full of "/Fill this in./" is exactly the work the
+ * designer exists to save.
+ */
+static void
+test_writes_the_org_files(void)
+{
+    g_autoptr(ClawtConfig) config = make_config();
+    g_autoptr(ClawtAgentDesigner) designer = clawt_agent_designer_new(config);
+    g_autoptr(AiMockProvider) provider = ai_mock_provider_new();
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *created;
+    GHashTable *files;
+    g_autofree gchar *soul = NULL;
+    g_autofree gchar *tools = NULL;
+
+    ai_mock_provider_push_tool_use(
+        provider, "set_identity",
+        "{\"id\":\"scribe\",\"name\":\"Scribe\","
+        "\"description\":\"writes things down\"}");
+    ai_mock_provider_push_tool_use(
+        provider, "write_file",
+        "{\"file\":\"SOUL.org\",\"content\":\"#+title: SOUL\\n\\nYou "
+        "write things down.\\n\"}");
+    ai_mock_provider_push_tool_use(
+        provider, "write_file",
+        "{\"file\":\"IDENTITY.org\",\"content\":\"#+title: IDENTITY\\n\"}");
+    ai_mock_provider_push_tool_use(provider, "commit", "{}");
+    ai_mock_provider_push_text(provider, "Designed a scribe.");
+
+    clawt_agent_designer_set_provider(designer, AI_PROVIDER(provider));
+
+    g_assert_nonnull(clawt_agent_designer_design(designer, "a scribe", NULL,
+                                                  &error));
+    g_assert_no_error(error);
+
+    files = clawt_agent_designer_get_files(designer);
+    g_assert_cmpuint(g_hash_table_size(files), ==, 2);
+    g_assert_nonnull(g_hash_table_lookup(files, "SOUL.org"));
+
+    created = clawt_agent_designer_commit(designer, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(created);
+
+    /* What the model wrote is on disk... */
+    soul = read_agent_file(created, "SOUL.org");
+    g_assert_nonnull(soul);
+    g_assert_nonnull(strstr(soul, "You write things down."));
+
+    /*
+     * ...and what it left alone was scaffolded, so a partial draft still
+     * produces a complete workspace rather than an agent missing half
+     * its prompt.
+     */
+    tools = read_agent_file(created, "TOOLS.org");
+    g_assert_nonnull(tools);
+    g_assert_nonnull(strstr(tools, "clawtilla_ask_agent"));
+}
+
+/*
+ * A file name the model invented is refused, and the refusal lists the
+ * real ones -- a model told only "no" tries another invented name.
+ */
+static void
+test_an_invented_file_is_refused(void)
+{
+    g_autoptr(ClawtConfig) config = make_config();
+    g_autoptr(ClawtAgentDesigner) designer = clawt_agent_designer_new(config);
+    g_autoptr(AiMockProvider) provider = ai_mock_provider_new();
+    g_autoptr(GError) error = NULL;
+    GHashTable *files;
+
+    ai_mock_provider_push_tool_use(
+        provider, "set_identity", "{\"id\":\"scribe\"}");
+    ai_mock_provider_push_tool_use(
+        provider, "write_file",
+        "{\"file\":\"PROMPT.org\",\"content\":\"nope\"}");
+    ai_mock_provider_push_tool_use(provider, "commit", "{}");
+    ai_mock_provider_push_text(provider, "Done.");
+
+    clawt_agent_designer_set_provider(designer, AI_PROVIDER(provider));
+
+    g_assert_nonnull(clawt_agent_designer_design(designer, "a scribe", NULL,
+                                                  &error));
+
+    files = clawt_agent_designer_get_files(designer);
+    g_assert_cmpuint(g_hash_table_size(files), ==, 0);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -354,6 +460,9 @@ main(int argc, char *argv[])
     g_test_add_func("/designer/unknown-integration",
                     test_unknown_integration_is_refused);
     g_test_add_func("/designer/preview", test_preview_shows_the_draft);
+    g_test_add_func("/designer/writes-org-files", test_writes_the_org_files);
+    g_test_add_func("/designer/invented-file-refused",
+                    test_an_invented_file_is_refused);
 
     return g_test_run();
 }

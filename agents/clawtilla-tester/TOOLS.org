@@ -1,0 +1,45 @@
+#+title: TOOLS
+#+description: Project-specific commands for building and testing clawtilla
+
+* Build
+
+- ~make~ -- release build (~build/release/~)
+- ~make DEBUG=1~ -- debug build (~build/debug/~, ~-O0 -g3 -DDEBUG~)
+- ~make clean~ / ~make DEBUG=1 clean~ -- clean current build type (leaves
+  ~deps/libreclaw~ built; it is slow to rebuild)
+- ~make clean-all~ -- clean everything, including ~deps/libreclaw~
+- ~git submodule update --init --recursive~ -- required once for
+  ~deps/libreclaw~ and its five bundled deps (ai-glib, yaml-glib,
+  podomation, mcp-glib, htmx-glib)
+
+* Test
+
+- ~make test~ / ~make DEBUG=1 test~ -- hermetic suite; no network, no
+  podman, no libvirt, no compositor required
+- ~make test-verbose~
+- ~make test-integration~ -- needs real podman / libvirt / gowl; only run
+  this if your container actually provides them, and say so if it doesn't
+
+* Config and docs
+
+- ~make config-files~ -- regenerate ~data/example-config.yaml~,
+  ~data/default-config.yaml~, ~docs/configuration-options.org~ from
+  ~src/config/clawt-config-schema.c~. Run this and commit the regenerated
+  files whenever a config option changes -- ~tests/test-config-schema.c~
+  fails on drift.
+- ~make docs-check~ -- fails on undocumented public API or stale doc
+  references
+
+* Full rebuild sanity check
+
+- ~make clean all~
+- ~make DEBUG=1 ASAN=1 clean all~ -- catch memory bugs under ASan
+
+* Notes
+
+- Zero warnings is a hard requirement on every target -- a warning is a
+  finding, not something to build around.
+- Fixtures and golden files live in ~tests/fixtures/~, found via the
+  ~CLAWT_TEST_FIXTURES~ define -- never assume cwd.
+- ~tools/clawt-test-floor.sh~ fails the suite if suspiciously few test
+  binaries ran -- a green run that built almost nothing is not a pass.

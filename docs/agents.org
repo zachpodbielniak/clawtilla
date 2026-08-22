@@ -290,6 +290,68 @@ state:  shadow - unknown computer type 'teleporter'; this build knows
 A shadow is listed, explains itself, and refuses to run.  The fleet
 starts without it.
 
+** Creating agents with AI
+
+#+begin_src bash
+clawtilla agent new
+#+end_src
+
+Asks six questions, then a model drafts the configuration *and* the org
+files.  Only the first is required:
+
+| Question | What it shapes |
+|----------+----------------|
+| What should this agent do? | the description and ~SOUL.org~'s mission |
+| What should it never do? | its operating parameters |
+| What does it need to work on? | whether it gets a computer, and which |
+| How should it come across? | voice, in ~SOUL.org~ and ~IDENTITY.org~ |
+| What is it working on, and where? | ~PROJECTS.org~ |
+| Anything else it should know? | ~TOOLS.org~ and the rest |
+
+A blank answer becomes a heading marked ~/Fill this in./~ rather than an
+invention.  That is deliberate: a confident invention is harder to find
+and fix than a blank.
+
+There was one free-text box before.  It asked the person to write a
+paragraph that happened to contain everything the model needed, and a
+paragraph that leaves out the boundaries produces an agent with none.
+
+*** Choosing who designs
+
+#+begin_src bash
+clawtilla agent new --designer claude --designer-model claude-opus-5
+#+end_src
+
+Separate from the model the agent will run on.  There is no reason for
+them to be the same, and a person will often want their best model to
+draft an agent that then runs on a cheap one.  The GTK dialog has the
+same pair, labelled /Designed by/.
+
+Unset falls back to ~ai_assist.provider~ and ~ai_assist.model~.
+
+*** A CLI provider cannot design
+
+The designer works entirely through tool calls, and ai-glib's
+command-line clients -- ~claude-code~, ~claude-tmux~, ~opencode~ -- drop
+the tool list rather than passing it to the CLI.  The model then gets a
+system prompt describing tools it was never given and answers in prose.
+
+clawtilla refuses before making the call and says so.  Use an API
+provider for designing: ~claude~, ~openai~, ~gemini~ or ~grok~.  Agents
+themselves run perfectly well on a CLI provider; this affects designing
+only.
+
+*** Nothing is created until you say so
+
+The design is shown -- the configuration, and which org files were
+written with how many lines -- and *the draft you reviewed is the one
+that gets created*.  It is held on the daemon between the two steps
+rather than the model being asked again, because a second run is a fresh
+conversation that produces something else, which would make the preview
+a demonstration rather than a decision.
+
+Say no and the draft is discarded.  At most eight can be pending.
+
 ** Creating agents
 
 #+begin_src bash

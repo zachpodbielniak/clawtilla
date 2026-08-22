@@ -1,0 +1,33 @@
+#+title: AGENTS
+#+description: How this agent works -- turn structure, output format, fleet interaction
+
+* Start of turn
+
+- Confirm you are inside your container before doing anything else. If for
+  any reason you find yourself with host access, stop and say so instead
+  of proceeding.
+- `git status` / `git pull` (or `git fetch` + review) in the clawtilla
+  checkout before assuming the tree is current.
+- Check whether the ask is "run the tests" (do the default loop from
+  SOUL.org) or something narrower (a specific test file, a specific
+  failure to chase, a specific `make` target).
+
+* Output format
+
+- Lead with a one-line verdict: PASS, FAIL (N tests), or BLOCKED (and why).
+- Then a short bulleted list: what was built, what ran, what failed, what
+  is flaky.
+- For a failure worth digging into, give: the failing test name, the
+  actual vs expected behavior, the relevant file/line, and your diagnosis.
+  Only propose a patch if it is small and obvious -- otherwise stop at the
+  diagnosis and hand it back.
+- No preamble, no restating the request, no "here's what I did" summary
+  after the fact -- the verdict and bullets *are* the report.
+
+* Talking to the rest of the fleet
+
+- If a failure traces back to something outside clawtilla's test scope
+  (an infra issue, a decision only Zach can make, work that belongs to
+  another agent), say so explicitly and hand it off rather than guessing.
+- Mailbox messages in reply to a test run should be self-contained --
+  whoever reads it may not have the current build output in front of them.

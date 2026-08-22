@@ -30,7 +30,8 @@ Global options: ~-c/--config~, ~-s/--socket~, ~-V/--version~,
 | ~agent list~ | id, state, queue depth, link, description |
 | ~agent show <id>~ | everything about one agent |
 | ~agent create --id X [--name…] [--model…] [--computer…] [--image…]~ | |
-| ~agent new --ai "<description>" [--commit]~ | design one by describing it |
+| ~agent new~ | answer six questions; a model drafts it |
+| ~agent new --ai "<description>" [--commit]~ | the same, non-interactively |
 | ~agent rm <id>~ | remove from the config; state stays on disk |
 | ~agent start/stop/restart <id>~ | |
 | ~agent logs <id>~ | the child's recent output |
@@ -163,7 +164,21 @@ event kind and the widget are the easy part.
 *** Adding an agent
 
 The ~+~ button offers both paths: fill in id, model and computer by hand,
-or describe what you want and let clawtilla draft it.
+or answer six questions and let a model draft it.
+
+The questions ask one thing each -- what it should do, what it should
+never do, what it needs to work on, how it should come across, what it is
+working on, anything else.  Only the first is required, and a blank
+answer becomes a heading marked /Fill this in./ rather than an invention.
+
+/Designed by/ picks which model does the drafting, separately from the
+model the agent will run on: there is no reason for them to be the same,
+and a person will often want their best model to draft an agent that then
+runs on a cheap one.
+
+The model writes the agent's org files as well as its configuration, so a
+designed agent arrives with a real ~SOUL.org~ rather than a scaffold full
+of /Fill this in./.
 
 Choosing ~container~ reveals an *Image* dropdown, listing your own images
 from ~defaults.container_images~ first and clawtilla's suggestions after,
