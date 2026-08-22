@@ -237,21 +237,67 @@ clawt_pod_bridge_load_module_for(ClawtPodBridge  *self,
          * does, and the first instance of this type is created below.
          *
          * Checked rather than passed blind: g_object_new() warns loudly
-         * about a property a module does not have, and modules without a
-         * connection (vm_virtmanager takes a libvirt URI another way) are
-         * legitimate.
+         * about a property a module does not have.
+         *
+         * The two modules clawtilla uses do not agree on the name.
+         * `container` calls it connection-uri and `vm_virtmanager` calls
+         * it uri, and looking for only the first meant every VM was
+         * created against vm_virtmanager's default of qemu:///system --
+         * which an unprivileged user cannot reach, whatever
+         * computer.vm.uri said.
          */
+        static const gchar *const uri_properties[] = {
+            "connection-uri", "uri", NULL
+        };
         GObjectClass *klass = g_type_class_ref(module_type);
-        gboolean takes_uri =
-            connection_uri != NULL && *connection_uri != '\0' &&
-            g_object_class_find_property(klass, "connection-uri") != NULL;
+        const gchar *uri_property = NULL;
+        gsize i;
 
-        instance = takes_uri
+        if (connection_uri != NULL && *connection_uri != '\0') {
+            for (i = 0; uri_properties[i] != NULL; i++) {
+                if (g_object_class_find_property(klass,
+                                                 uri_properties[i]) != NULL) {
+                    uri_property = uri_properties[i];
+                    break;
+                }
+            }
+        }
+
+        instance = uri_property != NULL
                    ? g_object_new(module_type,
-                                  "connection-uri", connection_uri, NULL)
+                                  uri_property, connection_uri, NULL)
                    : g_object_new(module_type, NULL);
 
         g_type_class_unref(klass);
+    }
+
+    /*
+     * A module that is an event source opens its connection when it is
+     * started, not when it is constructed.  vm_virtmanager is one, so
+     * without this it holds a URI and no connection, and every action on
+     * it fails with "not connected to libvirt" -- including the
+     * define_xml that creates the domain, which is why a VM agent could
+     * not be provisioned at all.
+     *
+     * Failure to start is failure to load: a module that cannot reach its
+     * backend answers every call with the same unhelpful refusal, and
+     * saying so here names the URI that could not be reached.
+     */
+    if (POD_IS_EVENT_SOURCE(instance)) {
+        g_autoptr(GError) start_error = NULL;
+
+        if (!pod_event_source_start(POD_EVENT_SOURCE(instance),
+                                    g_main_context_get_thread_default(),
+                                    &start_error)) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                        "the podomation '%s' module could not reach %s: %s",
+                        module_name,
+                        connection_uri != NULL ? connection_uri
+                                               : "its default backend",
+                        start_error->message);
+            g_object_unref(instance);
+            return FALSE;
+        }
     }
 
     g_hash_table_insert(self->modules, g_steal_pointer(&key), instance);
