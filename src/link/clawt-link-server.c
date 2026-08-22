@@ -31,6 +31,7 @@ enum {
     SIGNAL_LINK_ADDED,
     SIGNAL_LINK_REMOVED,
     SIGNAL_MESSAGE,
+    SIGNAL_TYPING,
     N_SIGNALS
 };
 
@@ -65,6 +66,27 @@ on_link_message(ClawtLink   *link,
 
     g_signal_emit(self, signals[SIGNAL_MESSAGE], 0,
                   clawt_link_get_agent_id(link), room_id, body, thread_id);
+}
+
+/*
+ * Relays the agent's own typing indicator.
+ *
+ * libreclaw raises this the moment a turn starts and drops it when the
+ * reply is posted, so it is the one signal that says "this agent is
+ * working on it".  It was emitted by ClawtLink and connected by nobody,
+ * which is why a client had no way to tell a thinking agent from a dead
+ * one.
+ */
+static void
+on_link_typing(ClawtLink   *link,
+               const gchar *room_id,
+               gboolean     typing,
+               gpointer     user_data)
+{
+    ClawtLinkServer *self = user_data;
+
+    g_signal_emit(self, signals[SIGNAL_TYPING], 0,
+                  clawt_link_get_agent_id(link), room_id, typing);
 }
 
 static void
@@ -155,6 +177,7 @@ on_incoming(GSocketService    *service,
 
     g_signal_connect(link, "hello", G_CALLBACK(on_link_hello), self);
     g_signal_connect(link, "message", G_CALLBACK(on_link_message), self);
+    g_signal_connect(link, "typing", G_CALLBACK(on_link_typing), self);
     g_signal_connect(link, "closed", G_CALLBACK(on_link_closed), self);
 
     /*
@@ -473,6 +496,18 @@ clawt_link_server_class_init(ClawtLinkServerClass *klass)
                      0, NULL, NULL, NULL, G_TYPE_NONE, 4,
                      G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
                      G_TYPE_STRING);
+
+    /**
+     * ClawtLinkServer::typing:
+     * @self: the server
+     * @agent_id: the agent
+     * @room_id: (nullable): the room the agent is composing in
+     * @typing: %TRUE while a turn is in flight
+     */
+    signals[SIGNAL_TYPING] =
+        g_signal_new("typing", CLAWT_TYPE_LINK_SERVER, G_SIGNAL_RUN_LAST,
+                     0, NULL, NULL, NULL, G_TYPE_NONE, 3,
+                     G_TYPE_STRING, G_TYPE_STRING, G_TYPE_BOOLEAN);
 }
 
 static void

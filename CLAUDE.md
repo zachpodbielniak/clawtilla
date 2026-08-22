@@ -266,6 +266,29 @@ the same program.
   with it. `ClawtClient` re-arms first, and delivers events from an idle
   so application handlers never run inside the reader at all.
 
+### AdwActionRow is not activatable
+
+- libadwaita clears `GtkListBoxRow:activatable` unless an
+  `activatable-widget` is set, so `::row-activated` never fires for a
+  plain `AdwActionRow` -- clicking an agent in the sidebar moved the
+  highlight and did nothing else. Drive a list from `::row-selected`,
+  which also covers arrow-key navigation. `AdwSwitchRow` and
+  `AdwComboRow` derive from `AdwActionRow`; `AdwEntryRow` and
+  `AdwExpanderRow` do **not**, so `adw_action_row_set_subtitle()` on one
+  is a runtime assertion, not a compile error.
+
+### A refresh that iterates the main context can re-enter
+
+- `clawt_client_request()` iterates the caller's context while it waits,
+  and events are delivered from an idle, so an event handler runs in the
+  middle of a rebuild and calls the same refresh again. The inner call
+  emptied the list and refilled it; the outer call then carried on
+  appending from where it was, and the fleet's tail appeared twice.
+  Every view that rebuilds a list from a reply goes through
+  `refresh_enter()` / `refresh_repeat()`, which bounces the nested call
+  and re-runs the body once on the way out so the daemon still has the
+  last word.
+
 ### Async callbacks own a reference
 
 - Anything handed to `*_async()` must hold a reference to whatever the

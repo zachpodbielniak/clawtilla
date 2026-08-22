@@ -88,7 +88,7 @@ inspector too.
 
 | Tab | What it is |
 |-----+------------|
-| Chat | the transcript, with bottom-follow that does not yank you down mid-read |
+| Chat | the transcript, with bottom-follow that does not yank you down mid-read, and an activity line under it |
 | Agent | edit name, description, provider, model, effort, computer, restart policy, autostart and chief-of-staff; credentials by reference; start/stop/restart; delete |
 | Mailbox | what is waiting, with acknowledge |
 | Computer | an exec console showing stdout *and* stderr |
@@ -112,6 +112,35 @@ on disk: removing an agent is reversible, deleting its history is not.
 Message bodies are rendered as labels, never as Pango markup.  Model
 output arrives from somewhere the user does not control, and treating it
 as markup would let a message rewrite the interface around it.
+
+*** The activity line
+
+Under the transcript, a spinner and a line of text, hidden when there is
+nothing to say.  An agent turn runs for minutes, and a chat window that
+shows nothing between the question and the answer is indistinguishable
+from a broken one.
+
+It shows:
+
+- =delivered -- waiting for a reply= the moment a message is accepted by
+  a *running* agent
+- =thinking= while the agent holds a typing indicator up, which libreclaw
+  raises for the whole turn
+- nothing at all once the reply lands, or when the target was not running
+
+That last case is deliberate.  Sending to a stopped agent raises a toast
+-- "bravo is stopped -- held in its mailbox until it starts" -- and
+leaves the activity line clear, because a spinner for something that is
+never going to answer is a worse lie than no spinner.  The daemon
+reports the target's state in the ~msg.send~ reply, so this is never
+inferred from a sidebar that may be a refresh behind.
+
+Tool calls are not shown yet.  libreclaw runs a turn through
+~ai_cli_client_chat_sync()~, which spawns the CLI without streaming and
+parses one buffer at the end, so no per-tool event exists to display.
+Showing them means moving the session turn onto
+~ai_cli_client_stream_run_async()~ upstream first; the frame kind,
+event kind and the widget are the easy part.
 
 *** Adding an agent
 

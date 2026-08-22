@@ -244,6 +244,9 @@ typedef struct {
     gchar   *removed;
     gchar   *last_body;
     gchar   *last_sender;
+    gchar   *typing_agent;
+    gboolean typing;
+    gboolean typing_seen;
 } Capture;
 
 static void
@@ -277,8 +280,23 @@ on_server_message(ClawtLinkServer *server, const gchar *agent_id,
     capture->last_sender = g_strdup(agent_id);
 }
 
+static void
+on_server_typing(ClawtLinkServer *server, const gchar *agent_id,
+                 const gchar *room_id, gboolean typing, gpointer data)
+{
+    Capture *capture = data;
+
+    g_free(capture->typing_agent);
+    capture->typing_agent = g_strdup(agent_id);
+    capture->typing = typing;
+    capture->typing_seen = TRUE;
+}
+
 static gboolean
 have_added(gpointer data) { return ((Capture *)data)->added != NULL; }
+
+static gboolean
+have_typing(gpointer data) { return ((Capture *)data)->typing_seen; }
 
 static gboolean
 have_removed(gpointer data) { return ((Capture *)data)->removed != NULL; }
@@ -293,6 +311,9 @@ capture_clear(Capture *capture)
     g_clear_pointer(&capture->removed, g_free);
     g_clear_pointer(&capture->last_body, g_free);
     g_clear_pointer(&capture->last_sender, g_free);
+    g_clear_pointer(&capture->typing_agent, g_free);
+    capture->typing = FALSE;
+    capture->typing_seen = FALSE;
 }
 
 static void
@@ -618,6 +639,57 @@ test_deliver_reaches_the_agent(void)
 }
 
 /*
+ * A typing frame has to reach whoever is watching the server.
+ *
+ * ClawtLink parsed chat.typing and emitted ::typing from the very first
+ * version, and nothing connected to it -- so an agent that spent two
+ * minutes on a turn looked exactly like one that had died, and the GTK
+ * window had no way to say which.  The relay is the whole path: frame ->
+ * link -> server -> subscriber.
+ */
+static void
+test_typing_reaches_the_server(void)
+{
+    Fixture fixture = { 0 };
+    Capture capture = { 0 };
+    Client client = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonObject) welcome = NULL;
+
+    fixture_setup(&fixture);
+    g_signal_connect(fixture.server, "link-added",
+                     G_CALLBACK(on_link_added), &capture);
+    g_signal_connect(fixture.server, "typing",
+                     G_CALLBACK(on_server_typing), &capture);
+    g_assert_true(clawt_link_server_start(fixture.server, &error));
+
+    g_assert_true(client_connect(&client, fixture.socket_path));
+    client_send(&client,
+        "{\"v\":1,\"kind\":\"control.hello\",\"payload\":{\"agent_id\":\"chief\"}}");
+    g_assert_true(pump_until(have_added, &capture, 2000));
+    welcome = client_read(&client, NULL);
+
+    client_send(&client,
+        "{\"v\":1,\"kind\":\"chat.typing\","
+        "\"payload\":{\"room_id\":\"standup\",\"typing\":true}}");
+    g_assert_true(pump_until(have_typing, &capture, 2000));
+    g_assert_cmpstr(capture.typing_agent, ==, "chief");
+    g_assert_true(capture.typing);
+
+    /* And the drop, which is what stops the spinner. */
+    capture.typing_seen = FALSE;
+    client_send(&client,
+        "{\"v\":1,\"kind\":\"chat.typing\","
+        "\"payload\":{\"room_id\":\"standup\",\"typing\":false}}");
+    g_assert_true(pump_until(have_typing, &capture, 2000));
+    g_assert_false(capture.typing);
+
+    client_close(&client);
+    capture_clear(&capture);
+    fixture_teardown(&fixture);
+}
+
+/*
  * The one that matters: a real libreclaw channel against a real link
  * server.  Both were written from the same protocol description, which is
  * exactly where two plausible readings diverge without either side's own
@@ -674,6 +746,8 @@ main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
+    g_test_add_func("/link/typing-reaches-the-server",
+                    test_typing_reaches_the_server);
     g_test_add_func("/link/server-starts", test_server_starts_and_restricts_the_socket);
     g_test_add_func("/link/stale-socket", test_stale_socket_is_cleared_but_live_one_is_not);
     g_test_add_func("/link/handshake", test_handshake_registers_the_agent);

@@ -618,8 +618,11 @@ cmd_send(int argc, char *argv[])
         return EXIT_FAILURE;
 
     {
-        gint64 queued = json_object_get_int_member(json_node_get_object(reply),
-                                                   "queued");
+        JsonObject *payload = json_node_get_object(reply);
+        gint64 queued = json_object_get_int_member(payload, "queued");
+        const gchar *state =
+            json_object_has_member(payload, "target_state")
+            ? json_object_get_string_member(payload, "target_state") : NULL;
 
         /*
          * Says where it went, because "sent" is ambiguous when the
@@ -628,6 +631,9 @@ cmd_send(int argc, char *argv[])
          */
         if (queued == 0)
             g_print("Nobody was queued: check the room's members.\n");
+        else if (state != NULL && g_strcmp0(state, "running") != 0)
+            g_print("Queued: %s is %s, so it is held in the mailbox until "
+                    "the agent starts.\n", argv[2], state);
         else
             g_print("Queued for %" G_GINT64_FORMAT " recipient(s).\n",
                     queued);

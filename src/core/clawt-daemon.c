@@ -280,6 +280,40 @@ on_link_removed(ClawtLinkServer *server, const gchar *agent_id,
     clawt_event_bus_emit(self->bus, "agent.disconnected", agent_id);
 }
 
+/*
+ * An agent's typing indicator becomes an agent.typing event.
+ *
+ * libreclaw raises it for the whole turn -- from the moment the message
+ * is picked up to the moment the reply is posted -- so it is what tells
+ * a client the difference between an agent that is working and one that
+ * is never going to answer.  Not persisted: it describes right now, and
+ * a client that connects late learns the state from the next transition.
+ */
+static void
+on_link_typing(ClawtLinkServer *server,
+               const gchar     *agent_id,
+               const gchar     *room_id,
+               gboolean         typing,
+               gpointer         user_data)
+{
+    ClawtDaemon *self = user_data;
+    ClawtEvent *event;
+
+    (void)server;
+
+    if (agent_id == NULL)
+        return;
+
+    event = clawt_event_new("agent.typing", agent_id);
+    clawt_event_set_detail(event, "typing", typing ? "true" : "false");
+
+    if (room_id != NULL)
+        clawt_event_set_detail(event, "room", room_id);
+
+    clawt_event_bus_publish(self->bus, event);
+    clawt_event_free(event);
+}
+
 static void
 on_link_message(ClawtLinkServer *server, const gchar *agent_id,
                 const gchar *room_id, const gchar *body,
@@ -864,6 +898,8 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
                      G_CALLBACK(on_link_removed), self);
     g_signal_connect(self->link_server, "message",
                      G_CALLBACK(on_link_message), self);
+    g_signal_connect(self->link_server, "typing",
+                     G_CALLBACK(on_link_typing), self);
 
     if (!clawt_link_server_start(self->link_server, error)) {
         if (self->main_context != NULL)
@@ -1630,6 +1666,27 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "queued");
         json_builder_add_int_value(builder, queued);
+
+        /*
+         * Whether anything is going to read it.  A mailbox accepts a
+         * message for a stopped agent by design -- that is the point of
+         * making it durable -- but a client that cannot tell "queued" from
+         * "delivered" leaves the user watching a spinner for an agent that
+         * is not running and never will answer.  Reported only for a
+         * single agent; for a room the members each have their own state
+         * and the client can ask for them.
+         */
+        {
+            ClawtAgent *agent = clawt_agent_manager_get(self->agents, target);
+
+            if (agent != NULL) {
+                json_builder_set_member_name(builder, "target_state");
+                json_builder_add_string_value(
+                    builder, clawt_enum_to_nick(CLAWT_TYPE_AGENT_STATE,
+                                                clawt_agent_get_state(agent)));
+            }
+        }
+
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));

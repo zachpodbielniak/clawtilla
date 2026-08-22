@@ -71,7 +71,18 @@ model, mailbox depth, and its credentials *by reference*.
 *** msg.* and room.*
 
 ~msg.send~ (~target~, ~body~, ~from~) → ~queued~, the number of mailboxes
-it went into.
+it went into, and ~target_state~ when ~target~ names an agent.
+
+~target_state~ is the agent's state at the moment the message was
+enqueued.  A stopped agent accepts mail -- that is what makes the
+mailbox worth having -- but nothing is going to read it until the agent
+starts, and a client that cannot tell the two apart shows a progress
+indicator that never resolves.  Both bundled clients say so instead: the
+CLI prints "held in the mailbox until the agent starts", and the GTK
+client raises a toast and leaves the activity line clear.
+
+A room has one state per member, so there is no single honest answer and
+the key is omitted rather than guessed at.
 
 ~room.list~, ~room.create~, ~room.add~, ~room.history~.
 
@@ -122,9 +133,23 @@ Subscribers receive:
 
 Event kinds: ~daemon.started~, ~daemon.stopped~, ~daemon.reloaded~,
 ~agent.created~, ~agent.removed~, ~agent.changed~, ~agent.started~,
-~agent.stopped~, ~agent.connected~, ~agent.disconnected~, ~message~,
+~agent.stopped~, ~agent.connected~, ~agent.disconnected~,
+~agent.typing~, ~message~,
 ~mailbox.queued~, ~mailbox.delivered~, ~room.created~, ~room.changed~,
 ~task.*~, ~computer.exec~.
+
+~agent.typing~ carries ~typing~ ("true" or "false") and, when the agent
+named one, ~room~.  It originates in libreclaw, which raises the
+indicator for the whole turn -- from picking the message up to posting
+the reply -- so it is what separates an agent that is working from one
+that is never going to answer.  It is deliberately not persisted: it
+describes right now, and a client that connects late learns the state
+from the next transition.
+
+Treat the reply as the end of the turn as well as the indicator
+dropping.  The two race, and the message wins often enough that a client
+waiting only for ~typing:false~ leaves a spinner running underneath an
+answer that has already arrived.
 
 ** Cursors and resume
 

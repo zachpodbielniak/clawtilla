@@ -41,6 +41,23 @@ static void         model_chooser_build(ModelChooser *chooser,
                                         const gchar  *want_provider,
                                         const gchar  *want_model);
 
+/*
+ * Every view that rebuilds a list from a daemon reply needs one of these.
+ *
+ * clawt_window_request() iterates the main context while it waits, and the
+ * client delivers events from an idle, so an event handler runs in the
+ * middle of the rebuild -- and calls the same refresh again.  The inner
+ * call emptied the list and refilled it, then the outer call carried on
+ * appending from where it was, which showed the tail of the fleet twice.
+ */
+typedef enum {
+    CLAWT_REFRESH_AGENTS,
+    CLAWT_REFRESH_SELECTED,
+    CLAWT_REFRESH_MAILBOX,
+    CLAWT_REFRESH_TASKS,
+    CLAWT_N_REFRESH
+} ClawtRefreshKind;
+
 struct _ClawtWindow {
     AdwApplicationWindow parent_instance;
 
@@ -80,11 +97,47 @@ struct _ClawtWindow {
     /* Tasks */
     GtkListBox        *task_list;
 
+    GtkWidget         *activity_bar;
+    GtkSpinner        *activity_spinner;
+
+    gboolean           refreshing[CLAWT_N_REFRESH];
+    gboolean           refresh_again[CLAWT_N_REFRESH];
+
     gchar             *selected_agent;
     gboolean           following;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtWindow, clawt_window, ADW_TYPE_APPLICATION_WINDOW)
+
+/*
+ * Returns %TRUE when the caller owns the rebuild.  A nested call notes
+ * that the data changed under it and returns; the owner runs the body
+ * again on the way out, so the last word still belongs to the daemon.
+ */
+static gboolean
+refresh_enter(ClawtWindow *self, ClawtRefreshKind kind)
+{
+    if (self->refreshing[kind]) {
+        self->refresh_again[kind] = TRUE;
+        return FALSE;
+    }
+
+    self->refreshing[kind] = TRUE;
+    return TRUE;
+}
+
+/* Returns %TRUE when the body must run once more. */
+static gboolean
+refresh_repeat(ClawtWindow *self, ClawtRefreshKind kind)
+{
+    if (!self->refresh_again[kind]) {
+        self->refreshing[kind] = FALSE;
+        return FALSE;
+    }
+
+    self->refresh_again[kind] = FALSE;
+    return TRUE;
+}
 
 static void refresh_agents(ClawtWindow *self);
 static void refresh_selected(ClawtWindow *self);
@@ -246,13 +299,27 @@ agent_row(JsonObject *agent)
     return row;
 }
 
+/*
+ * Selection, not activation, is what drives the view.
+ *
+ * AdwActionRow clears GtkListBoxRow:activatable unless an
+ * activatable-widget is set, so ::row-activated never fires for these
+ * rows at all -- clicking an agent moved the highlight and nothing else,
+ * leaving the previous agent's transcript on screen under the new
+ * agent's name.  ::row-selected also covers arrow-key navigation, which
+ * activation never did.
+ */
 static void
-on_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
+on_row_selected(GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
 {
     ClawtWindow *self = user_data;
     const gchar *agent_id;
 
     (void)box;
+
+    /* Emptying the list to rebuild it unselects; that is not a choice. */
+    if (row == NULL)
+        return;
 
     agent_id = g_object_get_data(G_OBJECT(row), "agent-id");
 
@@ -279,7 +346,7 @@ clear_box(GtkBox *box)
 }
 
 static void
-refresh_agents(ClawtWindow *self)
+refresh_agents_once(ClawtWindow *self)
 {
     g_autoptr(JsonNode) reply = NULL;
     JsonArray *agents;
@@ -308,20 +375,58 @@ refresh_agents(ClawtWindow *self)
 
         gtk_list_box_append(self->sidebar, row);
 
-        /* Keep the current selection across a refresh. */
+        /*
+         * Keep the current selection across a refresh, and make the very
+         * first refresh pick something.  Both go through
+         * gtk_list_box_select_row() rather than select_agent() so the
+         * highlight and self->selected_agent can never disagree -- they
+         * did, and the sidebar showed no selection at all until the
+         * second refresh.
+         */
         if (g_strcmp0(clawt_json_string(agent, "id", ""),
-                      self->selected_agent) == 0)
+                      self->selected_agent) == 0 ||
+            (self->selected_agent == NULL && i == 0))
             gtk_list_box_select_row(self->sidebar, GTK_LIST_BOX_ROW(row));
-    }
-
-    if (self->selected_agent == NULL) {
-        JsonObject *first = json_array_get_object_element(agents, 0);
-
-        select_agent(self, clawt_json_string(first, "id", NULL));
     }
 }
 
+static void
+refresh_agents(ClawtWindow *self)
+{
+    if (!refresh_enter(self, CLAWT_REFRESH_AGENTS))
+        return;
+
+    do {
+        refresh_agents_once(self);
+    } while (refresh_repeat(self, CLAWT_REFRESH_AGENTS));
+}
+
 /* ── Chat ────────────────────────────────────────────────────────── */
+
+/*
+ * Shows or hides the activity line.
+ *
+ * The spinner is stopped when hidden rather than left running: a
+ * GtkSpinner that is not visible still drives a frame clock, and there
+ * is one per window for the life of the process.
+ */
+static void
+set_activity(ClawtWindow *self, const gchar *text)
+{
+    if (self->activity_bar == NULL)
+        return;
+
+    if (text == NULL) {
+        gtk_spinner_stop(self->activity_spinner);
+        gtk_widget_set_visible(self->activity_bar, FALSE);
+        gtk_label_set_text(self->streaming, "");
+        return;
+    }
+
+    gtk_label_set_text(self->streaming, text);
+    gtk_widget_set_visible(self->activity_bar, TRUE);
+    gtk_spinner_start(self->activity_spinner);
+}
 
 static void
 append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
@@ -415,6 +520,7 @@ load_history(ClawtWindow *self)
     guint i;
 
     clear_box(self->transcript);
+    set_activity(self, NULL);
 
     if (self->selected_agent == NULL)
         return;
@@ -469,6 +575,29 @@ on_send(GtkWidget *widget, gpointer user_data)
 
     append_message(self, "you", body, TRUE);
     gtk_editable_set_text(GTK_EDITABLE(self->entry), "");
+
+    /*
+     * A stopped agent accepts the message -- that is what a durable
+     * mailbox is for -- but it will not answer it, and a spinner that
+     * spins forever is a worse lie than no spinner at all.  The daemon
+     * reports the target's state so this does not have to be inferred
+     * from a sidebar that may be a refresh behind.
+     */
+    {
+        const gchar *state = clawt_json_string(clawt_payload_of(reply),
+                                               "target_state", NULL);
+
+        if (state != NULL && g_strcmp0(state, "running") != 0) {
+            g_autofree gchar *warning = g_strdup_printf(
+                "%s is %s -- held in its mailbox until it starts",
+                self->selected_agent, state);
+
+            set_activity(self, NULL);
+            clawt_window_toast(self, warning);
+        } else {
+            set_activity(self, "delivered -- waiting for a reply");
+        }
+    }
 
     self->following = TRUE;
     queue_scroll(self);
@@ -828,7 +957,6 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
 
     self->description_row = entry_row(
         "Description", clawt_json_string(agent, "description", ""));
-    adw_action_row_set_subtitle(ADW_ACTION_ROW(self->description_row), "");
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
                               self->description_row);
 
@@ -982,7 +1110,7 @@ on_mailbox_ack(GtkButton *button, gpointer user_data)
 }
 
 static void
-refresh_mailbox(ClawtWindow *self)
+refresh_mailbox_once(ClawtWindow *self)
 {
     g_autoptr(JsonNode) reply = NULL;
     JsonArray *items;
@@ -1039,6 +1167,17 @@ refresh_mailbox(ClawtWindow *self)
 
         gtk_list_box_append(self->mailbox_list, row);
     }
+}
+
+static void
+refresh_mailbox(ClawtWindow *self)
+{
+    if (!refresh_enter(self, CLAWT_REFRESH_MAILBOX))
+        return;
+
+    do {
+        refresh_mailbox_once(self);
+    } while (refresh_repeat(self, CLAWT_REFRESH_MAILBOX));
 }
 
 /* ── Computer ────────────────────────────────────────────────────── */
@@ -1113,7 +1252,7 @@ refresh_computer(ClawtWindow *self, JsonObject *agent)
 /* ── Tasks ───────────────────────────────────────────────────────── */
 
 static void
-refresh_tasks(ClawtWindow *self)
+refresh_tasks_once(ClawtWindow *self)
 {
     g_autoptr(JsonNode) reply = NULL;
     JsonArray *tasks;
@@ -1147,10 +1286,21 @@ refresh_tasks(ClawtWindow *self)
     }
 }
 
+static void
+refresh_tasks(ClawtWindow *self)
+{
+    if (!refresh_enter(self, CLAWT_REFRESH_TASKS))
+        return;
+
+    do {
+        refresh_tasks_once(self);
+    } while (refresh_repeat(self, CLAWT_REFRESH_TASKS));
+}
+
 /* ── Selection ───────────────────────────────────────────────────── */
 
 static void
-refresh_selected(ClawtWindow *self)
+refresh_selected_once(ClawtWindow *self)
 {
     g_autoptr(JsonNode) reply = NULL;
     JsonObject *agent;
@@ -1174,9 +1324,31 @@ refresh_selected(ClawtWindow *self)
 }
 
 static void
+refresh_selected(ClawtWindow *self)
+{
+    if (!refresh_enter(self, CLAWT_REFRESH_SELECTED))
+        return;
+
+    do {
+        refresh_selected_once(self);
+    } while (refresh_repeat(self, CLAWT_REFRESH_SELECTED));
+}
+
+static void
 select_agent(ClawtWindow *self, const gchar *agent_id)
 {
-    if (agent_id == NULL)
+    if (agent_id == NULL || *agent_id == '\0')
+        return;
+
+    /*
+     * Re-selecting what is already shown has to be a no-op, and not by
+     * luck: refresh_agents() rebuilds the sidebar on every daemon event
+     * and restores the selection, which emits ::row-selected again.
+     * Reloading there would drop the transcript each time an event
+     * arrived, and load_history() iterates the main context, so it would
+     * re-enter this function while the first call was still running.
+     */
+    if (g_strcmp0(agent_id, self->selected_agent) == 0)
         return;
 
     g_free(self->selected_agent);
@@ -1218,10 +1390,31 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
             g_strcmp0(from, self->selected_agent) == 0) {
             append_message(self, from != NULL ? from : "?",
                            body != NULL ? body : "", FALSE);
+
+            /*
+             * The reply is the end of the turn.  libreclaw drops the
+             * typing indicator too, but the message overtakes it often
+             * enough that relying on the indicator alone leaves a
+             * spinner running under an answer that has already arrived.
+             */
+            if (g_strcmp0(from, self->selected_agent) == 0)
+                set_activity(self, NULL);
+
             queue_scroll(self);
         }
 
         refresh_agents(self);
+        return;
+    }
+
+    if (g_strcmp0(kind, "agent.typing") == 0) {
+        const gchar *typing = clawt_event_get_detail(event, "typing");
+
+        if (g_strcmp0(clawt_event_get_subject(event),
+                      self->selected_agent) == 0)
+            set_activity(self,
+                         g_strcmp0(typing, "true") == 0 ? "thinking" : NULL);
+
         return;
     }
 
@@ -1737,11 +1930,25 @@ build_chat_page(ClawtWindow *self)
                          GTK_SCROLLED_WINDOW(scroll)),
                      "value-changed", G_CALLBACK(on_scrolled), self);
 
+    /*
+     * The activity line.  A chat window that shows nothing between the
+     * question and the answer is indistinguishable from a broken one,
+     * and an agent turn can easily run for minutes.
+     */
     self->streaming = GTK_LABEL(gtk_label_new(NULL));
     gtk_widget_add_css_class(GTK_WIDGET(self->streaming), "dim-label");
     gtk_label_set_wrap(self->streaming, TRUE);
     gtk_label_set_xalign(self->streaming, 0.0f);
-    gtk_widget_set_margin_start(GTK_WIDGET(self->streaming), 12);
+    gtk_label_set_ellipsize(self->streaming, PANGO_ELLIPSIZE_END);
+
+    self->activity_spinner = GTK_SPINNER(gtk_spinner_new());
+    self->activity_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_append(GTK_BOX(self->activity_bar),
+                   GTK_WIDGET(self->activity_spinner));
+    gtk_box_append(GTK_BOX(self->activity_bar), GTK_WIDGET(self->streaming));
+    gtk_widget_set_margin_start(self->activity_bar, 12);
+    gtk_widget_set_margin_end(self->activity_bar, 12);
+    gtk_widget_set_visible(self->activity_bar, FALSE);
 
     self->entry = GTK_ENTRY(gtk_entry_new());
     gtk_entry_set_placeholder_text(self->entry, "Message");
@@ -1759,7 +1966,7 @@ build_chat_page(ClawtWindow *self)
     gtk_widget_set_margin_bottom(entry_box, 12);
 
     gtk_box_append(GTK_BOX(box), scroll);
-    gtk_box_append(GTK_BOX(box), GTK_WIDGET(self->streaming));
+    gtk_box_append(GTK_BOX(box), self->activity_bar);
     gtk_box_append(GTK_BOX(box), entry_box);
 
     return box;
@@ -1892,8 +2099,8 @@ clawt_window_new(AdwApplication *app, ClawtClient *client)
     self->sidebar = GTK_LIST_BOX(gtk_list_box_new());
     gtk_list_box_set_selection_mode(self->sidebar, GTK_SELECTION_SINGLE);
     gtk_widget_add_css_class(GTK_WIDGET(self->sidebar), "navigation-sidebar");
-    g_signal_connect(self->sidebar, "row-activated",
-                     G_CALLBACK(on_row_activated), self);
+    g_signal_connect(self->sidebar, "row-selected",
+                     G_CALLBACK(on_row_selected), self);
 
     sidebar_scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(sidebar_scroll),

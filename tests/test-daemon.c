@@ -1062,6 +1062,48 @@ test_history_by_agent_id(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * A send has to say whether anything is going to read it.
+ *
+ * The mailbox takes a message for a stopped agent on purpose -- durable
+ * queues are the point -- but a client with no way to tell "queued" from
+ * "delivered" shows a spinner for an agent that is never going to answer.
+ * Both clients now say so, and both read it from here.
+ */
+static void
+test_send_reports_the_target_state(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) sent = NULL;
+    g_autoptr(JsonNode) to_room = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    sent = request(&fixture, "msg.send",
+                   "{\"target\":\"chief\",\"body\":\"hello\","
+                   "\"from\":\"user\"}");
+    g_assert_false(clawt_ipc_frame_is_error(sent));
+    g_assert_cmpint(json_object_get_int_member(payload_of(sent), "queued"),
+                    ==, 1);
+    g_assert_cmpstr(json_object_get_string_member(payload_of(sent),
+                                                  "target_state"),
+                    ==, "stopped");
+
+    /*
+     * A room has as many states as it has members, so there is no single
+     * answer and the key is left out rather than guessed at.
+     */
+    to_room = request(&fixture, "msg.send",
+                      "{\"target\":\"dm:chief:user\",\"body\":\"x\","
+                      "\"from\":\"user\"}");
+    g_assert_false(clawt_ipc_frame_is_error(to_room));
+    g_assert_false(json_object_has_member(payload_of(to_room),
+                                          "target_state"));
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1106,6 +1148,8 @@ main(int argc, char *argv[])
     g_test_add_func("/daemon/request-from-event-handler",
                     test_a_request_from_an_event_handler_completes);
     g_test_add_func("/daemon/history-by-agent-id", test_history_by_agent_id);
+    g_test_add_func("/daemon/send-reports-target-state",
+                    test_send_reports_the_target_state);
 
     g_test_add_func("/daemon/requests-after-subscribe",
                     test_requests_work_after_subscribing);
