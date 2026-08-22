@@ -233,7 +233,10 @@ on a different machine from the daemon. Thumbnails are decoded at
 thumbnail size rather than shrunk in the widget: GTK has no
 maximum-size property, a size request is a minimum, and a GtkPicture
 takes its natural size from the paintable, so a full screenshot handed
-to it stays a full screenshot however the widget is configured.
+to it stays a full screenshot however the widget is configured. They
+also turn ~can-shrink~ off, which defaults *on* and sets the minimum
+width to zero -- with it left alone the preview was squeezed down to a
+few dozen pixels by the layout around it.
 
 The name is rebuilt from its basename rather than trusted --
 "../../.ssh/authorized_keys" is a filename -- and 32 MB is the cap,

@@ -766,7 +766,11 @@ append_attachment_previews(ClawtWindow *self, GtkWidget *row,
             g_autoptr(GBytes) pixels = NULL;
             g_autoptr(GError) error = NULL;
 
-            scaled = gdk_pixbuf_new_from_file_at_scale(candidate, 280, 160,
+            /*
+             * Big enough to actually see, the way a chat client shows
+             * one. A hundred and sixty pixels was a postage stamp.
+             */
+            scaled = gdk_pixbuf_new_from_file_at_scale(candidate, 460, 320,
                                                         TRUE, &error);
 
             if (scaled == NULL) {
@@ -792,6 +796,17 @@ append_attachment_previews(ClawtWindow *self, GtkWidget *row,
             picture = gtk_picture_new_for_paintable(GDK_PAINTABLE(texture));
         }
 
+        /*
+         * can-shrink off.
+         *
+         * It defaults on, which makes a GtkPicture's *minimum* width
+         * zero -- so anything in the ancestry doing a height-for-width
+         * pass is free to squeeze it to nothing, and it did: the
+         * thumbnail rendered a few dozen pixels wide. The texture is
+         * already exactly the size it should be drawn at, so shrinking
+         * it is never the right answer.
+         */
+        gtk_picture_set_can_shrink(GTK_PICTURE(picture), FALSE);
         gtk_widget_set_valign(picture, GTK_ALIGN_START);
 
         gtk_widget_set_halign(picture,

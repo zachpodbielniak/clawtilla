@@ -418,6 +418,15 @@ the same program.
   stat'd it with exec, confirmed the size, and had no way to open it.
   Give both, host first, and say which is which.
 
+### GtkPicture:can-shrink defaults to TRUE
+
+- Which makes its *minimum* width zero, so anything in the ancestry
+  doing a height-for-width pass is free to squeeze it to nothing — an
+  inline thumbnail rendered a few dozen pixels wide with no warning and
+  nothing wrong with the texture. Turn it off for an image already
+  decoded at the size it should be drawn. Leave it on only in a viewer,
+  where shrinking to the window is the point.
+
 ### GTK has no maximum size
 
 - A size request is a *minimum*, and `GtkPicture` takes its natural size
