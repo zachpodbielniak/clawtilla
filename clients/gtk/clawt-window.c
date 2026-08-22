@@ -620,7 +620,28 @@ context_menu_free(gpointer data)
 {
     ContextMenu *menu = data;
 
-    g_clear_pointer(&menu->popover, gtk_widget_unparent);
+    /*
+     * The popover is usually already gone by the time this runs.
+     *
+     * It is a child of the widget this is attached to, and GTK
+     * unparents a widget's children while destroying it -- which
+     * happens before object data is released. So this ran on a pointer
+     * to a finalized widget and asserted once per message, every time a
+     * transcript was cleared: fourteen messages, fourteen criticals.
+     *
+     * The weak pointer is what makes "already gone" tell the truth
+     * instead of dangling. The unparent is kept for the other way this
+     * can be reached -- the data being replaced on a widget that is
+     * still alive.
+     */
+    if (menu->popover != NULL) {
+        g_object_remove_weak_pointer(G_OBJECT(menu->popover),
+                                     (gpointer *)&menu->popover);
+
+        if (gtk_widget_get_parent(menu->popover) != NULL)
+            gtk_widget_unparent(menu->popover);
+    }
+
     g_free(menu);
 }
 
@@ -709,6 +730,8 @@ add_context_menu(ClawtWindow *self, GtkWidget *widget,
     gtk_popover_set_has_arrow(GTK_POPOVER(menu->popover), FALSE);
     gtk_popover_set_child(GTK_POPOVER(menu->popover), box);
     gtk_widget_set_parent(menu->popover, widget);
+    g_object_add_weak_pointer(G_OBJECT(menu->popover),
+                              (gpointer *)&menu->popover);
 
     gesture = gtk_gesture_click_new();
     gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(gesture),

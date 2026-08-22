@@ -437,6 +437,16 @@ the same program.
   deprecated). And use `SCALE_DOWN` rather than `CONTAIN` in a viewer,
   or a small image is blown up to fill the window and looks like a bug.
 
+### A widget's children go before its object data does
+
+- GTK unparents a widget's children while destroying it, and object
+  data set with `g_object_set_data_full()` is released after that. So a
+  `GDestroyNotify` that unparents a popover it had parented to that
+  widget runs on a finalized pointer — one `GTK_IS_WIDGET` critical per
+  widget, which for a chat transcript means one per message every time
+  it is cleared. Hold it with `g_object_add_weak_pointer()` so "already
+  gone" reads as NULL rather than as garbage.
+
 ### A GtkListBox in a popover fires the moment it opens
 
 - It selects a row when it takes focus, and a popover takes focus as it
