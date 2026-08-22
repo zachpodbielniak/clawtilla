@@ -579,6 +579,240 @@ set_label_markdown(GtkLabel *label, const gchar *body)
     gtk_label_set_text(label, body != NULL ? body : "");
 }
 
+/* ── Attachment previews in the transcript ───────────────────────── */
+
+/*
+ * The marker body_with_attachments() writes.
+ *
+ * The transcript is rebuilt from what the daemon stored, so the only
+ * way back to "this message had a picture on it" is to recognise the
+ * line we wrote. Matched on the prefix rather than the whole sentence,
+ * so rewording the guidance does not silently turn previews off.
+ */
+#define ATTACHMENT_MARKER "[clawtilla] Files sent with this message"
+
+static gboolean
+looks_like_an_image(const gchar *path)
+{
+    static const gchar *extensions[] = {
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", NULL
+    };
+    g_autofree gchar *lowered = g_ascii_strdown(path, -1);
+    gsize i;
+
+    for (i = 0; extensions[i] != NULL; i++) {
+        if (g_str_has_suffix(lowered, extensions[i]))
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+static gboolean
+on_preview_key(GtkEventControllerKey *controller, guint keyval, guint keycode,
+               GdkModifierType state, gpointer user_data)
+{
+    (void)controller;
+    (void)keycode;
+    (void)state;
+
+    if (keyval != GDK_KEY_Escape)
+        return GDK_EVENT_PROPAGATE;
+
+    gtk_window_destroy(GTK_WINDOW(user_data));
+    return GDK_EVENT_STOP;
+}
+
+/*
+ * Opens one attachment full size.
+ *
+ * A window rather than a dialog: this is something to look at beside
+ * the conversation, and a modal one would stop you reading the message
+ * it came with.
+ */
+static void
+on_preview_clicked(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *path = g_object_get_data(G_OBJECT(button), "path");
+    GtkWidget *window;
+    GtkWidget *scroll;
+    GtkWidget *picture;
+    GtkEventController *keys;
+    g_autofree gchar *title = NULL;
+
+    if (path == NULL)
+        return;
+
+    title = g_path_get_basename(path);
+
+    window = gtk_window_new();
+    gtk_window_set_title(GTK_WINDOW(window), title);
+    gtk_window_set_transient_for(GTK_WINDOW(window), GTK_WINDOW(self));
+    gtk_window_set_default_size(GTK_WINDOW(window), 900, 700);
+
+    picture = gtk_picture_new_for_filename(path);
+    gtk_picture_set_can_shrink(GTK_PICTURE(picture), TRUE);
+
+    /*
+     * SCALE_DOWN, not CONTAIN: a big screenshot shrinks to fit, and a
+     * small image is shown at its own size rather than blown up to fill
+     * the window, which is what CONTAIN does and it looks like a
+     * mistake.
+     */
+    gtk_picture_set_content_fit(GTK_PICTURE(picture),
+                                GTK_CONTENT_FIT_SCALE_DOWN);
+
+    scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), picture);
+    gtk_window_set_child(GTK_WINDOW(window), scroll);
+
+    keys = gtk_event_controller_key_new();
+    g_signal_connect(keys, "key-pressed", G_CALLBACK(on_preview_key), window);
+    gtk_widget_add_controller(window, keys);
+
+    gtk_window_present(GTK_WINDOW(window));
+}
+
+/*
+ * A thumbnail under any message that carried a picture.
+ *
+ * So the conversation still shows what was sent when you scroll back to
+ * it -- a path in a body is a thing nobody remembers the content of ten
+ * minutes later.
+ */
+static void
+append_attachment_previews(ClawtWindow *self, GtkWidget *row,
+                           const gchar *body, gboolean from_user)
+{
+    g_auto(GStrv) lines = NULL;
+    gboolean in_block = FALSE;
+    gsize i;
+
+    if (body == NULL || strstr(body, ATTACHMENT_MARKER) == NULL)
+        return;
+
+    lines = g_strsplit(body, "\n", -1);
+
+    for (i = 0; lines[i] != NULL; i++) {
+        g_autofree gchar *candidate = NULL;
+        const gchar *start;
+        GtkWidget *button;
+        GtkWidget *picture;
+
+        if (strstr(lines[i], ATTACHMENT_MARKER) != NULL) {
+            in_block = TRUE;
+            continue;
+        }
+
+        if (!in_block)
+            continue;
+
+        /*
+         * The block is its list items and their indented continuation
+         * lines. Anything at the left margin ends it, so a path an
+         * agent quotes further down the message does not sprout a
+         * preview of its own.
+         *
+         * Leaving on "no slash on this line" was wrong and cost the
+         * first preview: every entry starts with a name line, which has
+         * no slash, and that ended the block before the path beneath it
+         * was ever looked at.
+         */
+        if (lines[i][0] != '\0' && lines[i][0] != ' ' &&
+            lines[i][0] != '-' && lines[i][0] != '\t') {
+            in_block = FALSE;
+            continue;
+        }
+
+        start = strchr(lines[i], '/');
+
+        if (start == NULL)
+            continue;
+
+        candidate = g_strdup(start);
+        g_strchomp(candidate);
+
+        /* The container path is in brackets; the host one is not. */
+        if (g_str_has_suffix(candidate, ")"))
+            continue;
+
+        if (!looks_like_an_image(candidate) ||
+            !g_file_test(candidate, G_FILE_TEST_EXISTS))
+            continue;
+
+        /*
+         * Scaled on load rather than shrunk in the widget.
+         *
+         * A size request is a *minimum*: asking for 160 high and
+         * handing GtkPicture a 2000-pixel screenshot gets a 2000-pixel
+         * screenshot. Decoding straight to thumbnail size also means a
+         * transcript full of images does not hold every one of them in
+         * memory at full resolution.
+         */
+        /*
+         * Scaled during the decode, not by the widget.
+         *
+         * GTK has no maximum-size property: a size request is a
+         * *minimum*, and a GtkPicture takes its natural size from the
+         * paintable, so handing it a full screenshot gives a full-size
+         * thumbnail however the widget is configured. Decoding straight
+         * to thumbnail size settles it, and a transcript full of images
+         * then does not hold every one at full resolution either.
+         */
+        {
+            g_autoptr(GdkPixbuf) scaled = NULL;
+            g_autoptr(GdkTexture) texture = NULL;
+            g_autoptr(GBytes) pixels = NULL;
+            g_autoptr(GError) error = NULL;
+
+            scaled = gdk_pixbuf_new_from_file_at_scale(candidate, 280, 160,
+                                                        TRUE, &error);
+
+            if (scaled == NULL) {
+                /* Not an image after all, or one we cannot decode. */
+                g_info("no preview for %s: %s", candidate, error->message);
+                continue;
+            }
+
+            /*
+             * A memory texture from the pixbuf's own pixels.
+             * gdk_texture_new_for_pixbuf() would say this in one line
+             * and is deprecated.
+             */
+            pixels = g_bytes_new(gdk_pixbuf_get_pixels(scaled),
+                                 gdk_pixbuf_get_byte_length(scaled));
+            texture = gdk_memory_texture_new(
+                gdk_pixbuf_get_width(scaled),
+                gdk_pixbuf_get_height(scaled),
+                gdk_pixbuf_get_has_alpha(scaled)
+                    ? GDK_MEMORY_R8G8B8A8 : GDK_MEMORY_R8G8B8,
+                pixels, (gsize)gdk_pixbuf_get_rowstride(scaled));
+
+            picture = gtk_picture_new_for_paintable(GDK_PAINTABLE(texture));
+        }
+
+        gtk_widget_set_valign(picture, GTK_ALIGN_START);
+
+        gtk_widget_set_halign(picture,
+                              from_user ? GTK_ALIGN_END : GTK_ALIGN_START);
+
+        button = gtk_button_new();
+        gtk_button_set_child(GTK_BUTTON(button), picture);
+        gtk_widget_add_css_class(button, "flat");
+        gtk_widget_set_halign(button,
+                              from_user ? GTK_ALIGN_END : GTK_ALIGN_START);
+        gtk_widget_set_tooltip_text(button, "Click to see it full size");
+        g_object_set_data_full(G_OBJECT(button), "path",
+                               g_strdup(candidate), g_free);
+        g_signal_connect(button, "clicked", G_CALLBACK(on_preview_clicked),
+                         self);
+
+        gtk_box_append(GTK_BOX(row), button);
+    }
+}
+
+
 static void
 append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
                gboolean from_user)
@@ -609,6 +843,7 @@ append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
 
     gtk_box_append(GTK_BOX(row), who);
     gtk_box_append(GTK_BOX(row), text);
+    append_attachment_previews(self, row, body, from_user);
     gtk_widget_set_margin_start(row, 12);
     gtk_widget_set_margin_end(row, 12);
     gtk_widget_set_margin_top(row, 6);
@@ -968,7 +1203,10 @@ body_with_attachments(ClawtWindow *self, const gchar *body)
     if (out->len > 0)
         g_string_append(out, "\n\n");
 
-    g_string_append(out, "[clawtilla] Files sent with this message:\n");
+    g_string_append(out,
+                    "[clawtilla] Files sent with this message. Open them "
+                    "with your own read tool at the host path below; it "
+                    "runs on the host even when your shell does not.\n");
 
     for (i = 0; i < self->pending->len; i++) {
         Attachment *attachment = g_ptr_array_index(self->pending, i);
@@ -991,9 +1229,28 @@ body_with_attachments(ClawtWindow *self, const gchar *body)
             continue;
         }
 
-        g_string_append_printf(out, "- %s\n",
-                               clawt_json_string(clawt_payload_of(reply),
-                                                 "path", "?"));
+        {
+            JsonObject *result = clawt_payload_of(reply);
+            const gchar *host = clawt_json_string(result, "host_path", "");
+            const gchar *guest = clawt_json_string(result, "path", "");
+
+            g_string_append_printf(out, "- %s\n  %s\n",
+                                   attachment->name, host);
+
+            /*
+             * Both paths, and the host one first, because they are for
+             * different tools.
+             *
+             * An agent's own read tool runs on the host even when its
+             * shell runs in a container -- so given only the container
+             * path it could stat the file with clawtilla_computer_exec
+             * and never open it, which is exactly what happened to the
+             * first image anybody sent.
+             */
+            if (g_strcmp0(host, guest) != 0)
+                g_string_append_printf(
+                    out, "  (inside your container: %s)\n", guest);
+        }
     }
 
     g_ptr_array_set_size(self->pending, 0);

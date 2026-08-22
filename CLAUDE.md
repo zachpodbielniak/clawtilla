@@ -408,6 +408,26 @@ the same program.
   the client validates with `pango_parse_markup()` and falls back to
   plain text; and links are rendered non-clickable on purpose.
 
+### An agent's own tools run on the host, its shell does not
+
+- A container agent's `bash`/`read`/`write` run on the host; only
+  `clawtilla_computer_exec` enters the container. So anything handed to
+  an agent as a path needs the *host* path if it is meant to be read,
+  and the container path if it is meant to be a shell argument. The
+  first attachment ever sent gave only the container path: the agent
+  stat'd it with exec, confirmed the size, and had no way to open it.
+  Give both, host first, and say which is which.
+
+### GTK has no maximum size
+
+- A size request is a *minimum*, and `GtkPicture` takes its natural size
+  from its paintable, so a full-resolution screenshot stays full
+  resolution however `can-shrink` and `content-fit` are set. Decode
+  thumbnails at thumbnail size (`gdk_pixbuf_new_from_file_at_scale()` →
+  `gdk_memory_texture_new()`; `gdk_texture_new_for_pixbuf()` is
+  deprecated). And use `SCALE_DOWN` rather than `CONTAIN` in a viewer,
+  or a small image is blown up to fill the window and looks like a bug.
+
 ### A popover parented to a GtkEntry stops the window mapping
 
 - Worse than the GtkListBox case below: `gtk_widget_set_parent(popover,

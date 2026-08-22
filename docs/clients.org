@@ -193,20 +193,47 @@ anywhere until the message is actually sent, so an abandoned draft
 leaves nothing behind for the agent to find.
 
 On send, each one goes to the daemon over ~attachment.put~, which writes
-it into that agent's exchange directory and answers with the path *the
-agent* should use -- which is not the host path when the agent lives in
-a container, where the exchange is mounted somewhere else entirely. The
-message body then names them:
+it into that agent's exchange directory. The message body then names
+them, with *both* paths:
 
 #+begin_example
 have a look at this failure
 
-[clawtilla] Files sent with this message:
-- /mnt/clawtilla/exchange/researcher/pasted-1750000000.png
+[clawtilla] Files sent with this message. Open them with your own read
+tool at the host path below; it runs on the host even when your shell
+does not.
+- pasted-1750000000.png
+  /home/you/.local/share/clawtilla/exchange/researcher/pasted-1750000000.png
+  (inside your container: /mnt/clawtilla/exchange/researcher/pasted-1750000000.png)
 #+end_example
 
-Naming them is what makes them reachable: an agent reads files with its
-own tools, and one it has not been told about is one it will not open.
+Both, and the host one first, because they are for different tools. An
+agent's own read tool runs on the host even when its shell runs in a
+container -- so given only the container path it can stat the file with
+~clawtilla_computer_exec~ and never open it, which is exactly what
+happened to the first image anybody sent. The container path is there
+for shell commands.
+
+Naming them at all is what makes them reachable: an agent reads files
+with its own tools, and one it has not been told about is one it will
+not open.
+
+*** Seeing them again
+
+A message that carried an image shows a thumbnail under it, and clicking
+it opens the picture full size in its own window -- Escape closes it. A
+path in a message body is a thing nobody remembers the contents of ten
+minutes later, and the whole point of a transcript is that you can
+scroll back.
+
+The client recognises its own attachment block and reads the *host*
+paths out of it, so this works for anything still on disk and quietly
+does nothing for anything that is not -- including for a client running
+on a different machine from the daemon. Thumbnails are decoded at
+thumbnail size rather than shrunk in the widget: GTK has no
+maximum-size property, a size request is a minimum, and a GtkPicture
+takes its natural size from the paintable, so a full screenshot handed
+to it stays a full screenshot however the widget is configured.
 
 The name is rebuilt from its basename rather than trusted --
 "../../.ssh/authorized_keys" is a filename -- and 32 MB is the cap,
