@@ -400,6 +400,22 @@ agents share one base and a wrecked guest is thrown away by deleting one
 file.  Deleting the overlay also forgets the guest's host key, because a
 rebuilt VM is a different machine answering at the same address.
 
+*Changing ~image~ rebuilds the guest.*  The overlay records the base it
+was built on, so an overlay left in place would keep booting the old
+image for ever while the config said otherwise -- a setting that
+silently does nothing.  Instead the overlay is discarded and made again
+on the new base, which is said out loud in the log because *everything
+inside that VM goes with it*.  An agent's own work is in its workspace on
+the host, which this does not touch.
+
+*Deleting an image an agent is using is refused*, because the overlay
+names it: without the base, the VM stops booting at all.  Point the agent
+somewhere else first, or insist:
+
+#+begin_src bash
+clawtilla image vm rm fedora-44 --force
+#+end_src
+
 A plain installer ISO or a desktop image will *not* work unattended: it
 has no cloud-init, so nothing creates a login and clawtilla cannot get
 in.  Use a cloud image, or prepare your own and set ~cloud_init: false~.

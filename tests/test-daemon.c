@@ -1615,9 +1615,78 @@ test_an_attachment_cannot_escape_its_directory(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * An agent's overlay is built on its base image and records the path, so
+ * deleting that image breaks the VM the next time it starts -- with an
+ * error from qemu about a missing backing file, a long way from the
+ * button that caused it.  The refusal names the agents so the person can
+ * see what they were about to break.
+ */
+static void
+test_removing_an_image_in_use_is_refused(void)
+{
+    Fixture fixture;
+    g_autoptr(JsonNode) refused = NULL;
+    g_autoptr(JsonNode) forced = NULL;
+    g_autofree gchar *image_dir = NULL;
+    g_autofree gchar *image_path = NULL;
+    g_autofree gchar *payload = NULL;
+    ClawtAgentConfig *config;
+
+    fixture_setup(&fixture, NULL);
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    image_dir = g_build_filename(g_get_user_data_dir(), "clawtilla", "images",
+                                 NULL);
+    g_assert_true(clawt_ensure_dir(image_dir, 0700, NULL));
+
+    image_path = g_build_filename(image_dir, "pretend.qcow2", NULL);
+    g_assert_true(g_file_set_contents(image_path, "not a disk", -1, NULL));
+
+    {
+        g_autoptr(JsonNode) created =
+            request(&fixture, "agent.create",
+                    "{\"id\":\"vmagent\",\"computer\":\"vm\"}");
+
+        g_assert_false(clawt_ipc_frame_is_error(created));
+    }
+
+    config = clawt_config_get_agent(clawt_daemon_get_config(fixture.daemon),
+                                    "vmagent");
+    g_assert_nonnull(config);
+    clawt_agent_config_set_string(config, "computer.vm.image", image_path);
+    g_assert_true(clawt_config_save(clawt_daemon_get_config(fixture.daemon),
+                                    NULL));
+    g_assert_true(clawt_daemon_reload(fixture.daemon, NULL));
+
+    refused = request(&fixture, "image.vm_remove",
+                      "{\"name\":\"pretend.qcow2\"}");
+    g_assert_true(clawt_ipc_frame_is_error(refused));
+    g_assert_true(g_file_test(image_path, G_FILE_TEST_EXISTS));
+
+    /* force is the way past it, for somebody who means it. */
+    payload = g_strdup("{\"name\":\"pretend.qcow2\",\"force\":true}");
+    forced = request(&fixture, "image.vm_remove", payload);
+    g_assert_false(clawt_ipc_frame_is_error(forced));
+    g_assert_false(g_file_test(image_path, G_FILE_TEST_EXISTS));
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
+    g_autofree gchar *data_dir = g_dir_make_tmp("clawt-daemon-data-XXXXXX",
+                                                NULL);
+    gint status;
+
+    /*
+     * Before anything can ask for it: GLib caches the data directory on
+     * first use, and the daemon keeps cloud images under it.  Left alone
+     * a test would create and delete files in the real ~/.local/share.
+     */
+    g_setenv("XDG_DATA_HOME", data_dir, TRUE);
+
     g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/daemon/starts", test_starts_with_an_empty_config);
@@ -1695,6 +1764,12 @@ main(int argc, char *argv[])
                     test_a_reply_counts_as_a_hop);
     g_test_add_func("/daemon/attachment-cannot-escape",
                     test_an_attachment_cannot_escape_its_directory);
+    g_test_add_func("/daemon/image-in-use",
+                    test_removing_an_image_in_use_is_refused);
 
-    return g_test_run();
+    status = g_test_run();
+
+    clawt_test_remove_tree(data_dir);
+
+    return status;
 }

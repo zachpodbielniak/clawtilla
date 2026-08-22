@@ -475,6 +475,59 @@ vm_state_dir(ClawtVmComputer *self)
 }
 
 /*
+ * The base image an overlay was built on, as qcow2 recorded it.
+ *
+ * Asked of qemu-img rather than remembered separately, because the
+ * overlay is the thing that has to be right: a note beside it could say
+ * one image while the file itself referenced another.
+ */
+static gchar *
+overlay_backing_file(const gchar *overlay)
+{
+    g_autoptr(GSubprocess) process = NULL;
+    g_autoptr(JsonParser) parser = NULL;
+    g_autofree gchar *output = NULL;
+    JsonObject *root;
+
+    process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+                               G_SUBPROCESS_FLAGS_STDERR_SILENCE, NULL,
+                               "qemu-img", "info", "--output=json", overlay,
+                               NULL);
+
+    if (process == NULL)
+        return NULL;
+
+    if (!g_subprocess_communicate_utf8(process, NULL, NULL, &output, NULL,
+                                       NULL) ||
+        g_subprocess_get_exit_status(process) != 0)
+        return NULL;
+
+    parser = json_parser_new();
+
+    if (!json_parser_load_from_data(parser, output, -1, NULL))
+        return NULL;
+
+    root = json_node_get_object(json_parser_get_root(parser));
+
+    if (root == NULL)
+        return NULL;
+
+    /*
+     * full-backing-filename is the resolved path; backing-filename is
+     * whatever was written into the file, which may be relative.
+     */
+    if (json_object_has_member(root, "full-backing-filename"))
+        return g_strdup(json_object_get_string_member(root,
+                                                      "full-backing-filename"));
+
+    if (json_object_has_member(root, "backing-filename"))
+        return g_strdup(json_object_get_string_member(root,
+                                                      "backing-filename"));
+
+    return NULL;
+}
+
+/*
  * Creates the writable overlay.
  *
  * The base image is never written to, so several agents can share one and a
@@ -491,10 +544,6 @@ ensure_overlay(ClawtVmComputer *self, GError **error)
     if (self->image == NULL)
         return TRUE;
 
-    if (self->overlay != NULL &&
-        g_file_test(self->overlay, G_FILE_TEST_EXISTS))
-        return TRUE;
-
     state_dir = vm_state_dir(self);
 
     if (!clawt_ensure_dir(state_dir, 0700, error))
@@ -502,9 +551,36 @@ ensure_overlay(ClawtVmComputer *self, GError **error)
 
     g_free(self->overlay);
     self->overlay = g_build_filename(state_dir, "overlay.qcow2", NULL);
+    known_hosts = g_build_filename(state_dir, "known_hosts", NULL);
 
-    if (g_file_test(self->overlay, G_FILE_TEST_EXISTS))
-        return TRUE;
+    if (g_file_test(self->overlay, G_FILE_TEST_EXISTS)) {
+        g_autofree gchar *backing = overlay_backing_file(self->overlay);
+
+        if (g_strcmp0(backing, self->image) == 0)
+            return TRUE;
+
+        /*
+         * The configured image has changed, so the overlay is built on
+         * the wrong thing.  Keeping it would leave the VM booting the old
+         * base for ever while the config said otherwise -- a setting that
+         * silently does nothing, which is worse than one that costs you
+         * the guest's contents.
+         *
+         * Said out loud because it does cost you them: everything
+         * installed inside that VM goes with the overlay.  An agent's
+         * actual work lives in its workspace on the host, which this does
+         * not touch.
+         */
+        g_warning("vm %s: the disk image changed from %s to %s, so the "
+                  "guest is being rebuilt from the new one -- anything "
+                  "inside the old VM is gone. Its workspace on the host "
+                  "is untouched.",
+                  self->domain, backing != NULL ? backing : "something else",
+                  self->image);
+
+        g_unlink(self->overlay);
+        g_unlink(known_hosts);
+    }
 
     process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_SILENCE |
                                G_SUBPROCESS_FLAGS_STDERR_PIPE,
@@ -529,7 +605,6 @@ ensure_overlay(ClawtVmComputer *self, GError **error)
      * one would make every later connection look like an attack and be
      * refused, which reads as "SSH broke" rather than "the VM is new".
      */
-    known_hosts = g_build_filename(state_dir, "known_hosts", NULL);
     g_unlink(known_hosts);
 
     return TRUE;

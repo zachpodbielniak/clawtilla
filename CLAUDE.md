@@ -533,6 +533,37 @@ the same program.
   and the import wrote every file correctly and then did not appear in
   `agent list`.
 
+### A qcow2 overlay pins the base it was made from
+
+- `ensure_overlay()` returned early whenever the overlay existed, so
+  changing `computer.vm.image` wrote the config and changed nothing —
+  the VM kept booting the old base for ever. It now compares the
+  overlay's recorded backing file with the configured image and rebuilds
+  when they differ, loudly, because the guest's contents go with it.
+  Deleting a cached image is refused while an agent's overlay names it:
+  the VM would stop booting, with an error from qemu about a missing
+  backing file a long way from the button that caused it.
+- Both test binaries now point `XDG_DATA_HOME` at a temporary directory
+  in `main()`, **before** `g_test_init()` — `g_get_user_data_dir()`
+  caches on first use, and these tests write disk overlays and cloud
+  images under it. Without that the suite quietly created files in the
+  developer's real `~/.local/share`.
+
+### A popover unparented from object data is unparented too late
+
+- qdata is cleared in `g_object_finalize`, and `gtk_widget_finalize()`
+  checks for leftover children *before* chaining up to it — so a
+  `g_object_set_data_full()` notify that unparents a hand-parented
+  popover always runs after the check, and every chip in a cleared
+  transcript warned "Finalizing GtkButton, but it still has children
+  left: GtkPopover". Connect to `::destroy`, which is emitted from
+  dispose. Confirmed both ways with a 40-line GTK program: the notify
+  warns, `::destroy` is silent.
+- Unrelated and *not ours*: the
+  `GtkSettings:gtk-application-prefer-dark-theme` warning libadwaita
+  prints comes from the user's `~/.config/gtk-4.0/settings.ini` (or
+  their desktop), not from clawtilla, which never touches GtkSettings.
+
 ### GtkListBox keeps its own record of its rows
 
 - It wraps an appended widget in a row of its own, so unparenting

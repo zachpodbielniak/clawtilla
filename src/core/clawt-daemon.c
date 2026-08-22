@@ -2813,10 +2813,53 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
     if (g_strcmp0(kind, "image.vm_remove") == 0) {
         const gchar *name = clawt_ipc_payload_string(payload, "name");
         g_autoptr(GError) remove_error = NULL;
+        g_autofree gchar *image_path = NULL;
 
         if (name == NULL)
             return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
                                        "a name is required");
+
+        /*
+         * An agent's overlay records the base it was built on, so
+         * deleting the base breaks that VM the next time it starts --
+         * with an error from qemu about a missing backing file, a long
+         * way from the button that caused it.
+         */
+        image_path = clawt_vm_image_store_path(self->vm_images, name);
+
+        if (image_path != NULL &&
+            !clawt_ipc_payload_boolean(payload, "force", FALSE)) {
+            GPtrArray *agents = clawt_agent_manager_list(self->agents);
+            g_autoptr(GString) users = g_string_new(NULL);
+            guint i;
+
+            for (i = 0; agents != NULL && i < agents->len; i++) {
+                ClawtAgent *agent = g_ptr_array_index(agents, i);
+                g_autofree gchar *configured = clawt_agent_config_get_path_value(
+                    clawt_agent_get_config(agent), "computer.vm.image");
+
+                if (g_strcmp0(configured, image_path) != 0)
+                    continue;
+
+                if (users->len > 0)
+                    g_string_append(users, ", ");
+
+                g_string_append(users, clawt_agent_get_id(agent));
+            }
+
+            if (users->len > 0) {
+                g_autofree gchar *refusal = g_strdup_printf(
+                    "%s is the disk image for %s. Deleting it breaks that "
+                    "VM the next time it starts, because its overlay is "
+                    "built on this file. Point the agent at another image "
+                    "first, or pass force to delete it anyway.",
+                    name, users->str);
+
+                return clawt_ipc_error_new(request,
+                                           CLAWT_ERROR_INVALID_ARGUMENT,
+                                           refusal);
+            }
+        }
 
         if (!clawt_vm_image_store_remove(self->vm_images, name,
                                          &remove_error))

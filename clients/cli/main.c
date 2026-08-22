@@ -2265,15 +2265,23 @@ cmd_image_vm(int argc, char *argv[])
     if (g_strcmp0(verb, "rm") == 0 || g_strcmp0(verb, "cancel") == 0) {
         g_autoptr(JsonBuilder) builder = json_builder_new();
         const gchar *name = (argc > 4) ? argv[4] : NULL;
+        gboolean force = (argc > 5) && g_strcmp0(argv[5], "--force") == 0;
 
         if (name == NULL) {
-            g_printerr("Usage: clawtilla image vm %s <name>\n", verb);
+            g_printerr("Usage: clawtilla image vm %s <name> [--force]\n",
+                       verb);
             return EXIT_FAILURE;
         }
 
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "name");
         json_builder_add_string_value(builder, name);
+
+        if (force) {
+            json_builder_set_member_name(builder, "force");
+            json_builder_add_boolean_value(builder, TRUE);
+        }
+
         json_builder_end_object(builder);
 
         reply = call(client,
@@ -2291,6 +2299,8 @@ cmd_image_vm(int argc, char *argv[])
     }
 
     g_printerr("Usage: clawtilla image vm <list|catalog|get|rm|cancel>\n");
+    g_printerr("  clawtilla image vm get fedora-44\n");
+    g_printerr("  clawtilla image vm rm fedora-44 --force\n");
     return EXIT_FAILURE;
 }
 

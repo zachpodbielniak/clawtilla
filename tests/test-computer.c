@@ -1366,9 +1366,163 @@ test_image_falls_back_to_the_schema(void)
                     ==, clawt_image_catalog_default());
 }
 
+/*
+ * An agent's overlay is built on one base image, and qcow2 records which.
+ * Provisioning again must not rebuild it: the guest's contents live in
+ * that file, and throwing them away every start would make a VM agent
+ * amnesiac.
+ */
+/* A tiny qcow2 to hang an overlay off; nothing ever boots these. */
+static gboolean
+make_blank_image(const gchar *path)
+{
+    g_autoptr(GSubprocess) process =
+        g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_SILENCE |
+                         G_SUBPROCESS_FLAGS_STDERR_SILENCE, NULL,
+                         "qemu-img", "create", "-f", "qcow2", path, "16M",
+                         NULL);
+
+    return process != NULL &&
+           g_subprocess_wait_check(process, NULL, NULL);
+}
+
+static gchar *
+image_backing_file(const gchar *overlay)
+{
+    g_autoptr(GSubprocess) process = NULL;
+    g_autofree gchar *output = NULL;
+    g_auto(GStrv) lines = NULL;
+    gsize i;
+
+    process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+                               G_SUBPROCESS_FLAGS_STDERR_SILENCE, NULL,
+                               "qemu-img", "info", overlay, NULL);
+
+    if (process == NULL ||
+        !g_subprocess_communicate_utf8(process, NULL, NULL, &output, NULL,
+                                       NULL))
+        return NULL;
+
+    lines = g_strsplit(output, "\n", -1);
+
+    for (i = 0; lines[i] != NULL; i++) {
+        if (g_str_has_prefix(lines[i], "backing file: "))
+            return g_strdup(lines[i] + strlen("backing file: "));
+    }
+
+    return NULL;
+}
+
+static void
+test_vm_overlay_survives_a_second_provision(void)
+{
+    g_autofree gchar *base = NULL;
+    g_autofree gchar *overlay = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(GError) error = NULL;
+    GStatBuf before;
+    GStatBuf after;
+
+    {
+        g_autofree gchar *tool = g_find_program_in_path("qemu-img");
+
+        if (tool == NULL) {
+            g_test_skip("qemu-img is not installed here");
+            return;
+        }
+    }
+
+    base = g_build_filename(g_get_user_data_dir(), "base-one.qcow2", NULL);
+    g_assert_true(make_blank_image(base));
+
+    computer = clawt_vm_computer_new("overlaytest", CLAWT_VM_BACKEND_QEMU,
+                                     NULL);
+    clawt_vm_computer_set_image(CLAWT_VM_COMPUTER(computer), base);
+    clawt_vm_computer_set_cloud_init(CLAWT_VM_COMPUTER(computer), FALSE);
+
+    g_assert_true(clawt_computer_provision(computer, &error));
+    g_assert_no_error(error);
+
+    overlay = g_build_filename(g_get_user_data_dir(), "clawtilla", "vms",
+                               "overlaytest", "overlay.qcow2", NULL);
+    g_assert_cmpint(g_stat(overlay, &before), ==, 0);
+
+    g_assert_true(clawt_computer_provision(computer, &error));
+    g_assert_no_error(error);
+
+    g_assert_cmpint(g_stat(overlay, &after), ==, 0);
+    g_assert_cmpint(before.st_ino, ==, after.st_ino);
+}
+
+/*
+ * Changing the disk image has to take effect.
+ *
+ * The overlay is built on the old base, so keeping it would leave the VM
+ * booting the old image for ever while the config said otherwise -- a
+ * setting that silently does nothing, which is what picking one from the
+ * client's list would have done.
+ */
+static void
+test_vm_overlay_is_rebuilt_when_the_image_changes(void)
+{
+    g_autofree gchar *first = NULL;
+    g_autofree gchar *second = NULL;
+    g_autofree gchar *overlay = NULL;
+    g_autofree gchar *backing = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(GError) error = NULL;
+
+    {
+        g_autofree gchar *tool = g_find_program_in_path("qemu-img");
+
+        if (tool == NULL) {
+            g_test_skip("qemu-img is not installed here");
+            return;
+        }
+    }
+
+    first = g_build_filename(g_get_user_data_dir(), "base-first.qcow2", NULL);
+    second = g_build_filename(g_get_user_data_dir(), "base-second.qcow2",
+                              NULL);
+    g_assert_true(make_blank_image(first));
+    g_assert_true(make_blank_image(second));
+
+    computer = clawt_vm_computer_new("swaptest", CLAWT_VM_BACKEND_QEMU, NULL);
+    clawt_vm_computer_set_cloud_init(CLAWT_VM_COMPUTER(computer), FALSE);
+    clawt_vm_computer_set_image(CLAWT_VM_COMPUTER(computer), first);
+
+    g_assert_true(clawt_computer_provision(computer, &error));
+    g_assert_no_error(error);
+
+    clawt_vm_computer_set_image(CLAWT_VM_COMPUTER(computer), second);
+
+    /* The rebuild says so out loud, because it costs the guest. */
+    g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING,
+                          "*disk image changed*");
+    g_assert_true(clawt_computer_provision(computer, &error));
+    g_assert_no_error(error);
+    g_test_assert_expected_messages();
+
+    overlay = g_build_filename(g_get_user_data_dir(), "clawtilla", "vms",
+                               "swaptest", "overlay.qcow2", NULL);
+    backing = image_backing_file(overlay);
+
+    g_assert_cmpstr(backing, ==, second);
+}
+
 int
 main(int argc, char *argv[])
 {
+    g_autofree gchar *data_dir = g_dir_make_tmp("clawt-data-XXXXXX", NULL);
+    gint status;
+    /*
+     * Before anything can ask for it: GLib caches the data directory on
+     * first use, and the VM tests write overlays and seeds under it.
+     * Left alone they would land in the real ~/.local/share -- a test
+     * suite quietly filling the user's home with disk images.
+     */
+    g_setenv("XDG_DATA_HOME", data_dir, TRUE);
+
     g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/computer/null/refuses", test_null_computer_refuses_clearly);
@@ -1417,6 +1571,10 @@ main(int argc, char *argv[])
                     test_vm_ssh_argv_quotes_the_command);
     g_test_add_func("/computer/vm/boots-and-runs",
                     test_vm_boots_and_runs_a_command);
+    g_test_add_func("/computer/vm/overlay-kept",
+                    test_vm_overlay_survives_a_second_provision);
+    g_test_add_func("/computer/vm/overlay-rebuilt",
+                    test_vm_overlay_is_rebuilt_when_the_image_changes);
 
     g_test_add_func("/computer/desktop/observe-only",
                     test_desktop_observe_only_omits_input_tools);
@@ -1461,5 +1619,9 @@ main(int argc, char *argv[])
     g_test_add_func("/computer/socket-path-length",
                     test_an_over_long_socket_path_is_refused);
 
-    return g_test_run();
+    status = g_test_run();
+
+    clawt_test_remove_tree(data_dir);
+
+    return status;
 }
