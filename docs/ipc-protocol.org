@@ -148,6 +148,12 @@ own entries from ~defaults.container_images~ come first, under the group
 "Yours", followed by the built-in suggestions.  Nothing validates
 ~computer.container.image~ against it.
 
+Each provider carries ~tools~: %TRUE when it can be given tool
+definitions, which is what decides whether it can design an agent.  The
+CLI-backed providers cannot.  A client filtering on it should treat a
+missing member as "yes" -- an older daemon does not report it, and
+filtering on absence empties the list.
+
 Each provider carries ~open_ended~.  When it is true the list is a
 starting point rather than the whole truth -- Ollama runs whatever you
 have pulled -- and a client must offer a way to type a name that is not

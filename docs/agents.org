@@ -329,17 +329,31 @@ same pair, labelled /Designed by/.
 
 Unset falls back to ~ai_assist.provider~ and ~ai_assist.model~.
 
-*** A CLI provider cannot design
+*** Only an HTTP provider can design
 
 The designer works entirely through tool calls, and ai-glib's
 command-line clients -- ~claude-code~, ~claude-tmux~, ~opencode~ -- drop
 the tool list rather than passing it to the CLI.  The model then gets a
 system prompt describing tools it was never given and answers in prose.
 
-clawtilla refuses before making the call and says so.  Use an API
-provider for designing: ~claude~, ~openai~, ~gemini~ or ~grok~.  Agents
-themselves run perfectly well on a CLI provider; this affects designing
-only.
+So the designer takes an HTTP API provider: ~claude~, ~openai~,
+~gemini~, ~grok~ or ~ollama~, with any model each of them runs.  The
+GTK client's /Designed by/ list shows exactly those; the CLI accepts
+them by name:
+
+#+begin_src bash
+clawtilla agent new --designer grok --designer-model grok-4
+#+end_src
+
+Each needs its key in the daemon's environment, the same as an agent
+using it would.
+
+Asking a CLI provider to design is refused before the call rather than
+after it, naming the ones that work.  Agents themselves run perfectly
+well on a CLI provider; this affects designing only.
+
+~model.list~ reports ~tools~ per provider, so a client can tell the two
+apart without hardcoding the list.
 
 *** Nothing is created until you say so
 

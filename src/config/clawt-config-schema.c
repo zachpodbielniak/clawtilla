@@ -465,6 +465,23 @@ static const ClawtSchemaEntry schema[] = {
   "Set it to take control of the list: to reorder, to drop one, or to add\n"
   "a file of your own. An inline system_prompt replaces the lot.", "0.1.0" },
 
+{ "agents.prompt_suffix", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_COMMENTED,
+  NULL, NULL,
+  "Text appended to every turn this agent runs.\n"
+  "\n"
+  "For a rule that has to hold on turn 200 as much as turn 1. A resumed\n"
+  "session never re-receives the system prompt, and a long conversation\n"
+  "drifts away from anything said only once at the start.\n"
+  "\n"
+  "clawtilla already adds one of its own for an agent with a computer,\n"
+  "naming the container or VM and telling it to run commands there\n"
+  "rather than on the host. Yours is appended to that, not instead of\n"
+  "it.\n"
+  "\n"
+  "Costs tokens on every turn, so keep it to rules that genuinely have\n"
+  "to be repeated -- anything else belongs in the agent's org files.",
+  "0.1.0" },
+
 { "agents.memory", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "The agent's long-term memory file.\n"
   "\n"

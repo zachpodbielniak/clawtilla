@@ -43,8 +43,15 @@ typedef struct {
  * @open_ended: %TRUE when the list is a starting point rather than the
  *   whole truth -- Ollama runs whatever you have pulled, so a client must
  *   let a person type a name that is not listed
+ * @tools: %TRUE when this provider can be given tool definitions
  *
  * One provider and its models.
+ *
+ * @tools is what separates an HTTP API from a wrapped command-line tool.
+ * ai-glib's CLI clients drop the tool list rather than passing it on, so
+ * anything built on tool calls -- the agent designer -- simply cannot
+ * use them. Agents themselves run fine either way; this is only about
+ * whether a provider can be handed a set of tools and asked to use them.
  */
 typedef struct {
     const gchar          *id;
@@ -53,6 +60,7 @@ typedef struct {
     const ClawtModelInfo *models;
     gsize                 n_models;
     gboolean              open_ended;
+    gboolean              tools;
 } ClawtProviderInfo;
 
 /**

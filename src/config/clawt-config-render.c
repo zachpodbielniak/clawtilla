@@ -432,6 +432,64 @@ render_webhook_channel(GString *out, ClawtAgentConfig *agent)
                                               "integrations.webhook.port"));
 }
 
+
+/*
+ * The standing rule an agent with a computer needs on every turn.
+ *
+ * An agent runs as a libreclaw process on the *host*.  Its own bash,
+ * read and write tools therefore touch the host filesystem, and its
+ * container is reachable only through clawtilla_computer_exec.  Nothing
+ * told it that, so an agent with a perfectly good container sat in its
+ * workspace running commands on the machine clawtilla runs on and
+ * reporting, correctly, that it did not appear to be in a container.
+ *
+ * It goes in the per-turn suffix rather than only the system prompt
+ * because a resumed CLI session never re-receives the system prompt and
+ * a long conversation drifts away from anything said once at the start.
+ * This is the rule that has to hold on turn 200.
+ */
+static gchar *
+render_computer_directive(ClawtAgentConfig *for_agent)
+{
+    ClawtComputerType type =
+        (ClawtComputerType)clawt_agent_config_get_enum(for_agent,
+                                                       "computer.type");
+    const gchar *id = clawt_agent_config_get_id(for_agent);
+
+    switch (type) {
+    case CLAWT_COMPUTER_CONTAINER:
+        return g_strdup_printf(
+            "[clawtilla] Your computer is the container 'clawt-%s'. Run "
+            "every shell command in it with clawtilla_computer_exec. Your "
+            "own bash, read and write tools run on the host, outside it, "
+            "which is not where your work belongs. Touch the host only "
+            "when the user asks, and say so when you do.", id);
+
+    case CLAWT_COMPUTER_VM:
+        return g_strdup_printf(
+            "[clawtilla] Your computer is the virtual machine 'clawt-%s'. "
+            "Run every shell command in it with clawtilla_computer_exec. "
+            "Your own bash, read and write tools run on the host, outside "
+            "it, which is not where your work belongs. Touch the host "
+            "only when the user asks, and say so when you do.", id);
+
+    case CLAWT_COMPUTER_HOST:
+        /*
+         * No redirection to give -- the host is its computer.  What it
+         * needs instead is that this is somebody's real machine, which
+         * the confinement mode alone does not convey.
+         */
+        return g_strdup(
+            "[clawtilla] Your computer is the real machine clawtilla runs "
+            "on. Confinement is in force and will refuse paths outside "
+            "it. Every command affects a machine somebody uses.");
+
+    case CLAWT_COMPUTER_NONE:
+    default:
+        return NULL;
+    }
+}
+
 gchar *
 clawt_config_render_agent(ClawtConfig       *config,
                           ClawtAgentConfig  *agent,
@@ -489,6 +547,27 @@ clawt_config_render_agent(ClawtConfig       *config,
     append_key_value(out, 2, "name",
                      name != NULL ? name : clawt_agent_config_get_id(agent));
     append_key_value(out, 2, "workspace", workspace);
+
+    /*
+     * Joined with anything the user set rather than replacing it: a
+     * standing rule of ours should not silently discard one of theirs.
+     */
+    {
+        g_autofree gchar *directive = render_computer_directive(agent);
+        const gchar *configured =
+            clawt_agent_config_get_string(agent, "prompt_suffix");
+        g_autofree gchar *suffix = NULL;
+
+        if (directive != NULL && configured != NULL)
+            suffix = g_strconcat(directive, "\n\n", configured, NULL);
+        else if (directive != NULL)
+            suffix = g_strdup(directive);
+        else if (configured != NULL)
+            suffix = g_strdup(configured);
+
+        if (suffix != NULL)
+            append_key_value(out, 2, "prompt_suffix", suffix);
+    }
 
     identity_files = clawt_agent_config_get_string_list(
         agent, "persona.identity_files");

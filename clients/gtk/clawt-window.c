@@ -57,6 +57,12 @@ static void         model_chooser_build(ModelChooser *chooser,
                                         GtkWidget    *group,
                                         const gchar  *want_provider,
                                         const gchar  *want_model);
+static void         model_chooser_build_full(ModelChooser *chooser,
+                                             ClawtWindow  *window,
+                                             GtkWidget    *group,
+                                             const gchar  *want_provider,
+                                             const gchar  *want_model,
+                                             gboolean      tools_only);
 static void         image_chooser_build(ImageChooser *chooser,
                                         ClawtWindow  *window,
                                         GtkWidget    *group,
@@ -2039,6 +2045,27 @@ model_chooser_build(ModelChooser *chooser, ClawtWindow *window,
                     GtkWidget *group, const gchar *want_provider,
                     const gchar *want_model)
 {
+    model_chooser_build_full(chooser, window, group, want_provider,
+                             want_model, FALSE);
+}
+
+/*
+ * @tools_only drops the providers that cannot be given tool definitions.
+ *
+ * The agent designer works entirely through tool calls, and ai-glib's
+ * command-line clients drop the tool list rather than passing it on. A
+ * chooser that offered them let a person fill in the whole form, press
+ * Design, and only then be told the provider they picked -- the default
+ * one -- cannot do this. The list is filtered rather than the entries
+ * greyed out because every remaining index is used to look a provider
+ * back up, and a hole in the middle of that array is a bug waiting for
+ * somebody to add a provider.
+ */
+static void
+model_chooser_build_full(ModelChooser *chooser, ClawtWindow *window,
+                         GtkWidget *group, const gchar *want_provider,
+                         const gchar *want_model, gboolean tools_only)
+{
     g_autoptr(GtkStringList) provider_names = gtk_string_list_new(NULL);
     JsonArray *providers = NULL;
     guint chosen = 0;
@@ -2066,6 +2093,32 @@ model_chooser_build(ModelChooser *chooser, ClawtWindow *window,
                               chooser->model_entry);
 
     chooser->catalog = clawt_window_request(window, "model.list", NULL);
+
+    if (chooser->catalog != NULL && tools_only) {
+        JsonArray *all = json_object_get_array_member(
+            json_node_get_object(chooser->catalog), "providers");
+        g_autoptr(JsonArray) kept = json_array_new();
+
+        for (i = 0; i < json_array_get_length(all); i++) {
+            JsonObject *provider = json_array_get_object_element(all, i);
+
+            /*
+             * A missing "tools" member means an older daemon that does
+             * not report it -- keep the provider rather than drop it.
+             * Filtering on absence emptied the whole list and left two
+             * blank rows, which is a worse failure than offering one
+             * provider that will refuse.
+             */
+            if (!json_object_has_member(provider, "tools") ||
+                json_object_get_boolean_member(provider, "tools"))
+                json_array_add_object_element(kept,
+                                              json_object_ref(provider));
+        }
+
+        json_object_set_array_member(json_node_get_object(chooser->catalog),
+                                     "providers",
+                                     json_array_ref(kept));
+    }
 
     if (chooser->catalog != NULL) {
         providers = json_object_get_array_member(
@@ -2504,7 +2557,7 @@ on_new_agent(GtkButton *button, gpointer user_data)
      * a person will often want their best model to draft an agent that
      * then runs on a cheap one.
      */
-    model_chooser_build(&dialog->designer, self, ai, NULL, NULL);
+    model_chooser_build_full(&dialog->designer, self, ai, NULL, NULL, TRUE);
     adw_preferences_row_set_title(
         ADW_PREFERENCES_ROW(dialog->designer.provider_row),
         "Designed by");
@@ -2525,7 +2578,29 @@ on_new_agent(GtkButton *button, gpointer user_data)
 
     g_object_set_data_full(G_OBJECT(window), "dialog", dialog,
                            new_agent_dialog_free);
-    adw_dialog_set_child(window, page);
+    /*
+     * A header bar, for the close button.
+     *
+     * An AdwDialog with a bare child has no visible way out: Escape
+     * works, but a modal whose only exit is a keystroke nobody
+     * advertised is one people report as stuck -- and they were right
+     * to.
+     */
+    {
+        GtkWidget *toolbar = adw_toolbar_view_new();
+        GtkWidget *header = adw_header_bar_new();
+        GtkWidget *cancel = gtk_button_new_with_label("Cancel");
+
+        g_signal_connect_swapped(cancel, "clicked",
+                                 G_CALLBACK(adw_dialog_close), window);
+        adw_header_bar_pack_start(ADW_HEADER_BAR(header), cancel);
+
+        adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar), header);
+        adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar), page);
+
+        adw_dialog_set_child(window, toolbar);
+    }
+
     adw_dialog_present(window, GTK_WIDGET(self));
 }
 

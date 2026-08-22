@@ -136,6 +136,38 @@ Implemented through podomation's ~container~ module, which speaks the
 Podman REST API directly over a socket -- no libcurl, no libpod, no
 shelling out to the CLI.
 
+*** Your agent does not run inside its computer
+
+This is the part that surprises people, so it is worth stating plainly.
+
+An agent runs as a libreclaw process on the *host*.  Its own ~bash~,
+~read~ and ~write~ tools therefore operate on the host filesystem.  Its
+container or VM is a thing it *operates*, reachable only through
+~clawtilla_computer_exec~ -- not a thing it lives in.
+
+Nothing said so, and the result was an agent with a perfectly good
+container sitting in its workspace running commands on the host and
+reporting, correctly, that it did not appear to be in a container.
+
+Three things now say it:
+
+- the scaffolded ~TOOLS.org~ names the container -- ~clawt-<agent>~ --
+  and says to run every shell command in it
+- ~SOUL.org~ carries it as an operating parameter
+- and clawtilla injects it into *every turn* as
+  ~agent.prompt_suffix~ in the rendered libreclaw config
+
+The last one matters most.  A resumed session never re-receives the
+system prompt, and a long conversation drifts away from anything said
+only once at the start; the suffix is appended to every turn, so it
+holds on turn 200 as much as turn 1.
+
+Set ~prompt_suffix~ on an agent to add a standing rule of your own.  It
+is appended to clawtilla's, not instead of it.
+
+Host agents get a different line -- there is nothing to redirect, so
+what they are told instead is that this is somebody's real machine.
+
 *** Which image
 
 Defaults to ~registry.fedoraproject.org/fedora:44~ -- change it once for

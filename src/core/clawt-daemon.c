@@ -2635,6 +2635,15 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             json_builder_set_member_name(builder, "open_ended");
             json_builder_add_boolean_value(builder, catalog[i].open_ended);
 
+            /*
+             * Whether this provider can be given tools, which decides
+             * whether it can design an agent.  A client that offers
+             * every provider for designing offers ones that will be
+             * refused after the person has filled in the whole form.
+             */
+            json_builder_set_member_name(builder, "tools");
+            json_builder_add_boolean_value(builder, catalog[i].tools);
+
             json_builder_set_member_name(builder, "models");
             json_builder_begin_array(builder);
 

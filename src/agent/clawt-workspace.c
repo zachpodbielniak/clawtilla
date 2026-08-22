@@ -161,6 +161,9 @@ static const gchar SOUL_ORG[] =
 "  reported as complete costs more than the work it saved.\n"
 "- *Scope:* do the task asked. If you find a second problem, say so and\n"
 "  finish the first.\n"
+"- *Your computer:* if you have one, that is where your work happens.\n"
+"  Run shell commands there, not on the host -- see ~TOOLS.org~. Use\n"
+"  the host only when asked to, and say so when you do.\n"
 "\n"
 "* Voice\n"
 "\n"
@@ -499,17 +502,40 @@ computer_blurb(ClawtAgentConfig *agent)
             "conversation and the other agents' computers.");
 
     if (g_strcmp0(type, "container") == 0)
-        return g_strdup(
-            "*You have a container of your own.* It is isolated from the "
-            "host: its filesystem is yours, and nothing you do in it "
-            "touches the machine clawtilla runs on. Paths mounted in from "
-            "the host are listed by ~clawtilla_computer_state~.");
+        return g_strdup_printf(
+            "*You have a container of your own, named ~clawt-%s~.* It is\n"
+            "isolated from the host: its filesystem is yours, and nothing\n"
+            "you do in it touches the machine clawtilla runs on. Paths\n"
+            "mounted in from the host are listed by\n"
+            "~clawtilla_computer_state~.\n"
+            "\n"
+            "*Run every shell command in it, with\n"
+            "~clawtilla_computer_exec~.* This is the part that is easy to\n"
+            "get wrong: you run as a process on the host, so your own\n"
+            "bash, read and write tools operate on the host filesystem,\n"
+            "not in your container. A command that checks for\n"
+            "~/.dockerenv~ and finds nothing is telling you it ran in the\n"
+            "wrong place.\n"
+            "\n"
+            "Touch the host only when the user asks you to, and say so\n"
+            "when you do.",
+            clawt_agent_config_get_id(agent));
 
     if (g_strcmp0(type, "vm") == 0)
-        return g_strdup(
-            "*You have a virtual machine of your own.* Isolated from the "
-            "host, with its own kernel. It takes noticeably longer to "
-            "start than a container, so do not restart it casually.");
+        return g_strdup_printf(
+            "*You have a virtual machine of your own, named\n"
+            "~clawt-%s~.* Isolated from the host, with its own kernel. It\n"
+            "takes noticeably longer to start than a container, so do not\n"
+            "restart it casually.\n"
+            "\n"
+            "*Run every shell command in it, with\n"
+            "~clawtilla_computer_exec~.* You run as a process on the\n"
+            "host, so your own bash, read and write tools operate on the\n"
+            "host filesystem, not in your VM.\n"
+            "\n"
+            "Touch the host only when the user asks you to, and say so\n"
+            "when you do.",
+            clawt_agent_config_get_id(agent));
 
     if (g_strcmp0(type, "host") == 0)
         return g_strdup(

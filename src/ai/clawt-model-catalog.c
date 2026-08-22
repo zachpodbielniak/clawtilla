@@ -60,36 +60,36 @@ static const ClawtModelInfo ollama_models[] = {
 static const ClawtProviderInfo providers[] = {
     { "claude-code", "Claude Code",
       "the CLI, billed against your subscription",
-      claude_code_models, G_N_ELEMENTS(claude_code_models), TRUE },
+      claude_code_models, G_N_ELEMENTS(claude_code_models), TRUE, FALSE },
 
     { "claude-tmux", "Claude Code (tmux)",
       "the CLI in interactive mode; billed as ordinary subscription use "
       "rather than against the Agent SDK credit pool",
-      claude_code_models, G_N_ELEMENTS(claude_code_models), TRUE },
+      claude_code_models, G_N_ELEMENTS(claude_code_models), TRUE, FALSE },
 
     { "claude", "Claude API",
       "the HTTP API; needs an API key and is billed per token",
-      claude_api_models, G_N_ELEMENTS(claude_api_models), TRUE },
+      claude_api_models, G_N_ELEMENTS(claude_api_models), TRUE, TRUE },
 
     { "openai", "OpenAI",
       "needs an API key",
-      openai_models, G_N_ELEMENTS(openai_models), TRUE },
+      openai_models, G_N_ELEMENTS(openai_models), TRUE, TRUE },
 
     { "gemini", "Google Gemini",
       "needs an API key",
-      gemini_models, G_N_ELEMENTS(gemini_models), TRUE },
+      gemini_models, G_N_ELEMENTS(gemini_models), TRUE, TRUE },
 
     { "grok", "xAI Grok",
       "needs an API key",
-      grok_models, G_N_ELEMENTS(grok_models), TRUE },
+      grok_models, G_N_ELEMENTS(grok_models), TRUE, TRUE },
 
     { "opencode", "OpenCode",
       "the OpenCode CLI wrapper",
-      NULL, 0, TRUE },
+      NULL, 0, TRUE, FALSE },
 
     { "ollama", "Ollama",
       "local models; whatever you have pulled",
-      ollama_models, G_N_ELEMENTS(ollama_models), TRUE }
+      ollama_models, G_N_ELEMENTS(ollama_models), TRUE, TRUE }
 };
 
 const ClawtProviderInfo *

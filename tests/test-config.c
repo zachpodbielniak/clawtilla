@@ -545,12 +545,83 @@ test_validate_rejects_impossible_values(void)
     g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID);
 }
 
+/*
+ * An agent with a computer gets a standing per-turn directive naming it.
+ *
+ * An agent runs as a libreclaw process on the host, so its own bash,
+ * read and write tools touch the host filesystem and its container is
+ * reachable only through clawtilla_computer_exec. Nothing told it that,
+ * and an agent with a perfectly good container sat in its workspace
+ * running commands on the host and reporting, correctly, that it did
+ * not appear to be in one.
+ *
+ * The suffix rather than the system prompt because a resumed session
+ * never re-receives the system prompt: this is the rule that has to
+ * hold on turn 200.
+ */
+static void
+test_computer_directive_is_injected(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+        "agents:\n"
+        "  - id: boxed\n"
+        "    computer: {type: container}\n"
+        "  - id: guest\n"
+        "    computer: {type: vm}\n"
+        "  - id: talker\n"
+        "    computer: {type: none}\n"
+        "  - id: mine\n"
+        "    computer: {type: container}\n"
+        "    prompt_suffix: \"Always answer in French.\"\n",
+        &error);
+    GPtrArray *agents;
+    g_autofree gchar *boxed = NULL;
+    g_autofree gchar *guest = NULL;
+    g_autofree gchar *talker = NULL;
+    g_autofree gchar *mine = NULL;
+
+    g_assert_no_error(error);
+    agents = clawt_config_get_agents(config);
+    g_assert_cmpuint(agents->len, ==, 4);
+
+    boxed = clawt_config_render_agent(config, g_ptr_array_index(agents, 0),
+                                       "/tmp/s.sock", "/tmp/state", NULL);
+    g_assert_nonnull(boxed);
+    g_assert_nonnull(strstr(boxed, "prompt_suffix"));
+
+    /* Named, so the agent can say which container it means. */
+    g_assert_nonnull(strstr(boxed, "clawt-boxed"));
+    g_assert_nonnull(strstr(boxed, "clawtilla_computer_exec"));
+
+    guest = clawt_config_render_agent(config, g_ptr_array_index(agents, 1),
+                                       "/tmp/s.sock", "/tmp/state", NULL);
+    g_assert_nonnull(strstr(guest, "clawt-guest"));
+    g_assert_nonnull(strstr(guest, "virtual machine"));
+
+    /* Nothing to redirect for an agent with no computer. */
+    talker = clawt_config_render_agent(config, g_ptr_array_index(agents, 2),
+                                        "/tmp/s.sock", "/tmp/state", NULL);
+    g_assert_null(strstr(talker, "prompt_suffix"));
+
+    /*
+     * The user's own suffix is kept alongside ours. Replacing it would
+     * be a standing rule of theirs silently discarded.
+     */
+    mine = clawt_config_render_agent(config, g_ptr_array_index(agents, 3),
+                                      "/tmp/s.sock", "/tmp/state", NULL);
+    g_assert_nonnull(strstr(mine, "clawt-mine"));
+    g_assert_nonnull(strstr(mine, "Always answer in French."));
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/config/reads-configured", test_reads_configured_values);
+    g_test_add_func("/config/computer-directive",
+                    test_computer_directive_is_injected);
     g_test_add_func("/config/schema-defaults", test_falls_back_to_schema_defaults);
     g_test_add_func("/config/agent-inherits-defaults",
                     test_agent_inherits_from_defaults);
