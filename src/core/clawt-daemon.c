@@ -48,6 +48,18 @@ struct _ClawtDaemon {
      */
     GHashTable *drafts;          /* draft id -> ClawtAgentDesigner */
 
+    /*
+     * What each provider says it runs, cached.
+     *
+     * model.list used to ask the providers while the client waited, and
+     * both the new-agent dialog and the agent inspector ask on every
+     * build -- so pressing + or clicking an agent stalled for as long as
+     * the slowest provider took. Warmed in the background instead, and
+     * every request answers from here at once.
+     */
+    GHashTable *model_cache;     /* provider id -> GStrv (owned) */
+    gint64      model_cache_at;  /* monotonic, when it was last warmed */
+
     gchar   *libreclaw_binary;
     gchar   *state_dir;
     gchar   *link_socket;
@@ -744,6 +756,51 @@ release_components(ClawtDaemon *self)
     g_clear_pointer(&self->link_socket, g_free);
 }
 
+/*
+ * How long a cached model list is trusted.
+ *
+ * Providers add models in weeks, not minutes, so this only has to be
+ * short enough that a daemon left running for days notices.
+ */
+#define MODEL_CACHE_TTL_SECONDS (6 * 60 * 60)
+
+static void
+on_models_ready(const gchar *provider_id, GStrv models, gpointer user_data)
+{
+    ClawtDaemon *self = user_data;
+
+    if (self->model_cache == NULL || models == NULL || models[0] == NULL)
+        return;
+
+    g_hash_table_insert(self->model_cache, g_strdup(provider_id),
+                        g_strdupv(models));
+}
+
+/*
+ * Asks every provider that can be asked, without waiting for any.
+ *
+ * Answers land in the cache as they arrive; a request made in the
+ * meantime is served from the built-in table rather than blocked.
+ */
+static void
+warm_model_cache(ClawtDaemon *self)
+{
+    const ClawtProviderInfo *catalog;
+    gsize n_providers = 0;
+    gsize i;
+
+    catalog = clawt_model_catalog_get(&n_providers);
+    self->model_cache_at = g_get_monotonic_time();
+
+    for (i = 0; i < n_providers; i++) {
+        if (!catalog[i].tools)
+            continue;
+
+        clawt_model_catalog_fetch_models_async(catalog[i].id,
+                                                on_models_ready, self);
+    }
+}
+
 static gboolean
 on_sweep(gpointer user_data)
 {
@@ -1043,6 +1100,14 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
             g_warning("agent %s did not start: %s",
                       clawt_agent_get_id(agent), local->message);
     }
+
+    /*
+     * Asked for at start, so the first client to open a model list gets
+     * the real one. Nothing waits on it: the answers arrive over the
+     * next second or two and a request in the meantime is served from
+     * the built-in table.
+     */
+    warm_model_cache(self);
 
     clawt_event_bus_emit(self->bus, "daemon.started", NULL);
     g_signal_emit(self, signals[SIGNAL_STARTED], 0);
@@ -2916,6 +2981,17 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
 
         catalog = clawt_model_catalog_get(&n_providers);
 
+        /*
+         * A stale cache is refreshed behind this request rather than
+         * during it. The caller gets whatever is known now; the next
+         * one gets the fresh answer.
+         */
+        if (refresh &&
+            (self->model_cache_at == 0 ||
+             g_get_monotonic_time() - self->model_cache_at >
+                 (gint64)MODEL_CACHE_TTL_SECONDS * G_USEC_PER_SEC))
+            warm_model_cache(self);
+
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "providers");
         json_builder_begin_array(builder);
@@ -2965,9 +3041,15 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
              * nothing.
              */
             if (refresh && catalog[i].tools) {
-                g_autoptr(GError) fetch_error = NULL;
-                g_auto(GStrv) live = clawt_model_catalog_fetch_models(
-                    catalog[i].id, self->main_context, 15, &fetch_error);
+                /*
+                 * From the cache, never by asking now.  Asking here made
+                 * the request take as long as the slowest provider, and
+                 * both the new-agent dialog and the agent inspector ask
+                 * on every build -- so pressing + or clicking an agent
+                 * appeared to hang.
+                 */
+                GStrv live = g_hash_table_lookup(self->model_cache,
+                                                  catalog[i].id);
 
                 if (live != NULL && live[0] != NULL) {
                     gsize k;
@@ -2987,9 +3069,6 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
                     json_builder_end_object(builder);
                     continue;
                 }
-
-                if (fetch_error != NULL)
-                    g_debug("model.list: %s", fetch_error->message);
             }
 
             for (j = 0; j < catalog[i].n_models; j++) {
@@ -3249,6 +3328,7 @@ clawt_daemon_finalize(GObject *object)
     ClawtDaemon *self = CLAWT_DAEMON(object);
 
     g_clear_pointer(&self->drafts, g_hash_table_unref);
+    g_clear_pointer(&self->model_cache, g_hash_table_unref);
     g_free(self->config_path);
     g_free(self->libreclaw_binary);
     g_free(self->state_dir);
@@ -3284,5 +3364,8 @@ clawt_daemon_init(ClawtDaemon *self)
 {
     self->drafts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                           g_object_unref);
+    self->model_cache = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                               g_free,
+                                               (GDestroyNotify)g_strfreev);
     self->running = FALSE;
 }

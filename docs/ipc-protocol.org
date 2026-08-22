@@ -170,8 +170,16 @@ model being asked again: a second run is a fresh conversation producing
 something else, which would make the preview a demonstration rather than
 a decision.  ~design.discard~ drops one.  At most eight may be pending.
 
-~model.list~ takes ~refresh~: %TRUE asks each provider that can be
-reached which models it actually runs, and marks those entries ~live~.
+~model.list~ takes ~refresh~: %TRUE serves the providers' own lists from
+a cache, marking those entries ~live~, and refreshes that cache in the
+background when it is more than six hours old.  The request never waits
+on a provider.
+
+That is not a detail. Asking during the request made it take as long as
+the slowest provider, and both the new-agent dialog and the agent
+inspector ask on every build -- so pressing + or clicking an agent
+appeared to hang for tens of seconds. The cache is warmed at daemon
+start, so the first list a client opens is already the real one.
 The built-in table goes stale -- it offered grok-3 and grok-4 well after
 4.5 and 4.6 had shipped -- so anywhere a list is shown to a person should
 ask for this. A provider with no key, or no network, falls back to the

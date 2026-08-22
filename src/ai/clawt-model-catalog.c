@@ -229,3 +229,97 @@ clawt_model_catalog_fetch_models(const gchar   *provider_id,
 
     return (GStrv)g_ptr_array_free(g_steal_pointer(&names), FALSE);
 }
+
+/* ── Asking without waiting ──────────────────────────────────────── */
+
+typedef struct {
+    gchar                *provider_id;
+    ClawtModelsReadyFunc  ready;
+    gpointer              user_data;
+    GObject              *provider;
+} AsyncFetch;
+
+static void
+async_fetch_free(AsyncFetch *fetch)
+{
+    g_clear_object(&fetch->provider);
+    g_free(fetch->provider_id);
+    g_free(fetch);
+}
+
+static void
+on_models_listed_async(GObject *source, GAsyncResult *result,
+                       gpointer user_data)
+{
+    AsyncFetch *fetch = user_data;
+    g_autoptr(GError) error = NULL;
+    g_auto(GStrv) names = NULL;
+    GList *models;
+
+    models = ai_provider_list_models_finish(AI_PROVIDER(source), result,
+                                             &error);
+
+    if (models != NULL) {
+        g_autoptr(GPtrArray) array =
+            g_ptr_array_new_with_free_func(g_free);
+        GList *l;
+
+        for (l = models; l != NULL; l = l->next) {
+            if (l->data != NULL)
+                g_ptr_array_add(array, g_strdup(l->data));
+        }
+
+        g_list_free_full(models, g_free);
+        g_ptr_array_add(array, NULL);
+        names = (GStrv)g_ptr_array_free(g_steal_pointer(&array), FALSE);
+    } else if (error != NULL) {
+        /*
+         * Debug, not a warning.  A provider with no key is the ordinary
+         * case -- most people have one or two -- and a warning per
+         * provider per refresh would be noise in every log.
+         */
+        g_debug("model catalogue: %s: %s", fetch->provider_id,
+                error->message);
+    }
+
+    if (fetch->ready != NULL)
+        fetch->ready(fetch->provider_id, names, fetch->user_data);
+
+    async_fetch_free(fetch);
+}
+
+void
+clawt_model_catalog_fetch_models_async(const gchar          *provider_id,
+                                       ClawtModelsReadyFunc  ready,
+                                       gpointer              user_data)
+{
+    g_autoptr(AiConfig) ai_config = NULL;
+    g_autoptr(GError) error = NULL;
+    AsyncFetch *fetch;
+    GObject *provider;
+
+    g_return_if_fail(provider_id != NULL);
+
+    ai_config = ai_config_new();
+    provider = ai_provider_factory_new_from_string(provider_id, ai_config,
+                                                    &error);
+
+    if (provider == NULL) {
+        g_debug("model catalogue: %s: %s", provider_id,
+                error != NULL ? error->message : "unavailable");
+
+        if (ready != NULL)
+            ready(provider_id, NULL, user_data);
+
+        return;
+    }
+
+    fetch = g_new0(AsyncFetch, 1);
+    fetch->provider_id = g_strdup(provider_id);
+    fetch->ready = ready;
+    fetch->user_data = user_data;
+    fetch->provider = provider;
+
+    ai_provider_list_models_async(AI_PROVIDER(provider), NULL,
+                                   on_models_listed_async, fetch);
+}

@@ -122,4 +122,34 @@ GStrv clawt_model_catalog_fetch_models(const gchar   *provider_id,
                                        guint          timeout_seconds,
                                        GError       **error);
 
+/**
+ * ClawtModelsReadyFunc:
+ * @provider_id: which provider answered
+ * @models: (nullable) (array zero-terminated=1): what it runs, or %NULL
+ * @user_data: as passed in
+ *
+ * Called when a provider has answered, or failed to.
+ */
+typedef void (*ClawtModelsReadyFunc)(const gchar *provider_id,
+                                     GStrv        models,
+                                     gpointer     user_data);
+
+/**
+ * clawt_model_catalog_fetch_models_async:
+ * @provider_id: a provider id from the catalogue
+ * @ready: called when the provider answers
+ * @user_data: passed to @ready
+ *
+ * Asks a provider what it runs, without waiting.
+ *
+ * The synchronous version pumps the caller's context, which is fine for
+ * a CLI and wrong for a daemon: a client asking for the model list got
+ * a request that took as long as the slowest provider, and both the
+ * new-agent dialog and the agent inspector ask on every build. The
+ * result was a UI that appeared to hang on a button press.
+ */
+void clawt_model_catalog_fetch_models_async(const gchar          *provider_id,
+                                            ClawtModelsReadyFunc  ready,
+                                            gpointer              user_data);
+
 G_END_DECLS

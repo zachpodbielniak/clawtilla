@@ -257,6 +257,16 @@ the same program.
   another user of sqlite in the same process would find it shut down
   underneath them.
 
+### An IPC handler must not wait on the network
+
+- Every handler runs on the daemon's main context while the client
+  blocks, so a handler that calls out to the internet stalls that client
+  for as long as the far end takes. `model.list` asked five provider
+  APIs, and both the new-agent dialog and the agent inspector call it on
+  every build -- so pressing + or clicking an agent appeared to hang.
+  Anything that leaves the machine belongs in a cache warmed
+  asynchronously, with the handler answering from it.
+
 ### An AI CLI can only be given tools through an MCP config
 
 - ai-glib's CLI clients drop the tool list -- the claude-code client
