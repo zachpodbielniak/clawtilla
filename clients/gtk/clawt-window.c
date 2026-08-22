@@ -68,6 +68,7 @@ static void         image_chooser_build(ImageChooser *chooser,
                                         GtkWidget    *group,
                                         const gchar  *want);
 static gchar *      image_chooser_value(ImageChooser *chooser);
+static const gchar *answer_of(GtkWidget *row);
 static void         on_image_changed(GObject    *object,
                                      GParamSpec *pspec,
                                      gpointer    user_data);
@@ -1764,6 +1765,8 @@ typedef struct {
     ClawtWindow  *window;
     AdwDialog    *dialog;
     GtkWidget    *id_entry;
+    GtkWidget    *name_entry;
+    GtkWidget    *description_entry;
     GtkWidget    *computer_row;
     GtkWidget    *describe_entry;   /* purpose: the one required answer */
     GtkWidget    *boundaries_entry;
@@ -2148,7 +2151,15 @@ model_chooser_build_full(ModelChooser *chooser, ClawtWindow *window,
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
                               chooser->model_entry);
 
-    chooser->catalog = clawt_window_request(window, "model.list", NULL);
+    /*
+     * refresh: the provider's own list where we can get it.  The
+     * hardcoded table goes stale, and a person picking a model should
+     * see what the provider actually runs today. The daemon falls back
+     * to the table when there is no key or no network, so this never
+     * produces an empty chooser.
+     */
+    chooser->catalog = clawt_window_request(
+        window, "model.list", clawt_build_payload("refresh", "true", NULL));
 
     if (chooser->catalog != NULL && tools_only) {
         JsonArray *all = json_object_get_array_member(
@@ -2270,6 +2281,8 @@ on_create_manually(GtkButton *button, gpointer user_data)
         self, "agent.create",
         clawt_build_payload(
             "id", agent_id,
+            "name", answer_of(dialog->name_entry),
+            "description", answer_of(dialog->description_entry),
             "provider", provider != NULL
                         ? clawt_json_string(provider, "id", NULL) : NULL,
             "model", model,
@@ -2518,10 +2531,35 @@ on_new_agent(GtkButton *button, gpointer user_data)
                                     "By hand");
 
     dialog->id_entry = adw_entry_row_new();
+    adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(dialog->id_entry),
+                                        FALSE);
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->id_entry),
                                   "Id");
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(manual),
                               dialog->id_entry);
+
+    /*
+     * Name and description, which only the inspector offered before --
+     * so every agent was created with its id as its name and no
+     * description, and the description is what other agents read when
+     * deciding who to delegate to.
+     */
+    dialog->name_entry = adw_entry_row_new();
+    adw_preferences_row_set_use_markup(
+        ADW_PREFERENCES_ROW(dialog->name_entry), FALSE);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->name_entry),
+                                  "Name");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(manual),
+                              dialog->name_entry);
+
+    dialog->description_entry = adw_entry_row_new();
+    adw_preferences_row_set_use_markup(
+        ADW_PREFERENCES_ROW(dialog->description_entry), FALSE);
+    adw_preferences_row_set_title(
+        ADW_PREFERENCES_ROW(dialog->description_entry),
+        "What it is for");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(manual),
+                              dialog->description_entry);
 
     /*
      * Provider first, then model: the model list depends on it, and

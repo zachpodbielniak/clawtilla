@@ -1733,7 +1733,8 @@ cmd_model(int argc, char *argv[])
     if (client == NULL)
         return EXIT_FAILURE;
 
-    reply = call(client, "model.list", NULL);
+    reply = call(client, "model.list",
+                 build_payload("refresh", "true", NULL));
     if (reply == NULL)
         return EXIT_FAILURE;
 
@@ -1754,6 +1755,10 @@ cmd_model(int argc, char *argv[])
             g_print("    %-28s %s\n", member_or(model, "id", "?"),
                     member_or(model, "note", ""));
         }
+
+        if (json_object_has_member(provider, "live") &&
+            json_object_get_boolean_member(provider, "live"))
+            g_print("    (listed by the provider just now)\n");
 
         if (json_object_get_boolean_member(provider, "open_ended"))
             g_print("    (any other model name this provider accepts)\n");

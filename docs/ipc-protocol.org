@@ -148,6 +148,17 @@ model being asked again: a second run is a fresh conversation producing
 something else, which would make the preview a demonstration rather than
 a decision.  ~design.discard~ drops one.  At most eight may be pending.
 
+~model.list~ takes ~refresh~: %TRUE asks each provider that can be
+reached which models it actually runs, and marks those entries ~live~.
+The built-in table goes stale -- it offered grok-3 and grok-4 well after
+4.5 and 4.6 had shipped -- so anywhere a list is shown to a person should
+ask for this. A provider with no key, or no network, falls back to the
+table rather than returning nothing, and the call is bounded so a
+provider that never answers cannot hang the daemon.
+
+~design.agent~ takes ~id~ and ~name~: when present they are pinned and
+the model cannot change them.
+
 ~model.list~ returns the providers clawtilla knows about, each with its
 models.  It comes from the daemon rather than being built into each
 client so the CLI, the GTK app and the web client cannot disagree about

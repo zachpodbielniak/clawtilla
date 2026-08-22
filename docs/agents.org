@@ -346,6 +346,21 @@ There was one free-text box before.  It asked the person to write a
 paragraph that happened to contain everything the model needed, and a
 paragraph that leaves out the boundaries produces an agent with none.
 
+*** Your id and name are yours
+
+An id or name you typed is pinned: the model is told, and the tool that
+sets identity refuses to change them.
+
+Models rename routinely, to something they consider more descriptive.
+The agent then appears under a name nobody chose, and a script that
+asked for the original id is looking at the wrong agent.  Leave them
+blank and the model picks.
+
+It is also told not to invent a container image -- the default is a
+working, tested one, and an invented name is one podman cannot pull --
+and not to set ~system_prompt~, which would replace the org files it
+just wrote rather than adding to them.
+
 *** Choosing who designs
 
 #+begin_src bash

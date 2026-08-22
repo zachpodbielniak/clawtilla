@@ -2422,6 +2422,17 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         designer = clawt_agent_designer_new(self->config);
 
         /*
+         * An id or name the person typed is theirs.  Models rename
+         * routinely -- to something they consider more descriptive --
+         * and the agent then appears under a name nobody chose, with
+         * any script that asked for the original looking at the wrong
+         * agent.
+         */
+        clawt_agent_designer_pin_identity(
+            designer, clawt_ipc_payload_string(payload, "id"),
+            clawt_ipc_payload_string(payload, "name"));
+
+        /*
          * The model that designs is chosen per request, falling back to
          * ai_assist.  The one that drafts an agent and the one that then
          * runs it have no reason to be the same: a person will often
@@ -2679,6 +2690,8 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
 
     if (g_strcmp0(kind, "model.list") == 0) {
         const ClawtProviderInfo *catalog;
+        gboolean refresh = clawt_ipc_payload_boolean(payload, "refresh",
+                                                      FALSE);
         gsize n_providers = 0;
         gsize i;
 
@@ -2721,6 +2734,44 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
 
             json_builder_set_member_name(builder, "models");
             json_builder_begin_array(builder);
+
+            /*
+             * The provider's own list, when asked for and reachable.
+             *
+             * The hardcoded table goes stale -- it offered grok-3 and
+             * grok-4 well after 4.5 and 4.6 had shipped -- so a person
+             * choosing a model should be shown what the provider
+             * actually runs. Falls back to the table rather than
+             * failing: no key, or no network, is not a reason to offer
+             * nothing.
+             */
+            if (refresh && catalog[i].tools) {
+                g_autoptr(GError) fetch_error = NULL;
+                g_auto(GStrv) live = clawt_model_catalog_fetch_models(
+                    catalog[i].id, self->main_context, 15, &fetch_error);
+
+                if (live != NULL && live[0] != NULL) {
+                    gsize k;
+
+                    for (k = 0; live[k] != NULL; k++) {
+                        json_builder_begin_object(builder);
+                        json_builder_set_member_name(builder, "id");
+                        json_builder_add_string_value(builder, live[k]);
+                        json_builder_set_member_name(builder, "label");
+                        json_builder_add_string_value(builder, live[k]);
+                        json_builder_end_object(builder);
+                    }
+
+                    json_builder_end_array(builder);
+                    json_builder_set_member_name(builder, "live");
+                    json_builder_add_boolean_value(builder, TRUE);
+                    json_builder_end_object(builder);
+                    continue;
+                }
+
+                if (fetch_error != NULL)
+                    g_debug("model.list: %s", fetch_error->message);
+            }
 
             for (j = 0; j < catalog[i].n_models; j++) {
                 json_builder_begin_object(builder);

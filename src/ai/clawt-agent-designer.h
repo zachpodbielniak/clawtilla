@@ -70,6 +70,23 @@ void clawt_agent_designer_set_provider(ClawtAgentDesigner *self,
  * Returns: %TRUE if a provider was built
  */
 /**
+ * clawt_agent_designer_pin_identity:
+ * @self: a #ClawtAgentDesigner
+ * @id: (nullable): the id the person chose, or %NULL to let the model pick
+ * @name: (nullable): the display name they chose, or %NULL
+ *
+ * Fixes the agent's id and name so the model cannot change them.
+ *
+ * An id typed into a form is a decision. A model that renames it -- and
+ * they do, routinely, to something they consider more descriptive --
+ * leaves the agent appearing under a name nobody chose, and any script
+ * that expected the id it asked for looking at the wrong agent.
+ */
+void clawt_agent_designer_pin_identity(ClawtAgentDesigner *self,
+                                       const gchar        *id,
+                                       const gchar        *name);
+
+/**
  * clawt_agent_designer_set_provider_by_name:
  * @self: a #ClawtAgentDesigner
  * @provider_name: (nullable): a provider id from the model catalogue, or

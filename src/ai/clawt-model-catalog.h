@@ -96,4 +96,30 @@ const ClawtProviderInfo *clawt_model_catalog_find_provider(
  */
 const gchar *clawt_model_catalog_default_provider(void);
 
+/**
+ * clawt_model_catalog_fetch_models:
+ * @provider_id: a provider id from the catalogue
+ * @context: (nullable): the #GMainContext to pump while waiting
+ * @timeout_seconds: how long to wait before giving up
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Asks the provider which models it actually runs, right now.
+ *
+ * The hardcoded catalogue goes stale -- it listed grok-3 and grok-4 well
+ * after 4.5 and 4.6 had shipped -- so anywhere a list is shown to a
+ * person should prefer this and fall back to the catalogue when there is
+ * no key to ask with, or no network.
+ *
+ * Synchronous, because every caller is an IPC handler that is itself
+ * synchronous. The context is pumped while waiting rather than blocked,
+ * so the daemon keeps answering.
+ *
+ * Returns: (transfer full) (nullable) (array zero-terminated=1): the
+ *   model ids, or %NULL on failure
+ */
+GStrv clawt_model_catalog_fetch_models(const gchar   *provider_id,
+                                       GMainContext  *context,
+                                       guint          timeout_seconds,
+                                       GError       **error);
+
 G_END_DECLS

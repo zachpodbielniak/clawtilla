@@ -23,6 +23,15 @@ struct _ClawtAgentDesigner {
     gchar           *transcript;
     guint            max_turns;
     gboolean         committed;
+
+    /*
+     * Set when the person named the agent themselves.  The model gets
+     * told, and set_identity refuses to change them: an id typed into a
+     * form is a decision, and having it silently replaced by something
+     * the model preferred is the kind of helpfulness nobody wants.
+     */
+    gchar           *pinned_id;
+    gchar           *pinned_name;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtAgentDesigner, clawt_agent_designer, G_TYPE_OBJECT)
@@ -70,6 +79,23 @@ clawt_agent_designer_set_provider(ClawtAgentDesigner *self,
 
     if (provider != NULL)
         self->provider = g_object_ref(provider);
+}
+
+void
+clawt_agent_designer_pin_identity(ClawtAgentDesigner *self,
+                                  const gchar        *id,
+                                  const gchar        *name)
+{
+    g_return_if_fail(CLAWT_IS_AGENT_DESIGNER(self));
+
+    g_clear_pointer(&self->pinned_id, g_free);
+    g_clear_pointer(&self->pinned_name, g_free);
+
+    if (id != NULL && *id != '\0')
+        self->pinned_id = g_strdup(id);
+
+    if (name != NULL && *name != '\0')
+        self->pinned_name = g_strdup(name);
 }
 
 gboolean
@@ -200,7 +226,7 @@ tool_set_identity(AiToolUse *use, GCancellable *cancellable, GError **error,
         return NULL;
     }
 
-    if (!clawt_is_valid_id(id)) {
+    if (self->pinned_id == NULL && !clawt_is_valid_id(id)) {
         /*
          * Rejected with the rule stated, so the next attempt is right.  A
          * bare "invalid" makes a model guess, and it usually guesses the
@@ -212,6 +238,9 @@ tool_set_identity(AiToolUse *use, GCancellable *cancellable, GError **error,
         return NULL;
     }
 
+    if (self->pinned_id != NULL)
+        id = self->pinned_id;
+
     if (clawt_config_get_agent(self->config, id) != NULL) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_ALREADY_EXISTS,
                     "there is already an agent called '%s'; pick another id",
@@ -219,8 +248,16 @@ tool_set_identity(AiToolUse *use, GCancellable *cancellable, GError **error,
         return NULL;
     }
 
-    set_draft(self, "id", id);
-    set_draft(self, "name", input_string(use, "name"));
+    /*
+     * A pinned id wins.  The person typed it into a form; the model
+     * suggesting a better one is not a reason to overwrite a decision
+     * that has already been made, and the agent then appears under a
+     * name nobody chose.
+     */
+    set_draft(self, "id", (self->pinned_id != NULL) ? self->pinned_id : id);
+    set_draft(self, "name",
+              (self->pinned_name != NULL) ? self->pinned_name
+                                          : input_string(use, "name"));
     set_draft(self, "description", input_string(use, "description"));
     set_draft(self, "persona.system_prompt",
               input_string(use, "system_prompt"));
@@ -481,8 +518,11 @@ register_tools(ClawtAgentDesigner *self)
         { "description", "string", "One line on what this agent is for. "
                                    "Other agents read this when deciding "
                                    "who to delegate to.", FALSE },
-        { "system_prompt", "string", "The agent's standing instructions.",
-          FALSE }
+        { "system_prompt", "string", "Do not use this. Write SOUL.org with "
+                                     "write_file instead: a system_prompt "
+                                     "replaces the org files rather than "
+                                     "adding to them, so setting it throws "
+                                     "away everything you wrote.", FALSE }
     };
 
     static const ClawtParamInfo model_params[] = {
@@ -495,7 +535,10 @@ register_tools(ClawtAgentDesigner *self)
         { "type", "string", "none, host, container or vm.", TRUE },
         { "confine", "string", "For a host computer: workspace, allowlist "
                                "or bwrap.", FALSE },
-        { "image", "string", "For a container: the image to run.", FALSE }
+        { "image", "string", "For a container: only when the person named "
+                             "one. Leave it out otherwise -- the default "
+                             "is a working image and an invented name is "
+                             "one podman cannot pull.", FALSE }
     };
 
     static const ClawtParamInfo integration_params[] = {
@@ -670,6 +713,14 @@ clawt_agent_designer_design(ClawtAgentDesigner *self,
         "genuinely has to touch the real machine.\n"
         "- Do not invent credentials, hostnames or tokens. Enabling an\n"
         "integration is enough; the person fills in the rest.\n"
+        "- Do not set an image unless the person named one. The default is\n"
+        "a working, tested image; an invented name is one podman cannot\n"
+        "pull, and the agent then fails to start for a reason that looks\n"
+        "nothing like the cause.\n"
+        "- Do not set system_prompt. It replaces the org files rather than\n"
+        "adding to them, so setting it throws away everything write_file\n"
+        "wrote.\n"
+        "- Do not choose the id or the name if you were given them.\n"
         "\n"
         "The org files, written with write_file:\n"
         "- SOUL.org -- mission, operating parameters, voice. The one file\n"
@@ -845,6 +896,8 @@ clawt_agent_designer_finalize(GObject *object)
 
     g_clear_pointer(&self->draft, g_hash_table_unref);
     g_clear_pointer(&self->files, g_hash_table_unref);
+    g_clear_pointer(&self->pinned_id, g_free);
+    g_clear_pointer(&self->pinned_name, g_free);
     g_free(self->transcript);
 
     G_OBJECT_CLASS(clawt_agent_designer_parent_class)->finalize(object);

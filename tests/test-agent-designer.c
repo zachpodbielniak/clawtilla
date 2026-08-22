@@ -438,6 +438,71 @@ test_an_invented_file_is_refused(void)
     g_assert_cmpuint(g_hash_table_size(files), ==, 0);
 }
 
+/*
+ * A pinned id and name survive a model that wants to rename them.
+ *
+ * Models rename routinely -- to something they consider more
+ * descriptive -- and an id typed into a form is a decision, not a
+ * suggestion. The agent then appeared under a name nobody chose, and a
+ * script that asked for the original was looking at the wrong agent.
+ */
+static void
+test_pinned_identity_wins(void)
+{
+    g_autoptr(ClawtConfig) config = make_config();
+    g_autoptr(ClawtAgentDesigner) designer = clawt_agent_designer_new(config);
+    g_autoptr(AiMockProvider) provider = ai_mock_provider_new();
+    g_autoptr(GError) error = NULL;
+    GHashTable *draft;
+
+    clawt_agent_designer_pin_identity(designer, "clawtest",
+                                       "Clawtilla Tester");
+
+    ai_mock_provider_push_tool_use(
+        provider, "set_identity",
+        "{\"id\":\"test-runner\",\"name\":\"Test Runner\","
+        "\"description\":\"runs the tests\"}");
+    ai_mock_provider_push_tool_use(provider, "commit", "{}");
+    ai_mock_provider_push_text(provider, "Done.");
+
+    clawt_agent_designer_set_provider(designer, AI_PROVIDER(provider));
+
+    draft = clawt_agent_designer_design(designer, "a tester", NULL, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(draft);
+
+    g_assert_cmpstr(g_hash_table_lookup(draft, "id"), ==, "clawtest");
+    g_assert_cmpstr(g_hash_table_lookup(draft, "name"), ==,
+                    "Clawtilla Tester");
+
+    /* What it was actually asked to write still lands. */
+    g_assert_cmpstr(g_hash_table_lookup(draft, "description"), ==,
+                    "runs the tests");
+}
+
+/* Unpinned, the model still chooses -- pinning is opt-in. */
+static void
+test_unpinned_identity_is_the_models(void)
+{
+    g_autoptr(ClawtConfig) config = make_config();
+    g_autoptr(ClawtAgentDesigner) designer = clawt_agent_designer_new(config);
+    g_autoptr(AiMockProvider) provider = ai_mock_provider_new();
+    g_autoptr(GError) error = NULL;
+    GHashTable *draft;
+
+    ai_mock_provider_push_tool_use(
+        provider, "set_identity",
+        "{\"id\":\"test-runner\",\"name\":\"Test Runner\"}");
+    ai_mock_provider_push_tool_use(provider, "commit", "{}");
+    ai_mock_provider_push_text(provider, "Done.");
+
+    clawt_agent_designer_set_provider(designer, AI_PROVIDER(provider));
+
+    draft = clawt_agent_designer_design(designer, "a tester", NULL, &error);
+    g_assert_no_error(error);
+    g_assert_cmpstr(g_hash_table_lookup(draft, "id"), ==, "test-runner");
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -461,6 +526,9 @@ main(int argc, char *argv[])
                     test_unknown_integration_is_refused);
     g_test_add_func("/designer/preview", test_preview_shows_the_draft);
     g_test_add_func("/designer/writes-org-files", test_writes_the_org_files);
+    g_test_add_func("/designer/pinned-identity", test_pinned_identity_wins);
+    g_test_add_func("/designer/unpinned-identity",
+                    test_unpinned_identity_is_the_models);
     g_test_add_func("/designer/invented-file-refused",
                     test_an_invented_file_is_refused);
 
