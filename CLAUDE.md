@@ -549,6 +549,21 @@ the same program.
   images under it. Without that the suite quietly created files in the
   developer's real `~/.local/share`.
 
+### Double-encoded UTF-8 compiles perfectly
+
+- A tool that reads a source file as Latin-1 and writes it back turns
+  `…` into three characters. The compiler does not care — it is a string
+  literal either way — and it surfaces as mojibake in the sidebar, a long
+  way from the edit that caused it. This has now happened twice, so
+  `make docs-check` fails on it: `\xc2[\x80-\x9f]` is a C1 control,
+  which nothing legitimate contains (the range stops short of A0, a
+  non-breaking space), and `\xc3[\x82\x83]\xc2` is what a two-byte
+  character turns into. Verified in both directions against `… — ─ é ü`,
+  and against a clean tree.
+- Non-ASCII in C sources is fine and worth keeping — the section
+  dividers are box-drawing characters. It is the *round trip* through a
+  wrong encoding that breaks them.
+
 ### A popover unparented from object data is unparented too late
 
 - qdata is cleared in `g_object_finalize`, and `gtk_widget_finalize()`

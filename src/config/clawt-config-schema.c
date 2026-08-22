@@ -396,7 +396,7 @@ static const ClawtSchemaEntry schema[] = {
   "0 retries immediately.", "0.1.0" },
 
 /* ── rooms ───────────────────────────────────────────────────────── */
-/* ââ memory ââ */
+/* ── memory ── */
 { "memories", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "What an agent remembers between conversations.\n"
   "\n"

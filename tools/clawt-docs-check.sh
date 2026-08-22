@@ -13,6 +13,13 @@
 #   2. Every config key referenced in docs/ still exists in the schema.
 #      Docs that name a removed option are worse than no docs: the reader
 #      trusts them and then debugs why their setting does nothing.
+#
+#   3. No source file contains double-encoded UTF-8.  A tool that reads a
+#      file as Latin-1 and writes it back turns an ellipsis into three
+#      characters, and the compiler is perfectly happy: it is a string
+#      literal either way.  It shows up as mojibake in the sidebar, which
+#      is a long way from the edit that caused it -- and it has happened
+#      here twice.
 
 set -eu
 
@@ -65,9 +72,39 @@ check_doc_config_keys () {
     done
 }
 
+# UTF-8 that has been through Latin-1 and back.
+#
+# Two signatures, because the two cases look different:
+#
+#   \xc2[\x80-\x9f] is a C1 control character.  Every multi-byte UTF-8
+#   character has a continuation byte, and one in the 80-9F range becomes
+#   exactly this.  Nothing legitimate in source is a C1 control -- note
+#   the range stops short of A0, which is a non-breaking space.
+#
+#   \xc3[\x82\x83]\xc2 is an "A-circumflex" or "A-tilde" immediately
+#   followed by another Latin-1 lead, which is what a two-byte character
+#   turns into.
+MOJIBAKE='\xc2[\x80-\x9f]|\xc3[\x82\x83]\xc2'
+
+check_double_encoded_utf8 () {
+    for source in $(git ls-files '*.c' '*.h' '*.org' '*.md' '*.yaml' \
+                                '*.in' 2>/dev/null)
+    do
+        [ -f "${source}" ] || continue
+
+        if LC_ALL=C grep -qP "${MOJIBAKE}" "${source}" 2>/dev/null
+        then
+            echo "docs-check: ${source} has double-encoded UTF-8:"
+            LC_ALL=C grep -nP "${MOJIBAKE}" "${source}" | head -3
+            FAIL=1
+        fi
+    done
+}
+
 main () {
     check_public_headers
     check_doc_config_keys
+    check_double_encoded_utf8
 
     if [ "${FAIL}" -ne 0 ]
     then

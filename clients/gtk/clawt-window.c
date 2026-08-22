@@ -412,9 +412,9 @@ agent_row(JsonObject *agent)
         g_autofree gchar *activity = NULL;
 
         if (busy && peer != NULL && g_strcmp0(peer, "user") != 0)
-            activity = g_strdup_printf("working â for %s", peer);
+            activity = g_strdup_printf("working — for %s", peer);
         else if (busy)
-            activity = g_strdup("workingâ¦");
+            activity = g_strdup("working…");
         else if (g_strcmp0(state, "running") == 0 && depth > 0)
             activity = g_strdup_printf(
                 "%" G_GINT64_FORMAT " waiting to be read", depth);
