@@ -243,6 +243,71 @@ The name is rebuilt from its basename rather than trusted --
 because this crosses the IPC socket base64-encoded.
 
 
+
+*** Right-click
+
+| Where | What you get |
+|-------+--------------|
+| a message | copy it as markdown, text or org |
+| an attachment | open, save a copy, copy path, delete permanently |
+| the conversation | copy, open in $EDITOR, or save -- each as markdown, text or org |
+
+Attachments open with the desktop's own handler, so a PDF opens in
+whatever reads PDFs here and an image in whatever shows images. A file
+that is not an image gets a chip with its icon, name and size instead of
+a thumbnail; clicking it opens it the same way.
+
+Deleting asks first, goes through the daemon rather than unlinking from
+the client -- a client that deletes by path is a client that can be
+asked to delete any path -- and says plainly that the message will still
+name the file afterwards.
+
+*** Taking a conversation with you
+
+~Ctrl+Shift+G~ opens the whole conversation in ~$EDITOR~ as org.
+~Ctrl+G~ is the message you are writing; the difference is how much of
+it you meant.
+
+Conversion is pandoc's, run with ~--wrap=none~ so *one paragraph stays
+one line*. pandoc rewraps at 72 columns by default, which turns every
+paragraph into a block of hard-wrapped lines: unreadable in an editor
+that soft wraps and a nuisance to edit or diff afterwards.
+
+Markdown needs nothing installed. Text and org need pandoc, and say so
+rather than quietly handing back markdown under an org label -- which
+would be the worst of the three possible answers.
+
+The document is read back from the daemon rather than scraped off the
+widgets, so an export is of the conversation rather than of the last
+screenful of it.
+
+*** More commands
+
+| Command | What it does |
+|---------+--------------|
+| ~/reset~ | start the agent's AI session again, from nothing |
+| ~/retry~ | send your last message again |
+| ~/export [org]~ | save the conversation |
+| ~/copy [org]~ | copy the conversation |
+
+~/reset~ is for an agent that has got itself wedged. It stops the agent,
+moves its session files aside, clears its stored sessions from
+libreclaw's database, and starts it again if it was running -- so the
+next turn opens a new CLI session instead of resuming the old one with
+~--resume~.
+
+Both places matter: libreclaw restores a session from the files *or* the
+database, so clearing only one leaves the agent resuming from the other
+and looking like the reset did nothing. The files are moved rather than
+deleted, because a reset is what you reach for when something is wedged,
+which is exactly when you might want to look at what it was doing.
+
+*** Smaller things
+
+Messages carry the time they were sent. What you were typing is kept per
+agent, so clicking another agent and coming back does not lose it.
+
+
 *** The Flow tab
 
 The Chat tab is your conversation with one agent.  Flow is the rest of

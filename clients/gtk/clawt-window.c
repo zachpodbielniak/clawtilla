@@ -58,6 +58,7 @@ static gchar       *chooser_model(ModelChooser *chooser);
 static void         refresh_flow(ClawtWindow *self);
 static const gchar *editor_command(void);
 static void         on_send(GtkWidget *widget, gpointer user_data);
+static void         load_history(ClawtWindow *self);
 static void         on_new_agent(GtkButton *button,
                                  gpointer   user_data);
 static void         open_path_in_editor(ClawtWindow *self,
@@ -189,6 +190,15 @@ struct _ClawtWindow {
      * window opened was drawn twice.
      */
     GHashTable        *shown;
+
+    /*
+     * What was typed but not sent, per agent.
+     *
+     * Clicking another agent to check something and coming back to find
+     * your half-written message gone is the sort of small loss that
+     * makes a client feel careless.
+     */
+    GHashTable        *drafts;
 
     /*
      * Files and images queued to go with the next message, and the
@@ -579,6 +589,372 @@ set_label_markdown(GtkLabel *label, const gchar *body)
     gtk_label_set_text(label, body != NULL ? body : "");
 }
 
+/* ── Context menus ───────────────────────────────────────────────── */
+
+/*
+ * Attaches a right-click menu to a widget.
+ *
+ * GtkPopoverMenu wants a GMenuModel and an action group, which is a lot
+ * of ceremony for six entries whose targets change per widget. A
+ * GtkListBox in a plain popover is less machinery and behaves the same
+ * way to the person using it -- and a popover is fine here, unlike one
+ * parented to a GtkEntry, because it hangs off a container.
+ */
+typedef struct {
+    const gchar *label;
+    const gchar *action;
+} MenuEntry;
+
+typedef void (*MenuChosen)(ClawtWindow *self, const gchar *action,
+                           gpointer target);
+
+typedef struct {
+    ClawtWindow *window;
+    GtkWidget   *popover;
+    MenuChosen   chosen;
+    gpointer     target;      /* borrowed; owned by the widget it hangs off */
+} ContextMenu;
+
+static void
+context_menu_free(gpointer data)
+{
+    ContextMenu *menu = data;
+
+    g_clear_pointer(&menu->popover, gtk_widget_unparent);
+    g_free(menu);
+}
+
+static void
+on_context_chosen(GtkButton *button, gpointer user_data)
+{
+    ContextMenu *menu = user_data;
+    const gchar *action = g_object_get_data(G_OBJECT(button), "action");
+
+    gtk_popover_popdown(GTK_POPOVER(menu->popover));
+
+    if (action != NULL)
+        menu->chosen(menu->window, action, menu->target);
+}
+
+static void
+on_context_pressed(GtkGestureClick *gesture, gint n_press, gdouble x,
+                   gdouble y, gpointer user_data)
+{
+    ContextMenu *menu = user_data;
+    GdkRectangle at;
+
+    (void)gesture;
+    (void)n_press;
+
+    at.x = (gint)x;
+    at.y = (gint)y;
+    at.width = 1;
+    at.height = 1;
+
+    gtk_popover_set_pointing_to(GTK_POPOVER(menu->popover), &at);
+    gtk_popover_popup(GTK_POPOVER(menu->popover));
+}
+
+static void
+add_context_menu(ClawtWindow *self, GtkWidget *widget,
+                 const MenuEntry *entries, gsize n_entries,
+                 MenuChosen chosen, gpointer target)
+{
+    ContextMenu *menu = g_new0(ContextMenu, 1);
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    GtkGesture *gesture;
+    gsize i;
+
+    menu->window = self;
+    menu->chosen = chosen;
+    menu->target = target;
+
+    /*
+     * Buttons rather than a GtkListBox.
+     *
+     * A list box selects a row when it takes focus, and a popover takes
+     * focus the moment it opens -- so right-clicking a message ran the
+     * first entry immediately and copied it without being asked. A
+     * button does nothing until it is clicked, which is the entire
+     * behaviour wanted here.
+     */
+    for (i = 0; i < n_entries; i++) {
+        GtkWidget *item;
+
+        /* A NULL label is a separator in the table. */
+        if (entries[i].label == NULL) {
+            item = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+            gtk_widget_set_margin_top(item, 3);
+            gtk_widget_set_margin_bottom(item, 3);
+            gtk_box_append(GTK_BOX(box), item);
+            continue;
+        }
+
+        item = gtk_button_new_with_label(entries[i].label);
+        gtk_widget_add_css_class(item, "flat");
+        gtk_button_set_has_frame(GTK_BUTTON(item), FALSE);
+        gtk_widget_set_halign(item, GTK_ALIGN_FILL);
+
+        /* Left-aligned, like every other menu on the desktop. */
+        gtk_label_set_xalign(GTK_LABEL(gtk_button_get_child(GTK_BUTTON(item))),
+                             0.0f);
+
+        g_object_set_data_full(G_OBJECT(item), "action",
+                               g_strdup(entries[i].action), g_free);
+        g_signal_connect(item, "clicked", G_CALLBACK(on_context_chosen), menu);
+        gtk_box_append(GTK_BOX(box), item);
+    }
+
+    menu->popover = gtk_popover_new();
+    gtk_popover_set_has_arrow(GTK_POPOVER(menu->popover), FALSE);
+    gtk_popover_set_child(GTK_POPOVER(menu->popover), box);
+    gtk_widget_set_parent(menu->popover, widget);
+
+    gesture = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(gesture),
+                                  GDK_BUTTON_SECONDARY);
+    g_signal_connect(gesture, "pressed", G_CALLBACK(on_context_pressed), menu);
+    gtk_widget_add_controller(widget, GTK_EVENT_CONTROLLER(gesture));
+
+    /*
+     * Tied to the widget's lifetime: the popover is one of its children
+     * and has to be unparented before it goes, or GTK complains at
+     * teardown.
+     */
+    g_object_set_data_full(G_OBJECT(widget), "context-menu", menu,
+                           context_menu_free);
+}
+
+/* ── What the menus do ───────────────────────────────────────────── */
+
+static void
+copy_text(ClawtWindow *self, const gchar *text, const gchar *what)
+{
+    g_autofree gchar *message = NULL;
+
+    gdk_clipboard_set_text(gtk_widget_get_clipboard(GTK_WIDGET(self)),
+                           text != NULL ? text : "");
+
+    message = g_strdup_printf("%s copied.", what);
+    clawt_window_toast(self, message);
+}
+
+/*
+ * Converts and copies, saying so when the format is not available.
+ *
+ * Silently handing back markdown under an org label would be the worst
+ * of the three possible answers.
+ */
+static void
+copy_as(ClawtWindow *self, const gchar *markdown, ClawtExportFormat format,
+        const gchar *what)
+{
+    g_autofree gchar *converted = NULL;
+    g_autoptr(GError) error = NULL;
+
+    converted = clawt_export_convert(markdown, format, &error);
+
+    if (converted == NULL) {
+        clawt_window_toast(self, error->message);
+        return;
+    }
+
+    copy_text(self, converted, what);
+}
+
+/*
+ * The whole conversation as a markdown document.
+ *
+ * Read back from the daemon rather than scraped off the widgets: the
+ * transcript on screen is the last two hundred messages, and an export
+ * that quietly stopped there would be a export of the window rather
+ * than of the conversation.
+ */
+static gchar *
+conversation_markdown(ClawtWindow *self)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GPtrArray) messages = NULL;
+    JsonArray *array;
+    guint i;
+
+    if (self->selected_agent == NULL)
+        return NULL;
+
+    reply = clawt_window_request(
+        self, "room.history",
+        clawt_build_payload("room", self->selected_agent, "as", "user",
+                            "limit", "5000", NULL));
+
+    if (reply == NULL)
+        return NULL;
+
+    array = json_object_get_array_member(clawt_payload_of(reply), "messages");
+    messages = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_message_free);
+
+    for (i = 0; i < json_array_get_length(array); i++) {
+        JsonObject *one = json_array_get_object_element(array, i);
+        ClawtMessage *message = clawt_message_new(
+            self->selected_room, clawt_json_string(one, "sender", "?"),
+            clawt_json_string(one, "body", ""));
+
+        clawt_message_set_timestamp(message, clawt_json_int(one, "ts", 0));
+        g_ptr_array_add(messages, message);
+    }
+
+    return clawt_export_transcript(self->selected_agent, messages,
+                                   CLAWT_EXPORT_MARKDOWN, NULL);
+}
+
+static ClawtExportFormat
+format_from_action(const gchar *action)
+{
+    if (g_str_has_suffix(action, "org"))
+        return CLAWT_EXPORT_ORG;
+
+    if (g_str_has_suffix(action, "text"))
+        return CLAWT_EXPORT_PLAIN;
+
+    return CLAWT_EXPORT_MARKDOWN;
+}
+
+static void
+on_conversation_saved(GObject *source, GAsyncResult *result, gpointer data)
+{
+    ClawtWindow *self = g_object_get_data(source, "window");
+    g_autoptr(GFile) file = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *contents = data;
+
+    file = gtk_file_dialog_save_finish(GTK_FILE_DIALOG(source), result,
+                                       &error);
+
+    if (file == NULL) {
+        if (error != NULL &&
+            !g_error_matches(error, GTK_DIALOG_ERROR,
+                             GTK_DIALOG_ERROR_DISMISSED))
+            clawt_window_toast(self, error->message);
+
+        g_object_unref(self);
+        return;
+    }
+
+    if (!g_file_replace_contents(file, contents, strlen(contents), NULL,
+                                 FALSE, G_FILE_CREATE_NONE, NULL, NULL,
+                                 &error))
+        clawt_window_toast(self, error->message);
+    else
+        clawt_window_toast(self, "Saved.");
+
+    g_object_unref(self);
+}
+
+static void
+save_document(ClawtWindow *self, const gchar *contents, const gchar *basename,
+              ClawtExportFormat format)
+{
+    GtkFileDialog *dialog = gtk_file_dialog_new();
+    g_autofree gchar *suggested = g_strconcat(
+        basename, clawt_export_format_extension(format), NULL);
+
+    gtk_file_dialog_set_title(dialog, "Save");
+    gtk_file_dialog_set_initial_name(dialog, suggested);
+
+    /*
+     * The contents travel with the dialog rather than being re-derived
+     * in the callback: by the time somebody has picked a filename the
+     * conversation may have moved on, and saving something other than
+     * what they asked for is worse than not saving.
+     */
+    g_object_set_data_full(G_OBJECT(dialog), "window", g_object_ref(self),
+                           g_object_unref);
+    gtk_file_dialog_save(dialog, GTK_WINDOW(self), NULL, on_conversation_saved,
+                         g_strdup(contents));
+    g_object_unref(dialog);
+}
+
+static void
+open_document_in_editor(ClawtWindow *self, const gchar *contents,
+                        const gchar *basename, ClawtExportFormat format)
+{
+    g_autofree gchar *template = NULL;
+    g_autofree gchar *path = NULL;
+    g_autoptr(GError) error = NULL;
+    gint fd;
+
+    template = g_strdup_printf("%s-XXXXXX%s", basename,
+                               clawt_export_format_extension(format));
+    fd = g_file_open_tmp(template, &path, &error);
+
+    if (fd < 0) {
+        clawt_window_toast(self, error->message);
+        return;
+    }
+
+    close(fd);
+
+    if (!g_file_set_contents(path, contents, -1, &error)) {
+        clawt_window_toast(self, error->message);
+        g_unlink(path);
+        return;
+    }
+
+    /*
+     * Not deleted afterwards, unlike the message composer's scratch
+     * file: this is somebody taking a conversation away to keep, and
+     * removing it the moment their editor exits would throw away what
+     * they went to get.
+     */
+    open_path_in_editor(self, path, basename);
+}
+
+static void
+on_conversation_action(ClawtWindow *self, const gchar *action, gpointer target)
+{
+    g_autofree gchar *markdown = NULL;
+    g_autofree gchar *converted = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtExportFormat format = format_from_action(action);
+
+    (void)target;
+
+    markdown = conversation_markdown(self);
+
+    if (markdown == NULL) {
+        clawt_window_toast(self, "there is no conversation to export");
+        return;
+    }
+
+    converted = clawt_export_convert(markdown, format, &error);
+
+    if (converted == NULL) {
+        clawt_window_toast(self, error->message);
+        return;
+    }
+
+    if (g_str_has_prefix(action, "copy"))
+        copy_text(self, converted, "Conversation");
+    else if (g_str_has_prefix(action, "edit"))
+        open_document_in_editor(self, converted, self->selected_agent, format);
+    else if (g_str_has_prefix(action, "save"))
+        save_document(self, converted, self->selected_agent, format);
+}
+
+static void
+on_message_action(ClawtWindow *self, const gchar *action, gpointer target)
+{
+    const gchar *body = target;
+
+    if (g_strcmp0(action, "copy-markdown") == 0) {
+        copy_text(self, body, "Message");
+        return;
+    }
+
+    copy_as(self, body, format_from_action(action), "Message");
+}
+
+
 /* ── Attachment previews in the transcript ───────────────────────── */
 
 /*
@@ -622,6 +998,145 @@ on_preview_key(GtkEventControllerKey *controller, guint keyval, guint keycode,
     gtk_window_destroy(GTK_WINDOW(user_data));
     return GDK_EVENT_STOP;
 }
+
+/*
+ * Hands a file to the desktop -- xdg-open's job.
+ *
+ * GtkFileLauncher rather than a spawn, so this goes through the
+ * portal when there is one and through the mime handler when there is
+ * not, which is what a person means by "open it".
+ */
+static void
+open_with_desktop(ClawtWindow *self, const gchar *path)
+{
+    g_autoptr(GFile) file = g_file_new_for_path(path);
+    g_autoptr(GtkFileLauncher) launcher = gtk_file_launcher_new(file);
+
+    gtk_file_launcher_launch(launcher, GTK_WINDOW(self), NULL, NULL, NULL);
+}
+
+static void
+on_attachment_saved(GObject *source, GAsyncResult *result, gpointer data)
+{
+    ClawtWindow *self = g_object_get_data(source, "window");
+    g_autoptr(GFile) target = NULL;
+    g_autoptr(GFile) from = g_file_new_for_path(data);
+    g_autoptr(GError) error = NULL;
+
+    g_free(data);
+
+    target = gtk_file_dialog_save_finish(GTK_FILE_DIALOG(source), result,
+                                         &error);
+
+    if (target == NULL) {
+        if (error != NULL &&
+            !g_error_matches(error, GTK_DIALOG_ERROR,
+                             GTK_DIALOG_ERROR_DISMISSED))
+            clawt_window_toast(self, error->message);
+
+        g_object_unref(self);
+        return;
+    }
+
+    if (!g_file_copy(from, target, G_FILE_COPY_OVERWRITE, NULL, NULL, NULL,
+                     &error))
+        clawt_window_toast(self, error->message);
+    else
+        clawt_window_toast(self, "Saved.");
+
+    g_object_unref(self);
+}
+
+static void
+on_attachment_delete_confirmed(AdwAlertDialog *dialog, const gchar *response,
+                               gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *path = g_object_get_data(G_OBJECT(dialog), "path");
+    g_autofree gchar *name = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+
+    if (g_strcmp0(response, "delete") != 0)
+        return;
+
+    name = g_path_get_basename(path);
+
+    /*
+     * Through the daemon, which owns the exchange directory and checks
+     * the name, rather than unlinking from here -- a client that
+     * deletes by path is a client that can be asked to delete any path.
+     */
+    reply = clawt_window_request(
+        self, "attachment.remove",
+        clawt_build_payload("agent", self->selected_agent, "name", name,
+                            NULL));
+
+    if (reply == NULL)
+        return;
+
+    clawt_window_toast(self, "Deleted. The message still names it.");
+    load_history(self);
+}
+
+static void
+on_attachment_action(ClawtWindow *self, const gchar *action, gpointer target)
+{
+    const gchar *path = target;
+
+    if (g_strcmp0(action, "open") == 0) {
+        open_with_desktop(self, path);
+        return;
+    }
+
+    if (g_strcmp0(action, "copy-path") == 0) {
+        copy_text(self, path, "Path");
+        return;
+    }
+
+    if (g_strcmp0(action, "save") == 0) {
+        GtkFileDialog *dialog = gtk_file_dialog_new();
+        g_autofree gchar *name = g_path_get_basename(path);
+
+        gtk_file_dialog_set_title(dialog, "Save a copy");
+        gtk_file_dialog_set_initial_name(dialog, name);
+        g_object_set_data_full(G_OBJECT(dialog), "window",
+                               g_object_ref(self), g_object_unref);
+        gtk_file_dialog_save(dialog, GTK_WINDOW(self), NULL,
+                             on_attachment_saved, g_strdup(path));
+        g_object_unref(dialog);
+        return;
+    }
+
+    if (g_strcmp0(action, "delete") == 0) {
+        AdwAlertDialog *dialog;
+        g_autofree gchar *name = g_path_get_basename(path);
+        g_autofree gchar *body = g_strdup_printf(
+            "\xe2\x80\x9c%s\xe2\x80\x9d will be deleted from %s's exchange "
+            "directory. This cannot be undone, and the message will still "
+            "name the file.", name, self->selected_agent);
+
+        dialog = ADW_ALERT_DIALOG(
+            adw_alert_dialog_new("Delete this file?", body));
+        adw_alert_dialog_add_responses(dialog, "cancel", "Cancel",
+                                       "delete", "Delete", NULL);
+        adw_alert_dialog_set_response_appearance(dialog, "delete",
+                                                 ADW_RESPONSE_DESTRUCTIVE);
+        adw_alert_dialog_set_default_response(dialog, "cancel");
+        g_object_set_data_full(G_OBJECT(dialog), "path", g_strdup(path),
+                               g_free);
+        g_signal_connect(dialog, "response",
+                         G_CALLBACK(on_attachment_delete_confirmed), self);
+        adw_dialog_present(ADW_DIALOG(dialog), GTK_WIDGET(self));
+    }
+}
+
+static const MenuEntry attachment_menu[] = {
+    { "Open",              "open" },
+    { "Save a copy\xe2\x80\xa6", "save" },
+    { "Copy path",         "copy-path" },
+    { NULL,                NULL },
+    { "Delete permanently", "delete" }
+};
 
 /*
  * Opens one attachment full size.
@@ -672,6 +1187,75 @@ on_preview_clicked(GtkButton *button, gpointer user_data)
     gtk_widget_add_controller(window, keys);
 
     gtk_window_present(GTK_WINDOW(window));
+}
+
+/*
+ * A file that is not an image: a name, a size, and the same menu.
+ *
+ * Clicking opens it with the desktop's handler, which is what makes a
+ * PDF in a conversation something you can read rather than a path you
+ * have to go and find.
+ */
+static void
+on_file_chip_clicked(GtkButton *button, gpointer user_data)
+{
+    open_with_desktop(user_data, g_object_get_data(G_OBJECT(button), "path"));
+}
+
+static void
+append_file_chip(ClawtWindow *self, GtkWidget *row, const gchar *path,
+                 gboolean from_user)
+{
+    g_autoptr(GFile) file = g_file_new_for_path(path);
+    g_autoptr(GFileInfo) info = NULL;
+    g_autofree gchar *name = g_path_get_basename(path);
+    g_autofree gchar *label = NULL;
+    GtkWidget *button;
+    GtkWidget *box;
+    GtkWidget *icon;
+
+    info = g_file_query_info(file,
+                             G_FILE_ATTRIBUTE_STANDARD_SIZE ","
+                             G_FILE_ATTRIBUTE_STANDARD_ICON,
+                             G_FILE_QUERY_INFO_NONE, NULL, NULL);
+
+    if (info != NULL) {
+        g_autofree gchar *size = g_format_size(
+            (guint64)g_file_info_get_size(info));
+
+        label = g_strdup_printf("%s  \xc2\xb7  %s", name, size);
+    } else {
+        label = g_strdup(name);
+    }
+
+    box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+
+    /*
+     * The icon the desktop would use for this type, so a PDF looks like
+     * a PDF rather than like every other attachment.
+     */
+    icon = (info != NULL && g_file_info_get_icon(info) != NULL)
+           ? gtk_image_new_from_gicon(g_file_info_get_icon(info))
+           : gtk_image_new_from_icon_name("text-x-generic-symbolic");
+
+    gtk_box_append(GTK_BOX(box), icon);
+    gtk_box_append(GTK_BOX(box), gtk_label_new(label));
+
+    button = gtk_button_new();
+    gtk_button_set_child(GTK_BUTTON(button), box);
+    gtk_widget_add_css_class(button, "card");
+    gtk_widget_set_halign(button,
+                          from_user ? GTK_ALIGN_END : GTK_ALIGN_START);
+    gtk_widget_set_tooltip_text(button, path);
+    g_object_set_data_full(G_OBJECT(button), "path", g_strdup(path), g_free);
+    g_signal_connect(button, "clicked", G_CALLBACK(on_file_chip_clicked),
+                     self);
+
+    add_context_menu(self, button, attachment_menu,
+                     G_N_ELEMENTS(attachment_menu), on_attachment_action,
+                     g_object_get_data(G_OBJECT(button), "path"));
+
+    gtk_box_append(GTK_BOX(row), button);
 }
 
 /*
@@ -737,9 +1321,18 @@ append_attachment_previews(ClawtWindow *self, GtkWidget *row,
         if (g_str_has_suffix(candidate, ")"))
             continue;
 
-        if (!looks_like_an_image(candidate) ||
-            !g_file_test(candidate, G_FILE_TEST_EXISTS))
+        if (!g_file_test(candidate, G_FILE_TEST_EXISTS))
             continue;
+
+        /*
+         * Anything that is not an image gets a chip instead of a
+         * thumbnail: a name, a size and the same menu. A PDF in a
+         * conversation was previously a path and nothing else.
+         */
+        if (!looks_like_an_image(candidate)) {
+            append_file_chip(self, row, candidate, from_user);
+            continue;
+        }
 
         /*
          * Scaled on load rather than shrunk in the widget.
@@ -823,6 +1416,11 @@ append_attachment_previews(ClawtWindow *self, GtkWidget *row,
         g_signal_connect(button, "clicked", G_CALLBACK(on_preview_clicked),
                          self);
 
+        add_context_menu(self, button, attachment_menu,
+                         G_N_ELEMENTS(attachment_menu),
+                         on_attachment_action,
+                         g_object_get_data(G_OBJECT(button), "path"));
+
         gtk_box_append(GTK_BOX(row), button);
     }
 }
@@ -830,8 +1428,13 @@ append_attachment_previews(ClawtWindow *self, GtkWidget *row,
 
 static void
 append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
-               gboolean from_user)
+               gboolean from_user, gint64 ts)
 {
+    static const MenuEntry message_menu[] = {
+        { "Copy",             "copy-markdown" },
+        { "Copy as text",     "copy-text" },
+        { "Copy as org",      "copy-org" }
+    };
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     GtkWidget *who = gtk_label_new(sender);
     GtkWidget *text = gtk_label_new(NULL);
@@ -839,6 +1442,24 @@ append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
     gtk_widget_add_css_class(who, "caption");
     gtk_widget_add_css_class(who, "dim-label");
     gtk_widget_set_halign(who, from_user ? GTK_ALIGN_END : GTK_ALIGN_START);
+
+    /*
+     * The time, beside the name.  The Flow tab has had it since it was
+     * written and the chat has not, which made "when did it say that"
+     * a question you could only answer by exporting.
+     */
+    {
+        g_autoptr(GDateTime) when = (ts > 0)
+            ? g_date_time_new_from_unix_local(ts)
+            : g_date_time_new_now_local();
+        g_autofree gchar *stamp = (when != NULL)
+            ? g_date_time_format(when, "%H:%M") : g_strdup("");
+        g_autofree gchar *both = from_user
+            ? g_strdup_printf("%s  %s", stamp, sender)
+            : g_strdup_printf("%s  %s", sender, stamp);
+
+        gtk_label_set_text(GTK_LABEL(who), both);
+    }
 
     /*
      * Rendered from markdown, never *as* markup.
@@ -859,6 +1480,15 @@ append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
     gtk_box_append(GTK_BOX(row), who);
     gtk_box_append(GTK_BOX(row), text);
     append_attachment_previews(self, row, body, from_user);
+
+    /*
+     * The body travels with the row, so the menu can copy what was
+     * actually said rather than what the label happens to render.
+     */
+    g_object_set_data_full(G_OBJECT(row), "body", g_strdup(body), g_free);
+    add_context_menu(self, row, message_menu, G_N_ELEMENTS(message_menu),
+                     on_message_action,
+                     g_object_get_data(G_OBJECT(row), "body"));
     gtk_widget_set_margin_start(row, 12);
     gtk_widget_set_margin_end(row, 12);
     gtk_widget_set_margin_top(row, 6);
@@ -1414,6 +2044,10 @@ static const SlashCommand slash_commands[] = {
     { "/agents",  NULL,      "who is in the fleet" },
     { "/flow",    NULL,      "go to the conversations between agents" },
     { "/tasks",   NULL,      "go to the task board" },
+    { "/reset",   NULL,      "start the agent's AI session again, from nothing" },
+    { "/retry",   NULL,      "send your last message again" },
+    { "/export",  "[org]",   "save the conversation: text, markdown or org" },
+    { "/copy",    "[org]",   "copy the conversation: text, markdown or org" },
     { "/clear",   NULL,      "clear this transcript on screen only" },
     { "/new",     NULL,      "create an agent" }
 };
@@ -1422,7 +2056,7 @@ static const SlashCommand slash_commands[] = {
 static void
 append_local(ClawtWindow *self, const gchar *text)
 {
-    append_message(self, "clawtilla", text, FALSE);
+    append_message(self, "clawtilla", text, FALSE, 0);
     queue_scroll(self);
 }
 
@@ -1545,6 +2179,76 @@ run_slash_command(ClawtWindow *self, const gchar *text)
         }
 
         refresh_agents(self);
+        return TRUE;
+    }
+
+    if (g_strcmp0(name, "/reset") == 0) {
+        g_autoptr(JsonNode) reply = clawt_window_request(
+            self, "agent.reset",
+            clawt_build_payload("agent", self->selected_agent, NULL));
+
+        if (reply != NULL) {
+            JsonObject *result = clawt_payload_of(reply);
+            g_autofree gchar *message = g_strdup_printf(
+                "Session reset: %" G_GINT64_FORMAT " stored session%s "
+                "cleared%s. The next thing you say starts a new one.",
+                clawt_json_int(result, "sessions_cleared", 0),
+                clawt_json_int(result, "sessions_cleared", 0) == 1 ? "" : "s",
+                clawt_json_int(result, "restarted", 0) ? " and the agent "
+                                                          "restarted" : "");
+
+            append_local(self, message);
+        }
+
+        refresh_agents(self);
+        return TRUE;
+    }
+
+    if (g_strcmp0(name, "/retry") == 0) {
+        g_autoptr(JsonNode) reply = NULL;
+        JsonArray *messages;
+        const gchar *last = NULL;
+        guint j;
+
+        reply = clawt_window_request(
+            self, "room.history",
+            clawt_build_payload("room", self->selected_agent, "as", "user",
+                                NULL));
+
+        if (reply == NULL)
+            return TRUE;
+
+        messages = json_object_get_array_member(clawt_payload_of(reply),
+                                                "messages");
+
+        for (j = 0; j < json_array_get_length(messages); j++) {
+            JsonObject *one = json_array_get_object_element(messages, j);
+
+            if (g_strcmp0(clawt_json_string(one, "sender", ""), "user") == 0)
+                last = clawt_json_string(one, "body", NULL);
+        }
+
+        if (last == NULL) {
+            append_local(self, "You have not said anything to resend.");
+            return TRUE;
+        }
+
+        /*
+         * Put in the box rather than sent. Retry usually means "that
+         * did not go how I wanted", and the chance to change a word
+         * before it goes again is the point.
+         */
+        entry_set_text(self, last);
+        entry_focus_end(self);
+        return TRUE;
+    }
+
+    if (g_strcmp0(name, "/export") == 0 || g_strcmp0(name, "/copy") == 0) {
+        g_autofree gchar *what = g_strdup_printf(
+            "%s-%s", g_strcmp0(name, "/copy") == 0 ? "copy" : "save",
+            (rest != NULL && rest[0] != '\0') ? rest : "markdown");
+
+        on_conversation_action(self, what, NULL);
         return TRUE;
     }
 
@@ -1792,7 +2496,16 @@ on_entry_key(GtkEventControllerKey *controller, guint keyval, guint keycode,
         return GDK_EVENT_PROPAGATE;
 
     if (keyval == GDK_KEY_g || keyval == GDK_KEY_G) {
-        compose_in_editor(self);
+        /*
+         * Shift takes the whole conversation to $EDITOR as org; plain
+         * Ctrl+G takes the message being written. Same gesture, and the
+         * difference is how much of it you meant.
+         */
+        if ((state & GDK_SHIFT_MASK) != 0)
+            on_conversation_action(self, "edit-org", NULL);
+        else
+            compose_in_editor(self);
+
         return GDK_EVENT_STOP;
     }
 
@@ -1850,7 +2563,8 @@ load_history(ClawtWindow *self)
             g_hash_table_add(self->shown, g_strdup(id));
 
         append_message(self, sender, clawt_json_string(message, "body", ""),
-                       g_strcmp0(sender, "user") == 0);
+                       g_strcmp0(sender, "user") == 0,
+                       clawt_json_int(message, "ts", 0));
     }
 
     self->following = TRUE;
@@ -1902,6 +2616,7 @@ on_send(GtkWidget *widget, gpointer user_data)
      * on.
      */
     entry_set_text(self, "");
+    g_hash_table_remove(self->drafts, self->selected_agent);
 
     /*
      * A stopped agent accepts the message -- that is what a durable
@@ -3276,8 +3991,22 @@ select_agent(ClawtWindow *self, const gchar *agent_id)
     if (g_strcmp0(agent_id, self->selected_agent) == 0)
         return;
 
+    /* Keep what was being written to the agent we are leaving. */
+    if (self->selected_agent != NULL) {
+        g_autofree gchar *draft = entry_text(self);
+
+        if (draft != NULL && draft[0] != '\0')
+            g_hash_table_insert(self->drafts,
+                                g_strdup(self->selected_agent),
+                                g_steal_pointer(&draft));
+        else
+            g_hash_table_remove(self->drafts, self->selected_agent);
+    }
+
     g_free(self->selected_agent);
     self->selected_agent = g_strdup(agent_id);
+
+    entry_set_text(self, g_hash_table_lookup(self->drafts, agent_id));
 
     adw_window_title_set_title(
         ADW_WINDOW_TITLE(g_object_get_data(G_OBJECT(self), "title")),
@@ -3493,7 +4222,7 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
             !already_shown(self, clawt_event_get_detail(event, "id"))) {
             append_message(self, from != NULL ? from : "?",
                            body != NULL ? body : "",
-                           g_strcmp0(from, "user") == 0);
+                           g_strcmp0(from, "user") == 0, 0);
 
             /*
              * The reply is the end of the turn.  libreclaw drops the
@@ -4526,6 +5255,32 @@ build_chat_page(ClawtWindow *self)
     self->transcript = GTK_BOX(gtk_box_new(GTK_ORIENTATION_VERTICAL, 0));
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll),
                                   GTK_WIDGET(self->transcript));
+
+    /*
+     * Right-clicking the conversation itself, rather than one message.
+     * Attached to the scrolled window so the empty space below the last
+     * message counts too -- that is where somebody actually right
+     * clicks.
+     */
+    {
+        static const MenuEntry conversation_menu[] = {
+            { "Copy conversation as text",     "copy-text" },
+            { "Copy conversation as markdown", "copy-markdown" },
+            { "Copy conversation as org",      "copy-org" },
+            { NULL, NULL },
+            { "Open in $EDITOR as text",       "edit-text" },
+            { "Open in $EDITOR as markdown",   "edit-markdown" },
+            { "Open in $EDITOR as org",        "edit-org" },
+            { NULL, NULL },
+            { "Save as text\xe2\x80\xa6",      "save-text" },
+            { "Save as markdown\xe2\x80\xa6",  "save-markdown" },
+            { "Save as org\xe2\x80\xa6",       "save-org" }
+        };
+
+        add_context_menu(self, scroll, conversation_menu,
+                         G_N_ELEMENTS(conversation_menu),
+                         on_conversation_action, NULL);
+    }
     gtk_widget_set_vexpand(scroll, TRUE);
     self->transcript_scroll = GTK_SCROLLED_WINDOW(scroll);
 
@@ -5413,6 +6168,7 @@ clawt_window_dispose(GObject *object)
     g_clear_pointer(&self->selected_room, g_free);
     g_clear_pointer(&self->flow_room, g_free);
     g_clear_pointer(&self->shown, g_hash_table_unref);
+    g_clear_pointer(&self->drafts, g_hash_table_unref);
     g_clear_pointer(&self->pending, g_ptr_array_unref);
 
 
@@ -5445,6 +6201,8 @@ clawt_window_init(ClawtWindow *self)
     self->following = TRUE;
     self->shown = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                         NULL);
+    self->drafts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                         g_free);
     self->pending = g_ptr_array_new_with_free_func(
         (GDestroyNotify)attachment_free);
 }

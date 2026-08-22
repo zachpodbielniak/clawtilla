@@ -437,6 +437,23 @@ the same program.
   deprecated). And use `SCALE_DOWN` rather than `CONTAIN` in a viewer,
   or a small image is blown up to fill the window and looks like a bug.
 
+### A GtkListBox in a popover fires the moment it opens
+
+- It selects a row when it takes focus, and a popover takes focus as it
+  opens — so a right-click menu built from `::row-selected` ran its
+  first entry before the person had chosen anything. Context menus are
+  plain `GtkButton`s in a box: a button does nothing until it is
+  clicked, which is the whole behaviour wanted.
+
+### Two places remember an agent's AI session
+
+- libreclaw restores a session from `session.persist_dir` *or* from its
+  sqlite database, so `/reset` has to clear both — clearing one leaves
+  the agent resuming from the other and looking like the reset did
+  nothing. The daemon links liblc, so it does it through
+  `lc_database_remove_session()` rather than by opening libreclaw's
+  schema, and only with the agent stopped.
+
 ### A popover parented to a GtkEntry stops the window mapping
 
 - Worse than the GtkListBox case below: `gtk_widget_set_parent(popover,

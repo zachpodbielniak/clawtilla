@@ -10,6 +10,7 @@
 #include "clawtilla.h"
 
 #include <glib/gstdio.h>
+#include <errno.h>
 #include "core/clawt-daemon.h"
 
 #include <string.h>
@@ -2021,6 +2022,140 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         }
 
         json_builder_end_array(builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "agent.reset") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        ClawtAgent *agent = (agent_id != NULL)
+                            ? clawt_agent_manager_get(self->agents, agent_id)
+                            : NULL;
+        g_autofree gchar *state_dir = NULL;
+        g_autofree gchar *sessions = NULL;
+        g_autofree gchar *aside = NULL;
+        g_autofree gchar *db_path = NULL;
+        gboolean was_running;
+        guint cleared = 0;
+
+        if (agent == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such agent");
+
+        was_running = clawt_agent_get_state(agent) != CLAWT_AGENT_STATE_STOPPED;
+
+        /*
+         * Stopped first, and not only to be tidy: the agent holds its
+         * own session files and its own sqlite connection open, and
+         * clearing either underneath a running process is how you get a
+         * half-reset session that resumes anyway.
+         */
+        if (was_running)
+            clawt_daemon_stop_agent(self, agent_id);
+
+        state_dir = clawt_config_agent_state_dir(self->config, agent_id);
+        sessions = g_build_filename(state_dir, "sessions", NULL);
+        db_path = g_build_filename(state_dir, "libreclaw.db", NULL);
+
+        /*
+         * Moved aside rather than deleted. A reset is what you reach for
+         * when something is wedged, which is exactly when you might want
+         * to look at what it was doing.
+         */
+        if (g_file_test(sessions, G_FILE_TEST_IS_DIR)) {
+            aside = g_strdup_printf("%s.reset-%" G_GINT64_FORMAT, sessions,
+                                    g_get_real_time() / G_USEC_PER_SEC);
+
+            if (g_rename(sessions, aside) != 0)
+                g_clear_pointer(&aside, g_free);
+        }
+
+        /*
+         * And the database rows, because libreclaw restores a session
+         * from either place -- clearing only the files leaves the agent
+         * resuming the same CLI session from sqlite and looking like the
+         * reset did nothing.
+         *
+         * Through libreclaw's own API rather than by opening its schema:
+         * the daemon links liblc, and the agent is stopped, so this is
+         * the same code the agent itself would run.
+         */
+        if (g_file_test(db_path, G_FILE_TEST_EXISTS)) {
+            g_autoptr(LcDatabase) db = LC_DATABASE(lc_sqlite_database_new());
+            g_autoptr(GError) db_error = NULL;
+
+            if (lc_database_open(db, db_path, &db_error)) {
+                GPtrArray *rows = lc_database_load_sessions(db, NULL);
+                guint i;
+
+                for (i = 0; rows != NULL && i < rows->len; i++) {
+                    LcDbSession *row = g_ptr_array_index(rows, i);
+
+                    if (lc_database_remove_session(db, row->session_key,
+                                                   NULL))
+                        cleared++;
+                }
+
+                g_clear_pointer(&rows, g_ptr_array_unref);
+                lc_database_close(db);
+            } else {
+                g_warning("agent %s: could not clear its session rows: %s",
+                          agent_id, db_error->message);
+            }
+        }
+
+        if (was_running && !clawt_daemon_start_agent(self, agent_id, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "sessions_cleared");
+        json_builder_add_int_value(builder, cleared);
+        json_builder_set_member_name(builder, "moved");
+        json_builder_add_string_value(builder, aside != NULL ? aside : "");
+        json_builder_set_member_name(builder, "restarted");
+        json_builder_add_boolean_value(builder, was_running);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "attachment.remove") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        const gchar *name = clawt_ipc_payload_string(payload, "name");
+        g_autofree gchar *safe = NULL;
+        g_autofree gchar *relative = NULL;
+        g_autofree gchar *host_path = NULL;
+
+        if (agent_id == NULL || name == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "agent and name are both required");
+
+        if (self->exchange == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
+                                       "there is no exchange directory");
+
+        /*
+         * Rebuilt from its basename and resolved through the exchange,
+         * exactly as attachment.put does. A client asking to delete
+         * "../../../etc/passwd" gets a refusal about a file in its own
+         * drop-box that does not exist.
+         */
+        safe = g_path_get_basename(name);
+        relative = g_build_filename(agent_id, safe, NULL);
+        host_path = clawt_exchange_resolve(self->exchange, agent_id, relative,
+                                           TRUE, &error);
+
+        if (host_path == NULL)
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        if (g_unlink(host_path) != 0)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                       g_strerror(errno));
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "removed");
+        json_builder_add_string_value(builder, host_path);
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
