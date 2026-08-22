@@ -1413,6 +1413,68 @@ image_backing_file(const gchar *overlay)
     return NULL;
 }
 
+/*
+ * A VM agent with no disk image used to define, start, boot nothing and
+ * show a black console -- while SSH to it answered "connection reset",
+ * because the forwarded port reached a guest with no sshd. Three
+ * symptoms, one missing setting, and nothing connecting them.
+ */
+static void
+test_vm_without_an_image_is_refused(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        clawt_vm_computer_new("nodisk", CLAWT_VM_BACKEND_QEMU, NULL);
+    g_autoptr(GError) error = NULL;
+
+    g_assert_false(clawt_computer_provision(computer, &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_COMPUTER_PROVISION);
+
+    /* The message has to name the setting, or it is just a refusal. */
+    g_assert_nonnull(strstr(error->message, "computer.vm.image"));
+
+    g_assert_cmpint(clawt_computer_get_state(computer), ==,
+                    CLAWT_COMPUTER_STATE_ERROR);
+}
+
+/*
+ * The XML is what proves it: a domain built without a disk is one that
+ * boots nothing, and it looked perfectly valid to libvirt.
+ */
+static void
+test_vm_domain_xml_always_has_a_disk_to_boot(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        clawt_vm_computer_new("nodisk", CLAWT_VM_BACKEND_LIBVIRT, NULL);
+    g_autofree gchar *xml = NULL;
+
+    clawt_vm_computer_set_image(CLAWT_VM_COMPUTER(computer),
+                                "/tmp/base.qcow2");
+
+    xml = clawt_vm_computer_build_domain_xml(CLAWT_VM_COMPUTER(computer));
+
+    g_assert_nonnull(strstr(xml, "device='disk'"));
+    g_assert_nonnull(strstr(xml, "<boot dev='hd'/>"));
+}
+
+/*
+ * A qemu child already running must not be joined by a second one: two
+ * writers on one qcow2 corrupt it.
+ */
+static void
+test_vm_start_does_not_spawn_a_second_guest(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        clawt_vm_computer_new("twice", CLAWT_VM_BACKEND_QEMU, NULL);
+    g_autoptr(GError) error = NULL;
+
+    clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_RUNNING, NULL);
+
+    g_assert_true(clawt_computer_start(computer, &error));
+    g_assert_no_error(error);
+    g_assert_cmpint(clawt_computer_get_state(computer), ==,
+                    CLAWT_COMPUTER_STATE_RUNNING);
+}
+
 static void
 test_vm_overlay_survives_a_second_provision(void)
 {
@@ -1571,6 +1633,12 @@ main(int argc, char *argv[])
                     test_vm_ssh_argv_quotes_the_command);
     g_test_add_func("/computer/vm/boots-and-runs",
                     test_vm_boots_and_runs_a_command);
+    g_test_add_func("/computer/vm/no-image-refused",
+                    test_vm_without_an_image_is_refused);
+    g_test_add_func("/computer/vm/xml-has-a-disk",
+                    test_vm_domain_xml_always_has_a_disk_to_boot);
+    g_test_add_func("/computer/vm/no-second-guest",
+                    test_vm_start_does_not_spawn_a_second_guest);
     g_test_add_func("/computer/vm/overlay-kept",
                     test_vm_overlay_survives_a_second_provision);
     g_test_add_func("/computer/vm/overlay-rebuilt",

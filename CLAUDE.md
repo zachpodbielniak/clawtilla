@@ -533,6 +533,32 @@ the same program.
   and the import wrote every file correctly and then did not appear in
   `agent list`.
 
+### A libvirt domain defined without a UUID cannot be redefined
+
+- libvirt invents one per define and then refuses the name it already
+  holds: `domain 'clawt-x' already exists with uuid ...`. So an agent
+  provisioned once could never be started again — `define_xml` runs on
+  every provision by design, so config changes reach the domain. The XML
+  now carries a UUID derived from the domain name (SHA-1, version and
+  variant bits set), which makes define a redefine. `virsh define` of a
+  *dumped* XML works because the dump includes the UUID, which is why
+  testing that way proves nothing.
+- `start` and `stop` are separately guarded: a libvirt domain outlives
+  the daemon, so a restart finds one already running and
+  `virDomainCreate` on it is an error. The qemu backend is guarded too —
+  two qemus writing one qcow2 corrupt it.
+
+### A VM with no disk image is three symptoms and one cause
+
+- It defines, starts, boots nothing: a black console, SSH answering
+  `kex_exchange_identification: Connection reset by peer` because the
+  forward reaches a guest with no sshd, and virt-manager showing a
+  running VM. The docs said this would happen; nothing enforced it.
+  Provision now refuses and names `computer.vm.image`. Fedora Cloud
+  writes plenty to the serial console once there *is* a disk — nearly
+  300 lines to a login prompt — so a black console means no disk, not a
+  console misconfiguration.
+
 ### A qcow2 overlay pins the base it was made from
 
 - `ensure_overlay()` returned early whenever the overlay existed, so

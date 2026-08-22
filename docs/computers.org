@@ -352,8 +352,14 @@ forwards the port and fills the address in itself.
 *** Which image
 
 *clawtilla ships no disk image.*  ~image~ is a path to a qcow2 on this
-machine, and a VM agent without one has no disk at all -- it defines, it
-starts, and it never boots.
+machine, and a VM agent without one is *refused at provision*, naming
+this setting.
+
+It used to be allowed, and the result was three symptoms with nothing
+connecting them: the domain defined and started with no disk, so its
+console was black; SSH answered ~kex_exchange_identification: Connection
+reset by peer~, because the forwarded port reached a guest with no sshd;
+and virt-manager showed a running VM that had booted nothing.
 
 It will fetch one for you, though.  Images live in
 ~defaults.image_dir~ (~$XDG_DATA_HOME/clawtilla/images~ by default), one
@@ -494,7 +500,13 @@ refused.
 *** libvirt (default)
 
 podomation's ~vm_virtmanager~ module: the full 22-action surface,
-including snapshots.  ~snapshot_on_start: true~ is worth having -- an
+including snapshots.
+
+The domain carries a UUID derived from its name, so defining it again is
+a *re*define.  Without one libvirt invents a fresh UUID each time and
+then refuses the name it already holds -- ~domain 'clawt-x' already
+exists with uuid ...~ -- which meant an agent could be provisioned once
+and never started again.  ~snapshot_on_start: true~ is worth having -- an
 agent that breaks its VM can be put back rather than rebuilt.
 
 The domain is *persistent*: it is defined once and survives the agent

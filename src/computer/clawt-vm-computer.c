@@ -190,6 +190,36 @@ clawt_vm_computer_get_backend(ClawtVmComputer *self)
 
 /* ── Domain XML ──────────────────────────────────────────────────── */
 
+/*
+ * A UUID derived from the domain's name, so it is the same every time.
+ *
+ * Without one libvirt invents a fresh UUID on each define and then
+ * refuses the name it already holds -- "domain 'clawt-x' already exists
+ * with uuid ..." -- so provisioning worked exactly once and every later
+ * start of the same agent failed. Naming the UUID makes define a
+ * redefine, which is what it was always meant to be.
+ *
+ * Built like a version 5 UUID: SHA-1 of the name, with the version and
+ * variant bits set so libvirt accepts it as well formed.
+ */
+static gchar *
+stable_uuid(const gchar *name)
+{
+    g_autofree gchar *digest = NULL;
+    gchar hex[33];
+
+    digest = g_compute_checksum_for_string(G_CHECKSUM_SHA1, name, -1);
+
+    memcpy(hex, digest, 32);
+    hex[32] = '\0';
+
+    hex[12] = '5';
+    hex[16] = '8';
+
+    return g_strdup_printf("%.8s-%.4s-%.4s-%.4s-%.12s",
+                           hex, hex + 8, hex + 12, hex + 16, hex + 20);
+}
+
 gchar *
 clawt_vm_computer_build_domain_xml(ClawtVmComputer *self)
 {
@@ -206,6 +236,13 @@ clawt_vm_computer_build_domain_xml(ClawtVmComputer *self)
 
     g_string_append(out, "<domain type='kvm'>\n");
     g_string_append_printf(out, "  <name>%s</name>\n", escaped_domain);
+
+    {
+        g_autofree gchar *uuid = stable_uuid(self->domain);
+
+        g_string_append_printf(out, "  <uuid>%s</uuid>\n", uuid);
+    }
+
     g_string_append_printf(out, "  <memory unit='MiB'>%u</memory>\n",
                            self->memory_mb);
     g_string_append_printf(out, "  <vcpu>%u</vcpu>\n", self->cpus);
@@ -528,6 +565,36 @@ overlay_backing_file(const gchar *overlay)
 }
 
 /*
+ * What libvirt thinks the domain is doing, or %NULL if it does not know
+ * of one.
+ */
+static gchar *
+libvirt_domain_state(ClawtVmComputer *self)
+{
+    g_autoptr(GHashTable) params = NULL;
+    g_autoptr(GHashTable) result = NULL;
+    const gchar *state;
+
+    if (self->bridge == NULL ||
+        !clawt_pod_bridge_load_module_for(self->bridge, "vm_virtmanager",
+                                          self->uri, NULL))
+        return NULL;
+
+    params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    g_hash_table_insert(params, g_strdup("domain"), g_strdup(self->domain));
+
+    result = clawt_pod_bridge_call_for(self->bridge, "vm_virtmanager",
+                                       self->uri, "get_info", params, NULL);
+
+    if (result == NULL)
+        return NULL;
+
+    state = g_hash_table_lookup(result, "state");
+
+    return state != NULL ? g_strdup(state) : NULL;
+}
+
+/*
  * Creates the writable overlay.
  *
  * The base image is never written to, so several agents can share one and a
@@ -838,6 +905,28 @@ vm_provision(ClawtComputer *computer, GError **error)
     clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_PROVISIONING,
                              NULL);
 
+    /*
+     * Refused here rather than defined and left to fail.
+     *
+     * Without an image the domain XML carries no disk at all, so the VM
+     * defines, starts, boots nothing, and shows a black console -- while
+     * SSH to it answers "connection reset" because the port forward
+     * reaches a guest with no sshd. Three symptoms, one missing setting,
+     * and nothing anywhere connecting them.
+     */
+    if (self->image == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR,
+                            CLAWT_ERROR_COMPUTER_PROVISION,
+                            "this VM has no disk image, so there would be "
+                            "nothing for it to boot. Set computer.vm.image "
+                            "to a qcow2 -- `clawtilla image vm get "
+                            "fedora-44` fetches one, or pick one under "
+                            "Settings in the GTK client.");
+        clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ERROR,
+                                 (*error)->message);
+        return FALSE;
+    }
+
     if (!ensure_overlay(self, error) ||
         !ensure_cloud_init(self, error)) {
         clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ERROR,
@@ -891,6 +980,9 @@ vm_start(ClawtComputer *computer, GError **error)
 {
     ClawtVmComputer *self = CLAWT_VM_COMPUTER(computer);
 
+    if (clawt_computer_get_state(computer) == CLAWT_COMPUTER_STATE_RUNNING)
+        return TRUE;
+
     if (clawt_computer_get_state(computer) == CLAWT_COMPUTER_STATE_ABSENT &&
         !clawt_computer_provision(computer, error))
         return FALSE;
@@ -898,6 +990,25 @@ vm_start(ClawtComputer *computer, GError **error)
     clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_STARTING, NULL);
 
     if (self->backend == CLAWT_VM_BACKEND_LIBVIRT) {
+        g_autofree gchar *state = libvirt_domain_state(self);
+
+        /*
+         * A libvirt domain outlives the daemon, so restarting clawtilla
+         * finds one already running and asking it to start again is an
+         * error -- "Domain is already active" -- which failed the whole
+         * agent. The VM being up is the thing we wanted; say so and carry
+         * on.
+         *
+         * A config change made while it runs reaches the domain
+         * definition, which libvirt applies at its next boot, the same
+         * way cpus and memory always have.
+         */
+        if (g_strcmp0(state, "running") == 0) {
+            clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_RUNNING,
+                                     NULL);
+            return TRUE;
+        }
+
         if (!libvirt_call(self, "start", NULL, error)) {
             clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ERROR,
                                      (error != NULL && *error != NULL)
@@ -927,6 +1038,16 @@ vm_start(ClawtComputer *computer, GError **error)
     } else {
         g_auto(GStrv) argv = NULL;
         g_autofree gchar *socket_path = NULL;
+
+        /*
+         * Two qemus writing one qcow2 corrupts it, so an existing child
+         * is the answer rather than a reason to spawn another.
+         */
+        if (self->qemu != NULL) {
+            clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_RUNNING,
+                                     NULL);
+            return TRUE;
+        }
 
         socket_path = g_build_filename(g_get_user_runtime_dir(), "clawtilla",
                                        "vm", NULL);
@@ -977,6 +1098,15 @@ vm_stop(ClawtComputer *computer, GError **error)
     clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_STOPPING, NULL);
 
     if (self->backend == CLAWT_VM_BACKEND_LIBVIRT) {
+        g_autofree gchar *state = libvirt_domain_state(self);
+
+        /* Already down, or never defined: nothing to ask of libvirt. */
+        if (state == NULL || g_strcmp0(state, "running") != 0) {
+            clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_STOPPED,
+                                     NULL);
+            return TRUE;
+        }
+
         /*
          * shutdown rather than destroy: the guest gets to flush its
          * filesystems.  A VM pulled out from under a running write is how a
