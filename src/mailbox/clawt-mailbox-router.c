@@ -121,6 +121,34 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
 
     clawt_room_append(room, message, NULL);
 
+    /*
+     * One event per message, published here because this is the only
+     * place that knows which room it ended up in.
+     *
+     * It used to be published by the daemon's link handler instead,
+     * carrying the sender and the body but not the room -- so a client
+     * had nothing to match against and the GTK client fell back to "is
+     * this from the agent I am looking at". A reply from that agent to
+     * a *different* agent matched, and appeared in the user's own chat
+     * with it. The message had gone to the right mailbox all along; the
+     * transcript on screen was the thing that was wrong.
+     */
+    if (self->bus != NULL) {
+        g_autoptr(ClawtEvent) event = NULL;
+
+        event = clawt_event_new("message", clawt_room_get_id(room));
+        clawt_event_set_detail(event, "id", clawt_message_get_id(message));
+        clawt_event_set_detail(event, "from", sender);
+        clawt_event_set_detail(event, "to", destination);
+        clawt_event_set_detail(event, "body", clawt_message_get_body(message));
+
+        if (clawt_message_get_task_id(message) != NULL)
+            clawt_event_set_detail(event, "task",
+                                   clawt_message_get_task_id(message));
+
+        clawt_event_bus_publish(self->bus, event);
+    }
+
     members = clawt_room_get_members(room);
 
     for (i = 0; i < members->len; i++) {

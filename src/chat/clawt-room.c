@@ -338,6 +338,14 @@ clawt_room_append(ClawtRoom *self, ClawtMessage *message, GError **error)
     return TRUE;
 }
 
+guint
+clawt_room_get_message_count(ClawtRoom *self)
+{
+    g_return_val_if_fail(CLAWT_IS_ROOM(self), 0);
+
+    return self->messages->len;
+}
+
 GPtrArray *
 clawt_room_get_history(ClawtRoom *self, guint limit)
 {

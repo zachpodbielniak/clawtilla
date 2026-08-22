@@ -39,6 +39,26 @@ Removing a room leaves its transcript on disk.  Removing a room from the
 fleet is a configuration change; destroying the record of what was said
 in it is not, and is not recoverable.
 
+*** Direct rooms, and where a reply goes
+
+A message addressed to an agent rather than a room goes into the direct
+room between the two, named ~dm:<a>:<b>~ with the pair sorted so that
+"a to b" and "b to a" are the same room.  That is what makes a reply
+land in the conversation it answers instead of starting a parallel one:
+the room travels out to the agent with the message, libreclaw builds its
+reply against the same room, and it comes back into it.
+
+So a conversation between two agents is between those two agents, and
+does not appear in your own chat with either of them.  You read it on
+the GTK client's Flow tab, or with ~clawtilla room history dm:a:b~.
+
+These rooms are made on demand and nothing in the config names them, so
+the daemon scans the transcript directory at start and re-creates the
+ones that have a file.  Without that, every conversation the fleet had
+ever had was missing from a listing after a restart until the same two
+agents happened to speak again -- the transcripts were there, nothing
+had asked for them.
+
 ** Tasks
 
 A task is a delegated unit of work with an origin, an assignee, a prompt,

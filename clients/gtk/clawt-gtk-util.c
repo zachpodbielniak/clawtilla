@@ -24,6 +24,19 @@ clawt_json_string(JsonObject *object, const gchar *key, const gchar *fallback)
     return json_object_get_string_member(object, key);
 }
 
+gint64
+clawt_json_int(JsonObject *object, const gchar *key, gint64 fallback)
+{
+    if (object == NULL || key == NULL || !json_object_has_member(object, key))
+        return fallback;
+
+    if (json_node_get_value_type(json_object_get_member(object, key)) !=
+        G_TYPE_INT64)
+        return fallback;
+
+    return json_object_get_int_member(object, key);
+}
+
 JsonObject *
 clawt_payload_of(JsonNode *reply)
 {

@@ -1259,6 +1259,239 @@ test_tool_rpc_runs_a_tool(void)
     fixture_teardown(&fixture);
 }
 
+
+/* ── Who a conversation belongs to ───────────────────────────────── */
+
+typedef struct {
+    gchar *subject;
+    gchar *from;
+    gchar *to;
+    guint  count;
+} MessageWatch;
+
+static void
+on_bus_event(ClawtEventBus *bus, ClawtEvent *event, gpointer user_data)
+{
+    MessageWatch *watch = user_data;
+
+    (void)bus;
+
+    if (g_strcmp0(clawt_event_get_kind(event), "message") != 0)
+        return;
+
+    g_free(watch->subject);
+    g_free(watch->from);
+    g_free(watch->to);
+
+    watch->subject = g_strdup(clawt_event_get_subject(event));
+    watch->from = g_strdup(clawt_event_get_detail(event, "from"));
+    watch->to = g_strdup(clawt_event_get_detail(event, "to"));
+    watch->count++;
+}
+
+/*
+ * Two agents talking to each other do not appear in the user's chat
+ * with either of them.
+ *
+ * The report was that a reply went "to my chat instead of back to the
+ * agent". The routing was right the whole time -- a message to an agent
+ * goes into the direct room between sender and recipient, and the reply
+ * comes back into the same one. What was wrong was the event: it named
+ * the sender but not the room, so the GTK client matched on "is this
+ * from the agent I am looking at", and a reply from that agent to one
+ * of its peers matched.
+ */
+static void
+test_agents_talking_stays_out_of_the_users_chat(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) sent = NULL;
+    g_autoptr(JsonNode) replied = NULL;
+    g_autoptr(JsonNode) between = NULL;
+    g_autoptr(JsonNode) with_user = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    sent = request(&fixture, "msg.send",
+                   "{\"from\":\"alpha\",\"target\":\"beta\","
+                   "\"body\":\"summarise the last ten commits\"}");
+    g_assert_nonnull(sent);
+    g_assert_cmpint(json_object_get_int_member(payload_of(sent), "queued"),
+                    ==, 1);
+
+    replied = request(&fixture, "msg.send",
+                      "{\"from\":\"beta\",\"target\":\"alpha\","
+                      "\"body\":\"here they are\"}");
+    g_assert_nonnull(replied);
+
+    /* Both halves are in the room the two of them share. */
+    between = request(&fixture, "room.history",
+                      "{\"room\":\"beta\",\"as\":\"alpha\"}");
+    g_assert_nonnull(between);
+    g_assert_cmpuint(json_array_get_length(
+                         json_object_get_array_member(payload_of(between),
+                                                      "messages")), ==, 2);
+
+    /*
+     * And the user's own chat with beta has never had anything in it.
+     * This is the assertion the bug would have failed.
+     */
+    with_user = request(&fixture, "room.history",
+                        "{\"room\":\"beta\",\"as\":\"user\"}");
+    g_assert_nonnull(with_user);
+    g_assert_cmpuint(json_array_get_length(
+                         json_object_get_array_member(payload_of(with_user),
+                                                      "messages")), ==, 0);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Every routed message publishes one event, and it names the room.
+ *
+ * One, because it used to be published by the link handler as well as
+ * here; and the room, because that is the only thing a client can
+ * honestly filter a transcript on.
+ */
+static void
+test_a_routed_message_names_its_room(void)
+{
+    Fixture fixture = { 0 };
+    MessageWatch watch = { 0 };
+    g_autoptr(JsonNode) sent = NULL;
+    g_autoptr(JsonNode) history = NULL;
+    const gchar *room;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    g_signal_connect(clawt_daemon_get_event_bus(fixture.daemon), "event",
+                     G_CALLBACK(on_bus_event), &watch);
+
+    sent = request(&fixture, "msg.send",
+                   "{\"from\":\"alpha\",\"target\":\"beta\","
+                   "\"body\":\"ping\"}");
+    g_assert_nonnull(sent);
+
+    g_assert_cmpuint(watch.count, ==, 1);
+    g_assert_cmpstr(watch.from, ==, "alpha");
+    g_assert_cmpstr(watch.to, ==, "beta");
+
+    /* The subject is the room the daemon resolved, not either agent. */
+    history = request(&fixture, "room.history",
+                      "{\"room\":\"beta\",\"as\":\"alpha\"}");
+    room = json_object_get_string_member(payload_of(history), "room");
+
+    g_assert_nonnull(room);
+    g_assert_cmpstr(watch.subject, ==, room);
+    g_assert_cmpstr(watch.subject, !=, "beta");
+
+    g_free(watch.subject);
+    g_free(watch.from);
+    g_free(watch.to);
+    fixture_teardown(&fixture);
+}
+
+/*
+ * room.list carries enough to draw a conversation list without pulling
+ * every transcript to find out which rooms have anything in them.
+ */
+static void
+test_room_listing_shows_activity(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) sent = NULL;
+    g_autoptr(JsonNode) listed = NULL;
+    JsonArray *rooms;
+    gboolean found = FALSE;
+    guint i;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    sent = request(&fixture, "msg.send",
+                   "{\"from\":\"alpha\",\"target\":\"beta\","
+                   "\"body\":\"look into the flaky test\"}");
+    g_assert_nonnull(sent);
+
+    listed = request(&fixture, "room.list", NULL);
+    rooms = json_object_get_array_member(payload_of(listed), "rooms");
+
+    for (i = 0; i < json_array_get_length(rooms); i++) {
+        JsonObject *room = json_array_get_object_element(rooms, i);
+
+        if (json_object_get_int_member(room, "messages") == 0)
+            continue;
+
+        g_assert_cmpstr(json_object_get_string_member(room, "last_sender"),
+                        ==, "alpha");
+        g_assert_cmpstr(json_object_get_string_member(room, "last_body"),
+                        ==, "look into the flaky test");
+        g_assert_cmpint(json_object_get_int_member(room, "last_ts"), >, 0);
+        found = TRUE;
+    }
+
+    g_assert_true(found);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A conversation between two agents is still there after a restart.
+ *
+ * Direct rooms are made on demand, so nothing in the config names them
+ * and nothing re-created them at start -- every conversation the fleet
+ * had ever had was missing from a listing until the same two agents
+ * happened to speak again. The transcripts were on disk the whole time.
+ */
+static void
+test_direct_rooms_come_back_after_a_restart(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) sent = NULL;
+    g_autoptr(JsonNode) listed = NULL;
+    JsonArray *rooms;
+    gboolean found = FALSE;
+    guint i;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    sent = request(&fixture, "msg.send",
+                   "{\"from\":\"alpha\",\"target\":\"beta\","
+                   "\"body\":\"the nightly build is flaky again\"}");
+    g_assert_nonnull(sent);
+
+    /* Stop, and come up again on the same state directory. */
+    clawt_daemon_stop(fixture.daemon);
+    g_clear_object(&fixture.daemon);
+
+    while (g_main_context_iteration(fixture.context, FALSE))
+        ;
+
+    fixture.daemon = clawt_daemon_new(fixture.config_path, fixture.context);
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    listed = request(&fixture, "room.list", NULL);
+    rooms = json_object_get_array_member(payload_of(listed), "rooms");
+
+    for (i = 0; i < json_array_get_length(rooms); i++) {
+        JsonObject *room = json_array_get_object_element(rooms, i);
+
+        if (json_object_get_int_member(room, "messages") == 0)
+            continue;
+
+        g_assert_cmpstr(json_object_get_string_member(room, "last_body"),
+                        ==, "the nightly build is flaky again");
+        found = TRUE;
+    }
+
+    g_assert_true(found);
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1326,6 +1559,15 @@ main(int argc, char *argv[])
                     test_stop_removes_the_sockets);
     g_test_add_func("/daemon/broken-reload",
                     test_a_broken_reload_keeps_the_old_config);
+
+    g_test_add_func("/daemon/agents-talking-stays-between-them",
+                    test_agents_talking_stays_out_of_the_users_chat);
+    g_test_add_func("/daemon/message-event-names-its-room",
+                    test_a_routed_message_names_its_room);
+    g_test_add_func("/daemon/room-listing-shows-activity",
+                    test_room_listing_shows_activity);
+    g_test_add_func("/daemon/direct-rooms-survive-a-restart",
+                    test_direct_rooms_come_back_after_a_restart);
 
     return g_test_run();
 }

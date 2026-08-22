@@ -378,14 +378,12 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
     clawt_message_set_task_id(message, thread_id);
     clawt_message_set_depth(message, 1);
 
-    {
-        ClawtEvent *event = clawt_event_new("message", destination);
-
-        clawt_event_set_detail(event, "from", agent_id);
-        clawt_event_set_detail(event, "body", body);
-        clawt_event_bus_publish(self->bus, event);
-        clawt_event_free(event);
-    }
+    /*
+     * No event is published here.  The router publishes one for every
+     * message once it knows the room, and doing it here as well meant
+     * two events for one message -- one of which could not say where it
+     * had gone.
+     */
 
     /*
      * A task id in the reply means the delegated work is finished.  An
@@ -945,6 +943,13 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     self->rooms = clawt_room_manager_new(transcript_dir);
     clawt_room_manager_load(self->rooms, self->config);
 
+    /*
+     * And the direct rooms, which nothing in the config names.  They are
+     * made on demand, so without this a conversation between two agents
+     * was invisible after a restart until they happened to speak again.
+     */
+    clawt_room_manager_load_direct(self->rooms);
+
     self->tasks = clawt_task_manager_new();
     self->guard = clawt_loop_guard_new();
     configure_limits(self);
@@ -1223,6 +1228,7 @@ clawt_daemon_reload(ClawtDaemon *self, GError **error)
     clawt_agent_manager_load(self->agents, NULL);
 
     clawt_room_manager_load(self->rooms, self->config);
+    clawt_room_manager_load_direct(self->rooms);
 
     /*
      * Files are re-rendered for running agents too, so a restart picks up
@@ -2185,6 +2191,35 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
                     builder, g_ptr_array_index(members, j));
 
             json_builder_end_array(builder);
+
+            /*
+             * Enough for a client to draw a conversation list without
+             * fetching every transcript to find out which rooms have
+             * anything in them.  A fleet accumulates a direct room per
+             * pair, and most of them are empty.
+             */
+            json_builder_set_member_name(builder, "messages");
+            json_builder_add_int_value(
+                builder, clawt_room_get_message_count(room));
+
+            {
+                g_autoptr(GPtrArray) last = clawt_room_get_history(room, 1);
+
+                if (last->len > 0) {
+                    ClawtMessage *message = g_ptr_array_index(last, 0);
+
+                    json_builder_set_member_name(builder, "last_sender");
+                    json_builder_add_string_value(
+                        builder, clawt_message_get_sender_id(message));
+                    json_builder_set_member_name(builder, "last_body");
+                    json_builder_add_string_value(
+                        builder, clawt_message_get_body(message));
+                    json_builder_set_member_name(builder, "last_ts");
+                    json_builder_add_int_value(
+                        builder, clawt_message_get_timestamp(message));
+                }
+            }
+
             json_builder_end_object(builder);
         }
 
@@ -2269,6 +2304,19 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             room, (guint)clawt_ipc_payload_int(payload, "limit", 50));
 
         json_builder_begin_object(builder);
+
+        /*
+         * Which room this actually is, because the request may have
+         * named an agent and let the daemon resolve the direct room. A
+         * client that shows a conversation has to be able to tell
+         * whether an incoming message belongs in it, and comparing
+         * against the agent it asked for is not the same question --
+         * that is how a reply from an agent to one of its peers ended up
+         * drawn in the user's own chat with it.
+         */
+        json_builder_set_member_name(builder, "room");
+        json_builder_add_string_value(builder, clawt_room_get_id(room));
+
         json_builder_set_member_name(builder, "messages");
         json_builder_begin_array(builder);
 
@@ -2288,6 +2336,19 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             json_builder_set_member_name(builder, "ts");
             json_builder_add_int_value(
                 builder, clawt_message_get_timestamp(message));
+
+            /*
+             * The task this message belongs to, when it belongs to one.
+             * It is what turns a transcript into a chain you can follow:
+             * without it a delegated reply is just another line from an
+             * agent, with no sign of what asked for it.
+             */
+            if (clawt_message_get_task_id(message) != NULL) {
+                json_builder_set_member_name(builder, "task");
+                json_builder_add_string_value(
+                    builder, clawt_message_get_task_id(message));
+            }
+
             json_builder_end_object(builder);
         }
 

@@ -52,6 +52,7 @@ typedef struct {
 static JsonObject  *chooser_provider(ModelChooser *chooser);
 static const gchar *chooser_provider_id(ModelChooser *chooser);
 static gchar       *chooser_model(ModelChooser *chooser);
+static void         refresh_flow(ClawtWindow *self);
 static void         model_chooser_build(ModelChooser *chooser,
                                         ClawtWindow  *window,
                                         GtkWidget    *group,
@@ -87,6 +88,7 @@ typedef enum {
     CLAWT_REFRESH_SELECTED,
     CLAWT_REFRESH_MAILBOX,
     CLAWT_REFRESH_TASKS,
+    CLAWT_REFRESH_FLOW,
     CLAWT_N_REFRESH
 } ClawtRefreshKind;
 
@@ -146,6 +148,36 @@ struct _ClawtWindow {
     gboolean           refresh_again[CLAWT_N_REFRESH];
 
     gchar             *selected_agent;
+
+    /*
+     * Which room the transcript on screen actually is.
+     *
+     * Not derivable from selected_agent: a chat with an agent is the
+     * direct room between the user and it, and the daemon owns how that
+     * is named. Matching an incoming message on the sender instead is
+     * what put an agent's reply to one of its peers in the user's chat.
+     */
+    gchar             *selected_room;
+
+    /* The flow page: who has been talking to whom, and about what. */
+    GtkListBox        *flow_list;
+    GtkBox            *flow_transcript;
+    GtkScrolledWindow *flow_scroll;
+    GtkWidget         *flow_stack;
+    GtkWidget         *flow_title;
+    GtkWidget         *flow_subtitle;
+    GtkWidget         *flow_include_user;
+    gchar             *flow_room;
+
+    /*
+     * Which messages the transcript already has, by id.
+     *
+     * The daemon replays recent events to a client that has just
+     * connected, so the ones already in the loaded history arrive a
+     * second time as events. Without this every message sent before the
+     * window opened was drawn twice.
+     */
+    GHashTable        *shown;
     gboolean           following;
 };
 
@@ -575,6 +607,25 @@ on_scrolled(GtkAdjustment *adjustment, gpointer user_data)
     self->following = (bottom - value) < 32.0;
 }
 
+/*
+ * Whether this message is already on screen, remembering it if not.
+ *
+ * Answers the replay case: a client that has just connected is sent the
+ * recent events as well as loading the history they are already in.
+ */
+static gboolean
+already_shown(ClawtWindow *self, const gchar *id)
+{
+    if (id == NULL)
+        return FALSE;
+
+    if (g_hash_table_contains(self->shown, id))
+        return TRUE;
+
+    g_hash_table_add(self->shown, g_strdup(id));
+    return FALSE;
+}
+
 static void
 load_history(ClawtWindow *self)
 {
@@ -584,6 +635,8 @@ load_history(ClawtWindow *self)
 
     clear_box(self->transcript);
     set_activity(self, NULL);
+    g_clear_pointer(&self->selected_room, g_free);
+    g_hash_table_remove_all(self->shown);
 
     if (self->selected_agent == NULL)
         return;
@@ -596,12 +649,23 @@ load_history(ClawtWindow *self)
     if (reply == NULL)
         return;
 
+    /*
+     * The daemon says which room it resolved the agent to, and that is
+     * what later messages are matched against.
+     */
+    self->selected_room = g_strdup(
+        clawt_json_string(clawt_payload_of(reply), "room", NULL));
+
     messages = json_object_get_array_member(clawt_payload_of(reply),
                                             "messages");
 
     for (i = 0; i < json_array_get_length(messages); i++) {
         JsonObject *message = json_array_get_object_element(messages, i);
         const gchar *sender = clawt_json_string(message, "sender", "?");
+        const gchar *id = clawt_json_string(message, "id", NULL);
+
+        if (id != NULL)
+            g_hash_table_add(self->shown, g_strdup(id));
 
         append_message(self, sender, clawt_json_string(message, "body", ""),
                        g_strcmp0(sender, "user") == 0);
@@ -636,7 +700,13 @@ on_send(GtkWidget *widget, gpointer user_data)
     if (reply == NULL)
         return;
 
-    append_message(self, "you", body, TRUE);
+    /*
+     * Not drawn here.  The daemon publishes an event for every message
+     * it routes, this one included, so letting the send path draw its
+     * own would put it on screen twice -- and the event is the version
+     * that carries the room, which is what the transcript is filtered
+     * on.
+     */
     gtk_editable_set_text(GTK_EDITABLE(self->entry), "");
 
     /*
@@ -868,6 +938,7 @@ on_delete_confirmed_twice(AdwAlertDialog *dialog, gchar *response,
         return;
 
     g_clear_pointer(&self->selected_agent, g_free);
+    g_clear_pointer(&self->selected_room, g_free);
     clear_box(self->inspector);
     clear_box(self->transcript);
 
@@ -1970,6 +2041,7 @@ refresh_selected_once(ClawtWindow *self)
     refresh_computer(self, agent);
     refresh_mailbox(self);
     refresh_tasks(self);
+    refresh_flow(self);
 }
 
 static void
@@ -2201,15 +2273,23 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
         const gchar *body = clawt_event_get_detail(event, "body");
 
         /*
-         * Only messages in the conversation on screen are appended; the
+         * Matched on the room, and only on the room.
+         *
+         * This used to append anything whose sender *or* subject was the
+         * selected agent, which meant a reply from that agent to one of
+         * its peers was drawn in the user's own chat with it -- the
+         * message had been routed correctly the whole time, the
+         * transcript was showing a conversation it was not part of. The
          * rest change the sidebar's queue badge, which is what tells you
          * something happened elsewhere.
          */
-        if (g_strcmp0(clawt_event_get_subject(event),
-                      self->selected_agent) == 0 ||
-            g_strcmp0(from, self->selected_agent) == 0) {
+        if (self->selected_room != NULL &&
+            g_strcmp0(clawt_event_get_subject(event),
+                      self->selected_room) == 0 &&
+            !already_shown(self, clawt_event_get_detail(event, "id"))) {
             append_message(self, from != NULL ? from : "?",
-                           body != NULL ? body : "", FALSE);
+                           body != NULL ? body : "",
+                           g_strcmp0(from, "user") == 0);
 
             /*
              * The reply is the end of the turn.  libreclaw drops the
@@ -2223,6 +2303,13 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
             queue_scroll(self);
         }
 
+        /*
+         * The flow page is refreshed for every message, not only the one
+         * on screen: it is a list of what the fleet has been doing, and
+         * a conversation that does not move when the agents talk is the
+         * one thing it must not be.
+         */
+        refresh_flow(self);
         refresh_agents(self);
         return;
     }
@@ -3349,6 +3436,448 @@ build_computer_page(ClawtWindow *self)
     return box;
 }
 
+/* ── The flow page ───────────────────────────────────────────────── */
+
+/*
+ * "4 minutes ago" rather than a timestamp.
+ *
+ * A conversation list is read to find the recent one, and working out
+ * which of two wall-clock times is nearer to now is work the reader
+ * should not be doing.
+ */
+static gchar *
+relative_time(gint64 ts)
+{
+    gint64 delta = (g_get_real_time() / G_USEC_PER_SEC) - ts;
+
+    if (ts <= 0)
+        return g_strdup("");
+
+    if (delta < 60)
+        return g_strdup("just now");
+
+    if (delta < 3600)
+        return g_strdup_printf("%" G_GINT64_FORMAT "m ago", delta / 60);
+
+    if (delta < 86400)
+        return g_strdup_printf("%" G_GINT64_FORMAT "h ago", delta / 3600);
+
+    return g_strdup_printf("%" G_GINT64_FORMAT "d ago", delta / 86400);
+}
+
+/*
+ * One line of a message, trimmed, for a list subtitle.
+ *
+ * Cut on a character boundary rather than a byte one: an agent's reply
+ * is as likely to contain an em dash as not, and half a UTF-8 sequence
+ * renders as a replacement glyph for the rest of the row.
+ */
+static gchar *
+one_line(const gchar *body, glong limit)
+{
+    g_autofree gchar *flat = NULL;
+    const gchar *newline;
+
+    if (body == NULL)
+        return g_strdup("");
+
+    newline = strchr(body, '\n');
+    flat = (newline != NULL) ? g_strndup(body, (gsize)(newline - body))
+                             : g_strdup(body);
+    g_strstrip(flat);
+
+    if (!g_utf8_validate(flat, -1, NULL))
+        return g_strdup("");
+
+    if (g_utf8_strlen(flat, -1) <= limit)
+        return g_steal_pointer(&flat);
+
+    {
+        const gchar *end = g_utf8_offset_to_pointer(flat, limit);
+        g_autofree gchar *cut = g_strndup(flat, (gsize)(end - flat));
+
+        return g_strconcat(cut, "\xe2\x80\xa6", NULL);
+    }
+}
+
+/*
+ * "alpha and beta", from the room's member list.
+ *
+ * Built from the members rather than by taking the id apart, because
+ * how a direct room is named is the daemon's business -- a client that
+ * parses "dm:a:b" is a client that breaks when that changes.
+ */
+static gchar *
+room_label(JsonArray *members)
+{
+    g_autoptr(GString) out = g_string_new(NULL);
+    guint i;
+
+    for (i = 0; members != NULL && i < json_array_get_length(members); i++) {
+        const gchar *member = json_array_get_string_element(members, i);
+
+        if (out->len > 0)
+            g_string_append(out, i + 1 == json_array_get_length(members)
+                                 ? " and " : ", ");
+
+        g_string_append(out, g_strcmp0(member, "user") == 0 ? "you" : member);
+    }
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+static gboolean
+room_involves_user(JsonArray *members)
+{
+    guint i;
+
+    for (i = 0; members != NULL && i < json_array_get_length(members); i++) {
+        if (g_strcmp0(json_array_get_string_element(members, i),
+                      "user") == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+static void
+on_flow_task_clicked(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    (void)button;
+
+    /*
+     * The task board is where the rest of the story is -- who asked for
+     * it, what state it is in, what it returned.
+     */
+    adw_view_stack_set_visible_child_name(self->pages, "tasks");
+}
+
+/*
+ * Loads one conversation into the right-hand pane.
+ */
+static void
+show_flow_room(ClawtWindow *self, const gchar *room_id, const gchar *label)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    JsonArray *messages;
+    guint i;
+
+    clear_box(self->flow_transcript);
+
+    reply = clawt_window_request(
+        self, "room.history",
+        clawt_build_payload("room", room_id, "limit", "200", NULL));
+
+    if (reply == NULL)
+        return;
+
+    g_free(self->flow_room);
+    self->flow_room = g_strdup(room_id);
+
+    gtk_label_set_text(GTK_LABEL(self->flow_title),
+                       label != NULL ? label : room_id);
+
+    messages = json_object_get_array_member(clawt_payload_of(reply),
+                                            "messages");
+
+    {
+        g_autofree gchar *count = g_strdup_printf(
+            "%u message%s", json_array_get_length(messages),
+            json_array_get_length(messages) == 1 ? "" : "s");
+
+        gtk_label_set_text(GTK_LABEL(self->flow_subtitle), count);
+    }
+
+    for (i = 0; i < json_array_get_length(messages); i++) {
+        JsonObject *message = json_array_get_object_element(messages, i);
+        const gchar *sender = clawt_json_string(message, "sender", "?");
+        const gchar *task = clawt_json_string(message, "task", NULL);
+        GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+        GtkWidget *head = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        GtkWidget *who = gtk_label_new(
+            g_strcmp0(sender, "user") == 0 ? "you" : sender);
+        GtkWidget *body = gtk_label_new(clawt_json_string(message, "body",
+                                                          ""));
+        g_autofree gchar *when =
+            relative_time(clawt_json_int(message, "ts", 0));
+        GtkWidget *stamp = gtk_label_new(when);
+
+        gtk_widget_add_css_class(who, "heading");
+        gtk_widget_add_css_class(who, "caption");
+        gtk_widget_add_css_class(stamp, "caption");
+        gtk_widget_add_css_class(stamp, "dim-label");
+
+        gtk_box_append(GTK_BOX(head), who);
+        gtk_box_append(GTK_BOX(head), stamp);
+
+        /*
+         * The task chip is what makes this a flow rather than a list of
+         * remarks: it is the difference between "beta said something"
+         * and "beta said something because alpha delegated this".
+         */
+        if (task != NULL) {
+            g_autofree gchar *chip = g_strdup_printf("task %.8s", task);
+            GtkWidget *button = gtk_button_new_with_label(chip);
+
+            gtk_widget_add_css_class(button, "flat");
+            gtk_widget_add_css_class(button, "caption");
+            gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
+            gtk_widget_set_tooltip_text(button, task);
+            g_signal_connect(button, "clicked",
+                             G_CALLBACK(on_flow_task_clicked), self);
+            gtk_box_append(GTK_BOX(head), button);
+        }
+
+        /* Never markup: this is model output. */
+        gtk_label_set_wrap(GTK_LABEL(body), TRUE);
+        gtk_label_set_selectable(GTK_LABEL(body), TRUE);
+        gtk_label_set_xalign(GTK_LABEL(body), 0.0f);
+
+        gtk_box_append(GTK_BOX(row), head);
+        gtk_box_append(GTK_BOX(row), body);
+        gtk_widget_set_margin_start(row, 12);
+        gtk_widget_set_margin_end(row, 12);
+        gtk_widget_set_margin_top(row, 10);
+
+        gtk_box_append(self->flow_transcript, row);
+    }
+
+    gtk_stack_set_visible_child_name(GTK_STACK(self->flow_stack), "room");
+}
+
+static void
+on_flow_row_selected(GtkListBox *list, GtkListBoxRow *row, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *room_id;
+    const gchar *label;
+
+    (void)list;
+
+    if (row == NULL)
+        return;
+
+    room_id = g_object_get_data(G_OBJECT(row), "room");
+    label = g_object_get_data(G_OBJECT(row), "label");
+
+    if (room_id != NULL)
+        show_flow_room(self, room_id, label);
+}
+
+/*
+ * Sorts the conversation list, most recently active first.
+ */
+static gint
+compare_by_last(gconstpointer a, gconstpointer b)
+{
+    JsonObject *left = *(JsonObject **)a;
+    JsonObject *right = *(JsonObject **)b;
+    gint64 left_ts = clawt_json_int(left, "last_ts", 0);
+    gint64 right_ts = clawt_json_int(right, "last_ts", 0);
+
+    if (left_ts == right_ts)
+        return 0;
+
+    return (left_ts > right_ts) ? -1 : 1;
+}
+
+static void
+refresh_flow_once(ClawtWindow *self)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GPtrArray) ordered = NULL;
+    gboolean include_user = gtk_check_button_get_active(
+        GTK_CHECK_BUTTON(self->flow_include_user));
+    JsonArray *rooms;
+    guint i;
+
+    clear_list(self->flow_list);
+
+    reply = clawt_window_request(self, "room.list", NULL);
+
+    if (reply == NULL)
+        return;
+
+    rooms = json_object_get_array_member(clawt_payload_of(reply), "rooms");
+    ordered = g_ptr_array_new();
+
+    for (i = 0; i < json_array_get_length(rooms); i++) {
+        JsonObject *room = json_array_get_object_element(rooms, i);
+
+        /*
+         * An empty room is one the daemon made because somebody could
+         * have talked, not one where anybody did. A fleet accumulates a
+         * direct room per pair and listing them all buries the few that
+         * matter.
+         */
+        if (clawt_json_int(room, "messages", 0) == 0)
+            continue;
+
+        if (!include_user &&
+            room_involves_user(json_object_get_array_member(room, "members")))
+            continue;
+
+        g_ptr_array_add(ordered, room);
+    }
+
+    g_ptr_array_sort(ordered, compare_by_last);
+
+    for (i = 0; i < ordered->len; i++) {
+        JsonObject *room = g_ptr_array_index(ordered, i);
+        const gchar *room_id = clawt_json_string(room, "id", "");
+        GtkWidget *row = adw_action_row_new();
+        GtkWidget *count;
+        g_autofree gchar *label =
+            room_label(json_object_get_array_member(room, "members"));
+        g_autofree gchar *snippet =
+            one_line(clawt_json_string(room, "last_body", ""), 44);
+        g_autofree gchar *when =
+            relative_time(clawt_json_int(room, "last_ts", 0));
+        g_autofree gchar *subtitle = g_strdup_printf(
+            "%s \xc2\xb7 %s: %s", when,
+            clawt_json_string(room, "last_sender", "?"), snippet);
+        g_autofree gchar *badge = g_strdup_printf(
+            "%" G_GINT64_FORMAT, clawt_json_int(room, "messages", 0));
+
+        set_row_text(row, label, subtitle);
+
+        count = gtk_label_new(badge);
+        gtk_widget_add_css_class(count, "caption");
+        gtk_widget_add_css_class(count, "dim-label");
+        gtk_widget_set_valign(count, GTK_ALIGN_CENTER);
+        adw_action_row_add_suffix(ADW_ACTION_ROW(row), count);
+
+        g_object_set_data_full(G_OBJECT(row), "room", g_strdup(room_id),
+                               g_free);
+        g_object_set_data_full(G_OBJECT(row), "label",
+                               g_strdup(label), g_free);
+
+        gtk_list_box_append(self->flow_list, row);
+
+        /*
+         * The conversation already open stays open across a refresh,
+         * which arrives on every message -- reselecting the first row
+         * would drag the reader away from what they were reading every
+         * time anything anywhere said something.
+         */
+        if (g_strcmp0(room_id, self->flow_room) == 0)
+            gtk_list_box_select_row(
+                self->flow_list,
+                GTK_LIST_BOX_ROW(gtk_widget_get_last_child(
+                    GTK_WIDGET(self->flow_list))));
+    }
+}
+
+static void
+refresh_flow(ClawtWindow *self)
+{
+    if (!refresh_enter(self, CLAWT_REFRESH_FLOW))
+        return;
+
+    do {
+        refresh_flow_once(self);
+    } while (refresh_repeat(self, CLAWT_REFRESH_FLOW));
+}
+
+static void
+on_flow_filter_toggled(GtkCheckButton *button, gpointer user_data)
+{
+    (void)button;
+
+    refresh_flow(user_data);
+}
+
+static GtkWidget *
+build_flow_page(ClawtWindow *self)
+{
+    GtkWidget *paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
+    GtkWidget *left = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    GtkWidget *right = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    GtkWidget *header = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    GtkWidget *list_scroll = gtk_scrolled_window_new();
+    GtkWidget *empty = adw_status_page_new();
+
+    /* ── who has been talking ── */
+    self->flow_include_user = gtk_check_button_new_with_label(
+        "Include your own chats");
+    gtk_widget_set_margin_start(self->flow_include_user, 12);
+    gtk_widget_set_margin_end(self->flow_include_user, 12);
+    gtk_widget_set_margin_top(self->flow_include_user, 12);
+    gtk_widget_set_margin_bottom(self->flow_include_user, 6);
+    gtk_widget_set_tooltip_text(
+        self->flow_include_user,
+        "Off by default: this page is for what the agents did without you");
+    g_signal_connect(self->flow_include_user, "toggled",
+                     G_CALLBACK(on_flow_filter_toggled), self);
+
+    self->flow_list = GTK_LIST_BOX(gtk_list_box_new());
+    gtk_list_box_set_selection_mode(self->flow_list, GTK_SELECTION_SINGLE);
+    gtk_widget_add_css_class(GTK_WIDGET(self->flow_list), "navigation-sidebar");
+
+    /*
+     * ::row-selected, not ::row-activated: libadwaita clears
+     * GtkListBoxRow:activatable on an AdwActionRow with no
+     * activatable-widget, so the activate signal never arrives. Selection
+     * also covers arrow-key navigation, which activation does not.
+     */
+    g_signal_connect(self->flow_list, "row-selected",
+                     G_CALLBACK(on_flow_row_selected), self);
+
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(list_scroll),
+                                  GTK_WIDGET(self->flow_list));
+    gtk_widget_set_vexpand(list_scroll, TRUE);
+
+    gtk_box_append(GTK_BOX(left), self->flow_include_user);
+    gtk_box_append(GTK_BOX(left), list_scroll);
+    gtk_widget_set_size_request(left, 280, -1);
+
+    /* ── and what they said ── */
+    self->flow_title = gtk_label_new(NULL);
+    gtk_widget_add_css_class(self->flow_title, "title-4");
+    gtk_label_set_xalign(GTK_LABEL(self->flow_title), 0.0f);
+
+    self->flow_subtitle = gtk_label_new(NULL);
+    gtk_widget_add_css_class(self->flow_subtitle, "caption");
+    gtk_widget_add_css_class(self->flow_subtitle, "dim-label");
+    gtk_label_set_xalign(GTK_LABEL(self->flow_subtitle), 0.0f);
+
+    gtk_widget_set_margin_start(header, 12);
+    gtk_widget_set_margin_top(header, 12);
+    gtk_widget_set_margin_bottom(header, 6);
+    gtk_box_append(GTK_BOX(header), self->flow_title);
+    gtk_box_append(GTK_BOX(header), self->flow_subtitle);
+
+    self->flow_transcript = GTK_BOX(gtk_box_new(GTK_ORIENTATION_VERTICAL, 0));
+    self->flow_scroll = GTK_SCROLLED_WINDOW(gtk_scrolled_window_new());
+    gtk_scrolled_window_set_child(self->flow_scroll,
+                                  GTK_WIDGET(self->flow_transcript));
+    gtk_widget_set_vexpand(GTK_WIDGET(self->flow_scroll), TRUE);
+
+    gtk_box_append(GTK_BOX(right), header);
+    gtk_box_append(GTK_BOX(right), GTK_WIDGET(self->flow_scroll));
+
+    adw_status_page_set_icon_name(ADW_STATUS_PAGE(empty),
+                                  "system-users-symbolic");
+    adw_status_page_set_title(ADW_STATUS_PAGE(empty), "Nothing yet");
+    adw_status_page_set_description(
+        ADW_STATUS_PAGE(empty),
+        "When one agent messages another it appears here, newest first. "
+        "Pick a conversation to read it.");
+
+    self->flow_stack = gtk_stack_new();
+    gtk_stack_add_named(GTK_STACK(self->flow_stack), empty, "empty");
+    gtk_stack_add_named(GTK_STACK(self->flow_stack), right, "room");
+
+    gtk_paned_set_start_child(GTK_PANED(paned), left);
+    gtk_paned_set_end_child(GTK_PANED(paned), self->flow_stack);
+    gtk_paned_set_position(GTK_PANED(paned), 300);
+    gtk_paned_set_resize_start_child(GTK_PANED(paned), FALSE);
+
+    return paned;
+}
+
 static GtkWidget *
 build_task_page(ClawtWindow *self)
 {
@@ -3434,6 +3963,9 @@ clawt_window_new(AdwApplication *app, ClawtClient *client)
     adw_view_stack_add_titled_with_icon(self->pages, build_task_page(self),
                                         "tasks", "Tasks",
                                         "view-list-symbolic");
+    adw_view_stack_add_titled_with_icon(self->pages, build_flow_page(self),
+                                        "flow", "Flow",
+                                        "system-users-symbolic");
 
     header = adw_header_bar_new();
     title = adw_window_title_new("clawtilla", NULL);
@@ -3508,6 +4040,11 @@ clawt_window_dispose(GObject *object)
     g_clear_pointer(&self->agent_menu, gtk_widget_unparent);
     g_clear_object(&self->agent_actions);
 
+    g_clear_pointer(&self->selected_agent, g_free);
+    g_clear_pointer(&self->selected_room, g_free);
+    g_clear_pointer(&self->flow_room, g_free);
+    g_clear_pointer(&self->shown, g_hash_table_unref);
+
     G_OBJECT_CLASS(clawt_window_parent_class)->dispose(object);
 }
 
@@ -3535,4 +4072,6 @@ static void
 clawt_window_init(ClawtWindow *self)
 {
     self->following = TRUE;
+    self->shown = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                        NULL);
 }

@@ -113,6 +113,34 @@ Restart, and still asks twice.
 | Mailbox | what is waiting, with acknowledge |
 | Computer | an exec console showing stdout *and* stderr |
 | Tasks | what has been delegated to whom, and where it got to |
+| Flow | every conversation between agents, newest first, and what was said |
+
+*** The Flow tab
+
+The Chat tab is your conversation with one agent.  Flow is the rest of
+it: what the fleet said to each other while you were not looking.
+
+The left-hand list is one row per conversation that has anything in it
+-- who, how long ago, who spoke last and the first line of it, with the
+message count on the right.  A fleet accumulates a direct room per pair
+of agents and most of them are empty, so empty ones are left out. Sorted
+by most recent activity, and refreshed on every message, so the top of
+the list is what is happening now.
+
+Your own chats are excluded by default.  This page exists to answer
+"what did they do without me", and mixing them in buries it; the
+checkbox above the list puts them back.
+
+Picking one shows the whole exchange on the right, each message with who
+said it and when.  A message that belongs to a delegated task carries a
+~task~ chip -- that is the difference between "beta said something" and
+"beta said something because alpha asked it to", and it is the thing
+that makes this a flow rather than a list of remarks.  The chip opens
+the task board, where the rest of the story is.
+
+The conversation you are reading stays open across a refresh.  Messages
+arrive continuously, and a list that reselected its first row every time
+anything anywhere spoke would take you off what you were reading.
 
 Every control's sensitivity is bound to ~ClawtAgentCaps~, and a disabled
 control says why in its tooltip.  A greyed-out button with no

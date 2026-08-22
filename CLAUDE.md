@@ -303,6 +303,26 @@ the same program.
   nobody, because nothing on the agent side relays them into the
   session.
 
+### An event that cannot say where it happened is not enough
+
+- The `message` event named the sender and the body but not the room, so
+  a client had nothing to match a transcript against and the GTK client
+  fell back to "is this from the agent I am looking at". A reply from
+  that agent to one of its *peers* matched, so two agents talking
+  appeared in the user's own chat -- while the message itself had been
+  routed correctly all along. It is published from
+  `clawt_mailbox_router_send()`, which is the only place that knows the
+  room, and its subject is the room. Anything published before routing
+  is guessing.
+
+### A client that has just connected is told things twice
+
+- The daemon replays recent events to a subscriber, so a client that
+  loads history *and* subscribes receives the messages that history
+  already contains. Deduplicate on the message id; do not assume an
+  event is new because it arrived. `ClawtWindow` keeps a set of shown
+  ids for exactly this.
+
 ### An async reader re-arms before it dispatches
 
 - Whatever a completion callback runs may issue a request of its own and

@@ -74,6 +74,23 @@ const gchar *clawt_json_string(JsonObject   *object,
                                const gchar  *fallback);
 
 /**
+ * clawt_json_int:
+ * @object: (nullable): a JSON object
+ * @key: the member to read
+ * @fallback: what to return if it is absent or not a number
+ *
+ * The integer twin of clawt_json_string(), for the same reason: a
+ * client that calls json_object_get_int_member() on a member an older
+ * daemon does not send aborts, and a missing field is an ordinary thing
+ * to meet across a version boundary.
+ *
+ * Returns: the value, or @fallback
+ */
+gint64 clawt_json_int(JsonObject  *object,
+                      const gchar *key,
+                      gint64       fallback);
+
+/**
  * clawt_payload_of:
  * @reply: a reply frame
  *

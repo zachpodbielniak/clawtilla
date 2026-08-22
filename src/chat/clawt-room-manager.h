@@ -118,6 +118,22 @@ GPtrArray *clawt_room_manager_rooms_for(ClawtRoomManager *self,
                                         const gchar      *agent_id);
 
 /**
+ * clawt_room_manager_load_direct:
+ * @self: a #ClawtRoomManager
+ *
+ * Re-creates the direct rooms that have a transcript on disk.
+ *
+ * A direct room is made on demand by clawt_room_manager_get_direct(),
+ * so after a restart one exists only once somebody sends a message
+ * through it again -- which meant every conversation two agents had
+ * ever had was missing from a listing until they spoke once more. The
+ * transcripts were there the whole time; nothing had asked for them.
+ *
+ * Returns: how many were restored
+ */
+guint clawt_room_manager_load_direct(ClawtRoomManager *self);
+
+/**
  * clawt_room_manager_flush:
  * @self: a #ClawtRoomManager
  *

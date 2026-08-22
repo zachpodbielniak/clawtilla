@@ -1371,7 +1371,16 @@ cmd_room(int argc, char *argv[])
                                 json_array_get_string_element(members, j));
             }
 
-            g_print("%-24s %s\n", member_or(room, "id", "?"), list->str);
+            /*
+             * The message count is the column that makes this readable:
+             * a fleet accumulates a direct room per pair of agents and
+             * most of them have never been used.
+             */
+            g_print("%-24s %4" G_GINT64_FORMAT "  %s\n",
+                    member_or(room, "id", "?"),
+                    json_object_has_member(room, "messages")
+                        ? json_object_get_int_member(room, "messages") : 0,
+                    list->str);
         }
 
         return EXIT_SUCCESS;

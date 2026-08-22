@@ -108,6 +108,20 @@ gboolean clawt_room_append(ClawtRoom     *self,
 GPtrArray *clawt_room_get_history(ClawtRoom *self, guint limit);
 
 /**
+ * clawt_room_get_message_count:
+ * @self: a #ClawtRoom
+ *
+ * How many messages the room holds.
+ *
+ * Separate from clawt_room_get_history() because a listing wants the
+ * number beside every room and copying every message to count them is
+ * the whole transcript per row.
+ *
+ * Returns: the count
+ */
+guint clawt_room_get_message_count(ClawtRoom *self);
+
+/**
  * clawt_room_get_max_hops:
  * @self: a #ClawtRoom
  *

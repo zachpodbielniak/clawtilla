@@ -325,6 +325,54 @@ clawt_room_manager_get_direct(ClawtRoomManager *self, const gchar *a,
     return insert_room(self, room);
 }
 
+guint
+clawt_room_manager_load_direct(ClawtRoomManager *self)
+{
+    g_autoptr(GDir) dir = NULL;
+    const gchar *name;
+    guint restored = 0;
+
+    g_return_val_if_fail(CLAWT_IS_ROOM_MANAGER(self), 0);
+
+    if (self->transcript_dir == NULL)
+        return 0;
+
+    dir = g_dir_open(self->transcript_dir, 0, NULL);
+
+    if (dir == NULL)
+        return 0;
+
+    while ((name = g_dir_read_name(dir)) != NULL) {
+        g_autofree gchar *room_id = NULL;
+        g_auto(GStrv) parts = NULL;
+
+        if (!g_str_has_prefix(name, "dm:") ||
+            !g_str_has_suffix(name, ".ndjson"))
+            continue;
+
+        room_id = g_strndup(name, strlen(name) - strlen(".ndjson"));
+
+        if (g_hash_table_contains(self->rooms, room_id))
+            continue;
+
+        /*
+         * The members come back out of the id rather than out of the
+         * file: a transcript records who said what, not who is in the
+         * room, and a room with no members delivers to nobody.
+         */
+        parts = g_strsplit(room_id, ":", 3);
+
+        if (g_strv_length(parts) != 3 ||
+            parts[1][0] == '\0' || parts[2][0] == '\0')
+            continue;
+
+        clawt_room_manager_get_direct(self, parts[1], parts[2]);
+        restored++;
+    }
+
+    return restored;
+}
+
 GPtrArray *
 clawt_room_manager_list(ClawtRoomManager *self)
 {

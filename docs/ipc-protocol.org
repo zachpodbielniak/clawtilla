@@ -246,6 +246,24 @@ Event kinds: ~daemon.started~, ~daemon.stopped~, ~daemon.reloaded~,
 ~mailbox.queued~, ~mailbox.delivered~, ~room.created~, ~room.changed~,
 ~task.*~, ~computer.exec~.
 
+~message~ is published once for every message the daemon routes,
+whoever sent it, and its *subject is the room*.  Details: ~id~, ~from~,
+~to~ and ~body~, plus ~task~ when the message belongs to one.
+
+The subject matters more than it looks.  It used to be published from
+the link handler and named the sender and the body but not the room, so
+a client had nothing to match a transcript against; the GTK client fell
+back to "is this from the agent I am looking at", and a reply from that
+agent to one of its *peers* matched -- so two agents talking to each
+other appeared in the user's own chat with one of them.  The message had
+been routed correctly the whole time.  Match on the room, which
+~room.history~ hands back for exactly this purpose, and on nothing else.
+
+Because every message publishes one, a client must also expect to see a
+message it already has: a client that has just connected loads history
+*and* is replayed the recent events that history already contains.
+Deduplicate on ~id~.
+
 ~agent.typing~ carries ~typing~ ("true" or "false") and, when the agent
 named one, ~room~.  It originates in libreclaw, which raises the
 indicator for the whole turn -- from picking the message up to posting
