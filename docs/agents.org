@@ -13,19 +13,104 @@ with its own persona, model, credentials, integrations and computer.
 
 ** Identity and persona
 
+An agent's personality is a set of org files in its workspace, one
+concern per file, concatenated into its system prompt in order.  Every
+workspace is scaffolded with the standard set:
+
+| File               | What it holds                                    |
+|--------------------+--------------------------------------------------|
+| ~SOUL.org~         | Character, mission, voice                        |
+| ~IDENTITY.org~     | Name, role, self-description                     |
+| ~USER.org~         | Who the human is and how they work               |
+| ~AGENTS.org~       | How to work: format, safety, fleet etiquette     |
+| ~TOOLS.org~        | What this agent actually has                     |
+| ~TOOL_GOTCHAS.org~ | Footguns, appended as they are found             |
+| ~PROJECTS.org~     | What is in flight and where it lives             |
+
+Plus three that are not part of the prompt: ~README.org~ describes the
+directory to a person, and ~AGENTS.md~ / ~CLAUDE.md~ are loaders.
+
+*** Editing them
+
+#+begin_src bash
+clawtilla agent files researcher
+#+end_src
+
+#+begin_src bash
+clawtilla agent edit researcher
+#+end_src
+
+Opens the identity files in ~$VISUAL~ or ~$EDITOR~, in the order the
+agent reads them.  Name one to open just that:
+
+#+begin_src bash
+clawtilla agent edit researcher TOOLS.org
+#+end_src
+
+The editor runs in your terminal, not in the daemon -- the daemon only
+answers where the files are.  Only names in the standard set are
+accepted, so a path that climbs out of the workspace is refused rather
+than resolved.
+
+Files are scaffolded on demand, so this works on an agent that has never
+been started.  *Existing files are never overwritten*: the defaults are a
+starting point, and a start that quietly restored them would throw away
+the exact work this exists to make possible.  An agent created before a
+file joined the standard set gets it on its next start rather than
+staying a version behind.
+
+*** The loaders
+
+~AGENTS.md~ lists the org files in order as ~@~-includes.  ~CLAUDE.md~ is
+one line:
+
+#+begin_example
+@AGENTS.md
+#+end_example
+
+So a tool looking for either finds the same set, and there is one list to
+keep current rather than two that drift.
+
+Note that ~AGENTS.org~ and ~AGENTS.md~ are different things: the org file
+is content, the markdown file is the loader.
+
+*** What the defaults already know
+
+They are generated from the agent's own configuration, not left as
+placeholders: ~IDENTITY.org~ carries its id, name, role and model, and
+~TOOLS.org~ names the orchestration tools it has, the mailbox semantics
+it works under, the exchange directory, and *which computer it has and
+what that means*.  An agent that has to discover it has no computer
+spends its first turns running commands that are refused.
+
+The rest is marked ~/Fill this in./~ and is meant to be.
+
+*** Overriding
+
+#+begin_src yaml
+persona:
+  identity_files: [SOUL.org, HOUSE_STYLE.org]
+#+end_src
+
+Set ~identity_files~ to take control of the list -- to reorder, to drop
+one, or to add a file of your own.  Leave it unset for the standard set.
+
 #+begin_src yaml
 persona:
   system_prompt: "You read code carefully and report what you find."
-  identity_files: [SOUL.md, IDENTITY.md, AGENTS.md, TOOLS.md, USER.md]
 #+end_src
 
-~identity_files~ are concatenated into the system prompt by libreclaw,
-resolved relative to the agent's workspace.  Files that do not exist are
-skipped, so a shared list across a fleet is fine.
+An inline ~system_prompt~ replaces the lot.  The two are mutually
+exclusive.
+
+Files that do not exist are skipped by libreclaw, so a list shared across
+a fleet is fine.
 
 ~description~ is separate and matters more than it looks: it is what
 other agents read when deciding who to delegate to.  "reads code and
-summarises it" is useful; "the researcher agent" is not.
+summarises it" is useful; "the researcher agent" is not.  It is also what
+the scaffolded ~SOUL.org~ and ~IDENTITY.org~ are seeded from, so writing
+a real one pays twice.
 
 ** Memory
 
@@ -60,9 +145,13 @@ primary is unavailable.
 workspace: "~/agents/researcher"
 #+end_src
 
-Defaults to ~<defaults.workspace_root>/<id>~.  Scaffolded on first start
-through libreclaw's ~LcHatch~, so a new agent gets its identity files and
-directory layout without you creating them.
+Defaults to ~<defaults.workspace_root>/<id>~.  Created and scaffolded
+with the standard file set on first start, so a new agent has its
+identity files without you creating them -- see /Identity and persona/
+above.
+
+~MEMORY.md~ also lives here, but is not scaffolded: the agent writes it
+when it has something to remember.
 
 ** Runtimes
 

@@ -429,10 +429,15 @@ static const ClawtSchemaEntry schema[] = {
   NULL, NULL,
   "Files in the workspace concatenated into the system prompt, in order.\n"
   "\n"
-  "The convention is SOUL.md for character, IDENTITY.md for role,\n"
-  "AGENTS.md for how to work with others, TOOLS.md for what it has and\n"
-  "USER.md for who you are. Splitting them means one can be edited without\n"
-  "rewriting the rest.", "0.1.0" },
+  "Leave it unset to get the standard set, which is what every workspace\n"
+  "is scaffolded with: SOUL.org for character, IDENTITY.org for role,\n"
+  "USER.org for who you are, AGENTS.org for how to work, TOOLS.org for\n"
+  "what the agent has, TOOL_GOTCHAS.org for what has already bitten it,\n"
+  "PROJECTS.org for the work. Splitting them means one can be edited\n"
+  "without rewriting the rest -- `clawtilla agent edit <id>` opens them.\n"
+  "\n"
+  "Set it to take control of the list: to reorder, to drop one, or to add\n"
+  "a file of your own. An inline system_prompt replaces the lot.", "0.1.0" },
 
 { "agents.memory", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "The agent's long-term memory file.\n"

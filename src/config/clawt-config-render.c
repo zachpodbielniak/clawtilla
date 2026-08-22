@@ -492,6 +492,22 @@ clawt_config_render_agent(ClawtConfig       *config,
 
     identity_files = clawt_agent_config_get_string_list(
         agent, "persona.identity_files");
+
+    /*
+     * The standard set when nothing was configured.
+     *
+     * The files are scaffolded into every workspace, so leaving this
+     * empty produced an agent surrounded by its own identity files with
+     * none of them loaded -- which looks exactly like the files being
+     * ignored, because they were.  An explicit list still wins, and an
+     * inline system_prompt makes the whole thing moot.
+     */
+    if ((identity_files == NULL || identity_files[0] == NULL) &&
+        clawt_agent_config_get_string(agent, "persona.system_prompt") == NULL) {
+        g_strfreev(identity_files);
+        identity_files = clawt_workspace_identity_files();
+    }
+
     append_string_list(out, 2, "identity_files", identity_files);
 
     system_prompt = clawt_agent_config_get_string(agent,
@@ -663,6 +679,16 @@ clawt_config_write_agent_files(ClawtConfig       *config,
     secrets_dir = clawt_config_get_path_value(config, "secrets.dir");
 
     if (!clawt_ensure_dir(state_dir, 0700, error))
+        return FALSE;
+
+    /*
+     * The workspace and its identity files, created before anything
+     * tries to read them.  Existing files are left alone, so this is
+     * safe to run on every start -- which is when it runs, because an
+     * agent that was created before a file joined the standard set
+     * should get it too rather than staying a version behind.
+     */
+    if (!clawt_workspace_scaffold(agent, error))
         return FALSE;
 
     credentials_dir = g_build_filename(state_dir, "credentials", NULL);

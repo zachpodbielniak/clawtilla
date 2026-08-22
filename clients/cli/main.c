@@ -101,6 +101,11 @@ static const gchar *usage_text =
     "  clawtilla agent start researcher\n"
     "  clawtilla chat researcher\n"
     "\n"
+    "  # Edit who it is: the org files that become its system prompt\n"
+    "  clawtilla agent files researcher\n"
+    "  clawtilla agent edit researcher            # all of them, in order\n"
+    "  clawtilla agent edit researcher TOOLS.org  # just one\n"
+    "\n"
     "  # Hand work to a chief-of-staff and watch it delegate\n"
     "  clawtilla send chief-of-staff \"summarize this week's commits\"\n"
     "  clawtilla task list\n"
@@ -306,6 +311,104 @@ member_or(JsonObject *object, const gchar *key, const gchar *fallback)
 
 /* ── agent ───────────────────────────────────────────────────────── */
 
+/*
+ * The editor to open workspace files with.
+ *
+ * VISUAL first, then EDITOR, then a fall-through of what is actually
+ * installed -- the same order a shell profile uses, so a user who has
+ * set one gets it and a user who has set neither still gets an editor
+ * rather than an error.
+ */
+static gchar *
+resolve_editor(void)
+{
+    static const gchar *const candidates[] = {
+        "nvim", "vim", "vi", "emacsclient_tty", "emacs", "nano", NULL
+    };
+    const gchar *configured;
+    gsize i;
+
+    configured = g_getenv("VISUAL");
+
+    if (configured == NULL || *configured == '\0')
+        configured = g_getenv("EDITOR");
+
+    if (configured != NULL && *configured != '\0')
+        return g_strdup(configured);
+
+    for (i = 0; candidates[i] != NULL; i++) {
+        g_autofree gchar *found = g_find_program_in_path(candidates[i]);
+
+        if (found != NULL)
+            return g_steal_pointer(&found);
+    }
+
+    return NULL;
+}
+
+/*
+ * Runs $EDITOR on the given paths and waits.
+ *
+ * $EDITOR is a command line, not a program name -- "emacsclient -nw" and
+ * "code --wait" are both normal -- so it is split with shell quoting
+ * rules rather than exec'd whole.
+ *
+ * Inherits this process's stdin/stdout: the editor is a terminal program
+ * and the whole point is that the user drives it.
+ */
+static gint
+run_editor(GPtrArray *paths)
+{
+    g_autofree gchar *editor = resolve_editor();
+    g_autoptr(GPtrArray) argv = NULL;
+    g_auto(GStrv) parts = NULL;
+    g_autoptr(GError) error = NULL;
+    gint status = 0;
+    guint i;
+
+    if (editor == NULL) {
+        g_printerr("clawtilla: no editor found; set $EDITOR or $VISUAL\n");
+        return EXIT_FAILURE;
+    }
+
+    if (!g_shell_parse_argv(editor, NULL, &parts, &error)) {
+        g_printerr("clawtilla: $EDITOR is not a runnable command line "
+                   "(%s): %s\n", editor, error->message);
+        return EXIT_FAILURE;
+    }
+
+    argv = g_ptr_array_new();
+
+    for (i = 0; parts[i] != NULL; i++)
+        g_ptr_array_add(argv, parts[i]);
+
+    for (i = 0; i < paths->len; i++)
+        g_ptr_array_add(argv, g_ptr_array_index(paths, i));
+
+    g_ptr_array_add(argv, NULL);
+
+    if (!g_spawn_sync(NULL, (gchar **)argv->pdata, NULL,
+                      G_SPAWN_SEARCH_PATH | G_SPAWN_CHILD_INHERITS_STDIN,
+                      NULL, NULL, NULL, NULL, &status, &error)) {
+        g_printerr("clawtilla: could not run %s: %s\n", editor,
+                   error->message);
+        return EXIT_FAILURE;
+    }
+
+    /*
+     * The editor's exit status is this process's.  An editor that failed
+     * to save is not a successful edit, and a script doing
+     * `clawtilla agent edit ... && clawtilla agent restart ...` needs to
+     * be able to tell.
+     */
+    if (!g_spawn_check_wait_status(status, &error)) {
+        g_printerr("clawtilla: %s: %s\n", editor, error->message);
+        return EXIT_FAILURE;
+    }
+
+    return EXIT_SUCCESS;
+}
+
 static gint
 cmd_agent(int argc, char *argv[])
 {
@@ -316,7 +419,8 @@ cmd_agent(int argc, char *argv[])
 
     if (verb == NULL) {
         g_printerr("Usage: clawtilla agent "
-                   "<list|show|create|rm|start|stop|restart|logs|set> "
+                   "<list|show|create|rm|start|stop|restart|logs|set|"
+                   "files|edit> "
                    "[ARGS...]\n");
         return EXIT_FAILURE;
     }
@@ -566,6 +670,105 @@ cmd_agent(int argc, char *argv[])
             g_print("%s\n", json_array_get_string_element(lines, i));
 
         return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "files") == 0 || g_strcmp0(verb, "edit") == 0) {
+        g_autoptr(GPtrArray) paths = NULL;
+        JsonArray *files;
+        guint i;
+
+        if (target == NULL) {
+            g_printerr("Usage: clawtilla agent %s <agent> [FILE...]\n", verb);
+            g_printerr("  e.g. clawtilla agent edit researcher TOOLS.org\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "agent.files",
+                     build_payload("agent", target, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        files = json_object_get_array_member(json_node_get_object(reply),
+                                             "files");
+
+        if (g_strcmp0(verb, "files") == 0) {
+            g_print("%s\n\n",
+                    json_object_get_string_member(json_node_get_object(reply),
+                                                  "workspace"));
+
+            for (i = 0; i < json_array_get_length(files); i++) {
+                JsonObject *file = json_array_get_object_element(files, i);
+
+                /*
+                 * The prompt marker is the useful column: it is the
+                 * difference between a file the agent reads every turn
+                 * and one that only a person ever opens.
+                 */
+                g_print("%-18s %s  %s\n",
+                        json_object_get_string_member(file, "name"),
+                        json_object_get_boolean_member(file, "identity")
+                            ? "prompt" : "      ",
+                        json_object_get_string_member(file, "title"));
+            }
+
+            return EXIT_SUCCESS;
+        }
+
+        paths = g_ptr_array_new_with_free_func(g_free);
+
+        if (argc > 4) {
+            gint arg;
+
+            /*
+             * Named files are matched against the set rather than joined
+             * to the workspace here: the daemon owns where a workspace
+             * is, and a client building the path itself is a client that
+             * can be pointed at somebody else's.
+             */
+            for (arg = 4; arg < argc; arg++) {
+                gboolean found = FALSE;
+
+                for (i = 0; i < json_array_get_length(files); i++) {
+                    JsonObject *file = json_array_get_object_element(files, i);
+
+                    if (g_strcmp0(json_object_get_string_member(file, "name"),
+                                  argv[arg]) == 0) {
+                        g_ptr_array_add(paths, g_strdup(
+                            json_object_get_string_member(file, "path")));
+                        found = TRUE;
+                        break;
+                    }
+                }
+
+                if (!found) {
+                    g_printerr("clawtilla: %s has no file called '%s'; "
+                               "`clawtilla agent files %s` lists them\n",
+                               target, argv[arg], target);
+                    return EXIT_FAILURE;
+                }
+            }
+        } else {
+            /*
+             * No file named: everything that goes into the prompt, in
+             * the order the agent reads it.  The loaders are left out --
+             * they are generated, and editing them is how the list stops
+             * matching the files.
+             */
+            for (i = 0; i < json_array_get_length(files); i++) {
+                JsonObject *file = json_array_get_object_element(files, i);
+
+                if (json_object_get_boolean_member(file, "identity"))
+                    g_ptr_array_add(paths, g_strdup(
+                        json_object_get_string_member(file, "path")));
+            }
+        }
+
+        if (paths->len == 0) {
+            g_printerr("clawtilla: nothing to edit\n");
+            return EXIT_FAILURE;
+        }
+
+        return run_editor(paths);
     }
 
     if (g_strcmp0(verb, "set") == 0) {

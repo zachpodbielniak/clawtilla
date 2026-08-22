@@ -35,6 +35,8 @@ Global options: ~-c/--config~, ~-s/--socket~, ~-V/--version~,
 | ~agent start/stop/restart <id>~ | |
 | ~agent logs <id>~ | the child's recent output |
 | ~agent set <id> <key> <value>~ | e.g. ~model.effort high~ |
+| ~agent files <id>~ | the workspace's org files, and which reach the prompt |
+| ~agent edit <id> [FILE...]~ | open them in ~$EDITOR~ |
 | ~send <target> <message…>~ | to an agent or a room |
 | ~chat <agent>~ | interactive |
 | ~mailbox list/dead/ack/requeue/purge <agent> [item]~ | |

@@ -1519,6 +1519,64 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         return clawt_ipc_response_new(request, NULL);
     }
 
+    if (g_strcmp0(kind, "agent.files") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        ClawtAgent *agent = (agent_id != NULL)
+                            ? clawt_agent_manager_get(self->agents, agent_id)
+                            : NULL;
+        ClawtAgentConfig *agent_config;
+        const ClawtWorkspaceFile *files;
+        guint n_files = 0;
+        guint i;
+
+        if (agent == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such agent");
+
+        agent_config = clawt_agent_get_config(agent);
+
+        /*
+         * Scaffolded on the way out, so `agent edit` works on an agent
+         * that has never been started.  Nothing is overwritten.
+         */
+        if (!clawt_workspace_scaffold(agent_config, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        files = clawt_workspace_files(&n_files);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "workspace");
+        json_builder_add_string_value(
+            builder, clawt_agent_config_get_workspace(agent_config));
+        json_builder_set_member_name(builder, "files");
+        json_builder_begin_array(builder);
+
+        for (i = 0; i < n_files; i++) {
+            g_autofree gchar *path =
+                clawt_workspace_file_path(agent_config, files[i].name);
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "name");
+            json_builder_add_string_value(builder, files[i].name);
+            json_builder_set_member_name(builder, "path");
+            json_builder_add_string_value(builder, path != NULL ? path : "");
+            json_builder_set_member_name(builder, "title");
+            json_builder_add_string_value(builder, files[i].title);
+            json_builder_set_member_name(builder, "identity");
+            json_builder_add_boolean_value(builder, files[i].identity);
+            json_builder_set_member_name(builder, "exists");
+            json_builder_add_boolean_value(
+                builder,
+                path != NULL && g_file_test(path, G_FILE_TEST_EXISTS));
+            json_builder_end_object(builder);
+        }
+
+        json_builder_end_array(builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
     if (g_strcmp0(kind, "agent.logs") == 0) {
         const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
         ClawtAgent *agent = (agent_id != NULL)

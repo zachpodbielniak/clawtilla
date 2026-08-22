@@ -17,7 +17,10 @@
 
 set -eu
 
-TEST_FLOOR=1
+# One per tests/test-*.c.  Left at 1 since the suite was three files, which
+# made the check decorative -- a run where eleven of fourteen binaries
+# failed to link was still "green, and at least one ran".
+TEST_FLOOR=14
 
 main () {
     if [ $# -ne 1 ]

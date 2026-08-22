@@ -94,5 +94,6 @@
 #include "agent/clawt-embedded-runtime.h"
 #include "agent/clawt-agent.h"
 #include "agent/clawt-agent-manager.h"
+#include "agent/clawt-workspace.h"
 
 #undef CLAWT_INSIDE

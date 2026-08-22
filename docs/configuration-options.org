@@ -656,10 +656,15 @@ System prompt, inline. Mutually exclusive with identity_files.
 
 Files in the workspace concatenated into the system prompt, in order.
 
-The convention is SOUL.md for character, IDENTITY.md for role,
-AGENTS.md for how to work with others, TOOLS.md for what it has and
-USER.md for who you are. Splitting them means one can be edited without
-rewriting the rest.
+Leave it unset to get the standard set, which is what every workspace
+is scaffolded with: SOUL.org for character, IDENTITY.org for role,
+USER.org for who you are, AGENTS.org for how to work, TOOLS.org for
+what the agent has, TOOL_GOTCHAS.org for what has already bitten it,
+PROJECTS.org for the work. Splitting them means one can be edited
+without rewriting the rest -- `clawtilla agent edit <id>` opens them.
+
+Set it to take control of the list: to reorder, to drop one, or to add
+a file of your own. An inline system_prompt replaces the lot.
 
 ** =agents.memory=
 

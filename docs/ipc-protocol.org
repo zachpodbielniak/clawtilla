@@ -62,7 +62,20 @@ what is missing, not merely that something failed.
 *** agent.*
 
 ~agent.list~, ~agent.show~, ~agent.start~, ~agent.stop~, ~agent.restart~,
-~agent.logs~, ~agent.create~, ~agent.remove~, ~agent.set~.
+~agent.logs~, ~agent.create~, ~agent.remove~, ~agent.set~,
+~agent.files~.
+
+~agent.files~ (~agent~) → ~workspace~ and a ~files~ array of
+{~name~, ~path~, ~title~, ~identity~, ~exists~}.  ~identity~ says whether
+the file reaches the system prompt.  Missing files are scaffolded before
+the reply, so a client can offer to edit an agent that has never been
+started.
+
+The daemon answers with paths rather than contents on purpose: an editor
+belongs on the user's terminal, not in the daemon, and a client that
+built the path itself is a client that can be pointed at another agent's
+state directory.  For the same reason a name is matched against the
+standard set rather than joined to the workspace.
 
 An agent object carries id, name, description, state, detail, caps,
 whether it is the chief, whether it is connected, its computer type,
