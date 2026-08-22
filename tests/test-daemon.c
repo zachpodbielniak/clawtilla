@@ -1150,6 +1150,115 @@ test_string_booleans_are_understood(void)
     g_assert_true(clawt_ipc_payload_boolean(payload, "absent", TRUE));
 }
 
+/*
+ * The orchestration tools have to be reachable over IPC.
+ *
+ * They were served only over the agent's link, as mcp.request frames,
+ * which assumed something on the agent side would relay them into its
+ * AI session. Nothing did, and nothing could: an agent runs a CLI whose
+ * only way of being given tools is a config naming an MCP server. This
+ * verb is what clawtilla-mcp-server speaks so that server can exist --
+ * and it is the agent's token, not the socket alone, that says who is
+ * asking.
+ */
+static void
+test_tool_rpc_needs_the_agents_token(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *token = NULL;
+    g_autofree gchar *token_path = NULL;
+    g_autofree gchar *good = NULL;
+    g_autoptr(JsonNode) refused = NULL;
+    g_autoptr(JsonNode) listed = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    token_path = g_build_filename(fixture.dir, "state", "agents", "chief",
+                                   "token", NULL);
+    g_assert_true(g_file_get_contents(token_path, &token, NULL, NULL));
+    g_strstrip(token);
+
+    /* No token, no tools. */
+    refused = request(&fixture, "tool.rpc",
+                      "{\"agent\":\"chief\",\"request\":"
+                      "{\"jsonrpc\":\"2.0\",\"id\":1,"
+                      "\"method\":\"tools/list\"}}");
+    g_assert_true(clawt_ipc_frame_is_error(refused));
+
+    good = g_strdup_printf(
+        "{\"agent\":\"chief\",\"token\":\"%s\",\"request\":"
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}}",
+        token);
+
+    listed = request(&fixture, "tool.rpc", good);
+    g_assert_false(clawt_ipc_frame_is_error(listed));
+
+    {
+        JsonObject *response = json_object_get_object_member(
+            payload_of(listed), "response");
+        JsonArray *tools = json_object_get_array_member(
+            json_object_get_object_member(response, "result"), "tools");
+        guint i;
+        gboolean saw_ask = FALSE;
+
+        g_assert_cmpuint(json_array_get_length(tools), >, 0);
+
+        for (i = 0; i < json_array_get_length(tools); i++) {
+            if (g_strcmp0(json_object_get_string_member(
+                    json_array_get_object_element(tools, i), "name"),
+                    "clawtilla_ask_agent") == 0)
+                saw_ask = TRUE;
+        }
+
+        g_assert_true(saw_ask);
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And a tool call actually runs, rather than only being listed.
+ */
+static void
+test_tool_rpc_runs_a_tool(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *token = NULL;
+    g_autofree gchar *token_path = NULL;
+    g_autofree gchar *call = NULL;
+    g_autoptr(JsonNode) result = NULL;
+    g_autoptr(JsonNode) queued = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n  - id: chief\n  - id: worker\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    token_path = g_build_filename(fixture.dir, "state", "agents", "chief",
+                                   "token", NULL);
+    g_assert_true(g_file_get_contents(token_path, &token, NULL, NULL));
+    g_strstrip(token);
+
+    call = g_strdup_printf(
+        "{\"agent\":\"chief\",\"token\":\"%s\",\"request\":"
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","
+        "\"params\":{\"name\":\"clawtilla_message_agent\","
+        "\"arguments\":{\"agent_id\":\"worker\","
+        "\"body\":\"through the mcp server\"}}}}",
+        token);
+
+    result = request(&fixture, "tool.rpc", call);
+    g_assert_false(clawt_ipc_frame_is_error(result));
+
+    /* The message is really in the worker's mailbox. */
+    queued = request(&fixture, "mailbox.list", "{\"agent\":\"worker\"}");
+    g_assert_false(clawt_ipc_frame_is_error(queued));
+    g_assert_cmpuint(json_array_get_length(
+        json_object_get_array_member(payload_of(queued), "items")), ==, 1);
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1194,6 +1303,9 @@ main(int argc, char *argv[])
     g_test_add_func("/daemon/request-from-event-handler",
                     test_a_request_from_an_event_handler_completes);
     g_test_add_func("/daemon/history-by-agent-id", test_history_by_agent_id);
+    g_test_add_func("/daemon/tool-rpc-needs-a-token",
+                    test_tool_rpc_needs_the_agents_token);
+    g_test_add_func("/daemon/tool-rpc-runs-a-tool", test_tool_rpc_runs_a_tool);
     g_test_add_func("/daemon/string-booleans",
                     test_string_booleans_are_understood);
     g_test_add_func("/daemon/send-reports-target-state",

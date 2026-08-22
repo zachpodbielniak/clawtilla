@@ -92,6 +92,17 @@ An agent object carries id, name, description, state, detail, caps,
 whether it is the chief, whether it is connected, its computer type,
 model, mailbox depth, and its credentials *by reference*.
 
+*** tool.*
+
+~tool.rpc~ (~agent~, ~token~, ~request~) → ~response~.  Takes one MCP
+JSON-RPC request and returns the JSON-RPC response, so the orchestration
+tools have one implementation and ~clawtilla-mcp-server~ cannot drift
+from it.
+
+The agent's own token is required -- the same one the link uses.  The
+socket's permissions are the first line; this stops one agent on this
+machine calling tools as another.
+
 *** msg.* and room.*
 
 ~msg.send~ (~target~, ~body~, ~from~) → ~queued~, the number of mailboxes

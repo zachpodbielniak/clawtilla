@@ -344,6 +344,82 @@ test_configured_identity_files_win(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * The .mcp.json is what puts clawtilla's tools into the agent's session.
+ *
+ * An agent runs an AI CLI, and the only way such a CLI can be given
+ * tools is a config naming an MCP server. Without this file the agent
+ * has a mailbox, peers and a container it cannot reach -- and will tell
+ * you so if you ask it.
+ */
+static void
+test_mcp_config_is_written(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *text = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: scribe\n");
+    agent = first_agent(&fixture);
+
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+    g_assert_true(clawt_workspace_write_mcp_config(
+        agent, "/run/clawtilla.sock", "/state/scribe", &error));
+    g_assert_no_error(error);
+
+    path = clawt_workspace_file_path(agent, ".mcp.json");
+    g_assert_nonnull(path);
+    g_assert_true(g_file_get_contents(path, &text, NULL, NULL));
+
+    /* Named so the CLI finds it, and carrying who to act as. */
+    g_assert_nonnull(strstr(text, "mcpServers"));
+    g_assert_nonnull(strstr(text, "clawtilla-mcp-server"));
+    g_assert_nonnull(strstr(text, "--agent"));
+    g_assert_nonnull(strstr(text, "scribe"));
+    g_assert_nonnull(strstr(text, "/run/clawtilla.sock"));
+
+    /*
+     * The token path, not the token. A workspace is mounted into
+     * containers and read by people; the secret stays in the state
+     * directory.
+     */
+    g_assert_nonnull(strstr(text, "/state/scribe/token"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Rewritten every start, unlike the org files: it is generated rather
+ * than authored, and a stale one points at a socket that has moved.
+ */
+static void
+test_mcp_config_is_regenerated(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *text = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: scribe\n");
+    agent = first_agent(&fixture);
+
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+    g_assert_true(clawt_workspace_write_mcp_config(agent, "/old.sock",
+                                                    "/state/scribe", &error));
+    g_assert_true(clawt_workspace_write_mcp_config(agent, "/new.sock",
+                                                    "/state/scribe", &error));
+
+    path = clawt_workspace_file_path(agent, ".mcp.json");
+    g_assert_true(g_file_get_contents(path, &text, NULL, NULL));
+    g_assert_nonnull(strstr(text, "/new.sock"));
+    g_assert_null(strstr(text, "/old.sock"));
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -357,6 +433,9 @@ main(int argc, char *argv[])
                     test_scaffold_describes_this_agent);
     g_test_add_func("/workspace/no-computer-is-said-out-loud",
                     test_scaffold_says_when_there_is_no_computer);
+    g_test_add_func("/workspace/mcp-config", test_mcp_config_is_written);
+    g_test_add_func("/workspace/mcp-config-regenerated",
+                    test_mcp_config_is_regenerated);
     g_test_add_func("/workspace/file-path-refuses-escaping",
                     test_file_path_refuses_escaping);
     g_test_add_func("/workspace/rendered-config-loads-the-set",

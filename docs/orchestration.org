@@ -150,6 +150,51 @@ re-enable something specifically turned off.  Plugin tools obey the same
 lists -- a plugin must not be able to hand an agent something its
 operator turned off.
 
+** How the tools reach an agent
+
+An agent runs an AI CLI, and the only way such a CLI can be given tools
+is a config naming an MCP server to talk to.  clawtilla writes one into
+the agent's workspace as ~.mcp.json~, naming ~clawtilla-mcp-server~ with
+the agent's id, the daemon's socket, and the path to the agent's token.
+
+The CLI finds it in its working directory by itself, the same way it
+finds ~CLAUDE.md~ -- so this needs no cooperation from libreclaw and
+works for any CLI that follows the convention.
+
+~clawtilla-mcp-server~ speaks MCP on stdin and stdout and answers by
+asking the daemon over ~tool.rpc~.  It is almost entirely a
+pass-through: ~clawt_mcp_tools_call()~ already takes a JSON-RPC request
+and returns a JSON-RPC response, so the tools have one implementation
+and the server cannot drift from it.  It answers ~initialize~, ~ping~
+and the empty ~resources/~ and ~prompts/~ lists itself, because those
+are transport boilerplate the daemon has no opinion about.
+
+It authenticates with the agent's own token -- the same one the link
+uses -- so one agent on this machine cannot call tools as another.  The
+config holds the *path* to the token, never the token: a workspace is
+mounted into containers and read by people.
+
+It is rewritten on every start, because it carries the socket and the
+token path, and a stale one points at nothing.
+
+*** If an agent says it has no clawtilla tools
+
+That was true of every agent before this existed.  clawtilla served the
+tools over the agent's link as ~mcp.request~ frames, which assumed
+something on the agent side would relay them into the session; nothing
+did, and nothing could.  An agent had a mailbox, peers and a container
+it could not reach, and would tell you so if you asked it.
+
+Check the file is there, and that the server answers:
+
+#+begin_src bash
+cat ~/.clawtilla/agents/researcher/.mcp.json
+#+end_src
+
+#+begin_src bash
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | clawtilla-mcp-server --agent researcher
+#+end_src
+
 ** Loop safety
 
 Four limits, each answering a different failure.

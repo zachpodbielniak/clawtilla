@@ -2688,6 +2688,52 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
+    if (g_strcmp0(kind, "tool.rpc") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        const gchar *token = clawt_ipc_payload_string(payload, "token");
+        JsonNode *rpc = (payload != NULL &&
+                         json_object_has_member(payload, "request"))
+                        ? json_object_get_member(payload, "request") : NULL;
+        g_autoptr(JsonNode) rpc_response = NULL;
+
+        /*
+         * The orchestration tools, reachable over IPC.
+         *
+         * They were served only over the agent's link, as mcp.request
+         * frames -- which assumed something on the agent side would
+         * relay them into its AI session. Nothing did, and nothing
+         * could: an agent runs a CLI whose only way of being given
+         * tools is an --mcp-config pointing at a real MCP server. This
+         * is the verb clawtilla-mcp-server speaks so that server can
+         * exist.
+         */
+        if (agent_id == NULL || rpc == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "agent and request are both required");
+
+        /*
+         * The agent's own token, checked the same way the link checks
+         * it. The socket's permissions are the first line; this stops
+         * one agent on this machine calling tools as another.
+         */
+        if (!authenticate_agent(agent_id, token, self))
+            return clawt_ipc_error_new(request, CLAWT_ERROR_AUTH,
+                                       "that is not this agent's token");
+
+        rpc_response = clawt_mcp_tools_call(self->mcp_tools, agent_id, rpc);
+
+        if (rpc_response == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                       "the tool produced no response");
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "response");
+        json_builder_add_value(builder, json_node_ref(rpc_response));
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
     if (g_strcmp0(kind, "model.list") == 0) {
         const ClawtProviderInfo *catalog;
         gboolean refresh = clawt_ipc_payload_boolean(payload, "refresh",

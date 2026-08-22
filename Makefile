@@ -189,8 +189,8 @@ all:
 	@$(MAKE) --no-print-directory all-impl
 
 .PHONY: all-impl
-all-impl: $(OUTDIR)/clawt-version.h shared static daemon cli gtk web \
-          $(PROJECT_NAME)-1.0.pc plugins pod-modules gir
+all-impl: $(OUTDIR)/clawt-version.h shared static daemon cli mcp-server \
+          gtk web $(PROJECT_NAME)-1.0.pc plugins pod-modules gir
 
 # ── Submodule freshness ───────────────────────────────────────────────
 #
@@ -300,11 +300,13 @@ $(LIB_SHARED): $(LIB_OBJECTS) | $(OUTDIR)
 # ============================================================
 DAEMON_SRCDIR = clients/daemon
 CLI_SRCDIR    = clients/cli
+MCP_SRCDIR    = clients/mcp
 GTK_SRCDIR    = clients/gtk
 WEB_SRCDIR    = clients/web
 
 DAEMON_SOURCES = $(wildcard $(DAEMON_SRCDIR)/*.c)
 CLI_SOURCES    = $(wildcard $(CLI_SRCDIR)/*.c)
+MCP_SOURCES    = $(wildcard $(MCP_SRCDIR)/*.c)
 GTK_SOURCES    = $(wildcard $(GTK_SRCDIR)/*.c)
 WEB_SOURCES    = $(wildcard $(WEB_SRCDIR)/*.c)
 
@@ -312,6 +314,17 @@ WEB_SOURCES    = $(wildcard $(WEB_SRCDIR)/*.c)
 daemon: $(DAEMON_BIN_TARGET)
 cli:    $(CLI_BIN_TARGET)
 web:    $(WEB_BIN_TARGET)
+
+.PHONY: mcp-server
+mcp-server: $(MCP_BIN_TARGET)
+
+# CLAWT_BINDIR is baked in so the .mcp.json clawtilla writes for an agent
+# names the binary this build installs, rather than whatever else is on
+# PATH when the agent starts.
+$(MCP_BIN_TARGET): $(MCP_SOURCES) $(LIB_STATIC) | $(OUTDIR) $(OUTDIR)/clawt-version.h
+	@echo "Building $(MCP_BIN_NAME)..."
+	$(CC) $(CFLAGS) -DCLAWT_BINDIR='"$(BINDIR)"' $(MCP_SOURCES) -o $@ \
+		$(LIB_STATIC) $(LDFLAGS)
 
 $(DAEMON_BIN_TARGET): $(DAEMON_SOURCES) $(LIB_STATIC) | $(OUTDIR) $(OUTDIR)/clawt-version.h
 	@echo "Building $(DAEMON_BIN_NAME)..."
@@ -536,6 +549,7 @@ install: all
 	install -m 644 $(LIB_STATIC) $(DESTDIR)$(LIBDIR)/
 	install -m 755 $(DAEMON_BIN_TARGET) $(DESTDIR)$(BINDIR)/
 	install -m 755 $(CLI_BIN_TARGET) $(DESTDIR)$(BINDIR)/
+	install -m 755 $(MCP_BIN_TARGET) $(DESTDIR)$(BINDIR)/
 	@[ -x $(GTK_BIN_TARGET) ] && install -m 755 $(GTK_BIN_TARGET) $(DESTDIR)$(BINDIR)/ || true
 	@[ -x $(WEB_BIN_TARGET) ] && install -m 755 $(WEB_BIN_TARGET) $(DESTDIR)$(BINDIR)/ || true
 	@for h in $(PUBLIC_HEADERS); do \
@@ -571,6 +585,7 @@ uninstall:
 	rm -f $(DESTDIR)$(LIBDIR)/$(LIB_NAME).a
 	rm -f $(DESTDIR)$(BINDIR)/$(DAEMON_BIN_NAME)
 	rm -f $(DESTDIR)$(BINDIR)/$(CLI_BIN_NAME)
+	rm -f $(DESTDIR)$(BINDIR)/$(MCP_BIN_NAME)
 	rm -f $(DESTDIR)$(BINDIR)/$(GTK_BIN_NAME)
 	rm -f $(DESTDIR)$(BINDIR)/$(WEB_BIN_NAME)
 	rm -rf $(DESTDIR)$(INCLUDEDIR)/$(PROJECT_NAME)-1.0

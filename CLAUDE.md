@@ -93,6 +93,7 @@ libadwaita is absent -- everything else here is headless and still useful.
 | `clawtillad` | the daemon |
 | `clawtilla` | the CLI |
 | `clawtilla-gtk` | the GTK4 client |
+| `clawtilla-mcp-server` | serves the orchestration tools to an agent's CLI |
 | `clawtilla-web` | the htmx web client |
 | `plugins/libclawt-plugin-*.so` | bundled plugins |
 | `Clawt-1.0.gir`, `Clawt-1.0.typelib` | introspection data |
@@ -255,6 +256,19 @@ the same program.
   binary may call it at the end of `main()`; a library never may, because
   another user of sqlite in the same process would find it shut down
   underneath them.
+
+### An AI CLI can only be given tools through an MCP config
+
+- ai-glib's CLI clients drop the tool list -- the claude-code client
+  casts it to void. So anything built on tool calls (the agent designer)
+  cannot use them, and an agent's own session cannot be handed
+  clawtilla's tools directly. The route is a real MCP server named in a
+  config file the CLI finds for itself: `clawtilla-mcp-server`, named in
+  `<workspace>/.mcp.json`, which the CLI discovers in its working
+  directory the same way it finds `CLAUDE.md`. Serving the tools over
+  the agent's own link -- which is what clawtilla did first -- reaches
+  nobody, because nothing on the agent side relays them into the
+  session.
 
 ### An async reader re-arms before it dispatches
 

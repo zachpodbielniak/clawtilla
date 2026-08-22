@@ -84,6 +84,33 @@ clawt_workspace_scaffold(ClawtAgentConfig  *agent,
                          GError           **error);
 
 /**
+ * clawt_workspace_write_mcp_config:
+ * @agent: the agent's configuration
+ * @daemon_socket: (nullable): the daemon's IPC socket
+ * @state_dir: the agent's state directory, which holds its token
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Writes `.mcp.json` into the agent's workspace.
+ *
+ * This is what puts clawtilla's orchestration tools into the agent's
+ * session. An agent runs an AI CLI, and the only way such a CLI can be
+ * given tools is a config naming an MCP server to talk to; the CLI finds
+ * this file in its working directory by itself, the same way it finds
+ * CLAUDE.md.
+ *
+ * Rewritten on every start, unlike the org files: it is generated rather
+ * than authored, and a stale copy points the agent at a socket that has
+ * moved.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+clawt_workspace_write_mcp_config(ClawtAgentConfig *agent,
+                                 const gchar      *daemon_socket,
+                                 const gchar      *state_dir,
+                                 GError          **error);
+
+/**
  * clawt_workspace_file_path:
  * @agent: the agent's configuration
  * @name: a file name from the standard set, or any other name

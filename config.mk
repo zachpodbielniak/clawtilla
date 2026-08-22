@@ -195,6 +195,11 @@ GTK_BIN_TARGET = $(OUTDIR)/$(GTK_BIN_NAME)
 WEB_BIN_NAME = clawtilla-web
 WEB_BIN_TARGET = $(OUTDIR)/$(WEB_BIN_NAME)
 
+# The agent-facing MCP server.  An agent's AI CLI starts this; it is not
+# meant to be run by hand.
+MCP_BIN_NAME = clawtilla-mcp-server
+MCP_BIN_TARGET = $(OUTDIR)/$(MCP_BIN_NAME)
+
 # Build-time config generator.  Runs on the build host, so it links only
 # glib and yaml-glib -- never the full library.
 GENCONFIG_BIN = $(OUTDIR)/clawt-genconfig

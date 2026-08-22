@@ -770,6 +770,25 @@ clawt_config_write_agent_files(ClawtConfig       *config,
     if (!clawt_workspace_scaffold(agent, error))
         return FALSE;
 
+    /*
+     * The .mcp.json that puts clawtilla's tools into the agent's
+     * session. Written on every start because it carries the daemon's
+     * socket and the token path, and a stale one points at nothing.
+     */
+    {
+        /*
+         * The IPC socket comes from the config rather than being passed
+         * in: that is where the daemon gets its own from, so the two can
+         * never disagree about where an agent should dial.
+         */
+        g_autofree gchar *ipc_socket =
+            clawt_config_get_path_value(config, "daemon.socket");
+
+        if (!clawt_workspace_write_mcp_config(agent, ipc_socket, state_dir,
+                                               error))
+            return FALSE;
+    }
+
     credentials_dir = g_build_filename(state_dir, "credentials", NULL);
     if (!clawt_ensure_dir(credentials_dir, 0700, error))
         return FALSE;

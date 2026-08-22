@@ -17,6 +17,7 @@
 #include "agent/clawt-workspace.h"
 
 #include <glib/gstdio.h>
+#include <json-glib/json-glib.h>
 #include <string.h>
 
 /*
@@ -613,6 +614,122 @@ build_values(ClawtAgentConfig *agent)
                                  : g_get_user_name()));
 
     return values;
+}
+
+/*
+ * Where clawtilla-mcp-server is.
+ *
+ * Beside the binary that is running first, so a build tree works
+ * uninstalled and a daemon started from a checkout does not hand its
+ * agents a path to a different install.  The compiled-in bindir is the
+ * fallback, and a bare name lets PATH decide when neither exists.
+ */
+static gchar *
+mcp_server_path(void)
+{
+    g_autofree gchar *exe = g_file_read_link("/proc/self/exe", NULL);
+
+    if (exe != NULL) {
+        g_autofree gchar *dir = g_path_get_dirname(exe);
+        g_autofree gchar *beside = g_build_filename(dir,
+                                                     "clawtilla-mcp-server",
+                                                     NULL);
+
+        if (g_file_test(beside, G_FILE_TEST_IS_EXECUTABLE))
+            return g_steal_pointer(&beside);
+    }
+
+#ifdef CLAWT_BINDIR
+    {
+        g_autofree gchar *installed =
+            g_build_filename(CLAWT_BINDIR, "clawtilla-mcp-server", NULL);
+
+        if (g_file_test(installed, G_FILE_TEST_IS_EXECUTABLE))
+            return g_steal_pointer(&installed);
+    }
+#endif
+
+    return g_strdup("clawtilla-mcp-server");
+}
+
+gboolean
+clawt_workspace_write_mcp_config(ClawtAgentConfig *agent,
+                                 const gchar      *daemon_socket,
+                                 const gchar      *state_dir,
+                                 GError          **error)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(JsonGenerator) generator = json_generator_new();
+    g_autoptr(JsonNode) root = NULL;
+    g_autofree gchar *text = NULL;
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *server = NULL;
+    g_autofree gchar *token_file = NULL;
+    const gchar *workspace;
+
+    g_return_val_if_fail(agent != NULL, FALSE);
+
+    workspace = clawt_agent_config_get_workspace(agent);
+
+    if (workspace == NULL)
+        return TRUE;
+
+    server = mcp_server_path();
+    token_file = g_build_filename(state_dir, "token", NULL);
+
+    /*
+     * .mcp.json in the workspace, which is the agent's working
+     * directory.
+     *
+     * The CLI discovers it there by itself, the same way it finds
+     * CLAUDE.md -- so this needs no cooperation from libreclaw and works
+     * for any CLI that follows the same convention. Without it the agent
+     * has a mailbox, peers and a container it cannot reach, and will
+     * tell you so if asked.
+     */
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "mcpServers");
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "clawtilla");
+    json_builder_begin_object(builder);
+
+    json_builder_set_member_name(builder, "command");
+    json_builder_add_string_value(builder, server);
+
+    json_builder_set_member_name(builder, "args");
+    json_builder_begin_array(builder);
+    json_builder_add_string_value(builder, "--agent");
+    json_builder_add_string_value(builder,
+                                  clawt_agent_config_get_id(agent));
+
+    if (daemon_socket != NULL) {
+        json_builder_add_string_value(builder, "--socket");
+        json_builder_add_string_value(builder, daemon_socket);
+    }
+
+    json_builder_add_string_value(builder, "--token-file");
+    json_builder_add_string_value(builder, token_file);
+    json_builder_end_array(builder);
+
+    json_builder_end_object(builder);
+    json_builder_end_object(builder);
+    json_builder_end_object(builder);
+
+    root = json_builder_get_root(builder);
+    json_generator_set_root(generator, root);
+    json_generator_set_pretty(generator, TRUE);
+    text = json_generator_to_data(generator, NULL);
+
+    path = g_build_filename(workspace, ".mcp.json", NULL);
+
+    /*
+     * Rewritten every time, unlike the org files.
+     *
+     * This one is generated, not authored: it carries the socket and the
+     * token path, and a stale copy from a daemon that used to live
+     * somewhere else points the agent at nothing.
+     */
+    return clawt_write_file_atomic(path, text, -1, 0600, FALSE, error);
 }
 
 gboolean
