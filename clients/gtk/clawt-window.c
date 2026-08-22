@@ -100,6 +100,9 @@ struct _ClawtWindow {
     GtkWidget         *activity_bar;
     GtkSpinner        *activity_spinner;
 
+    GtkWidget         *agent_menu;
+    GSimpleActionGroup *agent_actions;
+
     gboolean           refreshing[CLAWT_N_REFRESH];
     gboolean           refresh_again[CLAWT_N_REFRESH];
 
@@ -296,6 +299,14 @@ agent_row(JsonObject *agent)
                            g_strdup(clawt_json_string(agent, "id", "")),
                            g_free);
 
+    /*
+     * The context menu decides what to grey out from here rather than
+     * asking the daemon again: a right-click has to be instant, and the
+     * sidebar was drawn from the same reply a moment ago.
+     */
+    g_object_set_data_full(G_OBJECT(row), "agent-state", g_strdup(state),
+                           g_free);
+
     return row;
 }
 
@@ -330,10 +341,23 @@ on_row_selected(GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
 static void
 clear_list(GtkListBox *list)
 {
-    GtkWidget *child;
+    GtkWidget *child = gtk_widget_get_first_child(GTK_WIDGET(list));
 
-    while ((child = gtk_widget_get_first_child(GTK_WIDGET(list))) != NULL)
-        gtk_list_box_remove(list, child);
+    /*
+     * Rows only, and walked rather than repeatedly taking the first
+     * child.  A GtkPopover parented to the list -- the sidebar's context
+     * menu is one -- is a child like any other, and gtk_list_box_remove()
+     * refuses to take it: the old loop then asked for the same first
+     * child forever and hung the window before it ever drew.
+     */
+    while (child != NULL) {
+        GtkWidget *next = gtk_widget_get_next_sibling(child);
+
+        if (GTK_IS_LIST_BOX_ROW(child))
+            gtk_list_box_remove(list, child);
+
+        child = next;
+    }
 }
 
 static void
@@ -615,23 +639,34 @@ info_row(const gchar *title, const gchar *value)
     return row;
 }
 
+/* Shared by the inspector's buttons and the sidebar's context menu. */
 static void
-on_agent_action(GtkButton *button, gpointer user_data)
+agent_action(ClawtWindow *self, const gchar *kind)
 {
-    ClawtWindow *self = user_data;
-    const gchar *kind = g_object_get_data(G_OBJECT(button), "kind");
     g_autoptr(JsonNode) reply = NULL;
 
-    if (self->selected_agent == NULL)
+    if (self->selected_agent == NULL || kind == NULL)
         return;
 
     reply = clawt_window_request(
         self, kind, clawt_build_payload("agent", self->selected_agent, NULL));
 
-    if (reply != NULL)
-        refresh_agents(self);
+    (void)reply;
 
+    /*
+     * Refreshed whether or not it worked.  A start that fails still moves
+     * the agent to ERROR, and skipping the refresh on failure left the
+     * sidebar showing "stopped" next to a toast explaining why it could
+     * not start -- two contradictory answers on screen at once.
+     */
+    refresh_agents(self);
     refresh_selected(self);
+}
+
+static void
+on_agent_action(GtkButton *button, gpointer user_data)
+{
+    agent_action(user_data, g_object_get_data(G_OBJECT(button), "kind"));
 }
 
 static GtkWidget *
@@ -822,13 +857,10 @@ on_delete_confirmed_once(AdwAlertDialog *dialog, gchar *response,
 }
 
 static void
-on_delete_agent(GtkButton *button, gpointer user_data)
+delete_agent(ClawtWindow *self)
 {
-    ClawtWindow *self = user_data;
     AdwAlertDialog *first;
     g_autofree gchar *heading = NULL;
-
-    (void)button;
 
     if (self->selected_agent == NULL)
         return;
@@ -849,6 +881,14 @@ on_delete_agent(GtkButton *button, gpointer user_data)
                      G_CALLBACK(on_delete_confirmed_once), self);
 
     adw_dialog_present(ADW_DIALOG(first), GTK_WIDGET(self));
+}
+
+static void
+on_delete_agent(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+
+    delete_agent(user_data);
 }
 
 /* ── The inspector ───────────────────────────────────────────────── */
@@ -1364,6 +1404,177 @@ select_agent(ClawtWindow *self, const gchar *agent_id)
     /* On a narrow window the sidebar is a drawer, so close it. */
     if (adw_overlay_split_view_get_collapsed(self->split))
         adw_overlay_split_view_set_show_sidebar(self->split, FALSE);
+}
+
+/* ── The sidebar's context menu ───────────────────────────────────── */
+
+/*
+ * Start, stop and restart without leaving the conversation.
+ *
+ * These live on the Agent tab too, but reaching for them meant leaving
+ * the chat, acting, and coming back -- three navigations for the thing
+ * you do most often to an agent.
+ */
+static void
+on_menu_action(GSimpleAction *action, GVariant *parameter, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *name = g_action_get_name(G_ACTION(action));
+
+    (void)parameter;
+
+    if (g_strcmp0(name, "delete") == 0) {
+        delete_agent(self);
+        return;
+    }
+
+    {
+        g_autofree gchar *kind = g_strconcat("agent.", name, NULL);
+
+        agent_action(self, kind);
+    }
+}
+
+static void
+enable_agent_action(ClawtWindow *self, const gchar *name, gboolean enabled)
+{
+    GAction *action = g_action_map_lookup_action(
+        G_ACTION_MAP(self->agent_actions), name);
+
+    if (action != NULL)
+        g_simple_action_set_enabled(G_SIMPLE_ACTION(action), enabled);
+}
+
+/*
+ * A menu that offers what would fail is worse than one that greys it
+ * out, so the same rules the inspector's buttons use apply here.  A
+ * shadow agent cannot run at all: its configuration did not parse, and
+ * every lifecycle verb would be refused by the daemon.
+ */
+static void
+set_agent_action_states(ClawtWindow *self, const gchar *state)
+{
+    gboolean shadow = g_strcmp0(state, "shadow") == 0;
+
+    enable_agent_action(self, "start",
+                        !shadow && g_strcmp0(state, "running") != 0);
+    enable_agent_action(self, "stop",
+                        !shadow && g_strcmp0(state, "stopped") != 0);
+    enable_agent_action(self, "restart", !shadow);
+    enable_agent_action(self, "delete", TRUE);
+}
+
+static void
+popup_agent_menu(ClawtWindow *self, gdouble x, gdouble y)
+{
+    GtkListBoxRow *row = gtk_list_box_get_row_at_y(self->sidebar, (gint)y);
+    g_autofree gchar *state = NULL;
+    const gchar *agent_id;
+    GdkRectangle rect;
+
+    if (row == NULL || self->agent_menu == NULL)
+        return;
+
+    agent_id = g_object_get_data(G_OBJECT(row), "agent-id");
+
+    /* The "No agents yet" placeholder is a row like any other. */
+    if (agent_id == NULL)
+        return;
+
+    /*
+     * Copied off the row before anything else, because selecting it
+     * loads the transcript, which iterates the main context, which lets
+     * a refresh rebuild the sidebar and free this row underneath us.
+     */
+    state = g_strdup(g_object_get_data(G_OBJECT(row), "agent-state"));
+
+    /* Act on what was right-clicked, not on what happened to be selected. */
+    gtk_list_box_select_row(self->sidebar, row);
+
+    set_agent_action_states(self, state);
+
+    rect.x = (gint)x;
+    rect.y = (gint)y;
+    rect.width = 1;
+    rect.height = 1;
+
+    gtk_popover_set_pointing_to(GTK_POPOVER(self->agent_menu), &rect);
+    gtk_popover_popup(GTK_POPOVER(self->agent_menu));
+}
+
+static void
+on_sidebar_secondary_click(GtkGestureClick *gesture, gint n_press,
+                           gdouble x, gdouble y, gpointer user_data)
+{
+    (void)gesture;
+    (void)n_press;
+
+    popup_agent_menu(user_data, x, y);
+}
+
+/* Touch has no second button; a long press is the same gesture there. */
+static void
+on_sidebar_long_press(GtkGestureLongPress *gesture, gdouble x, gdouble y,
+                      gpointer user_data)
+{
+    (void)gesture;
+
+    popup_agent_menu(user_data, x, y);
+}
+
+static void
+build_agent_menu(ClawtWindow *self)
+{
+    static const gchar *const names[] = { "start", "stop", "restart",
+                                          "delete" };
+    g_autoptr(GMenu) menu = g_menu_new();
+    g_autoptr(GMenu) lifecycle = g_menu_new();
+    g_autoptr(GMenu) danger = g_menu_new();
+    GtkGesture *click;
+    GtkGesture *press;
+    guint i;
+
+    self->agent_actions = g_simple_action_group_new();
+
+    for (i = 0; i < G_N_ELEMENTS(names); i++) {
+        g_autoptr(GSimpleAction) action = g_simple_action_new(names[i], NULL);
+
+        g_signal_connect(action, "activate", G_CALLBACK(on_menu_action), self);
+        g_action_map_add_action(G_ACTION_MAP(self->agent_actions),
+                                G_ACTION(action));
+    }
+
+    g_menu_append(lifecycle, "Start", "agent.start");
+    g_menu_append(lifecycle, "Stop", "agent.stop");
+    g_menu_append(lifecycle, "Restart", "agent.restart");
+    g_menu_append_section(menu, NULL, G_MENU_MODEL(lifecycle));
+
+    /* Its own section, so Delete is never the neighbour of Restart. */
+    g_menu_append(danger, "Delete\342\200\246", "agent.delete");
+    g_menu_append_section(menu, NULL, G_MENU_MODEL(danger));
+
+    gtk_widget_insert_action_group(GTK_WIDGET(self), "agent",
+                                   G_ACTION_GROUP(self->agent_actions));
+
+    self->agent_menu = gtk_popover_menu_new_from_model(G_MENU_MODEL(menu));
+    gtk_popover_set_has_arrow(GTK_POPOVER(self->agent_menu), FALSE);
+    gtk_widget_set_halign(self->agent_menu, GTK_ALIGN_START);
+    gtk_widget_set_parent(self->agent_menu, GTK_WIDGET(self->sidebar));
+
+    click = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click),
+                                  GDK_BUTTON_SECONDARY);
+    g_signal_connect(click, "pressed",
+                     G_CALLBACK(on_sidebar_secondary_click), self);
+    gtk_widget_add_controller(GTK_WIDGET(self->sidebar),
+                              GTK_EVENT_CONTROLLER(click));
+
+    press = gtk_gesture_long_press_new();
+    gtk_gesture_single_set_touch_only(GTK_GESTURE_SINGLE(press), TRUE);
+    g_signal_connect(press, "pressed",
+                     G_CALLBACK(on_sidebar_long_press), self);
+    gtk_widget_add_controller(GTK_WIDGET(self->sidebar),
+                              GTK_EVENT_CONTROLLER(press));
 }
 
 /* ── Events ──────────────────────────────────────────────────────── */
@@ -2101,6 +2312,7 @@ clawt_window_new(AdwApplication *app, ClawtClient *client)
     gtk_widget_add_css_class(GTK_WIDGET(self->sidebar), "navigation-sidebar");
     g_signal_connect(self->sidebar, "row-selected",
                      G_CALLBACK(on_row_selected), self);
+    build_agent_menu(self);
 
     sidebar_scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(sidebar_scroll),
@@ -2205,6 +2417,14 @@ clawt_window_dispose(GObject *object)
         g_signal_handlers_disconnect_by_data(self->client, self);
 
     g_clear_object(&self->client);
+
+    /*
+     * A popover parented to a widget outlives that widget's own dispose
+     * and GTK complains about it at teardown; unparenting is the
+     * documented way to hand it back.
+     */
+    g_clear_pointer(&self->agent_menu, gtk_widget_unparent);
+    g_clear_object(&self->agent_actions);
 
     G_OBJECT_CLASS(clawt_window_parent_class)->dispose(object);
 }

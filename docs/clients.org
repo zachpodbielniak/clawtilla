@@ -84,6 +84,21 @@ Each agent shows a state dot, its description, and badges:
 Colour is never the only signal: the state is in the tooltip and in the
 inspector too.
 
+*Right-click an agent* for Start, Stop, Restart and Delete.  These are on
+the Agent tab as well, but reaching them there means leaving the
+conversation, acting and coming back -- three navigations for the thing
+you do to an agent most often.  A long press does the same on touch,
+where there is no second button.
+
+Right-clicking selects the agent first, so the menu always acts on the
+row under the pointer rather than on whatever was selected before.
+Entries are greyed out by the same rules the inspector's buttons use:
+Stop is unavailable on a stopped agent, Start on a running one, and a
+shadow agent -- one whose configuration did not parse -- offers no
+lifecycle verb at all, because the daemon would refuse every one of
+them.  Delete sits in its own section so it is never the neighbour of
+Restart, and still asks twice.
+
 *** The tabs
 
 | Tab | What it is |

@@ -277,6 +277,15 @@ the same program.
   `AdwExpanderRow` do **not**, so `adw_action_row_set_subtitle()` on one
   is a runtime assertion, not a compile error.
 
+### A popover parented to a GtkListBox is one of its children
+
+- `gtk_widget_set_parent(popover, list_box)` makes the popover a child
+  widget, so a "remove the first child until there are none" loop asks
+  for the same child forever -- `gtk_list_box_remove()` refuses anything
+  that is not a `GtkListBoxRow`, and the window hangs before it draws.
+  `clear_list()` walks siblings and removes rows only. Unparent the
+  popover in `dispose()`, or GTK complains at teardown.
+
 ### A refresh that iterates the main context can re-enter
 
 - `clawt_client_request()` iterates the caller's context while it waits,
