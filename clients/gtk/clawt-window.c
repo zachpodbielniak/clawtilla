@@ -554,23 +554,53 @@ set_activity(ClawtWindow *self, const gchar *text)
     gtk_spinner_start(self->activity_spinner);
 }
 
+/*
+ * Sets a label from markdown, falling back to plain text.
+ *
+ * Pango refuses unbalanced markup and a GtkLabel handed something it
+ * cannot parse renders *nothing* -- a message that silently disappears
+ * is far worse than one that renders without its bold. So the markup is
+ * checked before it is used, and anything that fails goes up as the
+ * text it came from.
+ */
+static void
+set_label_markdown(GtkLabel *label, const gchar *body)
+{
+    g_autofree gchar *markup = clawt_markdown_to_pango(body);
+    g_autoptr(GError) error = NULL;
+
+    if (pango_parse_markup(markup, -1, 0, NULL, NULL, NULL, &error)) {
+        gtk_label_set_markup(label, markup);
+        return;
+    }
+
+    g_warning("markdown produced markup Pango rejected (%s); "
+              "showing it plainly", error->message);
+    gtk_label_set_text(label, body != NULL ? body : "");
+}
+
 static void
 append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
                gboolean from_user)
 {
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     GtkWidget *who = gtk_label_new(sender);
-    GtkWidget *text = gtk_label_new(body);
+    GtkWidget *text = gtk_label_new(NULL);
 
     gtk_widget_add_css_class(who, "caption");
     gtk_widget_add_css_class(who, "dim-label");
     gtk_widget_set_halign(who, from_user ? GTK_ALIGN_END : GTK_ALIGN_START);
 
     /*
-     * The body is a label, not markup.  Model output arrives from
-     * somewhere the user does not control, and treating it as Pango markup
-     * would let a message rewrite the interface around it.
+     * Rendered from markdown, never *as* markup.
+     *
+     * clawt_markdown_to_pango() emits markup only for the structure
+     * cmark identified and escapes every literal on the way out, so an
+     * agent writing "<span foreground=...>" gets those characters on
+     * screen rather than a message that repaints the interface around
+     * it.
      */
+    set_label_markdown(GTK_LABEL(text), body);
     gtk_label_set_wrap(GTK_LABEL(text), TRUE);
     gtk_label_set_selectable(GTK_LABEL(text), TRUE);
     gtk_label_set_xalign(GTK_LABEL(text), 0.0f);
@@ -4640,8 +4670,7 @@ show_flow_room(ClawtWindow *self, const gchar *room_id, const gchar *label)
         GtkWidget *head = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
         GtkWidget *who = gtk_label_new(
             g_strcmp0(sender, "user") == 0 ? "you" : sender);
-        GtkWidget *body = gtk_label_new(clawt_json_string(message, "body",
-                                                          ""));
+        GtkWidget *body = gtk_label_new(NULL);
         g_autofree gchar *when =
             relative_time(clawt_json_int(message, "ts", 0));
         GtkWidget *stamp = gtk_label_new(when);
@@ -4696,7 +4725,9 @@ show_flow_room(ClawtWindow *self, const gchar *room_id, const gchar *label)
             gtk_box_append(GTK_BOX(head), chip);
         }
 
-        /* Never markup: this is model output. */
+        /* Rendered from markdown; see set_label_markdown(). */
+        set_label_markdown(GTK_LABEL(body),
+                           clawt_json_string(message, "body", ""));
         gtk_label_set_wrap(GTK_LABEL(body), TRUE);
         gtk_label_set_selectable(GTK_LABEL(body), TRUE);
         gtk_label_set_xalign(GTK_LABEL(body), 0.0f);

@@ -116,6 +116,32 @@ Restart, and still asks twice.
 | Flow | every conversation between agents, newest first, and what was said |
 
 
+
+*** Markdown
+
+Agent replies are rendered: bold, italic, inline code, fenced code,
+headings, bullet and numbered lists, block quotes and rules. Enough for
+what a chat actually contains, and nothing beyond it.
+
+The important word is *rendered*, not *interpreted*.
+~clawt_markdown_to_pango()~ walks the document cmark parsed and emits
+Pango markup only for the structure cmark identified, escaping every
+piece of literal text on the way out. An agent that writes
+~<span foreground="red">~ gets those characters on screen; a message
+crafted to close a tag cannot reach the parser at all, because the
+parser never sees its text. ~tests/test-markdown.c~ throws the obvious
+attempts at it and also asserts that the tags in the output are always
+balanced -- Pango refuses unbalanced markup, and a GtkLabel handed
+something it cannot parse renders *nothing*, so a message would silently
+vanish. The client checks with ~pango_parse_markup()~ before using it
+and falls back to plain text, which is belt as well as braces.
+
+Links show their target beside the text and are not clickable. A
+clickable link in model output is one keystroke between a prompt
+injection and a browser; a person who can see where it goes is a person
+who can decide.
+
+
 *** Writing the message
 
 The box is a text view, not an entry: Ctrl+G hands whatever comes back

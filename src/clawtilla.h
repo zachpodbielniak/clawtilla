@@ -49,6 +49,7 @@
 #include "computer/clawt-computer-factory.h"
 
 #include "chat/clawt-message.h"
+#include "chat/clawt-markdown.h"
 #include "chat/clawt-loop-guard.h"
 #include "chat/clawt-room.h"
 #include "chat/clawt-room-manager.h"

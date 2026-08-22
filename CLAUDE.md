@@ -396,6 +396,18 @@ the same program.
   `AdwExpanderRow` do **not**, so `adw_action_row_set_subtitle()` on one
   is a runtime assertion, not a compile error.
 
+### Model output never reaches a markup parser
+
+- Agent replies are rendered by `clawt_markdown_to_pango()`, which walks
+  cmark's AST and emits Pango markup only for the structure cmark found,
+  escaping every literal. Never call `gtk_label_set_markup()` on
+  anything an agent wrote, and never add a path that passes its text
+  through. Two consequences worth keeping: the emitted tags must stay
+  balanced, because Pango refuses unbalanced markup and a GtkLabel that
+  cannot parse renders *nothing* — a message would silently vanish, so
+  the client validates with `pango_parse_markup()` and falls back to
+  plain text; and links are rendered non-clickable on purpose.
+
 ### A popover parented to a GtkEntry stops the window mapping
 
 - Worse than the GtkListBox case below: `gtk_widget_set_parent(popover,
