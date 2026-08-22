@@ -836,7 +836,12 @@ static const ClawtSchemaEntry schema[] = {
 { "agents.computer.vm.image", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
   "Base disk image. A qcow2 overlay is created on top, so the base is\n"
-  "never written to and several agents can share one.", "0.1.0" },
+  "never written to and several agents can share one.\n"
+  "\n"
+  "clawtilla ships no image and downloads none: point this at a qcow2 you\n"
+  "already have. A distribution's cloud image is the easy answer, because\n"
+  "cloud_init below can give it a login without the image being touched.",
+  "0.1.0" },
 
 { "agents.computer.vm.cpus", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "2", NULL,
@@ -848,11 +853,53 @@ static const ClawtSchemaEntry schema[] = {
 
 { "agents.computer.vm.ssh_user", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   "root", NULL,
-  "User commands are run as inside the guest, over SSH.", "0.1.0" },
+  "User commands are run as inside the guest, over SSH.\n"
+  "\n"
+  "With cloud_init on, this account is created in the guest rather than\n"
+  "having to exist already, and gets passwordless sudo unless it is root.",
+  "0.1.0" },
 
 { "agents.computer.vm.ssh_key", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
-  "Private key used to reach the guest.", "0.1.0" },
+  "Private key used to reach the guest.\n"
+  "\n"
+  "Left unset, an ed25519 key is generated per agent under the VM's state\n"
+  "directory and authorised through cloud-init. It cannot be encrypted:\n"
+  "the daemon uses it with nobody present to type a passphrase.",
+  "0.1.0" },
+
+{ "agents.computer.vm.ssh_host", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Address that reaches the guest.\n"
+  "\n"
+  "Leave it unset and clawtilla forwards a port on 127.0.0.1 to the\n"
+  "guest's SSH and fills this in itself -- the port is chosen once and\n"
+  "remembered, so it survives a restart. Set it when the VM is somewhere\n"
+  "clawtilla did not put it: a bridged network, another host, or a VM that\n"
+  "existed before this agent did.\n"
+  "\n"
+  "The libvirt backend can only forward a port through passt, because\n"
+  "libvirt has no port forwarding for the SLIRP backend. Without passt\n"
+  "installed the VM still runs, and this key is the way to reach it.",
+  "0.1.0" },
+
+{ "agents.computer.vm.ssh_port", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "22", NULL,
+  "Port SSH is reached on. Ignored when clawtilla is forwarding a port of\n"
+  "its own choosing, which is the default.", "0.1.0" },
+
+{ "agents.computer.vm.cloud_init", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "true", NULL,
+  "Hand the guest a cloud-init seed on first boot.\n"
+  "\n"
+  "A cloud image has no account, no password and no authorised key: it\n"
+  "expects to be given them. Without this it boots perfectly and nothing\n"
+  "can get in, which looks exactly like a VM that failed to boot.\n"
+  "\n"
+  "The seed is a small ISO labelled cidata, attached as a CD-ROM, holding\n"
+  "the login and public key. Building it needs xorriso (Fedora: xorriso).\n"
+  "Turn this off for an image that already has a login and a key.",
+  "0.1.0" },
 
 { "agents.computer.vm.snapshot_on_start", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "false", NULL,

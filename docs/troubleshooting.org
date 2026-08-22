@@ -234,6 +234,55 @@ Also intended.
   works as your user
 - QEMU backend: check ~qemu-system-x86_64~ and ~qemu-img~ are on PATH
 - either: the base image must exist and be readable
+- ~computer.vm.image~ must be *set*.  clawtilla ships no disk image and
+  downloads none; unset, the domain is defined with no disk and never
+  boots
+
+** A VM runs but commands in it do nothing
+
+#+begin_example
+nothing forwards a port to this VM's SSH, so commands cannot be run in it
+#+end_example
+
+Nothing reaches the guest.  In order of likelihood:
+
+- *passt is not installed*, and the backend is libvirt.  libvirt has no
+  port forwarding for the SLIRP backend, so passt (Fedora: ~passt~) is
+  what makes one possible.  Starting the VM warns about this; install it
+  and provision again
+- the VM is somewhere clawtilla did not put it.  Set
+  ~computer.vm.ssh_host~ (and ~computer.vm.ssh_port~) to an address that
+  reaches it; clawtilla then forwards nothing and dials that instead
+
+Check what it is trying:
+
+#+begin_src bash
+cat ~/.local/share/clawtilla/vms/<agent>/ssh-port
+#+end_src
+
+** A VM boots and the login is refused
+
+The guest has no account for clawtilla to use.  Almost always the image:
+an installer ISO or a desktop image has no cloud-init, so nothing acts on
+the seed.  Use a distribution's *cloud* image.
+
+Otherwise, in order:
+
+- ~xorriso~ missing -- provisioning stops and says so, because it cannot
+  build the seed
+- ~cloud_init: false~ with an image that does not in fact have a login
+  and an authorised key of its own
+- an encrypted ~ssh_key~.  Refused with that reason: nothing is present
+  to type its passphrase
+- the seed was built before you changed ~ssh_user~ or the key, and
+  cloud-init only acts on it at *first* boot.  Delete
+  ~~/.local/share/clawtilla/vms/<agent>/overlay.qcow2~ and start again
+
+What the guest was told is readable:
+
+#+begin_src bash
+cat ~/.local/share/clawtilla/vms/<agent>/cloud-init/user-data
+#+end_src
 
 ** gowl is unreachable
 

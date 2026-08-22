@@ -1559,9 +1559,14 @@ add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
     }
 
     /*
-     * The VM's size, so a client can show and edit it.  Reported only
-     * for a VM: no other backend reads these, and reporting a key an
-     * agent does not use invites a client to offer editing it.
+     * The VM's disk, size and address, so a client can show and edit
+     * them.  Reported only for a VM: no other backend reads these, and
+     * reporting a key an agent does not use invites a client to offer
+     * editing it.
+     *
+     * The disk matters most.  clawtilla ships no image and downloads
+     * none, so a VM agent with this unset has no disk at all and cannot
+     * boot -- which a client has no way to say unless it is told.
      */
     if (clawt_agent_config_get_enum(config, "computer.type") ==
         CLAWT_COMPUTER_VM) {
@@ -1572,10 +1577,18 @@ add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
             "%" G_GINT64_FORMAT,
             clawt_agent_config_get_int(config, "computer.vm.memory_mb"));
 
+        json_builder_set_member_name(builder, "vm_image");
+        json_builder_add_string_value(
+            builder, clawt_agent_config_get_string(config,
+                                                   "computer.vm.image"));
         json_builder_set_member_name(builder, "vm_cpus");
         json_builder_add_string_value(builder, cpus);
         json_builder_set_member_name(builder, "vm_memory_mb");
         json_builder_add_string_value(builder, memory);
+        json_builder_set_member_name(builder, "vm_ssh_host");
+        json_builder_add_string_value(
+            builder, clawt_agent_config_get_string(config,
+                                                   "computer.vm.ssh_host"));
     }
 
     json_builder_set_member_name(builder, "model");

@@ -434,6 +434,256 @@ test_vm_domain_xml_omits_shared_memory_without_mounts(void)
     g_assert_null(strstr(xml, "<memoryBacking>"));
 }
 
+/*
+ * A cloud image has no login until it is handed one, and the seed is how.
+ * It rides as a CD-ROM because that is what NoCloud looks for.
+ */
+static void
+test_vm_domain_xml_attaches_the_seed(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_LIBVIRT, NULL);
+    g_autofree gchar *xml = NULL;
+
+    clawt_vm_computer_set_seed_iso(CLAWT_VM_COMPUTER(computer),
+                                   "/tmp/vms/chief/seed.iso");
+
+    xml = clawt_vm_computer_build_domain_xml(CLAWT_VM_COMPUTER(computer));
+
+    g_assert_nonnull(strstr(xml, "device='cdrom'"));
+    g_assert_nonnull(strstr(xml, "/tmp/vms/chief/seed.iso"));
+    g_assert_nonnull(strstr(xml, "<readonly/>"));
+}
+
+/*
+ * libvirt has no port forwarding for the SLIRP backend, so a forwarded
+ * port has to bring passt with it -- a <portForward> without it is a
+ * rejected domain, not an unforwarded one.
+ */
+static void
+test_vm_domain_xml_forwards_ssh_through_passt(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_LIBVIRT, NULL);
+    g_autofree gchar *xml = NULL;
+
+    clawt_vm_computer_set_port_forward(CLAWT_VM_COMPUTER(computer), 24601);
+
+    xml = clawt_vm_computer_build_domain_xml(CLAWT_VM_COMPUTER(computer));
+
+    g_assert_nonnull(strstr(xml, "<backend type='passt'/>"));
+    g_assert_nonnull(strstr(xml, "<range start='24601' to='22'/>"));
+}
+
+/* An address the user configured needs no forward inventing alongside it. */
+static void
+test_vm_domain_xml_without_a_forward_stays_plain(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_LIBVIRT, NULL);
+    g_autofree gchar *xml =
+        clawt_vm_computer_build_domain_xml(CLAWT_VM_COMPUTER(computer));
+
+    g_assert_nonnull(strstr(xml, "<interface type='user'>"));
+    g_assert_null(strstr(xml, "portForward"));
+    g_assert_null(strstr(xml, "passt"));
+}
+
+/*
+ * The port is chosen on the host and written into the command line.
+ * qemu's hostfwd accepts port 0 and lets the kernel pick, which is what
+ * this used to do -- and then nothing reported which port it picked, so
+ * nothing could connect.
+ */
+static void
+test_vm_qemu_argv_forwards_a_known_port(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_QEMU, NULL);
+    g_auto(GStrv) argv = NULL;
+    g_autofree gchar *joined = NULL;
+    gboolean saw_forward = FALSE;
+    guint i;
+
+    clawt_vm_computer_set_port_forward(CLAWT_VM_COMPUTER(computer), 24601);
+    clawt_vm_computer_set_seed_iso(CLAWT_VM_COMPUTER(computer),
+                                   "/tmp/vms/chief/seed.iso");
+
+    argv = clawt_vm_computer_build_qemu_argv(CLAWT_VM_COMPUTER(computer),
+                                             NULL);
+
+    for (i = 0; argv[i] != NULL; i++) {
+        if (strstr(argv[i], "hostfwd=tcp:127.0.0.1:24601-:22") != NULL)
+            saw_forward = TRUE;
+    }
+
+    g_assert_true(saw_forward);
+
+    joined = g_strjoinv(" ", argv);
+    g_assert_null(strstr(joined, "hostfwd=tcp::0"));
+}
+
+static void
+test_vm_qemu_argv_attaches_the_seed(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_QEMU, NULL);
+    g_auto(GStrv) argv = NULL;
+    g_autofree gchar *joined = NULL;
+
+    clawt_vm_computer_set_seed_iso(CLAWT_VM_COMPUTER(computer),
+                                   "/tmp/vms/chief/seed.iso");
+
+    argv = clawt_vm_computer_build_qemu_argv(CLAWT_VM_COMPUTER(computer),
+                                             NULL);
+    joined = g_strjoinv(" ", argv);
+
+    g_assert_nonnull(strstr(joined, "seed.iso"));
+    g_assert_nonnull(strstr(joined, "media=cdrom"));
+}
+
+/*
+ * The bug this whole path existed to have: nothing ever set an address, so
+ * every command run in a VM failed.  A missing address must be a refusal
+ * the caller can report, not an argv that dials nowhere.
+ */
+static void
+test_vm_ssh_argv_is_null_without_an_address(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_QEMU, NULL);
+    const gchar *command[] = { "uname", "-a", NULL };
+
+    g_assert_null(clawt_vm_computer_build_ssh_argv(CLAWT_VM_COMPUTER(computer),
+                                                   command, NULL, 0));
+}
+
+static void
+test_vm_ssh_argv_uses_the_forwarded_port(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_QEMU, NULL);
+    const gchar *command[] = { "uname", "-a", NULL };
+    g_auto(GStrv) argv = NULL;
+    g_autofree gchar *joined = NULL;
+
+    clawt_vm_computer_set_ssh(CLAWT_VM_COMPUTER(computer), "agent", NULL,
+                              "127.0.0.1", 24601);
+
+    argv = clawt_vm_computer_build_ssh_argv(CLAWT_VM_COMPUTER(computer),
+                                            command, NULL, 0);
+    g_assert_nonnull(argv);
+    joined = g_strjoinv(" ", argv);
+
+    g_assert_cmpstr(argv[0], ==, "ssh");
+    g_assert_nonnull(strstr(joined, "-p 24601"));
+    g_assert_nonnull(strstr(joined, "agent@127.0.0.1"));
+
+    /*
+     * A rebuilt VM answers on the same address with a different host key.
+     * Against the user's own known_hosts that reads as an attack and is
+     * refused -- and clawtilla should not be writing there regardless.
+     */
+    g_assert_nonnull(strstr(joined, "UserKnownHostsFile="));
+    g_assert_null(strstr(joined, "UserKnownHostsFile=/dev/null"));
+}
+
+/* An argument with a space in it must arrive as one argument. */
+static void
+test_vm_ssh_argv_quotes_the_command(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_QEMU, NULL);
+    const gchar *command[] = { "cat", "/etc/rock & roll", NULL };
+    g_auto(GStrv) argv = NULL;
+    guint last = 0;
+
+    clawt_vm_computer_set_ssh(CLAWT_VM_COMPUTER(computer), "agent", NULL,
+                              "127.0.0.1", 24601);
+
+    argv = clawt_vm_computer_build_ssh_argv(CLAWT_VM_COMPUTER(computer),
+                                            command, "/work", 5);
+    g_assert_nonnull(argv);
+
+    while (argv[last + 1] != NULL)
+        last++;
+
+    g_assert_nonnull(strstr(argv[last], "cd '/work' &&"));
+    g_assert_nonnull(strstr(argv[last], "'/etc/rock & roll'"));
+}
+
+/*
+ * The whole VM path against a real guest: build a seed, boot the image,
+ * and run a command in it.
+ *
+ * Everything above this asserts on a specification -- the XML, the argv,
+ * the user-data -- and every one of those was already correct while the
+ * feature did not work at all.  Only a guest that boots and answers
+ * proves cloud-init accepted what it was handed and that the forwarded
+ * port reaches sshd.
+ *
+ * Needs CLAWT_TEST_INTEGRATION and a cloud image in CLAWT_TEST_VM_IMAGE:
+ *
+ *   CLAWT_TEST_INTEGRATION=1 \
+ *   CLAWT_TEST_VM_IMAGE=~/vms/Fedora-Cloud-Base-44.qcow2 \
+ *   make test-integration
+ */
+static void
+test_vm_boots_and_runs_a_command(void)
+{
+    const gchar *image = g_getenv("CLAWT_TEST_VM_IMAGE");
+    const gchar *command[] = { "sh", "-c", "id -un", NULL };
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtExecResult *result = NULL;
+    guint waited;
+
+    if (!integration_enabled()) {
+        g_test_skip("needs CLAWT_TEST_INTEGRATION");
+        return;
+    }
+
+    if (image == NULL) {
+        g_test_skip("needs a cloud image in CLAWT_TEST_VM_IMAGE");
+        return;
+    }
+
+    computer = clawt_vm_computer_new("vmtest", CLAWT_VM_BACKEND_QEMU, NULL);
+    clawt_vm_computer_set_image(CLAWT_VM_COMPUTER(computer), image);
+    clawt_vm_computer_set_resources(CLAWT_VM_COMPUTER(computer), 2, 1024);
+
+    g_assert_true(clawt_computer_provision(computer, &error));
+    g_assert_no_error(error);
+
+    /* Provisioning is what fills these in; nothing else ever did. */
+    g_assert_cmpstr(clawt_vm_computer_get_ssh_host(
+                        CLAWT_VM_COMPUTER(computer)), ==, "127.0.0.1");
+    g_assert_cmpuint(clawt_vm_computer_get_ssh_port(
+                         CLAWT_VM_COMPUTER(computer)), >, 0);
+
+    g_assert_true(clawt_computer_start(computer, &error));
+    g_assert_no_error(error);
+
+    for (waited = 0; waited < 240; waited += 5) {
+        g_usleep(5 * G_USEC_PER_SEC);
+
+        result = clawt_computer_exec(computer, command, NULL, 10, NULL, NULL);
+
+        if (result != NULL &&
+            clawt_exec_result_get_exit_status(result) == 0)
+            break;
+
+        g_clear_pointer(&result, clawt_exec_result_free);
+    }
+
+    clawt_computer_stop(computer, NULL);
+
+    g_assert_nonnull(result);
+    g_assert_nonnull(strstr(clawt_exec_result_get_stdout(result), "root"));
+
+    clawt_exec_result_free(result);
+}
+
 static void
 test_vm_qemu_argv(void)
 {
@@ -1149,6 +1399,24 @@ main(int argc, char *argv[])
     g_test_add_func("/computer/vm/no-shared-memory-without-mounts",
                     test_vm_domain_xml_omits_shared_memory_without_mounts);
     g_test_add_func("/computer/vm/qemu-argv", test_vm_qemu_argv);
+    g_test_add_func("/computer/vm/seed-cdrom",
+                    test_vm_domain_xml_attaches_the_seed);
+    g_test_add_func("/computer/vm/passt-port-forward",
+                    test_vm_domain_xml_forwards_ssh_through_passt);
+    g_test_add_func("/computer/vm/no-forward-stays-plain",
+                    test_vm_domain_xml_without_a_forward_stays_plain);
+    g_test_add_func("/computer/vm/qemu-hostfwd",
+                    test_vm_qemu_argv_forwards_a_known_port);
+    g_test_add_func("/computer/vm/qemu-seed",
+                    test_vm_qemu_argv_attaches_the_seed);
+    g_test_add_func("/computer/vm/no-address-no-argv",
+                    test_vm_ssh_argv_is_null_without_an_address);
+    g_test_add_func("/computer/vm/ssh-argv-port",
+                    test_vm_ssh_argv_uses_the_forwarded_port);
+    g_test_add_func("/computer/vm/ssh-argv-quoting",
+                    test_vm_ssh_argv_quotes_the_command);
+    g_test_add_func("/computer/vm/boots-and-runs",
+                    test_vm_boots_and_runs_a_command);
 
     g_test_add_func("/computer/desktop/observe-only",
                     test_desktop_observe_only_omits_input_tools);

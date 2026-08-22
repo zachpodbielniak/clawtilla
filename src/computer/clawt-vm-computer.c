@@ -11,6 +11,7 @@
 #include "computer/clawt-vm-computer.h"
 
 #include <string.h>
+#include <glib/gstdio.h>
 
 #define MAX_OUTPUT_BYTES (256 * 1024)
 
@@ -26,11 +27,23 @@ struct _ClawtVmComputer {
     gchar *overlay;
     gchar *ssh_user;
     gchar *ssh_key;
+    gchar *ssh_pubkey;
     gchar *ssh_host;
+    gchar *seed_iso;
 
     guint    cpus;
     guint    memory_mb;
+    guint    ssh_port;
+
+    /*
+     * The host port forwarded to the guest's SSH.  Zero means nothing is
+     * forwarded, which is the case when the address came from the config
+     * and the user has their own route to the guest.
+     */
+    guint    forward_port;
+
     gboolean snapshot_on_start;
+    gboolean cloud_init;
 
     GSubprocess *qemu;
     gchar       *qmp_socket;
@@ -93,7 +106,8 @@ void
 clawt_vm_computer_set_ssh(ClawtVmComputer *self,
                           const gchar     *user,
                           const gchar     *key_path,
-                          const gchar     *host)
+                          const gchar     *host,
+                          guint            port)
 {
     g_return_if_fail(CLAWT_IS_VM_COMPUTER(self));
 
@@ -111,6 +125,50 @@ clawt_vm_computer_set_ssh(ClawtVmComputer *self,
         g_free(self->ssh_host);
         self->ssh_host = g_strdup(host);
     }
+
+    if (port > 0)
+        self->ssh_port = port;
+}
+
+void
+clawt_vm_computer_set_cloud_init(ClawtVmComputer *self, gboolean enabled)
+{
+    g_return_if_fail(CLAWT_IS_VM_COMPUTER(self));
+
+    self->cloud_init = enabled;
+}
+
+void
+clawt_vm_computer_set_port_forward(ClawtVmComputer *self, guint host_port)
+{
+    g_return_if_fail(CLAWT_IS_VM_COMPUTER(self));
+
+    self->forward_port = host_port;
+}
+
+const gchar *
+clawt_vm_computer_get_ssh_host(ClawtVmComputer *self)
+{
+    g_return_val_if_fail(CLAWT_IS_VM_COMPUTER(self), NULL);
+
+    return self->ssh_host;
+}
+
+guint
+clawt_vm_computer_get_ssh_port(ClawtVmComputer *self)
+{
+    g_return_val_if_fail(CLAWT_IS_VM_COMPUTER(self), 0);
+
+    return self->ssh_port;
+}
+
+void
+clawt_vm_computer_set_seed_iso(ClawtVmComputer *self, const gchar *path)
+{
+    g_return_if_fail(CLAWT_IS_VM_COMPUTER(self));
+
+    g_free(self->seed_iso);
+    self->seed_iso = g_strdup(path);
 }
 
 void
@@ -186,6 +244,23 @@ clawt_vm_computer_build_domain_xml(ClawtVmComputer *self)
             "    </disk>\n", disk);
     }
 
+    /*
+     * The seed is a CD-ROM rather than a disk because that is what every
+     * cloud image's NoCloud datasource expects to find, and because a
+     * read-only device cannot be scribbled over by the guest.
+     */
+    if (self->seed_iso != NULL) {
+        g_autofree gchar *seed = g_markup_escape_text(self->seed_iso, -1);
+
+        g_string_append_printf(out,
+            "    <disk type='file' device='cdrom'>\n"
+            "      <driver name='qemu' type='raw'/>\n"
+            "      <source file='%s'/>\n"
+            "      <target dev='sda' bus='sata'/>\n"
+            "      <readonly/>\n"
+            "    </disk>\n", seed);
+    }
+
     for (i = 0; mounts != NULL && i < mounts->len; i++) {
         ClawtMount *mount = g_ptr_array_index(mounts, i);
         g_autofree gchar *source = clawt_mount_resolved_source(mount);
@@ -216,10 +291,29 @@ clawt_vm_computer_build_domain_xml(ClawtVmComputer *self)
                 ? "      <readonly/>\n" : "");
     }
 
+    /*
+     * User-mode networking either way, so no bridge appears on the host
+     * that the user did not ask for.  Forwarding a port needs the passt
+     * backend: libvirt's <portForward> is not supported for the SLIRP
+     * one, where a domain asking for it is rejected outright.
+     */
+    if (self->forward_port > 0) {
+        g_string_append_printf(out,
+            "    <interface type='user'>\n"
+            "      <backend type='passt'/>\n"
+            "      <model type='virtio'/>\n"
+            "      <portForward proto='tcp' address='127.0.0.1'>\n"
+            "        <range start='%u' to='22'/>\n"
+            "      </portForward>\n"
+            "    </interface>\n", self->forward_port);
+    } else {
+        g_string_append(out,
+            "    <interface type='user'>\n"
+            "      <model type='virtio'/>\n"
+            "    </interface>\n");
+    }
+
     g_string_append(out,
-        "    <interface type='user'>\n"
-        "      <model type='virtio'/>\n"
-        "    </interface>\n"
         "    <console type='pty'/>\n"
         "  </devices>\n"
         "</domain>\n");
@@ -273,6 +367,13 @@ clawt_vm_computer_build_qemu_argv(ClawtVmComputer *self,
                                                   : self->image));
     }
 
+    if (self->seed_iso != NULL) {
+        g_ptr_array_add(argv, g_strdup("-drive"));
+        g_ptr_array_add(argv,
+            g_strdup_printf("file=%s,media=cdrom,readonly=on",
+                            self->seed_iso));
+    }
+
     for (i = 0; mounts != NULL && i < mounts->len; i++) {
         ClawtMount *mount = g_ptr_array_index(mounts, i);
 
@@ -288,10 +389,22 @@ clawt_vm_computer_build_qemu_argv(ClawtVmComputer *self,
                             i, clawt_mount_get_target(mount)));
     }
 
-    /* User-mode networking with SSH forwarded, so commands can be run
-     * without configuring a bridge the user did not ask for. */
+    /*
+     * User-mode networking, with SSH forwarded from a port picked on the
+     * host, so commands can be run without configuring a bridge the user
+     * did not ask for.  The port is chosen before qemu starts rather than
+     * left to qemu -- hostfwd with port 0 does let the kernel pick, but
+     * nothing then reports which port it picked.
+     */
     g_ptr_array_add(argv, g_strdup("-netdev"));
-    g_ptr_array_add(argv, g_strdup("user,id=net0,hostfwd=tcp::0-:22"));
+
+    if (self->forward_port > 0)
+        g_ptr_array_add(argv,
+            g_strdup_printf("user,id=net0,hostfwd=tcp:127.0.0.1:%u-:22",
+                            self->forward_port));
+    else
+        g_ptr_array_add(argv, g_strdup("user,id=net0"));
+
     g_ptr_array_add(argv, g_strdup("-device"));
     g_ptr_array_add(argv, g_strdup("virtio-net-pci,netdev=net0"));
 
@@ -317,14 +430,20 @@ libvirt_call(ClawtVmComputer  *self,
     g_autoptr(GHashTable) params = NULL;
     g_autoptr(GHashTable) result = NULL;
 
-    if (!clawt_pod_bridge_load_module(self->bridge, "vm_virtmanager", error))
+    /*
+     * The connection is made when the module instance is *constructed*, so
+     * the URI has to be given here rather than with the action.  Passed as
+     * an ordinary parameter it is silently ignored, the module falls back
+     * to qemu:///system -- which an unprivileged user cannot reach -- and
+     * every single action fails with "not connected to libvirt", including
+     * the define that would have created the domain.
+     */
+    if (!clawt_pod_bridge_load_module_for(self->bridge, "vm_virtmanager",
+                                          self->uri, error))
         return FALSE;
 
     params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     g_hash_table_insert(params, g_strdup("domain"), g_strdup(self->domain));
-
-    if (self->uri != NULL)
-        g_hash_table_insert(params, g_strdup("uri"), g_strdup(self->uri));
 
     if (extra != NULL) {
         GHashTableIter iter;
@@ -336,10 +455,23 @@ libvirt_call(ClawtVmComputer  *self,
             g_hash_table_insert(params, g_strdup(key), g_strdup(value));
     }
 
-    result = clawt_pod_bridge_call(self->bridge, "vm_virtmanager", action,
-                                   params, error);
+    result = clawt_pod_bridge_call_for(self->bridge, "vm_virtmanager",
+                                       self->uri, action, params, error);
 
     return result != NULL;
+}
+
+/*
+ * Where this VM's overlay, generated key, seed and remembered host keys
+ * live.  One directory per agent, so removing an agent removes its guest.
+ */
+static gchar *
+vm_state_dir(ClawtVmComputer *self)
+{
+    const gchar *agent_id = clawt_computer_get_agent_id(CLAWT_COMPUTER(self));
+
+    return g_build_filename(g_get_user_data_dir(), "clawtilla", "vms",
+                            agent_id != NULL ? agent_id : "agent", NULL);
 }
 
 /*
@@ -353,8 +485,8 @@ static gboolean
 ensure_overlay(ClawtVmComputer *self, GError **error)
 {
     g_autofree gchar *state_dir = NULL;
+    g_autofree gchar *known_hosts = NULL;
     g_autoptr(GSubprocess) process = NULL;
-    const gchar *agent_id;
 
     if (self->image == NULL)
         return TRUE;
@@ -363,9 +495,7 @@ ensure_overlay(ClawtVmComputer *self, GError **error)
         g_file_test(self->overlay, G_FILE_TEST_EXISTS))
         return TRUE;
 
-    agent_id = clawt_computer_get_agent_id(CLAWT_COMPUTER(self));
-    state_dir = g_build_filename(g_get_user_data_dir(), "clawtilla", "vms",
-                                 agent_id != NULL ? agent_id : "agent", NULL);
+    state_dir = vm_state_dir(self);
 
     if (!clawt_ensure_dir(state_dir, 0700, error))
         return FALSE;
@@ -394,7 +524,235 @@ ensure_overlay(ClawtVmComputer *self, GError **error)
         return FALSE;
     }
 
+    /*
+     * A new overlay is a new guest with a new host key.  Keeping the old
+     * one would make every later connection look like an attack and be
+     * refused, which reads as "SSH broke" rather than "the VM is new".
+     */
+    known_hosts = g_build_filename(state_dir, "known_hosts", NULL);
+    g_unlink(known_hosts);
+
     return TRUE;
+}
+
+/*
+ * Picks the host port that reaches the guest's SSH, once, and remembers it.
+ *
+ * It has to survive a restart: a libvirt domain is defined with the port
+ * written into its XML, so choosing a fresh one next time would leave the
+ * daemon dialling a port nothing is listening on.
+ */
+static gboolean
+ensure_ssh_forward(ClawtVmComputer *self, GError **error)
+{
+    g_autofree gchar *state_dir = NULL;
+    g_autofree gchar *port_path = NULL;
+    g_autofree gchar *recorded = NULL;
+    g_autofree gchar *text = NULL;
+    g_autoptr(GSocket) probe = NULL;
+    g_autoptr(GInetAddress) loopback = NULL;
+    g_autoptr(GSocketAddress) wanted = NULL;
+    g_autoptr(GSocketAddress) bound = NULL;
+    guint64 parsed;
+    guint port;
+
+    state_dir = vm_state_dir(self);
+
+    if (!clawt_ensure_dir(state_dir, 0700, error))
+        return FALSE;
+
+    port_path = g_build_filename(state_dir, "ssh-port", NULL);
+
+    if (g_file_get_contents(port_path, &recorded, NULL, NULL) &&
+        g_ascii_string_to_unsigned(g_strstrip(recorded), 10, 1, 65535,
+                                   &parsed, NULL)) {
+        self->forward_port = (guint)parsed;
+        self->ssh_port = (guint)parsed;
+        return TRUE;
+    }
+
+    /*
+     * Bind port 0, read back what the kernel handed out, then let go.
+     * qemu's own hostfwd accepts port 0 and will do the same thing, but
+     * nothing then reports which port it chose -- which is precisely how
+     * this went unreachable in the first place.
+     *
+     * Something else can take the port in the window before the VM binds
+     * it.  Losing that race is loud: the VM refuses to start.
+     */
+    probe = g_socket_new(G_SOCKET_FAMILY_IPV4, G_SOCKET_TYPE_STREAM,
+                         G_SOCKET_PROTOCOL_TCP, error);
+
+    if (probe == NULL)
+        return FALSE;
+
+    loopback = g_inet_address_new_loopback(G_SOCKET_FAMILY_IPV4);
+    wanted = g_inet_socket_address_new(loopback, 0);
+
+    if (!g_socket_bind(probe, wanted, TRUE, error))
+        return FALSE;
+
+    bound = g_socket_get_local_address(probe, error);
+
+    if (bound == NULL)
+        return FALSE;
+
+    port = g_inet_socket_address_get_port(G_INET_SOCKET_ADDRESS(bound));
+    g_socket_close(probe, NULL);
+
+    text = g_strdup_printf("%u\n", port);
+
+    if (!clawt_write_file_atomic(port_path, text, -1, 0600, FALSE, error))
+        return FALSE;
+
+    self->forward_port = port;
+    self->ssh_port = port;
+
+    return TRUE;
+}
+
+/*
+ * Arranges for there to be an address that reaches the guest.
+ */
+static gboolean
+ensure_ssh_route(ClawtVmComputer *self, GError **error)
+{
+    /*
+     * libvirt can only forward a port through passt: <portForward> is not
+     * supported for the SLIRP backend.  Without passt the VM is still
+     * worth having -- it boots, it has its mounts, it can be snapshotted
+     * -- so this is an unreachable guest and a warning saying so, not a
+     * refusal to provision.
+     */
+    if (self->backend == CLAWT_VM_BACKEND_LIBVIRT) {
+        g_autofree gchar *passt = g_find_program_in_path("passt");
+
+        if (passt == NULL) {
+            g_warning("vm %s: passt is not installed, so no port can be "
+                      "forwarded to the guest and commands will not run in "
+                      "it. Install passt (Fedora: passt), or set "
+                      "computer.vm.ssh_host to an address that already "
+                      "reaches this VM.", self->domain);
+            return TRUE;
+        }
+    }
+
+    if (!ensure_ssh_forward(self, error))
+        return FALSE;
+
+    g_free(self->ssh_host);
+    self->ssh_host = g_strdup("127.0.0.1");
+
+    return TRUE;
+}
+
+/*
+ * Gives the guest a login.
+ *
+ * A distribution's cloud image ships with no account, no password and no
+ * authorized key: it expects a datasource to hand it those on first boot.
+ * Skipping this leaves a VM that boots perfectly and cannot be entered,
+ * which looks exactly like a VM that failed to boot.
+ */
+static gboolean
+ensure_cloud_init(ClawtVmComputer *self, GError **error)
+{
+    g_autofree gchar *state_dir = NULL;
+    g_autofree gchar *seed = NULL;
+
+    if (!self->cloud_init)
+        return TRUE;
+
+    state_dir = vm_state_dir(self);
+
+    if (!clawt_ensure_dir(state_dir, 0700, error))
+        return FALSE;
+
+    if (self->ssh_key != NULL) {
+        /*
+         * A key named in the config belongs to the user.  It is read, and
+         * never generated over.
+         */
+        g_free(self->ssh_pubkey);
+        self->ssh_pubkey = clawt_cloud_init_public_key(self->ssh_key, error);
+
+        if (self->ssh_pubkey == NULL)
+            return FALSE;
+    } else {
+        const gchar *agent_id =
+            clawt_computer_get_agent_id(CLAWT_COMPUTER(self));
+        g_autofree gchar *comment = NULL;
+        gchar *key_path = NULL;
+        gchar *public_key = NULL;
+
+        comment = g_strdup_printf("clawtilla-%s",
+                                  agent_id != NULL ? agent_id : "agent");
+
+        if (!clawt_cloud_init_ensure_key(state_dir, comment, &key_path,
+                                         &public_key, error))
+            return FALSE;
+
+        g_free(self->ssh_key);
+        self->ssh_key = key_path;
+        g_free(self->ssh_pubkey);
+        self->ssh_pubkey = public_key;
+    }
+
+    seed = clawt_cloud_init_write_seed(state_dir, self->domain,
+                                       self->ssh_user != NULL
+                                           ? self->ssh_user : "root",
+                                       self->ssh_pubkey, self->domain,
+                                       error);
+
+    if (seed == NULL)
+        return FALSE;
+
+    clawt_vm_computer_set_seed_iso(self, seed);
+
+    return TRUE;
+}
+
+/*
+ * Waits for evidence that qemu is actually running.
+ *
+ * g_subprocess_newv() reports only that the exec happened, and qemu
+ * rejects its own command line milliseconds later with the reason on a
+ * stderr nobody reads.  Marking the computer RUNNING there is how a VM
+ * that never started reported itself as up: the first symptom was SSH
+ * refusing a connection to a port qemu had never bound.
+ *
+ * The QMP socket is the evidence, because qemu creates it as it starts
+ * and it is there whether or not a port is being forwarded.
+ */
+static gboolean
+qemu_came_up(ClawtVmComputer *self, GError **error)
+{
+    g_autofree gchar *failure = NULL;
+    guint attempt;
+
+    for (attempt = 0; attempt < 20; attempt++) {
+        if (g_file_test(self->qmp_socket, G_FILE_TEST_EXISTS))
+            return TRUE;
+
+        g_usleep(150 * 1000);
+    }
+
+    /*
+     * Take qemu's own words for the error.  Anything this code invented
+     * would be a guess at what qemu already said plainly.
+     */
+    g_subprocess_force_exit(self->qemu);
+    g_subprocess_communicate_utf8(self->qemu, NULL, NULL, NULL, &failure,
+                                  NULL);
+
+    g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_COMPUTER_PROVISION,
+                "qemu did not start: %s",
+                (failure != NULL && *g_strstrip(failure) != '\0')
+                    ? failure : "it exited without saying why");
+
+    g_clear_object(&self->qemu);
+
+    return FALSE;
 }
 
 static gboolean
@@ -405,7 +763,20 @@ vm_provision(ClawtComputer *computer, GError **error)
     clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_PROVISIONING,
                              NULL);
 
-    if (!ensure_overlay(self, error)) {
+    if (!ensure_overlay(self, error) ||
+        !ensure_cloud_init(self, error)) {
+        clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ERROR,
+                                 (error != NULL && *error != NULL)
+                                 ? (*error)->message : NULL);
+        return FALSE;
+    }
+
+    /*
+     * An address in the config means the user has their own route to the
+     * guest -- a bridge, a real network, a VM that already existed -- and
+     * clawtilla has no business forwarding a port alongside it.
+     */
+    if (self->ssh_host == NULL && !ensure_ssh_route(self, error)) {
         clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ERROR,
                                  (error != NULL && *error != NULL)
                                  ? (*error)->message : NULL);
@@ -491,13 +862,26 @@ vm_start(ClawtComputer *computer, GError **error)
         self->qmp_socket = g_build_filename(socket_path,
                                             self->domain, NULL);
 
+        /*
+         * sockaddr_un.sun_path is 108 bytes and qemu refuses a longer one
+         * outright -- so the whole VM fails to start, and the message
+         * names a socket nobody asked for rather than the VM.
+         */
+        if (!clawt_check_socket_path(self->qmp_socket, error)) {
+            g_prefix_error(error, "the VM's QMP socket: ");
+            clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ERROR,
+                                     (error != NULL && *error != NULL)
+                                     ? (*error)->message : NULL);
+            return FALSE;
+        }
+
         argv = clawt_vm_computer_build_qemu_argv(self, self->qmp_socket);
 
         self->qemu = g_subprocess_newv((const gchar * const *)argv,
                                        G_SUBPROCESS_FLAGS_STDOUT_SILENCE |
                                        G_SUBPROCESS_FLAGS_STDERR_PIPE,
                                        error);
-        if (self->qemu == NULL) {
+        if (self->qemu == NULL || !qemu_came_up(self, error)) {
             clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ERROR,
                                      (error != NULL && *error != NULL)
                                      ? (*error)->message : NULL);
@@ -539,35 +923,32 @@ vm_stop(ClawtComputer *computer, GError **error)
 }
 
 /*
- * There is no `podman exec` for a VM, so commands go over SSH.  A guest
- * agent would be an extra thing to install inside every image, and SSH is
- * already there in anything that boots.
+ * Builds the ssh command line that runs @command_argv in the guest.
+ *
+ * Separated out because it is the part that was wrong: nothing ever set an
+ * address, every exec failed, and there was no pure function to notice it
+ * in.
  */
-static ClawtExecResult *
-vm_exec(ClawtComputer        *computer,
-        const gchar * const  *argv,
-        const gchar          *working_dir,
-        guint                 timeout_seconds,
-        GCancellable         *cancellable,
-        GError              **error)
+GStrv
+clawt_vm_computer_build_ssh_argv(ClawtVmComputer     *self,
+                                 const gchar * const *command_argv,
+                                 const gchar         *working_dir,
+                                 guint                timeout_seconds)
 {
-    ClawtVmComputer *self = CLAWT_VM_COMPUTER(computer);
-    g_autoptr(GSubprocess) process = NULL;
-    g_autofree gchar *stdout_text = NULL;
-    g_autofree gchar *stderr_text = NULL;
-    g_autofree gchar *bounded = NULL;
+    g_autofree gchar *state_dir = NULL;
+    g_autofree gchar *known_hosts = NULL;
     g_autoptr(GString) command = NULL;
     GPtrArray *ssh_argv;
-    ClawtExecResult *result;
-    gboolean truncated = FALSE;
     gsize i;
 
-    if (self->ssh_host == NULL) {
-        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_COMPUTER_EXEC,
-                            "this VM has no SSH address, so commands cannot "
-                            "be run in it yet");
+    g_return_val_if_fail(CLAWT_IS_VM_COMPUTER(self), NULL);
+    g_return_val_if_fail(command_argv != NULL, NULL);
+
+    if (self->ssh_host == NULL)
         return NULL;
-    }
+
+    state_dir = vm_state_dir(self);
+    known_hosts = g_build_filename(state_dir, "known_hosts", NULL);
 
     command = g_string_new(NULL);
 
@@ -577,8 +958,8 @@ vm_exec(ClawtComputer        *computer,
         g_string_append_printf(command, "cd %s && ", quoted);
     }
 
-    for (i = 0; argv[i] != NULL; i++) {
-        g_autofree gchar *quoted = g_shell_quote(argv[i]);
+    for (i = 0; command_argv[i] != NULL; i++) {
+        g_autofree gchar *quoted = g_shell_quote(command_argv[i]);
 
         if (i > 0)
             g_string_append_c(command, ' ');
@@ -591,6 +972,22 @@ vm_exec(ClawtComputer        *computer,
     g_ptr_array_add(ssh_argv, g_strdup("BatchMode=yes"));
     g_ptr_array_add(ssh_argv, g_strdup("-o"));
     g_ptr_array_add(ssh_argv, g_strdup("StrictHostKeyChecking=accept-new"));
+
+    /*
+     * The agent's guests get a known_hosts of their own.  A VM rebuilt
+     * from the same base image answers on the same address with a
+     * different host key, and the user's own file would report that as an
+     * attack and refuse to connect -- besides which, clawtilla has no
+     * business writing into it.
+     */
+    g_ptr_array_add(ssh_argv, g_strdup("-o"));
+    g_ptr_array_add(ssh_argv,
+                    g_strdup_printf("UserKnownHostsFile=%s", known_hosts));
+
+    if (self->ssh_port > 0) {
+        g_ptr_array_add(ssh_argv, g_strdup("-p"));
+        g_ptr_array_add(ssh_argv, g_strdup_printf("%u", self->ssh_port));
+    }
 
     if (timeout_seconds > 0) {
         g_ptr_array_add(ssh_argv, g_strdup("-o"));
@@ -612,11 +1009,48 @@ vm_exec(ClawtComputer        *computer,
     g_ptr_array_add(ssh_argv, g_strdup(command->str));
     g_ptr_array_add(ssh_argv, NULL);
 
-    process = g_subprocess_newv((const gchar * const *)ssh_argv->pdata,
+    return (GStrv)g_ptr_array_free(ssh_argv, FALSE);
+}
+
+/*
+ * There is no `podman exec` for a VM, so commands go over SSH.  A guest
+ * agent would be an extra thing to install inside every image, and SSH is
+ * already there in anything that boots.
+ */
+static ClawtExecResult *
+vm_exec(ClawtComputer        *computer,
+        const gchar * const  *argv,
+        const gchar          *working_dir,
+        guint                 timeout_seconds,
+        GCancellable         *cancellable,
+        GError              **error)
+{
+    ClawtVmComputer *self = CLAWT_VM_COMPUTER(computer);
+    g_autoptr(GSubprocess) process = NULL;
+    g_autofree gchar *stdout_text = NULL;
+    g_autofree gchar *stderr_text = NULL;
+    g_autofree gchar *bounded = NULL;
+    g_auto(GStrv) ssh_argv = NULL;
+    ClawtExecResult *result;
+    gboolean truncated = FALSE;
+
+    ssh_argv = clawt_vm_computer_build_ssh_argv(self, argv, working_dir,
+                                                timeout_seconds);
+
+    if (ssh_argv == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_COMPUTER_EXEC,
+                            "nothing forwards a port to this VM's SSH, so "
+                            "commands cannot be run in it. Install passt "
+                            "(Fedora: passt) and provision it again, or set "
+                            "computer.vm.ssh_host to an address that "
+                            "already reaches the guest.");
+        return NULL;
+    }
+
+    process = g_subprocess_newv((const gchar * const *)ssh_argv,
                                 G_SUBPROCESS_FLAGS_STDOUT_PIPE |
                                 G_SUBPROCESS_FLAGS_STDERR_PIPE,
                                 error);
-    g_ptr_array_unref(ssh_argv);
 
     if (process == NULL)
         return NULL;
@@ -648,6 +1082,21 @@ vm_describe(ClawtComputer *computer)
         "It is fully isolated from the host.",
         self->backend == CLAWT_VM_BACKEND_LIBVIRT ? "libvirt" : "QEMU",
         self->cpus, self->cpus == 1 ? "" : "s", self->memory_mb);
+
+    /*
+     * Saying which login the commands arrive as saves the agent guessing
+     * at sudo, and saying when there is no route at all saves it a turn
+     * spent probing a computer it cannot reach.
+     */
+    if (self->ssh_host != NULL)
+        g_string_append_printf(out, " Commands you run there arrive over "
+                                    "SSH as %s.",
+                               self->ssh_user != NULL ? self->ssh_user
+                                                      : "root");
+    else
+        g_string_append(out, " Nothing currently forwards a port to it, so "
+                             "commands cannot be run in it -- say so rather "
+                             "than retrying.");
 
     if (mounts != NULL && mounts->len > 0) {
         g_string_append(out, " Shared from the host over virtiofs:");
@@ -698,7 +1147,9 @@ clawt_vm_computer_finalize(GObject *object)
     g_clear_pointer(&self->overlay, g_free);
     g_clear_pointer(&self->ssh_user, g_free);
     g_clear_pointer(&self->ssh_key, g_free);
+    g_clear_pointer(&self->ssh_pubkey, g_free);
     g_clear_pointer(&self->ssh_host, g_free);
+    g_clear_pointer(&self->seed_iso, g_free);
     g_clear_pointer(&self->qmp_socket, g_free);
 
     G_OBJECT_CLASS(clawt_vm_computer_parent_class)->finalize(object);
@@ -728,5 +1179,7 @@ clawt_vm_computer_init(ClawtVmComputer *self)
     self->cpus = 2;
     self->memory_mb = 2048;
     self->ssh_user = g_strdup("root");
+    self->ssh_port = 22;
+    self->cloud_init = TRUE;
     self->uri = g_strdup("qemu:///session");
 }

@@ -54,10 +54,71 @@ void clawt_vm_computer_set_image(ClawtVmComputer *self, const gchar *image);
 void clawt_vm_computer_set_resources(ClawtVmComputer *self,
                                      guint            cpus,
                                      guint            memory_mb);
+/**
+ * clawt_vm_computer_set_ssh:
+ * @self: a #ClawtVmComputer
+ * @user: (nullable): the login to use in the guest
+ * @key_path: (nullable): the private key to authenticate with
+ * @host: (nullable): the guest's address
+ * @port: the guest's SSH port, or 0 to leave it alone
+ *
+ * @host is what the user configured.  Leaving it unset is the ordinary
+ * case: provisioning then forwards a host port to the guest and fills
+ * both in itself.
+ */
 void clawt_vm_computer_set_ssh(ClawtVmComputer *self,
                                const gchar     *user,
                                const gchar     *key_path,
-                               const gchar     *host);
+                               const gchar     *host,
+                               guint            port);
+
+/**
+ * clawt_vm_computer_set_cloud_init:
+ * @self: a #ClawtVmComputer
+ * @enabled: whether to build a NoCloud seed for the guest
+ *
+ * On by default.  Turn it off for an image that already has a login and
+ * an authorized key of its own.
+ */
+void clawt_vm_computer_set_cloud_init(ClawtVmComputer *self,
+                                      gboolean         enabled);
+
+/**
+ * clawt_vm_computer_set_port_forward:
+ * @self: a #ClawtVmComputer
+ * @host_port: a port on 127.0.0.1 to forward to the guest's SSH, or 0
+ *
+ * Set by provisioning once it has picked a port.  Exposed because the
+ * domain XML and the qemu argv are both pure functions of it, which is
+ * what lets them be tested without a hypervisor.
+ */
+void clawt_vm_computer_set_port_forward(ClawtVmComputer *self,
+                                        guint            host_port);
+
+/**
+ * clawt_vm_computer_set_seed_iso:
+ * @self: a #ClawtVmComputer
+ * @path: (nullable): the cloud-init seed to attach as a CD-ROM
+ */
+void clawt_vm_computer_set_seed_iso(ClawtVmComputer *self,
+                                    const gchar     *path);
+
+/**
+ * clawt_vm_computer_get_ssh_host:
+ * @self: a #ClawtVmComputer
+ *
+ * Returns: (nullable): the address commands are run through, or %NULL
+ *   when nothing reaches the guest
+ */
+const gchar *clawt_vm_computer_get_ssh_host(ClawtVmComputer *self);
+
+/**
+ * clawt_vm_computer_get_ssh_port:
+ * @self: a #ClawtVmComputer
+ *
+ * Returns: the port commands are run through
+ */
+guint clawt_vm_computer_get_ssh_port(ClawtVmComputer *self);
 
 /**
  * clawt_vm_computer_set_snapshot_on_start:
@@ -71,6 +132,24 @@ void clawt_vm_computer_set_snapshot_on_start(ClawtVmComputer *self,
                                              gboolean         snapshot);
 
 ClawtVmBackend clawt_vm_computer_get_backend(ClawtVmComputer *self);
+
+/**
+ * clawt_vm_computer_build_ssh_argv:
+ * @self: a #ClawtVmComputer
+ * @command_argv: (array zero-terminated=1): the command to run in the guest
+ * @working_dir: (nullable): a directory to run it in
+ * @timeout_seconds: how long to wait for the connection, or 0
+ *
+ * Builds the `ssh` command line, including the guest's port and a
+ * known_hosts file belonging to this agent alone.
+ *
+ * Returns: (transfer full) (nullable): the argv, or %NULL when nothing
+ *   reaches the guest
+ */
+GStrv clawt_vm_computer_build_ssh_argv(ClawtVmComputer     *self,
+                                       const gchar * const *command_argv,
+                                       const gchar         *working_dir,
+                                       guint                timeout_seconds);
 
 /**
  * clawt_vm_computer_build_domain_xml:

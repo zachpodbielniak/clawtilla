@@ -86,6 +86,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/computer/clawt-host-computer.h \
 	$(SRCDIR)/computer/clawt-pod-bridge.h \
 	$(SRCDIR)/computer/clawt-container-computer.h \
+	$(SRCDIR)/computer/clawt-cloud-init.h \
 	$(SRCDIR)/computer/clawt-vm-computer.h \
 	$(SRCDIR)/computer/clawt-desktop.h \
 	$(SRCDIR)/computer/clawt-computer-factory.h \
@@ -151,6 +152,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/computer/clawt-host-computer.c \
 	$(SRCDIR)/computer/clawt-pod-bridge.c \
 	$(SRCDIR)/computer/clawt-container-computer.c \
+	$(SRCDIR)/computer/clawt-cloud-init.c \
 	$(SRCDIR)/computer/clawt-vm-computer.c \
 	$(SRCDIR)/computer/clawt-desktop.c \
 	$(SRCDIR)/computer/clawt-computer-factory.c \

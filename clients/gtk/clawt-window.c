@@ -132,8 +132,10 @@ struct _ClawtWindow {
     ModelChooser       inspector_models;
     ImageChooser       inspector_image;
     gchar             *inspector_computer;   /* the selected agent's type */
+    GtkWidget         *vm_image_row;
     GtkWidget         *vm_cpus_row;
     GtkWidget         *vm_memory_row;
+    GtkWidget         *vm_ssh_host_row;
     GtkWidget         *mount_source_row;
     GtkWidget         *mount_target_row;
     GtkWidget         *mount_mode_row;
@@ -2831,16 +2833,26 @@ on_save_agent(GtkButton *button, gpointer user_data)
                                       3)]);
 
     if (self->vm_cpus_row != NULL) {
+        const gchar *image = gtk_editable_get_text(
+            GTK_EDITABLE(self->vm_image_row));
         const gchar *cpus = gtk_editable_get_text(
             GTK_EDITABLE(self->vm_cpus_row));
         const gchar *memory = gtk_editable_get_text(
             GTK_EDITABLE(self->vm_memory_row));
+        const gchar *ssh_host = gtk_editable_get_text(
+            GTK_EDITABLE(self->vm_ssh_host_row));
+
+        if (image != NULL && *image != '\0')
+            ok &= apply_setting(self, "computer.vm.image", image);
 
         if (cpus != NULL && *cpus != '\0')
             ok &= apply_setting(self, "computer.vm.cpus", cpus);
 
         if (memory != NULL && *memory != '\0')
             ok &= apply_setting(self, "computer.vm.memory_mb", memory);
+
+        if (ssh_host != NULL && *ssh_host != '\0')
+            ok &= apply_setting(self, "computer.vm.ssh_host", ssh_host);
     }
 
     if (self->inspector_image.row != NULL) {
@@ -3654,14 +3666,27 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
         self->inspector_image.row = NULL;
 
     /*
-     * How big the VM is.  Only shown for one: cpus and memory_mb are
-     * read by no other backend, and a row that quietly does nothing is
-     * worse than no row.
+     * The VM's disk, size and address.  Only shown for a VM: no other
+     * backend reads these, and a row that quietly does nothing is worse
+     * than no row.
      */
+    self->vm_image_row = NULL;
     self->vm_cpus_row = NULL;
     self->vm_memory_row = NULL;
+    self->vm_ssh_host_row = NULL;
 
     if (g_strcmp0(self->inspector_computer, "vm") == 0) {
+        /*
+         * There is no image list to choose from the way containers have
+         * one: clawtilla ships no disk image and downloads none.  Without
+         * a path here the VM has no disk and will not boot, so the row
+         * says where to get one rather than leaving it to be discovered.
+         */
+        self->vm_image_row = entry_row(
+            "Disk image", clawt_json_string(agent, "vm_image", ""));
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                  self->vm_image_row);
+
         self->vm_cpus_row = entry_row(
             "Cores", clawt_json_string(agent, "vm_cpus", ""));
         adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
@@ -3671,6 +3696,17 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
             "Memory (MB)", clawt_json_string(agent, "vm_memory_mb", ""));
         adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
                                   self->vm_memory_row);
+
+        /*
+         * Left empty, clawtilla forwards a port to the guest itself.  It
+         * is here for the VM that lives somewhere clawtilla did not put
+         * it.
+         */
+        self->vm_ssh_host_row = entry_row(
+            "SSH address (optional)",
+            clawt_json_string(agent, "vm_ssh_host", ""));
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                  self->vm_ssh_host_row);
     }
 
     self->restart_row = combo_row("Restart", restarts,

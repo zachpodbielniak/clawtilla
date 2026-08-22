@@ -68,6 +68,8 @@ the second is what clawtilla adds:
 | `qemu-system-x86_64` | `qemu-system-x86-core` (+ `qemu-system-aarch64-core` on Asahi) | VM computers (runtime) |
 | `qemu-img` | `qemu-img` | VM disk creation (runtime) |
 | `virtiofsd` | `virtiofsd` | mount paths into VMs (runtime) |
+| `passt` | `passt` | forwarding a port to a libvirt VM's SSH (runtime) |
+| `xorrisofs` | `xorriso` | the cloud-init seed that gives a VM a login (runtime) |
 | `bwrap` | `bubblewrap` | `confine: bwrap` host sandbox (runtime) |
 | `podman` | `podman` | container computers (runtime) |
 | — | `gobject-introspection-devel` | `.gir`/`.typelib` (auto-skipped if absent) |
@@ -302,6 +304,81 @@ the same program.
   the agent's own link -- which is what clawtilla did first -- reaches
   nobody, because nothing on the agent side relays them into the
   session.
+
+### A VM is not reachable just because it booted
+
+- clawtilla ships no disk image and downloads none, and a cloud image
+  has no account, no password and no authorised key -- so a VM built
+  from one boots perfectly and admits nobody, which looks exactly like a
+  VM that failed to boot. `clawt-cloud-init.c` builds a NoCloud seed:
+  an ISO that must be labelled `cidata`, because that label is the only
+  thing cloud-init looks for. It is acted on at **first boot only**, so
+  changing `ssh_user` or the key means deleting the overlay, not
+  restarting.
+- The address was the other half. Commands run over SSH, `ssh_host` was
+  never set by anything, and every exec in a VM's whole existence
+  returned "no SSH address" -- while `hostfwd=tcp::0-:22` asked the
+  kernel for a port and then discarded the answer. The port is now
+  chosen on the host before the VM starts, and **remembered**: a libvirt
+  domain is defined with it written into its XML, so picking a new one
+  next start leaves the daemon dialling nothing.
+- libvirt's `<portForward>` needs `<backend type='passt'/>`. It is not
+  supported for the SLIRP backend, where the domain is *rejected* rather
+  than merely unforwarded. Missing passt is a warning and an unreachable
+  guest, never a silent downgrade.
+- The reason both survived: nothing in that path was a pure function.
+  `clawt_vm_computer_build_ssh_argv()` exists so the argv can be
+  asserted on without a hypervisor, and returns NULL rather than an argv
+  that dials nowhere.
+
+### cloud-init installs a `users:` key only while creating the account
+
+- It skips an account that already exists — and root always exists. So
+  `users: [{name: root, ssh_authorized_keys: [...]}]` authorises
+  **nothing** for the default login: the seed is correct, cloud-init
+  reports success, and every connection is refused for a key the guest
+  was never told about. The top-level `ssh_authorized_keys` is written
+  by a different module and does reach root. Neither covers both cases,
+  so the key is emitted twice on purpose.
+- This is only findable by booting something. Every specification test —
+  the user-data, the ISO label, the domain XML — passed throughout.
+  `/computer/vm/boots-and-runs` (needs `CLAWT_TEST_INTEGRATION` and
+  `CLAWT_TEST_VM_IMAGE`) is the one that would have caught it.
+
+### A podomation module connects when its event source starts
+
+- Not when it is constructed. `vm_virtmanager` opens libvirt in
+  `pod_event_source_start()`, so a module the bridge only
+  `g_object_new()`d held a URI and no connection, and answered every
+  action — `define_xml` included — with "not connected to libvirt". The
+  **default** computer backend could therefore never provision a VM at
+  all. `clawt_pod_bridge_load_module_for()` now starts the source and
+  treats a failure to start as a failure to load, naming the URI.
+- The two modules also disagree on the property name: `container` calls
+  it `connection-uri`, `vm_virtmanager` calls it `uri`. Looking for only
+  the first meant every VM went to vm_virtmanager's own default of
+  `qemu:///system`, whatever `computer.vm.uri` said — and an
+  unprivileged user cannot reach that. Check both names.
+- Starting the source is safe for `container`: its `start()` spawns the
+  event-stream thread and returns TRUE unconditionally.
+- **No automated coverage.** `/computer/vm/boots-and-runs` exercises the
+  qemu backend, which leaves no state behind. The libvirt path is
+  verified by hand, because `vm_virtmanager` exposes no `undefine` — a
+  test that defines a domain cannot clean up after itself. That is also
+  why removing a VM agent leaves its domain defined in libvirt.
+
+### `g_subprocess_newv()` succeeding does not mean qemu is running
+
+- It reports that the exec happened. qemu rejects its own command line
+  milliseconds later, writes why to a stderr nobody reads, and exits —
+  and `vm_start()` had already set the state to RUNNING. The first
+  symptom was SSH refusing a connection to a port qemu never bound.
+  `qemu_came_up()` waits for the QMP socket to appear and otherwise
+  reports **qemu's own message**, which is always better than a guess at
+  it.
+- The failure that exposed this was a QMP socket path over 108 bytes —
+  the `sockaddr_un` limit `clawt_check_socket_path()` already exists
+  for, and which the VM path was not calling.
 
 ### Two things called "memory"
 

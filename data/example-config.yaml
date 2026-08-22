@@ -729,6 +729,10 @@ agents:
 
         # Base disk image. A qcow2 overlay is created on top, so the base is
         # never written to and several agents can share one.
+        #
+        # clawtilla ships no image and downloads none: point this at a qcow2 you
+        # already have. A distribution's cloud image is the easy answer, because
+        # cloud_init below can give it a login without the image being touched.
         image: null
 
         # Virtual CPUs.
@@ -738,10 +742,45 @@ agents:
         memory_mb: 2048
 
         # User commands are run as inside the guest, over SSH.
+        #
+        # With cloud_init on, this account is created in the guest rather than
+        # having to exist already, and gets passwordless sudo unless it is root.
         ssh_user: "root"
 
         # Private key used to reach the guest.
+        #
+        # Left unset, an ed25519 key is generated per agent under the VM's state
+        # directory and authorised through cloud-init. It cannot be encrypted:
+        # the daemon uses it with nobody present to type a passphrase.
         ssh_key: null
+
+        # Address that reaches the guest.
+        #
+        # Leave it unset and clawtilla forwards a port on 127.0.0.1 to the
+        # guest's SSH and fills this in itself -- the port is chosen once and
+        # remembered, so it survives a restart. Set it when the VM is somewhere
+        # clawtilla did not put it: a bridged network, another host, or a VM that
+        # existed before this agent did.
+        #
+        # The libvirt backend can only forward a port through passt, because
+        # libvirt has no port forwarding for the SLIRP backend. Without passt
+        # installed the VM still runs, and this key is the way to reach it.
+        ssh_host: null
+
+        # Port SSH is reached on. Ignored when clawtilla is forwarding a port of
+        # its own choosing, which is the default.
+        ssh_port: 22
+
+        # Hand the guest a cloud-init seed on first boot.
+        #
+        # A cloud image has no account, no password and no authorised key: it
+        # expects to be given them. Without this it boots perfectly and nothing
+        # can get in, which looks exactly like a VM that failed to boot.
+        #
+        # The seed is a small ISO labelled cidata, attached as a CD-ROM, holding
+        # the login and public key. Building it needs xorriso (Fedora: xorriso).
+        # Turn this off for an image that already has a login and a key.
+        cloud_init: true
 
         # Take a snapshot each time the VM starts, so a session can be rolled back.
         # libvirt backend only.

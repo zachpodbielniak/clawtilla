@@ -229,9 +229,9 @@ clawtilla agent set builder computer.vm.cpus 4
 clawtilla agent set builder computer.vm.memory_mb 8192
 #+end_src
 
-The Agent tab shows /Cores/ and /Memory (MB)/ for a VM agent, and only
-for one -- no other backend reads them, and a row that quietly does
-nothing is worse than no row.
+The Agent tab shows /Disk image/, /Cores/, /Memory (MB)/ and /SSH
+address/ for a VM agent, and only for one -- no other backend reads them,
+and a row that quietly does nothing is worse than no row.
 
 Applied when the domain is defined, so a change takes effect on the next
 start.
@@ -337,13 +337,114 @@ computer:
     backend: libvirt              # libvirt (default) | qemu
     domain: "clawt-researcher"
     uri: "qemu:///session"
-    image: "~/vms/fedora.qcow2"
+    image: "~/vms/Fedora-Cloud-Base-44.qcow2"
     cpus: 2
     memory_mb: 4096
     ssh_user: "agent"
-    ssh_key: "~/.ssh/clawt_vm"
+    cloud_init: true
     snapshot_on_start: true
 #+end_src
+
+That is the whole configuration for a working VM.  ~ssh_key~,
+~ssh_host~ and ~ssh_port~ are all optional: clawtilla generates the key,
+forwards the port and fills the address in itself.
+
+*** Which image
+
+*clawtilla ships no disk image and downloads none.*  ~image~ points at a
+qcow2 you already have, and a VM agent without one has no disk at all --
+it defines, it starts, and it never boots.
+
+Use a distribution's *cloud* image.  Fedora's lives at
+[[https://fedoraproject.org/cloud/download]]; every distribution
+publishes an equivalent.  They are small, they boot headless, and they
+expect to be handed their configuration on first boot -- which is what
+~cloud_init~ below does.
+
+#+begin_src bash
+clawtilla agent set researcher computer.vm.image ~/vms/Fedora-Cloud-Base-44.qcow2
+#+end_src
+
+The base is never written to.  A qcow2 overlay is created per agent
+under ~$XDG_DATA_HOME/clawtilla/vms/<agent>/overlay.qcow2~, so several
+agents share one base and a wrecked guest is thrown away by deleting one
+file.  Deleting the overlay also forgets the guest's host key, because a
+rebuilt VM is a different machine answering at the same address.
+
+A plain installer ISO or a desktop image will *not* work unattended: it
+has no cloud-init, so nothing creates a login and clawtilla cannot get
+in.  Use a cloud image, or prepare your own and set ~cloud_init: false~.
+
+The seed is tested against Fedora Cloud Base, and the mainstream cloud
+images -- Fedora, Debian, Ubuntu, CentOS Stream -- work the same way.
+Very small images can be a different matter: Alpine's ~nocloud~ image
+reads the seed, sets the hostname and installs the key in the right
+place, and its ~sshd~ then refuses the login anyway.  If you want one of
+those, expect to prepare it yourself and set ~cloud_init: false~.
+
+*** Getting in: cloud-init
+
+A cloud image has no account, no password and no authorised key.  Left
+alone it boots perfectly and nothing can enter it, which looks exactly
+like a VM that failed to boot.
+
+With ~cloud_init: true~ -- the default -- clawtilla builds a small ISO
+labelled ~cidata~, attaches it as a CD-ROM, and cloud-init reads it on
+first boot:
+
+- creates ~ssh_user~ (default ~root~), and nothing else.  The image's own
+  default login -- ~fedora~, ~debian~, ~ubuntu~ -- is never created, so
+  the guest has exactly the one account clawtilla holds a key for
+- authorises the public key, and disables password authentication
+- gives that account passwordless ~sudo~, unless it is already root
+
+The key is yours if you name one in ~ssh_key~; otherwise an ed25519 key
+is generated per agent beside the overlay.  A generated key has no
+passphrase, because the daemon uses it with nobody present to type one.
+It is mode 0600 in a mode 0700 directory and it reaches exactly one VM.
+An *encrypted* key in ~ssh_key~ is refused with that reason rather than
+hanging.
+
+Building the seed needs an ISO writer: ~xorriso~ on Fedora.  Without one,
+provisioning stops and says so.
+
+Set ~cloud_init: false~ for an image that already has a login and an
+authorised key, and set ~ssh_user~ and ~ssh_key~ to match it.
+
+*** Getting in: the address
+
+Commands run in a VM over SSH -- there is no ~podman exec~ for a guest,
+and a guest agent would be one more thing to install inside every image.
+
+Leave ~ssh_host~ unset and clawtilla arranges the route itself: it picks
+a free port on 127.0.0.1, forwards it to the guest's port 22, and
+remembers the choice in ~$XDG_DATA_HOME/clawtilla/vms/<agent>/ssh-port~.
+It has to be remembered -- a libvirt domain is defined with the port
+written into its XML, so choosing a new one on the next start would
+leave the daemon dialling a port nothing is listening on.
+
+The two backends forward differently:
+
+| Backend | How |
+|---------+-----|
+| ~qemu~ | ~-netdev user,hostfwd=tcp:127.0.0.1:<port>-:22~ |
+| ~libvirt~ | ~<interface type='user'>~ with a passt backend and a ~<portForward>~ |
+
+*libvirt needs passt* (Fedora: ~passt~).  libvirt has no port forwarding
+for the SLIRP backend -- a ~<portForward>~ without passt is a rejected
+domain, not an unforwarded one.  Without passt installed the VM still
+runs, and starting it warns that nothing reaches it; ~ssh_host~ is then
+how you say what does.
+
+Set ~ssh_host~ (and ~ssh_port~, if it is not 22) for a VM that lives
+somewhere clawtilla did not put it -- a bridged network, another
+machine, or a VM that existed before this agent did.  clawtilla forwards
+nothing when you do, on the assumption that you have your own route.
+
+Host keys go in a ~known_hosts~ beside the overlay rather than yours.  A
+VM rebuilt from the same base answers on the same address with a
+different key, which against your own file reads as an attack and is
+refused.
 
 *** libvirt (default)
 
@@ -351,11 +452,36 @@ podomation's ~vm_virtmanager~ module: the full 22-action surface,
 including snapshots.  ~snapshot_on_start: true~ is worth having -- an
 agent that breaks its VM can be put back rather than rebuilt.
 
+The domain is *persistent*: it is defined once and survives the agent
+stopping, which is what makes snapshots and ~virsh~ useful against it.
+It also means removing the agent leaves the domain defined -- there is no
+undefine in the module's action set -- so clean up by hand:
+
+#+begin_src bash
+virsh -c qemu:///session undefine clawt-<agent>
+#+end_src
+
 *** qemu (fallback)
 
 Spawns ~qemu-system-*~ directly and drives QMP over a unix socket.  A
 base image plus a qcow2 overlay; guest commands over SSH.  No libvirtd
 required, which matters on a machine where you do not want one.
+
+*** What ends up in the VM's state directory
+
+Everything for one guest, under
+~$XDG_DATA_HOME/clawtilla/vms/<agent>/~:
+
+| File | What it is |
+|------+------------|
+| ~overlay.qcow2~ | the writable disk, backed by ~image~ |
+| ~seed.iso~ | the cloud-init seed, labelled ~cidata~ |
+| ~cloud-init/~ | the ~user-data~ and ~meta-data~ inside it |
+| ~id_ed25519~ | the generated key, when ~ssh_key~ is unset |
+| ~ssh-port~ | the forwarded port, remembered across restarts |
+| ~known_hosts~ | this agent's guests, kept out of yours |
+
+Deleting the directory starts the guest over from the base image.
 
 ** Mount paths
 

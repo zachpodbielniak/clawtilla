@@ -44,6 +44,7 @@
 #include "computer/clawt-host-computer.h"
 #include "computer/clawt-pod-bridge.h"
 #include "computer/clawt-container-computer.h"
+#include "computer/clawt-cloud-init.h"
 #include "computer/clawt-vm-computer.h"
 #include "computer/clawt-desktop.h"
 #include "computer/clawt-computer-factory.h"

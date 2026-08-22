@@ -231,8 +231,17 @@ clawt_computer_factory_create(ClawtAgentConfig  *agent_config,
                 CLAWT_VM_COMPUTER(computer),
                 clawt_agent_config_get_string(agent_config,
                                               "computer.vm.ssh_user"),
-                key, NULL);
+                key,
+                clawt_agent_config_get_string(agent_config,
+                                              "computer.vm.ssh_host"),
+                (guint)clawt_agent_config_get_int(agent_config,
+                                                  "computer.vm.ssh_port"));
         }
+
+        clawt_vm_computer_set_cloud_init(
+            CLAWT_VM_COMPUTER(computer),
+            clawt_agent_config_get_boolean(agent_config,
+                                           "computer.vm.cloud_init"));
 
         clawt_vm_computer_set_snapshot_on_start(
             CLAWT_VM_COMPUTER(computer),

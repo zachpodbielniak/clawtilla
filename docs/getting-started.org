@@ -44,6 +44,8 @@ Runtime, only for the features that use them:
 | ~qemu-system-x86-core~ (or ~-aarch64-~) | either VM backend |
 | ~qemu-img~ | VM disk creation |
 | ~virtiofsd~ | mount paths into VMs |
+| ~passt~ | reaching a libvirt VM's SSH |
+| ~xorriso~ | the cloud-init seed that gives a VM a login |
 
 On Immutablue / Hyacinth Macaw these are layered into the image rather
 than installed on the host.  ~libadwaita-devel~ and ~libxml2-devel~ are
