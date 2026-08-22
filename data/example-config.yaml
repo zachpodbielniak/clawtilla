@@ -528,12 +528,20 @@ agents:
           #
           # This matters on Fedora Silverblue and friends, where an unlabelled bind
           # mount is visible in the container but every access is denied -- which
-          # reads like a permissions bug rather than a labelling one. shared (:z)
-          # is usually what you want. private (:Z) rewrites the host directory's
-          # labels exclusively for this container, which will break anything else
-          # using that directory.
+          # reads like a permissions bug rather than a labelling one.
+          #
+          # shared (:z) is the default because it is what makes a shared folder
+          # work. It used to default to none, which meant every mount anyone
+          # declared failed with permission denied on an SELinux system while
+          # this very text said shared was usually what you wanted. On a machine
+          # without SELinux it does nothing.
+          #
+          # private (:Z) rewrites the host directory's labels exclusively for this
+          # container, which will break anything else using that directory. none
+          # leaves the labels alone, which is right when the source is already
+          # labelled for container access.
           # Values: none, shared, private
-          relabel: "none"
+          relabel: "shared"
 
           # Create the source directory if it is missing, rather than failing.
           create: false

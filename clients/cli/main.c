@@ -424,7 +424,7 @@ cmd_agent(int argc, char *argv[])
     if (verb == NULL) {
         g_printerr("Usage: clawtilla agent "
                    "<list|show|create|rm|start|stop|restart|logs|set|"
-                   "files|edit> "
+                   "files|edit|mount> "
                    "[ARGS...]\n");
         return EXIT_FAILURE;
     }
@@ -495,6 +495,12 @@ cmd_agent(int argc, char *argv[])
         /* Only container agents have one, so only they report one. */
         if (json_object_has_member(agent, "image"))
             g_print("image:       %s\n", member_or(agent, "image", "-"));
+
+        /* Likewise the VM's size, which only a VM has. */
+        if (json_object_has_member(agent, "vm_cpus"))
+            g_print("vm:          %s core(s), %s MB\n",
+                    member_or(agent, "vm_cpus", "?"),
+                    member_or(agent, "vm_memory_mb", "?"));
         g_print("computer:    %s\n", member_or(agent, "computer", "none"));
         g_print("can:         %s\n", member_or(agent, "caps", "-"));
         g_print("queue:       %" G_GINT64_FORMAT "\n",
@@ -881,6 +887,95 @@ cmd_agent(int argc, char *argv[])
             g_print("%s\n", json_array_get_string_element(lines, i));
 
         return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "mount") == 0) {
+        const gchar *action = (argc > 3) ? argv[3] : NULL;
+        const gchar *who = (argc > 4) ? argv[4] : NULL;
+
+        if (action == NULL || who == NULL) {
+            g_printerr("Usage: clawtilla agent mount list <agent>\n");
+            g_printerr("       clawtilla agent mount add <agent> "
+                       "<source> <target> [ro|rw]\n");
+            g_printerr("       clawtilla agent mount rm <agent> <target>\n");
+            g_printerr("  e.g. clawtilla agent mount add researcher "
+                       "~/src /work rw\n");
+            return EXIT_FAILURE;
+        }
+
+        if (g_strcmp0(action, "list") == 0) {
+            JsonArray *mounts;
+            guint i;
+
+            reply = call(client, "agent.mount.list",
+                         build_payload("agent", who, NULL));
+            if (reply == NULL)
+                return EXIT_FAILURE;
+
+            mounts = json_object_get_array_member(json_node_get_object(reply),
+                                                   "mounts");
+
+            if (json_array_get_length(mounts) == 0) {
+                g_print("%s shares no folders.\n", who);
+                g_print("Add one with: clawtilla agent mount add %s "
+                        "<source> <target>\n", who);
+                return EXIT_SUCCESS;
+            }
+
+            for (i = 0; i < json_array_get_length(mounts); i++) {
+                JsonObject *mount = json_array_get_object_element(mounts, i);
+
+                g_print("%-34s %-24s %-4s %s\n",
+                        member_or(mount, "source", "-"),
+                        member_or(mount, "target", "?"),
+                        member_or(mount, "mode", "ro"),
+                        member_or(mount, "type", "bind"));
+            }
+
+            return EXIT_SUCCESS;
+        }
+
+        if (g_strcmp0(action, "rm") == 0) {
+            if (argc < 6) {
+                g_printerr("Usage: clawtilla agent mount rm <agent> "
+                           "<target>\n");
+                return EXIT_FAILURE;
+            }
+
+            reply = call(client, "agent.mount.remove",
+                         build_payload("agent", who, "target", argv[5],
+                                       NULL));
+            if (reply == NULL)
+                return EXIT_FAILURE;
+
+            g_print("%s no longer shares %s.\n", who, argv[5]);
+            g_print("Takes effect when the agent next starts.\n");
+            return EXIT_SUCCESS;
+        }
+
+        if (g_strcmp0(action, "add") == 0) {
+            if (argc < 7) {
+                g_printerr("Usage: clawtilla agent mount add <agent> "
+                           "<source> <target> [ro|rw]\n");
+                return EXIT_FAILURE;
+            }
+
+            reply = call(client, "agent.mount.add",
+                         build_payload("agent", who,
+                                       "source", argv[5],
+                                       "target", argv[6],
+                                       "mode", (argc > 7) ? argv[7] : "ro",
+                                       NULL));
+            if (reply == NULL)
+                return EXIT_FAILURE;
+
+            g_print("%s now sees %s at %s.\n", who, argv[5], argv[6]);
+            g_print("Takes effect when the agent next starts.\n");
+            return EXIT_SUCCESS;
+        }
+
+        g_printerr("clawtilla: unknown mount action '%s'\n", action);
+        return EXIT_FAILURE;
     }
 
     if (g_strcmp0(verb, "files") == 0 || g_strcmp0(verb, "edit") == 0) {

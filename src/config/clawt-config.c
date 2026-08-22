@@ -556,6 +556,155 @@ set_scalar(YamlNode *root, const gchar *key, YamlNode *value,
     return TRUE;
 }
 
+/*
+ * Adds one mount to computer.mounts, creating the sequence if needed.
+ *
+ * Mounts are the only list an agent's configuration holds, and
+ * clawt_agent_config_set_string() cannot express one -- it writes a
+ * scalar at a dotted path. Without this the mount list could be read
+ * but never written, so declaring a shared folder meant editing the
+ * YAML by hand and no client offered it at all.
+ */
+gboolean
+clawt_agent_config_add_mount(ClawtAgentConfig *self,
+                             ClawtMount       *mount)
+{
+    g_autoptr(YamlMapping) mapping = NULL;
+    g_autoptr(YamlNode) element = NULL;
+    YamlNode *computer;
+    YamlNode *list;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(mount != NULL, FALSE);
+    g_return_val_if_fail(clawt_mount_get_target(mount) != NULL, FALSE);
+
+    computer = node_at_path(self->node, "computer", TRUE);
+
+    if (computer == NULL ||
+        yaml_node_get_node_type(computer) != YAML_NODE_MAPPING)
+        return FALSE;
+
+    list = yaml_mapping_get_member(yaml_node_get_mapping(computer),
+                                    "mounts");
+
+    if (list == NULL ||
+        yaml_node_get_node_type(list) != YAML_NODE_SEQUENCE) {
+        /*
+         * NULL, not a fresh mapping: yaml_node_new_sequence() takes its
+         * argument (transfer none) and refs it, so passing one made here
+         * leaks this function's reference every time.
+         */
+        g_autoptr(YamlNode) created = yaml_node_new_sequence(NULL);
+
+        yaml_mapping_set_member(yaml_node_get_mapping(computer), "mounts",
+                                 created);
+        list = yaml_mapping_get_member(yaml_node_get_mapping(computer),
+                                        "mounts");
+    }
+
+    if (list == NULL)
+        return FALSE;
+
+    mapping = yaml_mapping_new();
+
+    if (clawt_mount_get_source(mount) != NULL) {
+        g_autoptr(YamlNode) value =
+            yaml_node_new_string(clawt_mount_get_source(mount));
+
+        yaml_mapping_set_member(mapping, "source", value);
+    }
+
+    {
+        g_autoptr(YamlNode) value =
+            yaml_node_new_string(clawt_mount_get_target(mount));
+
+        yaml_mapping_set_member(mapping, "target", value);
+    }
+
+    {
+        g_autoptr(YamlNode) value = yaml_node_new_string(
+            clawt_enum_to_nick(CLAWT_TYPE_MOUNT_MODE,
+                               clawt_mount_get_mode(mount)));
+
+        yaml_mapping_set_member(mapping, "mode", value);
+    }
+
+    if (clawt_mount_get_mount_type(mount) != CLAWT_MOUNT_BIND) {
+        g_autoptr(YamlNode) value = yaml_node_new_string(
+            clawt_enum_to_nick(CLAWT_TYPE_MOUNT_TYPE,
+                               clawt_mount_get_mount_type(mount)));
+
+        yaml_mapping_set_member(mapping, "type", value);
+    }
+
+    {
+        /*
+         * Always written, including "none".  A reader should be able to
+         * see what will happen to the labels without knowing which way
+         * an absent key falls.
+         */
+        g_autoptr(YamlNode) value = yaml_node_new_string(
+            clawt_enum_to_nick(CLAWT_TYPE_RELABEL,
+                               clawt_mount_get_relabel(mount)));
+
+        yaml_mapping_set_member(mapping, "relabel", value);
+    }
+
+    if (clawt_mount_get_size(mount) != NULL) {
+        g_autoptr(YamlNode) value =
+            yaml_node_new_string(clawt_mount_get_size(mount));
+
+        yaml_mapping_set_member(mapping, "size", value);
+    }
+
+    element = yaml_node_new_mapping(mapping);
+    yaml_sequence_add_element(yaml_node_get_sequence(list), element);
+
+    return TRUE;
+}
+
+/*
+ * Removes the mount with this target.
+ *
+ * Keyed on the target rather than the source, because the target is
+ * what has to be unique -- two sources cannot occupy one path inside
+ * the computer, and validation already refuses that.
+ */
+gboolean
+clawt_agent_config_remove_mount(ClawtAgentConfig *self,
+                                const gchar      *target)
+{
+    YamlNode *list;
+    YamlSequence *sequence;
+    guint i;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(target != NULL, FALSE);
+
+    list = node_at_path(self->node, "computer.mounts", FALSE);
+
+    if (list == NULL || yaml_node_get_node_type(list) != YAML_NODE_SEQUENCE)
+        return FALSE;
+
+    sequence = yaml_node_get_sequence(list);
+
+    for (i = 0; i < yaml_sequence_get_length(sequence); i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+
+        if (yaml_node_get_node_type(element) != YAML_NODE_MAPPING)
+            continue;
+
+        if (g_strcmp0(member_string(yaml_node_get_mapping(element), "target"),
+                      target) == 0) {
+            /* void upstream: it either removes or warns. */
+            yaml_sequence_remove_element(sequence, i);
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
 gboolean
 clawt_agent_config_set_string(ClawtAgentConfig *self,
                               const gchar      *key,
@@ -679,9 +828,22 @@ clawt_agent_config_get_mounts(ClawtAgentConfig *self)
             clawt_enum_from_nick(CLAWT_TYPE_MOUNT_TYPE, nick, &value))
             clawt_mount_set_mount_type(mount, (ClawtMountType)value);
 
+        /*
+         * Absent means shared, not none.
+         *
+         * A schema default only applies to a scalar at a dotted path;
+         * nothing applies one to a member of a list, so an entry
+         * written without `relabel` came back as none -- and on an
+         * SELinux system an unlabelled bind mount is visible inside the
+         * container with every access denied. Every shared folder
+         * anyone declared failed with permission denied, which reads
+         * like a permissions bug rather than a labelling one.
+         */
         nick = member_string(mapping, "relabel");
-        if (nick != NULL &&
-            clawt_enum_from_nick(CLAWT_TYPE_RELABEL, nick, &value))
+
+        if (nick == NULL)
+            clawt_mount_set_relabel(mount, CLAWT_RELABEL_SHARED);
+        else if (clawt_enum_from_nick(CLAWT_TYPE_RELABEL, nick, &value))
             clawt_mount_set_relabel(mount, (ClawtRelabel)value);
 
         clawt_mount_set_size(mount, member_string(mapping, "size"));

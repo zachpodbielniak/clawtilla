@@ -605,15 +605,23 @@ static const ClawtSchemaEntry schema[] = {
   "chosen automatically from the computer type.", "0.1.0" },
 
 { "agents.computer.mounts.relabel", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
-  "none", clawt_relabel_get_type,
+  "shared", clawt_relabel_get_type,
   "SELinux relabelling for a container bind mount: none, shared or private.\n"
   "\n"
   "This matters on Fedora Silverblue and friends, where an unlabelled bind\n"
   "mount is visible in the container but every access is denied -- which\n"
-  "reads like a permissions bug rather than a labelling one. shared (:z)\n"
-  "is usually what you want. private (:Z) rewrites the host directory's\n"
-  "labels exclusively for this container, which will break anything else\n"
-  "using that directory.", "0.1.0" },
+  "reads like a permissions bug rather than a labelling one.\n"
+  "\n"
+  "shared (:z) is the default because it is what makes a shared folder\n"
+  "work. It used to default to none, which meant every mount anyone\n"
+  "declared failed with permission denied on an SELinux system while\n"
+  "this very text said shared was usually what you wanted. On a machine\n"
+  "without SELinux it does nothing.\n"
+  "\n"
+  "private (:Z) rewrites the host directory's labels exclusively for this\n"
+  "container, which will break anything else using that directory. none\n"
+  "leaves the labels alone, which is right when the source is already\n"
+  "labelled for container access.", "0.1.0" },
 
 { "agents.computer.mounts.create", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "false", NULL,

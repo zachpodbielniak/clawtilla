@@ -614,12 +614,107 @@ test_computer_directive_is_injected(void)
     g_assert_nonnull(strstr(mine, "Always answer in French."));
 }
 
+/*
+ * Mounts can be written, not only read.
+ *
+ * They are the only list an agent's configuration holds, and
+ * clawt_agent_config_set_string() cannot express one -- it writes a
+ * scalar at a dotted path. So the list was read and applied on every
+ * start and no client could add to it: sharing a folder meant editing
+ * the YAML by hand.
+ */
+static void
+test_mounts_can_be_added_and_removed(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+        "agents:\n"
+        "  - id: boxed\n"
+        "    computer: {type: container}\n",
+        &error);
+    ClawtAgentConfig *agent;
+    g_autoptr(GPtrArray) before = NULL;
+    g_autoptr(GPtrArray) after = NULL;
+    g_autoptr(GPtrArray) gone = NULL;
+
+    g_assert_no_error(error);
+    agent = g_ptr_array_index(clawt_config_get_agents(config), 0);
+
+    before = clawt_agent_config_get_mounts(agent);
+    g_assert_cmpuint(before->len, ==, 0);
+
+    {
+        g_autoptr(ClawtMount) mount = clawt_mount_new("/srv/data", "/work");
+
+        clawt_mount_set_mode(mount, CLAWT_MOUNT_MODE_RW);
+        g_assert_true(clawt_agent_config_add_mount(agent, mount));
+    }
+
+    after = clawt_agent_config_get_mounts(agent);
+    g_assert_cmpuint(after->len, ==, 1);
+    g_assert_cmpstr(clawt_mount_get_target(g_ptr_array_index(after, 0)),
+                    ==, "/work");
+    g_assert_cmpint(clawt_mount_get_mode(g_ptr_array_index(after, 0)),
+                    ==, CLAWT_MOUNT_MODE_RW);
+
+    g_assert_false(clawt_agent_config_remove_mount(agent, "/nowhere"));
+    g_assert_true(clawt_agent_config_remove_mount(agent, "/work"));
+
+    gone = clawt_agent_config_get_mounts(agent);
+    g_assert_cmpuint(gone->len, ==, 0);
+}
+
+/*
+ * A mount with no relabel is shared, not none.
+ *
+ * A schema default only applies to a scalar at a dotted path; nothing
+ * applies one to a member of a list. So an entry written without
+ * `relabel` came back as none -- and on an SELinux system an unlabelled
+ * bind mount is visible inside the container with every access denied,
+ * which reads like a permissions bug rather than a labelling one. Every
+ * shared folder anyone declared failed.
+ */
+static void
+test_a_mount_without_relabel_is_shared(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+        "agents:\n"
+        "  - id: boxed\n"
+        "    computer:\n"
+        "      type: container\n"
+        "      mounts:\n"
+        "        - source: /srv/a\n"
+        "          target: /a\n"
+        "        - source: /srv/b\n"
+        "          target: /b\n"
+        "          relabel: none\n",
+        &error);
+    g_autoptr(GPtrArray) mounts = NULL;
+
+    g_assert_no_error(error);
+    mounts = clawt_agent_config_get_mounts(
+        g_ptr_array_index(clawt_config_get_agents(config), 0));
+
+    g_assert_cmpuint(mounts->len, ==, 2);
+    g_assert_cmpint(clawt_mount_get_relabel(g_ptr_array_index(mounts, 0)),
+                    ==, CLAWT_RELABEL_SHARED);
+
+    /* An explicit none is still none: this is a default, not a policy. */
+    g_assert_cmpint(clawt_mount_get_relabel(g_ptr_array_index(mounts, 1)),
+                    ==, CLAWT_RELABEL_NONE);
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/config/reads-configured", test_reads_configured_values);
+    g_test_add_func("/config/mounts-writable",
+                    test_mounts_can_be_added_and_removed);
+    g_test_add_func("/config/mount-relabel-default",
+                    test_a_mount_without_relabel_is_shared);
     g_test_add_func("/config/computer-directive",
                     test_computer_directive_is_injected);
     g_test_add_func("/config/schema-defaults", test_falls_back_to_schema_defaults);

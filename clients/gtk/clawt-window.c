@@ -118,6 +118,11 @@ struct _ClawtWindow {
     ModelChooser       inspector_models;
     ImageChooser       inspector_image;
     gchar             *inspector_computer;   /* the selected agent's type */
+    GtkWidget         *vm_cpus_row;
+    GtkWidget         *vm_memory_row;
+    GtkWidget         *mount_source_row;
+    GtkWidget         *mount_target_row;
+    GtkWidget         *mount_mode_row;
 
     /* Mailbox */
     GtkListBox        *mailbox_list;
@@ -784,6 +789,19 @@ on_save_agent(GtkButton *button, gpointer user_data)
                                           ADW_COMBO_ROW(self->computer_row)),
                                       3)]);
 
+    if (self->vm_cpus_row != NULL) {
+        const gchar *cpus = gtk_editable_get_text(
+            GTK_EDITABLE(self->vm_cpus_row));
+        const gchar *memory = gtk_editable_get_text(
+            GTK_EDITABLE(self->vm_memory_row));
+
+        if (cpus != NULL && *cpus != '\0')
+            ok &= apply_setting(self, "computer.vm.cpus", cpus);
+
+        if (memory != NULL && *memory != '\0')
+            ok &= apply_setting(self, "computer.vm.memory_mb", memory);
+    }
+
     if (self->inspector_image.row != NULL) {
         g_autofree gchar *image = image_chooser_value(&self->inspector_image);
 
@@ -1036,6 +1054,163 @@ switch_row(const gchar *title, const gchar *subtitle, gboolean active)
     return row;
 }
 
+/*
+ * Shares a host folder with the agent's computer.
+ *
+ * The mount list has always been read and applied -- bind mounts for a
+ * container, virtiofs devices for a VM -- and no client could write one,
+ * so the only way to share a folder was to edit the YAML by hand.
+ */
+static void
+on_add_mount(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+    static const gchar *const modes[] = { "ro", "rw" };
+    const gchar *source;
+    const gchar *target;
+    guint mode;
+
+    (void)button;
+
+    if (self->selected_agent == NULL || self->mount_source_row == NULL)
+        return;
+
+    source = gtk_editable_get_text(GTK_EDITABLE(self->mount_source_row));
+    target = gtk_editable_get_text(GTK_EDITABLE(self->mount_target_row));
+
+    if (source == NULL || *source == '\0' || target == NULL ||
+        *target == '\0') {
+        clawt_window_toast(self, "A share needs a folder and a path inside.");
+        return;
+    }
+
+    mode = adw_combo_row_get_selected(ADW_COMBO_ROW(self->mount_mode_row));
+
+    reply = clawt_window_request(
+        self, "agent.mount.add",
+        clawt_build_payload("agent", self->selected_agent,
+                            "source", source, "target", target,
+                            "mode", modes[MIN(mode, 1)], NULL));
+
+    if (reply == NULL)
+        return;
+
+    clawt_window_toast(self, "Shared. It appears when the agent restarts.");
+    refresh_selected(self);
+}
+
+static void
+on_remove_mount(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *target = g_object_get_data(G_OBJECT(button), "target");
+    g_autoptr(JsonNode) reply = NULL;
+
+    if (self->selected_agent == NULL || target == NULL)
+        return;
+
+    reply = clawt_window_request(
+        self, "agent.mount.remove",
+        clawt_build_payload("agent", self->selected_agent, "target", target,
+                            NULL));
+
+    if (reply == NULL)
+        return;
+
+    clawt_window_toast(self, "Removed. Takes effect on the next restart.");
+    refresh_selected(self);
+}
+
+/*
+ * The shared folders group, for a computer that can have them.
+ *
+ * A host agent is left out: its computer is the machine itself, so there
+ * is nothing to mount into -- what limits it there is confinement, not
+ * a mount list.
+ */
+static void
+build_mounts(ClawtWindow *self, const gchar *computer_type)
+{
+    static const gchar *const modes[] = { "ro", "rw", NULL };
+    g_autoptr(JsonNode) reply = NULL;
+    GtkWidget *group;
+    GtkWidget *add;
+    JsonArray *mounts;
+    guint i;
+
+    self->mount_source_row = NULL;
+    self->mount_target_row = NULL;
+    self->mount_mode_row = NULL;
+
+    if (g_strcmp0(computer_type, "container") != 0 &&
+        g_strcmp0(computer_type, "vm") != 0)
+        return;
+
+    group = adw_preferences_group_new();
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group),
+                                    "Shared folders");
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(group),
+        g_strcmp0(computer_type, "vm") == 0
+            ? "Passed into the VM over virtiofs. Changes apply when it "
+              "next starts."
+            : "Bind-mounted into the container, SELinux-relabelled so "
+              "they are actually readable. Changes apply when it next "
+              "starts.");
+
+    reply = clawt_window_request(
+        self, "agent.mount.list",
+        clawt_build_payload("agent", self->selected_agent, NULL));
+
+    mounts = (reply != NULL)
+             ? json_object_get_array_member(clawt_payload_of(reply), "mounts")
+             : NULL;
+
+    for (i = 0; mounts != NULL && i < json_array_get_length(mounts); i++) {
+        JsonObject *mount = json_array_get_object_element(mounts, i);
+        const gchar *target = clawt_json_string(mount, "target", "?");
+        GtkWidget *row = adw_action_row_new();
+        GtkWidget *remove;
+        g_autofree gchar *subtitle = g_strdup_printf(
+            "%s  (%s)", clawt_json_string(mount, "source", "-"),
+            clawt_json_string(mount, "mode", "ro"));
+
+        set_row_text(row, target, subtitle);
+
+        remove = gtk_button_new_from_icon_name("user-trash-symbolic");
+        gtk_widget_set_valign(remove, GTK_ALIGN_CENTER);
+        gtk_widget_add_css_class(remove, "flat");
+        gtk_widget_set_tooltip_text(remove, "Stop sharing this folder");
+        g_object_set_data_full(G_OBJECT(remove), "target", g_strdup(target),
+                               g_free);
+        g_signal_connect(remove, "clicked", G_CALLBACK(on_remove_mount),
+                         self);
+        adw_action_row_add_suffix(ADW_ACTION_ROW(row), remove);
+
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+    }
+
+    self->mount_source_row = entry_row("Folder on this machine", NULL);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              self->mount_source_row);
+
+    self->mount_target_row = entry_row("Where the agent sees it", NULL);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              self->mount_target_row);
+
+    self->mount_mode_row = combo_row("Access", modes, "ro");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              self->mount_mode_row);
+
+    add = gtk_button_new_with_label("Share this folder");
+    gtk_widget_set_margin_top(add, 6);
+    g_signal_connect(add, "clicked", G_CALLBACK(on_add_mount), self);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), add);
+
+    gtk_box_append(self->inspector, group);
+}
+
 static void
 build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
 {
@@ -1135,6 +1310,26 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
     else
         self->inspector_image.row = NULL;
 
+    /*
+     * How big the VM is.  Only shown for one: cpus and memory_mb are
+     * read by no other backend, and a row that quietly does nothing is
+     * worse than no row.
+     */
+    self->vm_cpus_row = NULL;
+    self->vm_memory_row = NULL;
+
+    if (g_strcmp0(self->inspector_computer, "vm") == 0) {
+        self->vm_cpus_row = entry_row(
+            "Cores", clawt_json_string(agent, "vm_cpus", ""));
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                  self->vm_cpus_row);
+
+        self->vm_memory_row = entry_row(
+            "Memory (MB)", clawt_json_string(agent, "vm_memory_mb", ""));
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                  self->vm_memory_row);
+    }
+
     self->restart_row = combo_row("Restart", restarts,
                                   clawt_json_string(agent, "restart",
                                                     "on-failure"));
@@ -1231,6 +1426,8 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
                                  "this agent cannot start"));
 
     gtk_box_append(self->inspector, actions);
+
+    build_mounts(self, self->inspector_computer);
 
     /* ── Removing it ── */
     danger = adw_preferences_group_new();

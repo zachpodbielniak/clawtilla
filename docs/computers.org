@@ -214,6 +214,28 @@ hand first.  The first start on a new image is therefore slow, and
 ~clawtilla agent logs~ shows nothing while it happens -- the pull is the
 daemon's, not the agent's.
 
+*** How big the VM is
+
+#+begin_src yaml
+computer:
+  type: vm
+  vm:
+    cpus: 4
+    memory_mb: 8192
+#+end_src
+
+#+begin_src bash
+clawtilla agent set builder computer.vm.cpus 4
+clawtilla agent set builder computer.vm.memory_mb 8192
+#+end_src
+
+The Agent tab shows /Cores/ and /Memory (MB)/ for a VM agent, and only
+for one -- no other backend reads them, and a row that quietly does
+nothing is worse than no row.
+
+Applied when the domain is defined, so a change takes effect on the next
+start.
+
 *** Which podman
 
 Rootless, by default: the socket under =XDG_RUNTIME_DIR= when there is
@@ -241,6 +263,40 @@ for a reason that makes no sense.
 
 Set it when the image has an entrypoint worth running.  A JSON array is
 used as written; anything else is split on spaces.
+
+*** Sharing folders
+
+#+begin_src bash
+clawtilla agent mount list researcher
+#+end_src
+
+#+begin_src bash
+clawtilla agent mount add researcher ~/src/projects /work rw
+#+end_src
+
+#+begin_src bash
+clawtilla agent mount rm researcher /work
+#+end_src
+
+The Agent tab has the same under /Shared folders/, listing what is
+shared with a button to stop sharing it.
+
+Changes apply when the computer next starts: a bind mount is part of a
+container's creation, not something added to a running one.
+
+*Relabelling defaults to shared* (~:z~).  On Fedora and friends an
+unlabelled bind mount is visible inside the container with every access
+denied -- which reads like a permissions bug rather than a labelling
+one.  It used to default to ~none~, so every shared folder anyone
+declared failed with permission denied while the documentation said
+shared was usually what you wanted.  ~private~ (~:Z~) relabels the host
+directory exclusively for this container and will break anything else
+using it; ~none~ is right when the source is already labelled for
+container access.
+
+The mount list is the same for a VM, where the entries become virtiofs
+devices rather than bind mounts.  You write source, target and mode; the
+right kind is filled in from the backend.
 
 *** A container left behind
 

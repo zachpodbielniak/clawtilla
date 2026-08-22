@@ -377,6 +377,39 @@ gchar *clawt_agent_config_get_workspace(ClawtAgentConfig *self);
 GPtrArray *clawt_agent_config_get_mounts(ClawtAgentConfig *self);
 
 /**
+ * clawt_agent_config_add_mount:
+ * @self: an agent's configuration
+ * @mount: (transfer none): the mount to add
+ *
+ * Appends one entry to `computer.mounts`.
+ *
+ * Mounts are the only list an agent's configuration holds, and
+ * clawt_agent_config_set_string() cannot express one -- it writes a
+ * scalar at a dotted path. Without this the list could be read and never
+ * written, so declaring a shared folder meant editing the YAML by hand.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean clawt_agent_config_add_mount(ClawtAgentConfig *self,
+                                      ClawtMount       *mount);
+
+/**
+ * clawt_agent_config_remove_mount:
+ * @self: an agent's configuration
+ * @target: the path inside the computer
+ *
+ * Removes the mount with that target.
+ *
+ * Keyed on the target rather than the source because the target is what
+ * has to be unique: two sources cannot occupy one path inside the
+ * computer, and validation already refuses that.
+ *
+ * Returns: %TRUE if one was removed
+ */
+gboolean clawt_agent_config_remove_mount(ClawtAgentConfig *self,
+                                         const gchar      *target);
+
+/**
  * clawt_agent_config_get_env:
  * @self: a #ClawtAgentConfig
  *

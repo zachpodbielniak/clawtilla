@@ -413,13 +413,18 @@ static void
 apply_mounts(ClawtDaemon *self, ClawtAgent *agent, ClawtComputer *computer)
 {
     ClawtAgentConfig *config = clawt_agent_get_config(agent);
-    g_autoptr(GPtrArray) mounts = NULL;
     guint i;
 
-    mounts = clawt_agent_config_get_mounts(config);
-
-    for (i = 0; mounts != NULL && i < mounts->len; i++)
-        clawt_computer_add_mount(computer, g_ptr_array_index(mounts, i));
+    /*
+     * The agent's own mounts are NOT applied here.
+     *
+     * clawt_computer_factory_create() already did it -- building a
+     * computer from a config is its whole job, and it also fills in the
+     * mount type per backend. Doing it again here added every mount
+     * twice, and podman refuses a create with a duplicate destination:
+     * "\"/work\": duplicate mount destination". It went unseen because
+     * no client could add a mount until now, so nobody had one.
+     */
 
     /*
      * Every computer gets the exchange unless the agent turned it off,
@@ -1234,6 +1239,26 @@ add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
                                                    "computer.container.image"));
     }
 
+    /*
+     * The VM's size, so a client can show and edit it.  Reported only
+     * for a VM: no other backend reads these, and reporting a key an
+     * agent does not use invites a client to offer editing it.
+     */
+    if (clawt_agent_config_get_enum(config, "computer.type") ==
+        CLAWT_COMPUTER_VM) {
+        g_autofree gchar *cpus = g_strdup_printf(
+            "%" G_GINT64_FORMAT,
+            clawt_agent_config_get_int(config, "computer.vm.cpus"));
+        g_autofree gchar *memory = g_strdup_printf(
+            "%" G_GINT64_FORMAT,
+            clawt_agent_config_get_int(config, "computer.vm.memory_mb"));
+
+        json_builder_set_member_name(builder, "vm_cpus");
+        json_builder_add_string_value(builder, cpus);
+        json_builder_set_member_name(builder, "vm_memory_mb");
+        json_builder_add_string_value(builder, memory);
+    }
+
     json_builder_set_member_name(builder, "model");
     json_builder_add_string_value(
         builder, clawt_agent_config_get_string(config, "model.model"));
@@ -1559,6 +1584,154 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             return clawt_ipc_error_new(request, error->code, error->message);
 
         return clawt_ipc_response_new(request, NULL);
+    }
+
+    if (g_strcmp0(kind, "agent.mount.add") == 0 ||
+        g_strcmp0(kind, "agent.mount.remove") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        const gchar *target = clawt_ipc_payload_string(payload, "target");
+        ClawtAgentConfig *agent_config;
+
+        /*
+         * Shared folders, settable.
+         *
+         * computer.mounts has always been read and applied -- bind
+         * mounts for a container, virtiofs devices for a VM -- and no
+         * client could write one, so the only way to share a folder
+         * with an agent was to edit the YAML by hand.
+         */
+        if (agent_id == NULL || target == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "agent and target are both required");
+
+        agent_config = clawt_config_get_agent(self->config, agent_id);
+
+        if (agent_config == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such agent");
+
+        if (g_strcmp0(kind, "agent.mount.remove") == 0) {
+            if (!clawt_agent_config_remove_mount(agent_config, target))
+                return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                           "that agent has no such mount");
+        } else {
+            const gchar *source = clawt_ipc_payload_string(payload, "source");
+            const gchar *mode = clawt_ipc_payload_string(payload, "mode");
+            const gchar *type = clawt_ipc_payload_string(payload, "type");
+            const gchar *relabel = clawt_ipc_payload_string(payload,
+                                                             "relabel");
+            const gchar *size = clawt_ipc_payload_string(payload, "size");
+            g_autoptr(ClawtMount) mount = clawt_mount_new(source, target);
+            gint parsed = 0;
+
+            if (mode != NULL) {
+                if (!clawt_enum_from_nick(CLAWT_TYPE_MOUNT_MODE, mode,
+                                           &parsed))
+                    return clawt_ipc_error_new(request,
+                                               CLAWT_ERROR_INVALID_ARGUMENT,
+                                               "mode is ro or rw");
+
+                clawt_mount_set_mode(mount, (ClawtMountMode)parsed);
+            }
+
+            if (type != NULL) {
+                if (!clawt_enum_from_nick(CLAWT_TYPE_MOUNT_TYPE, type,
+                                           &parsed))
+                    return clawt_ipc_error_new(request,
+                                               CLAWT_ERROR_INVALID_ARGUMENT,
+                                               "type is bind, volume, "
+                                               "virtiofs, 9p or tmpfs");
+
+                clawt_mount_set_mount_type(mount, (ClawtMountType)parsed);
+            }
+
+            if (relabel != NULL) {
+                if (!clawt_enum_from_nick(CLAWT_TYPE_RELABEL, relabel,
+                                           &parsed))
+                    return clawt_ipc_error_new(request,
+                                               CLAWT_ERROR_INVALID_ARGUMENT,
+                                               "relabel is none, shared or "
+                                               "private");
+
+                clawt_mount_set_relabel(mount, (ClawtRelabel)parsed);
+            }
+
+            if (size != NULL)
+                clawt_mount_set_size(mount, size);
+
+            /*
+             * Validated before it is written, so a mount that could
+             * never work is refused here rather than at the agent's
+             * next start -- by which time the config has been saved and
+             * the cause is a start failure that mentions neither the
+             * path nor the reason.
+             */
+            if (!clawt_mount_validate(mount, &error))
+                return clawt_ipc_error_new(request, error->code,
+                                           error->message);
+
+            if (!clawt_agent_config_add_mount(agent_config, mount))
+                return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                           "could not add the mount");
+        }
+
+        if (!clawt_config_save(self->config, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        clawt_agent_manager_load(self->agents, NULL);
+        render_all_agents(self);
+        clawt_event_bus_emit(self->bus, "agent.changed", agent_id);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "target");
+        json_builder_add_string_value(builder, target);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "agent.mount.list") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        ClawtAgentConfig *agent_config = (agent_id != NULL)
+            ? clawt_config_get_agent(self->config, agent_id) : NULL;
+        g_autoptr(GPtrArray) mounts = NULL;
+        guint i;
+
+        if (agent_config == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such agent");
+
+        mounts = clawt_agent_config_get_mounts(agent_config);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "mounts");
+        json_builder_begin_array(builder);
+
+        for (i = 0; i < mounts->len; i++) {
+            ClawtMount *mount = g_ptr_array_index(mounts, i);
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "source");
+            json_builder_add_string_value(builder,
+                                          clawt_mount_get_source(mount));
+            json_builder_set_member_name(builder, "target");
+            json_builder_add_string_value(builder,
+                                          clawt_mount_get_target(mount));
+            json_builder_set_member_name(builder, "mode");
+            json_builder_add_string_value(
+                builder, clawt_enum_to_nick(CLAWT_TYPE_MOUNT_MODE,
+                                            clawt_mount_get_mode(mount)));
+            json_builder_set_member_name(builder, "type");
+            json_builder_add_string_value(
+                builder, clawt_enum_to_nick(CLAWT_TYPE_MOUNT_TYPE,
+                                            clawt_mount_get_mount_type(mount)));
+            json_builder_end_object(builder);
+        }
+
+        json_builder_end_array(builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
     if (g_strcmp0(kind, "agent.files") == 0) {
