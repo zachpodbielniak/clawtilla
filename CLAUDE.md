@@ -437,6 +437,25 @@ the same program.
   deprecated). And use `SCALE_DOWN` rather than `CONTAIN` in a viewer,
   or a small image is blown up to fill the window and looks like a bug.
 
+### A member in the wrong object is still valid JSON
+
+- `json_builder_set_member_name()` puts a member wherever the builder
+  currently is. Adding `busy` to `add_agent_object()` a few lines too
+  early landed it inside the nested `credentials` object: the reply
+  parsed, nothing warned, and the field simply never reached the client
+  looking for it. Count the `begin_object`/`end_object` pairs when
+  adding a field, and check the field arrives rather than that the
+  request succeeds.
+
+### Adding an agent to the config does not create it
+
+- `clawt_config_add_agent()` plus `clawt_config_save()` leaves the
+  manager with no such agent: it builds its agents from a reloaded
+  config, so `clawt_daemon_reload()` and `clawt_agent_manager_load()`
+  are both required. `agent.create` does this; `agent.import` did not,
+  and the import wrote every file correctly and then did not appear in
+  `agent list`.
+
 ### A widget's children go before its object data does
 
 - GTK unparents a widget's children while destroying it, and object

@@ -1721,3 +1721,59 @@ clawt_config_remove_agent(ClawtConfig *self, const gchar *id)
 
     return FALSE;
 }
+
+guint
+clawt_config_adopt_libreclaw(ClawtAgentConfig *agent, const gchar *config_path)
+{
+    static const struct {
+        const gchar *from;   /* dotted path in libreclaw's config */
+        const gchar *to;     /* the clawtilla agent key */
+    } wanted[] = {
+        { "ai.provider",      "model.provider" },
+        { "ai.model",         "model.model" },
+        { "ai.default_effort", "model.effort" },
+        { "agent.name",       "name" },
+        { NULL, NULL }
+    };
+    g_autoptr(YamlParser) parser = NULL;
+    g_autoptr(GError) error = NULL;
+    YamlNode *root;
+    guint adopted = 0;
+    gsize i;
+
+    g_return_val_if_fail(agent != NULL, 0);
+
+    if (config_path == NULL || !g_file_test(config_path, G_FILE_TEST_EXISTS))
+        return 0;
+
+    parser = yaml_parser_new();
+
+    if (!yaml_parser_load_from_file(parser, config_path, &error)) {
+        g_info("import: %s could not be read (%s); using the fleet defaults",
+               config_path, error->message);
+        return 0;
+    }
+
+    root = yaml_parser_get_root(parser);
+
+    if (root == NULL)
+        return 0;
+
+    for (i = 0; wanted[i].from != NULL; i++) {
+        const gchar *value;
+
+        /* Never overrides something the caller has already set. */
+        if (clawt_agent_config_has_key(agent, wanted[i].to))
+            continue;
+
+        value = lookup_string(root, wanted[i].from);
+
+        if (value == NULL || value[0] == '\0')
+            continue;
+
+        if (clawt_agent_config_set_string(agent, wanted[i].to, value))
+            adopted++;
+    }
+
+    return adopted;
+}

@@ -330,6 +330,7 @@ on_link_typing(ClawtLinkServer *server,
                gpointer         user_data)
 {
     ClawtDaemon *self = user_data;
+    ClawtAgent *agent;
     ClawtEvent *event;
 
     (void)server;
@@ -337,8 +338,27 @@ on_link_typing(ClawtLinkServer *server,
     if (agent_id == NULL)
         return;
 
+    /*
+     * Recorded on the agent as well as published, so a client that
+     * connects while a turn is already running is not left thinking
+     * the agent is idle until the next transition.
+     */
+    agent = clawt_agent_manager_get(self->agents, agent_id);
+
+    if (agent != NULL)
+        clawt_agent_set_activity(agent, typing, NULL);
+
     event = clawt_event_new("agent.typing", agent_id);
     clawt_event_set_detail(event, "typing", typing ? "true" : "false");
+
+    /*
+     * Who the turn is for travels with it, because that is the part a
+     * client cannot work out: an agent busy for three minutes on a
+     * peer's question looks exactly like one busy on yours.
+     */
+    if (agent != NULL && clawt_agent_get_activity_peer(agent) != NULL)
+        clawt_event_set_detail(event, "peer",
+                               clawt_agent_get_activity_peer(agent));
 
     if (room_id != NULL)
         clawt_event_set_detail(event, "room", room_id);
@@ -1418,6 +1438,23 @@ add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
         json_builder_end_object(builder);
     }
 
+    /*
+     * What it is doing, so a listing can say more than "running".
+     *
+     * Note the nesting: these belong to the agent object, not to the
+     * credentials one above it. Put a member in the wrong object and it
+     * is still valid JSON -- it simply never reaches the client that
+     * was looking for it, which is what happened here.
+     */
+    json_builder_set_member_name(builder, "busy");
+    json_builder_add_boolean_value(builder, clawt_agent_get_busy(agent));
+
+    if (clawt_agent_get_activity_peer(agent) != NULL) {
+        json_builder_set_member_name(builder, "peer");
+        json_builder_add_string_value(builder,
+                                      clawt_agent_get_activity_peer(agent));
+    }
+
     json_builder_end_object(builder);
 }
 
@@ -2267,6 +2304,171 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         }
 
         json_builder_end_array(builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "agent.import") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "id");
+        const gchar *from = clawt_ipc_payload_string(payload, "from");
+        gboolean keep_git = clawt_ipc_payload_boolean(payload, "keep_git",
+                                                       FALSE);
+        g_autofree gchar *source = NULL;
+        g_autofree gchar *workspace = NULL;
+        ClawtAgentConfig *created;
+        guint copied = 0;
+
+        if (agent_id == NULL || from == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "id and from are both required");
+
+        source = clawt_expand_path(from);
+
+        if (!g_file_test(source, G_FILE_TEST_IS_DIR))
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "that is not a directory");
+
+        if (clawt_agent_manager_get(self->agents, agent_id) != NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_ALREADY_EXISTS,
+                                       "there is already an agent with that "
+                                       "id");
+
+        /*
+         * The config entry first, so the workspace path is whatever
+         * clawtilla would have chosen -- an import is an agent like any
+         * other afterwards, not one that remembers where it came from.
+         */
+        created = clawt_config_add_agent(self->config, agent_id, &error);
+
+        if (created == NULL)
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        workspace = clawt_agent_config_get_workspace(created);
+
+        if (!clawt_copy_tree(source, workspace, keep_git, &copied, &error)) {
+            clawt_config_remove_agent(self->config, agent_id);
+            return clawt_ipc_error_new(request, error->code, error->message);
+        }
+
+        /*
+         * Anything the source said about itself that clawtilla owns
+         * too. A standalone libreclaw instance keeps its provider and
+         * model in its own config.yaml, and an import that dropped them
+         * would quietly move the agent onto the fleet defaults.
+         */
+        {
+            g_autofree gchar *imported = g_build_filename(workspace,
+                                                          "config.yaml", NULL);
+
+            clawt_config_adopt_libreclaw(created, imported);
+        }
+
+        if (!clawt_config_save(self->config, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        /*
+         * The same two steps agent.create takes.  Saving the config is
+         * not enough to make an agent exist: the manager builds its
+         * agents from a reloaded config, and without this the import
+         * succeeded, wrote everything correctly, and then did not
+         * appear in `agent list`.
+         */
+        if (!clawt_daemon_reload(self, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        clawt_agent_manager_load(self->agents, NULL);
+        clawt_event_bus_emit(self->bus, "agent.created", agent_id);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "id");
+        json_builder_add_string_value(builder, agent_id);
+        json_builder_set_member_name(builder, "workspace");
+        json_builder_add_string_value(builder, workspace);
+        json_builder_set_member_name(builder, "files");
+        json_builder_add_int_value(builder, copied);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "state.git_init") == 0) {
+        g_autofree gchar *ignore_path = NULL;
+        g_autofree gchar *git_dir = NULL;
+        g_autoptr(GSubprocess) git = NULL;
+        gboolean already;
+
+        /*
+         * What must never be committed.
+         *
+         * The state directory holds credentials, link tokens and the
+         * agents' own databases beside the workspaces somebody actually
+         * wants to version. Writing this file is the whole reason this
+         * verb exists rather than telling people to run `git init`
+         * themselves: a state directory in git without it is an
+         * accident waiting to be pushed.
+         */
+        static const gchar GITIGNORE[] =
+            "# Written by clawtilla. Everything here is either a secret,\n"
+            "# a database, or a socket -- none of it belongs in history.\n"
+            "\n"
+            "credentials/\n"
+            "secrets/\n"
+            "*/token\n"
+            "agents/*/token\n"
+            "agents/*/credentials/\n"
+            "\n"
+            "*.db\n"
+            "*.db-wal\n"
+            "*.db-shm\n"
+            "agents/*/sessions/\n"
+            "agents/*.discarded/\n"
+            "sessions.reset-*/\n"
+            "\n"
+            "*.sock\n"
+            "events/\n"
+            "exchange/\n"
+            "\n"
+            "# The rendered libreclaw config carries resolved paths and is\n"
+            "# regenerated on every start.\n"
+            "agents/*/config.yaml\n";
+
+        if (self->state_dir == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                       "there is no state directory yet");
+
+        git_dir = g_build_filename(self->state_dir, ".git", NULL);
+        already = g_file_test(git_dir, G_FILE_TEST_IS_DIR);
+
+        /*
+         * The ignore file is written either way, so running this again
+         * on a repository somebody made by hand still protects them.
+         */
+        ignore_path = g_build_filename(self->state_dir, ".gitignore", NULL);
+
+        if (!clawt_write_file_atomic(ignore_path, GITIGNORE, -1, 0600, TRUE,
+                                     &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        if (!already) {
+            git = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_SILENCE |
+                                   G_SUBPROCESS_FLAGS_STDERR_PIPE, &error,
+                                   "git", "-C", self->state_dir, "init",
+                                   NULL);
+
+            if (git == NULL || !g_subprocess_wait_check(git, NULL, &error))
+                return clawt_ipc_error_new(
+                    request, CLAWT_ERROR_FAILED,
+                    error != NULL ? error->message : "git init failed");
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "path");
+        json_builder_add_string_value(builder, self->state_dir);
+        json_builder_set_member_name(builder, "created");
+        json_builder_add_boolean_value(builder, !already);
+        json_builder_set_member_name(builder, "gitignore");
+        json_builder_add_string_value(builder, ignore_path);
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));

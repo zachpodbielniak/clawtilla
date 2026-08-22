@@ -268,6 +268,27 @@ ClawtAgentConfig *clawt_config_add_agent(ClawtConfig  *self,
  */
 gboolean clawt_config_remove_agent(ClawtConfig *self, const gchar *id);
 
+/**
+ * clawt_config_adopt_libreclaw:
+ * @agent: the agent being imported
+ * @config_path: a standalone libreclaw config.yaml, which may not exist
+ *
+ * Takes what a standalone libreclaw instance said about itself.
+ *
+ * A libreclaw instance run by hand keeps its provider, model and
+ * identity files in its own config.yaml. An import that ignored them
+ * would quietly move the agent onto the fleet defaults -- the persona
+ * would arrive and the way it thinks would not.
+ *
+ * Only keys the agent has not already been given are taken, and only
+ * ones clawtilla owns: the rest of that file is regenerated on every
+ * start and anything else in it would be overwritten anyway.
+ *
+ * Returns: how many settings were adopted
+ */
+guint clawt_config_adopt_libreclaw(ClawtAgentConfig *agent,
+                                   const gchar      *config_path);
+
 /* ── One agent's configuration ───────────────────────────────────── */
 
 /**

@@ -524,3 +524,67 @@ clawt_is_valid_id(const gchar *id)
 
     return TRUE;
 }
+
+gboolean
+clawt_copy_tree(const gchar *source, const gchar *target, gboolean keep_git,
+                guint *copied, GError **error)
+{
+    g_autoptr(GDir) dir = NULL;
+    const gchar *name;
+
+    g_return_val_if_fail(source != NULL, FALSE);
+    g_return_val_if_fail(target != NULL, FALSE);
+
+    if (!clawt_ensure_dir(target, 0700, error))
+        return FALSE;
+
+    dir = g_dir_open(source, 0, error);
+
+    if (dir == NULL)
+        return FALSE;
+
+    while ((name = g_dir_read_name(dir)) != NULL) {
+        g_autofree gchar *from = g_build_filename(source, name, NULL);
+        g_autofree gchar *to = g_build_filename(target, name, NULL);
+        g_autoptr(GFile) from_file = NULL;
+        g_autoptr(GFile) to_file = NULL;
+
+        /*
+         * The usual reason to copy a directory into somebody else\'s
+         * tree is to take the contents and not the history, and a
+         * nested repository inside a workspace surprises people much
+         * later.
+         */
+        if (!keep_git && g_strcmp0(name, ".git") == 0)
+            continue;
+
+        if (g_file_test(from, G_FILE_TEST_IS_DIR) &&
+            !g_file_test(from, G_FILE_TEST_IS_SYMLINK)) {
+            if (!clawt_copy_tree(from, to, keep_git, copied, error))
+                return FALSE;
+
+            continue;
+        }
+
+        from_file = g_file_new_for_path(from);
+        to_file = g_file_new_for_path(to);
+
+        /*
+         * NOFOLLOW_SYMLINKS: a link pointing outside the source would
+         * otherwise pull in whatever it pointed at, which for a
+         * workspace holding a link to ~/.ssh is not a copy anybody
+         * asked for.
+         */
+        if (!g_file_copy(from_file, to_file,
+                         G_FILE_COPY_OVERWRITE |
+                         G_FILE_COPY_NOFOLLOW_SYMLINKS |
+                         G_FILE_COPY_ALL_METADATA,
+                         NULL, NULL, NULL, error))
+            return FALSE;
+
+        if (copied != NULL)
+            (*copied)++;
+    }
+
+    return TRUE;
+}

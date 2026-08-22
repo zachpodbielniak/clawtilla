@@ -348,6 +348,14 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
         clawt_agent_set_hop_depth(agent, clawt_mailbox_item_get_depth(item));
 
         /*
+         * And who this turn is for.  Delivery is the only moment that
+         * knows it: by the time the agent raises its typing indicator
+         * the message is inside libreclaw and the sender is not
+         * something the daemon can see any more.
+         */
+        clawt_agent_set_activity(agent, TRUE, from);
+
+        /*
          * Acknowledged on the daemon's behalf as soon as it reaches the
          * socket.  The lease exists to survive a crash mid-turn; holding
          * it until the agent replies would redeliver every message the

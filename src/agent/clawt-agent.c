@@ -24,6 +24,10 @@ struct _ClawtAgent {
     ClawtAgentConfig  *config;
     ClawtMailbox      *mailbox;
     ClawtMemoryStore  *memory;
+
+    /* What it is doing right now; see clawt_agent_set_activity(). */
+    gboolean           busy;
+    gchar             *activity_peer;
     ClawtAgentRuntime *runtime;
     ClawtComputer     *computer;
     ClawtLink         *link;
@@ -216,6 +220,7 @@ clawt_agent_set_memory(ClawtAgent *self, ClawtMemoryStore *memory)
     g_return_if_fail(CLAWT_IS_AGENT(self));
 
     g_clear_object(&self->memory);
+    g_clear_pointer(&self->activity_peer, g_free);
 
     if (memory != NULL)
         self->memory = g_object_ref(memory);
@@ -227,6 +232,40 @@ clawt_agent_get_memory(ClawtAgent *self)
     g_return_val_if_fail(CLAWT_IS_AGENT(self), NULL);
 
     return self->memory;
+}
+
+void
+clawt_agent_set_activity(ClawtAgent *self, gboolean busy, const gchar *peer)
+{
+    g_return_if_fail(CLAWT_IS_AGENT(self));
+
+    self->busy = busy;
+
+    /*
+     * The peer is kept when a turn ends rather than cleared, so a
+     * finished turn can still say who it was for -- "answered
+     * researcher" is worth more than "idle".
+     */
+    if (peer != NULL) {
+        g_free(self->activity_peer);
+        self->activity_peer = g_strdup(peer);
+    }
+}
+
+gboolean
+clawt_agent_get_busy(ClawtAgent *self)
+{
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), FALSE);
+
+    return self->busy;
+}
+
+const gchar *
+clawt_agent_get_activity_peer(ClawtAgent *self)
+{
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), NULL);
+
+    return self->activity_peer;
 }
 
 gboolean

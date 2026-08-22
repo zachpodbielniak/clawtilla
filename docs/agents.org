@@ -549,6 +549,74 @@ clawtilla agent new --ai "reads my notes and answers questions about them"
 That prints the proposed configuration and stops.  Add ~--commit~ to
 create it.  See [[file:clients.org][clients.org]].
 
+
+*** What each agent is doing
+
+The sidebar shows activity, not just state. A list where every row says
+"running" answers the wrong question; the one worth answering is whether
+anything is happening.
+
+While an agent is taking a turn its row spins and its description is
+replaced by what it is doing. When the turn is for another agent it says
+so -- =working — for researcher= -- because that is the part you cannot
+otherwise see: an agent busy for three minutes on a peer's question
+looks exactly like one busy on yours. A running agent with unread mail
+says how much.
+
+It comes from libreclaw's typing indicator, which is raised for the
+whole turn, and from the router, which is the only thing that knows who
+a delivered message came from -- by the time the agent starts thinking,
+the sender is inside libreclaw and no longer visible to the daemon. Both
+are recorded on the agent as well as published, so a client that
+connects mid-turn is not told the agent is idle.
+
+** Importing an agent you already run
+
+A libreclaw instance you run standalone is an agent clawtilla can adopt:
+
+#+begin_src bash
+clawtilla agent import scribe --from ~/libreclaw/scribe
+#+end_src
+
+It copies the workspace in recursively, *skipping =.git=* unless
+=--keep-git= -- the usual reason to copy a directory into somebody
+else's tree is to take the contents and not the history, and a nested
+repository inside a workspace surprises people much later. Symbolic
+links are copied as links rather than followed, so a link pointing at
+=~/.ssh= brings in a link and not your keys.
+
+It then reads the source's own libreclaw configuration file and
+takes what clawtilla
+also owns -- provider, model, effort, name. An import that ignored them
+would bring the persona across and leave the way it thinks behind.
+Nothing already set is overwritten.
+
+Without =--from= the same verb adopts a directory clawtilla already has;
+see =agent discover= above.
+
+** Keeping the state directory in git
+
+#+begin_src bash
+clawtilla agent git-init
+#+end_src
+
+Makes =~/.clawtilla= a repository and writes a =.gitignore= for it. That
+file is the whole reason this exists rather than telling you to run
+=git init=: the state directory holds credentials, link tokens, the
+agents' mailboxes and memory databases and the exchange directory, right
+beside the workspaces you actually want to version. A state directory in
+git without that ignore file is an accident waiting to be pushed.
+
+Ignored: =credentials/=, =secrets/=, every =token=, every =*.db= and its
+WAL, =sessions/=, =events/=, =exchange/=, sockets, and the rendered
+libreclaw configuration under each agent, which is regenerated on every
+start. Tracked:
+the org files, the loaders, =.mcp.json= -- the things you wrote.
+
+Safe to run twice: it writes the ignore file either way, so a repository
+you made by hand gets the protection too.
+
+
 * Agents on disk that are not in the config
 
 Directories accumulate. An agent removed from the config keeps its

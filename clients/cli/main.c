@@ -114,6 +114,10 @@ static const gchar *usage_text =
     "  clawtilla agent import researcher   # adopt one, keeping its state\n"
     "  clawtilla agent forget researcher   # move it aside, delete nothing\n"
     "\n"
+    "  # Bring in an agent you run standalone, and version the state dir\n"
+    "  clawtilla agent import scribe --from ~/libreclaw/scribe\n"
+    "  clawtilla agent git-init\n"
+    "\n"
     "  # What an agent has remembered\n"
     "  clawtilla memory list researcher\n"
     "  clawtilla memory search researcher \"deploy key\"\n"
@@ -988,6 +992,25 @@ cmd_agent(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
+    if (g_strcmp0(verb, "git-init") == 0) {
+        reply = call(client, "state.git_init", NULL);
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("%s is %s a git repository.\n",
+                member_or(json_node_get_object(reply), "path", "?"),
+                json_object_get_boolean_member(json_node_get_object(reply),
+                                               "created")
+                    ? "now" : "already");
+        g_print("Wrote %s, which keeps credentials, tokens, databases and\n"
+                "the exchange directory out of it. Read it before your "
+                "first commit.\n",
+                member_or(json_node_get_object(reply), "gitignore", "?"));
+
+        return EXIT_SUCCESS;
+    }
+
     if (g_strcmp0(verb, "discover") == 0) {
         JsonArray *found;
         guint i;
@@ -1033,10 +1056,50 @@ cmd_agent(int argc, char *argv[])
     }
 
     if (g_strcmp0(verb, "import") == 0) {
+        const gchar *from = NULL;
+        gboolean keep_git = FALSE;
+        gint arg;
+
         if (target == NULL) {
-            g_printerr("Usage: clawtilla agent import <id>\n");
-            g_printerr("  `clawtilla agent discover` lists what is there\n");
+            g_printerr("Usage: clawtilla agent import <id> "
+                       "[--from DIR] [--keep-git]\n");
+            g_printerr("  --from   copy a standalone libreclaw agent in\n");
+            g_printerr("  `clawtilla agent discover` lists what is already "
+                       "on disk\n");
             return EXIT_FAILURE;
+        }
+
+        for (arg = 4; arg < argc; arg++) {
+            if (g_strcmp0(argv[arg], "--from") == 0 && arg + 1 < argc)
+                from = argv[++arg];
+            else if (g_strcmp0(argv[arg], "--keep-git") == 0)
+                keep_git = TRUE;
+        }
+
+        /*
+         * Two different imports.  With --from this copies somebody
+         * else's libreclaw workspace in; without it, it adopts a
+         * directory clawtilla already has, which needs no copying at
+         * all.
+         */
+        if (from != NULL) {
+            reply = call(client, "agent.import",
+                         build_payload("id", target, "from", from,
+                                       "keep_git", keep_git ? "true" : "false",
+                                       NULL));
+
+            if (reply == NULL)
+                return EXIT_FAILURE;
+
+            g_print("Imported %s from %s: %" G_GINT64_FORMAT " files into "
+                    "%s\n", target, from,
+                    json_object_get_int_member(json_node_get_object(reply),
+                                               "files"),
+                    member_or(json_node_get_object(reply), "workspace", "?"));
+            g_print("Check it over with `clawtilla agent show %s` before "
+                    "starting it.\n", target);
+
+            return EXIT_SUCCESS;
         }
 
         /*

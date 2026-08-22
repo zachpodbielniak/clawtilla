@@ -80,6 +80,33 @@ gboolean clawt_write_file_atomic(const gchar  *path,
                                  GError      **error);
 
 /**
+ * clawt_copy_tree:
+ * @source: the directory to copy
+ * @target: where to put it
+ * @keep_git: whether to copy `.git` directories too
+ * @copied: (out) (optional): how many files were written
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Copies a directory tree, recursively.
+ *
+ * `.git` is skipped unless @keep_git, because the usual reason to copy
+ * a directory into somebody else's tree is to take the contents and not
+ * the history -- and a nested repository inside a workspace is a thing
+ * that surprises people much later.
+ *
+ * Symbolic links are copied as links rather than followed: a link
+ * pointing outside the source would otherwise pull in whatever it
+ * pointed at.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean clawt_copy_tree(const gchar  *source,
+                         const gchar  *target,
+                         gboolean      keep_git,
+                         guint        *copied,
+                         GError      **error);
+
+/**
  * clawt_generate_id:
  * @prefix: (nullable): a short prefix, or %NULL
  *

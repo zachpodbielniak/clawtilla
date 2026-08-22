@@ -370,10 +370,49 @@ agent_row(JsonObject *agent)
     gint64 depth = json_object_has_member(agent, "mailbox_depth")
                    ? json_object_get_int_member(agent, "mailbox_depth") : 0;
 
-    set_row_text(row,
-                 clawt_json_string(agent, "name",
-                                   clawt_json_string(agent, "id", "?")),
-                 clawt_json_string(agent, "description", ""));
+    /*
+     * What it is doing, in place of its description while it is doing
+     * it.
+     *
+     * A list of agents that all say "running" answers the wrong
+     * question. The one worth answering is whether anything is
+     * happening -- and, when it is, who it is happening for: an agent
+     * busy for three minutes on a peer's question looks exactly like
+     * one busy on yours.
+     */
+    {
+        gboolean busy = json_object_has_member(agent, "busy") &&
+                        json_object_get_boolean_member(agent, "busy");
+        const gchar *peer = clawt_json_string(agent, "peer", NULL);
+        g_autofree gchar *activity = NULL;
+
+        if (busy && peer != NULL && g_strcmp0(peer, "user") != 0)
+            activity = g_strdup_printf("working â for %s", peer);
+        else if (busy)
+            activity = g_strdup("workingâ¦");
+        else if (g_strcmp0(state, "running") == 0 && depth > 0)
+            activity = g_strdup_printf(
+                "%" G_GINT64_FORMAT " waiting to be read", depth);
+
+        set_row_text(row,
+                     clawt_json_string(agent, "name",
+                                       clawt_json_string(agent, "id", "?")),
+                     activity != NULL
+                         ? activity
+                         : clawt_json_string(agent, "description", ""));
+
+        /*
+         * A spinner beside the dot, because a colour that means "busy"
+         * is a colour somebody has to learn and movement is not.
+         */
+        if (busy) {
+            GtkWidget *spinner = gtk_spinner_new();
+
+            gtk_spinner_set_spinning(GTK_SPINNER(spinner), TRUE);
+            gtk_widget_set_tooltip_text(spinner, "taking a turn");
+            gtk_box_append(GTK_BOX(box), spinner);
+        }
+    }
 
     adw_action_row_add_prefix(ADW_ACTION_ROW(row), state_dot(state));
 
@@ -4290,12 +4329,32 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
 
     if (g_strcmp0(kind, "agent.typing") == 0) {
         const gchar *typing = clawt_event_get_detail(event, "typing");
+        const gchar *peer = clawt_event_get_detail(event, "peer");
 
         if (g_strcmp0(clawt_event_get_subject(event),
-                      self->selected_agent) == 0)
-            set_activity(self,
-                         g_strcmp0(typing, "true") == 0 ? "thinking" : NULL);
+                      self->selected_agent) == 0) {
+            g_autofree gchar *what = NULL;
 
+            /*
+             * Say who it is for when it is not for you. The activity
+             * line under a chat that reads "thinking" while the agent
+             * is actually answering a peer is the same lie the sidebar
+             * used to tell.
+             */
+            if (g_strcmp0(typing, "true") == 0 && peer != NULL &&
+                g_strcmp0(peer, "user") != 0)
+                what = g_strdup_printf("working for %s", peer);
+            else if (g_strcmp0(typing, "true") == 0)
+                what = g_strdup("thinking");
+
+            set_activity(self, what);
+        }
+
+        /*
+         * And the sidebar, which is where somebody looks to see whether
+         * anything anywhere is happening.
+         */
+        refresh_agents(self);
         return;
     }
 

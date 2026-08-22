@@ -110,6 +110,41 @@ void              clawt_agent_set_memory(ClawtAgent       *self,
 ClawtMemoryStore *clawt_agent_get_memory(ClawtAgent *self);
 
 /**
+ * clawt_agent_set_activity:
+ * @self: a #ClawtAgent
+ * @busy: whether a turn is in progress
+ * @peer: (nullable): who the turn is for, or %NULL for the operator
+ *
+ * Records what the agent is doing at this moment.
+ *
+ * libreclaw raises its typing indicator for the whole turn, which is
+ * what @busy follows. @peer is who the message being answered came
+ * from, which is the part a person cannot otherwise see: an agent can
+ * be busy for minutes on something another agent asked it, and from
+ * outside that is indistinguishable from being busy for you.
+ */
+void              clawt_agent_set_activity(ClawtAgent  *self,
+                                           gboolean     busy,
+                                           const gchar *peer);
+
+/**
+ * clawt_agent_get_busy:
+ * @self: a #ClawtAgent
+ *
+ * Returns: %TRUE while a turn is in progress
+ */
+gboolean          clawt_agent_get_busy(ClawtAgent *self);
+
+/**
+ * clawt_agent_get_activity_peer:
+ * @self: a #ClawtAgent
+ *
+ * Returns: (transfer none) (nullable): who the current or last turn was
+ *   for, or %NULL when it was the operator
+ */
+const gchar      *clawt_agent_get_activity_peer(ClawtAgent *self);
+
+/**
  * clawt_agent_is_chief_of_staff:
  * @self: a #ClawtAgent
  *
