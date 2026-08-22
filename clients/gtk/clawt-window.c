@@ -13,6 +13,9 @@
 
 #include "clawt-gtk.h"
 
+#include <glib/gstdio.h>
+#include <unistd.h>
+
 #include <string.h>
 
 /*
@@ -53,6 +56,13 @@ static JsonObject  *chooser_provider(ModelChooser *chooser);
 static const gchar *chooser_provider_id(ModelChooser *chooser);
 static gchar       *chooser_model(ModelChooser *chooser);
 static void         refresh_flow(ClawtWindow *self);
+static const gchar *editor_command(void);
+static void         on_send(GtkWidget *widget, gpointer user_data);
+static void         on_new_agent(GtkButton *button,
+                                 gpointer   user_data);
+static void         open_path_in_editor(ClawtWindow *self,
+                                        const gchar *path,
+                                        const gchar *name);
 static void         model_chooser_build(ModelChooser *chooser,
                                         ClawtWindow  *window,
                                         GtkWidget    *group,
@@ -105,7 +115,8 @@ struct _ClawtWindow {
     /* Chat */
     GtkBox            *transcript;
     GtkScrolledWindow *transcript_scroll;
-    GtkEntry          *entry;
+    GtkTextView       *entry;
+    GtkWidget         *placeholder;
     GtkLabel          *streaming;
 
     /* Inspector */
@@ -178,6 +189,26 @@ struct _ClawtWindow {
      * window opened was drawn twice.
      */
     GHashTable        *shown;
+
+    /*
+     * Files and images queued to go with the next message, and the
+     * strip that shows them. Held client-side until send: an attachment
+     * on a message that is never sent should not leave anything in the
+     * agent's exchange directory.
+     */
+    GPtrArray         *pending;      /* Attachment* */
+    GtkWidget         *attachments;  /* the strip above the entry */
+    /*
+     * The command list is a revealer above the entry, not a popover.
+     *
+     * A popover has to be parented to a widget, which makes it that
+     * widget's child; parented to the GtkEntry it belongs to, the
+     * window stopped mapping entirely -- it ran, its main loop turned,
+     * and nothing ever appeared. A revealer is an ordinary child of the
+     * page's box and cannot do that.
+     */
+    GtkWidget         *command_revealer;
+    GtkListBox        *command_list;
     gboolean           following;
 };
 
@@ -626,6 +657,855 @@ already_shown(ClawtWindow *self, const gchar *id)
     return FALSE;
 }
 
+/*
+ * The message being composed.
+ *
+ * A GtkTextView rather than a GtkEntry, because Ctrl+G hands the box
+ * whatever came back from $EDITOR and that is usually several
+ * paragraphs -- an entry is single-line and draws every newline as a
+ * control picture, so the one feature that exists to write something
+ * long made it unreadable.
+ */
+static gchar *
+entry_text(ClawtWindow *self)
+{
+    GtkTextBuffer *buffer = gtk_text_view_get_buffer(self->entry);
+    GtkTextIter start;
+    GtkTextIter end;
+
+    gtk_text_buffer_get_bounds(buffer, &start, &end);
+
+    return gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
+}
+
+static void
+entry_set_text(ClawtWindow *self, const gchar *text)
+{
+    gtk_text_buffer_set_text(gtk_text_view_get_buffer(self->entry),
+                             text != NULL ? text : "", -1);
+}
+
+static void
+entry_focus_end(ClawtWindow *self)
+{
+    GtkTextBuffer *buffer = gtk_text_view_get_buffer(self->entry);
+    GtkTextIter end;
+
+    gtk_text_buffer_get_end_iter(buffer, &end);
+    gtk_text_buffer_place_cursor(buffer, &end);
+    gtk_widget_grab_focus(GTK_WIDGET(self->entry));
+}
+
+/* ── Attachments ─────────────────────────────────────────────────── */
+
+/*
+ * One file queued to go with the next message.
+ *
+ * The bytes are held here rather than written straight into the agent's
+ * exchange directory, because a message that is composed and then
+ * abandoned should not leave anything behind for the agent to find.
+ */
+typedef struct {
+    gchar  *name;
+    GBytes *bytes;
+} Attachment;
+
+static void
+attachment_free(Attachment *attachment)
+{
+    if (attachment == NULL)
+        return;
+
+    g_free(attachment->name);
+    g_clear_pointer(&attachment->bytes, g_bytes_unref);
+    g_free(attachment);
+}
+
+static void refresh_attachment_strip(ClawtWindow *self);
+
+static void
+on_drop_attachment(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    Attachment *attachment = g_object_get_data(G_OBJECT(button), "attachment");
+
+    g_ptr_array_remove(self->pending, attachment);
+    refresh_attachment_strip(self);
+}
+
+/* A row of chips above the entry, one per queued file. */
+static void
+refresh_attachment_strip(ClawtWindow *self)
+{
+    GtkWidget *child;
+    guint i;
+
+    while ((child = gtk_widget_get_first_child(self->attachments)) != NULL)
+        gtk_box_remove(GTK_BOX(self->attachments), child);
+
+    gtk_widget_set_visible(self->attachments, self->pending->len > 0);
+
+    for (i = 0; i < self->pending->len; i++) {
+        Attachment *attachment = g_ptr_array_index(self->pending, i);
+        GtkWidget *chip = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+        GtkWidget *label;
+        GtkWidget *drop;
+        g_autofree gchar *text = g_strdup_printf(
+            "%s (%" G_GSIZE_FORMAT " KB)", attachment->name,
+            (g_bytes_get_size(attachment->bytes) + 1023) / 1024);
+
+        label = gtk_label_new(text);
+        gtk_widget_add_css_class(label, "caption");
+        gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_MIDDLE);
+        gtk_label_set_max_width_chars(GTK_LABEL(label), 28);
+
+        drop = gtk_button_new_from_icon_name("window-close-symbolic");
+        gtk_widget_add_css_class(drop, "flat");
+        gtk_widget_add_css_class(drop, "circular");
+        gtk_widget_set_tooltip_text(drop, "Do not send this one");
+        g_object_set_data(G_OBJECT(drop), "attachment", attachment);
+        g_signal_connect(drop, "clicked", G_CALLBACK(on_drop_attachment),
+                         self);
+
+        gtk_widget_add_css_class(chip, "card");
+        gtk_box_append(GTK_BOX(chip), label);
+        gtk_box_append(GTK_BOX(chip), drop);
+        gtk_box_append(GTK_BOX(self->attachments), chip);
+    }
+}
+
+static void
+queue_attachment(ClawtWindow *self, const gchar *name, GBytes *bytes)
+{
+    Attachment *attachment;
+
+    if (bytes == NULL || g_bytes_get_size(bytes) == 0)
+        return;
+
+    /*
+     * Bounded, because this crosses the IPC socket base64-encoded and a
+     * client that queues a 400 MB video would block the daemon's main
+     * context for as long as it takes to decode.
+     */
+    if (g_bytes_get_size(bytes) > 32u * 1024u * 1024u) {
+        clawt_window_toast(self, "that file is over 32 MB; put it in a "
+                                 "shared folder instead");
+        return;
+    }
+
+    attachment = g_new0(Attachment, 1);
+    attachment->name = g_strdup(name);
+    attachment->bytes = g_bytes_ref(bytes);
+
+    g_ptr_array_add(self->pending, attachment);
+    refresh_attachment_strip(self);
+}
+
+static void
+on_texture_pasted(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autoptr(GdkTexture) texture = NULL;
+    g_autoptr(GBytes) png = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *name = NULL;
+
+    texture = gdk_clipboard_read_texture_finish(GDK_CLIPBOARD(source), result,
+                                                &error);
+
+    if (texture == NULL) {
+        if (error != NULL &&
+            !g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+            clawt_window_toast(self, error->message);
+
+        return;
+    }
+
+    /*
+     * PNG, because a pasted screenshot is a texture with no file behind
+     * it and every model that reads images reads PNG.
+     */
+    png = gdk_texture_save_to_png_bytes(texture);
+
+    name = g_strdup_printf("pasted-%" G_GINT64_FORMAT ".png",
+                           g_get_real_time() / G_USEC_PER_SEC);
+
+    queue_attachment(self, name, png);
+    g_object_unref(self);
+}
+
+/*
+ * Whether the clipboard has an image, and if so take it.
+ *
+ * Returns %TRUE when the paste was handled here, so the entry does not
+ * also paste whatever text representation the source offered -- an
+ * image copied from a browser usually carries a URL alongside it, and
+ * getting both is worse than getting either.
+ */
+static gboolean
+paste_image(ClawtWindow *self)
+{
+    GdkClipboard *clipboard = gtk_widget_get_clipboard(GTK_WIDGET(self));
+    GdkContentFormats *formats = gdk_clipboard_get_formats(clipboard);
+
+    if (!gdk_content_formats_contain_gtype(formats, GDK_TYPE_TEXTURE))
+        return FALSE;
+
+    gdk_clipboard_read_texture_async(clipboard, NULL, on_texture_pasted,
+                                     g_object_ref(self));
+    return TRUE;
+}
+
+static void
+on_files_chosen(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autoptr(GListModel) files = NULL;
+    g_autoptr(GError) error = NULL;
+    guint i;
+
+    files = gtk_file_dialog_open_multiple_finish(GTK_FILE_DIALOG(source),
+                                                 result, &error);
+
+    if (files == NULL) {
+        /* Dismissing the dialog is not a failure worth a toast. */
+        if (error != NULL &&
+            !g_error_matches(error, GTK_DIALOG_ERROR, GTK_DIALOG_ERROR_DISMISSED))
+            clawt_window_toast(self, error->message);
+
+        g_object_unref(self);
+        return;
+    }
+
+    for (i = 0; i < g_list_model_get_n_items(files); i++) {
+        g_autoptr(GFile) file = g_list_model_get_item(files, i);
+        g_autofree gchar *name = g_file_get_basename(file);
+        g_autofree gchar *contents = NULL;
+        g_autoptr(GError) read_error = NULL;
+        gsize length = 0;
+
+        if (!g_file_load_contents(file, NULL, &contents, &length, NULL,
+                                  &read_error)) {
+            clawt_window_toast(self, read_error->message);
+            continue;
+        }
+
+        {
+            g_autoptr(GBytes) bytes = g_bytes_new(contents, length);
+
+            queue_attachment(self, name, bytes);
+        }
+    }
+
+    g_object_unref(self);
+}
+
+static void
+on_attach_clicked(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autoptr(GtkFileDialog) dialog = gtk_file_dialog_new();
+
+    (void)button;
+
+    gtk_file_dialog_set_title(dialog, "Send with this message");
+    gtk_file_dialog_open_multiple(dialog, GTK_WINDOW(self), NULL,
+                                  on_files_chosen, g_object_ref(self));
+}
+
+/*
+ * Hands the queued files to the daemon and describes them in the body.
+ *
+ * The daemon writes them into the agent's exchange directory and says
+ * what path the *agent* should use, which is not the host path when the
+ * agent lives in a container. Naming them in the message is what makes
+ * them reachable: an agent reads files with its own tools, and one it
+ * has not been told about is one it will not open.
+ *
+ * Returns: (transfer full): the body to actually send
+ */
+static gchar *
+body_with_attachments(ClawtWindow *self, const gchar *body)
+{
+    g_autoptr(GString) out = NULL;
+    guint i;
+
+    if (self->pending->len == 0)
+        return g_strdup(body);
+
+    out = g_string_new(body);
+
+    if (out->len > 0)
+        g_string_append(out, "\n\n");
+
+    g_string_append(out, "[clawtilla] Files sent with this message:\n");
+
+    for (i = 0; i < self->pending->len; i++) {
+        Attachment *attachment = g_ptr_array_index(self->pending, i);
+        g_autoptr(JsonNode) reply = NULL;
+        g_autofree gchar *encoded = NULL;
+        gsize length = 0;
+        const guchar *data = g_bytes_get_data(attachment->bytes, &length);
+
+        encoded = g_base64_encode(data, length);
+
+        reply = clawt_window_request(
+            self, "attachment.put",
+            clawt_build_payload("agent", self->selected_agent,
+                                "name", attachment->name,
+                                "data", encoded, NULL));
+
+        if (reply == NULL) {
+            g_string_append_printf(out, "- %s (could not be saved)\n",
+                                   attachment->name);
+            continue;
+        }
+
+        g_string_append_printf(out, "- %s\n",
+                               clawt_json_string(clawt_payload_of(reply),
+                                                 "path", "?"));
+    }
+
+    g_ptr_array_set_size(self->pending, 0);
+    refresh_attachment_strip(self);
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+/* ── Composing in $EDITOR ────────────────────────────────────────── */
+
+/*
+ * Ctrl+G: hand what is typed to $EDITOR, take back whatever comes out.
+ *
+ * A one-line GtkEntry is a bad place to write six paragraphs, and the
+ * editor is where the person already knows how to write. The file is
+ * seeded with the current text so this extends a draft rather than
+ * replacing it.
+ */
+static void
+on_compose_finished(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autofree gchar *path = g_object_get_data(G_OBJECT(source), "path") != NULL
+        ? g_strdup(g_object_get_data(G_OBJECT(source), "path")) : NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *written = NULL;
+
+    if (!g_subprocess_wait_check_finish(G_SUBPROCESS(source), result,
+                                        &error)) {
+        clawt_window_toast(self, error->message);
+        g_object_unref(self);
+        return;
+    }
+
+    if (path != NULL && g_file_get_contents(path, &written, NULL, NULL)) {
+        /*
+         * Trailing newline stripped: every editor adds one, and it would
+         * otherwise arrive as an empty line at the end of every message
+         * composed this way.
+         */
+        g_strchomp(written);
+        entry_set_text(self, written);
+    }
+
+    if (path != NULL)
+        g_unlink(path);
+
+    entry_focus_end(self);
+    g_object_unref(self);
+}
+
+static void
+compose_in_editor(ClawtWindow *self)
+{
+    g_autoptr(GPtrArray) argv = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(GSubprocess) process = NULL;
+    g_autoptr(GError) error = NULL;
+    g_auto(GStrv) parts = NULL;
+    g_autofree gchar *path = NULL;
+    const gchar *editor = editor_command();
+    g_autofree gchar *current = NULL;
+    gint fd;
+    gint i;
+
+    if (editor == NULL) {
+        clawt_window_toast(self, "no editor found; set $EDITOR or $VISUAL");
+        return;
+    }
+
+    /*
+     * .md, so an editor that picks a mode by extension gives you one
+     * suited to prose rather than to nothing at all.
+     */
+    fd = g_file_open_tmp("clawtilla-message-XXXXXX.md", &path, &error);
+
+    if (fd < 0) {
+        clawt_window_toast(self, error->message);
+        return;
+    }
+
+    close(fd);
+
+    current = entry_text(self);
+
+    if (!g_file_set_contents(path, current != NULL ? current : "", -1,
+                             &error)) {
+        clawt_window_toast(self, error->message);
+        g_unlink(path);
+        return;
+    }
+
+    if (!g_shell_parse_argv(editor, NULL, &parts, &error)) {
+        clawt_window_toast(self, error->message);
+        g_unlink(path);
+        return;
+    }
+
+    for (i = 0; parts[i] != NULL; i++)
+        g_ptr_array_add(argv, g_strdup(parts[i]));
+
+    g_ptr_array_add(argv, g_strdup(path));
+    g_ptr_array_add(argv, NULL);
+
+    process = g_subprocess_newv((const gchar *const *)argv->pdata,
+                                G_SUBPROCESS_FLAGS_NONE, &error);
+
+    if (process == NULL) {
+        clawt_window_toast(self, error->message);
+        g_unlink(path);
+        return;
+    }
+
+    g_object_set_data_full(G_OBJECT(process), "path", g_steal_pointer(&path),
+                           g_free);
+    g_subprocess_wait_check_async(process, NULL, on_compose_finished,
+                                  g_object_ref(self));
+}
+
+
+/* ── Slash commands ──────────────────────────────────────────────── */
+
+/*
+ * What "/" offers.
+ *
+ * A chat entry is the one place a person always is, so the things they
+ * do most often should be reachable without going and finding a tab.
+ * Everything here is a shortcut to something that already exists --
+ * none of it is a second way to do anything.
+ */
+typedef struct {
+    const gchar *name;
+    const gchar *argument;   /* (nullable) what to type after it */
+    const gchar *summary;
+} SlashCommand;
+
+static const SlashCommand slash_commands[] = {
+    { "/help",    NULL,      "list these commands" },
+    { "/start",   NULL,      "start this agent" },
+    { "/stop",    NULL,      "stop this agent" },
+    { "/restart", NULL,      "restart this agent" },
+    { "/attach",  NULL,      "pick files to send with the next message" },
+    { "/compose", NULL,      "write the message in $EDITOR (same as Ctrl+G)" },
+    { "/edit",    "[file]",  "open a workspace file in $EDITOR" },
+    { "/files",   NULL,      "list this agent's workspace files" },
+    { "/memory",  "<query>", "search what this agent has remembered" },
+    { "/agents",  NULL,      "who is in the fleet" },
+    { "/flow",    NULL,      "go to the conversations between agents" },
+    { "/tasks",   NULL,      "go to the task board" },
+    { "/clear",   NULL,      "clear this transcript on screen only" },
+    { "/new",     NULL,      "create an agent" }
+};
+
+/* A reply that came from the client, not from the agent. */
+static void
+append_local(ClawtWindow *self, const gchar *text)
+{
+    append_message(self, "clawtilla", text, FALSE);
+    queue_scroll(self);
+}
+
+static void
+show_command_help(ClawtWindow *self)
+{
+    g_autoptr(GString) out = g_string_new(NULL);
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(slash_commands); i++) {
+        g_string_append_printf(out, "%s%s%s\n    %s\n",
+                               slash_commands[i].name,
+                               slash_commands[i].argument != NULL ? " " : "",
+                               slash_commands[i].argument != NULL
+                                   ? slash_commands[i].argument : "",
+                               slash_commands[i].summary);
+    }
+
+    g_string_append(out,
+                    "\nCtrl+G writes the message in $EDITOR. Paste an image "
+                    "or use /attach to send files.");
+
+    append_local(self, out->str);
+}
+
+/*
+ * Runs a slash command.
+ *
+ * Returns %TRUE when the text was a command and has been dealt with, so
+ * the caller does not also send it to the agent -- a mistyped command
+ * reaching the model as a message is how a person learns to distrust
+ * the feature.
+ */
+static gboolean
+run_slash_command(ClawtWindow *self, const gchar *text)
+{
+    g_auto(GStrv) parts = NULL;
+    const gchar *name;
+    const gchar *rest;
+    gsize i;
+
+    if (text == NULL || text[0] != '/')
+        return FALSE;
+
+    parts = g_strsplit(text, " ", 2);
+    name = parts[0];
+    rest = (parts[1] != NULL) ? g_strstrip(parts[1]) : NULL;
+
+    for (i = 0; i < G_N_ELEMENTS(slash_commands); i++) {
+        if (g_strcmp0(slash_commands[i].name, name) == 0)
+            break;
+    }
+
+    if (i == G_N_ELEMENTS(slash_commands)) {
+        g_autofree gchar *message = g_strdup_printf(
+            "There is no %s. Type /help for the list.", name);
+
+        append_local(self, message);
+        return TRUE;
+    }
+
+    if (g_strcmp0(name, "/help") == 0) {
+        show_command_help(self);
+        return TRUE;
+    }
+
+    if (g_strcmp0(name, "/clear") == 0) {
+        clear_box(self->transcript);
+        g_hash_table_remove_all(self->shown);
+        append_local(self, "Cleared on screen. The transcript on disk is "
+                           "untouched -- reopen this agent to see it again.");
+        return TRUE;
+    }
+
+    if (g_strcmp0(name, "/compose") == 0) {
+        entry_set_text(self, "");
+        compose_in_editor(self);
+        return TRUE;
+    }
+
+    if (g_strcmp0(name, "/attach") == 0) {
+        on_attach_clicked(NULL, self);
+        return TRUE;
+    }
+
+    if (g_strcmp0(name, "/flow") == 0) {
+        adw_view_stack_set_visible_child_name(self->pages, "flow");
+        return TRUE;
+    }
+
+    if (g_strcmp0(name, "/tasks") == 0) {
+        adw_view_stack_set_visible_child_name(self->pages, "tasks");
+        return TRUE;
+    }
+
+    if (g_strcmp0(name, "/new") == 0) {
+        on_new_agent(NULL, self);
+        return TRUE;
+    }
+
+    if (self->selected_agent == NULL) {
+        append_local(self, "Pick an agent first.");
+        return TRUE;
+    }
+
+    if (g_strcmp0(name, "/start") == 0 || g_strcmp0(name, "/stop") == 0 ||
+        g_strcmp0(name, "/restart") == 0) {
+        g_autofree gchar *verb = g_strdup_printf("agent.%s", name + 1);
+        g_autoptr(JsonNode) reply = NULL;
+
+        reply = clawt_window_request(
+            self, verb,
+            clawt_build_payload("agent", self->selected_agent, NULL));
+
+        if (reply != NULL) {
+            g_autofree gchar *message = g_strdup_printf(
+                "%s: %s requested.", self->selected_agent, name + 1);
+
+            append_local(self, message);
+        }
+
+        refresh_agents(self);
+        return TRUE;
+    }
+
+    if (g_strcmp0(name, "/agents") == 0) {
+        g_autoptr(JsonNode) reply = clawt_window_request(self, "agent.list",
+                                                          NULL);
+        g_autoptr(GString) out = g_string_new(NULL);
+        JsonArray *agents;
+        guint j;
+
+        if (reply == NULL)
+            return TRUE;
+
+        agents = json_object_get_array_member(clawt_payload_of(reply),
+                                              "agents");
+
+        for (j = 0; j < json_array_get_length(agents); j++) {
+            JsonObject *one = json_array_get_object_element(agents, j);
+
+            g_string_append_printf(out, "%-20s %-10s %s\n",
+                                   clawt_json_string(one, "id", "?"),
+                                   clawt_json_string(one, "state", "?"),
+                                   clawt_json_string(one, "description", ""));
+        }
+
+        append_local(self, out->str);
+        return TRUE;
+    }
+
+    if (g_strcmp0(name, "/files") == 0 || g_strcmp0(name, "/edit") == 0) {
+        g_autoptr(JsonNode) reply = NULL;
+        JsonArray *files;
+        guint j;
+
+        reply = clawt_window_request(
+            self, "agent.files",
+            clawt_build_payload("agent", self->selected_agent, NULL));
+
+        if (reply == NULL)
+            return TRUE;
+
+        files = json_object_get_array_member(clawt_payload_of(reply),
+                                             "files");
+
+        if (g_strcmp0(name, "/files") == 0 || rest == NULL) {
+            g_autoptr(GString) out = g_string_new(NULL);
+
+            for (j = 0; j < json_array_get_length(files); j++) {
+                JsonObject *file = json_array_get_object_element(files, j);
+
+                g_string_append_printf(out, "%-18s %s\n",
+                                       clawt_json_string(file, "name", "?"),
+                                       clawt_json_string(file, "title", ""));
+            }
+
+            g_string_append(out, "\n/edit <name> opens one in $EDITOR.");
+            append_local(self, out->str);
+            return TRUE;
+        }
+
+        for (j = 0; j < json_array_get_length(files); j++) {
+            JsonObject *file = json_array_get_object_element(files, j);
+
+            if (g_strcmp0(clawt_json_string(file, "name", ""), rest) != 0)
+                continue;
+
+            /*
+             * The daemon's path, never one built here: it owns where a
+             * workspace is, and a client that constructs the path is a
+             * client that can be pointed at somebody else's.
+             */
+            open_path_in_editor(self, clawt_json_string(file, "path", ""),
+                                rest);
+            return TRUE;
+        }
+
+        {
+            g_autofree gchar *message = g_strdup_printf(
+                "%s has no file called '%s'. /files lists them.",
+                self->selected_agent, rest);
+
+            append_local(self, message);
+        }
+
+        return TRUE;
+    }
+
+    if (g_strcmp0(name, "/memory") == 0) {
+        g_autoptr(JsonNode) reply = NULL;
+        g_autoptr(GString) out = g_string_new(NULL);
+        JsonArray *memories;
+        guint j;
+
+        reply = clawt_window_request(
+            self, rest != NULL ? "memory.search" : "memory.list",
+            rest != NULL
+                ? clawt_build_payload("agent", self->selected_agent,
+                                      "query", rest, NULL)
+                : clawt_build_payload("agent", self->selected_agent, NULL));
+
+        if (reply == NULL)
+            return TRUE;
+
+        memories = json_object_get_array_member(clawt_payload_of(reply),
+                                                "memories");
+
+        if (json_array_get_length(memories) == 0) {
+            append_local(self, "Nothing remembered matches that.");
+            return TRUE;
+        }
+
+        for (j = 0; j < json_array_get_length(memories); j++) {
+            JsonObject *memory = json_array_get_object_element(memories, j);
+            const gchar *summary = clawt_json_string(memory, "summary", NULL);
+
+            g_string_append_printf(out, "%s [%s]\n  %s\n",
+                                   clawt_json_string(memory, "id", "?"),
+                                   clawt_json_string(memory, "category", "?"),
+                                   summary != NULL
+                                       ? summary
+                                       : clawt_json_string(memory, "content",
+                                                           ""));
+        }
+
+        append_local(self, out->str);
+        return TRUE;
+    }
+
+    return TRUE;
+}
+
+static void
+on_command_row_selected(GtkListBox *list, GtkListBoxRow *row,
+                        gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *name;
+    g_autofree gchar *filled = NULL;
+
+    (void)list;
+
+    if (row == NULL)
+        return;
+
+    name = g_object_get_data(G_OBJECT(row), "command");
+
+    if (name == NULL)
+        return;
+
+    /*
+     * A trailing space for a command that takes an argument, so the
+     * next keystroke is the argument rather than a correction.
+     */
+    filled = g_strconcat(name,
+                         g_object_get_data(G_OBJECT(row), "takes-argument")
+                             != NULL ? " " : "", NULL);
+
+    gtk_revealer_set_reveal_child(GTK_REVEALER(self->command_revealer),
+                                  FALSE);
+    entry_set_text(self, filled);
+    entry_focus_end(self);
+}
+
+/*
+ * Shows the matching commands as the person types "/".
+ *
+ * Discoverability, not completion: the list is there to be read, and
+ * clicking one fills it in. Anybody who already knows the command just
+ * keeps typing and never looks at it.
+ */
+static void
+on_entry_changed(GtkTextBuffer *buffer, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autofree gchar *text = entry_text(self);
+    guint matches = 0;
+    gsize i;
+
+    (void)buffer;
+
+    /* GtkTextView has no placeholder of its own. */
+    gtk_widget_set_visible(self->placeholder,
+                           text == NULL || text[0] == '\0');
+
+    if (text == NULL || text[0] != '/' || strchr(text, ' ') != NULL) {
+        gtk_revealer_set_reveal_child(GTK_REVEALER(self->command_revealer),
+                                      FALSE);
+        return;
+    }
+
+    clear_list(self->command_list);
+
+    for (i = 0; i < G_N_ELEMENTS(slash_commands); i++) {
+        GtkWidget *row;
+        g_autofree gchar *label = NULL;
+
+        if (!g_str_has_prefix(slash_commands[i].name, text))
+            continue;
+
+        label = g_strdup_printf("%s%s%s", slash_commands[i].name,
+                                slash_commands[i].argument != NULL ? " " : "",
+                                slash_commands[i].argument != NULL
+                                    ? slash_commands[i].argument : "");
+
+        row = adw_action_row_new();
+        set_row_text(row, label, slash_commands[i].summary);
+        g_object_set_data_full(G_OBJECT(row), "command",
+                               g_strdup(slash_commands[i].name), g_free);
+
+        if (slash_commands[i].argument != NULL)
+            g_object_set_data(G_OBJECT(row), "takes-argument",
+                              GINT_TO_POINTER(1));
+
+        gtk_list_box_append(self->command_list, row);
+        matches++;
+    }
+
+    gtk_revealer_set_reveal_child(GTK_REVEALER(self->command_revealer),
+                                  matches > 0);
+}
+
+static gboolean
+on_entry_key(GtkEventControllerKey *controller, guint keyval, guint keycode,
+             GdkModifierType state, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    (void)controller;
+    (void)keycode;
+
+    /*
+     * Enter sends; Shift+Enter is a newline.  A multi-line box needs
+     * both, and a chat window where Enter inserts a newline is a chat
+     * window nobody can send a message from.
+     */
+    if (keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter) {
+        if ((state & GDK_SHIFT_MASK) != 0)
+            return GDK_EVENT_PROPAGATE;
+
+        on_send(NULL, self);
+        return GDK_EVENT_STOP;
+    }
+
+    if ((state & GDK_CONTROL_MASK) == 0)
+        return GDK_EVENT_PROPAGATE;
+
+    if (keyval == GDK_KEY_g || keyval == GDK_KEY_G) {
+        compose_in_editor(self);
+        return GDK_EVENT_STOP;
+    }
+
+    /*
+     * Ctrl+V is intercepted only when there is actually an image on the
+     * clipboard; ordinary text paste is left to the entry, which
+     * already does it correctly.
+     */
+    if (keyval == GDK_KEY_v || keyval == GDK_KEY_V)
+        return paste_image(self) ? GDK_EVENT_STOP : GDK_EVENT_PROPAGATE;
+
+    return GDK_EVENT_PROPAGATE;
+}
+
+
 static void
 load_history(ClawtWindow *self)
 {
@@ -680,21 +1560,33 @@ on_send(GtkWidget *widget, gpointer user_data)
 {
     ClawtWindow *self = user_data;
     g_autoptr(JsonNode) reply = NULL;
-    const gchar *body;
+    g_autofree gchar *full = NULL;
+    g_autofree gchar *body = NULL;
 
     (void)widget;
 
     if (self->selected_agent == NULL)
         return;
 
-    body = gtk_editable_get_text(GTK_EDITABLE(self->entry));
+    body = entry_text(self);
 
     if (body == NULL || *body == '\0')
         return;
 
+    /*
+     * A command never reaches the agent.  A mistyped one arriving as a
+     * message is how somebody learns not to trust the feature.
+     */
+    if (run_slash_command(self, body)) {
+        entry_set_text(self, "");
+        return;
+    }
+
+    full = body_with_attachments(self, body);
+
     reply = clawt_window_request(
         self, "msg.send",
-        clawt_build_payload("target", self->selected_agent, "body", body,
+        clawt_build_payload("target", self->selected_agent, "body", full,
                             "from", "user", NULL));
 
     if (reply == NULL)
@@ -707,7 +1599,7 @@ on_send(GtkWidget *widget, gpointer user_data)
      * that carries the room, which is what the transcript is filtered
      * on.
      */
-    gtk_editable_set_text(GTK_EDITABLE(self->entry), "");
+    entry_set_text(self, "");
 
     /*
      * A stopped agent accepts the message -- that is what a durable
@@ -1478,17 +2370,19 @@ editor_launch(EditorLaunch *launch)
 }
 
 static void
-on_open_file(GtkButton *button, gpointer user_data)
+open_path_in_editor(ClawtWindow *self, const gchar *path, const gchar *name)
 {
-    ClawtWindow *self = user_data;
     EditorLaunch *launch;
-    const gchar *path = g_object_get_data(G_OBJECT(button), "path");
-    const gchar *name = g_object_get_data(G_OBJECT(button), "name");
+
+    if (path == NULL || path[0] == '\0')
+        return;
 
     if (editor_command() == NULL) {
         g_autofree gchar *message =
             g_strdup_printf("no editor set; try `clawtilla agent edit %s %s`",
-                            self->selected_agent, name);
+                            self->selected_agent != NULL
+                                ? self->selected_agent : "<agent>",
+                            name != NULL ? name : "<file>");
 
         clawt_window_toast(self, message);
         return;
@@ -1500,6 +2394,14 @@ on_open_file(GtkButton *button, gpointer user_data)
     launch->name = g_strdup(name);
 
     editor_launch(launch);
+}
+
+static void
+on_open_file(GtkButton *button, gpointer user_data)
+{
+    open_path_in_editor(user_data,
+                        g_object_get_data(G_OBJECT(button), "path"),
+                        g_object_get_data(G_OBJECT(button), "name"));
 }
 
 /*
@@ -3316,6 +4218,7 @@ build_chat_page(ClawtWindow *self)
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     GtkWidget *scroll = gtk_scrolled_window_new();
     GtkWidget *entry_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *attach;
     GtkWidget *send;
 
     self->transcript = GTK_BOX(gtk_box_new(GTK_ORIENTATION_VERTICAL, 0));
@@ -3348,15 +4251,123 @@ build_chat_page(ClawtWindow *self)
     gtk_widget_set_margin_end(self->activity_bar, 12);
     gtk_widget_set_visible(self->activity_bar, FALSE);
 
-    self->entry = GTK_ENTRY(gtk_entry_new());
-    gtk_entry_set_placeholder_text(self->entry, "Message");
+    /* The queued files, hidden until there are some. */
+    self->attachments = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_set_margin_start(self->attachments, 12);
+    gtk_widget_set_margin_end(self->attachments, 12);
+    gtk_widget_set_margin_top(self->attachments, 6);
+    gtk_widget_set_visible(self->attachments, FALSE);
+
+    self->entry = GTK_TEXT_VIEW(gtk_text_view_new());
+    gtk_text_view_set_wrap_mode(self->entry, GTK_WRAP_WORD_CHAR);
+    gtk_text_view_set_top_margin(self->entry, 8);
+    gtk_text_view_set_bottom_margin(self->entry, 8);
+    gtk_text_view_set_left_margin(self->entry, 8);
+    gtk_text_view_set_right_margin(self->entry, 8);
     gtk_widget_set_hexpand(GTK_WIDGET(self->entry), TRUE);
-    g_signal_connect(self->entry, "activate", G_CALLBACK(on_send), self);
+    g_signal_connect(gtk_text_view_get_buffer(self->entry), "changed",
+                     G_CALLBACK(on_entry_changed), self);
+
+    /*
+     * The placeholder is a label under the view rather than a property,
+     * because GtkTextView has none.  Hidden as soon as anything is
+     * typed, and it must not eat clicks meant for the text.
+     */
+    self->placeholder = gtk_label_new(
+        "Message  \xe2\x80\x94  / for commands, Ctrl+G to write it in $EDITOR");
+    gtk_widget_add_css_class(self->placeholder, "dim-label");
+    gtk_widget_set_halign(self->placeholder, GTK_ALIGN_START);
+    gtk_widget_set_valign(self->placeholder, GTK_ALIGN_START);
+    gtk_widget_set_margin_start(self->placeholder, 10);
+    gtk_widget_set_margin_top(self->placeholder, 8);
+    gtk_widget_set_can_target(self->placeholder, FALSE);
+
+    {
+        GtkEventController *keys = gtk_event_controller_key_new();
+
+        /*
+         * The capture phase, so Ctrl+V is seen before the entry's own
+         * paste handler consumes it.
+         */
+        gtk_event_controller_set_propagation_phase(keys, GTK_PHASE_CAPTURE);
+        g_signal_connect(keys, "key-pressed", G_CALLBACK(on_entry_key), self);
+        gtk_widget_add_controller(GTK_WIDGET(self->entry), keys);
+    }
+
+    /*
+     * The command list, parented to the entry it belongs to.  Note that
+     * this makes it a *child* of the entry, so anything that walks the
+     * entry's children has to expect it.
+     */
+    self->command_list = GTK_LIST_BOX(gtk_list_box_new());
+    gtk_list_box_set_selection_mode(self->command_list, GTK_SELECTION_SINGLE);
+    gtk_widget_add_css_class(GTK_WIDGET(self->command_list),
+                             "navigation-sidebar");
+    g_signal_connect(self->command_list, "row-selected",
+                     G_CALLBACK(on_command_row_selected), self);
+
+    {
+        GtkWidget *command_scroll = gtk_scrolled_window_new();
+
+        gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(command_scroll),
+                                      GTK_WIDGET(self->command_list));
+        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(command_scroll),
+                                       GTK_POLICY_NEVER,
+                                       GTK_POLICY_AUTOMATIC);
+        gtk_scrolled_window_set_max_content_height(
+            GTK_SCROLLED_WINDOW(command_scroll), 220);
+        gtk_scrolled_window_set_propagate_natural_height(
+            GTK_SCROLLED_WINDOW(command_scroll), TRUE);
+
+        self->command_revealer = gtk_revealer_new();
+        gtk_revealer_set_transition_type(
+            GTK_REVEALER(self->command_revealer),
+            GTK_REVEALER_TRANSITION_TYPE_SLIDE_UP);
+        gtk_revealer_set_child(GTK_REVEALER(self->command_revealer),
+                               command_scroll);
+        gtk_widget_set_margin_start(self->command_revealer, 12);
+        gtk_widget_set_margin_end(self->command_revealer, 12);
+    }
+
+    attach = gtk_button_new_from_icon_name("mail-attachment-symbolic");
+    gtk_widget_set_tooltip_text(attach,
+                                "Send files with this message. You can also "
+                                "paste an image.");
+    g_signal_connect(attach, "clicked", G_CALLBACK(on_attach_clicked), self);
 
     send = gtk_button_new_from_icon_name("document-send-symbolic");
     g_signal_connect(send, "clicked", G_CALLBACK(on_send), self);
 
-    gtk_box_append(GTK_BOX(entry_box), GTK_WIDGET(self->entry));
+    {
+        GtkWidget *overlay = gtk_overlay_new();
+        GtkWidget *entry_scroll = gtk_scrolled_window_new();
+
+        gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(entry_scroll),
+                                      GTK_WIDGET(self->entry));
+        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(entry_scroll),
+                                       GTK_POLICY_NEVER,
+                                       GTK_POLICY_AUTOMATIC);
+
+        /*
+         * Grows with the message and then stops: a pasted essay should
+         * not push the transcript off the top of the window.
+         */
+        gtk_scrolled_window_set_max_content_height(
+            GTK_SCROLLED_WINDOW(entry_scroll), 200);
+        gtk_scrolled_window_set_propagate_natural_height(
+            GTK_SCROLLED_WINDOW(entry_scroll), TRUE);
+        gtk_widget_add_css_class(entry_scroll, "card");
+        gtk_widget_set_hexpand(entry_scroll, TRUE);
+
+        gtk_overlay_set_child(GTK_OVERLAY(overlay), entry_scroll);
+        gtk_overlay_add_overlay(GTK_OVERLAY(overlay), self->placeholder);
+
+        gtk_box_append(GTK_BOX(entry_box), overlay);
+    }
+
+    gtk_widget_set_valign(attach, GTK_ALIGN_END);
+    gtk_widget_set_valign(send, GTK_ALIGN_END);
+    gtk_box_append(GTK_BOX(entry_box), attach);
     gtk_box_append(GTK_BOX(entry_box), send);
     gtk_widget_set_margin_start(entry_box, 12);
     gtk_widget_set_margin_end(entry_box, 12);
@@ -3365,6 +4376,8 @@ build_chat_page(ClawtWindow *self)
 
     gtk_box_append(GTK_BOX(box), scroll);
     gtk_box_append(GTK_BOX(box), self->activity_bar);
+    gtk_box_append(GTK_BOX(box), self->command_revealer);
+    gtk_box_append(GTK_BOX(box), self->attachments);
     gtk_box_append(GTK_BOX(box), entry_box);
 
     return box;
@@ -4097,6 +5110,8 @@ clawt_window_dispose(GObject *object)
     g_clear_pointer(&self->selected_room, g_free);
     g_clear_pointer(&self->flow_room, g_free);
     g_clear_pointer(&self->shown, g_hash_table_unref);
+    g_clear_pointer(&self->pending, g_ptr_array_unref);
+
 
     G_OBJECT_CLASS(clawt_window_parent_class)->dispose(object);
 }
@@ -4127,4 +5142,6 @@ clawt_window_init(ClawtWindow *self)
     self->following = TRUE;
     self->shown = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                         NULL);
+    self->pending = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)attachment_free);
 }

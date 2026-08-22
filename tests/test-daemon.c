@@ -1558,6 +1558,63 @@ test_a_reply_counts_as_a_hop(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * An attachment's name is rebuilt, not trusted.
+ *
+ * It comes from a filename somebody dragged in or a clipboard
+ * suggestion, and "../../.ssh/authorized_keys" is a filename. The
+ * basename is taken and the exchange resolves the rest, so a traversal
+ * lands in the agent's own directory under a harmless name rather than
+ * anywhere it was aimed.
+ */
+static void
+test_an_attachment_cannot_escape_its_directory(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *payload = NULL;
+    g_autofree gchar *encoded = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *host_path;
+
+    /*
+     * Its own exchange directory. Without one the daemon falls back to
+     * the real ~/.local/share, and a test that writes into the
+     * developer's home is a test that has already failed.
+     */
+    fixture_setup(&fixture,
+                  "defaults:\n  exchange_dir: \"/tmp/clawt-test-exchange\"\n"
+                  "agents:\n  - id: alpha\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    encoded = g_base64_encode((const guchar *)"hello", 5);
+    payload = g_strdup_printf(
+        "{\"agent\":\"alpha\",\"name\":\"../../escape.txt\",\"data\":\"%s\"}",
+        encoded);
+
+    reply = request(&fixture, "attachment.put", payload);
+    g_assert_nonnull(reply);
+
+    g_assert_cmpstr(json_object_get_string_member(payload_of(reply), "name"),
+                    ==, "escape.txt");
+
+    host_path = json_object_get_string_member(payload_of(reply), "host_path");
+    g_assert_nonnull(strstr(host_path, "alpha"));
+    g_assert_null(strstr(host_path, ".."));
+
+    /* And a name that is nothing but separators is refused outright. */
+    {
+        g_autofree gchar *bad = g_strdup_printf(
+            "{\"agent\":\"alpha\",\"name\":\"../..\",\"data\":\"%s\"}", encoded);
+        g_autoptr(JsonNode) refused = request(&fixture, "attachment.put", bad);
+
+        g_assert_false(json_object_get_boolean_member(
+            json_node_get_object(refused), "ok"));
+    }
+
+    clawt_test_remove_tree("/tmp/clawt-test-exchange");
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1636,6 +1693,8 @@ main(int argc, char *argv[])
                     test_direct_rooms_come_back_after_a_restart);
     g_test_add_func("/daemon/a-reply-counts-as-a-hop",
                     test_a_reply_counts_as_a_hop);
+    g_test_add_func("/daemon/attachment-cannot-escape",
+                    test_an_attachment_cannot_escape_its_directory);
 
     return g_test_run();
 }

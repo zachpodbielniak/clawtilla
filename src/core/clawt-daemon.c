@@ -2941,6 +2941,105 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         return clawt_ipc_response_new(request, NULL);
     }
 
+    if (g_strcmp0(kind, "attachment.put") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        const gchar *name = clawt_ipc_payload_string(payload, "name");
+        const gchar *encoded = clawt_ipc_payload_string(payload, "data");
+        ClawtAgent *agent = (agent_id != NULL)
+                            ? clawt_agent_manager_get(self->agents, agent_id)
+                            : NULL;
+        g_autofree guchar *bytes = NULL;
+        g_autofree gchar *safe = NULL;
+        g_autofree gchar *relative = NULL;
+        g_autofree gchar *host_path = NULL;
+        gsize length = 0;
+
+        if (agent == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such agent");
+
+        if (name == NULL || encoded == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "name and data are both required");
+
+        if (self->exchange == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
+                                       "there is no exchange directory");
+
+        /*
+         * The name is taken apart and rebuilt rather than trusted.  It
+         * comes from a filename a person dragged in or a clipboard
+         * suggestion, and "../../.ssh/authorized_keys" is a name.
+         */
+        safe = g_path_get_basename(name);
+
+        if (safe[0] == '\0' || g_strcmp0(safe, ".") == 0 ||
+            g_strcmp0(safe, "..") == 0 || g_strcmp0(safe, G_DIR_SEPARATOR_S) == 0)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "that is not a usable file name");
+
+        bytes = g_base64_decode(encoded, &length);
+
+        if (bytes == NULL || length == 0)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "the attachment is empty");
+
+        /*
+         * The agent's own directory, made if this is the first thing
+         * ever put in it. resolve() answers where a path *would* be, so
+         * without this the very first attachment failed on a directory
+         * that had never been created.
+         */
+        if (!clawt_exchange_prepare(self->exchange, agent_id, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        relative = g_build_filename(agent_id, safe, NULL);
+        host_path = clawt_exchange_resolve(self->exchange, agent_id, relative,
+                                           TRUE, &error);
+
+        if (host_path == NULL)
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        if (!clawt_write_file_atomic(host_path, (const gchar *)bytes,
+                                     (gssize)length, 0600, FALSE, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "name");
+        json_builder_add_string_value(builder, safe);
+        json_builder_set_member_name(builder, "host_path");
+        json_builder_add_string_value(builder, host_path);
+
+        /*
+         * The path to *tell the agent*, which is not the host path when
+         * it lives in a container: the exchange is mounted, so the
+         * agent sees it somewhere else entirely and a host path would
+         * send it looking for a file that is not there.
+         */
+        json_builder_set_member_name(builder, "path");
+
+        {
+            const gchar *computer = clawt_agent_config_get_string(
+                clawt_agent_get_config(agent), "computer.type");
+
+            if (g_strcmp0(computer, "container") == 0 ||
+                g_strcmp0(computer, "vm") == 0) {
+                g_autofree gchar *guest = g_build_filename(
+                    CLAWT_EXCHANGE_MOUNT_POINT, agent_id, safe, NULL);
+
+                json_builder_add_string_value(builder, guest);
+            } else {
+                json_builder_add_string_value(builder, host_path);
+            }
+        }
+
+        json_builder_set_member_name(builder, "bytes");
+        json_builder_add_int_value(builder, (gint64)length);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
     if (g_strcmp0(kind, "exchange.list") == 0) {
         g_autoptr(GPtrArray) entries = NULL;
         guint i;

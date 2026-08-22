@@ -396,6 +396,15 @@ the same program.
   `AdwExpanderRow` do **not**, so `adw_action_row_set_subtitle()` on one
   is a runtime assertion, not a compile error.
 
+### A popover parented to a GtkEntry stops the window mapping
+
+- Worse than the GtkListBox case below: `gtk_widget_set_parent(popover,
+  entry)` left the application running with its main loop turning and
+  *no window ever mapped* — nothing on screen, nothing in the log,
+  nothing to attach a debugger to. The slash-command list is a
+  `GtkRevealer` in the page's own box instead. Reach for a popover
+  parented to a leaf widget only if there is no alternative.
+
 ### A popover parented to a GtkListBox is one of its children
 
 - `gtk_widget_set_parent(popover, list_box)` makes the popover a child

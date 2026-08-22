@@ -115,6 +115,78 @@ Restart, and still asks twice.
 | Tasks | what has been delegated to whom, and where it got to |
 | Flow | every conversation between agents, newest first, and what was said |
 
+
+*** Writing the message
+
+The box is a text view, not an entry: Ctrl+G hands whatever comes back
+from ~$EDITOR~ straight into it, and that is usually several paragraphs.
+Enter sends, Shift+Enter is a newline, and the box grows to about ten
+lines before it starts scrolling.
+
+*Ctrl+G* writes the current draft to a temporary ~.md~ file, opens
+~$CLAWT_EDITOR~ / ~$VISUAL~ / ~$EDITOR~ on it, and takes back whatever
+was saved when the editor exits. It is seeded with what is already
+typed, so this extends a draft rather than replacing it. ~/compose~ does
+the same thing from the keyboard.
+
+*** Slash commands
+
+Typing ~/~ reveals the matching commands above the entry, with what each
+does; clicking one fills it in. Anybody who already knows the command
+keeps typing and never looks.
+
+| Command | What it does |
+|---------+--------------|
+| ~/help~ | list them |
+| ~/start~ ~/stop~ ~/restart~ | this agent's lifecycle |
+| ~/attach~ | pick files to send with the next message |
+| ~/compose~ | write the message in $EDITOR |
+| ~/edit [file]~ | open a workspace file in $EDITOR |
+| ~/files~ | this agent's workspace files |
+| ~/memory <query>~ | search what this agent has remembered |
+| ~/agents~ | who is in the fleet |
+| ~/flow~ ~/tasks~ | go to those pages |
+| ~/clear~ | clear the transcript on screen only |
+| ~/new~ | create an agent |
+
+Every one is a shortcut to something that already exists -- none of them
+is a second way to do anything. A command never reaches the agent, and
+an unrecognised one says so rather than being sent: a mistyped command
+arriving as a message is how somebody learns not to trust the feature.
+
+*** Sending files and images
+
+Paste an image and it is queued as a PNG. Ctrl+V is intercepted only
+when the clipboard actually holds an image -- ordinary text paste is
+left to the widget, and an image copied from a browser usually carries a
+URL alongside it, so taking both would be worse than taking either.
+
+The paperclip, or ~/attach~, picks files. Queued files appear as chips
+above the entry and can be dropped before sending; nothing is written
+anywhere until the message is actually sent, so an abandoned draft
+leaves nothing behind for the agent to find.
+
+On send, each one goes to the daemon over ~attachment.put~, which writes
+it into that agent's exchange directory and answers with the path *the
+agent* should use -- which is not the host path when the agent lives in
+a container, where the exchange is mounted somewhere else entirely. The
+message body then names them:
+
+#+begin_example
+have a look at this failure
+
+[clawtilla] Files sent with this message:
+- /mnt/clawtilla/exchange/researcher/pasted-1750000000.png
+#+end_example
+
+Naming them is what makes them reachable: an agent reads files with its
+own tools, and one it has not been told about is one it will not open.
+
+The name is rebuilt from its basename rather than trusted --
+"../../.ssh/authorized_keys" is a filename -- and 32 MB is the cap,
+because this crosses the IPC socket base64-encoded.
+
+
 *** The Flow tab
 
 The Chat tab is your conversation with one agent.  Flow is the rest of
