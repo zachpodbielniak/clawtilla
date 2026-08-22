@@ -56,6 +56,13 @@ static JsonObject  *chooser_provider(ModelChooser *chooser);
 static const gchar *chooser_provider_id(ModelChooser *chooser);
 static gchar       *chooser_model(ModelChooser *chooser);
 static void         refresh_flow(ClawtWindow *self);
+static void         refresh_settings_images(ClawtWindow *self);
+static gchar *      human_size(gint64 bytes);
+static void         disk_chooser_build(ImageChooser *chooser,
+                                       ClawtWindow  *window,
+                                       GtkWidget    *group,
+                                       const gchar  *want);
+static gchar *      disk_chooser_value(ImageChooser *chooser);
 static const gchar *editor_command(void);
 static void         on_send(GtkWidget *widget, gpointer user_data);
 static void         load_history(ClawtWindow *self);
@@ -100,6 +107,7 @@ typedef enum {
     CLAWT_REFRESH_MAILBOX,
     CLAWT_REFRESH_TASKS,
     CLAWT_REFRESH_FLOW,
+    CLAWT_REFRESH_IMAGES,
     CLAWT_N_REFRESH
 } ClawtRefreshKind;
 
@@ -112,6 +120,21 @@ struct _ClawtWindow {
     AdwOverlaySplitView *split;
     GtkListBox        *sidebar;
     AdwViewStack      *pages;
+
+    /*
+     * Settings, while it is open.
+     *
+     * The progress bars are held by name so a download event can move the
+     * right one without rebuilding the list: a 500 MB image emits a
+     * hundred of them, and rebuilding on each would fight whatever the
+     * person is doing in that window.
+     */
+    AdwDialog         *settings;
+    GtkWidget         *settings_images;
+    GtkWidget         *settings_catalog_row;
+    GtkWidget         *settings_url_row;
+    JsonNode          *settings_catalog;
+    GHashTable        *settings_bars;
 
     /* Chat */
     GtkBox            *transcript;
@@ -132,7 +155,7 @@ struct _ClawtWindow {
     ModelChooser       inspector_models;
     ImageChooser       inspector_image;
     gchar             *inspector_computer;   /* the selected agent's type */
-    GtkWidget         *vm_image_row;
+    ImageChooser       inspector_disk;
     GtkWidget         *vm_cpus_row;
     GtkWidget         *vm_memory_row;
     GtkWidget         *vm_ssh_host_row;
@@ -2833,8 +2856,7 @@ on_save_agent(GtkButton *button, gpointer user_data)
                                       3)]);
 
     if (self->vm_cpus_row != NULL) {
-        const gchar *image = gtk_editable_get_text(
-            GTK_EDITABLE(self->vm_image_row));
+        g_autofree gchar *image = disk_chooser_value(&self->inspector_disk);
         const gchar *cpus = gtk_editable_get_text(
             GTK_EDITABLE(self->vm_cpus_row));
         const gchar *memory = gtk_editable_get_text(
@@ -3670,22 +3692,14 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
      * backend reads these, and a row that quietly does nothing is worse
      * than no row.
      */
-    self->vm_image_row = NULL;
+    self->inspector_disk.row = NULL;
     self->vm_cpus_row = NULL;
     self->vm_memory_row = NULL;
     self->vm_ssh_host_row = NULL;
 
     if (g_strcmp0(self->inspector_computer, "vm") == 0) {
-        /*
-         * There is no image list to choose from the way containers have
-         * one: clawtilla ships no disk image and downloads none.  Without
-         * a path here the VM has no disk and will not boot, so the row
-         * says where to get one rather than leaving it to be discovered.
-         */
-        self->vm_image_row = entry_row(
-            "Disk image", clawt_json_string(agent, "vm_image", ""));
-        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
-                                  self->vm_image_row);
+        disk_chooser_build(&self->inspector_disk, self, group,
+                           clawt_json_string(agent, "vm_image", NULL));
 
         self->vm_cpus_row = entry_row(
             "Cores", clawt_json_string(agent, "vm_cpus", ""));
@@ -4345,6 +4359,78 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
         return;
     }
 
+    /*
+     * A download's progress moves the bar it belongs to and nothing else.
+     * Rebuilding the list on every one of a hundred events would fight
+     * whoever is using that window.
+     */
+    if (g_strcmp0(kind, "image.progress") == 0) {
+        GtkWidget *bar = g_hash_table_lookup(self->settings_bars,
+                                             clawt_event_get_subject(event));
+        gint64 total = clawt_event_get_detail_int(event, "total");
+
+        /*
+         * No bar means this download was begun somewhere else -- the CLI,
+         * or another window -- so there is no row for it yet.  Building
+         * the list once gives it one, and every later event for it finds
+         * the bar and moves it.
+         */
+        if (bar == NULL) {
+            if (self->settings_images != NULL)
+                refresh_settings_images(self);
+
+            return;
+        }
+
+        if (total > 0) {
+            gint64 done = clawt_event_get_detail_int(event, "done");
+            GtkWidget *row = gtk_widget_get_ancestor(bar,
+                                                     ADW_TYPE_ACTION_ROW);
+
+            gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(bar),
+                                          (gdouble)done / total);
+
+            /*
+             * The subtitle moves with the bar.  Left as it was written,
+             * it says the size the download had reached when the row was
+             * built -- a bar at a fifth beside "16 kB of 557 MB", which
+             * reads as a broken bar rather than a stale label.
+             */
+            if (row != NULL) {
+                g_autofree gchar *done_text = human_size(done);
+                g_autofree gchar *total_text = human_size(total);
+                g_autofree gchar *subtitle =
+                    g_strdup_printf("%s of %s", done_text, total_text);
+
+                adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
+            }
+        }
+
+        return;
+    }
+
+    if (g_strcmp0(kind, "image.finished") == 0) {
+        const gchar *failure = clawt_event_get_detail(event, "error");
+
+        if (failure != NULL) {
+            g_autofree gchar *message = g_strdup_printf(
+                "%s could not be downloaded: %s",
+                clawt_event_get_subject(event), failure);
+
+            /*
+             * Said out loud even when Settings is shut.  A download runs
+             * in the daemon and outlives the window that started it, so
+             * failing quietly would mean an image that never appears and
+             * nothing anywhere saying why.
+             */
+            adw_toast_overlay_add_toast(self->toasts,
+                                        adw_toast_new(message));
+        }
+
+        refresh_settings_images(self);
+        return;
+    }
+
     if (g_strcmp0(kind, "message.refused") == 0) {
         const gchar *from = clawt_event_get_detail(event, "from");
         const gchar *to = clawt_event_get_detail(event, "to");
@@ -4422,6 +4508,7 @@ typedef struct {
     ModelChooser  models;           /* the model the agent will run */
     ModelChooser  designer;         /* the model that drafts it */
     ImageChooser  image;
+    ImageChooser  disk;             /* the VM's disk, when it is a VM */
 } NewAgentDialog;
 
 static void
@@ -4432,6 +4519,7 @@ new_agent_dialog_free(gpointer data)
     g_clear_pointer(&dialog->models.catalog, json_node_unref);
     g_clear_pointer(&dialog->designer.catalog, json_node_unref);
     g_clear_pointer(&dialog->image.catalog, json_node_unref);
+    g_clear_pointer(&dialog->disk.catalog, json_node_unref);
     g_free(dialog);
 }
 
@@ -4740,6 +4828,152 @@ image_chooser_build(ImageChooser *chooser, ClawtWindow *window,
     on_image_changed(NULL, NULL, chooser);
 }
 
+
+/* ── The VM's disk ───────────────────────────────────────────────── */
+
+/*
+ * The same shape as the container image chooser, over a different list:
+ * cached cloud images rather than registry references, and a path rather
+ * than a reference.
+ *
+ * A VM without a disk is defined, started, and never boots -- so an agent
+ * with nothing chosen has to look wrong here, which is why the empty case
+ * says where to get one instead of showing a bare text field.
+ */
+static void
+on_disk_changed(GObject *object, GParamSpec *pspec, gpointer user_data)
+{
+    ImageChooser *chooser = user_data;
+    JsonArray *images;
+    guint selected;
+
+    (void)object;
+    (void)pspec;
+
+    if (chooser->catalog == NULL)
+        return;
+
+    images = json_object_get_array_member(
+        json_node_get_object(chooser->catalog), "images");
+    selected = adw_combo_row_get_selected(ADW_COMBO_ROW(chooser->row));
+
+    gtk_widget_set_visible(chooser->entry,
+                           selected >= json_array_get_length(images));
+
+    if (selected < json_array_get_length(images)) {
+        JsonObject *image = json_array_get_object_element(images, selected);
+
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(chooser->row),
+                                    clawt_json_string(image, "path", ""));
+        return;
+    }
+
+    adw_action_row_set_subtitle(
+        ADW_ACTION_ROW(chooser->row),
+        json_array_get_length(images) == 0
+            ? "No cloud images yet \342\200\224 fetch one from Settings"
+            : "A path to a qcow2 on this machine");
+}
+
+static gchar *
+disk_chooser_value(ImageChooser *chooser)
+{
+    JsonArray *images;
+    guint selected;
+
+    if (chooser->row == NULL || chooser->catalog == NULL)
+        return NULL;
+
+    images = json_object_get_array_member(
+        json_node_get_object(chooser->catalog), "images");
+    selected = adw_combo_row_get_selected(ADW_COMBO_ROW(chooser->row));
+
+    if (selected < json_array_get_length(images))
+        return g_strdup(clawt_json_string(
+            json_array_get_object_element(images, selected), "path", NULL));
+
+    {
+        const gchar *typed =
+            gtk_editable_get_text(GTK_EDITABLE(chooser->entry));
+
+        return (typed != NULL && *typed != '\0') ? g_strdup(typed) : NULL;
+    }
+}
+
+static void
+disk_chooser_build(ImageChooser *chooser, ClawtWindow *window,
+                   GtkWidget *group, const gchar *want)
+{
+    GtkStringList *labels = gtk_string_list_new(NULL);
+    JsonArray *images = NULL;
+    gboolean matched = FALSE;
+    guint chosen = 0;
+    guint i;
+
+    chooser->window = window;
+
+    chooser->row = adw_combo_row_new();
+    adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(chooser->row),
+                                       FALSE);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(chooser->row),
+                                  "Disk image");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), chooser->row);
+
+    chooser->entry = adw_entry_row_new();
+    adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(chooser->entry),
+                                       FALSE);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(chooser->entry),
+                                  "Path to a qcow2");
+    gtk_widget_set_visible(chooser->entry, FALSE);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), chooser->entry);
+
+    chooser->catalog = clawt_window_request(window, "image.vm_list", NULL);
+
+    if (chooser->catalog != NULL) {
+        images = json_object_get_array_member(
+            json_node_get_object(chooser->catalog), "images");
+
+        for (i = 0; i < json_array_get_length(images); i++) {
+            JsonObject *image = json_array_get_object_element(images, i);
+
+            /*
+             * One still downloading is listed and selectable: it will be
+             * there by the time the agent is started, and hiding it makes
+             * the list appear to lose the thing just asked for.
+             */
+            gtk_string_list_append(labels,
+                                   clawt_json_string(image, "name", "?"));
+
+            if (want != NULL &&
+                g_strcmp0(clawt_json_string(image, "path", ""), want) == 0) {
+                chosen = i;
+                matched = TRUE;
+            }
+        }
+    }
+
+    gtk_string_list_append(labels, "Other\342\200\246");
+    adw_combo_row_set_model(ADW_COMBO_ROW(chooser->row),
+                            G_LIST_MODEL(labels));
+
+    /*
+     * A path that is not one of ours keeps what it was given rather than
+     * being retargeted at whatever happens to be first.
+     */
+    if (want != NULL && *want != '\0' && !matched) {
+        gtk_editable_set_text(GTK_EDITABLE(chooser->entry), want);
+        chosen = (images != NULL) ? json_array_get_length(images) : 0;
+    } else if (!matched) {
+        chosen = (images != NULL) ? json_array_get_length(images) : 0;
+    }
+
+    adw_combo_row_set_selected(ADW_COMBO_ROW(chooser->row), chosen);
+
+    g_signal_connect(chooser->row, "notify::selected",
+                     G_CALLBACK(on_disk_changed), chooser);
+    on_disk_changed(NULL, NULL, chooser);
+}
+
 /*
  * Adds the provider and model rows to a group, populated from the daemon
  * so every view agrees on what exists.
@@ -4912,6 +5146,7 @@ on_create_manually(GtkButton *button, gpointer user_data)
     g_autoptr(JsonNode) reply = NULL;
     g_autofree gchar *model = NULL;
     g_autofree gchar *image = NULL;
+    g_autofree gchar *disk = NULL;
     static const gchar *const computers[] = { "none", "host", "container",
                                               "vm" };
     const gchar *agent_id;
@@ -4930,12 +5165,14 @@ on_create_manually(GtkButton *button, gpointer user_data)
     selected = adw_combo_row_get_selected(ADW_COMBO_ROW(dialog->computer_row));
 
     /*
-     * The image is only sent for a container.  Setting it on a host or
-     * vm agent would write a key that backend never reads, and it then
-     * looks like a setting that is being ignored.
+     * Each backend is sent only its own image key.  Setting a container
+     * reference on a VM, or the other way round, writes a key that
+     * backend never reads -- and then looks like a setting being ignored.
      */
     if (g_strcmp0(computers[MIN(selected, 3)], "container") == 0)
         image = image_chooser_value(&dialog->image);
+    else if (g_strcmp0(computers[MIN(selected, 3)], "vm") == 0)
+        disk = disk_chooser_value(&dialog->disk);
 
     reply = clawt_window_request(
         self, "agent.create",
@@ -4948,6 +5185,7 @@ on_create_manually(GtkButton *button, gpointer user_data)
             "model", model,
             "computer", computers[MIN(selected, 3)],
             "image", image,
+            "vm_image", disk,
             NULL));
 
     /*
@@ -5162,6 +5400,18 @@ on_computer_type_changed(GObject *object, GParamSpec *pspec,
         gtk_widget_set_visible(dialog->image.entry, FALSE);
     else
         on_image_changed(NULL, NULL, &dialog->image);
+
+    /*
+     * A VM gets the same treatment, over the cached cloud images.  It
+     * matters more here than for a container: podman pulls what it is
+     * given, while a VM with no disk defines, starts and never boots.
+     */
+    gtk_widget_set_visible(dialog->disk.row, selected == 3);
+
+    if (selected != 3)
+        gtk_widget_set_visible(dialog->disk.entry, FALSE);
+    else
+        on_disk_changed(NULL, NULL, &dialog->disk);
 }
 
 static void
@@ -5242,6 +5492,7 @@ on_new_agent(GtkButton *button, gpointer user_data)
      * nothing is worse than no row.
      */
     image_chooser_build(&dialog->image, self, manual, NULL);
+    disk_chooser_build(&dialog->disk, self, manual, NULL);
     g_signal_connect(dialog->computer_row, "notify::selected",
                      G_CALLBACK(on_computer_type_changed), dialog);
     on_computer_type_changed(NULL, NULL, dialog);
@@ -6012,6 +6263,401 @@ refresh_flow_once(ClawtWindow *self)
     }
 }
 
+/* ── Settings: the cloud image manager ───────────────────────────── */
+
+static gchar *
+human_size(gint64 bytes)
+{
+    if (bytes >= 1024LL * 1024 * 1024)
+        return g_strdup_printf("%.1f GB", bytes / (1024.0 * 1024.0 * 1024.0));
+
+    if (bytes >= 1024 * 1024)
+        return g_strdup_printf("%.0f MB", bytes / (1024.0 * 1024.0));
+
+    if (bytes >= 1024)
+        return g_strdup_printf("%.0f kB", bytes / 1024.0);
+
+    return g_strdup_printf("%" G_GINT64_FORMAT " B", bytes);
+}
+
+static void
+image_action(ClawtWindow *self, const gchar *kind, const gchar *name)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(JsonNode) reply = NULL;
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "name");
+    json_builder_add_string_value(builder, name);
+    json_builder_end_object(builder);
+
+    reply = clawt_window_request(self, kind, json_builder_get_root(builder));
+
+    if (reply != NULL)
+        refresh_settings_images(self);
+}
+
+static void
+on_image_remove(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    image_action(self, "image.vm_remove",
+                 g_object_get_data(G_OBJECT(button), "clawt-image"));
+}
+
+static void
+on_image_cancel(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    image_action(self, "image.vm_cancel",
+                 g_object_get_data(G_OBJECT(button), "clawt-image"));
+}
+
+static void
+start_download(ClawtWindow *self, const gchar *url, const gchar *name)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(JsonNode) reply = NULL;
+
+    if (url == NULL || *url == '\0')
+        return;
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "url");
+    json_builder_add_string_value(builder, url);
+
+    if (name != NULL) {
+        json_builder_set_member_name(builder, "name");
+        json_builder_add_string_value(builder, name);
+    }
+
+    json_builder_end_object(builder);
+
+    reply = clawt_window_request(self, "image.vm_download",
+                                 json_builder_get_root(builder));
+
+    if (reply != NULL)
+        refresh_settings_images(self);
+}
+
+static void
+on_download_from_catalog(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    JsonArray *sources;
+    guint selected;
+
+    (void)button;
+
+    if (self->settings_catalog == NULL)
+        return;
+
+    sources = json_object_get_array_member(
+        json_node_get_object(self->settings_catalog), "sources");
+    selected = adw_combo_row_get_selected(
+        ADW_COMBO_ROW(self->settings_catalog_row));
+
+    if (selected >= json_array_get_length(sources))
+        return;
+
+    /*
+     * The catalog id is sent rather than the URL behind it, so the daemon
+     * resolves the newest compose itself.  Sending a URL resolved here
+     * would pin whatever this client happened to see.
+     */
+    start_download(self,
+                   clawt_json_string(
+                       json_array_get_object_element(sources, selected),
+                       "id", NULL), NULL);
+}
+
+static void
+on_download_from_url(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *url = gtk_editable_get_text(
+        GTK_EDITABLE(self->settings_url_row));
+
+    (void)button;
+
+    start_download(self, url, NULL);
+    gtk_editable_set_text(GTK_EDITABLE(self->settings_url_row), "");
+}
+
+/*
+ * Rebuilds the list of images.
+ *
+ * Called when something changes it, never on progress: the bars are moved
+ * in place instead, because a hundred rebuilds during one download would
+ * take the scroll position and the focus with them each time.
+ */
+static void refresh_settings_images_once(ClawtWindow *self);
+
+static void
+refresh_settings_images(ClawtWindow *self)
+{
+    if (self->settings_images == NULL)
+        return;
+
+    /*
+     * Guarded like every other list here: clawt_window_request() iterates
+     * the main context while it waits, and events arrive from an idle, so
+     * a download event lands in the middle of a rebuild and starts
+     * another one.
+     */
+    if (!refresh_enter(self, CLAWT_REFRESH_IMAGES))
+        return;
+
+    do
+        refresh_settings_images_once(self);
+    while (refresh_repeat(self, CLAWT_REFRESH_IMAGES));
+}
+
+static void
+refresh_settings_images_once(ClawtWindow *self)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    JsonArray *images;
+    guint i;
+
+    /*
+     * clear_list(), not a loop unparenting children.  GtkListBox wraps an
+     * appended widget in a row of its own and keeps its own record of
+     * them, so unparenting behind its back leaves a list that accepts
+     * appends and draws none of them -- an empty box where the images
+     * were, which is exactly what it did.
+     */
+    clear_list(GTK_LIST_BOX(self->settings_images));
+
+    g_hash_table_remove_all(self->settings_bars);
+
+    reply = clawt_window_request(self, "image.vm_list", NULL);
+
+    if (reply == NULL)
+        return;
+
+    images = json_object_get_array_member(json_node_get_object(reply),
+                                          "images");
+
+    if (json_array_get_length(images) == 0) {
+        GtkWidget *empty = adw_action_row_new();
+
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(empty),
+                                      "No images yet");
+        adw_action_row_set_subtitle(
+            ADW_ACTION_ROW(empty),
+            "A VM needs one. Fedora is the safe pick; anything with "
+            "cloud-init works.");
+        gtk_list_box_append(GTK_LIST_BOX(self->settings_images), empty);
+        return;
+    }
+
+    for (i = 0; i < json_array_get_length(images); i++) {
+        JsonObject *image = json_array_get_object_element(images, i);
+        const gchar *name = clawt_json_string(image, "name", "?");
+        gboolean downloading =
+            json_object_has_member(image, "downloading") &&
+            json_object_get_boolean_member(image, "downloading");
+        gint64 bytes = json_object_get_int_member(image, "bytes");
+        gint64 total = json_object_get_int_member(image, "total");
+        GtkWidget *row = adw_action_row_new();
+        GtkWidget *button;
+
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), name);
+        adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row), FALSE);
+
+        if (downloading) {
+            GtkWidget *bar = gtk_progress_bar_new();
+            g_autofree gchar *done_text = human_size(bytes);
+            g_autofree gchar *total_text = human_size(total);
+            g_autofree gchar *subtitle =
+                g_strdup_printf("%s of %s", done_text, total_text);
+
+            adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
+
+            gtk_widget_set_valign(bar, GTK_ALIGN_CENTER);
+            gtk_widget_set_size_request(bar, 160, -1);
+
+            if (total > 0)
+                gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(bar),
+                                              (gdouble)bytes / total);
+
+            adw_action_row_add_suffix(ADW_ACTION_ROW(row), bar);
+            g_hash_table_insert(self->settings_bars, g_strdup(name),
+                                g_object_ref_sink(bar));
+
+            button = gtk_button_new_from_icon_name("process-stop-symbolic");
+            gtk_widget_set_tooltip_text(button, "Stop this download");
+            g_signal_connect(button, "clicked", G_CALLBACK(on_image_cancel),
+                             self);
+        } else {
+            g_autofree gchar *size = human_size(bytes);
+            const gchar *url = clawt_json_string(image, "url", NULL);
+            g_autofree gchar *subtitle =
+                url != NULL ? g_strdup_printf("%s  \342\200\224  %s", size, url)
+                            : g_strdup(size);
+
+            adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
+
+            button = gtk_button_new_from_icon_name("user-trash-symbolic");
+            gtk_widget_set_tooltip_text(button, "Delete this image");
+            g_signal_connect(button, "clicked", G_CALLBACK(on_image_remove),
+                             self);
+        }
+
+        gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
+        gtk_widget_add_css_class(button, "flat");
+        g_object_set_data_full(G_OBJECT(button), "clawt-image",
+                               g_strdup(name), g_free);
+        adw_action_row_add_suffix(ADW_ACTION_ROW(row), button);
+
+        gtk_list_box_append(GTK_LIST_BOX(self->settings_images), row);
+    }
+}
+
+static void
+on_settings_closed(AdwDialog *dialog, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    (void)dialog;
+
+    /*
+     * Forgotten together.  A bar held past its window is a finalized
+     * widget the next progress event would write to.
+     */
+    self->settings = NULL;
+    self->settings_images = NULL;
+    self->settings_catalog_row = NULL;
+    self->settings_url_row = NULL;
+    g_clear_pointer(&self->settings_catalog, json_node_unref);
+    g_hash_table_remove_all(self->settings_bars);
+}
+
+static void
+on_settings_activate(GSimpleAction *action, GVariant *parameter,
+                     gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    AdwDialog *dialog;
+    GtkWidget *page;
+    GtkWidget *cached_group;
+    GtkWidget *add_group;
+    GtkWidget *catalog_button;
+    GtkWidget *url_button;
+    GtkStringList *labels;
+    JsonArray *sources = NULL;
+    guint i;
+
+    (void)action;
+    (void)parameter;
+
+    if (self->settings != NULL) {
+        adw_dialog_present(self->settings, GTK_WIDGET(self));
+        return;
+    }
+
+    dialog = adw_preferences_dialog_new();
+    adw_dialog_set_title(dialog, "Settings");
+    adw_dialog_set_content_width(dialog, 720);
+    adw_dialog_set_content_height(dialog, 600);
+
+    page = adw_preferences_page_new();
+    adw_preferences_page_set_title(ADW_PREFERENCES_PAGE(page),
+                                   "Cloud images");
+    adw_preferences_page_set_icon_name(ADW_PREFERENCES_PAGE(page),
+                                       "drive-harddisk-symbolic");
+
+    cached_group = adw_preferences_group_new();
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(cached_group),
+                                    "On this machine");
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(cached_group),
+        "One copy serves every agent: a VM writes to an overlay backed by "
+        "the image, never to the image itself.");
+
+    /*
+     * The rows go in a list box of the group's own rather than straight
+     * into the group, so refreshing means emptying one container instead
+     * of tracking which children were ours.
+     */
+    self->settings_images = gtk_list_box_new();
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(self->settings_images),
+                                    GTK_SELECTION_NONE);
+    gtk_widget_add_css_class(self->settings_images, "boxed-list");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(cached_group),
+                              self->settings_images);
+
+    add_group = adw_preferences_group_new();
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(add_group),
+                                    "Fetch another");
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(add_group),
+        "These are suggestions, not a restriction. Any https URL to a "
+        "qcow2 works, and an image with cloud-init needs no preparing.");
+
+    labels = gtk_string_list_new(NULL);
+    self->settings_catalog = clawt_window_request(self, "image.vm_catalog",
+                                                  NULL);
+
+    if (self->settings_catalog != NULL) {
+        sources = json_object_get_array_member(
+            json_node_get_object(self->settings_catalog), "sources");
+
+        for (i = 0; i < json_array_get_length(sources); i++) {
+            gtk_string_list_append(
+                labels, clawt_json_string(
+                    json_array_get_object_element(sources, i), "name", "?"));
+        }
+    }
+
+    self->settings_catalog_row = adw_combo_row_new();
+    adw_preferences_row_set_title(
+        ADW_PREFERENCES_ROW(self->settings_catalog_row), "Suggested");
+    adw_combo_row_set_model(ADW_COMBO_ROW(self->settings_catalog_row),
+                            G_LIST_MODEL(labels));
+
+    catalog_button = gtk_button_new_with_label("Download");
+    gtk_widget_set_valign(catalog_button, GTK_ALIGN_CENTER);
+    gtk_widget_add_css_class(catalog_button, "suggested-action");
+    g_signal_connect(catalog_button, "clicked",
+                     G_CALLBACK(on_download_from_catalog), self);
+    adw_action_row_add_suffix(ADW_ACTION_ROW(self->settings_catalog_row),
+                              catalog_button);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(add_group),
+                              self->settings_catalog_row);
+
+    self->settings_url_row = adw_entry_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(self->settings_url_row),
+                                  "Or a URL of your own");
+    adw_preferences_row_set_use_markup(
+        ADW_PREFERENCES_ROW(self->settings_url_row), FALSE);
+
+    url_button = gtk_button_new_with_label("Download");
+    gtk_widget_set_valign(url_button, GTK_ALIGN_CENTER);
+    g_signal_connect(url_button, "clicked", G_CALLBACK(on_download_from_url),
+                     self);
+    adw_entry_row_add_suffix(ADW_ENTRY_ROW(self->settings_url_row),
+                             url_button);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(add_group),
+                              self->settings_url_row);
+
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(cached_group));
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(add_group));
+    adw_preferences_dialog_add(ADW_PREFERENCES_DIALOG(dialog),
+                               ADW_PREFERENCES_PAGE(page));
+
+    self->settings = dialog;
+    g_signal_connect(dialog, "closed", G_CALLBACK(on_settings_closed), self);
+
+    refresh_settings_images(self);
+    adw_dialog_present(dialog, GTK_WIDGET(self));
+}
+
 static void
 refresh_flow(ClawtWindow *self)
 {
@@ -6176,6 +6822,34 @@ clawt_window_new(AdwApplication *app, ClawtClient *client)
     adw_header_bar_set_title_widget(ADW_HEADER_BAR(sidebar_header),
                                     adw_window_title_new("Agents", NULL));
 
+    /*
+     * Packed before the + button, and therefore drawn to the right of it:
+     * pack_end stacks inward from the edge, so the first one packed is
+     * the outermost.
+     */
+    {
+        GMenu *menu = g_menu_new();
+        GtkWidget *menu_button = gtk_menu_button_new();
+        GSimpleAction *settings_action = g_simple_action_new("settings",
+                                                             NULL);
+
+        g_menu_append(menu, "Settings\342\200\246", "win.settings");
+
+        gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(menu_button),
+                                      "open-menu-symbolic");
+        gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(menu_button),
+                                       G_MENU_MODEL(menu));
+        gtk_widget_set_tooltip_text(menu_button, "Settings");
+        adw_header_bar_pack_end(ADW_HEADER_BAR(sidebar_header), menu_button);
+
+        g_signal_connect(settings_action, "activate",
+                         G_CALLBACK(on_settings_activate), self);
+        g_action_map_add_action(G_ACTION_MAP(self),
+                                G_ACTION(settings_action));
+        g_object_unref(settings_action);
+        g_object_unref(menu);
+    }
+
     new_button = gtk_button_new_from_icon_name("list-add-symbolic");
     gtk_widget_set_tooltip_text(new_button, "Add an agent");
     g_signal_connect(new_button, "clicked", G_CALLBACK(on_new_agent), self);
@@ -6300,6 +6974,8 @@ clawt_window_finalize(GObject *object)
 
     g_free(self->selected_agent);
     g_free(self->inspector_computer);
+    g_clear_pointer(&self->settings_bars, g_hash_table_unref);
+    g_clear_pointer(&self->settings_catalog, json_node_unref);
 
     G_OBJECT_CLASS(clawt_window_parent_class)->finalize(object);
 }
@@ -6323,4 +6999,12 @@ clawt_window_init(ClawtWindow *self)
                                          g_free);
     self->pending = g_ptr_array_new_with_free_func(
         (GDestroyNotify)attachment_free);
+
+    /*
+     * Holds a reference to each bar, so a progress event arriving while
+     * the list is being rebuilt finds a live widget rather than one the
+     * container has already dropped.
+     */
+    self->settings_bars = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                                g_free, g_object_unref);
 }

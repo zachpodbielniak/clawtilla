@@ -76,6 +76,22 @@ GTK4 and libadwaita.  Agents are presented as chats: a sidebar of who is
 here, a transcript in the middle, and everything else about an agent
 behind a tab rather than a settings dialog somewhere else.
 
+*** Settings
+
+The hamburger beside the *+* button, at the top of the sidebar.  It holds
+what belongs to the application rather than to any one agent -- currently
+the *cloud image manager*.
+
+That page lists the VM disk images on this machine with their size and
+where each came from, offers the suggested ones, takes an ~https~ URL of
+your own, and draws a bar per download.  A download is the daemon's, not
+the window's: closing Settings does not stop one, one begun with
+~clawtilla image vm get~ appears here while it runs, and a failure is
+said out loud as a toast even if this window is shut -- otherwise an
+image would simply never appear, with nothing anywhere saying why.
+
+See [[file:computers.org][computers.org]] for what to do with one.
+
 *** The sidebar
 
 Each agent shows a state dot, its description, and badges:

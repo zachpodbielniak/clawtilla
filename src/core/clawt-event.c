@@ -160,6 +160,17 @@ clawt_event_set_detail_int(ClawtEvent *self, const gchar *key, gint64 value)
     clawt_event_set_detail(self, key, text);
 }
 
+gint64
+clawt_event_get_detail_int(ClawtEvent *self, const gchar *key)
+{
+    const gchar *text = clawt_event_get_detail(self, key);
+
+    if (text == NULL)
+        return 0;
+
+    return g_ascii_strtoll(text, NULL, 10);
+}
+
 const gchar *
 clawt_event_get_detail(ClawtEvent *self, const gchar *key)
 {

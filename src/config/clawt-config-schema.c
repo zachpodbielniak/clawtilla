@@ -206,6 +206,14 @@ static const ClawtSchemaEntry schema[] = {
   "agent and readable by the others. It exists so agents can hand each\n"
   "other files without anybody wiring up mounts by hand.", "0.1.0" },
 
+{ "defaults.image_dir", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE,
+  "$XDG_DATA_HOME/clawtilla/images", NULL,
+  "Where downloaded cloud images are kept.\n"
+  "\n"
+  "One copy serves the whole fleet: a VM agent writes to a qcow2 overlay\n"
+  "backed by the image here, never to the image itself. Manage them with\n"
+  "`clawtilla image vm`, or from Settings in the GTK client.", "0.1.0" },
+
 { "defaults.exchange_max_bytes", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "1073741824", NULL,
   "Size cap for the exchange directory. 0 disables the limit.", "0.1.0" },

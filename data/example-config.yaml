@@ -172,6 +172,13 @@ defaults:
   # other files without anybody wiring up mounts by hand.
   exchange_dir: "$XDG_DATA_HOME/clawtilla/exchange"
 
+  # Where downloaded cloud images are kept.
+  #
+  # One copy serves the whole fleet: a VM agent writes to a qcow2 overlay
+  # backed by the image here, never to the image itself. Manage them with
+  # `clawtilla image vm`, or from Settings in the GTK client.
+  image_dir: "$XDG_DATA_HOME/clawtilla/images"
+
   # Size cap for the exchange directory. 0 disables the limit.
   exchange_max_bytes: 1073741824
 

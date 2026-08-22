@@ -351,19 +351,48 @@ forwards the port and fills the address in itself.
 
 *** Which image
 
-*clawtilla ships no disk image and downloads none.*  ~image~ points at a
-qcow2 you already have, and a VM agent without one has no disk at all --
-it defines, it starts, and it never boots.
+*clawtilla ships no disk image.*  ~image~ is a path to a qcow2 on this
+machine, and a VM agent without one has no disk at all -- it defines, it
+starts, and it never boots.
 
-Use a distribution's *cloud* image.  Fedora's lives at
-[[https://fedoraproject.org/cloud/download]]; every distribution
-publishes an equivalent.  They are small, they boot headless, and they
-expect to be handed their configuration on first boot -- which is what
-~cloud_init~ below does.
+It will fetch one for you, though.  Images live in
+~defaults.image_dir~ (~$XDG_DATA_HOME/clawtilla/images~ by default), one
+copy serving the whole fleet:
 
 #+begin_src bash
-clawtilla agent set researcher computer.vm.image ~/vms/Fedora-Cloud-Base-44.qcow2
+clawtilla image vm catalog          # what is suggested
+clawtilla image vm get fedora-44    # fetch it, with a progress bar
+clawtilla image vm list
 #+end_src
+
+In the GTK client the same thing is under the hamburger menu beside the
+*+* button: /Settings/ → /Cloud images/, which lists what is here, offers
+the suggestions, takes a URL of your own, and shows a bar per download.
+Downloads belong to the daemon, so closing that window does not stop one,
+and a download begun from the CLI appears in the window and vice versa.
+
+Then point an agent at it -- or pick it from /Disk image/ in the Agent
+tab, which lists what has been fetched:
+
+#+begin_src bash
+clawtilla agent set researcher computer.vm.image ~/.local/share/clawtilla/images/fedora-44
+#+end_src
+
+*** Where the suggestions come from
+
+The catalog is a starting point, never a restriction: any ~https~ URL to
+a qcow2 works, and ~clawtilla image vm get <url>~ takes one directly.
+
+Two of the entries name a *directory* and a pattern rather than a file,
+because Fedora and CentOS stamp the compose into the filename.  clawtilla
+lists the directory and takes the newest match, so those entries stay
+right until the release itself is retired -- and say so plainly when it
+is, rather than failing as a 404.
+
+A download is verified only in the sense that a short one is refused: if
+the server promised more bytes than it sent, the partial file is deleted
+rather than left looking like an image.  Nothing checks a signature, so
+an https URL from a distribution you trust is the safe habit.
 
 The base is never written to.  A qcow2 overlay is created per agent
 under ~$XDG_DATA_HOME/clawtilla/vms/<agent>/overlay.qcow2~, so several

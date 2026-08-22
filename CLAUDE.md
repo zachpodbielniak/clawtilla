@@ -533,6 +533,25 @@ the same program.
   and the import wrote every file correctly and then did not appear in
   `agent list`.
 
+### GtkListBox keeps its own record of its rows
+
+- It wraps an appended widget in a row of its own, so unparenting
+  children behind its back leaves a list that accepts appends and draws
+  none of them — an empty box where the settings images had been.
+  `clear_list()` exists for this and removes rows through
+  `gtk_list_box_remove()`; it is also the one that survives a popover
+  parented to the list.
+
+### A mirror can refuse a request that does not say who it is
+
+- libsoup sends no `User-Agent` by default and `cloud.centos.org`
+  answers 403 to that. The 403 page is a perfectly good page in which no
+  image matches, so the failure surfaced as "the catalog entry has gone
+  stale" — pointing at the wrong thing entirely. The session names
+  itself, and the listing fetch checks its HTTP status rather than
+  inferring failure from an empty result. Same shape as the download
+  path, where a 404 body would otherwise be written into a .qcow2.
+
 ### A widget's children go before its object data does
 
 - GTK unparents a widget's children while destroying it, and object

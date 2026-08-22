@@ -267,6 +267,18 @@ shared/ is writable by every agent; <agent-id>/ is writable by that
 agent and readable by the others. It exists so agents can hand each
 other files without anybody wiring up mounts by hand.
 
+*** =defaults.image_dir=
+
+- Type :: path
+- Default :: =$XDG_DATA_HOME/clawtilla/images=
+- Since :: 0.1.0
+
+Where downloaded cloud images are kept.
+
+One copy serves the whole fleet: a VM agent writes to a qcow2 overlay
+backed by the image here, never to the image itself. Manage them with
+`clawtilla image vm`, or from Settings in the GTK client.
+
 *** =defaults.exchange_max_bytes=
 
 - Type :: integer

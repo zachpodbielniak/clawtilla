@@ -39,6 +39,7 @@ struct _ClawtDaemon {
     ClawtMcpTools      *mcp_tools;
     ClawtPodBridge     *pod_bridge;
     ClawtPluginManager *plugins;
+    ClawtVmImageStore  *vm_images;
 
     /*
      * Designs waiting to be reviewed.
@@ -406,6 +407,58 @@ merge_gitignore(const gchar *existing)
  * repository: a nested repository there is a surprise, and their outer
  * repository is the one that needs the ignore rules anyway.
  */
+/*
+ * Publishes a download's progress.
+ *
+ * The subject is the image's name so a client can match a row to a bar
+ * without keeping its own bookkeeping, the same way a message event
+ * carries its room.
+ */
+static void
+on_image_progress(ClawtVmImageStore *store,
+                  const gchar       *name,
+                  gint64             done,
+                  gint64             total,
+                  gpointer           user_data)
+{
+    ClawtDaemon *self = user_data;
+    ClawtEvent *event = clawt_event_new("image.progress", name);
+
+    (void)store;
+
+    clawt_event_set_detail_int(event, "done", done);
+    clawt_event_set_detail_int(event, "total", total);
+    clawt_event_bus_publish(self->bus, event);
+    clawt_event_free(event);
+}
+
+static void
+on_image_finished(ClawtVmImageStore *store,
+                  const gchar       *name,
+                  const gchar       *path,
+                  const gchar       *error_message,
+                  gpointer           user_data)
+{
+    ClawtDaemon *self = user_data;
+    ClawtEvent *event = clawt_event_new("image.finished", name);
+
+    (void)store;
+
+    if (path != NULL)
+        clawt_event_set_detail(event, "path", path);
+
+    if (error_message != NULL)
+        clawt_event_set_detail(event, "error", error_message);
+
+    clawt_event_bus_publish(self->bus, event);
+    clawt_event_free(event);
+
+    if (error_message != NULL)
+        g_warning("image %s: %s", name, error_message);
+    else
+        g_message("image %s is ready", name);
+}
+
 static gboolean
 prepare_state_git(const gchar *state_dir, gboolean init_repo,
                   gboolean *created, gchar **ignore_path, GError **error)
@@ -965,6 +1018,7 @@ release_components(ClawtDaemon *self)
     g_clear_object(&self->tasks);
     g_clear_object(&self->rooms);
     g_clear_object(&self->agents);
+    g_clear_object(&self->vm_images);
     g_clear_object(&self->exchange);
     g_clear_object(&self->log);
     g_clear_object(&self->bus);
@@ -1167,6 +1221,24 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
         event_dir,
         (gint)clawt_config_get_int(self->config, "daemon.event_log_days"));
     clawt_event_log_attach(self->log, self->bus);
+
+    {
+        /*
+         * Download progress reaches clients as ordinary events, so a
+         * progress bar is a fold over the same stream everything else
+         * uses -- and a client that connects mid-download is told where
+         * it has got to by image.vm_list, rather than showing nothing
+         * until it finishes.
+         */
+        g_autofree gchar *image_dir =
+            clawt_config_get_path_value(self->config, "defaults.image_dir");
+
+        self->vm_images = clawt_vm_image_store_new(image_dir);
+        g_signal_connect(self->vm_images, "progress",
+                         G_CALLBACK(on_image_progress), self);
+        g_signal_connect(self->vm_images, "finished",
+                         G_CALLBACK(on_image_finished), self);
+    }
 
     exchange_dir = clawt_config_get_path_value(self->config,
                                                "defaults.exchange_dir");
@@ -2608,6 +2680,158 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
+    /*
+     * Cloud images.  A VM needs one, clawtilla ships none, and they are
+     * several hundred megabytes -- so they are fetched deliberately,
+     * ahead of any agent needing one, with progress to watch.
+     */
+    if (g_strcmp0(kind, "image.vm_catalog") == 0) {
+        const ClawtVmImageSource *catalog;
+        gsize n_sources = 0;
+        gsize i;
+
+        catalog = clawt_vm_image_catalog(&n_sources);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "sources");
+        json_builder_begin_array(builder);
+
+        for (i = 0; i < n_sources; i++) {
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "id");
+            json_builder_add_string_value(builder, catalog[i].id);
+            json_builder_set_member_name(builder, "name");
+            json_builder_add_string_value(builder, catalog[i].name);
+            json_builder_set_member_name(builder, "group");
+            json_builder_add_string_value(builder, catalog[i].group);
+            json_builder_set_member_name(builder, "url");
+            json_builder_add_string_value(builder, catalog[i].url);
+
+            if (catalog[i].note != NULL) {
+                json_builder_set_member_name(builder, "note");
+                json_builder_add_string_value(builder, catalog[i].note);
+            }
+
+            json_builder_end_object(builder);
+        }
+
+        json_builder_end_array(builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request,
+                                     json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "image.vm_list") == 0) {
+        g_autoptr(GPtrArray) images = clawt_vm_image_store_list(self->vm_images);
+        guint i;
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "images");
+        json_builder_begin_array(builder);
+
+        for (i = 0; images != NULL && i < images->len; i++) {
+            ClawtVmImage *image = g_ptr_array_index(images, i);
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "name");
+            json_builder_add_string_value(builder, image->name);
+            json_builder_set_member_name(builder, "path");
+            json_builder_add_string_value(builder, image->path);
+            json_builder_set_member_name(builder, "bytes");
+            json_builder_add_int_value(builder, image->bytes);
+            json_builder_set_member_name(builder, "total");
+            json_builder_add_int_value(builder, image->total);
+            json_builder_set_member_name(builder, "downloading");
+            json_builder_add_boolean_value(builder, image->downloading);
+
+            if (image->url != NULL) {
+                json_builder_set_member_name(builder, "url");
+                json_builder_add_string_value(builder, image->url);
+            }
+
+            json_builder_end_object(builder);
+        }
+
+        json_builder_end_array(builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request,
+                                     json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "image.vm_download") == 0) {
+        const gchar *url = clawt_ipc_payload_string(payload, "url");
+        g_autoptr(GError) start_error = NULL;
+        g_autofree gchar *name = NULL;
+
+        if (url == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "a url or a catalog id is required");
+
+        /*
+         * Returns as soon as the transfer is under way.  A handler runs on
+         * the daemon's main context while the client blocks, so waiting
+         * here for half a gigabyte would stall every other client for the
+         * length of the download.
+         */
+        name = clawt_vm_image_store_start(self->vm_images, url,
+                                          clawt_ipc_payload_string(payload,
+                                                                   "name"),
+                                          &start_error);
+
+        if (name == NULL)
+            return clawt_ipc_error_new(request, start_error->code,
+                                       start_error->message);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "name");
+        json_builder_add_string_value(builder, name);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request,
+                                     json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "image.vm_cancel") == 0) {
+        const gchar *name = clawt_ipc_payload_string(payload, "name");
+
+        if (name == NULL || !clawt_vm_image_store_cancel(self->vm_images,
+                                                         name))
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "nothing by that name is downloading");
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "cancelled");
+        json_builder_add_boolean_value(builder, TRUE);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request,
+                                     json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "image.vm_remove") == 0) {
+        const gchar *name = clawt_ipc_payload_string(payload, "name");
+        g_autoptr(GError) remove_error = NULL;
+
+        if (name == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "a name is required");
+
+        if (!clawt_vm_image_store_remove(self->vm_images, name,
+                                         &remove_error))
+            return clawt_ipc_error_new(request, remove_error->code,
+                                       remove_error->message);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "removed");
+        json_builder_add_string_value(builder, name);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request,
+                                     json_builder_get_root(builder));
+    }
+
     if (g_strcmp0(kind, "state.git_init") == 0) {
         g_autofree gchar *ignore_path = NULL;
         gboolean created = FALSE;
@@ -2718,6 +2942,7 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
                 { "computer",    "computer.type" },
                 { "confine",     "computer.host.confine" },
                 { "image",       "computer.container.image" },
+                { "vm_image",    "computer.vm.image" },
                 { "workspace",   "workspace" },
                 { NULL, NULL }
             };

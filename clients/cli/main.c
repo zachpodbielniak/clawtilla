@@ -2027,6 +2027,273 @@ cmd_config(int argc, char *argv[])
     return EXIT_FAILURE;
 }
 
+
+/* ── Cloud images for VMs ────────────────────────────────────────── */
+
+typedef struct {
+    const gchar *name;
+    GMainLoop   *loop;
+    gint         status;
+} ImageWatch;
+
+static gchar *
+human_bytes(gint64 bytes)
+{
+    if (bytes >= 1024 * 1024 * 1024)
+        return g_strdup_printf("%.1f GB", bytes / (1024.0 * 1024.0 * 1024.0));
+
+    if (bytes >= 1024 * 1024)
+        return g_strdup_printf("%.0f MB", bytes / (1024.0 * 1024.0));
+
+    if (bytes >= 1024)
+        return g_strdup_printf("%.0f kB", bytes / 1024.0);
+
+    return g_strdup_printf("%" G_GINT64_FORMAT " B", bytes);
+}
+
+/*
+ * Draws the bar in place.
+ *
+ * A download is the one thing here that takes minutes, and a command that
+ * prints nothing for six of them is indistinguishable from one that has
+ * hung.
+ */
+static void
+draw_progress(const gchar *name, gint64 done, gint64 total)
+{
+    g_autofree gchar *done_text = human_bytes(done);
+    g_autofree gchar *total_text = NULL;
+    gint filled;
+    gint i;
+
+    if (total <= 0) {
+        g_print("\r  %-28s %s   ", name, done_text);
+        return;
+    }
+
+    total_text = human_bytes(total);
+    filled = (gint)(done * 30 / total);
+
+    g_print("\r  %-28s [", name);
+
+    for (i = 0; i < 30; i++)
+        g_print("%s", i < filled ? "#" : "-");
+
+    g_print("] %3" G_GINT64_FORMAT "%%  %s / %s   ",
+            done * 100 / total, done_text, total_text);
+}
+
+static void
+on_image_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
+{
+    ImageWatch *watch = user_data;
+    const gchar *kind = clawt_event_get_kind(event);
+
+    (void)client;
+
+    if (g_strcmp0(clawt_event_get_subject(event), watch->name) != 0)
+        return;
+
+    if (g_strcmp0(kind, "image.progress") == 0) {
+        draw_progress(watch->name,
+                      clawt_event_get_detail_int(event, "done"),
+                      clawt_event_get_detail_int(event, "total"));
+        return;
+    }
+
+    if (g_strcmp0(kind, "image.finished") == 0) {
+        const gchar *failure = clawt_event_get_detail(event, "error");
+
+        g_print("\n");
+
+        if (failure != NULL) {
+            g_printerr("clawtilla: %s\n", failure);
+            watch->status = EXIT_FAILURE;
+        } else {
+            g_print("%s is ready: %s\n", watch->name,
+                    clawt_event_get_detail(event, "path"));
+        }
+
+        g_main_loop_quit(watch->loop);
+    }
+}
+
+static gint
+cmd_image_vm(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verb = (argc > 3) ? argv[3] : "list";
+    JsonObject *root;
+    guint i;
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    if (g_strcmp0(verb, "list") == 0) {
+        JsonArray *images;
+
+        reply = call(client, "image.vm_list", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        images = json_object_get_array_member(json_node_get_object(reply),
+                                              "images");
+
+        if (json_array_get_length(images) == 0) {
+            g_print("No cloud images yet.\n\n");
+            g_print("  clawtilla image vm catalog        what is suggested\n");
+            g_print("  clawtilla image vm get fedora-44  fetch one\n");
+            return EXIT_SUCCESS;
+        }
+
+        for (i = 0; i < json_array_get_length(images); i++) {
+            JsonObject *image = json_array_get_object_element(images, i);
+            g_autofree gchar *size =
+                human_bytes(json_object_get_int_member(image, "bytes"));
+
+            if (json_object_get_boolean_member(image, "downloading")) {
+                gint64 total = json_object_get_int_member(image, "total");
+                g_autofree gchar *expected = human_bytes(total);
+
+                g_print("  %-40s %s of %s (downloading)\n",
+                        member_or(image, "name", "?"), size, expected);
+                continue;
+            }
+
+            g_print("  %-40s %s\n", member_or(image, "name", "?"), size);
+        }
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "catalog") == 0) {
+        JsonArray *sources;
+        const gchar *last_group = NULL;
+
+        reply = call(client, "image.vm_catalog", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        sources = json_object_get_array_member(json_node_get_object(reply),
+                                               "sources");
+
+        for (i = 0; i < json_array_get_length(sources); i++) {
+            JsonObject *source = json_array_get_object_element(sources, i);
+            const gchar *group = member_or(source, "group", "Other");
+
+            if (g_strcmp0(group, last_group) != 0) {
+                g_print("%s%s\n", (last_group != NULL) ? "\n" : "", group);
+                last_group = group;
+            }
+
+            g_print("  %-18s %-28s %s\n", member_or(source, "id", "?"),
+                    member_or(source, "name", "?"),
+                    member_or(source, "note", ""));
+        }
+
+        g_print("\nAny https URL works too:\n");
+        g_print("  clawtilla image vm get https://example.com/disk.qcow2\n");
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "get") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        g_autoptr(GMainContext) context = NULL;
+        g_autoptr(GMainLoop) loop = NULL;
+        ImageWatch watch;
+        const gchar *url = (argc > 4) ? argv[4] : NULL;
+
+        if (url == NULL) {
+            g_printerr("Usage: clawtilla image vm get <url-or-id> "
+                       "[name]\n");
+            g_printerr("  e.g. clawtilla image vm get fedora-44\n");
+            return EXIT_FAILURE;
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "url");
+        json_builder_add_string_value(builder, url);
+
+        if (argc > 5) {
+            json_builder_set_member_name(builder, "name");
+            json_builder_add_string_value(builder, argv[5]);
+        }
+
+        json_builder_end_object(builder);
+
+        /*
+         * Subscribed before asking, because a small image can finish
+         * before a subscription made afterwards would have seen anything
+         * -- and then this waits for an event that has already been and
+         * gone.
+         */
+        watch.loop = loop = g_main_loop_new(NULL, FALSE);
+        watch.status = EXIT_SUCCESS;
+        watch.name = NULL;
+
+        g_signal_connect(client, "event", G_CALLBACK(on_image_event),
+                         &watch);
+
+        if (!clawt_client_subscribe(client, 0, NULL, NULL)) {
+            g_printerr("clawtilla: could not subscribe to the event "
+                       "stream\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "image.vm_download",
+                     json_builder_get_root(builder));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        root = json_node_get_object(reply);
+        watch.name = member_or(root, "name", url);
+
+        g_print("Fetching %s\n", watch.name);
+
+        context = g_main_context_ref(g_main_context_default());
+        (void)context;
+
+        g_main_loop_run(loop);
+
+        return watch.status;
+    }
+
+    if (g_strcmp0(verb, "rm") == 0 || g_strcmp0(verb, "cancel") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        const gchar *name = (argc > 4) ? argv[4] : NULL;
+
+        if (name == NULL) {
+            g_printerr("Usage: clawtilla image vm %s <name>\n", verb);
+            return EXIT_FAILURE;
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "name");
+        json_builder_add_string_value(builder, name);
+        json_builder_end_object(builder);
+
+        reply = call(client,
+                     g_strcmp0(verb, "rm") == 0 ? "image.vm_remove"
+                                                : "image.vm_cancel",
+                     json_builder_get_root(builder));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("%s %s\n", name,
+                g_strcmp0(verb, "rm") == 0 ? "removed" : "cancelled");
+
+        return EXIT_SUCCESS;
+    }
+
+    g_printerr("Usage: clawtilla image vm <list|catalog|get|rm|cancel>\n");
+    return EXIT_FAILURE;
+}
+
 static gint
 cmd_image(int argc, char *argv[])
 {
@@ -2038,8 +2305,8 @@ cmd_image(int argc, char *argv[])
     const gchar *last_group = NULL;
     guint i;
 
-    (void)argc;
-    (void)argv;
+    if (argc > 2 && g_strcmp0(argv[2], "vm") == 0)
+        return cmd_image_vm(argc, argv);
 
     client = connect_to_daemon();
     if (client == NULL)
@@ -2075,6 +2342,7 @@ cmd_image(int argc, char *argv[])
 
     g_print("\nAny other reference podman can pull works too.\n");
     g_print("Add your own to defaults.container_images in the config.\n");
+    g_print("\nFor VM disk images: clawtilla image vm\n");
 
     return EXIT_SUCCESS;
 }

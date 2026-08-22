@@ -89,6 +89,19 @@ void clawt_event_set_detail_int(ClawtEvent  *self,
 const gchar *clawt_event_get_detail(ClawtEvent *self, const gchar *key);
 
 /**
+ * clawt_event_get_detail_int:
+ * @self: a #ClawtEvent
+ * @key: a detail set with clawt_event_set_detail_int()
+ *
+ * Details travel as strings, so this is the counterpart that turns one
+ * back -- without it every caller writes the same g_ascii_strtoll().
+ *
+ * Returns: the value, or 0 when there is no such detail or it is not a
+ *   number
+ */
+gint64 clawt_event_get_detail_int(ClawtEvent *self, const gchar *key);
+
+/**
  * clawt_event_to_json:
  * @self: a #ClawtEvent
  *
