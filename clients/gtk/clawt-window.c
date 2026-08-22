@@ -740,6 +740,24 @@ on_context_pressed(GtkGestureClick *gesture, gint n_press, gdouble x,
     gtk_popover_popup(GTK_POPOVER(menu->popover));
 }
 
+/*
+ * Takes the popover off its owner while the owner is still a widget.
+ *
+ * A popover given a parent by hand is a child that parent knows nothing
+ * about, so nothing else will remove it.
+ */
+static void
+on_menu_owner_destroyed(GtkWidget *widget, gpointer user_data)
+{
+    ContextMenu *menu = user_data;
+
+    (void)widget;
+
+    if (menu->popover != NULL &&
+        gtk_widget_get_parent(menu->popover) != NULL)
+        gtk_widget_unparent(menu->popover);
+}
+
 static void
 add_context_menu(ClawtWindow *self, GtkWidget *widget,
                  const MenuEntry *entries, gsize n_entries,
@@ -804,10 +822,18 @@ add_context_menu(ClawtWindow *self, GtkWidget *widget,
     gtk_widget_add_controller(widget, GTK_EVENT_CONTROLLER(gesture));
 
     /*
-     * Tied to the widget's lifetime: the popover is one of its children
-     * and has to be unparented before it goes, or GTK complains at
-     * teardown.
+     * Unparented from ::destroy, not from the object data's notify.
+     *
+     * qdata is cleared in finalize, and gtk_widget_finalize() checks for
+     * leftover children *before* chaining up to it -- so the notify ran
+     * too late and every chip in a cleared transcript warned "Finalizing
+     * GtkButton, but it still has children left: GtkPopover". ::destroy
+     * is emitted from dispose, which is early enough for the child to be
+     * gone before anything counts them.
      */
+    g_signal_connect(widget, "destroy", G_CALLBACK(on_menu_owner_destroyed),
+                     menu);
+
     g_object_set_data_full(G_OBJECT(widget), "context-menu", menu,
                            context_menu_free);
 }
