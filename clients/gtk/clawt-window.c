@@ -31,6 +31,23 @@ typedef struct {
     JsonNode    *catalog;
 } ModelChooser;
 
+/*
+ * The container image, as a list plus a way to type one that is not on
+ * it.
+ *
+ * The catalogue is a suggestion, never a restriction -- any reference
+ * podman can pull is valid -- so the last entry is always "Other" and
+ * selecting it reveals a free-text row.  The daemon merges the user's
+ * own images from defaults.container_images into the list before it gets
+ * here, so this does not need to know where an entry came from.
+ */
+typedef struct {
+    ClawtWindow *window;
+    GtkWidget   *row;
+    GtkWidget   *entry;
+    JsonNode    *catalog;
+} ImageChooser;
+
 /* Defined below; the inspector and the create dialog both use them. */
 static JsonObject  *chooser_provider(ModelChooser *chooser);
 static const gchar *chooser_provider_id(ModelChooser *chooser);
@@ -40,6 +57,14 @@ static void         model_chooser_build(ModelChooser *chooser,
                                         GtkWidget    *group,
                                         const gchar  *want_provider,
                                         const gchar  *want_model);
+static void         image_chooser_build(ImageChooser *chooser,
+                                        ClawtWindow  *window,
+                                        GtkWidget    *group,
+                                        const gchar  *want);
+static gchar *      image_chooser_value(ImageChooser *chooser);
+static void         on_image_changed(GObject    *object,
+                                     GParamSpec *pspec,
+                                     gpointer    user_data);
 
 /*
  * Every view that rebuilds a list from a daemon reply needs one of these.
@@ -84,6 +109,7 @@ struct _ClawtWindow {
     GtkWidget         *autostart_row;
     GtkWidget         *chief_row;
     ModelChooser       inspector_models;
+    ImageChooser       inspector_image;
 
     /* Mailbox */
     GtkListBox        *mailbox_list;
@@ -750,6 +776,13 @@ on_save_agent(GtkButton *button, gpointer user_data)
                                           ADW_COMBO_ROW(self->computer_row)),
                                       3)]);
 
+    if (self->inspector_image.row != NULL) {
+        g_autofree gchar *image = image_chooser_value(&self->inspector_image);
+
+        if (image != NULL)
+            ok &= apply_setting(self, "computer.container.image", image);
+    }
+
     ok &= apply_setting(self, "runtime.restart",
                         restarts[MIN(adw_combo_row_get_selected(
                                          ADW_COMBO_ROW(self->restart_row)),
@@ -964,6 +997,16 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
     clear_box(self->inspector);
     g_clear_pointer(&self->inspector_models.catalog, json_node_unref);
 
+    /*
+     * The image chooser is rebuilt with the inspector, so its catalogue
+     * and its widget pointers are cleared together -- a stale row
+     * pointer here is one the save handler would write through after
+     * the widget had been destroyed.
+     */
+    g_clear_pointer(&self->inspector_image.catalog, json_node_unref);
+    self->inspector_image.row = NULL;
+    self->inspector_image.entry = NULL;
+
     /* ── What it is, and what it is doing ── */
     group = adw_preferences_group_new();
     adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group), "Agent");
@@ -1014,6 +1057,20 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
                                                      "none"));
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
                               self->computer_row);
+
+    /*
+     * The image, for a container agent.  Built only when there is one:
+     * an agent that is not a container has nothing to show, and the
+     * inspector is rebuilt whenever the selection changes, so switching
+     * the computer type and saving brings the row in on the next
+     * refresh.
+     */
+    if (g_strcmp0(clawt_json_string(agent, "computer", "none"),
+                  "container") == 0)
+        image_chooser_build(&self->inspector_image, self, group,
+                            clawt_json_string(agent, "image", NULL));
+    else
+        self->inspector_image.row = NULL;
 
     self->restart_row = combo_row("Restart", restarts,
                                   clawt_json_string(agent, "restart",
@@ -1648,6 +1705,7 @@ typedef struct {
     GtkWidget    *computer_row;
     GtkWidget    *describe_entry;
     ModelChooser  models;
+    ImageChooser  image;
 } NewAgentDialog;
 
 static void
@@ -1656,6 +1714,7 @@ new_agent_dialog_free(gpointer data)
     NewAgentDialog *dialog = data;
 
     g_clear_pointer(&dialog->models.catalog, json_node_unref);
+    g_clear_pointer(&dialog->image.catalog, json_node_unref);
     g_free(dialog);
 }
 
@@ -1796,6 +1855,174 @@ chooser_provider_id(ModelChooser *chooser)
                               : NULL;
 }
 
+/* The reference currently chosen, from the list or from the entry. */
+static gchar *
+image_chooser_value(ImageChooser *chooser)
+{
+    JsonArray *images;
+    guint selected;
+
+    if (chooser->catalog == NULL)
+        return NULL;
+
+    images = json_object_get_array_member(
+        json_node_get_object(chooser->catalog), "images");
+    selected = adw_combo_row_get_selected(ADW_COMBO_ROW(chooser->row));
+
+    if (selected < json_array_get_length(images))
+        return g_strdup(clawt_json_string(
+            json_array_get_object_element(images, selected), "reference",
+            NULL));
+
+    {
+        const gchar *typed =
+            gtk_editable_get_text(GTK_EDITABLE(chooser->entry));
+
+        return (typed != NULL && *typed != '\0') ? g_strdup(typed) : NULL;
+    }
+}
+
+static void
+on_image_changed(GObject *object, GParamSpec *pspec, gpointer user_data)
+{
+    ImageChooser *chooser = user_data;
+    JsonArray *images;
+    guint selected;
+
+    (void)object;
+    (void)pspec;
+
+    if (chooser->catalog == NULL)
+        return;
+
+    images = json_object_get_array_member(
+        json_node_get_object(chooser->catalog), "images");
+    selected = adw_combo_row_get_selected(ADW_COMBO_ROW(chooser->row));
+
+    /* "Other" is the one entry past the end of the catalogue. */
+    gtk_widget_set_visible(chooser->entry,
+                           selected >= json_array_get_length(images));
+
+    if (selected < json_array_get_length(images)) {
+        JsonObject *image = json_array_get_object_element(images, selected);
+        const gchar *note = clawt_json_string(image, "note", NULL);
+        const gchar *reference = clawt_json_string(image, "reference", "");
+
+        /*
+         * The subtitle carries the full reference, because a label like
+         * "Fedora 44" does not say which registry it comes from -- and
+         * that is exactly what goes wrong when two machines disagree
+         * about an unqualified name.
+         */
+        if (note != NULL) {
+            g_autofree gchar *subtitle =
+                g_strdup_printf("%s -- %s", reference, note);
+
+            adw_action_row_set_subtitle(ADW_ACTION_ROW(chooser->row),
+                                        subtitle);
+        } else {
+            adw_action_row_set_subtitle(ADW_ACTION_ROW(chooser->row),
+                                        reference);
+        }
+    } else {
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(chooser->row),
+                                    "any reference podman can pull");
+    }
+}
+
+/*
+ * Adds the image rows to a group, selecting @want if it is on the list
+ * and putting it in the entry if it is not.
+ */
+static void
+image_chooser_build(ImageChooser *chooser, ClawtWindow *window,
+                    GtkWidget *group, const gchar *want)
+{
+    GtkStringList *labels = gtk_string_list_new(NULL);
+    JsonArray *images = NULL;
+    const gchar *fallback = NULL;
+    gboolean matched = FALSE;
+    guint chosen = 0;
+    guint i;
+
+    chooser->window = window;
+
+    chooser->row = adw_combo_row_new();
+    adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(chooser->row),
+                                       FALSE);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(chooser->row), "Image");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), chooser->row);
+
+    chooser->entry = adw_entry_row_new();
+    adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(chooser->entry),
+                                       FALSE);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(chooser->entry),
+                                  "Image reference");
+    gtk_widget_set_visible(chooser->entry, FALSE);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), chooser->entry);
+
+    chooser->catalog = clawt_window_request(window, "image.list", NULL);
+
+    if (chooser->catalog != NULL) {
+        JsonObject *root = json_node_get_object(chooser->catalog);
+
+        images = json_object_get_array_member(root, "images");
+        fallback = clawt_json_string(root, "default", NULL);
+
+        for (i = 0; i < json_array_get_length(images); i++) {
+            JsonObject *image = json_array_get_object_element(images, i);
+            const gchar *reference = clawt_json_string(image, "reference", "");
+            /*
+             * The label alone, not the group.  AdwComboRow takes a flat
+             * GListModel and sizes its popup to the row, so a
+             * "Enterprise Linux / CentOS Stream 10" prefix truncates to
+             * the part every entry in the group shares -- which is the
+             * half that carries no information. The catalogue's labels
+             * are already distinct, the order groups them, and the full
+             * reference is on the subtitle once one is picked.
+             */
+            gtk_string_list_append(labels,
+                                   clawt_json_string(image, "label",
+                                                     reference));
+
+            if (want != NULL && g_strcmp0(reference, want) == 0) {
+                chosen = i;
+                matched = TRUE;
+            }
+        }
+    }
+
+    gtk_string_list_append(labels, "Other\342\200\246");
+    adw_combo_row_set_model(ADW_COMBO_ROW(chooser->row),
+                            G_LIST_MODEL(labels));
+
+    /*
+     * A reference that is not on the list is not an error: it goes into
+     * the entry, selected as "Other", so an agent configured by hand
+     * keeps what it was given instead of being silently retargeted at
+     * whatever happened to be first.
+     */
+    if (want != NULL && *want != '\0' && !matched) {
+        gtk_editable_set_text(GTK_EDITABLE(chooser->entry), want);
+        chosen = (images != NULL) ? json_array_get_length(images) : 0;
+    } else if (want == NULL && fallback != NULL && images != NULL) {
+        for (i = 0; i < json_array_get_length(images); i++) {
+            if (g_strcmp0(clawt_json_string(
+                    json_array_get_object_element(images, i),
+                    "reference", ""), fallback) == 0) {
+                chosen = i;
+                break;
+            }
+        }
+    }
+
+    adw_combo_row_set_selected(ADW_COMBO_ROW(chooser->row), chosen);
+
+    g_signal_connect(chooser->row, "notify::selected",
+                     G_CALLBACK(on_image_changed), chooser);
+    on_image_changed(NULL, NULL, chooser);
+}
+
 /*
  * Adds the provider and model rows to a group, populated from the daemon
  * so every view agrees on what exists.
@@ -1897,6 +2124,7 @@ on_create_manually(GtkButton *button, gpointer user_data)
     JsonObject *provider = chooser_provider(&dialog->models);
     g_autoptr(JsonNode) reply = NULL;
     g_autofree gchar *model = NULL;
+    g_autofree gchar *image = NULL;
     static const gchar *const computers[] = { "none", "host", "container",
                                               "vm" };
     const gchar *agent_id;
@@ -1914,6 +2142,14 @@ on_create_manually(GtkButton *button, gpointer user_data)
     model = chooser_model(&dialog->models);
     selected = adw_combo_row_get_selected(ADW_COMBO_ROW(dialog->computer_row));
 
+    /*
+     * The image is only sent for a container.  Setting it on a host or
+     * vm agent would write a key that backend never reads, and it then
+     * looks like a setting that is being ignored.
+     */
+    if (g_strcmp0(computers[MIN(selected, 3)], "container") == 0)
+        image = image_chooser_value(&dialog->image);
+
     reply = clawt_window_request(
         self, "agent.create",
         clawt_build_payload(
@@ -1922,6 +2158,7 @@ on_create_manually(GtkButton *button, gpointer user_data)
                         ? clawt_json_string(provider, "id", NULL) : NULL,
             "model", model,
             "computer", computers[MIN(selected, 3)],
+            "image", image,
             NULL));
 
     /*
@@ -2036,6 +2273,35 @@ on_design_with_ai(GtkButton *button, gpointer user_data)
     }
 }
 
+/*
+ * Shows the image rows only for a container.
+ *
+ * Sensitivity would be the softer choice, but a greyed-out Image row on
+ * a host agent still reads as "this agent has an image, you just cannot
+ * change it", which is not true.
+ */
+static void
+on_computer_type_changed(GObject *object, GParamSpec *pspec,
+                         gpointer user_data)
+{
+    NewAgentDialog *dialog = user_data;
+    guint selected;
+    gboolean is_container;
+
+    (void)object;
+    (void)pspec;
+
+    selected = adw_combo_row_get_selected(ADW_COMBO_ROW(dialog->computer_row));
+    is_container = (selected == 2);   /* none, host, container, vm */
+
+    gtk_widget_set_visible(dialog->image.row, is_container);
+
+    if (!is_container)
+        gtk_widget_set_visible(dialog->image.entry, FALSE);
+    else
+        on_image_changed(NULL, NULL, &dialog->image);
+}
+
 static void
 on_new_agent(GtkButton *button, gpointer user_data)
 {
@@ -2082,6 +2348,16 @@ on_new_agent(GtkButton *button, gpointer user_data)
                             G_LIST_MODEL(gtk_string_list_new(computers)));
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(manual),
                               dialog->computer_row);
+
+    /*
+     * The image, shown only while "container" is the chosen computer.
+     * The other backends do not read it, and a row that quietly does
+     * nothing is worse than no row.
+     */
+    image_chooser_build(&dialog->image, self, manual, NULL);
+    g_signal_connect(dialog->computer_row, "notify::selected",
+                     G_CALLBACK(on_computer_type_changed), dialog);
+    on_computer_type_changed(NULL, NULL, dialog);
 
     create = gtk_button_new_with_label("Create");
     gtk_widget_add_css_class(create, "suggested-action");

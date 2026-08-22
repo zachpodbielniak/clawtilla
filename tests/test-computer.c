@@ -1012,6 +1012,110 @@ test_container_command(void)
     g_assert_nonnull(clawt_container_computer_get_command(container));
 }
 
+/*
+ * The image catalogue is a suggestion list, and the first entry is what
+ * an agent gets when it names none.
+ *
+ * The default used to be a Debian slim image nobody had pulled, so a
+ * first container agent failed with "no such image" against something
+ * the user had never chosen.  Fedora because that is what clawtilla is
+ * developed on.
+ */
+static void
+test_image_catalog(void)
+{
+    const ClawtImageInfo *catalog;
+    gsize n_images = 0;
+    gsize i;
+
+    catalog = clawt_image_catalog_get(&n_images);
+    g_assert_nonnull(catalog);
+    g_assert_cmpuint(n_images, >, 0);
+
+    g_assert_cmpstr(clawt_image_catalog_default(), ==,
+                    "registry.fedoraproject.org/fedora:44");
+    g_assert_cmpstr(catalog[0].reference, ==, clawt_image_catalog_default());
+
+    for (i = 0; i < n_images; i++) {
+        g_assert_nonnull(catalog[i].reference);
+        g_assert_nonnull(catalog[i].label);
+        g_assert_nonnull(catalog[i].group);
+
+        /*
+         * Every reference names its registry.  A bare "fedora:44" is
+         * resolved through podman's unqualified-search list, which is
+         * per-machine, so the same config would pull different images on
+         * two hosts -- and the difference surfaces much later as a
+         * missing package.
+         */
+        g_assert_nonnull(strchr(catalog[i].reference, '/'));
+        g_assert_nonnull(strchr(catalog[i].reference, ':'));
+    }
+}
+
+/*
+ * An agent that names no image inherits defaults.container_image, and
+ * the schema default backs that up.  Without the inheritance the fleet
+ * default was a documented setting that nothing read.
+ */
+static void
+test_image_inherits_the_default(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+        "defaults:\n"
+        "  container_image: \"registry.example.com/base:1\"\n"
+        "agents:\n"
+        "  - id: inherits\n"
+        "    computer: {type: container}\n"
+        "  - id: explicit\n"
+        "    computer: {type: container, container: {image: \"other:2\"}}\n",
+        &error);
+    GPtrArray *agents;
+
+    g_assert_no_error(error);
+    g_assert_nonnull(config);
+
+    agents = clawt_config_get_agents(config);
+    g_assert_cmpuint(agents->len, ==, 2);
+
+    g_assert_cmpstr(clawt_agent_config_get_string(
+                        g_ptr_array_index(agents, 0),
+                        "computer.container.image"),
+                    ==, "registry.example.com/base:1");
+
+    /* An agent that named one keeps it. */
+    g_assert_cmpstr(clawt_agent_config_get_string(
+                        g_ptr_array_index(agents, 1),
+                        "computer.container.image"),
+                    ==, "other:2");
+}
+
+/*
+ * With no fleet default either, the schema's own default applies -- so a
+ * config that says nothing about images still produces an agent with a
+ * working one.
+ */
+static void
+test_image_falls_back_to_the_schema(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+        "agents:\n"
+        "  - id: bare\n"
+        "    computer: {type: container}\n",
+        &error);
+    GPtrArray *agents;
+
+    g_assert_no_error(error);
+    agents = clawt_config_get_agents(config);
+
+    g_assert_cmpstr(clawt_agent_config_get_string(
+                        g_ptr_array_index(agents, 0),
+                        "computer.container.image"),
+                    ==, clawt_image_catalog_default());
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1081,6 +1185,11 @@ main(int argc, char *argv[])
     g_test_add_func("/computer/container-connection-default",
                     test_container_connection_default);
     g_test_add_func("/computer/container-command", test_container_command);
+    g_test_add_func("/computer/image-catalog", test_image_catalog);
+    g_test_add_func("/computer/image-inherits-the-default",
+                    test_image_inherits_the_default);
+    g_test_add_func("/computer/image-falls-back-to-the-schema",
+                    test_image_falls_back_to_the_schema);
     g_test_add_func("/computer/socket-path-length",
                     test_an_over_long_socket_path_is_refused);
 

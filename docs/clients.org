@@ -29,7 +29,7 @@ Global options: ~-c/--config~, ~-s/--socket~, ~-V/--version~,
 | ~status~ | version, config path, agent and client counts |
 | ~agent list~ | id, state, queue depth, link, description |
 | ~agent show <id>~ | everything about one agent |
-| ~agent create --id X [--name…] [--model…] [--computer…]~ | |
+| ~agent create --id X [--name…] [--model…] [--computer…] [--image…]~ | |
 | ~agent new --ai "<description>" [--commit]~ | design one by describing it |
 | ~agent rm <id>~ | remove from the config; state stays on disk |
 | ~agent start/stop/restart <id>~ | |
@@ -46,6 +46,7 @@ Global options: ~-c/--config~, ~-s/--socket~, ~-V/--version~,
 | ~computer status <agent>~ | |
 | ~cp <src> <dst>~ | either side may be ~<agent>:<path>~ |
 | ~config show/validate/render/edit~ | |
+| ~image~ | container images clawtilla suggests, and your own |
 | ~plugin list~ | |
 | ~integration list/health <agent>~ | |
 
@@ -162,7 +163,17 @@ event kind and the widget are the easy part.
 *** Adding an agent
 
 The ~+~ button offers both paths: fill in id, model and computer by hand,
-or describe what you want and let clawtilla draft it.  *The AI path shows
+or describe what you want and let clawtilla draft it.
+
+Choosing ~container~ reveals an *Image* dropdown, listing your own images
+from ~defaults.container_images~ first and clawtilla's suggestions after,
+with the full reference shown underneath the selection -- a label like
+"Fedora 44" does not say which registry it came from, and that is exactly
+what differs between two machines.  /Other.../ reveals a free-text field:
+the list is a suggestion, and any reference podman can pull is valid.
+
+The same dropdown is on the Agent tab for a container agent, so the image
+can be changed later.  *The AI path shows
 the proposed configuration and waits for you to confirm* -- a model's
 proposal becoming an agent without anyone reading it is the kind of
 convenience nobody asks for twice.

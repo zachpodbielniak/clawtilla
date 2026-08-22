@@ -90,6 +90,7 @@ static const gchar *usage_text =
     "  cp <src> <dst>                Copy files to or from an agent's computer\n"
     "  config <verb>                 Show, validate or render configuration\n"
     "  plugin list                   List loaded plugins\n"
+    "  image                         Container images clawtilla suggests\n"
     "\n"
     "Examples:\n"
     "  # Write a starter config and start the daemon\n"
@@ -125,7 +126,8 @@ static const gchar *usage_text =
  */
 static const gchar *const verbs[] = {
     "daemon", "status", "agent", "send", "chat", "mailbox", "room", "task",
-    "computer", "cp", "config", "plugin", "integration", "model", NULL
+    "computer", "cp", "config", "plugin", "integration", "model", "image",
+    NULL
 };
 
 /*
@@ -487,6 +489,10 @@ cmd_agent(int argc, char *argv[])
                 json_object_has_member(agent, "detail") ? " - " : "",
                 member_or(agent, "detail", ""));
         g_print("model:       %s\n", member_or(agent, "model", "-"));
+
+        /* Only container agents have one, so only they report one. */
+        if (json_object_has_member(agent, "image"))
+            g_print("image:       %s\n", member_or(agent, "image", "-"));
         g_print("computer:    %s\n", member_or(agent, "computer", "none"));
         g_print("can:         %s\n", member_or(agent, "caps", "-"));
         g_print("queue:       %" G_GINT64_FORMAT "\n",
@@ -607,7 +613,8 @@ cmd_agent(int argc, char *argv[])
             if (!g_str_has_prefix(flag, "--") || i + 1 >= argc) {
                 g_printerr("clawtilla: unexpected argument '%s'\n", flag);
                 g_printerr("Usage: clawtilla agent create --id <id> "
-                           "[--name X] [--model X] [--computer X]\n");
+                           "[--name X] [--model X] [--computer X] "
+                           "[--image X]\n");
                 return EXIT_FAILURE;
             }
 
@@ -1456,6 +1463,58 @@ cmd_config(int argc, char *argv[])
 }
 
 static gint
+cmd_image(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    JsonObject *root;
+    JsonArray *images;
+    const gchar *fallback;
+    const gchar *last_group = NULL;
+    guint i;
+
+    (void)argc;
+    (void)argv;
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    reply = call(client, "image.list", NULL);
+    if (reply == NULL)
+        return EXIT_FAILURE;
+
+    root = json_node_get_object(reply);
+    images = json_object_get_array_member(root, "images");
+    fallback = member_or(root, "default", NULL);
+
+    for (i = 0; i < json_array_get_length(images); i++) {
+        JsonObject *image = json_array_get_object_element(images, i);
+        const gchar *reference = member_or(image, "reference", "?");
+        const gchar *group = member_or(image, "group", NULL);
+
+        if (g_strcmp0(group, last_group) != 0) {
+            g_print("%s%s\n", (last_group != NULL) ? "\n" : "",
+                    group != NULL ? group : "Other");
+            last_group = group;
+        }
+
+        /*
+         * The default is marked rather than just being first: the user's
+         * own images are listed above it, so position says nothing.
+         */
+        g_print("  %-46s %s%s\n", reference,
+                (g_strcmp0(reference, fallback) == 0) ? "(default) " : "",
+                member_or(image, "note", ""));
+    }
+
+    g_print("\nAny other reference podman can pull works too.\n");
+    g_print("Add your own to defaults.container_images in the config.\n");
+
+    return EXIT_SUCCESS;
+}
+
+static gint
 cmd_model(int argc, char *argv[])
 {
     g_autoptr(ClawtClient) client = NULL;
@@ -1833,6 +1892,9 @@ main(int argc, char *argv[])
 
     if (g_strcmp0(argv[1], "integration") == 0)
         return cmd_integration(argc, argv);
+
+    if (g_strcmp0(argv[1], "image") == 0)
+        return cmd_image(argc, argv);
 
     if (g_strcmp0(argv[1], "model") == 0)
         return cmd_model(argc, argv);

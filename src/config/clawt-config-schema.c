@@ -147,6 +147,32 @@ static const ClawtSchemaEntry schema[] = {
   "bigger grant than an agent that can only talk, and it should be asked\n"
   "for rather than inherited.", "0.1.0" },
 
+{ "defaults.container_image", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  "registry.fedoraproject.org/fedora:44", NULL,
+  "Image a container agent gets when it does not name one.\n"
+  "\n"
+  "Fedora because that is what clawtilla is developed and tested on, and\n"
+  "because a container whose package manager you already know is one you\n"
+  "can debug. Change it once here rather than per agent.", "0.1.0" },
+
+{ "defaults.container_images", CLAWT_SCHEMA_STRING_LIST,
+  CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
+  "Extra images to offer in a client's image list.\n"
+  "\n"
+  "Added to the built-in suggestions rather than replacing them, and\n"
+  "shown first: these are yours, and a list where your own images are\n"
+  "below a dozen you will never pick is one you scroll past.\n"
+  "\n"
+  "An entry is a reference, optionally followed by ' -- ' and a note:\n"
+  "\n"
+  "  container_images:\n"
+  "    - \"registry.example.com/team/devbox:latest -- ours, has the "
+  "toolchain\"\n"
+  "    - \"docker.io/library/haskell:9.10\"\n"
+  "\n"
+  "Nothing is validated here. A reference podman cannot pull fails at "
+  "start with podman's own error.", "0.1.0" },
+
 { "defaults.workspace_root", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE,
   "~/.clawtilla/agents", NULL,
   "Where per-agent workspaces are scaffolded.\n"
@@ -661,8 +687,14 @@ static const ClawtSchemaEntry schema[] = {
   "Settings for computer.type: container.", "0.1.0" },
 
 { "agents.computer.container.image", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
-  "docker.io/library/debian:stable-slim", NULL,
-  "Image the container is created from.", "0.1.0" },
+  "registry.fedoraproject.org/fedora:44", NULL,
+  "Image the container is created from.\n"
+  "\n"
+  "Any reference podman can pull. Unset means defaults.container_image.\n"
+  "\n"
+  "Name the registry: a bare 'fedora:44' is resolved through podman's\n"
+  "unqualified-search list, which is per-machine, so the same config can\n"
+  "pull a different image on two hosts.", "0.1.0" },
 
 { "agents.computer.container.name", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,

@@ -62,6 +62,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/config/clawt-config-render.h \
 	$(SRCDIR)/computer/clawt-mount.h \
 	$(SRCDIR)/computer/clawt-exchange.h \
+	$(SRCDIR)/computer/clawt-image-catalog.h \
 	$(SRCDIR)/link/clawt-link.h \
 	$(SRCDIR)/link/clawt-link-server.h \
 	$(SRCDIR)/ipc/clawt-ipc-proto.h \
@@ -122,6 +123,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/config/clawt-config-render.c \
 	$(SRCDIR)/computer/clawt-mount.c \
 	$(SRCDIR)/computer/clawt-exchange.c \
+	$(SRCDIR)/computer/clawt-image-catalog.c \
 	$(SRCDIR)/link/clawt-link.c \
 	$(SRCDIR)/link/clawt-link-server.c \
 	$(SRCDIR)/ipc/clawt-ipc-proto.c \

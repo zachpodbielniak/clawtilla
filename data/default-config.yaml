@@ -118,6 +118,28 @@ defaults:
   # for rather than inherited.
   computer: "none"
 
+  # Image a container agent gets when it does not name one.
+  #
+  # Fedora because that is what clawtilla is developed and tested on, and
+  # because a container whose package manager you already know is one you
+  # can debug. Change it once here rather than per agent.
+  container_image: "registry.fedoraproject.org/fedora:44"
+
+  # # Extra images to offer in a client's image list.
+  # #
+  # # Added to the built-in suggestions rather than replacing them, and
+  # # shown first: these are yours, and a list where your own images are
+  # # below a dozen you will never pick is one you scroll past.
+  # #
+  # # An entry is a reference, optionally followed by ' -- ' and a note:
+  # #
+  # #   container_images:
+  # #     - "registry.example.com/team/devbox:latest -- ours, has the toolchain"
+  # #     - "docker.io/library/haskell:9.10"
+  # #
+  # # Nothing is validated here. A reference podman cannot pull fails at start with podman's own error.
+  # container_images: []
+
   # Where per-agent workspaces are scaffolded.
   #
   # Each agent gets a directory here holding its libreclaw config, its

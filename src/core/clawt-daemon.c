@@ -1192,6 +1192,20 @@ add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
                      CLAWT_TYPE_COMPUTER_TYPE,
                      clawt_agent_config_get_enum(config, "computer.type")));
 
+    /*
+     * Reported for a container agent so a client can show what it will
+     * run in, including the default it inherited.  Left out otherwise:
+     * no other backend reads it, and reporting a key the agent does not
+     * use invites a client to offer editing it.
+     */
+    if (clawt_agent_config_get_enum(config, "computer.type") ==
+        CLAWT_COMPUTER_CONTAINER) {
+        json_builder_set_member_name(builder, "image");
+        json_builder_add_string_value(
+            builder, clawt_agent_config_get_string(config,
+                                                   "computer.container.image"));
+    }
+
     json_builder_set_member_name(builder, "model");
     json_builder_add_string_value(
         builder, clawt_agent_config_get_string(config, "model.model"));
@@ -1635,6 +1649,7 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
                 { "provider",    "model.provider" },
                 { "computer",    "computer.type" },
                 { "confine",     "computer.host.confine" },
+                { "image",       "computer.container.image" },
                 { "workspace",   "workspace" },
                 { NULL, NULL }
             };
@@ -2297,6 +2312,107 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         json_builder_set_member_name(builder, "notes");
         json_builder_add_string_value(
             builder, clawt_agent_designer_get_transcript(designer));
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "image.list") == 0) {
+        const ClawtImageInfo *catalog;
+        g_auto(GStrv) configured = NULL;
+        gsize n_images = 0;
+        gsize i;
+
+        catalog = clawt_image_catalog_get(&n_images);
+        configured = clawt_config_get_string_list(self->config,
+                                                  "defaults.container_images");
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "default");
+        json_builder_add_string_value(
+            builder, clawt_config_get_string(self->config,
+                                             "defaults.container_image"));
+
+        /*
+         * Nothing here is a restriction: any reference podman can pull
+         * is valid.  Said explicitly so a client offers a way to type
+         * one that is not listed rather than treating this as a menu.
+         */
+        json_builder_set_member_name(builder, "open_ended");
+        json_builder_add_boolean_value(builder, TRUE);
+
+        json_builder_set_member_name(builder, "images");
+        json_builder_begin_array(builder);
+
+        /*
+         * The user's own first.  A list where the images they added sit
+         * below a dozen they will never pick is one they scroll past.
+         */
+        for (i = 0; configured != NULL && configured[i] != NULL; i++) {
+            const gchar *entry = configured[i];
+            const gchar *separator = strstr(entry, " -- ");
+            g_autofree gchar *reference = NULL;
+
+            if (*entry == '\0')
+                continue;
+
+            reference = (separator != NULL)
+                        ? g_strndup(entry, separator - entry)
+                        : g_strdup(entry);
+            g_strstrip(reference);
+
+            if (*reference == '\0')
+                continue;
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "reference");
+            json_builder_add_string_value(builder, reference);
+
+            /*
+             * The last path component as the label.  A registry-and-org
+             * prefix is the same on all of a user's own images, so a
+             * list showing the whole reference truncates to
+             * "registry.exampl..." for every one of them and
+             * distinguishes none.  The full reference is still on the
+             * row's subtitle once selected.
+             */
+            json_builder_set_member_name(builder, "label");
+            {
+                const gchar *slash = strrchr(reference, '/');
+
+                json_builder_add_string_value(
+                    builder, (slash != NULL && slash[1] != '\0') ? slash + 1
+                                                                 : reference);
+            }
+
+            if (separator != NULL) {
+                json_builder_set_member_name(builder, "note");
+                json_builder_add_string_value(builder, separator + 4);
+            }
+
+            json_builder_set_member_name(builder, "group");
+            json_builder_add_string_value(builder, "Yours");
+            json_builder_end_object(builder);
+        }
+
+        for (i = 0; i < n_images; i++) {
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "reference");
+            json_builder_add_string_value(builder, catalog[i].reference);
+            json_builder_set_member_name(builder, "label");
+            json_builder_add_string_value(builder, catalog[i].label);
+
+            if (catalog[i].note != NULL) {
+                json_builder_set_member_name(builder, "note");
+                json_builder_add_string_value(builder, catalog[i].note);
+            }
+
+            json_builder_set_member_name(builder, "group");
+            json_builder_add_string_value(builder, catalog[i].group);
+            json_builder_end_object(builder);
+        }
+
+        json_builder_end_array(builder);
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));

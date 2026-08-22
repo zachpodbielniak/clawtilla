@@ -121,12 +121,19 @@ one side being ~<agent>:<path>~).  ~exchange.list~.
 *** config.*, plugin.*, integration.*, model.*, design.*
 
 ~config.show~, ~config.render~, ~config.validate~; ~plugin.list~;
-~integration.list~, ~integration.health~; ~model.list~; ~design.agent~.
+~integration.list~, ~integration.health~; ~model.list~; ~image.list~;
+~design.agent~.
 
 ~model.list~ returns the providers clawtilla knows about, each with its
 models.  It comes from the daemon rather than being built into each
 client so the CLI, the GTK app and the web client cannot disagree about
 what exists.
+
+~image.list~ returns ~default~, ~open_ended~ (always true) and an
+~images~ array of {~reference~, ~label~, ~note~, ~group~}.  The user's
+own entries from ~defaults.container_images~ come first, under the group
+"Yours", followed by the built-in suggestions.  Nothing validates
+~computer.container.image~ against it.
 
 Each provider carries ~open_ended~.  When it is true the list is a
 starting point rather than the whole truth -- Ollama runs whatever you

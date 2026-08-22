@@ -395,6 +395,7 @@ clawt_agent_config_get_string(ClawtAgentConfig *self, const gchar *key)
         { "model.model",     "defaults.model"     },
         { "computer.type",   "defaults.computer"  },
         { "runtime.restart", "defaults.restart"   },
+        { "computer.container.image", "defaults.container_image" },
         { NULL, NULL }
     };
     g_autofree gchar *schema_key = NULL;

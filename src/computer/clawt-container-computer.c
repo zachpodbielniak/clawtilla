@@ -310,6 +310,51 @@ container_provision(ClawtComputer *computer, GError **error)
      * ran podman by hand.  Removing ours and trying once more is what a
      * person would do, and it is safe because the name is ours.
      */
+    /*
+     * The image is not pulled yet.
+     *
+     * create does not pull -- deliberately, so a typo fails in a second
+     * rather than after a download -- but a first run against any image
+     * the user has not fetched by hand then fails, and the suggestion
+     * list a client offers is a list of images that do not work. Pulling
+     * once on the miss makes picking one from that list mean what it
+     * looks like it means.
+     */
+    if (result == NULL && error != NULL && *error != NULL &&
+        (strstr((*error)->message, "no such image") != NULL ||
+         strstr((*error)->message, "image not known") != NULL)) {
+        g_autoptr(GHashTable) pull =
+            g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+        g_autoptr(GHashTable) pulled = NULL;
+        g_autoptr(GError) pull_error = NULL;
+
+        g_hash_table_insert(pull, g_strdup("target"), g_strdup(self->image));
+        g_hash_table_insert(pull, g_strdup("image"), g_strdup(self->image));
+
+        g_message("container %s: pulling %s", self->name, self->image);
+
+        pulled = clawt_pod_bridge_call_for(self->bridge, "container",
+                                           self->connection, "pull", pull,
+                                           &pull_error);
+
+        if (pulled != NULL) {
+            g_clear_error(error);
+            result = clawt_pod_bridge_call_for(self->bridge, "container",
+                                               self->connection, "create",
+                                               params, error);
+        } else {
+            /*
+             * Both reasons, because they are different problems: the
+             * image may not exist, or the registry may be unreachable,
+             * and only the pull's own error distinguishes them.
+             */
+            g_prefix_error(error, "%s could not be pulled (%s); ",
+                           self->image,
+                           pull_error != NULL ? pull_error->message
+                                              : "no reason given");
+        }
+    }
+
     if (result == NULL && error != NULL && *error != NULL &&
         strstr((*error)->message, "already in use") != NULL) {
         g_autoptr(GHashTable) removal =
