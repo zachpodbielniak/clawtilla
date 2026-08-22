@@ -507,6 +507,14 @@ container_teardown(ClawtComputer *computer, GError **error)
     g_hash_table_insert(params, g_strdup("target"),
                         g_strdup(container_target(self)));
 
+    /*
+     * Forced, because tearing a computer down is a decision that has
+     * already been made.  podman refuses to remove a running container
+     * without it, so this failed for exactly the case it exists to
+     * handle -- an agent being deleted while its container is up.
+     */
+    g_hash_table_insert(params, g_strdup("force"), g_strdup("true"));
+
     result = clawt_pod_bridge_call_for(self->bridge, "container",
                                        self->connection, "remove",
                                    params, error);

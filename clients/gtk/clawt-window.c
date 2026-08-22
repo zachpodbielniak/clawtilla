@@ -116,6 +116,7 @@ struct _ClawtWindow {
     GtkWidget         *chief_row;
     ModelChooser       inspector_models;
     ImageChooser       inspector_image;
+    gchar             *inspector_computer;   /* the selected agent's type */
 
     /* Mailbox */
     GtkListBox        *mailbox_list;
@@ -826,18 +827,23 @@ on_delete_confirmed_twice(AdwAlertDialog *dialog, gchar *response,
                           gpointer user_data)
 {
     ClawtWindow *self = user_data;
+    GtkWidget *check = g_object_get_data(G_OBJECT(dialog), "remove-computer");
     g_autoptr(JsonNode) reply = NULL;
     g_autofree gchar *agent_id = NULL;
-
-    (void)dialog;
+    gboolean with_computer;
 
     if (g_strcmp0(response, "delete") != 0)
         return;
 
     agent_id = g_strdup(self->selected_agent);
+    with_computer = check != NULL &&
+                    gtk_check_button_get_active(GTK_CHECK_BUTTON(check));
 
     reply = clawt_window_request(
-        self, "agent.remove", clawt_build_payload("agent", agent_id, NULL));
+        self, "agent.remove",
+        clawt_build_payload("agent", agent_id,
+                            "remove_computer", with_computer ? "true" : NULL,
+                            NULL));
 
     if (reply == NULL)
         return;
@@ -847,7 +853,24 @@ on_delete_confirmed_twice(AdwAlertDialog *dialog, gchar *response,
     clear_box(self->transcript);
 
     {
-        g_autofree gchar *message = g_strdup_printf("%s is gone.", agent_id);
+        const gchar *computer = clawt_json_string(clawt_payload_of(reply),
+                                                   "computer", NULL);
+        g_autofree gchar *message = NULL;
+
+        /*
+         * The computer's fate is reported rather than assumed: a
+         * teardown that failed is not fatal to the removal, and a toast
+         * saying "is gone" over a container still running would be a
+         * lie.
+         */
+        if (computer != NULL && g_strcmp0(computer, "removed") == 0)
+            message = g_strdup_printf("%s and its computer are gone.",
+                                      agent_id);
+        else if (computer != NULL)
+            message = g_strdup_printf("%s is gone; its computer was not "
+                                      "removed: %s", agent_id, computer);
+        else
+            message = g_strdup_printf("%s is gone.", agent_id);
 
         clawt_window_toast(self, message);
     }
@@ -881,6 +904,36 @@ on_delete_confirmed_once(AdwAlertDialog *dialog, gchar *response,
         "running.\n\n"
         "Its mailbox and transcripts stay on disk -- removing an agent is "
         "reversible, deleting its history is not.");
+
+    /*
+     * The container or VM is a separate decision.
+     *
+     * Removing the agent used to leave it running under a name derived
+     * from an agent that no longer existed, so the only way to find it
+     * again was to remember what it had been called. Off by default,
+     * because a container may hold work that was never anywhere else.
+     */
+    if (g_strcmp0(self->inspector_computer, "container") == 0 ||
+        g_strcmp0(self->inspector_computer, "vm") == 0) {
+        GtkWidget *check;
+        g_autofree gchar *label = g_strdup_printf(
+            "Also delete its %s, clawt-%s",
+            g_strcmp0(self->inspector_computer, "vm") == 0
+                ? "virtual machine" : "container",
+            self->selected_agent);
+
+        check = gtk_check_button_new_with_label(label);
+        gtk_widget_set_margin_top(check, 12);
+        adw_alert_dialog_set_extra_child(second, check);
+
+        /*
+         * Kept on the dialog rather than in the window: the dialog is
+         * what the response handler is given, and a second delete
+         * started before the first finished would otherwise read the
+         * wrong checkbox.
+         */
+        g_object_set_data(G_OBJECT(second), "remove-computer", check);
+    }
 
     adw_alert_dialog_add_response(second, "cancel", "Keep it");
     adw_alert_dialog_add_response(second, "delete", "Delete it for good");
@@ -1071,8 +1124,11 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
      * the computer type and saving brings the row in on the next
      * refresh.
      */
-    if (g_strcmp0(clawt_json_string(agent, "computer", "none"),
-                  "container") == 0)
+    g_free(self->inspector_computer);
+    self->inspector_computer =
+        g_strdup(clawt_json_string(agent, "computer", "none"));
+
+    if (g_strcmp0(self->inspector_computer, "container") == 0)
         image_chooser_build(&self->inspector_image, self, group,
                             clawt_json_string(agent, "image", NULL));
     else
@@ -2918,6 +2974,7 @@ clawt_window_finalize(GObject *object)
     ClawtWindow *self = CLAWT_WINDOW(object);
 
     g_free(self->selected_agent);
+    g_free(self->inspector_computer);
 
     G_OBJECT_CLASS(clawt_window_parent_class)->finalize(object);
 }

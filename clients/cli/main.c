@@ -797,8 +797,51 @@ cmd_agent(int argc, char *argv[])
         return EXIT_SUCCESS;
     }
 
+    if (g_strcmp0(verb, "rm") == 0) {
+        gboolean with_computer = FALSE;
+        gint i;
+
+        if (target == NULL) {
+            g_printerr("Usage: clawtilla agent rm <agent> "
+                       "[--with-computer]\n");
+            return EXIT_FAILURE;
+        }
+
+        for (i = 4; i < argc; i++) {
+            if (g_strcmp0(argv[i], "--with-computer") == 0)
+                with_computer = TRUE;
+        }
+
+        reply = call(client, "agent.remove",
+                     build_payload("agent", target,
+                                   "remove_computer",
+                                   with_computer ? "true" : NULL, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        {
+            const gchar *computer = member_or(json_node_get_object(reply),
+                                              "computer", NULL);
+
+            /*
+             * The computer's fate is reported rather than assumed. A
+             * teardown that failed does not fail the removal, and saying
+             * "removed" over a container still running would be a lie.
+             */
+            if (computer != NULL && g_strcmp0(computer, "removed") == 0)
+                g_print("%s and its computer are gone.\n", target);
+            else if (computer != NULL)
+                g_print("%s is gone. Its computer was not removed: %s\n",
+                        target, computer);
+            else
+                g_print("%s: rm\n", target);
+        }
+
+        return EXIT_SUCCESS;
+    }
+
     if (g_strcmp0(verb, "start") == 0 || g_strcmp0(verb, "stop") == 0 ||
-        g_strcmp0(verb, "restart") == 0 || g_strcmp0(verb, "rm") == 0) {
+        g_strcmp0(verb, "restart") == 0) {
         g_autofree gchar *kind = NULL;
 
         if (target == NULL) {

@@ -290,6 +290,36 @@ state:  shadow - unknown computer type 'teleporter'; this build knows
 A shadow is listed, explains itself, and refuses to run.  The fleet
 starts without it.
 
+** Removing agents
+
+#+begin_src bash
+clawtilla agent rm researcher
+#+end_src
+
+Stops the agent and takes it out of the fleet and every room.  Its
+mailbox and transcripts stay on disk: removing an agent is reversible,
+deleting its history is not.
+
+*Its container or VM is a separate decision.*
+
+#+begin_src bash
+clawtilla agent rm researcher --with-computer
+#+end_src
+
+Off by default, because a container may hold work that was never
+anywhere else.  Without it the computer keeps running under a name --
+~clawt-researcher~ -- derived from an agent that no longer exists, so
+the only way to find it later is to remember what it was called.
+
+Forced when it does run: podman refuses to remove a running container
+otherwise, which is exactly the case this exists for.
+
+In the GTK client the second confirmation carries a checkbox naming the
+container or VM.  Agents with no computer do not get one.
+
+A teardown that fails does not fail the removal -- the agent is still
+going -- and the reason is reported rather than swallowed.
+
 ** Creating agents with AI
 
 #+begin_src bash

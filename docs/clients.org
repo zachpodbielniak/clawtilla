@@ -128,6 +128,11 @@ Removing an agent stops it and takes it out of every room, and one click
 between browsing and gone is too few.  Its mailbox and transcripts stay
 on disk: removing an agent is reversible, deleting its history is not.
 
+The second dialog carries a checkbox for the agent's container or VM,
+named -- "Also delete its container, clawt-researcher".  Off by default:
+a container may hold work that was never anywhere else.  Agents with no
+computer do not get one.
+
 Message bodies are rendered as labels, never as Pango markup.  Model
 output arrives from somewhere the user does not control, and treating it
 as markup would let a message rewrite the interface around it.

@@ -1717,10 +1717,73 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
 
     if (g_strcmp0(kind, "agent.remove") == 0) {
         const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        gboolean with_computer =
+            clawt_ipc_payload_boolean(payload, "remove_computer", FALSE);
+        g_autofree gchar *computer_detail = NULL;
 
         if (agent_id == NULL)
             return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
                                        "which agent?");
+
+        /*
+         * The container or VM, torn down before the agent goes.
+         *
+         * Removing an agent used to leave its computer running, with a
+         * name derived from an agent that no longer existed -- so the
+         * only way to find it again was to remember what it had been
+         * called. Opt-in, because a container may hold work that was
+         * never anywhere else.
+         *
+         * Done before the config entry is dropped: the computer is built
+         * from that config, and afterwards there is nothing left to
+         * build it from.
+         */
+        if (with_computer) {
+            ClawtAgent *agent = clawt_agent_manager_get(self->agents,
+                                                         agent_id);
+            ClawtComputer *computer = (agent != NULL)
+                                      ? clawt_agent_get_computer(agent)
+                                      : NULL;
+            g_autoptr(ClawtComputer) built = NULL;
+
+            /*
+             * An agent that was never started has no computer object,
+             * but its container may still be there from a previous run.
+             * Building one from the config finds it by name.
+             */
+            if (computer == NULL) {
+                ClawtAgentConfig *agent_config =
+                    clawt_config_get_agent(self->config, agent_id);
+
+                if (agent_config != NULL) {
+                    built = clawt_computer_factory_create(agent_config,
+                                                           self->pod_bridge,
+                                                           NULL);
+                    computer = built;
+                }
+            }
+
+            if (computer != NULL &&
+                clawt_computer_get_computer_type(computer) !=
+                    CLAWT_COMPUTER_NONE) {
+                g_autoptr(GError) teardown_error = NULL;
+
+                if (clawt_computer_teardown(computer, &teardown_error)) {
+                    computer_detail = g_strdup("removed");
+                } else {
+                    /*
+                     * Reported, not fatal.  The agent is still going, and
+                     * refusing to remove it because its container had
+                     * already been deleted by hand would be absurd.
+                     */
+                    computer_detail = g_strdup(
+                        teardown_error != NULL ? teardown_error->message
+                                               : "could not be removed");
+                    g_warning("agent %s: computer not removed: %s", agent_id,
+                              computer_detail);
+                }
+            }
+        }
 
         clawt_daemon_stop_agent(self, agent_id);
 
@@ -1739,7 +1802,19 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         clawt_agent_manager_load(self->agents, NULL);
         clawt_event_bus_emit(self->bus, "agent.removed", agent_id);
 
-        return clawt_ipc_response_new(request, NULL);
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "id");
+        json_builder_add_string_value(builder, agent_id);
+
+        /* What happened to the computer, so a client can say so. */
+        if (computer_detail != NULL) {
+            json_builder_set_member_name(builder, "computer");
+            json_builder_add_string_value(builder, computer_detail);
+        }
+
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
     if (g_strcmp0(kind, "agent.set") == 0) {

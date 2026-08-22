@@ -1104,6 +1104,52 @@ test_send_reports_the_target_state(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * A flag sent as the string "true" has to mean true.
+ *
+ * Both bundled clients build payloads from string pairs -- their
+ * build_payload(key, value, ...) helpers only ever emit strings -- and
+ * the reader required a real JSON boolean, so every such flag silently
+ * read as its default. That is the worst failure a boolean can have:
+ * the request succeeds and does the other thing. `agent rm
+ * --with-computer` removed the agent and left the container running,
+ * reporting success.
+ */
+static void
+test_string_booleans_are_understood(void)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+    JsonObject *payload;
+
+    g_assert_true(json_parser_load_from_data(
+        parser,
+        "{\"yes\":true,\"no\":false,\"s_yes\":\"true\","
+        "\"s_no\":\"false\",\"s_upper\":\"TRUE\",\"one\":\"1\","
+        "\"junk\":\"maybe\",\"number\":7}",
+        -1, NULL));
+
+    payload = json_node_get_object(json_parser_get_root(parser));
+
+    /* Real booleans, unchanged. */
+    g_assert_true(clawt_ipc_payload_boolean(payload, "yes", FALSE));
+    g_assert_false(clawt_ipc_payload_boolean(payload, "no", TRUE));
+
+    /* Strings, which is what the clients actually send. */
+    g_assert_true(clawt_ipc_payload_boolean(payload, "s_yes", FALSE));
+    g_assert_false(clawt_ipc_payload_boolean(payload, "s_no", TRUE));
+    g_assert_true(clawt_ipc_payload_boolean(payload, "s_upper", FALSE));
+    g_assert_true(clawt_ipc_payload_boolean(payload, "one", FALSE));
+
+    /*
+     * Anything else falls back rather than guessing. "maybe" is not a
+     * boolean, and picking one for it would hide a client bug.
+     */
+    g_assert_true(clawt_ipc_payload_boolean(payload, "junk", TRUE));
+    g_assert_false(clawt_ipc_payload_boolean(payload, "junk", FALSE));
+    g_assert_true(clawt_ipc_payload_boolean(payload, "number", TRUE));
+    g_assert_true(clawt_ipc_payload_boolean(payload, "absent", TRUE));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1148,6 +1194,8 @@ main(int argc, char *argv[])
     g_test_add_func("/daemon/request-from-event-handler",
                     test_a_request_from_an_event_handler_completes);
     g_test_add_func("/daemon/history-by-agent-id", test_history_by_agent_id);
+    g_test_add_func("/daemon/string-booleans",
+                    test_string_booleans_are_understood);
     g_test_add_func("/daemon/send-reports-target-state",
                     test_send_reports_the_target_state);
 

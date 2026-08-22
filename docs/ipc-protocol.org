@@ -65,6 +65,17 @@ what is missing, not merely that something failed.
 ~agent.logs~, ~agent.create~, ~agent.remove~, ~agent.set~,
 ~agent.files~.
 
+~agent.remove~ takes ~remove_computer~: %TRUE tears the agent's
+container or VM down before removing it, forcing it if it is running.
+Off by default. The reply carries ~computer~ saying what happened, or
+omits it when there was nothing to remove.
+
+Booleans in a payload may be sent as real JSON booleans or as the
+strings "true"/"false" -- both bundled clients build payloads from
+string pairs, and a flag sent as a string used to read as the default,
+which is the worst failure a boolean can have: the request succeeds and
+does the other thing.
+
 ~agent.files~ (~agent~) → ~workspace~ and a ~files~ array of
 {~name~, ~path~, ~title~, ~identity~, ~exists~}.  ~identity~ says whether
 the file reaches the system prompt.  Missing files are scaffolded before

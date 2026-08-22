@@ -350,9 +350,36 @@ clawt_ipc_payload_boolean(JsonObject *payload, const gchar *key,
         !json_object_has_member(payload, key))
         return fallback;
 
-    if (json_node_get_value_type(json_object_get_member(payload, key)) !=
-        G_TYPE_BOOLEAN)
-        return fallback;
+    /*
+     * "true" and "false" are accepted as well as real booleans.
+     *
+     * Clients build payloads from string pairs -- both bundled ones have
+     * a build_payload(key, value, ...) helper that only ever emits
+     * strings -- so a flag sent as "true" was silently read as the
+     * fallback. That is the worst possible failure for a boolean: the
+     * request succeeds and does the other thing.
+     */
+    {
+        JsonNode *node = json_object_get_member(payload, key);
+        GType type = json_node_get_value_type(node);
 
-    return json_object_get_boolean_member(payload, key);
+        if (type == G_TYPE_BOOLEAN)
+            return json_object_get_boolean_member(payload, key);
+
+        if (type == G_TYPE_STRING) {
+            const gchar *text = json_node_get_string(node);
+
+            if (g_ascii_strcasecmp(text, "true") == 0 ||
+                g_ascii_strcasecmp(text, "yes") == 0 ||
+                g_strcmp0(text, "1") == 0)
+                return TRUE;
+
+            if (g_ascii_strcasecmp(text, "false") == 0 ||
+                g_ascii_strcasecmp(text, "no") == 0 ||
+                g_strcmp0(text, "0") == 0)
+                return FALSE;
+        }
+    }
+
+    return fallback;
 }
