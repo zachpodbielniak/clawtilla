@@ -276,13 +276,6 @@ orchestration:
   # replies, each one a fresh chain.
   cycle_window: 10
 
-  # Id of the agent that receives work addressed to the fleet.
-  #
-  # At most one agent may hold this. Setting it here is equivalent to
-  # chief_of_staff: true on that agent, and the daemon refuses to start if
-  # two agents claim it.
-  chief_of_staff: null
-
   # Defaults for every agent's mailbox.
   #
   # Each agent has a durable queue, so a message to a stopped agent waits
@@ -317,6 +310,48 @@ orchestration:
     #
     # 0 retries immediately.
     backoff_seconds: 30
+
+# What an agent remembers between conversations.
+#
+# Not agents.memory, which is the MEMORY.md size budget and a different
+# thing entirely. This is the searchable store.
+#
+# Each agent gets its own SQLite database beside its mailbox, holding
+# what it chose to write down: decisions, preferences, things that
+# turned out to be true. It searches its own with clawtilla_memory_*.
+#
+# One database per agent rather than one table with an agent column, so
+# isolation is a property of the filesystem: a query that forgot to
+# filter still cannot reach another agent's memories, because they are
+# not in the file being read.
+memories:
+
+  # Whether agents get a memory store at all.
+  #
+  # Off means the clawtilla_memory_* tools are not offered, rather than
+  # offered and failing. An agent that can see a tool will try it.
+  enabled: true
+
+  # How many memories one search or listing returns at most.
+  #
+  # This lands in the agent's context on every call, so the limit is a
+  # budget rather than a formality.
+  max_results: 20
+
+  # Comma-separated ids of agents allowed to read this agent's memories.
+  #
+  # Empty by default, which is the whole point: an agent's memories are
+  # its own unless somebody says otherwise. Reading only -- there is no
+  # setting that lets one agent write into another's memory, because a
+  # memory you did not form is not a memory.
+  readers: null
+
+  # Id of the agent that receives work addressed to the fleet.
+  #
+  # At most one agent may hold this. Setting it here is equivalent to
+  # chief_of_staff: true on that agent, and the daemon refuses to start if
+  # two agents claim it.
+  chief_of_staff: null
 
 # Standing rooms, created at startup if they do not exist.
 #

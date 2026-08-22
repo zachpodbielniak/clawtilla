@@ -69,6 +69,8 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/ipc/clawt-ipc-server.h \
 	$(SRCDIR)/ipc/clawt-client.h \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.h \
+	$(SRCDIR)/memory/clawt-memory.h \
+	$(SRCDIR)/memory/clawt-memory-store.h \
 	$(SRCDIR)/mailbox/clawt-mailbox.h \
 	$(SRCDIR)/mailbox/clawt-mailbox-router.h \
 	$(SRCDIR)/agent/clawt-agent-runtime.h \
@@ -129,6 +131,8 @@ LIB_SOURCES = \
 	$(SRCDIR)/ipc/clawt-ipc-proto.c \
 	$(SRCDIR)/ipc/clawt-ipc-server.c \
 	$(SRCDIR)/ipc/clawt-client.c \
+	$(SRCDIR)/memory/clawt-memory.c \
+	$(SRCDIR)/memory/clawt-memory-store.c \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.c \
 	$(SRCDIR)/mailbox/clawt-mailbox.c \
 	$(SRCDIR)/mailbox/clawt-mailbox-router.c \

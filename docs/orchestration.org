@@ -256,6 +256,39 @@ cat ~/.clawtilla/agents/researcher/.mcp.json
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | clawtilla-mcp-server --agent researcher
 #+end_src
 
+
+*** Being messaged by another agent
+
+A message from a peer says so, in the body, at delivery time:
+
+#+begin_example
+[clawtilla] The following is from 'researcher', another agent in your
+fleet -- not from your operator. ...
+#+end_example
+
+The sender already travels in its own field, and models do not reliably
+notice it. An agent messaged by another agent read it as an instruction
+from its operator, answered it as one, and the two talked past each
+other for fifty turns. Saying it in the text is the difference between a
+colleague asking a question and the human giving an order.
+
+Applied on the way out, not stored: the transcript keeps what was
+actually said.
+
+*** Reaching the operator is not the same as replying
+
+An agent's reply goes back into the room the message came from. So an
+agent asked by its operator to find something out from a peer asks the
+peer, the peer answers, and the agent *replies to the peer* -- the
+operator hears nothing and ends up asking "did you get a reply?" every
+time.
+
+~clawtilla_message_user~ posts into the room between that agent and the
+user, which is the room the client is already watching. The scaffolded
+~TOOLS.org~ says when to use it: when the operator is waiting on
+something you have now been told.
+
+
 ** Your mailbox is empty while you are running
 
 This trips up agents, so it is worth stating plainly: a message is

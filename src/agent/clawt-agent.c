@@ -23,6 +23,7 @@ struct _ClawtAgent {
 
     ClawtAgentConfig  *config;
     ClawtMailbox      *mailbox;
+    ClawtMemoryStore  *memory;
     ClawtAgentRuntime *runtime;
     ClawtComputer     *computer;
     ClawtLink         *link;
@@ -207,6 +208,25 @@ clawt_agent_get_mailbox(ClawtAgent *self)
     g_return_val_if_fail(CLAWT_IS_AGENT(self), NULL);
 
     return self->mailbox;
+}
+
+void
+clawt_agent_set_memory(ClawtAgent *self, ClawtMemoryStore *memory)
+{
+    g_return_if_fail(CLAWT_IS_AGENT(self));
+
+    g_clear_object(&self->memory);
+
+    if (memory != NULL)
+        self->memory = g_object_ref(memory);
+}
+
+ClawtMemoryStore *
+clawt_agent_get_memory(ClawtAgent *self)
+{
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), NULL);
+
+    return self->memory;
 }
 
 gboolean
@@ -468,6 +488,7 @@ clawt_agent_dispose(GObject *object)
     g_clear_object(&self->computer);
     g_clear_object(&self->link);
     g_clear_object(&self->mailbox);
+    g_clear_object(&self->memory);
     g_clear_pointer(&self->config, clawt_agent_config_unref);
 
     G_OBJECT_CLASS(clawt_agent_parent_class)->dispose(object);

@@ -303,6 +303,34 @@ the same program.
   nobody, because nothing on the agent side relays them into the
   session.
 
+### Two things called "memory"
+
+- `agents.memory` is libreclaw's MEMORY.md size budget. `memories.*` is
+  the searchable per-agent sqlite store (`ClawtMemoryStore`). They are
+  unrelated, and the second is named in the plural precisely because the
+  first already exists — check before adding a key under either.
+
+### The schema table's order is the generated file's order
+
+- `clawt-genconfig` walks `clawt-config-schema.c` in order and opens a
+  YAML section when it meets one. Inserting a new top-level section in
+  the *middle* of another section's keys emits the remaining keys under
+  the new section and then reopens the old one — a duplicate top-level
+  key, which YAML resolves by silently discarding the first. Put a new
+  section after every key belonging to the one before it.
+  `tests/test-config-schema.c` catches it, as a warning count, not as
+  anything that names the cause.
+
+### An FTS5 query is syntax, not a search string
+
+- A query typed by a person or a model goes straight into FTS5's parser,
+  where a stray `"`, a bare `NOT` or an unbalanced `(` is a parse error
+  rather than a search for those words — and a failed search reports no
+  matches, not an error, so it looks like an empty store. Quote it as a
+  phrase literal. Also: joining an FTS5 table brings a second `id` into
+  scope, so an unqualified column list fails with "ambiguous column
+  name" and, again, silently returns nothing.
+
 ### A limit that is never reached is not a limit
 
 - `max_hops` counts how far a message has travelled agent-to-agent, the

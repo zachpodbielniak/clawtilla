@@ -88,6 +88,8 @@
 #include "core/clawt-daemon.h"
 
 #include "mailbox/clawt-mailbox-item.h"
+#include "memory/clawt-memory.h"
+#include "memory/clawt-memory-store.h"
 #include "mailbox/clawt-mailbox.h"
 
 #include "agent/clawt-agent-runtime.h"

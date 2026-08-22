@@ -8,6 +8,8 @@
  */
 
 #include "clawtilla.h"
+
+#include <glib/gstdio.h>
 #include "core/clawt-daemon.h"
 
 #include <string.h>
@@ -1942,6 +1944,256 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
 
         json_builder_end_array(builder);
         json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "memory.list") == 0 ||
+        g_strcmp0(kind, "memory.search") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        ClawtAgent *agent = (agent_id != NULL)
+                            ? clawt_agent_manager_get(self->agents, agent_id)
+                            : NULL;
+        ClawtMemoryStore *store;
+        g_autoptr(GPtrArray) memories = NULL;
+        guint i;
+
+        if (agent == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such agent");
+
+        store = clawt_agent_get_memory(agent);
+
+        if (store == NULL)
+            return clawt_ipc_error_new(
+                request, CLAWT_ERROR_NOT_SUPPORTED,
+                "that agent has no memory store; memories.enabled is off");
+
+        if (g_strcmp0(kind, "memory.search") == 0)
+            memories = clawt_memory_store_search(
+                store, clawt_ipc_payload_string(payload, "query"),
+                clawt_ipc_payload_string(payload, "category"),
+                (guint)clawt_ipc_payload_int(payload, "limit", 20), NULL);
+        else
+            memories = clawt_memory_store_list(
+                store, clawt_ipc_payload_string(payload, "category"),
+                clawt_ipc_payload_boolean(payload, "pinned", FALSE),
+                (guint)clawt_ipc_payload_int(payload, "limit", 20), NULL);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "total");
+        json_builder_add_int_value(builder,
+                                   clawt_memory_store_count(store, FALSE));
+        json_builder_set_member_name(builder, "memories");
+        json_builder_begin_array(builder);
+
+        for (i = 0; memories != NULL && i < memories->len; i++) {
+            ClawtMemory *memory = g_ptr_array_index(memories, i);
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "id");
+            json_builder_add_string_value(builder, memory->id);
+            json_builder_set_member_name(builder, "content");
+            json_builder_add_string_value(builder, memory->content);
+
+            if (memory->summary != NULL) {
+                json_builder_set_member_name(builder, "summary");
+                json_builder_add_string_value(builder, memory->summary);
+            }
+
+            json_builder_set_member_name(builder, "category");
+            json_builder_add_string_value(builder, memory->category);
+            json_builder_set_member_name(builder, "importance");
+            json_builder_add_string_value(builder, memory->importance);
+
+            if (memory->tags != NULL) {
+                json_builder_set_member_name(builder, "tags");
+                json_builder_add_string_value(builder, memory->tags);
+            }
+
+            json_builder_set_member_name(builder, "pinned");
+            json_builder_add_boolean_value(builder, memory->pinned);
+            json_builder_set_member_name(builder, "created_at");
+            json_builder_add_int_value(builder, memory->created_at);
+            json_builder_set_member_name(builder, "access_count");
+            json_builder_add_int_value(builder, memory->access_count);
+            json_builder_end_object(builder);
+        }
+
+        json_builder_end_array(builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "agent.discover") == 0) {
+        g_autofree gchar *agents_dir = NULL;
+        g_autofree gchar *workspace_root = NULL;
+        g_autoptr(GHashTable) seen = NULL;
+        gsize d;
+        static const gchar *interesting[] = {
+            "mailbox.db", "memory.db", "config.yaml", "SOUL.org",
+            "IDENTITY.org", "AGENTS.md", NULL
+        };
+
+        /*
+         * Directories that look like agents but are not in the config.
+         *
+         * They accumulate: an agent removed from the config keeps its
+         * state, a design that was never committed leaves a workspace,
+         * and a config restored from a backup leaves everything it did
+         * not mention. None of that is visible anywhere, so it just
+         * sits on disk and surprises people.
+         */
+        agents_dir = g_build_filename(self->state_dir, "agents", NULL);
+        workspace_root = clawt_config_get_path_value(
+            self->config, "defaults.workspace_root");
+
+        seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "found");
+        json_builder_begin_array(builder);
+
+        for (d = 0; d < 2; d++) {
+            const gchar *root = (d == 0) ? agents_dir : workspace_root;
+            g_autoptr(GDir) dir = NULL;
+            const gchar *name;
+
+            if (root == NULL)
+                continue;
+
+            /* One root may be inside the other; do not list twice. */
+            if (d == 1 && g_strcmp0(root, agents_dir) == 0)
+                continue;
+
+            dir = g_dir_open(root, 0, NULL);
+
+            if (dir == NULL)
+                continue;
+
+            while ((name = g_dir_read_name(dir)) != NULL) {
+                g_autofree gchar *path = g_build_filename(root, name, NULL);
+                GStatBuf info;
+                gsize i;
+
+                if (!g_file_test(path, G_FILE_TEST_IS_DIR))
+                    continue;
+
+                /*
+                 * Already put aside once.  Listing it again would ask
+                 * the same question a second time, which is the one
+                 * thing "forget" was supposed to stop.
+                 */
+                if (g_str_has_suffix(name, ".discarded"))
+                    continue;
+
+                if (clawt_agent_manager_get(self->agents, name) != NULL)
+                    continue;
+
+                if (g_hash_table_contains(seen, name))
+                    continue;
+
+                json_builder_begin_object(builder);
+                json_builder_set_member_name(builder, "id");
+                json_builder_add_string_value(builder, name);
+                json_builder_set_member_name(builder, "path");
+                json_builder_add_string_value(builder, path);
+                json_builder_set_member_name(builder, "kind");
+                json_builder_add_string_value(builder,
+                                              d == 0 ? "state" : "workspace");
+
+                /*
+                 * What is actually in there, so a person can tell a
+                 * real agent's leftovers from an empty directory
+                 * somebody made by hand.
+                 */
+                json_builder_set_member_name(builder, "holds");
+                json_builder_begin_array(builder);
+
+                for (i = 0; interesting[i] != NULL; i++) {
+                    g_autofree gchar *file =
+                        g_build_filename(path, interesting[i], NULL);
+
+                    if (g_file_test(file, G_FILE_TEST_EXISTS))
+                        json_builder_add_string_value(builder, interesting[i]);
+                }
+
+                json_builder_end_array(builder);
+
+                json_builder_set_member_name(builder, "modified");
+                json_builder_add_int_value(
+                    builder, g_stat(path, &info) == 0 ? info.st_mtime : 0);
+
+                json_builder_end_object(builder);
+
+                g_hash_table_add(seen, g_strdup(name));
+            }
+        }
+
+        json_builder_end_array(builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "agent.forget") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "id");
+        g_autofree gchar *state_path = NULL;
+        g_autofree gchar *workspace_root = NULL;
+        g_autofree gchar *workspace_path = NULL;
+
+        if (agent_id == NULL || strchr(agent_id, '/') != NULL ||
+            g_strcmp0(agent_id, "..") == 0)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "not a plain agent id");
+
+        if (clawt_agent_manager_get(self->agents, agent_id) != NULL)
+            return clawt_ipc_error_new(
+                request, CLAWT_ERROR_AGENT_STATE,
+                "that agent is in the config; remove it with agent.remove");
+
+        state_path = g_build_filename(self->state_dir, "agents", agent_id,
+                                      NULL);
+        workspace_root = clawt_config_get_path_value(
+            self->config, "defaults.workspace_root");
+
+        if (workspace_root != NULL)
+            workspace_path = g_build_filename(workspace_root, agent_id, NULL);
+
+        /*
+         * Moved aside rather than deleted.  This is somebody's agent --
+         * its transcripts, its memories, whatever it was told about
+         * them -- and "I never created this" is a thing people say
+         * about directories they later want back.
+         */
+        {
+            g_autoptr(GString) moved = g_string_new(NULL);
+            const gchar *paths[] = { state_path, workspace_path };
+            gsize i;
+
+            for (i = 0; i < G_N_ELEMENTS(paths); i++) {
+                g_autofree gchar *aside = NULL;
+
+                if (paths[i] == NULL ||
+                    !g_file_test(paths[i], G_FILE_TEST_IS_DIR))
+                    continue;
+
+                aside = g_strconcat(paths[i], ".discarded", NULL);
+
+                if (g_rename(paths[i], aside) == 0) {
+                    if (moved->len > 0)
+                        g_string_append(moved, ", ");
+
+                    g_string_append(moved, aside);
+                }
+            }
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "moved");
+            json_builder_add_string_value(builder, moved->str);
+            json_builder_end_object(builder);
+        }
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }

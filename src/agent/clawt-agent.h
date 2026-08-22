@@ -25,6 +25,7 @@
 #include "config/clawt-config.h"
 #include "link/clawt-link.h"
 #include "mailbox/clawt-mailbox.h"
+#include "memory/clawt-memory-store.h"
 
 G_BEGIN_DECLS
 
@@ -86,6 +87,27 @@ void clawt_agent_set_config(ClawtAgent *self, ClawtAgentConfig *config);
  *   could not be opened
  */
 ClawtMailbox     *clawt_agent_get_mailbox(ClawtAgent *self);
+
+/**
+ * clawt_agent_set_memory:
+ * @self: a #ClawtAgent
+ * @memory: (nullable): the agent's memory store
+ *
+ * Gives the agent somewhere to remember things.
+ */
+void              clawt_agent_set_memory(ClawtAgent       *self,
+                                         ClawtMemoryStore *memory);
+
+/**
+ * clawt_agent_get_memory:
+ * @self: a #ClawtAgent
+ *
+ * The agent's own memory store, and only its own.
+ *
+ * Returns: (transfer none) (nullable): the store, or %NULL when memory
+ *   is turned off for this agent
+ */
+ClawtMemoryStore *clawt_agent_get_memory(ClawtAgent *self);
 
 /**
  * clawt_agent_is_chief_of_staff:

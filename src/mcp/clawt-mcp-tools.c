@@ -25,7 +25,8 @@
 typedef enum {
     NEEDS_NOTHING = 0,
     NEEDS_PEER_COMMS,
-    NEEDS_COMPUTER
+    NEEDS_COMPUTER,
+    NEEDS_MEMORY
 } ToolRequirement;
 
 typedef struct {
@@ -114,6 +115,49 @@ static const ClawtParamInfo computer_exec_params[] = {
       "anything that might wait for input.", FALSE }
 };
 
+static const ClawtParamInfo message_user_params[] = {
+    { "body", "string", "What to tell them.", TRUE }
+};
+
+static const ClawtParamInfo memory_add_params[] = {
+    { "content",    "string",
+      "What to remember, written so it still makes sense to you in a "
+      "month with none of this conversation around it.", TRUE },
+    { "summary",    "string", "One line, for listings.", FALSE },
+    { "category",   "string",
+      "general, decision, preference, fact, project, learning, insight, "
+      "todo, relationship, technical, workflow, debug, research, config "
+      "or personal.", FALSE },
+    { "importance", "string", "low, normal, high or critical.", FALSE },
+    { "tags",       "string", "Comma-separated, for narrowing a search.",
+      FALSE }
+};
+
+static const ClawtParamInfo memory_search_params[] = {
+    { "query",    "string", "Words to look for.", TRUE },
+    { "category", "string", "Narrow to one category.", FALSE },
+    { "limit",    "integer", "How many at most.", FALSE },
+    { "agent",    "string",
+      "Whose memories to search. Defaults to your own; another agent's "
+      "only if they have listed you in memory.readers.", FALSE }
+};
+
+static const ClawtParamInfo memory_list_params[] = {
+    { "category",    "string", "Narrow to one category.", FALSE },
+    { "pinned_only", "boolean", "Only the pinned ones.", FALSE },
+    { "limit",       "integer", "How many at most.", FALSE }
+};
+
+static const ClawtParamInfo memory_id_params[] = {
+    { "id", "string", "Which memory.", TRUE }
+};
+
+static const ClawtParamInfo memory_pin_params[] = {
+    { "id",     "string", "Which memory.", TRUE },
+    { "pinned", "boolean", "Pin it, or unpin it. Defaults to pinning.",
+      FALSE }
+};
+
 /* ── The tools ───────────────────────────────────────────────────── */
 
 #define TOOL(name_, desc_, req_, params_) \
@@ -200,6 +244,48 @@ static const ToolDefinition tools[] = {
     TOOL("clawtilla_mailbox_reply",
          "Reply to a message in your mailbox and acknowledge it in one step.",
          NEEDS_PEER_COMMS, mailbox_reply_params),
+
+    TOOL("clawtilla_message_user",
+         "Say something to your human operator. This is the only way to "
+         "reach them: replying to a message from another agent reaches "
+         "that agent. If they asked you to find something out and a peer "
+         "has now told you, report it with this -- otherwise they are "
+         "left asking whether you ever heard back.",
+         NEEDS_NOTHING, message_user_params),
+
+    TOOL("clawtilla_memory_add",
+         "Remember something. Use it for what you would be worse off not "
+         "knowing next time: a decision and why, something the operator "
+         "prefers, a fact that cost you a turn to establish, a footgun "
+         "you hit. Not for what is already written down somewhere you "
+         "can read again.",
+         NEEDS_MEMORY, memory_add_params),
+
+    TOOL("clawtilla_memory_search",
+         "Search your memories. Do this before asking the operator "
+         "something they may already have told you, and before working "
+         "out something you may already have worked out.",
+         NEEDS_MEMORY, memory_search_params),
+
+    TOOL("clawtilla_memory_list",
+         "Your most recent memories, pinned ones first.",
+         NEEDS_MEMORY, memory_list_params),
+
+    TOOL("clawtilla_memory_get",
+         "One memory in full.",
+         NEEDS_MEMORY, memory_id_params),
+
+    TOOL("clawtilla_memory_forget",
+         "Archive a memory that turned out to be wrong or is no longer "
+         "true. It leaves every listing and search; a person can still "
+         "go and look.",
+         NEEDS_MEMORY, memory_id_params),
+
+    TOOL("clawtilla_memory_pin",
+         "Keep a memory at the top of every listing. For the handful you "
+         "want to see every time, not for anything you merely think is "
+         "important.",
+         NEEDS_MEMORY, memory_pin_params),
 
     TOOL("clawtilla_computer_exec",
          "Run a command on your computer.",
@@ -388,6 +474,16 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
             return FALSE;
         break;
 
+    case NEEDS_MEMORY:
+        /*
+         * Not offered when there is no store, rather than offered and
+         * failing: an agent that can see a tool will try it, and the
+         * refusal costs a turn to learn what it could have been told.
+         */
+        if (clawt_agent_get_memory(agent) == NULL)
+            return FALSE;
+        break;
+
     case NEEDS_PEER_COMMS:
         if ((clawt_agent_get_caps(agent) & CLAWT_AGENT_CAPS_PEER_COMMS) == 0)
             return FALSE;
@@ -554,6 +650,33 @@ argument_string(JsonObject *arguments, const gchar *name)
         return NULL;
 
     return json_object_get_string_member(arguments, name);
+}
+
+static gboolean
+argument_boolean(JsonObject *arguments, const gchar *name, gboolean fallback)
+{
+    if (arguments == NULL || !json_object_has_member(arguments, name))
+        return fallback;
+
+    /*
+     * Type-checked like the others, and lenient about a model that sends
+     * "true" as a string -- which they do, and which reading strictly
+     * would turn into a silent FALSE.
+     */
+    if (json_node_get_value_type(json_object_get_member(arguments, name)) ==
+        G_TYPE_BOOLEAN)
+        return json_object_get_boolean_member(arguments, name);
+
+    if (json_node_get_value_type(json_object_get_member(arguments, name)) ==
+        G_TYPE_STRING) {
+        const gchar *text = json_object_get_string_member(arguments, name);
+
+        return g_ascii_strcasecmp(text, "true") == 0 ||
+               g_strcmp0(text, "1") == 0 ||
+               g_ascii_strcasecmp(text, "yes") == 0;
+    }
+
+    return fallback;
 }
 
 static gint64
@@ -934,6 +1057,331 @@ tool_mailbox_list(ClawtMcpTools *self, const gchar *agent_id,
     return g_string_free(g_steal_pointer(&out), FALSE);
 }
 
+
+/*
+ * Reaching the person, which is not the same as replying.
+ *
+ * An agent's reply goes back into the room the message came from, so an
+ * agent asked by its operator to consult a peer answered the peer and
+ * the operator heard nothing -- they had to ask "did you get a reply?"
+ * every time. The room between an agent and the user is a room like any
+ * other; this posts into it, and the client is already watching it.
+ */
+static gchar *
+tool_message_user(ClawtMcpTools *self, const gchar *agent_id,
+                  JsonObject *arguments, gboolean *is_error)
+{
+    const gchar *body = argument_string(arguments, "body");
+    ClawtRoom *room;
+    g_autoptr(GError) error = NULL;
+
+    if (body == NULL || body[0] == '\0') {
+        *is_error = TRUE;
+        return g_strdup("A message needs a body.");
+    }
+
+    if (self->room_manager == NULL || self->deliver == NULL) {
+        *is_error = TRUE;
+        return g_strdup("There is no way to reach your operator from here.");
+    }
+
+    room = clawt_room_manager_get_direct(self->room_manager, agent_id,
+                                         "user");
+
+    if (!self->deliver(agent_id, clawt_room_get_id(room), body, NULL,
+                       outbound_depth(self, agent_id), self->deliver_data,
+                       &error)) {
+        *is_error = TRUE;
+        return g_strdup_printf("Could not reach your operator: %s",
+                               error != NULL ? error->message : "unknown");
+    }
+
+    return g_strdup("Told them.");
+}
+
+/* ── Memory ──────────────────────────────────────────────────────── */
+
+/*
+ * Whose memories the caller may read.
+ *
+ * Its own always. Somebody else's only when that agent has named it in
+ * memory.readers -- which is empty by default, so the answer is almost
+ * always "your own or nothing". Reading only: there is no path by which
+ * one agent writes into another's memory, because a memory you did not
+ * form is not a memory.
+ */
+static ClawtMemoryStore *
+memory_for(ClawtMcpTools *self, const gchar *caller, const gchar *wanted,
+           GError **error)
+{
+    ClawtAgent *owner;
+    const gchar *readers;
+    g_auto(GStrv) allowed = NULL;
+    gsize i;
+
+    if (wanted == NULL || wanted[0] == '\0' ||
+        g_strcmp0(wanted, caller) == 0) {
+        ClawtAgent *mine = clawt_agent_manager_get(self->agents, caller);
+
+        return (mine != NULL) ? clawt_agent_get_memory(mine) : NULL;
+    }
+
+    owner = clawt_agent_manager_get(self->agents, wanted);
+
+    if (owner == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "There is no agent called '%s'.", wanted);
+        return NULL;
+    }
+
+    readers = clawt_agent_config_get_string(clawt_agent_get_config(owner),
+                                            "memories.readers");
+    allowed = (readers != NULL) ? g_strsplit(readers, ",", -1) : NULL;
+
+    for (i = 0; allowed != NULL && allowed[i] != NULL; i++) {
+        if (g_strcmp0(g_strstrip(allowed[i]), caller) == 0)
+            return clawt_agent_get_memory(owner);
+    }
+
+    g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED,
+                "'%s' has not shared its memories with you. Agents keep "
+                "their own; ask the operator if you need theirs.", wanted);
+    return NULL;
+}
+
+/* One memory, formatted the same way everywhere it is shown. */
+static void
+append_memory(GString *out, ClawtMemory *memory, gboolean full)
+{
+    g_string_append_printf(out, "%s [%s/%s]%s", memory->id,
+                           memory->category, memory->importance,
+                           memory->pinned ? " (pinned)" : "");
+
+    if (memory->tags != NULL && memory->tags[0] != '\0')
+        g_string_append_printf(out, " tags: %s", memory->tags);
+
+    g_string_append_c(out, '\n');
+
+    if (memory->summary != NULL && memory->summary[0] != '\0')
+        g_string_append_printf(out, "  %s\n", memory->summary);
+
+    if (full || memory->summary == NULL || memory->summary[0] == '\0')
+        g_string_append_printf(out, "  %s\n", memory->content);
+}
+
+static gchar *
+memories_to_text(GPtrArray *memories, const gchar *nothing)
+{
+    g_autoptr(GString) out = NULL;
+    guint i;
+
+    if (memories == NULL || memories->len == 0)
+        return g_strdup(nothing);
+
+    out = g_string_new(NULL);
+
+    for (i = 0; i < memories->len; i++)
+        append_memory(out, g_ptr_array_index(memories, i), FALSE);
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+/*
+ * The configured limit is a ceiling, not a default to be argued with:
+ * every result lands in the agent's own context.
+ */
+static guint
+memory_limit(ClawtMcpTools *self, const gchar *agent_id,
+             JsonObject *arguments)
+{
+    ClawtAgent *agent = clawt_agent_manager_get(self->agents, agent_id);
+    gint configured = 20;
+    gint asked;
+
+    if (agent != NULL)
+        configured = (gint)clawt_agent_config_get_int(
+            clawt_agent_get_config(agent), "memories.max_results");
+
+    if (configured <= 0)
+        configured = 20;
+
+    asked = (gint)argument_int(arguments, "limit", configured);
+
+    return (guint)CLAMP(asked, 1, configured);
+}
+
+static ClawtMemoryStore *
+own_memory(ClawtMcpTools *self, const gchar *agent_id)
+{
+    ClawtAgent *agent = clawt_agent_manager_get(self->agents, agent_id);
+
+    return (agent != NULL) ? clawt_agent_get_memory(agent) : NULL;
+}
+
+static gchar *
+tool_memory_add(ClawtMcpTools *self, const gchar *agent_id,
+                JsonObject *arguments, gboolean *is_error)
+{
+    ClawtMemoryStore *store = own_memory(self, agent_id);
+    g_autoptr(ClawtMemory) memory = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *id = NULL;
+    const gchar *category = argument_string(arguments, "category");
+    const gchar *importance = argument_string(arguments, "importance");
+
+    if (store == NULL) {
+        *is_error = TRUE;
+        return g_strdup("You have no memory store.");
+    }
+
+    memory = clawt_memory_new(argument_string(arguments, "content"));
+    memory->summary = g_strdup(argument_string(arguments, "summary"));
+    memory->tags = g_strdup(argument_string(arguments, "tags"));
+
+    if (category != NULL && category[0] != '\0') {
+        g_free(memory->category);
+        memory->category = g_strdup(category);
+    }
+
+    if (importance != NULL && importance[0] != '\0') {
+        g_free(memory->importance);
+        memory->importance = g_strdup(importance);
+    }
+
+    /*
+     * Recorded rather than asked for: an agent should not have to
+     * remember to say that it was itself.
+     */
+    memory->source = g_strdup(agent_id);
+
+    id = clawt_memory_store_add(store, memory, &error);
+
+    if (id == NULL) {
+        *is_error = TRUE;
+        return g_strdup_printf("Could not remember that: %s",
+                               error->message);
+    }
+
+    return g_strdup_printf("Remembered as %s.", id);
+}
+
+static gchar *
+tool_memory_search(ClawtMcpTools *self, const gchar *agent_id,
+                   JsonObject *arguments, gboolean *is_error)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GPtrArray) found = NULL;
+    const gchar *whose = argument_string(arguments, "agent");
+    ClawtMemoryStore *store = memory_for(self, agent_id, whose, &error);
+
+    if (store == NULL) {
+        *is_error = TRUE;
+        return g_strdup(error != NULL ? error->message
+                                      : "You have no memory store.");
+    }
+
+    found = clawt_memory_store_search(store,
+                                      argument_string(arguments, "query"),
+                                      argument_string(arguments, "category"),
+                                      memory_limit(self, agent_id, arguments),
+                                      &error);
+
+    return memories_to_text(found, "Nothing remembered matches that.");
+}
+
+static gchar *
+tool_memory_list(ClawtMcpTools *self, const gchar *agent_id,
+                 JsonObject *arguments, gboolean *is_error)
+{
+    ClawtMemoryStore *store = own_memory(self, agent_id);
+    g_autoptr(GPtrArray) memories = NULL;
+
+    if (store == NULL) {
+        *is_error = TRUE;
+        return g_strdup("You have no memory store.");
+    }
+
+    memories = clawt_memory_store_list(
+        store, argument_string(arguments, "category"),
+        argument_boolean(arguments, "pinned_only", FALSE),
+        memory_limit(self, agent_id, arguments), NULL);
+
+    return memories_to_text(memories,
+                            "You have not remembered anything yet.");
+}
+
+static gchar *
+tool_memory_get(ClawtMcpTools *self, const gchar *agent_id,
+                JsonObject *arguments, gboolean *is_error)
+{
+    ClawtMemoryStore *store = own_memory(self, agent_id);
+    g_autoptr(ClawtMemory) memory = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GString) out = NULL;
+
+    if (store == NULL) {
+        *is_error = TRUE;
+        return g_strdup("You have no memory store.");
+    }
+
+    memory = clawt_memory_store_get(store, argument_string(arguments, "id"),
+                                    &error);
+
+    if (memory == NULL) {
+        *is_error = TRUE;
+        return g_strdup(error->message);
+    }
+
+    out = g_string_new(NULL);
+    append_memory(out, memory, TRUE);
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+static gchar *
+tool_memory_forget(ClawtMcpTools *self, const gchar *agent_id,
+                   JsonObject *arguments, gboolean *is_error)
+{
+    ClawtMemoryStore *store = own_memory(self, agent_id);
+    const gchar *id = argument_string(arguments, "id");
+    g_autoptr(GError) error = NULL;
+
+    if (store == NULL) {
+        *is_error = TRUE;
+        return g_strdup("You have no memory store.");
+    }
+
+    if (!clawt_memory_store_forget(store, id, &error)) {
+        *is_error = TRUE;
+        return g_strdup(error->message);
+    }
+
+    return g_strdup_printf("Forgotten: %s is out of every listing and "
+                           "search, and still on disk.", id);
+}
+
+static gchar *
+tool_memory_pin(ClawtMcpTools *self, const gchar *agent_id,
+                JsonObject *arguments, gboolean *is_error)
+{
+    ClawtMemoryStore *store = own_memory(self, agent_id);
+    const gchar *id = argument_string(arguments, "id");
+    gboolean pinned = argument_boolean(arguments, "pinned", TRUE);
+    g_autoptr(GError) error = NULL;
+
+    if (store == NULL) {
+        *is_error = TRUE;
+        return g_strdup("You have no memory store.");
+    }
+
+    if (!clawt_memory_store_pin(store, id, pinned, &error)) {
+        *is_error = TRUE;
+        return g_strdup(error->message);
+    }
+
+    return g_strdup_printf("%s is now %s.", id,
+                           pinned ? "pinned" : "unpinned");
+}
 
 /* ── Rooms ───────────────────────────────────────────────────────── */
 
@@ -1327,7 +1775,21 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
             text = g_strdup_printf("Task %s could not be completed; it may "
                                    "have already finished.", task_id);
         }
-    } else if (g_strcmp0(tool_name, "clawtilla_computer_exec") == 0)
+    } else if (g_strcmp0(tool_name, "clawtilla_message_user") == 0)
+        text = tool_message_user(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_memory_add") == 0)
+        text = tool_memory_add(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_memory_search") == 0)
+        text = tool_memory_search(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_memory_list") == 0)
+        text = tool_memory_list(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_memory_get") == 0)
+        text = tool_memory_get(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_memory_forget") == 0)
+        text = tool_memory_forget(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_memory_pin") == 0)
+        text = tool_memory_pin(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_computer_exec") == 0)
         text = tool_computer_exec(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_computer_state") == 0)
         text = tool_computer_state(self, agent_id);

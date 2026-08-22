@@ -460,18 +460,6 @@ A message repeating one already in the window is refused. This catches
 the case the hop limit does not: two agents alternating the same two
 replies, each one a fresh chain.
 
-*** =orchestration.chief_of_staff=
-
-- Type :: string
-- Default :: unset
-- Since :: 0.1.0
-
-Id of the agent that receives work addressed to the fleet.
-
-At most one agent may hold this. Setting it here is equivalent to
-chief_of_staff: true on that agent, and the daemon refuses to start if
-two agents claim it.
-
 ** =orchestration.mailbox=
 
 Defaults for every agent's mailbox.
@@ -537,6 +525,69 @@ jitter applied so a dependency that failed for every queued message does
 not bring them all back at the same instant.
 
 0 retries immediately.
+
+** =memories=
+
+What an agent remembers between conversations.
+
+Not agents.memory, which is the MEMORY.md size budget and a different
+thing entirely. This is the searchable store.
+
+Each agent gets its own SQLite database beside its mailbox, holding
+what it chose to write down: decisions, preferences, things that
+turned out to be true. It searches its own with clawtilla_memory_*.
+
+One database per agent rather than one table with an agent column, so
+isolation is a property of the filesystem: a query that forgot to
+filter still cannot reach another agent's memories, because they are
+not in the file being read.
+
+*** =memories.enabled=
+
+- Type :: boolean
+- Default :: =true=
+- Since :: 0.1.0
+
+Whether agents get a memory store at all.
+
+Off means the clawtilla_memory_* tools are not offered, rather than
+offered and failing. An agent that can see a tool will try it.
+
+*** =memories.max_results=
+
+- Type :: integer
+- Default :: =20=
+- Since :: 0.1.0
+
+How many memories one search or listing returns at most.
+
+This lands in the agent's context on every call, so the limit is a
+budget rather than a formality.
+
+*** =memories.readers=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+Comma-separated ids of agents allowed to read this agent's memories.
+
+Empty by default, which is the whole point: an agent's memories are
+its own unless somebody says otherwise. Reading only -- there is no
+setting that lets one agent write into another's memory, because a
+memory you did not form is not a memory.
+
+*** =orchestration.chief_of_staff=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+Id of the agent that receives work addressed to the fleet.
+
+At most one agent may hold this. Setting it here is equivalent to
+chief_of_staff: true on that agent, and the daemon refuses to start if
+two agents claim it.
 
 ** =rooms=
 

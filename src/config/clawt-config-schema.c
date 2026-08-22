@@ -330,14 +330,6 @@ static const ClawtSchemaEntry schema[] = {
   "the case the hop limit does not: two agents alternating the same two\n"
   "replies, each one a fresh chain.", "0.1.0" },
 
-{ "orchestration.chief_of_staff", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_COMMENTED,
-  NULL, NULL,
-  "Id of the agent that receives work addressed to the fleet.\n"
-  "\n"
-  "At most one agent may hold this. Setting it here is equivalent to\n"
-  "chief_of_staff: true on that agent, and the daemon refuses to start if\n"
-  "two agents claim it.", "0.1.0" },
-
 { "orchestration.mailbox", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Defaults for every agent's mailbox.\n"
   "\n"
@@ -379,6 +371,53 @@ static const ClawtSchemaEntry schema[] = {
   "0 retries immediately.", "0.1.0" },
 
 /* ── rooms ───────────────────────────────────────────────────────── */
+/* ââ memory ââ */
+{ "memories", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "What an agent remembers between conversations.\n"
+  "\n"
+  "Not agents.memory, which is the MEMORY.md size budget and a different\n"
+  "thing entirely. This is the searchable store.\n"
+  "\n"
+  "Each agent gets its own SQLite database beside its mailbox, holding\n"
+  "what it chose to write down: decisions, preferences, things that\n"
+  "turned out to be true. It searches its own with clawtilla_memory_*.\n"
+  "\n"
+  "One database per agent rather than one table with an agent column, so\n"
+  "isolation is a property of the filesystem: a query that forgot to\n"
+  "filter still cannot reach another agent's memories, because they are\n"
+  "not in the file being read.", "0.1.0" },
+
+{ "memories.enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_PER_AGENT,
+  "true", NULL,
+  "Whether agents get a memory store at all.\n"
+  "\n"
+  "Off means the clawtilla_memory_* tools are not offered, rather than\n"
+  "offered and failing. An agent that can see a tool will try it.", "0.1.0" },
+
+{ "memories.max_results", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_PER_AGENT,
+  "20", NULL,
+  "How many memories one search or listing returns at most.\n"
+  "\n"
+  "This lands in the agent's context on every call, so the limit is a\n"
+  "budget rather than a formality.", "0.1.0" },
+
+{ "memories.readers", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_PER_AGENT |
+  CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
+  "Comma-separated ids of agents allowed to read this agent's memories.\n"
+  "\n"
+  "Empty by default, which is the whole point: an agent's memories are\n"
+  "its own unless somebody says otherwise. Reading only -- there is no\n"
+  "setting that lets one agent write into another's memory, because a\n"
+  "memory you did not form is not a memory.", "0.1.0" },
+
+{ "orchestration.chief_of_staff", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_COMMENTED,
+  NULL, NULL,
+  "Id of the agent that receives work addressed to the fleet.\n"
+  "\n"
+  "At most one agent may hold this. Setting it here is equivalent to\n"
+  "chief_of_staff: true on that agent, and the daemon refuses to start if\n"
+  "two agents claim it.", "0.1.0" },
+
 { "rooms", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Standing rooms, created at startup if they do not exist.\n"
   "\n"

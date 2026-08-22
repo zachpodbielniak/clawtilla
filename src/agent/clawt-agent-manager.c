@@ -141,6 +141,32 @@ build_agent(ClawtAgentManager *self, ClawtAgentConfig *agent_config)
     if (mailbox == NULL)
         clawt_agent_mark_shadow(agent, "its mailbox could not be opened");
 
+    /*
+     * Its memory, beside its mailbox and no further.  One database per
+     * agent, so an agent reading its own memories cannot reach anybody
+     * else's -- there is no query that crosses, because the other
+     * memories are in another file.
+     *
+     * A memory store that will not open costs the agent its memory and
+     * nothing else: an agent that cannot remember is still an agent, and
+     * refusing to start it would be a worse answer than a warning.
+     */
+    if (clawt_agent_config_get_boolean(agent_config, "memories.enabled")) {
+        g_autofree gchar *memory_path = NULL;
+        g_autoptr(ClawtMemoryStore) memory = NULL;
+        g_autoptr(GError) memory_error = NULL;
+
+        memory_path = g_build_filename(self->state_dir, "agents", agent_id,
+                                       "memory.db", NULL);
+        memory = clawt_memory_store_new(memory_path, &memory_error);
+
+        if (memory == NULL)
+            g_warning("agent %s: its memory could not be opened: %s",
+                      agent_id, memory_error->message);
+        else
+            clawt_agent_set_memory(agent, memory);
+    }
+
     g_signal_connect(agent, "state-changed",
                      G_CALLBACK(on_agent_state_changed), self);
 

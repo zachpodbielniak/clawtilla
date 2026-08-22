@@ -109,6 +109,15 @@ static const gchar *usage_text =
     "  clawtilla agent edit researcher            # all of them, in order\n"
     "  clawtilla agent edit researcher TOOLS.org  # just one\n"
     "\n"
+    "  # Agents on disk that are not in the config\n"
+    "  clawtilla agent discover\n"
+    "  clawtilla agent import researcher   # adopt one, keeping its state\n"
+    "  clawtilla agent forget researcher   # move it aside, delete nothing\n"
+    "\n"
+    "  # What an agent has remembered\n"
+    "  clawtilla memory list researcher\n"
+    "  clawtilla memory search researcher \"deploy key\"\n"
+    "\n"
     "  # Hand work to a chief-of-staff and watch it delegate\n"
     "  clawtilla send chief-of-staff \"summarize this week's commits\"\n"
     "  clawtilla task list\n"
@@ -128,6 +137,7 @@ static const gchar *usage_text =
  */
 static const gchar *const verbs[] = {
     "daemon", "status", "agent", "send", "chat", "mailbox", "room", "task",
+    "memory",
     "computer", "cp", "config", "plugin", "integration", "model", "image",
     NULL
 };
@@ -978,6 +988,98 @@ cmd_agent(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
+    if (g_strcmp0(verb, "discover") == 0) {
+        JsonArray *found;
+        guint i;
+
+        reply = call(client, "agent.discover", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        found = json_object_get_array_member(json_node_get_object(reply),
+                                             "found");
+
+        if (json_array_get_length(found) == 0) {
+            g_print("Nothing on disk that is not in the config.\n");
+            return EXIT_SUCCESS;
+        }
+
+        g_print("Directories that look like agents but are not configured:\n\n");
+
+        for (i = 0; i < json_array_get_length(found); i++) {
+            JsonObject *one = json_array_get_object_element(found, i);
+            JsonArray *holds = json_object_get_array_member(one, "holds");
+            g_autoptr(GString) what = g_string_new(NULL);
+            guint j;
+
+            for (j = 0; j < json_array_get_length(holds); j++) {
+                if (what->len > 0)
+                    g_string_append(what, " ");
+
+                g_string_append(what, json_array_get_string_element(holds, j));
+            }
+
+            g_print("%-24s %-10s %s\n",
+                    member_or(one, "id", "?"),
+                    member_or(one, "kind", "?"),
+                    what->len > 0 ? what->str : "(empty)");
+            g_print("  %s\n", member_or(one, "path", ""));
+        }
+
+        g_print("\nAdopt one with `clawtilla agent import <id>`, or put it\n"
+                "out of the way with `clawtilla agent forget <id>`.\n");
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "import") == 0) {
+        if (target == NULL) {
+            g_printerr("Usage: clawtilla agent import <id>\n");
+            g_printerr("  `clawtilla agent discover` lists what is there\n");
+            return EXIT_FAILURE;
+        }
+
+        /*
+         * Import is create with the same id: the workspace and the
+         * state directory are already where the daemon looks for them,
+         * so adopting one is a config entry and nothing else. There is
+         * deliberately no second code path that could treat an imported
+         * agent differently from a created one.
+         */
+        reply = call(client, "agent.create",
+                     build_payload("id", target, NULL));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Imported %s. Its workspace and mailbox were already "
+                "there.\n", target);
+        g_print("Check it over with `clawtilla agent show %s` before "
+                "starting it.\n", target);
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "forget") == 0) {
+        if (target == NULL) {
+            g_printerr("Usage: clawtilla agent forget <id>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "agent.forget",
+                     build_payload("id", target, NULL));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Moved aside: %s\n",
+                member_or(json_node_get_object(reply), "moved", "(nothing)"));
+        g_print("Nothing was deleted. Remove the .discarded directories "
+                "yourself when you are sure.\n");
+
+        return EXIT_SUCCESS;
+    }
+
     if (g_strcmp0(verb, "files") == 0 || g_strcmp0(verb, "edit") == 0) {
         g_autoptr(GPtrArray) paths = NULL;
         JsonArray *files;
@@ -1327,6 +1429,90 @@ cmd_mailbox(int argc, char *argv[])
 }
 
 /* ── rooms ───────────────────────────────────────────────────────── */
+
+/* ── memories ────────────────────────────────────────────────────── */
+
+/*
+ * What an agent has written down.
+ *
+ * Read-only from here on purpose. Memories are formed in the agent's own
+ * work, and a person adding one by hand would be putting words in its
+ * mouth that it later reads back as its own conclusion.
+ */
+static gint
+cmd_memory(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verb = (argc > 2) ? argv[2] : NULL;
+    const gchar *target = (argc > 3) ? argv[3] : NULL;
+    JsonArray *memories;
+    guint i;
+
+    if (verb == NULL || target == NULL ||
+        (g_strcmp0(verb, "list") != 0 && g_strcmp0(verb, "search") != 0)) {
+        g_printerr("Usage: clawtilla memory list <agent> [--category C]\n");
+        g_printerr("       clawtilla memory search <agent> <query>\n");
+        return EXIT_FAILURE;
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    if (g_strcmp0(verb, "search") == 0) {
+        if (argc < 5) {
+            g_printerr("Usage: clawtilla memory search <agent> <query>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "memory.search",
+                     build_payload("agent", target, "query", argv[4], NULL));
+    } else {
+        const gchar *category = NULL;
+        int arg;
+
+        for (arg = 4; arg + 1 < argc; arg++) {
+            if (g_strcmp0(argv[arg], "--category") == 0)
+                category = argv[arg + 1];
+        }
+
+        reply = call(client, "memory.list",
+                     build_payload("agent", target, "category", category,
+                                   NULL));
+    }
+
+    if (reply == NULL)
+        return EXIT_FAILURE;
+
+    memories = json_object_get_array_member(json_node_get_object(reply),
+                                            "memories");
+
+    if (json_array_get_length(memories) == 0) {
+        g_print("Nothing.\n");
+        return EXIT_SUCCESS;
+    }
+
+    for (i = 0; i < json_array_get_length(memories); i++) {
+        JsonObject *memory = json_array_get_object_element(memories, i);
+        const gchar *summary = member_or(memory, "summary", NULL);
+
+        g_print("%s  [%s/%s]%s\n",
+                member_or(memory, "id", "?"),
+                member_or(memory, "category", "?"),
+                member_or(memory, "importance", "?"),
+                json_object_has_member(memory, "pinned") &&
+                json_object_get_boolean_member(memory, "pinned")
+                    ? "  pinned" : "");
+        g_print("  %s\n",
+                summary != NULL ? summary : member_or(memory, "content", ""));
+    }
+
+    g_print("\n%" G_GINT64_FORMAT " remembered in total.\n",
+            json_object_get_int_member(json_node_get_object(reply), "total"));
+
+    return EXIT_SUCCESS;
+}
 
 static gint
 cmd_room(int argc, char *argv[])
@@ -2195,6 +2381,9 @@ main(int argc, char *argv[])
 
     if (g_strcmp0(argv[1], "room") == 0)
         return cmd_room(argc, argv);
+
+    if (g_strcmp0(argv[1], "memory") == 0)
+        return cmd_memory(argc, argv);
 
     if (g_strcmp0(argv[1], "task") == 0)
         return cmd_task(argc, argv);

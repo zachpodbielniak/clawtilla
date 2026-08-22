@@ -396,6 +396,15 @@ clawt_agent_config_get_string(ClawtAgentConfig *self, const gchar *key)
         { "computer.type",   "defaults.computer"  },
         { "runtime.restart", "defaults.restart"   },
         { "computer.container.image", "defaults.container_image" },
+
+        /*
+         * These two fall back to the top-level key rather than a
+         * defaults.* one, because that section *is* the fleet-wide
+         * setting -- there is no defaults.memories, and inventing one
+         * would be a second place to say the same thing.
+         */
+        { "memories.enabled",     "memories.enabled"     },
+        { "memories.max_results", "memories.max_results" },
         { NULL, NULL }
     };
     g_autofree gchar *schema_key = NULL;

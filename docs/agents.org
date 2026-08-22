@@ -167,7 +167,92 @@ To reach OpenAI or Gemini from an agent, use ~opencode~, which is a CLI
 that routes to them.  The HTTP providers are offered for *designing* an
 agent, where ai-glib drives them directly -- see below.
 
-** Workspace
+** Memory
+
+Each agent has a searchable store of its own: what it chose to write
+down, kept between conversations and across restarts.
+
+** One database per agent
+
+~<state_dir>/agents/<id>/memory.db~, beside that agent's mailbox. Not
+one table with an agent column.
+
+That is the isolation, and it is deliberate: a query that forgets to
+filter still cannot reach another agent's memories, because they are not
+in the file being read. There is no ~WHERE~ clause to get wrong.
+
+Sharing is opt-in and one-way:
+
+#+begin_src yaml
+agents:
+  - id: researcher
+    memories:
+      readers: [chief-of-staff]
+#+end_src
+
+~chief-of-staff~ may now search ~researcher~'s memories by passing
+~agent: researcher~ to ~clawtilla_memory_search~. Reading only --
+nothing lets one agent write into another's memory, because a memory you
+did not form is not a memory.
+
+** The tools
+
+| Tool | What it does |
+|------+--------------|
+| ~clawtilla_memory_search~ | Full-text search, best match first |
+| ~clawtilla_memory_add~ | Write one down |
+| ~clawtilla_memory_list~ | Recent, pinned first |
+| ~clawtilla_memory_get~ | One in full |
+| ~clawtilla_memory_pin~ | Keep one at the top |
+| ~clawtilla_memory_forget~ | Archive one |
+
+They are not offered at all when ~memories.enabled~ is off, rather than
+offered and failing -- an agent that can see a tool will try it.
+
+** Why sqlite directly rather than an ORM
+
+clawtilla already links sqlite and already has a store of this shape in
+~ClawtMailbox~. The thing that matters here is *FTS5*, sqlite's
+full-text index, which is a virtual table reached through raw SQL: an
+ORM adds nothing to it and gets in the way of ~bm25()~ ranking.
+
+FTS5 is optional in a sqlite build, so its absence downgrades search to
+a substring match rather than refusing to open the store. A memory
+system that will not start on an older sqlite is worse than one that
+ranks less well.
+
+A search query is whatever a model typed, and unquoted it is FTS5
+*syntax* -- a stray ~"~ or a bare ~NOT~ is a parse error, not a search
+for those words. Queries are quoted as phrase literals, and
+~tests/test-memory.c~ throws the obvious hostile ones at it.
+
+** Ordering
+
+Pinned first, then best match or newest, then *rowid*. The last is not
+decoration: ~created_at~ has one-second resolution, and the id does not
+save it either, because two memories written in the same millisecond
+differ only by their random tail. rowid is sqlite's own insertion
+counter, which is exactly the question being asked.
+
+** Forgetting keeps
+
+~clawtilla_memory_forget~ archives: out of every listing and every
+search, still on disk. Deleting is not offered. An agent decides what to
+forget from inside one conversation, and being wrong about that would
+otherwise be unrecoverable; a person can still go and look.
+
+** From outside
+
+#+begin_src bash
+clawtilla memory list researcher
+clawtilla memory search researcher "deploy key"
+clawtilla memory list researcher --category preference
+#+end_src
+
+Read-only on purpose. A memory a person typed is one the agent will
+later read back as its own conclusion.
+
+* Workspace
 
 #+begin_src yaml
 workspace: "~/agents/researcher"
@@ -463,3 +548,40 @@ clawtilla agent new --ai "reads my notes and answers questions about them"
 
 That prints the proposed configuration and stops.  Add ~--commit~ to
 create it.  See [[file:clients.org][clients.org]].
+
+* Agents on disk that are not in the config
+
+Directories accumulate. An agent removed from the config keeps its
+state, a design that was never committed leaves a workspace behind, and
+a config restored from a backup leaves everything it did not mention.
+None of that was visible anywhere, so it sat on disk and surprised
+people.
+
+#+begin_src bash
+clawtilla agent discover
+#+end_src
+
+lists every directory under the state dir or the workspace root that
+looks like an agent and is not configured, with what is actually in it
+-- a mailbox, a memory store, org files -- so leftovers from a real
+agent are distinguishable from an empty directory somebody made by hand.
+
+#+begin_src bash
+clawtilla agent import ghost-writer
+#+end_src
+
+adopts one. Import *is* create with the same id: the workspace and the
+state directory are already where the daemon looks, so adopting is a
+config entry and nothing else. There is deliberately no second code path
+that could treat an imported agent differently from a created one.
+
+#+begin_src bash
+clawtilla agent forget ghost-writer
+#+end_src
+
+renames it to ~<path>.discarded~ and stops listing it. Nothing is
+deleted: this is somebody's agent -- its transcripts, its memories --
+and "I never created this" is a thing people say about directories they
+later want back. Remove the ~.discarded~ ones yourself when you are
+sure.
+

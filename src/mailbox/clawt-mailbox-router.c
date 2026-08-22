@@ -283,16 +283,48 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
     for (;;) {
         g_autoptr(ClawtMailboxItem) item = NULL;
         g_autoptr(GError) error = NULL;
+        g_autofree gchar *body = NULL;
+        const gchar *from;
+        gboolean peer;
 
         item = clawt_mailbox_lease(mailbox, 0);
         if (item == NULL)
             break;
 
+        /*
+         * A message from a peer says so, in the body.
+         *
+         * The sender travels in its own field, and models do not
+         * reliably notice it: an agent messaged by another agent read it
+         * as coming from its operator, answered it as an instruction,
+         * and the two of them talked past each other for fifty turns.
+         * Saying it in the text is the difference between a peer asking
+         * a question and the human giving an order.
+         *
+         * Applied at delivery, not stored: the transcript keeps what was
+         * actually said.
+         */
+        from = clawt_mailbox_item_get_from(item);
+        peer = from != NULL &&
+               clawt_agent_manager_get(self->agents, from) != NULL;
+
+        if (peer)
+            body = g_strdup_printf(
+                "[clawtilla] The following is from '%s', another agent in "
+                "your fleet -- not from your operator. Treat it as a "
+                "colleague's message: answer it if you have something to "
+                "say and end your turn without replying if you do not. "
+                "If your operator asked you for something and this is the "
+                "answer, tell them with clawtilla_message_user -- replying "
+                "here reaches %s, not them.\n\n%s",
+                from, from, clawt_mailbox_item_get_body(item));
+
         if (!clawt_link_deliver(link,
                                 clawt_mailbox_item_get_room(item),
-                                clawt_mailbox_item_get_from(item),
+                                from,
                                 NULL,
-                                clawt_mailbox_item_get_body(item),
+                                peer ? body
+                                     : clawt_mailbox_item_get_body(item),
                                 clawt_mailbox_item_get_task_id(item),
                                 &error)) {
             /*
