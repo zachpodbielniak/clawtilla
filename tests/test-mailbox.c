@@ -18,6 +18,8 @@
 
 #include <glib/gstdio.h>
 
+#include "clawt-test-util.h"
+
 typedef struct {
     gchar        *dir;
     gchar        *db_path;
@@ -51,7 +53,7 @@ fixture_teardown(Fixture *fixture)
         g_unlink(shm);
     }
 
-    g_rmdir(fixture->dir);
+    clawt_test_remove_tree(fixture->dir);
     g_clear_pointer(&fixture->db_path, g_free);
     g_clear_pointer(&fixture->dir, g_free);
 }
@@ -639,6 +641,7 @@ test_corrupt_database_is_quarantined(void)
     g_assert_nonnull(id);
 
     g_clear_object(&mailbox);
+    clawt_test_remove_tree(dir);
 }
 
 static void

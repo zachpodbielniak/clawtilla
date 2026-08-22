@@ -16,6 +16,8 @@
 
 #include <glib/gstdio.h>
 
+#include "clawt-test-util.h"
+
 /*
  * Where the fixture plugins and the example plugin were built.
  * BUILD_OUTDIR is the build tree matching this test's own build type, so
@@ -382,7 +384,7 @@ test_plugin_tools_are_offered_to_agents(void)
 
     g_assert_true(saw_plugin_tool);
 
-    g_rmdir(dir);
+    clawt_test_remove_tree(dir);
 }
 
 /*
@@ -434,7 +436,7 @@ test_plugin_tools_obey_the_deny_list(void)
     g_assert_false(clawt_mcp_tools_is_permitted(tools, "chief",
                                                 "example_fleet_tally"));
 
-    g_rmdir(dir);
+    clawt_test_remove_tree(dir);
 }
 
 int

@@ -17,6 +17,8 @@
 
 #include <glib/gstdio.h>
 
+#include "clawt-test-util.h"
+
 typedef struct {
     gchar *root;
     gchar *outside;

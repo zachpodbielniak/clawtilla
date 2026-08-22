@@ -19,6 +19,8 @@
 
 #include <glib/gstdio.h>
 
+#include "clawt-test-util.h"
+
 static gboolean
 integration_enabled(void)
 {
@@ -534,7 +536,7 @@ test_dead_gowl_socket_is_not_available(void)
     g_assert_nonnull(error);
 
     g_unlink(path);
-    g_rmdir(dir);
+    clawt_test_remove_tree(dir);
 }
 
 static void
@@ -748,27 +750,6 @@ test_container_against_real_podman(void)
  * g_rmdir on a non-empty directory quietly does nothing -- leaving the
  * temporary tree behind on every run.
  */
-static void
-remove_tree(const gchar *path)
-{
-    g_autoptr(GDir) dir = g_dir_open(path, 0, NULL);
-    const gchar *name;
-
-    if (dir == NULL)
-        return;
-
-    while ((name = g_dir_read_name(dir)) != NULL) {
-        g_autofree gchar *child = g_build_filename(path, name, NULL);
-
-        if (g_file_test(child, G_FILE_TEST_IS_DIR))
-            remove_tree(child);
-        else
-            g_unlink(child);
-    }
-
-    g_rmdir(path);
-}
-
 /* ── Mounts on the host ──────────────────────────────────────────── */
 
 /*
@@ -816,7 +797,7 @@ test_host_reaches_a_mount_by_its_target(void)
     g_assert_nonnull(strstr(clawt_exec_result_get_stdout(result),
                             "from the host"));
 
-    remove_tree(dir);
+    clawt_test_remove_tree(dir);
 }
 
 /*
@@ -849,7 +830,7 @@ test_a_mount_is_a_grant_in_workspace_mode(void)
     /* And nothing else was opened up by it. */
     g_assert_false(clawt_sandbox_path_is_allowed(sandbox, "/etc/shadow"));
 
-    remove_tree(dir);
+    clawt_test_remove_tree(dir);
 }
 
 /*
@@ -885,7 +866,7 @@ test_a_mount_prefix_is_not_a_match(void)
                                       &error));
     g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFINEMENT);
 
-    remove_tree(dir);
+    clawt_test_remove_tree(dir);
 }
 
 /*

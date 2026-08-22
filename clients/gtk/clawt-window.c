@@ -15,6 +15,32 @@
 
 #include <string.h>
 
+/*
+ * The provider and model rows, and the free-text row that appears when a
+ * model is not in the catalogue.
+ *
+ * Shared by the create dialog and the agent inspector: the rules for
+ * which models a provider runs belong in one place, or the two views
+ * drift and one of them starts offering combinations that cannot work.
+ */
+typedef struct {
+    ClawtWindow *window;
+    GtkWidget   *provider_row;
+    GtkWidget   *model_row;
+    GtkWidget   *model_entry;
+    JsonNode    *catalog;
+} ModelChooser;
+
+/* Defined below; the inspector and the create dialog both use them. */
+static JsonObject  *chooser_provider(ModelChooser *chooser);
+static const gchar *chooser_provider_id(ModelChooser *chooser);
+static gchar       *chooser_model(ModelChooser *chooser);
+static void         model_chooser_build(ModelChooser *chooser,
+                                        ClawtWindow  *window,
+                                        GtkWidget    *group,
+                                        const gchar  *want_provider,
+                                        const gchar  *want_model);
+
 struct _ClawtWindow {
     AdwApplicationWindow parent_instance;
 
@@ -33,6 +59,14 @@ struct _ClawtWindow {
 
     /* Inspector */
     GtkBox            *inspector;
+    GtkWidget         *name_row;
+    GtkWidget         *description_row;
+    GtkWidget         *effort_row;
+    GtkWidget         *computer_row;
+    GtkWidget         *restart_row;
+    GtkWidget         *autostart_row;
+    GtkWidget         *chief_row;
+    ModelChooser       inspector_models;
 
     /* Mailbox */
     GtkListBox        *mailbox_list;
@@ -491,17 +525,276 @@ action_button(ClawtWindow *self, const gchar *label, const gchar *kind,
     return button;
 }
 
+/*
+ * Sends one setting, and reports it if the daemon refuses.
+ *
+ * Returns: %TRUE if it was accepted
+ */
+static gboolean
+apply_setting(ClawtWindow *self, const gchar *key, const gchar *value)
+{
+    g_autoptr(JsonNode) reply = NULL;
+
+    reply = clawt_window_request(
+        self, "agent.set",
+        clawt_build_payload("agent", self->selected_agent, "key", key,
+                            "value", value, NULL));
+
+    return reply != NULL;
+}
+
+static void
+on_save_agent(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autofree gchar *model = NULL;
+    static const gchar *const computers[] = { "none", "host", "container",
+                                              "vm" };
+    static const gchar *const efforts[] = { "low", "medium", "high",
+                                            "xhigh", "max" };
+    static const gchar *const restarts[] = { "never", "on-failure",
+                                             "always" };
+    gboolean ok = TRUE;
+
+    (void)button;
+
+    if (self->selected_agent == NULL)
+        return;
+
+    ok &= apply_setting(self, "name",
+                        gtk_editable_get_text(GTK_EDITABLE(self->name_row)));
+    ok &= apply_setting(self, "description",
+                        gtk_editable_get_text(
+                            GTK_EDITABLE(self->description_row)));
+
+    if (chooser_provider_id(&self->inspector_models) != NULL)
+        ok &= apply_setting(self, "model.provider",
+                            chooser_provider_id(&self->inspector_models));
+
+    model = chooser_model(&self->inspector_models);
+
+    if (model != NULL)
+        ok &= apply_setting(self, "model.model", model);
+
+    ok &= apply_setting(self, "model.effort",
+                        efforts[MIN(adw_combo_row_get_selected(
+                                        ADW_COMBO_ROW(self->effort_row)), 4)]);
+
+    ok &= apply_setting(self, "computer.type",
+                        computers[MIN(adw_combo_row_get_selected(
+                                          ADW_COMBO_ROW(self->computer_row)),
+                                      3)]);
+
+    ok &= apply_setting(self, "runtime.restart",
+                        restarts[MIN(adw_combo_row_get_selected(
+                                         ADW_COMBO_ROW(self->restart_row)),
+                                     2)]);
+
+    ok &= apply_setting(self, "runtime.autostart",
+                        adw_switch_row_get_active(
+                            ADW_SWITCH_ROW(self->autostart_row))
+                            ? "true" : "false");
+
+    ok &= apply_setting(self, "chief_of_staff",
+                        adw_switch_row_get_active(
+                            ADW_SWITCH_ROW(self->chief_row))
+                            ? "true" : "false");
+
+    if (!ok)
+        return;
+
+    /*
+     * Said plainly, because most of these only take effect on the next
+     * start -- the model and the computer especially.  A reload does not
+     * restart running agents on purpose, and an interface that implied
+     * otherwise would have people wondering why nothing changed.
+     */
+    clawt_window_toast(self,
+                       "Saved. Restart the agent for the model or computer "
+                       "to take effect.");
+    refresh_agents(self);
+}
+
+/* ── Deleting ────────────────────────────────────────────────────── */
+
+static void
+on_delete_confirmed_twice(AdwAlertDialog *dialog, gchar *response,
+                          gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *agent_id = NULL;
+
+    (void)dialog;
+
+    if (g_strcmp0(response, "delete") != 0)
+        return;
+
+    agent_id = g_strdup(self->selected_agent);
+
+    reply = clawt_window_request(
+        self, "agent.remove", clawt_build_payload("agent", agent_id, NULL));
+
+    if (reply == NULL)
+        return;
+
+    g_clear_pointer(&self->selected_agent, g_free);
+    clear_box(self->inspector);
+    clear_box(self->transcript);
+
+    {
+        g_autofree gchar *message = g_strdup_printf("%s is gone.", agent_id);
+
+        clawt_window_toast(self, message);
+    }
+
+    refresh_agents(self);
+}
+
+static void
+on_delete_confirmed_once(AdwAlertDialog *dialog, gchar *response,
+                         gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    AdwAlertDialog *second;
+
+    (void)dialog;
+
+    if (g_strcmp0(response, "delete") != 0)
+        return;
+
+    /*
+     * A second, deliberately louder confirmation.  Removing an agent
+     * takes its running process and its place in every room with it, and
+     * a single click between "browsing" and "gone" is too few.
+     */
+    second = ADW_ALERT_DIALOG(
+        adw_alert_dialog_new("ARE YOU REALLY SURE!?", NULL));
+
+    adw_alert_dialog_set_body(
+        second,
+        "This removes the agent from the fleet and stops it if it is "
+        "running.\n\n"
+        "Its mailbox and transcripts stay on disk -- removing an agent is "
+        "reversible, deleting its history is not.");
+
+    adw_alert_dialog_add_response(second, "cancel", "Keep it");
+    adw_alert_dialog_add_response(second, "delete", "Delete it for good");
+    adw_alert_dialog_set_response_appearance(second, "delete",
+                                             ADW_RESPONSE_DESTRUCTIVE);
+    adw_alert_dialog_set_default_response(second, "cancel");
+    adw_alert_dialog_set_close_response(second, "cancel");
+
+    g_signal_connect(second, "response",
+                     G_CALLBACK(on_delete_confirmed_twice), self);
+
+    adw_dialog_present(ADW_DIALOG(second), GTK_WIDGET(self));
+}
+
+static void
+on_delete_agent(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    AdwAlertDialog *first;
+    g_autofree gchar *heading = NULL;
+
+    (void)button;
+
+    if (self->selected_agent == NULL)
+        return;
+
+    heading = g_strdup_printf("Delete %s?", self->selected_agent);
+
+    first = ADW_ALERT_DIALOG(adw_alert_dialog_new("Are you sure?", NULL));
+
+    adw_alert_dialog_set_body(first, heading);
+    adw_alert_dialog_add_response(first, "cancel", "Cancel");
+    adw_alert_dialog_add_response(first, "delete", "Delete");
+    adw_alert_dialog_set_response_appearance(first, "delete",
+                                             ADW_RESPONSE_DESTRUCTIVE);
+    adw_alert_dialog_set_default_response(first, "cancel");
+    adw_alert_dialog_set_close_response(first, "cancel");
+
+    g_signal_connect(first, "response",
+                     G_CALLBACK(on_delete_confirmed_once), self);
+
+    adw_dialog_present(ADW_DIALOG(first), GTK_WIDGET(self));
+}
+
+/* ── The inspector ───────────────────────────────────────────────── */
+
+static guint
+index_of(const gchar *const *values, const gchar *wanted)
+{
+    guint i;
+
+    for (i = 0; values[i] != NULL; i++) {
+        if (g_strcmp0(values[i], wanted) == 0)
+            return i;
+    }
+
+    return 0;
+}
+
+static GtkWidget *
+combo_row(const gchar *title, const gchar *const *values,
+          const gchar *selected)
+{
+    GtkWidget *row = adw_combo_row_new();
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
+    adw_combo_row_set_model(ADW_COMBO_ROW(row),
+                            G_LIST_MODEL(gtk_string_list_new(values)));
+    adw_combo_row_set_selected(ADW_COMBO_ROW(row),
+                               index_of(values, selected));
+
+    return row;
+}
+
+static GtkWidget *
+entry_row(const gchar *title, const gchar *value)
+{
+    GtkWidget *row = adw_entry_row_new();
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
+    gtk_editable_set_text(GTK_EDITABLE(row), value != NULL ? value : "");
+
+    return row;
+}
+
+static GtkWidget *
+switch_row(const gchar *title, const gchar *subtitle, gboolean active)
+{
+    GtkWidget *row = adw_switch_row_new();
+
+    set_row_text(row, title, subtitle);
+    adw_switch_row_set_active(ADW_SWITCH_ROW(row), active);
+
+    return row;
+}
+
 static void
 build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
 {
+    static const gchar *const computers[] = { "none", "host", "container",
+                                              "vm", NULL };
+    static const gchar *const efforts[] = { "low", "medium", "high",
+                                            "xhigh", "max", NULL };
+    static const gchar *const restarts[] = { "never", "on-failure",
+                                             "always", NULL };
     GtkWidget *group;
     GtkWidget *actions;
+    GtkWidget *save;
+    GtkWidget *danger;
+    GtkWidget *delete_button;
     const gchar *state = clawt_json_string(agent, "state", "stopped");
     const gchar *caps = clawt_json_string(agent, "caps", "");
     gboolean is_shadow = g_strcmp0(state, "shadow") == 0;
 
     clear_box(self->inspector);
+    g_clear_pointer(&self->inspector_models.catalog, json_node_unref);
 
+    /* ── What it is, and what it is doing ── */
     group = adw_preferences_group_new();
     adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group), "Agent");
 
@@ -517,15 +810,66 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
             info_row("Why", clawt_json_string(agent, "detail", NULL)));
 
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
-                              info_row("Model",
-                                       clawt_json_string(agent, "model",
-                                                         "-")));
-    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
-                              info_row("Computer",
-                                       clawt_json_string(agent, "computer",
-                                                         "none")));
-    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
                               info_row("Can do", caps));
+
+    gtk_box_append(self->inspector, group);
+
+    /* ── Editable ── */
+    group = adw_preferences_group_new();
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group), "Settings");
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(group),
+        "The model and the computer take effect when the agent next "
+        "starts.");
+
+    self->name_row = entry_row("Name", clawt_json_string(agent, "name", ""));
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), self->name_row);
+
+    self->description_row = entry_row(
+        "Description", clawt_json_string(agent, "description", ""));
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(self->description_row), "");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              self->description_row);
+
+    model_chooser_build(&self->inspector_models, self, group,
+                        clawt_json_string(agent, "provider", NULL),
+                        clawt_json_string(agent, "model", NULL));
+
+    self->effort_row = combo_row("Effort", efforts,
+                                 clawt_json_string(agent, "effort",
+                                                   "medium"));
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), self->effort_row);
+
+    self->computer_row = combo_row("Computer", computers,
+                                   clawt_json_string(agent, "computer",
+                                                     "none"));
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              self->computer_row);
+
+    self->restart_row = combo_row("Restart", restarts,
+                                  clawt_json_string(agent, "restart",
+                                                    "on-failure"));
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              self->restart_row);
+
+    self->autostart_row = switch_row(
+        "Start with the daemon", NULL,
+        json_object_has_member(agent, "autostart")
+            ? json_object_get_boolean_member(agent, "autostart") : TRUE);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              self->autostart_row);
+
+    self->chief_row = switch_row(
+        "Chief of staff", "Hands work to the other agents",
+        json_object_has_member(agent, "chief_of_staff") &&
+        json_object_get_boolean_member(agent, "chief_of_staff"));
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), self->chief_row);
+
+    save = gtk_button_new_with_label("Save changes");
+    gtk_widget_add_css_class(save, "suggested-action");
+    gtk_widget_set_margin_top(save, 12);
+    g_signal_connect(save, "clicked", G_CALLBACK(on_save_agent), self);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), save);
 
     gtk_box_append(self->inspector, group);
 
@@ -571,6 +915,7 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
         gtk_box_append(self->inspector, detail);
     }
 
+    /* ── Running it ── */
     actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_set_margin_top(GTK_WIDGET(actions), 12);
     gtk_widget_set_halign(actions, GTK_ALIGN_CENTER);
@@ -597,6 +942,24 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
                                  "this agent cannot start"));
 
     gtk_box_append(self->inspector, actions);
+
+    /* ── Removing it ── */
+    danger = adw_preferences_group_new();
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(danger),
+                                    "Danger zone");
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(danger),
+        "Removing an agent stops it and takes it out of every room. Its "
+        "mailbox and transcripts stay on disk.");
+
+    delete_button = gtk_button_new_with_label("Delete this agent");
+    gtk_widget_add_css_class(delete_button, "destructive-action");
+    gtk_widget_set_margin_top(delete_button, 6);
+    g_signal_connect(delete_button, "clicked", G_CALLBACK(on_delete_agent),
+                     self);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(danger), delete_button);
+
+    gtk_box_append(self->inspector, danger);
 }
 
 /* ── Mailbox ─────────────────────────────────────────────────────── */
@@ -874,15 +1237,12 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
 /* ── New agent ───────────────────────────────────────────────────── */
 
 typedef struct {
-    ClawtWindow *window;
-    AdwDialog   *dialog;        /* so it can close itself; see below */
-    GtkWidget   *id_entry;
-    GtkWidget   *provider_row;
-    GtkWidget   *model_row;
-    GtkWidget   *model_entry;   /* for a name not in the catalogue */
-    GtkWidget   *computer_row;
-    GtkWidget   *describe_entry;
-    JsonNode    *catalog;       /* the reply from model.list */
+    ClawtWindow  *window;
+    AdwDialog    *dialog;
+    GtkWidget    *id_entry;
+    GtkWidget    *computer_row;
+    GtkWidget    *describe_entry;
+    ModelChooser  models;
 } NewAgentDialog;
 
 static void
@@ -890,22 +1250,22 @@ new_agent_dialog_free(gpointer data)
 {
     NewAgentDialog *dialog = data;
 
-    g_clear_pointer(&dialog->catalog, json_node_unref);
+    g_clear_pointer(&dialog->models.catalog, json_node_unref);
     g_free(dialog);
 }
 
 static JsonObject *
-selected_provider(NewAgentDialog *dialog)
+chooser_provider(ModelChooser *chooser)
 {
     JsonArray *providers;
     guint selected;
 
-    if (dialog->catalog == NULL)
+    if (chooser->catalog == NULL)
         return NULL;
 
     providers = json_object_get_array_member(
-        json_node_get_object(dialog->catalog), "providers");
-    selected = adw_combo_row_get_selected(ADW_COMBO_ROW(dialog->provider_row));
+        json_node_get_object(chooser->catalog), "providers");
+    selected = adw_combo_row_get_selected(ADW_COMBO_ROW(chooser->provider_row));
 
     if (selected >= json_array_get_length(providers))
         return NULL;
@@ -923,8 +1283,8 @@ selected_provider(NewAgentDialog *dialog)
 static void
 on_provider_changed(GObject *object, GParamSpec *pspec, gpointer user_data)
 {
-    NewAgentDialog *dialog = user_data;
-    JsonObject *provider = selected_provider(dialog);
+    ModelChooser *chooser = user_data;
+    JsonObject *provider = chooser_provider(chooser);
     g_autoptr(GtkStringList) names = gtk_string_list_new(NULL);
     JsonArray *models;
     guint i;
@@ -944,8 +1304,7 @@ on_provider_changed(GObject *object, GParamSpec *pspec, gpointer user_data)
 
         label = (note != NULL)
                 ? g_strdup_printf("%s - %s",
-                                  clawt_json_string(model, "label", "?"),
-                                  note)
+                                  clawt_json_string(model, "label", "?"), note)
                 : g_strdup(clawt_json_string(model, "label", "?"));
 
         gtk_string_list_append(names, label);
@@ -958,14 +1317,14 @@ on_provider_changed(GObject *object, GParamSpec *pspec, gpointer user_data)
      */
     gtk_string_list_append(names, "Something else…");
 
-    adw_combo_row_set_model(ADW_COMBO_ROW(dialog->model_row),
+    adw_combo_row_set_model(ADW_COMBO_ROW(chooser->model_row),
                             G_LIST_MODEL(g_steal_pointer(&names)));
-    adw_combo_row_set_selected(ADW_COMBO_ROW(dialog->model_row), 0);
+    adw_combo_row_set_selected(ADW_COMBO_ROW(chooser->model_row), 0);
 
     if (clawt_json_string(provider, "note", NULL) != NULL) {
         adw_preferences_row_set_use_markup(
-            ADW_PREFERENCES_ROW(dialog->provider_row), FALSE);
-        adw_action_row_set_subtitle(ADW_ACTION_ROW(dialog->provider_row),
+            ADW_PREFERENCES_ROW(chooser->provider_row), FALSE);
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(chooser->provider_row),
                                     clawt_json_string(provider, "note", ""));
     }
 }
@@ -974,8 +1333,8 @@ on_provider_changed(GObject *object, GParamSpec *pspec, gpointer user_data)
 static void
 on_model_changed(GObject *object, GParamSpec *pspec, gpointer user_data)
 {
-    NewAgentDialog *dialog = user_data;
-    JsonObject *provider = selected_provider(dialog);
+    ModelChooser *chooser = user_data;
+    JsonObject *provider = chooser_provider(chooser);
     JsonArray *models;
     guint selected;
 
@@ -986,22 +1345,19 @@ on_model_changed(GObject *object, GParamSpec *pspec, gpointer user_data)
         return;
 
     models = json_object_get_array_member(provider, "models");
-    selected = adw_combo_row_get_selected(ADW_COMBO_ROW(dialog->model_row));
+    selected = adw_combo_row_get_selected(ADW_COMBO_ROW(chooser->model_row));
 
-    gtk_widget_set_visible(dialog->model_entry,
+    gtk_widget_set_visible(chooser->model_entry,
                            selected >= json_array_get_length(models));
 }
 
 /*
- * What the two rows add up to, as a model id.
- *
- * Returns: (transfer full) (nullable): the id, or %NULL if nothing was
- *   chosen
+ * Returns: (transfer full) (nullable): the chosen model id
  */
 static gchar *
-chosen_model(NewAgentDialog *dialog)
+chooser_model(ModelChooser *chooser)
 {
-    JsonObject *provider = selected_provider(dialog);
+    JsonObject *provider = chooser_provider(chooser);
     JsonArray *models;
     guint selected;
 
@@ -1009,7 +1365,7 @@ chosen_model(NewAgentDialog *dialog)
         return NULL;
 
     models = json_object_get_array_member(provider, "models");
-    selected = adw_combo_row_get_selected(ADW_COMBO_ROW(dialog->model_row));
+    selected = adw_combo_row_get_selected(ADW_COMBO_ROW(chooser->model_row));
 
     if (selected < json_array_get_length(models))
         return g_strdup(clawt_json_string(
@@ -1017,9 +1373,114 @@ chosen_model(NewAgentDialog *dialog)
 
     {
         const gchar *typed = gtk_editable_get_text(
-            GTK_EDITABLE(dialog->model_entry));
+            GTK_EDITABLE(chooser->model_entry));
 
         return (typed != NULL && *typed != '\0') ? g_strdup(typed) : NULL;
+    }
+}
+
+/*
+ * Returns: (transfer none) (nullable): the chosen provider id
+ */
+static const gchar *
+chooser_provider_id(ModelChooser *chooser)
+{
+    JsonObject *provider = chooser_provider(chooser);
+
+    return (provider != NULL) ? clawt_json_string(provider, "id", NULL)
+                              : NULL;
+}
+
+/*
+ * Adds the provider and model rows to a group, populated from the daemon
+ * so every view agrees on what exists.
+ */
+static void
+model_chooser_build(ModelChooser *chooser, ClawtWindow *window,
+                    GtkWidget *group, const gchar *want_provider,
+                    const gchar *want_model)
+{
+    g_autoptr(GtkStringList) provider_names = gtk_string_list_new(NULL);
+    JsonArray *providers = NULL;
+    guint chosen = 0;
+    guint i;
+
+    chooser->window = window;
+
+    chooser->provider_row = adw_combo_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(chooser->provider_row),
+                                  "Provider");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              chooser->provider_row);
+
+    chooser->model_row = adw_combo_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(chooser->model_row),
+                                  "Model");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              chooser->model_row);
+
+    chooser->model_entry = adw_entry_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(chooser->model_entry),
+                                  "Model name");
+    gtk_widget_set_visible(chooser->model_entry, FALSE);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              chooser->model_entry);
+
+    chooser->catalog = clawt_window_request(window, "model.list", NULL);
+
+    if (chooser->catalog != NULL) {
+        providers = json_object_get_array_member(
+            json_node_get_object(chooser->catalog), "providers");
+
+        for (i = 0; i < json_array_get_length(providers); i++) {
+            JsonObject *provider = json_array_get_object_element(providers, i);
+
+            gtk_string_list_append(provider_names,
+                                   clawt_json_string(provider, "label", "?"));
+
+            if (want_provider != NULL &&
+                g_strcmp0(clawt_json_string(provider, "id", ""),
+                          want_provider) == 0)
+                chosen = i;
+        }
+    }
+
+    adw_combo_row_set_model(ADW_COMBO_ROW(chooser->provider_row),
+                            G_LIST_MODEL(g_steal_pointer(&provider_names)));
+    adw_combo_row_set_selected(ADW_COMBO_ROW(chooser->provider_row), chosen);
+
+    g_signal_connect(chooser->provider_row, "notify::selected",
+                     G_CALLBACK(on_provider_changed), chooser);
+    g_signal_connect(chooser->model_row, "notify::selected",
+                     G_CALLBACK(on_model_changed), chooser);
+
+    on_provider_changed(NULL, NULL, chooser);
+
+    /* Select the agent's current model, or offer it as typed text. */
+    if (want_model != NULL && providers != NULL) {
+        JsonObject *provider = chooser_provider(chooser);
+        JsonArray *models = (provider != NULL)
+                            ? json_object_get_array_member(provider, "models")
+                            : NULL;
+        gboolean found = FALSE;
+
+        for (i = 0; models != NULL && i < json_array_get_length(models); i++) {
+            if (g_strcmp0(clawt_json_string(
+                              json_array_get_object_element(models, i),
+                              "id", ""), want_model) != 0)
+                continue;
+
+            adw_combo_row_set_selected(ADW_COMBO_ROW(chooser->model_row), i);
+            found = TRUE;
+            break;
+        }
+
+        if (!found && models != NULL) {
+            adw_combo_row_set_selected(ADW_COMBO_ROW(chooser->model_row),
+                                       json_array_get_length(models));
+            gtk_editable_set_text(GTK_EDITABLE(chooser->model_entry),
+                                  want_model);
+        }
     }
 }
 
@@ -1028,7 +1489,7 @@ on_create_manually(GtkButton *button, gpointer user_data)
 {
     NewAgentDialog *dialog = user_data;
     ClawtWindow *self = dialog->window;
-    JsonObject *provider = selected_provider(dialog);
+    JsonObject *provider = chooser_provider(&dialog->models);
     g_autoptr(JsonNode) reply = NULL;
     g_autofree gchar *model = NULL;
     static const gchar *const computers[] = { "none", "host", "container",
@@ -1045,7 +1506,7 @@ on_create_manually(GtkButton *button, gpointer user_data)
         return;
     }
 
-    model = chosen_model(dialog);
+    model = chooser_model(&dialog->models);
     selected = adw_combo_row_get_selected(ADW_COMBO_ROW(dialog->computer_row));
 
     reply = clawt_window_request(
@@ -1207,54 +1668,7 @@ on_new_agent(GtkButton *button, gpointer user_data)
      * asking for a model before knowing the provider is how you end up
      * offering "sonnet" for Ollama.
      */
-    dialog->provider_row = adw_combo_row_new();
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->provider_row),
-                                  "Provider");
-    adw_preferences_group_add(ADW_PREFERENCES_GROUP(manual),
-                              dialog->provider_row);
-
-    dialog->model_row = adw_combo_row_new();
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->model_row),
-                                  "Model");
-    adw_preferences_group_add(ADW_PREFERENCES_GROUP(manual),
-                              dialog->model_row);
-
-    dialog->model_entry = adw_entry_row_new();
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->model_entry),
-                                  "Model name");
-    gtk_widget_set_visible(dialog->model_entry, FALSE);
-    adw_preferences_group_add(ADW_PREFERENCES_GROUP(manual),
-                              dialog->model_entry);
-
-    /* Populate from the daemon, so every client agrees on the list. */
-    {
-        g_autoptr(GtkStringList) provider_names = gtk_string_list_new(NULL);
-
-        dialog->catalog = clawt_window_request(self, "model.list", NULL);
-
-        if (dialog->catalog != NULL) {
-            JsonArray *providers = json_object_get_array_member(
-                json_node_get_object(dialog->catalog), "providers");
-            guint i;
-
-            for (i = 0; i < json_array_get_length(providers); i++)
-                gtk_string_list_append(
-                    provider_names,
-                    clawt_json_string(
-                        json_array_get_object_element(providers, i),
-                        "label", "?"));
-        }
-
-        adw_combo_row_set_model(ADW_COMBO_ROW(dialog->provider_row),
-                                G_LIST_MODEL(g_steal_pointer(&provider_names)));
-    }
-
-    g_signal_connect(dialog->provider_row, "notify::selected",
-                     G_CALLBACK(on_provider_changed), dialog);
-    g_signal_connect(dialog->model_row, "notify::selected",
-                     G_CALLBACK(on_model_changed), dialog);
-
-    on_provider_changed(NULL, NULL, dialog);
+    model_chooser_build(&dialog->models, self, manual, NULL, NULL);
 
     dialog->computer_row = adw_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->computer_row),

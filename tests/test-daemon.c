@@ -16,33 +16,14 @@
 #include <gio/gunixsocketaddress.h>
 #include <glib/gstdio.h>
 
+#include "clawt-test-util.h"
+
 typedef struct {
     gchar        *dir;
     gchar        *config_path;
     ClawtDaemon  *daemon;
     GMainContext *context;
 } Fixture;
-
-static void
-remove_tree(const gchar *path)
-{
-    g_autoptr(GDir) dir = g_dir_open(path, 0, NULL);
-    const gchar *name;
-
-    if (dir == NULL)
-        return;
-
-    while ((name = g_dir_read_name(dir)) != NULL) {
-        g_autofree gchar *child = g_build_filename(path, name, NULL);
-
-        if (g_file_test(child, G_FILE_TEST_IS_DIR))
-            remove_tree(child);
-        else
-            g_unlink(child);
-    }
-
-    g_rmdir(path);
-}
 
 static void
 fixture_setup(Fixture *fixture, const gchar *extra_yaml)
@@ -99,7 +80,7 @@ fixture_teardown(Fixture *fixture)
     g_clear_pointer(&fixture->context, g_main_context_unref);
 
     if (fixture->dir != NULL)
-        remove_tree(fixture->dir);
+        clawt_test_remove_tree(fixture->dir);
 
     g_clear_pointer(&fixture->dir, g_free);
     g_clear_pointer(&fixture->config_path, g_free);

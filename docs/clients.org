@@ -89,7 +89,7 @@ inspector too.
 | Tab | What it is |
 |-----+------------|
 | Chat | the transcript, with bottom-follow that does not yank you down mid-read |
-| Agent | model, computer, capabilities, credentials by reference, start/stop |
+| Agent | edit name, description, provider, model, effort, computer, restart policy, autostart and chief-of-staff; credentials by reference; start/stop/restart; delete |
 | Mailbox | what is waiting, with acknowledge |
 | Computer | an exec console showing stdout *and* stderr |
 | Tasks | what has been delegated to whom, and where it got to |
@@ -97,6 +97,17 @@ inspector too.
 Every control's sensitivity is bound to ~ClawtAgentCaps~, and a disabled
 control says why in its tooltip.  A greyed-out button with no
 explanation is the interface equivalent of a shrug.
+
+Editing writes through ~agent.set~, which is the same path
+~clawtilla agent set~ uses -- the client has no second way to change a
+config.  The model and the computer only take effect on the agent's next
+start, and the Save toast says so rather than leaving you wondering why
+nothing changed.
+
+*Deleting asks twice.*  "Are you sure?", then "ARE YOU REALLY SURE!?".
+Removing an agent stops it and takes it out of every room, and one click
+between browsing and gone is too few.  Its mailbox and transcripts stay
+on disk: removing an agent is reversible, deleting its history is not.
 
 Message bodies are rendered as labels, never as Pango markup.  Model
 output arrives from somewhere the user does not control, and treating it

@@ -1137,6 +1137,30 @@ add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
     json_builder_add_string_value(
         builder, clawt_agent_config_get_string(config, "model.model"));
 
+    /*
+     * The settings a client offers for editing, so it can show what is
+     * currently set rather than guessing at defaults.
+     */
+    json_builder_set_member_name(builder, "provider");
+    json_builder_add_string_value(
+        builder, clawt_agent_config_get_string(config, "model.provider"));
+
+    json_builder_set_member_name(builder, "effort");
+    json_builder_add_string_value(
+        builder, clawt_agent_config_get_string(config, "model.effort"));
+
+    json_builder_set_member_name(builder, "restart");
+    json_builder_add_string_value(
+        builder, clawt_agent_config_get_string(config, "runtime.restart"));
+
+    json_builder_set_member_name(builder, "autostart");
+    json_builder_add_boolean_value(
+        builder, clawt_agent_config_get_boolean(config, "runtime.autostart"));
+
+    json_builder_set_member_name(builder, "enabled");
+    json_builder_add_boolean_value(
+        builder, clawt_agent_config_get_boolean(config, "enabled"));
+
     mailbox = clawt_agent_get_mailbox(agent);
     json_builder_set_member_name(builder, "mailbox_depth");
     json_builder_add_int_value(builder, mailbox != NULL

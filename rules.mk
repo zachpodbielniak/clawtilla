@@ -53,7 +53,7 @@ $(OBJDIR):
 # CLAWT_TEST_FIXTURES points at tests/fixtures/ so a test can find its
 # golden files and fake modules without guessing at the cwd it was run in.
 $(OUTDIR)/tests/%: $(TESTDIR)/%.c $(LIB_STATIC) $(LIBRECLAW_STATIC) | $(OUTDIR)/tests
-	$(CC) $(CFLAGS) -I$(SRCDIR) \
+	$(CC) $(CFLAGS) -I$(SRCDIR) -I$(TESTDIR) \
 		-DBUILD_OUTDIR='"$(OUTDIR)"' \
 		-DCLAWT_TEST_FIXTURES='"$(CURDIR)/$(TESTDIR)/fixtures"' \
 		-DCLAWT_TEST_SRCDIR='"$(CURDIR)"' \

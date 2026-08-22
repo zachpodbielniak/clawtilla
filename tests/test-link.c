@@ -18,6 +18,8 @@
 #include <gio/gunixsocketaddress.h>
 #include <glib/gstdio.h>
 
+#include "clawt-test-util.h"
+
 typedef struct {
     gchar           *dir;
     gchar           *socket_path;
@@ -41,7 +43,7 @@ fixture_teardown(Fixture *fixture)
     }
 
     g_unlink(fixture->socket_path);
-    g_rmdir(fixture->dir);
+    clawt_test_remove_tree(fixture->dir);
 
     g_clear_pointer(&fixture->socket_path, g_free);
     g_clear_pointer(&fixture->dir, g_free);

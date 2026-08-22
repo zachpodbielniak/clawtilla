@@ -16,6 +16,8 @@
 #include <glib/gstdio.h>
 #include <string.h>
 
+#include "clawt-test-util.h"
+
 static const gchar *sample_config =
     "# clawtilla configuration for the test fleet\n"
     "# second header line\n"
@@ -511,7 +513,7 @@ test_save_writes_atomically_and_keeps_a_backup(void)
 
     g_unlink(path);
     g_unlink(backup);
-    g_rmdir(dir);
+    clawt_test_remove_tree(dir);
 }
 
 /* A missing file is a fresh config, not an error: requiring the file to

@@ -15,6 +15,8 @@
 
 #include <glib/gstdio.h>
 
+#include "clawt-test-util.h"
+
 /* ── Loop safety ─────────────────────────────────────────────────── */
 
 static ClawtMessage *
@@ -396,7 +398,7 @@ test_transcript_redacts_on_write(void)
     g_assert_nonnull(strstr(contents, "REDACTED"));
 
     g_unlink(path);
-    g_rmdir(dir);
+    clawt_test_remove_tree(dir);
 }
 
 /* ── Tasks ───────────────────────────────────────────────────────── */
