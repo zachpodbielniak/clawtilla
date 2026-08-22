@@ -218,4 +218,20 @@ void clawt_agent_stop(ClawtAgent *self);
 void clawt_agent_mark_shadow(ClawtAgent  *self,
                              const gchar *reason);
 
+/**
+ * clawt_agent_set_error:
+ * @self: a #ClawtAgent
+ * @reason: what went wrong
+ *
+ * Puts the agent into error state.
+ *
+ * Use this rather than clawt_agent_mark_shadow() for anything that could
+ * succeed on a retry -- a container runtime that is down, an image that
+ * is not pulled. Shadow means the configuration itself cannot be
+ * understood, and it refuses every later start with the reason frozen
+ * from the first failure.
+ */
+void clawt_agent_set_error(ClawtAgent  *self,
+                           const gchar *reason);
+
 G_END_DECLS

@@ -41,6 +41,52 @@ ClawtComputer *clawt_container_computer_new(const gchar    *agent_id,
 
 void clawt_container_computer_set_name(ClawtContainerComputer *self,
                                        const gchar            *name);
+/**
+ * clawt_container_computer_set_connection:
+ * @self: a #ClawtContainerComputer
+ * @connection: (nullable): a podman connection -- a URI, a socket path, or
+ *   "unix" for the local default
+ *
+ * Chooses which podman the agent's container lives in.
+ *
+ * The default is resolved at construction: the rootless socket under
+ * XDG_RUNTIME_DIR when there is one, otherwise the system socket. %NULL,
+ * an empty string and "unix" all keep that default.
+ */
+void clawt_container_computer_set_connection(ClawtContainerComputer *self,
+                                             const gchar            *connection);
+
+/**
+ * clawt_container_computer_get_connection:
+ * @self: a #ClawtContainerComputer
+ *
+ * Returns: (transfer none) (nullable): the connection URI in use
+ */
+const gchar *clawt_container_computer_get_connection(ClawtContainerComputer *self);
+
+/**
+ * clawt_container_computer_set_command:
+ * @self: a #ClawtContainerComputer
+ * @command: (nullable): a JSON array of arguments, or a plain string that
+ *   is split on spaces
+ *
+ * Sets what the container runs.
+ *
+ * Defaults to something long-lived, because a container computer exists
+ * to be exec'd into and a plain base image's entrypoint exits at once.
+ * Set it when the image has an entrypoint of its own worth running.
+ */
+void clawt_container_computer_set_command(ClawtContainerComputer *self,
+                                          const gchar            *command);
+
+/**
+ * clawt_container_computer_get_command:
+ * @self: a #ClawtContainerComputer
+ *
+ * Returns: (transfer none) (nullable): the command, as a JSON array
+ */
+const gchar *clawt_container_computer_get_command(ClawtContainerComputer *self);
+
 void clawt_container_computer_set_network(ClawtContainerComputer *self,
                                           const gchar            *network);
 

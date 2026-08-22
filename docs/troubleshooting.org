@@ -83,21 +83,43 @@ daemon:
 That replaces the whole search path with the one directory, so a typo
 fails loudly rather than silently loading an older set from elsewhere.
 
-*** "container create failed: Could not connect: Permission denied"
+*** "container create failed: Could not connect: …"
 
-The module loaded and podman refused.  This is podman's own error, not
-clawtilla's: check the socket.
-
-#+begin_src bash
-systemctl --user status podman.socket
-#+end_src
+The module loaded and podman refused.  Almost always the rootless socket
+is not running:
 
 #+begin_src bash
-podman info
+systemctl --user enable --now podman.socket
 #+end_src
 
-A failure here that says "no reason given" means an old podomation --
-it used to fill in an error and then discard it before returning.
+clawtilla talks to the rootless socket under =XDG_RUNTIME_DIR= unless
+=agents.computer.container.connection= says otherwise.  Confirm which one podman
+itself thinks it has:
+
+#+begin_src bash
+podman info --format '{{.Host.RemoteSocket.Path}}'
+#+end_src
+
+A failure here that says "no reason given" means an old podomation -- it
+used to fill in an error and then discard it before returning.
+
+*** "no such image: … image not known"
+
+The image is not pulled.  ~create~ does not pull; that is deliberate, so
+a typo in an image name fails in a second rather than after a download.
+
+#+begin_src bash
+podman pull registry.fedoraproject.org/fedora:latest
+#+end_src
+
+*** The agent is in state error and will not start again
+
+Read the detail -- ~clawtilla agent show <agent>~ -- fix the cause, and
+start it again.  Unlike =shadow=, =error= is retryable: a runtime that
+was down, an image that was missing, a name that was taken.
+
+=shadow= is the other one: the configuration could not be understood, and
+no amount of retrying will change that.
 
 *** "integrations.matrix is enabled but … is not set"
 

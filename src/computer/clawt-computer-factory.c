@@ -176,6 +176,14 @@ clawt_computer_factory_create(ClawtAgentConfig  *agent_config,
             CLAWT_CONTAINER_COMPUTER(computer),
             clawt_agent_config_get_string(agent_config,
                                           "computer.container.name"));
+        clawt_container_computer_set_connection(
+            CLAWT_CONTAINER_COMPUTER(computer),
+            clawt_agent_config_get_string(agent_config,
+                                          "computer.container.connection"));
+        clawt_container_computer_set_command(
+            CLAWT_CONTAINER_COMPUTER(computer),
+            clawt_agent_config_get_string(agent_config,
+                                          "computer.container.command"));
         clawt_container_computer_set_network(
             CLAWT_CONTAINER_COMPUTER(computer),
             clawt_agent_config_get_string(agent_config,

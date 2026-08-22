@@ -668,6 +668,18 @@ static const ClawtSchemaEntry schema[] = {
   "Podman connection: a socket path, ssh://user@host/socket, tcp://host:port,\n"
   "or a named connection. Defaults to the user's podman socket.", "0.1.0" },
 
+{ "agents.computer.container.command", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_COMMENTED, "sleep infinity", NULL,
+  "What the container runs.\n"
+  "\n"
+  "The default keeps the container alive, because a container computer\n"
+  "exists to be exec'd into: a plain base image's entrypoint exits the\n"
+  "moment it starts, and an agent whose container has already gone is an\n"
+  "agent whose every command fails for no visible reason.\n"
+  "\n"
+  "Set it when the image has an entrypoint worth running. A JSON array is\n"
+  "used as-is; anything else is split on spaces.", "0.1.0" },
+
 { "agents.computer.container.network", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
   "Network to attach to. Leave unset for podman's default.", "0.1.0" },

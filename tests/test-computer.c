@@ -936,6 +936,82 @@ test_module_search_path(void)
     g_assert_nonnull(strstr(error->message, "/nowhere"));
 }
 
+/*
+ * A container computer has to talk to the podman the user actually runs.
+ *
+ * podomation defaults to /run/podman/podman.sock -- the root socket --
+ * so a rootless desktop got "Could not connect: Permission denied" for a
+ * daemon it was never going to be allowed to reach.  Rootless is the
+ * normal case.
+ */
+static void
+test_container_connection_default(void)
+{
+    g_autoptr(ClawtPodBridge) bridge = clawt_pod_bridge_new(NULL);
+    g_autoptr(ClawtComputer) computer =
+        clawt_container_computer_new("agent", bridge, "fedora:latest");
+    ClawtContainerComputer *container = CLAWT_CONTAINER_COMPUTER(computer);
+    const gchar *connection = clawt_container_computer_get_connection(container);
+
+    g_assert_nonnull(connection);
+    g_assert_true(g_str_has_prefix(connection, "unix://"));
+
+    /* "unix" is the documented shorthand, not a URI: it keeps the default. */
+    clawt_container_computer_set_connection(container, "unix");
+    g_assert_cmpstr(clawt_container_computer_get_connection(container),
+                    ==, connection);
+
+    /* A bare path is a socket path. */
+    clawt_container_computer_set_connection(container, "/tmp/podman.sock");
+    g_assert_cmpstr(clawt_container_computer_get_connection(container),
+                    ==, "unix:///tmp/podman.sock");
+
+    /* Anything with a scheme is passed through untouched. */
+    clawt_container_computer_set_connection(container,
+                                            "ssh://me@host/run/podman.sock");
+    g_assert_cmpstr(clawt_container_computer_get_connection(container),
+                    ==, "ssh://me@host/run/podman.sock");
+}
+
+/*
+ * A container computer exists to be exec'd into, so it needs something
+ * long-lived to run.  A plain base image's entrypoint exits at once, and
+ * podman then reports Exited while clawtilla still called it provisioned.
+ */
+static void
+test_container_command(void)
+{
+    g_autoptr(ClawtPodBridge) bridge = clawt_pod_bridge_new(NULL);
+    g_autoptr(ClawtComputer) computer =
+        clawt_container_computer_new("agent", bridge, "fedora:latest");
+    ClawtContainerComputer *container = CLAWT_CONTAINER_COMPUTER(computer);
+    const gchar *command;
+
+    command = clawt_container_computer_get_command(container);
+    g_assert_nonnull(command);
+    g_assert_cmpstr(command, ==, "[\"sleep\", \"infinity\"]");
+
+    /* A JSON array is taken as written. */
+    clawt_container_computer_set_command(container, "[\"tail\",\"-f\"]");
+    g_assert_cmpstr(clawt_container_computer_get_command(container),
+                    ==, "[\"tail\",\"-f\"]");
+
+    /*
+     * A plain string is split, because that is what somebody writing
+     * `command: "sleep infinity"` in YAML means -- passing it as one argv
+     * element gets it rejected by podman for no visible reason.
+     */
+    clawt_container_computer_set_command(container, "sleep 3600");
+    g_assert_nonnull(strstr(clawt_container_computer_get_command(container),
+                            "\"sleep\""));
+    g_assert_nonnull(strstr(clawt_container_computer_get_command(container),
+                            "\"3600\""));
+
+    /* Empty keeps whatever was there rather than clearing it. */
+    clawt_container_computer_set_command(container, "");
+    g_assert_nonnull(clawt_container_computer_get_command(container));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1002,6 +1078,9 @@ main(int argc, char *argv[])
     g_test_add_func("/computer/mount-prefix-not-a-match",
                     test_a_mount_prefix_is_not_a_match);
     g_test_add_func("/computer/module-search-path", test_module_search_path);
+    g_test_add_func("/computer/container-connection-default",
+                    test_container_connection_default);
+    g_test_add_func("/computer/container-command", test_container_command);
     g_test_add_func("/computer/socket-path-length",
                     test_an_over_long_socket_path_is_refused);
 

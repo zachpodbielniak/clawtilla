@@ -11,6 +11,8 @@
 #include "computer/clawt-container-computer.h"
 
 #include <json-glib/json-glib.h>
+#include <string.h>
+#include <unistd.h>
 
 #define MAX_OUTPUT_BYTES (256 * 1024)
 
@@ -22,11 +24,41 @@ struct _ClawtContainerComputer {
     gchar          *name;
     gchar          *network;
     gchar          *container_id;
+    gchar          *connection;
+    gchar          *command;
     gboolean        keep;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtContainerComputer, clawt_container_computer,
                     CLAWT_TYPE_COMPUTER)
+
+/*
+ * Resolves which podman to talk to.
+ *
+ * podomation defaults to /run/podman/podman.sock -- the *root* socket --
+ * so a rootless desktop got "Could not connect: Permission denied" for a
+ * daemon it was never going to be allowed to reach.  Rootless is the
+ * normal case: the socket lives under XDG_RUNTIME_DIR and is served by
+ * the podman.socket user unit.
+ *
+ * The system socket is still the answer when running as root, and an
+ * explicit `connection` beats both.
+ */
+static gchar *
+default_connection(void)
+{
+    const gchar *runtime_dir = g_get_user_runtime_dir();
+
+    if (runtime_dir != NULL && geteuid() != 0) {
+        g_autofree gchar *path = g_build_filename(runtime_dir, "podman",
+                                                  "podman.sock", NULL);
+
+        if (g_file_test(path, G_FILE_TEST_EXISTS))
+            return g_strdup_printf("unix://%s", path);
+    }
+
+    return g_strdup("unix:///run/podman/podman.sock");
+}
 
 ClawtComputer *
 clawt_container_computer_new(const gchar    *agent_id,
@@ -40,6 +72,16 @@ clawt_container_computer_new(const gchar    *agent_id,
     self = g_object_new(CLAWT_TYPE_CONTAINER_COMPUTER, NULL);
     self->bridge = g_object_ref(bridge);
     self->image = g_strdup(image);
+    self->connection = default_connection();
+
+    /*
+     * Something long-lived, because a container computer exists to be
+     * exec'd into.  A plain base image's entrypoint exits immediately,
+     * and podman then reports the container as Exited while clawtilla
+     * still called it provisioned -- the first sign was an exec failing
+     * for a reason that made no sense.
+     */
+    self->command = g_strdup("[\"sleep\", \"infinity\"]");
 
     /* A predictable name, so a container left behind can be found again. */
     self->name = g_strdup_printf("clawt-%s",
@@ -61,6 +103,84 @@ clawt_container_computer_set_name(ClawtContainerComputer *self,
 
     g_free(self->name);
     self->name = g_strdup(name);
+}
+
+void
+clawt_container_computer_set_connection(ClawtContainerComputer *self,
+                                        const gchar            *connection)
+{
+    g_return_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self));
+
+    /*
+     * "unix" on its own is the documented way of saying "the local
+     * podman", not a URI -- it was the example in every config we ship.
+     * Treating it as one produced a connection to nothing.
+     */
+    if (connection == NULL || *connection == '\0' ||
+        g_strcmp0(connection, "unix") == 0)
+        return;
+
+    g_free(self->connection);
+
+    /* A bare path is a socket path; anything with a scheme is passed on. */
+    self->connection = (*connection == '/')
+                       ? g_strdup_printf("unix://%s", connection)
+                       : g_strdup(connection);
+}
+
+const gchar *
+clawt_container_computer_get_connection(ClawtContainerComputer *self)
+{
+    g_return_val_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self), NULL);
+
+    return self->connection;
+}
+
+void
+clawt_container_computer_set_command(ClawtContainerComputer *self,
+                                     const gchar            *command)
+{
+    g_return_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self));
+
+    if (command == NULL || *command == '\0')
+        return;
+
+    g_free(self->command);
+
+    /*
+     * A JSON array is passed through; anything else is one argv element,
+     * which is what somebody writing `command: "sleep infinity"` in YAML
+     * means and would otherwise get silently rejected by podman.
+     */
+    if (*command == '[') {
+        self->command = g_strdup(command);
+    } else {
+        g_auto(GStrv) words = g_strsplit(command, " ", -1);
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        g_autoptr(JsonGenerator) generator = json_generator_new();
+        g_autoptr(JsonNode) root = NULL;
+        gsize i;
+
+        json_builder_begin_array(builder);
+
+        for (i = 0; words[i] != NULL; i++) {
+            if (*words[i] != '\0')
+                json_builder_add_string_value(builder, words[i]);
+        }
+
+        json_builder_end_array(builder);
+        root = json_builder_get_root(builder);
+        json_generator_set_root(generator, root);
+        self->command = json_generator_to_data(generator, NULL);
+    }
+}
+
+const gchar *
+clawt_container_computer_get_command(ClawtContainerComputer *self)
+{
+    g_return_val_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self), NULL);
+
+    return self->command;
 }
 
 void
@@ -154,7 +274,8 @@ container_provision(ClawtComputer *computer, GError **error)
     g_autofree gchar *mounts_json = NULL;
     const gchar *identifier;
 
-    if (!clawt_pod_bridge_load_module(self->bridge, "container", error))
+    if (!clawt_pod_bridge_load_module_for(self->bridge, "container",
+                                          self->connection, error))
         return FALSE;
 
     clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_PROVISIONING,
@@ -170,8 +291,46 @@ container_provision(ClawtComputer *computer, GError **error)
     g_hash_table_insert(params, g_strdup("mounts"),
                         g_steal_pointer(&mounts_json));
 
-    result = clawt_pod_bridge_call(self->bridge, "container", "create",
+    if (self->command != NULL)
+        g_hash_table_insert(params, g_strdup("command"),
+                            g_strdup(self->command));
+
+    result = clawt_pod_bridge_call_for(self->bridge, "container",
+                                       self->connection, "create",
                                    params, error);
+
+    /*
+     * A container we left behind holds the name.
+     *
+     * The name is deliberately predictable -- clawt-<agent> -- so a
+     * container can be found again after a daemon restart.  The cost is
+     * that a previous one still sitting there makes create fail, and it
+     * failed permanently: every later start hit the same collision, so a
+     * daemon killed at the wrong moment bricked the agent until somebody
+     * ran podman by hand.  Removing ours and trying once more is what a
+     * person would do, and it is safe because the name is ours.
+     */
+    if (result == NULL && error != NULL && *error != NULL &&
+        strstr((*error)->message, "already in use") != NULL) {
+        g_autoptr(GHashTable) removal =
+            g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+        g_autoptr(GHashTable) removed = NULL;
+
+        g_hash_table_insert(removal, g_strdup("target"), g_strdup(self->name));
+        g_hash_table_insert(removal, g_strdup("force"), g_strdup("true"));
+
+        removed = clawt_pod_bridge_call_for(self->bridge, "container",
+                                            self->connection, "remove",
+                                            removal, NULL);
+
+        if (removed != NULL) {
+            g_clear_error(error);
+            result = clawt_pod_bridge_call_for(self->bridge, "container",
+                                               self->connection, "create",
+                                               params, error);
+        }
+    }
+
     if (result == NULL) {
         clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ERROR,
                                  (error != NULL && *error != NULL)
@@ -179,11 +338,42 @@ container_provision(ClawtComputer *computer, GError **error)
         return FALSE;
     }
 
-    identifier = g_hash_table_lookup(result, "id");
-    if (identifier != NULL && *identifier != '\0') {
-        g_free(self->container_id);
-        self->container_id = g_strdup(identifier);
+    /*
+     * No id means no container, whatever the call reported.  podman
+     * answers a create for an image it does not have with a 404, and an
+     * older podomation read that as success -- the agent then came up
+     * "running" with a container that had never existed, and the first
+     * sign was an exec failing much later for a reason that made no
+     * sense.
+     */
+    /*
+     * "container_id" is what podomation calls it.  We asked for "id",
+     * which no result has ever had, so self->container_id was empty on
+     * every successful create too -- masked only because every later
+     * call falls back to the container's name, which podman also
+     * accepts.
+     */
+    identifier = g_hash_table_lookup(result, "container_id");
+
+    if (identifier == NULL || *identifier == '\0') {
+        const gchar *detail = g_hash_table_lookup(result, "message");
+
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_COMPUTER_PROVISION,
+                    "podman created no container for image '%s'%s%s. "
+                    "If the image is not pulled, `podman pull %s` first.",
+                    self->image,
+                    (detail != NULL && *detail != '\0') ? ": " : "",
+                    (detail != NULL && *detail != '\0') ? detail : "",
+                    self->image);
+
+        clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ERROR,
+                                 (error != NULL && *error != NULL)
+                                 ? (*error)->message : NULL);
+        return FALSE;
     }
+
+    g_free(self->container_id);
+    self->container_id = g_strdup(identifier);
 
     clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_STOPPED, NULL);
 
@@ -218,7 +408,8 @@ container_start(ClawtComputer *computer, GError **error)
     g_hash_table_insert(params, g_strdup("target"),
                         g_strdup(container_target(self)));
 
-    result = clawt_pod_bridge_call(self->bridge, "container", "start",
+    result = clawt_pod_bridge_call_for(self->bridge, "container",
+                                       self->connection, "start",
                                    params, error);
     if (result == NULL) {
         clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ERROR,
@@ -245,7 +436,8 @@ container_stop(ClawtComputer *computer, GError **error)
     g_hash_table_insert(params, g_strdup("target"),
                         g_strdup(container_target(self)));
 
-    result = clawt_pod_bridge_call(self->bridge, "container", "stop", params,
+    result = clawt_pod_bridge_call_for(self->bridge, "container",
+                                       self->connection, "stop", params,
                                    error);
 
     clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_STOPPED, NULL);
@@ -270,7 +462,8 @@ container_teardown(ClawtComputer *computer, GError **error)
     g_hash_table_insert(params, g_strdup("target"),
                         g_strdup(container_target(self)));
 
-    result = clawt_pod_bridge_call(self->bridge, "container", "remove",
+    result = clawt_pod_bridge_call_for(self->bridge, "container",
+                                       self->connection, "remove",
                                    params, error);
 
     clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ABSENT, NULL);
@@ -344,12 +537,21 @@ container_exec(ClawtComputer        *computer,
                         g_strdup(container_target(self)));
     g_hash_table_insert(params, g_strdup("command"), g_strdup(command));
 
-    result = clawt_pod_bridge_call(self->bridge, "container", "exec", params,
+    result = clawt_pod_bridge_call_for(self->bridge, "container",
+                                       self->connection, "exec", params,
                                    error);
     if (result == NULL)
         return NULL;
 
-    output = g_hash_table_lookup(result, "output");
+    /*
+     * "stdout"/"stderr" is what the module returns; "output" was a key no
+     * result has ever had, so every container exec came back empty even
+     * when the command had run and printed something.
+     */
+    output = g_hash_table_lookup(result, "stdout");
+
+    if (output == NULL)
+        output = g_hash_table_lookup(result, "output");
 
     /*
      * The exit status comes from the module rather than being assumed.
@@ -380,8 +582,25 @@ container_exec(ClawtComputer        *computer,
     bounded = clawt_computer_truncate_output(output, MAX_OUTPUT_BYTES,
                                              &truncated);
 
-    exec_result = clawt_exec_result_new(exit_status, bounded, "");
-    clawt_exec_result_set_truncated(exec_result, truncated);
+    /*
+     * stderr is kept separate rather than folded into stdout.  A command
+     * that writes a diagnostic and still succeeds is common, and merging
+     * the two makes that indistinguishable from output the caller asked
+     * for.
+     */
+    {
+        const gchar *errors = g_hash_table_lookup(result, "stderr");
+        gboolean errors_truncated = FALSE;
+        g_autofree gchar *bounded_errors =
+            clawt_computer_truncate_output(errors, MAX_OUTPUT_BYTES,
+                                           &errors_truncated);
+
+        exec_result = clawt_exec_result_new(exit_status, bounded,
+                                            bounded_errors != NULL
+                                            ? bounded_errors : "");
+        clawt_exec_result_set_truncated(exec_result,
+                                        truncated || errors_truncated);
+    }
 
     return exec_result;
 }
@@ -449,6 +668,8 @@ clawt_container_computer_finalize(GObject *object)
     g_clear_pointer(&self->name, g_free);
     g_clear_pointer(&self->network, g_free);
     g_clear_pointer(&self->container_id, g_free);
+    g_clear_pointer(&self->connection, g_free);
+    g_clear_pointer(&self->command, g_free);
 
     G_OBJECT_CLASS(clawt_container_computer_parent_class)->finalize(object);
 }

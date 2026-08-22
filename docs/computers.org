@@ -136,6 +136,43 @@ Implemented through podomation's ~container~ module, which speaks the
 Podman REST API directly over a socket -- no libcurl, no libpod, no
 shelling out to the CLI.
 
+*** Which podman
+
+Rootless, by default: the socket under =XDG_RUNTIME_DIR= when there is
+one, the system socket otherwise.  podomation's own default is the *root*
+socket, which on a desktop means "Could not connect: Permission denied"
+for a daemon the user was never going to be allowed to reach.
+
+Set ~connection~ to point somewhere else -- a URI, a bare socket path, or
+a podman named connection.  ="unix"= is the shorthand for "the local
+one" and keeps the default.
+
+Rootless needs the socket running:
+
+#+begin_src bash
+systemctl --user enable --now podman.socket
+#+end_src
+
+*** What the container runs
+
+~command~, defaulting to something long-lived.  A container computer
+exists to be exec'd into, and a plain base image's entrypoint exits the
+moment it starts -- podman then reports the container as Exited while the
+agent still believes it has one, and the first sign is an exec failing
+for a reason that makes no sense.
+
+Set it when the image has an entrypoint worth running.  A JSON array is
+used as written; anything else is split on spaces.
+
+*** A container left behind
+
+The container name is derived from the agent id -- =clawt-<agent>= --
+so it can be found again after a daemon restart.  If one is still there
+when the agent next starts, it is removed and recreated rather than
+failing: the name is ours, and a daemon killed at the wrong moment used
+to leave an agent that could never start again without running podman by
+hand.
+
 *** Where the modules are found
 
 The ~container~ and ~vm_virtmanager~ modules are built by libreclaw as

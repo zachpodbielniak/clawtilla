@@ -17,7 +17,7 @@ struct _ClawtPodBridge {
     GObject parent_instance;
 
     GStrv       search_path;
-    GHashTable *modules;   /* name -> PodModule* (owned) */
+    GHashTable *modules;   /* "name" or "name@uri" -> PodModule* (owned) */
 };
 
 G_DEFINE_FINAL_TYPE(ClawtPodBridge, clawt_pod_bridge, G_TYPE_OBJECT)
@@ -132,12 +132,38 @@ find_module(ClawtPodBridge *self, const gchar *module_name)
     return NULL;
 }
 
+/*
+ * The cache key.
+ *
+ * A module instance carries its connection, so two agents pointed at
+ * different podman sockets need two instances -- sharing one meant the
+ * second agent silently talked to the first one's daemon.
+ */
+static gchar *
+instance_key(const gchar *module_name, const gchar *connection_uri)
+{
+    if (connection_uri == NULL || *connection_uri == '\0')
+        return g_strdup(module_name);
+
+    return g_strdup_printf("%s@%s", module_name, connection_uri);
+}
+
 gboolean
 clawt_pod_bridge_load_module(ClawtPodBridge  *self,
                              const gchar     *module_name,
                              GError         **error)
 {
+    return clawt_pod_bridge_load_module_for(self, module_name, NULL, error);
+}
+
+gboolean
+clawt_pod_bridge_load_module_for(ClawtPodBridge  *self,
+                                 const gchar     *module_name,
+                                 const gchar     *connection_uri,
+                                 GError         **error)
+{
     g_autofree gchar *path = NULL;
+    g_autofree gchar *key = NULL;
     GModule *module;
     GType (*register_func)(void);
     gpointer symbol = NULL;
@@ -147,7 +173,9 @@ clawt_pod_bridge_load_module(ClawtPodBridge  *self,
     g_return_val_if_fail(CLAWT_IS_POD_BRIDGE(self), FALSE);
     g_return_val_if_fail(module_name != NULL, FALSE);
 
-    if (g_hash_table_contains(self->modules, module_name))
+    key = instance_key(module_name, connection_uri);
+
+    if (g_hash_table_contains(self->modules, key))
         return TRUE;
 
     path = find_module(self, module_name);
@@ -202,8 +230,31 @@ clawt_pod_bridge_load_module(ClawtPodBridge  *self,
      */
     g_module_make_resident(module);
 
-    instance = g_object_new(module_type, NULL);
-    g_hash_table_insert(self->modules, g_strdup(module_name), instance);
+    {
+        /*
+         * The class has to be referenced before its properties can be
+         * looked up -- g_type_class_peek() returns NULL until somebody
+         * does, and the first instance of this type is created below.
+         *
+         * Checked rather than passed blind: g_object_new() warns loudly
+         * about a property a module does not have, and modules without a
+         * connection (vm_virtmanager takes a libvirt URI another way) are
+         * legitimate.
+         */
+        GObjectClass *klass = g_type_class_ref(module_type);
+        gboolean takes_uri =
+            connection_uri != NULL && *connection_uri != '\0' &&
+            g_object_class_find_property(klass, "connection-uri") != NULL;
+
+        instance = takes_uri
+                   ? g_object_new(module_type,
+                                  "connection-uri", connection_uri, NULL)
+                   : g_object_new(module_type, NULL);
+
+        g_type_class_unref(klass);
+    }
+
+    g_hash_table_insert(self->modules, g_steal_pointer(&key), instance);
 
     return TRUE;
 }
@@ -211,9 +262,21 @@ clawt_pod_bridge_load_module(ClawtPodBridge  *self,
 gboolean
 clawt_pod_bridge_has_module(ClawtPodBridge *self, const gchar *module_name)
 {
+    return clawt_pod_bridge_has_module_for(self, module_name, NULL);
+}
+
+gboolean
+clawt_pod_bridge_has_module_for(ClawtPodBridge *self,
+                                const gchar    *module_name,
+                                const gchar    *connection_uri)
+{
+    g_autofree gchar *key = NULL;
+
     g_return_val_if_fail(CLAWT_IS_POD_BRIDGE(self), FALSE);
 
-    return g_hash_table_contains(self->modules, module_name);
+    key = instance_key(module_name, connection_uri);
+
+    return g_hash_table_contains(self->modules, key);
 }
 
 /*
@@ -281,7 +344,20 @@ clawt_pod_bridge_call(ClawtPodBridge  *self,
                       GHashTable      *params,
                       GError         **error)
 {
+    return clawt_pod_bridge_call_for(self, module_name, NULL, action, params,
+                                     error);
+}
+
+GHashTable *
+clawt_pod_bridge_call_for(ClawtPodBridge  *self,
+                          const gchar     *module_name,
+                          const gchar     *connection_uri,
+                          const gchar     *action,
+                          GHashTable      *params,
+                          GError         **error)
+{
     PodModule *module;
+    g_autofree gchar *key = NULL;
     g_autoptr(GVariant) variant_params = NULL;
     GVariant *result_variant = NULL;
     GHashTable *result;
@@ -290,7 +366,8 @@ clawt_pod_bridge_call(ClawtPodBridge  *self,
     g_return_val_if_fail(CLAWT_IS_POD_BRIDGE(self), NULL);
     g_return_val_if_fail(action != NULL, NULL);
 
-    module = g_hash_table_lookup(self->modules, module_name);
+    key = instance_key(module_name, connection_uri);
+    module = g_hash_table_lookup(self->modules, key);
 
     if (module == NULL) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,

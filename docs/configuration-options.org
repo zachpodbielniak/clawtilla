@@ -1048,6 +1048,22 @@ Container name. Defaults to clawt-<agent-id>.
 Podman connection: a socket path, ssh://user@host/socket, tcp://host:port,
 or a named connection. Defaults to the user's podman socket.
 
+*** =agents.computer.container.command=
+
+- Type :: string
+- Default :: =sleep infinity=
+- Since :: 0.1.0
+
+What the container runs.
+
+The default keeps the container alive, because a container computer
+exists to be exec'd into: a plain base image's entrypoint exits the
+moment it starts, and an agent whose container has already gone is an
+agent whose every command fails for no visible reason.
+
+Set it when the image has an entrypoint worth running. A JSON array is
+used as-is; anything else is split on spaces.
+
 *** =agents.computer.container.network=
 
 - Type :: string

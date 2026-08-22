@@ -508,6 +508,11 @@ clawt_daemon_start_agent(ClawtDaemon *self, const gchar *agent_id,
         computer = clawt_computer_factory_create(config, self->pod_bridge,
                                                  &local);
 
+        /*
+         * A computer that cannot be built from the config is a shadow
+         * agent: an unknown type or an unusable mount is not going to
+         * fix itself, and the fleet should carry on around it.
+         */
         if (computer == NULL) {
             clawt_agent_mark_shadow(agent, local->message);
             g_propagate_error(error, g_steal_pointer(&local));
@@ -516,13 +521,27 @@ clawt_daemon_start_agent(ClawtDaemon *self, const gchar *agent_id,
 
         apply_mounts(self, agent, computer);
 
+        /*
+         * Attached before it is started, and kept even when starting
+         * fails.  Dropping it left `computer status` answering "that
+         * agent has no computer" for an agent that plainly has one
+         * configured, which reads as a different fault entirely.
+         */
+        clawt_agent_set_computer(agent, computer);
+
         if (!clawt_computer_start(computer, &local)) {
-            clawt_agent_mark_shadow(agent, local->message);
+            /*
+             * ERROR, not SHADOW.  A podman that is not running, an image
+             * that is not pulled, a name still held by yesterday's
+             * container -- these are all transient, and SHADOW refuses
+             * every later start with the message frozen from the first
+             * one, so a fixed problem still looked broken until the
+             * daemon was restarted.
+             */
+            clawt_agent_set_error(agent, local->message);
             g_propagate_error(error, g_steal_pointer(&local));
             return FALSE;
         }
-
-        clawt_agent_set_computer(agent, computer);
     }
 
     if (clawt_agent_get_runtime(agent) == NULL) {

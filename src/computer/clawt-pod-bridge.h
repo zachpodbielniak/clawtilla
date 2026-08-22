@@ -69,6 +69,29 @@ gboolean clawt_pod_bridge_load_module(ClawtPodBridge  *self,
                                       GError         **error);
 
 /**
+ * clawt_pod_bridge_load_module_for:
+ * @self: a #ClawtPodBridge
+ * @module_name: e.g. "container" or "vm_virtmanager"
+ * @connection_uri: (nullable): the backend to talk to, or %NULL for the
+ *   module's own default
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Loads a module instance bound to one connection.
+ *
+ * Instances are cached per (module, connection): a module carries its
+ * connection, so two agents pointed at different podman sockets need two
+ * of them, and sharing one meant the second agent silently talked to the
+ * first one's daemon. A module with no connection-uri property ignores
+ * @connection_uri.
+ *
+ * Returns: %TRUE if it is available
+ */
+gboolean clawt_pod_bridge_load_module_for(ClawtPodBridge  *self,
+                                          const gchar     *module_name,
+                                          const gchar     *connection_uri,
+                                          GError         **error);
+
+/**
  * clawt_pod_bridge_has_module:
  * @self: a #ClawtPodBridge
  * @module_name: a module name
@@ -77,6 +100,18 @@ gboolean clawt_pod_bridge_load_module(ClawtPodBridge  *self,
  */
 gboolean clawt_pod_bridge_has_module(ClawtPodBridge *self,
                                      const gchar    *module_name);
+
+/**
+ * clawt_pod_bridge_has_module_for:
+ * @self: a #ClawtPodBridge
+ * @module_name: a module name
+ * @connection_uri: (nullable): the connection it was loaded for
+ *
+ * Returns: %TRUE if that instance is loaded and usable
+ */
+gboolean clawt_pod_bridge_has_module_for(ClawtPodBridge *self,
+                                         const gchar    *module_name,
+                                         const gchar    *connection_uri);
 
 /**
  * clawt_pod_bridge_call:
@@ -96,6 +131,28 @@ GHashTable *clawt_pod_bridge_call(ClawtPodBridge  *self,
                                   const gchar     *action,
                                   GHashTable      *params,
                                   GError         **error);
+
+/**
+ * clawt_pod_bridge_call_for:
+ * @self: a #ClawtPodBridge
+ * @module_name: which module
+ * @connection_uri: (nullable): which instance, as passed to
+ *   clawt_pod_bridge_load_module_for()
+ * @action: the handler to invoke, e.g. "start"
+ * @params: (transfer none) (element-type utf8 utf8): named arguments
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Invokes a handler on the instance bound to @connection_uri.
+ *
+ * Returns: (transfer full) (nullable) (element-type utf8 utf8): the result,
+ *   or %NULL on failure
+ */
+GHashTable *clawt_pod_bridge_call_for(ClawtPodBridge  *self,
+                                      const gchar     *module_name,
+                                      const gchar     *connection_uri,
+                                      const gchar     *action,
+                                      GHashTable      *params,
+                                      GError         **error);
 
 /**
  * clawt_pod_bridge_get_module_dir:

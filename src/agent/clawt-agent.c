@@ -446,6 +446,14 @@ clawt_agent_mark_shadow(ClawtAgent *self, const gchar *reason)
     set_state(self, CLAWT_AGENT_STATE_SHADOW, reason);
 }
 
+void
+clawt_agent_set_error(ClawtAgent *self, const gchar *reason)
+{
+    g_return_if_fail(CLAWT_IS_AGENT(self));
+
+    set_state(self, CLAWT_AGENT_STATE_ERROR, reason);
+}
+
 static void
 clawt_agent_dispose(GObject *object)
 {
