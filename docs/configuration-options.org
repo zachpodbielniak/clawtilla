@@ -31,6 +31,27 @@ SO_PEERCRED. A unix socket is used rather than a loopback HTTP port
 because a port has no such notion of who is calling, and any web page
 the user visits can reach a loopback port through DNS rebinding.
 
+*** =daemon.git=
+
+- Type :: boolean
+- Default :: =true=
+- Since :: 0.1.0
+
+Make the state directory a git repository on first start.
+
+The workspaces, the org files and this configuration are worth having
+a history of. What makes this safe rather than alarming is the
+.gitignore written beside it: the same directory holds credentials,
+link tokens, mailboxes and memory databases, and the moment to keep
+those out of a history is before there is anything in it.
+
+clawtilla never commits. It creates the repository and the ignore
+rules; what goes into a commit stays your decision.
+
+Turning this off stops the repository being created. The ignore file
+is still written, because a state directory somebody put in git by
+hand needs it more, not less.
+
 *** =daemon.state_dir=
 
 - Type :: path

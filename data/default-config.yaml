@@ -32,6 +32,22 @@ daemon:
   # the user visits can reach a loopback port through DNS rebinding.
   socket: "$XDG_RUNTIME_DIR/clawtilla/daemon.sock"
 
+  # Make the state directory a git repository on first start.
+  #
+  # The workspaces, the org files and this configuration are worth having
+  # a history of. What makes this safe rather than alarming is the
+  # .gitignore written beside it: the same directory holds credentials,
+  # link tokens, mailboxes and memory databases, and the moment to keep
+  # those out of a history is before there is anything in it.
+  #
+  # clawtilla never commits. It creates the repository and the ignore
+  # rules; what goes into a commit stays your decision.
+  #
+  # Turning this off stops the repository being created. The ignore file
+  # is still written, because a state directory somebody put in git by
+  # hand needs it more, not less.
+  git: true
+
   # Where agent workspaces, mailboxes, transcripts and credentials live.
   #
   # Created 0700. Never mounted into any agent's computer, whatever the

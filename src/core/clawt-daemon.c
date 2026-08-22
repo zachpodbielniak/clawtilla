@@ -313,6 +313,184 @@ on_link_removed(ClawtLinkServer *server, const gchar *agent_id,
     clawt_event_bus_emit(self->bus, "agent.disconnected", agent_id);
 }
 
+/* ── The state directory as a repository ─────────────────────────── */
+
+/*
+ * The patterns clawtilla insists on, between markers.
+ *
+ * A marked block rather than a whole file, because this is written on
+ * every start and people edit .gitignore. Everything outside the
+ * markers is left exactly as it was found; everything inside is ours to
+ * keep current. It is the same shape shell installers use on rc files,
+ * and for the same reason.
+ */
+#define GIT_BLOCK_BEGIN "# >>> clawtilla >>>"
+#define GIT_BLOCK_END   "# <<< clawtilla <<<"
+
+static const gchar GIT_BLOCK[] =
+    GIT_BLOCK_BEGIN "\n"
+    "# Everything below is a secret, a database, or a socket. None of it\n"
+    "# belongs in history. Edit outside these markers; clawtilla rewrites\n"
+    "# what is between them on every start.\n"
+    "\n"
+    "credentials/\n"
+    "secrets/\n"
+    "*/token\n"
+    "agents/*/token\n"
+    "agents/*/credentials/\n"
+    "\n"
+    "*.db\n"
+    "*.db-wal\n"
+    "*.db-shm\n"
+    "agents/*/sessions/\n"
+    "agents/*.discarded/\n"
+    "sessions.reset-*/\n"
+    "\n"
+    "*.sock\n"
+    "events/\n"
+    "exchange/\n"
+    "\n"
+    "# Regenerated on every start from clawtilla.yaml.\n"
+    "agents/*/config.yaml\n"
+    GIT_BLOCK_END "\n";
+
+/*
+ * Replaces clawtilla's block in an existing .gitignore, or appends it.
+ *
+ * Returns: (transfer full): the file's new contents
+ */
+static gchar *
+merge_gitignore(const gchar *existing)
+{
+    const gchar *begin;
+    const gchar *end;
+
+    if (existing == NULL || existing[0] == '\0')
+        return g_strdup(GIT_BLOCK);
+
+    begin = strstr(existing, GIT_BLOCK_BEGIN);
+    end = (begin != NULL) ? strstr(begin, GIT_BLOCK_END) : NULL;
+
+    if (begin == NULL || end == NULL) {
+        /* Theirs, then ours, with a blank line between. */
+        return g_strconcat(existing,
+                           g_str_has_suffix(existing, "\n") ? "" : "\n",
+                           "\n", GIT_BLOCK, NULL);
+    }
+
+    {
+        g_autofree gchar *before = g_strndup(existing,
+                                             (gsize)(begin - existing));
+        const gchar *after = end + strlen(GIT_BLOCK_END);
+
+        /* Skip the newline that closed the old block. */
+        if (after[0] == '\n')
+            after++;
+
+        return g_strconcat(before, GIT_BLOCK, after, NULL);
+    }
+}
+
+/*
+ * Makes the state directory a git repository, and keeps its ignore file
+ * current.
+ *
+ * The ignore file is the point. The state directory holds credentials,
+ * link tokens, the agents' mailboxes and memory databases right beside
+ * the workspaces somebody actually wants to version -- a state
+ * directory in git without it is an accident waiting to be pushed. So
+ * the ignore file is written even when the repository is not created,
+ * which also protects the case below.
+ *
+ * Not initialised when the directory is already inside somebody else's
+ * repository: a nested repository there is a surprise, and their outer
+ * repository is the one that needs the ignore rules anyway.
+ */
+static gboolean
+prepare_state_git(const gchar *state_dir, gboolean init_repo,
+                  gboolean *created, gchar **ignore_path, GError **error)
+{
+    g_autofree gchar *path = g_build_filename(state_dir, ".gitignore", NULL);
+    g_autofree gchar *git_dir = g_build_filename(state_dir, ".git", NULL);
+    g_autofree gchar *existing = NULL;
+    g_autofree gchar *merged = NULL;
+    gboolean is_repo = g_file_test(git_dir, G_FILE_TEST_IS_DIR);
+
+    if (created != NULL)
+        *created = FALSE;
+
+    g_file_get_contents(path, &existing, NULL, NULL);
+    merged = merge_gitignore(existing);
+
+    /*
+     * Only written when it differs, so an editor with the file open
+     * does not see it change on every daemon start.
+     */
+    if (g_strcmp0(existing, merged) != 0 &&
+        !clawt_write_file_atomic(path, merged, -1, 0600, existing != NULL,
+                                 error))
+        return FALSE;
+
+    if (ignore_path != NULL)
+        *ignore_path = g_steal_pointer(&path);
+
+    /*
+     * The ignore file is written above whatever @init_repo says: a
+     * state directory somebody has put in git by hand needs those rules
+     * more than one clawtilla made itself, not less.
+     */
+    if (!init_repo || is_repo)
+        return TRUE;
+
+    {
+        g_autoptr(GSubprocess) git = NULL;
+        g_autoptr(GError) local = NULL;
+        g_autofree gchar *toplevel = NULL;
+
+        /*
+         * Already inside a repository?  Then leave it alone: the ignore
+         * rules above are what that repository needed, and a nested
+         * repository is not something to create behind somebody's back.
+         */
+        git = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+                               G_SUBPROCESS_FLAGS_STDERR_SILENCE, NULL,
+                               "git", "-C", state_dir, "rev-parse",
+                               "--show-toplevel", NULL);
+
+        if (git != NULL &&
+            g_subprocess_communicate_utf8(git, NULL, NULL, &toplevel, NULL,
+                                          NULL) &&
+            g_subprocess_get_successful(git)) {
+            g_info("state: %s is already inside the git repository at %s; "
+                   "not creating another", state_dir, g_strstrip(toplevel));
+            return TRUE;
+        }
+
+        g_clear_object(&git);
+
+        git = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_SILENCE |
+                               G_SUBPROCESS_FLAGS_STDERR_SILENCE, &local,
+                               "git", "-C", state_dir, "init", "-q", NULL);
+
+        if (git == NULL || !g_subprocess_wait_check(git, NULL, &local)) {
+            /*
+             * Not fatal. A daemon that refuses to start because git is
+             * missing would be trading a real service for a
+             * convenience.
+             */
+            g_info("state: could not make %s a git repository (%s); "
+                   "the ignore file is written either way", state_dir,
+                   local != NULL ? local->message : "unknown");
+            return TRUE;
+        }
+
+        if (created != NULL)
+            *created = TRUE;
+    }
+
+    return TRUE;
+}
+
 /*
  * An agent's typing indicator becomes an agent.typing event.
  *
@@ -937,6 +1115,31 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
         if (self->main_context != NULL)
             g_main_context_pop_thread_default(self->main_context);
         return FALSE;
+    }
+
+    /*
+     * The state directory as a repository, from the first start.
+     *
+     * Asked for rather than left to a command somebody has to remember:
+     * the workspaces, the org files and clawtilla.yaml are worth having
+     * a history of, and the moment to write the ignore file that keeps
+     * credentials out of that history is before there is anything to
+     * commit -- not after.
+     */
+    {
+        g_autoptr(GError) git_error = NULL;
+        g_autofree gchar *ignore = NULL;
+        gboolean created = FALSE;
+
+        if (!prepare_state_git(self->state_dir,
+                               clawt_config_get_boolean(self->config,
+                                                        "daemon.git"),
+                               &created, &ignore, &git_error))
+            g_warning("state: %s", git_error->message);
+        else if (created)
+            g_message("state: %s is now a git repository; %s keeps "
+                      "credentials, tokens and databases out of it",
+                      self->state_dir, ignore);
     }
 
     self->link_socket = g_build_filename(self->state_dir, "agents.sock",
@@ -2394,79 +2597,21 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
 
     if (g_strcmp0(kind, "state.git_init") == 0) {
         g_autofree gchar *ignore_path = NULL;
-        g_autofree gchar *git_dir = NULL;
-        g_autoptr(GSubprocess) git = NULL;
-        gboolean already;
-
-        /*
-         * What must never be committed.
-         *
-         * The state directory holds credentials, link tokens and the
-         * agents' own databases beside the workspaces somebody actually
-         * wants to version. Writing this file is the whole reason this
-         * verb exists rather than telling people to run `git init`
-         * themselves: a state directory in git without it is an
-         * accident waiting to be pushed.
-         */
-        static const gchar GITIGNORE[] =
-            "# Written by clawtilla. Everything here is either a secret,\n"
-            "# a database, or a socket -- none of it belongs in history.\n"
-            "\n"
-            "credentials/\n"
-            "secrets/\n"
-            "*/token\n"
-            "agents/*/token\n"
-            "agents/*/credentials/\n"
-            "\n"
-            "*.db\n"
-            "*.db-wal\n"
-            "*.db-shm\n"
-            "agents/*/sessions/\n"
-            "agents/*.discarded/\n"
-            "sessions.reset-*/\n"
-            "\n"
-            "*.sock\n"
-            "events/\n"
-            "exchange/\n"
-            "\n"
-            "# The rendered libreclaw config carries resolved paths and is\n"
-            "# regenerated on every start.\n"
-            "agents/*/config.yaml\n";
+        gboolean created = FALSE;
 
         if (self->state_dir == NULL)
             return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
                                        "there is no state directory yet");
 
-        git_dir = g_build_filename(self->state_dir, ".git", NULL);
-        already = g_file_test(git_dir, G_FILE_TEST_IS_DIR);
-
-        /*
-         * The ignore file is written either way, so running this again
-         * on a repository somebody made by hand still protects them.
-         */
-        ignore_path = g_build_filename(self->state_dir, ".gitignore", NULL);
-
-        if (!clawt_write_file_atomic(ignore_path, GITIGNORE, -1, 0600, TRUE,
-                                     &error))
+        if (!prepare_state_git(self->state_dir, TRUE, &created, &ignore_path,
+                               &error))
             return clawt_ipc_error_new(request, error->code, error->message);
-
-        if (!already) {
-            git = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_SILENCE |
-                                   G_SUBPROCESS_FLAGS_STDERR_PIPE, &error,
-                                   "git", "-C", self->state_dir, "init",
-                                   NULL);
-
-            if (git == NULL || !g_subprocess_wait_check(git, NULL, &error))
-                return clawt_ipc_error_new(
-                    request, CLAWT_ERROR_FAILED,
-                    error != NULL ? error->message : "git init failed");
-        }
 
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "path");
         json_builder_add_string_value(builder, self->state_dir);
         json_builder_set_member_name(builder, "created");
-        json_builder_add_boolean_value(builder, !already);
+        json_builder_add_boolean_value(builder, created);
         json_builder_set_member_name(builder, "gitignore");
         json_builder_add_string_value(builder, ignore_path);
         json_builder_end_object(builder);

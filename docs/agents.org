@@ -596,16 +596,39 @@ see =agent discover= above.
 
 ** Keeping the state directory in git
 
-#+begin_src bash
-clawtilla agent git-init
-#+end_src
+This happens on its own. The first time the daemon starts it makes
+=~/.clawtilla= a repository and writes a =.gitignore= for it, and every
+later start keeps that ignore file current.
 
-Makes =~/.clawtilla= a repository and writes a =.gitignore= for it. That
-file is the whole reason this exists rather than telling you to run
-=git init=: the state directory holds credentials, link tokens, the
-agents' mailboxes and memory databases and the exchange directory, right
-beside the workspaces you actually want to version. A state directory in
-git without that ignore file is an accident waiting to be pushed.
+The ignore file is the point, not the repository. The state directory
+holds credentials, link tokens, the agents' mailboxes and memory
+databases and the exchange directory, right beside the workspaces you
+actually want to version -- and the moment to keep those out of a
+history is before there is anything in it. A state directory in git
+without that file is an accident waiting to be pushed.
+
+*clawtilla never commits.* It creates the repository and the rules; what
+goes into a commit stays your decision.
+
+Four behaviours worth knowing:
+
+- The ignore file is a *marked block*. Everything outside
+  =# >>> clawtilla >>>= is left exactly as found, so anything you add
+  survives; everything inside is rewritten. It is only written when it
+  actually differs, so an editor with the file open does not see it
+  change on every start.
+- If =~/.clawtilla= is already *inside* another repository -- a
+  home directory under version control, say -- no repository is created
+  there. A nested one is a surprise, and the outer repository is the one
+  that needed those ignore rules anyway. They are still written.
+- =daemon.git: false= stops the repository being created. The ignore
+  file is still written, because a state directory somebody put in git
+  by hand needs it more, not less.
+- git being missing is not fatal. The daemon logs it and carries on.
+
+=clawtilla agent git-init= does the same thing on demand, which is
+useful after changing =daemon.git= or on a directory made before this
+existed.
 
 Ignored: =credentials/=, =secrets/=, every =token=, every =*.db= and its
 WAL, =sessions/=, =events/=, =exchange/=, sockets, and the rendered

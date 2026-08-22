@@ -47,6 +47,23 @@ static const ClawtSchemaEntry schema[] = {
   "because a port has no such notion of who is calling, and any web page\n"
   "the user visits can reach a loopback port through DNS rebinding.", "0.1.0" },
 
+{ "daemon.git", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "true", NULL,
+  "Make the state directory a git repository on first start.\n"
+  "\n"
+  "The workspaces, the org files and this configuration are worth having\n"
+  "a history of. What makes this safe rather than alarming is the\n"
+  ".gitignore written beside it: the same directory holds credentials,\n"
+  "link tokens, mailboxes and memory databases, and the moment to keep\n"
+  "those out of a history is before there is anything in it.\n"
+  "\n"
+  "clawtilla never commits. It creates the repository and the ignore\n"
+  "rules; what goes into a commit stays your decision.\n"
+  "\n"
+  "Turning this off stops the repository being created. The ignore file\n"
+  "is still written, because a state directory somebody put in git by\n"
+  "hand needs it more, not less.", "0.1.0" },
+
 { "daemon.state_dir", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE,
   "~/.clawtilla", NULL,
   "Where agent workspaces, mailboxes, transcripts and credentials live.\n"
