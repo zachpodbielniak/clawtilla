@@ -1102,13 +1102,16 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     }
 
     /*
-     * Asked for at start, so the first client to open a model list gets
-     * the real one. Nothing waits on it: the answers arrive over the
-     * next second or two and a request in the meantime is served from
-     * the built-in table.
+     * The model cache is not warmed here.
+     *
+     * It was, so that the first client to open a model list got the
+     * real one -- but that made every daemon start call five provider
+     * APIs whether or not anybody was ever going to look, and it made
+     * `make test` reach the network from every daemon fixture, which is
+     * the one thing the suite is not allowed to do. It is warmed on the
+     * first `model.list refresh: true` instead, which is a client
+     * actually asking.
      */
-    warm_model_cache(self);
-
     clawt_event_bus_emit(self->bus, "daemon.started", NULL);
     g_signal_emit(self, signals[SIGNAL_STARTED], 0);
 
@@ -1822,12 +1825,37 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         if (!clawt_workspace_scaffold(agent_config, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
 
+        /*
+         * .mcp.json too, so `agent edit <id> .mcp.json` opens a real
+         * file on an agent that has never been started.  It is written
+         * here rather than by the full render because that resolves
+         * credentials, which can run a command, and a handler runs on
+         * the daemon's main context while the client waits.
+         */
+        {
+            g_autofree gchar *state_dir = clawt_config_agent_state_dir(
+                self->config, clawt_agent_config_get_id(agent_config));
+            g_autofree gchar *socket_path =
+                clawt_config_get_path_value(self->config, "daemon.socket");
+
+            if (!clawt_workspace_write_mcp_config(agent_config, socket_path,
+                                                  state_dir, &error))
+                return clawt_ipc_error_new(request, error->code,
+                                           error->message);
+        }
+
         files = clawt_workspace_files(&n_files);
 
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "workspace");
-        json_builder_add_string_value(
-            builder, clawt_agent_config_get_workspace(agent_config));
+
+        {
+            g_autofree gchar *workspace =
+                clawt_agent_config_get_workspace(agent_config);
+
+            json_builder_add_string_value(builder, workspace);
+        }
+
         json_builder_set_member_name(builder, "files");
         json_builder_begin_array(builder);
 
@@ -1844,6 +1872,8 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             json_builder_add_string_value(builder, files[i].title);
             json_builder_set_member_name(builder, "identity");
             json_builder_add_boolean_value(builder, files[i].identity);
+            json_builder_set_member_name(builder, "generated");
+            json_builder_add_boolean_value(builder, files[i].generated);
             json_builder_set_member_name(builder, "exists");
             json_builder_add_boolean_value(
                 builder,
@@ -3017,6 +3047,17 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
              */
             json_builder_set_member_name(builder, "open_ended");
             json_builder_add_boolean_value(builder, catalog[i].open_ended);
+
+            /*
+             * Whether libreclaw can actually run an agent on this
+             * provider.  Its provider table is command-line only and
+             * rewrites anything else to claude-code with a warning, so a
+             * client that offers every provider here lets someone pick
+             * OpenAI and quietly get Claude Code with "gpt-4o" in the
+             * model field.
+             */
+            json_builder_set_member_name(builder, "agent");
+            json_builder_add_boolean_value(builder, catalog[i].agent);
 
             /*
              * Whether this provider can be given tools, which decides

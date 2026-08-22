@@ -43,15 +43,24 @@ typedef struct {
  * @open_ended: %TRUE when the list is a starting point rather than the
  *   whole truth -- Ollama runs whatever you have pulled, so a client must
  *   let a person type a name that is not listed
+ * @agent: %TRUE when an agent can run on this provider
  * @tools: %TRUE when this provider can be given tool definitions
  *
  * One provider and its models.
  *
- * @tools is what separates an HTTP API from a wrapped command-line tool.
- * ai-glib's CLI clients drop the tool list rather than passing it on, so
- * anything built on tool calls -- the agent designer -- simply cannot
- * use them. Agents themselves run fine either way; this is only about
- * whether a provider can be handed a set of tools and asked to use them.
+ * The two flags exist because clawtilla picks a provider for two
+ * unrelated jobs, and the sets barely overlap.
+ *
+ * @agent is whether libreclaw can drive it.  libreclaw's provider table
+ * is command-line only -- lc_provider_type_normalize() knows
+ * claude-code, claude-tmux, opencode and grok-build, and turns anything
+ * else into claude-code with a warning.  Offering "OpenAI" as an agent's
+ * provider therefore did not run OpenAI: it ran Claude Code and handed
+ * it "gpt-4o" as a model name.
+ *
+ * @tools is whether ai-glib will pass a tool list on.  Its CLI clients
+ * drop it, so the agent designer -- which is nothing but tool calls --
+ * cannot use them, and needs an HTTP provider instead.
  */
 typedef struct {
     const gchar          *id;
@@ -60,6 +69,7 @@ typedef struct {
     const ClawtModelInfo *models;
     gsize                 n_models;
     gboolean              open_ended;
+    gboolean              agent;
     gboolean              tools;
 } ClawtProviderInfo;
 
@@ -137,7 +147,7 @@ typedef void (*ClawtModelsReadyFunc)(const gchar *provider_id,
 /**
  * clawt_model_catalog_fetch_models_async:
  * @provider_id: a provider id from the catalogue
- * @ready: called when the provider answers
+ * @ready: (scope async) (closure user_data): called when the provider answers
  * @user_data: passed to @ready
  *
  * Asks a provider what it runs, without waiting.

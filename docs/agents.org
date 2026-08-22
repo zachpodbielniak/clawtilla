@@ -136,8 +136,36 @@ model:
   fallbacks: [sonnet, haiku]
 #+end_src
 
-Anything libreclaw supports.  ~fallbacks~ are tried in order when the
-primary is unavailable.
+~fallbacks~ are tried in order when the primary is unavailable.
+
+*** An agent runs on a CLI backend, and only on a CLI backend
+
+libreclaw drives command-line tools, not HTTP APIs.  Its provider table
+knows exactly four:
+
+| Provider       | What it is                                          |
+|----------------+-----------------------------------------------------|
+| ~claude-code~  | the ~claude~ CLI in ~--print~ mode; Agent SDK credit |
+| ~claude-tmux~  | the same CLI driven interactively through tmux, so it bills as ordinary subscription use |
+| ~grok-build~   | xAI's ~grok~ CLI in headless mode; it authenticates itself rather than taking a key from clawtilla |
+| ~opencode~     | the OpenCode CLI, which routes to xAI, Google, OpenAI and others itself |
+
+Anything else is *not* an error.  ~lc_provider_type_normalize()~
+rewrites an unrecognised provider to ~claude-code~ with a warning in the
+log, so an agent configured for ~openai~ does not run OpenAI: it runs
+Claude Code and hands it ~gpt-4o~ as a model name, which fails somewhere
+much further along.
+
+So ~model.list~ reports ~agent~ per provider and clients offer only
+those four for an agent.  ~grok-build~ was missing from that list for a
+while and could not be chosen at all, which is the bug this table
+exists to stop recurring; ~tests/test-model-catalog.c~ checks the column
+against ~lc_provider_type_normalize()~ itself rather than against a
+second copy of the list.
+
+To reach OpenAI or Gemini from an agent, use ~opencode~, which is a CLI
+that routes to them.  The HTTP providers are offered for *designing* an
+agent, where ai-glib drives them directly -- see below.
 
 ** Workspace
 
@@ -398,7 +426,11 @@ after it, naming the ones that work.  Agents themselves run perfectly
 well on a CLI provider; this affects designing only.
 
 ~model.list~ reports ~tools~ per provider, so a client can tell the two
-apart without hardcoding the list.
+apart without hardcoding the list.  It reports ~agent~ beside it, and
+the two are very nearly exclusive: the providers that take tools are the
+ones libreclaw cannot run an agent on, and the reverse.  ~ai_assist.provider~
+therefore defaults to ~claude~ rather than ~claude-code~ -- it used to
+default to a backend that refuses the only job it has.
 
 *** Nothing is created until you say so
 

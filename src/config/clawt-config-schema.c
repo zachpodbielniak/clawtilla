@@ -226,11 +226,17 @@ static const ClawtSchemaEntry schema[] = {
   "Whether AI-assisted agent creation is offered.", "0.1.0" },
 
 { "ai_assist.provider", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
-  "claude-code", NULL,
-  "Provider used for the designer.", "0.1.0" },
+  "claude", NULL,
+  "Provider used for the designer. Must be one that takes tool\n"
+  "definitions -- claude, openai, gemini, grok or ollama.\n"
+  "\n"
+  "Not one of the CLI backends an agent runs on. The designer works\n"
+  "entirely through tool calls, and ai-glib's command-line clients drop\n"
+  "the tool list rather than passing it on, so claude-code and friends\n"
+  "refuse this job however capable the model behind them is.", "0.1.0" },
 
 { "ai_assist.model", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
-  "opus", NULL,
+  "claude-opus-5", NULL,
   "Model used for the designer. Worth a capable one: it is a short\n"
   "conversation and the output is a file you live with.", "0.1.0" },
 

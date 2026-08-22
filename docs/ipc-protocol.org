@@ -88,10 +88,12 @@ which is the worst failure a boolean can have: the request succeeds and
 does the other thing.
 
 ~agent.files~ (~agent~) → ~workspace~ and a ~files~ array of
-{~name~, ~path~, ~title~, ~identity~, ~exists~}.  ~identity~ says whether
-the file reaches the system prompt.  Missing files are scaffolded before
-the reply, so a client can offer to edit an agent that has never been
-started.
+{~name~, ~path~, ~title~, ~identity~, ~generated~, ~exists~}.  ~identity~
+says whether the file reaches the system prompt; ~generated~ says
+clawtilla writes into it as well as you, which today means ~.mcp.json~
+and nothing else.  Missing files are scaffolded before the reply, and
+~.mcp.json~ is written too, so a client can offer to edit an agent that
+has never been started.
 
 The daemon answers with paths rather than contents on purpose: an editor
 belongs on the user's terminal, not in the daemon, and a client that
@@ -178,8 +180,14 @@ on a provider.
 That is not a detail. Asking during the request made it take as long as
 the slowest provider, and both the new-agent dialog and the agent
 inspector ask on every build -- so pressing + or clicking an agent
-appeared to hang for tens of seconds. The cache is warmed at daemon
-start, so the first list a client opens is already the real one.
+appeared to hang for tens of seconds.
+
+The cache is *not* warmed at daemon start.  It was, so that the first
+list a client opened was already the real one, but that made every start
+call five provider APIs whether or not anybody would ever look -- and it
+made ~make test~ reach the network from every daemon fixture, which the
+suite is not allowed to do.  The first ~refresh~ request warms it
+instead, and is answered from the built-in table while that runs.
 The built-in table goes stale -- it offered grok-3 and grok-4 well after
 4.5 and 4.6 had shipped -- so anywhere a list is shown to a person should
 ask for this. A provider with no key, or no network, falls back to the
@@ -190,9 +198,18 @@ provider that never answers cannot hang the daemon.
 the model cannot change them.
 
 ~model.list~ returns the providers clawtilla knows about, each with its
-models.  It comes from the daemon rather than being built into each
-client so the CLI, the GTK app and the web client cannot disagree about
-what exists.
+models, ~open_ended~, ~agent~ and ~tools~.  It comes from the daemon
+rather than being built into each client so the CLI, the GTK app and the
+web client cannot disagree about what exists.
+
+~agent~ and ~tools~ are what a client filters on, and they answer two
+different questions.  ~agent~ is whether libreclaw can run an agent on
+it -- four CLI backends, and anything else is silently rewritten to
+~claude-code~, so offering the rest let a person pick OpenAI and get
+Claude Code with ~gpt-4o~ in the model field.  ~tools~ is whether it can
+be given tool definitions, which is what the agent designer needs.  A
+client that filters on neither is offering both lists at once, and
+roughly half of what it shows will not work.
 
 ~image.list~ returns ~default~, ~open_ended~ (always true) and an
 ~images~ array of {~reference~, ~label~, ~note~, ~group~}.  The user's

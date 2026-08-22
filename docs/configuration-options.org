@@ -305,15 +305,21 @@ Whether AI-assisted agent creation is offered.
 *** =ai_assist.provider=
 
 - Type :: string
-- Default :: =claude-code=
+- Default :: =claude=
 - Since :: 0.1.0
 
-Provider used for the designer.
+Provider used for the designer. Must be one that takes tool
+definitions -- claude, openai, gemini, grok or ollama.
+
+Not one of the CLI backends an agent runs on. The designer works
+entirely through tool calls, and ai-glib's command-line clients drop
+the tool list rather than passing it on, so claude-code and friends
+refuse this job however capable the model behind them is.
 
 *** =ai_assist.model=
 
 - Type :: string
-- Default :: =opus=
+- Default :: =claude-opus-5=
 - Since :: 0.1.0
 
 Model used for the designer. Worth a capable one: it is a short

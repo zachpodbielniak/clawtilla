@@ -62,7 +62,7 @@ static void         model_chooser_build_full(ModelChooser *chooser,
                                              GtkWidget    *group,
                                              const gchar  *want_provider,
                                              const gchar  *want_model,
-                                             gboolean      tools_only);
+                                             const gchar  *require);
 static void         image_chooser_build(ImageChooser *chooser,
                                         ClawtWindow  *window,
                                         GtkWidget    *group,
@@ -1211,6 +1211,297 @@ build_mounts(ClawtWindow *self, const gchar *computer_type)
     gtk_box_append(self->inspector, group);
 }
 
+/* ── Opening a workspace file ────────────────────────────────────── */
+
+/*
+ * One attempt at running an editor, so a failed one can be retried
+ * differently.
+ *
+ * Holds a reference to the window: this outlives the click that started
+ * it, and an editor the user leaves open for an hour would otherwise be
+ * writing its result into freed memory when they finally quit it.
+ */
+typedef struct {
+    ClawtWindow *window;
+    gchar       *path;
+    gchar       *name;
+    gboolean     in_terminal;
+    gint64       started;
+} EditorLaunch;
+
+static void editor_launch(EditorLaunch *launch);
+
+static void
+editor_launch_free(EditorLaunch *launch)
+{
+    g_clear_object(&launch->window);
+    g_free(launch->path);
+    g_free(launch->name);
+    g_free(launch);
+}
+
+/*
+ * $CLAWT_EDITOR first, so this can be pointed somewhere else without
+ * changing what every other program on the machine does.
+ */
+static const gchar *
+editor_command(void)
+{
+    const gchar *editor = g_getenv("CLAWT_EDITOR");
+
+    if (editor == NULL || editor[0] == '\0')
+        editor = g_getenv("VISUAL");
+
+    if (editor == NULL || editor[0] == '\0')
+        editor = g_getenv("EDITOR");
+
+    return (editor != NULL && editor[0] != '\0') ? editor : NULL;
+}
+
+/*
+ * A terminal to run a terminal-only editor inside.
+ *
+ * There is no way to ask an editor whether it needs one, so this is
+ * only reached after running it bare has already failed -- which is
+ * exactly what a curses editor does when it is started without a
+ * terminal, and quickly. The flag differs per terminal: some take the
+ * command straight after the binary, some want a separator first.
+ */
+static gboolean
+terminal_prefix(GPtrArray *argv)
+{
+    static const struct {
+        const gchar *binary;
+        const gchar *flag;
+    } terminals[] = {
+        { "xdg-terminal-exec", NULL },
+        { "gst",               "-e" },
+        { "foot",              NULL },
+        { "kitty",             NULL },
+        { "wezterm",           "start" },
+        { "alacritty",         "-e" },
+        { "gnome-terminal",    "--" },
+        { "xterm",             "-e" }
+    };
+    const gchar *configured = g_getenv("TERMINAL");
+    gsize i;
+
+    if (configured != NULL && configured[0] != '\0') {
+        g_ptr_array_add(argv, g_strdup(configured));
+        g_ptr_array_add(argv, g_strdup("-e"));
+        return TRUE;
+    }
+
+    for (i = 0; i < G_N_ELEMENTS(terminals); i++) {
+        g_autofree gchar *found = g_find_program_in_path(terminals[i].binary);
+
+        if (found == NULL)
+            continue;
+
+        g_ptr_array_add(argv, g_steal_pointer(&found));
+
+        if (terminals[i].flag != NULL)
+            g_ptr_array_add(argv, g_strdup(terminals[i].flag));
+
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+static void
+on_editor_finished(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    EditorLaunch *launch = user_data;
+    g_autoptr(GError) error = NULL;
+
+    if (g_subprocess_wait_check_finish(G_SUBPROCESS(source), result, &error)) {
+        editor_launch_free(launch);
+        return;
+    }
+
+    /*
+     * A terminal editor started without a terminal fails immediately,
+     * and there is no way to know in advance which kind $EDITOR is --
+     * emacsclient opens a window here and vi does not. So the bare run
+     * is the test, and this is the second attempt.
+     *
+     * Only when it failed straight away, though: an editor the user
+     * spent ten minutes in and then quit with a non-zero status has
+     * already done its job, and popping a terminal open at that point
+     * would be baffling.
+     */
+    if (!launch->in_terminal &&
+        g_get_monotonic_time() - launch->started < 2 * G_USEC_PER_SEC) {
+        launch->in_terminal = TRUE;
+        editor_launch(launch);
+        return;
+    }
+
+    {
+        g_autofree gchar *message =
+            g_strdup_printf("could not open %s: %s", launch->name,
+                            error->message);
+
+        clawt_window_toast(launch->window, message);
+    }
+
+    editor_launch_free(launch);
+}
+
+static void
+editor_launch(EditorLaunch *launch)
+{
+    g_autoptr(GPtrArray) argv = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(GSubprocess) process = NULL;
+    g_autoptr(GError) error = NULL;
+    g_auto(GStrv) parts = NULL;
+    const gchar *editor = editor_command();
+    gint i;
+
+    if (launch->in_terminal && !terminal_prefix(argv)) {
+        clawt_window_toast(launch->window,
+                           "no terminal found to run $EDITOR in");
+        editor_launch_free(launch);
+        return;
+    }
+
+    /*
+     * $EDITOR is a command line, not a program name: "emacsclient -nw"
+     * and "code --wait" are both ordinary settings, so it is parsed
+     * rather than exec'd whole.
+     */
+    if (editor == NULL || !g_shell_parse_argv(editor, NULL, &parts, &error)) {
+        g_autofree gchar *message =
+            g_strdup_printf("$EDITOR (%s) could not be parsed: %s",
+                            editor != NULL ? editor : "unset",
+                            error != NULL ? error->message : "it is not set");
+
+        clawt_window_toast(launch->window, message);
+        editor_launch_free(launch);
+        return;
+    }
+
+    for (i = 0; parts[i] != NULL; i++)
+        g_ptr_array_add(argv, g_strdup(parts[i]));
+
+    g_ptr_array_add(argv, g_strdup(launch->path));
+    g_ptr_array_add(argv, NULL);
+
+    process = g_subprocess_newv((const gchar *const *)argv->pdata,
+                                G_SUBPROCESS_FLAGS_STDOUT_SILENCE |
+                                G_SUBPROCESS_FLAGS_STDERR_SILENCE,
+                                &error);
+
+    if (process == NULL) {
+        g_autofree gchar *message =
+            g_strdup_printf("could not run %s: %s", editor, error->message);
+
+        clawt_window_toast(launch->window, message);
+        editor_launch_free(launch);
+        return;
+    }
+
+    launch->started = g_get_monotonic_time();
+    g_subprocess_wait_check_async(process, NULL, on_editor_finished, launch);
+}
+
+static void
+on_open_file(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    EditorLaunch *launch;
+    const gchar *path = g_object_get_data(G_OBJECT(button), "path");
+    const gchar *name = g_object_get_data(G_OBJECT(button), "name");
+
+    if (editor_command() == NULL) {
+        g_autofree gchar *message =
+            g_strdup_printf("no editor set; try `clawtilla agent edit %s %s`",
+                            self->selected_agent, name);
+
+        clawt_window_toast(self, message);
+        return;
+    }
+
+    launch = g_new0(EditorLaunch, 1);
+    launch->window = g_object_ref(self);
+    launch->path = g_strdup(path);
+    launch->name = g_strdup(name);
+
+    editor_launch(launch);
+}
+
+/*
+ * The agent's workspace files, each openable in $EDITOR.
+ *
+ * These are the files the agent reads as its system prompt, plus the
+ * .mcp.json that decides which MCP servers it can call -- so this is
+ * where an agent is actually configured, as opposed to merely wired up.
+ */
+static void
+build_files(ClawtWindow *self)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    GtkWidget *group;
+    JsonArray *files;
+    guint i;
+
+    reply = clawt_window_request(
+        self, "agent.files",
+        clawt_build_payload("agent", self->selected_agent, NULL));
+
+    if (reply == NULL)
+        return;
+
+    files = json_object_get_array_member(clawt_payload_of(reply), "files");
+
+    group = adw_preferences_group_new();
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group), "Files");
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(group),
+        "Opened in $EDITOR. The ones marked \"prompt\" are read into every "
+        "turn; .mcp.json is the list of MCP servers this agent may call, "
+        "and clawtilla only ever rewrites its own entry in it.");
+
+    for (i = 0; files != NULL && i < json_array_get_length(files); i++) {
+        JsonObject *file = json_array_get_object_element(files, i);
+        const gchar *name = clawt_json_string(file, "name", "?");
+        const gchar *path = clawt_json_string(file, "path", "");
+        GtkWidget *row = adw_action_row_new();
+        GtkWidget *open;
+        g_autofree gchar *subtitle = NULL;
+
+        subtitle = json_object_get_boolean_member(file, "identity")
+                   ? g_strdup_printf("prompt \xc2\xb7 %s",
+                                     clawt_json_string(file, "title", ""))
+                   : g_strdup(clawt_json_string(file, "title", ""));
+
+        set_row_text(row, name, subtitle);
+        gtk_widget_set_tooltip_text(row, path);
+
+        /*
+         * An explicit button rather than an activatable row: libadwaita
+         * clears GtkListBoxRow:activatable on an AdwActionRow unless it
+         * has an activatable-widget, so ::row-activated would never
+         * fire and clicking would appear to do nothing.
+         */
+        open = gtk_button_new_from_icon_name("document-edit-symbolic");
+        gtk_widget_set_valign(open, GTK_ALIGN_CENTER);
+        gtk_widget_add_css_class(open, "flat");
+        gtk_widget_set_tooltip_text(open, "Open in $EDITOR");
+        g_object_set_data_full(G_OBJECT(open), "path", g_strdup(path),
+                               g_free);
+        g_object_set_data_full(G_OBJECT(open), "name", g_strdup(name),
+                               g_free);
+        g_signal_connect(open, "clicked", G_CALLBACK(on_open_file), self);
+        adw_action_row_add_suffix(ADW_ACTION_ROW(row), open);
+
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+    }
+
+    gtk_box_append(self->inspector, group);
+}
+
 static void
 build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
 {
@@ -1428,6 +1719,7 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
     gtk_box_append(self->inspector, actions);
 
     build_mounts(self, self->inspector_computer);
+    build_files(self);
 
     /* ── Removing it ── */
     danger = adw_preferences_group_new();
@@ -2302,25 +2594,37 @@ model_chooser_build(ModelChooser *chooser, ClawtWindow *window,
                     const gchar *want_model)
 {
     model_chooser_build_full(chooser, window, group, want_provider,
-                             want_model, FALSE);
+                             want_model, "agent");
 }
 
 /*
- * @tools_only drops the providers that cannot be given tool definitions.
+ * @require names the flag a provider must carry to be offered, or is
+ * %NULL to offer all of them.
  *
- * The agent designer works entirely through tool calls, and ai-glib's
- * command-line clients drop the tool list rather than passing it on. A
- * chooser that offered them let a person fill in the whole form, press
- * Design, and only then be told the provider they picked -- the default
- * one -- cannot do this. The list is filtered rather than the entries
- * greyed out because every remaining index is used to look a provider
- * back up, and a hole in the middle of that array is a bug waiting for
- * somebody to add a provider.
+ * Two views ask this for two different jobs and want two different
+ * lists. "agent" is what libreclaw can drive: its provider table is
+ * command-line only, and it rewrites anything it does not recognise to
+ * claude-code, so offering the HTTP providers as an agent's backend let
+ * a person pick OpenAI and silently get Claude Code with "gpt-4o" in
+ * the model field. "tools" is what can be given tool definitions, which
+ * the designer is built entirely out of and ai-glib's CLI clients drop;
+ * offering those let a person fill in the whole form, press Design, and
+ * only then be told the provider cannot do this.
+ *
+ * The list is filtered rather than the entries greyed out because every
+ * remaining index is used to look a provider back up, and a hole in the
+ * middle of that array is a bug waiting for somebody to add a provider.
+ *
+ * @want_provider survives the filter whatever it is. An agent already
+ * configured for a provider this view would not offer must still show
+ * the one it has -- dropping it would leave the combo pointing at the
+ * first entry, and saving the page would then change the agent's
+ * provider to something nobody chose.
  */
 static void
 model_chooser_build_full(ModelChooser *chooser, ClawtWindow *window,
                          GtkWidget *group, const gchar *want_provider,
-                         const gchar *want_model, gboolean tools_only)
+                         const gchar *want_model, const gchar *require)
 {
     g_autoptr(GtkStringList) provider_names = gtk_string_list_new(NULL);
     JsonArray *providers = NULL;
@@ -2358,7 +2662,7 @@ model_chooser_build_full(ModelChooser *chooser, ClawtWindow *window,
     chooser->catalog = clawt_window_request(
         window, "model.list", clawt_build_payload("refresh", "true", NULL));
 
-    if (chooser->catalog != NULL && tools_only) {
+    if (chooser->catalog != NULL && require != NULL) {
         JsonArray *all = json_object_get_array_member(
             json_node_get_object(chooser->catalog), "providers");
         g_autoptr(JsonArray) kept = json_array_new();
@@ -2367,14 +2671,17 @@ model_chooser_build_full(ModelChooser *chooser, ClawtWindow *window,
             JsonObject *provider = json_array_get_object_element(all, i);
 
             /*
-             * A missing "tools" member means an older daemon that does
-             * not report it -- keep the provider rather than drop it.
-             * Filtering on absence emptied the whole list and left two
-             * blank rows, which is a worse failure than offering one
+             * A missing member means an older daemon that does not
+             * report this flag -- keep the provider rather than drop
+             * it. Filtering on absence emptied the whole list and left
+             * two blank rows, which is a worse failure than offering one
              * provider that will refuse.
              */
-            if (!json_object_has_member(provider, "tools") ||
-                json_object_get_boolean_member(provider, "tools"))
+            if (!json_object_has_member(provider, require) ||
+                json_object_get_boolean_member(provider, require) ||
+                (want_provider != NULL &&
+                 g_strcmp0(clawt_json_string(provider, "id", ""),
+                           want_provider) == 0))
                 json_array_add_object_element(kept,
                                               json_object_ref(provider));
         }
@@ -2848,7 +3155,8 @@ on_new_agent(GtkButton *button, gpointer user_data)
      * a person will often want their best model to draft an agent that
      * then runs on a cheap one.
      */
-    model_chooser_build_full(&dialog->designer, self, ai, NULL, NULL, TRUE);
+    model_chooser_build_full(&dialog->designer, self, ai, NULL, NULL,
+                             "tools");
     adw_preferences_row_set_title(
         ADW_PREFERENCES_ROW(dialog->designer.provider_row),
         "Designed by");

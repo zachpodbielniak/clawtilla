@@ -220,6 +220,29 @@ the same program.
 - `liblc-1.0.a` holds only libreclaw's own objects; a static link must also
   pull in all five bundled dep archives.
 
+### libreclaw drives four CLI backends and nothing else
+
+- `lc_provider_type_normalize()` knows `claude-code`, `claude-tmux`,
+  `opencode` and `grok-build`. Anything else is **not** an error: it is
+  rewritten to `claude-code` with a `g_warning`, so an agent configured
+  for `openai` runs Claude Code and is handed `gpt-4o` as a model name.
+  The HTTP providers (`claude`, `openai`, `gemini`, `grok`, `ollama`)
+  belong to ai-glib and can only be used for the agent *designer*, which
+  needs tool calls — the exact set the CLI backends cannot do. The two
+  sets are nearly disjoint, which is why `ClawtProviderInfo` carries
+  `agent` and `tools` as separate flags and `model.list` reports both.
+  `tests/test-model-catalog.c` pins the `agent` column to
+  `lc_provider_type_normalize()` rather than to a second copy of the list.
+
+### An IPC handler must not wait on the network — nor may daemon start
+
+- The handler rule below has a corollary that cost a second bug: the
+  daemon used to warm the model cache in `clawt_daemon_start()`, which
+  called five provider APIs on every start whether or not anyone would
+  look, and made `make test` reach the network from every daemon
+  fixture. Anything that leaves the machine happens when a client asks
+  for it, not because the daemon woke up.
+
 ### yaml-glib
 
 - `yaml_parser_get_document()` is transfer-none; use
@@ -388,3 +411,8 @@ the same program.
 - Never push to main without approval
 - Never leave a generated file naming the same top-level key twice; YAML
   keeps the last and silently discards everything under the first
+- Never regenerate an agent's `.mcp.json` wholesale. It is how an agent
+  is given MCP servers, so people edit it. Only the `clawtilla` key is
+  clawtilla's; read the rest back and write it out untouched, skip the
+  write when nothing changed, and move an unparseable file aside rather
+  than over it

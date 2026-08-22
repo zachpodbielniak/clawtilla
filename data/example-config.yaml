@@ -186,12 +186,18 @@ ai_assist:
   # Whether AI-assisted agent creation is offered.
   enabled: true
 
-  # Provider used for the designer.
-  provider: "claude-code"
+  # Provider used for the designer. Must be one that takes tool
+  # definitions -- claude, openai, gemini, grok or ollama.
+  #
+  # Not one of the CLI backends an agent runs on. The designer works
+  # entirely through tool calls, and ai-glib's command-line clients drop
+  # the tool list rather than passing it on, so claude-code and friends
+  # refuse this job however capable the model behind them is.
+  provider: "claude"
 
   # Model used for the designer. Worth a capable one: it is a short
   # conversation and the output is a file you live with.
-  model: "opus"
+  model: "claude-opus-5"
 
   # Turn cap for the design conversation, so a model that never commits
   # stops rather than looping.

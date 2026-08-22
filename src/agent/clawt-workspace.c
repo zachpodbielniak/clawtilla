@@ -27,16 +27,28 @@
  * reconciling the two.
  */
 static const ClawtWorkspaceFile workspace_files[] = {
-    { "SOUL.org",         "character, mission and voice",          TRUE  },
-    { "IDENTITY.org",     "name, role and self-description",       TRUE  },
-    { "USER.org",         "who the human is and how they work",    TRUE  },
-    { "AGENTS.org",       "how to work: format, safety, the fleet", TRUE },
-    { "TOOLS.org",        "what this agent actually has",          TRUE  },
-    { "TOOL_GOTCHAS.org", "footguns, appended as they are found",  TRUE  },
-    { "PROJECTS.org",     "what is in flight and where it lives",  TRUE  },
-    { "README.org",       "what this directory is, for a person",  FALSE },
-    { "AGENTS.md",        "loader: the org files, in order",       FALSE },
-    { "CLAUDE.md",        "loader: points at AGENTS.md",           FALSE }
+    { "SOUL.org",         "character, mission and voice",
+      TRUE,  FALSE },
+    { "IDENTITY.org",     "name, role and self-description",
+      TRUE,  FALSE },
+    { "USER.org",         "who the human is and how they work",
+      TRUE,  FALSE },
+    { "AGENTS.org",       "how to work: format, safety, the fleet",
+      TRUE,  FALSE },
+    { "TOOLS.org",        "what this agent actually has",
+      TRUE,  FALSE },
+    { "TOOL_GOTCHAS.org", "footguns, appended as they are found",
+      TRUE,  FALSE },
+    { "PROJECTS.org",     "what is in flight and where it lives",
+      TRUE,  FALSE },
+    { "README.org",       "what this directory is, for a person",
+      FALSE, FALSE },
+    { "AGENTS.md",        "loader: the org files, in order",
+      FALSE, FALSE },
+    { "CLAUDE.md",        "loader: points at AGENTS.md",
+      FALSE, FALSE },
+    { ".mcp.json",        "MCP servers this agent may call",
+      FALSE, TRUE  }
 };
 
 const ClawtWorkspaceFile *
@@ -67,7 +79,7 @@ clawt_workspace_identity_files(void)
 gchar *
 clawt_workspace_file_path(ClawtAgentConfig *agent, const gchar *name)
 {
-    const gchar *workspace;
+    g_autofree gchar *workspace = NULL;
 
     g_return_val_if_fail(agent != NULL, NULL);
     g_return_val_if_fail(name != NULL, NULL);
@@ -658,14 +670,23 @@ clawt_workspace_write_mcp_config(ClawtAgentConfig *agent,
                                  const gchar      *state_dir,
                                  GError          **error)
 {
-    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(JsonParser) parser = json_parser_new();
     g_autoptr(JsonGenerator) generator = json_generator_new();
     g_autoptr(JsonNode) root = NULL;
+    g_autoptr(JsonObject) out = NULL;
     g_autofree gchar *text = NULL;
+    g_autofree gchar *existing_text = NULL;
     g_autofree gchar *path = NULL;
     g_autofree gchar *server = NULL;
     g_autofree gchar *token_file = NULL;
-    const gchar *workspace;
+    JsonObject *clawtilla;
+    JsonObject *servers;
+    JsonObject *previous = NULL;
+    JsonArray *args;
+    GList *members = NULL;
+    GList *l;
+    gboolean replaced = FALSE;
+    g_autofree gchar *workspace = NULL;
 
     g_return_val_if_fail(agent != NULL, FALSE);
 
@@ -676,59 +697,116 @@ clawt_workspace_write_mcp_config(ClawtAgentConfig *agent,
 
     server = mcp_server_path();
     token_file = g_build_filename(state_dir, "token", NULL);
+    path = g_build_filename(workspace, ".mcp.json", NULL);
 
     /*
-     * .mcp.json in the workspace, which is the agent's working
-     * directory.
+     * clawtilla's own entry, rebuilt every time.
      *
-     * The CLI discovers it there by itself, the same way it finds
-     * CLAUDE.md -- so this needs no cooperation from libreclaw and works
-     * for any CLI that follows the same convention. Without it the agent
-     * has a mailbox, peers and a container it cannot reach, and will
-     * tell you so if asked.
+     * It carries the socket and the token path, and a copy left behind
+     * by a daemon that used to live somewhere else points the agent at
+     * nothing.
      */
-    json_builder_begin_object(builder);
-    json_builder_set_member_name(builder, "mcpServers");
-    json_builder_begin_object(builder);
-    json_builder_set_member_name(builder, "clawtilla");
-    json_builder_begin_object(builder);
+    clawtilla = json_object_new();
+    json_object_set_string_member(clawtilla, "command", server);
 
-    json_builder_set_member_name(builder, "command");
-    json_builder_add_string_value(builder, server);
-
-    json_builder_set_member_name(builder, "args");
-    json_builder_begin_array(builder);
-    json_builder_add_string_value(builder, "--agent");
-    json_builder_add_string_value(builder,
-                                  clawt_agent_config_get_id(agent));
+    args = json_array_new();
+    json_array_add_string_element(args, "--agent");
+    json_array_add_string_element(args, clawt_agent_config_get_id(agent));
 
     if (daemon_socket != NULL) {
-        json_builder_add_string_value(builder, "--socket");
-        json_builder_add_string_value(builder, daemon_socket);
+        json_array_add_string_element(args, "--socket");
+        json_array_add_string_element(args, daemon_socket);
     }
 
-    json_builder_add_string_value(builder, "--token-file");
-    json_builder_add_string_value(builder, token_file);
-    json_builder_end_array(builder);
+    json_array_add_string_element(args, "--token-file");
+    json_array_add_string_element(args, token_file);
+    json_object_set_array_member(clawtilla, "args", args);
 
-    json_builder_end_object(builder);
-    json_builder_end_object(builder);
-    json_builder_end_object(builder);
+    /*
+     * Everything else in the file is the user's, and is read back rather
+     * than regenerated.
+     *
+     * This file is how an agent is given MCP servers, so it is a file
+     * people edit -- and it used to be rewritten wholesale on every
+     * start, which meant a server added by hand survived exactly until
+     * the agent was next restarted. Only the "clawtilla" key is managed;
+     * the rest is carried across untouched, including any top-level key
+     * clawtilla has never heard of.
+     */
+    if (g_file_get_contents(path, &existing_text, NULL, NULL) &&
+        json_parser_load_from_data(parser, existing_text, -1, NULL)) {
+        JsonNode *node = json_parser_get_root(parser);
 
-    root = json_builder_get_root(builder);
+        if (node != NULL && JSON_NODE_HOLDS_OBJECT(node)) {
+            out = json_object_ref(json_node_get_object(node));
+
+            if (json_object_has_member(out, "mcpServers") &&
+                JSON_NODE_HOLDS_OBJECT(json_object_get_member(out,
+                                                              "mcpServers")))
+                previous = json_object_get_object_member(out, "mcpServers");
+        }
+    } else if (existing_text != NULL) {
+        /*
+         * Unparseable, and moved aside rather than overwritten: it is
+         * something a person wrote, and a stray comma is not a reason to
+         * delete their work without a copy of it.
+         */
+        g_autofree gchar *aside = g_strconcat(path, ".bad", NULL);
+
+        g_warning("%s is not valid JSON; keeping it as %s",
+                  path, aside);
+        g_rename(path, aside);
+    }
+
+    if (out == NULL)
+        out = json_object_new();
+
+    /*
+     * Rebuilt in place rather than appended to, so clawtilla's entry
+     * keeps whatever position it had. Moving it would make the file
+     * differ from itself on the next start and rewrite it under an open
+     * editor for no reason.
+     */
+    servers = json_object_new();
+
+    if (previous != NULL)
+        members = json_object_get_members(previous);
+
+    for (l = members; l != NULL; l = l->next) {
+        const gchar *name = l->data;
+
+        if (g_strcmp0(name, "clawtilla") == 0) {
+            json_object_set_object_member(servers, name, clawtilla);
+            replaced = TRUE;
+            continue;
+        }
+
+        json_object_set_member(servers, name,
+                               json_node_copy(json_object_get_member(previous,
+                                                                     name)));
+    }
+
+    g_list_free(members);
+
+    if (!replaced)
+        json_object_set_object_member(servers, "clawtilla", clawtilla);
+
+    json_object_set_object_member(out, "mcpServers", servers);
+
+    root = json_node_new(JSON_NODE_OBJECT);
+    json_node_set_object(root, out);
     json_generator_set_root(generator, root);
     json_generator_set_pretty(generator, TRUE);
     text = json_generator_to_data(generator, NULL);
 
-    path = g_build_filename(workspace, ".mcp.json", NULL);
-
     /*
-     * Rewritten every time, unlike the org files.
-     *
-     * This one is generated, not authored: it carries the socket and the
-     * token path, and a stale copy from a daemon that used to live
-     * somewhere else points the agent at nothing.
+     * Not written when nothing changed. An editor with the file open
+     * reloads it on every daemon start otherwise, and the agent's own
+     * workspace is a directory people keep in git.
      */
+    if (g_strcmp0(existing_text, text) == 0)
+        return TRUE;
+
     return clawt_write_file_atomic(path, text, -1, 0600, FALSE, error);
 }
 
@@ -736,7 +814,7 @@ gboolean
 clawt_workspace_scaffold(ClawtAgentConfig *agent, GError **error)
 {
     g_autoptr(GHashTable) values = NULL;
-    const gchar *workspace;
+    g_autofree gchar *workspace = NULL;
     guint i;
 
     g_return_val_if_fail(agent != NULL, FALSE);

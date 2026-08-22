@@ -1005,15 +1005,23 @@ cmd_agent(int argc, char *argv[])
             for (i = 0; i < json_array_get_length(files); i++) {
                 JsonObject *file = json_array_get_object_element(files, i);
 
+                const gchar *marker = "      ";
+
                 /*
-                 * The prompt marker is the useful column: it is the
-                 * difference between a file the agent reads every turn
-                 * and one that only a person ever opens.
+                 * The marker column is the useful one: "prompt" is a
+                 * file the agent reads every turn, "shared" is one
+                 * clawtilla writes into as well as you, and blank is
+                 * yours alone.
                  */
+                if (json_object_get_boolean_member(file, "identity"))
+                    marker = "prompt";
+                else if (json_object_has_member(file, "generated") &&
+                         json_object_get_boolean_member(file, "generated"))
+                    marker = "shared";
+
                 g_print("%-18s %s  %s\n",
                         json_object_get_string_member(file, "name"),
-                        json_object_get_boolean_member(file, "identity")
-                            ? "prompt" : "      ",
+                        marker,
                         json_object_get_string_member(file, "title"));
             }
 

@@ -10,7 +10,9 @@
 #include <clawtilla.h>
 
 #include <glib/gstdio.h>
+#include <json-glib/json-glib.h>
 #include <string.h>
+#include <utime.h>
 
 #include "clawt-test-util.h"
 
@@ -105,6 +107,18 @@ test_scaffold_writes_the_standard_set(void)
             clawt_workspace_file_path(agent, files[i].name);
 
         g_assert_nonnull(path);
+
+        /*
+         * A generated file has no template and is not scaffolded --
+         * .mcp.json is written by clawt_workspace_write_mcp_config(),
+         * which needs a socket and a state directory this has neither
+         * of.
+         */
+        if (files[i].generated) {
+            g_assert_false(g_file_test(path, G_FILE_TEST_EXISTS));
+            continue;
+        }
+
         g_assert_true(g_file_test(path, G_FILE_TEST_EXISTS));
     }
 
@@ -420,6 +434,162 @@ test_mcp_config_is_regenerated(void)
     fixture_teardown(&fixture);
 }
 
+
+/*
+ * A server the user added by hand survives a restart.
+ *
+ * This file is how an agent is given MCP servers, so it is a file
+ * people edit. It used to be regenerated wholesale on every start,
+ * which meant anything added to it lasted exactly until the agent was
+ * next restarted -- and the loss was silent.
+ */
+static void
+test_mcp_config_keeps_what_the_user_added(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *text = NULL;
+    JsonObject *servers;
+    JsonObject *root;
+
+    fixture_setup(&fixture, "agents:\n  - id: scribe\n");
+    agent = first_agent(&fixture);
+
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+    g_assert_true(clawt_workspace_write_mcp_config(agent, "/old.sock",
+                                                    "/state/scribe", &error));
+    g_assert_no_error(error);
+
+    path = clawt_workspace_file_path(agent, ".mcp.json");
+
+    /* What editing the file in $EDITOR amounts to. */
+    g_assert_true(g_file_set_contents(path,
+        "{\n"
+        "  \"mcpServers\": {\n"
+        "    \"clawtilla\": { \"command\": \"stale\" },\n"
+        "    \"gowl\": { \"command\": \"gowl-mcp\", \"args\": [\"--tty\"] }\n"
+        "  },\n"
+        "  \"somethingElse\": true\n"
+        "}\n", -1, NULL));
+
+    g_assert_true(clawt_workspace_write_mcp_config(agent, "/new.sock",
+                                                    "/state/scribe", &error));
+    g_assert_no_error(error);
+
+    g_assert_true(json_parser_load_from_file(parser, path, &error));
+    g_assert_no_error(error);
+
+    root = json_node_get_object(json_parser_get_root(parser));
+    servers = json_object_get_object_member(root, "mcpServers");
+
+    /* Theirs, untouched, arguments and all. */
+    g_assert_true(json_object_has_member(servers, "gowl"));
+    g_assert_cmpstr(json_object_get_string_member(
+                        json_object_get_object_member(servers, "gowl"),
+                        "command"), ==, "gowl-mcp");
+    g_assert_cmpuint(json_array_get_length(
+                         json_object_get_array_member(
+                             json_object_get_object_member(servers, "gowl"),
+                             "args")), ==, 1);
+
+    /* A top-level key clawtilla has never heard of survives too. */
+    g_assert_true(json_object_get_boolean_member(root, "somethingElse"));
+
+    /* Ours, current: the socket moved and the entry followed. */
+    g_assert_true(json_object_has_member(servers, "clawtilla"));
+    g_assert_true(g_file_get_contents(path, &text, NULL, NULL));
+    g_assert_nonnull(strstr(text, "/new.sock"));
+    g_assert_null(strstr(text, "stale"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A file that does not parse is moved aside, not overwritten.
+ *
+ * A stray comma is not a reason to delete something a person wrote
+ * without leaving them a copy of it.
+ */
+static void
+test_mcp_config_keeps_a_broken_file(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *aside = NULL;
+    g_autofree gchar *text = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: scribe\n");
+    agent = first_agent(&fixture);
+
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+
+    path = clawt_workspace_file_path(agent, ".mcp.json");
+    g_assert_true(g_file_set_contents(path, "{ not json,", -1, NULL));
+
+    g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING, "*not valid JSON*");
+    g_assert_true(clawt_workspace_write_mcp_config(agent, "/run/c.sock",
+                                                    "/state/scribe", &error));
+    g_test_assert_expected_messages();
+    g_assert_no_error(error);
+
+    aside = g_strconcat(path, ".bad", NULL);
+    g_assert_true(g_file_get_contents(aside, &text, NULL, NULL));
+    g_assert_cmpstr(text, ==, "{ not json,");
+
+    g_clear_pointer(&text, g_free);
+    g_assert_true(g_file_get_contents(path, &text, NULL, NULL));
+    g_assert_nonnull(strstr(text, "clawtilla"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Nothing changed means nothing written.
+ *
+ * An editor with the file open reloads it on every daemon start
+ * otherwise, and a workspace is a directory people keep in git.
+ */
+static void
+test_mcp_config_leaves_an_unchanged_file_alone(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *path = NULL;
+    struct utimbuf backdated;
+    GStatBuf before;
+    GStatBuf after;
+
+    fixture_setup(&fixture, "agents:\n  - id: scribe\n");
+    agent = first_agent(&fixture);
+
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+    g_assert_true(clawt_workspace_write_mcp_config(agent, "/run/c.sock",
+                                                    "/state/scribe", &error));
+
+    path = clawt_workspace_file_path(agent, ".mcp.json");
+
+    /* Backdated, so "unchanged" is a fact rather than a timer race. */
+    backdated.actime = 1000000;
+    backdated.modtime = 1000000;
+    g_assert_cmpint(g_utime(path, &backdated), ==, 0);
+    g_assert_cmpint(g_stat(path, &before), ==, 0);
+
+    g_assert_true(clawt_workspace_write_mcp_config(agent, "/run/c.sock",
+                                                    "/state/scribe", &error));
+    g_assert_no_error(error);
+
+    g_assert_cmpint(g_stat(path, &after), ==, 0);
+    g_assert_cmpint(before.st_mtime, ==, after.st_mtime);
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -436,6 +606,12 @@ main(int argc, char *argv[])
     g_test_add_func("/workspace/mcp-config", test_mcp_config_is_written);
     g_test_add_func("/workspace/mcp-config-regenerated",
                     test_mcp_config_is_regenerated);
+    g_test_add_func("/workspace/mcp-config-keeps-your-servers",
+                    test_mcp_config_keeps_what_the_user_added);
+    g_test_add_func("/workspace/mcp-config-keeps-a-broken-file",
+                    test_mcp_config_keeps_a_broken_file);
+    g_test_add_func("/workspace/mcp-config-leaves-unchanged-alone",
+                    test_mcp_config_leaves_an_unchanged_file_alone);
     g_test_add_func("/workspace/file-path-refuses-escaping",
                     test_file_path_refuses_escaping);
     g_test_add_func("/workspace/rendered-config-loads-the-set",

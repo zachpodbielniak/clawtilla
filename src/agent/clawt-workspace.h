@@ -24,13 +24,20 @@ G_BEGIN_DECLS
  * @name: the file's name in the workspace
  * @title: one line for a listing
  * @identity: %TRUE when it belongs in the system prompt
+ * @generated: %TRUE when clawtilla writes it rather than scaffolding it
  *
  * One entry in the standard workspace file set.
+ *
+ * @generated separates the files clawtilla keeps current from the ones
+ * it lays down once and then leaves alone. Only .mcp.json is generated,
+ * and even that one is merged rather than replaced -- the "clawtilla"
+ * server in it is clawtilla's, everything beside it is yours.
  */
 typedef struct {
     const gchar *name;
     const gchar *title;
     gboolean     identity;
+    gboolean     generated;
 } ClawtWorkspaceFile;
 
 /**

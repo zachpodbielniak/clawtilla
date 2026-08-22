@@ -174,8 +174,49 @@ uses -- so one agent on this machine cannot call tools as another.  The
 config holds the *path* to the token, never the token: a workspace is
 mounted into containers and read by people.
 
-It is rewritten on every start, because it carries the socket and the
-token path, and a stale one points at nothing.
+*** Adding your own MCP servers
+
+~.mcp.json~ is an ordinary file in the agent's workspace, and adding a
+server to it is how an agent is given tools clawtilla knows nothing
+about:
+
+#+begin_src bash
+clawtilla agent edit researcher .mcp.json
+#+end_src
+
+or the pencil beside it in the GTK client's /Files/ group, which opens
+the same file in ~$EDITOR~.
+
+Only the ~clawtilla~ key is managed.  On every start that entry is
+rebuilt -- it carries the socket and the token path, and a copy left by
+a daemon that used to live somewhere else points at nothing -- and
+everything beside it is read back and written out untouched, keeping its
+position in the file, including any top-level key clawtilla has never
+heard of:
+
+#+begin_src json
+{
+  "mcpServers": {
+    "clawtilla": { "command": "clawtilla-mcp-server", "args": ["..."] },
+    "gowl": { "command": "gowl-mcp", "args": ["--socket", "/run/gowl.sock"] }
+  }
+}
+#+end_src
+
+This was not always true.  The file used to be regenerated wholesale on
+every start, so a server added by hand survived exactly until the agent
+was next restarted, and the loss was silent.
+
+Two more things follow from it being a file people edit.  It is not
+written at all when nothing in it changed, so an editor with it open
+does not see it reload on every daemon start.  And a file that does not
+parse is moved aside to ~.mcp.json.bad~ rather than overwritten -- a
+stray comma is not a reason to delete somebody's work without leaving
+them a copy.
+
+To take clawtilla's *own* tools away from an agent, use the ~tools~
+allow and deny lists above rather than deleting the entry; the entry is
+restored on the next start, the deny list is not.
 
 *** If an agent says it has no clawtilla tools
 

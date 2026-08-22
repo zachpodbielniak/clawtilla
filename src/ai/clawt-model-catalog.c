@@ -57,6 +57,17 @@ static const ClawtModelInfo grok_models[] = {
 };
 
 /*
+ * The `grok` CLI, which is a different thing from the xAI HTTP API
+ * above and takes a different, shorter list.  Not asked for over the
+ * network: the CLI authenticates itself and there is no key here to
+ * enumerate models with.
+ */
+static const ClawtModelInfo grok_build_models[] = {
+    { "grok-4.6", "Grok 4.6", "the CLI's default" },
+    { "grok-4.5", "Grok 4.5", "previous release" }
+};
+
+/*
  * Ollama runs whatever has been pulled locally, so these are only the
  * common ones.  open_ended is TRUE so a client offers a way to type a
  * name that is not here.
@@ -68,39 +79,61 @@ static const ClawtModelInfo ollama_models[] = {
     { "deepseek-r1", "DeepSeek-R1", "reasoning" }
 };
 
+/*
+ * Ordered so the ones an agent can actually run on come first.
+ *
+ * The `agent` column is libreclaw's list, not a preference: its
+ * provider table is command-line only, and lc_provider_type_normalize()
+ * silently rewrites anything it does not know to claude-code.  An agent
+ * configured for "openai" was therefore running Claude Code with
+ * "gpt-4o" in the model field -- so those providers are offered for
+ * designing an agent, where ai-glib drives them over HTTP directly, and
+ * not for being one.
+ */
 static const ClawtProviderInfo providers[] = {
+    /* ── can back an agent: libreclaw's four CLI backends ────────── */
     { "claude-code", "Claude Code",
       "the CLI, billed against your subscription",
-      claude_code_models, G_N_ELEMENTS(claude_code_models), TRUE, FALSE },
+      claude_code_models, G_N_ELEMENTS(claude_code_models),
+      TRUE, TRUE, FALSE },
 
     { "claude-tmux", "Claude Code (tmux)",
       "the CLI in interactive mode; billed as ordinary subscription use "
       "rather than against the Agent SDK credit pool",
-      claude_code_models, G_N_ELEMENTS(claude_code_models), TRUE, FALSE },
+      claude_code_models, G_N_ELEMENTS(claude_code_models),
+      TRUE, TRUE, FALSE },
 
+    { "grok-build", "Grok CLI",
+      "xAI's grok CLI in headless mode; it edits files and runs commands, "
+      "and authenticates itself rather than taking a key from here",
+      grok_build_models, G_N_ELEMENTS(grok_build_models),
+      TRUE, TRUE, FALSE },
+
+    { "opencode", "OpenCode",
+      "the OpenCode CLI; routes to xAI, Google, OpenAI and others itself",
+      NULL, 0, TRUE, TRUE, FALSE },
+
+    /* ── can design an agent: ai-glib's HTTP providers ───────────── */
     { "claude", "Claude API",
       "the HTTP API; needs an API key and is billed per token",
-      claude_api_models, G_N_ELEMENTS(claude_api_models), TRUE, TRUE },
+      claude_api_models, G_N_ELEMENTS(claude_api_models),
+      TRUE, FALSE, TRUE },
 
     { "openai", "OpenAI",
       "needs an API key",
-      openai_models, G_N_ELEMENTS(openai_models), TRUE, TRUE },
+      openai_models, G_N_ELEMENTS(openai_models), TRUE, FALSE, TRUE },
 
     { "gemini", "Google Gemini",
       "needs an API key",
-      gemini_models, G_N_ELEMENTS(gemini_models), TRUE, TRUE },
+      gemini_models, G_N_ELEMENTS(gemini_models), TRUE, FALSE, TRUE },
 
     { "grok", "xAI Grok",
-      "needs an API key",
-      grok_models, G_N_ELEMENTS(grok_models), TRUE, TRUE },
-
-    { "opencode", "OpenCode",
-      "the OpenCode CLI wrapper",
-      NULL, 0, TRUE, FALSE },
+      "the HTTP API; needs an API key. For an agent, pick Grok CLI",
+      grok_models, G_N_ELEMENTS(grok_models), TRUE, FALSE, TRUE },
 
     { "ollama", "Ollama",
       "local models; whatever you have pulled",
-      ollama_models, G_N_ELEMENTS(ollama_models), TRUE, TRUE }
+      ollama_models, G_N_ELEMENTS(ollama_models), TRUE, FALSE, TRUE }
 };
 
 const ClawtProviderInfo *
