@@ -115,9 +115,31 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
      * stopped at the source: by delivery time the messages already exist,
      * and refusing then means cleaning up rather than preventing.
      */
-    if (self->guard != NULL &&
-        !clawt_loop_guard_check(self->guard, message, error))
-        return -1;
+    if (self->guard != NULL) {
+        g_autoptr(GError) refusal = NULL;
+
+        if (!clawt_loop_guard_check(self->guard, message, &refusal)) {
+            /*
+             * Announced, not only returned.  A refusal on the link path
+             * had nowhere to go but the log: the two agents simply
+             * stopped, and whoever was watching saw a conversation trail
+             * off with no indication that anything had stepped in.
+             */
+            if (self->bus != NULL) {
+                g_autoptr(ClawtEvent) event = NULL;
+
+                event = clawt_event_new("message.refused",
+                                        clawt_room_get_id(room));
+                clawt_event_set_detail(event, "from", sender);
+                clawt_event_set_detail(event, "to", destination);
+                clawt_event_set_detail(event, "reason", refusal->message);
+                clawt_event_bus_publish(self->bus, event);
+            }
+
+            g_propagate_error(error, g_steal_pointer(&refusal));
+            return -1;
+        }
+    }
 
     clawt_room_append(room, message, NULL);
 

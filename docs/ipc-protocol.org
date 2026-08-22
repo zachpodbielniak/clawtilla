@@ -242,7 +242,7 @@ Subscribers receive:
 Event kinds: ~daemon.started~, ~daemon.stopped~, ~daemon.reloaded~,
 ~agent.created~, ~agent.removed~, ~agent.changed~, ~agent.started~,
 ~agent.stopped~, ~agent.connected~, ~agent.disconnected~,
-~agent.typing~, ~message~,
+~agent.typing~, ~message~, ~message.refused~,
 ~mailbox.queued~, ~mailbox.delivered~, ~room.created~, ~room.changed~,
 ~task.*~, ~computer.exec~.
 
@@ -263,6 +263,16 @@ Because every message publishes one, a client must also expect to see a
 message it already has: a client that has just connected loads history
 *and* is replayed the recent events that history already contains.
 Deduplicate on ~id~.
+
+~message.refused~ is published when a loop limit rejects a message,
+subject the room, with ~from~, ~to~ and ~reason~.  A refusal on the link
+path went only to the log before this, so from outside the two agents
+just stopped talking and nothing said why.
+
+~room.history~ entries carry ~depth~ -- how far agent-to-agent that
+message had travelled -- which is what lets a client show a chain
+climbing towards ~max_hops~ instead of an inexplicable wall of polite
+agreement.
 
 ~agent.typing~ carries ~typing~ ("true" or "false") and, when the agent
 named one, ~room~.  It originates in libreclaw, which raises the

@@ -99,7 +99,9 @@ static const ClawtParamInfo create_room_params[] = {
 };
 
 static const ClawtParamInfo room_history_params[] = {
-    { "room_id", "string", "Which room.", TRUE },
+    { "room_id", "string",
+      "Which room, or an agent id to read your conversation with that "
+      "agent.", TRUE },
     { "limit",   "integer", "How many recent messages. Defaults to 20.",
       FALSE }
 };
@@ -159,7 +161,10 @@ static const ToolDefinition tools[] = {
          NEEDS_PEER_COMMS, create_room_params),
 
     TOOL("clawtilla_room_history",
-         "Read recent messages from a room.",
+         "Read recent messages from a room, or -- given an agent id -- "
+         "your conversation with that agent. This is how you see whether "
+         "someone answered you; your mailbox will be empty because "
+         "delivery empties it.",
          NEEDS_NOTHING, room_history_params),
 
     TOOL("clawtilla_task_status",
@@ -893,8 +898,25 @@ tool_mailbox_list(ClawtMcpTools *self, const gchar *agent_id,
     filter.limit = (guint)argument_int(arguments, "limit", 20);
     items = clawt_mailbox_list(mailbox, &filter);
 
+    /*
+     * "Empty" needs the reason attached, because while you are running
+     * it is almost always empty and that means nothing at all.
+     *
+     * A message is acknowledged the moment it reaches your socket and
+     * arrives as an ordinary turn; the mailbox holds what was queued
+     * while you were stopped. An agent that checked here to find out
+     * whether a peer had answered concluded, correctly and uselessly,
+     * that nothing had -- while the answer was in the turn it had just
+     * been handed.
+     */
     if (items->len == 0)
-        return g_strdup("Your mailbox is empty.");
+        return g_strdup(
+            "Your mailbox is empty. That is the normal state while you "
+            "are running: a message is delivered straight into your "
+            "conversation as soon as it arrives, and only queues here "
+            "when you are stopped. To see what someone said to you, or "
+            "whether they have replied, use clawtilla_room_history with "
+            "their agent id.");
 
     out = g_string_new(NULL);
 
@@ -923,12 +945,36 @@ tool_mailbox_list(ClawtMcpTools *self, const gchar *agent_id,
  * around a tool that lies about existing.
  */
 static ClawtRoom *
-room_for(ClawtMcpTools *self, const gchar *room_id)
+room_for(ClawtMcpTools *self, const gchar *room_id, const gchar *caller)
 {
+    ClawtRoom *room;
+
     if (self->room_manager == NULL || room_id == NULL)
         return NULL;
 
-    return clawt_room_manager_get(self->room_manager, room_id);
+    room = clawt_room_manager_get(self->room_manager, room_id);
+
+    if (room != NULL)
+        return room;
+
+    /*
+     * Not a room, so try it as an agent: the conversation between two
+     * agents lives in the direct room between them, and how that room
+     * is named is the daemon's business.
+     *
+     * Without this an agent asked to "message test and see what they
+     * say" had no way to look. Its mailbox is empty -- delivery drains
+     * it -- and reading the exchange meant knowing to type
+     * "dm:<sorted>:<pair>", which is exactly the internal naming a
+     * caller is told not to depend on. It reported that nothing had
+     * come back while the reply sat in the transcript.
+     */
+    if (caller == NULL ||
+        clawt_agent_manager_get(self->agents, room_id) == NULL)
+        return NULL;
+
+    return clawt_room_manager_get_direct(self->room_manager, caller,
+                                         room_id);
 }
 
 static gchar *
@@ -944,7 +990,7 @@ tool_post_room(ClawtMcpTools *self, const gchar *agent_id,
         return g_strdup("room_id and body are both required.");
     }
 
-    if (room_for(self, room_id) == NULL) {
+    if (room_for(self, room_id, agent_id) == NULL) {
         *is_error = TRUE;
         return g_strdup_printf("There is no room called '%s'.", room_id);
     }
@@ -1007,18 +1053,18 @@ tool_create_room(ClawtMcpTools *self, JsonObject *arguments,
 }
 
 static gchar *
-tool_room_history(ClawtMcpTools *self, JsonObject *arguments,
-                  gboolean *is_error)
+tool_room_history(ClawtMcpTools *self, const gchar *agent_id,
+                  JsonObject *arguments, gboolean *is_error)
 {
     const gchar *room_id = argument_string(arguments, "room_id");
-    ClawtRoom *room = room_for(self, room_id);
+    ClawtRoom *room = room_for(self, room_id, agent_id);
     g_autoptr(GPtrArray) history = NULL;
     g_autoptr(GString) out = NULL;
     guint i;
 
     if (room == NULL) {
         *is_error = TRUE;
-        return g_strdup_printf("There is no room called '%s'.",
+        return g_strdup_printf("There is no room or agent called '%s'.",
                                room_id != NULL ? room_id : "(none)");
     }
 
@@ -1298,7 +1344,8 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
     else if (g_strcmp0(tool_name, "clawtilla_create_room") == 0)
         text = tool_create_room(self, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_room_history") == 0)
-        text = tool_room_history(self, arguments, &is_error);
+        text = tool_room_history(self, agent_id, arguments,
+                                 &is_error);
     else {
         ClawtToolProvider *provider = find_provider(self, tool_name);
         g_autoptr(GError) provider_error = NULL;

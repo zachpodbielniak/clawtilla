@@ -1492,6 +1492,72 @@ test_direct_rooms_come_back_after_a_restart(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * Two agents replying to each other are stopped by max_hops.
+ *
+ * The hop counter existed, the router recorded it on every delivery,
+ * and the orchestration tools read it back -- but an agent's ordinary
+ * reply arrives over its link, and that path set the depth to a flat 1.
+ * So every reply looked like the start of a fresh conversation and the
+ * one limit built for this could never be reached: two agents traded
+ * fifty messages of "Idle." and nothing stopped them.
+ */
+static void
+test_a_reply_counts_as_a_hop(void)
+{
+    Fixture fixture = { 0 };
+    ClawtMailboxRouter *router;
+    ClawtAgentManager *agents;
+    guint i;
+    gint depth = 0;
+
+    fixture_setup(&fixture,
+                  "orchestration:\n"
+                  "  max_hops: 4\n"
+                  "  cycle_window: 0\n"
+                  "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    router = clawt_daemon_get_router(fixture.daemon);
+    agents = clawt_daemon_get_agents(fixture.daemon);
+
+    /*
+     * Each pass is one agent answering the other, at the depth the
+     * router last recorded for it -- which is what the link handler
+     * does.
+     */
+    for (i = 0; i < 8; i++) {
+        const gchar *from = (i % 2 == 0) ? "alpha" : "beta";
+        const gchar *to = (i % 2 == 0) ? "beta" : "alpha";
+        ClawtAgent *sender = clawt_agent_manager_get(agents, from);
+        g_autoptr(GError) error = NULL;
+        gint sent;
+
+        depth = clawt_agent_get_hop_depth(sender) + 1;
+        sent = clawt_mailbox_router_send_to(router, from, to, "Idle.", NULL,
+                                            depth, &error);
+
+        if (sent < 0) {
+            g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT);
+            break;
+        }
+
+        /*
+         * Standing in for delivery, which is where the router records
+         * how far a message had come. Nothing is running in this test,
+         * so the drain has nobody to hand it to.
+         */
+        clawt_agent_set_hop_depth(clawt_agent_manager_get(agents, to), depth);
+    }
+
+    /* It stopped, and it stopped at the configured limit rather than
+     * running to the end of the loop. */
+    g_assert_cmpint(depth, ==, 4);
+    g_assert_cmpuint(i, <, 8);
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1568,6 +1634,8 @@ main(int argc, char *argv[])
                     test_room_listing_shows_activity);
     g_test_add_func("/daemon/direct-rooms-survive-a-restart",
                     test_direct_rooms_come_back_after_a_restart);
+    g_test_add_func("/daemon/a-reply-counts-as-a-hop",
+                    test_a_reply_counts_as_a_hop);
 
     return g_test_run();
 }

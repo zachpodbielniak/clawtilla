@@ -303,6 +303,30 @@ the same program.
   nobody, because nothing on the agent side relays them into the
   session.
 
+### A limit that is never reached is not a limit
+
+- `max_hops` counts how far a message has travelled agent-to-agent, the
+  router records it on every delivery, and `ClawtMcpTools` reads it back
+  — but an agent's *ordinary reply* arrives through `on_link_message()`,
+  which stamped a flat depth of 1. So the one limit built for two agents
+  answering each other for ever could never fire on the path where that
+  actually happens; two agents traded fifty messages and nothing stopped
+  them. Anything that stamps a depth must derive it from
+  `clawt_agent_get_hop_depth()`, and a limit needs a test that reaches
+  it, not one that shows it exists.
+
+### An agent's mailbox is empty while it is running
+
+- Delivery acknowledges an item the moment it reaches the socket and
+  hands it over as an ordinary turn; the mailbox only holds what queued
+  while the agent was stopped. So `clawtilla_mailbox_list` is almost
+  always empty for a running agent and that means nothing — an agent
+  that checked there for a peer's reply concluded, correctly and
+  uselessly, that none had come, while the reply was in the turn it had
+  just been handed. `clawtilla_room_history` takes an agent id for this
+  reason. Anywhere a tool's empty result could be read as an answer, say
+  why it is empty.
+
 ### An event that cannot say where it happened is not enough
 
 - The `message` event named the sender and the body but not the room, so

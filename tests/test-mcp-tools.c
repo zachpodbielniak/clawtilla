@@ -24,6 +24,7 @@ typedef struct {
     ClawtAgentManager *agents;
     ClawtTaskManager  *tasks;
     ClawtLoopGuard    *guard;
+    ClawtRoomManager  *rooms;
     ClawtMcpTools     *tools;
 
     gchar             *last_target;
@@ -75,8 +76,10 @@ fixture_setup(Fixture *fixture, const gchar *agents_yaml)
 
     fixture->tasks = clawt_task_manager_new();
     fixture->guard = clawt_loop_guard_new();
+    fixture->rooms = clawt_room_manager_new(NULL);
     fixture->tools = clawt_mcp_tools_new(fixture->agents, fixture->tasks,
                                          fixture->guard);
+    clawt_mcp_tools_set_room_manager(fixture->tools, fixture->rooms);
 
     clawt_mcp_tools_set_deliver_func(fixture->tools, fake_deliver, fixture,
                                      NULL);
@@ -86,6 +89,7 @@ static void
 fixture_teardown(Fixture *fixture)
 {
     g_clear_object(&fixture->tools);
+    g_clear_object(&fixture->rooms);
     g_clear_object(&fixture->guard);
     g_clear_object(&fixture->tasks);
     g_clear_object(&fixture->agents);
@@ -561,6 +565,46 @@ test_assignee_can_complete_its_task(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * An agent can read its conversation with a peer by naming the peer.
+ *
+ * Asked to "message test and see what they say", an agent had nowhere
+ * to look: its mailbox is empty because delivery drains it, and reading
+ * the exchange meant knowing to type "dm:<sorted>:<pair>" -- the
+ * internal naming a caller is specifically told not to depend on. It
+ * reported that nothing had come back while the reply sat in the
+ * transcript.
+ */
+static void
+test_room_history_takes_an_agent_id(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    ClawtRoom *room;
+    const gchar *text;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n  - id: researcher\n");
+
+    room = clawt_room_manager_get_direct(fixture.rooms, "chief",
+                                         "researcher");
+    {
+        g_autoptr(ClawtMessage) said =
+            clawt_message_new(clawt_room_get_id(room), "researcher",
+                              "the build broke on the lease sweep");
+
+        g_assert_true(clawt_room_append(room, said, NULL));
+    }
+
+    response = call_tool(&fixture, "chief", "clawtilla_room_history",
+                         "{\"room_id\":\"researcher\"}");
+    text = response_text(response, NULL);
+
+    g_assert_nonnull(strstr(text, "the build broke on the lease sweep"));
+    g_assert_nonnull(strstr(text, "researcher"));
+
+    fixture_teardown(&fixture);
+}
+
 /* ── Mailbox ─────────────────────────────────────────────────────── */
 
 static void
@@ -578,6 +622,14 @@ test_mailbox_list_reports_waiting_messages(void)
                                NULL);
     text = response_text(empty_response, NULL);
     g_assert_nonnull(strstr(text, "empty"));
+
+    /*
+     * And says why, because while an agent is running its mailbox is
+     * almost always empty and that fact means nothing. One that checked
+     * here to find out whether a peer had answered concluded, correctly
+     * and uselessly, that nothing had.
+     */
+    g_assert_nonnull(strstr(text, "clawtilla_room_history"));
 
     agent = clawt_agent_manager_get(fixture.agents, "chief");
 
@@ -697,6 +749,8 @@ main(int argc, char *argv[])
                     test_assignee_can_complete_its_task);
 
     g_test_add_func("/mcp/mailbox-list", test_mailbox_list_reports_waiting_messages);
+    g_test_add_func("/mcp/room-history-by-agent",
+                    test_room_history_takes_an_agent_id);
 
     g_test_add_func("/mcp/computer-exec", test_computer_exec_through_the_tool);
     g_test_add_func("/mcp/failing-command", test_failing_command_reports_why);

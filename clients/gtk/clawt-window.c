@@ -2314,6 +2314,24 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
         return;
     }
 
+    if (g_strcmp0(kind, "message.refused") == 0) {
+        const gchar *from = clawt_event_get_detail(event, "from");
+        const gchar *to = clawt_event_get_detail(event, "to");
+        const gchar *reason = clawt_event_get_detail(event, "reason");
+        g_autofree gchar *message = g_strdup_printf(
+            "%s to %s was stopped: %s", from != NULL ? from : "?",
+            to != NULL ? to : "?", reason != NULL ? reason : "a limit");
+
+        /*
+         * Said out loud rather than only logged. A refusal on the link
+         * path is invisible otherwise: the two agents just stop, and the
+         * conversation appears to trail off for no reason.
+         */
+        clawt_window_toast(self, message);
+        refresh_flow(self);
+        return;
+    }
+
     if (g_strcmp0(kind, "agent.typing") == 0) {
         const gchar *typing = clawt_event_get_detail(event, "typing");
 
@@ -3564,14 +3582,25 @@ show_flow_room(ClawtWindow *self, const gchar *room_id, const gchar *label)
     JsonArray *messages;
     guint i;
 
-    clear_box(self->flow_transcript);
-
+    /*
+     * The request first, and only then the clear.
+     *
+     * clawt_window_request() iterates the main context while it waits,
+     * so an event arriving mid-flight re-enters this function: the inner
+     * call emptied the box and filled it, the outer one carried on
+     * appending from where it was, and the conversation appeared twice.
+     * Emptying after the answer is back means a nested call finishes
+     * completely and the outer one then replaces its work rather than
+     * adding to it.
+     */
     reply = clawt_window_request(
         self, "room.history",
         clawt_build_payload("room", room_id, "limit", "200", NULL));
 
     if (reply == NULL)
         return;
+
+    clear_box(self->flow_transcript);
 
     g_free(self->flow_room);
     self->flow_room = g_strdup(room_id);
@@ -3628,6 +3657,30 @@ show_flow_room(ClawtWindow *self, const gchar *room_id, const gchar *label)
             g_signal_connect(button, "clicked",
                              G_CALLBACK(on_flow_task_clicked), self);
             gtk_box_append(GTK_BOX(head), button);
+        }
+
+        /*
+         * The hop count, from the second hop on.
+         *
+         * This is what makes a runaway legible. Two agents politely
+         * agreeing to do nothing looks the same on the tenth exchange as
+         * on the first; the number climbing towards max_hops is the only
+         * thing on screen that says it is a loop rather than a
+         * conversation.
+         */
+        if (clawt_json_int(message, "depth", 0) > 1) {
+            g_autofree gchar *hops = g_strdup_printf(
+                "hop %" G_GINT64_FORMAT, clawt_json_int(message, "depth", 0));
+            GtkWidget *chip = gtk_label_new(hops);
+
+            gtk_widget_add_css_class(chip, "caption");
+            gtk_widget_add_css_class(chip, "dim-label");
+            gtk_widget_set_tooltip_text(
+                chip,
+                "How far this is from the request that started it. "
+                "A count that keeps climbing is a loop; orchestration."
+                "max_hops is where it stops.");
+            gtk_box_append(GTK_BOX(head), chip);
         }
 
         /* Never markup: this is model output. */

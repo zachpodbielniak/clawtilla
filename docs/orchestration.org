@@ -256,6 +256,29 @@ cat ~/.clawtilla/agents/researcher/.mcp.json
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | clawtilla-mcp-server --agent researcher
 #+end_src
 
+** Your mailbox is empty while you are running
+
+This trips up agents, so it is worth stating plainly: a message is
+acknowledged the moment it reaches the agent's socket and is delivered
+as an ordinary turn.  The mailbox holds what queued up while the agent
+was *stopped*.  For a running agent it is almost always empty, and that
+fact carries no information.
+
+An agent asked to "message test and see what they say back" therefore
+checked ~clawtilla_mailbox_list~, found nothing, and reported that no
+reply had come -- while the reply was in the turn it had just been
+handed.  Both agents then settled into acknowledging each other
+indefinitely.
+
+The answer is ~clawtilla_room_history~, which takes *either* a room id
+*or* an agent id and, given an agent id, returns the conversation
+between the caller and that agent.  It has to accept an agent id: every
+exchange between two agents is a room named ~dm:<sorted>:<pair>~, and
+that naming is internal -- an agent should no more be typing it than a
+client should.  The scaffolded ~TOOLS.org~ says all of this, and
+~clawtilla_mailbox_list~ says it again in the empty case rather than
+answering a bare "your mailbox is empty".
+
 ** Loop safety
 
 Four limits, each answering a different failure.
@@ -276,6 +299,29 @@ accumulates depth rather than every message looking like the first.  Past
 ~max_hops~ the send is refused with an error the agent can read.
 
 This is what stops A → B → A → B running until somebody notices.
+
+It applies to an agent's *ordinary reply* as well as to the
+orchestration tools, which was not always true and is the whole point.
+The router records how far each delivery had come and the tools read it
+back, but a reply arrives over the agent's link, and that path stamped a
+flat depth of 1 -- so every reply looked like the start of a fresh
+conversation and the one limit built for two agents answering each other
+for ever could never be reached on the path where that actually happens.
+Two agents traded fifty messages of "Idle." and nothing stopped them.
+
+A hop count is shown against each message on the GTK client's Flow tab
+from the second hop on, because a number climbing towards the limit is
+the only thing on screen that distinguishes a loop from a conversation:
+two agents politely agreeing to do nothing look the same on the tenth
+exchange as on the first.
+
+*** When a limit fires
+
+The sender gets the error, and the daemon publishes ~message.refused~
+naming both agents and the reason.  Without that a refusal on the link
+path went only to the log: the two agents simply stopped, and the
+conversation appeared to trail off for no reason at all.  The GTK client
+raises it as a toast.
 
 *** rate_limit_per_minute
 

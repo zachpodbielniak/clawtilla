@@ -376,7 +376,26 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
 
     message = clawt_message_new(destination, agent_id, body);
     clawt_message_set_task_id(message, thread_id);
-    clawt_message_set_depth(message, 1);
+
+    /*
+     * One hop further than the message being answered, not a flat 1.
+     *
+     * The router records how far each delivery had travelled, and the
+     * orchestration tools already read it back -- but an agent's
+     * ordinary reply comes through here, and this hardcoded 1 made
+     * every one of them look like the start of a fresh conversation. So
+     * max_hops, which exists for precisely the case of two agents
+     * replying politely to each other for ever, could never be reached
+     * on the path where that actually happens: two agents traded fifty
+     * messages of "Idle." and nothing stopped them.
+     */
+    {
+        ClawtAgent *sender = clawt_agent_manager_get(self->agents, agent_id);
+
+        clawt_message_set_depth(
+            message,
+            (sender != NULL) ? clawt_agent_get_hop_depth(sender) + 1 : 1);
+    }
 
     /*
      * No event is published here.  The router publishes one for every
@@ -2348,6 +2367,17 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
                 json_builder_add_string_value(
                     builder, clawt_message_get_task_id(message));
             }
+
+            /*
+             * How far this message had travelled agent-to-agent.  It is
+             * what makes a runaway visible: a conversation whose hop
+             * count climbs towards max_hops is a loop, and reading two
+             * agents politely agreeing to do nothing gives no sign of
+             * that at all.
+             */
+            json_builder_set_member_name(builder, "depth");
+            json_builder_add_int_value(builder,
+                                       clawt_message_get_depth(message));
 
             json_builder_end_object(builder);
         }
