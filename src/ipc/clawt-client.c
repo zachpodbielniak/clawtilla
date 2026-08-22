@@ -55,6 +55,8 @@ struct _ClawtClient {
      * perfectly healthy connection.
      */
     GHashTable   *pending;      /* request id -> Pending */
+    GQueue       *incoming;     /* ClawtEvent*, waiting to be emitted */
+    GSource      *drain_source;
     GMainContext *context;      /* the context the reader is attached to */
 
     gboolean auto_reconnect;
@@ -185,6 +187,28 @@ send_frame(ClawtClient *self, JsonNode *frame, GError **error)
                                      NULL, error);
 }
 
+/*
+ * Hands queued events to the application, one turn of the loop later.
+ */
+static gboolean
+drain_events(gpointer user_data)
+{
+    ClawtClient *self = user_data;
+
+    g_clear_pointer(&self->drain_source, g_source_unref);
+
+    for (;;) {
+        g_autoptr(ClawtEvent) event = g_queue_pop_head(self->incoming);
+
+        if (event == NULL)
+            break;
+
+        g_signal_emit(self, signals[SIGNAL_EVENT], 0, event);
+    }
+
+    return G_SOURCE_REMOVE;
+}
+
 static void
 dispatch_event(ClawtClient *self, JsonNode *frame)
 {
@@ -241,7 +265,29 @@ dispatch_event(ClawtClient *self, JsonNode *frame)
                 json_object_get_string_member(detail, l->data));
     }
 
-    g_signal_emit(self, signals[SIGNAL_EVENT], 0, event);
+    /*
+     * Queued rather than emitted here.
+     *
+     * A handler is application code: it may open a dialog, run a nested
+     * loop, or make a request and wait.  Running it inside the reader's
+     * own callback makes all of that re-entrant on the one socket.
+     * Delivering from an idle costs a turn of the loop and means a
+     * handler always runs with the reader idle and armed.
+     */
+    g_queue_push_tail(self->incoming, g_steal_pointer(&event));
+
+    /*
+     * Attached to this client's own context, not with g_idle_add(), which
+     * would put it on the global default -- where an embedded client's
+     * loop never looks, so events would simply never be delivered.
+     */
+    if (self->drain_source == NULL) {
+        self->drain_source = g_idle_source_new();
+
+        g_source_set_callback(self->drain_source, drain_events,
+                              g_object_ref(self), g_object_unref);
+        g_source_attach(self->drain_source, self->context);
+    }
 }
 
 /*
@@ -394,6 +440,18 @@ on_line_read(GObject *source, GAsyncResult *result, gpointer user_data)
         return;
     }
 
+    /*
+     * Re-armed before anything is dispatched, not after.
+     *
+     * Whatever runs below may issue a request of its own and wait for the
+     * answer -- a client refreshing its view when an event arrives does
+     * exactly that.  With the re-arm at the end of this function there
+     * was no outstanding read while that happened, so nothing could read
+     * the reply and the nested request sat there until it timed out,
+     * taking the outer one with it.
+     */
+    read_next(self);
+
     frame = clawt_ipc_frame_from_line(line, NULL);
 
     if (frame != NULL) {
@@ -402,8 +460,6 @@ on_line_read(GObject *source, GAsyncResult *result, gpointer user_data)
         else
             complete_pending(self, frame);
     }
-
-    read_next(self);
 }
 
 static void
@@ -849,6 +905,13 @@ clawt_client_finalize(GObject *object)
 {
     ClawtClient *self = CLAWT_CLIENT(object);
 
+    if (self->drain_source != NULL) {
+        g_source_destroy(self->drain_source);
+        g_clear_pointer(&self->drain_source, g_source_unref);
+    }
+
+    g_queue_free_full(g_steal_pointer(&self->incoming),
+                      (GDestroyNotify)clawt_event_free);
     g_clear_pointer(&self->pending, g_hash_table_unref);
     g_clear_pointer(&self->context, g_main_context_unref);
     g_free(self->socket_path);
@@ -892,4 +955,5 @@ clawt_client_init(ClawtClient *self)
     self->reconnect_delay = RECONNECT_BASE_SECONDS;
     self->pending = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                           pending_free);
+    self->incoming = g_queue_new();
 }

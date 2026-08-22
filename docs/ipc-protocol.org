@@ -75,6 +75,10 @@ it went into.
 
 ~room.list~, ~room.create~, ~room.add~, ~room.history~.
 
+~room.history~ accepts an agent id as well as a room id: an agent id
+means the direct room with that agent, the same way it does for
+~msg.send~.  Pass ~as~ to say who is asking; it defaults to ~user~.
+
 *** mailbox.*
 
 ~mailbox.list~, ~mailbox.dead~, ~mailbox.ack~, ~mailbox.requeue~,
@@ -189,9 +193,15 @@ clawt_client_subscribe(client, cursor, &resumed, &error);
 reply = clawt_client_request(client, "agent.list", NULL, &error);
 #+end_src
 
-~clawt_client_request()~ is synchronous and dispatches events that arrive
-while it waits, so a blocking call does not punch a hole in the caller's
-subscription.  ~clawt_client_request_async()~ runs it on a thread.
+~clawt_client_request()~ is synchronous: it iterates the caller's main
+context until the reply arrives, rather than reading the socket itself.
+One reader owns the connection for its whole life, so a request made from
+inside an event handler works like any other -- the reader is always
+armed, and events reach handlers from an idle rather than from inside the
+reader's own callback.
+
+~clawt_client_request_async()~ takes no thread; the same reader completes
+its ~GTask~.
 
 An embedding host can skip the socket entirely and call
 ~clawt_daemon_handle_request()~ with the same frames.

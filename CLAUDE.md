@@ -256,6 +256,16 @@ the same program.
   another user of sqlite in the same process would find it shut down
   underneath them.
 
+### An async reader re-arms before it dispatches
+
+- Whatever a completion callback runs may issue a request of its own and
+  wait for the answer -- a client refreshing itself when an event arrives
+  does exactly that. Re-arming the read *after* dispatching means there is
+  no outstanding read while that happens, so nothing can read the reply
+  and the nested request blocks until it times out, taking the outer one
+  with it. `ClawtClient` re-arms first, and delivers events from an idle
+  so application handlers never run inside the reader at all.
+
 ### Async callbacks own a reference
 
 - Anything handed to `*_async()` must hold a reference to whatever the
@@ -266,10 +276,13 @@ the same program.
 
 ### Main contexts
 
-- `g_timeout_add_seconds()` attaches to the **default** context, not the
-  thread-default one. In an embedded daemon that means the timer never
+- `g_timeout_add_seconds()` and `g_idle_add()` attach to the **default**
+  context, not the thread-default one. In an embedded daemon that means the timer never
   fires. Use `g_timeout_source_new_seconds()` + `g_source_attach(source, context)`.
-  Two real bugs came from getting this wrong.
+  Three real bugs came from getting this wrong: two timers that never
+  fired for an embedded daemon, and an idle that never delivered a single
+  event. Use `clawt_timeout_add_seconds()`, or `g_idle_source_new()` plus
+  `g_source_attach(source, context)`.
 
 ### Unix socket paths
 

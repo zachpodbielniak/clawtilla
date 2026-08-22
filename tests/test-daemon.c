@@ -939,6 +939,129 @@ test_the_state_directory_cannot_be_mounted(void)
     fixture_teardown(&fixture);
 }
 
+typedef struct {
+    ClawtClient *client;
+    gboolean     nested_ok;
+    gboolean     nested_ran;
+    gdouble      nested_seconds;
+} NestedProbe;
+
+/*
+ * A client refreshing itself when an event arrives -- which is what every
+ * real client does.
+ */
+static void
+on_event_make_a_request(ClawtClient *client, ClawtEvent *event,
+                        gpointer user_data)
+{
+    NestedProbe *probe = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GError) error = NULL;
+    gint64 started = g_get_monotonic_time();
+
+    (void)client;
+    (void)event;
+
+    if (probe->nested_ran)
+        return;
+
+    probe->nested_ran = TRUE;
+    reply = clawt_client_request(probe->client, "agent.list", NULL, &error);
+    probe->nested_seconds = (g_get_monotonic_time() - started) / 1e6;
+    probe->nested_ok = (reply != NULL);
+}
+
+/*
+ * A request made from inside an event handler must not deadlock.
+ *
+ * The reader used to re-arm only after dispatching, so a handler that
+ * issued a request waited with no read outstanding -- nothing could read
+ * the reply, and both that request and the one that triggered the event
+ * sat there until the two-minute timeout.  In the GTK client that made
+ * sending a message appear to do nothing at all.
+ */
+static void
+test_a_request_from_an_event_handler_completes(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtClient) client = NULL;
+    g_autofree gchar *socket_path = NULL;
+    g_autoptr(GError) error = NULL;
+    NestedProbe probe = { 0 };
+    gint64 deadline;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+
+    g_main_context_push_thread_default(fixture.context);
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    socket_path = g_build_filename(fixture.dir, "daemon.sock", NULL);
+    client = clawt_client_new(socket_path);
+    probe.client = client;
+
+    g_assert_true(clawt_client_connect(client, &error));
+    g_assert_no_error(error);
+
+    g_signal_connect(client, "event", G_CALLBACK(on_event_make_a_request),
+                     &probe);
+    g_assert_true(clawt_client_subscribe(client, 0, NULL, &error));
+
+    /* Publishing anything reaches the handler. */
+    clawt_event_bus_emit(clawt_daemon_get_event_bus(fixture.daemon),
+                         "test.poke", "chief");
+
+    deadline = g_get_monotonic_time() + (10 * G_USEC_PER_SEC);
+
+    while (!probe.nested_ran && g_get_monotonic_time() < deadline)
+        g_main_context_iteration(fixture.context, FALSE);
+
+    g_assert_true(probe.nested_ran);
+    g_assert_true(probe.nested_ok);
+
+    /* Promptly, not after a timeout. */
+    g_assert_cmpfloat(probe.nested_seconds, <, 5.0);
+
+    g_main_context_pop_thread_default(fixture.context);
+    fixture_teardown(&fixture);
+}
+
+/* A chat with an agent is a room, and asking for it by agent id works. */
+static void
+test_history_by_agent_id(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) sent = NULL;
+    g_autoptr(JsonNode) history = NULL;
+    JsonArray *messages;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    sent = request(&fixture, "msg.send",
+                   "{\"target\":\"chief\",\"body\":\"hello\","
+                   "\"from\":\"user\"}");
+    g_assert_false(clawt_ipc_frame_is_error(sent));
+
+    /*
+     * The client knows the agent, not how a direct room is named.  Asking
+     * by agent id used to answer "no such room", so every chat opened
+     * empty.
+     */
+    history = request(&fixture, "room.history",
+                      "{\"room\":\"chief\",\"as\":\"user\"}");
+
+    g_assert_false(clawt_ipc_frame_is_error(history));
+
+    messages = json_object_get_array_member(payload_of(history), "messages");
+    g_assert_cmpuint(json_array_get_length(messages), ==, 1);
+    g_assert_cmpstr(json_object_get_string_member(
+                        json_array_get_object_element(messages, 0), "body"),
+                    ==, "hello");
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -979,6 +1102,10 @@ main(int argc, char *argv[])
                     test_reload_reaches_the_fleet);
     g_test_add_func("/daemon/state-dir-cannot-be-mounted",
                     test_the_state_directory_cannot_be_mounted);
+
+    g_test_add_func("/daemon/request-from-event-handler",
+                    test_a_request_from_an_event_handler_completes);
+    g_test_add_func("/daemon/history-by-agent-id", test_history_by_agent_id);
 
     g_test_add_func("/daemon/requests-after-subscribe",
                     test_requests_work_after_subscribing);

@@ -1720,13 +1720,26 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
 
     if (g_strcmp0(kind, "room.history") == 0) {
         const gchar *room_id = clawt_ipc_payload_string(payload, "room");
+        const gchar *viewer = clawt_ipc_payload_string(payload, "as");
         ClawtRoom *room = clawt_room_manager_get(self->rooms, room_id);
         g_autoptr(GPtrArray) history = NULL;
         guint i;
 
+        /*
+         * An agent id means the direct room with that agent, the same way
+         * it does for msg.send.  Without this a client showing a
+         * conversation had to know how a direct room is named -- and the
+         * GTK client did not, so every chat opened empty with a "no such
+         * room" error behind it.
+         */
+        if (room == NULL && room_id != NULL &&
+            clawt_agent_manager_get(self->agents, room_id) != NULL)
+            room = clawt_room_manager_get_direct(
+                self->rooms, viewer != NULL ? viewer : "user", room_id);
+
         if (room == NULL)
             return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such room");
+                                       "no such room or agent");
 
         history = clawt_room_get_history(
             room, (guint)clawt_ipc_payload_int(payload, "limit", 50));

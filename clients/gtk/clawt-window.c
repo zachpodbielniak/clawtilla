@@ -421,7 +421,8 @@ load_history(ClawtWindow *self)
 
     reply = clawt_window_request(
         self, "room.history",
-        clawt_build_payload("room", self->selected_agent, NULL));
+        clawt_build_payload("room", self->selected_agent, "as", "user",
+                            NULL));
 
     if (reply == NULL)
         return;
