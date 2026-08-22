@@ -16,27 +16,120 @@
 struct _ClawtPodBridge {
     GObject parent_instance;
 
-    gchar      *module_dir;
+    GStrv       search_path;
     GHashTable *modules;   /* name -> PodModule* (owned) */
 };
 
 G_DEFINE_FINAL_TYPE(ClawtPodBridge, clawt_pod_bridge, G_TYPE_OBJECT)
+
+/*
+ * Where the binary that is running lives.
+ *
+ * Used so an uninstalled clawtilla finds the modules the build just
+ * produced.  Returns NULL when /proc is not available, which only costs
+ * that one entry in the search path.
+ */
+static gchar *
+executable_dir(void)
+{
+    g_autofree gchar *exe = g_file_read_link("/proc/self/exe", NULL);
+
+    if (exe == NULL)
+        return NULL;
+
+    return g_path_get_dirname(exe);
+}
+
+/*
+ * Builds the list of directories a module is looked for in, best first.
+ *
+ * There was one directory before, fixed at compile time to the install
+ * prefix, and a comment claiming it was the build tree.  It was not, so
+ * `container` and `vm_virtmanager` were missing for anyone running
+ * straight out of a checkout -- which is everyone, until the first
+ * `make install`.
+ */
+static GStrv
+default_search_path(void)
+{
+    g_autoptr(GPtrArray) dirs = g_ptr_array_new_with_free_func(g_free);
+    const gchar *env_path = g_getenv("CLAWT_POD_MODULE_DIR");
+    g_autofree gchar *exe_dir = NULL;
+
+    /* An override has to be able to win, so it goes first. */
+    if (env_path != NULL) {
+        g_auto(GStrv) parts = g_strsplit(env_path, ":", -1);
+        gsize i;
+
+        for (i = 0; parts[i] != NULL; i++) {
+            if (*parts[i] != '\0')
+                g_ptr_array_add(dirs, clawt_expand_path(parts[i]));
+        }
+    }
+
+    exe_dir = executable_dir();
+
+    if (exe_dir != NULL) {
+        g_ptr_array_add(dirs, g_build_filename(exe_dir, "pod-modules", NULL));
+
+        /*
+         * Where libreclaw itself drops them.  Worth trying because a
+         * checkout that has built libreclaw but not staged the modules
+         * still has a complete set sitting right there.
+         */
+        g_ptr_array_add(dirs, g_build_filename(exe_dir, "modules", NULL));
+    }
+
+    g_ptr_array_add(dirs, g_strdup(CLAWT_POD_MODULE_DIR));
+    g_ptr_array_add(dirs, NULL);
+
+    return (GStrv)g_ptr_array_free(g_steal_pointer(&dirs), FALSE);
+}
 
 ClawtPodBridge *
 clawt_pod_bridge_new(const gchar *module_dir)
 {
     ClawtPodBridge *self = g_object_new(CLAWT_TYPE_POD_BRIDGE, NULL);
 
-    /*
-     * The build tree's module directory is the default, so an uninstalled
-     * clawtilla works against the modules libreclaw just built rather than
-     * silently finding none.
-     */
-    self->module_dir = (module_dir != NULL)
-                       ? clawt_expand_path(module_dir)
-                       : g_strdup(CLAWT_POD_MODULE_DIR);
+    if (module_dir != NULL) {
+        /*
+         * Named explicitly, so it is the only place looked at.  A caller
+         * that says where the modules are is answered literally rather
+         * than quietly succeeding from somewhere else -- that is what
+         * makes the setting testable and its failure legible.
+         */
+        self->search_path = g_new0(gchar *, 2);
+        self->search_path[0] = clawt_expand_path(module_dir);
+    } else {
+        self->search_path = default_search_path();
+    }
 
     return self;
+}
+
+const gchar * const *
+clawt_pod_bridge_get_search_path(ClawtPodBridge *self)
+{
+    g_return_val_if_fail(CLAWT_IS_POD_BRIDGE(self), NULL);
+
+    return (const gchar * const *)self->search_path;
+}
+
+/* Returns the first directory that holds the module, or NULL. */
+static gchar *
+find_module(ClawtPodBridge *self, const gchar *module_name)
+{
+    gsize i;
+
+    for (i = 0; self->search_path[i] != NULL; i++) {
+        g_autofree gchar *path = g_strdup_printf(
+            "%s/libpod-module-%s.so", self->search_path[i], module_name);
+
+        if (g_file_test(path, G_FILE_TEST_EXISTS))
+            return g_steal_pointer(&path);
+    }
+
+    return NULL;
 }
 
 gboolean
@@ -57,13 +150,23 @@ clawt_pod_bridge_load_module(ClawtPodBridge  *self,
     if (g_hash_table_contains(self->modules, module_name))
         return TRUE;
 
-    path = g_strdup_printf("%s/libpod-module-%s.so", self->module_dir,
-                           module_name);
+    path = find_module(self, module_name);
 
-    if (!g_file_test(path, G_FILE_TEST_EXISTS)) {
+    if (path == NULL) {
+        /*
+         * Names every directory tried.  The old message named one and
+         * read as if that were the only place it could be, which sent
+         * people off to create a system directory when staging the
+         * build tree or setting CLAWT_POD_MODULE_DIR was the answer.
+         */
+        g_autofree gchar *tried = g_strjoinv(", ", self->search_path);
+
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
-                    "the podomation '%s' module is not at %s; this computer "
-                    "backend needs it", module_name, path);
+                    "this computer backend needs podomation's '%s' module, "
+                    "and there is no libpod-module-%s.so in any of: %s. "
+                    "Build it with `make -C deps/libreclaw pod-modules`, or "
+                    "point daemon.pod_module_dir at an existing set.",
+                    module_name, module_name, tried);
         return FALSE;
     }
 
@@ -236,7 +339,7 @@ clawt_pod_bridge_get_module_dir(ClawtPodBridge *self)
 {
     g_return_val_if_fail(CLAWT_IS_POD_BRIDGE(self), NULL);
 
-    return self->module_dir;
+    return (self->search_path != NULL) ? self->search_path[0] : NULL;
 }
 
 static void
@@ -245,7 +348,7 @@ clawt_pod_bridge_finalize(GObject *object)
     ClawtPodBridge *self = CLAWT_POD_BRIDGE(object);
 
     g_clear_pointer(&self->modules, g_hash_table_unref);
-    g_clear_pointer(&self->module_dir, g_free);
+    g_clear_pointer(&self->search_path, g_strfreev);
 
     G_OBJECT_CLASS(clawt_pod_bridge_parent_class)->finalize(object);
 }

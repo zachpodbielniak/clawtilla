@@ -62,6 +62,43 @@ defaults:
   libreclaw_binary: "~/src/libreclaw/build/release/libreclaw"
 #+end_src
 
+*** "there is no libpod-module-container.so in any of: …"
+
+A container or vm agent needs podomation's loadable modules, which
+libreclaw builds.  The message lists every directory that was searched.
+
+#+begin_src bash
+make -C deps/libreclaw pod-modules
+#+end_src
+
+A normal ~make~ links ~build/<type>/pod-modules~ to libreclaw's module
+output, so a build tree works uninstalled.  If the modules live
+somewhere else -- a system podomation, or another checkout -- name it:
+
+#+begin_src yaml
+daemon:
+  pod_module_dir: "~/src/podomation/build/release/modules"
+#+end_src
+
+That replaces the whole search path with the one directory, so a typo
+fails loudly rather than silently loading an older set from elsewhere.
+
+*** "container create failed: Could not connect: Permission denied"
+
+The module loaded and podman refused.  This is podman's own error, not
+clawtilla's: check the socket.
+
+#+begin_src bash
+systemctl --user status podman.socket
+#+end_src
+
+#+begin_src bash
+podman info
+#+end_src
+
+A failure here that says "no reason given" means an old podomation --
+it used to fill in an error and then discard it before returning.
+
 *** "integrations.matrix is enabled but … is not set"
 
 An enabled integration is missing a required key.  It is refused rather

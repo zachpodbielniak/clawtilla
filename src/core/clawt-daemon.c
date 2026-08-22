@@ -851,12 +851,16 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     clawt_mcp_tools_set_room_manager(self->mcp_tools, self->rooms);
 
     {
-        g_autofree gchar *module_dir = NULL;
-
-        module_dir = g_strdup(g_getenv("CLAWT_POD_MODULE_DIR"));
-
-        if (module_dir == NULL)
-            module_dir = g_strdup(CLAWT_POD_MODULE_DIR);
+        /*
+         * NULL means "search", which is what we want unless the config
+         * names a directory.  The environment variable is read by the
+         * bridge as part of that search, so it keeps working and keeps
+         * its priority over the compiled-in location.
+         */
+        const gchar *module_dir =
+            clawt_config_has_key(self->config, "daemon.pod_module_dir")
+            ? clawt_config_get_string(self->config, "daemon.pod_module_dir")
+            : NULL;
 
         self->pod_bridge = clawt_pod_bridge_new(module_dir);
     }

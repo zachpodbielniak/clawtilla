@@ -43,6 +43,25 @@ Created 0700. Never mounted into any agent's computer, whatever the
 mount configuration says -- an agent that could read this directory
 could read every other agent's credentials.
 
+*** =daemon.pod_module_dir=
+
+- Type :: path
+- Default :: unset
+- Since :: 0.1.0
+
+Where podomation's loadable modules are, if they are not found for you.
+
+The container and vm computers do their work through podomation's
+'container' and 'vm_virtmanager' modules, which libreclaw builds. They
+are looked for next to the running binary and then in the install
+location, so a normal build and a normal install both work without
+setting this.
+
+Set it when the modules live somewhere else -- a system podomation, or
+a build tree you are testing against. Naming a directory here means
+that directory and no other, so a wrong path fails loudly instead of
+being papered over by a stale set found elsewhere.
+
 *** =daemon.log_level=
 
 - Type :: enum

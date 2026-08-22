@@ -186,7 +186,7 @@ all:
 
 .PHONY: all-impl
 all-impl: $(OUTDIR)/clawt-version.h shared static daemon cli gtk web \
-          $(PROJECT_NAME)-1.0.pc plugins gir
+          $(PROJECT_NAME)-1.0.pc plugins pod-modules gir
 
 # ── Submodule freshness ───────────────────────────────────────────────
 #
@@ -222,6 +222,26 @@ deps:
 
 $(LIBRECLAW_STATIC):
 	@$(MAKE) --no-print-directory deps
+
+# ── podomation modules ────────────────────────────────────────────────
+#
+# libreclaw builds these; we make them reachable from an uninstalled
+# clawtilla by putting them where the binaries are.  Without it, `container`
+# and `vm_virtmanager` are missing for anyone running out of a checkout --
+# which is everyone until the first `make install` -- and starting a
+# container agent fails with a path that has never existed on the machine.
+#
+# A symlink rather than a copy: there are over a hundred modules, and a copy
+# goes stale the moment a dep is rebuilt.
+.PHONY: pod-modules
+pod-modules: | $(OUTDIR)
+	@if [ -d "$(CLAWT_POD_MODULE_DIR)" ]; then \
+		ln -sfn "$(abspath $(CLAWT_POD_MODULE_DIR))" \
+			"$(OUTDIR)/pod-modules"; \
+	else \
+		echo "note: $(CLAWT_POD_MODULE_DIR) does not exist yet;"; \
+		echo "      container and vm computers will be unavailable."; \
+	fi
 
 # ── Generated headers ─────────────────────────────────────────────────
 #

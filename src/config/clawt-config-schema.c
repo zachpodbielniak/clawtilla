@@ -55,6 +55,21 @@ static const ClawtSchemaEntry schema[] = {
   "mount configuration says -- an agent that could read this directory\n"
   "could read every other agent's credentials.", "0.1.0" },
 
+{ "daemon.pod_module_dir", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_COMMENTED,
+  NULL, NULL,
+  "Where podomation's loadable modules are, if they are not found for you.\n"
+  "\n"
+  "The container and vm computers do their work through podomation's\n"
+  "'container' and 'vm_virtmanager' modules, which libreclaw builds. They\n"
+  "are looked for next to the running binary and then in the install\n"
+  "location, so a normal build and a normal install both work without\n"
+  "setting this.\n"
+  "\n"
+  "Set it when the modules live somewhere else -- a system podomation, or\n"
+  "a build tree you are testing against. Naming a directory here means\n"
+  "that directory and no other, so a wrong path fails loudly instead of\n"
+  "being papered over by a stale set found elsewhere.", "0.1.0" },
+
 { "daemon.log_level", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   "info", clawt_log_level_get_type,
   "How much the daemon says: error, warning, info, debug.\n"

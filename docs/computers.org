@@ -136,6 +136,27 @@ Implemented through podomation's ~container~ module, which speaks the
 Podman REST API directly over a socket -- no libcurl, no libpod, no
 shelling out to the CLI.
 
+*** Where the modules are found
+
+The ~container~ and ~vm_virtmanager~ modules are built by libreclaw as
+loadable ~.so~ files, and looked for in this order:
+
+1. every directory in the ~CLAWT_POD_MODULE_DIR~ environment variable,
+   colon-separated
+2. ~pod-modules/~ beside the running binary -- ~make~ links this to
+   libreclaw's module output, so a build works uninstalled
+3. ~modules/~ beside the running binary, where libreclaw itself puts them
+4. the install location, ~$(libdir)/clawtilla/pod-modules~
+
+Setting ~daemon.pod_module_dir~ overrides the whole list with that one
+directory: a path you named is used literally, so a wrong one fails
+loudly rather than being papered over by a stale set found elsewhere.
+
+When no module is found, the error names *every* directory tried.  It
+used to name one, which read as an instruction to create that directory
+when the real answer was almost always that the modules were sitting in
+the build tree.
+
 ** vm
 
 #+begin_src yaml

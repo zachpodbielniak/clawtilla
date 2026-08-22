@@ -39,6 +39,20 @@ daemon:
   # could read every other agent's credentials.
   state_dir: "~/.clawtilla"
 
+  # Where podomation's loadable modules are, if they are not found for you.
+  #
+  # The container and vm computers do their work through podomation's
+  # 'container' and 'vm_virtmanager' modules, which libreclaw builds. They
+  # are looked for next to the running binary and then in the install
+  # location, so a normal build and a normal install both work without
+  # setting this.
+  #
+  # Set it when the modules live somewhere else -- a system podomation, or
+  # a build tree you are testing against. Naming a directory here means
+  # that directory and no other, so a wrong path fails loudly instead of
+  # being papered over by a stale set found elsewhere.
+  pod_module_dir: null
+
   # How much the daemon says: error, warning, info, debug.
   #
   # debug logs every frame on every link, which is what you want when an

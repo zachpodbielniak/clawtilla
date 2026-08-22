@@ -892,6 +892,50 @@ test_an_over_long_socket_path_is_refused(void)
     g_assert_no_error(error);
 }
 
+/*
+ * The module search path has to include the build tree.
+ *
+ * There was one directory, fixed at compile time to the install prefix,
+ * and a comment claiming it was the build tree.  It was not, so starting
+ * a container agent out of a checkout failed with a path that had never
+ * existed on the machine -- and the message named only that path, so it
+ * read as "create this directory" rather than "the modules are over
+ * there".
+ */
+static void
+test_module_search_path(void)
+{
+    g_autoptr(ClawtPodBridge) searching = clawt_pod_bridge_new(NULL);
+    g_autoptr(ClawtPodBridge) pinned = clawt_pod_bridge_new("/nowhere");
+    const gchar * const *path;
+    g_autoptr(GError) error = NULL;
+    gboolean saw_relative_to_binary = FALSE;
+    gsize i;
+
+    path = clawt_pod_bridge_get_search_path(searching);
+    g_assert_nonnull(path);
+
+    for (i = 0; path[i] != NULL; i++) {
+        if (g_str_has_suffix(path[i], "/pod-modules") ||
+            g_str_has_suffix(path[i], "/modules"))
+            saw_relative_to_binary = TRUE;
+    }
+
+    g_assert_true(saw_relative_to_binary);
+    g_assert_cmpuint(i, >, 1);
+
+    /* A named directory is the only one used, so a wrong path fails loudly. */
+    path = clawt_pod_bridge_get_search_path(pinned);
+    g_assert_cmpstr(path[0], ==, "/nowhere");
+    g_assert_null(path[1]);
+
+    g_assert_false(clawt_pod_bridge_load_module(pinned, "container", &error));
+    g_assert_nonnull(error);
+
+    /* The failure names where it looked, or nobody can act on it. */
+    g_assert_nonnull(strstr(error->message, "/nowhere"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -957,6 +1001,7 @@ main(int argc, char *argv[])
                     test_a_mount_is_a_grant_in_workspace_mode);
     g_test_add_func("/computer/mount-prefix-not-a-match",
                     test_a_mount_prefix_is_not_a_match);
+    g_test_add_func("/computer/module-search-path", test_module_search_path);
     g_test_add_func("/computer/socket-path-length",
                     test_an_over_long_socket_path_is_refused);
 

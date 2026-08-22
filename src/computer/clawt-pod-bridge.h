@@ -36,8 +36,19 @@ G_DECLARE_FINAL_TYPE(ClawtPodBridge, clawt_pod_bridge,
 
 /**
  * clawt_pod_bridge_new:
- * @module_dir: (nullable): where podomation's modules are, or %NULL for the
- *   compiled-in location
+ * @module_dir: (nullable): the one directory to load modules from, or %NULL
+ *   to search the default path
+ *
+ * Naming @module_dir means exactly that directory is used: a caller that
+ * says where the modules are gets a legible failure rather than a quiet
+ * success from somewhere else.
+ *
+ * The default path is, best first: every entry of the
+ * =CLAWT_POD_MODULE_DIR= environment variable (colon-separated),
+ * =pod-modules/= and =modules/= beside the running binary, then the
+ * compiled-in install location.  The binary-relative entries are what
+ * make an uninstalled clawtilla work against the modules the build just
+ * produced.
  *
  * Returns: (transfer full): a new #ClawtPodBridge
  */
@@ -90,8 +101,18 @@ GHashTable *clawt_pod_bridge_call(ClawtPodBridge  *self,
  * clawt_pod_bridge_get_module_dir:
  * @self: a #ClawtPodBridge
  *
- * Returns: (transfer none): where modules are being loaded from
+ * Returns: (transfer none) (nullable): the first directory searched
  */
 const gchar *clawt_pod_bridge_get_module_dir(ClawtPodBridge *self);
+
+/**
+ * clawt_pod_bridge_get_search_path:
+ * @self: a #ClawtPodBridge
+ *
+ * Every directory a module is looked for in, best first.
+ *
+ * Returns: (transfer none) (array zero-terminated=1): the search path
+ */
+const gchar * const *clawt_pod_bridge_get_search_path(ClawtPodBridge *self);
 
 G_END_DECLS
