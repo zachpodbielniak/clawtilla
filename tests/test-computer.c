@@ -1929,8 +1929,9 @@ test_provisioning_resolves_the_ssh_key(void)
     g_autofree gchar *joined = NULL;
     g_autoptr(GError) error = NULL;
     const gchar *command[] = { "true", NULL };
+    g_autofree gchar *qemu_img = g_find_program_in_path("qemu-img");
 
-    if (g_find_program_in_path("qemu-img") == NULL) {
+    if (qemu_img == NULL) {
         g_test_skip("qemu-img is not installed");
         return;
     }
