@@ -481,34 +481,75 @@ event_source_iface_init(PodEventSourceInterface *iface)
 /*
  * A GVariant of parameters, as a string table.
  *
- * Everything a pod passes is a string by the time it has been through
- * podomation's interpolation, so flattening here keeps the action
- * callback free of GVariant and therefore testable without one.
+ * podomation hands a handler its arguments as a *tuple*, in the order
+ * the module declared them -- `notify(title: "x")` and `notify("x")`
+ * both arrive as `('x', '', '')`, padded to the declared length. Reading
+ * it as the `a{sv}` the name suggests produced an empty table, so every
+ * action failed with "a notification needs a title" while the pod, the
+ * binding and the dispatch were all correct.
+ *
+ * Both shapes are accepted, because a dictionary is what the type
+ * signature would lead anybody to expect and there is no reason for a
+ * future podomation that sends one to break this.
+ *
+ * Everything is flattened to a string, which keeps the action callback
+ * free of GVariant and therefore testable without one.
  */
 static GHashTable *
-params_to_hash(GVariant *params)
+params_to_hash(GVariant *params, const Action *action)
 {
     GHashTable *out = g_hash_table_new_full(g_str_hash, g_str_equal,
                                             g_free, g_free);
     GVariantIter iter;
     const gchar *key;
     GVariant *value;
+    gsize i;
 
-    if (params == NULL || !g_variant_is_of_type(params,
-                                                G_VARIANT_TYPE("a{sv}")))
+    if (params == NULL)
         return out;
 
-    g_variant_iter_init(&iter, params);
+    if (g_variant_is_of_type(params, G_VARIANT_TYPE("a{sv}"))) {
+        g_variant_iter_init(&iter, params);
 
-    while (g_variant_iter_next(&iter, "{&sv}", &key, &value)) {
-        if (g_variant_is_of_type(value, G_VARIANT_TYPE_STRING))
-            g_hash_table_insert(out, g_strdup(key),
-                                g_variant_dup_string(value, NULL));
+        while (g_variant_iter_next(&iter, "{&sv}", &key, &value)) {
+            if (g_variant_is_of_type(value, G_VARIANT_TYPE_STRING))
+                g_hash_table_insert(out, g_strdup(key),
+                                    g_variant_dup_string(value, NULL));
+            else
+                g_hash_table_insert(out, g_strdup(key),
+                                    g_variant_print(value, FALSE));
+
+            g_variant_unref(value);
+        }
+
+        return out;
+    }
+
+    if (!g_variant_is_of_type(params, G_VARIANT_TYPE_TUPLE) ||
+        action == NULL)
+        return out;
+
+    for (i = 0; i < g_variant_n_children(params) && i < action->n_params;
+         i++) {
+        g_autoptr(GVariant) child = g_variant_get_child_value(params, i);
+        g_autofree gchar *text = NULL;
+
+        if (g_variant_is_of_type(child, G_VARIANT_TYPE_STRING))
+            text = g_variant_dup_string(child, NULL);
         else
-            g_hash_table_insert(out, g_strdup(key),
-                                g_variant_print(value, FALSE));
+            text = g_variant_print(child, FALSE);
 
-        g_variant_unref(value);
+        /*
+         * The padding is empty strings, and an empty string is not the
+         * same as a value: `notify(title: "x")` must leave `body` unset
+         * rather than set to "", or a backend that renders an empty body
+         * shows a notification with nothing in it.
+         */
+        if (text == NULL || *text == '\0')
+            continue;
+
+        g_hash_table_insert(out, g_strdup(action->params[i].name),
+                            g_steal_pointer(&text));
     }
 
     return out;
@@ -562,7 +603,7 @@ clawt_pod_handle_event(PodEventHandler *handler, const gchar *event_name,
         return FALSE;
     }
 
-    arguments = params_to_hash(params);
+    arguments = params_to_hash(params, action);
     agent = g_hash_table_lookup(arguments, "agent");
 
     /*
