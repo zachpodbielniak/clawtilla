@@ -750,6 +750,76 @@ test_every_family_installs_the_same_way(void)
     }
 }
 
+
+/* ── Starting something in the session, rather than beside it ────── */
+
+/*
+ * The workaround an agent reaches for on its own is `DISPLAY=:0 <app>`,
+ * and the trouble with it is that it works: a window appears, the
+ * process runs, and the application has been put on Xwayland rather
+ * than in the Wayland session the desktop was built for -- a different
+ * compositing and input path, with nothing an agent can query to say
+ * which of the two it got.
+ */
+static void
+test_the_guest_can_start_an_app_in_its_session(void)
+{
+    g_autofree gchar *data = render_for(CLAWT_GUEST_FLAVOUR_DEBIAN);
+
+    g_assert_nonnull(strstr(data, CLAWT_GUEST_DESKTOP_RUN_SCRIPT));
+
+    /*
+     * The environment comes from the session's own service manager,
+     * which gnome-session has already told about the session.
+     */
+    g_assert_nonnull(strstr(data, "systemd-run --user --collect"));
+
+    /*
+     * And it never sets a display itself -- neither the X one an agent
+     * would have guessed nor the Wayland one. Both come from the
+     * session, which is the entire difference between this and the
+     * workaround. It exports only what is needed to *reach* that
+     * session.
+     */
+    g_assert_null(strstr(data, "export DISPLAY="));
+    g_assert_null(strstr(data, "export WAYLAND_DISPLAY="));
+    g_assert_nonnull(strstr(data, "export XDG_RUNTIME_DIR="));
+    g_assert_nonnull(strstr(data, "export DBUS_SESSION_BUS_ADDRESS="));
+}
+
+/*
+ * A guest that has not finished booting has no session to open a window
+ * in, and every application says so in its own words -- about a display,
+ * which points at the application.  The launcher answers first.
+ */
+static void
+test_the_launcher_says_when_there_is_no_session(void)
+{
+    g_autofree gchar *data = render_for(CLAWT_GUEST_FLAVOUR_ARCH);
+
+    g_assert_nonnull(strstr(data, "^WAYLAND_DISPLAY="));
+    g_assert_nonnull(strstr(data, "has no graphical session yet"));
+}
+
+/*
+ * It is rendered even for a desktop with no automation installed.
+ * Starting an application is not part of driving one, and a person
+ * looking at the VM's own console still wants a browser in it.
+ */
+static void
+test_the_launcher_does_not_depend_on_the_mcp_install(void)
+{
+    g_autoptr(ClawtGuestDesktop) desktop = clawt_guest_desktop_new("clawt");
+    g_autofree gchar *data = NULL;
+
+    clawt_guest_desktop_set_install_mcp(desktop, FALSE);
+    data = clawt_cloud_init_build_user_data("root", NULL, "clawt-vm",
+                                            desktop);
+
+    g_assert_nonnull(strstr(data, CLAWT_GUEST_DESKTOP_RUN_SCRIPT));
+    g_assert_null(strstr(data, CLAWT_GUEST_DESKTOP_INSTALL_SCRIPT));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -817,6 +887,13 @@ main(int argc, char *argv[])
                     test_the_install_records_its_result);
     g_test_add_func("/guest-desktop/install/same-on-every-family",
                     test_every_family_installs_the_same_way);
+
+    g_test_add_func("/guest-desktop/run/starts-in-the-session",
+                    test_the_guest_can_start_an_app_in_its_session);
+    g_test_add_func("/guest-desktop/run/says-when-there-is-no-session",
+                    test_the_launcher_says_when_there_is_no_session);
+    g_test_add_func("/guest-desktop/run/independent-of-the-mcp-install",
+                    test_the_launcher_does_not_depend_on_the_mcp_install);
 
     g_test_add_func("/guest-desktop/flavour/arch-is-not-a-substring",
                     test_an_ordinary_path_is_not_arch);

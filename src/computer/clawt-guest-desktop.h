@@ -72,6 +72,19 @@ G_BEGIN_DECLS
 #define CLAWT_GUEST_DESKTOP_INSTALL_SCRIPT \
     "/usr/local/bin/clawtilla-desktop-install"
 
+/*
+ * How an agent starts a graphical application inside the guest.
+ *
+ * `computer_exec` arrives over SSH, which carries no session
+ * environment, so the obvious thing to reach for is `DISPLAY=:0 firefox`
+ * -- and it appears to work.  It also puts the application on Xwayland
+ * rather than in the Wayland session the desktop was built for, which
+ * composites and receives synthetic input by a different path, and
+ * nothing an agent can see says so.
+ */
+#define CLAWT_GUEST_DESKTOP_RUN_SCRIPT \
+    "/usr/local/bin/clawtilla-desktop-run"
+
 #define CLAWT_TYPE_GUEST_DESKTOP (clawt_guest_desktop_get_type())
 
 GType clawt_guest_desktop_get_type(void) G_GNUC_CONST;

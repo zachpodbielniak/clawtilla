@@ -393,6 +393,46 @@ clawt_desktop_describe(ClawtDesktop *self)
             "tell the user, because GNOME Shell only picks up a newly "
             "installed extension when the session restarts.";
 
+        /*
+         * How to start an application, because the obvious way is wrong
+         * and succeeds.
+         *
+         * `computer_exec` is an SSH connection with no session
+         * environment, so an agent asked to open a browser arrives at
+         * `DISPLAY=:0 firefox` by itself. A window appears and the
+         * application is now on Xwayland rather than in the session --
+         * a different compositing and input path, and nothing it can
+         * query says which one it got.
+         */
+        const gchar *launching =
+            " To start an application in that desktop, run "
+            "`" CLAWT_GUEST_DESKTOP_RUN_SCRIPT " <command>` through "
+            "clawtilla_computer_exec. Do not set DISPLAY yourself: a "
+            "plain shell here has no session, so `DISPLAY=:0 <app>` "
+            "appears to work and quietly puts the application on "
+            "Xwayland instead of in the session. It returns as soon as "
+            "the application has started, so confirm with list_windows "
+            "rather than by waiting.";
+
+        /*
+         * And the one an agent cannot possibly work out from its tools.
+         *
+         * `focused` is the window manager's idea of focus. GNOME's
+         * Activities overview takes the *keyboard* without changing it,
+         * so a window reads focused: true while every keystroke goes to
+         * the overview's search box. An agent typed a URL into it for a
+         * good part of a session and had no way to see that, because
+         * the one field that would have told it says the opposite.
+         */
+        const gchar *keyboard =
+            " One trap: `focused: true` is the window manager's focus "
+            "and does not mean your keystrokes arrive there. If GNOME's "
+            "Activities overview is open -- which it is at login, before "
+            "anything has a window -- it holds the keyboard while the "
+            "window still reports focused. Send Escape before typing "
+            "into a window you have just focused, and check a "
+            "screenshot if text is not appearing where you expect.";
+
         if (self->allow_input)
             return g_strconcat(
                 "There is a GNOME desktop inside your own VM, logged in and "
@@ -400,13 +440,18 @@ clawt_desktop_describe(ClawtDesktop *self)
                 "and send it keystrokes and pointer events. It is yours: "
                 "nothing you do there touches the user's screen. The tools "
                 "arrive from the `clawtilla-desktop` MCP server.",
-                diagnose, NULL);
+                launching, keyboard, diagnose, NULL);
 
+        /*
+         * An observe-only agent gets the launcher and not the keyboard
+         * paragraph: it cannot send Escape, and advice it cannot act on
+         * is noise in a prompt. A screenshot shows it the overview.
+         */
         return g_strconcat(
             "There is a GNOME desktop inside your own VM. You can list its "
             "windows and take screenshots of it, but you cannot send "
             "keystrokes or pointer events. The tools arrive from the "
-            "`clawtilla-desktop` MCP server.", diagnose, NULL);
+            "`clawtilla-desktop` MCP server.", launching, diagnose, NULL);
     }
 
     backend_name = (self->resolved == CLAWT_DESKTOP_BACKEND_GNOME)

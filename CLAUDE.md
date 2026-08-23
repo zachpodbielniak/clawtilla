@@ -441,6 +441,50 @@ the same program.
   itself was correct throughout; `gdbus call ... SetEnabled true` by hand
   returned `(true,)` on the same guest. Only the launcher was missing.
 
+### The workaround an agent invents for a missing feature succeeds
+
+- `clawtilla_computer_exec` is an SSH connection with no session
+  environment, and nothing offered a way to start a GUI application in
+  the guest's session -- the guest desktop's extension has no spawn
+  method, and `computer.desktop.allow_spawn` guards gowl's tools, which
+  a VM does not have. So an agent asked to open a browser arrived at
+  `DISPLAY=:0 firefox` by itself, and **it worked**: a window appeared,
+  the process ran, and the application had been put on Xwayland instead
+  of in the Wayland session the desktop was built for. Different
+  compositing, different route for synthetic input, and nothing an agent
+  can query to say which of the two it got. The symptoms surfaced far
+  away -- screenshots of that one application stale while GNOME's own
+  panel updated, Return not committing in its address bar.
+- `clawtilla-desktop-run` takes the environment from the session rather
+  than guessing it: it becomes the session's account (root cannot use
+  its Wayland socket) and starts the application with `systemd-run
+  --user`, under the manager gnome-session has already told about the
+  session. Verified on a real GNOME Wayland session by having the
+  launched process report its own environment: `XDG_SESSION_TYPE=wayland`
+  and a real `WAYLAND_DISPLAY`.
+- A missing feature an agent can work around is worse than one it
+  cannot, because the workaround is never reported as a problem. It was
+  reported as a *discovery*, which is the same signal as the
+  `/dev/console` case: when an agent explains a technique it worked out,
+  that technique belonged in the workspace files.
+
+### `focused: true` is the window manager's focus, not the keyboard's
+
+- gnome-desktop-mcp reports `focused` from `win.has_focus()`. GNOME's
+  Activities overview takes the **keyboard** without changing window
+  focus, so a window reads `focused: true` while every keystroke goes to
+  the overview's search entry -- and the overview is open at login,
+  before anything has a window, so the first application an agent starts
+  opens behind it. An agent typed a URL into the search box for a good
+  part of a session; the one field that would have told it said the
+  opposite, and no tool reports the shell's grab at all.
+- There is no dconf key for it: `org.gnome.shell` on GNOME 50.4 has
+  `welcome-dialog-last-shown-version` and nothing about the overview, so
+  it cannot be turned off in the seed. The description tells the agent to
+  send Escape before typing into a freshly focused window, and only when
+  it has `allow_input` -- advice an observe-only agent cannot act on is
+  noise in a prompt.
+
 ### Enabling an extension and installing it are two steps that fail apart
 
 - The seed enables the GNOME Shell extension through a dconf default and

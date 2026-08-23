@@ -398,6 +398,40 @@ clawtilla computer rebuild <agent>
 That destroys the guest and builds it again from the current
 configuration, so anything living only inside the VM goes with it.
 
+** The agent's typing goes somewhere else
+
+Text ends up in GNOME's Activities search box rather than in the
+application, while ~list_windows~ reports the window as ~focused: true~.
+
+Both are correct.  ~focused~ is the window manager's focus; the overview
+takes the *keyboard* without changing it, and no tool reports that.  It
+is open at login, before anything has a window, so the first application
+an agent starts opens *behind* it.
+
+Send Escape before typing into a freshly focused window.  A screenshot
+shows the overview plainly, which is the reliable check when text is not
+appearing where it should.
+
+** An application in the guest renders or behaves oddly
+
+Screenshots of one application come back stale while GNOME's own panel
+updates; keystrokes reach it but Return does not commit; that sort of
+thing.
+
+Check how it was started.  A plain shell in the guest has no session, so
+~DISPLAY=:0 <app>~ is the obvious thing and it *works* -- by putting the
+application on Xwayland rather than in the Wayland session, which
+composites and delivers synthetic input by a different path.
+
+#+begin_src bash
+clawtilla computer exec <agent> -- \
+    /usr/local/bin/clawtilla-desktop-run <command>
+#+end_src
+
+If the launcher is not there, the guest predates it; ~clawtilla computer
+rebuild <agent>~ or run
+~/usr/local/bin/clawtilla-desktop-install~ and re-provision.
+
 ** A connector's tools are missing, or refuse
 
 *** "not connected yet"

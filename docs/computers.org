@@ -1095,6 +1095,65 @@ extensions when the session starts, so one that arrives afterwards is not
 picked up until the session restarts -- on Wayland that means logging out
 and back in, which for an autologin guest is a reboot.
 
+**** Starting an application in the guest
+
+~clawtilla_computer_exec~ is an SSH connection.  It has no session
+environment -- no ~WAYLAND_DISPLAY~, no ~XDG_RUNTIME_DIR~, no session bus
+-- so an agent asked to open a browser arrives at ~DISPLAY=:0 firefox~ on
+its own.
+
+The trouble with that is that it *works*.  A window appears and the
+process runs, and the application has quietly been put on Xwayland rather
+than in the Wayland session the desktop was built for: a different
+compositing path and a different route for synthetic input, with nothing
+an agent can query to say which of the two it got.
+
+The seed writes a launcher that takes the environment from the session
+instead of guessing it:
+
+#+begin_src bash
+clawtilla computer exec <agent> -- \
+    /usr/local/bin/clawtilla-desktop-run firefox https://example.org
+#+end_src
+
+It becomes the session's own account (root cannot use its Wayland
+socket), and starts the application with ~systemd-run --user~ -- under
+the user's service manager, which gnome-session has already told about
+the session.  That is the same route a desktop launcher takes.
+
+It returns as soon as the application has started rather than when it
+exits, so an agent that waits on a browser does not wait for ever, and
+refuses with a sentence of its own when there is no session yet:
+
+#+begin_example
+clawtilla: clawt has no graphical session yet.
+clawtilla: the desktop may still be starting; there is nothing to open
+a window in until it has.
+#+end_example
+
+A guest still booting otherwise produces an error from the *application*
+about a display, which points at the application.
+
+The agent is told all of this in its own description of the desktop, for
+the same reason the ~/dev/console~ case is: it is not derivable from the
+tools, and an agent that works it out by trial and error arrives
+somewhere plausible and wrong.
+
+**** ~focused: true~ is not where the keystrokes go
+
+~list_windows~ reports ~focused~ from the window manager's idea of focus.
+GNOME's Activities overview takes the *keyboard* without changing it, so
+a window reads ~focused: true~ while every keystroke goes to the
+overview's search entry.  The overview is open at login, before anything
+has a window.
+
+An agent hit this for a good part of a session: it typed a URL into the
+overview's search box, and the one field that would have told it said the
+opposite.  There is no tool that reports the shell's grab, so the
+description tells the agent to send Escape before typing into a window it
+has just focused, and to check a screenshot when text is not appearing
+where it expects.
+
 **** The guest needs a GPU, and gets one
 
 A VM with no video device has no ~/dev/dri~, and GDM refuses to start a

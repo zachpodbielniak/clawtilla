@@ -685,6 +685,28 @@ test_a_guest_desktop_says_where_to_look_when_it_fails(void)
         g_assert_nonnull(strstr(described,
                                 CLAWT_GUEST_DESKTOP_INSTALL_SCRIPT));
 
+        /*
+         * And how to start something, which is the other thing an agent
+         * cannot get right from its tools: an SSH shell has no session,
+         * so `DISPLAY=:0 <app>` is the obvious move and puts the
+         * application on Xwayland instead of in the session.
+         */
+        g_assert_nonnull(strstr(described,
+                                CLAWT_GUEST_DESKTOP_RUN_SCRIPT));
+        g_assert_nonnull(strstr(described, "Xwayland"));
+
+        /*
+         * The keyboard warning goes only to an agent that has a
+         * keyboard.  Telling an observe-only agent to press Escape is
+         * advice it cannot take, and a prompt is not the place for it.
+         */
+        if (input) {
+            g_assert_nonnull(strstr(described, "focused: true"));
+            g_assert_nonnull(strstr(described, "Escape"));
+        } else {
+            g_assert_null(strstr(described, "Escape"));
+        }
+
         if (input)
             break;
     }

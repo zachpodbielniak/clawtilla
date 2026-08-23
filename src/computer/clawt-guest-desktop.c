@@ -548,6 +548,91 @@ render_dconf(ClawtGuestDesktop *self, GString *out)
 }
 
 /*
+ * Starting a graphical application inside the session, rather than
+ * beside it.
+ *
+ * An SSH connection has no session environment -- no WAYLAND_DISPLAY, no
+ * XDG_RUNTIME_DIR, no session bus -- so an agent handed `computer_exec`
+ * and told to open a browser reaches for `DISPLAY=:0 firefox`.  That is
+ * the worst kind of workaround: it succeeds.  A window appears, the
+ * process runs, and the application has quietly been put on Xwayland
+ * instead of in the Wayland session the desktop was built for, where it
+ * composites and receives synthetic input by a different path.  Nothing
+ * the agent can query says which of the two it got.
+ *
+ * So the environment is taken from the session instead of guessed at.
+ * `systemd-run --user` starts the application under the user's own
+ * service manager, which gnome-session has already told about the
+ * session -- the same route a desktop launcher takes.
+ */
+static void
+render_run_script(ClawtGuestDesktop *self, GString *out)
+{
+    g_autoptr(GString) body = g_string_new(NULL);
+    g_autofree gchar *user = g_shell_quote(self->session_user);
+
+    g_string_append(body,
+        "#!/bin/bash\n"
+        "# Written by clawtilla.\n"
+        "#\n"
+        "# Starts a graphical application inside the guest's session.\n"
+        "#\n"
+        "# Use this rather than `DISPLAY=:0 <app>` from a plain shell.\n"
+        "# That form works, and puts the application on Xwayland instead\n"
+        "# of in the session -- a different compositing and input path,\n"
+        "# with nothing to show which one you got.\n"
+        "set -uo pipefail\n"
+        "\n"
+        "user=");
+    g_string_append(body, user);
+    g_string_append(body,
+        "\n"
+        "\n"
+        "if [ $# -eq 0 ]\n"
+        "then\n"
+        "    echo \"usage: $(basename \"$0\") <command> [args...]\" >&2\n"
+        "    exit 2\n"
+        "fi\n"
+        "\n"
+        "if ! uid=\"$(id -u \"$user\")\"\n"
+        "then\n"
+        "    echo \"clawtilla: no such user: $user\" >&2\n"
+        "    exit 1\n"
+        "fi\n"
+        "\n"
+        "# Root cannot use the session's Wayland socket and the session's\n"
+        "# own account can, so become it -- re-execing this script rather\n"
+        "# than wrapping the application, so what runs is this\n"
+        "# environment and not a login shell's.\n"
+        "if [ \"$(id -u)\" -ne \"$uid\" ]\n"
+        "then\n"
+        "    exec runuser -u \"$user\" -- \"$0\" \"$@\"\n"
+        "fi\n"
+        "\n"
+        "export XDG_RUNTIME_DIR=\"/run/user/${uid}\"\n"
+        "export DBUS_SESSION_BUS_ADDRESS=\"unix:path=${XDG_RUNTIME_DIR}/bus\"\n"
+        "\n"
+        "# Said plainly, because the alternative is an error from the\n"
+        "# application about a display, which points at the application.\n"
+        "# A guest still booting, or one whose session died, looks\n"
+        "# exactly like a browser that will not start.\n"
+        "if ! systemctl --user show-environment 2>/dev/null \\\n"
+        "        | grep -q '^WAYLAND_DISPLAY='\n"
+        "then\n"
+        "    echo \"clawtilla: $user has no graphical session yet.\" >&2\n"
+        "    echo \"clawtilla: the desktop may still be starting; there is\" \\\n"
+        "         \"nothing to open a window in until it has.\" >&2\n"
+        "    exit 1\n"
+        "fi\n"
+        "\n"
+        "# Returns as soon as the application is started, not when it\n"
+        "# exits: an agent waiting on a browser would wait for ever.\n"
+        "exec systemd-run --user --collect --quiet -- \"$@\"\n");
+
+    append_file(out, CLAWT_GUEST_DESKTOP_RUN_SCRIPT, "0755", body->str);
+}
+
+/*
  * Everything the guest has to build for the desktop to be drivable.
  *
  * A script rather than the list of runcmd entries this used to be, and
@@ -680,6 +765,8 @@ render_scripts(ClawtGuestDesktop *self, GString *out)
         "export DBUS_SESSION_BUS_ADDRESS=\"unix:path=/run/user/${uid}/bus\"\n"
         "\n"
         "exec " CHECKOUT_DIR "/venv/bin/gnome-desktop-mcp \"$@\"\n");
+
+    render_run_script(self, out);
 
     if (!self->install_mcp)
         return;
