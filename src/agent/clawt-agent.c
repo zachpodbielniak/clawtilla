@@ -405,6 +405,53 @@ clawt_agent_get_desktop(ClawtAgent *self)
     return self->desktop;
 }
 
+gchar *
+clawt_agent_describe_computer(ClawtAgent *self)
+{
+    g_autoptr(GString) out = NULL;
+    g_autofree gchar *computer_text = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), NULL);
+
+    if (self->computer == NULL && self->desktop == NULL)
+        return g_strdup("You have no computer.");
+
+    out = g_string_new(NULL);
+
+    if (self->computer != NULL) {
+        computer_text = clawt_computer_describe(self->computer);
+
+        if (computer_text != NULL)
+            g_string_append(out, computer_text);
+    }
+
+    /*
+     * The desktop is described here and not by the computer, because it
+     * is an add-on: an agent can have one alongside whichever computer it
+     * was given, and the computer has never heard of it.
+     *
+     * It has to be said at all. The tools arrive through the agent's
+     * .mcp.json, so an MCP client lists them and the agent can see
+     * screenshot and key_press -- and has no way to know whether they
+     * point at its own VM or at the screen the user is sitting in front
+     * of. Those call for completely different amounts of caution, and
+     * guessing wrong in the confident direction is the bad one.
+     */
+    if (self->desktop != NULL) {
+        g_autofree gchar *desktop_text =
+            clawt_desktop_describe(self->desktop);
+
+        if (desktop_text != NULL) {
+            if (out->len > 0)
+                g_string_append_c(out, ' ');
+
+            g_string_append(out, desktop_text);
+        }
+    }
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
 void
 clawt_agent_set_link(ClawtAgent *self, ClawtLink *link_)
 {

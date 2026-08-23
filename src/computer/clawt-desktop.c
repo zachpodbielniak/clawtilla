@@ -349,6 +349,22 @@ clawt_desktop_describe(ClawtDesktop *self)
     g_return_val_if_fail(CLAWT_IS_DESKTOP(self), NULL);
 
     /*
+     * Resolved first, and it has to be.
+     *
+     * `resolved` is only set by clawt_desktop_resolve_backend(), and
+     * nothing on the description path had called it -- so a desktop built
+     * from a config saying `auto` still held AUTO here and fell through
+     * to the gowl wording. A guest agent was told, in its own prompt,
+     * that it was driving the gowl compositor and that "anything you
+     * click is clicked on the user's real screen".
+     *
+     * Exactly backwards, and backwards in the dangerous direction: an
+     * agent that believes it is on somebody's real screen when it is in
+     * its own VM is merely timid, but this was the reverse of that.
+     */
+    clawt_desktop_resolve_backend(self, NULL);
+
+    /*
      * The guest desktop is described separately, and differently on
      * purpose.  Telling an agent that its clicks land on the user's real
      * screen when they land in its own VM makes it needlessly cautious;
@@ -361,13 +377,13 @@ clawt_desktop_describe(ClawtDesktop *self)
                 "waiting. You can list its windows, take screenshots of it, "
                 "and send it keystrokes and pointer events. It is yours: "
                 "nothing you do there touches the user's screen. The tools "
-                "arrive from the `desktop` MCP server.");
+                "arrive from the `clawtilla-desktop` MCP server.");
 
         return g_strdup(
             "There is a GNOME desktop inside your own VM. You can list its "
             "windows and take screenshots of it, but you cannot send "
             "keystrokes or pointer events. The tools arrive from the "
-            "`desktop` MCP server.");
+            "`clawtilla-desktop` MCP server.");
     }
 
     backend_name = (self->resolved == CLAWT_DESKTOP_BACKEND_GNOME)

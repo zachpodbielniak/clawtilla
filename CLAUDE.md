@@ -519,6 +519,40 @@ the same program.
   anything else in it, which is what keeps a file somebody put there by
   hand.
 
+### Registering a tool is not telling the agent it has it
+
+- The guest desktop's tools reach an agent through its `.mcp.json`, so
+  its CLI lists them and it can see `screenshot` and `key_press` — with
+  nothing to say whether they point at its own VM or at the screen a
+  person is sitting in front of. Those call for completely different
+  amounts of caution. `clawt_desktop_describe()` said exactly that, in
+  words chosen for it, and was **called from nowhere**: the description
+  an agent receives came from `clawt_computer_describe()`, and a computer
+  has never heard of the desktop beside it. Both now go through
+  `clawt_agent_describe_computer()`.
+- Wiring it up then exposed a worse one. `describe()` reads
+  `self->resolved`, which only `clawt_desktop_resolve_backend()` sets —
+  and nothing on that path called it, so a desktop built from a config
+  saying `auto` still held `AUTO` and fell through to the gowl branch. A
+  guest agent was told it was driving the gowl compositor and that
+  "anything you click is clicked on the user's real screen". Backwards,
+  and backwards in the dangerous direction.
+- The unit test passed throughout, because it constructed the desktop
+  with `CLAWT_DESKTOP_BACKEND_GUEST` — which the factory never does. A
+  test that names a value the production path derives is testing a
+  different program. It uses `AUTO` now.
+- Found only by reading what a live agent was actually told. Neither
+  `make test` nor any amount of rereading would have shown it.
+
+### `make test` does not relink the daemon
+
+- It builds the library and the test binaries, so a change can be built,
+  tested and passing while `build/release/clawtillad` is still the
+  previous one. Two rounds of "the fix did not work" came from that —
+  the library was correct and provably so from a standalone probe, and
+  the running daemon was minutes old. Run plain `make` before restarting
+  the daemon to check a fix by hand.
+
 ### A rule enforced at one creation path is not enforced
 
 - Refusing a diskless VM agent in the daemon's `agent.create` handler

@@ -994,13 +994,11 @@ static gchar *
 tool_computer_state(ClawtMcpTools *self, const gchar *agent_id)
 {
     ClawtAgent *agent = clawt_agent_manager_get(self->agents, agent_id);
-    ClawtComputer *computer = (agent != NULL)
-                              ? clawt_agent_get_computer(agent) : NULL;
 
-    if (computer == NULL)
+    if (agent == NULL)
         return g_strdup("You have no computer.");
 
-    return clawt_computer_describe(computer);
+    return clawt_agent_describe_computer(agent);
 }
 
 static gchar *

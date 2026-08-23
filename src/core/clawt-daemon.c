@@ -1998,7 +1998,8 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         computer = clawt_agent_get_computer(agent);
 
         if (computer != NULL) {
-            g_autofree gchar *described = clawt_computer_describe(computer);
+            g_autofree gchar *described =
+                clawt_agent_describe_computer(agent);
 
             json_builder_set_member_name(builder, "computer_detail");
             json_builder_add_string_value(builder, described);
@@ -3697,7 +3698,7 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
                                        "that agent has no computer");
 
-        described = clawt_computer_describe(computer);
+        described = clawt_agent_describe_computer(agent);
 
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "state");

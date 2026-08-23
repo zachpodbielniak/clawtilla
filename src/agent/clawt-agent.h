@@ -222,6 +222,23 @@ void clawt_agent_set_desktop(ClawtAgent   *self,
 ClawtDesktop *clawt_agent_get_desktop(ClawtAgent *self);
 
 /**
+ * clawt_agent_describe_computer:
+ * @self: a #ClawtAgent
+ *
+ * What this agent has to work with, for its own prompt: the computer and
+ * the desktop together.
+ *
+ * The two are described in one place because they are separate objects
+ * and the agent does not experience them separately.  A desktop is an
+ * add-on the computer has never heard of, so asking the computer alone
+ * produced a description that never mentioned the screen the agent had
+ * just been handed the tools to drive.
+ *
+ * Returns: (transfer full): the description
+ */
+gchar *clawt_agent_describe_computer(ClawtAgent *self);
+
+/**
  * clawt_agent_set_link:
  * @self: a #ClawtAgent
  * @link_: (transfer none) (nullable): the connection, or %NULL when it goes

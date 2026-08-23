@@ -537,6 +537,109 @@ test_missing_binary_is_reported(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * An agent granted a desktop is told it has one.
+ *
+ * The tools arrive through .mcp.json, so an MCP client lists them and the
+ * agent can see screenshot and key_press -- with no way to know whether
+ * they point at its own VM or at the screen the user is sitting in front
+ * of. Those call for completely different amounts of caution.
+ *
+ * clawt_desktop_describe() said exactly that and was called from nowhere:
+ * the description an agent actually receives came from the computer,
+ * which has never heard of the desktop.
+ */
+static void
+test_the_description_mentions_the_desktop(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtAgent) agent = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(ClawtDesktop) desktop = NULL;
+    g_autofree gchar *without = NULL;
+    g_autofree gchar *with = NULL;
+
+    fixture_setup(&fixture);
+    fixture.config = load_config(&fixture, "agents:\n  - id: scribe\n");
+    agent = clawt_agent_new(clawt_config_get_agent(fixture.config, "scribe"),
+                            NULL);
+
+    computer = clawt_vm_computer_new("scribe", CLAWT_VM_BACKEND_QEMU, NULL);
+    clawt_agent_set_computer(agent, computer);
+
+    without = clawt_agent_describe_computer(agent);
+    g_assert_nonnull(strstr(without, "virtual machine"));
+    g_assert_null(strstr(without, "screenshot"));
+
+    /*
+     * AUTO, not GUEST -- because that is what the factory builds from a
+     * config left at its default, and naming the backend explicitly here
+     * is what let a describe() that never resolved pass its own test
+     * while telling a live agent the opposite of the truth.
+     */
+    desktop = clawt_desktop_new(CLAWT_DESKTOP_BACKEND_AUTO, NULL);
+    clawt_desktop_set_guest_available(desktop, TRUE);
+    clawt_desktop_set_allow_input(desktop, TRUE);
+    clawt_agent_set_desktop(agent, desktop);
+
+    with = clawt_agent_describe_computer(agent);
+
+    /* Still says what the computer is... */
+    g_assert_nonnull(strstr(with, "virtual machine"));
+
+    /* ...and now also that there is a screen, and whose it is. */
+    g_assert_nonnull(strstr(with, "screenshot"));
+    g_assert_nonnull(strstr(with, "your own VM"));
+
+    /*
+     * Which matters most of all. An agent that thinks it is clicking on
+     * the user's real screen behaves very differently from one that knows
+     * it is clicking in a machine of its own.
+     */
+    g_assert_null(strstr(with, "user's real screen"));
+
+    /*
+     * And it names the server the tools actually arrive from. The entry
+     * in .mcp.json is prefixed so it cannot collide with one somebody
+     * added themselves, so an agent told to look for "desktop" would be
+     * looking for something that is not there.
+     */
+    g_assert_nonnull(strstr(with, "clawtilla-desktop"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * ...and an observe-only agent is told it cannot act, rather than finding
+ * out by having a tool call refused.
+ */
+static void
+test_an_observe_only_desktop_says_so(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtAgent) agent = NULL;
+    g_autoptr(ClawtDesktop) desktop = NULL;
+    g_autofree gchar *described = NULL;
+
+    fixture_setup(&fixture);
+    fixture.config = load_config(&fixture, "agents:\n  - id: scribe\n");
+    agent = clawt_agent_new(clawt_config_get_agent(fixture.config, "scribe"),
+                            NULL);
+
+    desktop = clawt_desktop_new(CLAWT_DESKTOP_BACKEND_AUTO, NULL);
+    clawt_desktop_set_guest_available(desktop, TRUE);
+    clawt_desktop_set_allow_input(desktop, FALSE);
+    clawt_agent_set_desktop(agent, desktop);
+
+    described = clawt_agent_describe_computer(agent);
+
+    g_assert_nonnull(strstr(described, "cannot send"));
+    g_assert_nonnull(strstr(described, "your own VM"));
+    g_assert_null(strstr(described, "gowl"));
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -564,6 +667,11 @@ main(int argc, char *argv[])
     g_test_add_func("/agent/runtime/redacts-logs", test_log_lines_are_redacted);
     g_test_add_func("/agent/runtime/log-bounded", test_log_ring_is_bounded);
     g_test_add_func("/agent/runtime/missing-binary", test_missing_binary_is_reported);
+
+    g_test_add_func("/agent/describes-its-desktop",
+                    test_the_description_mentions_the_desktop);
+    g_test_add_func("/agent/observe-only-desktop-says-so",
+                    test_an_observe_only_desktop_says_so);
 
     return g_test_run();
 }
