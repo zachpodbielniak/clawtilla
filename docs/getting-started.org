@@ -186,6 +186,43 @@ awkward to enable by accident.
 Same daemon, same fleet.  Everything the CLI can do the GTK client can
 do, and both agree with each other because neither holds any state.
 
+** Reaching the fleet from another machine
+
+If Tailscale is installed and up, ~clawtillad~ already listens on this
+machine's tailnet address as well as its unix socket, and said so when it
+started:
+
+#+begin_example
+ipc: reachable on the tailnet at 100.72.0.41:8792 -- `clawtilla daemon
+token` prints the token a remote client needs
+#+end_example
+
+A token is always required, so the listener is reachable rather than
+open.  On the machine running the fleet:
+
+#+begin_src bash
+clawtilla daemon token
+#+end_src
+
+On the machine you are sitting at:
+
+#+begin_src bash
+clawtilla remote add workstation 100.72.0.41 --token "PASTE-IT-HERE"
+clawtilla --profile workstation agent list
+#+end_src
+
+The desktop client picks the same saved connections up in the menu left
+of its title, so switching between your machines is one click.  It also
+takes ~--profile~ directly:
+
+#+begin_src bash
+clawtilla-gtk --profile workstation
+#+end_src
+
+Turn the whole thing off with ~daemon.tailscale: false~.  See
+[[file:security.org][security.org]] for why a tailnet is the one network
+this is defensible on.
+
 ** Running it as a service
 
 #+begin_src bash

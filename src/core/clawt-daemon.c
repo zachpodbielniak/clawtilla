@@ -1124,10 +1124,80 @@ configure_limits(ClawtDaemon *self)
         (guint)clawt_config_get_int(self->config, "orchestration.max_hops"));
 }
 
+/*
+ * The bearer token a remote client must present.
+ *
+ * `daemon.token_file` wins when it names a readable file, because that is
+ * a token the person chose and may have copied to the other machine
+ * already.  Otherwise one is generated into the state directory and kept.
+ *
+ * Generating rather than refusing is the point.  A TCP listener without a
+ * token is refused outright by ClawtIpcServer, so leaving the token to be
+ * configured by hand would mean `daemon.tailscale: true` -- a default --
+ * failing daemon start on every machine that had never set one.  The
+ * failure mode of the alternative is worse in the other direction: a
+ * default that quietly listened with no authentication at all.
+ */
+static gchar *
+ensure_tcp_token(ClawtDaemon *self, GError **error)
+{
+    g_autofree gchar *configured =
+        clawt_config_get_path_value(self->config, "daemon.token_file");
+    g_autofree gchar *path = NULL;
+    gchar *token = NULL;
+
+    if (configured != NULL && *configured != '\0') {
+        if (!g_file_get_contents(configured, &token, NULL, error)) {
+            g_prefix_error(error, "daemon.token_file %s: ", configured);
+            return NULL;
+        }
+
+        g_strstrip(token);
+
+        if (*token == '\0') {
+            g_free(token);
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                        "daemon.token_file %s is empty", configured);
+            return NULL;
+        }
+
+        return token;
+    }
+
+    path = g_build_filename(self->state_dir, "tcp-token", NULL);
+
+    if (g_file_get_contents(path, &token, NULL, NULL)) {
+        g_strstrip(token);
+
+        if (*token != '\0')
+            return token;
+
+        /* Truncated by a crash mid-write; make a fresh one. */
+        g_clear_pointer(&token, g_free);
+    }
+
+    token = clawt_generate_token(error);
+
+    if (token == NULL)
+        return NULL;
+
+    /*
+     * 0600, like every other secret the daemon writes.  It is the whole
+     * authentication for anything reaching the daemon over the network.
+     */
+    if (!clawt_write_file_atomic(path, token, -1, 0600, FALSE, error)) {
+        g_free(token);
+        return NULL;
+    }
+
+    return token;
+}
+
 gboolean
 clawt_daemon_start(ClawtDaemon *self, GError **error)
 {
     g_autofree gchar *transcript_dir = NULL;
+    g_autofree gchar *tailnet_address = NULL;
     g_autofree gchar *event_dir = NULL;
     g_autofree gchar *exchange_dir = NULL;
     GPtrArray *agents;
@@ -1369,25 +1439,52 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
                                  NULL);
     clawt_ipc_server_attach_bus(self->ipc_server, self->bus);
 
-    if (clawt_config_get_boolean(self->config, "daemon.tcp_enabled")) {
-        g_autofree gchar *token_file =
-            clawt_config_get_path_value(self->config, "daemon.token_file");
-        g_autofree gchar *token = NULL;
+    {
+        gboolean tcp = clawt_config_get_boolean(self->config,
+                                                 "daemon.tcp_enabled");
+        gboolean tailscale = clawt_config_get_boolean(self->config,
+                                                       "daemon.tailscale");
+        const gchar *tailnet;
 
-        if (token_file != NULL &&
-            g_file_get_contents(token_file, &token, NULL, NULL))
-            g_strstrip(token);
+        /*
+         * Looked up before deciding, because a token is only worth
+         * generating for a listener that will exist: on a machine
+         * without Tailscale this whole block is a no-op and writing a
+         * secret for it would be litter.
+         */
+        if (tailscale)
+            tailnet_address = clawt_tailscale_find_address();
 
-        clawt_ipc_server_set_tcp(
-            self->ipc_server,
-            clawt_config_get_string(self->config, "daemon.tcp_address"),
-            (guint16)clawt_config_get_int(self->config, "daemon.tcp_port"),
-            token);
+        tailnet = tailnet_address;
 
-        clawt_ipc_server_set_tls(
-            self->ipc_server,
-            clawt_config_get_string(self->config, "daemon.tls_cert"),
-            clawt_config_get_string(self->config, "daemon.tls_key"));
+        if (tcp || tailnet != NULL) {
+            g_autofree gchar *token = ensure_tcp_token(self, error);
+
+            if (token == NULL) {
+                clawt_link_server_stop(self->link_server);
+
+                if (self->main_context != NULL)
+                    g_main_context_pop_thread_default(self->main_context);
+                return FALSE;
+            }
+
+            clawt_ipc_server_set_tcp(
+                self->ipc_server,
+                tcp ? clawt_config_get_string(self->config,
+                                              "daemon.tcp_address")
+                    : NULL,
+                (guint16)clawt_config_get_int(self->config, "daemon.tcp_port"),
+                token);
+
+            if (tailnet != NULL)
+                clawt_ipc_server_set_optional_tcp_address(self->ipc_server,
+                                                          tailnet);
+
+            clawt_ipc_server_set_tls(
+                self->ipc_server,
+                clawt_config_get_string(self->config, "daemon.tls_cert"),
+                clawt_config_get_string(self->config, "daemon.tls_key"));
+        }
     }
 
     if (!clawt_ipc_server_start(self->ipc_server, error)) {
@@ -1397,6 +1494,25 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
             g_main_context_pop_thread_default(self->main_context);
         return FALSE;
     }
+
+    /*
+     * Announced after the bind, and only if it took.  Saying it first
+     * meant a daemon whose tailnet port was already held printed that it
+     * was reachable there and then warned that it was not, one line
+     * apart.
+     *
+     * Said at all because a daemon that quietly became reachable from
+     * another machine is something a person should learn from its own
+     * output rather than from a port scan.
+     */
+    if (tailnet_address != NULL &&
+        clawt_ipc_server_is_listening_on(self->ipc_server,
+                                          tailnet_address))
+        g_message("ipc: reachable on the tailnet at "
+                  "%s:%" G_GINT64_FORMAT " -- `clawtilla daemon token` "
+                  "prints the token a remote client needs",
+                  tailnet_address,
+                  clawt_config_get_int(self->config, "daemon.tcp_port"));
 
     {
         GSource *source = g_timeout_source_new_seconds(SWEEP_INTERVAL_SECONDS);

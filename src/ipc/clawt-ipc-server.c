@@ -63,11 +63,33 @@ struct _ClawtIpcServer {
     GSocketService *service;
     GPtrArray      *clients;      /* Client*, owned */
 
-    gchar   *tcp_address;
-    guint16  tcp_port;
-    gchar   *tcp_token;
-    gchar   *tls_certificate;
-    gchar   *tls_key;
+    /*
+     * More than one, because a tailnet address is bound beside whatever
+     * daemon.tcp_address says rather than instead of it: the two are
+     * different decisions, and a machine on a tailnet usually wants the
+     * tailnet address and nothing else.
+     */
+    GPtrArray *tcp_addresses;  /* gchar*, owned */
+    /*
+     * Addresses whose bind failing is a warning rather than a refusal to
+     * start.  The tailnet address is one: it is a convenience the daemon
+     * offers, and a fleet that would not start because a second daemon
+     * already held that port -- or because tailscaled restarted between
+     * the lookup and the bind -- is a far worse failure than not being
+     * reachable from a laptop.
+     */
+    GPtrArray *optional_addresses;  /* gchar*, owned; subset by value */
+    /*
+     * What actually bound, filled in by start().  Kept because an
+     * optional address may not have, and anything reporting where the
+     * daemon can be reached has to say what happened rather than what
+     * was asked for.
+     */
+    GPtrArray *bound_addresses;     /* gchar*, owned */
+    guint16    tcp_port;
+    gchar     *tcp_token;
+    gchar     *tls_certificate;
+    gchar     *tls_key;
 
     ClawtEventBus *bus;
     gulong         bus_handler;
@@ -94,6 +116,9 @@ clawt_ipc_server_new(const gchar *socket_path)
 
     self = g_object_new(CLAWT_TYPE_IPC_SERVER, NULL);
     self->socket_path = clawt_expand_path(socket_path);
+    self->tcp_addresses = g_ptr_array_new_with_free_func(g_free);
+    self->optional_addresses = g_ptr_array_new_with_free_func(g_free);
+    self->bound_addresses = g_ptr_array_new_with_free_func(g_free);
 
     return self;
 }
@@ -120,12 +145,80 @@ clawt_ipc_server_set_tcp(ClawtIpcServer *self, const gchar *address,
 {
     g_return_if_fail(CLAWT_IS_IPC_SERVER(self));
 
-    g_free(self->tcp_address);
     g_free(self->tcp_token);
 
-    self->tcp_address = g_strdup(address);
+    g_ptr_array_set_size(self->tcp_addresses, 0);
+
+    if (address != NULL && *address != '\0')
+        g_ptr_array_add(self->tcp_addresses, g_strdup(address));
+
     self->tcp_port = port;
     self->tcp_token = g_strdup(token);
+}
+
+void
+clawt_ipc_server_add_tcp_address(ClawtIpcServer *self, const gchar *address)
+{
+    guint i;
+
+    g_return_if_fail(CLAWT_IS_IPC_SERVER(self));
+    g_return_if_fail(address != NULL && *address != '\0');
+
+    /*
+     * Binding the same address twice fails with EADDRINUSE against
+     * ourselves, which reads as another daemon already running -- the
+     * one diagnosis that sends a person hunting for a process that is
+     * not there.
+     */
+    for (i = 0; i < self->tcp_addresses->len; i++) {
+        if (g_strcmp0(g_ptr_array_index(self->tcp_addresses, i),
+                      address) == 0)
+            return;
+    }
+
+    g_ptr_array_add(self->tcp_addresses, g_strdup(address));
+}
+
+void
+clawt_ipc_server_set_optional_tcp_address(ClawtIpcServer *self,
+                                          const gchar    *address)
+{
+    g_return_if_fail(CLAWT_IS_IPC_SERVER(self));
+    g_return_if_fail(address != NULL && *address != '\0');
+
+    clawt_ipc_server_add_tcp_address(self, address);
+    g_ptr_array_add(self->optional_addresses, g_strdup(address));
+}
+
+static gboolean
+address_is_optional(ClawtIpcServer *self, const gchar *address)
+{
+    guint i;
+
+    for (i = 0; i < self->optional_addresses->len; i++) {
+        if (g_strcmp0(g_ptr_array_index(self->optional_addresses, i),
+                      address) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+gboolean
+clawt_ipc_server_is_listening_on(ClawtIpcServer *self, const gchar *address)
+{
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_IPC_SERVER(self), FALSE);
+    g_return_val_if_fail(address != NULL, FALSE);
+
+    for (i = 0; i < self->bound_addresses->len; i++) {
+        if (g_strcmp0(g_ptr_array_index(self->bound_addresses, i),
+                      address) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
 }
 
 void
@@ -666,9 +759,9 @@ clawt_ipc_server_start(ClawtIpcServer *self, GError **error)
         return FALSE;
     }
 
-    if (self->tcp_address != NULL && self->tcp_port != 0) {
-        g_autoptr(GSocketAddress) tcp = NULL;
-        g_autoptr(GInetAddress) inet = NULL;
+    if (self->tcp_addresses->len > 0 && self->tcp_port != 0) {
+        guint i;
+        guint bound = 0;
 
         /*
          * Refused without a token rather than started insecurely.  A unix
@@ -678,36 +771,75 @@ clawt_ipc_server_start(ClawtIpcServer *self, GError **error)
          */
         if (self->tcp_token == NULL || *self->tcp_token == '\0') {
             g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
-                                "daemon.tcp_enabled needs daemon.token_file: "
-                                "a TCP listener without a token would accept "
-                                "anyone who can reach the port");
+                                "a TCP listener needs a token: without one "
+                                "it would accept anyone who can reach the "
+                                "port");
             clawt_ipc_server_stop(self);
             return FALSE;
         }
 
-        inet = g_inet_address_new_from_string(self->tcp_address);
+        for (i = 0; i < self->tcp_addresses->len; i++) {
+            const gchar *text = g_ptr_array_index(self->tcp_addresses, i);
+            g_autoptr(GSocketAddress) tcp = NULL;
+            g_autoptr(GInetAddress) inet = NULL;
 
-        if (inet == NULL) {
-            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
-                        "'%s' is not an address this can bind to",
-                        self->tcp_address);
-            clawt_ipc_server_stop(self);
-            return FALSE;
+            gboolean optional = address_is_optional(self, text);
+            g_autoptr(GError) local = NULL;
+
+            inet = g_inet_address_new_from_string(text);
+
+            if (inet == NULL) {
+                if (optional) {
+                    g_warning("ipc: '%s' is not an address this can bind "
+                              "to; carrying on without it", text);
+                    continue;
+                }
+
+                g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                            "'%s' is not an address this can bind to", text);
+                clawt_ipc_server_stop(self);
+                return FALSE;
+            }
+
+            tcp = g_inet_socket_address_new(inet, self->tcp_port);
+
+            if (!g_socket_listener_add_address(
+                    G_SOCKET_LISTENER(self->service), tcp,
+                    G_SOCKET_TYPE_STREAM, G_SOCKET_PROTOCOL_DEFAULT, NULL,
+                    NULL, &local)) {
+                /*
+                 * The unix socket is the daemon's real interface, and it
+                 * is already bound by the time this runs.  Refusing to
+                 * start over an address nobody asked for by name would
+                 * mean one stale process, or a tailnet that came up
+                 * twice, taking the whole fleet down with it.
+                 */
+                if (optional) {
+                    g_warning("ipc: could not listen on %s:%u (%s); "
+                              "clients on other machines will not reach "
+                              "this daemon", text, self->tcp_port,
+                              local->message);
+                    continue;
+                }
+
+                clawt_ipc_server_stop(self);
+                g_propagate_prefixed_error(error, g_steal_pointer(&local),
+                                           "listening on %s:%u: ", text,
+                                           self->tcp_port);
+                return FALSE;
+            }
+
+            bound++;
+            g_ptr_array_add(self->bound_addresses, g_strdup(text));
+            g_info("ipc: listening on %s:%u", text, self->tcp_port);
         }
 
-        tcp = g_inet_socket_address_new(inet, self->tcp_port);
-
-        if (!g_socket_listener_add_address(G_SOCKET_LISTENER(self->service),
-                                           tcp, G_SOCKET_TYPE_STREAM,
-                                           G_SOCKET_PROTOCOL_DEFAULT, NULL,
-                                           NULL, error)) {
-            clawt_ipc_server_stop(self);
-            g_prefix_error(error, "listening on %s:%u: ", self->tcp_address,
-                           self->tcp_port);
-            return FALSE;
-        }
-
-        if (self->tls_certificate == NULL)
+        /*
+         * Only worth saying when something is actually listening.  A
+         * daemon that bound no network address at all was warning about
+         * the security of a listener it did not have.
+         */
+        if (bound > 0 && self->tls_certificate == NULL)
             g_warning("ipc: the TCP listener has no TLS certificate, so "
                       "the token crosses the network in the clear");
     }
@@ -771,7 +903,9 @@ clawt_ipc_server_finalize(GObject *object)
 
     g_clear_pointer(&self->clients, g_ptr_array_unref);
     g_free(self->socket_path);
-    g_free(self->tcp_address);
+    g_clear_pointer(&self->tcp_addresses, g_ptr_array_unref);
+    g_clear_pointer(&self->optional_addresses, g_ptr_array_unref);
+    g_clear_pointer(&self->bound_addresses, g_ptr_array_unref);
     g_free(self->tcp_token);
     g_free(self->tls_certificate);
     g_free(self->tls_key);

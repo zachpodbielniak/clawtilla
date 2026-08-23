@@ -68,6 +68,8 @@ static void         on_send(GtkWidget *widget, gpointer user_data);
 static void         load_history(ClawtWindow *self);
 static void         on_new_agent(GtkButton *button,
                                  gpointer   user_data);
+static void         on_import_agent(GtkButton *button,
+                                    gpointer   user_data);
 static void         open_path_in_editor(ClawtWindow *self,
                                         const gchar *path,
                                         const gchar *name);
@@ -115,6 +117,20 @@ struct _ClawtWindow {
     AdwApplicationWindow parent_instance;
 
     ClawtClient       *client;
+
+    /*
+     * Which daemon, and the ones this person has saved.
+     *
+     * The window holds the profile alongside the client rather than
+     * deriving it: a ClawtClient knows a host and a port, not the name
+     * somebody gave that machine, and a header bar reading "100.72.0.41"
+     * is the address a person saved a name to avoid.
+     */
+    GPtrArray         *connections;         /* ClawtConnection*, owned */
+    ClawtConnection   *active_connection;   /* owned */
+    gchar             *local_socket;        /* whatever --socket said */
+    GtkWidget         *connection_button;
+    GtkWidget         *connection_list;
 
     AdwToastOverlay   *toasts;
     AdwOverlaySplitView *split;
@@ -5745,6 +5761,1005 @@ on_new_agent(GtkButton *button, gpointer user_data)
     adw_dialog_present(window, GTK_WIDGET(self));
 }
 
+/*
+ * Importing an agent, rather than creating one.
+ *
+ * Two different things wear the name, and the dialog shows both because
+ * which one a person wants depends on where the agent already is.
+ *
+ * Adopting is the common one and the one nothing surfaced before: a
+ * workspace already under clawtilla's own directories -- an agent removed
+ * from the config, a design that was never committed, a config restored
+ * from a backup -- needs no copying at all, only a config entry.  Those
+ * accumulate silently, and `agent discover` was the only way to find out
+ * they were there.
+ *
+ * Copying is the other: somebody else's standalone libreclaw workspace,
+ * which is read from wherever it sits and written into a workspace
+ * clawtilla chose.
+ */
+typedef struct {
+    ClawtWindow *window;
+    AdwDialog   *dialog;
+    GtkWidget   *found_group;
+    GtkWidget   *id_entry;
+    GtkWidget   *from_row;
+    GtkWidget   *keep_git_row;
+    gchar       *from_path;
+} ImportAgentDialog;
+
+static void
+import_agent_dialog_free(gpointer data)
+{
+    ImportAgentDialog *dialog = data;
+
+    g_free(dialog->from_path);
+    g_free(dialog);
+}
+
+/*
+ * Adopts a workspace that is already where clawtilla keeps them.
+ *
+ * This is agent.create with nothing but an id, which is the whole of it:
+ * the workspace and the mailbox are already at the paths the daemon
+ * looks for, so there is deliberately no second code path that could
+ * treat an imported agent differently from a created one.
+ */
+static void
+on_adopt_found(GtkButton *button, gpointer user_data)
+{
+    ImportAgentDialog *dialog = user_data;
+    ClawtWindow *self = dialog->window;
+    const gchar *agent_id = g_object_get_data(G_OBJECT(button), "agent-id");
+    g_autoptr(JsonNode) reply = NULL;
+
+    if (agent_id == NULL)
+        return;
+
+    reply = clawt_window_request(self, "agent.create",
+                                 clawt_build_payload("id", agent_id, NULL));
+
+    if (reply == NULL)
+        return;
+
+    clawt_window_toast(self, "Imported. Check it over before starting it.");
+    refresh_agents(self);
+    adw_dialog_close(dialog->dialog);
+}
+
+/*
+ * What is on disk and not in the config.
+ *
+ * Each row says what the directory holds, because "there is a directory
+ * called researcher" is not enough to decide with: a workspace with a
+ * mailbox and a memory database is an agent somebody ran, and one with
+ * nothing but a config.yaml is a design that was abandoned halfway.
+ */
+static void
+import_dialog_fill_found(ImportAgentDialog *dialog)
+{
+    ClawtWindow *self = dialog->window;
+    g_autoptr(JsonNode) reply = NULL;
+    JsonArray *found;
+    guint i;
+
+    reply = clawt_window_request(self, "agent.discover", NULL);
+
+    if (reply == NULL)
+        return;
+
+    found = json_object_get_array_member(json_node_get_object(reply),
+                                          "found");
+
+    if (found == NULL || json_array_get_length(found) == 0) {
+        GtkWidget *row = adw_action_row_new();
+
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                      "Nothing unclaimed on disk");
+        adw_action_row_set_subtitle(
+            ADW_ACTION_ROW(row),
+            "Every workspace clawtilla can see is already an agent.");
+        gtk_widget_set_sensitive(row, FALSE);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(dialog->found_group),
+                                  row);
+        return;
+    }
+
+    for (i = 0; i < json_array_get_length(found); i++) {
+        JsonObject *entry = json_array_get_object_element(found, i);
+        const gchar *agent_id = clawt_json_string(entry, "id", NULL);
+        const gchar *holds = clawt_json_string(entry, "holds", NULL);
+        const gchar *path = clawt_json_string(entry, "path", NULL);
+        GtkWidget *row = adw_action_row_new();
+        GtkWidget *button = gtk_button_new_with_label("Import");
+
+        if (agent_id == NULL)
+            continue;
+
+        adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row), FALSE);
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), agent_id);
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(row),
+                                    holds != NULL && *holds != '\0'
+                                        ? holds : path);
+
+        gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
+        g_object_set_data_full(G_OBJECT(button), "agent-id",
+                               g_strdup(agent_id), g_free);
+        g_signal_connect(button, "clicked", G_CALLBACK(on_adopt_found),
+                         dialog);
+
+        adw_action_row_add_suffix(ADW_ACTION_ROW(row), button);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(dialog->found_group),
+                                  row);
+    }
+}
+
+static void
+on_import_folder_chosen(GObject *source, GAsyncResult *result,
+                        gpointer user_data)
+{
+    ImportAgentDialog *dialog = user_data;
+    g_autoptr(GFile) folder = NULL;
+    g_autoptr(GError) error = NULL;
+
+    folder = gtk_file_dialog_select_folder_finish(GTK_FILE_DIALOG(source),
+                                                   result, &error);
+
+    /* Dismissing the chooser is not a failure worth a toast. */
+    if (folder == NULL)
+        return;
+
+    g_free(dialog->from_path);
+    dialog->from_path = g_file_get_path(folder);
+
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(dialog->from_row),
+                                dialog->from_path);
+
+    /*
+     * The id defaults to the directory's own name, which is right often
+     * enough to be worth filling in and is still editable when it is
+     * not.
+     */
+    if (*gtk_editable_get_text(GTK_EDITABLE(dialog->id_entry)) == '\0') {
+        g_autofree gchar *base = g_file_get_basename(folder);
+
+        gtk_editable_set_text(GTK_EDITABLE(dialog->id_entry), base);
+    }
+}
+
+static void
+on_import_choose_folder(GtkButton *button, gpointer user_data)
+{
+    ImportAgentDialog *dialog = user_data;
+    GtkFileDialog *chooser = gtk_file_dialog_new();
+
+    (void)button;
+
+    gtk_file_dialog_set_title(chooser, "The agent's workspace");
+    gtk_file_dialog_select_folder(chooser,
+                                  GTK_WINDOW(dialog->window), NULL,
+                                  on_import_folder_chosen, dialog);
+    g_object_unref(chooser);
+}
+
+static void
+on_import_from_directory(GtkButton *button, gpointer user_data)
+{
+    ImportAgentDialog *dialog = user_data;
+    ClawtWindow *self = dialog->window;
+    const gchar *agent_id;
+    g_autoptr(JsonNode) reply = NULL;
+    gboolean keep_git;
+
+    (void)button;
+
+    agent_id = gtk_editable_get_text(GTK_EDITABLE(dialog->id_entry));
+
+    if (agent_id == NULL || *agent_id == '\0') {
+        clawt_window_toast(self, "An imported agent needs an id.");
+        return;
+    }
+
+    if (dialog->from_path == NULL) {
+        clawt_window_toast(self, "Choose the directory to import from.");
+        return;
+    }
+
+    keep_git = adw_switch_row_get_active(
+        ADW_SWITCH_ROW(dialog->keep_git_row));
+
+    reply = clawt_window_request(
+        self, "agent.import",
+        clawt_build_payload("id", agent_id, "from", dialog->from_path,
+                            "keep_git", keep_git ? "true" : "false", NULL));
+
+    /* Left open on failure, so the path and id are still there to fix. */
+    if (reply == NULL)
+        return;
+
+    clawt_window_toast(self, "Imported. Check it over before starting it.");
+    refresh_agents(self);
+    adw_dialog_close(dialog->dialog);
+}
+
+static void
+on_import_agent(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    ImportAgentDialog *dialog = g_new0(ImportAgentDialog, 1);
+    AdwDialog *window = adw_dialog_new();
+    GtkWidget *page = adw_preferences_page_new();
+    GtkWidget *from_group = adw_preferences_group_new();
+    GtkWidget *choose;
+    GtkWidget *import;
+
+    (void)button;
+
+    dialog->window = self;
+    dialog->dialog = window;
+
+    adw_dialog_set_title(window, "Import an agent");
+    adw_dialog_set_content_width(window, 520);
+
+    /* ── Already on disk ── */
+    dialog->found_group = adw_preferences_group_new();
+    adw_preferences_group_set_title(
+        ADW_PREFERENCES_GROUP(dialog->found_group), "Already on disk");
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(dialog->found_group),
+        "Workspaces clawtilla can see that no agent claims. Importing one "
+        "adds the config entry it is missing; nothing is copied or moved.");
+    import_dialog_fill_found(dialog);
+
+    /* ── From a directory ── */
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(from_group),
+                                    "From somewhere else");
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(from_group),
+        "Copies a standalone libreclaw workspace in. Its provider and "
+        "model come with it, so an import does not quietly move the agent "
+        "onto the fleet defaults.");
+
+    dialog->id_entry = adw_entry_row_new();
+    adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(dialog->id_entry),
+                                        FALSE);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->id_entry),
+                                  "Id");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(from_group),
+                              dialog->id_entry);
+
+    dialog->from_row = adw_action_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->from_row),
+                                  "Workspace");
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(dialog->from_row),
+                                "Nothing chosen");
+    choose = gtk_button_new_with_label("Choose\342\200\246");
+    gtk_widget_set_valign(choose, GTK_ALIGN_CENTER);
+    g_signal_connect(choose, "clicked", G_CALLBACK(on_import_choose_folder),
+                     dialog);
+    adw_action_row_add_suffix(ADW_ACTION_ROW(dialog->from_row), choose);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(from_group),
+                              dialog->from_row);
+
+    dialog->keep_git_row = adw_switch_row_new();
+    adw_preferences_row_set_title(
+        ADW_PREFERENCES_ROW(dialog->keep_git_row), "Keep git history");
+    adw_action_row_set_subtitle(
+        ADW_ACTION_ROW(dialog->keep_git_row),
+        "Copies .git too. Off by default: the new workspace is usually "
+        "not the same repository.");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(from_group),
+                              dialog->keep_git_row);
+
+    import = gtk_button_new_with_label("Import");
+    gtk_widget_add_css_class(import, "suggested-action");
+    gtk_widget_set_margin_top(import, 12);
+    g_signal_connect(import, "clicked", G_CALLBACK(on_import_from_directory),
+                     dialog);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(from_group), import);
+
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(dialog->found_group));
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(from_group));
+
+    g_object_set_data_full(G_OBJECT(window), "dialog", dialog,
+                           import_agent_dialog_free);
+
+    {
+        GtkWidget *toolbar = adw_toolbar_view_new();
+        GtkWidget *header = adw_header_bar_new();
+        GtkWidget *cancel = gtk_button_new_with_label("Cancel");
+
+        g_signal_connect_swapped(cancel, "clicked",
+                                 G_CALLBACK(adw_dialog_close), window);
+        adw_header_bar_pack_start(ADW_HEADER_BAR(header), cancel);
+
+        adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar), header);
+        adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar), page);
+
+        adw_dialog_set_child(window, toolbar);
+    }
+
+    adw_dialog_present(window, GTK_WIDGET(self));
+}
+
+/* ── Connections ─────────────────────────────────────────────────── */
+
+/*
+ * Which daemon this window is looking at.
+ *
+ * The daemon owns every agent process, credential and socket, and a
+ * client is a fold over one event stream -- which is precisely what makes
+ * pointing the same client at a daemon on another machine a change of one
+ * object rather than a second program.  clawtillad binds its tailnet
+ * address by default, so the far end usually needs nothing set up.
+ *
+ * Switching replaces self->client wholesale.  Everything on screen came
+ * from the old daemon and none of it is true of the new one: agent ids
+ * are per-fleet, so a stale selection would show one daemon's transcript
+ * under another daemon's agent.
+ */
+
+static void switch_connection(ClawtWindow *self, ClawtConnection *connection);
+static void rebuild_connection_menu(ClawtWindow *self);
+static void on_manage_connections(GtkButton *button, gpointer user_data);
+
+/*
+ * The name shown on the button, and in the window subtitle.
+ *
+ * Worth being loud about.  Every destructive verb in the client -- remove
+ * an agent, tear down its VM, reset its session -- acts on whichever
+ * daemon is connected, and a person who has forgotten they are pointed at
+ * another machine will not find out until afterwards.
+ */
+static void
+update_connection_label(ClawtWindow *self)
+{
+    GtkWidget *title = g_object_get_data(G_OBJECT(self), "title");
+    const gchar *name = self->active_connection != NULL
+                        ? clawt_connection_get_name(self->active_connection)
+                        : "Local";
+    gboolean remote = self->active_connection != NULL &&
+                      !clawt_connection_is_local(self->active_connection);
+
+    if (self->connection_button != NULL) {
+        adw_button_content_set_label(
+            ADW_BUTTON_CONTENT(
+                gtk_menu_button_get_child(
+                    GTK_MENU_BUTTON(self->connection_button))),
+            name);
+
+        /*
+         * A remote connection is styled, not merely labelled.  The label
+         * alone is a word in a header bar that stops being read after the
+         * first day.
+         */
+        if (remote)
+            gtk_widget_add_css_class(self->connection_button, "accent");
+        else
+            gtk_widget_remove_css_class(self->connection_button, "accent");
+    }
+
+    if (title != NULL)
+        adw_window_title_set_subtitle(ADW_WINDOW_TITLE(title),
+                                      remote ? name : NULL);
+}
+
+static void
+on_connection_chosen(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    ClawtConnection *connection = g_object_get_data(G_OBJECT(button),
+                                                     "connection");
+
+    gtk_menu_button_popdown(GTK_MENU_BUTTON(self->connection_button));
+
+    if (connection != NULL)
+        switch_connection(self, connection);
+}
+
+/*
+ * Everything the previous daemon told us.
+ *
+ * Not an optimisation -- a correctness step.  Agent ids, room ids and
+ * message ids are all per-daemon, so keeping any of them across a switch
+ * means the deduplication set silently swallows the new daemon's
+ * messages whenever an id happens to collide, and the selected agent
+ * names one that may not exist.
+ */
+static void
+forget_daemon_state(ClawtWindow *self)
+{
+    g_clear_pointer(&self->selected_agent, g_free);
+    g_clear_pointer(&self->selected_room, g_free);
+    g_clear_pointer(&self->flow_room, g_free);
+
+    g_hash_table_remove_all(self->shown);
+    g_hash_table_remove_all(self->drafts);
+
+    clear_box(self->transcript);
+    clear_list(self->sidebar);
+    set_activity(self, NULL);
+}
+
+static void
+switch_connection(ClawtWindow *self, ClawtConnection *connection)
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(GError) error = NULL;
+
+    g_return_if_fail(connection != NULL);
+
+    /* Already there.  Reconnecting would be a visible no-op. */
+    if (self->active_connection != NULL &&
+        g_strcmp0(clawt_connection_get_name(self->active_connection),
+                  clawt_connection_get_name(connection)) == 0 &&
+        clawt_client_is_connected(self->client))
+        return;
+
+    client = clawt_connection_create_client(connection);
+
+    /*
+     * The new client is connected *before* the old one is let go.  A
+     * remote daemon that is not running, or a token that is wrong, is
+     * the ordinary case here -- and dropping the working connection
+     * first would leave the window showing nothing, connected to
+     * nowhere, because of a typo in a port.
+     */
+    if (!clawt_client_connect(client, &error)) {
+        g_autofree gchar *where = clawt_connection_describe(connection);
+        g_autofree gchar *message =
+            g_strdup_printf("%s (%s): %s", clawt_connection_get_name(connection),
+                            where, error->message);
+
+        clawt_window_toast(self, message);
+        return;
+    }
+
+    clawt_client_set_auto_reconnect(client, TRUE);
+
+    if (self->client != NULL) {
+        g_signal_handlers_disconnect_by_data(self->client, self);
+        clawt_client_disconnect(self->client);
+        g_object_unref(self->client);
+    }
+
+    self->client = g_steal_pointer(&client);
+    g_signal_connect(self->client, "event", G_CALLBACK(on_daemon_event),
+                     self);
+
+    /*
+     * From 0, not from the cursor the previous daemon had reached.  A
+     * cursor is a position in one daemon's event stream and means
+     * nothing in another's; asking a fresh daemon to resume from it
+     * either replays the wrong events or reports it cannot resume.
+     */
+    clawt_client_subscribe(self->client, 0, NULL, NULL);
+
+    if (self->active_connection != NULL)
+        clawt_connection_free(self->active_connection);
+
+    self->active_connection = clawt_connection_copy(connection);
+
+    forget_daemon_state(self);
+    update_connection_label(self);
+    rebuild_connection_menu(self);
+
+    refresh_agents(self);
+    refresh_tasks(self);
+
+    {
+        g_autofree gchar *where = clawt_connection_describe(connection);
+        g_autofree gchar *message =
+            g_strdup_printf("Connected to %s (%s).",
+                            clawt_connection_get_name(connection), where);
+
+        clawt_window_toast(self, message);
+    }
+}
+
+/*
+ * Rebuilt rather than updated, because the set changes from the editor
+ * beside it and a menu that disagrees with the file is worse than one
+ * rebuilt more often than it needs to be.
+ *
+ * Plain GtkButtons in a box, not a GtkListBox: a list box selects a row
+ * when it takes focus and a popover takes focus as it opens, so the first
+ * entry would connect itself the moment the menu appeared.
+ */
+static void
+rebuild_connection_menu(ClawtWindow *self)
+{
+    GtkWidget *box = self->connection_list;
+    GtkWidget *child;
+    GtkWidget *manage;
+    guint i;
+
+    if (box == NULL)
+        return;
+
+    while ((child = gtk_widget_get_first_child(box)) != NULL)
+        gtk_box_remove(GTK_BOX(box), child);
+
+    for (i = 0; i < self->connections->len; i++) {
+        ClawtConnection *connection = g_ptr_array_index(self->connections, i);
+        g_autofree gchar *where = clawt_connection_describe(connection);
+        GtkWidget *button = gtk_button_new();
+        GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        GtkWidget *labels = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+        GtkWidget *name = gtk_label_new(clawt_connection_get_name(connection));
+        GtkWidget *detail = gtk_label_new(where);
+        gboolean current =
+            self->active_connection != NULL &&
+            g_strcmp0(clawt_connection_get_name(self->active_connection),
+                      clawt_connection_get_name(connection)) == 0;
+
+        gtk_widget_set_halign(name, GTK_ALIGN_START);
+        gtk_widget_set_halign(detail, GTK_ALIGN_START);
+        gtk_widget_add_css_class(detail, "dim-label");
+        gtk_widget_add_css_class(detail, "caption");
+        gtk_label_set_ellipsize(GTK_LABEL(detail), PANGO_ELLIPSIZE_MIDDLE);
+        gtk_label_set_max_width_chars(GTK_LABEL(detail), 28);
+
+        gtk_box_append(GTK_BOX(labels), name);
+        gtk_box_append(GTK_BOX(labels), detail);
+        gtk_widget_set_hexpand(labels, TRUE);
+        gtk_box_append(GTK_BOX(row), labels);
+
+        if (current) {
+            GtkWidget *tick =
+                gtk_image_new_from_icon_name("object-select-symbolic");
+
+            gtk_widget_set_valign(tick, GTK_ALIGN_CENTER);
+            gtk_box_append(GTK_BOX(row), tick);
+        }
+
+        gtk_button_set_child(GTK_BUTTON(button), row);
+        gtk_widget_add_css_class(button, "flat");
+
+        /*
+         * The profile is copied onto the button rather than referenced.
+         * The list behind it is rebuilt whenever the editor saves, and a
+         * button outliving that rebuild by one click would hand
+         * switch_connection() a freed profile.
+         */
+        g_object_set_data_full(G_OBJECT(button), "connection",
+                               clawt_connection_copy(connection),
+                               (GDestroyNotify)clawt_connection_free);
+        g_signal_connect(button, "clicked", G_CALLBACK(on_connection_chosen),
+                         self);
+
+        gtk_box_append(GTK_BOX(box), button);
+    }
+
+    gtk_box_append(GTK_BOX(box),
+                   gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
+
+    manage = gtk_button_new_with_label("Manage connections\342\200\246");
+    gtk_widget_add_css_class(manage, "flat");
+    g_signal_connect(manage, "clicked", G_CALLBACK(on_manage_connections),
+                     self);
+    gtk_box_append(GTK_BOX(box), manage);
+}
+
+/*
+ * The saved profiles, with the local daemon always first.
+ *
+ * Local is synthesised rather than stored: it is where the client points
+ * with no configuration at all, and a person who has never opened this
+ * menu should still find their own machine in it.  It also carries
+ * whatever --socket was given, so a second local daemon on a different
+ * socket stays reachable after a trip to a remote one.
+ */
+static void
+reload_connections(ClawtWindow *self)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GPtrArray) saved = NULL;
+    guint i;
+
+    saved = clawt_connection_list_load(NULL, &error);
+
+    if (saved == NULL) {
+        /*
+         * A connections file that cannot be read is worth saying out
+         * loud, once.  Failing silently would leave a person looking at
+         * a menu with their remote hosts missing and no reason given.
+         */
+        clawt_window_toast(self, error->message);
+        saved = g_ptr_array_new_with_free_func(
+            (GDestroyNotify)clawt_connection_free);
+    }
+
+    g_ptr_array_set_size(self->connections, 0);
+    g_ptr_array_add(self->connections,
+                    clawt_connection_new_local("Local", self->local_socket));
+
+    for (i = 0; i < saved->len; i++) {
+        ClawtConnection *connection = g_ptr_array_index(saved, i);
+
+        /* The synthesised Local already covers a file's own local entry. */
+        if (clawt_connection_is_local(connection))
+            continue;
+
+        g_ptr_array_add(self->connections,
+                        clawt_connection_copy(connection));
+    }
+
+    rebuild_connection_menu(self);
+}
+
+/* ── The connection editor ───────────────────────────────────────── */
+
+typedef struct {
+    ClawtWindow *window;
+    AdwDialog   *dialog;
+    GtkWidget   *list_group;
+    /*
+     * The rows we put in the group, so they can be taken back out.
+     * AdwPreferencesGroup wraps every added row in a list-box row of its
+     * own and offers no way to enumerate them, so walking its children
+     * hands back its internal boxes rather than anything
+     * adw_preferences_group_remove() will accept.
+     */
+    GPtrArray   *rows;
+    GtkWidget   *name_entry;
+    GtkWidget   *host_entry;
+    GtkWidget   *port_entry;
+    GtkWidget   *token_entry;
+    GtkWidget   *tls_row;
+    GtkWidget   *insecure_row;
+} ConnectionDialog;
+
+static void connection_dialog_fill(ConnectionDialog *dialog);
+
+/*
+ * Saves the remote profiles only.
+ *
+ * Local is synthesised at load, so writing it back would add an entry
+ * that reload_connections() then skips -- a line in the file that does
+ * nothing, which is how a file starts collecting explanations.
+ */
+static gboolean
+save_connections(ClawtWindow *self)
+{
+    g_autoptr(GPtrArray) remotes = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_connection_free);
+    g_autoptr(GError) error = NULL;
+    guint i;
+
+    for (i = 0; i < self->connections->len; i++) {
+        ClawtConnection *connection = g_ptr_array_index(self->connections, i);
+
+        if (clawt_connection_is_local(connection))
+            continue;
+
+        g_ptr_array_add(remotes, clawt_connection_copy(connection));
+    }
+
+    if (!clawt_connection_list_save(NULL, remotes, &error)) {
+        clawt_window_toast(self, error->message);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+static void
+on_connection_removed(GtkButton *button, gpointer user_data)
+{
+    ConnectionDialog *dialog = user_data;
+    ClawtWindow *self = dialog->window;
+    const gchar *name = g_object_get_data(G_OBJECT(button), "connection-name");
+    guint i;
+
+    if (name == NULL)
+        return;
+
+    for (i = 0; i < self->connections->len; i++) {
+        ClawtConnection *connection = g_ptr_array_index(self->connections, i);
+
+        if (clawt_connection_is_local(connection))
+            continue;
+
+        if (g_strcmp0(clawt_connection_get_name(connection), name) != 0)
+            continue;
+
+        g_ptr_array_remove_index(self->connections, i);
+        break;
+    }
+
+    if (!save_connections(self))
+        return;
+
+    rebuild_connection_menu(self);
+    connection_dialog_fill(dialog);
+    clawt_window_toast(self, "Removed.");
+}
+
+static void
+on_connection_added(GtkButton *button, gpointer user_data)
+{
+    ConnectionDialog *dialog = user_data;
+    ClawtWindow *self = dialog->window;
+    ClawtConnection *connection;
+    const gchar *name = gtk_editable_get_text(GTK_EDITABLE(dialog->name_entry));
+    const gchar *host = gtk_editable_get_text(GTK_EDITABLE(dialog->host_entry));
+    const gchar *port_text =
+        gtk_editable_get_text(GTK_EDITABLE(dialog->port_entry));
+    const gchar *token =
+        gtk_editable_get_text(GTK_EDITABLE(dialog->token_entry));
+    gint64 port;
+
+    (void)button;
+
+    if (host == NULL || *host == '\0') {
+        clawt_window_toast(self, "A connection needs a host.");
+        return;
+    }
+
+    port = (port_text != NULL && *port_text != '\0')
+           ? g_ascii_strtoll(port_text, NULL, 10)
+           : CLAWT_DEFAULT_TCP_PORT;
+
+    if (port <= 0 || port > G_MAXUINT16) {
+        clawt_window_toast(self, "That is not a port.");
+        return;
+    }
+
+    if (name == NULL || *name == '\0')
+        name = host;
+
+    /*
+     * A name is how the menu and the CLI's --profile refer to a
+     * connection, so two of them cannot share one: the second would be
+     * unreachable by name and would look like the first had simply not
+     * saved.
+     */
+    if (clawt_connection_list_find(self->connections, name) != NULL) {
+        clawt_window_toast(self, "There is already a connection with that "
+                                 "name.");
+        return;
+    }
+
+    connection = clawt_connection_new_remote(name, host, (guint16)port,
+                                             (token != NULL && *token != '\0')
+                                                 ? token : NULL);
+    clawt_connection_set_tls(
+        connection, adw_switch_row_get_active(ADW_SWITCH_ROW(dialog->tls_row)),
+        adw_switch_row_get_active(ADW_SWITCH_ROW(dialog->insecure_row)));
+
+    g_ptr_array_add(self->connections, connection);
+
+    if (!save_connections(self)) {
+        g_ptr_array_remove(self->connections, connection);
+        return;
+    }
+
+    gtk_editable_set_text(GTK_EDITABLE(dialog->name_entry), "");
+    gtk_editable_set_text(GTK_EDITABLE(dialog->host_entry), "");
+    gtk_editable_set_text(GTK_EDITABLE(dialog->token_entry), "");
+
+    rebuild_connection_menu(self);
+    connection_dialog_fill(dialog);
+    clawt_window_toast(self, "Saved.");
+}
+
+static void
+connection_dialog_fill(ConnectionDialog *dialog)
+{
+    ClawtWindow *self = dialog->window;
+    guint i;
+    guint shown = 0;
+
+    for (i = 0; i < dialog->rows->len; i++)
+        adw_preferences_group_remove(ADW_PREFERENCES_GROUP(dialog->list_group),
+                                     g_ptr_array_index(dialog->rows, i));
+
+    g_ptr_array_set_size(dialog->rows, 0);
+
+    for (i = 0; i < self->connections->len; i++) {
+        ClawtConnection *connection = g_ptr_array_index(self->connections, i);
+        g_autofree gchar *where = NULL;
+        GtkWidget *row;
+        GtkWidget *remove;
+
+        if (clawt_connection_is_local(connection))
+            continue;
+
+        where = clawt_connection_describe(connection);
+        row = adw_action_row_new();
+
+        adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row), FALSE);
+        adw_preferences_row_set_title(
+            ADW_PREFERENCES_ROW(row),
+            clawt_connection_get_name(connection));
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(row), where);
+
+        remove = gtk_button_new_from_icon_name("user-trash-symbolic");
+        gtk_widget_set_valign(remove, GTK_ALIGN_CENTER);
+        gtk_widget_add_css_class(remove, "flat");
+        g_object_set_data_full(
+            G_OBJECT(remove), "connection-name",
+            g_strdup(clawt_connection_get_name(connection)), g_free);
+        g_signal_connect(remove, "clicked", G_CALLBACK(on_connection_removed),
+                         dialog);
+
+        adw_action_row_add_suffix(ADW_ACTION_ROW(row), remove);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(dialog->list_group),
+                                  row);
+        g_ptr_array_add(dialog->rows, row);
+        shown++;
+    }
+
+    if (shown == 0) {
+        GtkWidget *row = adw_action_row_new();
+
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                      "No remote daemons yet");
+        adw_action_row_set_subtitle(
+            ADW_ACTION_ROW(row),
+            "clawtillad listens on its tailnet address by default, so a "
+            "machine on your tailnet usually needs nothing set up.");
+        gtk_widget_set_sensitive(row, FALSE);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(dialog->list_group),
+                                  row);
+        g_ptr_array_add(dialog->rows, row);
+    }
+}
+
+static void
+connection_dialog_free(gpointer data)
+{
+    ConnectionDialog *dialog = data;
+
+    g_ptr_array_unref(dialog->rows);
+    g_free(dialog);
+}
+
+static void
+on_manage_connections(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    ConnectionDialog *dialog = g_new0(ConnectionDialog, 1);
+    AdwDialog *window = adw_dialog_new();
+    GtkWidget *page = adw_preferences_page_new();
+    GtkWidget *add_group = adw_preferences_group_new();
+    GtkWidget *add;
+    g_autofree gchar *port_default = NULL;
+
+    (void)button;
+
+    gtk_menu_button_popdown(GTK_MENU_BUTTON(self->connection_button));
+
+    dialog->window = self;
+    dialog->dialog = window;
+    dialog->rows = g_ptr_array_new();
+
+    adw_dialog_set_title(window, "Connections");
+    adw_dialog_set_content_width(window, 520);
+
+    dialog->list_group = adw_preferences_group_new();
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(dialog->list_group),
+                                    "Saved");
+    connection_dialog_fill(dialog);
+
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(add_group),
+                                    "Add a daemon");
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(add_group),
+        "The address the daemon reports at startup, and the token from "
+        "`clawtilla daemon token` on that machine.");
+
+    dialog->name_entry = adw_entry_row_new();
+    adw_preferences_row_set_use_markup(
+        ADW_PREFERENCES_ROW(dialog->name_entry), FALSE);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->name_entry),
+                                  "Name");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(add_group),
+                              dialog->name_entry);
+
+    dialog->host_entry = adw_entry_row_new();
+    adw_preferences_row_set_use_markup(
+        ADW_PREFERENCES_ROW(dialog->host_entry), FALSE);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->host_entry),
+                                  "Host");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(add_group),
+                              dialog->host_entry);
+
+    dialog->port_entry = adw_entry_row_new();
+    adw_preferences_row_set_use_markup(
+        ADW_PREFERENCES_ROW(dialog->port_entry), FALSE);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->port_entry),
+                                  "Port");
+    port_default = g_strdup_printf("%d", CLAWT_DEFAULT_TCP_PORT);
+    gtk_editable_set_text(GTK_EDITABLE(dialog->port_entry), port_default);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(add_group),
+                              dialog->port_entry);
+
+    dialog->token_entry = adw_password_entry_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->token_entry),
+                                  "Token");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(add_group),
+                              dialog->token_entry);
+
+    dialog->tls_row = adw_switch_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->tls_row),
+                                  "TLS");
+    adw_action_row_set_subtitle(
+        ADW_ACTION_ROW(dialog->tls_row),
+        "Only if that daemon has a certificate. Without one the token "
+        "crosses the network in the clear -- inside a tailnet, WireGuard "
+        "is already encrypting it.");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(add_group),
+                              dialog->tls_row);
+
+    dialog->insecure_row = adw_switch_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->insecure_row),
+                                  "Accept an unknown certificate");
+    adw_action_row_set_subtitle(
+        ADW_ACTION_ROW(dialog->insecure_row),
+        "For a self-signed certificate on a machine you control. It turns "
+        "off the check that would notice somebody else answering.");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(add_group),
+                              dialog->insecure_row);
+
+    add = gtk_button_new_with_label("Save");
+    gtk_widget_add_css_class(add, "suggested-action");
+    gtk_widget_set_margin_top(add, 12);
+    g_signal_connect(add, "clicked", G_CALLBACK(on_connection_added), dialog);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(add_group), add);
+
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(dialog->list_group));
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(add_group));
+
+    g_object_set_data_full(G_OBJECT(window), "dialog", dialog,
+                           connection_dialog_free);
+
+    {
+        GtkWidget *toolbar = adw_toolbar_view_new();
+        GtkWidget *header = adw_header_bar_new();
+
+        adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar), header);
+        adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar), page);
+
+        adw_dialog_set_child(window, toolbar);
+    }
+
+    adw_dialog_present(window, GTK_WIDGET(self));
+}
+
+/*
+ * The menu entries beside the + button.
+ *
+ * A GAction hands its callback the action and a parameter; the button's
+ * own ::clicked hands it the button.  Two thin wrappers rather than one
+ * signature bent to fit both, because the alternative is a cast that is
+ * wrong on one of the two paths.
+ */
+static void
+on_new_agent_activate(GSimpleAction *action, GVariant *parameter,
+                      gpointer user_data)
+{
+    (void)action;
+    (void)parameter;
+
+    on_new_agent(NULL, user_data);
+}
+
+static void
+on_import_agent_activate(GSimpleAction *action, GVariant *parameter,
+                         gpointer user_data)
+{
+    (void)action;
+    (void)parameter;
+
+    on_import_agent(NULL, user_data);
+}
+
 /* ── Construction ────────────────────────────────────────────────── */
 
 static GtkWidget *
@@ -6933,7 +7948,8 @@ build_task_page(ClawtWindow *self)
 }
 
 ClawtWindow *
-clawt_window_new(AdwApplication *app, ClawtClient *client)
+clawt_window_new(AdwApplication *app, ClawtClient *client,
+                 ClawtConnection *connection)
 {
     ClawtWindow *self;
     GtkWidget *sidebar_box;
@@ -6949,6 +7965,19 @@ clawt_window_new(AdwApplication *app, ClawtClient *client)
 
     self = g_object_new(CLAWT_TYPE_WINDOW, "application", app, NULL);
     self->client = g_object_ref(client);
+
+    /*
+     * The profile is passed in beside the client rather than guessed at
+     * from it, because the two have to agree and only the caller knows
+     * both.  A window that worked out for itself what its client was
+     * would be a second answer to that question, and the ones this
+     * codebase has grown are all bugs.
+     */
+    self->active_connection =
+        connection != NULL ? clawt_connection_copy(connection)
+                           : clawt_connection_new_local("Local", NULL);
+    self->local_socket =
+        g_strdup(clawt_connection_get_socket_path(self->active_connection));
 
     gtk_window_set_title(GTK_WINDOW(self), "clawtilla");
     gtk_window_set_default_size(GTK_WINDOW(self), 1100, 720);
@@ -6998,9 +8027,52 @@ clawt_window_new(AdwApplication *app, ClawtClient *client)
         g_object_unref(menu);
     }
 
-    new_button = gtk_button_new_from_icon_name("list-add-symbolic");
-    gtk_widget_set_tooltip_text(new_button, "Add an agent");
-    g_signal_connect(new_button, "clicked", G_CALLBACK(on_new_agent), self);
+    /*
+     * A split button rather than a plain one: pressing + creates an
+     * agent, which is what it has always done and what people reach for,
+     * and the arrow beside it offers importing one.
+     *
+     * Import needed somewhere to live.  Adopting a workspace already on
+     * disk was reachable only from `clawtilla agent discover` followed by
+     * `agent import`, so from the client those directories were invisible
+     * -- and they are exactly what accumulates: an agent removed from the
+     * config keeps its state, and a design that was never committed
+     * leaves a whole workspace behind.
+     */
+    {
+        GMenu *menu = g_menu_new();
+        GSimpleAction *create_action = g_simple_action_new("agent-create",
+                                                            NULL);
+        GSimpleAction *import_action = g_simple_action_new("agent-import",
+                                                            NULL);
+
+        g_menu_append(menu, "Create an agent\342\200\246",
+                      "win.agent-create");
+        g_menu_append(menu, "Import an agent\342\200\246",
+                      "win.agent-import");
+
+        new_button = adw_split_button_new();
+        adw_split_button_set_icon_name(ADW_SPLIT_BUTTON(new_button),
+                                       "list-add-symbolic");
+        adw_split_button_set_menu_model(ADW_SPLIT_BUTTON(new_button),
+                                        G_MENU_MODEL(menu));
+        gtk_widget_set_tooltip_text(new_button, "Add an agent");
+
+        g_signal_connect(new_button, "clicked", G_CALLBACK(on_new_agent),
+                         self);
+
+        g_signal_connect(create_action, "activate",
+                         G_CALLBACK(on_new_agent_activate), self);
+        g_signal_connect(import_action, "activate",
+                         G_CALLBACK(on_import_agent_activate), self);
+        g_action_map_add_action(G_ACTION_MAP(self), G_ACTION(create_action));
+        g_action_map_add_action(G_ACTION_MAP(self), G_ACTION(import_action));
+
+        g_object_unref(create_action);
+        g_object_unref(import_action);
+        g_object_unref(menu);
+    }
+
     adw_header_bar_pack_end(ADW_HEADER_BAR(sidebar_header), new_button);
 
     sidebar_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
@@ -7040,6 +8112,50 @@ clawt_window_new(AdwApplication *app, ClawtClient *client)
     gtk_button_set_icon_name(GTK_BUTTON(sidebar_button),
                              "sidebar-show-symbolic");
     adw_header_bar_pack_start(ADW_HEADER_BAR(header), sidebar_button);
+
+    /*
+     * Which daemon, to the left of the title.
+     *
+     * A popover holding plain buttons rather than a GMenu, because the
+     * entries are the contents of a file that changes while the app is
+     * running -- and rather than a GtkListBox, which selects a row when
+     * it takes focus and would therefore connect to the first daemon in
+     * the list the moment the menu opened.
+     */
+    {
+        GtkWidget *label = adw_button_content_new();
+        GtkWidget *popover = gtk_popover_new();
+        GtkWidget *scroll = gtk_scrolled_window_new();
+
+        adw_button_content_set_icon_name(ADW_BUTTON_CONTENT(label),
+                                         "network-server-symbolic");
+        adw_button_content_set_label(ADW_BUTTON_CONTENT(label), "Local");
+
+        self->connection_list = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+        gtk_widget_set_size_request(self->connection_list, 240, -1);
+
+        gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll),
+                                      self->connection_list);
+        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                                       GTK_POLICY_NEVER,
+                                       GTK_POLICY_AUTOMATIC);
+        gtk_scrolled_window_set_max_content_height(
+            GTK_SCROLLED_WINDOW(scroll), 400);
+        gtk_scrolled_window_set_propagate_natural_height(
+            GTK_SCROLLED_WINDOW(scroll), TRUE);
+
+        gtk_popover_set_child(GTK_POPOVER(popover), scroll);
+
+        self->connection_button = gtk_menu_button_new();
+        gtk_menu_button_set_child(GTK_MENU_BUTTON(self->connection_button),
+                                  label);
+        gtk_menu_button_set_popover(GTK_MENU_BUTTON(self->connection_button),
+                                    popover);
+        gtk_widget_set_tooltip_text(self->connection_button,
+                                    "Which daemon this window is showing");
+        adw_header_bar_pack_start(ADW_HEADER_BAR(header),
+                                  self->connection_button);
+    }
 
     switcher = adw_view_switcher_new();
     adw_view_switcher_set_stack(ADW_VIEW_SWITCHER(switcher), self->pages);
@@ -7081,6 +8197,9 @@ clawt_window_new(AdwApplication *app, ClawtClient *client)
 
     g_signal_connect(client, "event", G_CALLBACK(on_daemon_event), self);
 
+    reload_connections(self);
+    update_connection_label(self);
+
     refresh_agents(self);
 
     return self;
@@ -7103,6 +8222,10 @@ clawt_window_dispose(GObject *object)
      */
     g_clear_pointer(&self->agent_menu, gtk_widget_unparent);
     g_clear_object(&self->agent_actions);
+
+    g_clear_pointer(&self->connections, g_ptr_array_unref);
+    g_clear_pointer(&self->active_connection, clawt_connection_free);
+    g_clear_pointer(&self->local_socket, g_free);
 
     g_clear_pointer(&self->selected_agent, g_free);
     g_clear_pointer(&self->selected_room, g_free);
@@ -7141,6 +8264,8 @@ static void
 clawt_window_init(ClawtWindow *self)
 {
     self->following = TRUE;
+    self->connections = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_connection_free);
     self->shown = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                         NULL);
     self->drafts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,

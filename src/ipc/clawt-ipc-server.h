@@ -76,6 +76,66 @@ void clawt_ipc_server_set_tcp(ClawtIpcServer *self,
                               const gchar    *token);
 
 /**
+ * clawt_ipc_server_add_tcp_address:
+ * @self: a #ClawtIpcServer
+ * @address: another address to bind, at the same port
+ *
+ * Adds an address beside the one clawt_ipc_server_set_tcp() named.
+ *
+ * This is how the tailnet address is bound without displacing whatever
+ * `daemon.tcp_address` says: the two are separate decisions, and a
+ * machine that is on a tailnet usually wants that address and no other.
+ * Adding an address already listed does nothing, because binding it
+ * twice fails with EADDRINUSE against ourselves and reads as another
+ * daemon already running.
+ *
+ * The token set by clawt_ipc_server_set_tcp() applies here too -- an
+ * address added without one is refused at start, exactly as the first
+ * one is.
+ */
+void clawt_ipc_server_add_tcp_address(ClawtIpcServer *self,
+                                      const gchar    *address);
+
+/**
+ * clawt_ipc_server_set_optional_tcp_address:
+ * @self: a #ClawtIpcServer
+ * @address: another address to bind, at the same port
+ *
+ * Adds an address whose bind failing is a warning rather than a refusal
+ * to start.
+ *
+ * The tailnet address is bound this way.  It is a convenience the daemon
+ * offers rather than an interface anyone configured by name, and the
+ * unix socket -- the daemon's real interface -- is already listening by
+ * the time this is reached.  A fleet that would not start because a
+ * stale process still held that port, or because tailscaled restarted
+ * between the address lookup and the bind, is a much worse failure than
+ * not being reachable from a laptop.
+ *
+ * An address named in the configuration is never optional: someone asked
+ * for it, so failing to provide it is an error rather than a footnote.
+ */
+void clawt_ipc_server_set_optional_tcp_address(ClawtIpcServer *self,
+                                               const gchar    *address);
+
+/**
+ * clawt_ipc_server_is_listening_on:
+ * @self: a #ClawtIpcServer
+ * @address: an address that was added
+ *
+ * Whether @address actually bound.
+ *
+ * An optional address may not have, so anything telling a person where
+ * the daemon can be reached has to ask this rather than repeat back what
+ * it requested -- otherwise the daemon announces an address in one line
+ * and warns that it could not bind it in the next.
+ *
+ * Returns: %TRUE if the server is listening on @address
+ */
+gboolean clawt_ipc_server_is_listening_on(ClawtIpcServer *self,
+                                          const gchar    *address);
+
+/**
  * clawt_ipc_server_set_tls:
  * @self: a #ClawtIpcServer
  * @certificate_path: (nullable): PEM certificate

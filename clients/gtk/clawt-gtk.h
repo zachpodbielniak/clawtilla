@@ -30,10 +30,19 @@ G_DECLARE_FINAL_TYPE(ClawtWindow, clawt_window, CLAWT, WINDOW,
  * clawt_window_new:
  * @app: the application
  * @client: (transfer none): the daemon connection
+ * @connection: (nullable): the profile @client was built from
+ *
+ * @connection is what the window shows in its header bar and switches
+ * away from.  It is passed in rather than derived, because a #ClawtClient
+ * knows a host and a port and not the name a person gave that machine --
+ * and two answers to "which daemon is this" is exactly how a window ends
+ * up acting on one and labelled with another.
  *
  * Returns: (transfer none): the window
  */
-ClawtWindow *clawt_window_new(AdwApplication *app, ClawtClient *client);
+ClawtWindow *clawt_window_new(AdwApplication  *app,
+                              ClawtClient     *client,
+                              ClawtConnection *connection);
 
 /**
  * clawt_window_toast:

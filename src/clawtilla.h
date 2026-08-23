@@ -87,9 +87,11 @@
 #include "link/clawt-link.h"
 #include "link/clawt-link-server.h"
 
+#include "ipc/clawt-tailscale.h"
 #include "ipc/clawt-ipc-proto.h"
 #include "ipc/clawt-ipc-server.h"
 #include "ipc/clawt-client.h"
+#include "ipc/clawt-connection.h"
 
 #include "core/clawt-daemon.h"
 

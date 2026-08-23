@@ -42,6 +42,13 @@ fixture_setup(Fixture *fixture, const gchar *extra_yaml)
      */
     yaml = g_strdup_printf(
         "daemon:\n"
+        /*
+         * No tailnet listener.  make test is hermetic -- it opens no
+         * network socket at all -- and on a machine that has a tailnet
+         * this would also collide with the developer's own running
+         * daemon on the same address and port.
+         */
+        "  tailscale: false\n"
         "  state_dir: \"%s/state\"\n"
         "  socket: \"%s/daemon.sock\"\n"
         "%s",
@@ -278,6 +285,13 @@ test_credentials_are_never_sent_in_full(void)
 
     yaml = g_strdup_printf(
         "daemon:\n"
+        /*
+         * No tailnet listener.  make test is hermetic -- it opens no
+         * network socket at all -- and on a machine that has a tailnet
+         * this would also collide with the developer's own running
+         * daemon on the same address and port.
+         */
+        "  tailscale: false\n"
         "  state_dir: \"%s/state\"\n"
         "  socket: \"%s/daemon.sock\"\n"
         "agents:\n"
@@ -863,7 +877,8 @@ test_reload_reaches_the_fleet(void)
         ==, 1);
 
     yaml = g_strdup_printf(
-        "daemon:\n  state_dir: \"%s/state\"\n  socket: \"%s/daemon.sock\"\n"
+        "daemon:\n  tailscale: false\n"
+        "  state_dir: \"%s/state\"\n  socket: \"%s/daemon.sock\"\n"
         "agents:\n  - id: chief\n  - id: researcher\n",
         fixture.dir, fixture.dir);
 
@@ -880,7 +895,8 @@ test_reload_reaches_the_fleet(void)
     /* And one removed from the file goes away again. */
     g_free(yaml);
     yaml = g_strdup_printf(
-        "daemon:\n  state_dir: \"%s/state\"\n  socket: \"%s/daemon.sock\"\n"
+        "daemon:\n  tailscale: false\n"
+        "  state_dir: \"%s/state\"\n  socket: \"%s/daemon.sock\"\n"
         "agents:\n  - id: chief\n",
         fixture.dir, fixture.dir);
 
@@ -904,7 +920,8 @@ test_the_state_directory_cannot_be_mounted(void)
     fixture_setup(&fixture, NULL);
 
     yaml = g_strdup_printf(
-        "daemon:\n  state_dir: \"%s/state\"\n  socket: \"%s/daemon.sock\"\n"
+        "daemon:\n  tailscale: false\n"
+        "  state_dir: \"%s/state\"\n  socket: \"%s/daemon.sock\"\n"
         "agents:\n"
         "  - id: sneaky\n"
         "    computer:\n"

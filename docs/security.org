@@ -58,6 +58,14 @@ computer, a message that persuades it to run something destructive will
 be honoured within its confinement.  The limits are on capability, not on
 judgement.
 
+*** Anything with the daemon's token has the fleet
+
+The same statement as the one below about the socket, and worth making
+twice because the tailnet listener is on by default.  A bearer token is
+all the authentication a remote client presents; treat
+~<state_dir>/tcp-token~ and the client's ~connections.yaml~ as you would
+an SSH private key.
+
 *** Anything with the socket has the fleet
 
 A process running as you can connect to ~daemon.sock~ and do everything a
@@ -162,6 +170,48 @@ something specifically turned off.  Plugin tools obey the same lists.
 ~clawtilla_spawn_agent~ is off by default: an agent that can create
 agents can create agents that create agents, and the hop limit does not
 apply to that.
+
+** The tailnet listener
+
+~daemon.tailscale~ is *on by default*, and it is the one place clawtilla
+listens beyond the loopback without being asked.
+
+The reasoning: a peer on a tailnet is a device you enrolled and WireGuard
+authenticated, nothing outside the tailnet can route to a 100.64/10
+address at all, and the traffic is already encrypted.  That is a
+different proposition from opening a port on a LAN, which is what
+~daemon.tcp_enabled~ does and why /that/ stays off.
+
+What it does not do:
+
+- it never binds ~0.0.0.0~.  Only the tailnet address itself, so an
+  interface on some other network is not covered by the same listener
+- it is never open.  A TCP listener without a token is refused outright,
+  so a token is generated into ~<state_dir>/tcp-token~ at mode 0600 the
+  first time one is needed.  Generating rather than refusing is the
+  choice that keeps a default from failing daemon start on every machine
+  that never set one -- and the alternative failure, a default that
+  listened with no authentication, is far worse
+- it is not silent.  The daemon says the address and port it bound, and
+  says it *after* the bind rather than before, so it cannot announce an
+  address it then failed to take
+- it is not required.  If the address will not bind -- a stale daemon
+  still holds the port, tailscaled restarted between the lookup and the
+  bind -- that is a warning, not a refusal to start.  The unix socket is
+  the daemon's real interface and is already listening by then; a fleet
+  that would not start over a convenience listener is the worse failure
+
+The address is found with ~getifaddrs()~ rather than by running
+~tailscale ip~, because daemon start may not wait on anything that can
+hang.  In userspace-networking mode there is no interface and so no
+address here, which is correct rather than a gap: in that mode there is
+no address to bind either.
+
+Turn it off with ~daemon.tailscale: false~.
+
+Anything holding the token has the whole fleet, exactly as anything
+holding the unix socket does.  ~clawtilla daemon token~ prints it, and
+the client's ~connections.yaml~ stores it at mode 0600.
 
 ** TCP and TLS
 

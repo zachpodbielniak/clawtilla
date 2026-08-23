@@ -17,6 +17,10 @@
 #include <stdlib.h>
 
 static gchar *opt_socket_path = NULL;
+static gchar *opt_profile = NULL;
+static gchar *opt_host = NULL;
+static gint opt_port = 0;
+static gchar *opt_token = NULL;
 static gboolean opt_version = FALSE;
 static gboolean opt_license = FALSE;
 
@@ -24,6 +28,22 @@ static GOptionEntry entries[] = {
     {
         "socket", 's', 0, G_OPTION_ARG_FILENAME, &opt_socket_path,
         "Path to the daemon's socket", "FILE"
+    },
+    {
+        "profile", 'p', 0, G_OPTION_ARG_STRING, &opt_profile,
+        "Start on a saved connection", "NAME"
+    },
+    {
+        "host", 'H', 0, G_OPTION_ARG_STRING, &opt_host,
+        "Start on a daemon at this address", "HOST"
+    },
+    {
+        "port", 0, 0, G_OPTION_ARG_INT, &opt_port,
+        "Port for --host (default 8792)", "PORT"
+    },
+    {
+        "token", 0, 0, G_OPTION_ARG_STRING, &opt_token,
+        "Bearer token for --host", "TOKEN"
     },
     {
         "version", 'V', 0, G_OPTION_ARG_NONE, &opt_version,
@@ -45,16 +65,26 @@ static const gchar *description_text =
     "  # Connect to a daemon on a different socket\n"
     "  clawtilla-gtk --socket /run/user/1000/clawtilla/daemon.sock\n"
     "\n"
+    "  # Start on a connection saved from the app's connection menu\n"
+    "  clawtilla-gtk --profile workstation\n"
+    "\n"
+    "  # Start on a daemon reached over a tailnet\n"
+    "  clawtilla-gtk --host 100.72.0.41 --token \"$(ssh box clawtilla "
+    "daemon token)\"\n"
+    "\n"
     "The daemon must already be running: start it with `clawtillad\n"
-    "--foreground`, or enable the systemd --user service.\n";
+    "--foreground`, or enable the systemd --user service. Connections can\n"
+    "also be saved and switched from the menu left of the app title.\n";
 
 static void
 on_activate(AdwApplication *app, gpointer user_data)
 {
     ClawtClient *client = user_data;
+    ClawtConnection *connection =
+        g_object_get_data(G_OBJECT(app), "connection");
     ClawtWindow *window;
 
-    window = clawt_window_new(app, client);
+    window = clawt_window_new(app, client, connection);
     gtk_window_present(GTK_WINDOW(window));
 }
 
@@ -93,6 +123,7 @@ main(int argc, char *argv[])
     g_autoptr(GOptionContext) context = NULL;
     g_autoptr(AdwApplication) app = NULL;
     g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(ClawtConnection) connection = NULL;
     g_autoptr(GError) error = NULL;
     gint status;
 
@@ -135,7 +166,41 @@ main(int argc, char *argv[])
     }
 
     app = adw_application_new("org.clawtilla.Gtk", G_APPLICATION_DEFAULT_FLAGS);
-    client = clawt_client_new(opt_socket_path);
+
+    /*
+     * Which daemon to open on.  --host wins over --profile, which wins
+     * over the local socket; a laptop with no fleet of its own can start
+     * straight on a workstation rather than being shown "the daemon is
+     * not running" for a daemon it was never asking about.
+     */
+    if (opt_host != NULL) {
+        connection = clawt_connection_new_remote(
+            opt_host, opt_host,
+            opt_port > 0 ? (guint16)opt_port : CLAWT_DEFAULT_TCP_PORT,
+            opt_token);
+    } else if (opt_profile != NULL) {
+        g_autoptr(GPtrArray) saved = clawt_connection_list_load(NULL, &error);
+
+        if (saved == NULL) {
+            g_printerr("clawtilla-gtk: %s\n", error->message);
+            return EXIT_FAILURE;
+        }
+
+        connection = clawt_connection_list_find(saved, opt_profile);
+
+        if (connection == NULL) {
+            g_printerr("clawtilla-gtk: there is no saved connection called "
+                       "'%s'\n", opt_profile);
+            return EXIT_FAILURE;
+        }
+
+        /* Copied: `saved` owns it and goes out of scope here. */
+        connection = clawt_connection_copy(connection);
+    } else {
+        connection = clawt_connection_new_local("Local", opt_socket_path);
+    }
+
+    client = clawt_connection_create_client(connection);
 
     /*
      * Reconnection is on: the daemon restarts whenever its configuration
@@ -161,6 +226,14 @@ main(int argc, char *argv[])
     }
 
     clawt_client_subscribe(client, 0, NULL, NULL);
+
+    /*
+     * Kept on the application for the same reason the failure message is:
+     * activate runs after this scope ends.
+     */
+    g_object_set_data_full(G_OBJECT(app), "connection",
+                           clawt_connection_copy(connection),
+                           (GDestroyNotify)clawt_connection_free);
 
     g_signal_connect(app, "activate", G_CALLBACK(on_activate), client);
 

@@ -102,13 +102,30 @@ static const ClawtSchemaEntry schema[] = {
   "listener is authenticated by whatever you configure below, so turning\n"
   "this on without TLS and a token puts the whole fleet on the network.", "0.1.0" },
 
+{ "daemon.tailscale", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "true", NULL,
+  "Also listen on this machine's tailnet address, when there is one.\n"
+  "\n"
+  "On by default, and the one network where that is defensible: a peer on\n"
+  "a tailnet is a device you enrolled and WireGuard authenticated, and\n"
+  "nothing outside it can route to a 100.64/10 address at all. It is what\n"
+  "lets the client on a laptop reach the fleet on a workstation with no\n"
+  "tunnel set up by hand.\n"
+  "\n"
+  "A token is still required, and generated into <state_dir>/tcp-token if\n"
+  "token_file names nothing -- so the listener is never open, only\n"
+  "reachable. Print it with `clawtilla daemon token`.\n"
+  "\n"
+  "Nothing happens when Tailscale is absent, down, or in\n"
+  "userspace-networking mode, since there is then no address to bind.", "0.1.0" },
+
 { "daemon.tcp_address", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_COMMENTED,
   "127.0.0.1", NULL,
   "Address to bind when tcp_enabled is true.", "0.1.0" },
 
 { "daemon.tcp_port", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_COMMENTED,
   "8792", NULL,
-  "Port to bind when tcp_enabled is true.", "0.1.0" },
+  "Port to bind for tcp_enabled and for tailscale. Both use this one.", "0.1.0" },
 
 { "daemon.tls_cert", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_COMMENTED,
   NULL, NULL,
@@ -122,7 +139,11 @@ static const ClawtSchemaEntry schema[] = {
 { "daemon.token_file", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_COMMENTED,
   NULL, NULL,
   "File holding the bearer token remote clients must present.\n"
-  "Ignored for unix socket connections, which the kernel already vouches for.", "0.1.0" },
+  "\n"
+  "Ignored for unix socket connections, which the kernel already vouches\n"
+  "for. Left unset, a token is generated into <state_dir>/tcp-token the\n"
+  "first time a TCP or tailnet listener needs one, so enabling either\n"
+  "cannot leave the daemon open by omission.", "0.1.0" },
 
 { "daemon.event_log_days", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "30", NULL,

@@ -82,10 +82,26 @@ daemon:
   # # this on without TLS and a token puts the whole fleet on the network.
   # tcp_enabled: false
 
+  # Also listen on this machine's tailnet address, when there is one.
+  #
+  # On by default, and the one network where that is defensible: a peer on
+  # a tailnet is a device you enrolled and WireGuard authenticated, and
+  # nothing outside it can route to a 100.64/10 address at all. It is what
+  # lets the client on a laptop reach the fleet on a workstation with no
+  # tunnel set up by hand.
+  #
+  # A token is still required, and generated into <state_dir>/tcp-token if
+  # token_file names nothing -- so the listener is never open, only
+  # reachable. Print it with `clawtilla daemon token`.
+  #
+  # Nothing happens when Tailscale is absent, down, or in
+  # userspace-networking mode, since there is then no address to bind.
+  tailscale: true
+
   # # Address to bind when tcp_enabled is true.
   # tcp_address: "127.0.0.1"
 
-  # # Port to bind when tcp_enabled is true.
+  # # Port to bind for tcp_enabled and for tailscale. Both use this one.
   # tcp_port: 8792
 
   # # TLS certificate for the TCP listener. Without one, remote clients talk
@@ -96,7 +112,11 @@ daemon:
   # tls_key: null
 
   # # File holding the bearer token remote clients must present.
-  # # Ignored for unix socket connections, which the kernel already vouches for.
+  # #
+  # # Ignored for unix socket connections, which the kernel already vouches
+  # # for. Left unset, a token is generated into <state_dir>/tcp-token the
+  # # first time a TCP or tailnet listener needs one, so enabling either
+  # # cannot leave the daemon open by omission.
   # token_file: null
 
   # How many days of per-room event logs to keep. 0 disables the sweep.

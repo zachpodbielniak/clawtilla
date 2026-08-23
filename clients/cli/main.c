@@ -38,6 +38,10 @@ static gboolean opt_license = FALSE;
 static gboolean opt_generate_config = FALSE;
 static gboolean opt_generate_service = FALSE;
 static gchar   *opt_config_path = NULL;
+static gchar   *opt_profile = NULL;
+static gchar   *opt_host = NULL;
+static gint     opt_port = 0;
+static gchar   *opt_token = NULL;
 
 static GOptionEntry entries[] = {
     {
@@ -47,6 +51,22 @@ static GOptionEntry entries[] = {
     {
         "socket", 's', 0, G_OPTION_ARG_FILENAME, &opt_socket_path,
         "Path to the daemon's socket", "FILE"
+    },
+    {
+        "profile", 'p', 0, G_OPTION_ARG_STRING, &opt_profile,
+        "Use a saved connection (see `clawtilla remote list`)", "NAME"
+    },
+    {
+        "host", 'H', 0, G_OPTION_ARG_STRING, &opt_host,
+        "Reach a daemon at this address instead of the local socket", "HOST"
+    },
+    {
+        "port", 0, 0, G_OPTION_ARG_INT, &opt_port,
+        "Port for --host (default 8792)", "PORT"
+    },
+    {
+        "token", 0, 0, G_OPTION_ARG_STRING, &opt_token,
+        "Bearer token for --host", "TOKEN"
     },
     {
         "version", 'V', 0, G_OPTION_ARG_NONE, &opt_version,
@@ -129,8 +149,16 @@ static const gchar *usage_text =
     "  # Look at what is queued for an agent that is currently stopped\n"
     "  clawtilla mailbox list researcher\n"
     "\n"
+    "  # Reach a daemon on another machine\n"
+    "  clawtilla daemon token                 # on that machine\n"
+    "  clawtilla remote add workstation 100.72.0.41 --token TOKEN\n"
+    "  clawtilla --profile workstation agent list\n"
+    "\n"
     "Configuration is read from the path given with -c, otherwise from\n"
-    "~/.clawtilla/config.yaml.\n";
+    "~/.clawtilla/config.yaml.\n"
+    "\n"
+    "clawtillad listens on this machine\'s tailnet address by default, so a\n"
+    "machine on your tailnet usually needs nothing but the token.\n";
 
 /*
  * Every verb, in one place.
@@ -140,7 +168,8 @@ static const gchar *usage_text =
  * missing here would have its arguments handed to the global parser.
  */
 static const gchar *const verbs[] = {
-    "daemon", "status", "agent", "send", "chat", "mailbox", "room", "task",
+    "daemon", "remote", "status", "agent", "send", "chat", "mailbox", "room",
+    "task",
     "memory",
     "computer", "cp", "config", "plugin", "integration", "model", "image",
     NULL
@@ -258,12 +287,50 @@ static ClawtClient *
 connect_to_daemon(void)
 {
     ClawtClient *client;
+    g_autoptr(ClawtConnection) connection = NULL;
     g_autoptr(GError) error = NULL;
 
-    client = clawt_client_new(opt_socket_path);
+    /*
+     * --host beats --profile beats the local socket.  The explicit
+     * address is last-resort and first-priority for the same reason: it
+     * is what a person reaches for when a saved profile is the thing
+     * they are trying to work around.
+     */
+    if (opt_host != NULL) {
+        connection = clawt_connection_new_remote(
+            opt_host, opt_host,
+            opt_port > 0 ? (guint16)opt_port : CLAWT_DEFAULT_TCP_PORT,
+            opt_token);
+    } else if (opt_profile != NULL) {
+        g_autoptr(GPtrArray) saved = clawt_connection_list_load(NULL, &error);
+        ClawtConnection *found;
+
+        if (saved == NULL) {
+            g_printerr("clawtilla: %s\n", error->message);
+            return NULL;
+        }
+
+        found = clawt_connection_list_find(saved, opt_profile);
+
+        if (found == NULL) {
+            g_printerr("clawtilla: there is no saved connection called "
+                       "'%s'\n", opt_profile);
+            g_printerr("  `clawtilla remote list` shows the ones there "
+                       "are.\n");
+            return NULL;
+        }
+
+        connection = clawt_connection_copy(found);
+    } else {
+        connection = clawt_connection_new_local("Local", opt_socket_path);
+    }
+
+    client = clawt_connection_create_client(connection);
 
     if (!clawt_client_connect(client, &error)) {
-        g_printerr("clawtilla: %s\n", error->message);
+        g_autofree gchar *where = clawt_connection_describe(connection);
+
+        g_printerr("clawtilla: %s (%s)\n", error->message, where);
         g_object_unref(client);
         return NULL;
     }
@@ -2731,10 +2798,15 @@ cmd_status(void)
     return EXIT_SUCCESS;
 }
 
+static gint cmd_daemon_token(void);
+
 static gint
-cmd_daemon(void)
+cmd_daemon(int argc, char *argv[])
 {
     g_autoptr(ClawtDaemon) daemon = NULL;
+
+    if (argc > 2 && g_strcmp0(argv[2], "token") == 0)
+        return cmd_daemon_token();
 
     /*
      * The same daemon clawtillad runs, in the foreground.  Handy for a
@@ -2744,6 +2816,197 @@ cmd_daemon(void)
     daemon = clawt_daemon_new(opt_config_path, NULL);
 
     return clawt_daemon_run(daemon);
+}
+
+/*
+ * Prints the token a remote client must present to this machine's daemon.
+ *
+ * Read from the file rather than asked for over IPC, and deliberately.
+ * Nothing may write a secret's value into an IPC response -- so there is
+ * no `daemon.token` request to make, and the value is taken from disk by
+ * a command that only runs where the daemon does.
+ */
+static gint
+cmd_daemon_token(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *configured = NULL;
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *token = NULL;
+
+    config = clawt_config_load(opt_config_path, &error);
+
+    if (config == NULL) {
+        g_printerr("clawtilla: %s\n", error->message);
+        return EXIT_FAILURE;
+    }
+
+    configured = clawt_config_get_path_value(config, "daemon.token_file");
+
+    if (configured != NULL && *configured != '\0') {
+        path = g_steal_pointer(&configured);
+    } else {
+        g_autofree gchar *state_dir =
+            clawt_config_get_path_value(config, "daemon.state_dir");
+
+        path = g_build_filename(state_dir, "tcp-token", NULL);
+    }
+
+    if (!g_file_get_contents(path, &token, NULL, &error)) {
+        g_printerr("clawtilla: no token yet (%s)\n", path);
+        g_printerr("  One is generated the first time the daemon starts a\n"
+                   "  TCP or tailnet listener. Check daemon.tailscale is on\n"
+                   "  and that this machine has a tailnet address.\n");
+        return EXIT_FAILURE;
+    }
+
+    g_strstrip(token);
+    g_print("%s\n", token);
+
+    return EXIT_SUCCESS;
+}
+
+/*
+ * Saved connections, shared with the GTK client's connection menu.
+ *
+ * `list` never prints a token.  It is the command a person runs to check
+ * what they saved, often over somebody's shoulder, and `daemon token` on
+ * the machine that owns it is the way to see one.
+ */
+static gint
+cmd_remote(int argc, char *argv[])
+{
+    const gchar *verb = (argc > 2) ? argv[2] : "list";
+    g_autoptr(GPtrArray) connections = NULL;
+    g_autoptr(GError) error = NULL;
+    guint i;
+
+    connections = clawt_connection_list_load(NULL, &error);
+
+    if (connections == NULL) {
+        g_printerr("clawtilla: %s\n", error->message);
+        return EXIT_FAILURE;
+    }
+
+    if (g_strcmp0(verb, "list") == 0) {
+        g_autofree gchar *path = clawt_connection_list_default_path();
+
+        if (connections->len == 0) {
+            g_print("No saved connections.\n");
+            g_print("  clawtilla remote add <name> <host> [--port N] "
+                    "[--token T]\n");
+            return EXIT_SUCCESS;
+        }
+
+        for (i = 0; i < connections->len; i++) {
+            ClawtConnection *connection = g_ptr_array_index(connections, i);
+            g_autofree gchar *where = clawt_connection_describe(connection);
+
+            g_print("%-20s %s%s\n", clawt_connection_get_name(connection),
+                    where,
+                    clawt_connection_get_token(connection) != NULL
+                        ? "" : "   (no token)");
+        }
+
+        g_print("\nFrom %s\n", path);
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "add") == 0) {
+        const gchar *name = (argc > 3) ? argv[3] : NULL;
+        const gchar *host = (argc > 4) ? argv[4] : NULL;
+        gint64 port = CLAWT_DEFAULT_TCP_PORT;
+        const gchar *token = NULL;
+        gboolean tls = FALSE;
+        gboolean insecure = FALSE;
+        ClawtConnection *connection;
+        gint arg;
+
+        if (name == NULL || host == NULL) {
+            g_printerr("Usage: clawtilla remote add <name> <host> "
+                       "[--port N] [--token T] [--tls] [--insecure]\n");
+            g_printerr("  e.g. clawtilla remote add workstation "
+                       "100.72.0.41 --token \"$(ssh box clawtilla daemon "
+                       "token)\"\n");
+            return EXIT_FAILURE;
+        }
+
+        for (arg = 5; arg < argc; arg++) {
+            if (g_strcmp0(argv[arg], "--port") == 0 && arg + 1 < argc)
+                port = g_ascii_strtoll(argv[++arg], NULL, 10);
+            else if (g_strcmp0(argv[arg], "--token") == 0 && arg + 1 < argc)
+                token = argv[++arg];
+            else if (g_strcmp0(argv[arg], "--tls") == 0)
+                tls = TRUE;
+            else if (g_strcmp0(argv[arg], "--insecure") == 0)
+                insecure = TRUE;
+        }
+
+        if (port <= 0 || port > G_MAXUINT16) {
+            g_printerr("clawtilla: %" G_GINT64_FORMAT " is not a port\n",
+                       port);
+            return EXIT_FAILURE;
+        }
+
+        if (clawt_connection_list_find(connections, name) != NULL) {
+            g_printerr("clawtilla: there is already a connection called "
+                       "'%s'\n", name);
+            return EXIT_FAILURE;
+        }
+
+        connection = clawt_connection_new_remote(name, host, (guint16)port,
+                                                  token);
+        clawt_connection_set_tls(connection, tls, insecure);
+        g_ptr_array_add(connections, connection);
+
+        if (!clawt_connection_list_save(NULL, connections, &error)) {
+            g_printerr("clawtilla: %s\n", error->message);
+            return EXIT_FAILURE;
+        }
+
+        g_print("Saved %s.\n", name);
+
+        if (token == NULL)
+            g_print("No token given; that daemon will refuse the "
+                    "connection until one is.\n");
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "rm") == 0) {
+        const gchar *name = (argc > 3) ? argv[3] : NULL;
+        ClawtConnection *found;
+
+        if (name == NULL) {
+            g_printerr("Usage: clawtilla remote rm <name>\n");
+            return EXIT_FAILURE;
+        }
+
+        found = clawt_connection_list_find(connections, name);
+
+        if (found == NULL) {
+            g_printerr("clawtilla: there is no connection called '%s'\n",
+                       name);
+            return EXIT_FAILURE;
+        }
+
+        g_ptr_array_remove(connections, found);
+
+        if (!clawt_connection_list_save(NULL, connections, &error)) {
+            g_printerr("clawtilla: %s\n", error->message);
+            return EXIT_FAILURE;
+        }
+
+        g_print("Removed %s.\n", name);
+
+        return EXIT_SUCCESS;
+    }
+
+    g_printerr("Usage: clawtilla remote {list,add,rm}\n");
+
+    return EXIT_FAILURE;
 }
 
 static gint
@@ -2867,7 +3130,10 @@ main(int argc, char *argv[])
     }
 
     if (g_strcmp0(argv[1], "daemon") == 0)
-        return cmd_daemon();
+        return cmd_daemon(argc, argv);
+
+    if (g_strcmp0(argv[1], "remote") == 0)
+        return cmd_remote(argc, argv);
 
     if (g_strcmp0(argv[1], "status") == 0)
         return cmd_status();

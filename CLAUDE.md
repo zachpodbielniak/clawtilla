@@ -1106,6 +1106,93 @@ the same program.
   SIGKILL cannot be caught and anything outlasting that is in
   uninterruptible sleep and must not become a hung daemon.
 
+### A convenience listener must not take daemon start down with it
+
+- `daemon.tailscale` is on by default, so the tailnet address is bound on
+  every start that finds one -- and the first thing that exposed was
+  `make test`, where every daemon fixture began binding a real network
+  address. That is two rules broken at once: the suite stopped being
+  hermetic, and on a machine already running a daemon the bind failed
+  with EADDRINUSE and took `clawt_daemon_start()` with it. A whole fleet
+  refusing to start because a *second* copy wanted the same convenience
+  port is a far worse failure than not being reachable from a laptop.
+- `clawt_ipc_server_set_optional_tcp_address()` marks an address whose
+  bind failure is a warning. The unix socket is the daemon's real
+  interface and is already listening by then. An address named in the
+  configuration is never optional -- somebody asked for it, so failing to
+  provide it is an error rather than a footnote.
+- The daemon also announced the address *before* binding it, so a daemon
+  that lost the race printed "reachable on the tailnet at ..." and warned
+  it could not bind that address one line later.
+  `clawt_ipc_server_is_listening_on()` exists so the announcement reports
+  what happened rather than what was requested.
+- Test fixtures set `daemon.tailscale: false`. `make test` opens no
+  network socket at all.
+
+### Finding an address must not run a program
+
+- The tailnet address comes from `getifaddrs()`, not from `tailscale ip
+  -4`. Daemon start may not wait on anything that can hang -- the same
+  rule that moved the model cache out of `clawt_daemon_start()` -- and a
+  subprocess talking to a wedged tailscaled hangs exactly as well as a
+  network call. An interface list is a syscall against data the kernel
+  already has.
+- Both the interface name and the address range are checked, because
+  either alone is wrong: `utun` is any tunnel on a BSD, and a container
+  can hold a 100.64/10 address for reasons of its own.
+- 100.64.0.0/10 is not an octet boundary. The second octet is a *range*,
+  64 through 127; `100.128.0.1` is somebody else's address on the open
+  internet and `100.63.255.255` is below the range. `tests/test-tailscale.c`
+  pins both ends.
+
+### Connection profiles belong to the client, not to clawtilla.yaml
+
+- The point of a profile is to reach a daemon that is somewhere else. A
+  laptop connecting to a workstation may have no fleet, no state
+  directory and no `clawtilla.yaml` at all, so reading the daemon's
+  config to find out how to reach a different daemon is backwards. They
+  live in `$XDG_CONFIG_HOME/clawtilla/connections.yaml`, 0600.
+- That file holds bearer tokens on purpose. There is deliberately no way
+  to write a secret into `clawtilla.yaml`, but here the token *is* the
+  thing being remembered, and a second file to manage would mean most
+  people keeping it in shell history instead.
+- Rendered with single-quoted YAML, whose only escape is a doubled quote,
+  so a token containing a backslash survives without an unescape step to
+  get wrong. `clawt_connection_list_parse()` and `_to_data()` are pure so
+  the round trip is asserted on without touching a file -- a field that
+  saves and does not load, in a file only touched when somebody edits
+  their connections, is otherwise found months later.
+- `clawtilla daemon token` reads the token from disk rather than asking
+  the daemon, because nothing may write a secret's value into an IPC
+  response. It therefore only works where the daemon runs, which is the
+  point.
+
+### A window holding a client must also hold what that client is
+
+- `clawt_window_new()` takes the `ClawtConnection` beside the
+  `ClawtClient`. A client knows a host and a port, not the name a person
+  gave that machine, so a window deriving its own label would be a second
+  answer to "which daemon is this" -- and every one of those this
+  codebase has grown turned out to be a bug.
+- Switching connects the new client *before* dropping the old one. A
+  remote daemon that is not running is the ordinary case here, and
+  releasing the working connection first leaves the window connected to
+  nothing because of a typo in a port.
+- Then everything from the previous daemon is cleared, and it is a
+  correctness step rather than tidying: agent ids, room ids and message
+  ids are all per-daemon, so a kept `shown` set silently swallows the new
+  daemon's messages on any id collision. Re-subscribe from cursor 0 for
+  the same reason -- a cursor is a position in one daemon's event stream.
+
+### AdwPreferencesGroup cannot enumerate its own rows
+
+- It wraps every added row in a list-box row of its own, so walking its
+  children hands back internal boxes rather than anything
+  `adw_preferences_group_remove()` will accept. A dialog that refills a
+  group keeps its own `GPtrArray` of the rows it added. Same shape as the
+  `GtkListBox` lesson above: the container keeps a record you have to go
+  back through.
+
 ## Things to NEVER Do
 
 - Never hand-edit `data/example-config.yaml` or `data/default-config.yaml`
@@ -1118,6 +1205,10 @@ the same program.
 - Never push to main without approval
 - Never leave a generated file naming the same top-level key twice; YAML
   keeps the last and silently discards everything under the first
+- Never make the tailnet listener mandatory; a bind failure there is a
+  warning, and `make test` must open no network socket at all
+- Never print a bearer token from a listing command, or write one into an
+  IPC response
 - Never regenerate an agent's `.mcp.json` wholesale. It is how an agent
   is given MCP servers, so people edit it. Only the `clawtilla` key is
   clawtilla's; read the rest back and write it out untouched, skip the

@@ -26,6 +26,8 @@ Global options: ~-c/--config~, ~-s/--socket~, ~-V/--version~,
 | Command | What it does |
 |---------+--------------|
 | ~daemon~ | run the daemon in the foreground (same code as ~clawtillad~) |
+| ~daemon token~ | print the bearer token a remote client must present |
+| ~remote list/add/rm~ | saved daemons on other machines |
 | ~status~ | version, config path, agent and client counts |
 | ~agent list~ | id, state, queue depth, link, description |
 | ~agent show <id>~ | everything about one agent |
@@ -56,6 +58,41 @@ Subcommands are dispatched on ~argv[1]~ before option parsing, and each
 owns its own option context.  One shared table across a dozen verbs
 collapses into mutually exclusive flags that are each valid for one verb,
 and the ~--help~ output stops being readable.
+
+*** Reaching a daemon on another machine
+
+Every verb takes ~--host~, ~--port~ and ~--token~, or ~--profile~ to use
+one saved earlier:
+
+#+begin_src sh
+# On the machine running the fleet
+clawtilla daemon token
+
+# On the machine you are sitting at
+clawtilla remote add workstation 100.72.0.41 --token "$(ssh box clawtilla daemon token)"
+clawtilla --profile workstation agent list
+clawtilla --profile workstation send researcher "how far did you get?"
+#+end_src
+
+~--host~ beats ~--profile~, which beats the local socket.  The explicit
+address is both last-resort and first-priority for the same reason: it is
+what you reach for when a saved profile is the thing you are working
+around.
+
+~daemon token~ reads the token from disk rather than asking the daemon
+for it, because nothing may write a secret's value into an IPC response.
+That also means it only works on the machine the daemon runs on, which is
+the point -- it is how you get the token to copy somewhere else.
+
+~remote list~ never prints a token.  It is the command you run to check
+what you saved, often over somebody's shoulder.
+
+The profiles live in ~$XDG_CONFIG_HOME/clawtilla/connections.yaml~, mode
+0600, and are shared with the GTK client's connection menu.  They are in
+the *client's* config rather than in ~clawtilla.yaml~ on purpose: the
+point of a profile is to reach a daemon that is somewhere else, and a
+laptop connecting to a workstation may have no fleet, no state directory
+and no ~clawtilla.yaml~ of its own.
 
 *** Exit statuses that mean something
 
@@ -406,8 +443,12 @@ event kind and the widget are the easy part.
 
 *** Adding an agent
 
-The ~+~ button offers both paths: fill in id, model and computer by hand,
-or answer six questions and let a model draft it.
+The ~+~ button is a split button.  Pressing it creates an agent, which is
+what it has always done; the arrow beside it also offers *Import an
+agent...*.
+
+The create dialog offers both paths: fill in id, model and computer by
+hand, or answer six questions and let a model draft it.
 
 The questions ask one thing each -- what it should do, what it should
 never do, what it needs to work on, how it should come across, what it is
@@ -435,6 +476,57 @@ can be changed later.  *The AI path shows
 the proposed configuration and waits for you to confirm* -- a model's
 proposal becoming an agent without anyone reading it is the kind of
 convenience nobody asks for twice.
+
+*** Importing an agent
+
+Two different things wear that name, and the dialog shows both, because
+which one you want depends on where the agent already is.
+
+*Already on disk* lists workspaces clawtilla can see that no agent
+claims -- an agent removed from the config keeps its state, a design that
+was never committed leaves a whole workspace, and a config restored from
+a backup leaves everything it did not mention.  Those accumulate silently
+and were previously reachable only through ~clawtilla agent discover~, so
+from the client they were invisible.  Importing one adds the config entry
+it is missing; nothing is copied or moved.  Each row says what the
+directory holds, because "there is a directory called researcher" is not
+enough to decide with: one with a mailbox and a memory database is an
+agent somebody ran, and one with nothing but a ~config.yaml~ is a design
+abandoned halfway.
+
+*From somewhere else* copies a standalone libreclaw workspace in.  Its
+provider and model come with it, so an import does not quietly move the
+agent onto the fleet defaults.  /Keep git history/ is off by default: the
+new workspace is usually not the same repository.
+
+*** Another machine's fleet
+
+Left of the app title is a menu naming the daemon the window is showing.
+It lists *Local* and every saved connection, and switching is one click.
+
+The name is also shown as the window's subtitle and the button is
+tinted whenever the connection is remote.  That is deliberate: every
+destructive verb in the client -- remove an agent, tear down its VM,
+reset its session -- acts on whichever daemon is connected, and someone
+who has forgotten they are pointed at another machine will not find out
+until afterwards.
+
+*Manage connections...* adds and removes them.  A connection needs a host
+and the token from ~clawtilla daemon token~ on that machine; the port
+defaults to 8792.  TLS is only worth turning on if that daemon has a
+certificate -- inside a tailnet, WireGuard is already encrypting the
+connection.
+
+Switching connects the new daemon *before* letting go of the old one, so
+a typo in a port leaves you where you were with a toast explaining why,
+rather than looking at nothing.  Everything on screen is then cleared:
+agent ids, room ids and message ids are all per-daemon, so keeping any of
+them would show one daemon's transcript under another daemon's agent.
+
+~clawtilla-gtk~ also takes ~--profile~, ~--host~, ~--port~ and ~--token~,
+so a laptop with no fleet of its own can start straight on a workstation
+rather than being shown "the daemon is not running" for a daemon it was
+never asking about.
 
 *** Adaptive
 
