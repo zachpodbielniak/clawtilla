@@ -554,6 +554,20 @@ the same program.
   `virDomainCreate` on it is an error. The qemu backend is guarded too —
   two qemus writing one qcow2 corrupt it.
 
+### computer_exec takes a command, not a shell line
+
+- Both backends `g_shell_quote()` each argument and join them, so `>`,
+  `|`, `&&`, `;`, `*` and `$VAR` reach the command as literal text.
+  The failure is the bad kind: `echo hi > /dev/console` **exits 0** and
+  prints `hi > /dev/console` to stdout, so it reports success and does
+  nothing. Measured both ways against a real guest.
+- An agent worked this out by trial and error and reported it as a
+  discovery, which is the signal that it belonged in the workspace files
+  rather than in a person's head. `TOOLS.org` now states the rule for
+  every backend, and a VM agent's own description shows the
+  `/dev/console` case with its own name in it — that being the one place
+  where the naive form most convincingly appears to have worked.
+
 ### The designer's pinning was right; the client never sent it
 
 - `clawt_agent_designer_pin_identity()` works and has two tests, the

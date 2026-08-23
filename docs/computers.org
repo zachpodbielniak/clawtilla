@@ -497,6 +497,32 @@ VM rebuilt from the same base answers on the same address with a
 different key, which against your own file reads as an attack and is
 refused.
 
+*** Running things in one
+
+~clawtilla_computer_exec~ takes a *command and its arguments*, not a
+shell line.  Every argument is quoted and passed through as it stands, so
+~>~, ~|~, ~&&~, ~;~, ~*~ and ~$VAR~ arrive at the command as literal text
+-- the command runs, reports success, and does nothing you were looking
+for.  This is the same for every backend.
+
+Wrap it in a shell when you want shell behaviour:
+
+#+begin_src bash
+clawtilla computer exec researcher -- bash -c 'echo hi > /tmp/note'
+#+end_src
+
+*Writing to a VM's screen* is the case where this bites hardest, because
+the naive form looks like it worked.  ~/dev/console~ is the serial
+console, and it is what somebody watching in virt-manager sees:
+
+#+begin_src bash
+clawtilla computer exec researcher -- bash -c 'echo ">>> hello <<<" > /dev/console'
+#+end_src
+
+An agent's ~TOOLS.org~ says all of this, and a VM agent's own description
+says it again with its name in it -- it is the kind of thing an agent
+otherwise works out by trial and error, and reports as a discovery.
+
 *** Stopping one
 
 ~shutdown~ first, so the guest flushes its filesystems -- a VM pulled out
