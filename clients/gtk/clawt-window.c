@@ -146,6 +146,12 @@ struct _ClawtWindow {
      * person is doing in that window.
      */
     AdwDialog         *settings;
+    /*
+     * Appearance, held for the life of the window rather than the life
+     * of the settings dialog: the dialog is a live preview, so its
+     * controls edit this and every edit is applied and saved at once.
+     */
+    ClawtAppearance   *appearance;
     GtkWidget         *settings_images;
     GtkWidget         *settings_catalog_row;
     GtkWidget         *settings_url_row;
@@ -656,10 +662,78 @@ set_activity(ClawtWindow *self, const gchar *text)
  * checked before it is used, and anything that fails goes up as the
  * text it came from.
  */
+/* ── Appearance ──────────────────────────────────────────────────── */
+
+/*
+ * The chosen code font, and the provider carrying the rest.
+ *
+ * File-scope because both are genuinely per-display rather than per
+ * window: a GtkCssProvider is added to the GdkDisplay, and a second
+ * window must not add a second copy of the same sheet. The alternative
+ * -- threading an appearance pointer down to set_label_markdown() --
+ * would put a parameter on a function whose whole job is one label, for
+ * a value that cannot differ between two labels.
+ */
+static GtkCssProvider *appearance_provider = NULL;
+static gchar          *appearance_code_font = NULL;
+
+/*
+ * Applies fonts and colour scheme.
+ *
+ * Called on startup and on every change in the settings dialog, so the
+ * dialog is a live preview rather than something you close and hope
+ * about.
+ */
+static void
+apply_appearance(ClawtAppearance *appearance)
+{
+    GdkDisplay *display = gdk_display_get_default();
+    g_autofree gchar *css = NULL;
+    AdwStyleManager *style = adw_style_manager_get_default();
+
+    if (appearance == NULL || display == NULL)
+        return;
+
+    switch (clawt_appearance_get_theme(appearance)) {
+    case CLAWT_THEME_LIGHT:
+        adw_style_manager_set_color_scheme(style, ADW_COLOR_SCHEME_FORCE_LIGHT);
+        break;
+    case CLAWT_THEME_DARK:
+        adw_style_manager_set_color_scheme(style, ADW_COLOR_SCHEME_FORCE_DARK);
+        break;
+    case CLAWT_THEME_SYSTEM:
+    default:
+        adw_style_manager_set_color_scheme(style, ADW_COLOR_SCHEME_DEFAULT);
+        break;
+    }
+
+    g_free(appearance_code_font);
+    appearance_code_font =
+        g_strdup(clawt_appearance_get_monospace_font(appearance));
+
+    css = clawt_appearance_to_css(appearance);
+
+    /*
+     * One provider, reloaded, rather than a new one each time.  Adding a
+     * provider per change leaves every previous sheet on the display at
+     * the same priority, so the fonts stop changing after the first edit
+     * -- the oldest rule keeps winning ties.
+     */
+    if (appearance_provider == NULL) {
+        appearance_provider = gtk_css_provider_new();
+        gtk_style_context_add_provider_for_display(
+            display, GTK_STYLE_PROVIDER(appearance_provider),
+            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    }
+
+    gtk_css_provider_load_from_string(appearance_provider, css);
+}
+
 static void
 set_label_markdown(GtkLabel *label, const gchar *body)
 {
-    g_autofree gchar *markup = clawt_markdown_to_pango(body);
+    g_autofree gchar *markup =
+        clawt_markdown_to_pango_full(body, appearance_code_font);
     g_autoptr(GError) error = NULL;
 
     if (pango_parse_markup(markup, -1, 0, NULL, NULL, NULL, &error)) {
@@ -7699,6 +7773,339 @@ on_settings_closed(AdwDialog *dialog, gpointer user_data)
     g_hash_table_remove_all(self->settings_bars);
 }
 
+/* ── The Appearance page ─────────────────────────────────────────── */
+
+/*
+ * Saved on every change rather than behind an Apply button.
+ *
+ * The page is a live preview -- the font changes under the dialog as you
+ * pick it -- and a preview you can see but which is not yet saved is the
+ * worst of both: it looks applied, and closing the window loses it.
+ */
+static void
+appearance_changed(ClawtWindow *self)
+{
+    g_autoptr(GError) error = NULL;
+
+    apply_appearance(self->appearance);
+
+    if (!clawt_appearance_save(self->appearance, NULL, &error))
+        clawt_window_toast(self, error->message);
+}
+
+static void
+on_theme_selected(GObject *row, GParamSpec *spec, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    guint selected = adw_combo_row_get_selected(ADW_COMBO_ROW(row));
+    static const ClawtTheme themes[] = {
+        CLAWT_THEME_SYSTEM, CLAWT_THEME_LIGHT, CLAWT_THEME_DARK
+    };
+
+    (void)spec;
+
+    clawt_appearance_set_theme(self->appearance,
+                               themes[MIN(selected, 2)]);
+    appearance_changed(self);
+}
+
+static void
+on_font_size_changed(GtkSpinButton *spin, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    gboolean monospace =
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(spin), "monospace"));
+    gdouble points = gtk_spin_button_get_value(spin);
+
+    if (monospace)
+        clawt_appearance_set_monospace_size(self->appearance, points);
+    else
+        clawt_appearance_set_font_size(self->appearance, points);
+
+    appearance_changed(self);
+}
+
+/*
+ * The label under a font row: the chosen family, or what the desktop is
+ * using when nothing is chosen.
+ *
+ * Naming the system font rather than saying "Default" matters, because
+ * the two states look identical on screen and only one of them keeps
+ * following the desktop when it changes.
+ */
+static void
+update_font_row(ClawtWindow *self, GtkWidget *row, gboolean monospace)
+{
+    const gchar *chosen =
+        monospace ? clawt_appearance_get_monospace_font(self->appearance)
+                  : clawt_appearance_get_font(self->appearance);
+
+    if (chosen != NULL) {
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(row), chosen);
+        return;
+    }
+
+    adw_action_row_set_subtitle(
+        ADW_ACTION_ROW(row),
+        monospace ? "Whatever the desktop uses for monospace"
+                  : "Whatever the desktop uses");
+}
+
+static void
+on_font_chosen(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    GtkWidget *row = user_data;
+    ClawtWindow *self = g_object_get_data(G_OBJECT(row), "window");
+    gboolean monospace =
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "monospace"));
+    g_autoptr(PangoFontDescription) description = NULL;
+    g_autoptr(GError) error = NULL;
+
+    description = gtk_font_dialog_choose_font_finish(
+        GTK_FONT_DIALOG(source), result, &error);
+
+    /* Dismissing the chooser is not a failure worth a toast. */
+    if (description == NULL)
+        return;
+
+    if (monospace)
+        clawt_appearance_set_monospace_font(
+            self->appearance, pango_font_description_get_family(description));
+    else
+        clawt_appearance_set_font(
+            self->appearance, pango_font_description_get_family(description));
+
+    /*
+     * The size comes with the family from a font chooser, and ignoring
+     * it would mean picking "Cantarell 14" and getting Cantarell at
+     * whatever size was already set -- which reads as the size control
+     * being broken.
+     */
+    if (pango_font_description_get_size(description) > 0) {
+        gdouble points =
+            (gdouble)pango_font_description_get_size(description) / PANGO_SCALE;
+        GtkWidget *spin = g_object_get_data(G_OBJECT(row), "spin");
+
+        if (monospace)
+            clawt_appearance_set_monospace_size(self->appearance, points);
+        else
+            clawt_appearance_set_font_size(self->appearance, points);
+
+        /*
+         * Set on the widget too, so the spin button agrees with what was
+         * just chosen.  ::value-changed then fires and saves, which is
+         * why this happens before the explicit save below rather than
+         * after it.
+         */
+        if (spin != NULL)
+            gtk_spin_button_set_value(
+                GTK_SPIN_BUTTON(spin),
+                monospace
+                    ? clawt_appearance_get_monospace_size(self->appearance)
+                    : clawt_appearance_get_font_size(self->appearance));
+    }
+
+    update_font_row(self, row, monospace);
+    appearance_changed(self);
+}
+
+static void
+on_choose_font(GtkButton *button, gpointer user_data)
+{
+    GtkWidget *row = user_data;
+    ClawtWindow *self = g_object_get_data(G_OBJECT(row), "window");
+    GtkFontDialog *chooser = gtk_font_dialog_new();
+    g_autoptr(PangoFontDescription) current = NULL;
+    gboolean monospace =
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "monospace"));
+    const gchar *family =
+        monospace ? clawt_appearance_get_monospace_font(self->appearance)
+                  : clawt_appearance_get_font(self->appearance);
+
+    (void)button;
+
+    gtk_font_dialog_set_title(chooser, monospace ? "Code font"
+                                                 : "Interface font");
+
+    if (family != NULL)
+        current = pango_font_description_from_string(family);
+
+    gtk_font_dialog_choose_font(chooser, GTK_WINDOW(self), current, NULL,
+                                on_font_chosen, row);
+    g_object_unref(chooser);
+}
+
+/*
+ * Back to the desktop's own font.
+ *
+ * Worth its own button: clearing a font chooser is not something a font
+ * chooser offers, so without this a person who tried a font could never
+ * get back to following their desktop -- only to naming whatever it
+ * happens to use today, which is a different and worse thing.
+ */
+static void
+on_clear_font(GtkButton *button, gpointer user_data)
+{
+    GtkWidget *row = user_data;
+    ClawtWindow *self = g_object_get_data(G_OBJECT(row), "window");
+    gboolean monospace =
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "monospace"));
+    GtkWidget *spin = g_object_get_data(G_OBJECT(row), "spin");
+
+    (void)button;
+
+    if (monospace) {
+        clawt_appearance_set_monospace_font(self->appearance, NULL);
+        clawt_appearance_set_monospace_size(self->appearance, 0);
+    } else {
+        clawt_appearance_set_font(self->appearance, NULL);
+        clawt_appearance_set_font_size(self->appearance, 0);
+    }
+
+    if (spin != NULL)
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(spin), 0);
+
+    update_font_row(self, row, monospace);
+    appearance_changed(self);
+}
+
+/*
+ * One font row: a family with a chooser, and a size beside it.
+ *
+ * The size is a separate control from the chooser's own because 0 has to
+ * be reachable, and 0 means "the desktop's size" -- which no font chooser
+ * has a way to express.
+ */
+static GtkWidget *
+build_font_group(ClawtWindow *self, const gchar *title,
+                 const gchar *description, gboolean monospace)
+{
+    GtkWidget *group = adw_preferences_group_new();
+    GtkWidget *row = adw_action_row_new();
+    GtkWidget *size_row = adw_action_row_new();
+    GtkWidget *buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *choose = gtk_button_new_with_label("Choose\342\200\246");
+    GtkWidget *clear = gtk_button_new_from_icon_name("edit-clear-symbolic");
+    GtkWidget *spin = gtk_spin_button_new_with_range(0, 48, 1);
+
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group), title);
+    adw_preferences_group_set_description(ADW_PREFERENCES_GROUP(group),
+                                          description);
+
+    adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row), FALSE);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), "Font");
+
+    g_object_set_data(G_OBJECT(row), "window", self);
+    g_object_set_data(G_OBJECT(row), "monospace",
+                      GINT_TO_POINTER(monospace));
+    g_object_set_data(G_OBJECT(row), "spin", spin);
+
+    gtk_widget_set_valign(buttons, GTK_ALIGN_CENTER);
+    gtk_widget_add_css_class(clear, "flat");
+    gtk_widget_set_tooltip_text(clear, "Follow the desktop again");
+
+    g_signal_connect(choose, "clicked", G_CALLBACK(on_choose_font), row);
+    g_signal_connect(clear, "clicked", G_CALLBACK(on_clear_font), row);
+
+    gtk_box_append(GTK_BOX(buttons), choose);
+    gtk_box_append(GTK_BOX(buttons), clear);
+    adw_action_row_add_suffix(ADW_ACTION_ROW(row), buttons);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(size_row), "Size");
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(size_row),
+                                "0 follows the desktop");
+
+    gtk_widget_set_valign(spin, GTK_ALIGN_CENTER);
+    gtk_spin_button_set_value(
+        GTK_SPIN_BUTTON(spin),
+        monospace ? clawt_appearance_get_monospace_size(self->appearance)
+                  : clawt_appearance_get_font_size(self->appearance));
+    g_object_set_data(G_OBJECT(spin), "monospace",
+                      GINT_TO_POINTER(monospace));
+    g_signal_connect(spin, "value-changed",
+                     G_CALLBACK(on_font_size_changed), self);
+
+    adw_action_row_add_suffix(ADW_ACTION_ROW(size_row), spin);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), size_row);
+
+    update_font_row(self, row, monospace);
+
+    return group;
+}
+
+static GtkWidget *
+build_appearance_page(ClawtWindow *self)
+{
+    GtkWidget *page = adw_preferences_page_new();
+    GtkWidget *theme_group = adw_preferences_group_new();
+    GtkWidget *theme_row = adw_combo_row_new();
+    static const gchar *const themes[] = { "Follow the system", "Light",
+                                           "Dark", NULL };
+    guint selected = 0;
+
+    adw_preferences_page_set_title(ADW_PREFERENCES_PAGE(page), "Appearance");
+    adw_preferences_page_set_icon_name(ADW_PREFERENCES_PAGE(page),
+                                       "applications-graphics-symbolic");
+
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(theme_group),
+                                    "Theme");
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(theme_group),
+        "Kept on this machine rather than in clawtilla.yaml. The client "
+        "can switch between daemons while it runs, and fonts that came "
+        "from a daemon's config would change when you connected to "
+        "another one.");
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(theme_row),
+                                  "Colour scheme");
+    adw_combo_row_set_model(ADW_COMBO_ROW(theme_row),
+                            G_LIST_MODEL(gtk_string_list_new(themes)));
+
+    switch (clawt_appearance_get_theme(self->appearance)) {
+    case CLAWT_THEME_LIGHT:
+        selected = 1;
+        break;
+    case CLAWT_THEME_DARK:
+        selected = 2;
+        break;
+    case CLAWT_THEME_SYSTEM:
+    default:
+        selected = 0;
+        break;
+    }
+
+    adw_combo_row_set_selected(ADW_COMBO_ROW(theme_row), selected);
+
+    /*
+     * Connected after the initial selection is set, or setting it would
+     * fire the handler and save the file on every open.
+     */
+    g_signal_connect(theme_row, "notify::selected",
+                     G_CALLBACK(on_theme_selected), self);
+
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(theme_group), theme_row);
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(theme_group));
+
+    adw_preferences_page_add(
+        ADW_PREFERENCES_PAGE(page),
+        ADW_PREFERENCES_GROUP(build_font_group(
+            self, "Interface",
+            "Everything but code: the agent list, messages, dialogs.",
+            FALSE)));
+
+    adw_preferences_page_add(
+        ADW_PREFERENCES_PAGE(page),
+        ADW_PREFERENCES_GROUP(build_font_group(
+            self, "Code",
+            "Code blocks and inline code in a conversation, and the "
+            "output of the exec console.",
+            TRUE)));
+
+    return page;
+}
+
 static void
 on_settings_activate(GSimpleAction *action, GVariant *parameter,
                      gpointer user_data)
@@ -7813,6 +8220,9 @@ on_settings_activate(GSimpleAction *action, GVariant *parameter,
                              ADW_PREFERENCES_GROUP(add_group));
     adw_preferences_dialog_add(ADW_PREFERENCES_DIALOG(dialog),
                                ADW_PREFERENCES_PAGE(page));
+    adw_preferences_dialog_add(ADW_PREFERENCES_DIALOG(dialog),
+                               ADW_PREFERENCES_PAGE(
+                                   build_appearance_page(self)));
 
     self->settings = dialog;
     g_signal_connect(dialog, "closed", G_CALLBACK(on_settings_closed), self);
@@ -8197,6 +8607,23 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
 
     g_signal_connect(client, "event", G_CALLBACK(on_daemon_event), self);
 
+    /*
+     * Applied before anything is shown, so the window is drawn once at
+     * the right size rather than redrawn a frame later.
+     */
+    {
+        g_autoptr(GError) appearance_error = NULL;
+
+        self->appearance = clawt_appearance_load(NULL, &appearance_error);
+
+        if (self->appearance == NULL) {
+            g_warning("appearance: %s", appearance_error->message);
+            self->appearance = clawt_appearance_new();
+        }
+
+        apply_appearance(self->appearance);
+    }
+
     reload_connections(self);
     update_connection_label(self);
 
@@ -8223,6 +8650,7 @@ clawt_window_dispose(GObject *object)
     g_clear_pointer(&self->agent_menu, gtk_widget_unparent);
     g_clear_object(&self->agent_actions);
 
+    g_clear_pointer(&self->appearance, clawt_appearance_free);
     g_clear_pointer(&self->connections, g_ptr_array_unref);
     g_clear_pointer(&self->active_connection, clawt_connection_free);
     g_clear_pointer(&self->local_socket, g_free);

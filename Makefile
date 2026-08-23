@@ -52,6 +52,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/clawt-error.h \
 	$(SRCDIR)/clawt-util.h \
 	$(SRCDIR)/config/clawt-config-schema.h \
+	$(SRCDIR)/config/clawt-appearance.h \
 	$(SRCDIR)/config/clawt-secret-ref.h \
 	$(SRCDIR)/core/clawt-event.h \
 	$(SRCDIR)/core/clawt-daemon.h \
@@ -122,6 +123,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/clawt-error.c \
 	$(SRCDIR)/clawt-util.c \
 	$(SRCDIR)/config/clawt-config-schema.c \
+	$(SRCDIR)/config/clawt-appearance.c \
 	$(SRCDIR)/config/clawt-schema-render.c \
 	$(SRCDIR)/config/clawt-secret-ref.c \
 	$(SRCDIR)/core/clawt-event.c \

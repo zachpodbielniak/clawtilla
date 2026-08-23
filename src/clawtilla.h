@@ -33,6 +33,7 @@
 #include "clawt-util.h"
 
 #include "config/clawt-config-schema.h"
+#include "config/clawt-appearance.h"
 #include "config/clawt-secret-ref.h"
 #include "computer/clawt-mount.h"
 #include "computer/clawt-exchange.h"

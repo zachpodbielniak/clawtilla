@@ -33,6 +33,18 @@ typedef struct {
     gint      quote;    /* how deep in block quotes */
 
     /*
+     * The opening and closing tags for a run of code.
+     *
+     * <tt> by default, which Pango resolves through fontconfig's generic
+     * "monospace" alias -- and that alias is not reachable from GTK CSS,
+     * so a person who chose a code font in the client would see it in the
+     * exec console and not in a chat message.  Naming the family in a
+     * <span> is the only way the choice reaches this text.
+     */
+    const gchar *code_open;
+    const gchar *code_close;
+
+    /*
      * Whether a blank line is owed before the next block.
      *
      * Set when a block ends and paid when the next one starts, rather
@@ -132,9 +144,10 @@ put_code_block(Render *render, const gchar *literal)
             break;
 
         begin_block_full(render, i == 0);
-        put_markup(render, "<tt>" DIM_OPEN "  " DIM_CLOSE);
+        put_markup(render, render->code_open);
+        put_markup(render, DIM_OPEN "  " DIM_CLOSE);
         put_text(render, lines[i]);
-        put_markup(render, "</tt>");
+        put_markup(render, render->code_close);
     }
 
     end_block(render);
@@ -229,9 +242,9 @@ enter_node(Render *render, cmark_node *node)
         break;
 
     case CMARK_NODE_CODE:
-        put_markup(render, "<tt>");
+        put_markup(render, render->code_open);
         put_text(render, cmark_node_get_literal(node));
-        put_markup(render, "</tt>");
+        put_markup(render, render->code_close);
         break;
 
     /*
@@ -329,11 +342,12 @@ exit_node(Render *render, cmark_node *node)
 }
 
 gchar *
-clawt_markdown_to_pango(const gchar *markdown)
+clawt_markdown_to_pango_full(const gchar *markdown, const gchar *code_font)
 {
     cmark_node *document;
     cmark_iter *iter;
     cmark_event_type event;
+    g_autofree gchar *code_open = NULL;
     Render render;
 
     if (markdown == NULL || markdown[0] == '\0')
@@ -343,6 +357,24 @@ clawt_markdown_to_pango(const gchar *markdown)
     render.lists = g_array_new(FALSE, FALSE, sizeof(ListLevel));
     render.quote = 0;
     render.blank = FALSE;
+
+    /*
+     * The family is escaped as attribute text before it goes anywhere
+     * near the markup.  It comes from a font chooser, so it is not
+     * hostile -- but it is the one piece of this markup that is not a
+     * literal, and the rule here is that nothing reaches the parser
+     * unescaped, whoever wrote it.
+     */
+    if (code_font != NULL && *code_font != '\0') {
+        g_autofree gchar *escaped = g_markup_escape_text(code_font, -1);
+
+        code_open = g_strdup_printf("<span font_family=\"%s\">", escaped);
+        render.code_open = code_open;
+        render.code_close = "</span>";
+    } else {
+        render.code_open = "<tt>";
+        render.code_close = "</tt>";
+    }
 
     /*
      * CMARK_OPT_SAFE would strip raw HTML for us, but it replaces it
@@ -379,4 +411,10 @@ clawt_markdown_to_pango(const gchar *markdown)
         g_string_truncate(render.out, render.out->len - 1);
 
     return g_string_free(render.out, FALSE);
+}
+
+gchar *
+clawt_markdown_to_pango(const gchar *markdown)
+{
+    return clawt_markdown_to_pango_full(markdown, NULL);
 }

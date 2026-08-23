@@ -44,4 +44,27 @@ G_BEGIN_DECLS
  */
 gchar *clawt_markdown_to_pango(const gchar *markdown);
 
+/**
+ * clawt_markdown_to_pango_full:
+ * @markdown: (nullable): what the agent said
+ * @code_font: (nullable): the family to render code in, or %NULL for the
+ *   system's monospace
+ *
+ * As clawt_markdown_to_pango(), with the code font named.
+ *
+ * `<tt>` is Pango's generic monospace alias, resolved through fontconfig
+ * -- and nothing in GTK CSS can redirect it. So a person who picked a
+ * code font in the client saw it in the exec console and not in a chat
+ * message, which is the place they were actually reading code. Naming
+ * the family in a `<span>` is the only way the choice reaches this text.
+ *
+ * @code_font is escaped before it is emitted. It comes from a font
+ * chooser rather than from a model, but the rule in this file is that
+ * nothing reaches a markup parser unescaped, whoever wrote it.
+ *
+ * Returns: (transfer full): Pango markup
+ */
+gchar *clawt_markdown_to_pango_full(const gchar *markdown,
+                                    const gchar *code_font);
+
 G_END_DECLS

@@ -1106,6 +1106,55 @@ the same program.
   SIGKILL cannot be caught and anything outlasting that is in
   uninterruptible sleep and must not become a hung daemon.
 
+### "Follow the desktop" is not the same as naming the desktop's font
+
+- The two look identical on screen and diverge for ever afterwards: one
+  keeps following, the other has quietly frozen. So `ClawtAppearance`
+  emits *no CSS rule at all* for an unset value rather than a rule naming
+  the current default -- otherwise a person who later changed their
+  desktop font would find this one app ignoring it, with no reason to
+  look in a dialog they had never opened. Zeroed means "defer" for every
+  field, which also makes a field added later default to deferring.
+- Clearing a font must reach NULL, not `""`. An empty family emits
+  `font-family: ;`, which is invalid, and GTK drops the whole block it
+  appears in -- so clearing the family would silently take the size with
+  it. And a font chooser has no way to express "unset", which is why the
+  dialog has a clear button beside it.
+- Appearance lives in the client's config, not `clawtilla.yaml`, for the
+  same reason connection profiles do -- and more sharply, because the
+  client switches daemons at runtime: fonts from a daemon's config would
+  change when you connected to another machine.
+
+### Pango's <tt> is not reachable from GTK CSS
+
+- It resolves through fontconfig's generic monospace alias, so a code
+  font set in the client applied to the exec console -- a real widget
+  with a CSS node -- and did nothing to a chat message, which is where
+  people actually read code. `clawt_markdown_to_pango_full()` names the
+  family in a `<span>` instead. The family is escaped on the way in: it
+  comes from a font chooser rather than a model, but the rule in that
+  file is that nothing reaches a markup parser unescaped, whoever wrote
+  it.
+- A font family in CSS is sanitised rather than escaped -- quotes,
+  braces, semicolons and angle brackets are dropped. CSS string escapes
+  are their own small language and there is nothing to preserve: no font
+  has a brace in its name. The test asserts *structure* (one block, one
+  declaration, one pair of quotes) rather than absence of the injected
+  text, because text inside the quoted family is harmless and asserting
+  on it fails for the wrong reason.
+
+### One CSS provider, reloaded
+
+- `gtk_style_context_add_provider_for_display()` adds; it does not
+  replace. A new provider per change leaves every previous sheet on the
+  display at the same priority, and the oldest wins ties -- so the fonts
+  change once and then appear stuck. Keep one provider and
+  `gtk_css_provider_load_from_string()` into it.
+- Verified by asking a realized widget for its resolved font description
+  rather than by reading the sheet: 21pt arrived as `Cantarell 28px` and
+  the monospace view as `DejaVu Sans Mono 22.667px`. GTK parsing a
+  stylesheet without complaint is not evidence that any widget uses it.
+
 ### Help text that describes a default is not the same as printing it
 
 - `clawtillad --help` computes what this machine would actually bind --

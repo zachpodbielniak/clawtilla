@@ -179,6 +179,49 @@ image would simply never appear, with nothing anywhere saying why.
 
 See [[file:computers.org][computers.org]] for what to do with one.
 
+*** Appearance
+
+The second page of Settings: colour scheme, and the fonts.
+
+| Setting | What it covers |
+|---------+----------------|
+| Colour scheme | Follow the system, Light, or Dark |
+| Interface font and size | Everything but code -- sidebar, messages, dialogs |
+| Code font and size | Code blocks and inline code in a conversation, and the exec console |
+
+Changes apply as you make them and are saved at once. A preview you can
+see but which is not yet saved is the worst of both: it looks applied,
+and closing the window loses it.
+
+*An empty font, or a size of 0, means "use whatever the desktop says",*
+and that is the default. It is deliberately not the same as naming the
+font your desktop currently uses -- a named one stops following it, so
+changing your desktop font later would leave this one app behind. The
+clear button beside each font goes back to following; a font chooser has
+no way to express that, which is why the button exists.
+
+The settings live in ~$XDG_CONFIG_HOME/clawtilla/appearance.yaml~:
+
+#+begin_src yaml
+theme: 'dark'
+font: 'Cantarell'
+font_size: 12
+monospace_font: 'JetBrains Mono'
+monospace_size: 10.5
+#+end_src
+
+Not in ~clawtilla.yaml~, for the same reason connection profiles are not
+-- and the reason is sharper here, because the client can switch daemons
+while it is running. Fonts that came from a daemon's config would change
+when you connected to a workstation and change back when you went home.
+They are per-machine by nature too: the size that is right on a laptop is
+not the size that is right on a 4K panel, and that is often the same
+fleet seen from both.
+
+A size outside 6--48pt is clamped rather than refused. This file invites
+hand-editing, and a 2 or a 2000 in it would make the settings dialog
+unreadable and therefore unable to fix itself.
+
 *** The sidebar
 
 Each agent shows a state dot, its description, and badges:
