@@ -606,6 +606,128 @@ the same program.
   the running daemon was minutes old. Run plain `make` before restarting
   the daemon to check a fix by hand.
 
+### g_enum_get_value_by_nick() asserts on a flags type
+
+- `clawt_enum_from_nick()` calls it, so passing a flags `GType` is an
+  assertion failure rather than a lookup that returns nothing. Every
+  notify integration therefore failed to parse its own `events` list and
+  **nothing would ever have fired** -- while the "send a test" button
+  worked perfectly throughout, because it skips the list by design. A
+  feature can be demonstrably working through the surface built to
+  demonstrate it and dead on every real path. `clawt_flags_from_nick()`
+  now exists and does its own case-insensitive comparison, for the same
+  reason its enum twin does.
+
+### A hand-written list of an option's keys drifts from the schema silently
+
+- The daemon kept two -- one to read an integration, one to write it --
+  and the CLI a third. Adding `backend` to the schema without adding it
+  to all three produced a setting that was accepted, reported as saved,
+  written to a file without it, and then ignored at the default. Nothing
+  warned. All three walk `clawt_config_schema_get()` now and dispatch on
+  `entry->type`; the schema is the source of truth for what an option
+  *is*, so it may as well be the source of truth for what the options
+  *are*.
+- Same shape as the starter-config generator, which skipped list
+  contents by naming `"agents."` and `"rooms."` outright and emitted a
+  third list's two dozen keys under whichever section was open above
+  them. `inside_list_of()` asks the schema instead.
+
+### A signal nothing connects to is a feature that does not exist
+
+- `ClawtAgentManager::agent-state-changed` had been emitted since the
+  manager was written and **nothing had ever connected to it**, so an
+  agent that crashed produced no event on the bus at all: clients found
+  out by polling, and nobody found out at 3am. Grep for a connection
+  before assuming a signal is wired; emitting one is half the work.
+
+### g_task_new() refs its source object, so it must be a GObject
+
+- Passing a `ClawtIntegrationBinding` -- a plain reference-counted struct
+  -- ran `g_object_ref()` on a pointer that is not a GObject and took the
+  daemon down on the first health check anybody asked for. It builds, it
+  type-checks, and the cast in the callback looks symmetrical with every
+  other async function in the file. Carry a non-GObject in the task
+  *data* and pass `NULL` as the source.
+
+### An IPC handler that must wait now has somewhere to wait
+
+- `clawt_ipc_server_defer()` claims the right to answer later; the
+  handler returns NULL and `clawt_ipc_pending_respond()` sends the frame
+  when the work finishes. The dispatcher already tolerated a NULL reply,
+  so it is a few dozen lines rather than a protocol change, and it is
+  what lets `integration.health`, `matrix_login`, `matrix_rooms` and
+  `notify_test` do real network work. Measured: a health check against a
+  blackholed address took the full 10 seconds while `agent list` answered
+  in 16ms.
+- The token holds a reference to the client, which is already refcounted
+  for exactly this reason, so a connection that closes mid-flight is
+  still there to be answered into and simply drops it.
+
+### podomation's DSL and its handler arguments both have shapes nothing documents
+
+- The lexer cannot parse a dot in an event name, so `agent.state` had to
+  become `on_agent_state` -- and every event podomation ships is named
+  `on_something`, which is the convention its bindings are written
+  around. Neither is written down; both took a pod that would not load.
+- Worse: a handler's arguments arrive as a **positional tuple**, padded
+  with empty strings, in the order the module declared its parameters.
+  `notify(title: "x")` and `notify("x")` both arrive as `('x', '', '')`.
+  Read as the `a{sv}` the type signature suggests, every argument was
+  dropped, so every action failed with "a notification needs a title"
+  while the pod, the binding and the dispatch were all correct. The one
+  line in the log named the handler, not what it was handed.
+- The padding must be dropped rather than stored: an empty string is not
+  the same as a value, and a backend that renders an empty body would
+  show a notification with nothing in it.
+- `PodModule::activate` refuses by default, which is right for a module
+  that has to open something and wrong for one whose daemon is already
+  running. Without overriding it every pod loaded and then failed to
+  activate, with one line in the log and no events ever delivered.
+
+### A `*/` inside a C comment ends the comment
+
+- A cron expression with a step in it -- `0 */6 * * *` -- cannot be
+  written in a block comment, and the compiler's complaint points at the
+  line *after* it. Worth knowing in a file that documents schedules.
+
+### A notifier is correct precisely when nothing happens
+
+- Which makes it the one thing in a fleet you cannot tell is working by
+  looking at it, and the reason `integration.notify_test` exists and
+  ignores both the event list and the quiet hours. A button that did
+  nothing at half past eleven at night would be indistinguishable from a
+  broken one.
+- Quiet hours wrap midnight, because people sleep across it: 23:00-07:00
+  is the ordinary spelling and the case that has to be right. Getting it
+  backwards produces a notifier silent all day and loud all night, which
+  is the same bug either way round and only noticed at 3am.
+
+### Cron's oldest oddity is an OR, and only sometimes
+
+- When **both** day fields are restricted the match is day-of-month OR
+  day-of-week, so `0 0 13 * 5` is the thirteenth *and* every Friday, not
+  Friday the thirteenth. With one at `*` the other decides. A scheduler
+  that gets this backwards is wrong in a way nobody notices until the
+  month a routine did not run.
+- The search runs four years ahead, not one: `0 0 29 2 *` is a
+  legitimate schedule that a one-year search reports as impossible.
+- Presets are sugar over cron rather than a second scheduler. Two
+  implementations of "when next" means the less-exercised one is wrong,
+  and it would be the one behind the friendly buttons.
+
+### A missed run is not a failed run
+
+- A routine that did not fire because the machine was asleep is not
+  broken, and showing it as broken trains somebody to ignore the one that
+  is. `catch_up` runs it *once* however many were missed -- a laptop
+  opened after a long weekend should not deliver a stack of good mornings
+  -- and a routine that has never run has not missed anything, so adding
+  one at four in the afternoon does not fire its 09:00 slot immediately.
+- Run state lives beside the config, never in it. A `clawtilla.yaml` that
+  rewrote itself every time a routine fired is one people stop keeping in
+  git.
+
 ### A generator that names the sections it knows about grows a bug per section
 
 - The starter config skipped list contents by testing `g_str_has_prefix`
@@ -1408,3 +1530,7 @@ the same program.
   marked region and clawtilla owns only that
 - Never return a secret obtained on a client's behalf to that client. A
   Matrix token goes to a 0600 file and the reply names the file
+- Never write a hand-maintained list of an option's keys. Walk the schema
+- Never give a pod an action that runs arbitrary code. Every action is a
+  fleet operation the daemon already owns; `computer_exec` is declared
+  and refused, with a reason, so naming it does not read as a typo

@@ -57,6 +57,8 @@ Global options: ~-c/--config~, ~-s/--socket~, ~-V/--version~,
 | ~integration health <agent> [name]~ | |
 | ~integration matrix-login <name> <homeserver> <user>~ | password from stdin |
 | ~integration matrix-rooms <name>~ | |
+| ~integration test <name>~ | send one notification now |
+| ~routine list/add/set/rm/run~ | standing work on a schedule |
 
 Subcommands are dispatched on ~argv[1]~ before option parsing, and each
 owns its own option context.  One shared table across a dozen verbs

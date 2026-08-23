@@ -1,0 +1,235 @@
+#+title: Routines
+#+description: Standing work on a schedule: presets, cron, and what happens when the machine was asleep
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-23 Sat]
+#+updated: [2026-08-23 Sat]
+#+version: 0.2.0
+
+* Routines
+
+A routine is the thing you would otherwise remember to ask for every
+morning.  A prompt, an agent, and when to run it.
+
+#+begin_src bash
+clawtilla routine add standup chief-of-staff \
+    description="Yesterday's commits" \
+    instructions="Summarise the last 24 hours of commits, and call out
+                  anything risky or missing tests." \
+    schedule=weekdays at=09:00
+#+end_src
+
+It runs as a *delegated task*, not a message.  That means it gets its own
+libreclaw session -- one morning's run never contaminates the next -- it
+appears in ~clawtilla task list~ while it works, and it has a result
+somebody can look at afterwards.
+
+** Presets are cron
+
+Every schedule becomes a cron expression, including the friendly ones:
+
+| Preset     | Becomes         | Notes                              |
+|------------+-----------------+------------------------------------|
+| =manual=   | nothing         | only when you ask                  |
+| =hourly=   | =20 * * * *=    | =at= supplies the minute           |
+| =daily=    | =0 9 * * *=     | =at: "09:00"=                      |
+| =weekdays= | =0 9 * * 1-5=   |                                    |
+| =weekly=   | =0 9 * * 1=     | =weekday: monday=                  |
+| =custom=   | whatever you write |                                 |
+
+This is deliberate rather than incidental.  Two implementations of "when
+does this next run" would mean the less-exercised one is the one that is
+wrong -- and it would be the one behind the friendly buttons, where most
+people are.
+
+** Custom schedules
+
+#+begin_src bash
+clawtilla routine add sweep researcher schedule=custom \
+    cron="0 */6 * * *" instructions="Check the queue and report anything stuck."
+#+end_src
+
+Five fields: minute, hour, day-of-month, month, day-of-week.  Ranges,
+lists and steps all work (=15,45=, =1-5=, =*/15=, =9-17/2=), months and
+weekdays may be named (=jan=, =mon=), and Sunday is both =0= and =7=.
+
+A range that wraps -- =22-2=, =fri-mon= -- means what it looks like.
+Vixie cron refuses those; refusing something whose meaning is obvious
+helps nobody.
+
+*** The oddity worth knowing
+
+When *both* day fields are restricted, the match is day-of-month *OR*
+day-of-week.  So:
+
+#+begin_src
+0 0 13 * 5     the thirteenth, AND every Friday
+0 0 13 * *     the thirteenth
+0 0 * * 5      every Friday
+#+end_src
+
+=0 0 13 * 5= is not Friday the thirteenth.  This is how every cron since
+Vixie's has behaved, and getting it backwards is wrong in a way nobody
+notices until the month a routine did not run.
+
+*** What is refused, and when
+
+A bad expression is refused *while you are still looking at what you
+typed* -- when the routine is saved, not at the next tick in a warning
+nobody is watching for.
+
+#+begin_src bash
+$ clawtilla routine add broken researcher schedule=custom cron="0 9 * *" ...
+clawtilla: '0 9 * *' has 4 fields; a cron expression has five: minute hour day-of-month month day-of-week
+#+end_src
+
+Six fields are refused too.  A seconds field is a different dialect, and
+accepting both would make a five-field expression ambiguous -- =0 9 * * *=
+would be either nine in the morning or every ninth minute depending on
+which we guessed.
+
+** Local time, and what that costs twice a year
+
+Schedules are local, because somebody who wrote =09:00= means nine
+o'clock where they are.  That has the usual consequences: an hour that
+does not exist in spring is skipped, and one that happens twice in autumn
+fires twice.  Both are what every other cron does, and the alternative --
+silently running everything in UTC -- is a schedule that is an hour wrong
+for half the year.
+
+** When the machine was asleep
+
+Routines only fire while the daemon is running.  A machine that was
+asleep at nine o'clock has missed nine o'clock, and clawtilla says so
+rather than pretending otherwise.
+
+#+begin_src bash
+$ clawtilla routine list
+ID                 AGENT            SCHEDULE         NEXT                 LAST
+standup            researcher       weekdays         Mon 24 Aug 09:00     missed: due 2026-08-21 09:00, but the daemon was not running
+#+end_src
+
+*Missed is not failed.*  A routine that did not run because the machine
+was asleep is not broken, and showing it as broken would train somebody
+to ignore the one that is.
+
+Set =catch_up: true= to run it once when the daemon comes back:
+
+#+begin_src bash
+clawtilla routine set standup catch_up=true
+#+end_src
+
+*Once*, however many were missed.  A laptop opened after a long weekend
+should not deliver a stack of good mornings at once.
+
+Off by default, and worth leaving off for anything that talks to
+somebody.
+
+A routine that has *never* run has not missed anything, so adding one at
+four in the afternoon does not immediately fire its 09:00 slot.
+
+** Where it runs
+
+#+begin_src yaml
+routines:
+  - id: review
+    agent: researcher
+    instructions: "Review the last day of commits."
+    schedule: weekdays
+    at: "09:00"
+    directory: "/work/clawtilla"
+    worktree: true
+#+end_src
+
+=directory= is a path on the *agent's computer*, which for a container or
+a VM is a path inside it and not on the host.
+
+=worktree= runs in a fresh git worktree of it instead.  Worth turning on
+for a routine that changes files: it keeps a scheduled run from landing
+on top of whatever you had checked out at the time.  The worktree is left
+behind deliberately -- throwing away work because a schedule fired is not
+recoverable.
+
+** Jitter
+
+=jitter_seconds= defaults to *0*, unlike the hosted schedulers this
+borrows its shape from.  There is no shared server to spread load across:
+this is your machine, and a routine set for 09:00 should run at 09:00.
+
+Worth setting only when several routines share one rate-limited service.
+
+** What the agent is told
+
+The instructions are the whole of the prompt, plus a short note that this
+run is different from a person typing:
+
+#+begin_example
+Summarise the last 24 hours of commits.
+
+---
+This is the scheduled routine 'standup', started by clawtilla rather than
+by a person. Nobody is waiting on this conversation, so asking a question
+here reaches nobody -- do the work with what you have, and if something
+is genuinely blocking, say so with clawtilla_message_user and stop.
+#+end_example
+
+That paragraph earns its place.  An agent that asks a clarifying question
+at three in the morning has not done the work, and it has no way to know
+from the instructions alone that nobody will answer.
+
+If it does use ~clawtilla_message_user~, a =notify= integration turns
+that into something that reaches you -- see
+[[file:integrations.org][integrations.org]].
+
+** Trying one before trusting it
+
+#+begin_src bash
+clawtilla routine add draft researcher schedule=manual instructions="..."
+clawtilla routine run draft
+#+end_src
+
+=routine run= ignores both the schedule and =enabled=, which is the
+point: a disabled routine you can still run by hand is how you find out
+whether the instructions are any good before putting them on a timer.
+
+** Run state
+
+Last-run times live in ~<state_dir>/routines.yaml~, beside the config
+rather than in it.  A last-run time is *state*, and a ~clawtilla.yaml~
+that rewrote itself every time a routine fired is one people stop keeping
+in git.
+
+A state file that cannot be parsed is a warning and an empty slate: it is
+a convenience, and refusing to schedule anything because a timestamp was
+lost would turn that into a stopped fleet.
+
+** From the GTK client
+
+The *Routines* page lists what is scheduled, with when each is next due
+-- worked out by the daemon, because an expression is not something a
+person can check by reading it and "next Mon 25 Aug at 09:00" is.
+
+The editor has the presets as a picker with the cron field revealed only
+by *Custom*.  Instructions are a text view rather than an entry, because
+a single line teaches people to write a reminder where an instruction is
+needed.  *Run now* sits beside *Save* on an existing routine.
+
+** From the CLI
+
+#+begin_src bash
+clawtilla routine list
+clawtilla routine add <id> <agent> [key=value ...]
+clawtilla routine set <id> [key=value ...]
+clawtilla routine rm <id>
+clawtilla routine run <id>
+#+end_src
+
+Every =key= is a schema key, so ~clawtilla config show~ and
+[[file:configuration-options.org][configuration-options.org]] are the
+reference for what a routine holds.
+
+** Reacting to a routine
+
+A routine that failed publishes ~routine.ran~ and its task publishes
+~task.changed~, both of which a podomation pod can bind to.  See
+[[file:automation.org][automation.org]].

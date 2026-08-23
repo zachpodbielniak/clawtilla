@@ -952,6 +952,53 @@ test_a_shared_channel_reaches_the_rendered_config(void)
     fixture_teardown(&fixture);
 }
 
+
+/*
+ * A notifier is not a tool the agent can call, and the agent is not
+ * involved in one -- but it is still told, because it changes whether
+ * saying something is worth doing. Without a branch of its own it
+ * rendered a heading and nothing at all.
+ */
+static void
+test_a_notifier_tells_the_agent_what_it_means(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent;
+    g_autofree gchar *text = NULL;
+
+    fixture_setup(&fixture,
+        "integrations:\n"
+        "  - name: phone\n"
+        "    type: notify\n"
+        "    scope: all\n"
+        "    backend: ntfy\n"
+        "    url: https://ntfy.example.org/topic\n"
+        "agents:\n"
+        "  - id: researcher\n");
+
+    agent = agent_named(&fixture, "researcher");
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+    g_assert_true(clawt_workspace_update_tools_org(fixture.config, agent,
+                                                   &error));
+    g_assert_no_error(error);
+
+    text = tools_org_of(&fixture, "researcher");
+
+    g_assert_nonnull(strstr(text, "phone"));
+    g_assert_nonnull(strstr(text, "clawtilla_message_user"));
+
+    /*
+     * Both halves: that interrupting works, and that it costs something.
+     * Only saying the first would produce an agent that asks about
+     * everything.
+     */
+    g_assert_nonnull(strstr(text, "real option"));
+    g_assert_nonnull(strstr(text, "real cost"));
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -996,6 +1043,8 @@ main(int argc, char *argv[])
                     test_an_mcp_env_secret_is_resolved);
     g_test_add_func("/integration/rendered-channel",
                     test_a_shared_channel_reaches_the_rendered_config);
+    g_test_add_func("/integration/notify-in-tools-org",
+                    test_a_notifier_tells_the_agent_what_it_means);
 
     return g_test_run();
 }

@@ -167,7 +167,7 @@ static const PodHandlerParamInfo room_params[] = {
 };
 
 static const Action actions[] = {
-    { "on_message_agent", "Queue a message to an agent",
+    { "message_agent", "Queue a message to an agent",
       message_agent_params, G_N_ELEMENTS(message_agent_params) },
     { "post_room", "Say something to every member of a room",
       room_params, G_N_ELEMENTS(room_params) },

@@ -1,0 +1,191 @@
+#+title: Automation
+#+description: clawtilla as a podomation module -- reacting to a fleet, and acting on it
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-23 Sat]
+#+updated: [2026-08-23 Sat]
+#+version: 0.2.0
+
+* Automation
+
+clawtilla embeds a [[https://gitlab.com/podomation][podomation]] engine
+and registers *itself* into it as a module.  A pod can therefore bind to
+what the fleet does and act on it in the same file:
+
+#+begin_src
+# ~/.clawtilla/pods/watch.pod
+pod researcher = clawtilla->new("researcher");
+researcher->on_agent_state => clawtilla->notify(title: "the researcher changed state");
+#+end_src
+
+Every ~*.pod~ in ~daemon.automation_dir~ is loaded at start.
+
+** Why it lives here and not upstream
+
+podomation lets an embedding application register an already-instantiated
+module, which is what this is.  podomation has no business knowing what
+an agent is, and clawtilla has no business waiting for a release of
+somebody else's library to add a hook point.
+
+There is also nothing a shared object could do here: the module needs a
+live event bus and a callback into a running daemon.
+
+** One module, both halves
+
+~clawtilla~ fires when something happens in the fleet, and ~clawtilla~ is
+also what you call to make something happen.
+
+A module that only emitted events would need a second module to do
+anything about them, and the pod between them would be the only place
+that knew they were the same system.
+
+** Scope
+
+Scope comes from the constructor, which is podomation's own way of saying
+it:
+
+#+begin_src
+clawtilla->new()                        every agent
+clawtilla->new("researcher")            one agent
+clawtilla->new("researcher", "scribe")  a group
+#+end_src
+
+*It applies in both directions.*  A pod scoped to one agent neither hears
+about the others nor can act on them, so a per-agent automation cannot
+reach across the fleet by accident:
+
+#+begin_src
+pod scribe_only = clawtilla->new("scribe");
+scribe_only->on_agent_state => clawtilla->stop_agent(agent: "researcher");
+#+end_src
+
+That refuses, with a warning saying why.
+
+An event with no agent -- a daemon reload, a routine that failed before
+it had one -- reaches *every* pod.  There is nothing to filter it
+against, and dropping it would silently lose the fleet-level hooks from a
+scoped pod.
+
+** Events
+
+Names use podomation's own convention: ~on_something~, and underscores
+rather than dots.  Both are forced: the DSL cannot parse a dot in an
+event name, and every event podomation ships is named that way.
+
+| Event | About |
+|---+---|
+| ~on_agent_created~ | An agent was added to the fleet |
+| ~on_agent_removed~ | An agent was removed |
+| ~on_agent_changed~ | An agent's configuration changed |
+| ~on_agent_started~ | An agent was started |
+| ~on_agent_stopped~ | An agent was stopped |
+| ~on_agent_state~ | It changed state; ~state~ says which, ~detail~ says why |
+| ~on_agent_connected~ | An agent dialled in to the daemon |
+| ~on_agent_disconnected~ | An agent's link dropped |
+| ~on_agent_typing~ | A turn began or ended; ~typing~ says which |
+| ~on_message~ | A message was routed; ~from~, ~to~, ~body~, ~task~ |
+| ~on_task_changed~ | A delegated task changed state |
+| ~on_routine_ran~ | A scheduled routine started |
+| ~on_routine_changed~ | A routine was added, edited or removed |
+| ~on_integration_changed~ | An integration was added, edited or removed |
+| ~on_daemon_started~ | The daemon came up |
+| ~on_daemon_reloaded~ | The configuration was reloaded |
+| ~on_daemon_stopped~ | The daemon is going away |
+
+Every event carries ~agent~ and ~timestamp~, plus whatever that kind has.
+
+Only these are forwarded.  A pod that could bind to anything the daemon
+ever published would break the day an internal event was renamed, and
+nothing would have told anybody it was load-bearing.
+
+** Actions
+
+| Action | Takes |
+|---+---|
+| ~message_agent~ | ~agent~, ~body~, ~priority~ |
+| ~post_room~ | ~room~, ~body~ |
+| ~delegate~ | ~agent~, ~prompt~ -- returns a task ~id~ |
+| ~start_agent~ | ~agent~ |
+| ~stop_agent~ | ~agent~ |
+| ~restart_agent~ | ~agent~ |
+| ~notify~ | ~title~, ~body~, ~agent~ |
+| ~run_routine~ | ~routine~ -- returns a task ~id~ |
+| ~memory_add~ | ~agent~, ~content~, ~category~ |
+
+Each returns ~ok~, and ~id~ for the ones that create something.
+
+*** computer_exec is declared and refused
+
+It is in the list so a pod naming it gets a *reason* rather than "no such
+action", which would read as a typo.  Calling it fails with an
+explanation.
+
+Every other action is a fleet operation the daemon already owns.  That
+one is arbitrary code on the machine, fired by an event, with nobody
+watching -- and podomation can already run a command through its own
+modules, where it is at least visible as one in the pod.
+
+** Worked examples
+
+*** Restart an agent that fell over, and say so
+
+#+begin_src
+pod watch = clawtilla->new();
+watch->on_agent_state => clawtilla->restart_agent(agent: "researcher");
+#+end_src
+
+*** Tell me when anything finishes a task
+
+#+begin_src
+pod tasks = clawtilla->new();
+tasks->on_task_changed => clawtilla->notify(title: "a task changed state");
+#+end_src
+
+*** Hand work to a second agent when the first says something
+
+#+begin_src
+pod handoff = clawtilla->new("researcher");
+handoff->on_message => clawtilla->delegate(agent: "scribe",
+                                           prompt: "Write this up.");
+#+end_src
+
+** What a broken pod costs
+
+A file that does not parse disables *that file*, with a warning naming
+it, and the rest are loaded:
+
+#+begin_example
+automation: /home/you/.clawtilla/pods/watch.pod could not be read:
+    line 3, column 18: expected '=>', got '.'
+automation: 2 pod files loaded from /home/you/.clawtilla/pods
+#+end_example
+
+And a failure to start the engine at all disables the automation and
+nothing else.  Pods are a convenience on top of a fleet; a fleet that
+would not start because one of them had a syntax error would be the
+convenience taking down the thing it decorates.
+
+** Two things the DSL will teach you the hard way
+
+Both of these cost a pod that would not load, and neither is written down
+anywhere else:
+
+- *No dots in event names.*  ~researcher->agent.state~ does not parse.
+  clawtilla's own event kinds keep their dots -- they are the wire format
+  a dozen other things read -- and the pod-visible names are translated.
+- *Handler arguments arrive as a tuple.*  ~notify(title: "x")~ and
+  ~notify("x")~ both reach the module as ~('x', '', '')~, positional and
+  padded.  clawtilla maps them back onto names using the parameter
+  metadata it declares, and drops the padding, because an empty string is
+  not the same as a value.
+
+** Configuration
+
+#+begin_src yaml
+daemon:
+  automation_dir: "~/.clawtilla/pods"
+#+end_src
+
+A missing directory is not an error.  Most fleets have no automation, and
+creating a directory to hold nothing would be a file appearing in
+somebody's home for a feature they never used.

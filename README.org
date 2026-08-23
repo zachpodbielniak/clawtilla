@@ -114,7 +114,9 @@ All under [[file:docs/][docs/]], in org-mode:
 | [[file:docs/mailboxes.org][mailboxes.org]] | queue semantics and how to unstick one |
 | [[file:docs/computers.org][computers.org]] | host, container, VM, desktop, mounts |
 | [[file:docs/orchestration.org][orchestration.org]] | rooms, tasks, chief-of-staff, loop safety |
-| [[file:docs/integrations.org][integrations.org]] | configuring and adding integrations |
+| [[file:docs/integrations.org][integrations.org]] | Matrix, mail, MCP servers, notifications; scoping them |
+| [[file:docs/routines.org][routines.org]] | standing work on a schedule, presets and cron |
+| [[file:docs/automation.org][automation.org]] | clawtilla as a podomation module: react and act |
 | [[file:docs/plugins.org][plugins.org]] | the plugin ABI and a worked example |
 | [[file:docs/ipc-protocol.org][ipc-protocol.org]] | the client wire format |
 | [[file:docs/clients.org][clients.org]] | CLI, GTK, web, and embedding =libclawt= |

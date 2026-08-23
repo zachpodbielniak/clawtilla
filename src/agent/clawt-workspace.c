@@ -1331,6 +1331,26 @@ describe_integration(GString *out, ClawtIntegrationBinding *binding)
         return;
     }
 
+    if (g_strcmp0(info->id, "notify") == 0) {
+        /*
+         * Worth telling the agent, even though the agent is not
+         * involved: it changes whether saying something is worth doing.
+         * An operator who will actually be interrupted is one it makes
+         * sense to stop and ask; an operator who will read it whenever
+         * they next open a client is not.
+         */
+        g_string_append(out,
+            "Your operator is notified when you say something to them\n"
+            "with ~clawtilla_message_user~, and when you stop with an\n"
+            "error. It reaches them wherever they are, not only when they\n"
+            "next look at a client.\n"
+            "\n"
+            "So stopping to ask is a real option when you are genuinely\n"
+            "blocked -- and interrupting somebody for anything less is a\n"
+            "real cost. Both halves of that matter.\n\n");
+        return;
+    }
+
     if (g_strcmp0(info->id, "mcp") == 0) {
         const gchar *command =
             clawt_integration_binding_get_string(binding, "command");

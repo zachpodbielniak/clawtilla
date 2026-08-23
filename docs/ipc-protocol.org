@@ -175,10 +175,33 @@ reply carries the reference back, never the value.
 ~per_agent~.  It returns ~user_id~, ~device_id~ and ~token_file~ -- the
 token itself stays in the daemon.
 
+*** routine.*
+
+~routine.list~ returns every routine with its own fields plus three the
+daemon works out: ~expression~ (what the schedule *means* as cron),
+~next_run~ (ISO 8601) and ~last_run~ / ~last_state~ / ~last_detail~.  A
+client that had to turn "weekdays at 09:00" into an expression itself
+would be a second implementation of the schedule.
+
+~routine.add~ and ~routine.update~ take the schema's own keys and refuse
+a schedule that does not parse, so a bad expression is rejected while
+somebody is still looking at what they typed rather than at the next tick.
+~routine.remove~ and ~routine.run~ take an ~id~; ~routine.run~ ignores
+both the schedule and ~enabled~ and returns the ~task~ it started.
+
+~routine.ran~ and ~routine.changed~ are published as events.
+
+*** integration.notify_test
+
+Takes ~integration~ and sends one notification through it, ignoring its
+event list and its quiet hours.  A notifier is correct precisely when
+nothing happens, so this is the only honest way to check one.
+
 *** Some replies arrive later
 
-~integration.health~, ~integration.matrix_login~ and
-~integration.matrix_rooms~ all wait on the network, so their handlers
+~integration.health~, ~integration.matrix_login~,
+~integration.matrix_rooms~ and ~integration.notify_test~ all wait on the
+network, so their handlers
 *defer*: the request is answered when the work finishes rather than
 before the handler returns.  A client sees nothing different -- the reply
 carries the request's id as always -- but the daemon keeps answering

@@ -9,14 +9,17 @@
 * Integrations
 
 An integration is how an agent reaches -- or is reached from -- the world
-outside the fleet.  There are two directions, and they behave completely
-differently:
+outside the fleet.  There are three directions, and they behave
+completely differently:
 
 - a *channel* puts a person on the other end of an agent's reply. Matrix,
   email, a webhook, a terminal, an Emacs session.  A message arrives as an
   ordinary turn and costs the agent a turn to answer.
 - a *tools* integration gives an agent an MCP server.  Its tools appear
   beside the agent's own and cost nothing until one is called.
+- a *notify* integration runs in neither direction an agent can see: the
+  daemon telling a person something, about an agent, without the agent
+  being involved or knowing it happened.
 
 They are configured the same way, which is the point: adding support for
 something new is a config entry, not a patch.
@@ -116,6 +119,7 @@ list per agent is an ordinary thing to want.
 | =email=    | =username=                 |
 | =webhook=  | =port=                     |
 | =mcp=      | nothing; share it freely   |
+| =notify=   | nothing; share it freely   |
 
 Two agents that end up sharing one of these are reported by
 =clawtilla integration list= and in the Integrations page, because it is
@@ -265,6 +269,123 @@ offering.
 Everything else in that file is yours and is carried across untouched.
 Do not name a server of your own =clawtilla-anything=.
 
+** notify -- when an agent is blocked on you, or has broken
+
+~clawtilla_message_user~ puts an agent's question where you will see it
+*if you look*.  An agent that asked one and waited had, in practice,
+stopped -- silently, until somebody next opened a client.  This is what
+makes you look.
+
+#+begin_src bash
+clawtilla integration add phone notify scope=all \
+    backend=ntfy url=https://ntfy.sh/your-topic
+clawtilla integration test phone
+#+end_src
+
+*** The rule
+
+| Event      | Default | What it is |
+|------------+---------+------------|
+| =question= | on      | An agent said something to you and is waiting |
+| =error=    | on      | An agent stopped in a way nobody asked for |
+| =done=     | off     | A task finished |
+| =routine=  | off     | A scheduled run failed |
+
+Blocked on you is worth a buzz.  Broken is worth a buzz.  Everything a
+fleet does while it works is not -- a notifier that fires on every turn
+is one people turn off, and then it is not there for the two that
+mattered.
+
+*** Backends
+
+| =backend=  | Needs | Reaches |
+|------------+-------+---------|
+| =desktop=  | nothing | The machine the daemon runs on |
+| =ntfy=     | =url=, optional =token= | A phone |
+| =gotify=   | =url=, =token= | A phone |
+| =matrix=   | =homeserver=, =room=, =token= | Wherever you read Matrix |
+| =command=  | =command=, optional =args= | Whatever you point it at |
+
+=desktop= is the wrong answer when the daemon is on a workstation and you
+are not.  It is spoken over the session bus rather than by running
+=notify-send=, which is a thin wrapper around the same call: spawning it
+buys a process and a PATH dependency and nothing else, and a daemon
+running as a systemd user service has a more certain session bus than it
+has a PATH.
+
+=matrix= on a bridged homeserver is often the best of these -- it arrives
+wherever you already read messages, and a room with nobody else in it
+keeps the fleet's noise out of one people are talking in.
+
+=command= is the escape hatch and is meant to be used:
+
+#+begin_src bash
+clawtilla integration add desk notify scope=all \
+    backend=command command=receipt-print
+#+end_src
+
+A program with no placeholders gets the title and the body as two
+arguments, which is what makes that line work with nothing else written
+down.  Otherwise ~{{title}}~, ~{{body}}~ and ~{{agent}}~ are substituted
+wherever they appear:
+
+#+begin_src yaml
+integrations:
+  - name: desk
+    type: notify
+    scope: all
+    backend: command
+    command: receipt-print
+    args: ["--header", "{{agent}}", "--body", "{{title}}"]
+#+end_src
+
+*** Quiet hours
+
+#+begin_src yaml
+    quiet_hours: "23:00-07:00"
+#+end_src
+
+Local time, and it silences that instance *completely*.
+
+To be woken for a broken agent but not for a question, make two
+instances -- one with quiet hours and one without, each with its own
+=events=.  That is why instances have names.
+
+A range that cannot be parsed does *not* silence anything: the failure
+nobody would ever find is a typo turning a notifier off for good.
+
+*** Credentials
+
+Resolved once when the configuration loads, not on every notification.  A
+=command= reference to a locked password manager blocks until it times
+out, and doing that each time something needed saying would make the
+notifier the slowest thing in the daemon -- on the path that exists to be
+fast.
+
+A credential that cannot be resolved disables *that notifier* with a
+warning naming the reference.  Being unable to buzz a phone is not a
+reason to stop a fleet.
+
+*** Testing one
+
+#+begin_src bash
+clawtilla integration test phone
+#+end_src
+
+A notifier is the one thing in a fleet you cannot tell is working by
+looking at it: it is correct precisely when nothing happens.  The test
+ignores the event list and the quiet hours, because a button that did
+nothing at half past eleven would be indistinguishable from a broken one.
+
+In the GTK editor the *Check* button becomes *Send a test* for a
+notifier, for the same reason: there is nothing to connect to and check.
+
+*** Reacting to more than this
+
+A pod can call ~notify~ itself, which is how anything the fleet does can
+be made to reach you without waiting for clawtilla to grow an event for
+it.  See [[file:automation.org][automation.org]].
+
 ** local and cmacs
 
 #+begin_src yaml
@@ -399,6 +520,6 @@ a plugin: ~get_id~ returns the =type:= value you answer to, ~validate~
 checks the settings, ~render_config~ returns the YAML for the agent's
 =channels:= block.  See [[file:plugins.org][plugins.org]].
 
-The built-in six are a declarative table rather than six classes, because
-each is the same shape: validate some keys, resolve some secrets, emit a
-channel block or an MCP server entry.
+The built-in seven are a declarative table rather than seven classes,
+because each is the same shape: validate some keys, resolve some secrets,
+emit a channel block, an MCP server entry or a notification.
