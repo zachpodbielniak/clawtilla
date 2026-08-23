@@ -852,7 +852,8 @@ computer:
     desktop:
       user: null           # defaults to ssh_user, or clawt when that is root
       autologin: true
-      packages: ["gdm", "gnome-shell", "gnome-session", "..."]
+      flavour: auto        # read off the image; fedora | enterprise | debian
+      packages: []         # empty means the family's own list
       mcp: true
       mcp_repo: "https://git.podbielniak.com/zachpodbielniak/gnome-desktop-mcp.git"
   desktop:
@@ -869,6 +870,48 @@ than what is asked for.  Raising ~disk_gb~ grows the disk on the next
 provision.  *Lowering it is refused*, with a warning: shrinking a disk
 discards whatever was past the new end, and a number edited downwards in
 a config file is not consent to lose it.
+
+**** Which distribution is in the image
+
+cloud-init picks the package *manager* for you and nothing else, so the
+seed has to know the names -- and the names are the smaller half of it.
+
+| | Fedora | Enterprise Linux | Debian and Ubuntu |
+|---+---+---+---|
+| display manager | ~gdm~ | ~gdm~ | ~gdm3~ |
+| unit enabled | ~gdm.service~ | ~gdm.service~ | ~gdm3.service~ |
+| PyGObject | ~python3-gobject~ | ~python3-gobject~ | ~python3-gi~ |
+| ~python3 -m venv~ | in ~python3~ | in ~python3~ | needs ~python3-venv~ |
+| ~glib-compile-schemas~ | in ~glib2~ | in ~glib2~ | needs ~libglib2.0-bin~ |
+| the ~dconf~ binary | ~dconf~ | ~dconf~ | ~dconf-cli~ |
+| terminal | ~gnome-console~ | ~gnome-terminal~ | ~gnome-terminal~ |
+
+Each of those on its own is enough to leave a guest that installed a
+desktop and has no session, or a session with no automation.  Enabling
+~gdm.service~ on Debian fails and the machine sits at a text console
+with a complete desktop on it; the wrong PyGObject leaves an MCP server
+that installs cleanly and dies on its first import; and without
+~dconf-cli~ every default written into ~/etc/dconf/db~ stays inert, which
+reads as an extension that will not enable.
+
+~flavour: auto~ reads the family off ~computer.vm.image~.  A catalog id
+says outright, and an image you downloaded keeps the distribution in its
+filename -- including Ubuntu's, which never say "ubuntu" and are named
+after the release adjective instead.  When neither says, clawtilla warns
+naming the key and the image, and installs Fedora names; it does not
+guess quietly, because a wrong guess surfaces as a failed package install
+inside a guest's log, a long way from the config line that caused it.
+
+~enterprise~ deliberately asks for less: ~gnome-console~,
+~gnome-text-editor~ and ~gnome-tweaks~ are not in the EL10 repositories,
+and cloud-init treats a package it cannot find as a failure of the whole
+install -- so asking for one takes the desktop down with it rather than
+merely missing an editor.
+
+Setting ~packages~ replaces the family's list rather than adding to it,
+which is also how you take something out.  It does not reach the packages
+the MCP server needs: those are not the desktop, and trimming this list
+must not switch automation off by accident.
 
 **** Why there are two accounts
 

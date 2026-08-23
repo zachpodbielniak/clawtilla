@@ -1643,9 +1643,39 @@ the same program.
   `make test` now diffs clean against a real `~/.clawtilla`.
 
 
+### cloud-init picks the package manager and nothing else
+
+- The seed still has to know the *names*, and the names turned out to be
+  the smaller half. `computer.vm.desktop.packages` was documented as the
+  knob for a non-Fedora guest -- "a Debian or Ubuntu guest wants gdm3 and
+  gnome-core instead" -- but three other Fedora assumptions were baked
+  into the renderer where no config could reach them: `systemctl enable
+  --now gdm.service` (Debian's unit is `gdm3`), `python3-gobject`
+  (Debian's is `python3-gi`), and the assumption that `dconf` and
+  `glib-compile-schemas` exist at all (on a Debian cloud image they are
+  `dconf-cli` and `libglib2.0-bin`, neither installed). So following the
+  documented advice produced a guest with a desktop and no display
+  manager, or a session with no automation.
+- Each failure lands *inside* the guest, in a cloud-init log nobody is
+  looking at, a long way from the config line that caused it. From the
+  host it looks like a VM that booted fine.
+- The family now comes from the image -- catalog id first, then the
+  filename, since an image somebody downloaded keeps the distribution in
+  its name. Ubuntu's cloud images are the exception that has to be
+  handled by hand: they never say "ubuntu", only the release adjective
+  (`noble-server-cloudimg-amd64.img`).
+- An image it cannot place warns naming `computer.vm.desktop.flavour`
+  rather than guessing quietly, and Enterprise Linux gets a shorter list
+  on purpose: cloud-init treats a package it cannot find as a failure of
+  the whole install, so one Fedora-only name takes the desktop with it.
+
+
 ## Things to NEVER Do
 
 - Never hand-edit `data/example-config.yaml` or `data/default-config.yaml`
+- Never write a distribution's package names, service units or binary
+  locations straight into the cloud-init seed. cloud-init chooses the
+  package manager and nothing else; everything else is per family
 - Never let a test fixture take `defaults.workspace_root` from the
   defaults. It points at `~/.clawtilla/agents`, so a test that creates an
   agent scaffolds it into the developer's real fleet

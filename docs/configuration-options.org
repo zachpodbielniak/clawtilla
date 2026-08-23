@@ -2182,18 +2182,44 @@ exists there is no desktop to control: the shell extension the agent
 talks to runs inside GNOME Shell. Turn this off and something else has
 to start the session.
 
+*** =agents.computer.vm.desktop.flavour=
+
+- Type :: enum
+- Values :: auto, fedora, enterprise, debian
+- Default :: =auto=
+- Since :: 0.2.0
+
+Which family the guest belongs to, for installing things into it.
+
+`auto` reads it off `computer.vm.image` -- a catalog id says outright,
+and an image you downloaded yourself keeps the distribution in its
+filename. Set it when neither does: clawtilla says which family it
+assumed rather than guessing quietly.
+
+`debian` covers Ubuntu, and `enterprise` covers CentOS Stream, RHEL
+and the rebuilds. It decides more than package names -- the display
+manager is gdm on Fedora and gdm3 on Debian, PyGObject is
+python3-gobject there and python3-gi here, and a Debian cloud image
+has neither the dconf binary nor glib-compile-schemas until asked.
+
 *** =agents.computer.vm.desktop.packages=
 
 - Type :: list of strings
-- Default :: =gdm,gnome-shell,gnome-session,gnome-console,gnome-control-center,nautilus,gnome-text-editor,xdg-user-dirs-gtk,gnome-tweaks,gnome-shell-extension-common=
+- Default :: unset
 - Since :: 0.1.0
 
-What to install to get a desktop.
+What to install to get a desktop, if not the usual set.
 
-These are Fedora names, matching the image catalog. A Debian or Ubuntu
-guest wants gdm3 and gnome-core instead. It is a deliberately small
-set rather than the full workstation group: the agent needs a session
-to drive, not an office suite to download.
+Left unset this is the list for the guest's `flavour`, which is
+almost always what you want: the names differ per distribution and
+nobody should have to know that to change image. Each family's list
+is deliberately small rather than the full workstation group -- the
+agent needs a session to drive, not an office suite to download.
+
+A list here replaces that one rather than adding to it, so it is also
+how you take something out. It does not reach the packages the MCP
+server needs: those are not the desktop, and trimming this list must
+not silently switch automation off.
 
 *** =agents.computer.vm.desktop.mcp=
 

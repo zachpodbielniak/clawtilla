@@ -135,6 +135,36 @@ build_guest_desktop(ClawtAgentConfig *agent_config)
     clawt_guest_desktop_set_packages(desktop,
                                      (const gchar * const *)packages);
 
+    {
+        g_autofree gchar *image =
+            clawt_agent_config_get_path_value(agent_config,
+                                              "computer.vm.image");
+        const gchar *configured =
+            clawt_agent_config_get_string(agent_config,
+                                          "computer.vm.desktop.flavour");
+        ClawtGuestFlavour flavour =
+            clawt_guest_desktop_resolve_flavour(configured, image);
+
+        /*
+         * Said out loud rather than guessed at quietly.  Getting this
+         * wrong installs Fedora package names into a Debian, which
+         * cloud-init reports as a failed install somewhere in the
+         * guest's log -- a long way from the config line that caused it,
+         * and invisible from the host.
+         */
+        if (flavour == CLAWT_GUEST_FLAVOUR_AUTO) {
+            g_warning("cannot tell which distribution '%s' is; installing "
+                      "the desktop with Fedora package names. Set "
+                      "computer.vm.desktop.flavour to fedora, enterprise "
+                      "or debian to settle it",
+                      image != NULL ? image : "(no image)");
+
+            flavour = CLAWT_GUEST_FLAVOUR_FEDORA;
+        }
+
+        clawt_guest_desktop_set_flavour(desktop, flavour);
+    }
+
     clawt_guest_desktop_set_autologin(
         desktop,
         clawt_agent_config_get_boolean(agent_config,

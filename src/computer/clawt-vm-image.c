@@ -32,33 +32,39 @@ static const ClawtVmImageSource sources[] = {
       "the default, and what clawtilla is tested against", "Fedora",
       "https://download.fedoraproject.org/pub/fedora/linux/releases/44/"
       "Cloud/x86_64/images/",
-      "Fedora-Cloud-Base-Generic-44-*.x86_64.qcow2" },
+      "Fedora-Cloud-Base-Generic-44-*.x86_64.qcow2",
+      CLAWT_GUEST_FLAVOUR_FEDORA },
 
     { "fedora-43", "Fedora 43 Cloud Base",
       "the previous release", "Fedora",
       "https://download.fedoraproject.org/pub/fedora/linux/releases/43/"
       "Cloud/x86_64/images/",
-      "Fedora-Cloud-Base-Generic-43-*.x86_64.qcow2" },
+      "Fedora-Cloud-Base-Generic-43-*.x86_64.qcow2",
+      CLAWT_GUEST_FLAVOUR_FEDORA },
 
     { "centos-stream-10", "CentOS Stream 10",
       "closest to RHEL", "Enterprise Linux",
       "https://cloud.centos.org/centos/10-stream/x86_64/images/",
-      "CentOS-Stream-GenericCloud-10-*.x86_64.qcow2" },
+      "CentOS-Stream-GenericCloud-10-*.x86_64.qcow2",
+      CLAWT_GUEST_FLAVOUR_ENTERPRISE },
 
     { "debian-13", "Debian 13 (trixie)",
       "small, and apt is familiar", "Debian and Ubuntu",
       "https://cloud.debian.org/images/cloud/trixie/latest/"
-      "debian-13-generic-amd64.qcow2", NULL },
+      "debian-13-generic-amd64.qcow2", NULL,
+      CLAWT_GUEST_FLAVOUR_DEBIAN },
 
     { "debian-12", "Debian 12 (bookworm)",
       "the previous stable", "Debian and Ubuntu",
       "https://cloud.debian.org/images/cloud/bookworm/latest/"
-      "debian-12-generic-amd64.qcow2", NULL },
+      "debian-12-generic-amd64.qcow2", NULL,
+      CLAWT_GUEST_FLAVOUR_DEBIAN },
 
     { "ubuntu-24.04", "Ubuntu 24.04 LTS",
       NULL, "Debian and Ubuntu",
       "https://cloud-images.ubuntu.com/noble/current/"
-      "noble-server-cloudimg-amd64.img", NULL }
+      "noble-server-cloudimg-amd64.img", NULL,
+      CLAWT_GUEST_FLAVOUR_DEBIAN }
 };
 
 const ClawtVmImageSource *
@@ -69,6 +75,65 @@ clawt_vm_image_catalog(gsize *n_sources)
     *n_sources = G_N_ELEMENTS(sources);
 
     return sources;
+}
+
+/*
+ * Which family an image belongs to.
+ *
+ * The catalog first, because that is authoritative.  Then the name,
+ * because an image somebody fetched keeps its distribution in the
+ * filename and that is the only clue there is short of booting it --
+ * `debian-13-generic-amd64.qcow2`, `noble-server-cloudimg-amd64.img`,
+ * `CentOS-Stream-GenericCloud-10-...`.
+ *
+ * Matched against the whole string rather than the basename: a path may
+ * be `~/images/ubuntu/disk.qcow2`, where the only mention of the
+ * distribution is a directory.
+ */
+static const struct {
+    const gchar      *marker;
+    ClawtGuestFlavour flavour;
+} flavour_markers[] = {
+    { "fedora",   CLAWT_GUEST_FLAVOUR_FEDORA },
+    { "centos",   CLAWT_GUEST_FLAVOUR_ENTERPRISE },
+    { "rhel",     CLAWT_GUEST_FLAVOUR_ENTERPRISE },
+    { "rocky",    CLAWT_GUEST_FLAVOUR_ENTERPRISE },
+    { "alma",     CLAWT_GUEST_FLAVOUR_ENTERPRISE },
+    { "debian",   CLAWT_GUEST_FLAVOUR_DEBIAN },
+    { "ubuntu",   CLAWT_GUEST_FLAVOUR_DEBIAN },
+    /*
+     * Ubuntu's own cloud images are named after the release adjective
+     * and never say "ubuntu": the file is `noble-server-cloudimg`.
+     */
+    { "noble",    CLAWT_GUEST_FLAVOUR_DEBIAN },
+    { "jammy",    CLAWT_GUEST_FLAVOUR_DEBIAN },
+    { "trixie",   CLAWT_GUEST_FLAVOUR_DEBIAN },
+    { "bookworm", CLAWT_GUEST_FLAVOUR_DEBIAN }
+};
+
+ClawtGuestFlavour
+clawt_vm_image_flavour(const gchar *image)
+{
+    const ClawtVmImageSource *entry;
+    g_autofree gchar *folded = NULL;
+    gsize i;
+
+    if (image == NULL || *image == '\0')
+        return CLAWT_GUEST_FLAVOUR_AUTO;
+
+    entry = clawt_vm_image_catalog_lookup(image);
+
+    if (entry != NULL)
+        return entry->flavour;
+
+    folded = g_ascii_strdown(image, -1);
+
+    for (i = 0; i < G_N_ELEMENTS(flavour_markers); i++) {
+        if (strstr(folded, flavour_markers[i].marker) != NULL)
+            return flavour_markers[i].flavour;
+    }
+
+    return CLAWT_GUEST_FLAVOUR_AUTO;
 }
 
 const ClawtVmImageSource *

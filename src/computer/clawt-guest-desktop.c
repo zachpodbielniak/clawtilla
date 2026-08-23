@@ -34,7 +34,147 @@ struct _ClawtGuestDesktop {
     GStrv     packages;
     gboolean  autologin;
     gboolean  install_mcp;
+
+    ClawtGuestFlavour flavour;
 };
+
+/* ── What each family calls things ───────────────────────────────── */
+
+/*
+ * cloud-init picks the package *manager* and nothing else, so a seed
+ * still has to know the names -- and the names turned out to be the
+ * smaller half of the problem.  Three other things differ, and all three
+ * used to be written out as Fedora and nothing else:
+ *
+ *   - the display manager's unit is `gdm` here and `gdm3` on Debian, so
+ *     `systemctl enable --now gdm.service` on a Debian guest fails and
+ *     the machine sits at multi-user with a desktop installed;
+ *
+ *   - PyGObject is `python3-gobject` here and `python3-gi` there, and
+ *     dasbus needs it, so the MCP server installs and dies on its first
+ *     import;
+ *
+ *   - a Debian cloud image has neither the `dconf` binary nor
+ *     `glib-compile-schemas`, so every default written into
+ *     /etc/dconf/db stays inert and the extension's schema never
+ *     compiles -- which reads as an extension that will not enable.
+ *
+ * None of that is reachable from `computer.vm.desktop.packages`, which
+ * is why overriding the package list was never enough on its own.
+ */
+static const gchar *const fedora_desktop[] = {
+    "gdm", "gnome-shell", "gnome-session", "gnome-console",
+    "gnome-control-center", "nautilus", "gnome-text-editor",
+    "xdg-user-dirs-gtk", "gnome-tweaks", "gnome-shell-extension-common",
+    "dconf", NULL
+};
+
+static const gchar *const fedora_mcp[] = {
+    "git", "python3-pip", "python3-gobject", NULL
+};
+
+/*
+ * Enterprise Linux is Fedora's names minus the parts that are Fedora's
+ * alone.  gnome-console, gnome-text-editor and gnome-tweaks are not in
+ * the EL10 repositories, and cloud-init treats a package it cannot find
+ * as a failure of the whole install -- so asking for one takes the
+ * desktop with it.
+ */
+static const gchar *const enterprise_desktop[] = {
+    "gdm", "gnome-shell", "gnome-session", "gnome-terminal",
+    "gnome-control-center", "nautilus", "xdg-user-dirs-gtk", "dconf", NULL
+};
+
+static const gchar *const enterprise_mcp[] = {
+    "git", "python3-pip", "python3-gobject", NULL
+};
+
+static const gchar *const debian_desktop[] = {
+    "gdm3", "gnome-shell", "gnome-session", "gnome-terminal",
+    "gnome-control-center", "nautilus", "gnome-text-editor",
+    "xdg-user-dirs-gtk", "gnome-tweaks",
+    /* The `dconf` binary is here, not in the gsettings backend. */
+    "dconf-cli", NULL
+};
+
+/*
+ * python3-venv is a separate package on Debian and `python3 -m venv`
+ * fails without it; libglib2.0-bin carries glib-compile-schemas, which
+ * a cloud image does not otherwise have.
+ */
+static const gchar *const debian_mcp[] = {
+    "git", "python3-pip", "python3-gi", "python3-venv", "libglib2.0-bin",
+    NULL
+};
+
+typedef struct {
+    ClawtGuestFlavour   flavour;
+    const gchar *const *desktop;
+    const gchar *const *mcp;
+    const gchar        *display_manager;
+} FlavourSpec;
+
+static const FlavourSpec flavours[] = {
+    { CLAWT_GUEST_FLAVOUR_FEDORA, fedora_desktop, fedora_mcp,
+      "gdm.service" },
+    { CLAWT_GUEST_FLAVOUR_ENTERPRISE, enterprise_desktop, enterprise_mcp,
+      "gdm.service" },
+    { CLAWT_GUEST_FLAVOUR_DEBIAN, debian_desktop, debian_mcp,
+      "gdm3.service" }
+};
+
+/*
+ * Falls back to Fedora, which is what clawtilla is developed against.
+ * A caller that could not place its image has already said so; this is
+ * not the place to warn again, once per rendered field.
+ */
+static const FlavourSpec *
+spec_for(ClawtGuestFlavour flavour)
+{
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(flavours); i++) {
+        if (flavours[i].flavour == flavour)
+            return &flavours[i];
+    }
+
+    return &flavours[0];
+}
+
+ClawtGuestFlavour
+clawt_guest_desktop_resolve_flavour(const gchar *configured,
+                                    const gchar *image)
+{
+    gint value = 0;
+
+    /*
+     * What somebody wrote down wins over anything derived.  An image
+     * with an unhelpful name is exactly the case this key exists for.
+     */
+    if (configured != NULL && *configured != '\0' &&
+        clawt_enum_from_nick(CLAWT_TYPE_GUEST_FLAVOUR, configured, &value) &&
+        (ClawtGuestFlavour)value != CLAWT_GUEST_FLAVOUR_AUTO)
+        return (ClawtGuestFlavour)value;
+
+    return clawt_vm_image_flavour(image);
+}
+
+void
+clawt_guest_desktop_set_flavour(ClawtGuestDesktop *self,
+                                ClawtGuestFlavour  flavour)
+{
+    g_return_if_fail(self != NULL);
+
+    self->flavour = flavour;
+}
+
+ClawtGuestFlavour
+clawt_guest_desktop_get_flavour(ClawtGuestDesktop *self)
+{
+    g_return_val_if_fail(self != NULL, CLAWT_GUEST_FLAVOUR_FEDORA);
+
+    return self->flavour;
+}
 
 G_DEFINE_BOXED_TYPE(ClawtGuestDesktop, clawt_guest_desktop,
                     clawt_guest_desktop_ref, clawt_guest_desktop_unref)
@@ -416,10 +556,13 @@ render_scripts(ClawtGuestDesktop *self, GString *out)
 void
 clawt_guest_desktop_render_setup(ClawtGuestDesktop *self, GString *out)
 {
+    const FlavourSpec *spec;
     gsize i;
 
     g_return_if_fail(self != NULL);
     g_return_if_fail(out != NULL);
+
+    spec = spec_for(self->flavour);
 
     /*
      * A cloud image's package metadata is however old the image is, and
@@ -428,10 +571,24 @@ clawt_guest_desktop_render_setup(ClawtGuestDesktop *self, GString *out)
      */
     g_string_append(out, "package_update: true\npackages:\n");
 
-    for (i = 0; self->packages != NULL && self->packages[i] != NULL; i++) {
-        g_string_append(out, "  - ");
-        append_quoted(out, self->packages[i]);
-        g_string_append_c(out, '\n');
+    /*
+     * A configured list wins outright and is not merged with the
+     * family's.  Somebody who wrote a list meant that list -- merging
+     * would quietly reinstate a package they had removed on purpose,
+     * and there would be no way to express "not that one".
+     */
+    if (self->packages != NULL && self->packages[0] != NULL) {
+        for (i = 0; self->packages[i] != NULL; i++) {
+            g_string_append(out, "  - ");
+            append_quoted(out, self->packages[i]);
+            g_string_append_c(out, '\n');
+        }
+    } else {
+        for (i = 0; spec->desktop[i] != NULL; i++) {
+            g_string_append(out, "  - ");
+            append_quoted(out, spec->desktop[i]);
+            g_string_append_c(out, '\n');
+        }
     }
 
     if (self->install_mcp) {
@@ -446,10 +603,11 @@ clawt_guest_desktop_render_setup(ClawtGuestDesktop *self, GString *out)
          * compiler and a set of -devel packages for a library that is
          * already installed.
          */
-        g_string_append(out,
-            "  - \"git\"\n"
-            "  - \"python3-pip\"\n"
-            "  - \"python3-gobject\"\n");
+        for (i = 0; spec->mcp[i] != NULL; i++) {
+            g_string_append(out, "  - ");
+            append_quoted(out, spec->mcp[i]);
+            g_string_append_c(out, '\n');
+        }
     }
 
     g_string_append(out, "write_files:\n");
@@ -529,7 +687,14 @@ clawt_guest_desktop_render_setup(ClawtGuestDesktop *self, GString *out)
      */
     g_string_append(out, "  - [dconf, update]\n");
 
-    if (self->autologin)
-        g_string_append(out,
-            "  - [systemctl, enable, --now, gdm.service]\n");
+    if (self->autologin) {
+        /*
+         * By its real unit name.  Debian's package is gdm3 and so is its
+         * unit; asking for gdm.service there fails, cloud-init logs one
+         * line about it, and the guest sits at a text console with a
+         * complete desktop installed on it.
+         */
+        g_string_append_printf(out, "  - [systemctl, enable, --now, %s]\n",
+                               spec->display_manager);
+    }
 }

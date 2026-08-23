@@ -515,6 +515,30 @@ clawt_run_state_get_type(void)
 }
 
 
+/* Register ClawtGuestFlavour as a GLib enum type */
+GType
+clawt_guest_flavour_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_GUEST_FLAVOUR_AUTO, "CLAWT_GUEST_FLAVOUR_AUTO", "auto" },
+            { CLAWT_GUEST_FLAVOUR_FEDORA, "CLAWT_GUEST_FLAVOUR_FEDORA",
+              "fedora" },
+            { CLAWT_GUEST_FLAVOUR_ENTERPRISE,
+              "CLAWT_GUEST_FLAVOUR_ENTERPRISE", "enterprise" },
+            { CLAWT_GUEST_FLAVOUR_DEBIAN, "CLAWT_GUEST_FLAVOUR_DEBIAN",
+              "debian" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id =
+            g_enum_register_static("ClawtGuestFlavour", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
 /* Register ClawtConnectorAuth as a GLib enum type */
 GType
 clawt_connector_auth_get_type(void)

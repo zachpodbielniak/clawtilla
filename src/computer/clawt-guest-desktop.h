@@ -87,6 +87,41 @@ gchar *clawt_guest_desktop_resolve_user(const gchar *configured,
 
 void clawt_guest_desktop_set_autologin(ClawtGuestDesktop *self,
                                        gboolean           autologin);
+/**
+ * clawt_guest_desktop_resolve_flavour:
+ * @configured: (nullable): `computer.vm.desktop.flavour`
+ * @image: (nullable): `computer.vm.image`
+ *
+ * Which family to install into.
+ *
+ * What somebody wrote down wins over anything derived from the image --
+ * an image with an unhelpful name is exactly the case the key exists
+ * for.  A plain function so the derivation can be asserted on without a
+ * hypervisor, a download or a boot.
+ *
+ * Returns: the family, or %CLAWT_GUEST_FLAVOUR_AUTO when neither the
+ *   configuration nor the image says
+ */
+ClawtGuestFlavour clawt_guest_desktop_resolve_flavour(const gchar *configured,
+                                                      const gchar *image);
+
+void clawt_guest_desktop_set_flavour(ClawtGuestDesktop *self,
+                                     ClawtGuestFlavour  flavour);
+
+ClawtGuestFlavour clawt_guest_desktop_get_flavour(ClawtGuestDesktop *self);
+
+/**
+ * clawt_guest_desktop_set_packages:
+ * @self: a #ClawtGuestDesktop
+ * @packages: (array zero-terminated=1) (nullable): what to install
+ *
+ * Overrides the family's desktop package list.
+ *
+ * An empty or %NULL list means the family's own, which is the ordinary
+ * case: the names differ per distribution and nobody should have to
+ * know that to switch image.  A list given here replaces the family's
+ * rather than adding to it.
+ */
 void clawt_guest_desktop_set_packages(ClawtGuestDesktop  *self,
                                       const gchar *const *packages);
 void clawt_guest_desktop_set_install_mcp(ClawtGuestDesktop *self,

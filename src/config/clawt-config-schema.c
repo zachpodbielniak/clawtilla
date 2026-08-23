@@ -1461,18 +1461,38 @@ static const ClawtSchemaEntry schema[] = {
   "talks to runs inside GNOME Shell. Turn this off and something else has\n"
   "to start the session.", "0.1.0" },
 
+{ "agents.computer.vm.desktop.flavour", CLAWT_SCHEMA_ENUM,
+  CLAWT_SCHEMA_FLAG_NONE, "auto", clawt_guest_flavour_get_type,
+  "Which family the guest belongs to, for installing things into it.\n"
+  "\n"
+  "`auto` reads it off `computer.vm.image` -- a catalog id says outright,\n"
+  "and an image you downloaded yourself keeps the distribution in its\n"
+  "filename. Set it when neither does: clawtilla says which family it\n"
+  "assumed rather than guessing quietly.\n"
+  "\n"
+  "`debian` covers Ubuntu, and `enterprise` covers CentOS Stream, RHEL\n"
+  "and the rebuilds. It decides more than package names -- the display\n"
+  "manager is gdm on Fedora and gdm3 on Debian, PyGObject is\n"
+  "python3-gobject there and python3-gi here, and a Debian cloud image\n"
+  "has neither the dconf binary nor glib-compile-schemas until asked.",
+  "0.2.0" },
+
 { "agents.computer.vm.desktop.packages", CLAWT_SCHEMA_STRING_LIST,
   CLAWT_SCHEMA_FLAG_NONE,
-  "gdm,gnome-shell,gnome-session,gnome-console,gnome-control-center,"
-  "nautilus,gnome-text-editor,xdg-user-dirs-gtk,gnome-tweaks,"
-  "gnome-shell-extension-common",
   NULL,
-  "What to install to get a desktop.\n"
+  NULL,
+  "What to install to get a desktop, if not the usual set.\n"
   "\n"
-  "These are Fedora names, matching the image catalog. A Debian or Ubuntu\n"
-  "guest wants gdm3 and gnome-core instead. It is a deliberately small\n"
-  "set rather than the full workstation group: the agent needs a session\n"
-  "to drive, not an office suite to download.", "0.1.0" },
+  "Left unset this is the list for the guest's `flavour`, which is\n"
+  "almost always what you want: the names differ per distribution and\n"
+  "nobody should have to know that to change image. Each family's list\n"
+  "is deliberately small rather than the full workstation group -- the\n"
+  "agent needs a session to drive, not an office suite to download.\n"
+  "\n"
+  "A list here replaces that one rather than adding to it, so it is also\n"
+  "how you take something out. It does not reach the packages the MCP\n"
+  "server needs: those are not the desktop, and trimming this list must\n"
+  "not silently switch automation off.", "0.1.0" },
 
 { "agents.computer.vm.desktop.mcp", CLAWT_SCHEMA_BOOLEAN,
   CLAWT_SCHEMA_FLAG_NONE, "true", NULL,

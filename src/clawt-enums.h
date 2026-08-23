@@ -532,6 +532,36 @@ typedef enum {
 } ClawtRunState;
 
 /**
+ * ClawtGuestFlavour:
+ * @CLAWT_GUEST_FLAVOUR_AUTO: work it out from the image
+ * @CLAWT_GUEST_FLAVOUR_FEDORA: Fedora
+ * @CLAWT_GUEST_FLAVOUR_ENTERPRISE: CentOS Stream, RHEL and their rebuilds
+ * @CLAWT_GUEST_FLAVOUR_DEBIAN: Debian and Ubuntu
+ *
+ * Which family a guest belongs to, for the purpose of installing things
+ * into it.
+ *
+ * cloud-init picks the package *manager* for you and nothing else, so a
+ * seed still has to know the package *names* -- and the names are only
+ * half of it.  The display manager is `gdm` on Fedora and `gdm3` on
+ * Debian; PyGObject is `python3-gobject` on one and `python3-gi` on the
+ * other; and a Debian cloud image has neither the `dconf` binary nor
+ * `glib-compile-schemas` until something asks for them.  Get any of
+ * those wrong and the guest boots, cloud-init reports success, and the
+ * agent is looking at a machine with no session on it.
+ *
+ * There is no member for a family clawtilla has never heard of.  A guest
+ * it cannot place is one where the seed says what it assumed, in a
+ * warning naming the key that settles it.
+ */
+typedef enum {
+    CLAWT_GUEST_FLAVOUR_AUTO = 0,
+    CLAWT_GUEST_FLAVOUR_FEDORA,
+    CLAWT_GUEST_FLAVOUR_ENTERPRISE,
+    CLAWT_GUEST_FLAVOUR_DEBIAN
+} ClawtGuestFlavour;
+
+/**
  * ClawtConnectorAuth:
  * @CLAWT_CONNECTOR_AUTH_NONE: no credential; the server is open
  * @CLAWT_CONNECTOR_AUTH_DEVICE: OAuth 2.0 device authorization grant
@@ -607,6 +637,7 @@ GType clawt_notify_backend_get_type(void) G_GNUC_CONST;
 GType clawt_notify_events_get_type(void) G_GNUC_CONST;
 GType clawt_schedule_get_type(void) G_GNUC_CONST;
 GType clawt_run_state_get_type(void) G_GNUC_CONST;
+GType clawt_guest_flavour_get_type(void) G_GNUC_CONST;
 GType clawt_connector_auth_get_type(void) G_GNUC_CONST;
 GType clawt_credential_placement_get_type(void) G_GNUC_CONST;
 
@@ -634,6 +665,7 @@ GType clawt_credential_placement_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_NOTIFY_EVENTS     (clawt_notify_events_get_type())
 #define CLAWT_TYPE_SCHEDULE          (clawt_schedule_get_type())
 #define CLAWT_TYPE_RUN_STATE         (clawt_run_state_get_type())
+#define CLAWT_TYPE_GUEST_FLAVOUR     (clawt_guest_flavour_get_type())
 #define CLAWT_TYPE_CONNECTOR_AUTH    (clawt_connector_auth_get_type())
 #define CLAWT_TYPE_CREDENTIAL_PLACEMENT \
     (clawt_credential_placement_get_type())

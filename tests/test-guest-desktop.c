@@ -309,6 +309,211 @@ test_no_desktop_renders_nothing_extra(void)
     g_assert_null(strstr(data, "runcmd:"));
 }
 
+
+/* ── Which distribution is in there ──────────────────────────────── */
+
+/*
+ * The catalog is authoritative, and every image in it must place itself.
+ * An entry that resolves to AUTO would install Fedora names into
+ * whatever it actually is, and the only symptom is a failed package
+ * install inside a guest's log.
+ */
+static void
+test_every_catalog_image_knows_its_family(void)
+{
+    gsize n = 0;
+    const ClawtVmImageSource *catalog = clawt_vm_image_catalog(&n);
+    gsize i;
+
+    g_assert_cmpuint(n, >, 0);
+
+    for (i = 0; i < n; i++) {
+        g_assert_cmpint(catalog[i].flavour, !=, CLAWT_GUEST_FLAVOUR_AUTO);
+        g_assert_cmpint(clawt_vm_image_flavour(catalog[i].id), ==,
+                        catalog[i].flavour);
+    }
+}
+
+/*
+ * An image somebody fetched keeps the distribution in its filename, and
+ * that is the only clue there is short of booting it.
+ */
+static void
+test_a_downloaded_image_is_placed_by_its_name(void)
+{
+    g_assert_cmpint(clawt_vm_image_flavour(
+                        "/var/lib/img/Fedora-Cloud-Base-Generic-44-1.5"
+                        ".x86_64.qcow2"),
+                    ==, CLAWT_GUEST_FLAVOUR_FEDORA);
+
+    g_assert_cmpint(clawt_vm_image_flavour(
+                        "/var/lib/img/debian-13-generic-amd64.qcow2"),
+                    ==, CLAWT_GUEST_FLAVOUR_DEBIAN);
+
+    g_assert_cmpint(clawt_vm_image_flavour(
+                        "/var/lib/img/CentOS-Stream-GenericCloud-10.qcow2"),
+                    ==, CLAWT_GUEST_FLAVOUR_ENTERPRISE);
+
+    /* A directory is as good a clue as a filename. */
+    g_assert_cmpint(clawt_vm_image_flavour("~/images/ubuntu/disk.qcow2"),
+                    ==, CLAWT_GUEST_FLAVOUR_DEBIAN);
+}
+
+/*
+ * Ubuntu's own cloud images never say "ubuntu" -- the file is
+ * `noble-server-cloudimg-amd64.img`, named after the release adjective.
+ * Matching only on the distribution name would place every Ubuntu image
+ * as unknown.
+ */
+static void
+test_an_ubuntu_image_does_not_say_ubuntu(void)
+{
+    g_assert_cmpint(clawt_vm_image_flavour(
+                        "noble-server-cloudimg-amd64.img"),
+                    ==, CLAWT_GUEST_FLAVOUR_DEBIAN);
+}
+
+static void
+test_a_configured_flavour_beats_the_image(void)
+{
+    /* The case the key exists for: an image with an unhelpful name. */
+    g_assert_cmpint(clawt_guest_desktop_resolve_flavour("debian",
+                                                        "disk.qcow2"),
+                    ==, CLAWT_GUEST_FLAVOUR_DEBIAN);
+
+    /* And it wins even when the image says otherwise -- a rebuild. */
+    g_assert_cmpint(clawt_guest_desktop_resolve_flavour(
+                        "enterprise", "fedora-44"),
+                    ==, CLAWT_GUEST_FLAVOUR_ENTERPRISE);
+
+    /* "auto" is not an answer; it means keep looking. */
+    g_assert_cmpint(clawt_guest_desktop_resolve_flavour("auto", "debian-13"),
+                    ==, CLAWT_GUEST_FLAVOUR_DEBIAN);
+}
+
+/*
+ * Reported rather than guessed.  The caller warns and names the key; a
+ * silent fallback here would install the wrong package names and the
+ * failure would surface inside a guest nobody is looking at.
+ */
+static void
+test_an_unplaceable_image_says_so(void)
+{
+    g_assert_cmpint(clawt_guest_desktop_resolve_flavour(NULL, "disk.qcow2"),
+                    ==, CLAWT_GUEST_FLAVOUR_AUTO);
+    g_assert_cmpint(clawt_guest_desktop_resolve_flavour(NULL, NULL),
+                    ==, CLAWT_GUEST_FLAVOUR_AUTO);
+}
+
+/* ── What each family actually gets ──────────────────────────────── */
+
+static gchar *
+render_for(ClawtGuestFlavour flavour)
+{
+    g_autoptr(ClawtGuestDesktop) desktop = clawt_guest_desktop_new("clawt");
+
+    clawt_guest_desktop_set_mcp_repo(desktop, "https://example.invalid/x.git");
+    clawt_guest_desktop_set_flavour(desktop, flavour);
+    clawt_guest_desktop_set_autologin(desktop, TRUE);
+
+    return clawt_cloud_init_build_user_data("root", NULL, "clawt-vm",
+                                            desktop);
+}
+
+/*
+ * The one that was wrong for the whole life of the feature.
+ *
+ * Debian's package is gdm3 and so is its unit, PyGObject is python3-gi,
+ * and a Debian cloud image has neither `python3 -m venv` nor
+ * `glib-compile-schemas` nor the `dconf` binary until something asks.
+ * Each of those on its own leaves a guest that installed a desktop and
+ * has no session, or a session with no automation.
+ */
+static void
+test_a_debian_guest_gets_debian_names(void)
+{
+    g_autofree gchar *data = render_for(CLAWT_GUEST_FLAVOUR_DEBIAN);
+
+    g_assert_nonnull(strstr(data, "- \"gdm3\""));
+    g_assert_nonnull(strstr(data, "gdm3.service"));
+
+    g_assert_nonnull(strstr(data, "- \"python3-gi\""));
+    g_assert_nonnull(strstr(data, "- \"python3-venv\""));
+    g_assert_nonnull(strstr(data, "- \"libglib2.0-bin\""));
+    g_assert_nonnull(strstr(data, "- \"dconf-cli\""));
+
+    /* And none of Fedora's spellings for the same things. */
+    g_assert_null(strstr(data, "- \"gdm\""));
+    g_assert_null(strstr(data, "- \"python3-gobject\""));
+    g_assert_null(strstr(data, "[systemctl, enable, --now, gdm.service]"));
+}
+
+static void
+test_a_fedora_guest_gets_fedora_names(void)
+{
+    g_autofree gchar *data = render_for(CLAWT_GUEST_FLAVOUR_FEDORA);
+
+    g_assert_nonnull(strstr(data, "- \"gdm\""));
+    g_assert_nonnull(strstr(data, "- \"python3-gobject\""));
+    g_assert_nonnull(strstr(data,
+                            "[systemctl, enable, --now, gdm.service]"));
+
+    g_assert_null(strstr(data, "- \"gdm3\""));
+    g_assert_null(strstr(data, "- \"python3-gi\""));
+}
+
+/*
+ * cloud-init treats a package it cannot find as a failure of the whole
+ * install, so asking Enterprise Linux for a Fedora-only package takes
+ * the desktop down with it rather than merely missing an editor.
+ */
+static void
+test_enterprise_asks_for_nothing_fedora_only(void)
+{
+    g_autofree gchar *data = render_for(CLAWT_GUEST_FLAVOUR_ENTERPRISE);
+
+    g_assert_nonnull(strstr(data, "- \"gdm\""));
+    g_assert_nonnull(strstr(data, "- \"gnome-shell\""));
+    g_assert_nonnull(strstr(data,
+                            "[systemctl, enable, --now, gdm.service]"));
+
+    g_assert_null(strstr(data, "gnome-console"));
+    g_assert_null(strstr(data, "gnome-text-editor"));
+    g_assert_null(strstr(data, "gnome-tweaks"));
+    g_assert_null(strstr(data, "gnome-shell-extension-common"));
+}
+
+/*
+ * A list somebody wrote replaces the family's rather than merging with
+ * it -- merging would quietly reinstate a package they removed on
+ * purpose, and there would be no way to say "not that one".
+ *
+ * It does not reach the packages the MCP server needs, which are not the
+ * desktop: trimming this list must not switch automation off by
+ * accident.
+ */
+static void
+test_an_explicit_list_replaces_the_familys(void)
+{
+    g_autoptr(ClawtGuestDesktop) desktop = clawt_guest_desktop_new("clawt");
+    static const gchar *const only[] = { "gdm3", "gnome-shell", NULL };
+    g_autofree gchar *data = NULL;
+
+    clawt_guest_desktop_set_flavour(desktop, CLAWT_GUEST_FLAVOUR_DEBIAN);
+    clawt_guest_desktop_set_mcp_repo(desktop, "https://example.invalid/x.git");
+    clawt_guest_desktop_set_packages(desktop, only);
+
+    data = clawt_cloud_init_build_user_data("root", NULL, "clawt-vm",
+                                            desktop);
+
+    g_assert_nonnull(strstr(data, "- \"gdm3\""));
+    g_assert_null(strstr(data, "nautilus"));
+
+    /* Still Debian's, because these are not the desktop. */
+    g_assert_nonnull(strstr(data, "- \"python3-gi\""));
+    g_assert_nonnull(strstr(data, "- \"python3-venv\""));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -340,6 +545,26 @@ main(int argc, char *argv[])
                     test_a_desktop_without_mcp_installs_no_automation);
     g_test_add_func("/guest-desktop/cloud-config/headless-unchanged",
                     test_no_desktop_renders_nothing_extra);
+
+    g_test_add_func("/guest-desktop/flavour/catalog-places-itself",
+                    test_every_catalog_image_knows_its_family);
+    g_test_add_func("/guest-desktop/flavour/from-a-filename",
+                    test_a_downloaded_image_is_placed_by_its_name);
+    g_test_add_func("/guest-desktop/flavour/ubuntu-never-says-ubuntu",
+                    test_an_ubuntu_image_does_not_say_ubuntu);
+    g_test_add_func("/guest-desktop/flavour/configured-wins",
+                    test_a_configured_flavour_beats_the_image);
+    g_test_add_func("/guest-desktop/flavour/unplaceable-says-so",
+                    test_an_unplaceable_image_says_so);
+
+    g_test_add_func("/guest-desktop/cloud-config/debian-names",
+                    test_a_debian_guest_gets_debian_names);
+    g_test_add_func("/guest-desktop/cloud-config/fedora-names",
+                    test_a_fedora_guest_gets_fedora_names);
+    g_test_add_func("/guest-desktop/cloud-config/enterprise-names",
+                    test_enterprise_asks_for_nothing_fedora_only);
+    g_test_add_func("/guest-desktop/cloud-config/explicit-list-replaces",
+                    test_an_explicit_list_replaces_the_familys);
 
     return g_test_run();
 }

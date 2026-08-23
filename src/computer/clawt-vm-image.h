@@ -44,12 +44,13 @@ G_BEGIN_DECLS
  * itself is retired.
  */
 typedef struct {
-    const gchar *id;
-    const gchar *name;
-    const gchar *note;
-    const gchar *group;
-    const gchar *url;
-    const gchar *pattern;
+    const gchar      *id;
+    const gchar      *name;
+    const gchar      *note;
+    const gchar      *group;
+    const gchar      *url;
+    const gchar      *pattern;
+    ClawtGuestFlavour flavour;
 } ClawtVmImageSource;
 
 /**
@@ -69,6 +70,23 @@ const ClawtVmImageSource *clawt_vm_image_catalog(gsize *n_sources);
  * Returns: (transfer none) (nullable): the entry, or %NULL
  */
 const ClawtVmImageSource *clawt_vm_image_catalog_lookup(const gchar *id);
+
+/**
+ * clawt_vm_image_flavour:
+ * @image: a catalog id, a path, or a URL
+ *
+ * Which family @image belongs to, for installing things into it.
+ *
+ * The catalog is checked first, then the name itself -- an image
+ * somebody downloaded keeps the distribution in its filename, and that
+ * is the only clue available without booting it.  Deliberately not a
+ * guess of last resort: an image this cannot place returns
+ * %CLAWT_GUEST_FLAVOUR_AUTO, so the caller can say what it assumed
+ * rather than quietly installing Fedora package names into a Debian.
+ *
+ * Returns: the family, or %CLAWT_GUEST_FLAVOUR_AUTO if it cannot tell
+ */
+ClawtGuestFlavour clawt_vm_image_flavour(const gchar *image);
 
 /**
  * clawt_vm_image_pick_newest:
