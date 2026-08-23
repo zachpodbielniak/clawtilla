@@ -1,0 +1,17 @@
+#!/bin/bash
+# stubborn-libreclaw - a child that will not go on SIGTERM
+#
+# Copyright (C) 2026
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Not a hypothetical case.
+# A stop used to clear its "running" flag the moment the signal was sent,
+# so anything slow to die -- or refusing to -- was reported as stopped
+# while it carried on, and the next start spawned a second one against the
+# same ports, session directory and database.
+trap '' TERM
+echo "stubborn-libreclaw up"
+while true
+do
+    sleep 0.05
+done

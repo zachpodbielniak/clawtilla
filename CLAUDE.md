@@ -519,6 +519,39 @@ the same program.
   anything else in it, which is what keeps a file somebody put there by
   hand.
 
+### A stop that only sends a signal is not a stop
+
+- `process_runtime_stop()` sent SIGTERM and cleared `running` in the next
+  line, without waiting. `agent.restart` is a stop immediately followed
+  by a start, so it found the runtime claiming to be stopped while the
+  child was still there and spawned a **second** libreclaw against the
+  same config — same ports, same `session.persist_dir`, same database,
+  which is the multi-instance collision libreclaw cannot survive. The new
+  one exited at once, the daemon reported the agent "stopped - exited
+  with status 0", and the original ran on tracked by nothing.
+- It now waits, **iterating the context** rather than sleeping — the exit
+  arrives on it, so a plain sleep would burn the whole grace period every
+  time and then kill a child that had gone in milliseconds — and force-
+  exits anything still there after 5 seconds. `tests/fixtures/stubborn-
+  libreclaw` traps SIGTERM, which is the case that exposed it.
+- `is_alive()` asked `g_subprocess_get_if_exited()`, which may only be
+  called after the wait has returned; asking about a live child is
+  undefined, not merely wrong. It reads our own flag now, set only by the
+  exit callback.
+
+### An agent must not outlive the daemon that spawned it
+
+- A daemon stopped cleanly stops its agents. One that is **killed** runs
+  no handler, and its agents were reparented to init still holding an
+  agent's ports, session directory and sqlite database with nothing
+  supervising them. The next daemon knew nothing of them and started a
+  second copy alongside each. Three accumulated in one afternoon of
+  restarts, and the symptom was an agent that would not start, exiting 0
+  immediately with no explanation anywhere.
+- `prctl(PR_SET_PDEATHSIG, SIGTERM)` in the child's setup function, which
+  is the only thing that survives SIGKILL of the parent. Verified by
+  killing a real daemon with -9 and watching the child go with it.
+
 ### Skipping work for a running guest skipped knowing how to reach it
 
 - `vm_provision()` returns early for a libvirt domain that is already

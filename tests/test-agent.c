@@ -13,6 +13,8 @@
 
 #include <clawtilla.h>
 
+#include <signal.h>
+
 #include <glib/gstdio.h>
 
 #include "clawt-test-util.h"
@@ -640,6 +642,114 @@ test_an_observe_only_desktop_says_so(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * Stopping a runtime stops it, rather than merely asking.
+ *
+ * The flag used to be cleared the instant SIGTERM was *sent*, so a
+ * restart -- a stop immediately followed by a start -- found the runtime
+ * claiming to be stopped while the child was still there, and spawned a
+ * second libreclaw against the same ports, session directory and
+ * database. The daemon then reported the agent stopped while the original
+ * ran on, tracked by nothing.
+ *
+ * The fixture refuses SIGTERM, which is the case that exposed it.
+ */
+static void
+test_stopping_waits_for_the_child_to_go(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtProcessRuntime) runtime = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *stubborn =
+        g_build_filename(CLAWT_TEST_FIXTURES, "stubborn-libreclaw", NULL);
+    GPid pid;
+
+    if (!g_file_test(stubborn, G_FILE_TEST_IS_EXECUTABLE)) {
+        g_test_skip("the stubborn fixture is not executable");
+        return;
+    }
+
+    fixture_setup(&fixture);
+    fixture.config = load_config(&fixture, "agents:\n  - id: chief\n");
+
+    runtime = clawt_process_runtime_new(
+        clawt_config_get_agent(fixture.config, "chief"), "/dev/null");
+    clawt_process_runtime_set_binary(runtime, stubborn);
+    clawt_agent_runtime_set_restart_policy(CLAWT_AGENT_RUNTIME(runtime),
+                                           CLAWT_RESTART_NEVER, 1, 0);
+
+    g_assert_true(clawt_agent_runtime_start(CLAWT_AGENT_RUNTIME(runtime),
+                                            &error));
+    g_assert_no_error(error);
+    g_assert_true(clawt_agent_runtime_is_alive(CLAWT_AGENT_RUNTIME(runtime)));
+
+    pid = clawt_agent_runtime_get_pid(CLAWT_AGENT_RUNTIME(runtime));
+    g_assert_cmpint(pid, >, 0);
+
+    clawt_agent_runtime_stop(CLAWT_AGENT_RUNTIME(runtime));
+
+    /*
+     * The whole assertion: once stop() has returned, the process is gone.
+     * kill(pid, 0) still succeeding means something is out there holding
+     * this agent's ports with nothing supervising it.
+     */
+    g_assert_false(clawt_agent_runtime_is_alive(CLAWT_AGENT_RUNTIME(runtime)));
+    g_assert_cmpint(kill(pid, 0), ==, -1);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * ...so a restart cannot leave two of them behind.
+ */
+static void
+test_restarting_does_not_leave_the_old_one(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtProcessRuntime) runtime = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *stubborn =
+        g_build_filename(CLAWT_TEST_FIXTURES, "stubborn-libreclaw", NULL);
+    GPid first;
+    GPid second;
+
+    if (!g_file_test(stubborn, G_FILE_TEST_IS_EXECUTABLE)) {
+        g_test_skip("the stubborn fixture is not executable");
+        return;
+    }
+
+    fixture_setup(&fixture);
+    fixture.config = load_config(&fixture, "agents:\n  - id: chief\n");
+
+    runtime = clawt_process_runtime_new(
+        clawt_config_get_agent(fixture.config, "chief"), "/dev/null");
+    clawt_process_runtime_set_binary(runtime, stubborn);
+    clawt_agent_runtime_set_restart_policy(CLAWT_AGENT_RUNTIME(runtime),
+                                           CLAWT_RESTART_NEVER, 1, 0);
+
+    g_assert_true(clawt_agent_runtime_start(CLAWT_AGENT_RUNTIME(runtime),
+                                            &error));
+    first = clawt_agent_runtime_get_pid(CLAWT_AGENT_RUNTIME(runtime));
+
+    /* What agent.restart does: stop, then start. */
+    clawt_agent_runtime_stop(CLAWT_AGENT_RUNTIME(runtime));
+    g_assert_true(clawt_agent_runtime_start(CLAWT_AGENT_RUNTIME(runtime),
+                                            &error));
+    g_assert_no_error(error);
+
+    second = clawt_agent_runtime_get_pid(CLAWT_AGENT_RUNTIME(runtime));
+    g_assert_cmpint(second, >, 0);
+    g_assert_cmpint(second, !=, first);
+
+    /* Exactly one, not two. */
+    g_assert_cmpint(kill(first, 0), ==, -1);
+
+    clawt_agent_runtime_stop(CLAWT_AGENT_RUNTIME(runtime));
+    g_assert_cmpint(kill(second, 0), ==, -1);
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -668,6 +778,10 @@ main(int argc, char *argv[])
     g_test_add_func("/agent/runtime/log-bounded", test_log_ring_is_bounded);
     g_test_add_func("/agent/runtime/missing-binary", test_missing_binary_is_reported);
 
+    g_test_add_func("/agent/stop-waits-for-the-child",
+                    test_stopping_waits_for_the_child_to_go);
+    g_test_add_func("/agent/restart-leaves-no-orphan",
+                    test_restarting_does_not_leave_the_old_one);
     g_test_add_func("/agent/describes-its-desktop",
                     test_the_description_mentions_the_desktop);
     g_test_add_func("/agent/observe-only-desktop-says-so",

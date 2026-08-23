@@ -8,6 +8,9 @@
  */
 
 #include "clawtilla.h"
+
+#include <signal.h>
+#include <sys/prctl.h>
 #include "agent/clawt-process-runtime.h"
 
 #include <string.h>
@@ -23,7 +26,24 @@ struct _ClawtProcessRuntime {
     GCancellable     *cancellable;
     GDataInputStream *log_stream;
     gboolean          running;
+
+    /*
+     * Set only when the child has genuinely gone, which is not the same
+     * as `running` -- that one was cleared the instant a SIGTERM was
+     * *sent*, so a stop reported success while the process was still
+     * there and the next start spawned a second one alongside it.
+     */
+    gboolean          exited;
 };
+
+/*
+ * How long a child gets to act on SIGTERM before it is killed, as a
+ * number of short polls -- 5 seconds, in 50ms steps.  Long enough for
+ * libreclaw to close its channels, short enough that stopping an agent is
+ * not something you wait on.
+ */
+#define STOP_TICK_USEC   (50 * 1000)
+#define STOP_GRACE_TICKS (100)
 
 G_DEFINE_FINAL_TYPE(ClawtProcessRuntime, clawt_process_runtime,
                     CLAWT_TYPE_AGENT_RUNTIME)
@@ -120,6 +140,7 @@ on_process_exited(GObject *source, GAsyncResult *result, gpointer user_data)
     gboolean clean;
 
     self->running = FALSE;
+    self->exited = TRUE;
 
     g_subprocess_wait_finish(process, result, &error);
 
@@ -133,6 +154,26 @@ on_process_exited(GObject *source, GAsyncResult *result, gpointer user_data)
                                  g_subprocess_get_exit_status(process));
 
     clawt_agent_runtime_record_exit(CLAWT_AGENT_RUNTIME(self), clean, detail);
+}
+
+/*
+ * Asks the kernel to signal the child if this process disappears.
+ *
+ * Runs in the child between fork and exec, so it must be
+ * async-signal-safe -- prctl is.
+ *
+ * A daemon stopped cleanly stops its agents itself, but one that is
+ * killed outright runs no handler at all, and its agents were then
+ * reparented to init and left holding the ports, the session directory
+ * and the sqlite database of an agent nothing was supervising. The next
+ * daemon started a second copy alongside each of them, which is the
+ * multi-instance collision libreclaw explicitly cannot survive. Three
+ * such orphans accumulated in one afternoon of restarts.
+ */
+static void
+die_with_parent(gpointer user_data)
+{
+    prctl(PR_SET_PDEATHSIG, SIGTERM);
 }
 
 /*
@@ -188,6 +229,8 @@ process_runtime_start(ClawtAgentRuntime *runtime, GError **error)
     }
 
     apply_environment(self, launcher);
+    g_subprocess_launcher_set_child_setup(launcher, die_with_parent, NULL,
+                                          NULL);
 
     argv[0] = binary;
     argv[1] = "-c";
@@ -200,6 +243,7 @@ process_runtime_start(ClawtAgentRuntime *runtime, GError **error)
      * long-lived agent that occasionally crashes leaked one per cycle.
      */
     g_clear_object(&self->process);
+    self->exited = FALSE;
     self->process = g_subprocess_launcher_spawnv(launcher, argv, error);
     if (self->process == NULL) {
         g_prefix_error(error, "starting %s: ", binary);
@@ -255,6 +299,50 @@ process_runtime_stop(ClawtAgentRuntime *runtime)
      * shutdown rather than a dropped connection to time out.
      */
     g_subprocess_send_signal(self->process, SIGTERM);
+
+    /*
+     * ...and then wait for it, which this did not do.
+     *
+     * `running` used to be cleared here, the instant the signal was
+     * *sent*. So a restart -- which is a stop immediately followed by a
+     * start -- found the runtime claiming to be stopped while the child
+     * was still shutting down, and spawned a second libreclaw against the
+     * same config: same ports, same session directory, same database.
+     * The new one exited straight away and the daemon reported the agent
+     * "stopped - exited with status 0" while the original went on running,
+     * now tracked by nothing.
+     *
+     * The context is iterated rather than slept through, because the exit
+     * arrives on it -- a plain sleep would wait the full grace period
+     * every time and then kill a child that had gone in milliseconds.
+     */
+    {
+        GMainContext *context = g_main_context_get_thread_default();
+        guint waited;
+
+        if (context == NULL)
+            context = g_main_context_default();
+
+        for (waited = 0; waited < STOP_GRACE_TICKS && !self->exited;
+             waited++) {
+            g_main_context_iteration(context, FALSE);
+            g_usleep(STOP_TICK_USEC);
+        }
+    }
+
+    /*
+     * A child that will not go is killed rather than left.  Leaving it is
+     * how the orphans happened, and an agent that ignores SIGTERM is
+     * exactly the one that most needs stopping.
+     */
+    if (!self->exited) {
+        g_warning("agent runtime: pid %d did not stop within %d seconds of "
+                  "SIGTERM; killing it",
+                  (gint)clawt_agent_runtime_get_pid(runtime),
+                  STOP_GRACE_TICKS * STOP_TICK_USEC / 1000000);
+        g_subprocess_force_exit(self->process);
+    }
+
     self->running = FALSE;
 }
 
@@ -263,8 +351,13 @@ process_runtime_is_alive(ClawtAgentRuntime *runtime)
 {
     ClawtProcessRuntime *self = CLAWT_PROCESS_RUNTIME(runtime);
 
-    return self->running && self->process != NULL &&
-           !g_subprocess_get_if_exited(self->process);
+    /*
+     * Asked of our own record rather than of GSubprocess.
+     * g_subprocess_get_if_exited() may only be called once the wait has
+     * returned, so asking it about a child that is still running is not
+     * merely wrong, it is undefined.
+     */
+    return self->running && self->process != NULL && !self->exited;
 }
 
 static GPid
