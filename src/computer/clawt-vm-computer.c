@@ -394,6 +394,45 @@ clawt_vm_computer_build_domain_xml(ClawtVmComputer *self)
     }
 
     /*
+     * A GPU, and only when there is a desktop to draw with it.
+     *
+     * Without one the guest has no /dev/dri at all, and GDM says so --
+     * "It appears that your system does not have a primary GPU!" -- and
+     * then starts nothing. Everything above it looks healthy: cloud-init
+     * finishes, gdm.service is active, the default target is graphical,
+     * and the console sits on the boot log for ever because the boot log
+     * is the only console there is.
+     *
+     * This was invisible for as long as it was, because the qemu backend
+     * gets a VGA adapter from qemu by default and the libvirt backend
+     * builds its XML from nothing. The feature worked on the backend it
+     * was tested on and not on the default one.
+     *
+     * virtio rather than the older models: it is what a current GNOME on
+     * Wayland wants, and every cloud image has the driver.
+     */
+    if (self->desktop != NULL) {
+        g_string_append(out,
+            "    <video>\n"
+            "      <model type='virtio' heads='1' primary='yes'/>\n"
+            "    </video>\n");
+
+        /*
+         * And a way for a person to look at it.  The agent does not need
+         * this -- it screenshots through the extension inside the guest
+         * -- but somebody wondering whether the desktop came up has
+         * otherwise only a serial console to wonder at.
+         *
+         * Bound to loopback. A VM's screen is a live view of whatever the
+         * agent is doing, and that does not belong on the network because
+         * a default was convenient.
+         */
+        g_string_append(out,
+            "    <graphics type='vnc' port='-1' autoport='yes' "
+            "listen='127.0.0.1'/>\n");
+    }
+
+    /*
      * User-mode networking either way, so no bridge appears on the host
      * that the user did not ask for.  Forwarding a port needs the passt
      * backend: libvirt's <portForward> is not supported for the SLIRP
@@ -446,6 +485,23 @@ clawt_vm_computer_build_qemu_argv(ClawtVmComputer *self,
 
     /* Headless: nothing here needs a display, and one would grab focus. */
     g_ptr_array_add(argv, g_strdup("-nographic"));
+
+    /*
+     * The GPU is named rather than left to qemu's default.
+     *
+     * -nographic disables the *host* window and leaves the guest a VGA
+     * adapter, which is why a desktop worked here while the libvirt
+     * backend -- which builds its devices from nothing -- gave the guest
+     * no /dev/dri and no session at all. An accidental default that
+     * happens to be right is what kept that hidden, so both backends now
+     * say what they mean.
+     */
+    if (self->desktop != NULL) {
+        g_ptr_array_add(argv, g_strdup("-vga"));
+        g_ptr_array_add(argv, g_strdup("none"));
+        g_ptr_array_add(argv, g_strdup("-device"));
+        g_ptr_array_add(argv, g_strdup("virtio-gpu-pci"));
+    }
     g_ptr_array_add(argv, g_strdup("-no-reboot"));
 
     if (mounts != NULL && mounts->len > 0) {

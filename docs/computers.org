@@ -912,6 +912,34 @@ cloud-init acts on **first boot only**.  Changing ~vm.desktop.user~ or
 turning the desktop on for a VM that has already booted means deleting
 the overlay, not restarting.
 
+**** The guest needs a GPU, and gets one
+
+A VM with no video device has no ~/dev/dri~, and GDM refuses to start a
+session on a machine with no display -- while reporting nothing that
+looks like the cause:
+
+#+begin_example
+Gdm: It appears that your system does not have a primary GPU!
+#+end_example
+
+Everything above that looks healthy.  cloud-init finishes, ~gdm.service~
+is active, ~systemctl get-default~ says ~graphical.target~, and the
+console sits on the boot log because with no video device the serial
+console is the only console there is.
+
+So a guest desktop adds two devices, and only when one is configured:
+
+- ~<video><model type='virtio'/></video>~ -- virtio because that is what
+  a current GNOME on Wayland wants, and every cloud image has the driver.
+- ~<graphics type='vnc' listen='127.0.0.1'/>~ -- so a person can look.
+  The agent does not need it; it screenshots through the extension inside
+  the guest. It is bound to loopback because a VM's screen is a live view
+  of what the agent is doing, and that does not belong on the network
+  because a default was convenient.
+
+~virt-manager~ shows that display once it is there; without it, the
+console it offers is the serial one.
+
 **** How the tools reach the agent
 
 The agent's ~.mcp.json~ gains a ~clawtilla-desktop~ server naming the

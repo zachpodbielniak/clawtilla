@@ -1833,6 +1833,73 @@ test_vm_teardown_leaves_what_it_did_not_make(void)
     g_assert_true(g_file_test(theirs, G_FILE_TEST_EXISTS));
 }
 
+/*
+ * A guest with a desktop gets a GPU, and one without does not.
+ *
+ * The absence of this was invisible for a long time: the qemu backend
+ * gets a VGA adapter from qemu by default, so the feature worked on the
+ * backend it was tested on. On libvirt the guest had no /dev/dri, GDM
+ * reported no primary GPU and started nothing, and every layer above --
+ * cloud-init, gdm.service, the default target -- looked healthy.
+ */
+static void
+test_a_guest_desktop_gets_a_screen(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        clawt_vm_computer_new("scribe", CLAWT_VM_BACKEND_LIBVIRT, NULL);
+    g_autoptr(ClawtGuestDesktop) desktop = clawt_guest_desktop_new("clawt");
+    g_autofree gchar *headless = NULL;
+    g_autofree gchar *graphical = NULL;
+
+    headless = clawt_vm_computer_build_domain_xml(CLAWT_VM_COMPUTER(computer));
+
+    /* No desktop, no GPU: a headless VM has nothing to draw. */
+    g_assert_null(strstr(headless, "<video>"));
+    g_assert_null(strstr(headless, "<graphics"));
+
+    clawt_vm_computer_set_desktop(CLAWT_VM_COMPUTER(computer), desktop);
+    graphical =
+        clawt_vm_computer_build_domain_xml(CLAWT_VM_COMPUTER(computer));
+
+    g_assert_nonnull(strstr(graphical, "<video>"));
+    g_assert_nonnull(strstr(graphical, "type='virtio'"));
+
+    /*
+     * And a viewer, on loopback.  A VM's screen is a live view of what
+     * the agent is doing; it does not go on the network because a default
+     * was convenient.
+     */
+    g_assert_nonnull(strstr(graphical, "type='vnc'"));
+    g_assert_nonnull(strstr(graphical, "listen='127.0.0.1'"));
+}
+
+/*
+ * ...and the qemu backend says the same thing rather than inheriting it.
+ */
+static void
+test_the_qemu_backend_names_its_gpu(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        clawt_vm_computer_new("scribe", CLAWT_VM_BACKEND_QEMU, NULL);
+    g_autoptr(ClawtGuestDesktop) desktop = clawt_guest_desktop_new("clawt");
+    g_auto(GStrv) argv = NULL;
+    g_autofree gchar *joined = NULL;
+
+    clawt_vm_computer_set_desktop(CLAWT_VM_COMPUTER(computer), desktop);
+
+    argv = clawt_vm_computer_build_qemu_argv(CLAWT_VM_COMPUTER(computer),
+                                             "/tmp/qmp.sock");
+    joined = g_strjoinv(" ", argv);
+
+    g_assert_nonnull(strstr(joined, "virtio-gpu-pci"));
+
+    /*
+     * -vga none as well, or the guest gets two GPUs: qemu's default VGA
+     * plus the one asked for.
+     */
+    g_assert_nonnull(strstr(joined, "-vga none"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1955,6 +2022,10 @@ main(int argc, char *argv[])
                     test_image_falls_back_to_the_schema);
     g_test_add_func("/computer/socket-path-length",
                     test_an_over_long_socket_path_is_refused);
+    g_test_add_func("/computer/vm/desktop-gets-a-screen",
+                    test_a_guest_desktop_gets_a_screen);
+    g_test_add_func("/computer/vm/qemu-names-its-gpu",
+                    test_the_qemu_backend_names_its_gpu);
     g_test_add_func("/computer/teardown/never-a-silent-success",
                     test_teardown_is_never_a_silent_success);
     g_test_add_func("/computer/vm/teardown-removes-the-disk",

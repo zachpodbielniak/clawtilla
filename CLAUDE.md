@@ -402,6 +402,31 @@ the same program.
   findable exactly once per overlay. Verified by booting a real Fedora
   44 guest twice from scratch.
 
+### A VM with no video device has no desktop, however well it installed
+
+- The libvirt domain XML emitted no `<video>` and no `<graphics>`, so
+  the guest had no `/dev/dri` at all. GDM says exactly this — *"It
+  appears that your system does not have a primary GPU! Proceeding with
+  any GPU"* — and then starts nothing. Every layer above it looks
+  healthy: cloud-init reaches `cloud-init.target`, `gdm.service` is
+  active, `systemctl get-default` is `graphical.target`, and the console
+  sits on the boot log for ever, because with no video device the serial
+  console is the only console there is.
+- It stayed hidden because the two backends disagreed by accident. qemu
+  gives a guest a VGA adapter unless told otherwise, so the qemu backend
+  — the one every test and probe used — had a working desktop, while the
+  libvirt backend, which is the **default** and builds its devices from
+  nothing, had none. A feature verified end to end on real hardware, on
+  the wrong backend.
+- Both now name the GPU: `<model type='virtio'>` in the XML, `-vga none
+  -device virtio-gpu-pci` in the argv. virtio because that is what a
+  current GNOME on Wayland wants. A `<graphics>` on loopback comes with
+  it, so a person can see whether the desktop came up — the agent does
+  not need it, since it screenshots through the extension inside the
+  guest.
+- Emitted only when a desktop is configured. A headless VM has nothing
+  to draw, and `tests/test-computer.c` asserts both halves.
+
 ### X-GNOME-Autostart-Phase now stops an autostart entry running
 
 - gnome-session no longer manages session services, so an entry setting
