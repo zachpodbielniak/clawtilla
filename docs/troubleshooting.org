@@ -398,6 +398,40 @@ clawtilla computer rebuild <agent>
 That destroys the guest and builds it again from the current
 configuration, so anything living only inside the VM goes with it.
 
+** Clicks land near the control but not on it
+
+The agent is estimating coordinates from an assumed layout.  An image is
+not a coordinate, and nothing in the tool surface turns one into the
+other, so it guesses -- and a few dozen pixels out looks exactly like the
+pointer being wrong.
+
+Take a screenshot and read the positions out of it:
+
+#+begin_src bash
+clawtilla computer exec <agent> -- \
+    tesseract /mnt/clawtilla/workspace/screenshots/x.png - tsv
+#+end_src
+
+The centre of the bounding box for the text you want is where to click.
+The agent is told this in its own description; if it is not doing it,
+the guest predates the guidance.
+
+~tesseract: command not found~ on Enterprise Linux is expected: it is in
+EPEL, which a cloud image does not enable, and clawtilla will not name a
+package cloud-init cannot find because that fails the whole install.
+
+** Text arrives duplicated or with a stray character
+
+~emacsemacs~ where ~emacs~ was meant, or one leftover character in front
+of otherwise clean text, right where a field was cleared and retyped.
+
+The clear did not fail; it arrived *after* the typing.  Synthetic events
+carried fabricated timestamps that restarted from the current clock on
+every call, so a burst was stamped into the future and the next call
+began behind it.  Fixed in the desktop extension -- update
+~computer.vm.desktop.mcp_repo~'s checkout and rebuild the guest, since
+cloud-init clones it at first boot.
+
 ** The agent's typing goes somewhere else
 
 Text ends up in GNOME's Activities search box rather than in the

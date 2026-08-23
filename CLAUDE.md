@@ -441,6 +441,52 @@ the same program.
   itself was correct throughout; `gdbus call ... SetEnabled true` by hand
   returned `(true,)` on the same guest. Only the launcher was missing.
 
+### A synthetic event stamped in the future makes the next call arrive in the past
+
+- gnome-desktop-mcp's input entry points each started from
+  `GLib.get_monotonic_time()` and stepped 10ms per event, while returning
+  as soon as the events were *queued* rather than when they were meant to
+  have happened. A burst was therefore stamped up to 100ms ahead, and the
+  next call -- microseconds later in real time -- began again behind it.
+  Measured against the old arithmetic: typing started **30ms before the
+  clear that preceded it had finished**. So Ctrl+A and Delete landed
+  after the characters meant to replace them, the field kept its
+  contents, and the result was `emacsemacs`, or one leftover character in
+  front of a clean `emacs`.
+- Reported as `type_text` dropping and duplicating characters, which is
+  what it looks like from outside and is not where the fault was. No
+  character was ever lost; they arrived in an order that made the edit
+  before them a no-op. Anything that fabricates timestamps needs *one*
+  clock across every entry point -- pointer and keyboard alike, since a
+  click and the typing after it order against each other too.
+- It also built a fresh `ClutterVirtualInputDevice` per call and dropped
+  it. Creating one adds it to the seat and dropping it takes it away, so
+  a device per keystroke churned seat capabilities under every client --
+  and GJS decides when the discarded one is finalised, which is not
+  necessarily after mutter has finished with the events it queued.
+- The rule now lives in `clock.js` as a pure function, so it can be
+  exercised without a running GNOME Shell. That is the whole reason the
+  before/after was measurable at all.
+
+### An agent given a screen and a pointer will estimate the coordinate
+
+- And miss by a few dozen pixels, and conclude the pointer tools are
+  broken. A screen is an image; a click needs a number, and nothing in
+  the tool surface bridges the two. An agent worked out
+  `tesseract <file> - tsv` -- a bounding box per word, click the centre
+  of the right box -- by trial and error over a session, and **reported
+  it as a discovery**. Same signal as the `/dev/console` case and the
+  `DISPLAY=:0` one: a technique an agent explains back to you belonged in
+  the workspace files.
+- The packages are per family and the language data is always separate:
+  `tesseract` + `tesseract-langpack-eng` on Fedora, `tesseract-ocr` +
+  `tesseract-ocr-eng` on Debian and Ubuntu, `tesseract` +
+  `tesseract-data-eng` on Arch. All four verified against the real
+  archives rather than recalled.
+- **Not** on Enterprise Linux: it is in EPEL, which a cloud image does
+  not enable, and cloud-init treats a package it cannot find as a failure
+  of the whole install -- so naming it would take the desktop with it.
+
 ### A share the guest never mounts, and a path the agent cannot open
 
 - Two halves of one gap, and together they cost a session. The domain XML

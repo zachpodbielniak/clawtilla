@@ -862,6 +862,66 @@ test_no_screenshot_share_without_the_mcp_install(void)
     g_assert_null(strstr(data, "tmpfiles.d"));
 }
 
+
+/*
+ * OCR is what turns a screenshot into somewhere to click.
+ *
+ * An agent given a screen and a pointer estimates positions from an
+ * assumed layout, misses controls by a few dozen pixels, and concludes
+ * the pointer tools are unreliable. One worked the OCR route out by
+ * trial and error over a session and reported it as a discovery, which
+ * is the signal that it belonged in the guest and in the agent's own
+ * description rather than in a person's head.
+ *
+ * The language data is a separate package on every distribution and
+ * tesseract does nothing useful without it, so both names are pinned.
+ */
+static void
+test_every_family_that_can_read_the_screen_does(void)
+{
+    struct { ClawtGuestFlavour flavour; const gchar *binary;
+             const gchar *data; } expected[] = {
+        { CLAWT_GUEST_FLAVOUR_FEDORA, "tesseract",
+          "tesseract-langpack-eng" },
+        { CLAWT_GUEST_FLAVOUR_DEBIAN, "tesseract-ocr",
+          "tesseract-ocr-eng" },
+        { CLAWT_GUEST_FLAVOUR_UBUNTU, "tesseract-ocr",
+          "tesseract-ocr-eng" },
+        { CLAWT_GUEST_FLAVOUR_ARCH, "tesseract", "tesseract-data-eng" }
+    };
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(expected); i++) {
+        g_autofree gchar *data = render_for(expected[i].flavour);
+        g_autofree gchar *binary =
+            g_strdup_printf("- \"%s\"", expected[i].binary);
+        g_autofree gchar *langdata =
+            g_strdup_printf("- \"%s\"", expected[i].data);
+
+        g_assert_nonnull(strstr(data, binary));
+        g_assert_nonnull(strstr(data, langdata));
+    }
+}
+
+/*
+ * ...and Enterprise Linux does not, on purpose.
+ *
+ * tesseract is in EPEL there, which a cloud image does not have enabled,
+ * and cloud-init treats a package it cannot find as a failure of the
+ * whole install -- so naming it would take the desktop down with it. An
+ * EL guest can drive a desktop; it just cannot read one.
+ */
+static void
+test_enterprise_does_not_ask_for_a_package_from_epel(void)
+{
+    g_autofree gchar *data = render_for(CLAWT_GUEST_FLAVOUR_ENTERPRISE);
+
+    g_assert_null(strstr(data, "tesseract"));
+
+    /* And still installs everything else the automation needs. */
+    g_assert_nonnull(strstr(data, "- \"python3-gobject\""));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -930,6 +990,10 @@ main(int argc, char *argv[])
     g_test_add_func("/guest-desktop/install/same-on-every-family",
                     test_every_family_installs_the_same_way);
 
+    g_test_add_func("/guest-desktop/ocr/every-family-that-can-reads",
+                    test_every_family_that_can_read_the_screen_does);
+    g_test_add_func("/guest-desktop/ocr/enterprise-avoids-epel",
+                    test_enterprise_does_not_ask_for_a_package_from_epel);
     g_test_add_func("/guest-desktop/screenshots/land-in-the-workspace",
                     test_screenshots_land_in_the_workspace_share);
     g_test_add_func("/guest-desktop/screenshots/none-without-the-install",

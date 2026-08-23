@@ -433,6 +433,38 @@ clawt_desktop_describe(ClawtDesktop *self)
             "into a window you have just focused, and check a "
             "screenshot if text is not appearing where you expect.";
 
+        /*
+         * Screenshots are a file the agent can open, which it was not
+         * told and had no way to guess.
+         *
+         * They land in the workspace share now, so an agent's own `read`
+         * reaches them -- but the tool returns the path inside the
+         * guest, so an agent that takes the return value at face value
+         * still cannot open it.
+         */
+        const gchar *looking =
+            " Screenshots are written into your workspace share, so read "
+            "one with your own tools and look at it. The tool returns "
+            "the path inside the VM; the same file is under your "
+            "workspace on the host, which is the one `read` opens.";
+
+        /*
+         * And how to turn a picture into a coordinate.
+         *
+         * An agent given a screen and a click tool estimates positions
+         * from an assumed layout, misses by a few dozen pixels, and
+         * concludes the pointer tools are unreliable. One worked out the
+         * OCR route by trial and error over a session and reported it as
+         * a discovery -- which is the signal that it belonged here.
+         */
+        const gchar *clicking =
+            " Before clicking, get the position rather than estimating "
+            "it: `tesseract <file> - tsv` in the VM prints a bounding "
+            "box per word, and the centre of the box for the text you "
+            "want is the coordinate. Guessing from an assumed layout "
+            "misses controls by a few dozen pixels and looks like the "
+            "pointer being wrong.";
+
         if (self->allow_input)
             return g_strconcat(
                 "There is a GNOME desktop inside your own VM, logged in and "
@@ -440,7 +472,7 @@ clawt_desktop_describe(ClawtDesktop *self)
                 "and send it keystrokes and pointer events. It is yours: "
                 "nothing you do there touches the user's screen. The tools "
                 "arrive from the `clawtilla-desktop` MCP server.",
-                launching, keyboard, diagnose, NULL);
+                launching, looking, clicking, keyboard, diagnose, NULL);
 
         /*
          * An observe-only agent gets the launcher and not the keyboard
@@ -451,7 +483,8 @@ clawt_desktop_describe(ClawtDesktop *self)
             "There is a GNOME desktop inside your own VM. You can list its "
             "windows and take screenshots of it, but you cannot send "
             "keystrokes or pointer events. The tools arrive from the "
-            "`clawtilla-desktop` MCP server.", launching, diagnose, NULL);
+            "`clawtilla-desktop` MCP server.", launching, looking,
+            diagnose, NULL);
     }
 
     backend_name = (self->resolved == CLAWT_DESKTOP_BACKEND_GNOME)

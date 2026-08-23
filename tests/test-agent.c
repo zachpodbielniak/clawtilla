@@ -700,11 +700,24 @@ test_a_guest_desktop_says_where_to_look_when_it_fails(void)
          * keyboard.  Telling an observe-only agent to press Escape is
          * advice it cannot take, and a prompt is not the place for it.
          */
+        /*
+         * Screenshots are a file it can open, which it had no way to
+         * guess: the tool returns the path inside the guest and the
+         * agent's `read` runs on the host.
+         */
+        g_assert_nonnull(strstr(described, "workspace share"));
+
         if (input) {
             g_assert_nonnull(strstr(described, "focused: true"));
             g_assert_nonnull(strstr(described, "Escape"));
+
+            /* And where to click, rather than where it assumes. */
+            g_assert_nonnull(strstr(described, "tesseract"));
         } else {
             g_assert_null(strstr(described, "Escape"));
+
+            /* Nothing about clicking for an agent that cannot click. */
+            g_assert_null(strstr(described, "tesseract"));
         }
 
         if (input)

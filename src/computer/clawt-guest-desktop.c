@@ -78,7 +78,19 @@ static const gchar *const fedora_desktop[] = {
 };
 
 static const gchar *const fedora_mcp[] = {
-    "git", "python3-pip", "python3-gobject", NULL
+    "git", "python3-pip", "python3-gobject",
+    /*
+     * OCR, which is what turns a screenshot into somewhere to click.
+     *
+     * An agent driving a desktop has the screen as an image and needs a
+     * coordinate; without this it estimates one from an assumed layout
+     * and misses controls by a few dozen pixels, which reads as the
+     * pointer tools being unreliable. `tesseract <file> - tsv` prints a
+     * bounding box per word, and the centre of the right box is the
+     * answer. The language data is a separate package everywhere and
+     * tesseract does nothing useful without it.
+     */
+    "tesseract", "tesseract-langpack-eng", NULL
 };
 
 /*
@@ -94,6 +106,15 @@ static const gchar *const enterprise_desktop[] = {
     "firefox", "dconf", NULL
 };
 
+/*
+ * No tesseract here, and it is not an oversight.
+ *
+ * On Enterprise Linux it lives in EPEL, which a cloud image does not
+ * have enabled -- and cloud-init treats a package it cannot find as a
+ * failure of the whole install, so naming it would take the desktop down
+ * with it. An EL guest can drive a desktop; it just cannot read one
+ * until somebody adds EPEL.
+ */
 static const gchar *const enterprise_mcp[] = {
     "git", "python3-pip", "python3-gobject", NULL
 };
@@ -133,6 +154,8 @@ static const gchar *const ubuntu_desktop[] = {
  */
 static const gchar *const debian_mcp[] = {
     "git", "python3-pip", "python3-gi", "python3-venv", "libglib2.0-bin",
+    /* Debian splits the binary from the language data; both are needed. */
+    "tesseract-ocr", "tesseract-ocr-eng",
     NULL
 };
 
@@ -150,7 +173,8 @@ static const gchar *const arch_desktop[] = {
 };
 
 static const gchar *const arch_mcp[] = {
-    "git", "python-pip", "python-gobject", "glib2-devel", NULL
+    "git", "python-pip", "python-gobject", "glib2-devel",
+    "tesseract", "tesseract-data-eng", NULL
 };
 
 typedef struct {

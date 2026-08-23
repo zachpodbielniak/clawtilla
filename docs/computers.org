@@ -1199,6 +1199,38 @@ the same reason the ~/dev/console~ case is: it is not derivable from the
 tools, and an agent that works it out by trial and error arrives
 somewhere plausible and wrong.
 
+**** Looking at the screen, and finding somewhere to click
+
+Two separate problems, and an agent solves neither by itself.
+
+*Looking* is now a matter of reading a file: screenshots land in the
+workspace share, so the agent's own ~read~ opens them.  The tool returns
+the path *inside* the guest, though, and an agent that takes the return
+value at face value still cannot open it -- so the description says
+which of the two names to use.
+
+*Clicking* needs a coordinate, and an image is not one.  An agent given a
+screen and a pointer estimates from an assumed layout, misses controls by
+a few dozen pixels, and reasonably concludes the pointer tools are
+unreliable.  The route that works is OCR:
+
+#+begin_src bash
+clawtilla computer exec <agent> -- \
+    tesseract /mnt/clawtilla/workspace/screenshots/x.png - tsv
+#+end_src
+
+That prints a bounding box per word; the centre of the box for the text
+you want is where to click.  clawtilla installs ~tesseract~ and its
+English data into every guest that can have them, and the agent is told
+the technique in its own description -- an agent worked it out by trial
+and error over a session and reported it as a discovery, which is the
+signal that it belonged here.
+
+Enterprise Linux is the exception: tesseract is in EPEL there, which a
+cloud image does not have enabled, and a package cloud-init cannot find
+fails the *whole* install.  An EL guest can drive a desktop; it cannot
+read one until somebody adds EPEL.
+
 **** ~focused: true~ is not where the keystrokes go
 
 ~list_windows~ reports ~focused~ from the window manager's idea of focus.
