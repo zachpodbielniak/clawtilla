@@ -264,12 +264,13 @@ test_the_mcp_prerequisites_are_not_the_operators_problem(void)
     g_assert_nonnull(strstr(data, "venv, --system-site-packages"));
 
     /*
-     * And mcp is pinned below 2.  gnome-desktop-mcp asks for `mcp>=1.0.0`
-     * and imports mcp.server.fastmcp, which the 2.x SDK removed -- so an
-     * unpinned install succeeds and the server dies on its first import,
-     * with nothing before that point reporting anything wrong.
+     * And no version constraints of clawtilla's own.  Those belong in the
+     * pyproject of the thing being cloned, where they can be raised in
+     * step with the code that needs raising; a copy held here would go
+     * stale silently and in the wrong direction.
      */
-    g_assert_nonnull(strstr(data, "\"mcp<2\""));
+    g_assert_null(strstr(data, "\"mcp<"));
+    g_assert_null(strstr(data, "\"mcp>"));
 }
 
 static void

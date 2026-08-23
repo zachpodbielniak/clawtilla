@@ -502,24 +502,25 @@ clawt_guest_desktop_render_setup(ClawtGuestDesktop *self, GString *out)
             CHECKOUT_DIR "/venv\"]\n");
 
         /*
-         * mcp is pinned below 2.
+         * No version constraints are given here, deliberately.
          *
-         * gnome-desktop-mcp asks for `mcp>=1.0.0` and imports
-         * `mcp.server.fastmcp`, which the 2.x SDK removed -- so pip
-         * resolves the newest, installs cleanly, and the server dies on
-         * its first import with ModuleNotFoundError. Nothing before that
-         * point fails: the clone works, the venv works, the install
-         * reports success, and the only symptom is an MCP server that
-         * exits the moment the agent's client speaks to it.
+         * gnome-desktop-mcp imports mcp.server.fastmcp, which exists
+         * only between mcp 1.2.0 and 2.0.0 -- and its own pyproject once
+         * said `mcp>=1.0.0`, which admitted versions that never had it
+         * and let a resolver take the 2.x that removed it. clawtilla
+         * pinned around that for a while; the constraint now lives in
+         * the repository being cloned, where it belongs and where it can
+         * be raised in step with a port to the new API.
          *
-         * The constraint belongs in the guest's own pyproject and this
-         * is a bandage over somebody else's floor being too low. It
-         * stays until that is raised, because the alternative is a
-         * feature that silently does not work.
+         * Which means mcp_repo has to be a checkout whose pyproject is
+         * honest about what it needs. That is the ordinary contract for
+         * installing anything, and the alternative -- clawtilla holding
+         * a copy of somebody else's dependency ranges -- goes stale
+         * silently and in the wrong direction.
          */
         g_string_append(out,
-            "  - [\"" CHECKOUT_DIR "/venv/bin/pip\", install, --quiet, "
-            "\"mcp<2\", \"" CHECKOUT_DIR "/mcp-server\"]\n");
+            "  - [\"" CHECKOUT_DIR "/venv/bin/pip\", install, --quiet, \""
+            CHECKOUT_DIR "/mcp-server\"]\n");
     }
 
     /*

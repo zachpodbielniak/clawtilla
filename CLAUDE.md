@@ -413,15 +413,23 @@ the same program.
   itself was correct throughout; `gdbus call ... SetEnabled true` by hand
   returned `(true,)` on the same guest. Only the launcher was missing.
 
-### `mcp>=1.0.0` resolves to a version that removed `fastmcp`
+### A dependency range belongs to the thing being installed
 
-- gnome-desktop-mcp asks for that and imports `mcp.server.fastmcp`,
-  which the 2.x SDK dropped (`mcp.server.mcpserver` replaced it). pip
-  resolves the newest, installs cleanly, reports success -- and the
-  server dies on its first import. Nothing before that point fails: the
-  clone works, the venv works, the install is quiet. clawtilla pins
-  `mcp<2` at install time; the constraint belongs upstream in the
-  guest's own pyproject.
+- gnome-desktop-mcp asked for `mcp>=1.0.0` and imports
+  `mcp.server.fastmcp`, which exists only from 1.2.0 to 2.0.0 --
+  `mcp.server.mcpserver` replaced it. So the floor admitted versions
+  that never had it, and the missing ceiling let a resolver take the
+  2.x that removed it. pip resolves, installs cleanly, reports success,
+  and the server dies on its first import: the clone works, the venv
+  works, and the only symptom is an MCP server that exits the moment a
+  client speaks to it.
+- clawtilla pinned `mcp<2` at install time for exactly as long as it
+  took to fix the range upstream, and then stopped. The guest install
+  now names no versions at all, because a copy of somebody else's
+  dependency ranges goes stale silently and in the wrong direction --
+  `computer.vm.desktop.mcp_repo` has to be a checkout whose pyproject is
+  honest, which is the ordinary contract for installing anything.
+  `tests/test-guest-desktop.c` asserts that no constraint is emitted.
 
 ### An AI CLI reaches a guest's MCP server over ssh, and ssh alone is not enough
 
