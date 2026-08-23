@@ -1905,6 +1905,74 @@ test_the_qemu_backend_names_its_gpu(void)
     g_assert_nonnull(strstr(joined, "-vga none"));
 }
 
+/*
+ * Provisioning leaves the computer knowing which key reaches the guest.
+ *
+ * That knowledge used to live only inside the seed builder, and
+ * provisioning skips seed-building entirely for a domain that is already
+ * running -- correctly, since rebuilding a running guest's disk destroys
+ * it. So a daemon restarted against a live VM held no key path, built an
+ * ssh command with no -i at all, and every exec came back "Permission
+ * denied (publickey)" for a key sitting in the state directory that
+ * worked perfectly by hand.
+ *
+ * This covers the qemu backend, which is the one reachable without a
+ * hypervisor. The libvirt early return that actually broke is verified
+ * against a real domain.
+ */
+static void
+test_provisioning_resolves_the_ssh_key(void)
+{
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autofree gchar *image = NULL;
+    g_auto(GStrv) argv = NULL;
+    g_autofree gchar *joined = NULL;
+    g_autoptr(GError) error = NULL;
+    const gchar *command[] = { "true", NULL };
+
+    if (g_find_program_in_path("qemu-img") == NULL) {
+        g_test_skip("qemu-img is not installed");
+        return;
+    }
+
+    if (clawt_cloud_init_find_tool() == NULL) {
+        g_test_skip("no ISO writer is installed");
+        return;
+    }
+
+    image = g_build_filename(g_get_user_data_dir(), "pretend-base.qcow2",
+                             NULL);
+    {
+        g_autoptr(GSubprocess) mk =
+            g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_SILENCE |
+                             G_SUBPROCESS_FLAGS_STDERR_SILENCE, NULL,
+                             "qemu-img", "create", "-f", "qcow2", image,
+                             "1M", NULL);
+
+        g_assert_nonnull(mk);
+        g_assert_true(g_subprocess_wait_check(mk, NULL, NULL));
+    }
+
+    computer = clawt_vm_computer_new("keyed", CLAWT_VM_BACKEND_QEMU, NULL);
+    clawt_vm_computer_set_image(CLAWT_VM_COMPUTER(computer), image);
+
+    g_assert_true(clawt_computer_provision(computer, &error));
+    g_assert_no_error(error);
+
+    argv = clawt_vm_computer_build_ssh_argv(CLAWT_VM_COMPUTER(computer),
+                                            command, NULL, 10);
+    g_assert_nonnull(argv);
+    joined = g_strjoinv(" ", argv);
+
+    /*
+     * The whole assertion. Without -i, ssh falls back to whatever keys
+     * the daemon's user happens to have, which is never the one
+     * cloud-init put in the guest.
+     */
+    g_assert_nonnull(strstr(joined, " -i "));
+    g_assert_nonnull(strstr(joined, "id_ed25519"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -2027,6 +2095,8 @@ main(int argc, char *argv[])
                     test_image_falls_back_to_the_schema);
     g_test_add_func("/computer/socket-path-length",
                     test_an_over_long_socket_path_is_refused);
+    g_test_add_func("/computer/vm/provision-resolves-the-key",
+                    test_provisioning_resolves_the_ssh_key);
     g_test_add_func("/computer/vm/desktop-gets-a-screen",
                     test_a_guest_desktop_gets_a_screen);
     g_test_add_func("/computer/vm/qemu-names-its-gpu",

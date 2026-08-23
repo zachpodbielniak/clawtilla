@@ -1215,13 +1215,27 @@ ensure_ssh_route(ClawtVmComputer *self, GError **error)
  * Skipping this leaves a VM that boots perfectly and cannot be entered,
  * which looks exactly like a VM that failed to boot.
  */
+/*
+ * Works out which key reaches the guest, without touching the guest.
+ *
+ * Separate from the seed because the two have very different
+ * preconditions.  Building a seed is only meaningful before a guest has
+ * booted; knowing where its key file is matters every time a command is
+ * run, including against a VM that has been up for days.
+ *
+ * They were one function, and provisioning skips seed-building entirely
+ * for a running domain -- correctly, since rebuilding a running guest's
+ * disk destroys it. But that skipped this too, so a daemon restarted
+ * against a running VM held no key path at all, built an ssh command with
+ * no -i, and every exec came back "Permission denied (publickey)" for a
+ * key sitting in the state directory that worked perfectly by hand.
+ */
 static gboolean
-ensure_cloud_init(ClawtVmComputer *self, GError **error)
+ensure_ssh_key(ClawtVmComputer *self, GError **error)
 {
     g_autofree gchar *state_dir = NULL;
-    g_autofree gchar *seed = NULL;
 
-    if (!self->cloud_init)
+    if (self->ssh_pubkey != NULL)
         return TRUE;
 
     state_dir = vm_state_dir(self);
@@ -1237,9 +1251,10 @@ ensure_cloud_init(ClawtVmComputer *self, GError **error)
         g_free(self->ssh_pubkey);
         self->ssh_pubkey = clawt_cloud_init_public_key(self->ssh_key, error);
 
-        if (self->ssh_pubkey == NULL)
-            return FALSE;
-    } else {
+        return self->ssh_pubkey != NULL;
+    }
+
+    {
         const gchar *agent_id =
             clawt_computer_get_agent_id(CLAWT_COMPUTER(self));
         g_autofree gchar *comment = NULL;
@@ -1258,6 +1273,26 @@ ensure_cloud_init(ClawtVmComputer *self, GError **error)
         g_free(self->ssh_pubkey);
         self->ssh_pubkey = public_key;
     }
+
+    return TRUE;
+}
+
+static gboolean
+ensure_cloud_init(ClawtVmComputer *self, GError **error)
+{
+    g_autofree gchar *state_dir = NULL;
+    g_autofree gchar *seed = NULL;
+
+    if (!self->cloud_init)
+        return TRUE;
+
+    state_dir = vm_state_dir(self);
+
+    if (!clawt_ensure_dir(state_dir, 0700, error))
+        return FALSE;
+
+    if (!ensure_ssh_key(self, error))
+        return FALSE;
 
     seed = clawt_cloud_init_write_seed(state_dir, self->domain,
                                        self->ssh_user != NULL
@@ -1361,6 +1396,22 @@ vm_provision(ClawtComputer *computer, GError **error)
 
         if (g_strcmp0(running, "running") == 0) {
             if (self->ssh_host == NULL && !ensure_ssh_route(self, error)) {
+                clawt_computer_set_state(computer,
+                                         CLAWT_COMPUTER_STATE_ERROR,
+                                         (error != NULL && *error != NULL)
+                                         ? (*error)->message : NULL);
+                return FALSE;
+            }
+
+            /*
+             * The key as well as the address.  Both are read from files
+             * and neither touches the guest, and without the key the ssh
+             * command is built with no -i at all -- so every exec against
+             * a VM that outlived its daemon came back "Permission denied
+             * (publickey)" for a key sitting in the state directory that
+             * worked by hand.
+             */
+            if (!ensure_ssh_key(self, error)) {
                 clawt_computer_set_state(computer,
                                          CLAWT_COMPUTER_STATE_ERROR,
                                          (error != NULL && *error != NULL)

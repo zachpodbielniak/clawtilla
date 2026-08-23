@@ -519,6 +519,26 @@ the same program.
   anything else in it, which is what keeps a file somebody put there by
   hand.
 
+### Skipping work for a running guest skipped knowing how to reach it
+
+- `vm_provision()` returns early for a libvirt domain that is already
+  running, so it cannot rebuild a live guest's overlay or seed. Correct
+  — that path destroyed a guest once. But the SSH key was resolved
+  *inside* `ensure_cloud_init()`, so the early return skipped that too:
+  a daemon restarted against a running VM held no key path, built an ssh
+  command with **no `-i` at all**, and every exec came back `Permission
+  denied (publickey)` — for a key sitting in the state directory that
+  worked perfectly by hand, against a VM that was plainly up.
+- Building a seed is only meaningful before a guest boots. Knowing where
+  its key file is matters every time a command runs. They had no business
+  in one function, and `ensure_ssh_key()` is now separate and called from
+  both paths.
+- A libvirt domain outliving its daemon is the *ordinary* case, not an
+  edge one — which is why this broke the moment anything restarted the
+  daemon. `/computer/vm/provision-resolves-the-key` covers the qemu
+  backend; the libvirt early return is verified against a real domain,
+  since `libvirt_domain_state()` needs a hypervisor to return anything.
+
 ### Registering a tool is not telling the agent it has it
 
 - The guest desktop's tools reach an agent through its `.mcp.json`, so
