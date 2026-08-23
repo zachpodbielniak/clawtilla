@@ -637,7 +637,7 @@ computer_blurb(ClawtAgentConfig *agent)
             "somebody watching this VM in virt-manager actually sees:\n"
             "\n"
             "#+begin_src bash\n"
-            "bash -c \'echo \\\">>> hello from %s <<<\\\" > /dev/console\'\n"
+            "bash -c 'echo \">>> hello from %s <<<\" > /dev/console'\n"
             "#+end_src\n"
             "\n"
             "The ~bash -c~ is not optional. ~clawtilla_computer_exec~\n"

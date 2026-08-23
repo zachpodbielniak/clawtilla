@@ -1880,7 +1880,6 @@ cmd_computer(int argc, char *argv[])
     }
 
     if (g_strcmp0(verb, "exec") == 0) {
-        g_autofree gchar *command = NULL;
         gint start = 4;
         JsonObject *result;
 
@@ -1894,11 +1893,34 @@ cmd_computer(int argc, char *argv[])
             return EXIT_FAILURE;
         }
 
-        command = g_strjoinv(" ", argv + start);
+        /*
+         * Sent as an array, not joined into a line.
+         *
+         * The shell has already split and unquoted these for us. Joining
+         * them back up and letting the daemon re-split meant every layer
+         * of quoting was consumed twice: `-- echo 'x\ny'` printed `xny`,
+         * and `-- sh -c 'echo a; echo b'` became four arguments and ran
+         * nothing at all.
+         */
+        {
+            g_autoptr(JsonBuilder) builder = json_builder_new();
+            gint i;
 
-        reply = call(client, "computer.exec",
-                     build_payload("agent", agent_id, "command", command,
-                                   NULL));
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "agent");
+            json_builder_add_string_value(builder, agent_id);
+            json_builder_set_member_name(builder, "argv");
+            json_builder_begin_array(builder);
+
+            for (i = start; i < argc; i++)
+                json_builder_add_string_value(builder, argv[i]);
+
+            json_builder_end_array(builder);
+            json_builder_end_object(builder);
+
+            reply = call(client, "computer.exec",
+                         json_builder_get_root(builder));
+        }
         if (reply == NULL)
             return EXIT_FAILURE;
 

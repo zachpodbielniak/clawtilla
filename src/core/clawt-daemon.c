@@ -3549,12 +3549,51 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         g_autoptr(ClawtExecResult) result = NULL;
         g_auto(GStrv) argv = NULL;
 
-        if (computer == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "that agent has no computer");
+        /*
+         * The computer is built when the agent starts, so a stopped
+         * agent has none -- and "that agent has no computer" then reads
+         * as a configuration mistake rather than a stopped agent, which
+         * is a different thing to go and check.
+         */
+        if (computer == NULL) {
+            const gchar *configured =
+                (agent != NULL)
+                ? clawt_agent_config_get_string(clawt_agent_get_config(agent),
+                                                "computer.type")
+                : NULL;
+            g_autofree gchar *detail = NULL;
 
-        if (command == NULL || !g_shell_parse_argv(command, NULL, &argv,
-                                                   &error))
+            if (configured != NULL && g_strcmp0(configured, "none") != 0)
+                detail = g_strdup_printf(
+                    "%s has a %s computer configured, but it is only built "
+                    "when the agent starts. Start it first.",
+                    agent_id, configured);
+            else
+                detail = g_strdup_printf("%s has no computer", agent_id);
+
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       detail);
+        }
+
+        /*
+         * An argv is taken as it stands.  A caller that already has the
+         * arguments separated -- the CLI has them from the shell that
+         * split them -- must not have them joined and re-split here:
+         * `echo 'x\\ny'` came back as `xny`, because the backslash the
+         * user quoted was consumed a second time, and `sh -c 'a; b'`
+         * turned into four arguments and ran nothing.
+         *
+         * The string form stays for callers that genuinely have a
+         * command line, which is what a model writes.
+         */
+        argv = clawt_ipc_payload_strv(payload, "argv");
+
+        if (argv != NULL && argv[0] == NULL)
+            g_clear_pointer(&argv, g_strfreev);
+
+        if (argv == NULL &&
+            (command == NULL || !g_shell_parse_argv(command, NULL, &argv,
+                                                    &error)))
             return clawt_ipc_error_new(
                 request, CLAWT_ERROR_INVALID_ARGUMENT,
                 error != NULL ? error->message : "no command given");

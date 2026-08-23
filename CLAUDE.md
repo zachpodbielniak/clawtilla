@@ -554,6 +554,15 @@ the same program.
   `virDomainCreate` on it is an error. The qemu backend is guarded too —
   two qemus writing one qcow2 corrupt it.
 
+### An example in a generated file is code, so run it
+
+- The `/dev/console` example shipped with its C escaping leaking into
+  the output — `echo \">>> x <<<\"` inside single quotes prints the
+  backslashes, so the command as documented would have written the wrong
+  text. It compiled, it read correctly at a glance, and it was wrong.
+  Escaping that survives a C string literal into an org file into a
+  shell has three layers; run the result.
+
 ### computer_exec takes a command, not a shell line
 
 - Both backends `g_shell_quote()` each argument and join them, so `>`,

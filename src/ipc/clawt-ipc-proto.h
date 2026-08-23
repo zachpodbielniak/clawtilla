@@ -149,6 +149,22 @@ const gchar *clawt_ipc_payload_string(JsonObject *payload, const gchar *key);
 gint64       clawt_ipc_payload_int(JsonObject  *payload,
                                    const gchar *key,
                                    gint64       fallback);
+/**
+ * clawt_ipc_payload_strv:
+ * @payload: (nullable): a request payload
+ * @key: the member to read
+ *
+ * Reads an array of strings.
+ *
+ * A command belongs in one of these rather than in a string: joining an
+ * argv for transport and splitting it again at the far end loses exactly
+ * the quoting the caller went to the trouble of writing.
+ *
+ * Returns: (transfer full) (nullable): the strings, or %NULL if there is
+ *   no such member or it is not an array of them
+ */
+GStrv        clawt_ipc_payload_strv(JsonObject *payload, const gchar *key);
+
 gboolean     clawt_ipc_payload_boolean(JsonObject  *payload,
                                        const gchar *key,
                                        gboolean     fallback);

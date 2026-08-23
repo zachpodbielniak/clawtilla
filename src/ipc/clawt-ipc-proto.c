@@ -342,6 +342,38 @@ clawt_ipc_payload_int(JsonObject *payload, const gchar *key, gint64 fallback)
     return json_object_get_int_member(payload, key);
 }
 
+GStrv
+clawt_ipc_payload_strv(JsonObject *payload, const gchar *key)
+{
+    JsonArray *array;
+    GPtrArray *out;
+    guint i;
+
+    if (payload == NULL || key == NULL ||
+        !json_object_has_member(payload, key))
+        return NULL;
+
+    if (json_node_get_node_type(
+            json_object_get_member(payload, key)) != JSON_NODE_ARRAY)
+        return NULL;
+
+    array = json_object_get_array_member(payload, key);
+    out = g_ptr_array_new();
+
+    for (i = 0; i < json_array_get_length(array); i++) {
+        JsonNode *element = json_array_get_element(array, i);
+
+        if (json_node_get_value_type(element) != G_TYPE_STRING)
+            continue;
+
+        g_ptr_array_add(out, g_strdup(json_node_get_string(element)));
+    }
+
+    g_ptr_array_add(out, NULL);
+
+    return (GStrv)g_ptr_array_free(out, FALSE);
+}
+
 gboolean
 clawt_ipc_payload_boolean(JsonObject *payload, const gchar *key,
                           gboolean fallback)

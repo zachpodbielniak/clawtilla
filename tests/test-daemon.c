@@ -1673,6 +1673,77 @@ test_removing_an_image_in_use_is_refused(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * An argv sent as an array survives exactly as sent.
+ *
+ * It used to be joined into a line by the client and split again here,
+ * so every layer of quoting was consumed twice: `echo 'x\ny'` came back
+ * as `xny` because the backslash the user had quoted was eaten as an
+ * escape, and `sh -c 'echo a; echo b'` became four arguments and ran
+ * nothing at all.
+ */
+static void
+test_exec_argv_survives_the_wire(void)
+{
+    g_autoptr(JsonNode) frame = clawt_ipc_request_new("computer.exec", "t1");
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_auto(GStrv) argv = NULL;
+    JsonObject *payload;
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "argv");
+    json_builder_begin_array(builder);
+    json_builder_add_string_value(builder, "sh");
+    json_builder_add_string_value(builder, "-c");
+    json_builder_add_string_value(builder, "echo a; echo b");
+    json_builder_add_string_value(builder, "x\\ny");
+    json_builder_add_string_value(builder, "one  two");
+    json_builder_end_array(builder);
+    json_builder_end_object(builder);
+
+    clawt_ipc_frame_set_payload(frame, json_builder_get_root(builder));
+    payload = clawt_ipc_frame_get_payload(frame);
+
+    argv = clawt_ipc_payload_strv(payload, "argv");
+
+    g_assert_nonnull(argv);
+    g_assert_cmpuint(g_strv_length(argv), ==, 5);
+    g_assert_cmpstr(argv[2], ==, "echo a; echo b");
+    g_assert_cmpstr(argv[3], ==, "x\\ny");
+    g_assert_cmpstr(argv[4], ==, "one  two");
+
+    /*
+     * And the old route really did destroy them, which is why the array
+     * exists rather than more careful quoting on the way in.
+     */
+    {
+        g_autofree gchar *joined = g_strjoinv(" ", argv);
+        g_auto(GStrv) reparsed = NULL;
+
+        g_assert_true(g_shell_parse_argv(joined, NULL, &reparsed, NULL));
+        g_assert_cmpstr(reparsed[3], !=, "x\\ny");
+    }
+}
+
+/* A missing or empty argv is not an argv; the command line still works. */
+static void
+test_exec_without_an_argv_falls_back(void)
+{
+    g_autoptr(JsonNode) frame = clawt_ipc_request_new("computer.exec", "t1");
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_auto(GStrv) argv = NULL;
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "command");
+    json_builder_add_string_value(builder, "uname -a");
+    json_builder_end_object(builder);
+
+    clawt_ipc_frame_set_payload(frame, json_builder_get_root(builder));
+
+    argv = clawt_ipc_payload_strv(clawt_ipc_frame_get_payload(frame), "argv");
+    g_assert_null(argv);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1766,6 +1837,10 @@ main(int argc, char *argv[])
                     test_an_attachment_cannot_escape_its_directory);
     g_test_add_func("/daemon/image-in-use",
                     test_removing_an_image_in_use_is_refused);
+    g_test_add_func("/daemon/exec-argv",
+                    test_exec_argv_survives_the_wire);
+    g_test_add_func("/daemon/exec-argv-fallback",
+                    test_exec_without_an_argv_falls_back);
 
     status = g_test_run();
 
