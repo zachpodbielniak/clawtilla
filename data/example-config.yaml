@@ -631,6 +631,94 @@ integrations:
     # and already holds the agent's own token.
     env: {}
 
+# Standing work: a prompt, an agent, and when to run it.
+#
+# A routine is the thing you would otherwise remember to ask for every
+# morning. It runs as a delegated task, so it has its own session and
+# its own result, and one morning's run never contaminates the next.
+#
+# Routines only fire while the daemon is running. A machine that was
+# asleep at nine o'clock has missed nine o'clock, and the routine says
+# so rather than pretending otherwise -- see `catch_up`.
+routines:
+
+    # What this routine is called, and how it is referred to.
+    # Required.
+  - id: null
+
+    # One line about what it is for, for a person reading the list.
+    description: null
+
+    # What the agent is asked to do, in full.
+    #
+    # Sent as the whole of the prompt, so it should read as an instruction
+    # rather than a reminder: the agent has no memory of the last run and
+    # nobody is there to answer a question about what was meant.
+    # Required.
+    instructions: null
+
+    # Which agent runs it.
+    # Required.
+    agent: null
+
+    # Whether it runs on its schedule. A disabled routine can still be
+    # started by hand, which is how you try one before trusting it.
+    enabled: true
+
+    # manual, hourly, daily, weekdays, weekly or custom.
+    #
+    # All of them become a cron expression, including the presets -- so
+    # there is one answer to "when does this next run" rather than two.
+    # Values: manual, hourly, daily, weekdays, weekly, custom
+    schedule: "daily"
+
+    # The time of day, for daily, weekdays and weekly.
+    #
+    # Local time, because somebody who wrote 09:00 means nine o'clock where
+    # they are. With `hourly` only the minute is used.
+    at: "09:00"
+
+    # Which day, for `weekly`.
+    weekday: "monday"
+
+    # The expression, for `custom`: minute hour day-of-month month day-of-week.
+    #
+    # Ranges, lists and steps all work, and months and weekdays may be
+    # named. Note the oldest oddity in cron: when *both* day fields are
+    # restricted the match is day-of-month OR day-of-week, so `0 0 13 * 5`
+    # is the thirteenth and every Friday, not Friday the thirteenth.
+    cron: null
+
+    # Where to run, if not the agent's workspace.
+    #
+    # A path on the agent's computer, which for a container or a VM is a
+    # path inside it and not on the host.
+    directory: null
+
+    # Run in a fresh git worktree of `directory` rather than in it.
+    #
+    # For a routine that changes files: it keeps a scheduled run from
+    # landing on top of whatever you had checked out at the time. The
+    # worktree is left behind deliberately -- throwing away work because a
+    # schedule fired is not recoverable.
+    worktree: false
+
+    # Run once at startup when its time passed while the daemon was down.
+    #
+    # Off by default, and worth leaving off for anything that talks to
+    # somebody: a laptop opened after a long weekend would otherwise deliver
+    # a stack of good mornings at once. Only ever one run, however many
+    # were missed.
+    catch_up: false
+
+    # Delay each run by up to this many seconds, chosen at random.
+    #
+    # Zero here, unlike a hosted scheduler, because there is no shared
+    # server to spread load across: this is your machine, and a routine set
+    # for 09:00 should run at 09:00. Worth setting only when several
+    # routines share one rate-limited service.
+    jitter_seconds: 0
+
 # The fleet.
 #
 # Each entry is one libreclaw agent: its persona, its model, its

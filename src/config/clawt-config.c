@@ -22,6 +22,7 @@ struct _ClawtConfig {
     YamlNode    *root;        /* always a mapping */
     GPtrArray   *agents;      /* ClawtAgentConfig* */
     GPtrArray   *integrations; /* ClawtIntegrationConfig* */
+    GPtrArray   *routines;    /* ClawtRoutine* */
     GPtrArray   *warnings;    /* gchar* */
 };
 
@@ -33,6 +34,7 @@ G_DEFINE_FINAL_TYPE(ClawtConfig, clawt_config, G_TYPE_OBJECT)
  * the whole of that section above the loader would bury it.
  */
 static void reload_integrations(ClawtConfig *self);
+static void reload_routines(ClawtConfig *self);
 
 struct _ClawtAgentConfig {
     gint         ref_count;
@@ -1205,6 +1207,7 @@ clawt_config_finalize(GObject *object)
     g_clear_pointer(&self->root, yaml_node_unref);
     g_clear_pointer(&self->agents, g_ptr_array_unref);
     g_clear_pointer(&self->integrations, g_ptr_array_unref);
+    g_clear_pointer(&self->routines, g_ptr_array_unref);
     g_clear_pointer(&self->warnings, g_ptr_array_unref);
 
     G_OBJECT_CLASS(clawt_config_parent_class)->finalize(object);
@@ -1226,6 +1229,8 @@ clawt_config_init(ClawtConfig *self)
         (GDestroyNotify)clawt_agent_config_unref);
     self->integrations = g_ptr_array_new_with_free_func(
         (GDestroyNotify)clawt_integration_config_unref);
+    self->routines = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_routine_unref);
     self->warnings = g_ptr_array_new_with_free_func(g_free);
 }
 
@@ -1396,6 +1401,7 @@ config_from_parser(YamlParser *parser, const gchar *path, GError **error)
     warn_unknown_keys(self, self->root, NULL);
     reload_agents(self);
     reload_integrations(self);
+    reload_routines(self);
 
     return self;
 }
@@ -2784,4 +2790,362 @@ clawt_integration_config_resolve_env(ClawtIntegrationConfig  *self,
     }
 
     return g_steal_pointer(&out);
+}
+
+/* ── Routines ────────────────────────────────────────────────────── */
+
+struct _ClawtRoutine {
+    gint         ref_count;
+
+    ClawtConfig *config;      /* unowned; the config outlives its routines */
+    gchar       *id;
+    YamlNode    *node;        /* the routine's mapping, unowned */
+};
+
+static ClawtRoutine *
+clawt_routine_new(ClawtConfig *config, const gchar *id, YamlNode *node)
+{
+    ClawtRoutine *self = g_new0(ClawtRoutine, 1);
+
+    self->ref_count = 1;
+    self->config = config;
+    self->id = g_strdup(id);
+    self->node = node;
+
+    return self;
+}
+
+ClawtRoutine *
+clawt_routine_ref(ClawtRoutine *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    g_atomic_int_inc(&self->ref_count);
+
+    return self;
+}
+
+void
+clawt_routine_unref(ClawtRoutine *self)
+{
+    if (self == NULL)
+        return;
+
+    if (!g_atomic_int_dec_and_test(&self->ref_count))
+        return;
+
+    g_free(self->id);
+    g_free(self);
+}
+
+G_DEFINE_BOXED_TYPE(ClawtRoutine, clawt_routine,
+                    clawt_routine_ref, clawt_routine_unref)
+
+const gchar *
+clawt_routine_get_id(ClawtRoutine *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return self->id;
+}
+
+static gchar *
+routine_schema_key(const gchar *key)
+{
+    return g_strdup_printf("routines.%s", key);
+}
+
+const gchar *
+clawt_routine_get_string(ClawtRoutine *self, const gchar *key)
+{
+    YamlNode *node;
+    g_autofree gchar *schema_key = NULL;
+
+    g_return_val_if_fail(self != NULL, NULL);
+    g_return_val_if_fail(key != NULL, NULL);
+
+    node = node_at_path(self->node, key, FALSE);
+
+    if (node != NULL && yaml_node_get_node_type(node) == YAML_NODE_SCALAR)
+        return yaml_node_get_string(node);
+
+    schema_key = routine_schema_key(key);
+
+    return schema_default_for(schema_key);
+}
+
+gboolean
+clawt_routine_get_boolean(ClawtRoutine *self, const gchar *key)
+{
+    YamlNode *node;
+    g_autofree gchar *schema_key = NULL;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    node = node_at_path(self->node, key, FALSE);
+
+    if (node != NULL && yaml_node_get_node_type(node) == YAML_NODE_SCALAR)
+        return yaml_node_get_boolean(node);
+
+    schema_key = routine_schema_key(key);
+
+    return string_to_boolean(schema_default_for(schema_key), FALSE);
+}
+
+gint64
+clawt_routine_get_int(ClawtRoutine *self, const gchar *key)
+{
+    YamlNode *node;
+    g_autofree gchar *schema_key = NULL;
+    const gchar *fallback;
+
+    g_return_val_if_fail(self != NULL, 0);
+    g_return_val_if_fail(key != NULL, 0);
+
+    node = node_at_path(self->node, key, FALSE);
+
+    if (node != NULL && yaml_node_get_node_type(node) == YAML_NODE_SCALAR)
+        return yaml_node_get_int(node);
+
+    schema_key = routine_schema_key(key);
+    fallback = schema_default_for(schema_key);
+
+    return fallback != NULL ? g_ascii_strtoll(fallback, NULL, 10) : 0;
+}
+
+gboolean
+clawt_routine_has_key(ClawtRoutine *self, const gchar *key)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    return node_at_path(self->node, key, FALSE) != NULL;
+}
+
+gboolean
+clawt_routine_set_string(ClawtRoutine *self, const gchar *key,
+                         const gchar *value)
+{
+    g_autoptr(YamlNode) node = NULL;
+    g_autofree gchar *schema_key = NULL;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    if (value == NULL) {
+        YamlMapping *mapping = yaml_node_get_mapping(self->node);
+
+        if (yaml_mapping_get_member(mapping, key) == NULL)
+            return FALSE;
+
+        yaml_mapping_remove_member(mapping, key);
+        return TRUE;
+    }
+
+    node = yaml_node_new_string(value);
+    schema_key = routine_schema_key(key);
+
+    return set_scalar(self->node, key, node, schema_key);
+}
+
+gboolean
+clawt_routine_set_boolean(ClawtRoutine *self, const gchar *key,
+                          gboolean value)
+{
+    g_autoptr(YamlNode) node = NULL;
+    g_autofree gchar *schema_key = NULL;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    node = yaml_node_new_boolean(value);
+    schema_key = routine_schema_key(key);
+
+    return set_scalar(self->node, key, node, schema_key);
+}
+
+gboolean
+clawt_routine_set_int(ClawtRoutine *self, const gchar *key, gint64 value)
+{
+    g_autoptr(YamlNode) node = NULL;
+    g_autofree gchar *schema_key = NULL;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    node = yaml_node_new_int(value);
+    schema_key = routine_schema_key(key);
+
+    return set_scalar(self->node, key, node, schema_key);
+}
+
+gchar *
+clawt_routine_get_cron(ClawtRoutine *self, GError **error)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return clawt_cron_from_preset(clawt_routine_get_string(self, "schedule"),
+                                  clawt_routine_get_string(self, "at"),
+                                  clawt_routine_get_string(self, "weekday"),
+                                  clawt_routine_get_string(self, "cron"),
+                                  error);
+}
+
+static void
+reload_routines(ClawtConfig *self)
+{
+    YamlNode *node;
+    YamlSequence *sequence;
+    g_autoptr(GHashTable) seen = NULL;
+    guint i;
+    guint length;
+
+    g_ptr_array_set_size(self->routines, 0);
+
+    node = node_at_path(self->root, "routines", FALSE);
+
+    if (node == NULL || yaml_node_get_node_type(node) != YAML_NODE_SEQUENCE)
+        return;
+
+    seen = g_hash_table_new(g_str_hash, g_str_equal);
+    sequence = yaml_node_get_sequence(node);
+    length = yaml_sequence_get_length(sequence);
+
+    for (i = 0; i < length; i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+        const gchar *id;
+
+        if (yaml_node_get_node_type(element) != YAML_NODE_MAPPING) {
+            g_ptr_array_add(self->warnings,
+                g_strdup_printf("routines[%u] is not a mapping; ignored", i));
+            continue;
+        }
+
+        id = member_string(yaml_node_get_mapping(element), "id");
+
+        if (id == NULL) {
+            g_ptr_array_add(self->warnings,
+                g_strdup_printf("routines[%u] has no id; ignored", i));
+            continue;
+        }
+
+        if (g_hash_table_contains(seen, id)) {
+            g_ptr_array_add(self->warnings,
+                g_strdup_printf("two routines are called '%s'; the second "
+                                "is ignored", id));
+            continue;
+        }
+
+        g_hash_table_add(seen, (gpointer)id);
+        g_ptr_array_add(self->routines,
+                        clawt_routine_new(self, id, element));
+    }
+}
+
+GPtrArray *
+clawt_config_get_routines(ClawtConfig *self)
+{
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+
+    return self->routines;
+}
+
+ClawtRoutine *
+clawt_config_get_routine(ClawtConfig *self, const gchar *id)
+{
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+    g_return_val_if_fail(id != NULL, NULL);
+
+    for (i = 0; i < self->routines->len; i++) {
+        ClawtRoutine *routine = g_ptr_array_index(self->routines, i);
+
+        if (g_strcmp0(clawt_routine_get_id(routine), id) == 0)
+            return routine;
+    }
+
+    return NULL;
+}
+
+ClawtRoutine *
+clawt_config_add_routine(ClawtConfig *self, const gchar *id, GError **error)
+{
+    YamlNode *list;
+    g_autoptr(YamlNode) entry = NULL;
+    g_autoptr(YamlNode) id_node = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+
+    if (!clawt_is_valid_id(id)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "'%s' is not a usable routine id: ids may hold only "
+                    "lowercase letters, digits, '-' and '_', and must not "
+                    "start with punctuation", id != NULL ? id : "");
+        return NULL;
+    }
+
+    if (clawt_config_get_routine(self, id) != NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_ALREADY_EXISTS,
+                    "a routine called '%s' already exists", id);
+        return NULL;
+    }
+
+    list = node_at_path(self->root, "routines", FALSE);
+
+    if (list == NULL || yaml_node_get_node_type(list) != YAML_NODE_SEQUENCE) {
+        g_autoptr(YamlNode) fresh = yaml_node_new_sequence(NULL);
+
+        yaml_mapping_set_member(yaml_node_get_mapping(self->root),
+                                "routines", fresh);
+        list = node_at_path(self->root, "routines", FALSE);
+        apply_schema_comment(list, "routines");
+    }
+
+    entry = yaml_node_new_mapping(NULL);
+    id_node = yaml_node_new_string(id);
+    yaml_mapping_set_member(yaml_node_get_mapping(entry), "id", id_node);
+    yaml_sequence_add_element(yaml_node_get_sequence(list), entry);
+
+    reload_routines(self);
+
+    return clawt_config_get_routine(self, id);
+}
+
+gboolean
+clawt_config_remove_routine(ClawtConfig *self, const gchar *id)
+{
+    YamlNode *list;
+    YamlSequence *sequence;
+    guint i;
+    guint length;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+    g_return_val_if_fail(id != NULL, FALSE);
+
+    list = node_at_path(self->root, "routines", FALSE);
+
+    if (list == NULL || yaml_node_get_node_type(list) != YAML_NODE_SEQUENCE)
+        return FALSE;
+
+    sequence = yaml_node_get_sequence(list);
+    length = yaml_sequence_get_length(sequence);
+
+    for (i = 0; i < length; i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+
+        if (yaml_node_get_node_type(element) != YAML_NODE_MAPPING)
+            continue;
+
+        if (g_strcmp0(member_string(yaml_node_get_mapping(element), "id"),
+                      id) != 0)
+            continue;
+
+        yaml_sequence_remove_element(sequence, i);
+        reload_routines(self);
+        return TRUE;
+    }
+
+    return FALSE;
 }

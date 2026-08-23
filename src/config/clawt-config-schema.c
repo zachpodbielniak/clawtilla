@@ -719,6 +719,103 @@ static const ClawtSchemaEntry schema[] = {
   "and already holds the agent's own token.", "0.2.0" },
 
 
+/* ── routines ────────────────────────────────────────────────────── */
+{ "routines", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
+  "Standing work: a prompt, an agent, and when to run it.\n"
+  "\n"
+  "A routine is the thing you would otherwise remember to ask for every\n"
+  "morning. It runs as a delegated task, so it has its own session and\n"
+  "its own result, and one morning's run never contaminates the next.\n"
+  "\n"
+  "Routines only fire while the daemon is running. A machine that was\n"
+  "asleep at nine o'clock has missed nine o'clock, and the routine says\n"
+  "so rather than pretending otherwise -- see `catch_up`.", "0.2.0" },
+
+{ "routines.id", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
+  "What this routine is called, and how it is referred to.", "0.2.0" },
+
+{ "routines.description", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "One line about what it is for, for a person reading the list.", "0.2.0" },
+
+{ "routines.instructions", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED,
+  NULL, NULL,
+  "What the agent is asked to do, in full.\n"
+  "\n"
+  "Sent as the whole of the prompt, so it should read as an instruction\n"
+  "rather than a reminder: the agent has no memory of the last run and\n"
+  "nobody is there to answer a question about what was meant.", "0.2.0" },
+
+{ "routines.agent", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED,
+  NULL, NULL,
+  "Which agent runs it.", "0.2.0" },
+
+{ "routines.enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "true", NULL,
+  "Whether it runs on its schedule. A disabled routine can still be\n"
+  "started by hand, which is how you try one before trusting it.", "0.2.0" },
+
+{ "routines.schedule", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "daily", clawt_schedule_get_type,
+  "manual, hourly, daily, weekdays, weekly or custom.\n"
+  "\n"
+  "All of them become a cron expression, including the presets -- so\n"
+  "there is one answer to \"when does this next run\" rather than two.", "0.2.0" },
+
+{ "routines.at", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  "09:00", NULL,
+  "The time of day, for daily, weekdays and weekly.\n"
+  "\n"
+  "Local time, because somebody who wrote 09:00 means nine o'clock where\n"
+  "they are. With `hourly` only the minute is used.", "0.2.0" },
+
+{ "routines.weekday", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  "monday", NULL,
+  "Which day, for `weekly`.", "0.2.0" },
+
+{ "routines.cron", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "The expression, for `custom`: minute hour day-of-month month day-of-week.\n"
+  "\n"
+  "Ranges, lists and steps all work, and months and weekdays may be\n"
+  "named. Note the oldest oddity in cron: when *both* day fields are\n"
+  "restricted the match is day-of-month OR day-of-week, so `0 0 13 * 5`\n"
+  "is the thirteenth and every Friday, not Friday the thirteenth.", "0.2.0" },
+
+{ "routines.directory", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Where to run, if not the agent's workspace.\n"
+  "\n"
+  "A path on the agent's computer, which for a container or a VM is a\n"
+  "path inside it and not on the host.", "0.2.0" },
+
+{ "routines.worktree", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "false", NULL,
+  "Run in a fresh git worktree of `directory` rather than in it.\n"
+  "\n"
+  "For a routine that changes files: it keeps a scheduled run from\n"
+  "landing on top of whatever you had checked out at the time. The\n"
+  "worktree is left behind deliberately -- throwing away work because a\n"
+  "schedule fired is not recoverable.", "0.2.0" },
+
+{ "routines.catch_up", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "false", NULL,
+  "Run once at startup when its time passed while the daemon was down.\n"
+  "\n"
+  "Off by default, and worth leaving off for anything that talks to\n"
+  "somebody: a laptop opened after a long weekend would otherwise deliver\n"
+  "a stack of good mornings at once. Only ever one run, however many\n"
+  "were missed.", "0.2.0" },
+
+{ "routines.jitter_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "0", NULL,
+  "Delay each run by up to this many seconds, chosen at random.\n"
+  "\n"
+  "Zero here, unlike a hosted scheduler, because there is no shared\n"
+  "server to spread load across: this is your machine, and a routine set\n"
+  "for 09:00 should run at 09:00. Worth setting only when several\n"
+  "routines share one rate-limited service.", "0.2.0" },
+
 /* ── agents ──────────────────────────────────────────────────────── */
 { "agents", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "The fleet.\n"

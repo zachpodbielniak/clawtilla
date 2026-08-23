@@ -472,6 +472,48 @@ clawt_notify_events_get_type(void)
     return g_define_type_id__volatile;
 }
 
+/* Register ClawtSchedule as a GLib enum type */
+GType
+clawt_schedule_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_SCHEDULE_MANUAL, "CLAWT_SCHEDULE_MANUAL", "manual" },
+            { CLAWT_SCHEDULE_HOURLY, "CLAWT_SCHEDULE_HOURLY", "hourly" },
+            { CLAWT_SCHEDULE_DAILY, "CLAWT_SCHEDULE_DAILY", "daily" },
+            { CLAWT_SCHEDULE_WEEKDAYS, "CLAWT_SCHEDULE_WEEKDAYS", "weekdays" },
+            { CLAWT_SCHEDULE_WEEKLY, "CLAWT_SCHEDULE_WEEKLY", "weekly" },
+            { CLAWT_SCHEDULE_CUSTOM, "CLAWT_SCHEDULE_CUSTOM", "custom" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtSchedule", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
+/* Register ClawtRunState as a GLib enum type */
+GType
+clawt_run_state_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_RUN_NEVER, "CLAWT_RUN_NEVER", "never" },
+            { CLAWT_RUN_OK, "CLAWT_RUN_OK", "ok" },
+            { CLAWT_RUN_FAILED, "CLAWT_RUN_FAILED", "failed" },
+            { CLAWT_RUN_MISSED, "CLAWT_RUN_MISSED", "missed" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtRunState", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
 /* ── Nickname helpers ────────────────────────────────────────────── */
 
 /*

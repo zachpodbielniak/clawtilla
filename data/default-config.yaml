@@ -412,6 +412,17 @@ memories:
 # # first.
 # integrations: []
 
+# # Standing work: a prompt, an agent, and when to run it.
+# #
+# # A routine is the thing you would otherwise remember to ask for every
+# # morning. It runs as a delegated task, so it has its own session and
+# # its own result, and one morning's run never contaminates the next.
+# #
+# # Routines only fire while the daemon is running. A machine that was
+# # asleep at nine o'clock has missed nine o'clock, and the routine says
+# # so rather than pretending otherwise -- see `catch_up`.
+# routines: []
+
 # The fleet.  Empty to start with; `clawtilla agent create` or
 # `clawtilla agent new --ai` fills this in.
 #

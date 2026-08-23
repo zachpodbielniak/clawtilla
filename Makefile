@@ -104,8 +104,10 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/chat/clawt-loop-guard.h \
 	$(SRCDIR)/chat/clawt-room.h \
 	$(SRCDIR)/chat/clawt-room-manager.h \
+	$(SRCDIR)/task/clawt-cron.h \
 	$(SRCDIR)/task/clawt-task.h \
 	$(SRCDIR)/task/clawt-task-manager.h \
+	$(SRCDIR)/task/clawt-routine-runner.h \
 	$(SRCDIR)/plugin/clawt-param-info.h \
 	$(SRCDIR)/plugin/clawt-plugin.h \
 	$(SRCDIR)/plugin/clawt-plugin-manager.h \
@@ -178,8 +180,10 @@ LIB_SOURCES = \
 	$(SRCDIR)/chat/clawt-loop-guard.c \
 	$(SRCDIR)/chat/clawt-room.c \
 	$(SRCDIR)/chat/clawt-room-manager.c \
+	$(SRCDIR)/task/clawt-cron.c \
 	$(SRCDIR)/task/clawt-task.c \
 	$(SRCDIR)/task/clawt-task-manager.c \
+	$(SRCDIR)/task/clawt-routine-runner.c \
 	$(SRCDIR)/plugin/clawt-param-info.c \
 	$(SRCDIR)/plugin/clawt-plugin.c \
 	$(SRCDIR)/plugin/clawt-plugin-manager.c \

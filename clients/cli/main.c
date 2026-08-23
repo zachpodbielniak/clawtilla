@@ -113,6 +113,7 @@ static const gchar *usage_text =
     "  cp <src> <dst>                Copy files to or from an agent's computer\n"
     "  config <verb>                 Show, validate or render configuration\n"
     "  integration <verb>            Connect agents to Matrix, mail, MCP servers\n"
+    "  routine <verb>                Standing work on a schedule\n"
     "  plugin list                   List loaded plugins\n"
     "  image                         Container images clawtilla suggests\n"
     "\n"
@@ -184,7 +185,8 @@ static const gchar *const verbs[] = {
     "daemon", "remote", "status", "agent", "send", "chat", "mailbox", "room",
     "task",
     "memory",
-    "computer", "cp", "config", "plugin", "integration", "model", "image",
+    "computer", "cp", "config", "plugin", "integration", "routine",
+    "model", "image",
     NULL
 };
 
@@ -3331,6 +3333,210 @@ cmd_integration(int argc, char *argv[])
     return EXIT_FAILURE;
 }
 
+static void
+print_routine_usage(void)
+{
+    g_printerr(
+        "Usage: clawtilla routine <verb> [...]\n"
+        "\n"
+        "  list                           what is scheduled, and when next\n"
+        "  add <id> <agent> [key=value]   add one\n"
+        "  set <id> [key=value ...]       change one\n"
+        "  rm <id>                        remove it\n"
+        "  run <id>                       run it now, schedule or not\n"
+        "\n"
+        "Schedules: manual, hourly, daily, weekdays, weekly, custom.\n"
+        "\n"
+        "Examples:\n"
+        "  clawtilla routine add standup chief-of-staff \\\n"
+        "      description=\"Yesterday's commits\" \\\n"
+        "      instructions=\"Summarise the last 24 hours of commits.\" \\\n"
+        "      schedule=weekdays at=09:00\n"
+        "  clawtilla routine add sweep researcher schedule=custom \\\n"
+        "      cron=\"0 */6 * * *\" instructions=\"Check the queue.\"\n"
+        "  clawtilla routine run standup\n");
+}
+
+static gint
+cmd_routine(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verb = (argc > 2) ? argv[2] : "list";
+    const gchar *id = (argc > 3) ? argv[3] : NULL;
+    guint i;
+
+    if (g_strcmp0(verb, "help") == 0 || g_strcmp0(verb, "--help") == 0) {
+        print_routine_usage();
+        return EXIT_SUCCESS;
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    if (g_strcmp0(verb, "list") == 0) {
+        JsonArray *routines;
+
+        reply = call(client, "routine.list", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        routines = json_object_get_array_member(json_node_get_object(reply),
+                                                "routines");
+
+        if (json_array_get_length(routines) == 0) {
+            g_print("Nothing scheduled. `clawtilla routine add` makes "
+                    "one.\n");
+            return EXIT_SUCCESS;
+        }
+
+        g_print("%-18s %-16s %-16s %-20s %s\n", "ID", "AGENT", "SCHEDULE",
+                "NEXT", "LAST");
+
+        for (i = 0; i < json_array_get_length(routines); i++) {
+            JsonObject *routine = json_array_get_object_element(routines, i);
+            const gchar *next = member_or(routine, "next_run", NULL);
+            g_autofree gchar *when = NULL;
+            g_autofree gchar *schedule = NULL;
+
+            schedule = g_strdup_printf(
+                "%s%s", member_or(routine, "schedule", "?"),
+                json_object_get_boolean_member(routine, "enabled")
+                    ? "" : " (off)");
+
+            /*
+             * The expression is shown for a custom schedule, because
+             * "custom" on its own answers nothing.
+             */
+            if (g_str_has_prefix(schedule, "custom")) {
+                g_free(schedule);
+                schedule = g_strdup(member_or(routine, "expression", "?"));
+            }
+
+            if (next != NULL) {
+                g_autoptr(GDateTime) parsed =
+                    g_date_time_new_from_iso8601(next, NULL);
+
+                when = (parsed != NULL)
+                    ? g_date_time_format(parsed, "%a %d %b %H:%M")
+                    : g_strdup(next);
+            } else {
+                when = g_strdup("-");
+            }
+
+            g_print("%-18s %-16s %-16s %-20s %s%s%s\n",
+                    member_or(routine, "id", "?"),
+                    member_or(routine, "agent", "?"), schedule, when,
+                    member_or(routine, "last_state", "never"),
+                    member_or(routine, "last_detail", NULL) != NULL
+                        ? ": " : "",
+                    member_or(routine, "last_detail", ""));
+        }
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "add") == 0 || g_strcmp0(verb, "set") == 0) {
+        gboolean adding = g_strcmp0(verb, "add") == 0;
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        int first = adding ? 5 : 4;
+        int a;
+
+        if (id == NULL || (adding && argc < 5)) {
+            g_printerr("Usage: clawtilla routine %s <id>%s [key=value ...]\n",
+                       verb, adding ? " <agent>" : "");
+            return EXIT_FAILURE;
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "id");
+        json_builder_add_string_value(builder, id);
+
+        if (adding) {
+            json_builder_set_member_name(builder, "agent");
+            json_builder_add_string_value(builder, argv[4]);
+        }
+
+        for (a = first; a < argc; a++) {
+            g_auto(GStrv) parts = g_strsplit(argv[a], "=", 2);
+            g_autofree gchar *schema_key = NULL;
+            const ClawtSchemaEntry *entry;
+
+            if (parts[0] == NULL || parts[1] == NULL) {
+                g_printerr("clawtilla: '%s' is not key=value\n", argv[a]);
+                return EXIT_FAILURE;
+            }
+
+            schema_key = g_strdup_printf("routines.%s", parts[0]);
+            entry = clawt_config_schema_lookup(schema_key);
+
+            if (entry == NULL) {
+                g_printerr("clawtilla: '%s' is not something a routine "
+                           "holds\n", parts[0]);
+                return EXIT_FAILURE;
+            }
+
+            json_builder_set_member_name(builder, parts[0]);
+
+            switch (entry->type) {
+            case CLAWT_SCHEMA_BOOLEAN:
+                json_builder_add_boolean_value(
+                    builder, g_strcmp0(parts[1], "true") == 0 ||
+                             g_strcmp0(parts[1], "yes") == 0 ||
+                             g_strcmp0(parts[1], "1") == 0);
+                break;
+
+            case CLAWT_SCHEMA_INT:
+                json_builder_add_int_value(
+                    builder, g_ascii_strtoll(parts[1], NULL, 10));
+                break;
+
+            default:
+                json_builder_add_string_value(builder, parts[1]);
+                break;
+            }
+        }
+
+        json_builder_end_object(builder);
+
+        reply = call(client, adding ? "routine.add" : "routine.update",
+                     json_builder_get_root(builder));
+
+        return reply != NULL ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+
+    if (g_strcmp0(verb, "rm") == 0) {
+        if (id == NULL) {
+            g_printerr("Usage: clawtilla routine rm <id>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "routine.remove", build_payload("id", id, NULL));
+        return reply != NULL ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+
+    if (g_strcmp0(verb, "run") == 0) {
+        if (id == NULL) {
+            g_printerr("Usage: clawtilla routine run <id>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "routine.run", build_payload("id", id, NULL));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Started as task %s.\n",
+                member_or(json_node_get_object(reply), "task", "?"));
+        return EXIT_SUCCESS;
+    }
+
+    g_printerr("clawtilla: unknown routine verb '%s'\n", verb);
+    print_routine_usage();
+    return EXIT_FAILURE;
+}
+
 static gint
 cmd_plugin(int argc, char *argv[])
 {
@@ -3781,6 +3987,9 @@ main(int argc, char *argv[])
 
     if (g_strcmp0(argv[1], "integration") == 0)
         return cmd_integration(argc, argv);
+
+    if (g_strcmp0(argv[1], "routine") == 0)
+        return cmd_routine(argc, argv);
 
     if (g_strcmp0(argv[1], "image") == 0)
         return cmd_image(argc, argv);

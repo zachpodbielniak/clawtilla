@@ -893,4 +893,85 @@ gboolean clawt_config_remove_integration(ClawtConfig *self,
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtIntegrationConfig,
                               clawt_integration_config_unref)
 
+/* ── Routines ────────────────────────────────────────────────────── */
+
+/**
+ * ClawtRoutine:
+ *
+ * One entry from the top-level `routines:` list.
+ *
+ * The same handle shape as #ClawtIntegrationConfig, and for the same
+ * reason: typed getters over the entry's own YAML, falling back to the
+ * schema, rather than a parsed struct that has to be kept in step with
+ * the file.
+ */
+
+#define CLAWT_TYPE_ROUTINE (clawt_routine_get_type())
+
+GType clawt_routine_get_type(void) G_GNUC_CONST;
+
+ClawtRoutine *clawt_routine_ref(ClawtRoutine *self);
+void          clawt_routine_unref(ClawtRoutine *self);
+
+const gchar *clawt_routine_get_id(ClawtRoutine *self);
+
+const gchar *clawt_routine_get_string(ClawtRoutine *self, const gchar *key);
+gboolean     clawt_routine_get_boolean(ClawtRoutine *self, const gchar *key);
+gint64       clawt_routine_get_int(ClawtRoutine *self, const gchar *key);
+gboolean     clawt_routine_has_key(ClawtRoutine *self, const gchar *key);
+
+gboolean clawt_routine_set_string(ClawtRoutine *self, const gchar *key,
+                                  const gchar *value);
+gboolean clawt_routine_set_boolean(ClawtRoutine *self, const gchar *key,
+                                   gboolean value);
+gboolean clawt_routine_set_int(ClawtRoutine *self, const gchar *key,
+                               gint64 value);
+
+/**
+ * clawt_routine_get_cron:
+ * @self: a #ClawtRoutine
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The cron expression this routine's schedule means.
+ *
+ * %NULL with no error set for a manual routine: it has no next time,
+ * which is an answer rather than a failure to compute one.
+ *
+ * Returns: (transfer full) (nullable): the expression
+ */
+gchar *clawt_routine_get_cron(ClawtRoutine *self, GError **error);
+
+/**
+ * clawt_config_get_routines:
+ * @self: a #ClawtConfig
+ *
+ * Returns: (transfer none) (element-type ClawtRoutine): the routines
+ */
+GPtrArray *clawt_config_get_routines(ClawtConfig *self);
+
+/**
+ * clawt_config_get_routine:
+ * @self: a #ClawtConfig
+ * @id: a routine id
+ *
+ * Returns: (transfer none) (nullable): the routine
+ */
+ClawtRoutine *clawt_config_get_routine(ClawtConfig *self, const gchar *id);
+
+/**
+ * clawt_config_add_routine:
+ * @self: a #ClawtConfig
+ * @id: an id unique in the file
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Returns: (transfer none) (nullable): the new routine
+ */
+ClawtRoutine *clawt_config_add_routine(ClawtConfig  *self,
+                                       const gchar  *id,
+                                       GError      **error);
+
+gboolean clawt_config_remove_routine(ClawtConfig *self, const gchar *id);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtRoutine, clawt_routine_unref)
+
 G_END_DECLS

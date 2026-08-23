@@ -485,6 +485,52 @@ typedef enum {
     CLAWT_NOTIFY_EVENTS_ROUTINE  = 1 << 3
 } ClawtNotifyEvents;
 
+/**
+ * ClawtSchedule:
+ * @CLAWT_SCHEDULE_MANUAL: only when somebody asks
+ * @CLAWT_SCHEDULE_HOURLY: every hour
+ * @CLAWT_SCHEDULE_DAILY: once a day at a chosen time
+ * @CLAWT_SCHEDULE_WEEKDAYS: Monday to Friday at a chosen time
+ * @CLAWT_SCHEDULE_WEEKLY: once a week on a chosen day
+ * @CLAWT_SCHEDULE_CUSTOM: a cron expression
+ *
+ * How often a routine runs.
+ *
+ * Every one of these becomes a cron expression, including the presets:
+ * "daily at 09:00" *is* `0 9 * * *`, and keeping them as separate kinds
+ * of thing would mean two implementations of "when next", one of which
+ * is exercised far less and is therefore the one that is wrong.
+ */
+typedef enum {
+    CLAWT_SCHEDULE_MANUAL = 0,
+    CLAWT_SCHEDULE_HOURLY,
+    CLAWT_SCHEDULE_DAILY,
+    CLAWT_SCHEDULE_WEEKDAYS,
+    CLAWT_SCHEDULE_WEEKLY,
+    CLAWT_SCHEDULE_CUSTOM
+} ClawtSchedule;
+
+/**
+ * ClawtRunState:
+ * @CLAWT_RUN_NEVER: it has not run yet
+ * @CLAWT_RUN_OK: the last run started and finished
+ * @CLAWT_RUN_FAILED: the last run could not be started
+ * @CLAWT_RUN_MISSED: its time passed while the daemon was not running
+ *
+ * How a routine's last run went.
+ *
+ * @CLAWT_RUN_MISSED is separate from @CLAWT_RUN_FAILED on purpose. A
+ * routine that did not run because the machine was asleep is not broken,
+ * and showing it as broken would train somebody to ignore the one that
+ * is.
+ */
+typedef enum {
+    CLAWT_RUN_NEVER = 0,
+    CLAWT_RUN_OK,
+    CLAWT_RUN_FAILED,
+    CLAWT_RUN_MISSED
+} ClawtRunState;
+
 /* GType registration */
 GType clawt_agent_state_get_type(void) G_GNUC_CONST;
 GType clawt_agent_caps_get_type(void) G_GNUC_CONST;
@@ -508,6 +554,8 @@ GType clawt_integration_scope_get_type(void) G_GNUC_CONST;
 GType clawt_integration_kind_get_type(void) G_GNUC_CONST;
 GType clawt_notify_backend_get_type(void) G_GNUC_CONST;
 GType clawt_notify_events_get_type(void) G_GNUC_CONST;
+GType clawt_schedule_get_type(void) G_GNUC_CONST;
+GType clawt_run_state_get_type(void) G_GNUC_CONST;
 
 #define CLAWT_TYPE_AGENT_STATE      (clawt_agent_state_get_type())
 #define CLAWT_TYPE_AGENT_CAPS       (clawt_agent_caps_get_type())
@@ -531,6 +579,8 @@ GType clawt_notify_events_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_INTEGRATION_KIND  (clawt_integration_kind_get_type())
 #define CLAWT_TYPE_NOTIFY_BACKEND    (clawt_notify_backend_get_type())
 #define CLAWT_TYPE_NOTIFY_EVENTS     (clawt_notify_events_get_type())
+#define CLAWT_TYPE_SCHEDULE          (clawt_schedule_get_type())
+#define CLAWT_TYPE_RUN_STATE         (clawt_run_state_get_type())
 
 /**
  * clawt_enum_to_nick:

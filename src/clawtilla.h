@@ -62,8 +62,10 @@
 
 #include "mailbox/clawt-mailbox-router.h"
 
+#include "task/clawt-cron.h"
 #include "task/clawt-task.h"
 #include "task/clawt-task-manager.h"
+#include "task/clawt-routine-runner.h"
 
 #include "plugin/clawt-param-info.h"
 #include "plugin/clawt-plugin.h"
