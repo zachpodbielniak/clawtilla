@@ -51,8 +51,18 @@ fixture_setup(Fixture *fixture, const gchar *extra_yaml)
         "  tailscale: false\n"
         "  state_dir: \"%s/state\"\n"
         "  socket: \"%s/daemon.sock\"\n"
+        /*
+         * And nowhere near the real fleet.  `workspace_root`
+         * defaults to ~/.clawtilla/agents, so without this every
+         * agent a test creates is scaffolded into the developer's
+         * own agent directory -- indistinguishable afterwards from
+         * one they meant to keep.  The socket and the state dir
+         * were already pinned here; this is the third thing that
+         * escapes a temporary directory if nobody says otherwise.
+         */
+        "defaults:\n  workspace_root: \"%s/agents\"\n"
         "%s",
-        fixture->dir, fixture->dir,
+        fixture->dir, fixture->dir, fixture->dir,
         extra_yaml != NULL ? extra_yaml : "");
 
     g_file_set_contents(fixture->config_path, yaml, -1, &error);
@@ -294,12 +304,13 @@ test_credentials_are_never_sent_in_full(void)
         "  tailscale: false\n"
         "  state_dir: \"%s/state\"\n"
         "  socket: \"%s/daemon.sock\"\n"
+        "defaults:\n  workspace_root: \"%s/agents\"\n"
         "agents:\n"
         "  - id: chief\n"
         "    credentials:\n"
         "      api_key:\n"
         "        file: \"%s\"\n",
-        fixture.dir, fixture.dir, secret_path);
+        fixture.dir, fixture.dir, fixture.dir, secret_path);
 
     g_file_set_contents(fixture.config_path, yaml, -1, NULL);
 
@@ -879,8 +890,9 @@ test_reload_reaches_the_fleet(void)
     yaml = g_strdup_printf(
         "daemon:\n  tailscale: false\n"
         "  state_dir: \"%s/state\"\n  socket: \"%s/daemon.sock\"\n"
+        "defaults:\n  workspace_root: \"%s/agents\"\n"
         "agents:\n  - id: chief\n  - id: researcher\n",
-        fixture.dir, fixture.dir);
+        fixture.dir, fixture.dir, fixture.dir);
 
     g_file_set_contents(fixture.config_path, yaml, -1, NULL);
 
@@ -897,8 +909,9 @@ test_reload_reaches_the_fleet(void)
     yaml = g_strdup_printf(
         "daemon:\n  tailscale: false\n"
         "  state_dir: \"%s/state\"\n  socket: \"%s/daemon.sock\"\n"
+        "defaults:\n  workspace_root: \"%s/agents\"\n"
         "agents:\n  - id: chief\n",
-        fixture.dir, fixture.dir);
+        fixture.dir, fixture.dir, fixture.dir);
 
     g_file_set_contents(fixture.config_path, yaml, -1, NULL);
     g_assert_true(clawt_daemon_reload(fixture.daemon, NULL));
@@ -922,6 +935,7 @@ test_the_state_directory_cannot_be_mounted(void)
     yaml = g_strdup_printf(
         "daemon:\n  tailscale: false\n"
         "  state_dir: \"%s/state\"\n  socket: \"%s/daemon.sock\"\n"
+        "defaults:\n  workspace_root: \"%s/agents\"\n"
         "agents:\n"
         "  - id: sneaky\n"
         "    computer:\n"
@@ -930,7 +944,7 @@ test_the_state_directory_cannot_be_mounted(void)
         "        - source: \"%s/state\"\n"
         "          target: \"/loot\"\n"
         "          mode: rw\n",
-        fixture.dir, fixture.dir, fixture.dir);
+        fixture.dir, fixture.dir, fixture.dir, fixture.dir);
 
     g_file_set_contents(fixture.config_path, yaml, -1, NULL);
 
@@ -1599,7 +1613,14 @@ test_an_attachment_cannot_escape_its_directory(void)
      * developer's home is a test that has already failed.
      */
     fixture_setup(&fixture,
-                  "defaults:\n  exchange_dir: \"/tmp/clawt-test-exchange\"\n"
+                  /*
+                   * Indented, continuing the `defaults:` the
+                   * fixture opened.  A second top-level defaults
+                   * would not merge -- YAML keeps the last and
+                   * silently discards the first, taking
+                   * workspace_root with it.
+                   */
+                  "  exchange_dir: \"/tmp/clawt-test-exchange\"\n"
                   "agents:\n  - id: alpha\n");
     g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
 

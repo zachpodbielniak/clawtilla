@@ -17,14 +17,40 @@
 
 #include <string.h>
 
+#include "clawt-test-util.h"
+
+/*
+ * Where the agents this test designs are actually written.
+ *
+ * Every test here calls clawt_agent_designer_commit(), and committing
+ * scaffolds a real workspace.  With nothing said about where, that is
+ * `defaults.workspace_root` -- whose default is ~/.clawtilla/agents.  So
+ * `make test` was quietly creating agent directories in the developer's
+ * own fleet, one per test, on every run: not hermetic, and confusing
+ * later in exactly the way a leftover always is, since the directories
+ * look indistinguishable from agents somebody meant to keep.
+ *
+ * Same shape as the XDG_DATA_HOME lesson: a default that points at real
+ * user state has to be redirected before the first thing reads it.
+ */
+static gchar *test_root = NULL;
+
 static ClawtConfig *
 make_config(void)
 {
     g_autoptr(GError) error = NULL;
     ClawtConfig *config;
 
-    config = clawt_config_load_from_string("daemon:\n  log_level: info\n",
-                                           &error);
+    g_autofree gchar *yaml = NULL;
+
+    yaml = g_strdup_printf("daemon:\n"
+                           "  log_level: info\n"
+                           "  state_dir: \"%s/state\"\n"
+                           "defaults:\n"
+                           "  workspace_root: \"%s/agents\"\n",
+                           test_root, test_root);
+
+    config = clawt_config_load_from_string(yaml, &error);
     g_assert_no_error(error);
 
     return config;
@@ -506,6 +532,8 @@ test_unpinned_identity_is_the_models(void)
 int
 main(int argc, char *argv[])
 {
+    test_root = g_dir_make_tmp("clawt-designer-XXXXXX", NULL);
+
     g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/designer/designs", test_designs_an_agent);
@@ -532,5 +560,18 @@ main(int argc, char *argv[])
     g_test_add_func("/designer/invented-file-refused",
                     test_an_invented_file_is_refused);
 
-    return g_test_run();
+    {
+        gint status;
+
+        /*
+         * Made before g_test_init() runs anything, and taken away after,
+         * so a run leaves nothing behind wherever it happened to start.
+         */
+        status = g_test_run();
+
+        clawt_test_remove_tree(test_root);
+        g_clear_pointer(&test_root, g_free);
+
+        return status;
+    }
 }

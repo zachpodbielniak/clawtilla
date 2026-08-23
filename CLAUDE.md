@@ -1622,9 +1622,33 @@ the same program.
   tool server report its own `/proc/self/cmdline` and `environ`.
 
 
+### A test fixture that pins the socket can still write to the real fleet
+
+- `test-daemon.c` set `state_dir` and `socket` into a temporary directory
+  -- with comments explaining why each mattered -- and said nothing about
+  `defaults.workspace_root`, whose default is `~/.clawtilla/agents`. So
+  every agent any of those tests created was scaffolded into the
+  developer's own agent directory, on every `make test`, and the
+  leftovers are indistinguishable afterwards from agents somebody meant
+  to keep. `test-agent-designer.c` was worse: it set nothing at all,
+  because committing a design scaffolds a workspace and nothing in the
+  test looked like it touched the filesystem.
+- Found only by diffing `~/.clawtilla` across a run. It had been
+  happening for a long time, and the file that exposed it was one a
+  scratch daemon had written into a leftover -- the confusion was
+  entirely about which of two things had created a directory that should
+  never have existed.
+- Three things escape a temporary directory unless a fixture says
+  otherwise: the socket, the state directory and the workspace root.
+  `make test` now diffs clean against a real `~/.clawtilla`.
+
+
 ## Things to NEVER Do
 
 - Never hand-edit `data/example-config.yaml` or `data/default-config.yaml`
+- Never let a test fixture take `defaults.workspace_root` from the
+  defaults. It points at `~/.clawtilla/agents`, so a test that creates an
+  agent scaffolds it into the developer's real fleet
 - Never let the daemon or `libclawt` link GTK
 - Never pass `environ` wholesale to a spawned agent -- use the allowlist
 - Never write a secret's value into an IPC response, a log line or a transcript
