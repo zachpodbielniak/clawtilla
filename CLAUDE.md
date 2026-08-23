@@ -533,6 +533,16 @@ the same program.
   and the import wrote every file correctly and then did not appear in
   `agent list`.
 
+### Looking up a libvirt domain that is absent logs two errors
+
+- podomation's `lookup_domain()` tries the name, then tries the same
+  string as a UUID, so a domain that is not there produces `Domain not
+  found` *and* `Invalid UUID` on stderr. The `get_xml` added for UUID
+  adoption made that happen on every first provision — two alarming
+  lines on the daemon's console for the most ordinary path there is, and
+  a person reasonably read them as the reason their VM would not start.
+  Ask `list_domains` first; it enumerates without complaining.
+
 ### A libvirt domain defined without a UUID cannot be redefined
 
 - libvirt invents one per define and then refuses the name it already

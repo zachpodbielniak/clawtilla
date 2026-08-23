@@ -523,6 +523,32 @@ An agent's ~TOOLS.org~ says all of this, and a VM agent's own description
 says it again with its name in it -- it is the kind of thing an agent
 otherwise works out by trial and error, and reports as a discovery.
 
+*** When libvirt cannot find an emulator
+
+#+begin_example
+unsupported configuration: No emulator found for arch 'x86_64'
+#+end_example
+
+Not clawtilla: the session daemon has failed to probe QEMU, and *any*
+domain will fail to define, including one written by hand.  Confirm with
+
+#+begin_src bash
+virsh -c qemu:///session domcapabilities
+#+end_src
+
+which will say the same thing.  Restarting the user daemon makes it
+probe again:
+
+#+begin_src bash
+systemctl --user restart virtqemud.service
+#+end_src
+
+and if it persists, the cached probe is stale:
+
+#+begin_src bash
+rm -rf ~/.cache/libvirt/qemu/cache/capabilities
+#+end_src
+
 *** Stopping one
 
 ~shutdown~ first, so the guest flushes its filesystems -- a VM pulled out
@@ -537,6 +563,14 @@ fallback such a VM could not be stopped through clawtilla at all.
 
 podomation's ~vm_virtmanager~ module: the full 22-action surface,
 including snapshots.
+
+*A VM that has been removed is rebuilt.*  Provisioning asks libvirt what
+domains exist before asking about this one, so a domain you undefined --
+or one that never existed -- is simply built again from scratch.  Asking
+after a missing domain directly is loud: the module tries the name, then
+tries the same string as a UUID, and libvirt logs both failures, which
+put two alarming lines on the daemon's console for the most ordinary
+path there is.
 
 The domain carries a UUID derived from its name, so defining it again is
 a *re*define.  One defined by an older build keeps whatever UUID libvirt

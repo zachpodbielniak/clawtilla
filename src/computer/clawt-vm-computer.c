@@ -59,6 +59,8 @@ struct _ClawtVmComputer {
 
 G_DEFINE_FINAL_TYPE(ClawtVmComputer, clawt_vm_computer, CLAWT_TYPE_COMPUTER)
 
+static gboolean libvirt_has_domain(ClawtVmComputer *self);
+
 ClawtComputer *
 clawt_vm_computer_new(const gchar    *agent_id,
                       ClawtVmBackend  backend,
@@ -607,6 +609,10 @@ libvirt_domain_state(ClawtVmComputer *self)
                                           self->uri, NULL))
         return NULL;
 
+    /* Same reason: asking after a domain that is gone is loud. */
+    if (!libvirt_has_domain(self))
+        return NULL;
+
     params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     g_hash_table_insert(params, g_strdup("domain"), g_strdup(self->domain));
 
@@ -630,6 +636,73 @@ libvirt_domain_state(ClawtVmComputer *self)
  * created by an older build carry on working -- the alternative is
  * undefining somebody's domain, which is a great deal ruder.
  */
+/*
+ * Whether libvirt has a domain of this name.
+ *
+ * Asked with list_domains rather than by looking the name up, because
+ * looking up one that is not there is *loud*: the module tries the name,
+ * then tries the same string as a UUID, and libvirt logs both failures
+ * to stderr. On a first provision -- the most ordinary path there is --
+ * that put two alarming lines on the daemon's console:
+ *
+ *   Domain not found: no domain with matching name 'clawt-x'
+ *   Invalid UUID
+ *
+ * Neither meant anything was wrong.
+ */
+static gboolean
+libvirt_has_domain(ClawtVmComputer *self)
+{
+    g_autoptr(GHashTable) params = NULL;
+    g_autoptr(GHashTable) result = NULL;
+    g_autoptr(JsonParser) parser = NULL;
+    const gchar *domains;
+    JsonArray *array;
+    guint i;
+
+    if (self->bridge == NULL ||
+        !clawt_pod_bridge_load_module_for(self->bridge, "vm_virtmanager",
+                                          self->uri, NULL))
+        return FALSE;
+
+    params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    g_hash_table_insert(params, g_strdup("state"), g_strdup("all"));
+
+    result = clawt_pod_bridge_call_for(self->bridge, "vm_virtmanager",
+                                       self->uri, "list_domains", params,
+                                       NULL);
+
+    if (result == NULL)
+        return FALSE;
+
+    domains = g_hash_table_lookup(result, "domains");
+
+    if (domains == NULL)
+        return FALSE;
+
+    parser = json_parser_new();
+
+    if (!json_parser_load_from_data(parser, domains, -1, NULL))
+        return FALSE;
+
+    if (json_node_get_node_type(json_parser_get_root(parser)) !=
+        JSON_NODE_ARRAY)
+        return FALSE;
+
+    array = json_node_get_array(json_parser_get_root(parser));
+
+    for (i = 0; i < json_array_get_length(array); i++) {
+        JsonObject *entry = json_array_get_object_element(array, i);
+
+        if (entry != NULL && json_object_has_member(entry, "name") &&
+            g_strcmp0(json_object_get_string_member(entry, "name"),
+                      self->domain) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
 static gchar *
 libvirt_domain_uuid(ClawtVmComputer *self)
 {
@@ -642,6 +715,14 @@ libvirt_domain_uuid(ClawtVmComputer *self)
     if (self->bridge == NULL ||
         !clawt_pod_bridge_load_module_for(self->bridge, "vm_virtmanager",
                                           self->uri, NULL))
+        return NULL;
+
+    /*
+     * Only ask about a domain that is there. A VM the user removed --
+     * or one that never existed -- is a normal thing to find, and is
+     * answered by building it from scratch rather than by complaining.
+     */
+    if (!libvirt_has_domain(self))
         return NULL;
 
     params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
