@@ -407,12 +407,27 @@ file.  Deleting the overlay also forgets the guest's host key, because a
 rebuilt VM is a different machine answering at the same address.
 
 *Changing ~image~ rebuilds the guest.*  The overlay records the base it
-was built on, so an overlay left in place would keep booting the old
-image for ever while the config said otherwise -- a setting that
-silently does nothing.  Instead the overlay is discarded and made again
-on the new base, which is said out loud in the log because *everything
-inside that VM goes with it*.  An agent's own work is in its workspace on
-the host, which this does not touch.
+was built on, so one left in place would keep booting the old image for
+ever while the config said otherwise -- a setting that silently does
+nothing.  The old disk is *moved aside* to ~overlay-superseded.qcow2~
+rather than deleted, and the log says where: everything installed inside
+that VM is in it, and a config line changing is a poor reason for that to
+be unrecoverable.  Delete it when you are sure.  An agent's own work is
+in its workspace on the host, which this never touches.
+
+Two things it will *not* do:
+
+- *A disk whose base cannot be read is left exactly as it is.*  The
+  usual reason is that a guest is running and holding it -- ~qemu-img~
+  refuses an image another process has open -- and unknown is not
+  different.  Reading that refusal as "the base changed" once deleted
+  the disk of a running VM, which carried on against the unlinked inode
+  while the file on disk was replaced by an empty one.
+- *A running domain is not touched at all.*  Restarting the daemon
+  re-provisions every agent, and a libvirt domain outlives the daemon,
+  so this runs routinely against a VM that is up.  Its overlay and its
+  seed are left alone; only the address is worked out, because that is
+  read from a file.
 
 *Deleting an image an agent is using is refused*, because the overlay
 names it: without the base, the VM stops booting at all.  Point the agent
@@ -522,6 +537,37 @@ clawtilla computer exec researcher -- bash -c 'echo ">>> hello <<<" > /dev/conso
 An agent's ~TOOLS.org~ says all of this, and a VM agent's own description
 says it again with its name in it -- it is the kind of thing an agent
 otherwise works out by trial and error, and reports as a discovery.
+
+*** The console is black
+
+A serial console shows what is written *while you are attached*.  The
+boot messages have already gone by, and an idle guest writes nothing, so
+a VM that booted before you opened virt-manager shows an empty screen.
+That is not a fault.
+
+Make it say something:
+
+#+begin_src bash
+clawtilla computer exec researcher -- bash -c 'echo hello > /dev/console'
+#+end_src
+
+A genuinely black screen *from boot* means the domain has no disk -- see
+above.
+
+*** virt-manager can take the session away
+
+virt-manager installed as a flatpak ships its own ~virtqemud~, and
+opening it can leave that daemon owning
+~$XDG_RUNTIME_DIR/libvirt/virtqemud-sock~.  Its sandbox has no QEMU in
+it, so every ~qemu:///session~ connection afterwards -- clawtilla's
+included -- is answered by a daemon that cannot find an emulator, and
+every VM stops working until it exits.
+
+#+begin_src bash
+ss -lxp | grep virtqemud-sock
+#+end_src
+
+names the process holding it.
 
 *** When libvirt cannot find an emulator
 

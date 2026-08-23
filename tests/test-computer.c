@@ -1537,6 +1537,90 @@ test_vm_start_does_not_spawn_a_second_guest(void)
                     CLAWT_COMPUTER_STATE_RUNNING);
 }
 
+/*
+ * The worst thing this code ever did.
+ *
+ * qemu-img refuses an image a running guest holds -- `Failed to get
+ * shared "write" lock` -- and that refusal was read as "the base is
+ * something else", so provisioning deleted the disk of a running VM. The
+ * guest carried on against the unlinked inode while the file on disk was
+ * replaced by an empty one.
+ *
+ * Unknown is not different. An overlay whose base cannot be read is left
+ * exactly as it is.
+ */
+static void
+test_vm_overlay_is_kept_when_its_base_cannot_be_read(void)
+{
+    g_autofree gchar *base = NULL;
+    g_autofree gchar *overlay = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(GError) error = NULL;
+    GStatBuf before;
+    GStatBuf after;
+
+    {
+        g_autofree gchar *tool = g_find_program_in_path("qemu-img");
+
+        if (tool == NULL) {
+            g_test_skip("qemu-img is not installed here");
+            return;
+        }
+    }
+
+    base = g_build_filename(g_get_user_data_dir(), "unreadable-base.qcow2",
+                            NULL);
+    g_assert_true(make_blank_image(base));
+
+    computer = clawt_vm_computer_new("unreadable", CLAWT_VM_BACKEND_QEMU,
+                                     NULL);
+    clawt_vm_computer_set_image(CLAWT_VM_COMPUTER(computer), base);
+    clawt_vm_computer_set_cloud_init(CLAWT_VM_COMPUTER(computer), FALSE);
+
+    g_assert_true(clawt_computer_provision(computer, &error));
+    g_assert_no_error(error);
+
+    overlay = g_build_filename(g_get_user_data_dir(), "clawtilla", "vms",
+                               "unreadable", "overlay.qcow2", NULL);
+    g_assert_cmpint(g_stat(overlay, &before), ==, 0);
+
+    /*
+     * Standing in for the lock a running guest holds: whatever the
+     * reason, qemu-img cannot answer, and the answer to that is to leave
+     * the disk alone.
+     */
+    g_assert_cmpint(g_chmod(overlay, 0), ==, 0);
+
+    g_assert_true(clawt_computer_provision(computer, &error));
+    g_assert_no_error(error);
+
+    g_assert_cmpint(g_chmod(overlay, 0600), ==, 0);
+    g_assert_cmpint(g_stat(overlay, &after), ==, 0);
+
+    /* Same file, untouched. */
+    g_assert_cmpint(before.st_ino, ==, after.st_ino);
+    g_assert_cmpint(before.st_mtime, ==, after.st_mtime);
+}
+
+/*
+ * A base that has gone is named, rather than surfacing later as a qemu
+ * complaint about a backing file nobody chose by hand.
+ */
+static void
+test_vm_missing_base_image_is_named(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        clawt_vm_computer_new("nobase", CLAWT_VM_BACKEND_QEMU, NULL);
+    g_autoptr(GError) error = NULL;
+
+    clawt_vm_computer_set_image(CLAWT_VM_COMPUTER(computer),
+                                "/nonexistent/never-here.qcow2");
+    clawt_vm_computer_set_cloud_init(CLAWT_VM_COMPUTER(computer), FALSE);
+
+    g_assert_false(clawt_computer_provision(computer, &error));
+    g_assert_nonnull(strstr(error->message, "never-here.qcow2"));
+}
+
 static void
 test_vm_overlay_survives_a_second_provision(void)
 {
@@ -1705,6 +1789,10 @@ main(int argc, char *argv[])
                     test_vm_domain_xml_always_has_a_disk_to_boot);
     g_test_add_func("/computer/vm/no-second-guest",
                     test_vm_start_does_not_spawn_a_second_guest);
+    g_test_add_func("/computer/vm/overlay-kept-when-unreadable",
+                    test_vm_overlay_is_kept_when_its_base_cannot_be_read);
+    g_test_add_func("/computer/vm/missing-base-named",
+                    test_vm_missing_base_image_is_named);
     g_test_add_func("/computer/vm/overlay-kept",
                     test_vm_overlay_survives_a_second_provision);
     g_test_add_func("/computer/vm/overlay-rebuilt",

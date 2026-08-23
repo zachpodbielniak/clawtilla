@@ -616,6 +616,38 @@ the same program.
   300 lines to a login prompt — so a black console means no disk, not a
   console misconfiguration.
 
+### qemu-img refuses an image a running guest holds
+
+- `Failed to get shared "write" lock`, exit 1. The overlay-change check
+  read that as "the base is something else" and **deleted the disk of a
+  running VM** — which carried on against the unlinked inode while the
+  file on disk was replaced by an empty one. Unknown is not different:
+  `overlay_backing_file()` now reports whether it could *answer*
+  separately from the answer, and an unreadable disk is left alone.
+- Provisioning also skips the overlay and the seed entirely when the
+  domain is running. Restarting the daemon re-provisions every agent and
+  a libvirt domain outlives the daemon, so that path runs routinely
+  against a VM that is up.
+- A genuine base change now *moves* the old overlay to
+  `overlay-superseded.qcow2` rather than unlinking it. Destroying a
+  guest because a config line changed should be recoverable.
+
+### A libvirt disconnect can deadlock the whole daemon
+
+- Observed, with a stack: `virNetClientIncomingEvent` →
+  `virNetClientMarkClose` → `virNetSocketRemoveIOCallback` →
+  `virNetSocketEventFree` → `__lll_lock_wait`, all inside
+  `clawt_daemon_run`. libvirt's glib event integration self-deadlocks
+  tearing down the socket when the far end goes away, and because
+  podomation registers that event loop on **our** main context it takes
+  the IPC server, every agent and every client with it. SIGTERM cannot
+  help — the handler runs on the loop that is stuck — so it needs
+  SIGKILL.
+- **Not fixed.** The real remedy is to stop sharing a main context with
+  libvirt: run the vm_virtmanager module on its own thread and
+  GMainContext, so a hung teardown costs one thread rather than the
+  daemon.
+
 ### A qcow2 overlay pins the base it was made from
 
 - `ensure_overlay()` returned early whenever the overlay existed, so

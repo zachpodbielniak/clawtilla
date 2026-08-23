@@ -546,51 +546,77 @@ vm_state_dir(ClawtVmComputer *self)
  * Asked of qemu-img rather than remembered separately, because the
  * overlay is the thing that has to be right: a note beside it could say
  * one image while the file itself referenced another.
+ *
+ * The return value says whether the question could be *answered*, which
+ * is not the same as the answer.  qemu-img refuses an image a running
+ * guest holds -- `Failed to get shared "write" lock` -- and treating
+ * that as "the backing file is something else" deleted the disk of a
+ * running VM. Unknown is not different.
  */
-static gchar *
-overlay_backing_file(const gchar *overlay)
+static gboolean
+overlay_backing_file(const gchar  *overlay,
+                     gchar       **backing,
+                     gchar       **why_not)
 {
     g_autoptr(GSubprocess) process = NULL;
     g_autoptr(JsonParser) parser = NULL;
     g_autofree gchar *output = NULL;
+    g_autofree gchar *failure = NULL;
     JsonObject *root;
 
+    *backing = NULL;
+
     process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE |
-                               G_SUBPROCESS_FLAGS_STDERR_SILENCE, NULL,
+                               G_SUBPROCESS_FLAGS_STDERR_PIPE, NULL,
                                "qemu-img", "info", "--output=json", overlay,
                                NULL);
 
-    if (process == NULL)
-        return NULL;
+    if (process == NULL) {
+        if (why_not != NULL)
+            *why_not = g_strdup("qemu-img could not be run");
+        return FALSE;
+    }
 
-    if (!g_subprocess_communicate_utf8(process, NULL, NULL, &output, NULL,
-                                       NULL) ||
-        g_subprocess_get_exit_status(process) != 0)
-        return NULL;
+    if (!g_subprocess_communicate_utf8(process, NULL, NULL, &output,
+                                       &failure, NULL) ||
+        g_subprocess_get_exit_status(process) != 0) {
+        if (why_not != NULL)
+            *why_not = g_strdup(
+                (failure != NULL && *g_strstrip(failure) != '\0')
+                    ? failure : "qemu-img could not read it");
+        return FALSE;
+    }
 
     parser = json_parser_new();
 
-    if (!json_parser_load_from_data(parser, output, -1, NULL))
-        return NULL;
+    if (!json_parser_load_from_data(parser, output, -1, NULL)) {
+        if (why_not != NULL)
+            *why_not = g_strdup("qemu-img said something unparseable");
+        return FALSE;
+    }
 
     root = json_node_get_object(json_parser_get_root(parser));
 
-    if (root == NULL)
-        return NULL;
+    if (root == NULL) {
+        if (why_not != NULL)
+            *why_not = g_strdup("qemu-img said something unparseable");
+        return FALSE;
+    }
 
     /*
      * full-backing-filename is the resolved path; backing-filename is
-     * whatever was written into the file, which may be relative.
+     * whatever was written into the file, which may be relative.  A
+     * plain image with neither is answered as NULL, which is a real
+     * answer: it has no base.
      */
     if (json_object_has_member(root, "full-backing-filename"))
-        return g_strdup(json_object_get_string_member(root,
-                                                      "full-backing-filename"));
+        *backing = g_strdup(
+            json_object_get_string_member(root, "full-backing-filename"));
+    else if (json_object_has_member(root, "backing-filename"))
+        *backing = g_strdup(
+            json_object_get_string_member(root, "backing-filename"));
 
-    if (json_object_has_member(root, "backing-filename"))
-        return g_strdup(json_object_get_string_member(root,
-                                                      "backing-filename"));
-
-    return NULL;
+    return TRUE;
 }
 
 /*
@@ -765,6 +791,7 @@ ensure_overlay(ClawtVmComputer *self, GError **error)
 {
     g_autofree gchar *state_dir = NULL;
     g_autofree gchar *known_hosts = NULL;
+    g_autofree gchar *superseded = NULL;
     g_autoptr(GSubprocess) process = NULL;
 
     if (self->image == NULL)
@@ -779,32 +806,73 @@ ensure_overlay(ClawtVmComputer *self, GError **error)
     self->overlay = g_build_filename(state_dir, "overlay.qcow2", NULL);
     known_hosts = g_build_filename(state_dir, "known_hosts", NULL);
 
+    /*
+     * A base that is not there cannot back anything, and the error qemu
+     * gives later names a backing file rather than the setting that
+     * chose it.
+     */
+    if (!g_file_test(self->image, G_FILE_TEST_EXISTS)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_COMPUTER_PROVISION,
+                    "the disk image %s is not there. Fetch it with "
+                    "`clawtilla image vm get`, or point "
+                    "computer.vm.image at one that exists.", self->image);
+        return FALSE;
+    }
+
     if (g_file_test(self->overlay, G_FILE_TEST_EXISTS)) {
-        g_autofree gchar *backing = overlay_backing_file(self->overlay);
+        g_autofree gchar *backing = NULL;
+        g_autofree gchar *why_not = NULL;
+
+        /*
+         * Cannot tell?  Then leave it alone.
+         *
+         * The commonest reason by far is that a guest is running and
+         * holding the image, and qemu-img refuses to open it. Reading
+         * that as "the base changed" deleted the disk out from under a
+         * running VM -- which kept going on the unlinked inode while the
+         * file on disk was replaced by an empty one. Unknown is not
+         * different, and nothing here is worth destroying a guest over.
+         */
+        if (!overlay_backing_file(self->overlay, &backing, &why_not)) {
+            g_message("vm %s: leaving the existing disk alone; its base "
+                      "could not be read (%s)",
+                      self->domain,
+                      why_not != NULL ? why_not : "no reason given");
+            return TRUE;
+        }
 
         if (g_strcmp0(backing, self->image) == 0)
             return TRUE;
 
         /*
-         * The configured image has changed, so the overlay is built on
-         * the wrong thing.  Keeping it would leave the VM booting the old
-         * base for ever while the config said otherwise -- a setting that
-         * silently does nothing, which is worse than one that costs you
-         * the guest's contents.
+         * Genuinely a different base.  Keeping the overlay would leave
+         * the VM booting the old one for ever while the config said
+         * otherwise -- a setting that silently does nothing.
          *
-         * Said out loud because it does cost you them: everything
-         * installed inside that VM goes with the overlay.  An agent's
-         * actual work lives in its workspace on the host, which this does
-         * not touch.
+         * The old disk is moved aside rather than deleted. Everything
+         * installed inside that VM is in it, and a config line changing
+         * is a poor reason for that to be unrecoverable. An agent's own
+         * work lives in its workspace on the host, which this never
+         * touches.
          */
-        g_warning("vm %s: the disk image changed from %s to %s, so the "
-                  "guest is being rebuilt from the new one -- anything "
-                  "inside the old VM is gone. Its workspace on the host "
-                  "is untouched.",
-                  self->domain, backing != NULL ? backing : "something else",
-                  self->image);
+        superseded = g_build_filename(state_dir, "overlay-superseded.qcow2",
+                                      NULL);
+        g_unlink(superseded);
 
-        g_unlink(self->overlay);
+        if (g_rename(self->overlay, superseded) != 0) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_COMPUTER_PROVISION,
+                        "the disk image changed, but the old guest could "
+                        "not be moved aside: %s", g_strerror(errno));
+            return FALSE;
+        }
+
+        g_warning("vm %s: the disk image changed from %s to %s. The old "
+                  "guest is at %s -- delete it when you are sure you do "
+                  "not want it. Its workspace on the host is untouched.",
+                  self->domain,
+                  backing != NULL ? backing : "an image with no base",
+                  self->image, superseded);
+
         g_unlink(known_hosts);
     }
 
@@ -1084,6 +1152,34 @@ vm_provision(ClawtComputer *computer, GError **error)
         clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ERROR,
                                  (*error)->message);
         return FALSE;
+    }
+
+    /*
+     * A running guest's disk is not ours to touch.
+     *
+     * Restarting the daemon re-provisions every agent, and a libvirt
+     * domain outlives the daemon -- so this runs routinely against a VM
+     * that is up. Rebuilding its overlay or its seed underneath it is at
+     * best pointless and at worst destroys the guest, which is exactly
+     * what happened. The address still gets worked out, because that is
+     * read from a file and is how commands reach the thing.
+     */
+    if (self->backend == CLAWT_VM_BACKEND_LIBVIRT) {
+        g_autofree gchar *running = libvirt_domain_state(self);
+
+        if (g_strcmp0(running, "running") == 0) {
+            if (self->ssh_host == NULL && !ensure_ssh_route(self, error)) {
+                clawt_computer_set_state(computer,
+                                         CLAWT_COMPUTER_STATE_ERROR,
+                                         (error != NULL && *error != NULL)
+                                         ? (*error)->message : NULL);
+                return FALSE;
+            }
+
+            clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_RUNNING,
+                                     NULL);
+            return TRUE;
+        }
     }
 
     if (!ensure_overlay(self, error) ||
