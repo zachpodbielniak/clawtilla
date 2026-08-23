@@ -371,19 +371,42 @@ clawt_desktop_describe(ClawtDesktop *self)
      * telling it the reverse is far worse.
      */
     if (self->resolved == CLAWT_DESKTOP_BACKEND_GUEST) {
+        /*
+         * Where to look first when those tools do not work, said in the
+         * description rather than left to be discovered.
+         *
+         * The tools are a GNOME Shell extension inside the guest, and
+         * everything that could stop it loading happened at first boot
+         * in a log nobody reads.  What an agent sees is "DBus object
+         * has no attribute", which names nothing -- so two of them each
+         * spent a long turn reading dconf, listing extensions and
+         * introspecting the bus to arrive at a fact the guest had
+         * written down.  One sentence here is cheaper than that turn,
+         * every time.
+         */
+        const gchar *diagnose =
+            " If those tools fail with a D-Bus error, do not investigate "
+            "the bus: read " CLAWT_GUEST_DESKTOP_STATUS_FILE " in the VM. "
+            "The guest records there whether its half installed, and a "
+            "failure in that file is the answer. Re-run "
+            "`" CLAWT_GUEST_DESKTOP_INSTALL_SCRIPT "` to try again -- and "
+            "tell the user, because GNOME Shell only picks up a newly "
+            "installed extension when the session restarts.";
+
         if (self->allow_input)
-            return g_strdup(
+            return g_strconcat(
                 "There is a GNOME desktop inside your own VM, logged in and "
                 "waiting. You can list its windows, take screenshots of it, "
                 "and send it keystrokes and pointer events. It is yours: "
                 "nothing you do there touches the user's screen. The tools "
-                "arrive from the `clawtilla-desktop` MCP server.");
+                "arrive from the `clawtilla-desktop` MCP server.",
+                diagnose, NULL);
 
-        return g_strdup(
+        return g_strconcat(
             "There is a GNOME desktop inside your own VM. You can list its "
             "windows and take screenshots of it, but you cannot send "
             "keystrokes or pointer events. The tools arrive from the "
-            "`clawtilla-desktop` MCP server.");
+            "`clawtilla-desktop` MCP server.", diagnose, NULL);
     }
 
     backend_name = (self->resolved == CLAWT_DESKTOP_BACKEND_GNOME)

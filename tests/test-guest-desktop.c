@@ -261,7 +261,7 @@ test_the_mcp_prerequisites_are_not_the_operators_problem(void)
      * compiler and a set of -devel packages for a library already
      * installed.
      */
-    g_assert_nonnull(strstr(data, "venv, --system-site-packages"));
+    g_assert_nonnull(strstr(data, "python3 -m venv --system-site-packages"));
 
     /*
      * And no version constraints of clawtilla's own.  Those belong in the
@@ -622,6 +622,134 @@ test_an_explicit_list_replaces_the_familys(void)
     g_assert_nonnull(strstr(data, "- \"python3-venv\""));
 }
 
+
+/* ── Installing the extension GNOME Shell has to find ────────────── */
+
+/*
+ * The bug that let this feature work on exactly one distribution.
+ *
+ * The seed linked the extension into /usr/share/gnome-shell/extensions
+ * with `ln -sfn`, which will not create a parent -- and only Fedora's
+ * gnome-shell package ships that directory.  On Debian and Arch the
+ * link failed with ENOENT, cloud-init ran the rest of the list
+ * regardless, and dconf went on to enable an extension that was not on
+ * disk.  What an agent saw, much later, was every desktop tool
+ * answering "DBus object has no attribute".
+ */
+static void
+test_the_extension_directory_is_made_before_it_is_used(void)
+{
+    g_autofree gchar *data = render_for(CLAWT_GUEST_FLAVOUR_DEBIAN);
+    const gchar *made;
+    const gchar *linked;
+
+    made = strstr(data, "mkdir -p \"$sysext\"");
+    linked = strstr(data, "ln -sfn \"$checkout/extension/$uuid\"");
+
+    g_assert_nonnull(made);
+    g_assert_nonnull(linked);
+
+    /* The order is the whole of it: a link cannot make its own parent. */
+    g_assert_true(made < linked);
+}
+
+/*
+ * And the link is tested through rather than at.  A dangling symlink
+ * enumerates as a symlink and not as a directory, which GNOME Shell
+ * skips without saying anything -- the same silence the missing
+ * directory produced, arrived at a different way.
+ */
+static void
+test_the_extension_link_is_verified_through(void)
+{
+    g_autofree gchar *data = render_for(CLAWT_GUEST_FLAVOUR_ARCH);
+
+    g_assert_nonnull(strstr(data, "$sysext/$uuid/metadata.json"));
+}
+
+/*
+ * One script, because cloud-init's runcmd does not stop at a failure.
+ *
+ * It runs without `set -e`, so a command that fails is one line in a log
+ * inside the guest and every later command runs anyway.  That is how a
+ * guest ended up holding a virtualenv, an MCP server, a dconf key
+ * enabling an extension -- and no extension.
+ */
+static void
+test_the_install_is_one_script_that_checks_itself(void)
+{
+    g_autofree gchar *data = render_for(CLAWT_GUEST_FLAVOUR_DEBIAN);
+    const gchar *runcmd = strstr(data, "runcmd:");
+
+    g_assert_nonnull(runcmd);
+    g_assert_nonnull(strstr(runcmd, CLAWT_GUEST_DESKTOP_INSTALL_SCRIPT));
+
+    /* The steps are no longer loose commands a failure runs straight past. */
+    g_assert_null(strstr(runcmd, "git clone"));
+    g_assert_null(strstr(runcmd, "ln -sfn"));
+    g_assert_null(strstr(runcmd, "glib-compile-schemas"));
+
+    /* And each one says which step it was. */
+    g_assert_nonnull(strstr(data, "could not create $sysext"));
+    g_assert_nonnull(strstr(data, "could not link the extension"));
+}
+
+/*
+ * ...and writes the answer down, because the question gets asked from
+ * outside the guest, by somebody who cannot see cloud-init's log.
+ */
+static void
+test_the_install_records_its_result(void)
+{
+    g_autofree gchar *data = render_for(CLAWT_GUEST_FLAVOUR_FEDORA);
+
+    g_assert_nonnull(strstr(data, CLAWT_GUEST_DESKTOP_STATUS_FILE));
+    g_assert_nonnull(strstr(data, "printf 'ok\\n' > \"$status\""));
+    g_assert_nonnull(strstr(data, "printf 'failed: %s\\n'"));
+}
+
+/*
+ * The installer is byte-for-byte the same on every family, and has to
+ * be.  Everything that differs between distributions is a package name,
+ * and those are chosen before this runs.  A step that varied per family
+ * here would be a step exercised on one distribution and not the others
+ * -- which is precisely how the missing directory survived: it only
+ * ever ran where it happened not to matter.
+ */
+static gchar *
+install_script_of(ClawtGuestFlavour flavour)
+{
+    g_autofree gchar *data = render_for(flavour);
+    const gchar *start = strstr(data, "# Installs the half of the desktop");
+    const gchar *end;
+
+    g_assert_nonnull(start);
+    end = strstr(start, "printf 'ok\\n' > \"$status\"");
+    g_assert_nonnull(end);
+
+    return g_strndup(start, (gsize)(end - start));
+}
+
+static void
+test_every_family_installs_the_same_way(void)
+{
+    static const ClawtGuestFlavour families[] = {
+        CLAWT_GUEST_FLAVOUR_FEDORA,
+        CLAWT_GUEST_FLAVOUR_ENTERPRISE,
+        CLAWT_GUEST_FLAVOUR_DEBIAN,
+        CLAWT_GUEST_FLAVOUR_UBUNTU,
+        CLAWT_GUEST_FLAVOUR_ARCH
+    };
+    g_autofree gchar *first = install_script_of(families[0]);
+    gsize i;
+
+    for (i = 1; i < G_N_ELEMENTS(families); i++) {
+        g_autofree gchar *other = install_script_of(families[i]);
+
+        g_assert_cmpstr(first, ==, other);
+    }
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -679,6 +807,17 @@ main(int argc, char *argv[])
                     test_every_family_gets_a_browser);
     g_test_add_func("/guest-desktop/cloud-config/arch-upgrades-first",
                     test_arch_upgrades_before_it_installs);
+    g_test_add_func("/guest-desktop/install/directory-made-before-used",
+                    test_the_extension_directory_is_made_before_it_is_used);
+    g_test_add_func("/guest-desktop/install/link-verified-through",
+                    test_the_extension_link_is_verified_through);
+    g_test_add_func("/guest-desktop/install/one-script-that-checks-itself",
+                    test_the_install_is_one_script_that_checks_itself);
+    g_test_add_func("/guest-desktop/install/records-its-result",
+                    test_the_install_records_its_result);
+    g_test_add_func("/guest-desktop/install/same-on-every-family",
+                    test_every_family_installs_the_same_way);
+
     g_test_add_func("/guest-desktop/flavour/arch-is-not-a-substring",
                     test_an_ordinary_path_is_not_arch);
 

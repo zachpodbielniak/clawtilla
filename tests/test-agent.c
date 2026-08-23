@@ -645,6 +645,54 @@ test_an_observe_only_desktop_says_so(void)
 }
 
 /*
+ * ...and both grants say where to look when the tools do not work.
+ *
+ * They are a GNOME Shell extension inside the guest, so everything that
+ * could stop them existing happened at first boot, in a log nobody
+ * reads.  What reaches the agent is "DBus object has no attribute",
+ * which names nothing -- and two agents each spent a long turn reading
+ * dconf, listing extensions and introspecting the bus to arrive at a
+ * fact the guest had already written down.  Naming the file costs one
+ * sentence and saves that turn every time.
+ */
+static void
+test_a_guest_desktop_says_where_to_look_when_it_fails(void)
+{
+    Fixture fixture = { 0 };
+    gboolean input;
+
+    fixture_setup(&fixture);
+    fixture.config = load_config(&fixture, "agents:\n  - id: scribe\n");
+
+    /* Either grant can hit it: seeing the screen needs the extension too. */
+    for (input = FALSE; ; input = TRUE) {
+        g_autoptr(ClawtAgent) agent = NULL;
+        g_autoptr(ClawtDesktop) desktop = NULL;
+        g_autofree gchar *described = NULL;
+
+        agent = clawt_agent_new(
+            clawt_config_get_agent(fixture.config, "scribe"), NULL);
+
+        desktop = clawt_desktop_new(CLAWT_DESKTOP_BACKEND_AUTO, NULL);
+        clawt_desktop_set_guest_available(desktop, TRUE);
+        clawt_desktop_set_allow_input(desktop, input);
+        clawt_agent_set_desktop(agent, desktop);
+
+        described = clawt_agent_describe_computer(agent);
+
+        g_assert_nonnull(strstr(described,
+                                CLAWT_GUEST_DESKTOP_STATUS_FILE));
+        g_assert_nonnull(strstr(described,
+                                CLAWT_GUEST_DESKTOP_INSTALL_SCRIPT));
+
+        if (input)
+            break;
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * Stopping a runtime stops it, rather than merely asking.
  *
  * The flag used to be cleared the instant SIGTERM was *sent*, so a
@@ -836,6 +884,8 @@ main(int argc, char *argv[])
                     test_restarting_does_not_leave_the_old_one);
     g_test_add_func("/agent/describes-its-desktop",
                     test_the_description_mentions_the_desktop);
+    g_test_add_func("/agent/guest-desktop-says-where-to-look",
+                    test_a_guest_desktop_says_where_to_look_when_it_fails);
     g_test_add_func("/agent/observe-only-desktop-says-so",
                     test_an_observe_only_desktop_says_so);
 

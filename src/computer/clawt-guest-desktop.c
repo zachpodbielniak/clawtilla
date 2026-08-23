@@ -26,6 +26,14 @@
  */
 #define ENABLE_SCRIPT "/usr/local/bin/clawtilla-desktop-automation-enable"
 
+/*
+ * GNOME Shell looks for extensions under gnome-shell/extensions in each
+ * XDG_DATA_DIRS entry.  Only Fedora's gnome-shell package ships the
+ * directory, which is the whole of the bug this constant exists to keep
+ * visible: it has to be created before anything is put in it.
+ */
+#define SYSTEM_EXTENSION_DIR "/usr/share/gnome-shell/extensions"
+
 struct _ClawtGuestDesktop {
     gint      ref_count;
 
@@ -540,6 +548,116 @@ render_dconf(ClawtGuestDesktop *self, GString *out)
 }
 
 /*
+ * Everything the guest has to build for the desktop to be drivable.
+ *
+ * A script rather than the list of runcmd entries this used to be, and
+ * the difference cost a working feature on two distributions out of
+ * five.  cloud-init runs runcmd without `set -e`: a step that fails is
+ * one line in a log inside the guest and every later step runs anyway.
+ * So the extension failed to install, the venv and the MCP server were
+ * built regardless, dconf enabled an extension that was not on disk, and
+ * the first anybody heard of it was an agent -- days later -- being told
+ * "DBus object has no attribute" by every desktop tool it owns.
+ *
+ * A script can check each step, name the one that went wrong, and write
+ * the answer down.  It can also be run a second time, which a seed
+ * cannot: cloud-init acts at first boot only.
+ */
+static void
+render_install_script(ClawtGuestDesktop *self, GString *out)
+{
+    g_autoptr(GString) body = g_string_new(NULL);
+    g_autofree gchar *repo = NULL;
+
+    /*
+     * Shell-quoted rather than interpolated. It is a URL out of a config
+     * file somebody edits, and it is about to be a word in a command
+     * line -- the same rule the credential format follows a directory
+     * along, for the same reason.
+     */
+    repo = g_shell_quote(self->mcp_repo != NULL ? self->mcp_repo : "");
+
+    g_string_append(body,
+        "#!/bin/bash\n"
+        "# Written by clawtilla.\n"
+        "#\n"
+        "# Installs the half of the desktop that lives in the guest: the\n"
+        "# GNOME Shell extension the agent's tools actually are, and the\n"
+        "# MCP server that speaks to it.\n"
+        "#\n"
+        "# Safe to run again. Every step checks for what it was going to\n"
+        "# create, which matters because cloud-init will not run twice.\n"
+        "set -uo pipefail\n"
+        "\n"
+        "uuid='" EXTENSION_UUID "'\n"
+        "checkout='" CHECKOUT_DIR "'\n"
+        "sysext='" SYSTEM_EXTENSION_DIR "'\n"
+        "status='" CLAWT_GUEST_DESKTOP_STATUS_FILE "'\n"
+        "\n"
+        "mkdir -p \"$(dirname \"$status\")\"\n"
+        "\n"
+        "fail () {\n"
+        "    printf 'failed: %s\\n' \"$1\" > \"$status\"\n"
+        "    printf 'clawtilla: desktop install failed: %s\\n' \"$1\" >&2\n"
+        "    exit 1\n"
+        "}\n"
+        "\n"
+        "printf 'installing\\n' > \"$status\"\n"
+        "\n"
+        "if [ ! -d \"$checkout\" ]\n"
+        "then\n"
+        "    git clone --depth 1 ");
+    g_string_append(body, repo);
+    g_string_append(body,
+        " \"$checkout\" \\\n"
+        "        || fail 'could not clone the desktop MCP repository'\n"
+        "fi\n"
+        "\n"
+        "[ -d \"$checkout/extension/$uuid\" ] \\\n"
+        "    || fail \"the checkout has no extension at extension/$uuid\"\n"
+        "\n"
+        "# The step that only ever worked on Fedora.\n"
+        "#\n"
+        "# GNOME Shell looks for extensions under gnome-shell/extensions\n"
+        "# in each XDG_DATA_DIRS entry, but only Fedora's gnome-shell\n"
+        "# package ships that directory -- and `ln` will not create a\n"
+        "# parent. On Debian and Arch the link failed with ENOENT while\n"
+        "# everything around it succeeded.\n"
+        "mkdir -p \"$sysext\" || fail \"could not create $sysext\"\n"
+        "\n"
+        "ln -sfn \"$checkout/extension/$uuid\" \"$sysext/$uuid\" \\\n"
+        "    || fail \"could not link the extension into $sysext\"\n"
+        "\n"
+        "# Through the link rather than at it. A dangling symlink\n"
+        "# enumerates as a symlink and not as a directory, which GNOME\n"
+        "# Shell skips without saying anything.\n"
+        "[ -f \"$sysext/$uuid/metadata.json\" ] \\\n"
+        "    || fail 'the extension link does not resolve to an extension'\n"
+        "\n"
+        "glib-compile-schemas \"$checkout/extension/$uuid/schemas\" \\\n"
+        "    || fail \"could not compile the extension's schemas\"\n"
+        "\n"
+        "# --system-site-packages so PyGObject is visible; the virtualenv\n"
+        "# is otherwise there to keep pip away from an\n"
+        "# externally-managed /usr, which on Fedora refuses outright.\n"
+        "python3 -m venv --system-site-packages \"$checkout/venv\" \\\n"
+        "    || fail 'could not create the virtualenv'\n"
+        "\n"
+        "# No version constraints, deliberately: they belong to the\n"
+        "# repository being cloned, where they can be raised in step with\n"
+        "# the code that needs them.\n"
+        "\"$checkout/venv/bin/pip\" install --quiet \"$checkout/mcp-server\" \\\n"
+        "    || fail 'could not install the desktop MCP server'\n"
+        "\n"
+        "[ -x \"$checkout/venv/bin/gnome-desktop-mcp\" ] \\\n"
+        "    || fail 'the server installed but left no gnome-desktop-mcp'\n"
+        "\n"
+        "printf 'ok\\n' > \"$status\"\n");
+
+    append_file(out, CLAWT_GUEST_DESKTOP_INSTALL_SCRIPT, "0755", body->str);
+}
+
+/*
  * The two scripts the guest ends up running: one to reach the MCP server
  * with the right bus in the environment, one to switch automation on once
  * the session exists.
@@ -565,6 +683,8 @@ render_scripts(ClawtGuestDesktop *self, GString *out)
 
     if (!self->install_mcp)
         return;
+
+    render_install_script(self, out);
 
     append_file(out, ENABLE_SCRIPT, "0755",
         "#!/bin/bash\n"
@@ -691,60 +811,12 @@ clawt_guest_desktop_render_setup(ClawtGuestDesktop *self, GString *out)
      */
     g_string_append(out, "  - [systemctl, set-default, graphical.target]\n");
 
-    if (self->install_mcp) {
-        g_autofree gchar *clone = NULL;
-
-        /*
-         * Cloned rather than taken from PyPI: the extension only exists
-         * in the repository, and the server calls D-Bus methods that
-         * exact extension has to export.  A version skew between the two
-         * halves surfaces as a tool that exists and always fails.
-         */
-        clone = g_strdup_printf(
-            "test -d %s || git clone --depth 1 %s %s",
-            CHECKOUT_DIR,
-            self->mcp_repo != NULL ? self->mcp_repo : "", CHECKOUT_DIR);
-
-        g_string_append(out, "  - ");
-        append_quoted(out, clone);
-        g_string_append_c(out, '\n');
-
-        g_string_append(out,
-            "  - [ln, -sfn, \"" CHECKOUT_DIR "/extension/" EXTENSION_UUID
-            "\", \"/usr/share/gnome-shell/extensions/" EXTENSION_UUID "\"]\n"
-            "  - [glib-compile-schemas, \"" CHECKOUT_DIR "/extension/"
-            EXTENSION_UUID "/schemas\"]\n");
-
-        /*
-         * --system-site-packages so PyGObject is visible; the virtualenv
-         * is otherwise there to keep pip away from an
-         * externally-managed /usr, which on Fedora refuses outright.
-         */
-        g_string_append(out,
-            "  - [python3, -m, venv, --system-site-packages, \""
-            CHECKOUT_DIR "/venv\"]\n");
-
-        /*
-         * No version constraints are given here, deliberately.
-         *
-         * gnome-desktop-mcp imports mcp.server.fastmcp, which exists
-         * only between mcp 1.2.0 and 2.0.0 -- and its own pyproject once
-         * said `mcp>=1.0.0`, which admitted versions that never had it
-         * and let a resolver take the 2.x that removed it. clawtilla
-         * pinned around that for a while; the constraint now lives in
-         * the repository being cloned, where it belongs and where it can
-         * be raised in step with a port to the new API.
-         *
-         * Which means mcp_repo has to be a checkout whose pyproject is
-         * honest about what it needs. That is the ordinary contract for
-         * installing anything, and the alternative -- clawtilla holding
-         * a copy of somebody else's dependency ranges -- goes stale
-         * silently and in the wrong direction.
-         */
-        g_string_append(out,
-            "  - [\"" CHECKOUT_DIR "/venv/bin/pip\", install, --quiet, \""
-            CHECKOUT_DIR "/mcp-server\"]\n");
-    }
+    /*
+     * One entry, not six.  What it does and why it is a script rather
+     * than a list of commands is in render_install_script().
+     */
+    if (self->install_mcp)
+        g_string_append(out, "  - [" CLAWT_GUEST_DESKTOP_INSTALL_SCRIPT "]\n");
 
     /*
      * dconf reads the text files above once and compiles them; until it

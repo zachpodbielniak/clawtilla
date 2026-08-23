@@ -441,6 +441,41 @@ the same program.
   itself was correct throughout; `gdbus call ... SetEnabled true` by hand
   returned `(true,)` on the same guest. Only the launcher was missing.
 
+### Enabling an extension and installing it are two steps that fail apart
+
+- The seed enables the GNOME Shell extension through a dconf default and
+  links the checkout into `/usr/share/gnome-shell/extensions`. Only
+  **Fedora's** `gnome-shell` package ships that directory, and `ln` will
+  not create a parent -- so on Debian and Arch the link failed with
+  ENOENT, cloud-init's `runcmd` (which runs without `set -e`) carried on
+  through the venv and the pip install, and dconf went on to enable an
+  extension that was not on disk. The guest looked perfect from the
+  host: GDM active, a GNOME console, `Ping` answered on the bus --
+  because GDBus answers `Peer.Ping` at the *connection* level for any
+  object path as long as the name is owned. Every real call returned
+  "DBus object has no attribute", which names nothing.
+- Verified end to end on Fedora 44 throughout, which is the whole
+  lesson: the one distribution whose `gnome-shell` happens to ship the
+  directory is the one where the missing step could not be seen. Same
+  shape as the missing `<video>` device -- two backends agreeing by
+  accident, and the feature demonstrated on the lucky one.
+- The install is now one script rather than a list of `runcmd` entries,
+  because `runcmd` cannot stop at a failure and cannot say which step it
+  was. It creates the directory, links, tests *through* the link (a
+  dangling symlink enumerates as a symlink, not a directory, and GNOME
+  Shell skips it in silence), and writes its result to
+  `/var/lib/clawtilla/desktop-install.status`.
+- Two agents each spent a long turn arriving at this from the bus --
+  reading dconf, listing extensions, introspecting `org.gnome.Shell`.
+  The answer was one line the guest could have written down. The agent's
+  own desktop description now names that file, because a tool error that
+  names nothing is an invitation to investigate the wrong layer.
+- `tests/test-guest-desktop.c` asserts the `mkdir` *precedes* the `ln`,
+  and that the installer is byte-identical across all five families:
+  everything distribution-specific is a package name chosen before it
+  runs, so a step that varied per family would be a step exercised on
+  one distribution and not the others.
+
 ### A dependency range belongs to the thing being installed
 
 - gnome-desktop-mcp asked for `mcp>=1.0.0` and imports

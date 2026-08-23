@@ -1041,6 +1041,60 @@ cloud-init acts on **first boot only**.  Changing ~vm.desktop.user~ or
 turning the desktop on for a VM that has already booted means deleting
 the overlay, not restarting.
 
+**** Enabling an extension is not installing it
+
+Enabling happens in dconf, before anyone logs in.  Installing means
+putting the extension somewhere GNOME Shell looks -- and those are two
+separate steps that fail independently.  A guest can have the extension
+enabled by name and no extension on disk, which is exactly as broken as
+having neither and looks like nothing at all from the host.
+
+GNOME Shell searches ~gnome-shell/extensions~ under each ~XDG_DATA_DIRS~
+entry, so clawtilla links the checkout into
+=/usr/share/gnome-shell/extensions=.  Only Fedora's ~gnome-shell~ package
+ships that directory; on Debian, Ubuntu and Arch it does not exist until
+something creates it, and ~ln~ will not create a parent.  The installer
+creates it, links the extension, and then tests *through* the link --
+a dangling symlink enumerates as a symlink rather than as a directory,
+which GNOME Shell skips in silence.
+
+All of it is one script, =/usr/local/bin/clawtilla-desktop-install=,
+rather than a list of ~runcmd~ entries.  cloud-init runs ~runcmd~ without
+~set -e~: a command that fails is one line in a log inside the guest and
+every later command runs anyway.  A script can stop at the step that
+failed and say which one it was.
+
+It writes the answer to =/var/lib/clawtilla/desktop-install.status=:
+
+#+begin_src bash
+clawtilla computer exec <agent-id> -- cat /var/lib/clawtilla/desktop-install.status
+#+end_src
+
+#+begin_example
+ok
+#+end_example
+
+...or the step that stopped it:
+
+#+begin_example
+failed: could not create /usr/share/gnome-shell/extensions
+#+end_example
+
+That file is named in the agent's own description of its desktop, so an
+agent whose tools return ~DBus object has no attribute~ is told to read
+it rather than left to work the answer out from the bus.
+
+The script is safe to run again, which the seed that first ran it is not:
+
+#+begin_src bash
+clawtilla computer exec <agent-id> -- /usr/local/bin/clawtilla-desktop-install
+#+end_src
+
+Running it does not by itself fix a running guest.  GNOME Shell scans for
+extensions when the session starts, so one that arrives afterwards is not
+picked up until the session restarts -- on Wayland that means logging out
+and back in, which for an autologin guest is a reboot.
+
 **** The guest needs a GPU, and gets one
 
 A VM with no video device has no ~/dev/dri~, and GDM refuses to start a

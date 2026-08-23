@@ -353,6 +353,51 @@ again, not restarting.
 follows a monthly rebuild, so a cached copy ages faster than the others
 and a first boot eventually fails on package signatures.
 
+** The desktop is up and every tool says "DBus object has no attribute"
+
+The session is fine.  A screenshot of the console shows GNOME, ~gdm~ is
+active, and the ~clawtilla-desktop~ tools are listed -- and every one of
+them fails with a D-Bus error naming nothing.
+
+The tools *are* a GNOME Shell extension.  If it did not install, the
+D-Bus name is still owned by GNOME Shell (so a ~Ping~ succeeds, which
+makes it look like a live connection) and the object the tools call does
+not exist.  Read the guest's own record of the install first:
+
+#+begin_src bash
+clawtilla computer exec <agent> -- cat /var/lib/clawtilla/desktop-install.status
+#+end_src
+
+#+begin_example
+failed: could not create /usr/share/gnome-shell/extensions
+#+end_example
+
+That is the answer.  Do not go on to read dconf, list extensions or
+introspect the bus -- all three will report exactly what a missing
+extension implies, at length.
+
+If the file says ~ok~ but the tools still fail, the extension is on disk
+and GNOME Shell has not loaded it.  It scans at session start, so one
+installed afterwards needs the session restarted; on Wayland that means a
+reboot of the guest.
+
+#+begin_src bash
+clawtilla computer exec <agent> -- /usr/local/bin/clawtilla-desktop-install
+clawtilla agent restart <agent>
+#+end_src
+
+If the file is *not there at all*, the guest was built before clawtilla
+installed the desktop this way.  cloud-init acts on the seed at first
+boot only, so a fix to the seed cannot reach a guest that has already
+booted:
+
+#+begin_src bash
+clawtilla computer rebuild <agent>
+#+end_src
+
+That destroys the guest and builds it again from the current
+configuration, so anything living only inside the VM goes with it.
+
 ** A connector's tools are missing, or refuse
 
 *** "not connected yet"

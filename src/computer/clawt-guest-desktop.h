@@ -53,6 +53,25 @@ G_BEGIN_DECLS
  */
 #define CLAWT_GUEST_DESKTOP_LAUNCHER "clawtilla-desktop-mcp"
 
+/*
+ * Where the guest records whether its half of the desktop installed.
+ *
+ * The tools an agent drives live inside a GNOME Shell extension, and
+ * everything that could stop that extension loading happens at first
+ * boot, inside the guest, in a log nobody is reading.  What the agent
+ * sees much later is "DBus object has no attribute", which names
+ * nothing.  This file names it, in one line, in one place.
+ */
+#define CLAWT_GUEST_DESKTOP_STATUS_FILE \
+    "/var/lib/clawtilla/desktop-install.status"
+
+/*
+ * The installer that writes it, which is safe to run again -- unlike the
+ * seed that first ran it, since cloud-init acts at first boot only.
+ */
+#define CLAWT_GUEST_DESKTOP_INSTALL_SCRIPT \
+    "/usr/local/bin/clawtilla-desktop-install"
+
 #define CLAWT_TYPE_GUEST_DESKTOP (clawt_guest_desktop_get_type())
 
 GType clawt_guest_desktop_get_type(void) G_GNUC_CONST;
