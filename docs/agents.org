@@ -138,6 +138,11 @@ model:
 
 ~fallbacks~ are tried in order when the primary is unavailable.
 
+The Claude Code backend takes aliases rather than dated model ids --
+~opus~, ~sonnet~, ~fable~, ~haiku~ -- because an alias keeps working when
+a new snapshot lands and a pinned id quietly does not.  ~fable~ is the
+one to reach for when an agent writes prose rather than code.
+
 *** An agent runs on a CLI backend, and only on a CLI backend
 
 libreclaw drives command-line tools, not HTTP APIs.  Its provider table
@@ -473,6 +478,20 @@ It is also told not to invent a container image -- the default is a
 working, tested one, and an invented name is one podman cannot pull --
 and not to set ~system_prompt~, which would replace the org files it
 just wrote rather than adding to them.
+
+*** What you chose is not the designer's to change
+
+An id, a name or a computer filled in on the form is pinned: the model
+fills in what is blank rather than replacing what is not.
+
+The computer matters more than the others.  The designer has no way to
+name a disk image -- the images that exist are the ones somebody
+fetched, not something to invent a path for -- so a VM it picked on its
+own is always an agent that refuses to provision, naming
+~computer.vm.image~.  Choose the computer above the design box and it is
+carried through with its image; ask for a VM without one and the
+designer says it cannot, and suggests a container, rather than drafting
+something that fails later.
 
 *** Choosing who designs
 

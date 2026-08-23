@@ -1725,6 +1725,25 @@ the same program.
   or people rebuild for things that never needed it.
 
 
+### The designer's pinning was extended for identity and not for the computer
+
+- The exact bug the identity pinning was written to fix, one field-set
+  over: `agent.create` sent the disk image the dialog had collected and
+  `design.agent` did not. So designing a VM agent produced one that
+  refused to provision, naming `computer.vm.image` -- while the image sat
+  filled in on screen a few rows above the button. Pressing Create
+  worked; pressing Design it did not.
+- Both paths now read the form through one function. A bug whose whole
+  nature is two code paths disagreeing about the same widgets is fixed by
+  removing the second reader, not by teaching it to agree.
+- The sharper half: the designer *cannot* name a disk image, because the
+  images that exist are the ones somebody fetched rather than a path to
+  invent. So `vm` was a choice it could never satisfy, and `set_computer`
+  now refuses it when nothing is pinned and says to use a container --
+  one turn spent instead of an agent that fails to provision later,
+  naming a setting the model never saw.
+
+
 ## Things to NEVER Do
 
 - Never hand-edit `data/example-config.yaml` or `data/default-config.yaml`

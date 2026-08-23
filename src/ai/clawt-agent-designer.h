@@ -82,6 +82,30 @@ void clawt_agent_designer_set_provider(ClawtAgentDesigner *self,
  * leaves the agent appearing under a name nobody chose, and any script
  * that expected the id it asked for looking at the wrong agent.
  */
+/**
+ * clawt_agent_designer_pin_computer:
+ * @self: a #ClawtAgentDesigner
+ * @type: (nullable): the computer type the person chose
+ * @settings: (nullable) (element-type utf8 utf8): its settings, by config
+ *   key -- `computer.vm.image`, `computer.vm.cpus` and so on
+ *
+ * Fixes the computer, so the model configures an agent around it rather
+ * than choosing one.
+ *
+ * A VM is the case this exists for.  The designer has no way to name a
+ * disk image -- the images that exist are the ones somebody fetched, not
+ * something to invent a path for -- so a VM the model picked on its own
+ * is always an agent that refuses to provision, with a message naming a
+ * setting the model never saw.  Pinning is how the choice and the image
+ * arrive together.
+ *
+ * Written into the draft immediately, so the preview shows what will be
+ * created.
+ */
+void clawt_agent_designer_pin_computer(ClawtAgentDesigner *self,
+                                       const gchar        *type,
+                                       GHashTable         *settings);
+
 void clawt_agent_designer_pin_identity(ClawtAgentDesigner *self,
                                        const gchar        *id,
                                        const gchar        *name);

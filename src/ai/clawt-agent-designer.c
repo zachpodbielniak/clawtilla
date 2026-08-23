@@ -32,6 +32,18 @@ struct _ClawtAgentDesigner {
      */
     gchar           *pinned_id;
     gchar           *pinned_name;
+
+    /*
+     * The computer the person already chose, if they did.
+     *
+     * Same reasoning as the identity pins: what somebody filled in on a
+     * form is theirs, and a model that picks something else has thrown
+     * their answer away.  It matters more here than for a name, because
+     * a VM is the one choice the designer cannot satisfy on its own --
+     * it has no way to name a disk image, so `vm` from the model alone
+     * is always an agent that will not provision.
+     */
+    gchar           *pinned_computer;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtAgentDesigner, clawt_agent_designer, G_TYPE_OBJECT)
@@ -96,6 +108,46 @@ clawt_agent_designer_pin_identity(ClawtAgentDesigner *self,
 
     if (name != NULL && *name != '\0')
         self->pinned_name = g_strdup(name);
+}
+
+/* Defined below, beside the tools that are its other callers. */
+static void set_draft(ClawtAgentDesigner *self, const gchar *key,
+                      const gchar *value);
+
+void
+clawt_agent_designer_pin_computer(ClawtAgentDesigner *self,
+                                  const gchar        *type,
+                                  GHashTable         *settings)
+{
+    g_return_if_fail(CLAWT_IS_AGENT_DESIGNER(self));
+
+    g_clear_pointer(&self->pinned_computer, g_free);
+
+    if (type == NULL || *type == '\0')
+        return;
+
+    self->pinned_computer = g_strdup(type);
+
+    /*
+     * Written into the draft now rather than at commit, so the preview
+     * the person reviews is the agent they will get.  A preview that
+     * showed the model's choice and then created theirs would be the one
+     * thing a preview exists to prevent.
+     */
+    set_draft(self, "computer.type", type);
+
+    if (settings != NULL) {
+        GHashTableIter iter;
+        gpointer key;
+        gpointer value;
+
+        g_hash_table_iter_init(&iter, settings);
+
+        while (g_hash_table_iter_next(&iter, &key, &value)) {
+            if (value != NULL && *(const gchar *)value != '\0')
+                set_draft(self, key, value);
+        }
+    }
 }
 
 gboolean
@@ -307,6 +359,36 @@ tool_set_computer(AiToolUse *use, GCancellable *cancellable, GError **error,
             return NULL;
         }
     }
+
+    /*
+     * A computer the person chose is not the model's to change.  Told
+     * rather than silently ignored, so it stops trying and spends its
+     * remaining turns on the parts that are still open.
+     */
+    if (self->pinned_computer != NULL) {
+        if (g_strcmp0(self->pinned_computer, type) == 0)
+            return g_strdup_printf("Computer is already %s, as the person "
+                                   "chose.", self->pinned_computer);
+
+        return g_strdup_printf("The person already chose a %s computer and "
+                               "configured it. Leave it as it is.",
+                               self->pinned_computer);
+    }
+
+    /*
+     * And a VM is a choice this cannot satisfy on its own: there is no
+     * parameter here for a disk image, because the images that exist are
+     * the ones somebody has fetched -- not something to invent a path
+     * for. Asked for a VM with nothing pinned, the honest answer is that
+     * it cannot, rather than drafting an agent that fails to provision
+     * with a message about a setting the model never saw.
+     */
+    if (g_strcmp0(type, "vm") == 0)
+        return g_strdup(
+            "A VM needs a disk image, which is chosen by the person rather "
+            "than from here. Use `container` for an isolated machine, or "
+            "`host` if it needs this one. They can change it to a VM "
+            "afterwards.");
 
     set_draft(self, "computer.type", type);
 
@@ -903,6 +985,7 @@ clawt_agent_designer_finalize(GObject *object)
     g_clear_pointer(&self->files, g_hash_table_unref);
     g_clear_pointer(&self->pinned_id, g_free);
     g_clear_pointer(&self->pinned_name, g_free);
+    g_clear_pointer(&self->pinned_computer, g_free);
     g_free(self->transcript);
 
     G_OBJECT_CLASS(clawt_agent_designer_parent_class)->finalize(object);

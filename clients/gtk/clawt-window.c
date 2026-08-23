@@ -5034,6 +5034,39 @@ new_agent_dialog_free(gpointer data)
     g_free(dialog);
 }
 
+/*
+ * The computer the form describes.
+ *
+ * Shared deliberately, because this was two code paths disagreeing about
+ * one form: `agent.create` sent the disk image and `design.agent` did
+ * not, so designing a VM agent produced one that refused to provision --
+ * naming a setting that was filled in on screen at the time. A single
+ * reader cannot drift from itself.
+ *
+ * Each backend is sent only its own image key. Setting a container
+ * reference on a VM, or the other way round, writes a key that backend
+ * never reads and then looks like a setting being ignored.
+ */
+static const gchar *
+dialog_computer(NewAgentDialog *dialog, gchar **out_image, gchar **out_disk)
+{
+    static const gchar *const computers[] = { "none", "host", "container",
+                                              "vm" };
+    guint selected =
+        adw_combo_row_get_selected(ADW_COMBO_ROW(dialog->computer_row));
+    const gchar *type = computers[MIN(selected, 3)];
+
+    *out_image = NULL;
+    *out_disk = NULL;
+
+    if (g_strcmp0(type, "container") == 0)
+        *out_image = image_chooser_value(&dialog->image);
+    else if (g_strcmp0(type, "vm") == 0)
+        *out_disk = disk_chooser_value(&dialog->disk);
+
+    return type;
+}
+
 static JsonObject *
 chooser_provider(ModelChooser *chooser)
 {
@@ -5658,10 +5691,8 @@ on_create_manually(GtkButton *button, gpointer user_data)
     g_autofree gchar *model = NULL;
     g_autofree gchar *image = NULL;
     g_autofree gchar *disk = NULL;
-    static const gchar *const computers[] = { "none", "host", "container",
-                                              "vm" };
+    const gchar *computer;
     const gchar *agent_id;
-    guint selected;
 
     (void)button;
 
@@ -5673,17 +5704,7 @@ on_create_manually(GtkButton *button, gpointer user_data)
     }
 
     model = chooser_model(&dialog->models);
-    selected = adw_combo_row_get_selected(ADW_COMBO_ROW(dialog->computer_row));
-
-    /*
-     * Each backend is sent only its own image key.  Setting a container
-     * reference on a VM, or the other way round, writes a key that
-     * backend never reads -- and then looks like a setting being ignored.
-     */
-    if (g_strcmp0(computers[MIN(selected, 3)], "container") == 0)
-        image = image_chooser_value(&dialog->image);
-    else if (g_strcmp0(computers[MIN(selected, 3)], "vm") == 0)
-        disk = disk_chooser_value(&dialog->disk);
+    computer = dialog_computer(dialog, &image, &disk);
 
     reply = clawt_window_request(
         self, "agent.create",
@@ -5694,7 +5715,7 @@ on_create_manually(GtkButton *button, gpointer user_data)
             "provider", provider != NULL
                         ? clawt_json_string(provider, "id", NULL) : NULL,
             "model", model,
-            "computer", computers[MIN(selected, 3)],
+            "computer", computer,
             "image", image,
             "vm_image", disk,
             NULL));
@@ -5781,6 +5802,9 @@ on_design_with_ai(GtkButton *button, gpointer user_data)
     ClawtWindow *self = dialog->window;
     g_autoptr(JsonNode) reply = NULL;
     g_autofree gchar *designer_model = NULL;
+    g_autofree gchar *image = NULL;
+    g_autofree gchar *disk = NULL;
+    const gchar *computer;
     const gchar *purpose;
 
     purpose = answer_of(dialog->describe_entry);
@@ -5799,6 +5823,7 @@ on_design_with_ai(GtkButton *button, gpointer user_data)
     gtk_button_set_label(GTK_BUTTON(button), "Designing...");
 
     designer_model = chooser_model(&dialog->designer);
+    computer = dialog_computer(dialog, &image, &disk);
 
     reply = clawt_window_request(
         self, "design.agent",
@@ -5820,6 +5845,17 @@ on_design_with_ai(GtkButton *button, gpointer user_data)
             "notes", answer_of(dialog->notes_entry),
             "provider", chooser_provider_id(&dialog->designer),
             "model", designer_model,
+            /*
+             * And the computer chosen above, which used to be left out.
+             * The designer cannot name a disk image -- the images that
+             * exist are the ones somebody fetched -- so a VM it picked
+             * on its own never provisioned, refusing with a message
+             * about computer.vm.image while the image sat filled in on
+             * screen a few rows up.
+             */
+            "computer", g_strcmp0(computer, "none") != 0 ? computer : NULL,
+            "image", image,
+            "vm_image", disk,
             NULL));
 
     gtk_button_set_label(GTK_BUTTON(button), "Design it");

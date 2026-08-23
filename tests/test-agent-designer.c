@@ -529,6 +529,104 @@ test_unpinned_identity_is_the_models(void)
     g_assert_cmpstr(g_hash_table_lookup(draft, "id"), ==, "test-runner");
 }
 
+
+/*
+ * The computer somebody chose on the form is theirs, and this matters
+ * more than the name does.
+ *
+ * The designer has no way to name a disk image -- the images that exist
+ * are the ones somebody fetched, not something to invent a path for --
+ * so a VM it picked on its own was always an agent that refused to
+ * provision, naming computer.vm.image. Which was filled in on screen at
+ * the time: the client collected it and never sent it, the same gap the
+ * identity pinning had.
+ */
+static void
+test_a_pinned_computer_wins(void)
+{
+    g_autoptr(ClawtConfig) config = make_config();
+    g_autoptr(ClawtAgentDesigner) designer = clawt_agent_designer_new(config);
+    g_autoptr(AiMockProvider) provider = ai_mock_provider_new();
+    g_autoptr(GHashTable) settings =
+        g_hash_table_new_full(g_str_hash, g_str_equal, NULL, NULL);
+    g_autoptr(GError) error = NULL;
+    GHashTable *draft;
+
+    g_hash_table_insert(settings, (gpointer)"computer.vm.image",
+                        (gpointer)"/images/debian-13-generic-amd64.qcow2");
+    g_hash_table_insert(settings, (gpointer)"computer.vm.cpus",
+                        (gpointer)"2");
+
+    clawt_agent_designer_pin_computer(designer, "vm", settings);
+
+    ai_mock_provider_push_tool_use(
+        provider, "set_identity",
+        "{\"id\":\"deb-tester\",\"name\":\"Deb Tester\","
+        "\"description\":\"tests on Debian\"}");
+
+    /* The model tries to choose the computer for itself anyway. */
+    ai_mock_provider_push_tool_use(provider, "set_computer",
+                                   "{\"type\":\"container\"}");
+    ai_mock_provider_push_tool_use(provider, "commit", "{}");
+    ai_mock_provider_push_text(provider, "Done.");
+
+    clawt_agent_designer_set_provider(designer, AI_PROVIDER(provider));
+
+    draft = clawt_agent_designer_design(designer, "a tester", NULL, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(draft);
+
+    g_assert_cmpstr(g_hash_table_lookup(draft, "computer.type"), ==, "vm");
+
+    /*
+     * And the image arrived with it. Without this the draft is a VM with
+     * nothing to boot, which is refused at commit -- naming a setting
+     * the model never saw.
+     */
+    g_assert_cmpstr(g_hash_table_lookup(draft, "computer.vm.image"), ==,
+                    "/images/debian-13-generic-amd64.qcow2");
+    g_assert_cmpstr(g_hash_table_lookup(draft, "computer.vm.cpus"), ==, "2");
+}
+
+/*
+ * And with nothing pinned, a VM is refused rather than drafted.
+ *
+ * There is no disk image to give it, so drafting one produces an agent
+ * that fails to provision later, with a message about a setting nothing
+ * in the design ever set. Saying so here costs the model one turn and
+ * lets it pick something that works.
+ */
+static void
+test_an_unpinned_vm_is_refused(void)
+{
+    g_autoptr(ClawtConfig) config = make_config();
+    g_autoptr(ClawtAgentDesigner) designer = clawt_agent_designer_new(config);
+    g_autoptr(AiMockProvider) provider = ai_mock_provider_new();
+    g_autoptr(GError) error = NULL;
+    GHashTable *draft;
+
+    ai_mock_provider_push_tool_use(
+        provider, "set_identity",
+        "{\"id\":\"scratch\",\"name\":\"Scratch\","
+        "\"description\":\"a tester\"}");
+    ai_mock_provider_push_tool_use(provider, "set_computer",
+                                   "{\"type\":\"vm\"}");
+    ai_mock_provider_push_tool_use(provider, "set_computer",
+                                   "{\"type\":\"container\"}");
+    ai_mock_provider_push_tool_use(provider, "commit", "{}");
+    ai_mock_provider_push_text(provider, "Done.");
+
+    clawt_agent_designer_set_provider(designer, AI_PROVIDER(provider));
+
+    draft = clawt_agent_designer_design(designer, "a tester", NULL, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(draft);
+
+    /* The second choice is the one that stuck. */
+    g_assert_cmpstr(g_hash_table_lookup(draft, "computer.type"), ==,
+                    "container");
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -557,6 +655,9 @@ main(int argc, char *argv[])
     g_test_add_func("/designer/pinned-identity", test_pinned_identity_wins);
     g_test_add_func("/designer/unpinned-identity",
                     test_unpinned_identity_is_the_models);
+    g_test_add_func("/designer/pinned-computer", test_a_pinned_computer_wins);
+    g_test_add_func("/designer/unpinned-vm-refused",
+                    test_an_unpinned_vm_is_refused);
     g_test_add_func("/designer/invented-file-refused",
                     test_an_invented_file_is_refused);
 

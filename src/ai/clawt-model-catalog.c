@@ -20,6 +20,7 @@
 static const ClawtModelInfo claude_code_models[] = {
     { "opus",   "Opus",   "the most capable; slowest and dearest" },
     { "sonnet", "Sonnet", "the usual choice" },
+    { "fable",  "Fable",  "for writing rather than code" },
     { "haiku",  "Haiku",  "fast and cheap; good for narrow work" }
 };
 

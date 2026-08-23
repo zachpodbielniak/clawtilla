@@ -6330,6 +6330,44 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             clawt_ipc_payload_string(payload, "name"));
 
         /*
+         * And so is the computer, for a sharper reason than the name.
+         * The designer cannot name a disk image, so a VM it chose by
+         * itself never provisions -- it refuses naming computer.vm.image,
+         * a setting nothing in the design ever set. The client collects
+         * that above the Design button; this is where it arrives.
+         */
+        if (clawt_ipc_payload_string(payload, "computer") != NULL) {
+            g_autoptr(GHashTable) settings =
+                g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                      g_free);
+            static const struct {
+                const gchar *member;
+                const gchar *key;
+            } carried[] = {
+                { "image",     "computer.container.image" },
+                { "vm_image",  "computer.vm.image" },
+                { "vm_cpus",   "computer.vm.cpus" },
+                { "vm_memory", "computer.vm.memory_mb" },
+                { "vm_disk",   "computer.vm.disk_gb" },
+                { NULL, NULL }
+            };
+            gsize c;
+
+            for (c = 0; carried[c].member != NULL; c++) {
+                const gchar *value =
+                    clawt_ipc_payload_string(payload, carried[c].member);
+
+                if (value != NULL && *value != '\0')
+                    g_hash_table_insert(settings, g_strdup(carried[c].key),
+                                        g_strdup(value));
+            }
+
+            clawt_agent_designer_pin_computer(
+                designer, clawt_ipc_payload_string(payload, "computer"),
+                settings);
+        }
+
+        /*
          * The model that designs is chosen per request, falling back to
          * ai_assist.  The one that drafts an agent and the one that then
          * runs it have no reason to be the same: a person will often
