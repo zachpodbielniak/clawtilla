@@ -1006,6 +1006,19 @@ agents:
       # agent that should not see what the others are passing around.
       exchange: true
 
+      # Whether the agent's own workspace is mounted into its computer at
+      # /mnt/clawtilla/workspace.
+      #
+      # On by default. The workspace holds the agent's persona, its notes and
+      # its MEMORY.md, and without this it exists only on the host -- so the
+      # agent reads the files that describe it with one set of tools and
+      # works in a machine that cannot see them, and anything it writes there
+      # from inside goes somewhere the host never looks.
+      #
+      # Turn it off for an agent whose computer should hold nothing of
+      # clawtilla's.
+      workspace: true
+
       # Host paths shared into the computer.
       #
       #   mounts:

@@ -36,6 +36,43 @@ apply_mounts(ClawtComputer *computer, ClawtAgentConfig *agent_config)
 
         clawt_computer_add_mount(computer, mount);
     }
+
+    /*
+     * And the agent's own workspace, unless it asked not to have it.
+     *
+     * It holds the persona, the notes and MEMORY.md, and until now it
+     * lived only on the host -- so an agent read the files describing it
+     * with tools that run out here, and worked in a machine that could
+     * not see them. Anything it wrote inside went somewhere the host
+     * never looked: a VM agent's screenshots were captured perfectly and
+     * were unreachable, which is indistinguishable from a capture that
+     * failed.
+     *
+     * Here rather than beside the exchange in the daemon, because it is
+     * derivable from the config alone -- which is this function's whole
+     * input, and what makes it testable without a hypervisor.
+     */
+    if (type != CLAWT_COMPUTER_NONE &&
+        clawt_agent_config_get_boolean(agent_config, "computer.workspace")) {
+        g_autofree gchar *workspace =
+            clawt_agent_config_get_workspace(agent_config);
+
+        if (workspace != NULL) {
+            ClawtMount *mount = clawt_mount_new(workspace,
+                                                CLAWT_WORKSPACE_MOUNT_POINT);
+
+            /* The point is that it is the same file on both sides. */
+            clawt_mount_set_mode(mount, CLAWT_MOUNT_MODE_RW);
+            clawt_mount_set_create(mount, TRUE);
+            clawt_mount_set_relabel(mount, CLAWT_RELABEL_SHARED);
+
+            if (type == CLAWT_COMPUTER_VM)
+                clawt_mount_set_mount_type(mount, CLAWT_MOUNT_VIRTIOFS);
+
+            clawt_computer_add_mount(computer, mount);
+            clawt_mount_free(mount);
+        }
+    }
 }
 
 static ClawtSandbox *

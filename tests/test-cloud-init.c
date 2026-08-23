@@ -188,7 +188,7 @@ test_write_seed_builds_a_labelled_image(void)
 
     iso = clawt_cloud_init_write_seed(dir, "clawt-scribe", "agent",
                                       "ssh-ed25519 AAAA x", "clawt-scribe",
-                                      NULL, &error);
+                                      NULL, NULL, &error);
     g_assert_no_error(error);
     g_assert_nonnull(iso);
     g_assert_true(g_file_test(iso, G_FILE_TEST_EXISTS));
@@ -201,7 +201,7 @@ test_write_seed_builds_a_labelled_image(void)
      */
     again = clawt_cloud_init_write_seed(dir, "clawt-scribe", "agent",
                                         "ssh-ed25519 AAAA x", "clawt-scribe",
-                                        NULL, &error);
+                                        NULL, NULL, &error);
     g_assert_no_error(error);
     g_assert_cmpstr(again, ==, iso);
 
@@ -211,11 +211,111 @@ test_write_seed_builds_a_labelled_image(void)
     clawt_test_remove_tree(dir);
 }
 
+
+/* ── Shares the guest actually mounts ────────────────────────────── */
+
+static GPtrArray *
+virtiofs_mounts(void)
+{
+    GPtrArray *mounts =
+        g_ptr_array_new_with_free_func((GDestroyNotify)clawt_mount_free);
+    ClawtMount *mount;
+
+    /* Deliberately out of order: the renderer has to sort them. */
+    mount = clawt_mount_new("/host/exchange/scribe",
+                            "/mnt/clawtilla/exchange/scribe");
+    clawt_mount_set_mount_type(mount, CLAWT_MOUNT_VIRTIOFS);
+    clawt_mount_set_mode(mount, CLAWT_MOUNT_MODE_RW);
+    g_ptr_array_add(mounts, mount);
+
+    mount = clawt_mount_new("/host/exchange", "/mnt/clawtilla/exchange");
+    clawt_mount_set_mount_type(mount, CLAWT_MOUNT_VIRTIOFS);
+    clawt_mount_set_mode(mount, CLAWT_MOUNT_MODE_RO);
+    g_ptr_array_add(mounts, mount);
+
+    return mounts;
+}
+
+/*
+ * A <filesystem> device hands the guest a tag and nothing else.
+ *
+ * Nothing mounted it, so every share was a device the guest never used --
+ * and an agent that went looking found an empty directory, created it by
+ * hand, and reported the share as missing. The host side was right the
+ * whole time.
+ */
+static void
+test_the_guest_gets_fstab_entries_for_its_shares(void)
+{
+    g_autoptr(GPtrArray) mounts = virtiofs_mounts();
+    g_autofree gchar *data =
+        clawt_cloud_init_build_user_data_full("agent", NULL, NULL, NULL,
+                                              mounts);
+
+    g_assert_nonnull(strstr(data, "mounts:"));
+    g_assert_nonnull(strstr(data, "\"virtiofs\""));
+    g_assert_nonnull(strstr(data, "\"/mnt/clawtilla/exchange\""));
+    g_assert_nonnull(strstr(data, "\"/mnt/clawtilla/exchange/scribe\""));
+
+    /*
+     * nofail: a share whose backing daemon did not start must not stop
+     * the guest booting. A VM that will not boot because a directory is
+     * missing is far worse than one that boots without it.
+     */
+    g_assert_nonnull(strstr(data, "nofail"));
+
+    /* Read-only on the host stays read-only in the guest. */
+    g_assert_nonnull(strstr(data, "\"ro,nofail\""));
+}
+
+/*
+ * Parent before child, because the exchange nests: the whole directory
+ * read-only with read-write mounts inside it.  A child mounted first
+ * disappears under its parent the moment the parent arrives.
+ */
+static void
+test_a_nested_share_is_mounted_after_its_parent(void)
+{
+    g_autoptr(GPtrArray) mounts = virtiofs_mounts();
+    g_autofree gchar *data =
+        clawt_cloud_init_build_user_data_full("agent", NULL, NULL, NULL,
+                                              mounts);
+    const gchar *block = strstr(data, "mounts:");
+    const gchar *parent;
+    const gchar *child;
+
+    g_assert_nonnull(block);
+
+    parent = strstr(block, "\"/mnt/clawtilla/exchange\"");
+    child = strstr(block, "\"/mnt/clawtilla/exchange/scribe\"");
+
+    g_assert_nonnull(parent);
+    g_assert_nonnull(child);
+    g_assert_true(parent < child);
+}
+
+/* A guest with nothing shared gets no mounts block at all. */
+static void
+test_no_shares_means_no_mounts_block(void)
+{
+    g_autofree gchar *data =
+        clawt_cloud_init_build_user_data_full("agent", NULL, NULL, NULL,
+                                              NULL);
+
+    g_assert_null(strstr(data, "mounts:"));
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
+    g_test_add_func("/cloud-init/mounts/guest-gets-fstab-entries",
+                    test_the_guest_gets_fstab_entries_for_its_shares);
+    g_test_add_func("/cloud-init/mounts/nested-after-its-parent",
+                    test_a_nested_share_is_mounted_after_its_parent);
+    g_test_add_func("/cloud-init/mounts/none-means-no-block",
+                    test_no_shares_means_no_mounts_block);
     g_test_add_func("/cloud-init/user-data/only-the-named-user",
                     test_user_data_creates_only_the_named_user);
     g_test_add_func("/cloud-init/user-data/root-permitted",

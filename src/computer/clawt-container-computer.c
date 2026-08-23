@@ -662,35 +662,13 @@ static gchar *
 container_describe(ClawtComputer *computer)
 {
     ClawtContainerComputer *self = CLAWT_CONTAINER_COMPUTER(computer);
-    GPtrArray *mounts = clawt_computer_get_mounts(computer);
     g_autoptr(GString) out = g_string_new(NULL);
-    guint i;
 
     g_string_append_printf(out,
         "You have a container of your own, running %s. Anything you do "
         "inside it is isolated from the host.", self->image);
 
-    if (mounts == NULL || mounts->len == 0) {
-        g_string_append(out,
-            " No host directories are shared with it, so you can only see "
-            "what the image provides.");
-        return g_string_free(g_steal_pointer(&out), FALSE);
-    }
-
-    g_string_append(out, " Shared from the host:");
-
-    for (i = 0; i < mounts->len; i++) {
-        ClawtMount *mount = g_ptr_array_index(mounts, i);
-
-        g_string_append_printf(out, "%s %s (%s)",
-                               i > 0 ? "," : "",
-                               clawt_mount_get_target(mount),
-                               clawt_mount_get_mode(mount) ==
-                                   CLAWT_MOUNT_MODE_RO
-                               ? "read-only" : "read-write");
-    }
-
-    g_string_append_c(out, '.');
+    clawt_computer_describe_mounts(computer, out);
 
     return g_string_free(g_steal_pointer(&out), FALSE);
 }

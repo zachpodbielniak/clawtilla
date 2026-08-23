@@ -820,6 +820,48 @@ test_the_launcher_does_not_depend_on_the_mcp_install(void)
     g_assert_null(strstr(data, CLAWT_GUEST_DESKTOP_INSTALL_SCRIPT));
 }
 
+
+/*
+ * The screenshots have to land somewhere the agent can open.
+ *
+ * gnome-desktop-mcp writes them into the guest and returns that path,
+ * and an agent's own `read` runs on the host -- so the file was captured
+ * perfectly and was unreachable, which looks exactly like a capture that
+ * failed. One agent spent a session reasoning from window titles rather
+ * than looking at the screen, and reported the capture as broken.
+ */
+static void
+test_screenshots_land_in_the_workspace_share(void)
+{
+    g_autofree gchar *data = render_for(CLAWT_GUEST_FLAVOUR_FEDORA);
+
+    g_assert_nonnull(strstr(data, "/etc/tmpfiles.d/clawtilla-desktop.conf"));
+    g_assert_nonnull(strstr(data,
+        "L+ /tmp/gnome-mcp - - - - " CLAWT_WORKSPACE_MOUNT_POINT
+        "/screenshots"));
+
+    /*
+     * tmpfiles rather than the installer, because /tmp is usually a
+     * tmpfs: the link has to be made again on every boot.
+     */
+    g_assert_nonnull(strstr(data,
+        "d " CLAWT_WORKSPACE_MOUNT_POINT "/screenshots"));
+}
+
+/* No automation installed means no screenshots to redirect. */
+static void
+test_no_screenshot_share_without_the_mcp_install(void)
+{
+    g_autoptr(ClawtGuestDesktop) desktop = clawt_guest_desktop_new("clawt");
+    g_autofree gchar *data = NULL;
+
+    clawt_guest_desktop_set_install_mcp(desktop, FALSE);
+    data = clawt_cloud_init_build_user_data("root", NULL, "clawt-vm",
+                                            desktop);
+
+    g_assert_null(strstr(data, "tmpfiles.d"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -888,6 +930,10 @@ main(int argc, char *argv[])
     g_test_add_func("/guest-desktop/install/same-on-every-family",
                     test_every_family_installs_the_same_way);
 
+    g_test_add_func("/guest-desktop/screenshots/land-in-the-workspace",
+                    test_screenshots_land_in_the_workspace_share);
+    g_test_add_func("/guest-desktop/screenshots/none-without-the-install",
+                    test_no_screenshot_share_without_the_mcp_install);
     g_test_add_func("/guest-desktop/run/starts-in-the-session",
                     test_the_guest_can_start_an_app_in_its_session);
     g_test_add_func("/guest-desktop/run/says-when-there-is-no-session",

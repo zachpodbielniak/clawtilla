@@ -1138,6 +1138,21 @@ static const ClawtSchemaEntry schema[] = {
   "agent that should not see what the others are passing around.",
   "0.1.0" },
 
+{ "agents.computer.workspace", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "true", NULL,
+  "Whether the agent's own workspace is mounted into its computer at\n"
+  "/mnt/clawtilla/workspace.\n"
+  "\n"
+  "On by default. The workspace holds the agent's persona, its notes and\n"
+  "its MEMORY.md, and without this it exists only on the host -- so the\n"
+  "agent reads the files that describe it with one set of tools and\n"
+  "works in a machine that cannot see them, and anything it writes there\n"
+  "from inside goes somewhere the host never looks.\n"
+  "\n"
+  "Turn it off for an agent whose computer should hold nothing of\n"
+  "clawtilla's.",
+  "0.1.0" },
+
 { "agents.computer.mounts", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
   "Host paths shared into the computer.\n"

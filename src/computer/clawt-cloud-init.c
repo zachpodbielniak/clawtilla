@@ -40,11 +40,112 @@ append_quoted(GString *out, const gchar *value)
     g_string_append_c(out, '"');
 }
 
+/* Shortest target first; see render_mounts(). */
+static gint
+compare_by_target_depth(gconstpointer a, gconstpointer b)
+{
+    ClawtMount *const *ma = a;
+    ClawtMount *const *mb = b;
+    gsize la = strlen(clawt_mount_get_target(*ma));
+    gsize lb = strlen(clawt_mount_get_target(*mb));
+
+    if (la != lb)
+        return la < lb ? -1 : 1;
+
+    return g_strcmp0(clawt_mount_get_target(*ma),
+                     clawt_mount_get_target(*mb));
+}
+
+/*
+ * fstab entries for the shares the domain carries.
+ *
+ * A <filesystem> device hands the guest a tag and nothing else.  Nothing
+ * mounted it, so every share was a device the guest never used -- and an
+ * agent that went looking found an empty directory, created it by hand
+ * to explain the absence to itself, and reported the whole feature as
+ * missing.  The host side was correct throughout.
+ *
+ * Sorted shortest target first, because the exchange nests: the whole
+ * directory read-only with read-write mounts inside it.  A child mounted
+ * before its parent disappears the moment the parent arrives on top of
+ * it.  A parent target is always a prefix of its children, so it is
+ * always shorter.
+ *
+ * nofail, because a share whose backing daemon did not start must not
+ * stop the guest booting.  A VM that will not boot because a directory
+ * is missing is far worse than one that boots without it.
+ */
+static void
+render_mounts(GString *out, GPtrArray *mounts)
+{
+    g_autoptr(GPtrArray) sorted = NULL;
+    gboolean opened = FALSE;
+    guint i;
+
+    if (mounts == NULL || mounts->len == 0)
+        return;
+
+    /*
+     * A plain array of borrowed pointers.  g_ptr_array_copy() carries the
+     * source's element-free-func across, so a shallow copy of an array
+     * that owns its mounts owns them a second time -- and freeing this
+     * one took the caller's with it.
+     */
+    sorted = g_ptr_array_new();
+
+    for (i = 0; i < mounts->len; i++)
+        g_ptr_array_add(sorted, g_ptr_array_index(mounts, i));
+
+    g_ptr_array_sort(sorted, compare_by_target_depth);
+
+    for (i = 0; i < sorted->len; i++) {
+        ClawtMount *mount = g_ptr_array_index(sorted, i);
+
+        /*
+         * Only virtiofs.  A bind mount belongs to a container and never
+         * reaches a seed; emitting one here would put a device in fstab
+         * that has nothing behind it.
+         */
+        if (clawt_mount_get_mount_type(mount) != CLAWT_MOUNT_VIRTIOFS)
+            continue;
+
+        if (!opened) {
+            g_string_append(out,
+                "\n"
+                "# The shares this VM carries. The tag is the target path,\n"
+                "# which is what the domain's <filesystem> device names.\n"
+                "mounts:\n");
+            opened = TRUE;
+        }
+
+        g_string_append(out, "  - [ ");
+        append_quoted(out, clawt_mount_get_target(mount));
+        g_string_append(out, ", ");
+        append_quoted(out, clawt_mount_get_target(mount));
+        g_string_append(out, ", \"virtiofs\", ");
+        append_quoted(out,
+                      clawt_mount_get_mode(mount) == CLAWT_MOUNT_MODE_RO
+                      ? "ro,nofail" : "defaults,nofail");
+        g_string_append(out, ", \"0\", \"0\" ]\n");
+    }
+}
+
 gchar *
 clawt_cloud_init_build_user_data(const gchar       *user,
                                  const gchar       *authorized_key,
                                  const gchar       *hostname,
                                  ClawtGuestDesktop *desktop)
+{
+    return clawt_cloud_init_build_user_data_full(user, authorized_key,
+                                                 hostname, desktop, NULL);
+}
+
+gchar *
+clawt_cloud_init_build_user_data_full(const gchar       *user,
+                                      const gchar       *authorized_key,
+                                      const gchar       *hostname,
+                                      ClawtGuestDesktop *desktop,
+                                      GPtrArray         *mounts)
 {
     g_autoptr(GString) out = NULL;
     gboolean is_root;
@@ -141,6 +242,8 @@ clawt_cloud_init_build_user_data(const gchar       *user,
     if (desktop != NULL)
         clawt_guest_desktop_render_setup(desktop, out);
 
+    render_mounts(out, mounts);
+
     return g_string_free(g_steal_pointer(&out), FALSE);
 }
 
@@ -222,6 +325,7 @@ clawt_cloud_init_write_seed(const gchar        *dir,
                             const gchar        *authorized_key,
                             const gchar        *hostname,
                             ClawtGuestDesktop  *desktop,
+                            GPtrArray          *mounts,
                             GError            **error)
 {
     g_autofree gchar *seed_dir = NULL;
@@ -244,8 +348,9 @@ clawt_cloud_init_write_seed(const gchar        *dir,
     if (!clawt_ensure_dir(seed_dir, 0700, error))
         return NULL;
 
-    user_data = clawt_cloud_init_build_user_data(user, authorized_key,
-                                                 hostname, desktop);
+    user_data = clawt_cloud_init_build_user_data_full(user, authorized_key,
+                                                      hostname, desktop,
+                                                      mounts);
     meta_data = clawt_cloud_init_build_meta_data(instance_id, hostname);
 
     user_data_path = g_build_filename(seed_dir, "user-data", NULL);

@@ -1866,6 +1866,7 @@ test_rebuild_refuses_what_it_must(void)
     fixture_teardown(&fixture);
 }
 
+
 int
 main(int argc, char *argv[])
 {

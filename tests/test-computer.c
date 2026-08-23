@@ -700,8 +700,23 @@ test_vm_qemu_argv(void)
     mount = clawt_mount_new("/tmp", "/work");
     clawt_computer_add_mount(computer, mount);
 
+    /*
+     * A share on this backend is refused out loud, and the refusal is
+     * the point of the assertion.
+     *
+     * `-chardev socket,path=...` connects as a client, and nothing here
+     * ever started a virtiofsd to listen -- so qemu exited before the
+     * guest existed. Emitting the device was worse than not having the
+     * share, and it only stayed hidden while nothing had a mount by
+     * default.
+     */
+    g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING,
+                          "*qemu backend shares no directories*");
+
     argv = clawt_vm_computer_build_qemu_argv(CLAWT_VM_COMPUTER(computer),
                                              "/tmp/clawt-qmp.sock");
+
+    g_test_assert_expected_messages();
 
     g_assert_cmpstr(argv[0], ==, "qemu-system-x86_64");
 
@@ -710,6 +725,9 @@ test_vm_qemu_argv(void)
             saw_qmp = TRUE;
         if (strstr(argv[i], "memory-backend-memfd") != NULL)
             saw_memfd = TRUE;
+
+        /* And no half-built device that qemu would refuse to start on. */
+        g_assert_null(strstr(argv[i], "vhost-user-fs"));
     }
 
     g_assert_true(saw_qmp);
@@ -907,10 +925,27 @@ test_factory_picks_the_mount_type_for_the_backend(void)
     g_assert_no_error(error);
 
     mounts = clawt_computer_get_mounts(computer);
-    g_assert_cmpuint(mounts->len, ==, 1);
-    g_assert_cmpint(
-        clawt_mount_get_mount_type(g_ptr_array_index(mounts, 0)), ==,
-        CLAWT_MOUNT_VIRTIOFS);
+
+    /*
+     * Found by target rather than by position: every computer also gets
+     * the agent's workspace, so the configured mount is not the only one
+     * here and counting them tests the wrong thing.
+     */
+    {
+        ClawtMount *work = NULL;
+        guint i;
+
+        for (i = 0; i < mounts->len; i++) {
+            ClawtMount *mount = g_ptr_array_index(mounts, i);
+
+            if (g_strcmp0(clawt_mount_get_target(mount), "/work") == 0)
+                work = mount;
+        }
+
+        g_assert_nonnull(work);
+        g_assert_cmpint(clawt_mount_get_mount_type(work), ==,
+                        CLAWT_MOUNT_VIRTIOFS);
+    }
 }
 
 /*
@@ -2009,6 +2044,180 @@ test_a_guest_that_vanished_is_built_again(void)
     g_assert_nonnull(g_strstr_len(error->message, -1, "computer.vm.image"));
 }
 
+
+/*
+ * A share has two paths and the agent needs both.
+ *
+ * `read`, `write` and `bash` run on the host; only
+ * clawtilla_computer_exec goes inside. This named only the path inside,
+ * which is the one that is no use to the tools an agent reaches for
+ * first -- so two of them looked for a shared file at the guest's path,
+ * on the host, found nothing, and reported the share as never set up.
+ */
+static void
+test_a_share_is_described_by_both_of_its_paths(void)
+{
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(ClawtMount) mount = NULL;
+    g_autofree gchar *described = NULL;
+
+    computer = clawt_vm_computer_new("scribe", CLAWT_VM_BACKEND_LIBVIRT,
+                                     NULL);
+
+    mount = clawt_mount_new("/host/agents/scribe",
+                            CLAWT_WORKSPACE_MOUNT_POINT);
+    clawt_mount_set_mode(mount, CLAWT_MOUNT_MODE_RW);
+    clawt_computer_add_mount(computer, mount);
+
+    described = clawt_computer_describe(computer);
+
+    g_assert_nonnull(strstr(described, "/host/agents/scribe"));
+    g_assert_nonnull(strstr(described, CLAWT_WORKSPACE_MOUNT_POINT));
+
+    /* And which of the two goes with which tool. */
+    g_assert_nonnull(strstr(described, "run on the host"));
+}
+
+/*
+ * A computer with nothing shared says so, rather than leaving an agent
+ * to discover it by writing a file nobody can then find.
+ */
+static void
+test_a_computer_with_no_shares_says_so(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        clawt_vm_computer_new("scribe", CLAWT_VM_BACKEND_LIBVIRT, NULL);
+    g_autofree gchar *described = clawt_computer_describe(computer);
+
+    g_assert_nonnull(strstr(described, "No host directories are shared"));
+}
+
+
+/*
+ * Every computer gets the agent's own workspace.
+ *
+ * It holds the persona, the notes and MEMORY.md, and it used to live
+ * only on the host -- so an agent read the files describing it with
+ * tools that run out here and worked in a machine that could not see
+ * them, and anything it wrote inside went somewhere the host never
+ * looked. A VM agent's screenshots were the case that exposed it: the
+ * capture was perfect and the file unreachable, which is
+ * indistinguishable from a capture that failed.
+ */
+static void
+test_a_computer_is_given_the_agents_workspace(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent;
+    GPtrArray *mounts;
+    gboolean saw_workspace = FALSE;
+    guint i;
+
+    agent = agent_from_yaml(&config,
+                            "agents:\n"
+                            "  - id: chief\n"
+                            "    computer:\n"
+                            "      type: host\n"
+                            "      host:\n"
+                            "        confirm_host_control: true\n");
+
+    computer = clawt_computer_factory_create(agent, NULL, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(computer);
+
+    mounts = clawt_computer_get_mounts(computer);
+    g_assert_nonnull(mounts);
+
+    for (i = 0; i < mounts->len; i++) {
+        ClawtMount *mount = g_ptr_array_index(mounts, i);
+
+        if (g_strcmp0(clawt_mount_get_target(mount),
+                      CLAWT_WORKSPACE_MOUNT_POINT) == 0) {
+            saw_workspace = TRUE;
+
+            /* Read-write: the point is that it is the same file. */
+            g_assert_cmpint(clawt_mount_get_mode(mount), ==,
+                            CLAWT_MOUNT_MODE_RW);
+        }
+    }
+
+    g_assert_true(saw_workspace);
+}
+
+/*
+ * A VM gets it as a virtiofs share rather than a bind mount, without
+ * anybody having to write down which spelling their backend wants.
+ */
+static void
+test_a_vm_workspace_share_is_virtiofs(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent;
+    GPtrArray *mounts;
+    guint i;
+
+    agent = agent_from_yaml(&config,
+                            "agents:\n"
+                            "  - id: chief\n"
+                            "    computer:\n"
+                            "      type: vm\n"
+                            "      vm:\n"
+                            "        image: /tmp/does-not-matter.qcow2\n");
+
+    computer = clawt_computer_factory_create(agent, NULL, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(computer);
+
+    mounts = clawt_computer_get_mounts(computer);
+
+    for (i = 0; i < mounts->len; i++) {
+        ClawtMount *mount = g_ptr_array_index(mounts, i);
+
+        if (g_strcmp0(clawt_mount_get_target(mount),
+                      CLAWT_WORKSPACE_MOUNT_POINT) == 0)
+            g_assert_cmpint(clawt_mount_get_mount_type(mount), ==,
+                            CLAWT_MOUNT_VIRTIOFS);
+    }
+}
+
+/* ...and an agent that asked not to have it does not get it. */
+static void
+test_the_workspace_share_can_be_turned_off(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent;
+    GPtrArray *mounts;
+    guint i;
+
+    agent = agent_from_yaml(&config,
+                            "agents:\n"
+                            "  - id: chief\n"
+                            "    computer:\n"
+                            "      type: host\n"
+                            "      workspace: false\n"
+                            "      host:\n"
+                            "        confirm_host_control: true\n");
+
+    computer = clawt_computer_factory_create(agent, NULL, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(computer);
+
+    mounts = clawt_computer_get_mounts(computer);
+
+    for (i = 0; mounts != NULL && i < mounts->len; i++) {
+        ClawtMount *mount = g_ptr_array_index(mounts, i);
+
+        g_assert_cmpstr(clawt_mount_get_target(mount), !=,
+                        CLAWT_WORKSPACE_MOUNT_POINT);
+    }
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -2039,6 +2248,16 @@ main(int argc, char *argv[])
                     test_host_description_mentions_the_confinement);
     g_test_add_func("/computer/truncation", test_output_truncation_is_reported);
 
+    g_test_add_func("/computer/mounts/workspace-is-shared",
+                    test_a_computer_is_given_the_agents_workspace);
+    g_test_add_func("/computer/mounts/vm-workspace-is-virtiofs",
+                    test_a_vm_workspace_share_is_virtiofs);
+    g_test_add_func("/computer/mounts/workspace-can-be-off",
+                    test_the_workspace_share_can_be_turned_off);
+    g_test_add_func("/computer/mounts/described-by-both-paths",
+                    test_a_share_is_described_by_both_of_its_paths);
+    g_test_add_func("/computer/mounts/none-says-so",
+                    test_a_computer_with_no_shares_says_so);
     g_test_add_func("/computer/container/mount-json", test_container_mount_json);
     g_test_add_func("/computer/container/no-mounts",
                     test_container_mount_json_handles_no_mounts);

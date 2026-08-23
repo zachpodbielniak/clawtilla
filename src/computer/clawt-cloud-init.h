@@ -55,6 +55,28 @@ gchar *clawt_cloud_init_build_user_data(const gchar       *user,
                                         ClawtGuestDesktop *desktop);
 
 /**
+ * clawt_cloud_init_build_user_data_full:
+ * @user: the login to create in the guest
+ * @authorized_key: (nullable): one OpenSSH public key line
+ * @hostname: (nullable): the guest's hostname
+ * @desktop: (nullable): a graphical session to install
+ * @mounts: (nullable) (element-type ClawtMount): the shares the domain
+ *   carries, so the guest has fstab entries for them
+ *
+ * As clawt_cloud_init_build_user_data(), and additionally writes the
+ * fstab entries for @mounts.  A `<filesystem>` device gives the guest a
+ * tag and nothing else -- without this the share exists and nothing
+ * mounts it.
+ *
+ * Returns: (transfer full): the `#cloud-config` document
+ */
+gchar *clawt_cloud_init_build_user_data_full(const gchar       *user,
+                                             const gchar       *authorized_key,
+                                             const gchar       *hostname,
+                                             ClawtGuestDesktop *desktop,
+                                             GPtrArray         *mounts);
+
+/**
  * clawt_cloud_init_build_meta_data:
  * @instance_id: identifies this instance to cloud-init
  * @hostname: (nullable): the guest's hostname
@@ -100,6 +122,8 @@ GStrv clawt_cloud_init_build_iso_argv(const gchar *tool,
  * @authorized_key: (nullable): one OpenSSH public key line
  * @hostname: (nullable): the guest's hostname
  * @desktop: (nullable): a graphical session to install
+ * @mounts: (nullable) (element-type ClawtMount): the shares to write
+ *   fstab entries for
  * @error: return location for a #GError
  *
  * Writes the two documents and builds `seed.iso` beside them.  The build
@@ -114,6 +138,7 @@ gchar *clawt_cloud_init_write_seed(const gchar        *dir,
                                    const gchar        *authorized_key,
                                    const gchar        *hostname,
                                    ClawtGuestDesktop  *desktop,
+                                   GPtrArray          *mounts,
                                    GError            **error);
 
 /**

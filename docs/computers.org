@@ -817,6 +817,66 @@ rewritten by a mount at ~/mnt/shared~.
   computer -- an agent that could read the state directory could read
   every other agent's mailbox and token
 
+** What every computer gets
+
+Two shares, without anybody configuring them.
+
+*** The agent's workspace -- ~/mnt/clawtilla/workspace~
+
+The agent's own directory: its persona, its notes, its ~MEMORY.md~, the
+files it writes as it goes.  Read-write, and the same file on both sides.
+
+This is what makes anything *produced inside* a computer reachable.  An
+agent's ~read~, ~write~ and ~bash~ run on the **host**; only
+~clawtilla_computer_exec~ goes inside.  So without this, a file the agent
+created in its VM was a file it could not then open -- which is
+indistinguishable from a file that was never created.
+
+That is not hypothetical: a VM agent's screenshots land in the guest, and
+before this the agent reasoned from window titles for a whole session
+rather than looking at the screen, and reported the *capture* as broken.
+It was perfect.  It was just somewhere the agent's own tools do not
+reach.  A guest desktop now writes its screenshots into
+~/mnt/clawtilla/workspace/screenshots~, so they arrive in the agent's
+workspace on the host with no copying step to forget.
+
+Turn it off with ~computer.workspace: false~ for an agent whose computer
+should hold nothing of clawtilla's.
+
+*** The exchange -- ~/mnt/clawtilla/exchange~
+
+Described below.
+
+*** Both paths, always
+
+Every share has two names, and which one to use depends on which tool is
+holding it.  ~clawt_computer_describe()~ therefore lists them as
+~host path = the path inside~ and says so outright, because naming only
+the path inside is what sent two agents looking on the host at a guest
+path, finding nothing, and reporting a share that was working as absent.
+
+** The guest has to mount them
+
+On a container a bind mount is live the moment the container starts.  A
+VM is not: the domain gets a ~<filesystem>~ device, which hands the guest
+a *tag* and nothing else.  Something still has to mount it.
+
+clawtilla writes the fstab entries into the cloud-init seed, parent
+before child -- the exchange nests, and a child mounted first vanishes
+under its parent -- with ~nofail~, so a share whose backing daemon did
+not start cannot stop the guest booting.
+
+Two consequences worth knowing:
+
+- Shares are fixed at provision time, like everything else in the seed.
+  Adding one to a guest that has already booted needs
+  ~clawtilla computer rebuild <agent>~.
+- The **qemu fallback backend shares nothing**.  It has no virtiofsd of
+  its own, and the device it used to emit pointed at a socket nothing
+  listened on -- so qemu exited before the guest existed.  It now warns
+  and carries on without the share.  Use ~computer.vm.backend: libvirt~,
+  which is the default, if you need shares.
+
 ** The exchange directory
 
 A shared drop-box so agents hand files around without hand-wired mounts.

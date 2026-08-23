@@ -32,6 +32,17 @@
 
 G_BEGIN_DECLS
 
+/**
+ * CLAWT_WORKSPACE_MOUNT_POINT:
+ *
+ * Where an agent's own workspace appears inside its computer.
+ *
+ * Beside the exchange rather than anywhere more natural, so everything
+ * clawtilla puts in a computer is under one directory an agent can be
+ * told about once.
+ */
+#define CLAWT_WORKSPACE_MOUNT_POINT "/mnt/clawtilla/workspace"
+
 #define CLAWT_TYPE_COMPUTER (clawt_computer_get_type())
 
 G_DECLARE_DERIVABLE_TYPE(ClawtComputer, clawt_computer,
@@ -172,6 +183,17 @@ const gchar *clawt_computer_get_agent_id(ClawtComputer *self);
  * Adds a mount.  Applied when the computer is provisioned, so calling this
  * afterwards has no effect until it is provisioned again.
  */
+/**
+ * clawt_computer_describe_mounts:
+ * @self: a #ClawtComputer
+ * @out: the description being built
+ *
+ * Appends every share as `host path = path inside`, and says which of
+ * the two an agent's own tools can open.  Shared by the backends so the
+ * wording cannot drift between them.
+ */
+void clawt_computer_describe_mounts(ClawtComputer *self, GString *out);
+
 void clawt_computer_add_mount(ClawtComputer *self, ClawtMount *mount);
 
 /**

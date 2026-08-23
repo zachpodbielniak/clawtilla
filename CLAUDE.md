@@ -441,6 +441,39 @@ the same program.
   itself was correct throughout; `gdbus call ... SetEnabled true` by hand
   returned `(true,)` on the same guest. Only the launcher was missing.
 
+### A share the guest never mounts, and a path the agent cannot open
+
+- Two halves of one gap, and together they cost a session. The domain XML
+  emitted a `<filesystem>` device, which hands the guest a **tag** and
+  nothing else -- nothing wrote an fstab entry, so every VM share was a
+  device the guest never used. And `describe()` named only the path
+  *inside*, while an agent's `read`/`write`/`bash` run on the **host**.
+  So an agent looked for a shared file at the guest's path, on the host,
+  found nothing, created the directory by hand to explain the absence to
+  itself, and reported the whole feature missing. The host side was
+  correct throughout.
+- The screenshot case is the sharp end: gnome-desktop-mcp writes to
+  `/tmp/gnome-mcp` in the guest and returns that path. The capture was
+  perfect and unreachable, which is indistinguishable from a capture that
+  failed -- so an agent spent a session reasoning from window titles
+  instead of looking at the screen. `/tmp/gnome-mcp` is now a tmpfiles
+  symlink into the workspace share (tmpfiles, not the installer: `/tmp`
+  is a tmpfs and the link has to survive a reboot).
+- Every computer now gets the agent's **workspace** as well as the
+  exchange, and `clawt_computer_describe_mounts()` states both names --
+  `host path = the path inside` -- for both backends, from one function,
+  because two copies of that sentence would drift.
+- The qemu backend emitted `-chardev socket,path=...`, which *connects*
+  as a client, with no virtiofsd ever started to listen -- so qemu exited
+  before the guest existed. Harmless while nothing had a mount by
+  default; the moment the workspace became one it would have stopped
+  every VM on that backend. It warns and carries on without the share.
+- `g_ptr_array_copy()` carries the source's element-free-func across, so
+  a shallow copy of an array that owns its elements owns them twice. The
+  sort in the fstab renderer freed the caller's mounts; the second call
+  in the same process died in malloc. Copy into a plain `g_ptr_array_new()`
+  when you only want to reorder.
+
 ### The workaround an agent invents for a missing feature succeeds
 
 - `clawtilla_computer_exec` is an SSH connection with no session

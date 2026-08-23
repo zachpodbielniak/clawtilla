@@ -474,7 +474,6 @@ clawt_vm_computer_build_qemu_argv(ClawtVmComputer *self,
 {
     GPtrArray *argv;
     GPtrArray *mounts;
-    guint i;
 
     g_return_val_if_fail(CLAWT_IS_VM_COMPUTER(self), NULL);
 
@@ -536,20 +535,28 @@ clawt_vm_computer_build_qemu_argv(ClawtVmComputer *self,
                             self->seed_iso));
     }
 
-    for (i = 0; mounts != NULL && i < mounts->len; i++) {
-        ClawtMount *mount = g_ptr_array_index(mounts, i);
-
-        g_ptr_array_add(argv, g_strdup("-chardev"));
-        g_ptr_array_add(argv,
-            g_strdup_printf("socket,id=virtiofs%u,path=%s-virtiofs%u.sock",
-                            i, self->qmp_socket != NULL ? self->qmp_socket
-                                                        : "/tmp/clawt",
-                            i));
-        g_ptr_array_add(argv, g_strdup("-device"));
-        g_ptr_array_add(argv,
-            g_strdup_printf("vhost-user-fs-pci,chardev=virtiofs%u,tag=%s",
-                            i, clawt_mount_get_target(mount)));
-    }
+    /*
+     * Shares are refused here rather than half-built.
+     *
+     * `-chardev socket,path=...` connects as a *client*, and nothing on
+     * this path ever started a virtiofsd to listen on that socket -- so
+     * qemu failed to connect and exited before the guest existed. It
+     * went unnoticed for as long as nothing had a mount by default; the
+     * moment the workspace and the exchange became defaults, every VM on
+     * this backend would have refused to start, which is a far worse
+     * failure than not having the share.
+     *
+     * libvirt is the default backend and starts a virtiofsd per
+     * <filesystem> itself. Saying so names the setting that fixes it,
+     * rather than leaving somebody to wonder why the same agent works on
+     * one backend and not the other.
+     */
+    if (mounts != NULL && mounts->len > 0)
+        g_warning("vm %s: the qemu backend shares no directories -- it has "
+                  "no virtiofsd of its own. %u share%s will be missing; set "
+                  "computer.vm.backend to libvirt for them.",
+                  self->domain, mounts->len,
+                  mounts->len == 1 ? "" : "s");
 
     /*
      * User-mode networking, with SSH forwarded from a port picked on the
@@ -1298,7 +1305,10 @@ ensure_cloud_init(ClawtVmComputer *self, GError **error)
                                        self->ssh_user != NULL
                                            ? self->ssh_user : "root",
                                        self->ssh_pubkey, self->domain,
-                                       self->desktop, error);
+                                       self->desktop,
+                                       clawt_computer_get_mounts(
+                                           CLAWT_COMPUTER(self)),
+                                       error);
 
     if (seed == NULL)
         return FALSE;
@@ -2060,9 +2070,7 @@ static gchar *
 vm_describe(ClawtComputer *computer)
 {
     ClawtVmComputer *self = CLAWT_VM_COMPUTER(computer);
-    GPtrArray *mounts = clawt_computer_get_mounts(computer);
     g_autoptr(GString) out = g_string_new(NULL);
-    guint i;
 
     g_string_append_printf(out,
         "You have a virtual machine of your own (%s, %u CPU%s, %u MB RAM, "
@@ -2086,18 +2094,7 @@ vm_describe(ClawtComputer *computer)
                              "commands cannot be run in it -- say so rather "
                              "than retrying.");
 
-    if (mounts != NULL && mounts->len > 0) {
-        g_string_append(out, " Shared from the host over virtiofs:");
-
-        for (i = 0; i < mounts->len; i++) {
-            ClawtMount *mount = g_ptr_array_index(mounts, i);
-
-            g_string_append_printf(out, "%s %s", i > 0 ? "," : "",
-                                   clawt_mount_get_target(mount));
-        }
-
-        g_string_append_c(out, '.');
-    }
+    clawt_computer_describe_mounts(computer, out);
 
     return g_string_free(g_steal_pointer(&out), FALSE);
 }

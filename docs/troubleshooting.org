@@ -412,6 +412,39 @@ Send Escape before typing into a freshly focused window.  A screenshot
 shows the overview plainly, which is the reliable check when text is not
 appearing where it should.
 
+** A file the agent made in its computer is not there
+
+The agent writes a file inside its VM or container, then cannot open it
+-- or a tool hands back a path that does not exist.
+
+Its ~read~, ~write~ and ~bash~ run on the **host**.  Only
+~clawtilla_computer_exec~ goes inside.  So a path from inside means
+nothing to the tool the agent reaches for first, and an empty result
+there reads exactly like a file that was never written.
+
+Put it in a share and use the host name of it:
+
+#+begin_src bash
+clawtilla computer exec <agent> -- ls /mnt/clawtilla/workspace
+#+end_src
+
+The agent's own description lists every share as
+~host path = the path inside~.  Screenshots from a guest desktop already
+land in ~/mnt/clawtilla/workspace/screenshots~, which is
+~<workspace>/screenshots~ on the host.
+
+If the directory is empty *inside* the guest, the share is not mounted:
+
+#+begin_src bash
+clawtilla computer exec <agent> -- findmnt /mnt/clawtilla/workspace
+#+end_src
+
+A guest built before clawtilla wrote fstab entries has the device and no
+mount.  cloud-init acts on the seed at first boot only, so that needs
+~clawtilla computer rebuild <agent>~.  On the qemu fallback backend there
+is no share at all and the daemon says so at start -- it has no virtiofsd
+of its own; use ~computer.vm.backend: libvirt~.
+
 ** An application in the guest renders or behaves oddly
 
 Screenshots of one application come back stale while GNOME's own panel

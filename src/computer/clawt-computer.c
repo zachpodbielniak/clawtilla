@@ -219,6 +219,60 @@ clawt_computer_get_last_error(ClawtComputer *self)
     return PRIV(self)->last_error;
 }
 
+/*
+ * Both paths for every share, host first.
+ *
+ * An agent's `read`, `write` and `bash` run on the *host*; only
+ * clawtilla_computer_exec goes inside. So a share has two names and the
+ * agent needs both -- the host one to open the file, the guest one to
+ * pass as an argument to a command running in there.
+ *
+ * This said only the target, which is the one that is no use to the
+ * tools an agent reaches for first. Two of them worked out that
+ * something was shared, went looking on the host at the *guest's* path,
+ * found nothing, and concluded the share did not exist. It did. The same
+ * lesson the attachment path learned, arrived at from the other end.
+ */
+void
+clawt_computer_describe_mounts(ClawtComputer *self, GString *out)
+{
+    GPtrArray *mounts;
+    guint i;
+
+    g_return_if_fail(CLAWT_IS_COMPUTER(self));
+    g_return_if_fail(out != NULL);
+
+    mounts = clawt_computer_get_mounts(self);
+
+    if (mounts == NULL || mounts->len == 0) {
+        g_string_append(out,
+            " No host directories are shared with it, so nothing you write "
+            "in there is visible to your own read and write tools.");
+        return;
+    }
+
+    g_string_append(out,
+        " Shared with the host, as host path = the path inside:");
+
+    for (i = 0; i < mounts->len; i++) {
+        ClawtMount *mount = g_ptr_array_index(mounts, i);
+        g_autofree gchar *source = clawt_mount_resolved_source(mount);
+
+        g_string_append_printf(out, "%s %s = %s (%s)",
+                               i > 0 ? "," : "",
+                               source != NULL ? source : "?",
+                               clawt_mount_get_target(mount),
+                               clawt_mount_get_mode(mount) ==
+                                   CLAWT_MOUNT_MODE_RO
+                               ? "read-only" : "read-write");
+    }
+
+    g_string_append(out,
+        ". Your read and write tools run on the host, so use the host path "
+        "with those and the inside path only as an argument to a command "
+        "you run in there.");
+}
+
 void
 clawt_computer_add_mount(ClawtComputer *self, ClawtMount *mount)
 {
