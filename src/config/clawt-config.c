@@ -513,9 +513,33 @@ node_to_strv(YamlNode *node)
 GStrv
 clawt_agent_config_get_string_list(ClawtAgentConfig *self, const gchar *key)
 {
+    GStrv value;
+    const gchar *fallback;
+    g_autofree gchar *schema_key = NULL;
+
     g_return_val_if_fail(self != NULL, NULL);
 
-    return node_to_strv(node_at_path(self->node, key, FALSE));
+    value = node_to_strv(node_at_path(self->node, key, FALSE));
+
+    if (value != NULL)
+        return value;
+
+    /*
+     * A list falls back to the schema's default like every other type.
+     *
+     * It used not to, and it was the only getter that did not -- so a
+     * default declared in the schema appeared in the generated files,
+     * was documented, and was never once handed to the code that asked
+     * for it. Defaults are comma-separated in the table, which is the
+     * same spelling the generator renders from.
+     */
+    schema_key = g_strconcat("agents.", key, NULL);
+    fallback = schema_default_for(schema_key);
+
+    if (fallback == NULL)
+        return NULL;
+
+    return g_strsplit(fallback, ",", -1);
 }
 
 gboolean

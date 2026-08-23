@@ -136,10 +136,36 @@ append_value(GString *out, const ClawtSchemaEntry *entry)
         return;
 
     case CLAWT_SCHEMA_STRING_LIST:
-        g_string_append(out, value != NULL ? value : " []\n");
-        if (value == NULL)
+        if (value == NULL) {
+            g_string_append(out, " []\n");
             return;
-        g_string_append_c(out, '\n');
+        }
+
+        /*
+         * Flow style, so this needs no indent to be correct.  A block
+         * sequence would, and append_value() is not told what column it
+         * is writing in -- which is how a comma-separated default first
+         * came out as `packages:gdm,gnome-shell` and stopped the file
+         * being YAML at all.
+         *
+         * Defaults are written comma-separated in the schema table,
+         * because that is also the form clawt_config_get_string_list()
+         * falls back to at runtime. One spelling, both readers.
+         */
+        {
+            g_auto(GStrv) items = g_strsplit(value, ",", -1);
+            gsize i;
+
+            g_string_append(out, " [");
+
+            for (i = 0; items[i] != NULL; i++) {
+                if (i > 0)
+                    g_string_append(out, ", ");
+                g_string_append_printf(out, "\"%s\"", g_strstrip(items[i]));
+            }
+
+            g_string_append(out, "]\n");
+        }
         return;
 
     case CLAWT_SCHEMA_MAPPING:
