@@ -16,6 +16,7 @@
 #include <clawtilla.h>
 
 #include <unistd.h>
+#include <termios.h>
 
 /*
  * libreclaw's umbrella header does not pull in its own version macros, so
@@ -111,6 +112,7 @@ static const gchar *usage_text =
     "  computer <verb>               Run commands on an agent's computer\n"
     "  cp <src> <dst>                Copy files to or from an agent's computer\n"
     "  config <verb>                 Show, validate or render configuration\n"
+    "  integration <verb>            Connect agents to Matrix, mail, MCP servers\n"
     "  plugin list                   List loaded plugins\n"
     "  image                         Container images clawtilla suggests\n"
     "\n"
@@ -137,6 +139,17 @@ static const gchar *usage_text =
     "  # Bring in an agent you run standalone, and version the state dir\n"
     "  clawtilla agent import scribe --from ~/libreclaw/scribe\n"
     "  clawtilla agent git-init\n"
+    "\n"
+    "  # Put an agent on Matrix: sign in once, then choose its rooms\n"
+    "  clawtilla integration add home matrix\n"
+    "  clawtilla integration matrix-login home matrix.example.org researcher\n"
+    "  clawtilla integration matrix-rooms home\n"
+    "  clawtilla integration set home rooms=!abc:example.org\n"
+    "  clawtilla integration scope home researcher\n"
+    "\n"
+    "  # Give the whole fleet an MCP server\n"
+    "  clawtilla integration add github mcp scope=all \\\n"
+    "      command=npx args=-y,@modelcontextprotocol/server-github\n"
     "\n"
     "  # What an agent has remembered\n"
     "  clawtilla memory list researcher\n"
@@ -2639,24 +2652,401 @@ cmd_model(int argc, char *argv[])
     return EXIT_SUCCESS;
 }
 
+/*
+ * Reads a secret from stdin, or from a terminal without echoing it.
+ *
+ * A password on a command line is in the shell history and in the
+ * process table for as long as the command runs, which is exactly long
+ * enough for somebody else on the machine to see it.  There is
+ * deliberately no --password flag.
+ */
+static gchar *
+read_secret(const gchar *prompt)
+{
+    gchar *line = NULL;
+    gsize length = 0;
+
+    if (isatty(STDIN_FILENO)) {
+        struct termios original;
+        struct termios quiet;
+        gboolean hushed = FALSE;
+
+        g_printerr("%s", prompt);
+
+        if (tcgetattr(STDIN_FILENO, &original) == 0) {
+            quiet = original;
+            quiet.c_lflag &= ~(tcflag_t)ECHO;
+            hushed = tcsetattr(STDIN_FILENO, TCSAFLUSH, &quiet) == 0;
+        }
+
+        if (getline(&line, &length, stdin) < 0)
+            g_clear_pointer(&line, free);
+
+        if (hushed)
+            tcsetattr(STDIN_FILENO, TCSAFLUSH, &original);
+
+        g_printerr("\n");
+    } else {
+        if (getline(&line, &length, stdin) < 0)
+            g_clear_pointer(&line, free);
+    }
+
+    if (line == NULL)
+        return NULL;
+
+    g_strchomp(line);
+
+    return line;
+}
+
+/*
+ * `key=value` arguments, turned into the payload members the daemon
+ * expects.
+ *
+ * Lists are comma-separated -- `rooms=!a:x,!b:x` -- and a secret is
+ * `access_token=env:NAME`, never a literal, because there is no way to
+ * write a secret's value into clawtilla.yaml and this is not going to be
+ * the first one.
+ */
+static gboolean
+apply_setting(JsonBuilder *builder, const gchar *argument)
+{
+    static const gchar *const lists[] = { "rooms", "folders", "args",
+                                          "agents", NULL };
+    static const gchar *const integers[] = { "imap_port", "smtp_port",
+                                             "port", NULL };
+    static const gchar *const secrets[] = { "access_token", "password",
+                                            NULL };
+    g_auto(GStrv) parts = g_strsplit(argument, "=", 2);
+    const gchar *key;
+    const gchar *value;
+    gsize i;
+
+    if (parts[0] == NULL || parts[1] == NULL) {
+        g_printerr("clawtilla: '%s' is not key=value\n", argument);
+        return FALSE;
+    }
+
+    key = parts[0];
+    value = parts[1];
+
+    for (i = 0; secrets[i] != NULL; i++) {
+        g_auto(GStrv) ref = NULL;
+
+        if (g_strcmp0(key, secrets[i]) != 0)
+            continue;
+
+        ref = g_strsplit(value, ":", 2);
+
+        if (ref[1] == NULL) {
+            g_printerr("clawtilla: %s must be a reference -- file:PATH, "
+                       "env:NAME or command:\"...\"\n", key);
+            return FALSE;
+        }
+
+        json_builder_set_member_name(builder, "secret_key");
+        json_builder_add_string_value(builder, key);
+        json_builder_set_member_name(builder, "secret_backend");
+        json_builder_add_string_value(builder, ref[0]);
+        json_builder_set_member_name(builder, "secret_locator");
+        json_builder_add_string_value(builder, ref[1]);
+
+        return TRUE;
+    }
+
+    for (i = 0; lists[i] != NULL; i++) {
+        g_auto(GStrv) values = NULL;
+        guint k;
+
+        if (g_strcmp0(key, lists[i]) != 0)
+            continue;
+
+        json_builder_set_member_name(builder, key);
+        json_builder_begin_array(builder);
+
+        if (*value != '\0') {
+            values = g_strsplit(value, ",", -1);
+
+            for (k = 0; values[k] != NULL; k++)
+                json_builder_add_string_value(builder,
+                                              g_strstrip(values[k]));
+        }
+
+        json_builder_end_array(builder);
+
+        return TRUE;
+    }
+
+    for (i = 0; integers[i] != NULL; i++) {
+        if (g_strcmp0(key, integers[i]) != 0)
+            continue;
+
+        json_builder_set_member_name(builder, key);
+        json_builder_add_int_value(builder, g_ascii_strtoll(value, NULL, 10));
+
+        return TRUE;
+    }
+
+    if (g_strcmp0(key, "enabled") == 0 ||
+        g_strcmp0(key, "require_mention") == 0) {
+        json_builder_set_member_name(builder, key);
+        json_builder_add_boolean_value(builder,
+                                       g_strcmp0(value, "true") == 0 ||
+                                       g_strcmp0(value, "yes") == 0 ||
+                                       g_strcmp0(value, "1") == 0);
+        return TRUE;
+    }
+
+    json_builder_set_member_name(builder, key);
+    json_builder_add_string_value(builder, value);
+
+    return TRUE;
+}
+
+/*
+ * Builds an add/update payload out of `key=value` arguments.
+ */
+static JsonNode *
+build_integration_payload(const gchar *name, const gchar *type_id,
+                          const gchar *agent_id,
+                          int argc, char *argv[], int first)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    int i;
+
+    json_builder_begin_object(builder);
+
+    if (name != NULL) {
+        json_builder_set_member_name(builder, "name");
+        json_builder_add_string_value(builder, name);
+    }
+
+    if (type_id != NULL) {
+        json_builder_set_member_name(builder, "type");
+        json_builder_add_string_value(builder, type_id);
+    }
+
+    if (agent_id != NULL) {
+        json_builder_set_member_name(builder, "agent");
+        json_builder_add_string_value(builder, agent_id);
+    }
+
+    for (i = first; i < argc; i++) {
+        /* --agent was lifted out of argv and left as a hole. */
+        if (argv[i] == NULL)
+            continue;
+
+        if (!apply_setting(builder, argv[i]))
+            return NULL;
+    }
+
+    json_builder_end_object(builder);
+
+    return json_builder_get_root(builder);
+}
+
+static void
+print_integration_usage(void)
+{
+    g_printerr(
+        "Usage: clawtilla integration <verb> [...]\n"
+        "\n"
+        "  types                          what kinds there are\n"
+        "  list [agent]                   the instances, and what an agent has\n"
+        "  show <name>                    one instance in full\n"
+        "  add <name> <type> [key=value]  add one\n"
+        "  set <name> [key=value ...]     change one\n"
+        "  set <name> --agent <id> ...    change it for one agent only\n"
+        "  scope <name> all|none|<ids>    who gets it\n"
+        "  rm <name>                      remove it\n"
+        "  health <agent> [name]          can it reach what it talks to\n"
+        "  matrix-login <name> <homeserver> <user>\n"
+        "                                 sign in; the password is read from\n"
+        "                                 stdin and never stored\n"
+        "  matrix-rooms <name>            the rooms that account is in\n"
+        "\n"
+        "Examples:\n"
+        "  clawtilla integration add home matrix \\\n"
+        "      homeserver=https://matrix.example.org\n"
+        "  clawtilla integration matrix-login home https://matrix.example.org "
+        "agent\n"
+        "  clawtilla integration scope home researcher,scribe\n"
+        "  clawtilla integration add github mcp scope=all \\\n"
+        "      command=npx args=-y,@modelcontextprotocol/server-github\n"
+        "  clawtilla integration set home --agent researcher \\\n"
+        "      user_id=@researcher:example.org\n");
+}
+
+static void
+print_integration_row(JsonObject *integration)
+{
+    JsonArray *effective =
+        json_object_has_member(integration, "effective_agents")
+            ? json_object_get_array_member(integration, "effective_agents")
+            : NULL;
+    const gchar *scope = member_or(integration, "scope", "?");
+    g_autofree gchar *reach = NULL;
+
+    if (g_strcmp0(scope, "all") == 0) {
+        reach = g_strdup_printf("all (%u)",
+                                effective != NULL
+                                    ? json_array_get_length(effective) : 0);
+    } else if (effective == NULL || json_array_get_length(effective) == 0) {
+        reach = g_strdup("nobody");
+    } else {
+        GString *names = g_string_new(NULL);
+        guint i;
+
+        for (i = 0; i < json_array_get_length(effective); i++) {
+            if (i > 0)
+                g_string_append(names, ",");
+
+            g_string_append(names, json_array_get_string_element(effective, i));
+        }
+
+        reach = g_string_free(names, FALSE);
+    }
+
+    g_print("%-16s %-8s %-4s %s\n",
+            member_or(integration, "name", "?"),
+            member_or(integration, "type", "?"),
+            json_object_get_boolean_member(integration, "enabled")
+                ? "on" : "off",
+            reach);
+
+    if (json_object_has_member(integration, "shadow_reason"))
+        g_print("                 disabled: %s\n",
+                member_or(integration, "shadow_reason", ""));
+}
+
 static gint
 cmd_integration(int argc, char *argv[])
 {
     g_autoptr(ClawtClient) client = NULL;
     g_autoptr(JsonNode) reply = NULL;
     const gchar *verb = (argc > 2) ? argv[2] : "list";
-    const gchar *agent_id = (argc > 3) ? argv[3] : NULL;
+    const gchar *name = (argc > 3) ? argv[3] : NULL;
+    const gchar *agent_id = NULL;
     guint i;
+    int settings_start = 4;
+
+    /*
+     * --agent is pulled out here rather than left as a key=value, because
+     * it selects *where* the other settings are written rather than being
+     * one of them.
+     */
+    {
+        int a;
+
+        for (a = 3; a + 1 < argc; a++) {
+            if (g_strcmp0(argv[a], "--agent") != 0)
+                continue;
+
+            agent_id = argv[a + 1];
+            argv[a] = NULL;
+            argv[a + 1] = NULL;
+            break;
+        }
+    }
+
+    if (g_strcmp0(verb, "help") == 0 || g_strcmp0(verb, "--help") == 0) {
+        print_integration_usage();
+        return EXIT_SUCCESS;
+    }
 
     client = connect_to_daemon();
     if (client == NULL)
         return EXIT_FAILURE;
 
+    if (g_strcmp0(verb, "types") == 0) {
+        JsonArray *types;
+
+        reply = call(client, "integration.types", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        types = json_object_get_array_member(json_node_get_object(reply),
+                                             "types");
+
+        for (i = 0; i < json_array_get_length(types); i++) {
+            JsonObject *type = json_array_get_object_element(types, i);
+
+            g_print("%-8s %-8s %s\n", member_or(type, "id", "?"),
+                    member_or(type, "kind", ""),
+                    member_or(type, "summary", ""));
+        }
+
+        return EXIT_SUCCESS;
+    }
+
     if (g_strcmp0(verb, "list") == 0) {
+        JsonObject *root;
         JsonArray *integrations;
+        JsonArray *warnings;
 
         reply = call(client, "integration.list",
-                     build_payload("agent", agent_id, NULL));
+                     build_payload("agent", name, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        root = json_node_get_object(reply);
+        integrations = json_object_get_array_member(root, "integrations");
+
+        if (json_array_get_length(integrations) == 0)
+            g_print("No shared integrations. `clawtilla integration add` "
+                    "makes one.\n");
+
+        for (i = 0; i < json_array_get_length(integrations); i++)
+            print_integration_row(
+                json_array_get_object_element(integrations, i));
+
+        /*
+         * An agent's own inline blocks are not instances and are invisible
+         * in the list above, so an agent with a Matrix block of its own
+         * would otherwise look like it had nothing.
+         */
+        if (json_object_has_member(root, "bindings")) {
+            JsonArray *bindings = json_object_get_array_member(root,
+                                                               "bindings");
+
+            g_print("\n%s has:\n", name);
+
+            if (json_array_get_length(bindings) == 0)
+                g_print("  nothing\n");
+
+            for (i = 0; i < json_array_get_length(bindings); i++) {
+                JsonObject *binding =
+                    json_array_get_object_element(bindings, i);
+                gboolean valid =
+                    json_object_get_boolean_member(binding, "valid");
+
+                g_print("  %-16s %-8s %-8s %s\n",
+                        member_or(binding, "name", "?"),
+                        member_or(binding, "type", "?"),
+                        json_object_get_boolean_member(binding, "shared")
+                            ? "shared" : "its own",
+                        valid ? "" : member_or(binding, "problem", ""));
+            }
+        }
+
+        warnings = json_object_get_array_member(root, "warnings");
+
+        for (i = 0; i < json_array_get_length(warnings); i++)
+            g_printerr("warning: %s\n",
+                       json_array_get_string_element(warnings, i));
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "show") == 0) {
+        JsonArray *integrations;
+
+        if (name == NULL) {
+            g_printerr("Usage: clawtilla integration show <name>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "integration.list", NULL);
         if (reply == NULL)
             return EXIT_FAILURE;
 
@@ -2666,11 +3056,203 @@ cmd_integration(int argc, char *argv[])
         for (i = 0; i < json_array_get_length(integrations); i++) {
             JsonObject *integration =
                 json_array_get_object_element(integrations, i);
+            g_autoptr(GList) members = NULL;
+            GList *l;
 
-            g_print("%-10s %-4s %s\n", member_or(integration, "id", "?"),
-                    json_object_get_boolean_member(integration, "enabled")
-                        ? "on" : "-",
-                    member_or(integration, "summary", ""));
+            if (g_strcmp0(member_or(integration, "name", ""), name) != 0)
+                continue;
+
+            members = json_object_get_members(integration);
+
+            for (l = members; l != NULL; l = l->next) {
+                g_autoptr(JsonGenerator) generator = json_generator_new();
+                g_autofree gchar *text = NULL;
+                JsonNode *value = json_object_get_member(integration,
+                                                         l->data);
+
+                json_generator_set_root(generator, value);
+                text = json_generator_to_data(generator, NULL);
+                g_print("%-18s %s\n", (const gchar *)l->data, text);
+            }
+
+            return EXIT_SUCCESS;
+        }
+
+        g_printerr("clawtilla: there is no integration called '%s'\n", name);
+        return EXIT_FAILURE;
+    }
+
+    if (g_strcmp0(verb, "add") == 0) {
+        g_autoptr(JsonNode) payload = NULL;
+        const gchar *type_id = (argc > 4) ? argv[4] : NULL;
+
+        if (name == NULL || type_id == NULL) {
+            g_printerr("Usage: clawtilla integration add <name> <type> "
+                       "[key=value ...]\n");
+            return EXIT_FAILURE;
+        }
+
+        payload = build_integration_payload(name, type_id, agent_id, argc,
+                                            argv, 5);
+        if (payload == NULL)
+            return EXIT_FAILURE;
+
+        reply = call(client, "integration.add", g_steal_pointer(&payload));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Added %s.\n", name);
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "set") == 0) {
+        g_autoptr(JsonNode) payload = NULL;
+
+        if (name == NULL) {
+            g_printerr("Usage: clawtilla integration set <name> "
+                       "[--agent <id>] key=value ...\n");
+            return EXIT_FAILURE;
+        }
+
+        payload = build_integration_payload(name, NULL, agent_id, argc, argv,
+                                            settings_start);
+        if (payload == NULL)
+            return EXIT_FAILURE;
+
+        reply = call(client, "integration.update", g_steal_pointer(&payload));
+        return reply != NULL ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+
+    if (g_strcmp0(verb, "scope") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        const gchar *scope = (argc > 4) ? argv[4] : NULL;
+
+        if (name == NULL || scope == NULL) {
+            g_printerr("Usage: clawtilla integration scope <name> "
+                       "all|none|<agent,agent>\n");
+            return EXIT_FAILURE;
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "name");
+        json_builder_add_string_value(builder, name);
+
+        if (g_strcmp0(scope, "all") == 0 || g_strcmp0(scope, "none") == 0) {
+            json_builder_set_member_name(builder, "scope");
+            json_builder_add_string_value(builder, scope);
+        } else {
+            g_auto(GStrv) ids = g_strsplit(scope, ",", -1);
+            guint k;
+
+            json_builder_set_member_name(builder, "scope");
+            json_builder_add_string_value(builder, "selected");
+            json_builder_set_member_name(builder, "agents");
+            json_builder_begin_array(builder);
+
+            for (k = 0; ids[k] != NULL; k++)
+                json_builder_add_string_value(builder, g_strstrip(ids[k]));
+
+            json_builder_end_array(builder);
+        }
+
+        json_builder_end_object(builder);
+
+        reply = call(client, "integration.update",
+                     json_builder_get_root(builder));
+        return reply != NULL ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+
+    if (g_strcmp0(verb, "rm") == 0) {
+        if (name == NULL) {
+            g_printerr("Usage: clawtilla integration rm <name>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "integration.remove",
+                     build_payload("name", name, NULL));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        /*
+         * Said out loud, because it is the surprising half: the token
+         * file stays where it is, so removing an integration by mistake
+         * costs a retype of the config and not another sign-in.
+         */
+        g_print("Removed %s. Any credential file it wrote is still on "
+                "disk.\n", name);
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "matrix-login") == 0) {
+        const gchar *homeserver = (argc > 4) ? argv[4] : NULL;
+        const gchar *user = (argc > 5) ? argv[5] : NULL;
+        g_autofree gchar *password = NULL;
+        JsonObject *root;
+
+        if (name == NULL || homeserver == NULL || user == NULL) {
+            g_printerr("Usage: clawtilla integration matrix-login <name> "
+                       "<homeserver> <user> [--agent <id>]\n");
+            return EXIT_FAILURE;
+        }
+
+        password = read_secret("Matrix password: ");
+
+        if (password == NULL || *password == '\0') {
+            g_printerr("clawtilla: no password given\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "integration.matrix_login",
+                     build_payload("integration", name,
+                                   "homeserver", homeserver,
+                                   "user", user,
+                                   "password", password,
+                                   "agent", agent_id, NULL));
+
+        /* Gone from this process as soon as it is on its way. */
+        memset(password, 0, strlen(password));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        root = json_node_get_object(reply);
+
+        g_print("Signed in as %s.\n", member_or(root, "user_id", "?"));
+        g_print("The token is in %s, and the config now refers to it.\n",
+                member_or(root, "token_file", "?"));
+        g_print("It appears on your account's device list as \"clawtilla\"; "
+                "sign that device out to revoke it.\n");
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "matrix-rooms") == 0) {
+        JsonArray *rooms;
+
+        if (name == NULL) {
+            g_printerr("Usage: clawtilla integration matrix-rooms <name> "
+                       "[--agent <id>]\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "integration.matrix_rooms",
+                     build_payload("integration", name, "agent", agent_id,
+                                   NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        rooms = json_object_get_array_member(json_node_get_object(reply),
+                                             "rooms");
+
+        if (json_array_get_length(rooms) == 0)
+            g_print("That account is not in any rooms yet.\n");
+
+        for (i = 0; i < json_array_get_length(rooms); i++) {
+            JsonObject *room = json_array_get_object_element(rooms, i);
+
+            g_print("%-40s %s\n", member_or(room, "id", "?"),
+                    member_or(room, "label", ""));
         }
 
         return EXIT_SUCCESS;
@@ -2680,14 +3262,14 @@ cmd_integration(int argc, char *argv[])
         JsonArray *checks;
         gint status = EXIT_SUCCESS;
 
-        if (agent_id == NULL) {
+        if (name == NULL) {
             g_printerr("Usage: clawtilla integration health <agent> "
                        "[integration]\n");
             return EXIT_FAILURE;
         }
 
         reply = call(client, "integration.health",
-                     build_payload("agent", agent_id, "integration",
+                     build_payload("agent", name, "integration",
                                    argc > 4 ? argv[4] : NULL, NULL));
         if (reply == NULL)
             return EXIT_FAILURE;
@@ -2696,7 +3278,7 @@ cmd_integration(int argc, char *argv[])
                                               "checks");
 
         if (json_array_get_length(checks) == 0) {
-            g_print("%s has no integrations enabled.\n", agent_id);
+            g_print("%s has no integrations.\n", name);
             return EXIT_SUCCESS;
         }
 
@@ -2704,7 +3286,8 @@ cmd_integration(int argc, char *argv[])
             JsonObject *check = json_array_get_object_element(checks, i);
             gboolean ok = json_object_get_boolean_member(check, "ok");
 
-            g_print("%-10s %s%s%s\n", member_or(check, "id", "?"),
+            g_print("%-16s %-8s %s%s%s\n", member_or(check, "id", "?"),
+                    member_or(check, "type", ""),
                     ok ? "ok" : "FAILED", ok ? "" : ": ",
                     ok ? "" : member_or(check, "error", ""));
 
@@ -2720,6 +3303,7 @@ cmd_integration(int argc, char *argv[])
     }
 
     g_printerr("clawtilla: unknown integration verb '%s'\n", verb);
+    print_integration_usage();
     return EXIT_FAILURE;
 }
 

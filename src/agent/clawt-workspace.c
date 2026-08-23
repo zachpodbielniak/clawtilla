@@ -456,6 +456,15 @@ static const gchar TOOLS_ORG[] =
 "Write a file into your own directory and tell the other agent where it\n"
 "is. Do not try to write into theirs.\n"
 "\n"
+"# BEGIN clawtilla integrations -- rewritten on every start\n"
+"\n"
+"* Your integrations\n"
+"\n"
+"/Filled in when the daemon starts./ Anything written between these two\n"
+"markers is replaced; the rest of this file is yours.\n"
+"\n"
+"# END clawtilla integrations\n"
+"\n"
 "* Limits worth knowing\n"
 "\n"
 "The daemon enforces a hop limit, a per-minute message rate and a cost\n"
@@ -763,6 +772,83 @@ sibling_binary_path(const gchar *name)
 }
 
 /*
+ * One `mcp` integration, as an entry in the agent's .mcp.json.
+ *
+ * A command server and a URL server are two different shapes and the
+ * validator has already refused an instance that is both, so exactly one
+ * branch here is ever taken.
+ */
+static JsonObject *
+build_integration_server(ClawtIntegrationBinding  *binding,
+                         const gchar              *secrets_dir,
+                         GError                  **error)
+{
+    g_autoptr(JsonObject) entry = json_object_new();
+    g_autoptr(GHashTable) env = NULL;
+    g_auto(GStrv) args = NULL;
+    const gchar *command =
+        clawt_integration_binding_get_string(binding, "command");
+    const gchar *url = clawt_integration_binding_get_string(binding, "url");
+
+    if (command == NULL && url == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                    "integration '%s': set either command or url",
+                    clawt_integration_binding_get_name(binding));
+        return NULL;
+    }
+
+    if (url != NULL) {
+        json_object_set_string_member(entry, "type",
+                                      g_str_has_suffix(url, "/sse") ? "sse"
+                                                                    : "http");
+        json_object_set_string_member(entry, "url", url);
+        return g_steal_pointer(&entry);
+    }
+
+    json_object_set_string_member(entry, "command", command);
+
+    args = clawt_integration_binding_get_string_list(binding, "args");
+
+    if (args != NULL && args[0] != NULL) {
+        JsonArray *array = json_array_new();
+        guint i;
+
+        for (i = 0; args[i] != NULL; i++)
+            json_array_add_string_element(array, args[i]);
+
+        json_object_set_array_member(entry, "args", array);
+    }
+
+    /*
+     * The environment holds resolved secrets, which is why this file is
+     * 0600 and why the values are fetched here rather than left as
+     * references: the CLI that reads it has never heard of clawtilla's
+     * secret backends.
+     */
+    env = clawt_integration_binding_resolve_env(binding, "env", secrets_dir,
+                                                error);
+
+    if (env == NULL)
+        return NULL;
+
+    if (g_hash_table_size(env) > 0) {
+        JsonObject *object = json_object_new();
+        g_autoptr(GList) names = g_hash_table_get_keys(env);
+        GList *l;
+
+        names = g_list_sort(g_steal_pointer(&names), (GCompareFunc)g_strcmp0);
+
+        for (l = names; l != NULL; l = l->next)
+            json_object_set_string_member(object, l->data,
+                                          g_hash_table_lookup(env, l->data));
+
+        json_object_set_object_member(entry, "env", object);
+    }
+
+    return g_steal_pointer(&entry);
+}
+
+/*
  * The entry that gives an agent with a VM desktop its screen.
  *
  * It names the clawtilla CLI rather than ssh, and it has to.  The port
@@ -822,11 +908,15 @@ wants_guest_desktop(ClawtAgentConfig *agent)
 }
 
 gboolean
-clawt_workspace_write_mcp_config(ClawtAgentConfig *agent,
+clawt_workspace_write_mcp_config(ClawtConfig      *config,
+                                 ClawtAgentConfig *agent,
                                  const gchar      *daemon_socket,
                                  const gchar      *state_dir,
                                  GError          **error)
 {
+    g_autoptr(GPtrArray) bindings = NULL;
+    g_autoptr(GHashTable) wanted = NULL;   /* key -> JsonObject*, owned */
+    g_autofree gchar *secrets_dir = NULL;
     g_autoptr(JsonParser) parser = json_parser_new();
     g_autoptr(JsonGenerator) generator = json_generator_new();
     g_autoptr(JsonNode) root = NULL;
@@ -883,6 +973,43 @@ clawt_workspace_write_mcp_config(ClawtAgentConfig *agent,
 
     if (wants_guest_desktop(agent))
         desktop = build_desktop_server(agent, daemon_socket);
+
+    /*
+     * One entry per `mcp` integration in scope for this agent.
+     *
+     * Built before the file is read, so a secret that cannot be resolved
+     * fails the write outright rather than leaving the agent with a
+     * server entry whose credentials are missing -- which starts, and
+     * then fails on the first tool call, a long way from the cause.
+     */
+    wanted = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                   (GDestroyNotify)json_object_unref);
+
+    if (config != NULL) {
+        guint i;
+
+        secrets_dir = clawt_config_get_path_value(config, "secrets.dir");
+        bindings = clawt_integration_resolve_for_agent(config, agent);
+
+        for (i = 0; i < bindings->len; i++) {
+            ClawtIntegrationBinding *binding = g_ptr_array_index(bindings, i);
+            JsonObject *entry;
+            gchar *key;
+
+            if (g_strcmp0(clawt_integration_binding_get_info(binding)->id,
+                          "mcp") != 0)
+                continue;
+
+            entry = build_integration_server(binding, secrets_dir, error);
+
+            if (entry == NULL)
+                return FALSE;
+
+            key = g_strdup_printf("clawtilla-%s",
+                                  clawt_integration_binding_get_name(binding));
+            g_hash_table_insert(wanted, key, entry);
+        }
+    }
 
     /*
      * Everything else in the file is the user's, and is read back rather
@@ -944,17 +1071,33 @@ clawt_workspace_write_mcp_config(ClawtAgentConfig *agent,
         }
 
         /*
-         * The one other key clawtilla owns.  It is prefixed so it cannot
-         * collide with a `desktop` server somebody added themselves, and
-         * it is *dropped* rather than carried when the agent no longer
-         * has a guest desktop -- an entry left behind would start an ssh
-         * to a VM that is not there and fail on every tool call.
+         * The other keys clawtilla owns.  They are prefixed so they cannot
+         * collide with a `desktop` or a `github` somebody added
+         * themselves, and one that should no longer be there is *dropped*
+         * rather than carried: a stale `clawtilla-desktop` starts an ssh
+         * to a VM that is not there, and a stale integration entry points
+         * at a server the fleet has stopped granting.
+         *
+         * The prefix is therefore reserved. A server of your own called
+         * `clawtilla-anything` will be removed on the next start.
          */
         if (g_strcmp0(name, "clawtilla-desktop") == 0) {
             if (desktop != NULL) {
                 json_object_set_object_member(servers, name, desktop);
                 replaced_desktop = TRUE;
             }
+            continue;
+        }
+
+        if (g_str_has_prefix(name, "clawtilla-")) {
+            JsonObject *entry = g_hash_table_lookup(wanted, name);
+
+            if (entry != NULL) {
+                json_object_set_object_member(servers, name,
+                                              json_object_ref(entry));
+                g_hash_table_remove(wanted, name);
+            }
+
             continue;
         }
 
@@ -970,6 +1113,22 @@ clawt_workspace_write_mcp_config(ClawtAgentConfig *agent,
 
     if (desktop != NULL && !replaced_desktop)
         json_object_set_object_member(servers, "clawtilla-desktop", desktop);
+
+    /* Whatever was not already in the file, in a stable order. */
+    {
+        g_autoptr(GList) fresh = g_hash_table_get_keys(wanted);
+        GList *entry;
+
+        fresh = g_list_sort(g_steal_pointer(&fresh), (GCompareFunc)g_strcmp0);
+
+        for (entry = fresh; entry != NULL; entry = entry->next) {
+            const gchar *key = entry->data;
+
+            json_object_set_object_member(
+                servers, key,
+                json_object_ref(g_hash_table_lookup(wanted, key)));
+        }
+    }
 
     json_object_set_object_member(out, "mcpServers", servers);
 
@@ -1040,4 +1199,263 @@ clawt_workspace_scaffold(ClawtAgentConfig *agent, GError **error)
     }
 
     return TRUE;
+}
+
+/* ── The integrations section of TOOLS.org ───────────────────────── */
+
+/*
+ * The markers.
+ *
+ * Org comments, so they are invisible when the file is exported and
+ * harmless when it is read as prose.  The text says what will happen to
+ * anything written between them, because that is the one thing a person
+ * opening this file needs to know before they start typing.
+ */
+static const gchar TOOLS_BEGIN[] =
+    "# BEGIN clawtilla integrations -- rewritten on every start";
+static const gchar TOOLS_END[] =
+    "# END clawtilla integrations";
+
+/*
+ * What an agent is told about one integration.
+ *
+ * Written from the agent's side rather than the operator's: not "this
+ * fleet has a Matrix account" but "messages will arrive from people, and
+ * this is what answering one does".  The distinction matters most for a
+ * channel, where nothing in a session reveals that the person on the
+ * other end is in a room with four other people.
+ */
+static void
+describe_integration(GString *out, ClawtIntegrationBinding *binding)
+{
+    const ClawtIntegrationInfo *info =
+        clawt_integration_binding_get_info(binding);
+    const gchar *name = clawt_integration_binding_get_name(binding);
+    const gchar *description =
+        clawt_integration_binding_get_string(binding, "description");
+
+    g_string_append_printf(out, "** %s (~%s~)\n\n", name, info->id);
+
+    if (description != NULL && *description != '\0')
+        g_string_append_printf(out, "%s\n\n", description);
+
+    if (g_strcmp0(info->id, "matrix") == 0) {
+        const gchar *user_id =
+            clawt_integration_binding_get_string(binding, "user_id");
+        g_auto(GStrv) rooms =
+            clawt_integration_binding_get_string_list(binding, "rooms");
+
+        g_string_append(out,
+            "Messages from Matrix arrive as ordinary turns in your\n"
+            "conversation, and your reply goes back to the room they came\n"
+            "from. *There are people there.* Write as if somebody is\n"
+            "reading it in a chat app on their phone, because they are:\n"
+            "short, no preamble, and no wall of formatting.\n\n");
+
+        if (user_id != NULL)
+            g_string_append_printf(out,
+                "You are ~%s~ there. Somebody addressing you by that name\n"
+                "means you.\n\n", user_id);
+
+        if (rooms != NULL && rooms[0] != NULL) {
+            guint i;
+
+            g_string_append(out, "Rooms:\n\n");
+
+            for (i = 0; rooms[i] != NULL; i++)
+                g_string_append_printf(out, "- ~%s~\n", rooms[i]);
+
+            g_string_append_c(out, '\n');
+        } else {
+            g_string_append(out,
+                "You are in every room this account has joined.\n\n");
+        }
+
+        if (clawt_integration_binding_get_boolean(binding, "require_mention"))
+            g_string_append(out,
+                "You only see messages that mention you, so anything that\n"
+                "reaches you was addressed to you deliberately.\n\n");
+        else
+            g_string_append(out,
+                "You see *every* message in these rooms, including ones\n"
+                "between two other people. Most of them are not for you.\n"
+                "Answering anyway is how a room decides to remove a bot.\n\n");
+
+        /*
+         * Worth saying explicitly.  Bridged rooms are the ordinary case
+         * on a self-hosted homeserver, and an agent that reasons about
+         * "Matrix users" will misjudge who it is talking to.
+         */
+        g_string_append(out,
+            "A room may be bridged from Discord, Signal or elsewhere. It\n"
+            "looks the same from here, but formatting and message length\n"
+            "may be handled differently on the far side.\n\n");
+        return;
+    }
+
+    if (g_strcmp0(info->id, "email") == 0) {
+        const gchar *username =
+            clawt_integration_binding_get_string(binding, "username");
+
+        g_string_append(out,
+            "Mail arrives as a turn and your reply is sent as a reply.\n"
+            "It is not a chat: quote what you are answering, and remember\n"
+            "that a mistake here is in somebody's inbox for ever.\n\n");
+
+        if (username != NULL)
+            g_string_append_printf(out, "The mailbox is ~%s~.\n\n", username);
+
+        return;
+    }
+
+    if (g_strcmp0(info->id, "webhook") == 0) {
+        g_string_append_printf(out,
+            "Another service posts to you on port %" G_GINT64_FORMAT ".\n"
+            "There is no person waiting on the other end, so a reply is\n"
+            "read by a program: say what happened, once.\n\n",
+            clawt_integration_binding_get_int(binding, "port"));
+        return;
+    }
+
+    if (g_strcmp0(info->id, "local") == 0) {
+        g_string_append(out,
+            "Somebody is running you from a terminal and is watching this\n"
+            "conversation as it happens.\n\n");
+        return;
+    }
+
+    if (g_strcmp0(info->id, "cmacs") == 0) {
+        g_string_append(out,
+            "You are reachable from an Emacs session. Your operator is\n"
+            "most likely in the middle of something else.\n\n");
+        return;
+    }
+
+    if (g_strcmp0(info->id, "mcp") == 0) {
+        const gchar *command =
+            clawt_integration_binding_get_string(binding, "command");
+        const gchar *url =
+            clawt_integration_binding_get_string(binding, "url");
+
+        g_string_append_printf(out,
+            "An MCP server your session can call, listed in ~.mcp.json~ as\n"
+            "~clawtilla-%s~. Its tools appear beside your own.\n\n", name);
+
+        if (command != NULL)
+            g_string_append_printf(out,
+                "It runs as ~%s~ *on the host*, not on your computer, so a\n"
+                "path you give it is a host path.\n\n", command);
+        else if (url != NULL)
+            g_string_append_printf(out,
+                "It is reached over the network at ~%s~, so its tools are\n"
+                "as fast, as slow and as available as that service is.\n\n",
+                url);
+
+        return;
+    }
+}
+
+/*
+ * The whole managed region, markers included.
+ */
+static gchar *
+render_integrations_section(ClawtConfig *config, ClawtAgentConfig *agent)
+{
+    g_autoptr(GString) out = g_string_new(NULL);
+    g_autoptr(GPtrArray) bindings = NULL;
+    guint i;
+
+    g_string_append_printf(out, "%s\n\n", TOOLS_BEGIN);
+    g_string_append(out, "* Your integrations\n\n");
+
+    if (config != NULL)
+        bindings = clawt_integration_resolve_for_agent(config, agent);
+
+    if (bindings == NULL || bindings->len == 0) {
+        /*
+         * Said rather than left blank.  An empty section reads as
+         * "clawtilla has not worked this out yet", and an agent that
+         * suspects it has an unlisted way of reaching the world will go
+         * looking for one.
+         */
+        g_string_append(out,
+            "You have none. Everything you can reach is in this file\n"
+            "already, and nobody outside the fleet can reach you.\n\n");
+        g_string_append_printf(out, "%s\n", TOOLS_END);
+
+        return g_string_free(g_steal_pointer(&out), FALSE);
+    }
+
+    g_string_append(out,
+        "These connect you to things outside the fleet. Some of them put\n"
+        "a person on the other end of your reply.\n\n");
+
+    for (i = 0; i < bindings->len; i++)
+        describe_integration(out, g_ptr_array_index(bindings, i));
+
+    g_string_append_printf(out, "%s\n", TOOLS_END);
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+gboolean
+clawt_workspace_update_tools_org(ClawtConfig      *config,
+                                 ClawtAgentConfig *agent,
+                                 GError          **error)
+{
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *existing = NULL;
+    g_autofree gchar *section = NULL;
+    g_autofree gchar *updated = NULL;
+    const gchar *begin;
+    const gchar *end;
+
+    g_return_val_if_fail(agent != NULL, FALSE);
+
+    path = clawt_workspace_file_path(agent, "TOOLS.org");
+
+    if (path == NULL)
+        return TRUE;
+
+    /*
+     * A workspace that has not been scaffolded yet is not an error: the
+     * scaffolder runs first on every path that matters, and refusing here
+     * would turn "this agent has no workspace" into "this agent will not
+     * start".
+     */
+    if (!g_file_get_contents(path, &existing, NULL, NULL))
+        return TRUE;
+
+    section = render_integrations_section(config, agent);
+
+    begin = strstr(existing, TOOLS_BEGIN);
+    end = begin != NULL ? strstr(begin, TOOLS_END) : NULL;
+
+    if (begin != NULL && end != NULL) {
+        g_autofree gchar *head = g_strndup(existing, begin - existing);
+        const gchar *tail = end + strlen(TOOLS_END);
+
+        /* The newline after the end marker belongs to the marker. */
+        if (*tail == '\n')
+            tail++;
+
+        updated = g_strconcat(head, section, tail, NULL);
+    } else {
+        /*
+         * Appended when the markers are not there -- a file scaffolded by
+         * an older clawtilla, or one somebody edited them out of.
+         * Appending is the only safe move: this file is prose written by
+         * a person, and there is no position in it we could claim to know
+         * is the right one.
+         */
+        gboolean ends_blank = *existing == '\0' ||
+                              g_str_has_suffix(existing, "\n\n");
+
+        updated = g_strconcat(existing, ends_blank ? "" : "\n", section, NULL);
+    }
+
+    if (g_strcmp0(existing, updated) == 0)
+        return TRUE;
+
+    return clawt_write_file_atomic(path, updated, -1, 0600, FALSE, error);
 }

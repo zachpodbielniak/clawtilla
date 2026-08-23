@@ -92,6 +92,7 @@ clawt_workspace_scaffold(ClawtAgentConfig  *agent,
 
 /**
  * clawt_workspace_write_mcp_config:
+ * @config: (nullable): the fleet configuration, for shared integrations
  * @agent: the agent's configuration
  * @daemon_socket: (nullable): the daemon's IPC socket
  * @state_dir: the agent's state directory, which holds its token
@@ -105,16 +106,58 @@ clawt_workspace_scaffold(ClawtAgentConfig  *agent,
  * this file in its working directory by itself, the same way it finds
  * CLAUDE.md.
  *
+ * It is also how a `mcp` integration reaches an agent: one entry per
+ * integration in scope, so a tool server configured once for the fleet
+ * arrives in every agent's file without any of them being edited by
+ * hand.
+ *
  * Rewritten on every start, unlike the org files: it is generated rather
  * than authored, and a stale copy points the agent at a socket that has
- * moved.
+ * moved.  Only the keys clawtilla owns are rewritten -- `clawtilla` and
+ * anything beginning `clawtilla-`.  Everything else in the file is
+ * carried across untouched, because this is the file people add their own
+ * MCP servers to.
+ *
+ * With @config %NULL the built-in servers are still written and no shared
+ * integration is: an agent's own tools do not depend on there being a
+ * fleet around it.
  *
  * Returns: %TRUE on success
  */
 gboolean
-clawt_workspace_write_mcp_config(ClawtAgentConfig *agent,
+clawt_workspace_write_mcp_config(ClawtConfig      *config,
+                                 ClawtAgentConfig *agent,
                                  const gchar      *daemon_socket,
                                  const gchar      *state_dir,
+                                 GError          **error);
+
+/**
+ * clawt_workspace_update_tools_org:
+ * @config: (nullable): the fleet configuration, for shared integrations
+ * @agent: the agent's configuration
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Rewrites the integrations section of the agent's `TOOLS.org`.
+ *
+ * TOOLS.org is scaffolded once and then belongs to whoever edits it, so
+ * clawtilla owns a marked region of it and nothing else: the region is
+ * replaced, everything around it is kept, and a file that has lost its
+ * markers gets them appended rather than being rewritten.
+ *
+ * It exists because an integration nobody told the agent about is an
+ * integration it does not use.  A Matrix channel is invisible from
+ * inside a session -- messages simply arrive -- and an MCP server's tools
+ * appear with no indication of who they reach or whether a person is on
+ * the other end.
+ *
+ * Skips the write when nothing changed, so an editor with the file open
+ * does not reload it on every daemon start.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+clawt_workspace_update_tools_org(ClawtConfig      *config,
+                                 ClawtAgentConfig *agent,
                                  GError          **error);
 
 /**

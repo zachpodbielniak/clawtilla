@@ -156,8 +156,38 @@ one side being ~<agent>:<path>~).  ~exchange.list~.
 *** config.*, plugin.*, integration.*, model.*, design.*
 
 ~config.show~, ~config.render~, ~config.validate~; ~plugin.list~;
-~integration.list~, ~integration.health~; ~model.list~; ~image.list~;
-~design.agent~, ~design.commit~, ~design.discard~.
+~model.list~; ~image.list~; ~design.agent~, ~design.commit~,
+~design.discard~.
+
+Integrations: ~integration.types~ (the kinds, with the keys each needs);
+~integration.list~ (~agent~ optional -- with it, the reply also carries
+~bindings~, what that one agent actually has, and every instance gains a
+~covers~ flag); ~integration.add~, ~integration.update~,
+~integration.remove~; ~integration.health~; ~integration.matrix_login~,
+~integration.matrix_rooms~.
+
+A secret is written by naming its *reference*: ~secret_key~,
+~secret_backend~ (~file~, ~env~ or ~command~) and ~secret_locator~.  A
+reply carries the reference back, never the value.
+
+~integration.matrix_login~ takes ~integration~, ~homeserver~, ~user~ and
+~password~, and optionally ~agent~ to write the result under
+~per_agent~.  It returns ~user_id~, ~device_id~ and ~token_file~ -- the
+token itself stays in the daemon.
+
+*** Some replies arrive later
+
+~integration.health~, ~integration.matrix_login~ and
+~integration.matrix_rooms~ all wait on the network, so their handlers
+*defer*: the request is answered when the work finishes rather than
+before the handler returns.  A client sees nothing different -- the reply
+carries the request's id as always -- but the daemon keeps answering
+everybody else in the meantime.
+
+This matters because a handler runs on the daemon's main context while
+the client blocks.  Waiting there for a ten-second connect timeout is ten
+seconds in which no agent's message is routed and no other client is
+answered.
 
 ~design.agent~ takes the questionnaire -- ~purpose~ (required),
 ~boundaries~, ~needs~, ~personality~, ~projects~, ~notes~ -- plus

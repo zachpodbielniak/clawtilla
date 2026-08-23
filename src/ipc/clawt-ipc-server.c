@@ -102,6 +102,17 @@ struct _ClawtIpcServer {
     ClawtIpcHandler handler;
     gpointer        handler_data;
     GDestroyNotify  handler_destroy;
+
+    /*
+     * Whose request is being handled right now.
+     *
+     * Set only around the handler call, which is synchronous and on the
+     * main context, so there is exactly one -- that is what lets
+     * clawt_ipc_server_defer() know which connection to answer into
+     * without threading a client pointer through a handler signature that
+     * every other request has no use for.
+     */
+    Client *current;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtIpcServer, clawt_ipc_server, G_TYPE_OBJECT)
@@ -403,6 +414,56 @@ client_send(Client *client, JsonNode *frame)
     flush_pending(client);
 }
 
+/* ── Deferred replies ────────────────────────────────────────────── */
+
+struct _ClawtIpcPending {
+    Client   *client;    /* owned */
+    JsonNode *request;   /* owned */
+};
+
+ClawtIpcPending *
+clawt_ipc_server_defer(ClawtIpcServer *self, JsonNode *request)
+{
+    ClawtIpcPending *pending;
+
+    g_return_val_if_fail(CLAWT_IS_IPC_SERVER(self), NULL);
+    g_return_val_if_fail(request != NULL, NULL);
+
+    if (self->current == NULL) {
+        g_warning("ipc: a reply was deferred outside a request");
+        return NULL;
+    }
+
+    pending = g_new0(ClawtIpcPending, 1);
+    pending->client = client_ref(self->current);
+    pending->request = json_node_ref(request);
+
+    return pending;
+}
+
+JsonNode *
+clawt_ipc_pending_get_request(ClawtIpcPending *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return self->request;
+}
+
+void
+clawt_ipc_pending_respond(ClawtIpcPending *self, JsonNode *response)
+{
+    g_return_if_fail(self != NULL);
+
+    if (response != NULL) {
+        client_send(self->client, response);
+        json_node_unref(response);
+    }
+
+    client_unref(self->client);
+    json_node_unref(self->request);
+    g_free(self);
+}
+
 /* ── Requests ────────────────────────────────────────────────────── */
 
 static JsonNode *
@@ -563,7 +624,9 @@ on_line_read(GObject *source, GAsyncResult *result, gpointer user_data)
 
     if (!handled) {
         if (self->handler != NULL) {
+            self->current = client;
             reply = self->handler(request, self->handler_data);
+            self->current = NULL;
         } else {
             reply = clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
                                         "this daemon has no handler wired "

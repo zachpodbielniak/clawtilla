@@ -21,10 +21,18 @@ struct _ClawtConfig {
     gchar       *path;
     YamlNode    *root;        /* always a mapping */
     GPtrArray   *agents;      /* ClawtAgentConfig* */
+    GPtrArray   *integrations; /* ClawtIntegrationConfig* */
     GPtrArray   *warnings;    /* gchar* */
 };
 
 G_DEFINE_FINAL_TYPE(ClawtConfig, clawt_config, G_TYPE_OBJECT)
+
+/*
+ * Defined with the rest of the integration code at the end of the file;
+ * declared here because loading has to rebuild both lists, and putting
+ * the whole of that section above the loader would bury it.
+ */
+static void reload_integrations(ClawtConfig *self);
 
 struct _ClawtAgentConfig {
     gint         ref_count;
@@ -1196,6 +1204,7 @@ clawt_config_finalize(GObject *object)
     g_clear_pointer(&self->path, g_free);
     g_clear_pointer(&self->root, yaml_node_unref);
     g_clear_pointer(&self->agents, g_ptr_array_unref);
+    g_clear_pointer(&self->integrations, g_ptr_array_unref);
     g_clear_pointer(&self->warnings, g_ptr_array_unref);
 
     G_OBJECT_CLASS(clawt_config_parent_class)->finalize(object);
@@ -1215,6 +1224,8 @@ clawt_config_init(ClawtConfig *self)
     self->root = yaml_node_new_mapping(NULL);
     self->agents = g_ptr_array_new_with_free_func(
         (GDestroyNotify)clawt_agent_config_unref);
+    self->integrations = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_integration_config_unref);
     self->warnings = g_ptr_array_new_with_free_func(g_free);
 }
 
@@ -1384,6 +1395,7 @@ config_from_parser(YamlParser *parser, const gchar *path, GError **error)
 
     warn_unknown_keys(self, self->root, NULL);
     reload_agents(self);
+    reload_integrations(self);
 
     return self;
 }
@@ -1825,4 +1837,951 @@ clawt_config_adopt_libreclaw(ClawtAgentConfig *agent, const gchar *config_path)
     }
 
     return adopted;
+}
+
+/* ── Integration instances ───────────────────────────────────────── */
+
+struct _ClawtIntegrationConfig {
+    gint         ref_count;
+
+    ClawtConfig *config;      /* unowned; the config outlives its instances */
+    gchar       *name;
+    YamlNode    *node;        /* the instance's mapping, unowned */
+    gchar       *shadow_reason;
+};
+
+static ClawtIntegrationConfig *
+clawt_integration_config_new(ClawtConfig *config,
+                             const gchar *name,
+                             YamlNode    *node)
+{
+    ClawtIntegrationConfig *self = g_new0(ClawtIntegrationConfig, 1);
+
+    self->ref_count = 1;
+    self->config = config;
+    self->name = g_strdup(name);
+    self->node = node;
+
+    return self;
+}
+
+ClawtIntegrationConfig *
+clawt_integration_config_ref(ClawtIntegrationConfig *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    g_atomic_int_inc(&self->ref_count);
+
+    return self;
+}
+
+void
+clawt_integration_config_unref(ClawtIntegrationConfig *self)
+{
+    if (self == NULL)
+        return;
+
+    if (!g_atomic_int_dec_and_test(&self->ref_count))
+        return;
+
+    g_free(self->name);
+    g_free(self->shadow_reason);
+    g_free(self);
+}
+
+G_DEFINE_BOXED_TYPE(ClawtIntegrationConfig, clawt_integration_config,
+                    clawt_integration_config_ref,
+                    clawt_integration_config_unref)
+
+static void
+integration_mark_shadow(ClawtIntegrationConfig *self,
+                        const gchar            *format, ...) G_GNUC_PRINTF(2, 3);
+
+static void
+integration_mark_shadow(ClawtIntegrationConfig *self, const gchar *format, ...)
+{
+    va_list args;
+
+    /* The first reason is kept: it is the one that caused the rest. */
+    if (self->shadow_reason != NULL)
+        return;
+
+    va_start(args, format);
+    self->shadow_reason = g_strdup_vprintf(format, args);
+    va_end(args);
+}
+
+const gchar *
+clawt_integration_config_get_name(ClawtIntegrationConfig *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return self->name;
+}
+
+const gchar *
+clawt_integration_config_get_type_id(ClawtIntegrationConfig *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return member_string(yaml_node_get_mapping(self->node), "type");
+}
+
+gboolean
+clawt_integration_config_is_shadow(ClawtIntegrationConfig *self)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    return self->shadow_reason != NULL;
+}
+
+const gchar *
+clawt_integration_config_get_shadow_reason(ClawtIntegrationConfig *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return self->shadow_reason;
+}
+
+/*
+ * Where a key is read from, in order: the agent's own override, then the
+ * instance, then nothing.
+ *
+ * The schema fallback is applied by the callers rather than here, because
+ * only they know what type to turn the default string into.
+ */
+static YamlNode *
+integration_node_for(ClawtIntegrationConfig *self,
+                     const gchar            *agent_id,
+                     const gchar            *key)
+{
+    YamlNode *node;
+
+    if (agent_id != NULL) {
+        g_autofree gchar *path = g_strdup_printf("per_agent.%s.%s",
+                                                 agent_id, key);
+
+        node = node_at_path(self->node, path, FALSE);
+
+        if (node != NULL)
+            return node;
+    }
+
+    return node_at_path(self->node, key, FALSE);
+}
+
+/*
+ * The schema key for one of an instance's own keys.
+ *
+ * Every key in the list shares the "integrations." prefix whatever the
+ * instance's type is, exactly as "rooms.id" does -- the schema describes
+ * the shape of an entry, and an entry is one flat mapping.
+ */
+static gchar *
+integration_schema_key(const gchar *key)
+{
+    return g_strdup_printf("integrations.%s", key);
+}
+
+const gchar *
+clawt_integration_config_get_string(ClawtIntegrationConfig *self,
+                                    const gchar            *agent_id,
+                                    const gchar            *key)
+{
+    YamlNode *node;
+
+    g_return_val_if_fail(self != NULL, NULL);
+    g_return_val_if_fail(key != NULL, NULL);
+
+    node = integration_node_for(self, agent_id, key);
+
+    if (node != NULL && yaml_node_get_node_type(node) == YAML_NODE_SCALAR)
+        return yaml_node_get_string(node);
+
+    {
+        g_autofree gchar *schema_key = integration_schema_key(key);
+
+        return schema_default_for(schema_key);
+    }
+}
+
+gboolean
+clawt_integration_config_get_boolean(ClawtIntegrationConfig *self,
+                                     const gchar            *agent_id,
+                                     const gchar            *key)
+{
+    YamlNode *node;
+    g_autofree gchar *schema_key = NULL;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    node = integration_node_for(self, agent_id, key);
+
+    if (node != NULL && yaml_node_get_node_type(node) == YAML_NODE_SCALAR)
+        return yaml_node_get_boolean(node);
+
+    schema_key = integration_schema_key(key);
+
+    return string_to_boolean(schema_default_for(schema_key), FALSE);
+}
+
+gint64
+clawt_integration_config_get_int(ClawtIntegrationConfig *self,
+                                 const gchar            *agent_id,
+                                 const gchar            *key)
+{
+    YamlNode *node;
+    g_autofree gchar *schema_key = NULL;
+    const gchar *fallback;
+
+    g_return_val_if_fail(self != NULL, 0);
+    g_return_val_if_fail(key != NULL, 0);
+
+    node = integration_node_for(self, agent_id, key);
+
+    if (node != NULL && yaml_node_get_node_type(node) == YAML_NODE_SCALAR)
+        return yaml_node_get_int(node);
+
+    schema_key = integration_schema_key(key);
+    fallback = schema_default_for(schema_key);
+
+    return fallback != NULL ? g_ascii_strtoll(fallback, NULL, 10) : 0;
+}
+
+GStrv
+clawt_integration_config_get_string_list(ClawtIntegrationConfig *self,
+                                         const gchar            *agent_id,
+                                         const gchar            *key)
+{
+    GStrv value;
+    g_autofree gchar *schema_key = NULL;
+    const gchar *fallback;
+
+    g_return_val_if_fail(self != NULL, NULL);
+    g_return_val_if_fail(key != NULL, NULL);
+
+    value = node_to_strv(integration_node_for(self, agent_id, key));
+
+    if (value != NULL)
+        return value;
+
+    /* Same schema fallback every other getter here has. */
+    schema_key = integration_schema_key(key);
+    fallback = schema_default_for(schema_key);
+
+    if (fallback == NULL)
+        return g_new0(gchar *, 1);
+
+    return g_strsplit(fallback, ",", -1);
+}
+
+GHashTable *
+clawt_integration_config_get_mapping(ClawtIntegrationConfig *self,
+                                     const gchar            *agent_id,
+                                     const gchar            *key)
+{
+    GHashTable *out;
+
+    g_return_val_if_fail(self != NULL, NULL);
+    g_return_val_if_fail(key != NULL, NULL);
+
+    out = mapping_to_hash(node_at_path(self->node, key, FALSE));
+
+    /*
+     * Merged over the instance's own rather than replacing it.  An agent
+     * that had to restate the whole `env` block to change one variable
+     * would end up with three copies of it that drift.
+     */
+    if (agent_id != NULL) {
+        g_autofree gchar *path = g_strdup_printf("per_agent.%s.%s",
+                                                 agent_id, key);
+        g_autoptr(GHashTable) overrides =
+            mapping_to_hash(node_at_path(self->node, path, FALSE));
+        GHashTableIter iter;
+        gpointer k;
+        gpointer v;
+
+        g_hash_table_iter_init(&iter, overrides);
+
+        while (g_hash_table_iter_next(&iter, &k, &v))
+            g_hash_table_insert(out, g_strdup(k), g_strdup(v));
+    }
+
+    return out;
+}
+
+ClawtSecretRef *
+clawt_integration_config_get_secret(ClawtIntegrationConfig *self,
+                                    const gchar            *agent_id,
+                                    const gchar            *key)
+{
+    YamlNode *node;
+    ClawtSecretBackend default_backend;
+    g_autoptr(GError) error = NULL;
+    ClawtSecretRef *ref;
+
+    g_return_val_if_fail(self != NULL, NULL);
+    g_return_val_if_fail(key != NULL, NULL);
+
+    node = integration_node_for(self, agent_id, key);
+
+    if (node == NULL)
+        return NULL;
+
+    default_backend = (ClawtSecretBackend)
+        clawt_config_get_enum(self->config, "secrets.default_backend");
+
+    ref = clawt_secret_ref_parse(node, default_backend, &error);
+
+    if (ref == NULL && error != NULL) {
+        g_warning("integration %s: %s: %s", self->name, key, error->message);
+        return NULL;
+    }
+
+    return ref;
+}
+
+gboolean
+clawt_integration_config_has_key(ClawtIntegrationConfig *self,
+                                 const gchar            *agent_id,
+                                 const gchar            *key)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    return integration_node_for(self, agent_id, key) != NULL;
+}
+
+gboolean
+clawt_integration_config_get_enabled(ClawtIntegrationConfig *self)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    if (self->shadow_reason != NULL)
+        return FALSE;
+
+    return clawt_integration_config_get_boolean(self, NULL, "enabled");
+}
+
+ClawtIntegrationScope
+clawt_integration_config_get_scope(ClawtIntegrationConfig *self)
+{
+    const gchar *nick;
+    gint value = 0;
+
+    g_return_val_if_fail(self != NULL, CLAWT_INTEGRATION_SCOPE_NONE);
+
+    nick = clawt_integration_config_get_string(self, NULL, "scope");
+
+    if (nick == NULL)
+        return CLAWT_INTEGRATION_SCOPE_SELECTED;
+
+    if (!clawt_enum_from_nick(CLAWT_TYPE_INTEGRATION_SCOPE, nick, &value)) {
+        /*
+         * An unrecognised scope reaches nobody rather than everybody.  The
+         * two failure modes are not symmetric: a typo that hands a
+         * credential to the whole fleet is a great deal worse than one
+         * that hands it to nothing and says so.
+         */
+        g_warning("integration %s: '%s' is not a scope; reaching nobody",
+                  self->name, nick);
+        return CLAWT_INTEGRATION_SCOPE_NONE;
+    }
+
+    return (ClawtIntegrationScope)value;
+}
+
+GStrv
+clawt_integration_config_get_agents(ClawtIntegrationConfig *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return node_to_strv(node_at_path(self->node, "agents", FALSE));
+}
+
+gboolean
+clawt_integration_config_covers(ClawtIntegrationConfig *self,
+                                const gchar            *agent_id)
+{
+    g_auto(GStrv) agents = NULL;
+    guint i;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    if (agent_id == NULL)
+        return FALSE;
+
+    if (!clawt_integration_config_get_enabled(self))
+        return FALSE;
+
+    switch (clawt_integration_config_get_scope(self)) {
+    case CLAWT_INTEGRATION_SCOPE_ALL:
+        return TRUE;
+
+    case CLAWT_INTEGRATION_SCOPE_NONE:
+        return FALSE;
+
+    case CLAWT_INTEGRATION_SCOPE_SELECTED:
+    default:
+        break;
+    }
+
+    agents = clawt_integration_config_get_agents(self);
+
+    for (i = 0; agents != NULL && agents[i] != NULL; i++) {
+        if (g_strcmp0(agents[i], agent_id) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+/*
+ * The mapping a write lands in: the instance itself, or the agent's own
+ * block under per_agent, created on demand.
+ */
+static YamlNode *
+integration_write_root(ClawtIntegrationConfig *self, const gchar *agent_id)
+{
+    g_autofree gchar *path = NULL;
+
+    if (agent_id == NULL)
+        return self->node;
+
+    path = g_strdup_printf("per_agent.%s", agent_id);
+
+    return node_at_path(self->node, path, TRUE);
+}
+
+/*
+ * Removes a key, and then removes the per-agent block if that emptied it.
+ *
+ * Without the second half, clearing an override leaves `per_agent: {agent:
+ * {}}` behind -- which reads, correctly but uselessly, as "this agent has
+ * overrides" in every listing that shows them.
+ */
+static gboolean
+integration_unset(ClawtIntegrationConfig *self,
+                  const gchar            *agent_id,
+                  const gchar            *key)
+{
+    YamlNode *root = integration_write_root(self, agent_id);
+    YamlMapping *mapping;
+
+    if (root == NULL || yaml_node_get_node_type(root) != YAML_NODE_MAPPING)
+        return FALSE;
+
+    mapping = yaml_node_get_mapping(root);
+
+    if (yaml_mapping_get_member(mapping, key) == NULL)
+        return FALSE;
+
+    yaml_mapping_remove_member(mapping, key);
+
+    if (agent_id != NULL && yaml_mapping_get_size(mapping) == 0) {
+        YamlNode *per_agent = node_at_path(self->node, "per_agent", FALSE);
+
+        if (per_agent != NULL &&
+            yaml_node_get_node_type(per_agent) == YAML_NODE_MAPPING) {
+            YamlMapping *outer = yaml_node_get_mapping(per_agent);
+
+            yaml_mapping_remove_member(outer, agent_id);
+
+            if (yaml_mapping_get_size(outer) == 0)
+                yaml_mapping_remove_member(yaml_node_get_mapping(self->node),
+                                           "per_agent");
+        }
+    }
+
+    return TRUE;
+}
+
+gboolean
+clawt_integration_config_set_string(ClawtIntegrationConfig *self,
+                                    const gchar            *agent_id,
+                                    const gchar            *key,
+                                    const gchar            *value)
+{
+    g_autoptr(YamlNode) node = NULL;
+    g_autofree gchar *schema_key = NULL;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    if (value == NULL)
+        return integration_unset(self, agent_id, key);
+
+    node = yaml_node_new_string(value);
+    schema_key = integration_schema_key(key);
+
+    return set_scalar(integration_write_root(self, agent_id), key,
+                      node, agent_id == NULL ? schema_key : NULL);
+}
+
+gboolean
+clawt_integration_config_set_boolean(ClawtIntegrationConfig *self,
+                                     const gchar            *agent_id,
+                                     const gchar            *key,
+                                     gboolean                value)
+{
+    g_autoptr(YamlNode) node = NULL;
+    g_autofree gchar *schema_key = NULL;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    node = yaml_node_new_boolean(value);
+    schema_key = integration_schema_key(key);
+
+    return set_scalar(integration_write_root(self, agent_id), key,
+                      node, agent_id == NULL ? schema_key : NULL);
+}
+
+gboolean
+clawt_integration_config_set_int(ClawtIntegrationConfig *self,
+                                 const gchar            *agent_id,
+                                 const gchar            *key,
+                                 gint64                  value)
+{
+    g_autoptr(YamlNode) node = NULL;
+    g_autofree gchar *schema_key = NULL;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    node = yaml_node_new_int(value);
+    schema_key = integration_schema_key(key);
+
+    return set_scalar(integration_write_root(self, agent_id), key,
+                      node, agent_id == NULL ? schema_key : NULL);
+}
+
+gboolean
+clawt_integration_config_set_string_list(ClawtIntegrationConfig *self,
+                                         const gchar            *agent_id,
+                                         const gchar            *key,
+                                         const gchar *const     *values)
+{
+    g_autoptr(YamlNode) node = NULL;
+    g_autoptr(YamlSequence) sequence = NULL;
+    g_autofree gchar *schema_key = NULL;
+    guint i;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    if (values == NULL || values[0] == NULL)
+        return integration_unset(self, agent_id, key);
+
+    sequence = yaml_sequence_new();
+
+    for (i = 0; values[i] != NULL; i++) {
+        g_autoptr(YamlNode) element = yaml_node_new_string(values[i]);
+
+        yaml_sequence_add_element(sequence, element);
+    }
+
+    node = yaml_node_new_sequence(sequence);
+    schema_key = integration_schema_key(key);
+
+    return set_scalar(integration_write_root(self, agent_id), key,
+                      node, agent_id == NULL ? schema_key : NULL);
+}
+
+gboolean
+clawt_integration_config_set_secret(ClawtIntegrationConfig *self,
+                                    const gchar            *agent_id,
+                                    const gchar            *key,
+                                    ClawtSecretBackend      backend,
+                                    const gchar            *locator)
+{
+    g_autoptr(YamlNode) node = NULL;
+    g_autoptr(YamlMapping) mapping = NULL;
+    g_autoptr(YamlNode) value = NULL;
+    g_autofree gchar *schema_key = NULL;
+    const gchar *backend_key;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    if (locator == NULL)
+        return integration_unset(self, agent_id, key);
+
+    switch (backend) {
+    case CLAWT_SECRET_BACKEND_ENV:
+        backend_key = "env";
+        break;
+    case CLAWT_SECRET_BACKEND_COMMAND:
+        backend_key = "command";
+        break;
+    case CLAWT_SECRET_BACKEND_FILE:
+    default:
+        backend_key = "file";
+        break;
+    }
+
+    mapping = yaml_mapping_new();
+    value = yaml_node_new_string(locator);
+    yaml_mapping_set_member(mapping, backend_key, value);
+    node = yaml_node_new_mapping(mapping);
+    schema_key = integration_schema_key(key);
+
+    return set_scalar(integration_write_root(self, agent_id), key,
+                      node, agent_id == NULL ? schema_key : NULL);
+}
+
+gboolean
+clawt_integration_config_set_scope(ClawtIntegrationConfig *self,
+                                   ClawtIntegrationScope   scope,
+                                   const gchar *const     *agents)
+{
+    const gchar *nick;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    nick = clawt_enum_to_nick(CLAWT_TYPE_INTEGRATION_SCOPE, (gint)scope);
+
+    if (nick == NULL)
+        return FALSE;
+
+    if (!clawt_integration_config_set_string(self, NULL, "scope", nick))
+        return FALSE;
+
+    /*
+     * The agent list is written whenever it is given, whatever the scope.
+     * Keeping it under `all` is what lets the UI offer "back to these
+     * three" instead of an empty box.
+     */
+    if (agents != NULL)
+        clawt_integration_config_set_string_list(self, NULL, "agents", agents);
+
+    return TRUE;
+}
+
+gboolean
+clawt_integration_config_set_enabled(ClawtIntegrationConfig *self,
+                                     gboolean                enabled)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    return clawt_integration_config_set_boolean(self, NULL, "enabled",
+                                                enabled);
+}
+
+/*
+ * Rebuilds the instance list from the YAML tree, exactly as reload_agents()
+ * does for agents and for the same reason.
+ */
+static void
+reload_integrations(ClawtConfig *self)
+{
+    YamlNode *node;
+    YamlSequence *sequence;
+    g_autoptr(GHashTable) seen = NULL;
+    guint i;
+    guint length;
+
+    g_ptr_array_set_size(self->integrations, 0);
+
+    node = node_at_path(self->root, "integrations", FALSE);
+
+    if (node == NULL || yaml_node_get_node_type(node) != YAML_NODE_SEQUENCE)
+        return;
+
+    seen = g_hash_table_new(g_str_hash, g_str_equal);
+    sequence = yaml_node_get_sequence(node);
+    length = yaml_sequence_get_length(sequence);
+
+    for (i = 0; i < length; i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+        ClawtIntegrationConfig *instance;
+        const gchar *name;
+
+        if (yaml_node_get_node_type(element) != YAML_NODE_MAPPING) {
+            g_ptr_array_add(self->warnings,
+                g_strdup_printf("integrations[%u] is not a mapping; ignored",
+                                i));
+            continue;
+        }
+
+        name = member_string(yaml_node_get_mapping(element), "name");
+
+        if (name == NULL) {
+            g_ptr_array_add(self->warnings,
+                g_strdup_printf("integrations[%u] has no name; ignored", i));
+            continue;
+        }
+
+        instance = clawt_integration_config_new(self, name, element);
+
+        if (g_hash_table_contains(seen, name))
+            integration_mark_shadow(instance,
+                                    "another integration already uses the "
+                                    "name '%s'", name);
+        else
+            g_hash_table_add(seen, (gpointer)name);
+
+        if (clawt_integration_config_get_type_id(instance) == NULL)
+            integration_mark_shadow(instance, "no type is set");
+
+        if (clawt_integration_config_is_shadow(instance))
+            g_ptr_array_add(self->warnings,
+                g_strdup_printf("integration '%s' disabled: %s", name,
+                    clawt_integration_config_get_shadow_reason(instance)));
+
+        g_ptr_array_add(self->integrations, instance);
+    }
+}
+
+GPtrArray *
+clawt_config_get_integrations(ClawtConfig *self)
+{
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+
+    return self->integrations;
+}
+
+ClawtIntegrationConfig *
+clawt_config_get_integration(ClawtConfig *self, const gchar *name)
+{
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+    g_return_val_if_fail(name != NULL, NULL);
+
+    for (i = 0; i < self->integrations->len; i++) {
+        ClawtIntegrationConfig *instance =
+            g_ptr_array_index(self->integrations, i);
+
+        if (g_strcmp0(clawt_integration_config_get_name(instance), name) == 0)
+            return instance;
+    }
+
+    return NULL;
+}
+
+ClawtIntegrationConfig *
+clawt_config_add_integration(ClawtConfig  *self,
+                             const gchar  *name,
+                             const gchar  *type_id,
+                             GError      **error)
+{
+    YamlNode *list;
+    g_autoptr(YamlNode) entry = NULL;
+    g_autoptr(YamlNode) name_node = NULL;
+    g_autoptr(YamlNode) type_node = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+
+    /*
+     * The same id rules as an agent, because the name becomes a key in
+     * the agent's .mcp.json and a file name under its credentials
+     * directory.  A name with a slash in it would write outside both.
+     */
+    if (!clawt_is_valid_id(name)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "'%s' is not a usable integration name: names may hold "
+                    "only lowercase letters, digits, '-' and '_', and must "
+                    "not start with punctuation",
+                    name != NULL ? name : "");
+        return NULL;
+    }
+
+    if (type_id == NULL || *type_id == '\0') {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "an integration needs a type");
+        return NULL;
+    }
+
+    if (clawt_config_get_integration(self, name) != NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_ALREADY_EXISTS,
+                    "an integration called '%s' already exists", name);
+        return NULL;
+    }
+
+    list = node_at_path(self->root, "integrations", FALSE);
+
+    if (list == NULL ||
+        yaml_node_get_node_type(list) != YAML_NODE_SEQUENCE) {
+        g_autoptr(YamlNode) fresh = yaml_node_new_sequence(NULL);
+
+        yaml_mapping_set_member(yaml_node_get_mapping(self->root),
+                                "integrations", fresh);
+        list = node_at_path(self->root, "integrations", FALSE);
+        apply_schema_comment(list, "integrations");
+    }
+
+    entry = yaml_node_new_mapping(NULL);
+    name_node = yaml_node_new_string(name);
+    type_node = yaml_node_new_string(type_id);
+    yaml_mapping_set_member(yaml_node_get_mapping(entry), "name", name_node);
+    yaml_mapping_set_member(yaml_node_get_mapping(entry), "type", type_node);
+
+    yaml_sequence_add_element(yaml_node_get_sequence(list), entry);
+
+    reload_integrations(self);
+
+    return clawt_config_get_integration(self, name);
+}
+
+gboolean
+clawt_config_remove_integration(ClawtConfig *self, const gchar *name)
+{
+    YamlNode *list;
+    YamlSequence *sequence;
+    guint i;
+    guint length;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+    g_return_val_if_fail(name != NULL, FALSE);
+
+    list = node_at_path(self->root, "integrations", FALSE);
+
+    if (list == NULL || yaml_node_get_node_type(list) != YAML_NODE_SEQUENCE)
+        return FALSE;
+
+    sequence = yaml_node_get_sequence(list);
+    length = yaml_sequence_get_length(sequence);
+
+    for (i = 0; i < length; i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+
+        if (yaml_node_get_node_type(element) != YAML_NODE_MAPPING)
+            continue;
+
+        if (g_strcmp0(member_string(yaml_node_get_mapping(element), "name"),
+                      name) != 0)
+            continue;
+
+        yaml_sequence_remove_element(sequence, i);
+        reload_integrations(self);
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+/*
+ * Resolves an `env` mapping, where a value may be a literal or a secret.
+ *
+ * The two are told apart by node type rather than by a marker, which is
+ * how a secret reference is spelled everywhere else in this file: a
+ * scalar is the value, a mapping is `{env: NAME}` or `{file: PATH}` and
+ * is fetched.  Without this an MCP server needing an API key could only
+ * be given one by writing it into clawtilla.yaml, which is the single
+ * thing the secret machinery exists to prevent.
+ */
+GHashTable *
+clawt_integration_config_resolve_env(ClawtIntegrationConfig  *self,
+                                     const gchar             *agent_id,
+                                     const gchar             *key,
+                                     const gchar             *secrets_dir,
+                                     GError                 **error)
+{
+    g_autoptr(GHashTable) out = NULL;
+    ClawtSecretBackend default_backend;
+    guint timeout;
+    guint pass;
+
+    g_return_val_if_fail(self != NULL, NULL);
+    g_return_val_if_fail(key != NULL, NULL);
+
+    out = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    default_backend = (ClawtSecretBackend)
+        clawt_config_get_enum(self->config, "secrets.default_backend");
+    timeout = (guint)clawt_config_get_int(self->config,
+                                          "secrets.command_timeout_seconds");
+
+    /*
+     * The instance's own values first, then the agent's, so an override
+     * replaces one variable without restating the block.
+     */
+    for (pass = 0; pass < 2; pass++) {
+        YamlNode *node;
+        YamlMapping *mapping;
+        GList *members;
+        GList *l;
+
+        if (pass == 0) {
+            node = node_at_path(self->node, key, FALSE);
+        } else {
+            g_autofree gchar *path = NULL;
+
+            if (agent_id == NULL)
+                break;
+
+            path = g_strdup_printf("per_agent.%s.%s", agent_id, key);
+            node = node_at_path(self->node, path, FALSE);
+        }
+
+        if (node == NULL ||
+            yaml_node_get_node_type(node) != YAML_NODE_MAPPING)
+            continue;
+
+        mapping = yaml_node_get_mapping(node);
+        members = yaml_mapping_get_members(mapping);
+
+        for (l = members; l != NULL; l = l->next) {
+            const gchar *name = l->data;
+            YamlNode *value = yaml_mapping_get_member(mapping, name);
+
+            if (value == NULL)
+                continue;
+
+            if (yaml_node_get_node_type(value) == YAML_NODE_SCALAR) {
+                g_hash_table_insert(out, g_strdup(name),
+                                    g_strdup(yaml_node_get_string(value)));
+                continue;
+            }
+
+            {
+                g_autoptr(ClawtSecretRef) ref = NULL;
+                g_autoptr(GError) local = NULL;
+                gchar *resolved;
+
+                ref = clawt_secret_ref_parse(value, default_backend, &local);
+
+                if (ref == NULL) {
+                    g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                                "integration '%s': %s.%s is neither a value "
+                                "nor a secret reference: %s",
+                                self->name, key, name,
+                                local != NULL ? local->message
+                                              : "unknown reason");
+                    g_list_free(members);
+                    return NULL;
+                }
+
+                resolved = clawt_secret_ref_resolve(ref, secrets_dir, timeout,
+                                                    &local);
+
+                if (resolved == NULL) {
+                    g_autofree gchar *described =
+                        clawt_secret_ref_describe(ref);
+
+                    /*
+                     * Named by reference, never by value.  A failure here
+                     * is one variable's worth of trouble and the message
+                     * has to be enough to fix it without being enough to
+                     * leak it.
+                     */
+                    g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_SECRET,
+                                "integration '%s': %s.%s: could not resolve "
+                                "%s: %s",
+                                self->name, key, name, described,
+                                local != NULL ? local->message
+                                              : "unknown reason");
+                    g_list_free(members);
+                    return NULL;
+                }
+
+                g_hash_table_insert(out, g_strdup(name), resolved);
+            }
+        }
+
+        g_list_free(members);
+    }
+
+    return g_steal_pointer(&out);
 }

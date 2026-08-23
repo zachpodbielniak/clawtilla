@@ -39,6 +39,63 @@ G_DECLARE_FINAL_TYPE(ClawtIpcServer, clawt_ipc_server, CLAWT, IPC_SERVER,
 typedef JsonNode *(*ClawtIpcHandler)(JsonNode *request, gpointer user_data);
 
 /**
+ * ClawtIpcPending:
+ *
+ * A reply a handler could not give straight away.
+ *
+ * A #ClawtIpcHandler runs on the daemon's main context while the client
+ * blocks, so a handler that waits on the network stalls every other
+ * client for as long as the far end takes -- the rule that moved the
+ * model cache out of daemon start, met again from the other direction.
+ * A handler with real work to do calls clawt_ipc_server_defer(), returns
+ * %NULL, and answers when the work finishes.
+ *
+ * It holds a reference to the client, so a connection that closes while
+ * the answer is in flight is still there to be answered into and simply
+ * drops it.
+ */
+typedef struct _ClawtIpcPending ClawtIpcPending;
+
+/**
+ * clawt_ipc_server_defer: (skip)
+ * @self: a #ClawtIpcServer
+ * @request: the frame being answered
+ *
+ * Claims the right to answer @request later.
+ *
+ * Only valid from inside a #ClawtIpcHandler, which must then return
+ * %NULL: the request's answer is whatever is passed to
+ * clawt_ipc_pending_respond(), and a handler that both defers and returns
+ * a frame would send two.
+ *
+ * Returns: (transfer full) (nullable): the token to answer with
+ */
+ClawtIpcPending *clawt_ipc_server_defer(ClawtIpcServer *self,
+                                        JsonNode       *request);
+
+/**
+ * clawt_ipc_pending_respond: (skip)
+ * @self: (transfer full): a #ClawtIpcPending
+ * @response: (transfer full) (nullable): the frame to send
+ *
+ * Sends the answer and releases the token.
+ *
+ * Consumes both, so it cannot be called twice and there is nothing left
+ * to leak on the paths that answer early.
+ */
+void clawt_ipc_pending_respond(ClawtIpcPending *self, JsonNode *response);
+
+/**
+ * clawt_ipc_pending_get_request: (skip)
+ * @self: a #ClawtIpcPending
+ *
+ * The frame being answered, kept so the reply carries its id.
+ *
+ * Returns: (transfer none): the request
+ */
+JsonNode *clawt_ipc_pending_get_request(ClawtIpcPending *self);
+
+/**
  * clawt_ipc_server_new:
  * @socket_path: the unix socket to listen on
  *

@@ -553,4 +553,344 @@ void              clawt_agent_config_unref(ClawtAgentConfig *self);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtAgentConfig, clawt_agent_config_unref)
 
+/* ── Integration instances ───────────────────────────────────────── */
+
+/**
+ * ClawtIntegrationConfig:
+ *
+ * One entry from the top-level `integrations:` list.
+ *
+ * Shaped exactly like #ClawtAgentConfig and for the same reason: a thin
+ * handle over the instance's YAML mapping, with typed getters that fall
+ * back to the schema, rather than a struct of parsed fields that has to be
+ * kept in step with the file.
+ *
+ * Every getter takes an agent id.  An instance may be handed to more than
+ * one agent, and the things that must differ between them -- a Matrix user
+ * id, a mailbox, a webhook port -- live under `per_agent`, so "the value of
+ * this key" is only ever a question with an answer once you say who is
+ * asking.  Passing %NULL asks for the instance's own value, which is what
+ * a settings dialog wants and what an agent almost never does.
+ */
+
+#define CLAWT_TYPE_INTEGRATION_CONFIG (clawt_integration_config_get_type())
+
+GType clawt_integration_config_get_type(void) G_GNUC_CONST;
+
+ClawtIntegrationConfig *clawt_integration_config_ref(ClawtIntegrationConfig *self);
+void                    clawt_integration_config_unref(ClawtIntegrationConfig *self);
+
+/**
+ * clawt_integration_config_get_name:
+ * @self: a #ClawtIntegrationConfig
+ *
+ * Returns: (transfer none): the instance's name
+ */
+const gchar *clawt_integration_config_get_name(ClawtIntegrationConfig *self);
+
+/**
+ * clawt_integration_config_get_type_id:
+ * @self: a #ClawtIntegrationConfig
+ *
+ * The `type:` field -- "matrix", "mcp" and so on.
+ *
+ * Named `type_id` rather than `type` because #GType already owns that
+ * spelling on a boxed type.
+ *
+ * Returns: (transfer none) (nullable): the type id
+ */
+const gchar *clawt_integration_config_get_type_id(ClawtIntegrationConfig *self);
+
+/**
+ * clawt_integration_config_get_enabled:
+ * @self: a #ClawtIntegrationConfig
+ *
+ * Returns: %TRUE if the instance is switched on
+ */
+gboolean clawt_integration_config_get_enabled(ClawtIntegrationConfig *self);
+
+/**
+ * clawt_integration_config_get_scope:
+ * @self: a #ClawtIntegrationConfig
+ *
+ * Returns: which agents it reaches
+ */
+ClawtIntegrationScope
+clawt_integration_config_get_scope(ClawtIntegrationConfig *self);
+
+/**
+ * clawt_integration_config_get_agents:
+ * @self: a #ClawtIntegrationConfig
+ *
+ * The ids named in `agents:`, whatever the scope.
+ *
+ * Returned even when the scope is `all` or `none`, so that switching scope
+ * back to `selected` in a dialog does not lose the selection -- a list
+ * that empties itself when you look away is not a list anybody trusts.
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the ids
+ */
+GStrv clawt_integration_config_get_agents(ClawtIntegrationConfig *self);
+
+/**
+ * clawt_integration_config_covers:
+ * @self: a #ClawtIntegrationConfig
+ * @agent_id: an agent id
+ *
+ * Whether this instance is handed to @agent_id.
+ *
+ * Returns: %TRUE if it is enabled and in scope for that agent
+ */
+gboolean clawt_integration_config_covers(ClawtIntegrationConfig *self,
+                                         const gchar            *agent_id);
+
+/**
+ * clawt_integration_config_is_shadow:
+ * @self: a #ClawtIntegrationConfig
+ *
+ * Whether this instance could not be understood.
+ *
+ * The same treatment a shadow agent gets: an unknown type or a missing
+ * name disables one integration and explains itself, rather than stopping
+ * the daemon.
+ *
+ * Returns: %TRUE if it refuses to be used
+ */
+gboolean clawt_integration_config_is_shadow(ClawtIntegrationConfig *self);
+
+/**
+ * clawt_integration_config_get_shadow_reason:
+ * @self: a #ClawtIntegrationConfig
+ *
+ * Returns: (transfer none) (nullable): why it is a shadow
+ */
+const gchar *
+clawt_integration_config_get_shadow_reason(ClawtIntegrationConfig *self);
+
+/**
+ * clawt_integration_config_get_string:
+ * @self: a #ClawtIntegrationConfig
+ * @agent_id: (nullable): whose value to read, or %NULL for the instance's own
+ * @key: a key relative to the instance, such as "homeserver"
+ *
+ * Reads a value, preferring @agent_id's override under `per_agent`, then
+ * the instance's own, then the schema default.
+ *
+ * Returns: (transfer none) (nullable): the value
+ */
+const gchar *clawt_integration_config_get_string(ClawtIntegrationConfig *self,
+                                                 const gchar            *agent_id,
+                                                 const gchar            *key);
+
+gboolean clawt_integration_config_get_boolean(ClawtIntegrationConfig *self,
+                                              const gchar            *agent_id,
+                                              const gchar            *key);
+
+gint64   clawt_integration_config_get_int(ClawtIntegrationConfig *self,
+                                          const gchar            *agent_id,
+                                          const gchar            *key);
+
+/**
+ * clawt_integration_config_get_string_list:
+ * @self: a #ClawtIntegrationConfig
+ * @agent_id: (nullable): whose value to read
+ * @key: a key relative to the instance
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the values, never %NULL
+ */
+GStrv    clawt_integration_config_get_string_list(ClawtIntegrationConfig *self,
+                                                  const gchar            *agent_id,
+                                                  const gchar            *key);
+
+/**
+ * clawt_integration_config_get_mapping:
+ * @self: a #ClawtIntegrationConfig
+ * @agent_id: (nullable): whose value to read
+ * @key: a key relative to the instance
+ *
+ * A free-form mapping such as `env`.
+ *
+ * Merged rather than replaced when an agent overrides it: an override that
+ * silently dropped the keys it did not mention would mean repeating the
+ * whole block to change one variable.
+ *
+ * Returns: (transfer full) (element-type utf8 utf8): the entries
+ */
+GHashTable *clawt_integration_config_get_mapping(ClawtIntegrationConfig *self,
+                                                 const gchar            *agent_id,
+                                                 const gchar            *key);
+
+/**
+ * clawt_integration_config_get_secret:
+ * @self: a #ClawtIntegrationConfig
+ * @agent_id: (nullable): whose value to read
+ * @key: a key relative to the instance
+ *
+ * Returns: (transfer full) (nullable): the reference, or %NULL if unset
+ */
+ClawtSecretRef *clawt_integration_config_get_secret(ClawtIntegrationConfig *self,
+                                                    const gchar            *agent_id,
+                                                    const gchar            *key);
+
+gboolean clawt_integration_config_has_key(ClawtIntegrationConfig *self,
+                                          const gchar            *agent_id,
+                                          const gchar            *key);
+
+/**
+ * clawt_integration_config_set_string:
+ * @self: a #ClawtIntegrationConfig
+ * @agent_id: (nullable): whose value to write, or %NULL for the instance's own
+ * @key: a key relative to the instance
+ * @value: (nullable): the value, or %NULL to unset it
+ *
+ * Returns: %TRUE if the file changed
+ */
+gboolean clawt_integration_config_set_string(ClawtIntegrationConfig *self,
+                                             const gchar            *agent_id,
+                                             const gchar            *key,
+                                             const gchar            *value);
+
+gboolean clawt_integration_config_set_boolean(ClawtIntegrationConfig *self,
+                                              const gchar            *agent_id,
+                                              const gchar            *key,
+                                              gboolean                value);
+
+gboolean clawt_integration_config_set_int(ClawtIntegrationConfig *self,
+                                          const gchar            *agent_id,
+                                          const gchar            *key,
+                                          gint64                  value);
+
+/**
+ * clawt_integration_config_set_string_list:
+ * @self: a #ClawtIntegrationConfig
+ * @agent_id: (nullable): whose value to write
+ * @key: a key relative to the instance
+ * @values: (nullable) (array zero-terminated=1): the values, or %NULL to unset
+ *
+ * Returns: %TRUE if the file changed
+ */
+gboolean clawt_integration_config_set_string_list(ClawtIntegrationConfig *self,
+                                                  const gchar            *agent_id,
+                                                  const gchar            *key,
+                                                  const gchar *const     *values);
+
+/**
+ * clawt_integration_config_set_secret:
+ * @self: a #ClawtIntegrationConfig
+ * @agent_id: (nullable): whose value to write
+ * @key: a key relative to the instance
+ * @backend: which secret backend
+ * @locator: (nullable): the file, variable or command, or %NULL to unset
+ *
+ * Writes a secret *reference*.  There is no way to write a secret's value
+ * here, which is the point of the type.
+ *
+ * Returns: %TRUE if the file changed
+ */
+gboolean clawt_integration_config_set_secret(ClawtIntegrationConfig *self,
+                                             const gchar            *agent_id,
+                                             const gchar            *key,
+                                             ClawtSecretBackend      backend,
+                                             const gchar            *locator);
+
+/**
+ * clawt_integration_config_set_scope:
+ * @self: a #ClawtIntegrationConfig
+ * @scope: who should get it
+ * @agents: (nullable) (array zero-terminated=1): ids, for %CLAWT_INTEGRATION_SCOPE_SELECTED
+ *
+ * Returns: %TRUE if the file changed
+ */
+gboolean clawt_integration_config_set_scope(ClawtIntegrationConfig *self,
+                                            ClawtIntegrationScope   scope,
+                                            const gchar *const     *agents);
+
+/**
+ * clawt_integration_config_set_enabled:
+ * @self: a #ClawtIntegrationConfig
+ * @enabled: whether it is live
+ *
+ * Returns: %TRUE if the file changed
+ */
+gboolean clawt_integration_config_set_enabled(ClawtIntegrationConfig *self,
+                                              gboolean                enabled);
+
+/**
+ * clawt_integration_config_resolve_env:
+ * @self: a #ClawtIntegrationConfig
+ * @agent_id: (nullable): whose values to read
+ * @key: the mapping key, in practice "env"
+ * @secrets_dir: (nullable): where a `{file: ...}` reference is relative to
+ * @error: (out) (optional): return location for a #GError
+ *
+ * A mapping whose values may be literals or secret references, with the
+ * references fetched.
+ *
+ * Separate from clawt_integration_config_get_mapping() because it can
+ * fail and because it holds real secrets: the result goes straight into
+ * a 0600 file and nowhere else.
+ *
+ * Returns: (transfer full) (nullable) (element-type utf8 utf8): the
+ *   resolved entries, or %NULL on the first that could not be fetched
+ */
+GHashTable *
+clawt_integration_config_resolve_env(ClawtIntegrationConfig  *self,
+                                     const gchar             *agent_id,
+                                     const gchar             *key,
+                                     const gchar             *secrets_dir,
+                                     GError                 **error);
+
+/**
+ * clawt_config_get_integrations:
+ * @self: a #ClawtConfig
+ *
+ * Every instance in the file, including shadows.
+ *
+ * Returns: (transfer none) (element-type ClawtIntegrationConfig): the instances
+ */
+GPtrArray *clawt_config_get_integrations(ClawtConfig *self);
+
+/**
+ * clawt_config_get_integration:
+ * @self: a #ClawtConfig
+ * @name: an instance name
+ *
+ * Returns: (transfer none) (nullable): the instance, or %NULL
+ */
+ClawtIntegrationConfig *clawt_config_get_integration(ClawtConfig *self,
+                                                     const gchar *name);
+
+/**
+ * clawt_config_add_integration:
+ * @self: a #ClawtConfig
+ * @name: a name unique in the file
+ * @type_id: which kind: "matrix", "email", "webhook", "local", "cmacs", "mcp"
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Adds an instance and returns it, ready to have its keys set.
+ *
+ * As with an agent, this changes the in-memory config only:
+ * clawt_config_save() writes it, and the daemon has to reload before
+ * anything is handed to an agent.
+ *
+ * Returns: (transfer none) (nullable): the new instance, or %NULL
+ */
+ClawtIntegrationConfig *clawt_config_add_integration(ClawtConfig  *self,
+                                                     const gchar  *name,
+                                                     const gchar  *type_id,
+                                                     GError      **error);
+
+/**
+ * clawt_config_remove_integration:
+ * @self: a #ClawtConfig
+ * @name: an instance name
+ *
+ * Returns: %TRUE if it was there
+ */
+gboolean clawt_config_remove_integration(ClawtConfig *self,
+                                         const gchar *name);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtIntegrationConfig,
+                              clawt_integration_config_unref)
+
 G_END_DECLS

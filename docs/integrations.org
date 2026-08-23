@@ -1,42 +1,165 @@
 #+title: Integrations
-#+description: Matrix, email, webhooks, local and cmacs; credentials and health
+#+description: Matrix, email, webhooks and MCP servers; scoping, credentials and health
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-21 Fri]
-#+version: 0.1.0
+#+updated: [2026-08-23 Sat]
+#+version: 0.2.0
 
 * Integrations
 
-An integration is how an agent reaches the world outside the fleet.
-libreclaw implements them channel-side; clawtilla's job is declarative
-configuration, credential files, validation and health.
+An integration is how an agent reaches -- or is reached from -- the world
+outside the fleet.  There are two directions, and they behave completely
+differently:
 
-#+begin_src bash
-clawtilla integration list researcher
-clawtilla integration health researcher
+- a *channel* puts a person on the other end of an agent's reply. Matrix,
+  email, a webhook, a terminal, an Emacs session.  A message arrives as an
+  ordinary turn and costs the agent a turn to answer.
+- a *tools* integration gives an agent an MCP server.  Its tools appear
+  beside the agent's own and cost nothing until one is called.
+
+They are configured the same way, which is the point: adding support for
+something new is a config entry, not a patch.
+
+** Where an integration lives
+
+Two places, and both are legitimate.
+
+*Inside an agent*, for a connection only that agent will ever use:
+
+#+begin_src yaml
+agents:
+  - id: researcher
+    integrations:
+      matrix:
+        enabled: true
+        homeserver: "https://matrix.example.org"
+        user_id: "@researcher:example.org"
+        access_token: {file: "researcher-matrix"}
 #+end_src
 
-** matrix
+*At the top level*, as a named instance with a scope, for a connection
+handed to several agents or to the whole fleet:
 
 #+begin_src yaml
 integrations:
-  matrix:
-    enabled: true
-    homeserver: "https://matrix.example.com"
-    user_id: "@researcher:example.com"
-    access_token: {file: "~/.clawtilla/secrets/researcher-matrix"}
-    rooms: ["!abcdef:example.com"]
-    require_mention: true
+  - name: github
+    type: mcp
+    scope: all
+    description: "GitHub issues and pull requests"
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-github"]
+    env:
+      GITHUB_TOKEN: {env: GH_TOKEN}
 #+end_src
 
-The token is resolved at start and written to
-~<state_dir>/agents/<id>/credentials/matrix_credentials.json~ at 0600.
-It never appears in any rendered YAML.
+Everything downstream -- the rendered libreclaw config, the agent's
+=.mcp.json=, the paragraph written into its =TOOLS.org=, the health check
+-- reads the *resolved* set and never looks at which of the two it came
+from.  There is one code path, so there is one behaviour.
 
-Bridged networks -- Discord, Signal, anything else with a Matrix bridge
--- are just rooms, so an agent reaches them without knowing they are
-bridged.
+** Scope: one bot, some bots, all bots
+
+| =scope=    | Who gets it                                          |
+|------------+------------------------------------------------------|
+| =all=      | every agent, including ones created later            |
+| =selected= | the ids in =agents:=                                 |
+| =none=     | nobody -- parked, with its settings and credentials  |
+
+=none= exists so an instance can be switched off without being deleted.
+Turning a Matrix account off for an afternoon should not mean retyping
+its homeserver, its user id and its rooms, and a credential that has to
+be re-entered to be re-enabled tends to end up somewhere worse than a
+config file.
+
+The =agents:= list is kept whatever the scope, so switching to =all= and
+back does not lose the selection.
+
+#+begin_src bash
+clawtilla integration scope home researcher,scribe   # a group
+clawtilla integration scope github all               # the fleet
+clawtilla integration scope home none                # park it
+#+end_src
+
+** Sharing an account that cannot be shared
+
+A Matrix account is one login.  Two agents on the same =user_id= both
+receive every message in every room and both answer as the same person,
+which reads as the fleet misbehaving rather than as a mistake in a file.
+
+So each type declares the keys that must *differ* between agents sharing
+an instance, and those go under =per_agent=:
+
+#+begin_src yaml
+integrations:
+  - name: home
+    type: matrix
+    scope: selected
+    agents: [researcher, scribe]
+    homeserver: "https://matrix.example.org"     # shared
+    require_mention: true                        # shared
+    per_agent:
+      researcher:
+        user_id: "@researcher:example.org"
+        access_token: {file: "home-researcher-matrix-token"}
+      scribe:
+        user_id: "@scribe:example.org"
+        access_token: {file: "home-scribe-matrix-token"}
+#+end_src
+
+Any key may be overridden, not only the identity ones -- a different room
+list per agent is an ordinary thing to want.
+
+| Type       | Must differ per agent      |
+|------------+----------------------------|
+| =matrix=   | =user_id=, =access_token=  |
+| =email=    | =username=                 |
+| =webhook=  | =port=                     |
+| =mcp=      | nothing; share it freely   |
+
+Two agents that end up sharing one of these are reported by
+=clawtilla integration list= and in the Integrations page, because it is
+not visible from either agent alone.
+
+** Matrix
+
+The one people actually want, and the one with a step that used to be
+tedious: getting an access token out of a client by hand.  clawtilla logs
+in for you.
+
+#+begin_src bash
+clawtilla integration add home matrix
+clawtilla integration matrix-login home matrix.example.org researcher
+clawtilla integration matrix-rooms home
+clawtilla integration set home rooms=!abc:example.org,!def:example.org
+clawtilla integration scope home researcher
+#+end_src
+
+The password is read from stdin, used once, by the daemon, and never
+stored -- there is deliberately no =--password= flag, because an argument
+is in the shell history and in the process table.  What comes back is an
+access token, written to a file under =secrets.dir= at 0600 and referred
+to from the config by path.  *It is never returned to the client that
+asked for the login*: a secret's value has no business in an IPC
+response, and here it does not need to be in one.
+
+The session appears on the account's device list as
+=clawtilla (researcher)=, which is where you revoke it.
+
+The =user_id= written into the config is the server's answer, not what
+was typed: signing in as =researcher= gives =@researcher:example.org=,
+and the short form authenticates perfectly and matches no mention.
+
+An empty =rooms= list means every room the account is joined to,
+including ones it is invited to later.  =require_mention= defaults to
+*on*, unlike a clawtilla room: a Matrix room usually has people in it
+talking to each other, and an agent that takes a turn on every line of it
+is both expensive and unbearable.
+
+Bridged rooms -- Discord, Signal, anything else with a Matrix bridge --
+are just rooms, so an agent reaches them without knowing they are
+bridged.  Its =TOOLS.org= says so, because an agent reasoning about
+"Matrix users" will otherwise misjudge who it is talking to.
 
 Health check: a TCP connection to the homeserver.
 
@@ -44,8 +167,10 @@ Health check: a TCP connection to the homeserver.
 
 #+begin_src yaml
 integrations:
-  email:
-    enabled: true
+  - name: support
+    type: email
+    scope: selected
+    agents: [triage]
     imap_host: "imap.example.com"
     imap_port: 993
     smtp_host: "smtp.example.com"
@@ -67,8 +192,10 @@ send looks like it is ignoring people.
 
 #+begin_src yaml
 integrations:
-  webhook:
-    enabled: true
+  - name: alerts
+    type: webhook
+    scope: selected
+    agents: [oncall]
     port: 9100
 #+end_src
 
@@ -77,46 +204,201 @@ listener the failure that matters is the port already being taken, and
 binding then immediately closing is the only way to find that out without
 starting the agent.
 
-Give each agent a different port.
+Give each agent a different port under =per_agent=.
 
-** local
+** mcp -- anything with an MCP server
 
-#+begin_src yaml
-integrations:
-  local: true
-#+end_src
-
-stdin and stdout.  Only for an agent you run by hand -- it owns fd 0 and
-1, so two agents with it would fight over the terminal, and an agent
-started by the daemon has no terminal at all.  It is never rendered
-unless asked for explicitly.
-
-** cmacs
+This is the general one.  A hosted connector, somebody's stdio binary, a
+service behind an HTTP endpoint: one entry reaches every agent in scope,
+instead of the same block pasted into each agent's =.mcp.json= by hand.
 
 #+begin_src yaml
 integrations:
-  cmacs: true
+  - name: github
+    type: mcp
+    scope: all
+    description: "GitHub issues and pull requests"
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-github"]
+    env:
+      GITHUB_TOKEN: {env: GH_TOKEN}
 #+end_src
 
-libreclaw's in-process Emacs integration.
+Or over the network, instead of a command:
+
+#+begin_src yaml
+integrations:
+  - name: connectors
+    type: mcp
+    scope: all
+    url: "https://mcp.example.com/v1"
+#+end_src
+
+One or the other, never both: an entry naming a command *and* a URL is
+two different servers and there is no way to tell which was meant, so it
+is refused.
+
+An =env= value may be a literal or a secret reference, told apart by
+shape.  References are resolved when the agent's =.mcp.json= is written,
+because the CLI that reads that file has never heard of clawtilla's
+secret backends -- which is why the file is 0600 and already holds the
+agent's own token.
+
+Several =mcp= integrations on one agent is the ordinary case; each gets
+its own entry.
+
+Health check: that =command= is on the daemon's =PATH=, or that =url=
+answers.  The command is *not* run.  Starting an MCP server to find out
+whether it starts is a side effect nobody asked for -- it may log in
+somewhere, or cost money -- and the failure people actually hit is a
+binary that is not installed.
+
+*** The =clawtilla-= prefix in =.mcp.json= is reserved
+
+An integration called =github= becomes a server called =clawtilla-github=
+in every agent in scope.  clawtilla owns =clawtilla= and every key
+beginning =clawtilla-=: it rewrites them on every start and *removes* the
+ones that should no longer be there, because an entry left behind after a
+grant is withdrawn points the agent at a server the fleet has stopped
+offering.
+
+Everything else in that file is yours and is carried across untouched.
+Do not name a server of your own =clawtilla-anything=.
+
+** local and cmacs
+
+#+begin_src yaml
+agents:
+  - id: scratch
+    integrations:
+      local: true
+#+end_src
+
+=local= is stdin and stdout.  Only for an agent you run by hand -- it
+owns fd 0 and 1, so two agents with it would fight over the terminal, and
+an agent started by the daemon has no terminal at all.  At most one agent
+in the fleet may have it, and clawtilla says so if two do.
+
+=cmacs= is libreclaw's in-process Emacs integration.
+
+** What the agent is told
+
+An integration nobody told the agent about is an integration it does not
+use.  A Matrix channel is invisible from inside a session -- messages
+simply arrive -- and an MCP server's tools appear with no indication of
+who they reach or whether a person is on the other end.
+
+So clawtilla writes a section of the agent's =TOOLS.org=, between two
+markers:
+
+#+begin_example
+# BEGIN clawtilla integrations -- rewritten on every start
+...
+# END clawtilla integrations
+#+end_example
+
+Everything outside the markers is yours and is never touched.  The
+section is replaced on every start and skipped when nothing changed, so
+an editor with the file open does not reload it for no reason.  A file
+whose markers somebody removed gets them back, appended -- there is no
+position in a file of somebody's prose that clawtilla could claim to know
+is the right one.
+
+The =description:= you write on an integration goes in beside it.  It is
+the sentence the model reads when deciding whether this is the thing to
+reach for, so it is worth filling in for anything whose name is not
+self-explanatory.
+
+** Health
+
+#+begin_src bash
+clawtilla integration health researcher            # everything it has
+clawtilla integration health researcher home       # just one
+#+end_src
+
+A failing check is a non-zero exit, so this is usable in a pre-flight
+script rather than only by eye.
+
+Deliberately a connectivity check rather than a login: a check that
+needed credentials could not run before they are resolved, and the
+failure people actually hit is a typo in a hostname or a firewall.
+
+It runs *asynchronously* in the daemon.  A handler runs on the daemon's
+main context while the client blocks, so one that waited on the network
+would stall every other client for the length of the timeout -- ten
+seconds in which no agent's message is routed.
 
 ** Validation
 
-Every enabled integration is checked before the agent starts, and a
-missing required key refuses the start with the key named.
+Checked when the config loads and again before an agent starts:
 
-That is deliberate.  An agent whose Matrix block is missing its
-homeserver starts perfectly cleanly and then never receives anything --
-a much worse failure than being told which line to fix.
+- an enabled integration missing a required key names the key
+- a credential key with no secret reference names it, and says what a
+  reference looks like
+- an =mcp= entry with neither a command nor a URL, or with both
+- two agents sharing an identity key on one instance
+- two agents with =local=
+- an instance naming an agent that is not there
+- an unknown =type=, which disables *that instance* and nothing else
 
-** Adding one
+The last one is the same treatment a shadow agent gets, and for the same
+reason: a config written by a newer clawtilla must still load in an older
+one.
 
-Implement ~ClawtIntegrationProvider~ in a plugin: ~get_id~ returns the
-~integrations.<id>~ key you answer to, ~validate~ checks the settings,
-~render_config~ returns the YAML for the agent's ~channels:~ block.  See
-[[file:plugins.org][plugins.org]].
+A missing key is reported rather than tolerated because the failure it
+causes is silent.  An agent whose Matrix block has no homeserver starts
+perfectly cleanly and then never receives anything -- much worse than
+being told which line to fix.
 
-The built-in five are a declarative table rather than five classes,
-because each is the same shape: validate some keys, resolve some secrets,
-emit a channel block.  Anything that genuinely needs behaviour should be
-a provider.
+** From the GTK client
+
+*Settings → Integrations* lists every instance with its type, who it
+reaches, and any warning about two agents sharing one account.  The =+=
+adds one; clicking a row opens the editor.
+
+The editor shows only the fields that type has, a scope selector, and a
+switch per agent.  Matrix gets a *Sign in* button beside the homeserver
+and a *Choose…* button beside the rooms, which lists the account's rooms
+by name rather than making anybody paste a room id.  *Check* runs the
+health check.
+
+An agent's own inspector has an *Integrations* group: a switch per shared
+instance, plus a read-only row for anything configured inside that agent.
+The switch edits the *instance's* scope rather than writing a copy into
+the agent, because that is where the scope lives -- and an inline copy
+per agent is the duplication shared instances exist to end.
+
+** From the CLI
+
+#+begin_src bash
+clawtilla integration types                     # what kinds there are
+clawtilla integration list                      # the instances
+clawtilla integration list researcher           # and what one agent has
+clawtilla integration show home                 # one in full
+clawtilla integration add home matrix homeserver=matrix.example.org
+clawtilla integration set home require_mention=false
+clawtilla integration set home --agent scribe user_id=@scribe:example.org
+clawtilla integration scope home researcher,scribe
+clawtilla integration rm home
+#+end_src
+
+=key=value= arguments follow the schema: lists are comma-separated, and a
+secret is =access_token=env:NAME= -- a *reference*, never a literal.
+
+Removing an integration leaves any credential file it wrote where it is.
+Removing one by mistake should cost a retype of the config, not another
+sign-in.
+
+** Adding a type
+
+Most things do not need one.  If it speaks MCP, it is an =mcp= entry and
+there is nothing to write.
+
+If it genuinely needs behaviour, implement ~ClawtIntegrationProvider~ in
+a plugin: ~get_id~ returns the =type:= value you answer to, ~validate~
+checks the settings, ~render_config~ returns the YAML for the agent's
+=channels:= block.  See [[file:plugins.org][plugins.org]].
+
+The built-in six are a declarative table rather than six classes, because
+each is the same shape: validate some keys, resolve some secrets, emit a
+channel block or an MCP server entry.

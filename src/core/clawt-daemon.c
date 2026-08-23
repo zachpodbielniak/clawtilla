@@ -2074,6 +2074,710 @@ mailbox_for(ClawtDaemon *self, JsonObject *payload, GError **error)
     return clawt_agent_get_mailbox(agent);
 }
 
+/* ── Integrations ────────────────────────────────────────────────── */
+
+static void
+add_key_array(JsonBuilder *builder, const gchar *member,
+              const gchar *const *keys)
+{
+    gsize i;
+
+    json_builder_set_member_name(builder, member);
+    json_builder_begin_array(builder);
+
+    for (i = 0; keys != NULL && keys[i] != NULL; i++)
+        json_builder_add_string_value(builder, keys[i]);
+
+    json_builder_end_array(builder);
+}
+
+/*
+ * Every key of an instance except its secrets, which are described
+ * rather than read.
+ *
+ * A secret's *reference* is not a secret -- `{env: MATRIX_TOKEN}` is a
+ * variable name, and a client that could not show it would leave a
+ * person unable to tell a configured integration from an unconfigured
+ * one.  The value behind it never leaves the daemon.
+ */
+static void
+add_integration_values(JsonBuilder            *builder,
+                       ClawtIntegrationConfig *instance,
+                       const gchar            *agent_id)
+{
+    static const gchar *const strings[] = {
+        "description", "homeserver", "user_id", "imap_host", "smtp_host",
+        "username", "command", "url", NULL
+    };
+    static const gchar *const integers[] = {
+        "imap_port", "smtp_port", "port", NULL
+    };
+    static const gchar *const lists[] = {
+        "rooms", "folders", "args", NULL
+    };
+    static const gchar *const secrets[] = {
+        "access_token", "password", NULL
+    };
+    gsize i;
+
+    for (i = 0; strings[i] != NULL; i++) {
+        const gchar *value =
+            clawt_integration_config_get_string(instance, agent_id,
+                                                strings[i]);
+
+        if (value == NULL)
+            continue;
+
+        json_builder_set_member_name(builder, strings[i]);
+        json_builder_add_string_value(builder, value);
+    }
+
+    for (i = 0; integers[i] != NULL; i++) {
+        if (!clawt_integration_config_has_key(instance, agent_id, integers[i]))
+            continue;
+
+        json_builder_set_member_name(builder, integers[i]);
+        json_builder_add_int_value(
+            builder,
+            clawt_integration_config_get_int(instance, agent_id, integers[i]));
+    }
+
+    for (i = 0; lists[i] != NULL; i++) {
+        g_auto(GStrv) values = NULL;
+        guint k;
+
+        if (!clawt_integration_config_has_key(instance, agent_id, lists[i]))
+            continue;
+
+        values = clawt_integration_config_get_string_list(instance, agent_id,
+                                                          lists[i]);
+
+        json_builder_set_member_name(builder, lists[i]);
+        json_builder_begin_array(builder);
+
+        for (k = 0; values != NULL && values[k] != NULL; k++)
+            json_builder_add_string_value(builder, values[k]);
+
+        json_builder_end_array(builder);
+    }
+
+    if (clawt_integration_config_has_key(instance, agent_id,
+                                         "require_mention")) {
+        json_builder_set_member_name(builder, "require_mention");
+        json_builder_add_boolean_value(
+            builder,
+            clawt_integration_config_get_boolean(instance, agent_id,
+                                                 "require_mention"));
+    }
+
+    for (i = 0; secrets[i] != NULL; i++) {
+        g_autoptr(ClawtSecretRef) ref = NULL;
+        g_autofree gchar *described = NULL;
+
+        ref = clawt_integration_config_get_secret(instance, agent_id,
+                                                  secrets[i]);
+
+        if (ref == NULL)
+            continue;
+
+        described = clawt_secret_ref_describe(ref);
+
+        json_builder_set_member_name(builder, secrets[i]);
+        json_builder_add_string_value(builder, described);
+    }
+}
+
+static void
+add_integration_object(JsonBuilder            *builder,
+                       ClawtConfig            *config,
+                       ClawtIntegrationConfig *instance,
+                       const gchar            *agent_id)
+{
+    const ClawtIntegrationInfo *info;
+    g_auto(GStrv) agents = NULL;
+    GPtrArray *all;
+    guint i;
+
+    json_builder_begin_object(builder);
+
+    json_builder_set_member_name(builder, "name");
+    json_builder_add_string_value(builder,
+                                  clawt_integration_config_get_name(instance));
+    json_builder_set_member_name(builder, "type");
+    json_builder_add_string_value(
+        builder, clawt_integration_config_get_type_id(instance));
+
+    info = clawt_integration_find(
+        clawt_integration_config_get_type_id(instance));
+
+    json_builder_set_member_name(builder, "kind");
+    json_builder_add_string_value(
+        builder, info != NULL
+                 ? clawt_enum_to_nick(CLAWT_TYPE_INTEGRATION_KIND,
+                                      (gint)info->kind)
+                 : "unknown");
+
+    json_builder_set_member_name(builder, "summary");
+    json_builder_add_string_value(builder,
+                                  info != NULL ? info->summary : "");
+
+    json_builder_set_member_name(builder, "enabled");
+    json_builder_add_boolean_value(
+        builder, clawt_integration_config_get_enabled(instance));
+
+    json_builder_set_member_name(builder, "scope");
+    json_builder_add_string_value(
+        builder,
+        clawt_enum_to_nick(CLAWT_TYPE_INTEGRATION_SCOPE,
+                           (gint)clawt_integration_config_get_scope(instance)));
+
+    agents = clawt_integration_config_get_agents(instance);
+
+    json_builder_set_member_name(builder, "agents");
+    json_builder_begin_array(builder);
+
+    for (i = 0; agents != NULL && agents[i] != NULL; i++)
+        json_builder_add_string_value(builder, agents[i]);
+
+    json_builder_end_array(builder);
+
+    /*
+     * Who it actually reaches, worked out here rather than by the client.
+     * `scope: all` names nobody in the file, so a client rendering the
+     * `agents` list alone would show "all agents" beside an empty box and
+     * leave a person guessing whether that meant none.
+     */
+    json_builder_set_member_name(builder, "effective_agents");
+    json_builder_begin_array(builder);
+
+    all = clawt_config_get_agents(config);
+
+    for (i = 0; all != NULL && i < all->len; i++) {
+        ClawtAgentConfig *agent = g_ptr_array_index(all, i);
+
+        if (clawt_integration_config_covers(instance,
+                                            clawt_agent_config_get_id(agent)))
+            json_builder_add_string_value(builder,
+                                          clawt_agent_config_get_id(agent));
+    }
+
+    json_builder_end_array(builder);
+
+    if (agent_id != NULL) {
+        json_builder_set_member_name(builder, "covers");
+        json_builder_add_boolean_value(
+            builder, clawt_integration_config_covers(instance, agent_id));
+    }
+
+    if (clawt_integration_config_is_shadow(instance)) {
+        json_builder_set_member_name(builder, "shadow_reason");
+        json_builder_add_string_value(
+            builder, clawt_integration_config_get_shadow_reason(instance));
+    }
+
+    add_integration_values(builder, instance, agent_id);
+
+    json_builder_end_object(builder);
+}
+
+/*
+ * One integration as one agent has it, whether it came from an instance
+ * or from the agent's own block.
+ */
+static void
+add_binding_object(JsonBuilder *builder, ClawtIntegrationBinding *binding)
+{
+    const ClawtIntegrationInfo *info =
+        clawt_integration_binding_get_info(binding);
+    g_autoptr(GError) valid = NULL;
+
+    json_builder_begin_object(builder);
+
+    json_builder_set_member_name(builder, "name");
+    json_builder_add_string_value(builder,
+                                  clawt_integration_binding_get_name(binding));
+    json_builder_set_member_name(builder, "type");
+    json_builder_add_string_value(builder, info->id);
+    json_builder_set_member_name(builder, "kind");
+    json_builder_add_string_value(
+        builder, clawt_enum_to_nick(CLAWT_TYPE_INTEGRATION_KIND,
+                                    (gint)info->kind));
+    json_builder_set_member_name(builder, "summary");
+    json_builder_add_string_value(builder, info->summary);
+    json_builder_set_member_name(builder, "shared");
+    json_builder_add_boolean_value(
+        builder, clawt_integration_binding_is_shared(binding));
+
+    json_builder_set_member_name(builder, "valid");
+    json_builder_add_boolean_value(
+        builder, clawt_integration_binding_validate(binding, &valid));
+
+    if (valid != NULL) {
+        json_builder_set_member_name(builder, "problem");
+        json_builder_add_string_value(builder, valid->message);
+    }
+
+    json_builder_end_object(builder);
+}
+
+/*
+ * Applies whatever the client sent, ignoring what it did not.
+ *
+ * Absent and empty are deliberately different: a member that is not
+ * there is left alone, and one sent as null is cleared.  Without that a
+ * dialog editing one field would have to send every other field back or
+ * silently erase them.
+ */
+static gboolean
+apply_integration_fields(ClawtIntegrationConfig  *instance,
+                         JsonObject              *payload,
+                         GError                 **error)
+{
+    static const gchar *const strings[] = {
+        "description", "homeserver", "user_id", "imap_host", "smtp_host",
+        "username", "command", "url", NULL
+    };
+    static const gchar *const integers[] = {
+        "imap_port", "smtp_port", "port", NULL
+    };
+    static const gchar *const lists[] = {
+        "rooms", "folders", "args", NULL
+    };
+    const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+    gsize i;
+
+    for (i = 0; strings[i] != NULL; i++) {
+        if (!json_object_has_member(payload, strings[i]))
+            continue;
+
+        clawt_integration_config_set_string(
+            instance, agent_id, strings[i],
+            clawt_ipc_payload_string(payload, strings[i]));
+    }
+
+    for (i = 0; integers[i] != NULL; i++) {
+        if (!json_object_has_member(payload, integers[i]))
+            continue;
+
+        clawt_integration_config_set_int(
+            instance, agent_id, integers[i],
+            clawt_ipc_payload_int(payload, integers[i], 0));
+    }
+
+    for (i = 0; lists[i] != NULL; i++) {
+        g_auto(GStrv) values = NULL;
+
+        if (!json_object_has_member(payload, lists[i]))
+            continue;
+
+        values = clawt_ipc_payload_strv(payload, lists[i]);
+        clawt_integration_config_set_string_list(
+            instance, agent_id, lists[i], (const gchar *const *)values);
+    }
+
+    if (json_object_has_member(payload, "require_mention"))
+        clawt_integration_config_set_boolean(
+            instance, agent_id, "require_mention",
+            clawt_ipc_payload_boolean(payload, "require_mention", TRUE));
+
+    if (json_object_has_member(payload, "enabled"))
+        clawt_integration_config_set_enabled(
+            instance, clawt_ipc_payload_boolean(payload, "enabled", TRUE));
+
+    if (json_object_has_member(payload, "scope")) {
+        const gchar *nick = clawt_ipc_payload_string(payload, "scope");
+        g_auto(GStrv) agents = NULL;
+        gint scope = 0;
+
+        if (!clawt_enum_from_nick(CLAWT_TYPE_INTEGRATION_SCOPE, nick,
+                                  &scope)) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "'%s' is not a scope: use all, selected or none",
+                        nick != NULL ? nick : "");
+            return FALSE;
+        }
+
+        if (json_object_has_member(payload, "agents"))
+            agents = clawt_ipc_payload_strv(payload, "agents");
+
+        clawt_integration_config_set_scope(
+            instance, (ClawtIntegrationScope)scope,
+            (const gchar *const *)agents);
+    } else if (json_object_has_member(payload, "agents")) {
+        g_auto(GStrv) agents = clawt_ipc_payload_strv(payload, "agents");
+
+        clawt_integration_config_set_string_list(
+            instance, NULL, "agents", (const gchar *const *)agents);
+    }
+
+    /*
+     * A secret arrives as a reference and never as a value.  The client
+     * says which backend and what to look up in it; the daemon reads it
+     * when the agent starts.
+     */
+    if (json_object_has_member(payload, "secret_key")) {
+        const gchar *key = clawt_ipc_payload_string(payload, "secret_key");
+        const gchar *backend_nick =
+            clawt_ipc_payload_string(payload, "secret_backend");
+        const gchar *locator =
+            clawt_ipc_payload_string(payload, "secret_locator");
+        gint backend = CLAWT_SECRET_BACKEND_FILE;
+
+        if (key == NULL) {
+            g_set_error_literal(error, CLAWT_ERROR,
+                                CLAWT_ERROR_INVALID_ARGUMENT,
+                                "secret_key names which secret to set");
+            return FALSE;
+        }
+
+        if (backend_nick != NULL &&
+            !clawt_enum_from_nick(CLAWT_TYPE_SECRET_BACKEND, backend_nick,
+                                  &backend)) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "'%s' is not a secret backend: use file, env or "
+                        "command", backend_nick);
+            return FALSE;
+        }
+
+        clawt_integration_config_set_secret(instance, agent_id, key,
+                                            (ClawtSecretBackend)backend,
+                                            locator);
+    }
+
+    return TRUE;
+}
+
+/* ── Health, which has to wait on the network ────────────────────── */
+
+typedef struct {
+    gchar    *name;
+    gchar    *type_id;
+    gboolean  ok;
+    gchar    *message;
+} HealthResult;
+
+static void
+health_result_free(HealthResult *self)
+{
+    if (self == NULL)
+        return;
+
+    g_free(self->name);
+    g_free(self->type_id);
+    g_free(self->message);
+    g_free(self);
+}
+
+typedef struct {
+    ClawtIpcPending *pending;
+    GPtrArray       *checks;    /* ClawtIntegrationBinding* */
+    GPtrArray       *results;   /* HealthResult* */
+    guint            timeout;
+    guint            next;
+} HealthRun;
+
+static void health_run_step(HealthRun *run);
+
+static void
+health_run_free(HealthRun *run)
+{
+    if (run == NULL)
+        return;
+
+    g_clear_pointer(&run->checks, g_ptr_array_unref);
+    g_clear_pointer(&run->results, g_ptr_array_unref);
+    g_free(run);
+}
+
+static void
+health_run_finish(HealthRun *run)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    guint i;
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "checks");
+    json_builder_begin_array(builder);
+
+    for (i = 0; i < run->results->len; i++) {
+        HealthResult *result = g_ptr_array_index(run->results, i);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "id");
+        json_builder_add_string_value(builder, result->name);
+        json_builder_set_member_name(builder, "type");
+        json_builder_add_string_value(builder, result->type_id);
+        json_builder_set_member_name(builder, "ok");
+        json_builder_add_boolean_value(builder, result->ok);
+
+        if (result->message != NULL) {
+            json_builder_set_member_name(builder, "error");
+            json_builder_add_string_value(builder, result->message);
+        }
+
+        json_builder_end_object(builder);
+    }
+
+    json_builder_end_array(builder);
+    json_builder_end_object(builder);
+
+    clawt_ipc_pending_respond(
+        run->pending,
+        clawt_ipc_response_new(clawt_ipc_pending_get_request(run->pending),
+                               json_builder_get_root(builder)));
+
+    health_run_free(run);
+}
+
+static void
+on_health_checked(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    HealthRun *run = user_data;
+    ClawtIntegrationBinding *binding;
+    g_autoptr(GError) error = NULL;
+    HealthResult *entry = g_new0(HealthResult, 1);
+
+    /*
+     * The binding is taken from the run rather than from the task's
+     * source object, which is NULL: a binding is not a #GObject and
+     * cannot be one.
+     */
+    binding = g_ptr_array_index(run->checks, run->next - 1);
+
+    entry->name = g_strdup(clawt_integration_binding_get_name(binding));
+    entry->type_id =
+        g_strdup(clawt_integration_binding_get_info(binding)->id);
+    entry->ok = clawt_integration_health_check_finish(binding, result, &error);
+
+    if (!entry->ok)
+        entry->message = g_strdup(error != NULL ? error->message
+                                                : "it did not answer");
+
+    g_ptr_array_add(run->results, entry);
+
+    health_run_step(run);
+}
+
+/*
+ * One check at a time.
+ *
+ * Sequential rather than parallel on purpose: these are almost always a
+ * handful of hosts, and a fleet-wide check firing thirty simultaneous
+ * connects at one homeserver looks like something it should not.
+ */
+static void
+health_run_step(HealthRun *run)
+{
+    ClawtIntegrationBinding *binding;
+
+    if (run->next >= run->checks->len) {
+        health_run_finish(run);
+        return;
+    }
+
+    binding = g_ptr_array_index(run->checks, run->next++);
+
+    clawt_integration_health_check_async(binding, run->timeout, NULL,
+                                         on_health_checked, run);
+}
+
+static void
+health_run_start(HealthRun *run)
+{
+    health_run_step(run);
+}
+
+/* ── Matrix sign-in ──────────────────────────────────────────────── */
+
+typedef struct {
+    ClawtDaemon     *daemon;      /* unowned; it outlives the request */
+    ClawtIpcPending *pending;
+    gchar           *name;
+    gchar           *agent_id;
+    gchar           *homeserver;
+} MatrixLogin;
+
+static void
+matrix_login_free(MatrixLogin *self)
+{
+    if (self == NULL)
+        return;
+
+    g_free(self->name);
+    g_free(self->agent_id);
+    g_free(self->homeserver);
+    g_free(self);
+}
+
+static void
+on_matrix_login(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    MatrixLogin *login = user_data;
+    ClawtDaemon *self = login->daemon;
+    g_autoptr(ClawtMatrixLogin) session = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autofree gchar *secrets_dir = NULL;
+    g_autofree gchar *token_path = NULL;
+    g_autofree gchar *file_name = NULL;
+    ClawtIntegrationConfig *instance;
+
+    session = clawt_matrix_login_finish(result, &error);
+
+    if (session == NULL) {
+        clawt_ipc_pending_respond(
+            login->pending,
+            clawt_ipc_error_new(clawt_ipc_pending_get_request(login->pending),
+                                CLAWT_ERROR_AUTH, error->message));
+        matrix_login_free(login);
+        return;
+    }
+
+    instance = clawt_config_get_integration(self->config, login->name);
+
+    if (instance == NULL) {
+        clawt_ipc_pending_respond(
+            login->pending,
+            clawt_ipc_error_new(clawt_ipc_pending_get_request(login->pending),
+                                CLAWT_ERROR_NOT_FOUND,
+                                "that integration was removed while signing "
+                                "in"));
+        matrix_login_free(login);
+        return;
+    }
+
+    /*
+     * The token goes to a file and the config gets a reference to it.
+     * It is never in the reply: a client asked to sign in, and handing
+     * it back the credential would put a live Matrix token into every
+     * client's memory, and into whatever that client logs.
+     */
+    secrets_dir = clawt_config_get_path_value(self->config, "secrets.dir");
+
+    if (!clawt_ensure_dir(secrets_dir, 0700, &error)) {
+        clawt_ipc_pending_respond(
+            login->pending,
+            clawt_ipc_error_new(clawt_ipc_pending_get_request(login->pending),
+                                CLAWT_ERROR_SECRET, error->message));
+        matrix_login_free(login);
+        return;
+    }
+
+    file_name = (login->agent_id != NULL)
+        ? g_strdup_printf("%s-%s-matrix-token", login->name, login->agent_id)
+        : g_strdup_printf("%s-matrix-token", login->name);
+    token_path = g_build_filename(secrets_dir, file_name, NULL);
+
+    if (!clawt_write_file_atomic(token_path, session->access_token, -1, 0600,
+                                 FALSE, &error)) {
+        clawt_ipc_pending_respond(
+            login->pending,
+            clawt_ipc_error_new(clawt_ipc_pending_get_request(login->pending),
+                                CLAWT_ERROR_SECRET, error->message));
+        matrix_login_free(login);
+        return;
+    }
+
+    clawt_integration_config_set_string(instance, login->agent_id,
+                                        "homeserver", login->homeserver);
+
+    /*
+     * The user id is the server's, not the one that was typed.  Signing
+     * in as `agent` gives `@agent:example.org`, and the short form in the
+     * config authenticates perfectly and matches no mention.
+     */
+    if (session->user_id != NULL)
+        clawt_integration_config_set_string(instance, login->agent_id,
+                                            "user_id", session->user_id);
+
+    clawt_integration_config_set_secret(instance, login->agent_id,
+                                        "access_token",
+                                        CLAWT_SECRET_BACKEND_FILE, file_name);
+
+    if (!clawt_config_save(self->config, &error)) {
+        clawt_ipc_pending_respond(
+            login->pending,
+            clawt_ipc_error_new(clawt_ipc_pending_get_request(login->pending),
+                                error->code, error->message));
+        matrix_login_free(login);
+        return;
+    }
+
+    clawt_daemon_reload(self, NULL);
+    clawt_event_bus_emit(self->bus, "integration.changed", login->name);
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "user_id");
+    json_builder_add_string_value(builder, session->user_id);
+    json_builder_set_member_name(builder, "device_id");
+    json_builder_add_string_value(builder, session->device_id);
+    json_builder_set_member_name(builder, "token_file");
+    json_builder_add_string_value(builder, token_path);
+    json_builder_end_object(builder);
+
+    clawt_ipc_pending_respond(
+        login->pending,
+        clawt_ipc_response_new(clawt_ipc_pending_get_request(login->pending),
+                               json_builder_get_root(builder)));
+
+    matrix_login_free(login);
+}
+
+static void
+on_matrix_rooms(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    ClawtIpcPending *pending = user_data;
+    g_autoptr(GPtrArray) rooms = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    guint i;
+
+    rooms = clawt_matrix_rooms_finish(result, &error);
+
+    if (rooms == NULL) {
+        clawt_ipc_pending_respond(
+            pending,
+            clawt_ipc_error_new(clawt_ipc_pending_get_request(pending),
+                                CLAWT_ERROR_NOT_CONNECTED, error->message));
+        return;
+    }
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "rooms");
+    json_builder_begin_array(builder);
+
+    for (i = 0; i < rooms->len; i++) {
+        ClawtMatrixRoom *room = g_ptr_array_index(rooms, i);
+        g_autofree gchar *label = clawt_matrix_room_describe(room);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "id");
+        json_builder_add_string_value(builder, room->id);
+        json_builder_set_member_name(builder, "label");
+        json_builder_add_string_value(builder, label);
+
+        if (room->name != NULL) {
+            json_builder_set_member_name(builder, "name");
+            json_builder_add_string_value(builder, room->name);
+        }
+
+        if (room->alias != NULL) {
+            json_builder_set_member_name(builder, "alias");
+            json_builder_add_string_value(builder, room->alias);
+        }
+
+        json_builder_end_object(builder);
+    }
+
+    json_builder_end_array(builder);
+    json_builder_end_object(builder);
+
+    clawt_ipc_pending_respond(
+        pending,
+        clawt_ipc_response_new(clawt_ipc_pending_get_request(pending),
+                               json_builder_get_root(builder)));
+}
+
 JsonNode *
 clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
 {
@@ -2403,8 +3107,9 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             g_autofree gchar *socket_path =
                 clawt_config_get_path_value(self->config, "daemon.socket");
 
-            if (!clawt_workspace_write_mcp_config(agent_config, socket_path,
-                                                  state_dir, &error))
+            if (!clawt_workspace_write_mcp_config(self->config, agent_config,
+                                                  socket_path, state_dir,
+                                                  &error))
                 return clawt_ipc_error_new(request, error->code,
                                            error->message);
         }
@@ -4718,31 +5423,36 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
-    if (g_strcmp0(kind, "integration.list") == 0) {
+    if (g_strcmp0(kind, "integration.types") == 0) {
         const ClawtIntegrationInfo *info;
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        ClawtAgentConfig *agent_config = (agent_id != NULL)
-            ? clawt_config_get_agent(self->config, agent_id) : NULL;
         gsize n_integrations = 0;
         gsize i;
 
         info = clawt_integration_list(&n_integrations);
 
         json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "integrations");
+        json_builder_set_member_name(builder, "types");
         json_builder_begin_array(builder);
 
         for (i = 0; i < n_integrations; i++) {
             json_builder_begin_object(builder);
             json_builder_set_member_name(builder, "id");
             json_builder_add_string_value(builder, info[i].id);
+            json_builder_set_member_name(builder, "kind");
+            json_builder_add_string_value(
+                builder, clawt_enum_to_nick(CLAWT_TYPE_INTEGRATION_KIND,
+                                            (gint)info[i].kind));
             json_builder_set_member_name(builder, "summary");
             json_builder_add_string_value(builder, info[i].summary);
-            json_builder_set_member_name(builder, "enabled");
-            json_builder_add_boolean_value(
-                builder, agent_config != NULL &&
-                         clawt_integration_is_enabled(agent_config,
-                                                      info[i].id));
+            json_builder_set_member_name(builder, "one_per_agent");
+            json_builder_add_boolean_value(builder, info[i].one_per_agent);
+            json_builder_set_member_name(builder, "one_per_fleet");
+            json_builder_add_boolean_value(builder, info[i].one_per_fleet);
+
+            add_key_array(builder, "required_keys", info[i].required_keys);
+            add_key_array(builder, "credential_keys", info[i].credential_keys);
+            add_key_array(builder, "identity_keys", info[i].identity_keys);
+
             json_builder_end_object(builder);
         }
 
@@ -4752,58 +5462,326 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
-    if (g_strcmp0(kind, "integration.health") == 0) {
+    if (g_strcmp0(kind, "integration.list") == 0) {
         const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        const gchar *integration = clawt_ipc_payload_string(payload,
-                                                            "integration");
         ClawtAgentConfig *agent_config = (agent_id != NULL)
             ? clawt_config_get_agent(self->config, agent_id) : NULL;
-        g_auto(GStrv) enabled = NULL;
-        gsize i;
+        GPtrArray *instances = clawt_config_get_integrations(self->config);
+        g_autoptr(GPtrArray) warnings = NULL;
+        guint i;
 
-        if (agent_config == NULL)
+        if (agent_id != NULL && agent_config == NULL)
             return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
                                        "no such agent");
 
-        if (integration != NULL) {
-            enabled = g_new0(gchar *, 2);
-            enabled[0] = g_strdup(integration);
-        } else {
-            enabled = clawt_integration_enabled_for(agent_config);
-        }
-
         json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "checks");
+
+        /*
+         * The shared instances, whatever was asked for.  A settings page
+         * shows all of them; an agent inspector shows which of them reach
+         * that agent, which is the `covers` flag rather than a filter --
+         * the dialog needs the ones it could turn on as well as the ones
+         * that are on.
+         */
+        json_builder_set_member_name(builder, "integrations");
         json_builder_begin_array(builder);
 
-        for (i = 0; enabled[i] != NULL; i++) {
-            g_autoptr(GError) check_error = NULL;
-            gboolean ok;
+        for (i = 0; instances != NULL && i < instances->len; i++) {
+            ClawtIntegrationConfig *instance =
+                g_ptr_array_index(instances, i);
 
-            ok = clawt_integration_health_check(
-                agent_config, enabled[i],
-                (guint)clawt_ipc_payload_int(payload, "timeout", 10),
-                &check_error);
-
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "id");
-            json_builder_add_string_value(builder, enabled[i]);
-            json_builder_set_member_name(builder, "ok");
-            json_builder_add_boolean_value(builder, ok);
-
-            if (!ok) {
-                json_builder_set_member_name(builder, "error");
-                json_builder_add_string_value(builder,
-                                              check_error->message);
-            }
-
-            json_builder_end_object(builder);
+            add_integration_object(builder, self->config, instance, agent_id);
         }
+
+        json_builder_end_array(builder);
+
+        /*
+         * And what one agent actually has, inline blocks included.  A
+         * client cannot work this out from the list above, because an
+         * agent's own `integrations:` block is not an instance and never
+         * appears there.
+         */
+        if (agent_config != NULL) {
+            g_autoptr(GPtrArray) bindings =
+                clawt_integration_resolve_for_agent(self->config,
+                                                    agent_config);
+
+            json_builder_set_member_name(builder, "bindings");
+            json_builder_begin_array(builder);
+
+            for (i = 0; i < bindings->len; i++)
+                add_binding_object(builder,
+                                   g_ptr_array_index(bindings, i));
+
+            json_builder_end_array(builder);
+        }
+
+        clawt_integration_validate_fleet(self->config, &warnings);
+
+        json_builder_set_member_name(builder, "warnings");
+        json_builder_begin_array(builder);
+
+        for (i = 0; warnings != NULL && i < warnings->len; i++)
+            json_builder_add_string_value(builder,
+                                          g_ptr_array_index(warnings, i));
 
         json_builder_end_array(builder);
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "integration.add") == 0) {
+        const gchar *name = clawt_ipc_payload_string(payload, "name");
+        const gchar *type_id = clawt_ipc_payload_string(payload, "type");
+        ClawtIntegrationConfig *instance;
+
+        instance = clawt_config_add_integration(self->config, name, type_id,
+                                                &error);
+
+        if (instance == NULL)
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        if (clawt_integration_find(type_id) == NULL) {
+            /*
+             * Rolled back rather than left as a shadow.  A shadow agent
+             * earns its keep because the config was already on disk when
+             * we met it; here somebody has just typed a type that does
+             * not exist, and the honest answer is to say so and change
+             * nothing.
+             */
+            clawt_config_remove_integration(self->config, name);
+
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "there is no integration type called "
+                                       "that");
+        }
+
+        if (!apply_integration_fields(instance, payload, &error)) {
+            clawt_config_remove_integration(self->config, name);
+            return clawt_ipc_error_new(request, error->code, error->message);
+        }
+
+        if (!clawt_config_save(self->config, &error)) {
+            clawt_config_remove_integration(self->config, name);
+            return clawt_ipc_error_new(request, error->code, error->message);
+        }
+
+        if (!clawt_daemon_reload(self, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        clawt_event_bus_emit(self->bus, "integration.changed", name);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "name");
+        json_builder_add_string_value(builder, name);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "integration.update") == 0) {
+        const gchar *name = clawt_ipc_payload_string(payload, "name");
+        ClawtIntegrationConfig *instance = (name != NULL)
+            ? clawt_config_get_integration(self->config, name) : NULL;
+
+        if (instance == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "there is no integration called that");
+
+        if (!apply_integration_fields(instance, payload, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        if (!clawt_config_save(self->config, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        if (!clawt_daemon_reload(self, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        clawt_event_bus_emit(self->bus, "integration.changed", name);
+
+        return clawt_ipc_response_new(request, NULL);
+    }
+
+    if (g_strcmp0(kind, "integration.remove") == 0) {
+        const gchar *name = clawt_ipc_payload_string(payload, "name");
+
+        if (name == NULL ||
+            !clawt_config_remove_integration(self->config, name))
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "there is no integration called that");
+
+        if (!clawt_config_save(self->config, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        if (!clawt_daemon_reload(self, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        /*
+         * The credential file it wrote is deliberately left where it is.
+         * Removing an integration is a config change, and taking a token
+         * off disk as a side effect of it is the kind of helpfulness that
+         * is only noticed when it was wrong.
+         */
+        clawt_event_bus_emit(self->bus, "integration.changed", name);
+
+        return clawt_ipc_response_new(request, NULL);
+    }
+
+    if (g_strcmp0(kind, "integration.health") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        const gchar *name = clawt_ipc_payload_string(payload, "integration");
+        ClawtAgentConfig *agent_config = (agent_id != NULL)
+            ? clawt_config_get_agent(self->config, agent_id) : NULL;
+        g_autoptr(GPtrArray) bindings = NULL;
+        HealthRun *run;
+        guint i;
+
+        if (agent_config == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such agent");
+
+        bindings = clawt_integration_resolve_for_agent(self->config,
+                                                       agent_config);
+
+        run = g_new0(HealthRun, 1);
+        run->pending = clawt_ipc_server_defer(self->ipc_server, request);
+        run->checks = g_ptr_array_new_with_free_func(
+            (GDestroyNotify)clawt_integration_binding_unref);
+        run->results = g_ptr_array_new_with_free_func(
+            (GDestroyNotify)health_result_free);
+        run->timeout = (guint)clawt_ipc_payload_int(payload, "timeout", 10);
+
+        if (run->pending == NULL) {
+            health_run_free(run);
+            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                       "this request cannot be answered "
+                                       "later");
+        }
+
+        for (i = 0; i < bindings->len; i++) {
+            ClawtIntegrationBinding *binding = g_ptr_array_index(bindings, i);
+
+            if (name != NULL &&
+                g_strcmp0(clawt_integration_binding_get_name(binding),
+                          name) != 0 &&
+                g_strcmp0(clawt_integration_binding_get_info(binding)->id,
+                          name) != 0)
+                continue;
+
+            g_ptr_array_add(run->checks,
+                            clawt_integration_binding_ref(binding));
+        }
+
+        health_run_start(run);
+
+        /*
+         * NULL, not a frame: the answer goes out from health_run_finish()
+         * when the last check comes back.  A handler that waits here
+         * would hold the daemon's main context for the whole timeout,
+         * which is exactly the ten seconds in which nothing else is
+         * routed.
+         */
+        return NULL;
+    }
+
+    if (g_strcmp0(kind, "integration.matrix_login") == 0) {
+        const gchar *name = clawt_ipc_payload_string(payload, "integration");
+        const gchar *homeserver = clawt_ipc_payload_string(payload,
+                                                           "homeserver");
+        const gchar *user = clawt_ipc_payload_string(payload, "user");
+        const gchar *password = clawt_ipc_payload_string(payload, "password");
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        ClawtIntegrationConfig *instance = (name != NULL)
+            ? clawt_config_get_integration(self->config, name) : NULL;
+        MatrixLogin *login;
+
+        if (instance == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "there is no integration called that");
+
+        if (homeserver == NULL)
+            homeserver = clawt_integration_config_get_string(instance,
+                                                             agent_id,
+                                                             "homeserver");
+
+        if (homeserver == NULL || user == NULL || password == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "a homeserver, a user and a password "
+                                       "are all needed");
+
+        login = g_new0(MatrixLogin, 1);
+        login->daemon = self;
+        login->pending = clawt_ipc_server_defer(self->ipc_server, request);
+        login->name = g_strdup(name);
+        login->agent_id = g_strdup(agent_id);
+        login->homeserver = g_strdup(homeserver);
+
+        if (login->pending == NULL) {
+            matrix_login_free(login);
+            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                       "this request cannot be answered "
+                                       "later");
+        }
+
+        {
+            g_autofree gchar *device = g_strdup_printf(
+                "clawtilla (%s)", agent_id != NULL ? agent_id : name);
+
+            clawt_matrix_login_async(homeserver, user, password, device,
+                                     NULL, on_matrix_login, login);
+        }
+
+        return NULL;
+    }
+
+    if (g_strcmp0(kind, "integration.matrix_rooms") == 0) {
+        const gchar *name = clawt_ipc_payload_string(payload, "integration");
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        ClawtIntegrationConfig *instance = (name != NULL)
+            ? clawt_config_get_integration(self->config, name) : NULL;
+        g_autoptr(ClawtSecretRef) ref = NULL;
+        g_autofree gchar *token = NULL;
+        g_autofree gchar *secrets_dir = NULL;
+        const gchar *homeserver;
+        ClawtIpcPending *pending;
+
+        if (instance == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "there is no integration called that");
+
+        homeserver = clawt_integration_config_get_string(instance, agent_id,
+                                                         "homeserver");
+        ref = clawt_integration_config_get_secret(instance, agent_id,
+                                                  "access_token");
+
+        if (homeserver == NULL || ref == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_CONFIG_INVALID,
+                                       "sign in first: there is no "
+                                       "homeserver and token to list with");
+
+        secrets_dir = clawt_config_get_path_value(self->config, "secrets.dir");
+        token = clawt_secret_ref_resolve(
+            ref, secrets_dir,
+            (guint)clawt_config_get_int(self->config,
+                                        "secrets.command_timeout_seconds"),
+            &error);
+
+        if (token == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_SECRET,
+                                       error->message);
+
+        pending = clawt_ipc_server_defer(self->ipc_server, request);
+
+        if (pending == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                       "this request cannot be answered "
+                                       "later");
+
+        clawt_matrix_rooms_async(homeserver, token, NULL, on_matrix_rooms,
+                                 pending);
+
+        return NULL;
     }
 
     if (g_strcmp0(kind, "plugin.list") == 0) {

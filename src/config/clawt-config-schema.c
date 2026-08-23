@@ -490,6 +490,171 @@ static const ClawtSchemaEntry schema[] = {
 { "rooms.max_hops", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Overrides orchestration.max_hops for this room.", "0.1.0" },
 
+/* ── integrations ────────────────────────────────────────────────── */
+{ "integrations", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
+  "Named integrations, each handed to one agent, some agents or all of them.\n"
+  "\n"
+  "An integration is a connection to something outside the fleet, kept in\n"
+  "one place and pointed at whichever agents should have it. That is the\n"
+  "difference from the per-agent `integrations:` block inside an agent,\n"
+  "which still works and is still the right thing for a connection only\n"
+  "that one agent will ever use: this one is configured once and scoped.\n"
+  "\n"
+  "Which keys below apply depends on `type`. Each names the type it\n"
+  "belongs to; a key belonging to another type is ignored rather than\n"
+  "rejected, so changing a draft's type does not mean deleting fields\n"
+  "first.", "0.2.0" },
+
+{ "integrations.name", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
+  "What this instance is called.\n"
+  "\n"
+  "Unique across the file, and used everywhere the instance is referred\n"
+  "to -- the CLI, the UI, and the key it gets in an agent's .mcp.json. Two\n"
+  "instances with the same name is an error rather than a merge, because\n"
+  "the second silently winning is how a credential ends up pointing at the\n"
+  "wrong account.", "0.2.0" },
+
+{ "integrations.type", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
+  "Which kind: matrix, email, webhook, local, cmacs or mcp.\n"
+  "\n"
+  "An unknown type disables that instance and nothing else, with the\n"
+  "reason recorded -- the same treatment a shadow agent gets, and for the\n"
+  "same reason: a config written by a newer build must survive an older\n"
+  "one.", "0.2.0" },
+
+{ "integrations.enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "true", NULL,
+  "Whether this instance is live at all.\n"
+  "\n"
+  "Independent of `scope`: this is the switch, scope is the audience.", "0.2.0" },
+
+{ "integrations.scope", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "selected", clawt_integration_scope_get_type,
+  "Who gets it: all, selected or none.\n"
+  "\n"
+  "`all` includes agents created later, which is the point of it -- a tool\n"
+  "server the fleet shares should not need revisiting every time the fleet\n"
+  "grows. `selected` uses the `agents:` list below. `none` keeps the\n"
+  "instance and its credentials without handing it to anybody.", "0.2.0" },
+
+{ "integrations.agents", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Agent ids, when `scope: selected`.\n"
+  "\n"
+  "An id that names no agent is a warning rather than an error: an agent\n"
+  "removed for the afternoon should not stop the daemon starting.", "0.2.0" },
+
+{ "integrations.per_agent", CLAWT_SCHEMA_MAPPING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Per-agent overrides, keyed by agent id.\n"
+  "\n"
+  "This is how one instance covers several agents that cannot share an\n"
+  "identity. A Matrix account is one login: two agents on the same one\n"
+  "both receive every message and both answer as the same user. So the\n"
+  "homeserver and the room list live at the top and each agent's own\n"
+  "user_id and access_token go here.\n"
+  "\n"
+  "Any key from this section may be overridden, not only the identity\n"
+  "ones -- a room list that differs per agent is an ordinary thing to\n"
+  "want.", "0.2.0" },
+
+{ "integrations.description", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "What this is for, in your words.\n"
+  "\n"
+  "Written into the agent's TOOLS.org beside the integration, so it is\n"
+  "the sentence the model reads when deciding whether this is the thing\n"
+  "to reach for. Worth filling in for anything whose name is not\n"
+  "self-explanatory.", "0.2.0" },
+
+{ "integrations.homeserver", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "matrix: the homeserver base URL, e.g. https://matrix.example.org.", "0.2.0" },
+
+{ "integrations.user_id", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "matrix: the full user id, e.g. @agent:example.org.\n"
+  "\n"
+  "Must differ per agent. Put it under `per_agent` when the instance\n"
+  "covers more than one.", "0.2.0" },
+
+{ "integrations.access_token", CLAWT_SCHEMA_SECRET, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "matrix: the access token, as a secret reference.\n"
+  "\n"
+  "`clawtilla integration matrix-login` turns a password into one of\n"
+  "these without the password ever being written down.", "0.2.0" },
+
+{ "integrations.rooms", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "matrix: room ids to listen in.\n"
+  "\n"
+  "Empty means every room the account is joined to. Bridged rooms --\n"
+  "Discord, Signal, anything else with a Matrix bridge -- are just rooms,\n"
+  "so an agent reaches them without knowing they are bridged.", "0.2.0" },
+
+{ "integrations.require_mention", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "true", NULL,
+  "matrix: only answer messages that name the agent.\n"
+  "\n"
+  "Defaults on, unlike a clawtilla room. A Matrix room usually has people\n"
+  "in it talking to each other, and an agent that takes a turn on every\n"
+  "line of it is both expensive and unbearable.", "0.2.0" },
+
+{ "integrations.imap_host", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL, "email: IMAP server hostname.", "0.2.0" },
+
+{ "integrations.imap_port", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "993", NULL, "email: IMAP port.", "0.2.0" },
+
+{ "integrations.smtp_host", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL, "email: SMTP server hostname.", "0.2.0" },
+
+{ "integrations.smtp_port", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "587", NULL, "email: SMTP port.", "0.2.0" },
+
+{ "integrations.username", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "email: the mailbox to log in as. Must differ per agent.", "0.2.0" },
+
+{ "integrations.password", CLAWT_SCHEMA_SECRET, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL, "email: the password, as a secret reference.", "0.2.0" },
+
+{ "integrations.folders", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL, "email: folders to watch. Empty means INBOX.", "0.2.0" },
+
+{ "integrations.port", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "webhook: the port to listen on. Must differ per agent -- two agents\n"
+  "cannot bind the same one, and the second to start simply fails.", "0.2.0" },
+
+{ "integrations.command", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "mcp: the program to run, spoken to over stdio.\n"
+  "\n"
+  "This is the general way to give the fleet anything with an MCP server:\n"
+  "one entry here reaches every agent in scope, instead of the same block\n"
+  "pasted into each agent's .mcp.json by hand.", "0.2.0" },
+
+{ "integrations.args", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL, "mcp: arguments for `command`.", "0.2.0" },
+
+{ "integrations.url", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "mcp: an HTTP or SSE endpoint, instead of `command`.\n"
+  "\n"
+  "One or the other, never both: an entry naming a command and a URL is\n"
+  "two different servers and there is no way to tell which was meant.", "0.2.0" },
+
+{ "integrations.env", CLAWT_SCHEMA_MAPPING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "mcp: environment for the server process.\n"
+  "\n"
+  "A value may be a secret reference, which is resolved when the agent\n"
+  "starts and written into its .mcp.json -- a file that is already 0600\n"
+  "and already holds the agent's own token.", "0.2.0" },
+
+
 /* ── agents ──────────────────────────────────────────────────────── */
 { "agents", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "The fleet.\n"

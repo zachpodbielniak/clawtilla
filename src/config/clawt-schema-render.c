@@ -348,6 +348,36 @@ clawt_config_schema_render_example(void)
     return g_string_free(out, FALSE);
 }
 
+/*
+ * Whether this key lives inside a list of mappings.
+ *
+ * Derived from the schema rather than from a list of section names.  The
+ * starter config used to name "agents." and "rooms." outright, and adding
+ * a third list -- integrations -- silently emitted its keys at top level,
+ * under whichever section happened to be open above them.  The result
+ * parsed, so nothing failed; it simply declared two dozen options that
+ * belonged to somebody else.  One rule, applied to whatever the table
+ * holds, does not grow a bug per section.
+ */
+static gboolean
+inside_list_of(const gchar *key)
+{
+    const gchar *dot = key;
+
+    while ((dot = strchr(dot, '.')) != NULL)
+    {
+        g_autofree gchar *prefix = g_strndup(key, dot - key);
+        const ClawtSchemaEntry *parent = clawt_config_schema_lookup(prefix);
+
+        if (parent != NULL && parent->type == CLAWT_SCHEMA_LIST_OF)
+            return TRUE;
+
+        dot++;
+    }
+
+    return FALSE;
+}
+
 gchar *
 clawt_config_schema_render_default(void)
 {
@@ -375,12 +405,12 @@ clawt_config_schema_render_default(void)
         gboolean commented;
 
         /*
-         * Per-agent options are documented under agents.* but have no place
-         * in a starter file with no agents in it: emitting them at top level
-         * would produce a config that does not validate.
+         * The contents of a list have no place in a starter file with no
+         * list entries in it: emitted at top level they would produce a
+         * config that does not validate, and they are documented in
+         * example-config.yaml where they can be shown in context.
          */
-        if (g_str_has_prefix(entry->key, "agents.") ||
-            g_str_has_prefix(entry->key, "rooms."))
+        if (inside_list_of(entry->key))
             continue;
 
         /*

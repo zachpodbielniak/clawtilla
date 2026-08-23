@@ -393,6 +393,43 @@ clawt_log_level_get_type(void)
     return g_define_type_id__volatile;
 }
 
+/* Register ClawtIntegrationScope as a GLib enum type */
+GType
+clawt_integration_scope_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_INTEGRATION_SCOPE_NONE, "CLAWT_INTEGRATION_SCOPE_NONE", "none" },
+            { CLAWT_INTEGRATION_SCOPE_SELECTED, "CLAWT_INTEGRATION_SCOPE_SELECTED", "selected" },
+            { CLAWT_INTEGRATION_SCOPE_ALL, "CLAWT_INTEGRATION_SCOPE_ALL", "all" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtIntegrationScope", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
+/* Register ClawtIntegrationKind as a GLib enum type */
+GType
+clawt_integration_kind_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_INTEGRATION_KIND_CHANNEL, "CLAWT_INTEGRATION_KIND_CHANNEL", "channel" },
+            { CLAWT_INTEGRATION_KIND_TOOLS, "CLAWT_INTEGRATION_KIND_TOOLS", "tools" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtIntegrationKind", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
 /* ── Nickname helpers ────────────────────────────────────────────── */
 
 /*

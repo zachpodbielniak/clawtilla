@@ -380,7 +380,7 @@ test_mcp_config_is_written(void)
 
     g_assert_true(clawt_workspace_scaffold(agent, &error));
     g_assert_true(clawt_workspace_write_mcp_config(
-        agent, "/run/clawtilla.sock", "/state/scribe", &error));
+        fixture.config, agent, "/run/clawtilla.sock", "/state/scribe", &error));
     g_assert_no_error(error);
 
     path = clawt_workspace_file_path(agent, ".mcp.json");
@@ -431,7 +431,7 @@ test_mcp_config_offers_a_guest_desktop(void)
 
     g_assert_true(clawt_workspace_scaffold(agent, &error));
     g_assert_true(clawt_workspace_write_mcp_config(
-        agent, "/run/clawtilla.sock", "/state/scribe", &error));
+        fixture.config, agent, "/run/clawtilla.sock", "/state/scribe", &error));
     g_assert_no_error(error);
 
     path = clawt_workspace_file_path(agent, ".mcp.json");
@@ -485,7 +485,7 @@ test_mcp_config_has_no_desktop_without_a_vm(void)
 
     g_assert_true(clawt_workspace_scaffold(agent, &error));
     g_assert_true(clawt_workspace_write_mcp_config(
-        agent, "/run/clawtilla.sock", "/state/scribe", &error));
+        fixture.config, agent, "/run/clawtilla.sock", "/state/scribe", &error));
 
     path = clawt_workspace_file_path(agent, ".mcp.json");
     g_assert_true(g_file_get_contents(path, &text, NULL, NULL));
@@ -522,7 +522,7 @@ test_mcp_config_drops_a_desktop_that_was_revoked(void)
 
     g_assert_true(clawt_workspace_scaffold(agent, &error));
     g_assert_true(clawt_workspace_write_mcp_config(
-        agent, "/run/clawtilla.sock", "/state/scribe", &error));
+        fixture.config, agent, "/run/clawtilla.sock", "/state/scribe", &error));
 
     path = clawt_workspace_file_path(agent, ".mcp.json");
     g_assert_true(g_file_get_contents(path, &text, NULL, NULL));
@@ -533,7 +533,7 @@ test_mcp_config_drops_a_desktop_that_was_revoked(void)
                                   "false");
 
     g_assert_true(clawt_workspace_write_mcp_config(
-        agent, "/run/clawtilla.sock", "/state/scribe", &error));
+        fixture.config, agent, "/run/clawtilla.sock", "/state/scribe", &error));
     g_assert_true(g_file_get_contents(path, &text, NULL, NULL));
 
     g_assert_null(strstr(text, "clawtilla-desktop"));
@@ -561,9 +561,11 @@ test_mcp_config_is_regenerated(void)
     agent = first_agent(&fixture);
 
     g_assert_true(clawt_workspace_scaffold(agent, &error));
-    g_assert_true(clawt_workspace_write_mcp_config(agent, "/old.sock",
+    g_assert_true(clawt_workspace_write_mcp_config(
+        fixture.config, agent, "/old.sock",
                                                     "/state/scribe", &error));
-    g_assert_true(clawt_workspace_write_mcp_config(agent, "/new.sock",
+    g_assert_true(clawt_workspace_write_mcp_config(
+        fixture.config, agent, "/new.sock",
                                                     "/state/scribe", &error));
 
     path = clawt_workspace_file_path(agent, ".mcp.json");
@@ -599,7 +601,8 @@ test_mcp_config_keeps_what_the_user_added(void)
     agent = first_agent(&fixture);
 
     g_assert_true(clawt_workspace_scaffold(agent, &error));
-    g_assert_true(clawt_workspace_write_mcp_config(agent, "/old.sock",
+    g_assert_true(clawt_workspace_write_mcp_config(
+        fixture.config, agent, "/old.sock",
                                                     "/state/scribe", &error));
     g_assert_no_error(error);
 
@@ -615,7 +618,8 @@ test_mcp_config_keeps_what_the_user_added(void)
         "  \"somethingElse\": true\n"
         "}\n", -1, NULL));
 
-    g_assert_true(clawt_workspace_write_mcp_config(agent, "/new.sock",
+    g_assert_true(clawt_workspace_write_mcp_config(
+        fixture.config, agent, "/new.sock",
                                                     "/state/scribe", &error));
     g_assert_no_error(error);
 
@@ -672,7 +676,8 @@ test_mcp_config_keeps_a_broken_file(void)
     g_assert_true(g_file_set_contents(path, "{ not json,", -1, NULL));
 
     g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING, "*not valid JSON*");
-    g_assert_true(clawt_workspace_write_mcp_config(agent, "/run/c.sock",
+    g_assert_true(clawt_workspace_write_mcp_config(
+        fixture.config, agent, "/run/c.sock",
                                                     "/state/scribe", &error));
     g_test_assert_expected_messages();
     g_assert_no_error(error);
@@ -709,7 +714,8 @@ test_mcp_config_leaves_an_unchanged_file_alone(void)
     agent = first_agent(&fixture);
 
     g_assert_true(clawt_workspace_scaffold(agent, &error));
-    g_assert_true(clawt_workspace_write_mcp_config(agent, "/run/c.sock",
+    g_assert_true(clawt_workspace_write_mcp_config(
+        fixture.config, agent, "/run/c.sock",
                                                     "/state/scribe", &error));
 
     path = clawt_workspace_file_path(agent, ".mcp.json");
@@ -720,7 +726,8 @@ test_mcp_config_leaves_an_unchanged_file_alone(void)
     g_assert_cmpint(g_utime(path, &backdated), ==, 0);
     g_assert_cmpint(g_stat(path, &before), ==, 0);
 
-    g_assert_true(clawt_workspace_write_mcp_config(agent, "/run/c.sock",
+    g_assert_true(clawt_workspace_write_mcp_config(
+        fixture.config, agent, "/run/c.sock",
                                                     "/state/scribe", &error));
     g_assert_no_error(error);
 

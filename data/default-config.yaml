@@ -398,6 +398,20 @@ memories:
 # # so there is one mechanism rather than two.
 # rooms: []
 
+# # Named integrations, each handed to one agent, some agents or all of them.
+# #
+# # An integration is a connection to something outside the fleet, kept in
+# # one place and pointed at whichever agents should have it. That is the
+# # difference from the per-agent `integrations:` block inside an agent,
+# # which still works and is still the right thing for a connection only
+# # that one agent will ever use: this one is configured once and scoped.
+# #
+# # Which keys below apply depends on `type`. Each names the type it
+# # belongs to; a key belonging to another type is ignored rather than
+# # rejected, so changing a draft's type does not mean deleting fields
+# # first.
+# integrations: []
+
 # The fleet.  Empty to start with; `clawtilla agent create` or
 # `clawtilla agent new --ai` fills this in.
 #

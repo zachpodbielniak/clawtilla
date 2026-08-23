@@ -606,6 +606,103 @@ the same program.
   the running daemon was minutes old. Run plain `make` before restarting
   the daemon to check a fix by hand.
 
+### A generator that names the sections it knows about grows a bug per section
+
+- The starter config skipped list contents by testing `g_str_has_prefix`
+  against `"agents."` and `"rooms."` -- the two lists that existed when
+  it was written. Adding a third, `integrations`, emitted its two dozen
+  keys at top level under whichever section happened to be open above
+  them, which was `memories`. The file parsed. It simply declared two
+  dozen options that belonged to somebody else, and the only symptom was
+  a config-schema test counting 23 unknown keys. `inside_list_of()` walks
+  the key's own prefixes and asks the schema, so the next list added
+  needs no edit here.
+
+### An integration is configured in two places and must behave as one
+
+- Inline in an agent, or as a named instance with a scope. Everything
+  downstream -- the rendered `channels:` block, the agent's `.mcp.json`,
+  the paragraph in its `TOOLS.org`, the health check -- goes through
+  `clawt_integration_resolve_for_agent()` and a `ClawtIntegrationBinding`,
+  which reads through to whichever of the two holds the values. Two code
+  paths would be two behaviours, and the one nobody tests is the shared
+  one.
+- `one_per_agent` is not a nicety. libreclaw renders one
+  `channels.<type>` block per agent, so a second Matrix instance for the
+  same agent has nowhere to go -- and dropping it silently leaves an
+  account that looks configured in the file and receives nothing for
+  ever. The inline block wins, because somebody wrote it inside that
+  agent, and the instance is named in a warning.
+
+### A shared account is a fleet-level bug that no agent can see
+
+- A Matrix account is one login: two agents on the same `user_id` receive
+  each other's messages and answer as the same person, which reads as the
+  fleet misbehaving rather than as a config mistake. Each type declares
+  `identity_keys` -- the keys that must differ between agents sharing an
+  instance -- and `clawt_integration_validate_fleet()` is the only place
+  that can notice, because it needs two agents at once.
+- An unrecognised `scope` reaches **nobody**, not everybody. The two
+  failure modes are not symmetric: a typo that hands a credential to the
+  whole fleet is far worse than one that hands it to nothing and says so.
+
+### g_task_new() refs its source object, so it must be a GObject
+
+- Passing a `ClawtIntegrationBinding` -- a plain reference-counted struct
+  -- ran `g_object_ref()` on a pointer that is not a GObject and took the
+  daemon down on the first health check anybody asked for. It builds and
+  it type-checks; the cast in the callback looks symmetrical with every
+  other async function in the file. Carry a non-GObject in the task
+  *data* and pass `NULL` as the source.
+
+### An IPC handler that must wait now has somewhere to wait
+
+- `clawt_ipc_server_defer()` claims the right to answer later; the
+  handler returns NULL and `clawt_ipc_pending_respond()` sends the frame
+  when the work finishes. The dispatcher already tolerated a NULL reply,
+  so this is a few dozen lines rather than a protocol change, and it is
+  what lets `integration.health`, `matrix_login` and `matrix_rooms` do
+  real network work without stalling the daemon. Measured: a health check
+  against a blackholed address took the full 10 seconds while
+  `agent list` answered in 16ms.
+- The token holds a reference to the client, which is already refcounted
+  for exactly this reason, so a connection that closes mid-flight is
+  still there to be answered into and simply drops it.
+
+### A file a person edits gets a marked region, not a rewrite
+
+- `TOOLS.org` is scaffolded once and then belongs to whoever edits it, so
+  clawtilla owns the region between `# BEGIN clawtilla integrations` and
+  `# END clawtilla integrations` and nothing else. Same contract as the
+  `clawtilla` key in `.mcp.json`, and for the same reason. A file whose
+  markers somebody removed gets them **appended** -- there is no position
+  in a page of somebody's prose that we could claim to know is right.
+- The `clawtilla-` prefix in `.mcp.json` is now reserved wholesale: every
+  key beginning with it is rewritten or *removed* on each start, which is
+  what lets a revoked integration's entry disappear instead of pointing
+  the agent at a server the fleet has stopped offering.
+
+### A password may cross IPC; a token may not come back
+
+- `integration.matrix_login` takes a password, uses it once, and writes
+  the resulting access token to a 0600 file under `secrets.dir`, putting
+  only the *path* in the config and in the reply. The rule is about
+  responses, logs and transcripts -- so the one thing that must never
+  happen is handing the token back to the client that asked for the
+  login, which would put a live credential into every client's memory.
+  The CLI reads the password from stdin with echo off; there is
+  deliberately no `--password` flag, because an argument is in the shell
+  history and in the process table.
+
+### A shared SoupSession cannot carry per-request state
+
+- Parking a context pointer on the session with `g_object_set_data()`
+  works exactly until two requests are in flight, which for a room
+  listing is immediately: every room's name lookup is fired at once, each
+  overwrote the last, and every callback would have decorated the same
+  room. Allocate a struct per request and pass it as the callback's
+  user_data.
+
 ### A rule enforced at one creation path is not enforced
 
 - Refusing a diskless VM agent in the daemon's `agent.create` handler
@@ -1303,7 +1400,11 @@ the same program.
 - Never print a bearer token from a listing command, or write one into an
   IPC response
 - Never regenerate an agent's `.mcp.json` wholesale. It is how an agent
-  is given MCP servers, so people edit it. Only the `clawtilla` key is
-  clawtilla's; read the rest back and write it out untouched, skip the
-  write when nothing changed, and move an unparseable file aside rather
-  than over it
+  is given MCP servers, so people edit it. Only `clawtilla` and the
+  `clawtilla-*` keys are clawtilla's; read the rest back and write it out
+  untouched, skip the write when nothing changed, and move an unparseable
+  file aside rather than over it
+- Never rewrite an agent's org files wholesale either. `TOOLS.org` has a
+  marked region and clawtilla owns only that
+- Never return a secret obtained on a client's behalf to that client. A
+  Matrix token goes to a 0600 file and the reply names the file

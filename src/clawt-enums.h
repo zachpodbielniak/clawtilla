@@ -390,6 +390,47 @@ typedef enum {
     CLAWT_SECRET_BACKEND_COMMAND
 } ClawtSecretBackend;
 
+/**
+ * ClawtIntegrationScope:
+ * @CLAWT_INTEGRATION_SCOPE_NONE: nobody; kept in the file but handed to no agent
+ * @CLAWT_INTEGRATION_SCOPE_SELECTED: only the agents named in `agents:`
+ * @CLAWT_INTEGRATION_SCOPE_ALL: every agent in the fleet, including ones added later
+ *
+ * Which agents an integration instance reaches.
+ *
+ * %CLAWT_INTEGRATION_SCOPE_NONE exists so an instance can be parked
+ * without being deleted.  Turning a Matrix account off for an afternoon
+ * should not mean retyping its homeserver, its user id and its rooms, and
+ * a credential that has to be re-entered to be re-enabled tends to end up
+ * somewhere worse than the config file.
+ */
+typedef enum {
+    CLAWT_INTEGRATION_SCOPE_NONE = 0,
+    CLAWT_INTEGRATION_SCOPE_SELECTED,
+    CLAWT_INTEGRATION_SCOPE_ALL
+} ClawtIntegrationScope;
+
+/**
+ * ClawtIntegrationKind:
+ * @CLAWT_INTEGRATION_KIND_CHANNEL: how people reach the agent
+ * @CLAWT_INTEGRATION_KIND_TOOLS: how the agent reaches a service
+ *
+ * The direction an integration runs in.
+ *
+ * The two are configured the same way and do completely different things
+ * to an agent, so they are separated here rather than in a comment.  A
+ * channel arrives as a conversation and costs the agent a turn; a tools
+ * integration arrives as an MCP server in its `.mcp.json` and costs it
+ * nothing until it calls one.  Sharing follows from this: a channel
+ * shared by two agents means both answer the same person, which is
+ * almost never wanted, while a tool server shared by the whole fleet is
+ * the ordinary case.
+ */
+typedef enum {
+    CLAWT_INTEGRATION_KIND_CHANNEL = 0,
+    CLAWT_INTEGRATION_KIND_TOOLS
+} ClawtIntegrationKind;
+
 /* GType registration */
 GType clawt_agent_state_get_type(void) G_GNUC_CONST;
 GType clawt_agent_caps_get_type(void) G_GNUC_CONST;
@@ -409,6 +450,8 @@ GType clawt_overflow_policy_get_type(void) G_GNUC_CONST;
 GType clawt_task_state_get_type(void) G_GNUC_CONST;
 GType clawt_secret_backend_get_type(void) G_GNUC_CONST;
 GType clawt_log_level_get_type(void) G_GNUC_CONST;
+GType clawt_integration_scope_get_type(void) G_GNUC_CONST;
+GType clawt_integration_kind_get_type(void) G_GNUC_CONST;
 
 #define CLAWT_TYPE_AGENT_STATE      (clawt_agent_state_get_type())
 #define CLAWT_TYPE_AGENT_CAPS       (clawt_agent_caps_get_type())
@@ -428,6 +471,8 @@ GType clawt_log_level_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_TASK_STATE       (clawt_task_state_get_type())
 #define CLAWT_TYPE_SECRET_BACKEND   (clawt_secret_backend_get_type())
 #define CLAWT_TYPE_LOG_LEVEL        (clawt_log_level_get_type())
+#define CLAWT_TYPE_INTEGRATION_SCOPE (clawt_integration_scope_get_type())
+#define CLAWT_TYPE_INTEGRATION_KIND  (clawt_integration_kind_get_type())
 
 /**
  * clawt_enum_to_nick:

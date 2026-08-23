@@ -699,6 +699,278 @@ on every message, which is expensive and rarely wanted.
 
 Overrides orchestration.max_hops for this room.
 
+** =integrations=
+
+Named integrations, each handed to one agent, some agents or all of them.
+
+An integration is a connection to something outside the fleet, kept in
+one place and pointed at whichever agents should have it. That is the
+difference from the per-agent `integrations:` block inside an agent,
+which still works and is still the right thing for a connection only
+that one agent will ever use: this one is configured once and scoped.
+
+Which keys below apply depends on `type`. Each names the type it
+belongs to; a key belonging to another type is ignored rather than
+rejected, so changing a draft's type does not mean deleting fields
+first.
+
+*** =integrations.name=
+
+- Type :: string
+- Default :: unset
+- Required :: yes
+- Since :: 0.2.0
+
+What this instance is called.
+
+Unique across the file, and used everywhere the instance is referred
+to -- the CLI, the UI, and the key it gets in an agent's .mcp.json. Two
+instances with the same name is an error rather than a merge, because
+the second silently winning is how a credential ends up pointing at the
+wrong account.
+
+*** =integrations.type=
+
+- Type :: string
+- Default :: unset
+- Required :: yes
+- Since :: 0.2.0
+
+Which kind: matrix, email, webhook, local, cmacs or mcp.
+
+An unknown type disables that instance and nothing else, with the
+reason recorded -- the same treatment a shadow agent gets, and for the
+same reason: a config written by a newer build must survive an older
+one.
+
+*** =integrations.enabled=
+
+- Type :: boolean
+- Default :: =true=
+- Since :: 0.2.0
+
+Whether this instance is live at all.
+
+Independent of `scope`: this is the switch, scope is the audience.
+
+*** =integrations.scope=
+
+- Type :: enum
+- Values :: none, selected, all
+- Default :: =selected=
+- Since :: 0.2.0
+
+Who gets it: all, selected or none.
+
+`all` includes agents created later, which is the point of it -- a tool
+server the fleet shares should not need revisiting every time the fleet
+grows. `selected` uses the `agents:` list below. `none` keeps the
+instance and its credentials without handing it to anybody.
+
+*** =integrations.agents=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.2.0
+
+Agent ids, when `scope: selected`.
+
+An id that names no agent is a warning rather than an error: an agent
+removed for the afternoon should not stop the daemon starting.
+
+*** =integrations.per_agent=
+
+- Type :: mapping
+- Default :: unset
+- Since :: 0.2.0
+
+Per-agent overrides, keyed by agent id.
+
+This is how one instance covers several agents that cannot share an
+identity. A Matrix account is one login: two agents on the same one
+both receive every message and both answer as the same user. So the
+homeserver and the room list live at the top and each agent's own
+user_id and access_token go here.
+
+Any key from this section may be overridden, not only the identity
+ones -- a room list that differs per agent is an ordinary thing to
+want.
+
+*** =integrations.description=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.2.0
+
+What this is for, in your words.
+
+Written into the agent's TOOLS.org beside the integration, so it is
+the sentence the model reads when deciding whether this is the thing
+to reach for. Worth filling in for anything whose name is not
+self-explanatory.
+
+*** =integrations.homeserver=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.2.0
+
+matrix: the homeserver base URL, e.g. https://matrix.example.org.
+
+*** =integrations.user_id=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.2.0
+
+matrix: the full user id, e.g. @agent:example.org.
+
+Must differ per agent. Put it under `per_agent` when the instance
+covers more than one.
+
+*** =integrations.access_token=
+
+- Type :: secret reference
+- Default :: unset
+- Since :: 0.2.0
+
+matrix: the access token, as a secret reference.
+
+`clawtilla integration matrix-login` turns a password into one of
+these without the password ever being written down.
+
+*** =integrations.rooms=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.2.0
+
+matrix: room ids to listen in.
+
+Empty means every room the account is joined to. Bridged rooms --
+Discord, Signal, anything else with a Matrix bridge -- are just rooms,
+so an agent reaches them without knowing they are bridged.
+
+*** =integrations.require_mention=
+
+- Type :: boolean
+- Default :: =true=
+- Since :: 0.2.0
+
+matrix: only answer messages that name the agent.
+
+Defaults on, unlike a clawtilla room. A Matrix room usually has people
+in it talking to each other, and an agent that takes a turn on every
+line of it is both expensive and unbearable.
+
+*** =integrations.imap_host=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.2.0
+
+email: IMAP server hostname.
+
+*** =integrations.imap_port=
+
+- Type :: integer
+- Default :: =993=
+- Since :: 0.2.0
+
+email: IMAP port.
+
+*** =integrations.smtp_host=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.2.0
+
+email: SMTP server hostname.
+
+*** =integrations.smtp_port=
+
+- Type :: integer
+- Default :: =587=
+- Since :: 0.2.0
+
+email: SMTP port.
+
+*** =integrations.username=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.2.0
+
+email: the mailbox to log in as. Must differ per agent.
+
+*** =integrations.password=
+
+- Type :: secret reference
+- Default :: unset
+- Since :: 0.2.0
+
+email: the password, as a secret reference.
+
+*** =integrations.folders=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.2.0
+
+email: folders to watch. Empty means INBOX.
+
+*** =integrations.port=
+
+- Type :: integer
+- Default :: unset
+- Since :: 0.2.0
+
+webhook: the port to listen on. Must differ per agent -- two agents
+cannot bind the same one, and the second to start simply fails.
+
+*** =integrations.command=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.2.0
+
+mcp: the program to run, spoken to over stdio.
+
+This is the general way to give the fleet anything with an MCP server:
+one entry here reaches every agent in scope, instead of the same block
+pasted into each agent's .mcp.json by hand.
+
+*** =integrations.args=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.2.0
+
+mcp: arguments for `command`.
+
+*** =integrations.url=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.2.0
+
+mcp: an HTTP or SSE endpoint, instead of `command`.
+
+One or the other, never both: an entry naming a command and a URL is
+two different servers and there is no way to tell which was meant.
+
+*** =integrations.env=
+
+- Type :: mapping
+- Default :: unset
+- Since :: 0.2.0
+
+mcp: environment for the server process.
+
+A value may be a secret reference, which is resolved when the agent
+starts and written into its .mcp.json -- a file that is already 0600
+and already holds the agent's own token.
+
 ** =agents=
 
 The fleet.

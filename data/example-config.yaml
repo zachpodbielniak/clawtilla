@@ -422,6 +422,157 @@ rooms:
     # Overrides orchestration.max_hops for this room.
     max_hops: null
 
+# Named integrations, each handed to one agent, some agents or all of them.
+#
+# An integration is a connection to something outside the fleet, kept in
+# one place and pointed at whichever agents should have it. That is the
+# difference from the per-agent `integrations:` block inside an agent,
+# which still works and is still the right thing for a connection only
+# that one agent will ever use: this one is configured once and scoped.
+#
+# Which keys below apply depends on `type`. Each names the type it
+# belongs to; a key belonging to another type is ignored rather than
+# rejected, so changing a draft's type does not mean deleting fields
+# first.
+integrations:
+
+    # What this instance is called.
+    #
+    # Unique across the file, and used everywhere the instance is referred
+    # to -- the CLI, the UI, and the key it gets in an agent's .mcp.json. Two
+    # instances with the same name is an error rather than a merge, because
+    # the second silently winning is how a credential ends up pointing at the
+    # wrong account.
+    # Required.
+  - name: null
+
+    # Which kind: matrix, email, webhook, local, cmacs or mcp.
+    #
+    # An unknown type disables that instance and nothing else, with the
+    # reason recorded -- the same treatment a shadow agent gets, and for the
+    # same reason: a config written by a newer build must survive an older
+    # one.
+    # Required.
+    type: null
+
+    # Whether this instance is live at all.
+    #
+    # Independent of `scope`: this is the switch, scope is the audience.
+    enabled: true
+
+    # Who gets it: all, selected or none.
+    #
+    # `all` includes agents created later, which is the point of it -- a tool
+    # server the fleet shares should not need revisiting every time the fleet
+    # grows. `selected` uses the `agents:` list below. `none` keeps the
+    # instance and its credentials without handing it to anybody.
+    # Values: none, selected, all
+    scope: "selected"
+
+    # Agent ids, when `scope: selected`.
+    #
+    # An id that names no agent is a warning rather than an error: an agent
+    # removed for the afternoon should not stop the daemon starting.
+    agents: []
+
+    # Per-agent overrides, keyed by agent id.
+    #
+    # This is how one instance covers several agents that cannot share an
+    # identity. A Matrix account is one login: two agents on the same one
+    # both receive every message and both answer as the same user. So the
+    # homeserver and the room list live at the top and each agent's own
+    # user_id and access_token go here.
+    #
+    # Any key from this section may be overridden, not only the identity
+    # ones -- a room list that differs per agent is an ordinary thing to
+    # want.
+    per_agent: {}
+
+    # What this is for, in your words.
+    #
+    # Written into the agent's TOOLS.org beside the integration, so it is
+    # the sentence the model reads when deciding whether this is the thing
+    # to reach for. Worth filling in for anything whose name is not
+    # self-explanatory.
+    description: null
+
+    # matrix: the homeserver base URL, e.g. https://matrix.example.org.
+    homeserver: null
+
+    # matrix: the full user id, e.g. @agent:example.org.
+    #
+    # Must differ per agent. Put it under `per_agent` when the instance
+    # covers more than one.
+    user_id: null
+
+    # matrix: the access token, as a secret reference.
+    #
+    # `clawtilla integration matrix-login` turns a password into one of
+    # these without the password ever being written down.
+    access_token: null
+
+    # matrix: room ids to listen in.
+    #
+    # Empty means every room the account is joined to. Bridged rooms --
+    # Discord, Signal, anything else with a Matrix bridge -- are just rooms,
+    # so an agent reaches them without knowing they are bridged.
+    rooms: []
+
+    # matrix: only answer messages that name the agent.
+    #
+    # Defaults on, unlike a clawtilla room. A Matrix room usually has people
+    # in it talking to each other, and an agent that takes a turn on every
+    # line of it is both expensive and unbearable.
+    require_mention: true
+
+    # email: IMAP server hostname.
+    imap_host: null
+
+    # email: IMAP port.
+    imap_port: 993
+
+    # email: SMTP server hostname.
+    smtp_host: null
+
+    # email: SMTP port.
+    smtp_port: 587
+
+    # email: the mailbox to log in as. Must differ per agent.
+    username: null
+
+    # email: the password, as a secret reference.
+    password: null
+
+    # email: folders to watch. Empty means INBOX.
+    folders: []
+
+    # webhook: the port to listen on. Must differ per agent -- two agents
+    # cannot bind the same one, and the second to start simply fails.
+    port: null
+
+    # mcp: the program to run, spoken to over stdio.
+    #
+    # This is the general way to give the fleet anything with an MCP server:
+    # one entry here reaches every agent in scope, instead of the same block
+    # pasted into each agent's .mcp.json by hand.
+    command: null
+
+    # mcp: arguments for `command`.
+    args: []
+
+    # mcp: an HTTP or SSE endpoint, instead of `command`.
+    #
+    # One or the other, never both: an entry naming a command and a URL is
+    # two different servers and there is no way to tell which was meant.
+    url: null
+
+    # mcp: environment for the server process.
+    #
+    # A value may be a secret reference, which is resolved when the agent
+    # starts and written into its .mcp.json -- a file that is already 0600
+    # and already holds the agent's own token.
+    env: {}
+
 # The fleet.
 #
 # Each entry is one libreclaw agent: its persona, its model, its

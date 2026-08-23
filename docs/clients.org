@@ -52,7 +52,11 @@ Global options: ~-c/--config~, ~-s/--socket~, ~-V/--version~,
 | ~config show/validate/render/edit~ | |
 | ~image~ | container images clawtilla suggests, and your own |
 | ~plugin list~ | |
-| ~integration list/health <agent>~ | |
+| ~integration types/list/show~ | what kinds exist, and what is configured |
+| ~integration add/set/scope/rm~ | one bot, some bots or all of them |
+| ~integration health <agent> [name]~ | |
+| ~integration matrix-login <name> <homeserver> <user>~ | password from stdin |
+| ~integration matrix-rooms <name>~ | |
 
 Subcommands are dispatched on ~argv[1]~ before option parsing, and each
 owns its own option context.  One shared table across a dozen verbs
@@ -152,6 +156,30 @@ a bare ~fd7a:115c:a1e0::1~ is fine.
 - ~integration health~ exits non-zero if any check failed, so it is
   usable in a pre-flight script
 - a subcommand with no arguments prints usage and exits non-zero
+
+*** Signing in to Matrix
+
+#+begin_src bash
+clawtilla integration add home matrix
+clawtilla integration matrix-login home matrix.example.org researcher
+#+end_src
+
+The password is read from stdin, and from a terminal without echoing.
+There is deliberately no ~--password~ flag: an argument is in the shell
+history and in the process table for as long as the command runs, which
+is long enough.
+
+Piping works too, for a script:
+
+#+begin_src bash
+pass show matrix/researcher | clawtilla integration matrix-login \
+    home matrix.example.org researcher
+#+end_src
+
+Nothing secret comes back.  The token is written to a file on the
+daemon's disk and the config is given its path; the reply says which
+file, and the user id the server assigned.  See
+[[file:integrations.org][integrations.org]].
 
 ** The GTK client
 

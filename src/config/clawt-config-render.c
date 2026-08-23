@@ -186,15 +186,15 @@ append_block(GString *out, guint indent, const gchar *yaml)
  * leak by the most ordinary possible route.
  */
 static gboolean
-write_secret_file(ClawtConfig      *config,
-                  ClawtAgentConfig *agent,
-                  const gchar      *key,
-                  const gchar      *base_dir,
-                  const gchar      *dir,
-                  const gchar      *filename,
-                  const gchar      *json_member,
-                  gchar           **out_path,
-                  GError          **error)
+write_secret_file(ClawtConfig             *config,
+                  ClawtIntegrationBinding *binding,
+                  const gchar             *key,
+                  const gchar             *base_dir,
+                  const gchar             *dir,
+                  const gchar             *filename,
+                  const gchar             *json_member,
+                  gchar                  **out_path,
+                  GError                 **error)
 {
     g_autoptr(ClawtSecretRef) ref = NULL;
     g_autofree gchar *value = NULL;
@@ -205,7 +205,10 @@ write_secret_file(ClawtConfig      *config,
 
     *out_path = NULL;
 
-    ref = clawt_agent_config_get_secret(agent, key);
+    if (binding == NULL)
+        return TRUE;
+
+    ref = clawt_integration_binding_get_secret(binding, key);
 
     /*
      * Absent is only acceptable when nothing depends on it.  The channel
@@ -230,7 +233,9 @@ write_secret_file(ClawtConfig      *config,
          * fetched should say so rather than start silently deaf.
          */
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_SECRET,
-                    "%s: could not resolve %s: %s", key, described,
+                    "%s (%s): could not resolve %s: %s",
+                    key, clawt_integration_binding_get_name(binding),
+                    described,
                     local != NULL ? local->message : "unknown reason");
         return FALSE;
     }
@@ -270,15 +275,15 @@ write_secret_file(ClawtConfig      *config,
  * Writes a two-value credential file, as the email channel expects.
  */
 static gboolean
-write_login_file(ClawtConfig      *config,
-                 ClawtAgentConfig *agent,
-                 const gchar      *username,
-                 const gchar      *password_key,
-                 const gchar      *base_dir,
-                 const gchar      *dir,
-                 const gchar      *filename,
-                 gchar           **out_path,
-                 GError          **error)
+write_login_file(ClawtConfig             *config,
+                 ClawtIntegrationBinding *binding,
+                 const gchar             *username,
+                 const gchar             *password_key,
+                 const gchar             *base_dir,
+                 const gchar             *dir,
+                 const gchar             *filename,
+                 gchar                  **out_path,
+                 GError                 **error)
 {
     g_autoptr(ClawtSecretRef) ref = NULL;
     g_autofree gchar *password = NULL;
@@ -291,7 +296,10 @@ write_login_file(ClawtConfig      *config,
 
     *out_path = NULL;
 
-    ref = clawt_agent_config_get_secret(agent, password_key);
+    if (binding == NULL)
+        return TRUE;
+
+    ref = clawt_integration_binding_get_secret(binding, password_key);
     if (ref == NULL || username == NULL)
         return TRUE;
 
@@ -304,7 +312,9 @@ write_login_file(ClawtConfig      *config,
         g_autofree gchar *described = clawt_secret_ref_describe(ref);
 
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_SECRET,
-                    "%s: could not resolve %s: %s", password_key, described,
+                    "%s (%s): could not resolve %s: %s",
+                    password_key, clawt_integration_binding_get_name(binding),
+                    described,
                     local != NULL ? local->message : "unknown reason");
         return FALSE;
     }
@@ -356,80 +366,80 @@ render_clawtilla_channel(GString          *out,
     append_key_int(out, 4, "reconnect_backoff_seconds", 5);
 }
 
+/*
+ * Every channel below reads through a binding rather than out of the
+ * agent's own block, so a Matrix account configured once at the top level
+ * and pointed at four agents renders exactly what four inline blocks
+ * would have.  There is one code path, so there is one behaviour.
+ */
 static void
-render_matrix_channel(GString          *out,
-                      ClawtAgentConfig *agent,
-                      const gchar      *token_path)
+render_matrix_channel(GString                 *out,
+                      ClawtIntegrationBinding *binding,
+                      const gchar             *token_path)
 {
     g_auto(GStrv) rooms = NULL;
 
-    if (!clawt_integration_is_enabled(agent, "matrix"))
+    if (binding == NULL)
         return;
 
     g_string_append(out, "  matrix:\n");
     append_key_bool(out, 4, "enabled", TRUE);
     append_key_value(out, 4, "homeserver",
-                     clawt_agent_config_get_string(
-                         agent, "integrations.matrix.homeserver"));
+                     clawt_integration_binding_get_string(binding,
+                                                          "homeserver"));
     append_key_value(out, 4, "user_id",
-                     clawt_agent_config_get_string(
-                         agent, "integrations.matrix.user_id"));
+                     clawt_integration_binding_get_string(binding, "user_id"));
     append_key_value(out, 4, "access_token_file", token_path);
 
-    rooms = clawt_agent_config_get_string_list(agent,
-                                               "integrations.matrix.rooms");
+    rooms = clawt_integration_binding_get_string_list(binding, "rooms");
     append_string_list(out, 4, "rooms", rooms);
 
     append_key_bool(out, 4, "require_mention",
-                    clawt_agent_config_get_boolean(
-                        agent, "integrations.matrix.require_mention"));
+                    clawt_integration_binding_get_boolean(binding,
+                                                          "require_mention"));
 }
 
 static void
-render_email_channel(GString          *out,
-                     ClawtAgentConfig *agent,
-                     const gchar      *imap_path,
-                     const gchar      *smtp_path)
+render_email_channel(GString                 *out,
+                     ClawtIntegrationBinding *binding,
+                     const gchar             *imap_path,
+                     const gchar             *smtp_path)
 {
     g_auto(GStrv) folders = NULL;
 
-    if (!clawt_integration_is_enabled(agent, "email"))
+    if (binding == NULL)
         return;
 
     g_string_append(out, "  email:\n");
     append_key_bool(out, 4, "enabled", TRUE);
     append_key_value(out, 4, "imap_host",
-                     clawt_agent_config_get_string(
-                         agent, "integrations.email.imap_host"));
+                     clawt_integration_binding_get_string(binding,
+                                                          "imap_host"));
     append_key_int(out, 4, "imap_port",
-                   clawt_agent_config_get_int(agent,
-                                              "integrations.email.imap_port"));
+                   clawt_integration_binding_get_int(binding, "imap_port"));
     append_key_value(out, 4, "imap_credentials_file", imap_path);
 
-    folders = clawt_agent_config_get_string_list(agent,
-                                                 "integrations.email.folders");
+    folders = clawt_integration_binding_get_string_list(binding, "folders");
     append_string_list(out, 4, "folders", folders);
 
     append_key_value(out, 4, "smtp_host",
-                     clawt_agent_config_get_string(
-                         agent, "integrations.email.smtp_host"));
+                     clawt_integration_binding_get_string(binding,
+                                                          "smtp_host"));
     append_key_int(out, 4, "smtp_port",
-                   clawt_agent_config_get_int(agent,
-                                              "integrations.email.smtp_port"));
+                   clawt_integration_binding_get_int(binding, "smtp_port"));
     append_key_value(out, 4, "smtp_credentials_file", smtp_path);
 }
 
 static void
-render_webhook_channel(GString *out, ClawtAgentConfig *agent)
+render_webhook_channel(GString *out, ClawtIntegrationBinding *binding)
 {
-    if (!clawt_integration_is_enabled(agent, "webhook"))
+    if (binding == NULL)
         return;
 
     g_string_append(out, "  webhook:\n");
     append_key_bool(out, 4, "enabled", TRUE);
     append_key_int(out, 4, "listen_port",
-                   clawt_agent_config_get_int(agent,
-                                              "integrations.webhook.port"));
+                   clawt_integration_binding_get_int(binding, "port"));
 }
 
 
@@ -639,6 +649,8 @@ clawt_config_render_agent(ClawtConfig       *config,
     render_clawtilla_channel(out, agent, link_socket, state_dir);
 
     {
+        g_autoptr(GPtrArray) bindings =
+            clawt_integration_resolve_for_agent(config, agent);
         g_autofree gchar *matrix_token =
             g_build_filename(state_dir, "credentials",
                              "matrix_credentials.json", NULL);
@@ -649,26 +661,32 @@ clawt_config_render_agent(ClawtConfig       *config,
             g_build_filename(state_dir, "credentials",
                              "smtp_credentials.json", NULL);
 
-        render_matrix_channel(out, agent, matrix_token);
-        render_email_channel(out, agent, imap, smtp);
-    }
+        render_matrix_channel(out,
+                              clawt_integration_find_binding(bindings,
+                                                             "matrix"),
+                              matrix_token);
+        render_email_channel(out,
+                             clawt_integration_find_binding(bindings, "email"),
+                             imap, smtp);
+        render_webhook_channel(out,
+                               clawt_integration_find_binding(bindings,
+                                                              "webhook"));
 
-    render_webhook_channel(out, agent);
+        /*
+         * channels.local owns stdin and stdout.  Two agents in one process
+         * would fight over the terminal, and an agent started by the daemon
+         * has no terminal at all, so it is only ever rendered when asked for
+         * explicitly.
+         */
+        if (clawt_integration_find_binding(bindings, "local") != NULL) {
+            g_string_append(out, "  local:\n");
+            append_key_bool(out, 4, "enabled", TRUE);
+        }
 
-    /*
-     * channels.local owns stdin and stdout.  Two agents in one process
-     * would fight over the terminal, and an agent started by the daemon
-     * has no terminal at all, so it is only ever rendered when asked for
-     * explicitly.
-     */
-    if (clawt_integration_is_enabled(agent, "local")) {
-        g_string_append(out, "  local:\n");
-        append_key_bool(out, 4, "enabled", TRUE);
-    }
-
-    if (clawt_integration_is_enabled(agent, "cmacs")) {
-        g_string_append(out, "  cmacs:\n");
-        append_key_bool(out, 4, "enabled", TRUE);
+        if (clawt_integration_find_binding(bindings, "cmacs") != NULL) {
+            g_string_append(out, "  cmacs:\n");
+            append_key_bool(out, 4, "enabled", TRUE);
+        }
     }
 
     g_string_append(out, "\n");
@@ -784,8 +802,17 @@ clawt_config_write_agent_files(ClawtConfig       *config,
         g_autofree gchar *ipc_socket =
             clawt_config_get_path_value(config, "daemon.socket");
 
-        if (!clawt_workspace_write_mcp_config(agent, ipc_socket, state_dir,
-                                               error))
+        if (!clawt_workspace_write_mcp_config(config, agent, ipc_socket,
+                                               state_dir, error))
+            return FALSE;
+
+        /*
+         * And the paragraph that tells the agent what those servers are,
+         * which has to happen here rather than at scaffold time: the
+         * scaffolder only writes files that are missing, so an agent
+         * given a Matrix account today would never be told about it.
+         */
+        if (!clawt_workspace_update_tools_org(config, agent, error))
             return FALSE;
     }
 
@@ -868,34 +895,47 @@ clawt_config_write_agent_files(ClawtConfig       *config,
         }
     }
 
-    if (!write_secret_file(config, agent, "integrations.matrix.access_token",
-                           secrets_dir, credentials_dir,
-                           "matrix_credentials.json",
-                           "access_token", &matrix_token, error))
-        return FALSE;
+    {
+        g_autoptr(GPtrArray) bindings =
+            clawt_integration_resolve_for_agent(config, agent);
+        ClawtIntegrationBinding *matrix =
+            clawt_integration_find_binding(bindings, "matrix");
+        ClawtIntegrationBinding *email =
+            clawt_integration_find_binding(bindings, "email");
 
-    if (!write_login_file(config, agent,
-                          clawt_agent_config_get_string(
-                              agent, "integrations.email.username"),
-                          "integrations.email.password",
-                          secrets_dir, credentials_dir,
-                          "imap_credentials.json",
-                          &imap_file, error))
-        return FALSE;
+        if (!write_secret_file(config, matrix, "access_token",
+                               secrets_dir, credentials_dir,
+                               "matrix_credentials.json",
+                               "access_token", &matrix_token, error))
+            return FALSE;
 
-    /*
-     * The same login for both directions unless the config separates them.
-     * libreclaw wants two files; making the user say the same password
-     * twice would be a worse answer than writing it twice.
-     */
-    if (!write_login_file(config, agent,
-                          clawt_agent_config_get_string(
-                              agent, "integrations.email.username"),
-                          "integrations.email.password",
-                          secrets_dir, credentials_dir,
-                          "smtp_credentials.json",
-                          &smtp_file, error))
-        return FALSE;
+        if (!write_login_file(config, email,
+                              email != NULL
+                                  ? clawt_integration_binding_get_string(
+                                        email, "username")
+                                  : NULL,
+                              "password",
+                              secrets_dir, credentials_dir,
+                              "imap_credentials.json",
+                              &imap_file, error))
+            return FALSE;
+
+        /*
+         * The same login for both directions unless the config separates
+         * them. libreclaw wants two files; making the user say the same
+         * password twice would be a worse answer than writing it twice.
+         */
+        if (!write_login_file(config, email,
+                              email != NULL
+                                  ? clawt_integration_binding_get_string(
+                                        email, "username")
+                                  : NULL,
+                              "password",
+                              secrets_dir, credentials_dir,
+                              "smtp_credentials.json",
+                              &smtp_file, error))
+            return FALSE;
+    }
 
     rendered = clawt_config_render_agent(config, agent, link_socket,
                                          state_dir, error);
