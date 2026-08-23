@@ -654,6 +654,115 @@ integrations:
     # and already holds the agent's own token.
     env: {}
 
+    # connector: which service this is an account on.
+    #
+    # One of the ids from `clawtilla connector catalog`. The catalogue says
+    # how to authenticate and, where there is a well-known one, which MCP
+    # server fronts it -- so a connector integration is usually a provider,
+    # a client id and nothing else.
+    provider: null
+
+    # connector: which account on that service, in your own words.
+    #
+    # Two connectors for the same provider are the ordinary case -- work
+    # and personal, or one GitLab org and another -- and the account label
+    # is what tells them apart everywhere they are shown.
+    account: null
+
+    # connector: the host, for a service you run yourself.
+    #
+    # Only meaningful for a self-hostable provider such as gitlab or
+    # forgejo, where the endpoints are paths joined onto this. Left unset
+    # it is the provider's flagship host.
+    instance: null
+
+    # connector: the OAuth application you registered with the provider.
+    #
+    # clawtilla ships none. It has no application of its own to lend, and
+    # borrowing another project's would mean every clawtilla identifying
+    # itself as something it is not. Registering one takes a few minutes
+    # and `clawtilla connector catalog` says where for each provider.
+    client_id: null
+
+    # connector: the application's secret, if the provider insists on one.
+    #
+    # Many do not for the device flow, and one that does not must not be
+    # sent an empty string -- some providers authenticate that and fail.
+    # Leave it unset rather than blank.
+    client_secret: null
+
+    # connector: what to ask the provider for, space separated.
+    #
+    # Defaults to the catalogue's suggestion. Ask for less than that when
+    # the agent needs less: a scope granted is a scope every agent sharing
+    # this connector has, for as long as the token lives.
+    scopes: null
+
+    # connector: where the credential is kept, mode 0600.
+    #
+    # Written by the daemon when the flow completes, and named here rather
+    # than in the config so that nothing has to put the value itself in a
+    # file people keep in git. Set automatically; there is rarely a reason
+    # to write it by hand.
+    token_file: null
+
+    # connector: the environment variable or header the credential goes in.
+    #
+    # Overrides the catalogue, which is what makes the generic `api-key`
+    # and `bearer` providers cover a service that has no entry of its own.
+    credential_name: null
+
+    # connector: the only tools the agent may use, if you want fewer.
+    #
+    # Empty means every tool the server offers. Naming some is enforced in
+    # the relay: the others are removed from the agent's tool list rather
+    # than refused when called, because a tool that is advertised and then
+    # refused is worse than one that was never there -- the agent plans
+    # around it and has to work out from an error that it never had it.
+    tools: []
+
+# Connected accounts: how clawtilla obtains credentials and keeps them.
+#
+# A connector integration gives an agent the tools of a service without
+# giving it the credential. The daemon runs the authorization, holds the
+# token, renews it, and injects it into the tool server -- so the value
+# is never in the agent's .mcp.json, its environment or its transcript.
+#
+# What that is worth depends on where the agent runs. For a container
+# or VM agent the boundary is real: the token file and the relay are on
+# the host and the agent cannot reach either. For an unconfined host
+# agent it is protection against leaking a credential by accident, not
+# against one that goes looking -- see docs/security.org.
+connectors:
+
+  # Directory of extra connector definitions.
+  #
+  # Each `.yaml` file holds a `connectors:` list, and an entry whose id
+  # matches a built-in one replaces it. These are somebody else's URLs:
+  # a provider that moves an endpoint should be fixable here rather than
+  # by waiting for a clawtilla release.
+  dir: "$XDG_CONFIG_HOME/clawtilla/connectors.d"
+
+  # How long before expiry to renew a token.
+  #
+  # An access token often lasts an hour, and one that expires while the
+  # request carrying it is in flight fails exactly like a wrong one --
+  # the agent sees only a refusal from a service it was using a minute
+  # ago.
+  refresh_margin_seconds: 300
+
+  # Loopback port for the authorization-code flow's redirect.
+  #
+  # Only used by providers with no device flow. It has to be a fixed
+  # number rather than whatever the kernel offers, because the redirect
+  # URI is registered with the provider in advance and most match it
+  # exactly: register `http://127.0.0.1:8765/callback`.
+  #
+  # Bound on 127.0.0.1 only. A redirect carries an authorization code in
+  # a URL, and a listener on every interface offers that code to whoever
+  # on the network reaches the port first.
+  redirect_port: 8765
+
 # Standing work: a prompt, an agent, and when to run it.
 #
 # A routine is the thing you would otherwise remember to ask for every

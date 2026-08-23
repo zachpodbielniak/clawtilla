@@ -514,6 +514,49 @@ clawt_run_state_get_type(void)
     return g_define_type_id__volatile;
 }
 
+
+/* Register ClawtConnectorAuth as a GLib enum type */
+GType
+clawt_connector_auth_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_CONNECTOR_AUTH_NONE, "CLAWT_CONNECTOR_AUTH_NONE", "none" },
+            { CLAWT_CONNECTOR_AUTH_DEVICE, "CLAWT_CONNECTOR_AUTH_DEVICE", "device" },
+            { CLAWT_CONNECTOR_AUTH_PKCE, "CLAWT_CONNECTOR_AUTH_PKCE", "pkce" },
+            { CLAWT_CONNECTOR_AUTH_API_KEY, "CLAWT_CONNECTOR_AUTH_API_KEY", "api_key" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id =
+            g_enum_register_static("ClawtConnectorAuth", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
+/* Register ClawtCredentialPlacement as a GLib enum type */
+GType
+clawt_credential_placement_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_CREDENTIAL_PLACEMENT_ENV,
+              "CLAWT_CREDENTIAL_PLACEMENT_ENV", "env" },
+            { CLAWT_CREDENTIAL_PLACEMENT_HEADER,
+              "CLAWT_CREDENTIAL_PLACEMENT_HEADER", "header" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id =
+            g_enum_register_static("ClawtCredentialPlacement", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
 /* ── Nickname helpers ────────────────────────────────────────────── */
 
 /*

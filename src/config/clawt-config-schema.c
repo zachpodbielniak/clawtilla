@@ -743,6 +743,132 @@ static const ClawtSchemaEntry schema[] = {
   "and already holds the agent's own token.", "0.2.0" },
 
 
+{ "integrations.provider", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "connector: which service this is an account on.\n"
+  "\n"
+  "One of the ids from `clawtilla connector catalog`. The catalogue says\n"
+  "how to authenticate and, where there is a well-known one, which MCP\n"
+  "server fronts it -- so a connector integration is usually a provider,\n"
+  "a client id and nothing else.", "0.2.0" },
+
+{ "integrations.account", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "connector: which account on that service, in your own words.\n"
+  "\n"
+  "Two connectors for the same provider are the ordinary case -- work\n"
+  "and personal, or one GitLab org and another -- and the account label\n"
+  "is what tells them apart everywhere they are shown.", "0.2.0" },
+
+{ "integrations.instance", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "connector: the host, for a service you run yourself.\n"
+  "\n"
+  "Only meaningful for a self-hostable provider such as gitlab or\n"
+  "forgejo, where the endpoints are paths joined onto this. Left unset\n"
+  "it is the provider's flagship host.", "0.2.0" },
+
+{ "integrations.client_id", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "connector: the OAuth application you registered with the provider.\n"
+  "\n"
+  "clawtilla ships none. It has no application of its own to lend, and\n"
+  "borrowing another project's would mean every clawtilla identifying\n"
+  "itself as something it is not. Registering one takes a few minutes\n"
+  "and `clawtilla connector catalog` says where for each provider.",
+  "0.2.0" },
+
+{ "integrations.client_secret", CLAWT_SCHEMA_SECRET, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "connector: the application's secret, if the provider insists on one.\n"
+  "\n"
+  "Many do not for the device flow, and one that does not must not be\n"
+  "sent an empty string -- some providers authenticate that and fail.\n"
+  "Leave it unset rather than blank.", "0.2.0" },
+
+{ "integrations.scopes", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "connector: what to ask the provider for, space separated.\n"
+  "\n"
+  "Defaults to the catalogue's suggestion. Ask for less than that when\n"
+  "the agent needs less: a scope granted is a scope every agent sharing\n"
+  "this connector has, for as long as the token lives.", "0.2.0" },
+
+{ "integrations.token_file", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "connector: where the credential is kept, mode 0600.\n"
+  "\n"
+  "Written by the daemon when the flow completes, and named here rather\n"
+  "than in the config so that nothing has to put the value itself in a\n"
+  "file people keep in git. Set automatically; there is rarely a reason\n"
+  "to write it by hand.", "0.2.0" },
+
+{ "integrations.credential_name", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "connector: the environment variable or header the credential goes in.\n"
+  "\n"
+  "Overrides the catalogue, which is what makes the generic `api-key`\n"
+  "and `bearer` providers cover a service that has no entry of its own.",
+  "0.2.0" },
+
+{ "integrations.tools", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "connector: the only tools the agent may use, if you want fewer.\n"
+  "\n"
+  "Empty means every tool the server offers. Naming some is enforced in\n"
+  "the relay: the others are removed from the agent's tool list rather\n"
+  "than refused when called, because a tool that is advertised and then\n"
+  "refused is worse than one that was never there -- the agent plans\n"
+  "around it and has to work out from an error that it never had it.",
+  "0.2.0" },
+
+
+/* ── connectors ──────────────────────────────────────────────────── */
+{ "connectors", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Connected accounts: how clawtilla obtains credentials and keeps them.\n"
+  "\n"
+  "A connector integration gives an agent the tools of a service without\n"
+  "giving it the credential. The daemon runs the authorization, holds the\n"
+  "token, renews it, and injects it into the tool server -- so the value\n"
+  "is never in the agent's .mcp.json, its environment or its transcript.\n"
+  "\n"
+  "What that is worth depends on where the agent runs. For a container\n"
+  "or VM agent the boundary is real: the token file and the relay are on\n"
+  "the host and the agent cannot reach either. For an unconfined host\n"
+  "agent it is protection against leaking a credential by accident, not\n"
+  "against one that goes looking -- see docs/security.org.", "0.2.0" },
+
+{ "connectors.dir", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE,
+  "$XDG_CONFIG_HOME/clawtilla/connectors.d", NULL,
+  "Directory of extra connector definitions.\n"
+  "\n"
+  "Each `.yaml` file holds a `connectors:` list, and an entry whose id\n"
+  "matches a built-in one replaces it. These are somebody else's URLs:\n"
+  "a provider that moves an endpoint should be fixable here rather than\n"
+  "by waiting for a clawtilla release.", "0.2.0" },
+
+{ "connectors.refresh_margin_seconds", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_NONE, "300", NULL,
+  "How long before expiry to renew a token.\n"
+  "\n"
+  "An access token often lasts an hour, and one that expires while the\n"
+  "request carrying it is in flight fails exactly like a wrong one --\n"
+  "the agent sees only a refusal from a service it was using a minute\n"
+  "ago.", "0.2.0" },
+
+{ "connectors.redirect_port", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "8765", NULL,
+  "Loopback port for the authorization-code flow's redirect.\n"
+  "\n"
+  "Only used by providers with no device flow. It has to be a fixed\n"
+  "number rather than whatever the kernel offers, because the redirect\n"
+  "URI is registered with the provider in advance and most match it\n"
+  "exactly: register `http://127.0.0.1:8765/callback`.\n"
+  "\n"
+  "Bound on 127.0.0.1 only. A redirect carries an authorization code in\n"
+  "a URL, and a listener on every interface offers that code to whoever\n"
+  "on the network reaches the port first.", "0.2.0" },
+
 /* ── routines ────────────────────────────────────────────────────── */
 { "routines", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Standing work: a prompt, an agent, and when to run it.\n"

@@ -435,6 +435,48 @@ memories:
 # # first.
 # integrations: []
 
+# Connected accounts: how clawtilla obtains credentials and keeps them.
+#
+# A connector integration gives an agent the tools of a service without
+# giving it the credential. The daemon runs the authorization, holds the
+# token, renews it, and injects it into the tool server -- so the value
+# is never in the agent's .mcp.json, its environment or its transcript.
+#
+# What that is worth depends on where the agent runs. For a container
+# or VM agent the boundary is real: the token file and the relay are on
+# the host and the agent cannot reach either. For an unconfined host
+# agent it is protection against leaking a credential by accident, not
+# against one that goes looking -- see docs/security.org.
+connectors:
+
+  # Directory of extra connector definitions.
+  #
+  # Each `.yaml` file holds a `connectors:` list, and an entry whose id
+  # matches a built-in one replaces it. These are somebody else's URLs:
+  # a provider that moves an endpoint should be fixable here rather than
+  # by waiting for a clawtilla release.
+  dir: "$XDG_CONFIG_HOME/clawtilla/connectors.d"
+
+  # How long before expiry to renew a token.
+  #
+  # An access token often lasts an hour, and one that expires while the
+  # request carrying it is in flight fails exactly like a wrong one --
+  # the agent sees only a refusal from a service it was using a minute
+  # ago.
+  refresh_margin_seconds: 300
+
+  # Loopback port for the authorization-code flow's redirect.
+  #
+  # Only used by providers with no device flow. It has to be a fixed
+  # number rather than whatever the kernel offers, because the redirect
+  # URI is registered with the provider in advance and most match it
+  # exactly: register `http://127.0.0.1:8765/callback`.
+  #
+  # Bound on 127.0.0.1 only. A redirect carries an authorization code in
+  # a URL, and a listener on every interface offers that code to whoever
+  # on the network reaches the port first.
+  redirect_port: 8765
+
 # # Standing work: a prompt, an agent, and when to run it.
 # #
 # # A routine is the thing you would otherwise remember to ask for every

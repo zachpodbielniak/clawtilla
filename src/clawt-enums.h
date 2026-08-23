@@ -531,6 +531,57 @@ typedef enum {
     CLAWT_RUN_MISSED
 } ClawtRunState;
 
+/**
+ * ClawtConnectorAuth:
+ * @CLAWT_CONNECTOR_AUTH_NONE: no credential; the server is open
+ * @CLAWT_CONNECTOR_AUTH_DEVICE: OAuth 2.0 device authorization grant
+ * @CLAWT_CONNECTOR_AUTH_PKCE: OAuth 2.0 authorization code with PKCE
+ * @CLAWT_CONNECTOR_AUTH_API_KEY: a key the person already holds
+ *
+ * How a connector proves who it is.
+ *
+ * @CLAWT_CONNECTOR_AUTH_DEVICE is the one to prefer and the reason this
+ * is feasible in a daemon at all.  It needs no redirect URI, no listening
+ * socket and no browser on the same machine: the daemon asks for a code,
+ * the person types it into a page on whatever device they are holding,
+ * and the daemon polls until they have.  A headless workstation reached
+ * over SSH can be connected from a phone.
+ *
+ * @CLAWT_CONNECTOR_AUTH_PKCE exists because a good many services never
+ * implemented device grant.  It costs a loopback listener and a redirect
+ * URI registered in advance, which is why it is second choice rather
+ * than the default.
+ *
+ * @CLAWT_CONNECTOR_AUTH_API_KEY is not OAuth and is not pretending to
+ * be, but it belongs here: the point of the broker is that the agent
+ * never holds the credential, and that is worth as much for a key
+ * pasted from a dashboard as for a token a flow negotiated.
+ */
+typedef enum {
+    CLAWT_CONNECTOR_AUTH_NONE = 0,
+    CLAWT_CONNECTOR_AUTH_DEVICE,
+    CLAWT_CONNECTOR_AUTH_PKCE,
+    CLAWT_CONNECTOR_AUTH_API_KEY
+} ClawtConnectorAuth;
+
+/**
+ * ClawtCredentialPlacement:
+ * @CLAWT_CREDENTIAL_PLACEMENT_ENV: an environment variable on the server process
+ * @CLAWT_CREDENTIAL_PLACEMENT_HEADER: an HTTP header on every request
+ *
+ * Where the relay puts the credential when it starts the tool server.
+ *
+ * There is deliberately no query-parameter member.  A token in a URL is
+ * written to every proxy log and every server access log it passes
+ * through, and survives there long after the token is revoked; a
+ * connector whose service only accepts that is one clawtilla declines to
+ * support rather than one it supports badly.
+ */
+typedef enum {
+    CLAWT_CREDENTIAL_PLACEMENT_ENV = 0,
+    CLAWT_CREDENTIAL_PLACEMENT_HEADER
+} ClawtCredentialPlacement;
+
 /* GType registration */
 GType clawt_agent_state_get_type(void) G_GNUC_CONST;
 GType clawt_agent_caps_get_type(void) G_GNUC_CONST;
@@ -556,6 +607,8 @@ GType clawt_notify_backend_get_type(void) G_GNUC_CONST;
 GType clawt_notify_events_get_type(void) G_GNUC_CONST;
 GType clawt_schedule_get_type(void) G_GNUC_CONST;
 GType clawt_run_state_get_type(void) G_GNUC_CONST;
+GType clawt_connector_auth_get_type(void) G_GNUC_CONST;
+GType clawt_credential_placement_get_type(void) G_GNUC_CONST;
 
 #define CLAWT_TYPE_AGENT_STATE      (clawt_agent_state_get_type())
 #define CLAWT_TYPE_AGENT_CAPS       (clawt_agent_caps_get_type())
@@ -581,6 +634,9 @@ GType clawt_run_state_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_NOTIFY_EVENTS     (clawt_notify_events_get_type())
 #define CLAWT_TYPE_SCHEDULE          (clawt_schedule_get_type())
 #define CLAWT_TYPE_RUN_STATE         (clawt_run_state_get_type())
+#define CLAWT_TYPE_CONNECTOR_AUTH    (clawt_connector_auth_get_type())
+#define CLAWT_TYPE_CREDENTIAL_PLACEMENT \
+    (clawt_credential_placement_get_type())
 
 /**
  * clawt_enum_to_nick:
