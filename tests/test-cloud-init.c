@@ -24,7 +24,7 @@ test_user_data_creates_only_the_named_user(void)
 {
     g_autofree gchar *data =
         clawt_cloud_init_build_user_data("agent", "ssh-ed25519 AAAA x",
-                                         "clawt-scribe");
+                                         "clawt-scribe", NULL);
 
     g_assert_nonnull(strstr(data, "#cloud-config"));
     g_assert_nonnull(strstr(data, "- name: \"agent\""));
@@ -40,7 +40,8 @@ static void
 test_user_data_permits_root_when_root_is_the_login(void)
 {
     g_autofree gchar *data =
-        clawt_cloud_init_build_user_data("root", "ssh-ed25519 AAAA x", NULL);
+        clawt_cloud_init_build_user_data("root", "ssh-ed25519 AAAA x", NULL,
+                                         NULL);
 
     g_assert_nonnull(strstr(data, "disable_root: false"));
 
@@ -59,7 +60,8 @@ static void
 test_user_data_authorises_the_key_at_the_top_level_too(void)
 {
     g_autofree gchar *data =
-        clawt_cloud_init_build_user_data("root", "ssh-ed25519 AAAA x", NULL);
+        clawt_cloud_init_build_user_data("root", "ssh-ed25519 AAAA x", NULL,
+                                         NULL);
     const gchar *first;
     const gchar *second;
 
@@ -74,7 +76,8 @@ static void
 test_user_data_gives_a_non_root_login_sudo(void)
 {
     g_autofree gchar *data =
-        clawt_cloud_init_build_user_data("agent", "ssh-ed25519 AAAA x", NULL);
+        clawt_cloud_init_build_user_data("agent", "ssh-ed25519 AAAA x", NULL,
+                                         NULL);
 
     g_assert_nonnull(strstr(data, "disable_root: true"));
     g_assert_nonnull(strstr(data, "ALL=(ALL) NOPASSWD:ALL"));
@@ -88,7 +91,8 @@ static void
 test_user_data_refuses_password_authentication(void)
 {
     g_autofree gchar *data =
-        clawt_cloud_init_build_user_data("agent", "ssh-ed25519 AAAA x", NULL);
+        clawt_cloud_init_build_user_data("agent", "ssh-ed25519 AAAA x", NULL,
+                                         NULL);
 
     g_assert_nonnull(strstr(data, "ssh_pwauth: false"));
 }
@@ -105,7 +109,7 @@ test_user_data_escapes_a_quote_in_the_key(void)
     g_autofree gchar *data =
         clawt_cloud_init_build_user_data("agent",
                                          "ssh-ed25519 AAAA zach@\"host\"",
-                                         NULL);
+                                         NULL, NULL);
 
     g_assert_nonnull(strstr(data, "\\\"host\\\""));
     g_assert_null(strstr(data, "zach@\"host\""));
@@ -115,7 +119,7 @@ static void
 test_user_data_without_a_key_authorises_nothing(void)
 {
     g_autofree gchar *data =
-        clawt_cloud_init_build_user_data("agent", NULL, NULL);
+        clawt_cloud_init_build_user_data("agent", NULL, NULL, NULL);
 
     g_assert_nonnull(strstr(data, "- name: \"agent\""));
     g_assert_null(strstr(data, "ssh_authorized_keys"));
@@ -184,7 +188,7 @@ test_write_seed_builds_a_labelled_image(void)
 
     iso = clawt_cloud_init_write_seed(dir, "clawt-scribe", "agent",
                                       "ssh-ed25519 AAAA x", "clawt-scribe",
-                                      &error);
+                                      NULL, &error);
     g_assert_no_error(error);
     g_assert_nonnull(iso);
     g_assert_true(g_file_test(iso, G_FILE_TEST_EXISTS));
@@ -197,7 +201,7 @@ test_write_seed_builds_a_labelled_image(void)
      */
     again = clawt_cloud_init_write_seed(dir, "clawt-scribe", "agent",
                                         "ssh-ed25519 AAAA x", "clawt-scribe",
-                                        &error);
+                                        NULL, &error);
     g_assert_no_error(error);
     g_assert_cmpstr(again, ==, iso);
 

@@ -205,6 +205,7 @@ clawt_desktop_backend_get_type(void)
             { CLAWT_DESKTOP_BACKEND_AUTO, "CLAWT_DESKTOP_BACKEND_AUTO", "auto" },
             { CLAWT_DESKTOP_BACKEND_GOWL, "CLAWT_DESKTOP_BACKEND_GOWL", "gowl" },
             { CLAWT_DESKTOP_BACKEND_GNOME, "CLAWT_DESKTOP_BACKEND_GNOME", "gnome" },
+            { CLAWT_DESKTOP_BACKEND_GUEST, "CLAWT_DESKTOP_BACKEND_GUEST", "guest" },
             { 0, NULL, NULL }
         };
         GType g_define_type_id = g_enum_register_static("ClawtDesktopBackend", values);

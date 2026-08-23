@@ -90,6 +90,8 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/computer/clawt-vm-image.h \
 	$(SRCDIR)/computer/clawt-vm-computer.h \
 	$(SRCDIR)/computer/clawt-desktop.h \
+	$(SRCDIR)/computer/clawt-guest-desktop.h \
+	$(SRCDIR)/computer/clawt-desktop-relay.h \
 	$(SRCDIR)/computer/clawt-computer-factory.h \
 	$(SRCDIR)/chat/clawt-message.h \
 	$(SRCDIR)/chat/clawt-markdown.h \
@@ -157,6 +159,8 @@ LIB_SOURCES = \
 	$(SRCDIR)/computer/clawt-vm-image.c \
 	$(SRCDIR)/computer/clawt-vm-computer.c \
 	$(SRCDIR)/computer/clawt-desktop.c \
+	$(SRCDIR)/computer/clawt-guest-desktop.c \
+	$(SRCDIR)/computer/clawt-desktop-relay.c \
 	$(SRCDIR)/computer/clawt-computer-factory.c \
 	$(SRCDIR)/chat/clawt-message.c \
 	$(SRCDIR)/chat/clawt-markdown.c \

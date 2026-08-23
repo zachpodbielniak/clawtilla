@@ -55,6 +55,7 @@ typedef struct _ClawtExchange       ClawtExchange;
 typedef struct _ClawtSandbox        ClawtSandbox;
 typedef struct _ClawtPodBridge      ClawtPodBridge;
 typedef struct _ClawtDesktop        ClawtDesktop;
+typedef struct _ClawtGuestDesktop   ClawtGuestDesktop;
 
 /* Link and IPC */
 typedef struct _ClawtLink           ClawtLink;

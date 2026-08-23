@@ -780,26 +780,150 @@ removes oldest-first and never follows a symlink out of the directory.
 
 ** Desktop control
 
-An add-on rather than a separate type:
+An add-on rather than a separate type, so it works alongside whichever
+computer the agent has:
 
 #+begin_src yaml
 computer:
   type: host
   desktop:
     enabled: true
-    backend: gowl          # gowl | gnome; auto-detected by default
+    backend: auto          # auto | gowl | gnome | guest
     socket: "$XDG_RUNTIME_DIR/gowl-mcp.sock"
     allow_input: true      # false = observe only
 #+end_src
 
-~ClawtGowlDesktop~ connects straight to gowl's MCP socket with mcp-glib.
-~ClawtGnomeDesktop~ spawns ~gnome-desktop-mcp~ over stdio.  Either way the
-endpoint is handed to the agent through its link, so ~describe_desktop~,
-~screenshot_monitor~ and ~send_key~ arrive as ordinary MCP tools.
+There are four backends and they divide into two quite different things.
+~gowl~ and ~gnome~ drive *the screen a person is sitting at*: gowl through
+its own MCP socket, GNOME through ~gnome-desktop-mcp~ on the host.
+~guest~ drives a desktop inside the agent's own VM, which is the only one
+where a misjudged click lands somewhere recoverable.
 
-*Launching a process is separate.*  ~allow_spawn~ is off by default and
-is not covered by ~allow_input~.  The compositor's ~spawn~ tool starts a
-process through the compositor's own socket, so none of clawtilla's
+~auto~ picks ~guest~ whenever the agent has a VM, and otherwise probes
+gowl and then GNOME.  An agent with a machine of its own should be
+driving that screen rather than yours.
+
+*Tools arrive through the agent's ~.mcp.json~, not through its link.*  An
+AI CLI drops a tool list handed to it in-process -- see the note in
+=CLAUDE.md= -- so the only route to an agent's session is a command named
+in a config file the CLI finds for itself.
+
+*** A desktop inside the agent's VM
+
+A cloud image has no desktop at all: no display manager, no compositor,
+no graphical target.  So ~computer.desktop.enabled~ on a VM agent does
+not *find* a desktop, it *builds* one, through the cloud-init seed on the
+guest's first boot:
+
+#+begin_src yaml
+computer:
+  type: vm
+  vm:
+    image: "~/.local/share/clawtilla/images/Fedora-Cloud-Base-44.qcow2"
+    cpus: 2
+    memory_mb: 8192
+    disk_gb: 128
+    desktop:
+      user: null           # defaults to ssh_user, or clawt when that is root
+      autologin: true
+      packages: ["gdm", "gnome-shell", "gnome-session", "..."]
+      mcp: true
+      mcp_repo: "https://git.podbielniak.com/zachpodbielniak/gnome-desktop-mcp.git"
+  desktop:
+    enabled: true
+    allow_input: true
+#+end_src
+
+The defaults for ~cpus~, ~memory_mb~ and ~disk_gb~ are sized for this:
+2 cores, 8 GB and a 128 GB disk.  A cloud image's own disk is a few
+gigabytes, which a desktop fills immediately; the overlay is created at
+~disk_gb~ instead and cloud-init's ~growpart~ extends the guest's
+filesystem to match.  qcow2 is sparse, so it costs what is written rather
+than what is asked for.  Raising ~disk_gb~ grows the disk on the next
+provision.  *Lowering it is refused*, with a warning: shrinking a disk
+discards whatever was past the new end, and a number edited downwards in
+a config file is not consent to lose it.
+
+**** Why there are two accounts
+
+GDM refuses to log root in, and ~ssh_user~ defaults to root.  So a VM
+left at its defaults gets a second account -- ~clawt~ -- which owns the
+graphical session, while commands the agent runs still arrive as root.
+Both are created by cloud-init and both authorise the same key.  Set
+~ssh_user~ to something other than root, or name
+~vm.desktop.user~, and there is one account instead.
+
+The key has to reach the session account: the MCP server talks to GNOME
+Shell over the session bus of whoever is logged in at the screen, so it
+is reached by an SSH connection *as that account*.
+
+**** What is switched on, and why each one matters
+
+Four things would each, on their own, leave the agent looking at a
+desktop it cannot touch, and all four are handled in the seed:
+
+- *the extension is enabled* through a dconf system default, because
+  ~gnome-extensions enable~ needs a session that does not exist yet;
+- *consent is pre-acknowledged*, because the extension opens a modal
+  dialog on first enable and nobody is there to dismiss it -- it would
+  sit in front of everything the agent tried to look at;
+- *automation is switched on* by an autostart entry that calls
+  ~SetEnabled~ over D-Bus, retrying, because the extension starts with it
+  off and the only other way to flip it is a click on the top bar;
+- *the lock screen is disabled*, because nothing in the guest can answer
+  one -- screenshots would come back showing a lock screen and clicks
+  would land nowhere.
+
+The GNOME Shell extension is not avoidable.  GNOME on Wayland refuses
+screenshots and input injection to every process outside the compositor,
+so the only way in is code running *inside* GNOME Shell exposing a D-Bus
+interface.  ~gnome-desktop-mcp~ is cloned rather than installed from
+PyPI, because the extension only exists in the repository and the two
+halves have to match: the server calls D-Bus methods that exact extension
+has to export.
+
+cloud-init acts on **first boot only**.  Changing ~vm.desktop.user~ or
+turning the desktop on for a VM that has already booted means deleting
+the overlay, not restarting.
+
+**** How the tools reach the agent
+
+The agent's ~.mcp.json~ gains a ~clawtilla-desktop~ server naming the
+clawtilla CLI:
+
+#+begin_src sh
+clawtilla --socket <daemon.sock> computer desktop-mcp <agent-id>
+#+end_src
+
+It asks the daemon for the SSH command that reaches the guest, and relays
+stdin and stdout to it.  SSH already carries stdio, so there is no
+protocol translation -- but the relay is not a bare ~ssh~ entry, for two
+reasons.
+
+The first is the port.  It is chosen when the VM is provisioned, which is
+*after* the workspace files are written, so a command line captured at
+render time would name a port nothing is listening on.  The relay asks
+each time it starts.
+
+The second is the grant.  ~gnome-desktop-mcp~ offers every tool it has to
+whoever connects; it has never heard of ~allow_input~.  A bare ssh entry
+would hand an observe-only agent the ability to type and click.  So the
+relay reads the JSON-RPC going past: it removes tools the agent may not
+use from ~tools/list~, and answers a call to one of them with an error
+rather than forwarding it.  A tool that is advertised and then refused is
+worse than one that is absent -- the agent plans around it, calls it, and
+has to work out from an error that it never had it.
+
+~clawtilla-desktop~ is the second and last key clawtilla owns in that
+file; everything else in it is read back and written out untouched.  It
+is *removed* when the agent no longer has a guest desktop, because an
+entry left behind would start an ssh to a VM that is not there.
+
+*** Acting is a separate grant from seeing
+
+*Launching a process is separate again.*  ~allow_spawn~ is off by default
+and is not covered by ~allow_input~.  The compositor's ~spawn~ tool starts
+a process through the compositor's own socket, so none of clawtilla's
 confinement applies to it -- not the path checks, not the sudo block, and
 not bwrap.  An operator who chose bwrap would not expect enabling desktop
 input to hand back unrestricted process launching.
@@ -809,7 +933,9 @@ see the screen and query the compositor but cannot click or type.  Seeing
 and acting are separate capabilities and clawtilla does not conflate
 them.
 
-gowl needs to be built with ~MCP=1~ and have ~modules.mcp.enabled: true~.
+For the host backends, gowl needs to be built with ~MCP=1~ and have
+~modules.mcp.enabled: true~, and the GNOME fallback needs
+~gnome-desktop-mcp~ on ~PATH~.
 
 ** Adding a backend
 

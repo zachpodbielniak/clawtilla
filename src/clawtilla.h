@@ -48,6 +48,8 @@
 #include "computer/clawt-vm-image.h"
 #include "computer/clawt-vm-computer.h"
 #include "computer/clawt-desktop.h"
+#include "computer/clawt-guest-desktop.h"
+#include "computer/clawt-desktop-relay.h"
 #include "computer/clawt-computer-factory.h"
 
 #include "chat/clawt-message.h"

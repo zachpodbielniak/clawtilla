@@ -380,6 +380,86 @@ the same program.
   the `sockaddr_un` limit `clawt_check_socket_path()` already exists
   for, and which the VM path was not calling.
 
+### A GNOME session has to be *installed* into a VM, not found
+
+- A cloud image has no display manager, no compositor and no graphical
+  target, so `computer.desktop.enabled` on a VM agent does not find a
+  desktop -- it builds one, through the cloud-init seed. Four things
+  would each on their own leave the agent looking at a desktop it cannot
+  touch, and all four are handled: the extension is enabled through a
+  **dconf system default** (`gnome-extensions enable` needs a session
+  that does not exist yet); consent is pre-acknowledged (the extension
+  opens a modal on first enable and nobody is there to dismiss it); a
+  lock screen is disabled (nothing in the guest can answer one); and
+  automation is switched on from an autostart entry, because the
+  extension starts with it off and the only other way is a click on the
+  top bar.
+- **GDM refuses to log root in**, and `computer.vm.ssh_user` defaults to
+  root -- so a VM left at its defaults gets a second account for the
+  session while commands still arrive as root. The key is authorised for
+  both, because the MCP server talks to GNOME Shell over the session bus
+  of whoever is logged in and so has to *run as that account*.
+- cloud-init acts on **first boot only**, so every one of these is
+  findable exactly once per overlay. Verified by booting a real Fedora
+  44 guest twice from scratch.
+
+### X-GNOME-Autostart-Phase now stops an autostart entry running
+
+- gnome-session no longer manages session services, so an entry setting
+  it is **skipped**, with one line in the journal saying so. The
+  automation-enable script therefore never ran, and every desktop tool
+  answered "Automation disabled by user. Enable from top bar indicator."
+  -- on a machine with no top bar for anyone to click. The D-Bus call
+  itself was correct throughout; `gdbus call ... SetEnabled true` by hand
+  returned `(true,)` on the same guest. Only the launcher was missing.
+
+### `mcp>=1.0.0` resolves to a version that removed `fastmcp`
+
+- gnome-desktop-mcp asks for that and imports `mcp.server.fastmcp`,
+  which the 2.x SDK dropped (`mcp.server.mcpserver` replaced it). pip
+  resolves the newest, installs cleanly, reports success -- and the
+  server dies on its first import. Nothing before that point fails: the
+  clone works, the venv works, the install is quiet. clawtilla pins
+  `mcp<2` at install time; the constraint belongs upstream in the
+  guest's own pyproject.
+
+### An AI CLI reaches a guest's MCP server over ssh, and ssh alone is not enough
+
+- SSH already carries stdio, so the transport is just
+  `ssh ... clawtilla-desktop-mcp` with no protocol translation -- but the
+  `.mcp.json` entry names the clawtilla CLI rather than ssh, for two
+  reasons. The port that reaches the guest is chosen when the VM is
+  provisioned, which is *after* the workspace files are written, so a
+  command line captured at render time names a port nothing listens on.
+  And gnome-desktop-mcp offers every tool it has to whoever connects: it
+  has never heard of `allow_input`, so a bare ssh entry hands an
+  observe-only agent the ability to type. `clawt-desktop-relay.c` filters
+  `tools/list` and refuses `tools/call`, which is the only place that
+  grant is enforced for a guest desktop.
+- `clawtilla-desktop` is the second and last key clawtilla owns in that
+  file, and it is *removed* when the grant is revoked -- an entry left
+  behind starts an ssh to a VM that is not there.
+
+### A schema default that no getter reads is not a default
+
+- `clawt_agent_config_get_string_list()` was the only getter that did not
+  fall back to the schema, so the first STRING_LIST default ever declared
+  was generated into `data/*.yaml`, documented in
+  `docs/configuration-options.org`, and never once handed to the code
+  that asked for it. It also rendered as `packages:gdm,gnome-shell`,
+  which is not YAML at all -- `append_value()` is not told what column it
+  is writing in, so a list default is emitted in flow style. Defaults are
+  comma-separated in the table; one spelling, both readers.
+
+### A factory function nothing calls is not a feature
+
+- `clawt_computer_factory_create_desktop()` existed, was correct, had a
+  permission model and a tool list -- and no caller. `computer.desktop`
+  therefore set a caps flag and did nothing else for the whole life of
+  the feature. Same shape as the designer's pinning: two tested halves
+  with no wire between them. When something works in isolation and not in
+  the product, grep for the caller before debugging the logic.
+
 ### Two things called "memory"
 
 - `agents.memory` is libreclaw's MEMORY.md size budget. `memories.*` is

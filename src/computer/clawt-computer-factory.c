@@ -103,6 +103,54 @@ build_sandbox(ClawtAgentConfig *agent_config)
     return sandbox;
 }
 
+/*
+ * The graphical session to build inside a VM, or %NULL for a headless one.
+ *
+ * Gated on computer.desktop.enabled rather than on a key of its own.  That
+ * key is already the grant -- "this agent may see and drive a desktop" --
+ * and a second switch meaning "and there is one to drive" is two ways to
+ * say yes and one more way to end up with a desktop nobody asked for or an
+ * agent staring at a machine that has none.
+ */
+static ClawtGuestDesktop *
+build_guest_desktop(ClawtAgentConfig *agent_config)
+{
+    ClawtGuestDesktop *desktop;
+    g_auto(GStrv) packages = NULL;
+    g_autofree gchar *session_user = NULL;
+
+    if (!clawt_agent_config_get_boolean(agent_config,
+                                        "computer.desktop.enabled"))
+        return NULL;
+
+    session_user = clawt_guest_desktop_resolve_user(
+        clawt_agent_config_get_string(agent_config,
+                                      "computer.vm.desktop.user"),
+        clawt_agent_config_get_string(agent_config, "computer.vm.ssh_user"));
+
+    desktop = clawt_guest_desktop_new(session_user);
+
+    packages = clawt_agent_config_get_string_list(
+        agent_config, "computer.vm.desktop.packages");
+    clawt_guest_desktop_set_packages(desktop,
+                                     (const gchar * const *)packages);
+
+    clawt_guest_desktop_set_autologin(
+        desktop,
+        clawt_agent_config_get_boolean(agent_config,
+                                       "computer.vm.desktop.autologin"));
+    clawt_guest_desktop_set_install_mcp(
+        desktop,
+        clawt_agent_config_get_boolean(agent_config,
+                                       "computer.vm.desktop.mcp"));
+    clawt_guest_desktop_set_mcp_repo(
+        desktop,
+        clawt_agent_config_get_string(agent_config,
+                                      "computer.vm.desktop.mcp_repo"));
+
+    return desktop;
+}
+
 ClawtComputer *
 clawt_computer_factory_create(ClawtAgentConfig  *agent_config,
                               ClawtPodBridge    *bridge,
@@ -220,7 +268,9 @@ clawt_computer_factory_create(ClawtAgentConfig  *agent_config,
             CLAWT_VM_COMPUTER(computer),
             (guint)clawt_agent_config_get_int(agent_config, "computer.vm.cpus"),
             (guint)clawt_agent_config_get_int(agent_config,
-                                              "computer.vm.memory_mb"));
+                                              "computer.vm.memory_mb"),
+            (guint)clawt_agent_config_get_int(agent_config,
+                                              "computer.vm.disk_gb"));
 
         {
             g_autofree gchar *key =
@@ -247,6 +297,14 @@ clawt_computer_factory_create(ClawtAgentConfig  *agent_config,
             CLAWT_VM_COMPUTER(computer),
             clawt_agent_config_get_boolean(agent_config,
                                            "computer.vm.snapshot_on_start"));
+
+        {
+            g_autoptr(ClawtGuestDesktop) desktop =
+                build_guest_desktop(agent_config);
+
+            clawt_vm_computer_set_desktop(CLAWT_VM_COMPUTER(computer),
+                                          desktop);
+        }
         break;
     }
 
@@ -267,7 +325,9 @@ clawt_computer_factory_create_desktop(ClawtAgentConfig *agent_config)
 {
     ClawtDesktop *desktop;
     ClawtDesktopBackend backend;
+    ClawtComputerType type;
     g_autofree gchar *socket_path = NULL;
+    gboolean has_guest;
 
     g_return_val_if_fail(agent_config != NULL, NULL);
 
@@ -280,7 +340,29 @@ clawt_computer_factory_create_desktop(ClawtAgentConfig *agent_config)
     socket_path = clawt_agent_config_get_path_value(agent_config,
                                                     "computer.desktop.socket");
 
+    type = (ClawtComputerType)
+        clawt_agent_config_get_enum(agent_config, "computer.type");
+    has_guest = (type == CLAWT_COMPUTER_VM);
+
+    /*
+     * Asked for a guest desktop without a guest.  Refusing outright would
+     * take the agent down over a setting it can simply not have, so it
+     * falls back to probing the host -- loudly, because an agent quietly
+     * driving the user's screen when it was told to drive its own VM is
+     * the wrong way round to be wrong.
+     */
+    if (backend == CLAWT_DESKTOP_BACKEND_GUEST && !has_guest) {
+        g_warning("agent %s: computer.desktop.backend is guest but "
+                  "computer.type is %s, so there is no guest to drive. "
+                  "Falling back to the host's desktop -- set "
+                  "computer.type to vm, or name a different backend.",
+                  clawt_agent_config_get_id(agent_config),
+                  clawt_enum_to_nick(CLAWT_TYPE_COMPUTER_TYPE, type));
+        backend = CLAWT_DESKTOP_BACKEND_AUTO;
+    }
+
     desktop = clawt_desktop_new(backend, socket_path);
+    clawt_desktop_set_guest_available(desktop, has_guest);
     clawt_desktop_set_allow_spawn(
         desktop,
         clawt_agent_config_get_boolean(agent_config,

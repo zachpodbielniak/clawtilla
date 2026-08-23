@@ -1299,10 +1299,32 @@ Virtual CPUs.
 *** =agents.computer.vm.memory_mb=
 
 - Type :: integer
-- Default :: =2048=
+- Default :: =8192=
 - Since :: 0.1.0
 
 Memory in megabytes.
+
+Sized for a guest running a GNOME session, because that is what
+computer.desktop.enabled installs into one. A headless VM is happy in
+a quarter of it.
+
+*** =agents.computer.vm.disk_gb=
+
+- Type :: integer
+- Default :: =128=
+- Since :: 0.1.0
+
+Virtual disk size in gigabytes.
+
+A cloud image's own disk is only a few gigabytes, which a desktop and
+a toolchain fill immediately. The overlay is created at this size
+instead and cloud-init grows the guest's filesystem to match on first
+boot.
+
+qcow2 is sparse, so this costs what is written and not what is asked
+for. Raising it grows the disk on the next provision; lowering it is
+refused, because shrinking a disk destroys whatever was past the new
+end.
 
 *** =agents.computer.vm.ssh_user=
 
@@ -1379,6 +1401,87 @@ Turn this off for an image that already has a login and a key.
 Take a snapshot each time the VM starts, so a session can be rolled back.
 libvirt backend only.
 
+** =agents.computer.vm.desktop=
+
+How the guest's graphical session is built.
+
+None of this happens unless computer.desktop.enabled is also true --
+that key is the grant, and these are the details of what it installs.
+A cloud image has no desktop at all, so an agent given one on a VM has
+to have it put there first.
+
+*** =agents.computer.vm.desktop.user=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+The account the graphical session runs as.
+
+Left unset this is computer.vm.ssh_user, unless that is root: GDM
+refuses to log root in, so a VM whose ssh_user is root -- the default
+-- gets a separate `clawt` account for the session and keeps running
+commands as root. Both are created by cloud-init and both authorise
+the same key.
+
+cloud-init acts on first boot only, so changing this later means
+deleting the overlay rather than restarting.
+
+*** =agents.computer.vm.desktop.autologin=
+
+- Type :: boolean
+- Default :: =true=
+- Since :: 0.1.0
+
+Log that account straight in at boot, with no password prompt.
+
+There is nobody at the VM's console to type one, and until a session
+exists there is no desktop to control: the shell extension the agent
+talks to runs inside GNOME Shell. Turn this off and something else has
+to start the session.
+
+*** =agents.computer.vm.desktop.packages=
+
+- Type :: list of strings
+- Default :: =gdm,gnome-shell,gnome-session,gnome-console,gnome-control-center,nautilus,gnome-text-editor,xdg-user-dirs-gtk,gnome-tweaks,gnome-shell-extension-common=
+- Since :: 0.1.0
+
+What to install to get a desktop.
+
+These are Fedora names, matching the image catalog. A Debian or Ubuntu
+guest wants gdm3 and gnome-core instead. It is a deliberately small
+set rather than the full workstation group: the agent needs a session
+to drive, not an office suite to download.
+
+*** =agents.computer.vm.desktop.mcp=
+
+- Type :: boolean
+- Default :: =true=
+- Since :: 0.1.0
+
+Install gnome-desktop-mcp into the guest and switch it on.
+
+This is the part the agent actually talks to: a GNOME Shell extension
+exposing screenshots, window management and input injection over
+D-Bus, and a stdio MCP server in front of it. GNOME on Wayland refuses
+those to any process outside the compositor, which is why an extension
+is involved at all.
+
+Without this the guest has a desktop and the agent has no way to see
+it.
+
+*** =agents.computer.vm.desktop.mcp_repo=
+
+- Type :: string
+- Default :: =https://git.podbielniak.com/zachpodbielniak/gnome-desktop-mcp.git=
+- Since :: 0.1.0
+
+Where the guest clones gnome-desktop-mcp from.
+
+Cloned rather than installed from PyPI because the extension is only
+in the repository, and the two halves have to be the same version --
+the server calls D-Bus methods the extension has to already export.
+
 ** =agents.computer.desktop=
 
 Let the agent see and drive a desktop session.
@@ -1398,15 +1501,21 @@ Whether desktop tools are offered to the agent.
 *** =agents.computer.desktop.backend=
 
 - Type :: enum
-- Values :: auto, gowl, gnome
+- Values :: auto, gowl, gnome, guest
 - Default :: =auto=
 - Since :: 0.1.0
 
-auto, gowl or gnome.
+auto, gowl, gnome or guest.
 
-auto tries gowl's MCP socket first and falls back to gnome-desktop-mcp.
-gowl is the better fit where it is available: same tool vocabulary,
-native, and no Python or GNOME Shell extension in the way.
+guest is the agent's own VM, and auto picks it whenever the agent has
+one -- an agent with its own machine should drive that screen rather
+than yours. It is also the only backend where a misjudged click lands
+somewhere recoverable.
+
+Otherwise auto tries gowl's MCP socket and falls back to
+gnome-desktop-mcp on the host. gowl is the better fit where it is
+available: same tool vocabulary, native, and no Python or GNOME Shell
+extension in the way.
 
 *** =agents.computer.desktop.socket=
 

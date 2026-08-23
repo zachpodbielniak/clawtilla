@@ -368,7 +368,7 @@ test_vm_domain_xml_includes_shared_memory_for_mounts(void)
     g_autofree gchar *xml = NULL;
 
     computer = clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_LIBVIRT, NULL);
-    clawt_vm_computer_set_resources(CLAWT_VM_COMPUTER(computer), 4, 4096);
+    clawt_vm_computer_set_resources(CLAWT_VM_COMPUTER(computer), 4, 4096, 64);
 
     mount = clawt_mount_new("/tmp", "/work");
     clawt_mount_set_mount_type(mount, CLAWT_MOUNT_VIRTIOFS);
@@ -650,7 +650,7 @@ test_vm_boots_and_runs_a_command(void)
 
     computer = clawt_vm_computer_new("vmtest", CLAWT_VM_BACKEND_QEMU, NULL);
     clawt_vm_computer_set_image(CLAWT_VM_COMPUTER(computer), image);
-    clawt_vm_computer_set_resources(CLAWT_VM_COMPUTER(computer), 2, 1024);
+    clawt_vm_computer_set_resources(CLAWT_VM_COMPUTER(computer), 2, 1024, 16);
 
     g_assert_true(clawt_computer_provision(computer, &error));
     g_assert_no_error(error);
@@ -695,7 +695,7 @@ test_vm_qemu_argv(void)
     guint i;
 
     computer = clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_QEMU, NULL);
-    clawt_vm_computer_set_resources(CLAWT_VM_COMPUTER(computer), 2, 1024);
+    clawt_vm_computer_set_resources(CLAWT_VM_COMPUTER(computer), 2, 1024, 16);
 
     mount = clawt_mount_new("/tmp", "/work");
     clawt_computer_add_mount(computer, mount);

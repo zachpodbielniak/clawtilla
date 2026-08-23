@@ -9,6 +9,7 @@
 
 #include "clawtilla.h"
 #include "computer/clawt-cloud-init.h"
+#include "computer/clawt-guest-desktop.h"
 
 /*
  * The label NoCloud looks for.  cloud-init finds the seed by filesystem
@@ -40,9 +41,10 @@ append_quoted(GString *out, const gchar *value)
 }
 
 gchar *
-clawt_cloud_init_build_user_data(const gchar *user,
-                                 const gchar *authorized_key,
-                                 const gchar *hostname)
+clawt_cloud_init_build_user_data(const gchar       *user,
+                                 const gchar       *authorized_key,
+                                 const gchar       *hostname,
+                                 ClawtGuestDesktop *desktop)
 {
     g_autoptr(GString) out = NULL;
     gboolean is_root;
@@ -122,6 +124,23 @@ clawt_cloud_init_build_user_data(const gchar *user,
         g_string_append_c(out, '\n');
     }
 
+    /*
+     * The session account goes in while the users: block is still open.
+     * cloud-config is a mapping, so reopening users: further down would
+     * not append to it -- YAML keeps the last value for a duplicate key
+     * and silently discards everything under the first.
+     */
+    if (desktop != NULL)
+        clawt_guest_desktop_render_account(desktop, out, authorized_key,
+                                           user);
+
+    /*
+     * ...and everything that is not an account goes in after it, for the
+     * same reason in reverse.
+     */
+    if (desktop != NULL)
+        clawt_guest_desktop_render_setup(desktop, out);
+
     return g_string_free(g_steal_pointer(&out), FALSE);
 }
 
@@ -197,12 +216,13 @@ clawt_cloud_init_build_iso_argv(const gchar *tool,
 }
 
 gchar *
-clawt_cloud_init_write_seed(const gchar  *dir,
-                            const gchar  *instance_id,
-                            const gchar  *user,
-                            const gchar  *authorized_key,
-                            const gchar  *hostname,
-                            GError      **error)
+clawt_cloud_init_write_seed(const gchar        *dir,
+                            const gchar        *instance_id,
+                            const gchar        *user,
+                            const gchar        *authorized_key,
+                            const gchar        *hostname,
+                            ClawtGuestDesktop  *desktop,
+                            GError            **error)
 {
     g_autofree gchar *seed_dir = NULL;
     g_autofree gchar *user_data = NULL;
@@ -225,7 +245,7 @@ clawt_cloud_init_write_seed(const gchar  *dir,
         return NULL;
 
     user_data = clawt_cloud_init_build_user_data(user, authorized_key,
-                                                 hostname);
+                                                 hostname, desktop);
     meta_data = clawt_cloud_init_build_meta_data(instance_id, hostname);
 
     user_data_path = g_build_filename(seed_dir, "user-data", NULL);

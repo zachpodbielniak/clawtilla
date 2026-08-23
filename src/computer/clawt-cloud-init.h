@@ -29,6 +29,8 @@
 
 #include <glib.h>
 
+#include "clawt-types.h"
+
 G_BEGIN_DECLS
 
 /**
@@ -36,6 +38,8 @@ G_BEGIN_DECLS
  * @user: the login to create in the guest
  * @authorized_key: (nullable): one OpenSSH public key line
  * @hostname: (nullable): the guest's hostname
+ * @desktop: (nullable): a graphical session to install, or %NULL for a
+ *   headless guest
  *
  * Renders the `#cloud-config` document.
  *
@@ -45,9 +49,10 @@ G_BEGIN_DECLS
  *
  * Returns: (transfer full): the document
  */
-gchar *clawt_cloud_init_build_user_data(const gchar *user,
-                                        const gchar *authorized_key,
-                                        const gchar *hostname);
+gchar *clawt_cloud_init_build_user_data(const gchar       *user,
+                                        const gchar       *authorized_key,
+                                        const gchar       *hostname,
+                                        ClawtGuestDesktop *desktop);
 
 /**
  * clawt_cloud_init_build_meta_data:
@@ -94,6 +99,7 @@ GStrv clawt_cloud_init_build_iso_argv(const gchar *tool,
  * @user: the login to create in the guest
  * @authorized_key: (nullable): one OpenSSH public key line
  * @hostname: (nullable): the guest's hostname
+ * @desktop: (nullable): a graphical session to install
  * @error: return location for a #GError
  *
  * Writes the two documents and builds `seed.iso` beside them.  The build
@@ -102,12 +108,13 @@ GStrv clawt_cloud_init_build_iso_argv(const gchar *tool,
  *
  * Returns: (transfer full) (nullable): the path to the ISO, or %NULL
  */
-gchar *clawt_cloud_init_write_seed(const gchar  *dir,
-                                   const gchar  *instance_id,
-                                   const gchar  *user,
-                                   const gchar  *authorized_key,
-                                   const gchar  *hostname,
-                                   GError      **error);
+gchar *clawt_cloud_init_write_seed(const gchar        *dir,
+                                   const gchar        *instance_id,
+                                   const gchar        *user,
+                                   const gchar        *authorized_key,
+                                   const gchar        *hostname,
+                                   ClawtGuestDesktop  *desktop,
+                                   GError            **error);
 
 /**
  * clawt_cloud_init_public_key:

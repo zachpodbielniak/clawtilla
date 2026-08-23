@@ -39,8 +39,16 @@ struct _ClawtVmComputer {
     gchar *seed_iso;
     gchar *uuid;
 
+    /*
+     * The graphical session to build inside the guest, or NULL for a
+     * headless VM -- which is every VM unless the agent was granted a
+     * desktop.
+     */
+    ClawtGuestDesktop *desktop;
+
     guint    cpus;
     guint    memory_mb;
+    guint    disk_gb;
     guint    ssh_port;
 
     /*
@@ -60,6 +68,11 @@ struct _ClawtVmComputer {
 G_DEFINE_FINAL_TYPE(ClawtVmComputer, clawt_vm_computer, CLAWT_TYPE_COMPUTER)
 
 static gboolean libvirt_has_domain(ClawtVmComputer *self);
+static GStrv    build_ssh_argv_as(ClawtVmComputer *self,
+                                  const gchar     *login,
+                                  const gchar     *command,
+                                  guint            timeout_seconds,
+                                  gboolean         interactive_stream);
 
 ClawtComputer *
 clawt_vm_computer_new(const gchar    *agent_id,
@@ -102,7 +115,8 @@ SETTER(image, image)
 void
 clawt_vm_computer_set_resources(ClawtVmComputer *self,
                                 guint            cpus,
-                                guint            memory_mb)
+                                guint            memory_mb,
+                                guint            disk_gb)
 {
     g_return_if_fail(CLAWT_IS_VM_COMPUTER(self));
 
@@ -110,6 +124,8 @@ clawt_vm_computer_set_resources(ClawtVmComputer *self,
         self->cpus = cpus;
     if (memory_mb > 0)
         self->memory_mb = memory_mb;
+    if (disk_gb > 0)
+        self->disk_gb = disk_gb;
 }
 
 void
@@ -138,6 +154,26 @@ clawt_vm_computer_set_ssh(ClawtVmComputer *self,
 
     if (port > 0)
         self->ssh_port = port;
+}
+
+void
+clawt_vm_computer_set_desktop(ClawtVmComputer   *self,
+                              ClawtGuestDesktop *desktop)
+{
+    g_return_if_fail(CLAWT_IS_VM_COMPUTER(self));
+
+    g_clear_pointer(&self->desktop, clawt_guest_desktop_unref);
+
+    if (desktop != NULL)
+        self->desktop = clawt_guest_desktop_ref(desktop);
+}
+
+ClawtGuestDesktop *
+clawt_vm_computer_get_desktop(ClawtVmComputer *self)
+{
+    g_return_val_if_fail(CLAWT_IS_VM_COMPUTER(self), NULL);
+
+    return self->desktop;
 }
 
 void
@@ -556,6 +592,7 @@ vm_state_dir(ClawtVmComputer *self)
 static gboolean
 overlay_backing_file(const gchar  *overlay,
                      gchar       **backing,
+                     guint64      *virtual_size,
                      gchar       **why_not)
 {
     g_autoptr(GSubprocess) process = NULL;
@@ -615,6 +652,15 @@ overlay_backing_file(const gchar  *overlay,
     else if (json_object_has_member(root, "backing-filename"))
         *backing = g_strdup(
             json_object_get_string_member(root, "backing-filename"));
+
+    /*
+     * The size the guest sees, which for an overlay is its own and not
+     * the base's -- an overlay may be larger, and that is how a 5 GB
+     * cloud image ends up as a disk worth installing anything on.
+     */
+    if (virtual_size != NULL && json_object_has_member(root, "virtual-size"))
+        *virtual_size =
+            (guint64)json_object_get_int_member(root, "virtual-size");
 
     return TRUE;
 }
@@ -780,6 +826,77 @@ libvirt_domain_uuid(ClawtVmComputer *self)
 }
 
 /*
+ * The configured disk size in bytes.
+ */
+static guint64
+disk_bytes(ClawtVmComputer *self)
+{
+    return (guint64)self->disk_gb * 1024 * 1024 * 1024;
+}
+
+/*
+ * Brings an existing overlay up to the configured size.
+ *
+ * Growing a qcow2 is safe and instant -- it writes a larger size into the
+ * header and nothing else -- and the guest's own filesystem follows on the
+ * next boot, because cloud-init runs growpart every time rather than only
+ * on the first.
+ *
+ * Shrinking is refused rather than done.  qemu-img will happily discard
+ * everything past the new end, and a number being edited downwards in a
+ * config file is not consent to lose whatever was living there.  The VM
+ * keeps the disk it has and says why.
+ */
+static gboolean
+resize_overlay(ClawtVmComputer *self, guint64 have, GError **error)
+{
+    g_autoptr(GSubprocess) process = NULL;
+    g_autofree gchar *size = NULL;
+    guint64 want = disk_bytes(self);
+
+    /*
+     * A size qemu-img did not report reads as zero, and guessing from it
+     * would mean resizing on no information at all.
+     */
+    if (have == 0 || want == have)
+        return TRUE;
+
+    if (want < have) {
+        g_warning("vm %s: computer.vm.disk_gb is %u GB but the disk is "
+                  "already %.0f GB. It is left as it is -- shrinking a "
+                  "disk throws away whatever was past the new end, which "
+                  "is not something a config edit should do silently.",
+                  self->domain, self->disk_gb,
+                  (gdouble)have / (1024.0 * 1024.0 * 1024.0));
+        return TRUE;
+    }
+
+    size = g_strdup_printf("%" G_GUINT64_FORMAT, want);
+
+    process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_SILENCE |
+                               G_SUBPROCESS_FLAGS_STDERR_PIPE,
+                               error,
+                               "qemu-img", "resize", self->overlay, size,
+                               NULL);
+
+    if (process == NULL) {
+        g_prefix_error(error, "growing the VM disk: ");
+        return FALSE;
+    }
+
+    if (!g_subprocess_wait_check(process, NULL, error)) {
+        g_prefix_error(error, "qemu-img could not grow %s to %u GB: ",
+                       self->overlay, self->disk_gb);
+        return FALSE;
+    }
+
+    g_message("vm %s: disk grown to %u GB; the guest's filesystem follows "
+              "on its next boot", self->domain, self->disk_gb);
+
+    return TRUE;
+}
+
+/*
  * Creates the writable overlay.
  *
  * The base image is never written to, so several agents can share one and a
@@ -792,6 +909,7 @@ ensure_overlay(ClawtVmComputer *self, GError **error)
     g_autofree gchar *state_dir = NULL;
     g_autofree gchar *known_hosts = NULL;
     g_autofree gchar *superseded = NULL;
+    g_autofree gchar *size = NULL;
     g_autoptr(GSubprocess) process = NULL;
 
     if (self->image == NULL)
@@ -822,6 +940,7 @@ ensure_overlay(ClawtVmComputer *self, GError **error)
     if (g_file_test(self->overlay, G_FILE_TEST_EXISTS)) {
         g_autofree gchar *backing = NULL;
         g_autofree gchar *why_not = NULL;
+        guint64 have = 0;
 
         /*
          * Cannot tell?  Then leave it alone.
@@ -833,7 +952,7 @@ ensure_overlay(ClawtVmComputer *self, GError **error)
          * file on disk was replaced by an empty one. Unknown is not
          * different, and nothing here is worth destroying a guest over.
          */
-        if (!overlay_backing_file(self->overlay, &backing, &why_not)) {
+        if (!overlay_backing_file(self->overlay, &backing, &have, &why_not)) {
             g_message("vm %s: leaving the existing disk alone; its base "
                       "could not be read (%s)",
                       self->domain,
@@ -842,7 +961,7 @@ ensure_overlay(ClawtVmComputer *self, GError **error)
         }
 
         if (g_strcmp0(backing, self->image) == 0)
-            return TRUE;
+            return resize_overlay(self, have, error);
 
         /*
          * Genuinely a different base.  Keeping the overlay would leave
@@ -876,12 +995,25 @@ ensure_overlay(ClawtVmComputer *self, GError **error)
         g_unlink(known_hosts);
     }
 
+    /*
+     * The size is given explicitly rather than inherited from the base.
+     *
+     * A cloud image's own disk is a few gigabytes, which is enough to
+     * boot and nothing else: a desktop, a toolchain and a couple of
+     * container images fill it and the guest starts failing in ways that
+     * look nothing like a full disk. qcow2 only occupies what is
+     * written, so asking for more costs nothing until it is used, and
+     * cloud-init's growpart extends the guest's filesystem to match on
+     * first boot.
+     */
+    size = g_strdup_printf("%" G_GUINT64_FORMAT, disk_bytes(self));
+
     process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_SILENCE |
                                G_SUBPROCESS_FLAGS_STDERR_PIPE,
                                error,
                                "qemu-img", "create", "-f", "qcow2",
                                "-F", "qcow2", "-b", self->image,
-                               self->overlay, NULL);
+                               self->overlay, size, NULL);
 
     if (process == NULL) {
         g_prefix_error(error, "creating the VM overlay: ");
@@ -1071,7 +1203,7 @@ ensure_cloud_init(ClawtVmComputer *self, GError **error)
                                        self->ssh_user != NULL
                                            ? self->ssh_user : "root",
                                        self->ssh_pubkey, self->domain,
-                                       error);
+                                       self->desktop, error);
 
     if (seed == NULL)
         return FALSE;
@@ -1448,10 +1580,7 @@ clawt_vm_computer_build_ssh_argv(ClawtVmComputer     *self,
                                  const gchar         *working_dir,
                                  guint                timeout_seconds)
 {
-    g_autofree gchar *state_dir = NULL;
-    g_autofree gchar *known_hosts = NULL;
     g_autoptr(GString) command = NULL;
-    GPtrArray *ssh_argv;
     gsize i;
 
     g_return_val_if_fail(CLAWT_IS_VM_COMPUTER(self), NULL);
@@ -1459,9 +1588,6 @@ clawt_vm_computer_build_ssh_argv(ClawtVmComputer     *self,
 
     if (self->ssh_host == NULL)
         return NULL;
-
-    state_dir = vm_state_dir(self);
-    known_hosts = g_build_filename(state_dir, "known_hosts", NULL);
 
     command = g_string_new(NULL);
 
@@ -1478,6 +1604,67 @@ clawt_vm_computer_build_ssh_argv(ClawtVmComputer     *self,
             g_string_append_c(command, ' ');
         g_string_append(command, quoted);
     }
+
+    return build_ssh_argv_as(self, self->ssh_user, command->str,
+                             timeout_seconds, FALSE);
+}
+
+/*
+ * The argv that reaches the guest's MCP server.
+ *
+ * A separate login from the one commands run as, and it has to be: the
+ * server talks to GNOME Shell over the session bus of whoever is logged
+ * in at the screen, and root -- the default ssh_user -- is by definition
+ * not that account, because GDM will not log root in.
+ *
+ * The remote command is one bare word.  Everything that has to be worked
+ * out inside the guest is worked out by the launcher installed there,
+ * rather than being threaded through argv quoting here, ssh's own
+ * re-parsing and a remote shell.
+ */
+GStrv
+clawt_vm_computer_build_desktop_argv(ClawtVmComputer *self)
+{
+    const gchar *session_user;
+
+    g_return_val_if_fail(CLAWT_IS_VM_COMPUTER(self), NULL);
+
+    if (self->desktop == NULL || self->ssh_host == NULL)
+        return NULL;
+
+    session_user = clawt_guest_desktop_get_session_user(self->desktop);
+
+    /*
+     * No timeout at all on the session itself.  This is a stdio pipe an
+     * MCP client holds open for as long as the agent runs, so a
+     * ConnectTimeout is the only bound that makes sense -- and that one
+     * is set inside, because a VM that is not up should fail rather than
+     * leave the client waiting on a pipe nothing will ever write to.
+     */
+    return build_ssh_argv_as(self, session_user,
+                             CLAWT_GUEST_DESKTOP_LAUNCHER, 0, TRUE);
+}
+
+/*
+ * Assembles the ssh command line.
+ *
+ * Shared by the two callers because everything except the login, the
+ * remote command and whether the pipe is long-lived is the same, and two
+ * copies of the option list would drift.
+ */
+static GStrv
+build_ssh_argv_as(ClawtVmComputer *self,
+                  const gchar     *login,
+                  const gchar     *command,
+                  guint            timeout_seconds,
+                  gboolean         interactive_stream)
+{
+    g_autofree gchar *state_dir = NULL;
+    g_autofree gchar *known_hosts = NULL;
+    GPtrArray *ssh_argv;
+
+    state_dir = vm_state_dir(self);
+    known_hosts = g_build_filename(state_dir, "known_hosts", NULL);
 
     ssh_argv = g_ptr_array_new_with_free_func(g_free);
     g_ptr_array_add(ssh_argv, g_strdup("ssh"));
@@ -1509,6 +1696,27 @@ clawt_vm_computer_build_ssh_argv(ClawtVmComputer     *self,
                                         MIN(timeout_seconds, 30)));
     }
 
+    if (interactive_stream) {
+        /*
+         * -T because this carries JSON-RPC frames rather than a session
+         * for a person.  A pty would translate line endings and act on
+         * control characters in the middle of a message, and the damage
+         * would surface as a protocol error a long way from here.
+         */
+        g_ptr_array_add(ssh_argv, g_strdup("-T"));
+        g_ptr_array_add(ssh_argv, g_strdup("-o"));
+        g_ptr_array_add(ssh_argv, g_strdup("ConnectTimeout=10"));
+
+        /*
+         * A VM that goes away leaves the pipe open and silent otherwise,
+         * and the client waits on it for ever.
+         */
+        g_ptr_array_add(ssh_argv, g_strdup("-o"));
+        g_ptr_array_add(ssh_argv, g_strdup("ServerAliveInterval=30"));
+        g_ptr_array_add(ssh_argv, g_strdup("-o"));
+        g_ptr_array_add(ssh_argv, g_strdup("ServerAliveCountMax=3"));
+    }
+
     if (self->ssh_key != NULL) {
         g_ptr_array_add(ssh_argv, g_strdup("-i"));
         g_ptr_array_add(ssh_argv, g_strdup(self->ssh_key));
@@ -1516,10 +1724,9 @@ clawt_vm_computer_build_ssh_argv(ClawtVmComputer     *self,
 
     g_ptr_array_add(ssh_argv,
                     g_strdup_printf("%s@%s",
-                                    self->ssh_user != NULL ? self->ssh_user
-                                                           : "root",
+                                    login != NULL ? login : "root",
                                     self->ssh_host));
-    g_ptr_array_add(ssh_argv, g_strdup(command->str));
+    g_ptr_array_add(ssh_argv, g_strdup(command));
     g_ptr_array_add(ssh_argv, NULL);
 
     return (GStrv)g_ptr_array_free(ssh_argv, FALSE);
@@ -1591,10 +1798,11 @@ vm_describe(ClawtComputer *computer)
     guint i;
 
     g_string_append_printf(out,
-        "You have a virtual machine of your own (%s, %u CPU%s, %u MB). "
-        "It is fully isolated from the host.",
+        "You have a virtual machine of your own (%s, %u CPU%s, %u MB RAM, "
+        "%u GB disk). It is fully isolated from the host.",
         self->backend == CLAWT_VM_BACKEND_LIBVIRT ? "libvirt" : "QEMU",
-        self->cpus, self->cpus == 1 ? "" : "s", self->memory_mb);
+        self->cpus, self->cpus == 1 ? "" : "s", self->memory_mb,
+        self->disk_gb);
 
     /*
      * Saying which login the commands arrive as saves the agent guessing
@@ -1654,6 +1862,7 @@ clawt_vm_computer_finalize(GObject *object)
 {
     ClawtVmComputer *self = CLAWT_VM_COMPUTER(object);
 
+    g_clear_pointer(&self->desktop, clawt_guest_desktop_unref);
     g_clear_pointer(&self->domain, g_free);
     g_clear_pointer(&self->uri, g_free);
     g_clear_pointer(&self->image, g_free);
@@ -1691,7 +1900,8 @@ clawt_vm_computer_init(ClawtVmComputer *self)
 {
     self->backend = CLAWT_VM_BACKEND_LIBVIRT;
     self->cpus = 2;
-    self->memory_mb = 2048;
+    self->memory_mb = 8192;
+    self->disk_gb = 128;
     self->ssh_user = g_strdup("root");
     self->ssh_port = 22;
     self->cloud_init = TRUE;

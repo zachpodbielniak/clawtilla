@@ -828,6 +828,20 @@ clawt_daemon_start_agent(ClawtDaemon *self, const gchar *agent_id,
         apply_mounts(self, agent, computer);
 
         /*
+         * The desktop is an add-on to whatever computer that turned out
+         * to be, so it is built alongside rather than inside it.  It is
+         * attached even when it turns out to be unreachable: the agent
+         * asking about a desktop it was granted should be told why it
+         * cannot have it, not told it never had one.
+         */
+        {
+            g_autoptr(ClawtDesktop) desktop =
+                clawt_computer_factory_create_desktop(config);
+
+            clawt_agent_set_desktop(agent, desktop);
+        }
+
+        /*
          * Attached before it is started, and kept even when starting
          * fails.  Dropping it left `computer status` answering "that
          * agent has no computer" for an agent that plainly has one
@@ -1648,6 +1662,9 @@ add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
         g_autofree gchar *memory = g_strdup_printf(
             "%" G_GINT64_FORMAT,
             clawt_agent_config_get_int(config, "computer.vm.memory_mb"));
+        g_autofree gchar *disk = g_strdup_printf(
+            "%" G_GINT64_FORMAT,
+            clawt_agent_config_get_int(config, "computer.vm.disk_gb"));
 
         json_builder_set_member_name(builder, "vm_image");
         json_builder_add_string_value(
@@ -1657,10 +1674,27 @@ add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
         json_builder_add_string_value(builder, cpus);
         json_builder_set_member_name(builder, "vm_memory_mb");
         json_builder_add_string_value(builder, memory);
+        json_builder_set_member_name(builder, "vm_disk_gb");
+        json_builder_add_string_value(builder, disk);
         json_builder_set_member_name(builder, "vm_ssh_host");
         json_builder_add_string_value(
             builder, clawt_agent_config_get_string(config,
                                                    "computer.vm.ssh_host"));
+
+        /*
+         * Whether the guest gets a GNOME session, and whether the agent
+         * may click in it.  Two grants rather than one: an agent that can
+         * screenshot but not type is a genuinely useful amount of access
+         * and a much smaller thing to hand over.
+         */
+        json_builder_set_member_name(builder, "desktop_enabled");
+        json_builder_add_boolean_value(
+            builder, clawt_agent_config_get_boolean(
+                         config, "computer.desktop.enabled"));
+        json_builder_set_member_name(builder, "desktop_input");
+        json_builder_add_boolean_value(
+            builder, clawt_agent_config_get_boolean(
+                         config, "computer.desktop.allow_input"));
     }
 
     json_builder_set_member_name(builder, "model");
@@ -3660,6 +3694,116 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
                                         clawt_computer_get_state(computer)));
         json_builder_set_member_name(builder, "description");
         json_builder_add_string_value(builder, described);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "computer.desktop") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        ClawtAgent *agent = (agent_id != NULL)
+                            ? clawt_agent_manager_get(self->agents, agent_id)
+                            : NULL;
+        ClawtComputer *computer = (agent != NULL)
+                                  ? clawt_agent_get_computer(agent) : NULL;
+        ClawtAgentConfig *agent_config = (agent != NULL)
+                                         ? clawt_agent_get_config(agent)
+                                         : NULL;
+        g_autoptr(ClawtDesktop) built = NULL;
+        ClawtDesktop *desktop = NULL;
+        g_auto(GStrv) argv = NULL;
+        g_auto(GStrv) tools = NULL;
+        gsize i;
+
+        if (agent == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "there is no such agent");
+
+        /*
+         * The attached desktop when there is one, and otherwise one built
+         * from the config.
+         *
+         * An agent only gets a ClawtDesktop when it is started, so a
+         * stopped agent with the grant plainly set was told it "has no
+         * desktop; set computer.desktop.enabled" -- naming the key that
+         * was already true. The policy is a pure function of the config,
+         * so it can be answered without the agent running.
+         */
+        desktop = clawt_agent_get_desktop(agent);
+
+        if (desktop == NULL) {
+            built = clawt_computer_factory_create_desktop(agent_config);
+            desktop = built;
+        }
+
+        if (desktop == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "that agent has no desktop; set "
+                                       "computer.desktop.enabled");
+
+        if (clawt_agent_config_get_enum(agent_config, "computer.type") !=
+            CLAWT_COMPUTER_VM)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
+                                       "that agent's desktop is not in a "
+                                       "VM, so there is nothing to relay "
+                                       "to");
+
+        /*
+         * Configured for a VM but without one built means the agent is
+         * not running, which is a different thing from being misconfigured
+         * and deserves saying so.
+         */
+        if (computer == NULL ||
+            clawt_computer_get_computer_type(computer) != CLAWT_COMPUTER_VM)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_AGENT_STATE,
+                                       "that agent is not running, so its "
+                                       "VM has no address yet. Start the "
+                                       "agent first.");
+
+        /*
+         * Built here rather than written into the agent's .mcp.json,
+         * because the port that reaches the guest is chosen when the VM
+         * is provisioned -- which is after the workspace files are
+         * written, and again after anybody edits the config. A command
+         * line captured at render time would name a port nothing is
+         * listening on.
+         */
+        argv = clawt_vm_computer_build_desktop_argv(CLAWT_VM_COMPUTER(computer));
+
+        if (argv == NULL)
+            return clawt_ipc_error_new(
+                request, CLAWT_ERROR_COMPUTER_EXEC,
+                "nothing reaches that agent's VM yet: it may not be "
+                "running, or no port is forwarded to it. Start the agent "
+                "and try again.");
+
+        tools = clawt_desktop_get_tool_names(desktop);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "backend");
+        json_builder_add_string_value(
+            builder, clawt_enum_to_nick(CLAWT_TYPE_DESKTOP_BACKEND,
+                                        clawt_desktop_resolve_backend(desktop,
+                                                                      NULL)));
+
+        json_builder_set_member_name(builder, "argv");
+        json_builder_begin_array(builder);
+        for (i = 0; argv[i] != NULL; i++)
+            json_builder_add_string_value(builder, argv[i]);
+        json_builder_end_array(builder);
+
+        /*
+         * The permitted tools travel with the command, so the relay does
+         * not need its own copy of the policy -- and so an agent whose
+         * allow_input was turned off stops being able to click the moment
+         * the daemon is reloaded, rather than whenever its MCP client is
+         * next restarted.
+         */
+        json_builder_set_member_name(builder, "tools");
+        json_builder_begin_array(builder);
+        for (i = 0; tools != NULL && tools[i] != NULL; i++)
+            json_builder_add_string_value(builder, tools[i]);
+        json_builder_end_array(builder);
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));

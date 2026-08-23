@@ -20,6 +20,13 @@ struct _ClawtDesktop {
     gchar               *socket_path;
     gboolean             allow_input;
     gboolean             allow_spawn;
+
+    /*
+     * Whether this agent has a VM with a desktop in it.  Set by the
+     * factory, which is the only thing that knows what computer the agent
+     * was given.
+     */
+    gboolean             guest_available;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtDesktop, clawt_desktop, G_TYPE_OBJECT)
@@ -38,6 +45,20 @@ static const gchar *const observing_tools[] = {
     "screenshot_window", "screenshot_monitor", "screenshot_region",
     "screenshot_area", "pick_color", "get_client_process_info",
     "list_keybinds", "get_config", "ping",
+
+    /*
+     * Housekeeping and status, added after watching a real
+     * gnome-desktop-mcp answer tools/list: it offers cleanup_screenshots
+     * (which deletes temporary files the server itself wrote) and the
+     * pair that reads and flips its own automation switch.
+     *
+     * set_enabled is here on purpose.  It grants nothing -- an agent
+     * cannot use it to reach an input tool, because that filtering
+     * happens on this side -- and it is the one thing that lets an agent
+     * rescue itself when the guest's own autostart lost the race to
+     * switch automation on.
+     */
+    "cleanup_screenshots", "get_enabled", "set_enabled",
     NULL
 };
 
@@ -86,6 +107,22 @@ clawt_desktop_new(ClawtDesktopBackend backend, const gchar *socket_path)
                                            "gowl-mcp.sock", NULL);
 
     return self;
+}
+
+void
+clawt_desktop_set_guest_available(ClawtDesktop *self, gboolean available)
+{
+    g_return_if_fail(CLAWT_IS_DESKTOP(self));
+
+    self->guest_available = available;
+}
+
+gboolean
+clawt_desktop_get_guest_available(ClawtDesktop *self)
+{
+    g_return_val_if_fail(CLAWT_IS_DESKTOP(self), FALSE);
+
+    return self->guest_available;
 }
 
 void
@@ -154,7 +191,20 @@ clawt_desktop_resolve_backend(ClawtDesktop *self, GError **error)
     }
 
     /*
-     * gowl first: it is native, needs no Python and no shell extension, and
+     * The agent's own VM first, when it has one.
+     *
+     * Not a preference between equals: the other three backends drive the
+     * screen a person is sitting at, and this one drives a machine that
+     * exists to be driven.  An agent that misjudges a click in its own VM
+     * has broken its own VM.
+     */
+    if (self->guest_available) {
+        self->resolved = CLAWT_DESKTOP_BACKEND_GUEST;
+        return self->resolved;
+    }
+
+    /*
+     * gowl next: it is native, needs no Python and no shell extension, and
      * speaks the richer vocabulary.  GNOME is the fallback for sessions not
      * running it.
      */
@@ -205,6 +255,22 @@ clawt_desktop_is_available(ClawtDesktop *self, GError **error)
 
         g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
                             "gnome-desktop-mcp is not installed");
+        return FALSE;
+
+    case CLAWT_DESKTOP_BACKEND_GUEST:
+        /*
+         * Answered from the configuration rather than by dialling the
+         * guest.  Whether the VM is up, has finished installing GNOME and
+         * has anybody logged in is the VM's own question, asked where the
+         * VM is -- and this one is called while a client waits.
+         */
+        if (self->guest_available)
+            return TRUE;
+
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                            "this agent has no VM to put a desktop in; "
+                            "computer.desktop.backend is guest but "
+                            "computer.type is not vm");
         return FALSE;
 
     case CLAWT_DESKTOP_BACKEND_AUTO:
@@ -281,6 +347,28 @@ clawt_desktop_describe(ClawtDesktop *self)
     const gchar *backend_name;
 
     g_return_val_if_fail(CLAWT_IS_DESKTOP(self), NULL);
+
+    /*
+     * The guest desktop is described separately, and differently on
+     * purpose.  Telling an agent that its clicks land on the user's real
+     * screen when they land in its own VM makes it needlessly cautious;
+     * telling it the reverse is far worse.
+     */
+    if (self->resolved == CLAWT_DESKTOP_BACKEND_GUEST) {
+        if (self->allow_input)
+            return g_strdup(
+                "There is a GNOME desktop inside your own VM, logged in and "
+                "waiting. You can list its windows, take screenshots of it, "
+                "and send it keystrokes and pointer events. It is yours: "
+                "nothing you do there touches the user's screen. The tools "
+                "arrive from the `desktop` MCP server.");
+
+        return g_strdup(
+            "There is a GNOME desktop inside your own VM. You can list its "
+            "windows and take screenshots of it, but you cannot send "
+            "keystrokes or pointer events. The tools arrive from the "
+            "`desktop` MCP server.");
+    }
 
     backend_name = (self->resolved == CLAWT_DESKTOP_BACKEND_GNOME)
                    ? "the GNOME desktop" : "the gowl compositor";

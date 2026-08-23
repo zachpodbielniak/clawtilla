@@ -14,6 +14,7 @@
 
 #include <glib.h>
 #include <glib/gstdio.h>
+#include <string.h>
 
 /*
  * Removes a temporary directory and everything in it.
@@ -56,4 +57,29 @@ clawt_test_remove_tree(const gchar *path)
     }
 
     g_rmdir(path);
+}
+
+/*
+ * How many times @needle appears in @haystack.
+ *
+ * Written for the assertions that a thing is emitted exactly once, or
+ * exactly as many times as it should be.  strstr() answers "at least
+ * once", which is the wrong question when the failure being guarded
+ * against is a duplicate.
+ */
+static inline guint
+clawt_test_count_substrings(const gchar *haystack, const gchar *needle)
+{
+    const gchar *at = haystack;
+    guint count = 0;
+
+    if (haystack == NULL || needle == NULL || *needle == '\0')
+        return 0;
+
+    while ((at = strstr(at, needle)) != NULL) {
+        count++;
+        at += strlen(needle);
+    }
+
+    return count;
 }

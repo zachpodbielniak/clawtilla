@@ -729,7 +729,7 @@ build_values(ClawtAgentConfig *agent)
 }
 
 /*
- * Where clawtilla-mcp-server is.
+ * Where one of clawtilla's own binaries is.
  *
  * Beside the binary that is running first, so a build tree works
  * uninstalled and a daemon started from a checkout does not hand its
@@ -737,15 +737,13 @@ build_values(ClawtAgentConfig *agent)
  * fallback, and a bare name lets PATH decide when neither exists.
  */
 static gchar *
-mcp_server_path(void)
+sibling_binary_path(const gchar *name)
 {
     g_autofree gchar *exe = g_file_read_link("/proc/self/exe", NULL);
 
     if (exe != NULL) {
         g_autofree gchar *dir = g_path_get_dirname(exe);
-        g_autofree gchar *beside = g_build_filename(dir,
-                                                     "clawtilla-mcp-server",
-                                                     NULL);
+        g_autofree gchar *beside = g_build_filename(dir, name, NULL);
 
         if (g_file_test(beside, G_FILE_TEST_IS_EXECUTABLE))
             return g_steal_pointer(&beside);
@@ -754,14 +752,73 @@ mcp_server_path(void)
 #ifdef CLAWT_BINDIR
     {
         g_autofree gchar *installed =
-            g_build_filename(CLAWT_BINDIR, "clawtilla-mcp-server", NULL);
+            g_build_filename(CLAWT_BINDIR, name, NULL);
 
         if (g_file_test(installed, G_FILE_TEST_IS_EXECUTABLE))
             return g_steal_pointer(&installed);
     }
 #endif
 
-    return g_strdup("clawtilla-mcp-server");
+    return g_strdup(name);
+}
+
+/*
+ * The entry that gives an agent with a VM desktop its screen.
+ *
+ * It names the clawtilla CLI rather than ssh, and it has to.  The port
+ * that reaches the guest is chosen when the VM is provisioned -- after
+ * this file is written, and again whenever the config changes -- so a
+ * command line captured here would name a port nothing listens on. The
+ * relay asks the daemon for the real one each time it is started, and
+ * filters the tools on the way past.
+ */
+static JsonObject *
+build_desktop_server(ClawtAgentConfig *agent, const gchar *daemon_socket)
+{
+    JsonObject *entry = json_object_new();
+    g_autofree gchar *cli = sibling_binary_path("clawtilla");
+    JsonArray *args = json_array_new();
+
+    json_object_set_string_member(entry, "command", cli);
+
+    /*
+     * --socket goes before the verb.  The CLI splits its own options from
+     * the subcommand's at the first verb it recognises, so a global
+     * option written after `computer` is handed to the subcommand, which
+     * has never heard of it.
+     */
+    if (daemon_socket != NULL) {
+        json_array_add_string_element(args, "--socket");
+        json_array_add_string_element(args, daemon_socket);
+    }
+
+    json_array_add_string_element(args, "computer");
+    json_array_add_string_element(args, "desktop-mcp");
+    json_array_add_string_element(args, clawt_agent_config_get_id(agent));
+
+    json_object_set_array_member(entry, "args", args);
+
+    return entry;
+}
+
+/*
+ * Whether this agent has a desktop of its own to be given.
+ *
+ * Both halves are required: the grant, and a VM for the desktop to be
+ * in.  A host desktop is reached without any of this.
+ */
+static gboolean
+wants_guest_desktop(ClawtAgentConfig *agent)
+{
+    ClawtComputerType type;
+
+    if (!clawt_agent_config_get_boolean(agent, "computer.desktop.enabled"))
+        return FALSE;
+
+    type = (ClawtComputerType)
+        clawt_agent_config_get_enum(agent, "computer.type");
+
+    return type == CLAWT_COMPUTER_VM;
 }
 
 gboolean
@@ -780,12 +837,14 @@ clawt_workspace_write_mcp_config(ClawtAgentConfig *agent,
     g_autofree gchar *server = NULL;
     g_autofree gchar *token_file = NULL;
     JsonObject *clawtilla;
+    JsonObject *desktop = NULL;
     JsonObject *servers;
     JsonObject *previous = NULL;
     JsonArray *args;
     GList *members = NULL;
     GList *l;
     gboolean replaced = FALSE;
+    gboolean replaced_desktop = FALSE;
     g_autofree gchar *workspace = NULL;
 
     g_return_val_if_fail(agent != NULL, FALSE);
@@ -795,7 +854,7 @@ clawt_workspace_write_mcp_config(ClawtAgentConfig *agent,
     if (workspace == NULL)
         return TRUE;
 
-    server = mcp_server_path();
+    server = sibling_binary_path("clawtilla-mcp-server");
     token_file = g_build_filename(state_dir, "token", NULL);
     path = g_build_filename(workspace, ".mcp.json", NULL);
 
@@ -821,6 +880,9 @@ clawt_workspace_write_mcp_config(ClawtAgentConfig *agent,
     json_array_add_string_element(args, "--token-file");
     json_array_add_string_element(args, token_file);
     json_object_set_array_member(clawtilla, "args", args);
+
+    if (wants_guest_desktop(agent))
+        desktop = build_desktop_server(agent, daemon_socket);
 
     /*
      * Everything else in the file is the user's, and is read back rather
@@ -881,6 +943,21 @@ clawt_workspace_write_mcp_config(ClawtAgentConfig *agent,
             continue;
         }
 
+        /*
+         * The one other key clawtilla owns.  It is prefixed so it cannot
+         * collide with a `desktop` server somebody added themselves, and
+         * it is *dropped* rather than carried when the agent no longer
+         * has a guest desktop -- an entry left behind would start an ssh
+         * to a VM that is not there and fail on every tool call.
+         */
+        if (g_strcmp0(name, "clawtilla-desktop") == 0) {
+            if (desktop != NULL) {
+                json_object_set_object_member(servers, name, desktop);
+                replaced_desktop = TRUE;
+            }
+            continue;
+        }
+
         json_object_set_member(servers, name,
                                json_node_copy(json_object_get_member(previous,
                                                                      name)));
@@ -890,6 +967,9 @@ clawt_workspace_write_mcp_config(ClawtAgentConfig *agent,
 
     if (!replaced)
         json_object_set_object_member(servers, "clawtilla", clawtilla);
+
+    if (desktop != NULL && !replaced_desktop)
+        json_object_set_object_member(servers, "clawtilla-desktop", desktop);
 
     json_object_set_object_member(out, "mcpServers", servers);
 

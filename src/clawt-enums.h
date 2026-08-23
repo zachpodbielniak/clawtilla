@@ -207,16 +207,23 @@ typedef enum {
 
 /**
  * ClawtDesktopBackend:
- * @CLAWT_DESKTOP_BACKEND_AUTO: probe for gowl, then GNOME
+ * @CLAWT_DESKTOP_BACKEND_AUTO: the agent's own VM, else gowl, else GNOME
  * @CLAWT_DESKTOP_BACKEND_GOWL: gowl's MCP socket
  * @CLAWT_DESKTOP_BACKEND_GNOME: the gnome-desktop-mcp stdio server
+ * @CLAWT_DESKTOP_BACKEND_GUEST: gnome-desktop-mcp inside the agent's VM
  *
  * Which desktop-control implementation to use.
+ *
+ * The first three drive the screen clawtilla itself is running on.  The
+ * fourth drives a desktop installed inside the agent's own VM, which is
+ * the only one where the agent clicking something does not click it on
+ * somebody's real screen.
  */
 typedef enum {
     CLAWT_DESKTOP_BACKEND_AUTO = 0,
     CLAWT_DESKTOP_BACKEND_GOWL,
-    CLAWT_DESKTOP_BACKEND_GNOME
+    CLAWT_DESKTOP_BACKEND_GNOME,
+    CLAWT_DESKTOP_BACKEND_GUEST
 } ClawtDesktopBackend;
 
 /**

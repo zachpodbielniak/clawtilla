@@ -49,11 +49,47 @@ ClawtComputer *clawt_vm_computer_new(const gchar     *agent_id,
                                      ClawtPodBridge  *bridge);
 
 void clawt_vm_computer_set_domain(ClawtVmComputer *self, const gchar *domain);
+
+/**
+ * clawt_vm_computer_set_desktop:
+ * @self: a #ClawtVmComputer
+ * @desktop: (nullable): a graphical session to build in the guest
+ *
+ * A cloud image has no desktop at all, so an agent granted one on a VM
+ * needs it installed before there is anything to drive.  The session is
+ * described here and built by cloud-init on the guest's first boot.
+ */
+void clawt_vm_computer_set_desktop(ClawtVmComputer   *self,
+                                   ClawtGuestDesktop *desktop);
+
+/**
+ * clawt_vm_computer_get_desktop:
+ * @self: a #ClawtVmComputer
+ *
+ * Returns: (transfer none) (nullable): the guest's desktop, or %NULL
+ */
+ClawtGuestDesktop *clawt_vm_computer_get_desktop(ClawtVmComputer *self);
+
+/**
+ * clawt_vm_computer_build_desktop_argv:
+ * @self: a #ClawtVmComputer
+ *
+ * The command that reaches the MCP server inside the guest, over SSH as
+ * the account the desktop is logged in as.
+ *
+ * A pure function, so the argv can be asserted on without a hypervisor.
+ * It returns %NULL rather than a command that dials nowhere when there is
+ * no desktop or no address that reaches the guest.
+ *
+ * Returns: (transfer full) (nullable) (array zero-terminated=1): the argv
+ */
+GStrv clawt_vm_computer_build_desktop_argv(ClawtVmComputer *self);
 void clawt_vm_computer_set_uri(ClawtVmComputer *self, const gchar *uri);
 void clawt_vm_computer_set_image(ClawtVmComputer *self, const gchar *image);
 void clawt_vm_computer_set_resources(ClawtVmComputer *self,
                                      guint            cpus,
-                                     guint            memory_mb);
+                                     guint            memory_mb,
+                                     guint            disk_gb);
 /**
  * clawt_vm_computer_set_ssh:
  * @self: a #ClawtVmComputer

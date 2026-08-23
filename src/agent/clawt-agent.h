@@ -201,6 +201,27 @@ void clawt_agent_set_computer(ClawtAgent    *self,
 ClawtComputer *clawt_agent_get_computer(ClawtAgent *self);
 
 /**
+ * clawt_agent_set_desktop:
+ * @self: a #ClawtAgent
+ * @desktop: (nullable) (transfer none): the desktop it may drive
+ *
+ * Kept beside the computer rather than inside it, because a desktop is an
+ * add-on: an agent can have one alongside whichever computer it was given,
+ * and an agent with no computer at all can still be pointed at the host's
+ * screen.
+ */
+void clawt_agent_set_desktop(ClawtAgent   *self,
+                             ClawtDesktop *desktop);
+
+/**
+ * clawt_agent_get_desktop:
+ * @self: a #ClawtAgent
+ *
+ * Returns: (transfer none) (nullable): the desktop, or %NULL
+ */
+ClawtDesktop *clawt_agent_get_desktop(ClawtAgent *self);
+
+/**
  * clawt_agent_set_link:
  * @self: a #ClawtAgent
  * @link_: (transfer none) (nullable): the connection, or %NULL when it goes

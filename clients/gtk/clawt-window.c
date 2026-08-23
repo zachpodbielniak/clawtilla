@@ -158,7 +158,10 @@ struct _ClawtWindow {
     ImageChooser       inspector_disk;
     GtkWidget         *vm_cpus_row;
     GtkWidget         *vm_memory_row;
+    GtkWidget         *vm_disk_row;
     GtkWidget         *vm_ssh_host_row;
+    GtkWidget         *vm_desktop_row;
+    GtkWidget         *vm_desktop_input_row;
     GtkWidget         *mount_source_row;
     GtkWidget         *mount_target_row;
     GtkWidget         *mount_mode_row;
@@ -2925,6 +2928,8 @@ on_save_agent(GtkButton *button, gpointer user_data)
             GTK_EDITABLE(self->vm_cpus_row));
         const gchar *memory = gtk_editable_get_text(
             GTK_EDITABLE(self->vm_memory_row));
+        const gchar *disk = gtk_editable_get_text(
+            GTK_EDITABLE(self->vm_disk_row));
         const gchar *ssh_host = gtk_editable_get_text(
             GTK_EDITABLE(self->vm_ssh_host_row));
 
@@ -2937,8 +2942,27 @@ on_save_agent(GtkButton *button, gpointer user_data)
         if (memory != NULL && *memory != '\0')
             ok &= apply_setting(self, "computer.vm.memory_mb", memory);
 
+        if (disk != NULL && *disk != '\0')
+            ok &= apply_setting(self, "computer.vm.disk_gb", disk);
+
         if (ssh_host != NULL && *ssh_host != '\0')
             ok &= apply_setting(self, "computer.vm.ssh_host", ssh_host);
+
+        /*
+         * Written unconditionally, unlike the entries above.  A switch
+         * turned *off* is a value of its own, and skipping an empty one
+         * the way an empty text field is skipped would make the desktop
+         * impossible to turn back off from here.
+         */
+        ok &= apply_setting(
+            self, "computer.desktop.enabled",
+            adw_switch_row_get_active(
+                ADW_SWITCH_ROW(self->vm_desktop_row)) ? "true" : "false");
+        ok &= apply_setting(
+            self, "computer.desktop.allow_input",
+            adw_switch_row_get_active(
+                ADW_SWITCH_ROW(self->vm_desktop_input_row)) ? "true"
+                                                            : "false");
     }
 
     if (self->inspector_image.row != NULL) {
@@ -3759,7 +3783,10 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
     self->inspector_disk.row = NULL;
     self->vm_cpus_row = NULL;
     self->vm_memory_row = NULL;
+    self->vm_disk_row = NULL;
     self->vm_ssh_host_row = NULL;
+    self->vm_desktop_row = NULL;
+    self->vm_desktop_input_row = NULL;
 
     if (g_strcmp0(self->inspector_computer, "vm") == 0) {
         disk_chooser_build(&self->inspector_disk, self, group,
@@ -3774,6 +3801,41 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
             "Memory (MB)", clawt_json_string(agent, "vm_memory_mb", ""));
         adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
                                   self->vm_memory_row);
+
+        self->vm_disk_row = entry_row(
+            "Disk (GB)", clawt_json_string(agent, "vm_disk_gb", ""));
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                  self->vm_disk_row);
+
+        /*
+         * A cloud image has no desktop at all, so this installs one --
+         * GNOME, GDM and an autologin -- on the guest's first boot. It
+         * takes a while and it wants the memory and disk above.
+         */
+        self->vm_desktop_row = switch_row(
+            "Desktop in the VM",
+            "Installs GNOME and logs it in, then lets this agent see it. "
+            "Built on first boot, so give it time.",
+            json_object_has_member(agent, "desktop_enabled")
+                ? json_object_get_boolean_member(agent, "desktop_enabled")
+                : FALSE);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                  self->vm_desktop_row);
+
+        /*
+         * Separate from seeing it, and off by default.  An agent that can
+         * screenshot but not click is a genuinely useful amount of access
+         * and a much smaller grant.
+         */
+        self->vm_desktop_input_row = switch_row(
+            "Let it click and type",
+            "Without this the agent can take screenshots and list windows "
+            "but cannot act.",
+            json_object_has_member(agent, "desktop_input")
+                ? json_object_get_boolean_member(agent, "desktop_input")
+                : FALSE);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                  self->vm_desktop_input_row);
 
         /*
          * Left empty, clawtilla forwards a port to the guest itself.  It

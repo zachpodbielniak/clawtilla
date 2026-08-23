@@ -327,6 +327,37 @@ member_or(JsonObject *object, const gchar *key, const gchar *fallback)
     return json_object_get_string_member(object, key);
 }
 
+/*
+ * A string array member, or %NULL when it is absent or is something else.
+ */
+static GStrv
+string_array_member(JsonObject *object, const gchar *key)
+{
+    GPtrArray *out;
+    JsonArray *array;
+    guint i;
+    guint length;
+
+    if (object == NULL || !json_object_has_member(object, key) ||
+        !JSON_NODE_HOLDS_ARRAY(json_object_get_member(object, key)))
+        return NULL;
+
+    array = json_object_get_array_member(object, key);
+    length = json_array_get_length(array);
+    out = g_ptr_array_new_with_free_func(g_free);
+
+    for (i = 0; i < length; i++) {
+        JsonNode *element = json_array_get_element(array, i);
+
+        if (json_node_get_value_type(element) == G_TYPE_STRING)
+            g_ptr_array_add(out, g_strdup(json_node_get_string(element)));
+    }
+
+    g_ptr_array_add(out, NULL);
+
+    return (GStrv)g_ptr_array_free(out, FALSE);
+}
+
 /* ── agent ───────────────────────────────────────────────────────── */
 
 /*
@@ -524,12 +555,27 @@ cmd_agent(int argc, char *argv[])
                     (disk != NULL && *disk != '\0')
                         ? disk
                         : "(none -- the VM has nothing to boot)");
-            g_print("vm:          %s core(s), %s MB\n",
+            g_print("vm:          %s core(s), %s MB RAM, %s GB disk\n",
                     member_or(agent, "vm_cpus", "?"),
-                    member_or(agent, "vm_memory_mb", "?"));
+                    member_or(agent, "vm_memory_mb", "?"),
+                    member_or(agent, "vm_disk_gb", "?"));
 
             if (ssh_host != NULL && *ssh_host != '\0')
                 g_print("vm ssh:      %s\n", ssh_host);
+
+            /*
+             * A desktop is built into the guest on its first boot and
+             * takes a while, so it is worth saying that it was asked for
+             * rather than leaving it to be inferred from the caps line.
+             */
+            if (json_object_has_member(agent, "desktop_enabled") &&
+                json_object_get_boolean_member(agent, "desktop_enabled"))
+                g_print("vm desktop:  GNOME, %s\n",
+                        (json_object_has_member(agent, "desktop_input") &&
+                         json_object_get_boolean_member(agent,
+                                                        "desktop_input"))
+                            ? "the agent may look and act"
+                            : "the agent may look but not act");
         }
         g_print("computer:    %s\n", member_or(agent, "computer", "none"));
         g_print("can:         %s\n", member_or(agent, "caps", "-"));
@@ -1857,14 +1903,49 @@ cmd_computer(int argc, char *argv[])
     const gchar *agent_id = (argc > 3) ? argv[3] : NULL;
 
     if (verb == NULL || agent_id == NULL) {
-        g_printerr("Usage: clawtilla computer <exec|status> <agent> "
-                   "[-- COMMAND...]\n");
+        g_printerr("Usage: clawtilla computer <exec|status|desktop-mcp> "
+                   "<agent> [-- COMMAND...]\n");
         return EXIT_FAILURE;
     }
 
     client = connect_to_daemon();
     if (client == NULL)
         return EXIT_FAILURE;
+
+    /*
+     * Not a verb a person runs.  It is what an agent's .mcp.json names,
+     * and it speaks MCP on stdin and stdout -- so nothing here may print
+     * to stdout except the protocol itself.
+     */
+    if (g_strcmp0(verb, "desktop-mcp") == 0) {
+        g_auto(GStrv) relay_argv = NULL;
+        g_auto(GStrv) tools = NULL;
+        JsonObject *result;
+
+        reply = call(client, "computer.desktop",
+                     build_payload("agent", agent_id, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        result = json_node_get_object(reply);
+        relay_argv = string_array_member(result, "argv");
+        tools = string_array_member(result, "tools");
+
+        if (relay_argv == NULL || relay_argv[0] == NULL) {
+            g_printerr("clawtilla: the daemon gave no way to reach that "
+                       "agent's desktop\n");
+            return EXIT_FAILURE;
+        }
+
+        /*
+         * The daemon connection is dropped first.  The relay runs for as
+         * long as the agent does, and holding an idle IPC connection open
+         * all that time would keep a client slot for nothing.
+         */
+        g_clear_object(&client);
+
+        return clawt_desktop_relay_run(relay_argv, tools);
+    }
 
     if (g_strcmp0(verb, "status") == 0) {
         reply = call(client, "computer.status",

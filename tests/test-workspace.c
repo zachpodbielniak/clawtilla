@@ -405,6 +405,146 @@ test_mcp_config_is_written(void)
 }
 
 /*
+ * A VM agent granted a desktop is given the relay that reaches it.
+ *
+ * The entry names the clawtilla CLI rather than ssh, because the port
+ * that reaches the guest is chosen when the VM is provisioned -- after
+ * this file is written.
+ */
+static void
+test_mcp_config_offers_a_guest_desktop(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *text = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: scribe\n"
+                  "    computer:\n"
+                  "      type: vm\n"
+                  "      desktop:\n"
+                  "        enabled: true\n");
+    agent = first_agent(&fixture);
+
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+    g_assert_true(clawt_workspace_write_mcp_config(
+        agent, "/run/clawtilla.sock", "/state/scribe", &error));
+    g_assert_no_error(error);
+
+    path = clawt_workspace_file_path(agent, ".mcp.json");
+    g_assert_true(g_file_get_contents(path, &text, NULL, NULL));
+
+    g_assert_nonnull(strstr(text, "clawtilla-desktop"));
+    g_assert_nonnull(strstr(text, "desktop-mcp"));
+
+    /*
+     * --socket before the verb.  The CLI splits its own options from the
+     * subcommand's at the first verb it recognises, so one written after
+     * `computer` is handed to a subcommand that has never heard of it.
+     */
+    {
+        const gchar *socket_at = strstr(text, "--socket");
+        const gchar *verb_at = strstr(text, "\"computer\"");
+
+        g_assert_nonnull(socket_at);
+        g_assert_nonnull(verb_at);
+        g_assert_true(socket_at < verb_at);
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * ...and an agent without one is not.  A desktop entry left behind would
+ * start an ssh to a VM that is not there and fail on every tool call.
+ */
+static void
+test_mcp_config_has_no_desktop_without_a_vm(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *text = NULL;
+
+    /*
+     * The grant without the VM.  Both halves are needed: a host desktop
+     * is reached without any of this.
+     */
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: scribe\n"
+                  "    computer:\n"
+                  "      type: host\n"
+                  "      desktop:\n"
+                  "        enabled: true\n");
+    agent = first_agent(&fixture);
+
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+    g_assert_true(clawt_workspace_write_mcp_config(
+        agent, "/run/clawtilla.sock", "/state/scribe", &error));
+
+    path = clawt_workspace_file_path(agent, ".mcp.json");
+    g_assert_true(g_file_get_contents(path, &text, NULL, NULL));
+
+    g_assert_null(strstr(text, "clawtilla-desktop"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Turning the desktop off takes the entry away again.
+ *
+ * The whole of the rest of this file is carried across untouched, so an
+ * entry clawtilla owns has to be actively removed -- otherwise revoking
+ * the grant leaves the relay in place for ever.
+ */
+static void
+test_mcp_config_drops_a_desktop_that_was_revoked(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *text = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: scribe\n"
+                  "    computer:\n"
+                  "      type: vm\n"
+                  "      desktop:\n"
+                  "        enabled: true\n");
+    agent = first_agent(&fixture);
+
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+    g_assert_true(clawt_workspace_write_mcp_config(
+        agent, "/run/clawtilla.sock", "/state/scribe", &error));
+
+    path = clawt_workspace_file_path(agent, ".mcp.json");
+    g_assert_true(g_file_get_contents(path, &text, NULL, NULL));
+    g_assert_nonnull(strstr(text, "clawtilla-desktop"));
+    g_clear_pointer(&text, g_free);
+
+    clawt_agent_config_set_string(agent, "computer.desktop.enabled",
+                                  "false");
+
+    g_assert_true(clawt_workspace_write_mcp_config(
+        agent, "/run/clawtilla.sock", "/state/scribe", &error));
+    g_assert_true(g_file_get_contents(path, &text, NULL, NULL));
+
+    g_assert_null(strstr(text, "clawtilla-desktop"));
+
+    /* The one clawtilla always owns is still there. */
+    g_assert_nonnull(strstr(text, "clawtilla-mcp-server"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * Rewritten every start, unlike the org files: it is generated rather
  * than authored, and a stale one points at a socket that has moved.
  */
@@ -604,6 +744,12 @@ main(int argc, char *argv[])
     g_test_add_func("/workspace/no-computer-is-said-out-loud",
                     test_scaffold_says_when_there_is_no_computer);
     g_test_add_func("/workspace/mcp-config", test_mcp_config_is_written);
+    g_test_add_func("/workspace/mcp-config-guest-desktop",
+                    test_mcp_config_offers_a_guest_desktop);
+    g_test_add_func("/workspace/mcp-config-no-desktop-without-a-vm",
+                    test_mcp_config_has_no_desktop_without_a_vm);
+    g_test_add_func("/workspace/mcp-config-drops-a-revoked-desktop",
+                    test_mcp_config_drops_a_desktop_that_was_revoked);
     g_test_add_func("/workspace/mcp-config-regenerated",
                     test_mcp_config_is_regenerated);
     g_test_add_func("/workspace/mcp-config-keeps-your-servers",

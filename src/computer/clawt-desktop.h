@@ -51,6 +51,29 @@ ClawtDesktop *clawt_desktop_new(ClawtDesktopBackend  backend,
                                 const gchar         *socket_path);
 
 /**
+ * clawt_desktop_set_guest_available:
+ * @self: a #ClawtDesktop
+ * @available: whether the agent has a VM with a desktop in it
+ *
+ * Tells the desktop that this agent's own VM is an option.
+ *
+ * Set by the factory, which is the only thing that knows what computer
+ * the agent was given.  It is what makes `auto` resolve to the guest: an
+ * agent with a machine of its own should be driving that screen rather
+ * than the one somebody is sitting at.
+ */
+void clawt_desktop_set_guest_available(ClawtDesktop *self,
+                                       gboolean      available);
+
+/**
+ * clawt_desktop_get_guest_available:
+ * @self: a #ClawtDesktop
+ *
+ * Returns: %TRUE if the agent's own VM has a desktop
+ */
+gboolean clawt_desktop_get_guest_available(ClawtDesktop *self);
+
+/**
  * clawt_desktop_set_allow_input:
  * @self: a #ClawtDesktop
  * @allow: whether key and pointer injection is permitted

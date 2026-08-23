@@ -30,6 +30,7 @@ struct _ClawtAgent {
     gchar             *activity_peer;
     ClawtAgentRuntime *runtime;
     ClawtComputer     *computer;
+    ClawtDesktop      *desktop;
     ClawtLink         *link;
 
     ClawtAgentState state;
@@ -386,6 +387,25 @@ clawt_agent_get_computer(ClawtAgent *self)
 }
 
 void
+clawt_agent_set_desktop(ClawtAgent *self, ClawtDesktop *desktop)
+{
+    g_return_if_fail(CLAWT_IS_AGENT(self));
+
+    g_clear_object(&self->desktop);
+
+    if (desktop != NULL)
+        self->desktop = g_object_ref(desktop);
+}
+
+ClawtDesktop *
+clawt_agent_get_desktop(ClawtAgent *self)
+{
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), NULL);
+
+    return self->desktop;
+}
+
+void
 clawt_agent_set_link(ClawtAgent *self, ClawtLink *link_)
 {
     g_return_if_fail(CLAWT_IS_AGENT(self));
@@ -525,6 +545,7 @@ clawt_agent_dispose(GObject *object)
 
     g_clear_object(&self->runtime);
     g_clear_object(&self->computer);
+    g_clear_object(&self->desktop);
     g_clear_object(&self->link);
     g_clear_object(&self->mailbox);
     g_clear_object(&self->memory);

@@ -856,8 +856,26 @@ static const ClawtSchemaEntry schema[] = {
   "Virtual CPUs.", "0.1.0" },
 
 { "agents.computer.vm.memory_mb", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
-  "2048", NULL,
-  "Memory in megabytes.", "0.1.0" },
+  "8192", NULL,
+  "Memory in megabytes.\n"
+  "\n"
+  "Sized for a guest running a GNOME session, because that is what\n"
+  "computer.desktop.enabled installs into one. A headless VM is happy in\n"
+  "a quarter of it.", "0.1.0" },
+
+{ "agents.computer.vm.disk_gb", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "128", NULL,
+  "Virtual disk size in gigabytes.\n"
+  "\n"
+  "A cloud image's own disk is only a few gigabytes, which a desktop and\n"
+  "a toolchain fill immediately. The overlay is created at this size\n"
+  "instead and cloud-init grows the guest's filesystem to match on first\n"
+  "boot.\n"
+  "\n"
+  "qcow2 is sparse, so this costs what is written and not what is asked\n"
+  "for. Raising it grows the disk on the next provision; lowering it is\n"
+  "refused, because shrinking a disk destroys whatever was past the new\n"
+  "end.", "0.1.0" },
 
 { "agents.computer.vm.ssh_user", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   "root", NULL,
@@ -914,6 +932,74 @@ static const ClawtSchemaEntry schema[] = {
   "Take a snapshot each time the VM starts, so a session can be rolled back.\n"
   "libvirt backend only.", "0.1.0" },
 
+/* ── agents.computer.vm.desktop ──────────────────────────────────── */
+{ "agents.computer.vm.desktop", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "How the guest's graphical session is built.\n"
+  "\n"
+  "None of this happens unless computer.desktop.enabled is also true --\n"
+  "that key is the grant, and these are the details of what it installs.\n"
+  "A cloud image has no desktop at all, so an agent given one on a VM has\n"
+  "to have it put there first.", "0.1.0" },
+
+{ "agents.computer.vm.desktop.user", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "The account the graphical session runs as.\n"
+  "\n"
+  "Left unset this is computer.vm.ssh_user, unless that is root: GDM\n"
+  "refuses to log root in, so a VM whose ssh_user is root -- the default\n"
+  "-- gets a separate `clawt` account for the session and keeps running\n"
+  "commands as root. Both are created by cloud-init and both authorise\n"
+  "the same key.\n"
+  "\n"
+  "cloud-init acts on first boot only, so changing this later means\n"
+  "deleting the overlay rather than restarting.", "0.1.0" },
+
+{ "agents.computer.vm.desktop.autologin", CLAWT_SCHEMA_BOOLEAN,
+  CLAWT_SCHEMA_FLAG_NONE, "true", NULL,
+  "Log that account straight in at boot, with no password prompt.\n"
+  "\n"
+  "There is nobody at the VM's console to type one, and until a session\n"
+  "exists there is no desktop to control: the shell extension the agent\n"
+  "talks to runs inside GNOME Shell. Turn this off and something else has\n"
+  "to start the session.", "0.1.0" },
+
+{ "agents.computer.vm.desktop.packages", CLAWT_SCHEMA_STRING_LIST,
+  CLAWT_SCHEMA_FLAG_NONE,
+  "gdm,gnome-shell,gnome-session,gnome-console,gnome-control-center,"
+  "nautilus,gnome-text-editor,xdg-user-dirs-gtk,gnome-tweaks,"
+  "gnome-shell-extension-common",
+  NULL,
+  "What to install to get a desktop.\n"
+  "\n"
+  "These are Fedora names, matching the image catalog. A Debian or Ubuntu\n"
+  "guest wants gdm3 and gnome-core instead. It is a deliberately small\n"
+  "set rather than the full workstation group: the agent needs a session\n"
+  "to drive, not an office suite to download.", "0.1.0" },
+
+{ "agents.computer.vm.desktop.mcp", CLAWT_SCHEMA_BOOLEAN,
+  CLAWT_SCHEMA_FLAG_NONE, "true", NULL,
+  "Install gnome-desktop-mcp into the guest and switch it on.\n"
+  "\n"
+  "This is the part the agent actually talks to: a GNOME Shell extension\n"
+  "exposing screenshots, window management and input injection over\n"
+  "D-Bus, and a stdio MCP server in front of it. GNOME on Wayland refuses\n"
+  "those to any process outside the compositor, which is why an extension\n"
+  "is involved at all.\n"
+  "\n"
+  "Without this the guest has a desktop and the agent has no way to see\n"
+  "it.", "0.1.0" },
+
+{ "agents.computer.vm.desktop.mcp_repo", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_NONE,
+  "https://git.podbielniak.com/zachpodbielniak/gnome-desktop-mcp.git", NULL,
+  "Where the guest clones gnome-desktop-mcp from.\n"
+  "\n"
+  "Cloned rather than installed from PyPI because the extension is only\n"
+  "in the repository, and the two halves have to be the same version --\n"
+  "the server calls D-Bus methods the extension has to already export.",
+  "0.1.0" },
+
 /* ── agents.computer.desktop ─────────────────────────────────────── */
 { "agents.computer.desktop", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_DANGEROUS,
   NULL, NULL,
@@ -929,11 +1015,17 @@ static const ClawtSchemaEntry schema[] = {
 
 { "agents.computer.desktop.backend", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   "auto", clawt_desktop_backend_get_type,
-  "auto, gowl or gnome.\n"
+  "auto, gowl, gnome or guest.\n"
   "\n"
-  "auto tries gowl's MCP socket first and falls back to gnome-desktop-mcp.\n"
-  "gowl is the better fit where it is available: same tool vocabulary,\n"
-  "native, and no Python or GNOME Shell extension in the way.", "0.1.0" },
+  "guest is the agent's own VM, and auto picks it whenever the agent has\n"
+  "one -- an agent with its own machine should drive that screen rather\n"
+  "than yours. It is also the only backend where a misjudged click lands\n"
+  "somewhere recoverable.\n"
+  "\n"
+  "Otherwise auto tries gowl's MCP socket and falls back to\n"
+  "gnome-desktop-mcp on the host. gowl is the better fit where it is\n"
+  "available: same tool vocabulary, native, and no Python or GNOME Shell\n"
+  "extension in the way.", "0.1.0" },
 
 { "agents.computer.desktop.socket", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE,
   "$XDG_RUNTIME_DIR/gowl-mcp.sock", NULL,
