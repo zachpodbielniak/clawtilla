@@ -1649,6 +1649,44 @@ scroll_to_bottom(gpointer user_data)
     return G_SOURCE_REMOVE;
 }
 
+/*
+ * Pins the view to the bottom when the transcript actually grows.
+ *
+ * The queued idle is not enough on its own: it reads `upper` before
+ * GTK's frame clock has laid the new message out, so it scrolls to where
+ * the bottom *was* and leaves the newest message just below the fold --
+ * which is why a reply, or even typing, needed a scroll by hand. The
+ * adjustment says when it genuinely knows how tall the content is; that
+ * is the moment to follow it.
+ *
+ * page-size as well as upper, because typing grows the composer and
+ * shrinks the transcript above it, which moves the bottom without adding
+ * anything.
+ */
+static void
+on_transcript_grew(GObject *object, GParamSpec *pspec, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    GtkAdjustment *adjustment = GTK_ADJUSTMENT(object);
+    gdouble bottom;
+
+    (void)pspec;
+
+    if (!self->following)
+        return;
+
+    bottom = gtk_adjustment_get_upper(adjustment) -
+             gtk_adjustment_get_page_size(adjustment);
+
+    /*
+     * Only when it is not already there. Setting the same value is a
+     * no-op to GTK but this runs on every layout pass, and doing nothing
+     * is cheaper than asking it to.
+     */
+    if (gtk_adjustment_get_value(adjustment) < bottom)
+        gtk_adjustment_set_value(adjustment, bottom);
+}
+
 static void
 on_scrolled(GtkAdjustment *adjustment, gpointer user_data)
 {
@@ -5687,6 +5725,19 @@ build_chat_page(ClawtWindow *self)
     }
     gtk_widget_set_vexpand(scroll, TRUE);
     self->transcript_scroll = GTK_SCROLLED_WINDOW(scroll);
+
+    /*
+     * Following is maintained from three places: the reader scrolling
+     * (below), and the content growing (either of these two), because
+     * "am I at the bottom" changes for both reasons.
+     */
+    g_signal_connect(gtk_scrolled_window_get_vadjustment(
+                         GTK_SCROLLED_WINDOW(scroll)),
+                     "notify::upper", G_CALLBACK(on_transcript_grew), self);
+    g_signal_connect(gtk_scrolled_window_get_vadjustment(
+                         GTK_SCROLLED_WINDOW(scroll)),
+                     "notify::page-size",
+                     G_CALLBACK(on_transcript_grew), self);
 
     g_signal_connect(gtk_scrolled_window_get_vadjustment(
                          GTK_SCROLLED_WINDOW(scroll)),

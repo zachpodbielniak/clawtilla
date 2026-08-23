@@ -632,21 +632,21 @@ the same program.
   `overlay-superseded.qcow2` rather than unlinking it. Destroying a
   guest because a config line changed should be recoverable.
 
-### A libvirt disconnect can deadlock the whole daemon
+### libvirt's remove-handle callback must not be called inline
 
-- Observed, with a stack: `virNetClientIncomingEvent` →
-  `virNetClientMarkClose` → `virNetSocketRemoveIOCallback` →
-  `virNetSocketEventFree` → `__lll_lock_wait`, all inside
-  `clawt_daemon_run`. libvirt's glib event integration self-deadlocks
-  tearing down the socket when the far end goes away, and because
-  podomation registers that event loop on **our** main context it takes
-  the IPC server, every agent and every client with it. SIGTERM cannot
-  help — the handler runs on the loop that is stuck — so it needs
-  SIGKILL.
-- **Not fixed.** The real remedy is to stop sharing a main context with
-  libvirt: run the vm_virtmanager module on its own thread and
-  GMainContext, so a hung teardown costs one thread rather than the
-  daemon.
+- `virEventRemoveHandleFunc` is invoked while libvirt holds the lock for
+  the thing being removed; its contract is that the `ff` callback runs
+  *afterwards*, from the event loop. podomation called it synchronously
+  from a `GHashTable` destroy notify, inside its own mutex, so
+  `virNetSocketEventFree` tried to take the lock its caller held and the
+  **whole process** stopped — main loop, IPC server, every agent — and
+  could not be stopped with SIGTERM, since that handler runs on the loop
+  that is stuck.
+- Reached two ways, both routine: the remote closing the connection, and
+  *us* closing it by unreffing the module (`virConnectDispose`). Fixed
+  upstream in podomation by deferring the callback to an idle. The
+  before/after was measured: connect, list, drop, three times — hangs
+  without the change, completes with it.
 
 ### A qcow2 overlay pins the base it was made from
 
@@ -693,6 +693,15 @@ the same program.
   `GtkSettings:gtk-application-prefer-dark-theme` warning libadwaita
   prints comes from the user's `~/.config/gtk-4.0/settings.ini` (or
   their desktop), not from clawtilla, which never touches GtkSettings.
+
+### A queued idle reads the adjustment before GTK has laid out
+
+- `queue_scroll()` fired at `G_PRIORITY_DEFAULT_IDLE` and read
+  `gtk_adjustment_get_upper()`, but GTK4 lays out from the frame clock,
+  not the idle queue — so it scrolled to where the bottom *was* and left
+  the newest message just below the fold. Follow the adjustment instead:
+  `notify::upper` for content arriving, `notify::page-size` because
+  typing grows the composer and shrinks the transcript above it.
 
 ### GtkListBox keeps its own record of its rows
 
