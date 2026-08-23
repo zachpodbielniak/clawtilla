@@ -538,6 +538,7 @@ typedef enum {
  * @CLAWT_GUEST_FLAVOUR_ENTERPRISE: CentOS Stream, RHEL and their rebuilds
  * @CLAWT_GUEST_FLAVOUR_DEBIAN: Debian
  * @CLAWT_GUEST_FLAVOUR_UBUNTU: Ubuntu
+ * @CLAWT_GUEST_FLAVOUR_ARCH: Arch Linux
  *
  * Which family a guest belongs to, for the purpose of installing things
  * into it.
@@ -568,7 +569,8 @@ typedef enum {
     CLAWT_GUEST_FLAVOUR_FEDORA,
     CLAWT_GUEST_FLAVOUR_ENTERPRISE,
     CLAWT_GUEST_FLAVOUR_DEBIAN,
-    CLAWT_GUEST_FLAVOUR_UBUNTU
+    CLAWT_GUEST_FLAVOUR_UBUNTU,
+    CLAWT_GUEST_FLAVOUR_ARCH
 } ClawtGuestFlavour;
 
 /**

@@ -128,23 +128,59 @@ static const gchar *const debian_mcp[] = {
     NULL
 };
 
+/*
+ * Arch drops the `3` that Debian and Fedora both put in their Python
+ * package names, and `glib-compile-schemas` lives in glib2-devel since
+ * the development tools were split out of glib2 -- a cloud image has the
+ * library and not the compiler.  `python -m venv` needs nothing extra:
+ * venv is in the core python package.
+ */
+static const gchar *const arch_desktop[] = {
+    "gdm", "gnome-shell", "gnome-session", "gnome-terminal",
+    "gnome-control-center", "nautilus", "gnome-text-editor",
+    "xdg-user-dirs-gtk", "gnome-tweaks", "firefox", "dconf", NULL
+};
+
+static const gchar *const arch_mcp[] = {
+    "git", "python-pip", "python-gobject", "glib2-devel", NULL
+};
+
 typedef struct {
     ClawtGuestFlavour   flavour;
     const gchar *const *desktop;
     const gchar *const *mcp;
     const gchar        *display_manager;
+    /*
+     * Whether to upgrade everything before installing anything.
+     *
+     * Only Arch, and not as a nicety.  cloud-init's package_update runs
+     * `pacman -Sy`, which refreshes the index without upgrading what is
+     * already there -- and installing against that is the partial
+     * upgrade Arch warns about, where a new package is linked against
+     * libraries the image still has the old versions of.  It breaks in
+     * the guest, after the desktop appears to have installed.
+     *
+     * package_upgrade adds the `-Su`, and cloud-init runs it between the
+     * refresh and the install, which is exactly the order wanted.  A
+     * point release does not need this, which is why it is per family
+     * rather than always on: it is a long download on a distribution
+     * that would not benefit.
+     */
+    gboolean            full_upgrade;
 } FlavourSpec;
 
 static const FlavourSpec flavours[] = {
     { CLAWT_GUEST_FLAVOUR_FEDORA, fedora_desktop, fedora_mcp,
-      "gdm.service" },
+      "gdm.service", FALSE },
     { CLAWT_GUEST_FLAVOUR_ENTERPRISE, enterprise_desktop, enterprise_mcp,
-      "gdm.service" },
+      "gdm.service", FALSE },
     { CLAWT_GUEST_FLAVOUR_DEBIAN, debian_desktop, debian_mcp,
-      "gdm3.service" },
+      "gdm3.service", FALSE },
     /* Everything but the browser is Debian's, so the rest is shared. */
     { CLAWT_GUEST_FLAVOUR_UBUNTU, ubuntu_desktop, debian_mcp,
-      "gdm3.service" }
+      "gdm3.service", FALSE },
+    { CLAWT_GUEST_FLAVOUR_ARCH, arch_desktop, arch_mcp,
+      "gdm.service", TRUE }
 };
 
 /*
@@ -593,7 +629,12 @@ clawt_guest_desktop_render_setup(ClawtGuestDesktop *self, GString *out)
      * an install against a stale index fails on a package that has since
      * been rebuilt.
      */
-    g_string_append(out, "package_update: true\npackages:\n");
+    g_string_append(out, "package_update: true\n");
+
+    if (spec->full_upgrade)
+        g_string_append(out, "package_upgrade: true\n");
+
+    g_string_append(out, "packages:\n");
 
     /*
      * A configured list wins outright and is not merged with the

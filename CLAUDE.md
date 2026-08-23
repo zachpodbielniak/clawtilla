@@ -1668,6 +1668,20 @@ the same program.
   rather than guessing quietly, and Enterprise Linux gets a shorter list
   on purpose: cloud-init treats a package it cannot find as a failure of
   the whole install, so one Fedora-only name takes the desktop with it.
+- Arch needs `package_upgrade` as well as `package_update`, and it is the
+  only family that does. cloud-init's update runs `pacman -Sy`, which
+  refreshes the index without upgrading what is there -- installing
+  against that is the partial upgrade pacman warns about, where a new
+  package links against libraries the image still has old versions of.
+  It breaks inside the guest, after the desktop appears to have
+  installed. Arch also publishes two qcow2s and only `cloudimg` has
+  cloud-init; `basic` boots perfectly and admits nobody, which is
+  indistinguishable from a VM that failed to boot.
+- Matching an image on the substring "arch" would place
+  `~/archived-vms/debian.qcow2` and `/home/me/research/disk.qcow2` as
+  Arch and install pacman's names into a Debian. The markers are
+  `arch-linux` and `archlinux`. Worth remembering for any distribution
+  whose name is a common English fragment.
 - Ubuntu is a family of its own for a single entry. Everything about it
   is Debian's -- gdm3, python3-gi, python3-venv, dconf-cli -- except
   Firefox: Debian stable has no `firefox` package, only `firefox-esr`,

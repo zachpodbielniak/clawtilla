@@ -2185,7 +2185,7 @@ to start the session.
 *** =agents.computer.vm.desktop.flavour=
 
 - Type :: enum
-- Values :: auto, fedora, enterprise, debian, ubuntu
+- Values :: auto, fedora, enterprise, debian, ubuntu, arch
 - Default :: =auto=
 - Since :: 0.2.0
 
@@ -2196,7 +2196,11 @@ and an image you downloaded yourself keeps the distribution in its
 filename. Set it when neither does: clawtilla says which family it
 assumed rather than guessing quietly.
 
-`enterprise` covers CentOS Stream, RHEL and the rebuilds. Ubuntu is
+`enterprise` covers CentOS Stream, RHEL and the rebuilds; `arch` is
+Arch Linux, whose names drop the 3 everyone else puts in their Python
+packages and which is upgraded fully before anything is installed --
+refreshing pacman's index without upgrading is the partial upgrade it
+warns about. Ubuntu is
 separate from Debian for one reason: Debian stable has no `firefox`
 package, only `firefox-esr`, and Ubuntu has no `firefox-esr` -- so a
 single family would be wrong on half of it, and a package that does

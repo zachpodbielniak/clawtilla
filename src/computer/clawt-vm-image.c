@@ -64,7 +64,20 @@ static const ClawtVmImageSource sources[] = {
       NULL, "Debian and Ubuntu",
       "https://cloud-images.ubuntu.com/noble/current/"
       "noble-server-cloudimg-amd64.img", NULL,
-      CLAWT_GUEST_FLAVOUR_UBUNTU }
+      CLAWT_GUEST_FLAVOUR_UBUNTU },
+
+    /*
+     * Arch publishes two qcow2s and only one of them is any use here:
+     * `basic` has no cloud-init, so a VM built from it boots and admits
+     * nobody, which looks exactly like a VM that failed to boot.  The
+     * `cloudimg` variant is the one with cloud-init preinstalled.
+     */
+    { "arch", "Arch Linux",
+      "rolling, and the only image here that is rebuilt monthly",
+      "Rolling",
+      "https://geo.mirror.pkgbuild.com/images/latest/"
+      "Arch-Linux-x86_64-cloudimg.qcow2", NULL,
+      CLAWT_GUEST_FLAVOUR_ARCH }
 };
 
 const ClawtVmImageSource *
@@ -108,7 +121,15 @@ static const struct {
     { "noble",    CLAWT_GUEST_FLAVOUR_UBUNTU },
     { "jammy",    CLAWT_GUEST_FLAVOUR_UBUNTU },
     { "trixie",   CLAWT_GUEST_FLAVOUR_DEBIAN },
-    { "bookworm", CLAWT_GUEST_FLAVOUR_DEBIAN }
+    { "bookworm", CLAWT_GUEST_FLAVOUR_DEBIAN },
+    /*
+     * Spelled out rather than matched on "arch", which is a substring of
+     * words that turn up in perfectly ordinary paths -- `research`,
+     * `archive`, `~/archived-vms/debian.qcow2`.  Any of those would place
+     * the image as Arch and install pacman's package names into a Debian.
+     */
+    { "arch-linux", CLAWT_GUEST_FLAVOUR_ARCH },
+    { "archlinux",  CLAWT_GUEST_FLAVOUR_ARCH }
 };
 
 ClawtGuestFlavour

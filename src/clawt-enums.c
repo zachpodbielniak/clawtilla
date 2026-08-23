@@ -532,6 +532,8 @@ clawt_guest_flavour_get_type(void)
               "debian" },
             { CLAWT_GUEST_FLAVOUR_UBUNTU, "CLAWT_GUEST_FLAVOUR_UBUNTU",
               "ubuntu" },
+            { CLAWT_GUEST_FLAVOUR_ARCH, "CLAWT_GUEST_FLAVOUR_ARCH",
+              "arch" },
             { 0, NULL, NULL }
         };
         GType g_define_type_id =

@@ -876,16 +876,17 @@ a config file is not consent to lose it.
 cloud-init picks the package *manager* for you and nothing else, so the
 seed has to know the names -- and the names are the smaller half of it.
 
-| | Fedora | Enterprise Linux | Debian | Ubuntu |
-|---+---+---+---+---|
-| display manager | ~gdm~ | ~gdm~ | ~gdm3~ | ~gdm3~ |
-| unit enabled | ~gdm.service~ | ~gdm.service~ | ~gdm3.service~ | ~gdm3.service~ |
-| PyGObject | ~python3-gobject~ | ~python3-gobject~ | ~python3-gi~ | ~python3-gi~ |
-| ~python3 -m venv~ | in ~python3~ | in ~python3~ | ~python3-venv~ | ~python3-venv~ |
-| ~glib-compile-schemas~ | in ~glib2~ | in ~glib2~ | ~libglib2.0-bin~ | ~libglib2.0-bin~ |
-| the ~dconf~ binary | ~dconf~ | ~dconf~ | ~dconf-cli~ | ~dconf-cli~ |
-| terminal | ~gnome-console~ | ~gnome-terminal~ | ~gnome-terminal~ | ~gnome-terminal~ |
-| browser | ~firefox~ | ~firefox~ | ~firefox-esr~ | ~firefox~ |
+| | Fedora | Enterprise Linux | Debian | Ubuntu | Arch |
+|---+---+---+---+---+---|
+| display manager | ~gdm~ | ~gdm~ | ~gdm3~ | ~gdm3~ | ~gdm~ |
+| unit enabled | ~gdm.service~ | ~gdm.service~ | ~gdm3.service~ | ~gdm3.service~ | ~gdm.service~ |
+| PyGObject | ~python3-gobject~ | ~python3-gobject~ | ~python3-gi~ | ~python3-gi~ | ~python-gobject~ |
+| venv | in ~python3~ | in ~python3~ | ~python3-venv~ | ~python3-venv~ | in ~python~ |
+| ~glib-compile-schemas~ | in ~glib2~ | in ~glib2~ | ~libglib2.0-bin~ | ~libglib2.0-bin~ | ~glib2-devel~ |
+| the ~dconf~ binary | ~dconf~ | ~dconf~ | ~dconf-cli~ | ~dconf-cli~ | ~dconf~ |
+| terminal | ~gnome-console~ | ~gnome-terminal~ | ~gnome-terminal~ | ~gnome-terminal~ | ~gnome-terminal~ |
+| browser | ~firefox~ | ~firefox~ | ~firefox-esr~ | ~firefox~ | ~firefox~ |
+| upgraded first | no | no | no | no | *yes* |
 
 Each of those on its own is enough to leave a guest that installed a
 desktop and has no session, or a session with no automation.  Enabling
@@ -915,6 +916,25 @@ no deb to prefer instead.
 
 A browser is in every list because an agent driving a desktop with
 nothing on it can look at a wallpaper and little else.
+
+Arch is the one that is fully upgraded before anything is installed.
+cloud-init's ~package_update~ runs ~pacman -Sy~, which refreshes the
+index without upgrading what is already there -- and installing against
+that is exactly the partial upgrade pacman warns about, where a new
+package links against libraries the image still has old versions of.  It
+breaks inside the guest, after the desktop appears to have installed.
+The seed asks for ~package_upgrade~ as well, which cloud-init runs
+between the refresh and the install.  That costs a longer first boot, and
+is why it is per family rather than always on: a point release does not
+need it.
+
+Arch also publishes two qcow2s and only one of them is any use --
+~Arch-Linux-x86_64-basic.qcow2~ has no cloud-init, so a VM built from it
+boots perfectly and admits nobody.  The catalog entry points at
+~Arch-Linux-x86_64-cloudimg.qcow2~.  It is rebuilt monthly and the
+~latest/~ URL follows, so a cached copy ages faster than the others do;
+~clawtilla image rm arch~ and re-fetch if a first boot starts failing on
+package signatures.
 
 ~enterprise~ deliberately asks for less: ~gnome-console~,
 ~gnome-text-editor~ and ~gnome-tweaks~ are not in the EL10 repositories,

@@ -402,6 +402,66 @@ test_debian_and_ubuntu_want_different_firefoxes(void)
 }
 
 /*
+ * Arch is the only rolling distribution here, and the only one where
+ * refreshing the index without upgrading is actively dangerous: that is
+ * the partial upgrade pacman warns about, where a package installs
+ * against libraries the image still has old versions of.  It breaks
+ * inside the guest, after the desktop appears to have installed.
+ */
+static void
+test_arch_upgrades_before_it_installs(void)
+{
+    g_autofree gchar *arch = render_for(CLAWT_GUEST_FLAVOUR_ARCH);
+    g_autofree gchar *fedora = render_for(CLAWT_GUEST_FLAVOUR_FEDORA);
+
+    g_assert_nonnull(strstr(arch, "package_upgrade: true"));
+
+    /* Arch's names drop the 3 that everyone else puts in. */
+    g_assert_nonnull(strstr(arch, "- \"python-gobject\""));
+    g_assert_nonnull(strstr(arch, "- \"python-pip\""));
+    g_assert_null(strstr(arch, "python3-"));
+
+    /*
+     * glib-compile-schemas is in glib2-devel since Arch split the
+     * development tools out; a cloud image has the library and not the
+     * compiler, so the extension's schema would never build.
+     */
+    g_assert_nonnull(strstr(arch, "- \"glib2-devel\""));
+
+    g_assert_nonnull(strstr(arch, "[systemctl, enable, --now, gdm.service]"));
+
+    /*
+     * And a point release does not pay for an upgrade it does not need:
+     * this is per family rather than always on.
+     */
+    g_assert_null(strstr(fedora, "package_upgrade"));
+}
+
+/*
+ * "arch" is a substring of words that turn up in ordinary paths, and
+ * matching on it would place `~/archived-vms/debian.qcow2` as Arch and
+ * install pacman's names into a Debian.
+ */
+static void
+test_an_ordinary_path_is_not_arch(void)
+{
+    g_assert_cmpint(clawt_vm_image_flavour(
+                        "/home/me/research/disk.qcow2"),
+                    ==, CLAWT_GUEST_FLAVOUR_AUTO);
+
+    g_assert_cmpint(clawt_vm_image_flavour(
+                        "~/archived-vms/debian-13-generic-amd64.qcow2"),
+                    ==, CLAWT_GUEST_FLAVOUR_DEBIAN);
+
+    /* The real thing still resolves, by either spelling. */
+    g_assert_cmpint(clawt_vm_image_flavour(
+                        "Arch-Linux-x86_64-cloudimg.qcow2"),
+                    ==, CLAWT_GUEST_FLAVOUR_ARCH);
+    g_assert_cmpint(clawt_vm_image_flavour("~/vms/archlinux.qcow2"),
+                    ==, CLAWT_GUEST_FLAVOUR_ARCH);
+}
+
+/*
  * A desktop with no browser on it gives an agent a wallpaper to look at.
  */
 static void
@@ -409,7 +469,8 @@ test_every_family_gets_a_browser(void)
 {
     ClawtGuestFlavour families[] = {
         CLAWT_GUEST_FLAVOUR_FEDORA, CLAWT_GUEST_FLAVOUR_ENTERPRISE,
-        CLAWT_GUEST_FLAVOUR_DEBIAN, CLAWT_GUEST_FLAVOUR_UBUNTU
+        CLAWT_GUEST_FLAVOUR_DEBIAN, CLAWT_GUEST_FLAVOUR_UBUNTU,
+        CLAWT_GUEST_FLAVOUR_ARCH
     };
     gsize i;
 
@@ -616,6 +677,10 @@ main(int argc, char *argv[])
                     test_debian_and_ubuntu_want_different_firefoxes);
     g_test_add_func("/guest-desktop/cloud-config/every-family-browses",
                     test_every_family_gets_a_browser);
+    g_test_add_func("/guest-desktop/cloud-config/arch-upgrades-first",
+                    test_arch_upgrades_before_it_installs);
+    g_test_add_func("/guest-desktop/flavour/arch-is-not-a-substring",
+                    test_an_ordinary_path_is_not_arch);
 
     return g_test_run();
 }
