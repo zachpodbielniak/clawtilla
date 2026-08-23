@@ -163,6 +163,30 @@ static const ClawtSchemaEntry schema[] = {
   "acts rather than one typo, so it requires this AND confirm_host_control\n"
   "on the agent itself.", "0.1.0" },
 
+{ "daemon.automation_dir", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_COMMENTED,
+  "~/.clawtilla/pods", NULL,
+  "Where podomation pods that watch the fleet live.\n"
+  "\n"
+  "Every `*.pod` in here is loaded at start. clawtilla registers itself\n"
+  "into podomation as a module, so a pod can bind to what the fleet does\n"
+  "and act on it in the same file:\n"
+  "\n"
+  "  pod restart_the_researcher {\n"
+  "    source = Clawtilla.New(\"researcher\")\n"
+  "    sink   = Clawtilla.New(\"researcher\")\n"
+  "    on \"agent.state\" where state == \"error\" {\n"
+  "      restart_agent(agent: \"researcher\")\n"
+  "      notify(title: \"researcher fell over; restarted it\")\n"
+  "    }\n"
+  "  }\n"
+  "\n"
+  "The constructor's arguments are the scope, and it applies both ways:\n"
+  "a pod named for one agent neither hears about the others nor can act\n"
+  "on them. With no arguments, the whole fleet.\n"
+  "\n"
+  "A file that does not parse disables that file and warns; the rest are\n"
+  "loaded.", "0.2.0" },
+
 /* ── defaults ────────────────────────────────────────────────────── */
 { "defaults", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "What a new agent gets when its own block does not say.\n"

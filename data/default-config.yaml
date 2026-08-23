@@ -136,6 +136,29 @@ daemon:
   # # DANGEROUS: read docs/security.org before enabling this.
   # allow_unconfined_host: false
 
+  # # Where podomation pods that watch the fleet live.
+  # #
+  # # Every `*.pod` in here is loaded at start. clawtilla registers itself
+  # # into podomation as a module, so a pod can bind to what the fleet does
+  # # and act on it in the same file:
+  # #
+  # #   pod restart_the_researcher {
+  # #     source = Clawtilla.New("researcher")
+  # #     sink   = Clawtilla.New("researcher")
+  # #     on "agent.state" where state == "error" {
+  # #       restart_agent(agent: "researcher")
+  # #       notify(title: "researcher fell over; restarted it")
+  # #     }
+  # #   }
+  # #
+  # # The constructor's arguments are the scope, and it applies both ways:
+  # # a pod named for one agent neither hears about the others nor can act
+  # # on them. With no arguments, the whole fleet.
+  # #
+  # # A file that does not parse disables that file and warns; the rest are
+  # # loaded.
+  # automation_dir: "~/.clawtilla/pods"
+
 # What a new agent gets when its own block does not say.
 #
 # Every key here can be overridden per agent.

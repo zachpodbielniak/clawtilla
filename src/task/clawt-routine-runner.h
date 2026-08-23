@@ -60,6 +60,14 @@ G_DECLARE_FINAL_TYPE(ClawtRoutineRunner, clawt_routine_runner,
 ClawtRoutineRunner *clawt_routine_runner_new(ClawtConfig *config,
                                              const gchar *state_path);
 
+/**
+ * clawt_routine_runner_set_run_func:
+ * @self: a #ClawtRoutineRunner
+ * @func: (scope forever): how to start a run
+ * @user_data: data for @func
+ *
+ * Set once, by the daemon, and never replaced -- hence `forever`.
+ */
 void clawt_routine_runner_set_run_func(ClawtRoutineRunner  *self,
                                        ClawtRoutineRunFunc  func,
                                        gpointer             user_data);

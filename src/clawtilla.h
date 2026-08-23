@@ -76,6 +76,8 @@
 #include "interfaces/clawt-integration-provider.h"
 
 #include "plugin/clawt-plugin-manager.h"
+#include "plugin/clawt-pod-module.h"
+#include "plugin/clawt-automation.h"
 #include "mcp/clawt-mcp-tools.h"
 #include "ai/clawt-model-catalog.h"
 #include "ai/clawt-agent-designer.h"

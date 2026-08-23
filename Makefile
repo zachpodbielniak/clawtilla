@@ -111,6 +111,8 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/plugin/clawt-param-info.h \
 	$(SRCDIR)/plugin/clawt-plugin.h \
 	$(SRCDIR)/plugin/clawt-plugin-manager.h \
+	$(SRCDIR)/plugin/clawt-pod-module.h \
+	$(SRCDIR)/plugin/clawt-automation.h \
 	$(SRCDIR)/interfaces/clawt-event-handler.h \
 	$(SRCDIR)/interfaces/clawt-tool-provider.h \
 	$(SRCDIR)/interfaces/clawt-computer-provider.h \
@@ -187,6 +189,8 @@ LIB_SOURCES = \
 	$(SRCDIR)/plugin/clawt-param-info.c \
 	$(SRCDIR)/plugin/clawt-plugin.c \
 	$(SRCDIR)/plugin/clawt-plugin-manager.c \
+	$(SRCDIR)/plugin/clawt-pod-module.c \
+	$(SRCDIR)/plugin/clawt-automation.c \
 	$(SRCDIR)/interfaces/clawt-event-handler.c \
 	$(SRCDIR)/interfaces/clawt-tool-provider.c \
 	$(SRCDIR)/interfaces/clawt-computer-provider.c \

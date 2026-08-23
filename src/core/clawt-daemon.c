@@ -97,6 +97,9 @@ struct _ClawtDaemon {
     /* Standing work, and when it is next due. */
     ClawtRoutineRunner *routines;
 
+    /* Pods that watch the fleet and act on it. */
+    ClawtAutomation *automation;
+
     gchar   *libreclaw_binary;
     gchar   *state_dir;
     gchar   *link_socket;
@@ -575,6 +578,199 @@ prepare_state_git(const gchar *state_dir, gboolean init_repo,
     }
 
     return TRUE;
+}
+
+/*
+ * Everything a pod is allowed to do.
+ *
+ * A closed list rather than the daemon's whole IPC surface. A pod runs
+ * unattended and reacts to the fleet's own events, so a mistake in one
+ * is a mistake nobody is watching -- `agent.remove` behind an automation
+ * rule is not a feature anybody asked for, and adding it later is easier
+ * than taking it back.
+ */
+static gboolean
+pod_action(const gchar *action, GHashTable *params, GHashTable **out_result,
+           gpointer user_data, GError **error)
+{
+    ClawtDaemon *self = user_data;
+    const gchar *agent = g_hash_table_lookup(params, "agent");
+    GHashTable *result = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                               g_free, g_free);
+
+    *out_result = result;
+    g_hash_table_insert(result, g_strdup("ok"), g_strdup("true"));
+
+    if (g_strcmp0(action, "message_agent") == 0 ||
+        g_strcmp0(action, "post_room") == 0) {
+        const gchar *target = (agent != NULL)
+            ? agent : g_hash_table_lookup(params, "room");
+        const gchar *body = g_hash_table_lookup(params, "body");
+
+        if (target == NULL || body == NULL) {
+            g_set_error_literal(error, CLAWT_ERROR,
+                                CLAWT_ERROR_INVALID_ARGUMENT,
+                                "a target and a body are both needed");
+            return FALSE;
+        }
+
+        return clawt_mailbox_router_send_to(self->router, "user", target,
+                                            body, NULL, 0, error) >= 0;
+    }
+
+    if (g_strcmp0(action, "delegate") == 0) {
+        const gchar *prompt = g_hash_table_lookup(params, "prompt");
+        ClawtTask *task;
+
+        if (agent == NULL || prompt == NULL) {
+            g_set_error_literal(error, CLAWT_ERROR,
+                                CLAWT_ERROR_INVALID_ARGUMENT,
+                                "an agent and a prompt are both needed");
+            return FALSE;
+        }
+
+        task = clawt_task_manager_create(self->tasks, "user", agent, prompt,
+                                         NULL, error);
+
+        if (task == NULL)
+            return FALSE;
+
+        clawt_task_manager_start(self->tasks, clawt_task_get_id(task));
+
+        if (clawt_mailbox_router_send_to(self->router, "user", agent, prompt,
+                                         clawt_task_get_id(task), 0,
+                                         error) < 0)
+            return FALSE;
+
+        g_hash_table_insert(result, g_strdup("id"),
+                            g_strdup(clawt_task_get_id(task)));
+        return TRUE;
+    }
+
+    if (g_strcmp0(action, "start_agent") == 0)
+        return clawt_daemon_start_agent(self, agent, error);
+
+    if (g_strcmp0(action, "stop_agent") == 0)
+        return clawt_daemon_stop_agent(self, agent);
+
+    if (g_strcmp0(action, "restart_agent") == 0) {
+        clawt_daemon_stop_agent(self, agent);
+        return clawt_daemon_start_agent(self, agent, error);
+    }
+
+    if (g_strcmp0(action, "run_routine") == 0) {
+        const gchar *routine = g_hash_table_lookup(params, "routine");
+        const gchar *task_id;
+
+        if (self->routines == NULL) {
+            g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                                "this daemon has no scheduler");
+            return FALSE;
+        }
+
+        task_id = clawt_routine_runner_run_now(self->routines, routine, error);
+
+        if (task_id == NULL)
+            return FALSE;
+
+        g_hash_table_insert(result, g_strdup("id"), g_strdup(task_id));
+        return TRUE;
+    }
+
+    if (g_strcmp0(action, "notify") == 0) {
+        const gchar *title = g_hash_table_lookup(params, "title");
+        g_autoptr(ClawtNotification) notification = NULL;
+
+        if (self->notifier == NULL) {
+            g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                                "this daemon has no notifier");
+            return FALSE;
+        }
+
+        if (title == NULL) {
+            g_set_error_literal(error, CLAWT_ERROR,
+                                CLAWT_ERROR_INVALID_ARGUMENT,
+                                "a notification needs a title");
+            return FALSE;
+        }
+
+        /*
+         * Raised as a question, which is the one event notifiers are on
+         * for by default: a pod that took the trouble to say something
+         * meant it to arrive.
+         */
+        notification = clawt_notification_new(
+            CLAWT_NOTIFY_EVENTS_QUESTION, agent, NULL, title,
+            g_hash_table_lookup(params, "body"));
+
+        clawt_notifier_notify(self->notifier, notification);
+        return TRUE;
+    }
+
+    if (g_strcmp0(action, "memory_add") == 0) {
+        const gchar *content = g_hash_table_lookup(params, "content");
+        ClawtMemoryStore *store;
+        ClawtAgent *target;
+
+        if (agent == NULL || content == NULL) {
+            g_set_error_literal(error, CLAWT_ERROR,
+                                CLAWT_ERROR_INVALID_ARGUMENT,
+                                "an agent and something to remember are "
+                                "both needed");
+            return FALSE;
+        }
+
+        target = clawt_agent_manager_get(self->agents, agent);
+        store = (target != NULL) ? clawt_agent_get_memory(target) : NULL;
+
+        if (store == NULL) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                        "%s has no memory store; memories.enabled is off",
+                        agent);
+            return FALSE;
+        }
+
+        {
+            g_autoptr(ClawtMemory) memory = clawt_memory_new(content);
+            const gchar *category = g_hash_table_lookup(params, "category");
+            g_autofree gchar *id = NULL;
+
+            if (category != NULL)
+                g_object_set(memory, "category", category, NULL);
+
+            id = clawt_memory_store_add(store, memory, error);
+
+            if (id == NULL)
+                return FALSE;
+
+            g_hash_table_insert(result, g_strdup("id"),
+                                g_steal_pointer(&id));
+            return TRUE;
+        }
+    }
+
+    if (g_strcmp0(action, "computer_exec") == 0) {
+        const gchar *command = g_hash_table_lookup(params, "command");
+
+        /*
+         * Deliberately refused rather than run. Every other action here
+         * is a fleet operation the daemon already owns; this one is
+         * arbitrary code on somebody's machine, triggered by an event,
+         * with nobody watching -- and podomation can already run a
+         * command through its own modules, where it is at least visible
+         * as one in the pod.
+         */
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                    "computer_exec is not available to a pod: use "
+                    "podomation's own command module, or delegate it to "
+                    "the agent (%s)", command != NULL ? command : "");
+        return FALSE;
+    }
+
+    g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                "there is no action called '%s'", action);
+
+    return FALSE;
 }
 
 /*
@@ -1619,6 +1815,23 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
          */
         clawt_routine_runner_catch_up(self->routines);
         clawt_routine_runner_start(self->routines, self->main_context);
+    }
+
+    {
+        g_autofree gchar *pods =
+            clawt_config_get_path_value(self->config, "daemon.automation_dir");
+        g_autoptr(GError) local = NULL;
+
+        self->automation = clawt_automation_new(self->bus, pod_action, self);
+
+        /*
+         * A failure here disables the automation and nothing else. Pods
+         * are a convenience on top of a fleet; a fleet that would not
+         * start because one of them had a syntax error would be the
+         * convenience taking the thing it decorates down with it.
+         */
+        if (!clawt_automation_load(self->automation, pods, &local))
+            g_warning("automation: %s", local->message);
     }
 
     /*
@@ -6631,6 +6844,7 @@ clawt_daemon_finalize(GObject *object)
     g_clear_pointer(&self->drafts, g_hash_table_unref);
     g_clear_object(&self->notifier);
     g_clear_object(&self->routines);
+    g_clear_object(&self->automation);
     g_clear_pointer(&self->model_cache, g_hash_table_unref);
     g_clear_pointer(&self->bind_specs, g_ptr_array_unref);
     g_free(self->config_path);
