@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-21 Fri]
+#+updated: [2026-08-23 Sun]
 #+version: 0.1.0
 
 * Architecture
@@ -69,6 +69,10 @@ The assembly.  Owns:
 | ~ClawtMcpTools~ | the tools agents call to work together |
 | ~ClawtPluginManager~ | third-party extensions |
 | ~ClawtPodBridge~ | podomation, for containers and VMs |
+| ~ClawtNotifier~ | telling a person when an agent is blocked or broken |
+| ~ClawtRoutineRunner~ | standing work, on presets or cron |
+| ~ClawtAutomation~ | clawtilla as a podomation module, both directions |
+| the connector catalogue | services an account can be held for, and the flows in progress |
 
 ~clawt_daemon_new(path, main_context)~ takes a ~GMainContext~.  That
 parameter is what makes embedding work: a host that owns its own loop
@@ -221,7 +225,9 @@ src/
   computer/            the four backends, mounts, confinement
   chat/                rooms, messages, loop safety
   task/                delegated work
-  mcp/                 the tools agents get
+  integration/         how an agent reaches the world, and connectors
+  mcp/                 the tools agents get, and the relay in front of them
+  task/                cron and routines live here too
   core/                events, the log, and ClawtDaemon assembling it all
   plugin/, interfaces/ third-party extensions
   ai/                  the agent designer
@@ -229,3 +235,11 @@ src/
 
 That is roughly bottom-up: each layer only knows about the ones above it
 in the list.
+
+Two files carry more of the reasoning than their size suggests.
+~integration/clawt-connector-relay.c~ is where a credential is used
+without being handed over, and its header says exactly what that is and
+is not worth depending on where the agent runs.
+~computer/clawt-guest-desktop.c~ holds the per-distribution table for
+building a GNOME session inside a VM, and every entry in it exists
+because getting it wrong fails inside a guest rather than here.

@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-21 Fri]
+#+updated: [2026-08-23 Sun]
 #+version: 0.1.0
 
 * Configuration
@@ -37,9 +37,23 @@ ai_assist:      # the agent designer
 secrets:        # how secret references resolve
 plugins:        # where to look, what to disable
 orchestration:  # limits, the chief of staff, mailbox policy
+memories:       # the searchable per-agent store
 rooms:          # standing rooms
+integrations:   # named instances, pointed at one agent, some, or all
+connectors:     # connected accounts: the catalogue and renewal
+routines:       # standing work, on presets or cron
 agents:         # the fleet
 #+end_src
+
+In that order, and the order matters: the file is generated from the
+schema table, and a section inserted among another section's keys emits
+a duplicate top-level key -- which YAML resolves by silently discarding
+the first.
+
+~memories~ and ~agents[].memory~ are unrelated despite the names.  The
+first is the searchable per-agent store; the second is libreclaw's
+~MEMORY.md~ size budget.  The plural one is plural for exactly this
+reason.
 
 ** daemon
 
@@ -168,6 +182,41 @@ clawtilla does not model every libreclaw option and never will.  The
 ~libreclaw:~ block is copied into the rendered file unchanged, last, so
 it wins.  A libreclaw setting clawtilla has never heard of is still
 reachable without waiting for a clawtilla release.
+
+** integrations and connectors
+
+Two sections for two halves of the same idea, and which one you want
+depends on who holds the credential.
+
+~integrations~ is a named instance -- a Matrix account, an MCP server, a
+notifier -- with a ~scope~ saying whether one agent, some agents or the
+whole fleet gets it.  [[file:integrations.org][integrations.org]] covers them.
+
+A ~connector~ is one of those types, and the one to reach for whenever
+the credential is something you would mind an agent reading.  clawtilla
+obtains it, keeps it 0600, renews it before it expires and injects it
+into the tool server, so the value is never in the agent's ~.mcp.json~,
+its environment or its transcript.  ~connectors~ is the section that
+configures the catalogue and renewal for all of them:
+
+#+begin_src yaml
+connectors:
+  dir: "$XDG_CONFIG_HOME/clawtilla/connectors.d"
+  refresh_margin_seconds: 300
+  redirect_port: 8765
+
+integrations:
+  - name: gh
+    type: connector
+    provider: github
+    account: work
+    scope: all
+    command: github-mcp-server
+    # token_file is written for you by `clawtilla connector key|connect`
+#+end_src
+
+[[file:connectors.org][connectors.org]] covers the catalogue, the flows, renewal, revoking, and
+what the arrangement does and does not protect against.
 
 ** Secret references
 

@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-21 Fri]
+#+updated: [2026-08-23 Sun]
 #+version: 0.1.0
 
 * Maintenance
@@ -23,6 +23,8 @@
     libreclaw.db                  libreclaw's own database
   transcripts/<room>.ndjson       what was said
   events/YYYY-MM-DD.ndjson        what happened
+  secrets/                        (secrets.dir) 0700
+    connector-<name>.json         a connected account's credential; 0600
 
 $XDG_DATA_HOME/clawtilla/exchange/   files agents pass around
 $XDG_RUNTIME_DIR/clawtilla/daemon.sock
@@ -36,9 +38,17 @@ Worth keeping:
 - ~agents/*/mailbox.db~ -- undelivered messages
 - ~transcripts/~ -- the record of what was said
 - whatever your secret references point at
+- ~secrets/~ -- connector credentials, if you would rather not authorize
+  every connected account again
 
 Not worth keeping: anything marked GENERATED, ~sessions/~, ~events/~
 beyond your retention window.
+
+A backup that includes ~secrets/~ is a backup that includes live
+credentials for every service the fleet is connected to, and a refresh
+token can be valid for months.  Encrypt it, or leave that directory out
+and re-run ~clawtilla connector connect~ afterwards -- which is a few
+minutes and costs nothing.
 
 #+begin_src bash
 systemctl --user stop clawtilla
@@ -60,6 +70,25 @@ files are regenerated.
 
 A token that no longer matches simply means the agent gets a new one on
 its next start.
+
+** Decommissioning a fleet
+
+Removing the state directory stops *clawtilla* using a credential.  It
+does not stop the credential working: a token nobody deleted at the
+provider is valid for anyone holding a copy of that backup, for as long
+as the provider says.
+
+So revoke first, while the daemon can still reach them:
+
+#+begin_src bash
+clawtilla connector list
+clawtilla connector revoke <name>     # for each
+#+end_src
+
+~revoke~ says whether the provider was actually told.  Where it answers
+that it was not -- some providers publish no revocation endpoint --
+finish the job in that provider's own settings page.  See
+[[file:connectors.org][connectors.org]].
 
 ** Log rotation
 
@@ -122,8 +151,13 @@ clawtilla config validate
 2. Recreate whatever the secret references point at -- they are not in
    the backup and should not be.
 3. Fix any absolute paths in the config: workspaces, mount sources,
-   ~libreclaw_binary~.
-4. ~clawtilla config validate~ before starting.
+   ~libreclaw_binary~, and ~integrations[].token_file~ if you brought
+   ~secrets/~ across -- it is an absolute path like any other.
+4. Connected accounts: either copy ~secrets/~ (encrypted in transit; it
+   is live credentials) or re-run ~clawtilla connector connect~ on the
+   new machine.  The client ids in ~config.yaml~ come with it either way,
+   so that part is not repeated.
+5. ~clawtilla config validate~ before starting.
 
 ** Health checks
 
@@ -131,6 +165,7 @@ clawtilla config validate
 clawtilla status
 clawtilla agent list
 clawtilla integration health researcher   # non-zero if anything failed
+clawtilla connector list                  # connected, expiring, renewable
 #+end_src
 
 The last is meant for a pre-flight script.

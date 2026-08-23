@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-21 Fri]
+#+updated: [2026-08-23 Sun]
 #+version: 0.1.0
 
 * Getting started
@@ -244,6 +244,10 @@ loginctl enable-linger $USER
 - [[file:architecture.org][architecture.org]] -- how the pieces fit, and why the daemon owns everything
 - [[file:configuration.org][configuration.org]] -- every option, with worked examples
 - [[file:computers.org][computers.org]] -- containers, VMs, host access and what each confinement mode actually prevents
+- [[file:integrations.org][integrations.org]] -- Matrix, mail, MCP servers, notifications, and scoping them
+- [[file:connectors.org][connectors.org]] -- connected accounts: agents get the tools, the credential stays here
+- [[file:routines.org][routines.org]] -- standing work on a schedule
+- [[file:automation.org][automation.org]] -- reacting to the fleet, and acting on it, from a pod
 - [[file:mailboxes.org][mailboxes.org]] -- queue semantics, and how to reason about a stuck queue
 - [[file:security.org][security.org]] -- the threat model, stated plainly
 - [[file:troubleshooting.org][troubleshooting.org]] -- when something does not work

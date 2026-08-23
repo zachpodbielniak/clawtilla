@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-21 Fri]
+#+updated: [2026-08-23 Sun]
 #+version: 0.1.0
 
 * Clients
@@ -215,8 +215,17 @@ behind a tab rather than a settings dialog somewhere else.
 *** Settings
 
 The hamburger beside the *+* button, at the top of the sidebar.  It holds
-what belongs to the application rather than to any one agent -- currently
-the *cloud image manager*.
+what belongs to the application rather than to any one agent, in four
+pages:
+
+| Page | What it is for |
+|------+----------------|
+| Cloud images | VM disk images on this machine, and fetching more |
+| Integrations | Matrix, mail, MCP servers and notifiers, and who gets each |
+| Connectors | connected accounts, and the credential for each |
+| Appearance | colour scheme and fonts |
+
+**** Cloud images
 
 That page lists the VM disk images on this machine with their size and
 where each came from, offers the suggested ones, takes an ~https~ URL of
@@ -228,9 +237,47 @@ image would simply never appear, with nothing anywhere saying why.
 
 See [[file:computers.org][computers.org]] for what to do with one.
 
-*** Appearance
+**** Integrations
 
-The second page of Settings: colour scheme, and the fonts.
+Everything configured once and pointed at one agent, some agents or the
+whole fleet.  *+* adds one; the type decides which fields appear, so a
+Matrix instance asks for a homeserver and rooms while a notifier asks for
+a backend and quiet hours.
+
+Two things here do real work rather than editing a file.  *Sign in* runs
+a Matrix password login and stores the resulting token in a 0600 file --
+the token never comes back to this window, which is the whole point of
+doing it in the daemon.  And *Send a test* delivers a notification
+immediately, ignoring both the event list and quiet hours, because a
+notifier that is working correctly is indistinguishable from a broken one
+by looking at it.
+
+Each agent's own Integrations group, in the agent inspector, shows which
+of these that agent actually has and whether each is healthy.
+
+See [[file:integrations.org][integrations.org]].
+
+**** Connectors
+
+Connected accounts.  *+* lists the catalogue with the auth kind beside
+each name, because that decides what happens next: a device connector
+needs a client id, an ~api_key~ one needs a token pasted.
+
+Clicking a connector offers /Authorize again/, /Paste a token/, /Renew
+now/, /Revoke/ and /Remove/.  Authorizing shows the user code as the
+dialog's heading at full size -- it is about to be read off this screen
+and typed into a phone -- and waits there while you do it.
+
+The list shows three states rather than two.  A credential that has
+expired *and can renew itself* reads as connected, because it is: the
+daemon renews it on a timer.  Showing that as broken would light the list
+up every hour and teach you to ignore the one that genuinely is.
+
+See [[file:connectors.org][connectors.org]].
+
+**** Appearance
+
+Colour scheme, and the fonts.
 
 | Setting | What it covers |
 |---------+----------------|
@@ -307,10 +354,16 @@ Restart, and still asks twice.
 | Agent | edit name, description, provider, model, effort, computer, restart policy, autostart and chief-of-staff; credentials by reference; start/stop/restart; delete |
 | Mailbox | what is waiting, with acknowledge |
 | Computer | an exec console showing stdout *and* stderr |
+| Routines | standing work for this agent: the schedule, when it last ran and what happened |
 | Tasks | what has been delegated to whom, and where it got to |
 | Flow | every conversation between agents, newest first, and what was said |
 
-
+The Routines tab puts the presets in front -- Manual, Hourly, Daily,
+Weekdays, Weekly -- and cron behind /Custom/, because most standing work
+is one of the five and nobody should have to write ~0 9 * * 1-5~ to get
+weekday mornings.  A routine that did not fire because the machine was
+asleep is shown as *missed*, not failed: showing it as broken would train
+you to ignore the one that is.  See [[file:routines.org][routines.org]].
 
 *** Markdown
 

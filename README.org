@@ -110,6 +110,7 @@ All under [[file:docs/][docs/]], in org-mode:
 | [[file:docs/getting-started.org][getting-started.org]] | install, first daemon, first agent |
 | [[file:docs/architecture.org][architecture.org]] | object graph, message flow, threading model |
 | [[file:docs/configuration.org][configuration.org]] | every option, with worked examples |
+| [[file:docs/configuration-options.org][configuration-options.org]] | the option reference, generated from the schema |
 | [[file:docs/agents.org][agents.org]] | personas, models, runtimes, lifecycle |
 | [[file:docs/mailboxes.org][mailboxes.org]] | queue semantics and how to unstick one |
 | [[file:docs/computers.org][computers.org]] | host, container, VM, desktop, mounts |

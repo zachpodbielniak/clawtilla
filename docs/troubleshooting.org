@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-21 Fri]
+#+updated: [2026-08-23 Sun]
 #+version: 0.1.0
 
 * Troubleshooting
@@ -283,6 +283,94 @@ What the guest was told is readable:
 #+begin_src bash
 cat ~/.local/share/clawtilla/vms/<agent>/cloud-init/user-data
 #+end_src
+
+** A VM has a desktop installed and no session on it
+
+The guest boots, cloud-init reports success, and the agent's screenshots
+come back showing a text console -- or the desktop is there and every
+automation tool answers that automation is disabled.
+
+Almost always the wrong *family*.  cloud-init picks the package manager
+for you and nothing else, so the seed has to know the names, the display
+manager's unit and where a couple of binaries live.  Getting it wrong
+fails inside the guest, in a log nobody is looking at.
+
+Check what clawtilla thought it was building:
+
+#+begin_src bash
+grep -E "^packages:|gdm" \
+    ~/.local/share/clawtilla/vms/<agent>/cloud-init/user-data
+#+end_src
+
+- ~gdm3~ and ~gdm3.service~ means it decided Debian or Ubuntu; ~gdm~ and
+  ~gdm.service~ means Fedora, Enterprise Linux or Arch
+- if that does not match the image, set ~computer.vm.desktop.flavour~
+  outright rather than leaving it at ~auto~
+
+Starting the agent warns when it could not place the image at all:
+
+#+begin_example
+cannot tell which distribution '...' is; installing the desktop with
+Fedora package names. Set computer.vm.desktop.flavour to ...
+#+end_example
+
+Then read what actually happened *in the guest*, which is where the
+failure is:
+
+#+begin_src bash
+clawtilla computer exec <agent> -- cloud-init status --long
+clawtilla computer exec <agent> -- journalctl -u cloud-final --no-pager
+#+end_src
+
+A package that does not exist fails the *whole* install, so one wrong
+name costs the desktop rather than one application.  cloud-init acts on
+the seed at **first boot only**: fixing the flavour means deleting
+~~/.local/share/clawtilla/vms/<agent>/overlay.qcow2~ and provisioning
+again, not restarting.
+
+*** On Arch, after the image has sat for a while
+
+~clawtilla image vm rm arch~ and fetch it again.  The ~latest/~ URL
+follows a monthly rebuild, so a cached copy ages faster than the others
+and a first boot eventually fails on package signatures.
+
+** A connector's tools are missing, or refuse
+
+*** "not connected yet"
+
+No credential has been stored for it:
+
+#+begin_src bash
+clawtilla connector key <name>       # paste a token
+clawtilla connector connect <name>   # or authorize, with a client id
+#+end_src
+
+*** The agent has the connector and no tools
+
+The catalogue entry names no MCP server and the integration named none
+either, so there is a credential and nothing to use it with.  Set
+~command~ or ~url~ on the integration; ~clawtilla connector catalog~
+shows which entries know a server of their own.
+
+*** "clawtilla does not permit 'x' for this agent"
+
+The connector was narrowed with ~tools~.  Widen or clear that list.
+
+*** "no connector called 'x'"
+
+~provider~ names a catalogue entry that does not exist.  The error names
+~connectors.dir~ as well, because the fix is usually a file that adds it.
+
+*** It worked yesterday and stopped
+
+#+begin_src bash
+clawtilla connector list      # expiry and whether it can renew itself
+clawtilla connector refresh <name>
+#+end_src
+
+A credential that expired and has no refresh token needs connecting
+again.  One that is expired *and* renewable is normal -- the daemon
+renews it on a timer, and the list says so rather than calling it broken.
 
 ** gowl is unreachable
 

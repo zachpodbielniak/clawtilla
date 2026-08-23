@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-21 Fri]
+#+updated: [2026-08-23 Sun]
 #+version: 0.1.0
 
 * Development
@@ -123,6 +123,49 @@ Two real bugs came from getting this wrong.
 Do not hand-edit ~data/*.yaml~ or ~docs/configuration-options.org~.
 ~tests/test-config-schema.c~ fails when they have drifted, which is what
 makes this rule enforceable rather than merely written down.
+
+** Adding a connector to the catalogue
+
+Two ways, and the second is usually right.
+
+For something only you use, a file in ~connectors.dir~ needs no rebuild
+and survives upgrades -- see [[file:connectors.org][connectors.org]].  These are somebody
+else's endpoints, and a copy of them in C goes stale silently.
+
+For something worth shipping, add a row to the table in
+~src/integration/clawt-connector.c~.  A row must carry a
+~credential_name~ (nothing else says what to call it) and, if it uses
+OAuth, both endpoints.  It must *not* carry a client id: clawtilla has no
+application of its own to lend, and borrowing another project's would
+mean every clawtilla identifying itself as something it is not.  Put
+where to register one in ~client_id_help~ instead.
+
+Set ~default_instance~ only for a service people self-host.  It changes
+how every URL in the row is read -- absolute without it, a path joined
+onto the configured instance with it -- so a row that mixes the two
+authenticates against the wrong server.
+
+** Adding a distribution for guest desktops
+
+~src/computer/clawt-guest-desktop.c~ holds one ~FlavourSpec~ per family.
+A new one needs a ~ClawtGuestFlavour~ member, a row in the table, a
+~flavour~ on whichever ~ClawtVmImageSource~ entries belong to it, and a
+marker in ~flavour_markers~ so an image somebody downloaded is placed by
+its filename.
+
+Choose that marker carefully.  It is matched anywhere in the path, so a
+short one that is a common English fragment will place unrelated images:
+matching Arch on ~arch~ would claim ~~/archived-vms/debian.qcow2~ and
+~/home/me/research/disk.qcow2~.  ~arch-linux~ and ~archlinux~ are the
+markers for that reason, and there is a test naming both of those paths.
+
+What a row has to get right is more than package names: the display
+manager's unit, whether PyGObject is ~python3-gobject~ or ~python3-gi~ or
+~python-gobject~, and whether ~glib-compile-schemas~, ~python -m venv~
+and the ~dconf~ binary are present at all.  Every one of those fails
+*inside the guest*, in a cloud-init log, long after the config line that
+caused it -- so assert the rendered seed rather than trusting the table
+to read correctly.
 
 ** Adding a test
 
