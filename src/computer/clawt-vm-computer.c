@@ -15,6 +15,13 @@
 
 #define MAX_OUTPUT_BYTES (256 * 1024)
 
+/*
+ * How long a guest gets to act on a shutdown before it is powered off.
+ * Long enough for a real system to stop its services, short enough that
+ * stopping an agent is not something you go and make tea during.
+ */
+#define SHUTDOWN_GRACE_SECONDS (30)
+
 struct _ClawtVmComputer {
     ClawtComputer parent_instance;
 
@@ -1173,6 +1180,7 @@ static gboolean
 vm_stop(ClawtComputer *computer, GError **error)
 {
     ClawtVmComputer *self = CLAWT_VM_COMPUTER(computer);
+    guint waited;
 
     clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_STOPPING, NULL);
 
@@ -1195,6 +1203,50 @@ vm_stop(ClawtComputer *computer, GError **error)
             clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ERROR,
                                      NULL);
             return FALSE;
+        }
+
+        /*
+         * Shutdown is a request, and only a guest that is listening
+         * answers it.  One that has hung, or never booted -- a VM with
+         * no disk is exactly that -- ignores it for ever, and the agent
+         * could then not be stopped through clawtilla at all: the only
+         * way out was virsh destroy by hand.
+         *
+         * So: wait, and pull the plug if it does not go. Pulling the
+         * plug is what destroy is for, and a guest that never wrote
+         * anything has nothing to lose by it.
+         */
+        for (waited = 0; waited < SHUTDOWN_GRACE_SECONDS; waited++) {
+            g_autofree gchar *state_now = NULL;
+
+            g_usleep(G_USEC_PER_SEC);
+            state_now = libvirt_domain_state(self);
+
+            if (g_strcmp0(state_now, "running") != 0)
+                break;
+        }
+
+        {
+            g_autofree gchar *final_state = libvirt_domain_state(self);
+
+            if (g_strcmp0(final_state, "running") == 0) {
+                g_autoptr(GError) destroy_error = NULL;
+
+                g_warning("vm %s: it ignored a shutdown for %d seconds, so "
+                          "it is being powered off. A guest that never "
+                          "booted -- one with no disk image, say -- can "
+                          "never answer one.",
+                          self->domain, SHUTDOWN_GRACE_SECONDS);
+
+                if (!libvirt_call(self, "destroy", NULL, &destroy_error)) {
+                    g_propagate_error(error,
+                                      g_steal_pointer(&destroy_error));
+                    clawt_computer_set_state(computer,
+                                             CLAWT_COMPUTER_STATE_ERROR,
+                                             NULL);
+                    return FALSE;
+                }
+            }
         }
     } else if (self->qemu != NULL) {
         g_subprocess_send_signal(self->qemu, SIGTERM);

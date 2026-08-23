@@ -554,6 +554,24 @@ the same program.
   `virDomainCreate` on it is an error. The qemu backend is guarded too —
   two qemus writing one qcow2 corrupt it.
 
+### The designer's pinning was right; the client never sent it
+
+- `clawt_agent_designer_pin_identity()` works and has two tests, the
+  daemon pins from the `design.agent` payload — and the GTK dialog sent
+  the purpose fields and *not* the id or name it had just collected. So
+  the model renamed every agent designed from the client, and no test
+  could see it: the gap was between two tested halves. When a feature
+  works in isolation and not in the product, suspect the wiring before
+  the logic.
+
+### A shutdown is a request, not a command
+
+- Only a guest that is listening answers one. A hung guest — or one that
+  never booted, which a VM with no disk always is — ignores it for ever,
+  and the agent then could not be stopped through clawtilla at all;
+  `virsh destroy` by hand was the only way out. `vm_stop()` waits 30
+  seconds and then destroys, saying so.
+
 ### A VM with no disk image is three symptoms and one cause
 
 - It defines, starts, boots nothing: a black console, SSH answering

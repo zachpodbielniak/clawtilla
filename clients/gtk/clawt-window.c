@@ -5318,6 +5318,15 @@ on_design_with_ai(GtkButton *button, gpointer user_data)
     reply = clawt_window_request(
         self, "design.agent",
         clawt_build_payload(
+            /*
+             * Whatever was typed above is pinned, so the model fills in
+             * what is blank rather than replacing what is not. Left out,
+             * these arrived as NULL and the model named the agent
+             * itself -- renaming one the person had already named, which
+             * is the single most irritating thing it can do.
+             */
+            "id", answer_of(dialog->id_entry),
+            "name", answer_of(dialog->name_entry),
             "purpose", purpose,
             "boundaries", answer_of(dialog->boundaries_entry),
             "needs", answer_of(dialog->needs_entry),

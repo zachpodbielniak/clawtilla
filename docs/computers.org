@@ -497,6 +497,16 @@ VM rebuilt from the same base answers on the same address with a
 different key, which against your own file reads as an attack and is
 refused.
 
+*** Stopping one
+
+~shutdown~ first, so the guest flushes its filesystems -- a VM pulled out
+from under a running write is how a disk image becomes unbootable.
+
+Shutdown is a *request*, though, and only a guest that is listening
+answers it.  One that has hung, or never booted, ignores it for ever, so
+after 30 seconds the plug is pulled and the log says why.  Without that
+fallback such a VM could not be stopped through clawtilla at all.
+
 *** libvirt (default)
 
 podomation's ~vm_virtmanager~ module: the full 22-action surface,

@@ -510,11 +510,27 @@ cmd_agent(int argc, char *argv[])
         if (json_object_has_member(agent, "image"))
             g_print("image:       %s\n", member_or(agent, "image", "-"));
 
-        /* Likewise the VM's size, which only a VM has. */
-        if (json_object_has_member(agent, "vm_cpus"))
+        /* Likewise the VM's disk, size and address, which only a VM has. */
+        if (json_object_has_member(agent, "vm_cpus")) {
+            const gchar *disk = member_or(agent, "vm_image", NULL);
+            const gchar *ssh_host = member_or(agent, "vm_ssh_host", NULL);
+
+            /*
+             * Said even when unset, and said loudly: a VM with no disk
+             * defines, starts and boots nothing, and this is the only
+             * place the CLI would ever show you why.
+             */
+            g_print("vm image:    %s\n",
+                    (disk != NULL && *disk != '\0')
+                        ? disk
+                        : "(none -- the VM has nothing to boot)");
             g_print("vm:          %s core(s), %s MB\n",
                     member_or(agent, "vm_cpus", "?"),
                     member_or(agent, "vm_memory_mb", "?"));
+
+            if (ssh_host != NULL && *ssh_host != '\0')
+                g_print("vm ssh:      %s\n", ssh_host);
+        }
         g_print("computer:    %s\n", member_or(agent, "computer", "none"));
         g_print("can:         %s\n", member_or(agent, "caps", "-"));
         g_print("queue:       %" G_GINT64_FORMAT "\n",
@@ -574,6 +590,8 @@ cmd_agent(int argc, char *argv[])
             g_hash_table_new_full(g_str_hash, g_str_equal, NULL, g_free);
         const gchar *designer_provider = NULL;
         const gchar *designer_model = NULL;
+        const gchar *pinned_id = NULL;
+        const gchar *pinned_name = NULL;
         gboolean use_ai = FALSE;
         gboolean commit = FALSE;
         gint i;
@@ -587,6 +605,21 @@ cmd_agent(int argc, char *argv[])
 
             if (g_strcmp0(argv[i], "--commit") == 0) {
                 commit = TRUE;
+                continue;
+            }
+
+            /*
+             * Pinned, not suggested: a model told to design an agent
+             * renames it as a matter of course, and the agent then
+             * appears under a name nobody chose.
+             */
+            if (g_strcmp0(argv[i], "--id") == 0 && i + 1 < argc) {
+                pinned_id = argv[++i];
+                continue;
+            }
+
+            if (g_strcmp0(argv[i], "--name") == 0 && i + 1 < argc) {
+                pinned_name = argv[++i];
                 continue;
             }
 
@@ -649,6 +682,8 @@ cmd_agent(int argc, char *argv[])
             g_printerr("Usage: clawtilla agent new            "
                        "# ask me the questions\n");
             g_printerr("       clawtilla agent new --ai <description>\n");
+            g_printerr("  --id <id> and --name <name> keep what you "
+                       "choose; the model fills in the rest.\n");
             g_printerr("  For a hand-written agent use "
                        "'clawtilla agent create --id <id>'.\n");
             return EXIT_FAILURE;
@@ -679,6 +714,16 @@ cmd_agent(int argc, char *argv[])
         if (description->len > 0) {
             json_builder_set_member_name(builder, "description");
             json_builder_add_string_value(builder, description->str);
+        }
+
+        if (pinned_id != NULL) {
+            json_builder_set_member_name(builder, "id");
+            json_builder_add_string_value(builder, pinned_id);
+        }
+
+        if (pinned_name != NULL) {
+            json_builder_set_member_name(builder, "name");
+            json_builder_add_string_value(builder, pinned_name);
         }
 
         if (designer_provider != NULL) {
