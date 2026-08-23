@@ -56,6 +56,39 @@ ClawtDaemon *clawt_daemon_new(const gchar  *config_path,
                               GMainContext *main_context);
 
 /**
+ * clawt_daemon_set_bind_addresses:
+ * @self: a #ClawtDaemon
+ * @addresses: (nullable) (array zero-terminated=1): addresses to listen
+ *   on, each `IP` or `IP:PORT`, or %NULL to listen on none
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Replaces whatever the configuration says about network listeners.
+ *
+ * Calling this *at all* is the override; @addresses says what to bind.
+ * %NULL or an empty list therefore means "no network listener", which is
+ * what `clawtillad --no-bind` asks for, and is a different answer from
+ * never calling this -- which leaves `daemon.tcp_enabled` and
+ * `daemon.tailscale` in charge.
+ *
+ * An override replaces rather than adds: a daemon told to bind one
+ * address that also brought up the tailnet address would be listening
+ * somewhere the person neither asked for nor saw. For the same reason
+ * these are never optional, so an address that will not bind fails the
+ * start rather than being skipped with a warning.
+ *
+ * Addresses are parsed here rather than at start, so a typo is refused
+ * while the person is still looking at the command line instead of after
+ * the state directory and every agent workspace have been written.
+ *
+ * Must be called before clawt_daemon_start().
+ *
+ * Returns: %TRUE if every address was understood
+ */
+gboolean clawt_daemon_set_bind_addresses(ClawtDaemon        *self,
+                                         const gchar *const *addresses,
+                                         GError            **error);
+
+/**
  * clawt_daemon_start:
  * @self: a #ClawtDaemon
  * @error: (out) (optional): return location for a #GError

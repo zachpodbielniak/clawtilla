@@ -94,6 +94,56 @@ point of a profile is to reach a daemon that is somewhere else, and a
 laptop connecting to a workstation may have no fleet, no state directory
 and no ~clawtilla.yaml~ of its own.
 
+*** Choosing where the daemon listens
+
+~clawtillad~ takes ~--bind~ and ~--no-bind~, and its ~--help~ prints what
+this machine would listen on with neither:
+
+#+begin_example
+Listening, with no --bind:
+
+  unix     /run/user/1000/clawtilla/daemon.sock
+  tailnet  100.72.0.41:8792  (daemon.tailscale: true)
+  tcp      off (daemon.tcp_enabled: false)
+#+end_example
+
+The real address and the real port, not a description of them -- the
+whole reason to reach for these flags is wanting to know, and change,
+exactly that.
+
+#+begin_src sh
+clawtillad --no-bind                    # unix socket only
+clawtillad --bind 127.0.0.1:8792        # somewhere specific instead
+clawtillad --bind 10.0.0.5:9000 --bind '[fd7a:115c:a1e0::1]:9000'
+#+end_src
+
+~--bind~ *replaces* the network addresses rather than adding to them, so
+a daemon told where to listen is not also listening somewhere it was not
+asked to. It is repeatable, and each address carries its own port; the
+port defaults to ~daemon.tcp_port~ when one is not given.
+
+An address you name must bind. That is the difference between it and the
+tailnet address, which clawtilla chose for you and only warns about: a
+stale process holding the tailnet port should not stop the fleet, but a
+daemon that ignored where you told it to listen and started anyway would
+be running somewhere you did not know about.
+
+Addresses are parsed before anything is created, so a typo is refused
+while you are still looking at the command line:
+
+#+begin_example
+clawtillad: --bind: 'localhost' is not a numeric address; clawtillad binds
+addresses rather than resolving names
+#+end_example
+
+Names are refused rather than resolved on purpose: resolution is a
+network round trip on the path that starts the daemon, and a name can
+resolve to an address on a different network than the one intended.
+
+IPv6 with a port needs brackets -- ~[fd7a:115c:a1e0::1]:9000~ -- because
+an address full of colons has no last-colon to split on. Without a port,
+a bare ~fd7a:115c:a1e0::1~ is fine.
+
 *** Exit statuses that mean something
 
 - ~computer exec~ exits with the *command's* exit status, so

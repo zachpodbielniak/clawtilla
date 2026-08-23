@@ -18,8 +18,30 @@
 /* How often expired mailbox items and abandoned leases are cleaned up. */
 #define SWEEP_INTERVAL_SECONDS 60
 
+/*
+ * One `--bind` from the command line, already parsed.
+ *
+ * Parsed at the point the person typed it rather than carried as text to
+ * daemon start, so `clawtillad --bind nonsense` is refused immediately
+ * with the word that was wrong, instead of after the state directory and
+ * every agent workspace have been written.
+ */
+typedef struct {
+    gchar   *host;
+    guint16  port;
+} BindSpec;
+
 struct _ClawtDaemon {
     GObject parent_instance;
+
+    /*
+     * Set by clawt_daemon_set_bind_addresses(), which replaces whatever
+     * the config says about network listeners.  The flag is separate from
+     * the list because "bind nothing" and "bind whatever is configured"
+     * are different answers and an empty list has to mean the first.
+     */
+    gboolean   bind_override;
+    GPtrArray *bind_specs;   /* BindSpec*, owned */
 
     gchar        *config_path;
     GMainContext *main_context;
@@ -1440,24 +1462,36 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     clawt_ipc_server_attach_bus(self->ipc_server, self->bus);
 
     {
-        gboolean tcp = clawt_config_get_boolean(self->config,
-                                                 "daemon.tcp_enabled");
-        gboolean tailscale = clawt_config_get_boolean(self->config,
-                                                       "daemon.tailscale");
-        const gchar *tailnet;
+        guint16 port =
+            (guint16)clawt_config_get_int(self->config, "daemon.tcp_port");
+        gboolean want_network;
 
         /*
-         * Looked up before deciding, because a token is only worth
-         * generating for a listener that will exist: on a machine
-         * without Tailscale this whole block is a no-op and writing a
-         * secret for it would be litter.
+         * A command-line override replaces the configuration wholesale
+         * rather than adding to it.  `clawtillad --bind 10.0.0.5:9000`
+         * that also brought up the tailnet address would be listening
+         * somewhere the person did not ask for and did not see.
          */
-        if (tailscale)
-            tailnet_address = clawt_tailscale_find_address();
+        if (self->bind_override) {
+            want_network = self->bind_specs != NULL &&
+                           self->bind_specs->len > 0;
+        } else {
+            gboolean tcp = clawt_config_get_boolean(self->config,
+                                                     "daemon.tcp_enabled");
 
-        tailnet = tailnet_address;
+            /*
+             * Looked up before deciding, because a token is only worth
+             * generating for a listener that will exist: on a machine
+             * without Tailscale this whole block is a no-op and writing
+             * a secret for it would be litter.
+             */
+            if (clawt_config_get_boolean(self->config, "daemon.tailscale"))
+                tailnet_address = clawt_tailscale_find_address();
 
-        if (tcp || tailnet != NULL) {
+            want_network = tcp || tailnet_address != NULL;
+        }
+
+        if (want_network) {
             g_autofree gchar *token = ensure_tcp_token(self, error);
 
             if (token == NULL) {
@@ -1468,17 +1502,44 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
                 return FALSE;
             }
 
-            clawt_ipc_server_set_tcp(
-                self->ipc_server,
-                tcp ? clawt_config_get_string(self->config,
-                                              "daemon.tcp_address")
-                    : NULL,
-                (guint16)clawt_config_get_int(self->config, "daemon.tcp_port"),
-                token);
+            clawt_ipc_server_set_token(self->ipc_server, token);
 
-            if (tailnet != NULL)
-                clawt_ipc_server_set_optional_tcp_address(self->ipc_server,
-                                                          tailnet);
+            if (self->bind_override) {
+                guint spec_index;
+
+                for (spec_index = 0; spec_index < self->bind_specs->len;
+                     spec_index++) {
+                    const BindSpec *spec =
+                        g_ptr_array_index(self->bind_specs, spec_index);
+
+                    /*
+                     * Never optional.  Somebody wrote it on a command
+                     * line, so a daemon that could not bind it and
+                     * carried on regardless would be running somewhere
+                     * other than where they asked.
+                     */
+                    clawt_ipc_server_add_listener(self->ipc_server,
+                                                  spec->host, spec->port,
+                                                  FALSE);
+                }
+            } else {
+                if (clawt_config_get_boolean(self->config,
+                                             "daemon.tcp_enabled")) {
+                    const gchar *configured =
+                        clawt_config_get_string(self->config,
+                                                "daemon.tcp_address");
+
+                    if (configured != NULL && *configured != '\0')
+                        clawt_ipc_server_add_listener(self->ipc_server,
+                                                      configured, port,
+                                                      FALSE);
+                }
+
+                if (tailnet_address != NULL)
+                    clawt_ipc_server_add_listener(self->ipc_server,
+                                                  tailnet_address, port,
+                                                  TRUE);
+            }
 
             clawt_ipc_server_set_tls(
                 self->ipc_server,
@@ -1506,12 +1567,12 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      * output rather than from a port scan.
      */
     if (tailnet_address != NULL &&
-        clawt_ipc_server_is_listening_on(self->ipc_server,
-                                          tailnet_address))
-        g_message("ipc: reachable on the tailnet at "
-                  "%s:%" G_GINT64_FORMAT " -- `clawtilla daemon token` "
-                  "prints the token a remote client needs",
-                  tailnet_address,
+        clawt_ipc_server_is_listening_on(
+            self->ipc_server, tailnet_address,
+            (guint16)clawt_config_get_int(self->config, "daemon.tcp_port")))
+        g_message("ipc: reachable on the tailnet at %s:%" G_GINT64_FORMAT
+                  " -- `clawtilla daemon token` prints the token a remote "
+                  "client needs", tailnet_address,
                   clawt_config_get_int(self->config, "daemon.tcp_port"));
 
     {
@@ -4870,6 +4931,61 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
 }
 
 static void
+bind_spec_free(gpointer data)
+{
+    BindSpec *spec = data;
+
+    g_free(spec->host);
+    g_free(spec);
+}
+
+gboolean
+clawt_daemon_set_bind_addresses(ClawtDaemon        *self,
+                                const gchar *const *addresses,
+                                GError            **error)
+{
+    gsize i;
+
+    g_return_val_if_fail(CLAWT_IS_DAEMON(self), FALSE);
+
+    g_clear_pointer(&self->bind_specs, g_ptr_array_unref);
+    self->bind_specs = g_ptr_array_new_with_free_func(bind_spec_free);
+
+    /*
+     * The call itself is the override, not the contents.  Passing NULL or
+     * an empty list means "listen on no network address at all", which is
+     * what --no-bind asks for; not calling this at all leaves the
+     * configuration in charge.
+     */
+    self->bind_override = TRUE;
+
+    for (i = 0; addresses != NULL && addresses[i] != NULL; i++) {
+        BindSpec *spec = g_new0(BindSpec, 1);
+
+        if (!clawt_ipc_parse_listen_address(addresses[i],
+                                            CLAWT_DEFAULT_TCP_PORT,
+                                            &spec->host, &spec->port,
+                                            error)) {
+            g_free(spec);
+
+            /*
+             * Rolled back rather than left half applied.  A daemon that
+             * kept the addresses it managed to parse would listen on some
+             * of what was asked for and report an error about the rest,
+             * which is the worst of both.
+             */
+            g_clear_pointer(&self->bind_specs, g_ptr_array_unref);
+            self->bind_override = FALSE;
+            return FALSE;
+        }
+
+        g_ptr_array_add(self->bind_specs, spec);
+    }
+
+    return TRUE;
+}
+
+static void
 clawt_daemon_dispose(GObject *object)
 {
     ClawtDaemon *self = CLAWT_DAEMON(object);
@@ -4887,6 +5003,7 @@ clawt_daemon_finalize(GObject *object)
 
     g_clear_pointer(&self->drafts, g_hash_table_unref);
     g_clear_pointer(&self->model_cache, g_hash_table_unref);
+    g_clear_pointer(&self->bind_specs, g_ptr_array_unref);
     g_free(self->config_path);
     g_free(self->libreclaw_binary);
     g_free(self->state_dir);

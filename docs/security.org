@@ -207,7 +207,10 @@ hang.  In userspace-networking mode there is no interface and so no
 address here, which is correct rather than a gap: in that mode there is
 no address to bind either.
 
-Turn it off with ~daemon.tailscale: false~.
+Turn it off with ~daemon.tailscale: false~, or for one run with
+~clawtillad --no-bind~, which drops every network listener and keeps the
+unix socket. ~clawtillad --bind IP[:PORT]~ replaces them instead, and
+~clawtillad --help~ prints what this machine would bind with neither.
 
 Anything holding the token has the whole fleet, exactly as anything
 holding the unix socket does.  ~clawtilla daemon token~ prints it, and

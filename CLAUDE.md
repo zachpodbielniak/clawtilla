@@ -1106,6 +1106,50 @@ the same program.
   SIGKILL cannot be caught and anything outlasting that is in
   uninterruptible sleep and must not become a hung daemon.
 
+### Help text that describes a default is not the same as printing it
+
+- `clawtillad --help` computes what this machine would actually bind --
+  the real tailnet address, the real port out of `daemon.tcp_port`, the
+  real socket path -- because "the tailnet address" is not something a
+  person can check against `ss -ltn`, and wanting to know exactly that is
+  the reason they reached for `--bind` in the first place. GOption
+  answers `--help` during the parse, so the description is built before
+  it, from a small pre-scan of argv for `-c`.
+- `--bind` *replaces* the configured network addresses rather than adding
+  to them, and is never optional: an address clawtilla chose warns, an
+  address a person named is an error, because a daemon that ignored where
+  it was told to listen and started anyway is running somewhere nobody
+  knows about.
+- Addresses are parsed when the flag is read, not at start, so a typo is
+  refused while the person is still looking at the command line rather
+  than after the state directory and every agent workspace are written.
+
+### An IPv6 address has no last colon to split on
+
+- `<ip>:<port>` cannot be parsed with `strrchr(':')`. Splitting
+  `fd7a:115c:a1e0::1` on its last colon yields a host of
+  `fd7a:115c:a1e0:` and a port of `:1`, both of which are almost
+  plausible and neither of which is anything. The bracket form settles
+  it, and a bare IPv6 address with no port is accepted because it parses
+  whole. `tests/test-bind-address.c` covers both.
+- Names are refused rather than resolved: resolution is a network round
+  trip on the path that starts the daemon, and a name can resolve onto a
+  different network than the one intended.
+- Port 0 is refused too. It asks the kernel for any free port, which for
+  a daemon clients dial by number is the same as not listening.
+
+### Two edits where the first deletes the second's target
+
+- Rewriting a block of `clawt-ipc-server.c` removed the function a later
+  edit meant to patch, so that edit matched nothing, reported nothing,
+  and the definition simply vanished. It compiled -- the header still
+  declared it -- and surfaced as `undefined reference` at link time, in
+  the *daemon*, several steps away.
+- It was then missed twice more because the build was being filtered
+  through `grep ':[0-9]+:[0-9]+: (warning|error)'`, which matches
+  compiler diagnostics and not linker ones. A filter that hides a whole
+  class of failure is worse than reading the output.
+
 ### A convenience listener must not take daemon start down with it
 
 - `daemon.tailscale` is on by default, so the tailnet address is bound on

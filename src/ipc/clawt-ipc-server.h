@@ -59,81 +59,106 @@ void clawt_ipc_server_set_handler(ClawtIpcServer  *self,
                                   GDestroyNotify   destroy);
 
 /**
- * clawt_ipc_server_set_tcp:
+ * clawt_ipc_server_set_token:
  * @self: a #ClawtIpcServer
- * @address: (nullable): address to bind, or %NULL for none
- * @port: the port
  * @token: (nullable): shared secret a TCP client must present
  *
- * Adds an optional TCP listener beside the unix socket.
+ * A listener is refused at start without one.  A unix socket is protected
+ * by file permissions; a TCP port is protected by nothing at all, so
+ * defaulting to open would turn one careless config line into a remote
+ * shell.
  *
- * Off by default, and refused without a token: a unix socket is protected
- * by file permissions, and a TCP port is protected by nothing at all.
+ * Unix clients never present it -- the kernel already vouches for them
+ * through SO_PEERCRED.
  */
-void clawt_ipc_server_set_tcp(ClawtIpcServer *self,
-                              const gchar    *address,
-                              guint16         port,
-                              const gchar    *token);
+void clawt_ipc_server_set_token(ClawtIpcServer *self, const gchar *token);
 
 /**
- * clawt_ipc_server_add_tcp_address:
+ * clawt_ipc_server_add_listener:
  * @self: a #ClawtIpcServer
- * @address: another address to bind, at the same port
+ * @host: the address to bind
+ * @port: the port to bind it on
+ * @optional: whether failing to bind it is a warning rather than an error
  *
- * Adds an address beside the one clawt_ipc_server_set_tcp() named.
+ * Adds a network address beside the unix socket.
  *
- * This is how the tailnet address is bound without displacing whatever
- * `daemon.tcp_address` says: the two are separate decisions, and a
- * machine that is on a tailnet usually wants that address and no other.
- * Adding an address already listed does nothing, because binding it
+ * Each listener carries its own port, because the addresses a person
+ * names have no reason to agree about which port they are on -- and a
+ * single shared port is a limitation `clawtillad --bind` would have
+ * inherited for no reason.
+ *
+ * @optional is for an address clawtilla chose rather than one anybody
+ * asked for -- the tailnet address is the only such case today.  The unix
+ * socket is the daemon's real interface and is already listening by the
+ * time these are bound, so a stale process holding that port, or a
+ * tailnet that came up twice, must not take the whole fleet down with it.
+ * An address named in the configuration or on the command line is never
+ * optional: somebody asked for it, so failing to provide it is an error.
+ *
+ * Adding the same address and port twice does nothing, because binding it
  * twice fails with EADDRINUSE against ourselves and reads as another
- * daemon already running.
- *
- * The token set by clawt_ipc_server_set_tcp() applies here too -- an
- * address added without one is refused at start, exactly as the first
- * one is.
+ * daemon already running.  Adding it again as non-optional does promote
+ * it, so naming the tailnet address explicitly makes it mandatory.
  */
-void clawt_ipc_server_add_tcp_address(ClawtIpcServer *self,
-                                      const gchar    *address);
+void clawt_ipc_server_add_listener(ClawtIpcServer *self,
+                                   const gchar    *host,
+                                   guint16         port,
+                                   gboolean        optional);
 
 /**
- * clawt_ipc_server_set_optional_tcp_address:
+ * clawt_ipc_server_clear_listeners:
  * @self: a #ClawtIpcServer
- * @address: another address to bind, at the same port
  *
- * Adds an address whose bind failing is a warning rather than a refusal
- * to start.
- *
- * The tailnet address is bound this way.  It is a convenience the daemon
- * offers rather than an interface anyone configured by name, and the
- * unix socket -- the daemon's real interface -- is already listening by
- * the time this is reached.  A fleet that would not start because a
- * stale process still held that port, or because tailscaled restarted
- * between the address lookup and the bind, is a much worse failure than
- * not being reachable from a laptop.
- *
- * An address named in the configuration is never optional: someone asked
- * for it, so failing to provide it is an error rather than a footnote.
+ * Drops every network address, leaving the unix socket alone.
  */
-void clawt_ipc_server_set_optional_tcp_address(ClawtIpcServer *self,
-                                               const gchar    *address);
+void clawt_ipc_server_clear_listeners(ClawtIpcServer *self);
+
+/**
+ * clawt_ipc_parse_listen_address:
+ * @text: an address, optionally with `:port`
+ * @default_port: the port to assume when @text does not name one
+ * @out_host: (out) (transfer full): the address
+ * @out_port: (out): the port
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Parses the `<ip>:<port>` form `clawtillad --bind` takes.
+ *
+ * IPv6 is why this is not a `strrchr(':')`: an IPv6 address is full of
+ * colons, so one must be written `[fd7a::1]:8792` when it carries a port.
+ * A bare `fd7a::1` is accepted as an address with @default_port, because
+ * that is unambiguous -- it parses as an address whole.
+ *
+ * Only numeric addresses are accepted.  A name would have to be resolved,
+ * which is a network round trip on the path that starts the daemon, and
+ * it can resolve to an address on a different network than the one
+ * intended.
+ *
+ * Returns: %TRUE if @text was understood
+ */
+gboolean clawt_ipc_parse_listen_address(const gchar  *text,
+                                        guint16       default_port,
+                                        gchar       **out_host,
+                                        guint16      *out_port,
+                                        GError      **error);
 
 /**
  * clawt_ipc_server_is_listening_on:
  * @self: a #ClawtIpcServer
- * @address: an address that was added
+ * @host: an address that was added
+ * @port: the port it was added on
  *
- * Whether @address actually bound.
+ * Whether that listener actually bound.
  *
- * An optional address may not have, so anything telling a person where
+ * An optional listener may not have, so anything telling a person where
  * the daemon can be reached has to ask this rather than repeat back what
  * it requested -- otherwise the daemon announces an address in one line
  * and warns that it could not bind it in the next.
  *
- * Returns: %TRUE if the server is listening on @address
+ * Returns: %TRUE if the server is listening there
  */
 gboolean clawt_ipc_server_is_listening_on(ClawtIpcServer *self,
-                                          const gchar    *address);
+                                          const gchar    *host,
+                                          guint16         port);
 
 /**
  * clawt_ipc_server_set_tls:

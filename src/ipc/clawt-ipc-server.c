@@ -15,6 +15,7 @@
 #include <glib/gstdio.h>
 
 #include <errno.h>
+#include <string.h>
 
 /*
  * How much a slow client may have queued before it is disconnected.
@@ -42,6 +43,22 @@
  * a reference for exactly as long as the read is outstanding, so the
  * struct survives to be told the read failed.
  */
+/*
+ * One address the daemon listens on, and what happened to it.
+ *
+ * @optional means a bind failure is a warning rather than a refusal to
+ * start -- the tailnet address is one, because it is a convenience the
+ * daemon offers rather than an interface anyone named.  @bound records
+ * what actually happened, so anything reporting where the daemon can be
+ * reached says that rather than what was requested.
+ */
+typedef struct {
+    gchar   *host;
+    guint16  port;
+    gboolean optional;
+    gboolean bound;
+} Listener;
+
 typedef struct {
     gint              ref_count;
     ClawtIpcServer   *server;      /* unowned */
@@ -68,25 +85,13 @@ struct _ClawtIpcServer {
      * daemon.tcp_address says rather than instead of it: the two are
      * different decisions, and a machine on a tailnet usually wants the
      * tailnet address and nothing else.
+     *
+     * Each carries its own port.  A single shared port was a limitation
+     * nobody had asked for and `clawtillad --bind` would have inherited:
+     * the two addresses a person names on a command line have no reason
+     * to agree about which port they are on.
      */
-    GPtrArray *tcp_addresses;  /* gchar*, owned */
-    /*
-     * Addresses whose bind failing is a warning rather than a refusal to
-     * start.  The tailnet address is one: it is a convenience the daemon
-     * offers, and a fleet that would not start because a second daemon
-     * already held that port -- or because tailscaled restarted between
-     * the lookup and the bind -- is a far worse failure than not being
-     * reachable from a laptop.
-     */
-    GPtrArray *optional_addresses;  /* gchar*, owned; subset by value */
-    /*
-     * What actually bound, filled in by start().  Kept because an
-     * optional address may not have, and anything reporting where the
-     * daemon can be reached has to say what happened rather than what
-     * was asked for.
-     */
-    GPtrArray *bound_addresses;     /* gchar*, owned */
-    guint16    tcp_port;
+    GPtrArray *listeners;      /* Listener*, owned */
     gchar     *tcp_token;
     gchar     *tls_certificate;
     gchar     *tls_key;
@@ -100,6 +105,15 @@ struct _ClawtIpcServer {
 };
 
 G_DEFINE_FINAL_TYPE(ClawtIpcServer, clawt_ipc_server, G_TYPE_OBJECT)
+
+static void
+listener_free(gpointer data)
+{
+    Listener *listener = data;
+
+    g_free(listener->host);
+    g_free(listener);
+}
 
 static void read_next(Client *client);
 static void flush_pending(Client *client);
@@ -116,9 +130,7 @@ clawt_ipc_server_new(const gchar *socket_path)
 
     self = g_object_new(CLAWT_TYPE_IPC_SERVER, NULL);
     self->socket_path = clawt_expand_path(socket_path);
-    self->tcp_addresses = g_ptr_array_new_with_free_func(g_free);
-    self->optional_addresses = g_ptr_array_new_with_free_func(g_free);
-    self->bound_addresses = g_ptr_array_new_with_free_func(g_free);
+    self->listeners = g_ptr_array_new_with_free_func(listener_free);
 
     return self;
 }
@@ -140,81 +152,78 @@ clawt_ipc_server_set_handler(ClawtIpcServer  *self,
 }
 
 void
-clawt_ipc_server_set_tcp(ClawtIpcServer *self, const gchar *address,
-                         guint16 port, const gchar *token)
+clawt_ipc_server_set_token(ClawtIpcServer *self, const gchar *token)
 {
     g_return_if_fail(CLAWT_IS_IPC_SERVER(self));
 
     g_free(self->tcp_token);
-
-    g_ptr_array_set_size(self->tcp_addresses, 0);
-
-    if (address != NULL && *address != '\0')
-        g_ptr_array_add(self->tcp_addresses, g_strdup(address));
-
-    self->tcp_port = port;
     self->tcp_token = g_strdup(token);
 }
 
 void
-clawt_ipc_server_add_tcp_address(ClawtIpcServer *self, const gchar *address)
+clawt_ipc_server_add_listener(ClawtIpcServer *self, const gchar *host,
+                              guint16 port, gboolean optional)
 {
+    Listener *listener;
     guint i;
 
     g_return_if_fail(CLAWT_IS_IPC_SERVER(self));
-    g_return_if_fail(address != NULL && *address != '\0');
+    g_return_if_fail(host != NULL && *host != '\0');
+    g_return_if_fail(port != 0);
 
     /*
-     * Binding the same address twice fails with EADDRINUSE against
-     * ourselves, which reads as another daemon already running -- the
-     * one diagnosis that sends a person hunting for a process that is
+     * Binding the same address and port twice fails with EADDRINUSE
+     * against ourselves, which reads as another daemon already running --
+     * the one diagnosis that sends a person hunting for a process that is
      * not there.
      */
-    for (i = 0; i < self->tcp_addresses->len; i++) {
-        if (g_strcmp0(g_ptr_array_index(self->tcp_addresses, i),
-                      address) == 0)
+    for (i = 0; i < self->listeners->len; i++) {
+        Listener *existing = g_ptr_array_index(self->listeners, i);
+
+        if (existing->port == port &&
+            g_strcmp0(existing->host, host) == 0) {
+            /*
+             * Asked for by name as well as automatically: the name wins,
+             * so a person who wrote it on the command line gets an error
+             * rather than a warning if it will not bind.
+             */
+            if (!optional)
+                existing->optional = FALSE;
+
             return;
+        }
     }
 
-    g_ptr_array_add(self->tcp_addresses, g_strdup(address));
+    listener = g_new0(Listener, 1);
+    listener->host = g_strdup(host);
+    listener->port = port;
+    listener->optional = optional;
+
+    g_ptr_array_add(self->listeners, listener);
 }
 
 void
-clawt_ipc_server_set_optional_tcp_address(ClawtIpcServer *self,
-                                          const gchar    *address)
+clawt_ipc_server_clear_listeners(ClawtIpcServer *self)
 {
     g_return_if_fail(CLAWT_IS_IPC_SERVER(self));
-    g_return_if_fail(address != NULL && *address != '\0');
 
-    clawt_ipc_server_add_tcp_address(self, address);
-    g_ptr_array_add(self->optional_addresses, g_strdup(address));
-}
-
-static gboolean
-address_is_optional(ClawtIpcServer *self, const gchar *address)
-{
-    guint i;
-
-    for (i = 0; i < self->optional_addresses->len; i++) {
-        if (g_strcmp0(g_ptr_array_index(self->optional_addresses, i),
-                      address) == 0)
-            return TRUE;
-    }
-
-    return FALSE;
+    g_ptr_array_set_size(self->listeners, 0);
 }
 
 gboolean
-clawt_ipc_server_is_listening_on(ClawtIpcServer *self, const gchar *address)
+clawt_ipc_server_is_listening_on(ClawtIpcServer *self, const gchar *host,
+                                 guint16 port)
 {
     guint i;
 
     g_return_val_if_fail(CLAWT_IS_IPC_SERVER(self), FALSE);
-    g_return_val_if_fail(address != NULL, FALSE);
+    g_return_val_if_fail(host != NULL, FALSE);
 
-    for (i = 0; i < self->bound_addresses->len; i++) {
-        if (g_strcmp0(g_ptr_array_index(self->bound_addresses, i),
-                      address) == 0)
+    for (i = 0; i < self->listeners->len; i++) {
+        Listener *listener = g_ptr_array_index(self->listeners, i);
+
+        if (listener->bound && listener->port == port &&
+            g_strcmp0(listener->host, host) == 0)
             return TRUE;
     }
 
@@ -713,6 +722,132 @@ clear_stale_socket(const gchar *path, GError **error)
     return TRUE;
 }
 
+/*
+ * The `<ip>:<port>` form `clawtillad --bind` takes.
+ *
+ * Not a strrchr(':') job.  An IPv6 address is full of colons, so the last
+ * one in `fd7a:115c:a1e0::1` is part of the address rather than a
+ * separator -- splitting there yields a host of `fd7a:115c:a1e0:` and a
+ * port of `:1`, neither of which is anything. The bracket form settles
+ * it, and a bare IPv6 address with no port is accepted because it parses
+ * whole and so cannot be mistaken for anything else.
+ */
+gboolean
+clawt_ipc_parse_listen_address(const gchar *text, guint16 default_port,
+                               gchar **out_host, guint16 *out_port,
+                               GError **error)
+{
+    g_autofree gchar *host = NULL;
+    g_autoptr(GInetAddress) inet = NULL;
+    gint64 port = default_port;
+    const gchar *colon;
+
+    g_return_val_if_fail(out_host != NULL, FALSE);
+    g_return_val_if_fail(out_port != NULL, FALSE);
+
+    if (text == NULL || *text == '\0') {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "an address is required, as IP or IP:PORT");
+        return FALSE;
+    }
+
+    if (*text == '[') {
+        const gchar *close = strchr(text, ']');
+
+        if (close == NULL) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "'%s' opens with '[' and never closes it; an IPv6 "
+                        "address with a port is written [ADDRESS]:PORT",
+                        text);
+            return FALSE;
+        }
+
+        host = g_strndup(text + 1, (gsize)(close - text - 1));
+
+        if (close[1] == ':')
+            colon = close + 1;
+        else if (close[1] == '\0')
+            colon = NULL;
+        else {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "'%s' has trailing text after the ']'", text);
+            return FALSE;
+        }
+    } else {
+        colon = strchr(text, ':');
+
+        /*
+         * More than one colon and no brackets: this is a bare IPv6
+         * address, so every colon belongs to it and none is a separator.
+         */
+        if (colon != NULL && strchr(colon + 1, ':') != NULL) {
+            host = g_strdup(text);
+            colon = NULL;
+        } else if (colon != NULL) {
+            host = g_strndup(text, (gsize)(colon - text));
+        } else {
+            host = g_strdup(text);
+        }
+    }
+
+    if (colon != NULL) {
+        const gchar *digits = colon + 1;
+        gchar *end = NULL;
+
+        if (*digits == '\0') {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "'%s' ends with ':' and names no port", text);
+            return FALSE;
+        }
+
+        port = g_ascii_strtoll(digits, &end, 10);
+
+        if (end == NULL || *end != '\0') {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "'%s' is not a port", digits);
+            return FALSE;
+        }
+
+        /*
+         * Port 0 asks the kernel for any free port, which for a daemon
+         * clients dial by number is the same as not listening: nothing
+         * would know where to find it.
+         */
+        if (port <= 0 || port > G_MAXUINT16) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "%" G_GINT64_FORMAT " is not a port; it must be "
+                        "between 1 and 65535", port);
+            return FALSE;
+        }
+    }
+
+    if (*host == '\0') {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "'%s' names a port but no address", text);
+        return FALSE;
+    }
+
+    /*
+     * Numeric only.  Resolving a name is a network round trip on the path
+     * that starts the daemon -- which is exactly what daemon start may
+     * not wait on -- and a name can resolve to an address on a different
+     * network than the one intended.
+     */
+    inet = g_inet_address_new_from_string(host);
+
+    if (inet == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "'%s' is not a numeric address; clawtillad binds "
+                    "addresses rather than resolving names", host);
+        return FALSE;
+    }
+
+    *out_host = g_steal_pointer(&host);
+    *out_port = (guint16)port;
+
+    return TRUE;
+}
+
 gboolean
 clawt_ipc_server_start(ClawtIpcServer *self, GError **error)
 {
@@ -759,7 +894,7 @@ clawt_ipc_server_start(ClawtIpcServer *self, GError **error)
         return FALSE;
     }
 
-    if (self->tcp_addresses->len > 0 && self->tcp_port != 0) {
+    if (self->listeners->len > 0) {
         guint i;
         guint bound = 0;
 
@@ -778,30 +913,29 @@ clawt_ipc_server_start(ClawtIpcServer *self, GError **error)
             return FALSE;
         }
 
-        for (i = 0; i < self->tcp_addresses->len; i++) {
-            const gchar *text = g_ptr_array_index(self->tcp_addresses, i);
+        for (i = 0; i < self->listeners->len; i++) {
+            Listener *listener = g_ptr_array_index(self->listeners, i);
             g_autoptr(GSocketAddress) tcp = NULL;
             g_autoptr(GInetAddress) inet = NULL;
-
-            gboolean optional = address_is_optional(self, text);
             g_autoptr(GError) local = NULL;
 
-            inet = g_inet_address_new_from_string(text);
+            inet = g_inet_address_new_from_string(listener->host);
 
             if (inet == NULL) {
-                if (optional) {
+                if (listener->optional) {
                     g_warning("ipc: '%s' is not an address this can bind "
-                              "to; carrying on without it", text);
+                              "to; carrying on without it", listener->host);
                     continue;
                 }
 
                 g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
-                            "'%s' is not an address this can bind to", text);
+                            "'%s' is not an address this can bind to",
+                            listener->host);
                 clawt_ipc_server_stop(self);
                 return FALSE;
             }
 
-            tcp = g_inet_socket_address_new(inet, self->tcp_port);
+            tcp = g_inet_socket_address_new(inet, listener->port);
 
             if (!g_socket_listener_add_address(
                     G_SOCKET_LISTENER(self->service), tcp,
@@ -814,24 +948,25 @@ clawt_ipc_server_start(ClawtIpcServer *self, GError **error)
                  * mean one stale process, or a tailnet that came up
                  * twice, taking the whole fleet down with it.
                  */
-                if (optional) {
+                if (listener->optional) {
                     g_warning("ipc: could not listen on %s:%u (%s); "
                               "clients on other machines will not reach "
-                              "this daemon", text, self->tcp_port,
+                              "this daemon", listener->host, listener->port,
                               local->message);
                     continue;
                 }
 
                 clawt_ipc_server_stop(self);
                 g_propagate_prefixed_error(error, g_steal_pointer(&local),
-                                           "listening on %s:%u: ", text,
-                                           self->tcp_port);
+                                           "listening on %s:%u: ",
+                                           listener->host, listener->port);
                 return FALSE;
             }
 
+            listener->bound = TRUE;
             bound++;
-            g_ptr_array_add(self->bound_addresses, g_strdup(text));
-            g_info("ipc: listening on %s:%u", text, self->tcp_port);
+            g_info("ipc: listening on %s:%u", listener->host,
+                   listener->port);
         }
 
         /*
@@ -903,9 +1038,7 @@ clawt_ipc_server_finalize(GObject *object)
 
     g_clear_pointer(&self->clients, g_ptr_array_unref);
     g_free(self->socket_path);
-    g_clear_pointer(&self->tcp_addresses, g_ptr_array_unref);
-    g_clear_pointer(&self->optional_addresses, g_ptr_array_unref);
-    g_clear_pointer(&self->bound_addresses, g_ptr_array_unref);
+    g_clear_pointer(&self->listeners, g_ptr_array_unref);
     g_free(self->tcp_token);
     g_free(self->tls_certificate);
     g_free(self->tls_key);
