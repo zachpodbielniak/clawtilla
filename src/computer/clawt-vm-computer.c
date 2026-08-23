@@ -30,6 +30,7 @@ struct _ClawtVmComputer {
     gchar *ssh_pubkey;
     gchar *ssh_host;
     gchar *seed_iso;
+    gchar *uuid;
 
     guint    cpus;
     guint    memory_mb;
@@ -163,6 +164,15 @@ clawt_vm_computer_get_ssh_port(ClawtVmComputer *self)
 }
 
 void
+clawt_vm_computer_set_uuid(ClawtVmComputer *self, const gchar *uuid)
+{
+    g_return_if_fail(CLAWT_IS_VM_COMPUTER(self));
+
+    g_free(self->uuid);
+    self->uuid = g_strdup(uuid);
+}
+
+void
 clawt_vm_computer_set_seed_iso(ClawtVmComputer *self, const gchar *path)
 {
     g_return_if_fail(CLAWT_IS_VM_COMPUTER(self));
@@ -238,7 +248,17 @@ clawt_vm_computer_build_domain_xml(ClawtVmComputer *self)
     g_string_append_printf(out, "  <name>%s</name>\n", escaped_domain);
 
     {
-        g_autofree gchar *uuid = stable_uuid(self->domain);
+        /*
+         * A domain libvirt already knows keeps the UUID it already has;
+         * only a new one gets the derived value.
+         */
+        g_autofree gchar *derived = NULL;
+        const gchar *uuid = self->uuid;
+
+        if (uuid == NULL) {
+            derived = stable_uuid(self->domain);
+            uuid = derived;
+        }
 
         g_string_append_printf(out, "  <uuid>%s</uuid>\n", uuid);
     }
@@ -592,6 +612,57 @@ libvirt_domain_state(ClawtVmComputer *self)
     state = g_hash_table_lookup(result, "state");
 
     return state != NULL ? g_strdup(state) : NULL;
+}
+
+/*
+ * The UUID libvirt already holds for this domain, if it holds one.
+ *
+ * libvirt refuses to redefine a name under a different UUID, and a
+ * domain defined before clawtilla started supplying one has whatever
+ * libvirt invented at the time. Adopting it is what lets an agent
+ * created by an older build carry on working -- the alternative is
+ * undefining somebody's domain, which is a great deal ruder.
+ */
+static gchar *
+libvirt_domain_uuid(ClawtVmComputer *self)
+{
+    g_autoptr(GHashTable) params = NULL;
+    g_autoptr(GHashTable) result = NULL;
+    const gchar *xml;
+    const gchar *open;
+    const gchar *close;
+
+    if (self->bridge == NULL ||
+        !clawt_pod_bridge_load_module_for(self->bridge, "vm_virtmanager",
+                                          self->uri, NULL))
+        return NULL;
+
+    params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    g_hash_table_insert(params, g_strdup("domain"), g_strdup(self->domain));
+
+    result = clawt_pod_bridge_call_for(self->bridge, "vm_virtmanager",
+                                       self->uri, "get_xml", params, NULL);
+
+    if (result == NULL)
+        return NULL;
+
+    xml = g_hash_table_lookup(result, "xml");
+
+    if (xml == NULL)
+        return NULL;
+
+    open = strstr(xml, "<uuid>");
+
+    if (open == NULL)
+        return NULL;
+
+    open += strlen("<uuid>");
+    close = strstr(open, "</uuid>");
+
+    if (close == NULL)
+        return NULL;
+
+    return g_strndup(open, (gsize)(close - open));
 }
 
 /*
@@ -949,7 +1020,7 @@ vm_provision(ClawtComputer *computer, GError **error)
 
     if (self->backend == CLAWT_VM_BACKEND_LIBVIRT) {
         g_autoptr(GHashTable) extra = NULL;
-        g_autofree gchar *xml = clawt_vm_computer_build_domain_xml(self);
+        g_autofree gchar *xml = NULL;
 
         if (self->bridge == NULL) {
             g_set_error_literal(error, CLAWT_ERROR,
@@ -958,6 +1029,14 @@ vm_provision(ClawtComputer *computer, GError **error)
                                 "vm_virtmanager module");
             return FALSE;
         }
+
+        /*
+         * Asked before the XML is built, because the answer goes into it.
+         */
+        if (self->uuid == NULL)
+            self->uuid = libvirt_domain_uuid(self);
+
+        xml = clawt_vm_computer_build_domain_xml(self);
 
         extra = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
         g_hash_table_insert(extra, g_strdup("xml"), g_strdup(xml));
@@ -1355,6 +1434,7 @@ clawt_vm_computer_finalize(GObject *object)
     g_clear_pointer(&self->ssh_pubkey, g_free);
     g_clear_pointer(&self->ssh_host, g_free);
     g_clear_pointer(&self->seed_iso, g_free);
+    g_clear_pointer(&self->uuid, g_free);
     g_clear_pointer(&self->qmp_socket, g_free);
 
     G_OBJECT_CLASS(clawt_vm_computer_parent_class)->finalize(object);

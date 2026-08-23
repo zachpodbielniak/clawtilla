@@ -503,7 +503,9 @@ podomation's ~vm_virtmanager~ module: the full 22-action surface,
 including snapshots.
 
 The domain carries a UUID derived from its name, so defining it again is
-a *re*define.  Without one libvirt invents a fresh UUID each time and
+a *re*define.  One defined by an older build keeps whatever UUID libvirt
+invented for it: provisioning reads it back and adopts it, rather than
+undefining a domain you might care about.  Without one libvirt invents a fresh UUID each time and
 then refuses the name it already holds -- ~domain 'clawt-x' already
 exists with uuid ...~ -- which meant an agent could be provisioned once
 and never started again.  ~snapshot_on_start: true~ is worth having -- an

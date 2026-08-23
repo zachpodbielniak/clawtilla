@@ -1419,6 +1419,68 @@ image_backing_file(const gchar *overlay)
  * because the forwarded port reached a guest with no sshd. Three
  * symptoms, one missing setting, and nothing connecting them.
  */
+/*
+ * define_xml runs on every provision, so config changes reach the domain.
+ * Without a UUID libvirt invents a fresh one each time and then refuses
+ * the name it already holds -- so an agent could be provisioned once and
+ * never started again.
+ */
+static void
+test_vm_domain_xml_uuid_is_stable(void)
+{
+    g_autoptr(ClawtComputer) first =
+        clawt_vm_computer_new("steady", CLAWT_VM_BACKEND_LIBVIRT, NULL);
+    g_autoptr(ClawtComputer) second =
+        clawt_vm_computer_new("steady", CLAWT_VM_BACKEND_LIBVIRT, NULL);
+    g_autofree gchar *one = NULL;
+    g_autofree gchar *two = NULL;
+
+    clawt_vm_computer_set_image(CLAWT_VM_COMPUTER(first), "/tmp/a.qcow2");
+    clawt_vm_computer_set_image(CLAWT_VM_COMPUTER(second), "/tmp/a.qcow2");
+
+    one = clawt_vm_computer_build_domain_xml(CLAWT_VM_COMPUTER(first));
+    two = clawt_vm_computer_build_domain_xml(CLAWT_VM_COMPUTER(second));
+
+    g_assert_nonnull(strstr(one, "<uuid>"));
+    g_assert_cmpstr(one, ==, two);
+
+    /* A different agent must not collide with it. */
+    {
+        g_autoptr(ClawtComputer) other =
+            clawt_vm_computer_new("elsewhere", CLAWT_VM_BACKEND_LIBVIRT,
+                                  NULL);
+        g_autofree gchar *third = NULL;
+
+        clawt_vm_computer_set_image(CLAWT_VM_COMPUTER(other), "/tmp/a.qcow2");
+        third = clawt_vm_computer_build_domain_xml(CLAWT_VM_COMPUTER(other));
+
+        g_assert_cmpstr(one, !=, third);
+    }
+}
+
+/*
+ * A domain defined before clawtilla supplied a UUID has whatever libvirt
+ * invented then, and libvirt will not take a different one for the same
+ * name.  Provisioning adopts it rather than undefining somebody's domain.
+ */
+static void
+test_vm_domain_xml_keeps_an_adopted_uuid(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        clawt_vm_computer_new("adopted", CLAWT_VM_BACKEND_LIBVIRT, NULL);
+    g_autofree gchar *xml = NULL;
+
+    clawt_vm_computer_set_image(CLAWT_VM_COMPUTER(computer), "/tmp/a.qcow2");
+    clawt_vm_computer_set_uuid(CLAWT_VM_COMPUTER(computer),
+                               "deadbeef-1234-4567-89ab-cdef01234567");
+
+    xml = clawt_vm_computer_build_domain_xml(CLAWT_VM_COMPUTER(computer));
+
+    g_assert_nonnull(strstr(xml,
+                            "<uuid>deadbeef-1234-4567-89ab-cdef01234567"
+                            "</uuid>"));
+}
+
 static void
 test_vm_without_an_image_is_refused(void)
 {
@@ -1633,6 +1695,10 @@ main(int argc, char *argv[])
                     test_vm_ssh_argv_quotes_the_command);
     g_test_add_func("/computer/vm/boots-and-runs",
                     test_vm_boots_and_runs_a_command);
+    g_test_add_func("/computer/vm/uuid-stable",
+                    test_vm_domain_xml_uuid_is_stable);
+    g_test_add_func("/computer/vm/uuid-adopted",
+                    test_vm_domain_xml_keeps_an_adopted_uuid);
     g_test_add_func("/computer/vm/no-image-refused",
                     test_vm_without_an_image_is_refused);
     g_test_add_func("/computer/vm/xml-has-a-disk",

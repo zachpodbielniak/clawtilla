@@ -96,6 +96,17 @@ void clawt_vm_computer_set_port_forward(ClawtVmComputer *self,
                                         guint            host_port);
 
 /**
+ * clawt_vm_computer_set_uuid:
+ * @self: a #ClawtVmComputer
+ * @uuid: (nullable): the domain's UUID, or %NULL to derive one
+ *
+ * Set from the domain libvirt already holds, if it holds one.  libvirt
+ * refuses to redefine a name under a different UUID, so a domain defined
+ * before clawtilla supplied one keeps whatever libvirt invented then.
+ */
+void clawt_vm_computer_set_uuid(ClawtVmComputer *self, const gchar *uuid);
+
+/**
  * clawt_vm_computer_set_seed_iso:
  * @self: a #ClawtVmComputer
  * @path: (nullable): the cloud-init seed to attach as a CD-ROM

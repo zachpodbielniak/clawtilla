@@ -543,6 +543,12 @@ the same program.
   variant bits set), which makes define a redefine. `virsh define` of a
   *dumped* XML works because the dump includes the UUID, which is why
   testing that way proves nothing.
+- A domain defined by an *older* build has whatever UUID libvirt
+  invented then, and libvirt refuses the same name under a different
+  one — so simply adding a derived UUID broke every existing agent
+  instead of fixing it. Provision asks `get_xml` first and adopts the
+  UUID already there, which is non-destructive and needs no `undefine`
+  (which `vm_virtmanager` does not expose anyway).
 - `start` and `stop` are separately guarded: a libvirt domain outlives
   the daemon, so a restart finds one already running and
   `virDomainCreate` on it is an error. The qemu backend is guarded too —
