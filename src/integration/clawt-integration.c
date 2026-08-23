@@ -93,6 +93,20 @@ static const ClawtIntegrationInfo integrations[] = {
     { "mcp", CLAWT_INTEGRATION_KIND_TOOLS,
       "Give agents the tools of any MCP server, by command or by URL.",
       NULL, NULL, NULL,
+      NULL, FALSE, FALSE },
+
+    /*
+     * The one that runs in neither direction an agent can see: the
+     * daemon telling a person something, about an agent, without the
+     * agent being involved or knowing it happened.
+     *
+     * Not one_per_agent -- a desktop notification while you are at the
+     * machine and a phone push while you are not is two instances doing
+     * their jobs, not a conflict.
+     */
+    { "notify", CLAWT_INTEGRATION_KIND_NOTIFY,
+      "Tell you when an agent is blocked on you or has broken.",
+      NULL, NULL, NULL,
       NULL, FALSE, FALSE }
 };
 
@@ -180,6 +194,23 @@ clawt_integration_binding_unref(ClawtIntegrationBinding *self)
 G_DEFINE_BOXED_TYPE(ClawtIntegrationBinding, clawt_integration_binding,
                     clawt_integration_binding_ref,
                     clawt_integration_binding_unref)
+
+ClawtIntegrationBinding *
+clawt_integration_binding_for_instance(ClawtIntegrationConfig     *instance,
+                                       const ClawtIntegrationInfo *info,
+                                       const gchar                *agent_id)
+{
+    ClawtIntegrationBinding *self;
+
+    g_return_val_if_fail(instance != NULL, NULL);
+    g_return_val_if_fail(info != NULL, NULL);
+
+    self = binding_new(info, clawt_integration_config_get_name(instance),
+                       agent_id);
+    self->instance = clawt_integration_config_ref(instance);
+
+    return self;
+}
 
 const gchar *
 clawt_integration_binding_get_name(ClawtIntegrationBinding *self)

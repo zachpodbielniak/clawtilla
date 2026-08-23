@@ -86,6 +86,14 @@ struct _ClawtDaemon {
     GHashTable *model_cache;     /* provider id -> GStrv (owned) */
     gint64      model_cache_at;  /* monotonic, when it was last warmed */
 
+    /*
+     * Who to tell when something is worth interrupting somebody for.
+     *
+     * Rebuilt on every reload, because that is when its credentials are
+     * resolved -- see ClawtNotifier.
+     */
+    ClawtNotifier *notifier;
+
     gchar   *libreclaw_binary;
     gchar   *state_dir;
     gchar   *link_socket;
@@ -566,6 +574,156 @@ prepare_state_git(const gchar *state_dir, gboolean init_repo,
     return TRUE;
 }
 
+/* ── What is worth interrupting somebody for ─────────────────────── */
+
+/*
+ * An agent's state changed.
+ *
+ * Published for every state, because a client that has to poll to find
+ * out an agent crashed is a client that shows a running agent that is
+ * not -- but notified about only for the states nobody asked for.
+ */
+static void
+on_agent_state_changed(ClawtAgentManager *manager,
+                       const gchar       *agent_id,
+                       gint               state,
+                       const gchar       *detail,
+                       gpointer           user_data)
+{
+    ClawtDaemon *self = user_data;
+    g_autoptr(ClawtEvent) event = NULL;
+    ClawtAgentConfig *config;
+    g_autoptr(ClawtNotification) notification = NULL;
+    const gchar *nick;
+
+    (void)manager;
+
+    nick = clawt_enum_to_nick(CLAWT_TYPE_AGENT_STATE, state);
+
+    event = clawt_event_new("agent.state", agent_id);
+    clawt_event_set_detail(event, "state", nick != NULL ? nick : "unknown");
+
+    if (detail != NULL)
+        clawt_event_set_detail(event, "detail", detail);
+
+    clawt_event_bus_publish(self->bus, event);
+
+    if (state != CLAWT_AGENT_STATE_ERROR &&
+        state != CLAWT_AGENT_STATE_DEGRADED)
+        return;
+
+    if (self->notifier == NULL)
+        return;
+
+    config = clawt_config_get_agent(self->config, agent_id);
+
+    notification = clawt_notification_new(
+        CLAWT_NOTIFY_EVENTS_ERROR, agent_id,
+        config != NULL ? clawt_agent_config_get_string(config, "name") : NULL,
+        state == CLAWT_AGENT_STATE_ERROR ? "stopped with an error"
+                                         : "is degraded",
+        detail);
+
+    clawt_notifier_notify(self->notifier, notification);
+}
+
+/*
+ * A task changed state.
+ *
+ * Only a finished one is worth a notification, and only because
+ * somebody asked: `done` is off by default, since a fleet that works is
+ * a fleet finishing tasks all day.
+ */
+static void
+on_task_changed(ClawtTaskManager *manager,
+                const gchar      *task_id,
+                gint              state,
+                gpointer          user_data)
+{
+    ClawtDaemon *self = user_data;
+    ClawtTask *task;
+    ClawtAgentConfig *config;
+    g_autoptr(ClawtNotification) notification = NULL;
+    g_autofree gchar *summary = NULL;
+
+    (void)manager;
+
+    if (state != CLAWT_TASK_COMPLETED || self->notifier == NULL)
+        return;
+
+    task = clawt_task_manager_get(self->tasks, task_id);
+
+    if (task == NULL)
+        return;
+
+    config = clawt_config_get_agent(self->config,
+                                    clawt_task_get_assignee(task));
+
+    summary = clawt_notify_summarize(clawt_task_get_result(task), 0);
+
+    notification = clawt_notification_new(
+        CLAWT_NOTIFY_EVENTS_DONE, clawt_task_get_assignee(task),
+        config != NULL ? clawt_agent_config_get_string(config, "name") : NULL,
+        "finished a task", summary);
+
+    clawt_notifier_notify(self->notifier, notification);
+}
+
+/*
+ * Whether a room is the private conversation between an agent and the
+ * person running it.
+ *
+ * Every room has the human as an implicit member, so membership cannot
+ * answer this -- by that test every message an agent ever sent would be
+ * worth a buzz. A direct room is `dm:<a>:<b>` with the pair sorted, so
+ * the question is whether one half of it is the operator.
+ */
+static gboolean
+is_operator_room(const gchar *room_id)
+{
+    g_auto(GStrv) parts = NULL;
+
+    if (room_id == NULL || !g_str_has_prefix(room_id, "dm:"))
+        return FALSE;
+
+    parts = g_strsplit(room_id + 3, ":", 2);
+
+    return g_strcmp0(parts[0], "user") == 0 ||
+           g_strcmp0(parts[1], "user") == 0;
+}
+
+/*
+ * An agent said something to its operator.
+ *
+ * This is the one that matters. `clawtilla_message_user` is the only way
+ * an agent can reach a person, and until now it put the message
+ * somewhere they would see it *if they looked* -- so an agent that asked
+ * a question and waited was an agent that had silently stopped.
+ */
+static void
+notify_user_message(ClawtDaemon *self, const gchar *from, const gchar *body,
+                    const gchar *room_id)
+{
+    ClawtAgentConfig *config;
+    g_autoptr(ClawtNotification) notification = NULL;
+    g_autofree gchar *summary = NULL;
+
+    if (self->notifier == NULL || from == NULL)
+        return;
+
+    config = clawt_config_get_agent(self->config, from);
+    summary = clawt_notify_summarize(body, 0);
+
+    notification = clawt_notification_new(
+        CLAWT_NOTIFY_EVENTS_QUESTION, from,
+        config != NULL ? clawt_agent_config_get_string(config, "name") : NULL,
+        summary, NULL);
+
+    notification->room_id = g_strdup(room_id);
+
+    clawt_notifier_notify(self->notifier, notification);
+}
+
 /*
  * An agent's typing indicator becomes an agent.typing event.
  *
@@ -689,9 +847,14 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
     if (thread_id != NULL)
         clawt_task_manager_complete(self->tasks, thread_id, body);
 
-    if (clawt_mailbox_router_send(self->router, message, &error) < 0)
+    if (clawt_mailbox_router_send(self->router, message, &error) < 0) {
         g_info("daemon: %s's message was not routed: %s", agent_id,
                error->message);
+        return;
+    }
+
+    if (is_operator_room(destination))
+        notify_user_message(self, agent_id, body, destination);
 }
 
 /*
@@ -708,8 +871,19 @@ deliver_for_tools(const gchar *from_agent, const gchar *target,
 {
     ClawtDaemon *self = user_data;
 
-    return clawt_mailbox_router_send_to(self->router, from_agent, target,
-                                        body, task_id, depth, error) >= 0;
+    if (clawt_mailbox_router_send_to(self->router, from_agent, target, body,
+                                     task_id, depth, error) < 0)
+        return FALSE;
+
+    /*
+     * This is where clawtilla_message_user arrives, which is the whole
+     * point of the notifier: an agent that asked a question and waited
+     * had, until now, silently stopped.
+     */
+    if (is_operator_room(target))
+        notify_user_message(self, from_agent, body, target);
+
+    return TRUE;
 }
 
 /* ── Agents ──────────────────────────────────────────────────────── */
@@ -1377,6 +1551,20 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     self->guard = clawt_loop_guard_new();
     configure_limits(self);
 
+    self->notifier = clawt_notifier_new(self->config);
+
+    /*
+     * The manager has emitted `agent-state-changed` since it was
+     * written and nothing had ever connected to it, so an agent that
+     * crashed produced no event at all: clients found out by polling,
+     * and nobody found out at 3am. It is now both an event on the bus
+     * and, for the states nobody asked for, a notification.
+     */
+    g_signal_connect(self->agents, "agent-state-changed",
+                     G_CALLBACK(on_agent_state_changed), self);
+    g_signal_connect(self->tasks, "task-changed",
+                     G_CALLBACK(on_task_changed), self);
+
     self->router = clawt_mailbox_router_new(self->agents, self->rooms,
                                             self->guard);
     clawt_mailbox_router_set_event_bus(self->router, self->bus);
@@ -1739,6 +1927,14 @@ clawt_daemon_reload(ClawtDaemon *self, GError **error)
     clawt_room_manager_load_direct(self->rooms);
 
     /*
+     * The notifier holds a reference too, and this is also when it
+     * resolves credentials -- so a token rotated in the file reaches it
+     * on a reload rather than on a restart.
+     */
+    if (self->notifier != NULL)
+        clawt_notifier_reload(self->notifier, self->config);
+
+    /*
      * Files are re-rendered for running agents too, so a restart picks up
      * the change -- but nothing is restarted here.  A reload that
      * interrupted every agent mid-turn would make editing one description
@@ -2092,6 +2288,50 @@ add_key_array(JsonBuilder *builder, const gchar *member,
 }
 
 /*
+ * The keys an integration entry may hold, taken from the schema.
+ *
+ * Not a list written out here.  There were two of them -- one to read an
+ * instance and one to write it -- plus a third in the CLI, and adding
+ * `backend` to the schema without adding it to all three produced a
+ * notifier that accepted the setting, reported success, saved a file
+ * without it and then used the default. Nothing warned. The schema is
+ * the single source of truth for what an option *is*; it may as well be
+ * the source of truth for what the options *are*.
+ */
+static gboolean
+is_own_key(const gchar *leaf)
+{
+    static const gchar *const structural[] = {
+        "name", "type", "enabled", "scope", "agents", "per_agent", NULL
+    };
+    gsize i;
+
+    for (i = 0; structural[i] != NULL; i++) {
+        if (g_strcmp0(structural[i], leaf) == 0)
+            return FALSE;
+    }
+
+    return TRUE;
+}
+
+static const gchar *
+integration_leaf(const ClawtSchemaEntry *entry)
+{
+    const gchar *leaf;
+
+    if (!g_str_has_prefix(entry->key, "integrations."))
+        return NULL;
+
+    leaf = entry->key + strlen("integrations.");
+
+    /* One level only: nothing nested belongs to an entry. */
+    if (strchr(leaf, '.') != NULL)
+        return NULL;
+
+    return is_own_key(leaf) ? leaf : NULL;
+}
+
+/*
  * Every key of an instance except its secrets, which are described
  * rather than read.
  *
@@ -2105,85 +2345,102 @@ add_integration_values(JsonBuilder            *builder,
                        ClawtIntegrationConfig *instance,
                        const gchar            *agent_id)
 {
-    static const gchar *const strings[] = {
-        "description", "homeserver", "user_id", "imap_host", "smtp_host",
-        "username", "command", "url", NULL
-    };
-    static const gchar *const integers[] = {
-        "imap_port", "smtp_port", "port", NULL
-    };
-    static const gchar *const lists[] = {
-        "rooms", "folders", "args", NULL
-    };
-    static const gchar *const secrets[] = {
-        "access_token", "password", NULL
-    };
+    const ClawtSchemaEntry *entries;
+    gsize n_entries = 0;
     gsize i;
 
-    for (i = 0; strings[i] != NULL; i++) {
-        const gchar *value =
-            clawt_integration_config_get_string(instance, agent_id,
-                                                strings[i]);
+    entries = clawt_config_schema_get(&n_entries);
 
-        if (value == NULL)
+    for (i = 0; i < n_entries; i++) {
+        const gchar *leaf = integration_leaf(&entries[i]);
+
+        if (leaf == NULL)
             continue;
 
-        json_builder_set_member_name(builder, strings[i]);
-        json_builder_add_string_value(builder, value);
-    }
+        switch (entries[i].type) {
+        case CLAWT_SCHEMA_SECRET: {
+            g_autoptr(ClawtSecretRef) ref = NULL;
+            g_autofree gchar *described = NULL;
 
-    for (i = 0; integers[i] != NULL; i++) {
-        if (!clawt_integration_config_has_key(instance, agent_id, integers[i]))
-            continue;
+            ref = clawt_integration_config_get_secret(instance, agent_id,
+                                                      leaf);
 
-        json_builder_set_member_name(builder, integers[i]);
-        json_builder_add_int_value(
-            builder,
-            clawt_integration_config_get_int(instance, agent_id, integers[i]));
-    }
+            if (ref == NULL)
+                break;
 
-    for (i = 0; lists[i] != NULL; i++) {
-        g_auto(GStrv) values = NULL;
-        guint k;
+            /*
+             * The reference, never the value.  `{env: MATRIX_TOKEN}` is
+             * a variable name, and a client that could not show it would
+             * leave a person unable to tell a configured integration
+             * from an unconfigured one.
+             */
+            described = clawt_secret_ref_describe(ref);
+            json_builder_set_member_name(builder, leaf);
+            json_builder_add_string_value(builder, described);
+            break;
+        }
 
-        if (!clawt_integration_config_has_key(instance, agent_id, lists[i]))
-            continue;
+        case CLAWT_SCHEMA_INT:
+            if (!clawt_integration_config_has_key(instance, agent_id, leaf))
+                break;
 
-        values = clawt_integration_config_get_string_list(instance, agent_id,
-                                                          lists[i]);
+            json_builder_set_member_name(builder, leaf);
+            json_builder_add_int_value(
+                builder,
+                clawt_integration_config_get_int(instance, agent_id, leaf));
+            break;
 
-        json_builder_set_member_name(builder, lists[i]);
-        json_builder_begin_array(builder);
+        case CLAWT_SCHEMA_BOOLEAN:
+            if (!clawt_integration_config_has_key(instance, agent_id, leaf))
+                break;
 
-        for (k = 0; values != NULL && values[k] != NULL; k++)
-            json_builder_add_string_value(builder, values[k]);
+            json_builder_set_member_name(builder, leaf);
+            json_builder_add_boolean_value(
+                builder,
+                clawt_integration_config_get_boolean(instance, agent_id,
+                                                     leaf));
+            break;
 
-        json_builder_end_array(builder);
-    }
+        case CLAWT_SCHEMA_STRING_LIST: {
+            g_auto(GStrv) values = NULL;
+            guint k;
 
-    if (clawt_integration_config_has_key(instance, agent_id,
-                                         "require_mention")) {
-        json_builder_set_member_name(builder, "require_mention");
-        json_builder_add_boolean_value(
-            builder,
-            clawt_integration_config_get_boolean(instance, agent_id,
-                                                 "require_mention"));
-    }
+            if (!clawt_integration_config_has_key(instance, agent_id, leaf))
+                break;
 
-    for (i = 0; secrets[i] != NULL; i++) {
-        g_autoptr(ClawtSecretRef) ref = NULL;
-        g_autofree gchar *described = NULL;
+            values = clawt_integration_config_get_string_list(instance,
+                                                              agent_id, leaf);
 
-        ref = clawt_integration_config_get_secret(instance, agent_id,
-                                                  secrets[i]);
+            json_builder_set_member_name(builder, leaf);
+            json_builder_begin_array(builder);
 
-        if (ref == NULL)
-            continue;
+            for (k = 0; values != NULL && values[k] != NULL; k++)
+                json_builder_add_string_value(builder, values[k]);
 
-        described = clawt_secret_ref_describe(ref);
+            json_builder_end_array(builder);
+            break;
+        }
 
-        json_builder_set_member_name(builder, secrets[i]);
-        json_builder_add_string_value(builder, described);
+        case CLAWT_SCHEMA_MAPPING:
+            /*
+             * Left out on purpose: the only mapping an entry has is an
+             * MCP server's `env`, whose values may be secret references
+             * and whose resolved form must never leave the daemon.
+             */
+            break;
+
+        default: {
+            const gchar *value =
+                clawt_integration_config_get_string(instance, agent_id, leaf);
+
+            if (value == NULL)
+                break;
+
+            json_builder_set_member_name(builder, leaf);
+            json_builder_add_string_value(builder, value);
+            break;
+        }
+        }
     }
 }
 
@@ -2333,52 +2590,59 @@ apply_integration_fields(ClawtIntegrationConfig  *instance,
                          JsonObject              *payload,
                          GError                 **error)
 {
-    static const gchar *const strings[] = {
-        "description", "homeserver", "user_id", "imap_host", "smtp_host",
-        "username", "command", "url", NULL
-    };
-    static const gchar *const integers[] = {
-        "imap_port", "smtp_port", "port", NULL
-    };
-    static const gchar *const lists[] = {
-        "rooms", "folders", "args", NULL
-    };
     const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+    const ClawtSchemaEntry *entries;
+    gsize n_entries = 0;
     gsize i;
 
-    for (i = 0; strings[i] != NULL; i++) {
-        if (!json_object_has_member(payload, strings[i]))
+    entries = clawt_config_schema_get(&n_entries);
+
+    for (i = 0; i < n_entries; i++) {
+        const gchar *leaf = integration_leaf(&entries[i]);
+
+        if (leaf == NULL || !json_object_has_member(payload, leaf))
             continue;
 
-        clawt_integration_config_set_string(
-            instance, agent_id, strings[i],
-            clawt_ipc_payload_string(payload, strings[i]));
+        switch (entries[i].type) {
+        case CLAWT_SCHEMA_SECRET:
+            /*
+             * Never from a plain member.  A secret is written by naming
+             * its reference -- secret_key, secret_backend, secret_locator
+             * -- so there is no path here that could put a value in the
+             * file even if a client sent one.
+             */
+            break;
+
+        case CLAWT_SCHEMA_INT:
+            clawt_integration_config_set_int(
+                instance, agent_id, leaf,
+                clawt_ipc_payload_int(payload, leaf, 0));
+            break;
+
+        case CLAWT_SCHEMA_BOOLEAN:
+            clawt_integration_config_set_boolean(
+                instance, agent_id, leaf,
+                clawt_ipc_payload_boolean(payload, leaf, TRUE));
+            break;
+
+        case CLAWT_SCHEMA_STRING_LIST: {
+            g_auto(GStrv) values = clawt_ipc_payload_strv(payload, leaf);
+
+            clawt_integration_config_set_string_list(
+                instance, agent_id, leaf, (const gchar *const *)values);
+            break;
+        }
+
+        case CLAWT_SCHEMA_MAPPING:
+            break;
+
+        default:
+            clawt_integration_config_set_string(
+                instance, agent_id, leaf,
+                clawt_ipc_payload_string(payload, leaf));
+            break;
+        }
     }
-
-    for (i = 0; integers[i] != NULL; i++) {
-        if (!json_object_has_member(payload, integers[i]))
-            continue;
-
-        clawt_integration_config_set_int(
-            instance, agent_id, integers[i],
-            clawt_ipc_payload_int(payload, integers[i], 0));
-    }
-
-    for (i = 0; lists[i] != NULL; i++) {
-        g_auto(GStrv) values = NULL;
-
-        if (!json_object_has_member(payload, lists[i]))
-            continue;
-
-        values = clawt_ipc_payload_strv(payload, lists[i]);
-        clawt_integration_config_set_string_list(
-            instance, agent_id, lists[i], (const gchar *const *)values);
-    }
-
-    if (json_object_has_member(payload, "require_mention"))
-        clawt_integration_config_set_boolean(
-            instance, agent_id, "require_mention",
-            clawt_ipc_payload_boolean(payload, "require_mention", TRUE));
 
     if (json_object_has_member(payload, "enabled"))
         clawt_integration_config_set_enabled(
@@ -2413,7 +2677,7 @@ apply_integration_fields(ClawtIntegrationConfig  *instance,
     /*
      * A secret arrives as a reference and never as a value.  The client
      * says which backend and what to look up in it; the daemon reads it
-     * when the agent starts.
+     * when it is needed.
      */
     if (json_object_has_member(payload, "secret_key")) {
         const gchar *key = clawt_ipc_payload_string(payload, "secret_key");
@@ -2421,12 +2685,19 @@ apply_integration_fields(ClawtIntegrationConfig  *instance,
             clawt_ipc_payload_string(payload, "secret_backend");
         const gchar *locator =
             clawt_ipc_payload_string(payload, "secret_locator");
+        const ClawtSchemaEntry *entry = NULL;
         gint backend = CLAWT_SECRET_BACKEND_FILE;
 
-        if (key == NULL) {
-            g_set_error_literal(error, CLAWT_ERROR,
-                                CLAWT_ERROR_INVALID_ARGUMENT,
-                                "secret_key names which secret to set");
+        if (key != NULL) {
+            g_autofree gchar *full = g_strdup_printf("integrations.%s", key);
+
+            entry = clawt_config_schema_lookup(full);
+        }
+
+        if (entry == NULL || entry->type != CLAWT_SCHEMA_SECRET) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "'%s' is not a secret an integration holds",
+                        key != NULL ? key : "");
             return FALSE;
         }
 
@@ -2721,6 +2992,25 @@ on_matrix_login(GObject *source, GAsyncResult *result, gpointer user_data)
                                json_builder_get_root(builder)));
 
     matrix_login_free(login);
+}
+
+static void
+on_notify_tested(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    ClawtIpcPending *pending = user_data;
+    g_autoptr(GError) error = NULL;
+
+    if (!clawt_notifier_test_finish(CLAWT_NOTIFIER(source), result, &error)) {
+        clawt_ipc_pending_respond(
+            pending,
+            clawt_ipc_error_new(clawt_ipc_pending_get_request(pending),
+                                CLAWT_ERROR_NOT_CONNECTED, error->message));
+        return;
+    }
+
+    clawt_ipc_pending_respond(
+        pending,
+        clawt_ipc_response_new(clawt_ipc_pending_get_request(pending), NULL));
 }
 
 static void
@@ -5685,6 +5975,32 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         return NULL;
     }
 
+    if (g_strcmp0(kind, "integration.notify_test") == 0) {
+        const gchar *name = clawt_ipc_payload_string(payload, "integration");
+        ClawtIpcPending *pending;
+
+        if (self->notifier == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
+                                       "this daemon has no notifier");
+
+        pending = clawt_ipc_server_defer(self->ipc_server, request);
+
+        if (pending == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                       "this request cannot be answered "
+                                       "later");
+
+        /*
+         * A notifier is the one thing in a fleet you cannot tell is
+         * working by looking at it: it is correct precisely when nothing
+         * happens. This is the button that makes something happen.
+         */
+        clawt_notifier_test_async(self->notifier, name, NULL,
+                                  on_notify_tested, pending);
+
+        return NULL;
+    }
+
     if (g_strcmp0(kind, "integration.matrix_login") == 0) {
         const gchar *name = clawt_ipc_payload_string(payload, "integration");
         const gchar *homeserver = clawt_ipc_payload_string(payload,
@@ -5980,6 +6296,7 @@ clawt_daemon_finalize(GObject *object)
     ClawtDaemon *self = CLAWT_DAEMON(object);
 
     g_clear_pointer(&self->drafts, g_hash_table_unref);
+    g_clear_object(&self->notifier);
     g_clear_pointer(&self->model_cache, g_hash_table_unref);
     g_clear_pointer(&self->bind_specs, g_ptr_array_unref);
     g_free(self->config_path);

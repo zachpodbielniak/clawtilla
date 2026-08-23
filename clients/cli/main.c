@@ -2711,16 +2711,11 @@ read_secret(const gchar *prompt)
 static gboolean
 apply_setting(JsonBuilder *builder, const gchar *argument)
 {
-    static const gchar *const lists[] = { "rooms", "folders", "args",
-                                          "agents", NULL };
-    static const gchar *const integers[] = { "imap_port", "smtp_port",
-                                             "port", NULL };
-    static const gchar *const secrets[] = { "access_token", "password",
-                                            NULL };
     g_auto(GStrv) parts = g_strsplit(argument, "=", 2);
+    g_autofree gchar *schema_key = NULL;
+    const ClawtSchemaEntry *entry;
     const gchar *key;
     const gchar *value;
-    gsize i;
 
     if (parts[0] == NULL || parts[1] == NULL) {
         g_printerr("clawtilla: '%s' is not key=value\n", argument);
@@ -2730,13 +2725,24 @@ apply_setting(JsonBuilder *builder, const gchar *argument)
     key = parts[0];
     value = parts[1];
 
-    for (i = 0; secrets[i] != NULL; i++) {
-        g_auto(GStrv) ref = NULL;
+    /*
+     * The schema decides how to spell it, rather than a list here.
+     * There used to be one, and it fell out of step the first time a
+     * key was added: the setting was accepted, reported as saved, and
+     * silently dropped.
+     */
+    schema_key = g_strdup_printf("integrations.%s", key);
+    entry = clawt_config_schema_lookup(schema_key);
 
-        if (g_strcmp0(key, secrets[i]) != 0)
-            continue;
+    if (entry == NULL) {
+        g_printerr("clawtilla: '%s' is not something an integration holds\n",
+                   key);
+        return FALSE;
+    }
 
-        ref = g_strsplit(value, ":", 2);
+    switch (entry->type) {
+    case CLAWT_SCHEMA_SECRET: {
+        g_auto(GStrv) ref = g_strsplit(value, ":", 2);
 
         if (ref[1] == NULL) {
             g_printerr("clawtilla: %s must be a reference -- file:PATH, "
@@ -2754,12 +2760,9 @@ apply_setting(JsonBuilder *builder, const gchar *argument)
         return TRUE;
     }
 
-    for (i = 0; lists[i] != NULL; i++) {
+    case CLAWT_SCHEMA_STRING_LIST: {
         g_auto(GStrv) values = NULL;
         guint k;
-
-        if (g_strcmp0(key, lists[i]) != 0)
-            continue;
 
         json_builder_set_member_name(builder, key);
         json_builder_begin_array(builder);
@@ -2768,8 +2771,7 @@ apply_setting(JsonBuilder *builder, const gchar *argument)
             values = g_strsplit(value, ",", -1);
 
             for (k = 0; values[k] != NULL; k++)
-                json_builder_add_string_value(builder,
-                                              g_strstrip(values[k]));
+                json_builder_add_string_value(builder, g_strstrip(values[k]));
         }
 
         json_builder_end_array(builder);
@@ -2777,30 +2779,29 @@ apply_setting(JsonBuilder *builder, const gchar *argument)
         return TRUE;
     }
 
-    for (i = 0; integers[i] != NULL; i++) {
-        if (g_strcmp0(key, integers[i]) != 0)
-            continue;
-
+    case CLAWT_SCHEMA_INT:
         json_builder_set_member_name(builder, key);
         json_builder_add_int_value(builder, g_ascii_strtoll(value, NULL, 10));
-
         return TRUE;
-    }
 
-    if (g_strcmp0(key, "enabled") == 0 ||
-        g_strcmp0(key, "require_mention") == 0) {
+    case CLAWT_SCHEMA_BOOLEAN:
         json_builder_set_member_name(builder, key);
         json_builder_add_boolean_value(builder,
                                        g_strcmp0(value, "true") == 0 ||
                                        g_strcmp0(value, "yes") == 0 ||
                                        g_strcmp0(value, "1") == 0);
         return TRUE;
+
+    case CLAWT_SCHEMA_MAPPING:
+        g_printerr("clawtilla: %s is a mapping; edit it in the config "
+                   "file\n", key);
+        return FALSE;
+
+    default:
+        json_builder_set_member_name(builder, key);
+        json_builder_add_string_value(builder, value);
+        return TRUE;
     }
-
-    json_builder_set_member_name(builder, key);
-    json_builder_add_string_value(builder, value);
-
-    return TRUE;
 }
 
 /*
@@ -2860,6 +2861,7 @@ print_integration_usage(void)
         "  scope <name> all|none|<ids>    who gets it\n"
         "  rm <name>                      remove it\n"
         "  health <agent> [name]          can it reach what it talks to\n"
+        "  test <name>                    send one notification now\n"
         "  matrix-login <name> <homeserver> <user>\n"
         "                                 sign in; the password is read from\n"
         "                                 stdin and never stored\n"
@@ -2874,7 +2876,12 @@ print_integration_usage(void)
         "  clawtilla integration add github mcp scope=all \\\n"
         "      command=npx args=-y,@modelcontextprotocol/server-github\n"
         "  clawtilla integration set home --agent researcher \\\n"
-        "      user_id=@researcher:example.org\n");
+        "      user_id=@researcher:example.org\n"
+        "  clawtilla integration add phone notify scope=all \\\n"
+        "      backend=ntfy url=https://ntfy.sh/my-topic events=question,error\n"
+        "  clawtilla integration add desk notify scope=all backend=command \\\n"
+        "      command=receipt-print\n"
+        "  clawtilla integration test phone\n");
 }
 
 static void
@@ -3181,6 +3188,23 @@ cmd_integration(int argc, char *argv[])
          */
         g_print("Removed %s. Any credential file it wrote is still on "
                 "disk.\n", name);
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "test") == 0) {
+        if (name == NULL) {
+            g_printerr("Usage: clawtilla integration test <name>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "integration.notify_test",
+                     build_payload("integration", name, NULL));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Sent. If nothing arrived, the notifier is not reaching "
+                "you.\n");
         return EXIT_SUCCESS;
     }
 

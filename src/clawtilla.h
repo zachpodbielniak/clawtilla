@@ -85,6 +85,7 @@
 #include "config/clawt-config-render.h"
 #include "integration/clawt-integration.h"
 #include "integration/clawt-matrix.h"
+#include "integration/clawt-notify.h"
 
 #include "link/clawt-link.h"
 #include "link/clawt-link-server.h"

@@ -422,9 +422,51 @@ clawt_integration_kind_get_type(void)
         static const GEnumValue values[] = {
             { CLAWT_INTEGRATION_KIND_CHANNEL, "CLAWT_INTEGRATION_KIND_CHANNEL", "channel" },
             { CLAWT_INTEGRATION_KIND_TOOLS, "CLAWT_INTEGRATION_KIND_TOOLS", "tools" },
+            { CLAWT_INTEGRATION_KIND_NOTIFY, "CLAWT_INTEGRATION_KIND_NOTIFY", "notify" },
             { 0, NULL, NULL }
         };
         GType g_define_type_id = g_enum_register_static("ClawtIntegrationKind", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
+/* Register ClawtNotifyBackend as a GLib enum type */
+GType
+clawt_notify_backend_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_NOTIFY_BACKEND_DESKTOP, "CLAWT_NOTIFY_BACKEND_DESKTOP", "desktop" },
+            { CLAWT_NOTIFY_BACKEND_NTFY, "CLAWT_NOTIFY_BACKEND_NTFY", "ntfy" },
+            { CLAWT_NOTIFY_BACKEND_GOTIFY, "CLAWT_NOTIFY_BACKEND_GOTIFY", "gotify" },
+            { CLAWT_NOTIFY_BACKEND_MATRIX, "CLAWT_NOTIFY_BACKEND_MATRIX", "matrix" },
+            { CLAWT_NOTIFY_BACKEND_COMMAND, "CLAWT_NOTIFY_BACKEND_COMMAND", "command" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtNotifyBackend", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
+/* Register ClawtNotifyEvents as a GLib flags type */
+GType
+clawt_notify_events_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GFlagsValue values[] = {
+            { CLAWT_NOTIFY_EVENTS_QUESTION, "CLAWT_NOTIFY_EVENTS_QUESTION", "question" },
+            { CLAWT_NOTIFY_EVENTS_DONE, "CLAWT_NOTIFY_EVENTS_DONE", "done" },
+            { CLAWT_NOTIFY_EVENTS_ERROR, "CLAWT_NOTIFY_EVENTS_ERROR", "error" },
+            { CLAWT_NOTIFY_EVENTS_ROUTINE, "CLAWT_NOTIFY_EVENTS_ROUTINE", "routine" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_flags_register_static("ClawtNotifyEvents", values);
         g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
     }
     return g_define_type_id__volatile;
@@ -504,6 +546,36 @@ clawt_enum_from_nick(GType enum_type, const gchar *nick, gint *out_value)
             *out_value = ev->value;
             return TRUE;
         }
+    }
+
+    return FALSE;
+}
+
+gboolean
+clawt_flags_from_nick(GType flags_type, const gchar *nick, guint *out_value)
+{
+    g_autoptr(GFlagsClass) klass = NULL;
+    guint i;
+
+    g_return_val_if_fail(G_TYPE_IS_FLAGS(flags_type), FALSE);
+    g_return_val_if_fail(out_value != NULL, FALSE);
+
+    if (nick == NULL)
+        return FALSE;
+
+    klass = g_type_class_ref(flags_type);
+
+    /*
+     * Compared here rather than through g_flags_get_value_by_nick(),
+     * for the same reason clawt_enum_from_nick() does its own: whether
+     * a config file parses must not depend on which GLib is installed.
+     */
+    for (i = 0; i < klass->n_values; i++) {
+        if (g_ascii_strcasecmp(klass->values[i].value_nick, nick) != 0)
+            continue;
+
+        *out_value = klass->values[i].value;
+        return TRUE;
     }
 
     return FALSE;

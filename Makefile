@@ -60,6 +60,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/core/clawt-event-log.h \
 	$(SRCDIR)/integration/clawt-integration.h \
 	$(SRCDIR)/integration/clawt-matrix.h \
+	$(SRCDIR)/integration/clawt-notify.h \
 	$(SRCDIR)/config/clawt-config.h \
 	$(SRCDIR)/config/clawt-config-render.h \
 	$(SRCDIR)/computer/clawt-mount.h \
@@ -133,6 +134,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/clawt-event-log.c \
 	$(SRCDIR)/integration/clawt-integration.c \
 	$(SRCDIR)/integration/clawt-matrix.c \
+	$(SRCDIR)/integration/clawt-notify.c \
 	$(SRCDIR)/config/clawt-config.c \
 	$(SRCDIR)/config/clawt-config-render.c \
 	$(SRCDIR)/computer/clawt-mount.c \

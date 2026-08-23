@@ -414,6 +414,7 @@ typedef enum {
  * ClawtIntegrationKind:
  * @CLAWT_INTEGRATION_KIND_CHANNEL: how people reach the agent
  * @CLAWT_INTEGRATION_KIND_TOOLS: how the agent reaches a service
+ * @CLAWT_INTEGRATION_KIND_NOTIFY: how the fleet reaches the operator
  *
  * The direction an integration runs in.
  *
@@ -425,11 +426,64 @@ typedef enum {
  * shared by two agents means both answer the same person, which is
  * almost never wanted, while a tool server shared by the whole fleet is
  * the ordinary case.
+ *
+ * @CLAWT_INTEGRATION_KIND_NOTIFY runs in neither direction an agent can
+ * see: it is the daemon telling a person something, about an agent,
+ * without the agent being involved or knowing it happened.
  */
 typedef enum {
     CLAWT_INTEGRATION_KIND_CHANNEL = 0,
-    CLAWT_INTEGRATION_KIND_TOOLS
+    CLAWT_INTEGRATION_KIND_TOOLS,
+    CLAWT_INTEGRATION_KIND_NOTIFY
 } ClawtIntegrationKind;
+
+/**
+ * ClawtNotifyBackend:
+ * @CLAWT_NOTIFY_BACKEND_DESKTOP: a desktop notification on the machine the daemon runs on
+ * @CLAWT_NOTIFY_BACKEND_NTFY: an ntfy topic
+ * @CLAWT_NOTIFY_BACKEND_GOTIFY: a gotify server
+ * @CLAWT_NOTIFY_BACKEND_MATRIX: a message into a Matrix room
+ * @CLAWT_NOTIFY_BACKEND_COMMAND: run a program and hand it the text
+ *
+ * How a notification reaches the operator.
+ *
+ * @CLAWT_NOTIFY_BACKEND_COMMAND is the escape hatch and is meant to be
+ * used: a receipt printer, a script, anything already on the machine.
+ * The four named ones are there because they are what people actually
+ * reach for, not because the list is meant to be closed.
+ */
+typedef enum {
+    CLAWT_NOTIFY_BACKEND_DESKTOP = 0,
+    CLAWT_NOTIFY_BACKEND_NTFY,
+    CLAWT_NOTIFY_BACKEND_GOTIFY,
+    CLAWT_NOTIFY_BACKEND_MATRIX,
+    CLAWT_NOTIFY_BACKEND_COMMAND
+} ClawtNotifyBackend;
+
+/**
+ * ClawtNotifyEvents:
+ * @CLAWT_NOTIFY_EVENTS_NONE: nothing
+ * @CLAWT_NOTIFY_EVENTS_QUESTION: an agent said something to the operator
+ * @CLAWT_NOTIFY_EVENTS_DONE: a task finished
+ * @CLAWT_NOTIFY_EVENTS_ERROR: an agent stopped in a way nobody asked for
+ * @CLAWT_NOTIFY_EVENTS_ROUTINE: a routine failed to run
+ *
+ * What is worth interrupting somebody for.
+ *
+ * The default is @CLAWT_NOTIFY_EVENTS_QUESTION and
+ * @CLAWT_NOTIFY_EVENTS_ERROR and nothing else, which is the whole rule:
+ * an agent *blocked on you* is worth a buzz, and one that has broken is
+ * worth a buzz. Everything a fleet does while it works is not -- a
+ * notifier that fires on every turn is one people turn off, and then it
+ * is not there for the two that mattered.
+ */
+typedef enum {
+    CLAWT_NOTIFY_EVENTS_NONE     = 0,
+    CLAWT_NOTIFY_EVENTS_QUESTION = 1 << 0,
+    CLAWT_NOTIFY_EVENTS_DONE     = 1 << 1,
+    CLAWT_NOTIFY_EVENTS_ERROR    = 1 << 2,
+    CLAWT_NOTIFY_EVENTS_ROUTINE  = 1 << 3
+} ClawtNotifyEvents;
 
 /* GType registration */
 GType clawt_agent_state_get_type(void) G_GNUC_CONST;
@@ -452,6 +506,8 @@ GType clawt_secret_backend_get_type(void) G_GNUC_CONST;
 GType clawt_log_level_get_type(void) G_GNUC_CONST;
 GType clawt_integration_scope_get_type(void) G_GNUC_CONST;
 GType clawt_integration_kind_get_type(void) G_GNUC_CONST;
+GType clawt_notify_backend_get_type(void) G_GNUC_CONST;
+GType clawt_notify_events_get_type(void) G_GNUC_CONST;
 
 #define CLAWT_TYPE_AGENT_STATE      (clawt_agent_state_get_type())
 #define CLAWT_TYPE_AGENT_CAPS       (clawt_agent_caps_get_type())
@@ -473,6 +529,8 @@ GType clawt_integration_kind_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_LOG_LEVEL        (clawt_log_level_get_type())
 #define CLAWT_TYPE_INTEGRATION_SCOPE (clawt_integration_scope_get_type())
 #define CLAWT_TYPE_INTEGRATION_KIND  (clawt_integration_kind_get_type())
+#define CLAWT_TYPE_NOTIFY_BACKEND    (clawt_notify_backend_get_type())
+#define CLAWT_TYPE_NOTIFY_EVENTS     (clawt_notify_events_get_type())
 
 /**
  * clawt_enum_to_nick:
@@ -500,6 +558,27 @@ const gchar *clawt_enum_to_nick(GType enum_type, gint value);
  * Returns: %TRUE if @nick names a member of @enum_type
  */
 gboolean clawt_enum_from_nick(GType enum_type, const gchar *nick, gint *out_value);
+
+/**
+ * clawt_flags_from_nick:
+ * @flags_type: a registered flags #GType
+ * @nick: one flag's nickname
+ * @out_value: (out): the value
+ *
+ * The flags twin of clawt_enum_from_nick(), and it has to exist
+ * separately: g_enum_get_value_by_nick() takes a #GEnumClass, so calling
+ * it on a flags type is an assertion failure rather than a lookup that
+ * returns nothing.
+ *
+ * That failure is quiet in the way that matters -- it left every notify
+ * integration unable to parse its own event list, so nothing was ever
+ * notified, while the "send a test" button worked perfectly because it
+ * skips the list on purpose.
+ *
+ * Returns: %TRUE if @nick names a flag
+ */
+gboolean clawt_flags_from_nick(GType flags_type, const gchar *nick,
+                               guint *out_value);
 
 /**
  * clawt_flags_to_string:

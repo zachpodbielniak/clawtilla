@@ -928,6 +928,99 @@ email: folders to watch. Empty means INBOX.
 webhook: the port to listen on. Must differ per agent -- two agents
 cannot bind the same one, and the second to start simply fails.
 
+*** =integrations.backend=
+
+- Type :: enum
+- Values :: desktop, ntfy, gotify, matrix, command
+- Default :: =desktop=
+- Since :: 0.2.0
+
+notify: how the notification reaches you.
+
+`desktop` raises one on the machine the daemon runs on, which is the
+wrong answer when the daemon is on a workstation and you are not.
+`ntfy` and `gotify` reach a phone. `matrix` posts into a room, which
+on a bridged homeserver means it reaches you wherever you already
+read messages. `command` runs a program and hands it the text.
+
+*** =integrations.token=
+
+- Type :: secret reference
+- Default :: unset
+- Since :: 0.2.0
+
+notify: the credential for ntfy, gotify or Matrix, as a secret
+reference.
+
+Resolved once when the configuration loads rather than on every
+notification: a `command` reference to a locked password manager
+blocks until it times out, and doing that each time something needed
+saying would make the notifier the slowest thing in the daemon.
+
+*** =integrations.room=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.2.0
+
+notify: with `backend: matrix`, the room id to post into.
+
+A room of your own with nobody else in it works well: it keeps the
+fleet's noise out of a room people are talking in, and still arrives
+on every device you read Matrix on.
+
+*** =integrations.events=
+
+- Type :: list of strings
+- Default :: =question,error=
+- Since :: 0.2.0
+
+notify: what is worth interrupting you for.
+
+`question` -- an agent said something to you and is waiting.
+`done` -- a task finished.
+`error` -- an agent stopped in a way nobody asked for.
+`routine` -- a scheduled run failed.
+
+The default is question and error, which is the whole rule: blocked
+on you, or broken. A notifier that fires on every turn is one people
+turn off, and then it is not there for the two that mattered.
+
+*** =integrations.priority=
+
+- Type :: string
+- Default :: =normal=
+- Since :: 0.2.0
+
+notify: low, normal, high or urgent.
+
+Mapped onto whatever the backend understands -- ntfy's five levels,
+gotify's ten, the two urgency hints a desktop has.
+
+*** =integrations.quiet_hours=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.2.0
+
+notify: a local-time range to stay silent in, such as `23:00-07:00`.
+
+Silences this instance completely. If you want to be woken for a
+broken agent but not for a question, that is two instances -- one
+with quiet hours and one without, each with its own `events` -- which
+is why instances have names.
+
+*** =integrations.title=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.2.0
+
+notify: a title to use instead of the agent's name.
+
+Worth setting when several fleets notify the same phone, so a buzz
+says which machine it came from.
+
 *** =integrations.command=
 
 - Type :: string

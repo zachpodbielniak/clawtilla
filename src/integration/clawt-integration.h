@@ -98,6 +98,24 @@ clawt_integration_binding_ref(ClawtIntegrationBinding *self);
 void clawt_integration_binding_unref(ClawtIntegrationBinding *self);
 
 /**
+ * clawt_integration_binding_for_instance:
+ * @instance: a shared integration
+ * @info: what clawtilla knows about its type
+ * @agent_id: (nullable): whose values to read, or %NULL for the instance's own
+ *
+ * A binding onto one instance, without resolving a whole agent.
+ *
+ * Wanted where there is no agent to resolve for -- testing a notifier
+ * that covers nobody yet, or reading an instance's settings in a dialog.
+ *
+ * Returns: (transfer full): the binding
+ */
+ClawtIntegrationBinding *
+clawt_integration_binding_for_instance(ClawtIntegrationConfig     *instance,
+                                       const ClawtIntegrationInfo *info,
+                                       const gchar                *agent_id);
+
+/**
  * clawt_integration_binding_get_name:
  * @self: a #ClawtIntegrationBinding
  *

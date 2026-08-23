@@ -8347,6 +8347,12 @@ typedef struct {
     GtkWidget   *args_row;
     GtkWidget   *url_row;
 
+    GtkWidget   *backend_row;
+    GtkWidget   *quiet_row;
+    GtkWidget   *notify_title_row;
+    GtkWidget   *priority_row;
+    GPtrArray   *event_rows;     /* AdwSwitchRow*, unowned */
+
     GStrv        rooms;          /* what the picker last agreed on */
 } IntegrationDialog;
 
@@ -8363,6 +8369,7 @@ integration_dialog_free(gpointer data)
     g_free(dialog->type_id);
     g_strfreev(dialog->rooms);
     g_clear_pointer(&dialog->agent_rows, g_ptr_array_unref);
+    g_clear_pointer(&dialog->event_rows, g_ptr_array_unref);
     g_free(dialog);
 }
 
@@ -8543,6 +8550,44 @@ on_integration_saved(GtkButton *button, gpointer user_data)
         add_list_member(builder, "args",
                         gtk_editable_get_text(GTK_EDITABLE(dialog->args_row)));
         add_string_member(builder, "url", dialog->url_row);
+    } else if (g_strcmp0(dialog->type_id, "notify") == 0) {
+        static const gchar *const backend_ids[] = {
+            "desktop", "ntfy", "gotify", "matrix", "command"
+        };
+        static const gchar *const priorities[] = {
+            "low", "normal", "high", "urgent"
+        };
+        guint backend = adw_combo_row_get_selected(
+            ADW_COMBO_ROW(dialog->backend_row));
+        guint priority = adw_combo_row_get_selected(
+            ADW_COMBO_ROW(dialog->priority_row));
+
+        json_builder_set_member_name(builder, "backend");
+        json_builder_add_string_value(builder, backend_ids[MIN(backend, 4)]);
+        json_builder_set_member_name(builder, "priority");
+        json_builder_add_string_value(builder, priorities[MIN(priority, 3)]);
+
+        add_string_member(builder, "url", dialog->url_row);
+        add_string_member(builder, "homeserver", dialog->homeserver_row);
+        add_string_member(builder, "room", dialog->rooms_row);
+        add_string_member(builder, "command", dialog->command_row);
+        add_list_member(builder, "args",
+                        gtk_editable_get_text(GTK_EDITABLE(dialog->args_row)));
+        add_string_member(builder, "title", dialog->notify_title_row);
+        add_string_member(builder, "quiet_hours", dialog->quiet_row);
+
+        json_builder_set_member_name(builder, "events");
+        json_builder_begin_array(builder);
+
+        for (i = 0; i < dialog->event_rows->len; i++) {
+            GtkWidget *row = g_ptr_array_index(dialog->event_rows, i);
+
+            if (adw_switch_row_get_active(ADW_SWITCH_ROW(row)))
+                json_builder_add_string_value(
+                    builder, g_object_get_data(G_OBJECT(row), "event"));
+        }
+
+        json_builder_end_array(builder);
     }
 
     /*
@@ -8568,8 +8613,10 @@ on_integration_saved(GtkButton *button, gpointer user_data)
 
             json_builder_set_member_name(builder, "secret_key");
             json_builder_add_string_value(
-                builder, g_strcmp0(dialog->type_id, "email") == 0
-                             ? "password" : "access_token");
+                builder,
+                g_strcmp0(dialog->type_id, "email") == 0 ? "password"
+                    : (g_strcmp0(dialog->type_id, "notify") == 0 ? "token"
+                                                                 : "access_token"));
             json_builder_set_member_name(builder, "secret_backend");
             json_builder_add_string_value(builder, parts[0]);
             json_builder_set_member_name(builder, "secret_locator");
@@ -8639,6 +8686,25 @@ on_integration_checked(GtkButton *button, gpointer user_data)
     guint i;
 
     (void)button;
+
+    /*
+     * A notifier has nothing to connect to and check: the only honest
+     * test is to send one and see whether it arrives.  It ignores the
+     * event list and the quiet hours, because a button that did nothing
+     * at half past eleven would be indistinguishable from a broken one.
+     */
+    if (g_strcmp0(dialog->type_id, "notify") == 0) {
+        reply = clawt_window_request(
+            dialog->window, "integration.notify_test",
+            clawt_build_payload("integration", dialog->name, NULL));
+
+        if (reply != NULL)
+            clawt_window_toast(dialog->window,
+                               "Sent. If nothing arrived, it is not "
+                               "reaching you.");
+
+        return;
+    }
 
     list = clawt_window_request(dialog->window, "integration.list", NULL);
     integration = find_integration(list, dialog->name);
@@ -9074,6 +9140,163 @@ build_matrix_rows(IntegrationDialog *dialog, GtkWidget *group,
                               dialog->mention_row);
 }
 
+
+/*
+ * A notifier's rows.
+ *
+ * Which of them make sense depends on the backend, and they are all
+ * built rather than swapped as it changes: a dialog that rebuilds itself
+ * under somebody's cursor loses whatever they were typing, and an unused
+ * entry left empty costs nothing.
+ */
+static void
+build_notify_rows(IntegrationDialog *dialog, GtkWidget *group,
+                  JsonObject *integration)
+{
+    static const gchar *const backends[] = {
+        "Desktop notification", "ntfy", "Gotify", "Matrix room",
+        "Run a command", NULL
+    };
+    static const gchar *const backend_ids[] = {
+        "desktop", "ntfy", "gotify", "matrix", "command"
+    };
+    static const gchar *const priorities[] = {
+        "Low", "Normal", "High", "Urgent", NULL
+    };
+    static const struct {
+        const gchar *id;
+        const gchar *title;
+        const gchar *subtitle;
+    } events[] = {
+        { "question", "Blocked on you",
+          "An agent said something and is waiting" },
+        { "error",    "Broken",
+          "An agent stopped in a way nobody asked for" },
+        { "done",     "Finished a task",
+          "Off by default: a fleet that works finishes tasks all day" },
+        { "routine",  "A routine failed",
+          "A scheduled run that could not be started" }
+    };
+    g_autofree gchar *chosen = join_strings(integration, "events", ",");
+    const gchar *backend = clawt_json_string(integration, "backend",
+                                             "desktop");
+    const gchar *priority = clawt_json_string(integration, "priority",
+                                              "normal");
+    gsize i;
+
+    dialog->backend_row = adw_combo_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->backend_row),
+                                  "How it reaches you");
+    adw_combo_row_set_model(ADW_COMBO_ROW(dialog->backend_row),
+                            G_LIST_MODEL(gtk_string_list_new(backends)));
+
+    for (i = 0; i < G_N_ELEMENTS(backend_ids); i++) {
+        if (g_strcmp0(backend_ids[i], backend) == 0)
+            adw_combo_row_set_selected(ADW_COMBO_ROW(dialog->backend_row),
+                                       (guint)i);
+    }
+
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              dialog->backend_row);
+
+    dialog->url_row = add_entry(group, "URL",
+                                clawt_json_string(integration, "url", ""));
+    adw_action_row_set_subtitle(
+        ADW_ACTION_ROW(dialog->url_row),
+        "ntfy: the topic, https://ntfy.sh/your-topic. Gotify: the server.");
+
+    dialog->homeserver_row = add_entry(
+        group, "Homeserver",
+        clawt_json_string(integration, "homeserver", ""));
+    dialog->rooms_row = add_entry(group, "Room",
+                                  clawt_json_string(integration, "room", ""));
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(dialog->rooms_row),
+                                "Matrix only. A room with nobody else in it "
+                                "works well.");
+
+    dialog->secret_row = add_entry(group, "Token",
+                                   clawt_json_string(integration, "token",
+                                                     ""));
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(dialog->secret_row),
+                                "A reference: env:NAME, file:PATH or "
+                                "command:...");
+
+    dialog->command_row = add_entry(
+        group, "Command", clawt_json_string(integration, "command", ""));
+    adw_action_row_set_subtitle(
+        ADW_ACTION_ROW(dialog->command_row),
+        "Gets the title and the body as two arguments, or wherever you "
+        "write {{title}} and {{body}}.");
+
+    {
+        g_autofree gchar *args = join_strings(integration, "args", ", ");
+
+        dialog->args_row = add_entry(group, "Arguments", args);
+    }
+
+    dialog->priority_row = adw_combo_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->priority_row),
+                                  "Priority");
+    adw_combo_row_set_model(ADW_COMBO_ROW(dialog->priority_row),
+                            G_LIST_MODEL(gtk_string_list_new(priorities)));
+    adw_combo_row_set_selected(
+        ADW_COMBO_ROW(dialog->priority_row),
+        g_strcmp0(priority, "low") == 0 ? 0
+            : (g_strcmp0(priority, "high") == 0 ? 2
+                : (g_strcmp0(priority, "urgent") == 0 ? 3 : 1)));
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              dialog->priority_row);
+
+    dialog->notify_title_row = add_entry(
+        group, "Say it is from",
+        clawt_json_string(integration, "title", ""));
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(dialog->notify_title_row),
+                                "Worth setting when several fleets notify "
+                                "the same phone");
+
+    dialog->quiet_row = add_entry(
+        group, "Quiet hours",
+        clawt_json_string(integration, "quiet_hours", ""));
+    adw_action_row_set_subtitle(
+        ADW_ACTION_ROW(dialog->quiet_row),
+        "Such as 23:00-07:00. Silences this one completely -- to be woken "
+        "only for a broken agent, make a second notifier without it.");
+
+    dialog->event_rows = g_ptr_array_new();
+
+    for (i = 0; i < G_N_ELEMENTS(events); i++) {
+        GtkWidget *row = adw_switch_row_new();
+        g_auto(GStrv) parts = g_strsplit(chosen, ",", -1);
+        guint k;
+
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                      events[i].title);
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(row), events[i].subtitle);
+
+        /*
+         * An instance with no `events` of its own is on the schema
+         * default, which is question and error -- so an empty list here
+         * would show two switches off that the daemon has on.
+         */
+        if (*chosen == '\0') {
+            adw_switch_row_set_active(
+                ADW_SWITCH_ROW(row),
+                g_strcmp0(events[i].id, "question") == 0 ||
+                g_strcmp0(events[i].id, "error") == 0);
+        } else {
+            for (k = 0; parts[k] != NULL; k++) {
+                if (g_strcmp0(g_strstrip(parts[k]), events[i].id) == 0)
+                    adw_switch_row_set_active(ADW_SWITCH_ROW(row), TRUE);
+            }
+        }
+
+        g_object_set_data_full(G_OBJECT(row), "event",
+                               g_strdup(events[i].id), g_free);
+        g_ptr_array_add(dialog->event_rows, row);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+    }
+}
+
 static void
 open_integration_editor(ClawtWindow *self, const gchar *name,
                         const gchar *type_id)
@@ -9185,6 +9408,8 @@ open_integration_editor(ClawtWindow *self, const gchar *name,
             group, "Or a URL", clawt_json_string(integration, "url", ""));
         adw_action_row_set_subtitle(ADW_ACTION_ROW(dialog->url_row),
                                     "One or the other, never both");
+    } else if (g_strcmp0(dialog->type_id, "notify") == 0) {
+        build_notify_rows(dialog, group, integration);
     }
 
     build_agent_group(dialog, integration);
@@ -9195,7 +9420,8 @@ open_integration_editor(ClawtWindow *self, const gchar *name,
     g_signal_connect(save, "clicked", G_CALLBACK(on_integration_saved),
                      dialog);
 
-    check = gtk_button_new_with_label("Check");
+    check = gtk_button_new_with_label(
+        g_strcmp0(dialog->type_id, "notify") == 0 ? "Send a test" : "Check");
     gtk_widget_set_hexpand(check, TRUE);
     g_signal_connect(check, "clicked", G_CALLBACK(on_integration_checked),
                      dialog);

@@ -550,6 +550,64 @@ integrations:
     # cannot bind the same one, and the second to start simply fails.
     port: null
 
+    # notify: how the notification reaches you.
+    #
+    # `desktop` raises one on the machine the daemon runs on, which is the
+    # wrong answer when the daemon is on a workstation and you are not.
+    # `ntfy` and `gotify` reach a phone. `matrix` posts into a room, which
+    # on a bridged homeserver means it reaches you wherever you already
+    # read messages. `command` runs a program and hands it the text.
+    # Values: desktop, ntfy, gotify, matrix, command
+    backend: "desktop"
+
+    # notify: the credential for ntfy, gotify or Matrix, as a secret
+    # reference.
+    #
+    # Resolved once when the configuration loads rather than on every
+    # notification: a `command` reference to a locked password manager
+    # blocks until it times out, and doing that each time something needed
+    # saying would make the notifier the slowest thing in the daemon.
+    token: null
+
+    # notify: with `backend: matrix`, the room id to post into.
+    #
+    # A room of your own with nobody else in it works well: it keeps the
+    # fleet's noise out of a room people are talking in, and still arrives
+    # on every device you read Matrix on.
+    room: null
+
+    # notify: what is worth interrupting you for.
+    #
+    # `question` -- an agent said something to you and is waiting.
+    # `done` -- a task finished.
+    # `error` -- an agent stopped in a way nobody asked for.
+    # `routine` -- a scheduled run failed.
+    #
+    # The default is question and error, which is the whole rule: blocked
+    # on you, or broken. A notifier that fires on every turn is one people
+    # turn off, and then it is not there for the two that mattered.
+    events: ["question", "error"]
+
+    # notify: low, normal, high or urgent.
+    #
+    # Mapped onto whatever the backend understands -- ntfy's five levels,
+    # gotify's ten, the two urgency hints a desktop has.
+    priority: "normal"
+
+    # notify: a local-time range to stay silent in, such as `23:00-07:00`.
+    #
+    # Silences this instance completely. If you want to be woken for a
+    # broken agent but not for a question, that is two instances -- one
+    # with quiet hours and one without, each with its own `events` -- which
+    # is why instances have names.
+    quiet_hours: null
+
+    # notify: a title to use instead of the agent's name.
+    #
+    # Worth setting when several fleets notify the same phone, so a buzz
+    # says which machine it came from.
+    title: null
+
     # mcp: the program to run, spoken to over stdio.
     #
     # This is the general way to give the fleet anything with an MCP server:

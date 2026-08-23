@@ -628,6 +628,70 @@ static const ClawtSchemaEntry schema[] = {
   "webhook: the port to listen on. Must differ per agent -- two agents\n"
   "cannot bind the same one, and the second to start simply fails.", "0.2.0" },
 
+{ "integrations.backend", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "desktop", clawt_notify_backend_get_type,
+  "notify: how the notification reaches you.\n"
+  "\n"
+  "`desktop` raises one on the machine the daemon runs on, which is the\n"
+  "wrong answer when the daemon is on a workstation and you are not.\n"
+  "`ntfy` and `gotify` reach a phone. `matrix` posts into a room, which\n"
+  "on a bridged homeserver means it reaches you wherever you already\n"
+  "read messages. `command` runs a program and hands it the text.", "0.2.0" },
+
+{ "integrations.token", CLAWT_SCHEMA_SECRET, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "notify: the credential for ntfy, gotify or Matrix, as a secret\n"
+  "reference.\n"
+  "\n"
+  "Resolved once when the configuration loads rather than on every\n"
+  "notification: a `command` reference to a locked password manager\n"
+  "blocks until it times out, and doing that each time something needed\n"
+  "saying would make the notifier the slowest thing in the daemon.", "0.2.0" },
+
+{ "integrations.room", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "notify: with `backend: matrix`, the room id to post into.\n"
+  "\n"
+  "A room of your own with nobody else in it works well: it keeps the\n"
+  "fleet's noise out of a room people are talking in, and still arrives\n"
+  "on every device you read Matrix on.", "0.2.0" },
+
+{ "integrations.events", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
+  "question,error", NULL,
+  "notify: what is worth interrupting you for.\n"
+  "\n"
+  "`question` -- an agent said something to you and is waiting.\n"
+  "`done` -- a task finished.\n"
+  "`error` -- an agent stopped in a way nobody asked for.\n"
+  "`routine` -- a scheduled run failed.\n"
+  "\n"
+  "The default is question and error, which is the whole rule: blocked\n"
+  "on you, or broken. A notifier that fires on every turn is one people\n"
+  "turn off, and then it is not there for the two that mattered.", "0.2.0" },
+
+{ "integrations.priority", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  "normal", NULL,
+  "notify: low, normal, high or urgent.\n"
+  "\n"
+  "Mapped onto whatever the backend understands -- ntfy's five levels,\n"
+  "gotify's ten, the two urgency hints a desktop has.", "0.2.0" },
+
+{ "integrations.quiet_hours", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "notify: a local-time range to stay silent in, such as `23:00-07:00`.\n"
+  "\n"
+  "Silences this instance completely. If you want to be woken for a\n"
+  "broken agent but not for a question, that is two instances -- one\n"
+  "with quiet hours and one without, each with its own `events` -- which\n"
+  "is why instances have names.", "0.2.0" },
+
+{ "integrations.title", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "notify: a title to use instead of the agent's name.\n"
+  "\n"
+  "Worth setting when several fleets notify the same phone, so a buzz\n"
+  "says which machine it came from.", "0.2.0" },
+
 { "integrations.command", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
   "mcp: the program to run, spoken to over stdio.\n"
