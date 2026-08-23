@@ -849,6 +849,59 @@ build_integration_server(ClawtIntegrationBinding  *binding,
 }
 
 /*
+ * One `connector` integration, as an entry in the agent's .mcp.json.
+ *
+ * Names the clawtilla CLI and carries no credential, which is the whole
+ * point: an `mcp` integration's environment is resolved into this file,
+ * and this file is one the agent can read.  That is fine for a key
+ * somebody chose to hand it and not fine for an OAuth grant on their
+ * account.  The relay reads the token from a 0600 file the agent has no
+ * reason to touch, and starts the server with it.
+ *
+ * It also means the entry stays correct across a token being renewed.
+ * A credential written in here would be the one that was current when
+ * the workspace was last rendered, which for an hour-long access token
+ * is almost never the one that works.
+ */
+static JsonObject *
+build_connector_server(ClawtConfig             *config,
+                       ClawtIntegrationBinding *binding,
+                       const gchar             *daemon_socket)
+{
+    JsonObject *entry = json_object_new();
+    g_autofree gchar *cli = sibling_binary_path("clawtilla");
+    JsonArray *args = json_array_new();
+    const gchar *config_path = clawt_config_get_path(config);
+
+    json_object_set_string_member(entry, "command", cli);
+
+    /*
+     * Both global options go before the verb.  The CLI splits its own
+     * options from the subcommand's at the first verb it recognises, so
+     * anything written after `connector` is handed to the subcommand,
+     * which has never heard of it.
+     */
+    if (config_path != NULL) {
+        json_array_add_string_element(args, "--config");
+        json_array_add_string_element(args, config_path);
+    }
+
+    if (daemon_socket != NULL) {
+        json_array_add_string_element(args, "--socket");
+        json_array_add_string_element(args, daemon_socket);
+    }
+
+    json_array_add_string_element(args, "connector");
+    json_array_add_string_element(args, "relay");
+    json_array_add_string_element(args,
+                                  clawt_integration_binding_get_name(binding));
+
+    json_object_set_array_member(entry, "args", args);
+
+    return entry;
+}
+
+/*
  * The entry that gives an agent with a VM desktop its screen.
  *
  * It names the clawtilla CLI rather than ssh, and it has to.  The port
@@ -996,11 +1049,16 @@ clawt_workspace_write_mcp_config(ClawtConfig      *config,
             JsonObject *entry;
             gchar *key;
 
-            if (g_strcmp0(clawt_integration_binding_get_info(binding)->id,
-                          "mcp") != 0)
-                continue;
+            const gchar *type =
+                clawt_integration_binding_get_info(binding)->id;
 
-            entry = build_integration_server(binding, secrets_dir, error);
+            if (g_strcmp0(type, "connector") == 0)
+                entry = build_connector_server(config, binding,
+                                               daemon_socket);
+            else if (g_strcmp0(type, "mcp") == 0)
+                entry = build_integration_server(binding, secrets_dir, error);
+            else
+                continue;
 
             if (entry == NULL)
                 return FALSE;
@@ -1238,6 +1296,69 @@ describe_integration(GString *out, ClawtIntegrationBinding *binding)
 
     if (description != NULL && *description != '\0')
         g_string_append_printf(out, "%s\n\n", description);
+
+    if (g_strcmp0(info->id, "connector") == 0) {
+        const gchar *provider =
+            clawt_integration_binding_get_string(binding, "provider");
+        const gchar *account =
+            clawt_integration_binding_get_string(binding, "account");
+        const gchar *scopes =
+            clawt_integration_binding_get_string(binding, "scopes");
+        g_auto(GStrv) tools =
+            clawt_integration_binding_get_string_list(binding, "tools");
+
+        g_string_append_printf(out,
+            "Tools for %s appear beside your own, under\n"
+            "~clawtilla-%s~.\n\n", provider != NULL ? provider : "a service",
+            name);
+
+        /*
+         * The thing an agent most needs to know, and the thing it cannot
+         * work out from the tool list: these reach a real account
+         * belonging to a real person, not a sandbox of its own.
+         */
+        g_string_append(out,
+            "This is somebody's actual account, not a test one. What you\n"
+            "do through it is done as them and is visible to everyone\n"
+            "else who can see it. Reading is cheap; anything that writes,\n"
+            "sends or deletes is worth being sure about first.\n\n");
+
+        if (account != NULL && *account != '\0')
+            g_string_append_printf(out,
+                "The account is ~%s~.\n\n", account);
+
+        /*
+         * Said out loud so it is not discovered by trying.  An agent
+         * that goes looking for the credential wastes turns and leaves
+         * something alarming in a transcript, and the honest answer is
+         * that there is nothing to find.
+         */
+        g_string_append(out,
+            "You do not have the credential and cannot get it. clawtilla\n"
+            "holds it and hands it to the tool server, so there is no\n"
+            "token in your config, your environment or anywhere else to\n"
+            "look -- and no need for one.\n\n");
+
+        if (scopes != NULL && *scopes != '\0')
+            g_string_append_printf(out,
+                "Access was granted for: %s. Anything outside that will\n"
+                "be refused by the service rather than by clawtilla, so\n"
+                "it is worth reading before assuming a failure was\n"
+                "yours.\n\n", scopes);
+
+        if (tools != NULL && tools[0] != NULL) {
+            guint i;
+
+            g_string_append(out, "Only these tools are available here:\n\n");
+
+            for (i = 0; tools[i] != NULL; i++)
+                g_string_append_printf(out, "- ~%s~\n", tools[i]);
+
+            g_string_append_c(out, '\n');
+        }
+
+        return;
+    }
 
     if (g_strcmp0(info->id, "matrix") == 0) {
         const gchar *user_id =

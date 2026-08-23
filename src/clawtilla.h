@@ -78,6 +78,7 @@
 #include "plugin/clawt-plugin-manager.h"
 #include "plugin/clawt-pod-module.h"
 #include "plugin/clawt-automation.h"
+#include "mcp/clawt-mcp-relay.h"
 #include "mcp/clawt-mcp-tools.h"
 #include "ai/clawt-model-catalog.h"
 #include "ai/clawt-agent-designer.h"
@@ -87,7 +88,10 @@
 
 #include "config/clawt-config.h"
 #include "config/clawt-config-render.h"
+#include "integration/clawt-connector.h"
 #include "integration/clawt-integration.h"
+#include "integration/clawt-oauth.h"
+#include "integration/clawt-connector-relay.h"
 #include "integration/clawt-matrix.h"
 #include "integration/clawt-notify.h"
 

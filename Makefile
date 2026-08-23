@@ -58,7 +58,10 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/core/clawt-daemon.h \
 	$(SRCDIR)/core/clawt-event-bus.h \
 	$(SRCDIR)/core/clawt-event-log.h \
+	$(SRCDIR)/integration/clawt-connector.h \
+	$(SRCDIR)/integration/clawt-connector-relay.h \
 	$(SRCDIR)/integration/clawt-integration.h \
+	$(SRCDIR)/integration/clawt-oauth.h \
 	$(SRCDIR)/integration/clawt-matrix.h \
 	$(SRCDIR)/integration/clawt-notify.h \
 	$(SRCDIR)/config/clawt-config.h \
@@ -117,6 +120,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/interfaces/clawt-tool-provider.h \
 	$(SRCDIR)/interfaces/clawt-computer-provider.h \
 	$(SRCDIR)/interfaces/clawt-integration-provider.h \
+	$(SRCDIR)/mcp/clawt-mcp-relay.h \
 	$(SRCDIR)/mcp/clawt-mcp-tools.h \
 	$(SRCDIR)/ai/clawt-model-catalog.h \
 	$(SRCDIR)/ai/clawt-agent-designer.h
@@ -136,7 +140,10 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/clawt-daemon.c \
 	$(SRCDIR)/core/clawt-event-bus.c \
 	$(SRCDIR)/core/clawt-event-log.c \
+	$(SRCDIR)/integration/clawt-connector.c \
+	$(SRCDIR)/integration/clawt-connector-relay.c \
 	$(SRCDIR)/integration/clawt-integration.c \
+	$(SRCDIR)/integration/clawt-oauth.c \
 	$(SRCDIR)/integration/clawt-matrix.c \
 	$(SRCDIR)/integration/clawt-notify.c \
 	$(SRCDIR)/config/clawt-config.c \
@@ -195,6 +202,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/interfaces/clawt-tool-provider.c \
 	$(SRCDIR)/interfaces/clawt-computer-provider.c \
 	$(SRCDIR)/interfaces/clawt-integration-provider.c \
+	$(SRCDIR)/mcp/clawt-mcp-relay.c \
 	$(SRCDIR)/mcp/clawt-mcp-tools.c \
 	$(SRCDIR)/ai/clawt-model-catalog.c \
 	$(SRCDIR)/ai/clawt-agent-designer.c

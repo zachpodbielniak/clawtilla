@@ -54,6 +54,10 @@ static const gchar *const webhook_identity[] = {
     "port", NULL
 };
 
+static const gchar *const connector_required[] = {
+    "provider", NULL
+};
+
 static const ClawtIntegrationInfo integrations[] = {
     { "matrix", CLAWT_INTEGRATION_KIND_CHANNEL,
       "Chat over Matrix, including bridged Discord and Signal rooms.",
@@ -93,6 +97,28 @@ static const ClawtIntegrationInfo integrations[] = {
     { "mcp", CLAWT_INTEGRATION_KIND_TOOLS,
       "Give agents the tools of any MCP server, by command or by URL.",
       NULL, NULL, NULL,
+      NULL, FALSE, FALSE },
+
+    /*
+     * The brokered one.
+     *
+     * Same shape as `mcp` from the agent's side -- tools appear in its
+     * .mcp.json and it calls them -- and completely different on this
+     * side: the daemon obtains the credential, keeps it, renews it and
+     * injects it, so the value never reaches the agent's config, its
+     * environment or its transcript.  That is the whole difference
+     * between handing somebody a key and unlocking the door for them.
+     *
+     * Not one_per_agent: an agent with a GitHub account and a calendar
+     * has two, and each gets its own key in the agent's .mcp.json.  Not
+     * identity-keyed either, because sharing one is the point -- a
+     * fleet-wide connector is a single account the whole fleet reads
+     * through, which is what somebody asking for "give all of them
+     * GitHub" means.
+     */
+    { "connector", CLAWT_INTEGRATION_KIND_TOOLS,
+      "A connected account: clawtilla holds the credential, agents use it.",
+      connector_required, NULL, NULL,
       NULL, FALSE, FALSE },
 
     /*
@@ -473,13 +499,22 @@ clawt_integration_binding_validate(ClawtIntegrationBinding  *self,
      * tell which was meant, and picking one would be a guess about which
      * of the agent's tools are real.
      */
-    if (g_strcmp0(self->info->id, "mcp") == 0) {
+    if (g_strcmp0(self->info->id, "mcp") == 0 ||
+        g_strcmp0(self->info->id, "connector") == 0) {
         gboolean has_command =
             clawt_integration_binding_get_string(self, "command") != NULL;
         gboolean has_url =
             clawt_integration_binding_get_string(self, "url") != NULL;
+        /*
+         * A connector may name neither, and usually does: the catalogue
+         * entry for its provider says which server fronts the service.
+         * An `mcp` integration has no catalogue to fall back on, so
+         * naming neither leaves nothing to start.
+         */
+        gboolean from_catalog =
+            g_strcmp0(self->info->id, "connector") == 0;
 
-        if (!has_command && !has_url) {
+        if (!has_command && !has_url && !from_catalog) {
             g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
                         "integration '%s': set either command or url",
                         self->name);
@@ -1098,6 +1133,70 @@ clawt_integration_health_check_async(ClawtIntegrationBinding *binding,
         }
 
         g_socket_listener_close(listener);
+        g_task_return_boolean(task, TRUE);
+        g_object_unref(task);
+        return;
+    }
+
+    /*
+     * A connector's health is whether there is a live credential, and
+     * that is answered from disk.  Calling the provider to find out
+     * would spend a real API call -- and a rate limit -- on a question
+     * the token file already answers, on a path a person may hit for
+     * every connector at once.
+     */
+    if (g_strcmp0(id, "connector") == 0) {
+        const gchar *token_file =
+            clawt_integration_binding_get_string(binding, "token_file");
+        const gchar *provider =
+            clawt_integration_binding_get_string(binding, "provider");
+        g_autoptr(ClawtOauthToken) token = NULL;
+        g_autoptr(GError) load_error = NULL;
+        gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+
+        if (provider == NULL) {
+            g_task_return_new_error(task, CLAWT_ERROR,
+                                    CLAWT_ERROR_CONFIG_INVALID,
+                                    "no provider is set");
+            g_object_unref(task);
+            return;
+        }
+
+        if (token_file == NULL || !g_file_test(token_file,
+                                               G_FILE_TEST_EXISTS)) {
+            g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_AUTH,
+                                    "not connected yet -- run "
+                                    "`clawtilla connector add %s`",
+                                    binding->name);
+            g_object_unref(task);
+            return;
+        }
+
+        token = clawt_oauth_token_load(token_file, &load_error);
+
+        if (token == NULL) {
+            g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_AUTH,
+                                    "the stored credential cannot be read: "
+                                    "%s", load_error->message);
+            g_object_unref(task);
+            return;
+        }
+
+        /*
+         * Expired but renewable is healthy.  Reporting it as broken
+         * would light up every connector in the list each hour, and
+         * teach somebody to ignore the one that genuinely is.
+         */
+        if (clawt_oauth_token_is_expired(token, now, 0) &&
+            token->refresh_token == NULL) {
+            g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_AUTH,
+                                    "the credential expired and the "
+                                    "provider issued nothing to renew it "
+                                    "with; connect again");
+            g_object_unref(task);
+            return;
+        }
+
         g_task_return_boolean(task, TRUE);
         g_object_unref(task);
         return;
