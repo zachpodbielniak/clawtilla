@@ -7986,7 +7986,15 @@ build_font_group(ClawtWindow *self, const gchar *title,
     GtkWidget *buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     GtkWidget *choose = gtk_button_new_with_label("Choose\342\200\246");
     GtkWidget *clear = gtk_button_new_from_icon_name("edit-clear-symbolic");
-    GtkWidget *spin = gtk_spin_button_new_with_range(0, 48, 1);
+    /*
+     * Half-point steps, one decimal shown.
+     *
+     * Whole points looked tidier and could not express a size people
+     * actually run: Emacs states a pixel size, and 18px lands on 13.6pt
+     * -- which a whole-number control silently rounds to 14, so the file
+     * and the dialog disagree about what is set.
+     */
+    GtkWidget *spin = gtk_spin_button_new_with_range(0, 48, 0.5);
 
     adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group), title);
     adw_preferences_group_set_description(ADW_PREFERENCES_GROUP(group),
@@ -8017,6 +8025,7 @@ build_font_group(ClawtWindow *self, const gchar *title,
                                 "0 follows the desktop");
 
     gtk_widget_set_valign(spin, GTK_ALIGN_CENTER);
+    gtk_spin_button_set_digits(GTK_SPIN_BUTTON(spin), 1);
     gtk_spin_button_set_value(
         GTK_SPIN_BUTTON(spin),
         monospace ? clawt_appearance_get_monospace_size(self->appearance)
