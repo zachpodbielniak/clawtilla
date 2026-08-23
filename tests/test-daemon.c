@@ -1622,6 +1622,50 @@ test_an_attachment_cannot_escape_its_directory(void)
  * button that caused it.  The refusal names the agents so the person can
  * see what they were about to break.
  */
+/*
+ * A VM agent with no disk is refused at creation.
+ *
+ * Provisioning refuses it too, but that is a start and a daemon restart
+ * away from the empty field that caused it -- far enough that what gets
+ * reported is "the VM was never created", with nothing connecting the
+ * two. This is the same rule, moved to where the mistake is made.
+ */
+static void
+test_creating_a_vm_agent_without_a_disk_is_refused(void)
+{
+    Fixture fixture = { 0 };
+
+    fixture_setup(&fixture, NULL);
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    {
+        g_autoptr(JsonNode) created =
+            request(&fixture, "agent.create",
+                    "{\"id\":\"diskless\",\"computer\":\"vm\"}");
+
+        g_assert_true(clawt_ipc_frame_is_error(created));
+    }
+
+    /*
+     * And nothing half-made is left behind.  The check runs after the
+     * fields are applied, so the agent briefly exists; a refusal that
+     * kept it would leave a broken agent for somebody to find and delete.
+     */
+    g_assert_null(clawt_config_get_agent(
+        clawt_daemon_get_config(fixture.daemon), "diskless"));
+
+    /* A computer that needs no disk is unaffected. */
+    {
+        g_autoptr(JsonNode) created =
+            request(&fixture, "agent.create",
+                    "{\"id\":\"chatty\",\"computer\":\"none\"}");
+
+        g_assert_false(clawt_ipc_frame_is_error(created));
+    }
+
+    fixture_teardown(&fixture);
+}
+
 static void
 test_removing_an_image_in_use_is_refused(void)
 {
@@ -1644,9 +1688,17 @@ test_removing_an_image_in_use_is_refused(void)
     g_assert_true(g_file_set_contents(image_path, "not a disk", -1, NULL));
 
     {
+        /*
+         * The disk is named at creation, because a VM agent cannot be
+         * created without one -- an agent with no disk boots nothing, and
+         * finding that out at start time is a long way from the dialog
+         * where the field was left empty.
+         */
+        g_autofree gchar *create_payload =
+            g_strdup_printf("{\"id\":\"vmagent\",\"computer\":\"vm\","
+                            "\"vm_image\":\"%s\"}", image_path);
         g_autoptr(JsonNode) created =
-            request(&fixture, "agent.create",
-                    "{\"id\":\"vmagent\",\"computer\":\"vm\"}");
+            request(&fixture, "agent.create", create_payload);
 
         g_assert_false(clawt_ipc_frame_is_error(created));
     }
@@ -1654,9 +1706,6 @@ test_removing_an_image_in_use_is_refused(void)
     config = clawt_config_get_agent(clawt_daemon_get_config(fixture.daemon),
                                     "vmagent");
     g_assert_nonnull(config);
-    clawt_agent_config_set_string(config, "computer.vm.image", image_path);
-    g_assert_true(clawt_config_save(clawt_daemon_get_config(fixture.daemon),
-                                    NULL));
     g_assert_true(clawt_daemon_reload(fixture.daemon, NULL));
 
     refused = request(&fixture, "image.vm_remove",
@@ -1835,6 +1884,8 @@ main(int argc, char *argv[])
                     test_a_reply_counts_as_a_hop);
     g_test_add_func("/daemon/attachment-cannot-escape",
                     test_an_attachment_cannot_escape_its_directory);
+    g_test_add_func("/daemon/vm-agent-needs-a-disk",
+                    test_creating_a_vm_agent_without_a_disk_is_refused);
     g_test_add_func("/daemon/image-in-use",
                     test_removing_an_image_in_use_is_refused);
     g_test_add_func("/daemon/exec-argv",

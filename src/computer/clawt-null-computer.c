@@ -58,6 +58,19 @@ null_describe(ClawtComputer *self)
                     "files or reach a filesystem.");
 }
 
+/*
+ * Nothing was ever created, so nothing is left over.
+ *
+ * Spelled out rather than left to a default, because the default is now a
+ * refusal -- a backend that cannot destroy what it made should say so,
+ * and this one genuinely made nothing.
+ */
+static gboolean
+null_teardown(ClawtComputer *computer, GError **error)
+{
+    return TRUE;
+}
+
 static ClawtComputerType
 null_get_computer_type(ClawtComputer *self)
 {
@@ -70,6 +83,7 @@ clawt_null_computer_class_init(ClawtNullComputerClass *klass)
 {
     ClawtComputerClass *computer_class = CLAWT_COMPUTER_CLASS(klass);
 
+    computer_class->teardown = null_teardown;
     computer_class->exec = null_exec;
     computer_class->describe = null_describe;
     computer_class->get_computer_type = null_get_computer_type;

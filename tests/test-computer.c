@@ -1718,6 +1718,121 @@ test_vm_overlay_is_rebuilt_when_the_image_changes(void)
     g_assert_cmpstr(backing, ==, second);
 }
 
+/*
+ * The bug this exists for: teardown used to go through CALL_OR_TRUE, so
+ * a backend that had not implemented it reported the computer as
+ * destroyed and destroyed nothing.  Removing a VM agent said "removed"
+ * and left the libvirt domain defined.
+ *
+ * A VM has a teardown now, so the assertion is that the *contract* holds
+ * -- a computer that cannot destroy itself has to say so.
+ */
+static void
+test_teardown_is_never_a_silent_success(void)
+{
+    g_autoptr(ClawtComputer) vm =
+        clawt_vm_computer_new("scribe", CLAWT_VM_BACKEND_QEMU, NULL);
+    g_autoptr(ClawtComputer) null_computer =
+        clawt_null_computer_new("scribe");
+    g_autoptr(ClawtSandbox) sandbox =
+        clawt_sandbox_new(CLAWT_CONFINE_WORKSPACE, "/tmp");
+    g_autoptr(ClawtComputer) host =
+        clawt_host_computer_new("scribe", sandbox);
+    ClawtComputerClass *klass;
+
+    /*
+     * Every backend states its answer rather than inheriting one.  A new
+     * backend that forgets gets the base class's refusal, which is the
+     * whole point -- so what is asserted is that none of these is relying
+     * on it.
+     */
+    klass = CLAWT_COMPUTER_GET_CLASS(vm);
+    g_assert_nonnull(klass->teardown);
+
+    klass = CLAWT_COMPUTER_GET_CLASS(null_computer);
+    g_assert_nonnull(klass->teardown);
+
+    klass = CLAWT_COMPUTER_GET_CLASS(host);
+    g_assert_nonnull(klass->teardown);
+
+    /* The two with genuinely nothing to destroy succeed. */
+    g_assert_true(clawt_computer_teardown(null_computer, NULL));
+    g_assert_true(clawt_computer_teardown(host, NULL));
+}
+
+/*
+ * Tearing down a VM removes the guest's disk, not just its definition.
+ *
+ * Keeping it would leave an agent's whole machine behind under a name
+ * nothing refers to, and a later agent with the same id would silently
+ * adopt it -- which is the confusion teardown is called to end.
+ */
+static void
+test_vm_teardown_removes_the_disk(void)
+{
+    g_autoptr(ClawtComputer) vm = NULL;
+    g_autofree gchar *state_dir = NULL;
+    g_autofree gchar *overlay = NULL;
+    g_autofree gchar *key = NULL;
+    g_autoptr(GError) error = NULL;
+
+    vm = clawt_vm_computer_new("teardownee", CLAWT_VM_BACKEND_QEMU, NULL);
+
+    state_dir = g_build_filename(g_get_user_data_dir(), "clawtilla", "vms",
+                                 "teardownee", NULL);
+    g_assert_true(clawt_ensure_dir(state_dir, 0700, &error));
+    g_assert_no_error(error);
+
+    overlay = g_build_filename(state_dir, "overlay.qcow2", NULL);
+    key = g_build_filename(state_dir, "id_ed25519", NULL);
+
+    g_assert_true(g_file_set_contents(overlay, "not really a disk", -1,
+                                      NULL));
+    g_assert_true(g_file_set_contents(key, "not really a key", -1, NULL));
+
+    g_assert_true(clawt_computer_teardown(vm, &error));
+    g_assert_no_error(error);
+
+    g_assert_false(g_file_test(overlay, G_FILE_TEST_EXISTS));
+    g_assert_false(g_file_test(key, G_FILE_TEST_EXISTS));
+
+    /* And the directory itself, once there is nothing left in it. */
+    g_assert_false(g_file_test(state_dir, G_FILE_TEST_EXISTS));
+}
+
+/*
+ * ...but anything that was not clawtilla's is left alone.  g_rmdir only
+ * removes an empty directory, so a file somebody put there by hand
+ * survives rather than being swept up with the disk.
+ */
+static void
+test_vm_teardown_leaves_what_it_did_not_make(void)
+{
+    g_autoptr(ClawtComputer) vm = NULL;
+    g_autofree gchar *state_dir = NULL;
+    g_autofree gchar *overlay = NULL;
+    g_autofree gchar *theirs = NULL;
+    g_autoptr(GError) error = NULL;
+
+    vm = clawt_vm_computer_new("keepsomething", CLAWT_VM_BACKEND_QEMU, NULL);
+
+    state_dir = g_build_filename(g_get_user_data_dir(), "clawtilla", "vms",
+                                 "keepsomething", NULL);
+    g_assert_true(clawt_ensure_dir(state_dir, 0700, &error));
+
+    overlay = g_build_filename(state_dir, "overlay.qcow2", NULL);
+    theirs = g_build_filename(state_dir, "notes.txt", NULL);
+
+    g_assert_true(g_file_set_contents(overlay, "disk", -1, NULL));
+    g_assert_true(g_file_set_contents(theirs, "mine", -1, NULL));
+
+    g_assert_true(clawt_computer_teardown(vm, &error));
+    g_assert_no_error(error);
+
+    g_assert_false(g_file_test(overlay, G_FILE_TEST_EXISTS));
+    g_assert_true(g_file_test(theirs, G_FILE_TEST_EXISTS));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1840,6 +1955,12 @@ main(int argc, char *argv[])
                     test_image_falls_back_to_the_schema);
     g_test_add_func("/computer/socket-path-length",
                     test_an_over_long_socket_path_is_refused);
+    g_test_add_func("/computer/teardown/never-a-silent-success",
+                    test_teardown_is_never_a_silent_success);
+    g_test_add_func("/computer/vm/teardown-removes-the-disk",
+                    test_vm_teardown_removes_the_disk);
+    g_test_add_func("/computer/vm/teardown-leaves-theirs",
+                    test_vm_teardown_leaves_what_it_did_not_make);
 
     status = g_test_run();
 

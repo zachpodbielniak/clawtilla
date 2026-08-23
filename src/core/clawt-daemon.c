@@ -3035,6 +3035,18 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             }
         }
 
+        /*
+         * Checked after the fields are applied, so it sees what was
+         * actually written rather than what the payload claimed, and
+         * rolled back rather than saved: an agent that exists and cannot
+         * work is worse than one that was never added, because the person
+         * has to find out it is broken and then delete it.
+         */
+        if (!clawt_agent_config_validate_computer(created, &error)) {
+            clawt_config_remove_agent(self->config, agent_id);
+            return clawt_ipc_error_new(request, error->code, error->message);
+        }
+
         if (!clawt_config_save(self->config, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
 

@@ -68,9 +68,37 @@ clawt_computer_stop(ClawtComputer *self, GError **error)
 gboolean
 clawt_computer_teardown(ClawtComputer *self, GError **error)
 {
+    ClawtComputerClass *klass;
+
     g_return_val_if_fail(CLAWT_IS_COMPUTER(self), FALSE);
 
-    CALL_OR_TRUE(self, teardown, error);
+    klass = CLAWT_COMPUTER_GET_CLASS(self);
+
+    /*
+     * Refused rather than answered TRUE, unlike every other vfunc here.
+     *
+     * This one used to go through CALL_OR_TRUE, so a backend that had not
+     * implemented it reported the computer as destroyed and destroyed
+     * nothing. ClawtVmComputer was in exactly that state: removing a VM
+     * agent said "removed", left the libvirt domain defined and the disk
+     * on disk, and the only way to find out was to go looking in
+     * virt-manager for a VM that should not have been there.
+     *
+     * A backend that genuinely has nothing to destroy says so with a
+     * teardown of its own -- see the null and host computers, which are
+     * two lines each. That way the next backend added inherits a loud
+     * failure rather than a quiet lie.
+     */
+    if (klass->teardown == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                    "a %s computer does not know how to destroy itself, so "
+                    "anything it created is still there. Remove it by hand.",
+                    clawt_enum_to_nick(CLAWT_TYPE_COMPUTER_TYPE,
+                                       clawt_computer_get_computer_type(self)));
+        return FALSE;
+    }
+
+    return klass->teardown(self, error);
 }
 
 ClawtExecResult *

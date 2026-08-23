@@ -366,6 +366,29 @@ gint     clawt_agent_config_get_enum(ClawtAgentConfig *self,
  */
 GStrv    clawt_agent_config_get_string_list(ClawtAgentConfig *self,
                                             const gchar      *key);
+/**
+ * clawt_agent_config_validate_computer:
+ * @self: a #ClawtAgentConfig
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Whether this agent's computer could actually work.
+ *
+ * Only one rule so far, and it earns its place: a VM with no disk image
+ * defines, starts and boots nothing.  Provisioning refuses it too, but
+ * that is a daemon restart away from the mistake -- far enough that the
+ * symptom people report is "the VM was never created", with no visible
+ * connection to a field left empty.
+ *
+ * Called from every path that creates an agent, which is why it is here
+ * rather than in any one of them: the daemon's agent.create and the AI
+ * designer's commit are separate code, and a rule living in one is a rule
+ * the other does not have.
+ *
+ * Returns: %TRUE if the computer is usable as configured
+ */
+gboolean clawt_agent_config_validate_computer(ClawtAgentConfig  *self,
+                                              GError           **error);
+
 gboolean clawt_agent_config_has_key(ClawtAgentConfig *self,
                                     const gchar      *key);
 

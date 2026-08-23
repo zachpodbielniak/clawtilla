@@ -550,6 +550,20 @@ host_describe(ClawtComputer *computer)
     return g_string_free(g_steal_pointer(&out), FALSE);
 }
 
+/*
+ * The host is not clawtilla's to destroy.
+ *
+ * Removing an agent that had the run of this machine takes away its
+ * access and nothing else: the filesystem it was working in belongs to
+ * the person, not to the agent. Spelled out rather than left to the
+ * default, which is now a refusal.
+ */
+static gboolean
+host_teardown(ClawtComputer *computer, GError **error)
+{
+    return TRUE;
+}
+
 static ClawtComputerType
 host_get_computer_type(ClawtComputer *computer)
 {
@@ -579,6 +593,7 @@ clawt_host_computer_class_init(ClawtHostComputerClass *klass)
     computer_class->provision = host_provision;
     computer_class->start = host_start;
     computer_class->stop = host_stop;
+    computer_class->teardown = host_teardown;
     computer_class->exec = host_exec;
     computer_class->put_file = host_put_file;
     computer_class->get_file = host_get_file;

@@ -864,6 +864,11 @@ clawt_agent_designer_commit(ClawtAgentDesigner *self, GError **error)
         }
     }
 
+    if (!clawt_agent_config_validate_computer(agent, error)) {
+        clawt_config_remove_agent(self->config, id);
+        return NULL;
+    }
+
     if (!clawt_integration_validate(agent, error)) {
         /*
          * Rolled back rather than left half-created.  An agent that exists

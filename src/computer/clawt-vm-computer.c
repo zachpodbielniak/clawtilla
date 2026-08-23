@@ -1733,6 +1733,120 @@ build_ssh_argv_as(ClawtVmComputer *self,
 }
 
 /*
+ * Removes the guest and everything clawtilla made for it.
+ *
+ * Never called automatically -- an agent whose daemon restarted keeps its
+ * VM. It runs when somebody asks for the computer to go, and then it has
+ * to actually go: this vfunc did not exist at all, and because the base
+ * class answered TRUE for a missing one, removing a VM agent reported the
+ * computer as destroyed while the libvirt domain stayed defined and the
+ * disk stayed on disk. The person then found it in virt-manager and had
+ * to undefine it by hand.
+ *
+ * Everything here is best-effort and additive: a domain somebody already
+ * removed, or a disk already deleted, is not a reason to refuse. What is
+ * a reason to refuse is being unable to remove something that is still
+ * there, because that is the case the caller has to hear about.
+ */
+static gboolean
+vm_teardown(ClawtComputer *computer, GError **error)
+{
+    ClawtVmComputer *self = CLAWT_VM_COMPUTER(computer);
+    g_autofree gchar *state_dir = NULL;
+    g_autoptr(GError) local = NULL;
+    static const gchar *const leftovers[] = {
+        "overlay.qcow2", "overlay-superseded.qcow2", "seed.iso",
+        "known_hosts", "ssh-port", "id_ed25519", "id_ed25519.pub", NULL
+    };
+    gsize i;
+
+    /*
+     * Stopped first, and by whichever route each backend has.  libvirt
+     * refuses to undefine a running domain -- podomation's undefine
+     * refuses it too rather than leaving a transient domain behind -- and
+     * qemu has to be told to go before its files can be removed.
+     */
+    if (!clawt_computer_stop(computer, &local))
+        g_message("vm %s: could not be stopped cleanly before removal (%s); "
+                  "carrying on", self->domain, local->message);
+
+    g_clear_error(&local);
+
+    if (self->backend == CLAWT_VM_BACKEND_LIBVIRT) {
+        /*
+         * Asked only when there is something to ask about. libvirt logs
+         * two alarming lines for a domain that is not there -- it tries
+         * the name, then the same string as a UUID -- and this is the
+         * ordinary path for an agent that was never started.
+         */
+        if (libvirt_has_domain(self)) {
+            if (!libvirt_call(self, "undefine", NULL, error)) {
+                g_prefix_error(error, "the libvirt domain %s could not be "
+                                      "removed: ", self->domain);
+                return FALSE;
+            }
+        }
+    } else if (self->qemu != NULL) {
+        g_subprocess_force_exit(self->qemu);
+        g_clear_object(&self->qemu);
+    }
+
+    if (self->qmp_socket != NULL)
+        g_unlink(self->qmp_socket);
+
+    /*
+     * The disk goes with the domain.  It is the guest: keeping it would
+     * leave an agent's whole machine behind under a name nothing refers
+     * to any more, and a later agent with the same id would silently
+     * adopt it instead of starting clean -- which is exactly the
+     * confusion this is being called to end.
+     *
+     * The agent's own *work* is in its workspace on the host, which this
+     * never touches.
+     */
+    state_dir = vm_state_dir(self);
+
+    for (i = 0; leftovers[i] != NULL; i++) {
+        g_autofree gchar *path = g_build_filename(state_dir, leftovers[i],
+                                                  NULL);
+
+        if (g_unlink(path) != 0 && errno != ENOENT) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_COMPUTER_PROVISION,
+                        "the VM is gone but %s could not be removed: %s",
+                        path, g_strerror(errno));
+            return FALSE;
+        }
+    }
+
+    {
+        g_autofree gchar *seed_dir = g_build_filename(state_dir,
+                                                      "cloud-init", NULL);
+        g_autofree gchar *user_data = g_build_filename(seed_dir, "user-data",
+                                                       NULL);
+        g_autofree gchar *meta_data = g_build_filename(seed_dir, "meta-data",
+                                                       NULL);
+
+        g_unlink(user_data);
+        g_unlink(meta_data);
+        g_rmdir(seed_dir);
+    }
+
+    /*
+     * Left if anything else is in it.  g_rmdir only removes an empty
+     * directory, so something put there by hand survives rather than
+     * being swept up with the rest.
+     */
+    g_rmdir(state_dir);
+
+    g_clear_pointer(&self->overlay, g_free);
+    g_clear_pointer(&self->seed_iso, g_free);
+
+    clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ABSENT, NULL);
+
+    return TRUE;
+}
+
+/*
  * There is no `podman exec` for a VM, so commands go over SSH.  A guest
  * agent would be an extra thing to install inside every image, and SSH is
  * already there in anything that boots.
@@ -1890,6 +2004,7 @@ clawt_vm_computer_class_init(ClawtVmComputerClass *klass)
     computer_class->provision = vm_provision;
     computer_class->start = vm_start;
     computer_class->stop = vm_stop;
+    computer_class->teardown = vm_teardown;
     computer_class->exec = vm_exec;
     computer_class->describe = vm_describe;
     computer_class->get_computer_type = vm_get_computer_type;

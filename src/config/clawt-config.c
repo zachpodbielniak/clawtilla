@@ -543,6 +543,31 @@ clawt_agent_config_get_string_list(ClawtAgentConfig *self, const gchar *key)
 }
 
 gboolean
+clawt_agent_config_validate_computer(ClawtAgentConfig *self, GError **error)
+{
+    g_autofree gchar *image = NULL;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    if (clawt_agent_config_get_enum(self, "computer.type") !=
+        CLAWT_COMPUTER_VM)
+        return TRUE;
+
+    image = clawt_agent_config_get_path_value(self, "computer.vm.image");
+
+    if (image != NULL && *image != '\0')
+        return TRUE;
+
+    g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "a VM needs a disk image to boot: set "
+                        "computer.vm.image. `clawtilla image vm get "
+                        "fedora-44` fetches one, or pick one from the Disk "
+                        "image row when creating the agent.");
+
+    return FALSE;
+}
+
+gboolean
 clawt_agent_config_has_key(ClawtAgentConfig *self, const gchar *key)
 {
     g_return_val_if_fail(self != NULL, FALSE);

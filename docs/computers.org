@@ -658,6 +658,32 @@ Everything for one guest, under
 
 Deleting the directory starts the guest over from the base image.
 
+*** Removing a VM
+
+~clawtilla agent rm <agent> --with-computer~ destroys the guest: it stops
+the domain, undefines it, and deletes the overlay, the seed, the key and
+the recorded port.  The agent's *workspace* on the host is never touched
+-- that is where its work is.
+
+Without ~--with-computer~ the VM is left exactly as it is.  Removing an
+agent from the fleet is reversible and deleting its disk is not, so the
+destructive half is opt-in.
+
+Two things this used to get wrong, both worth knowing if you are running
+an older build:
+
+- ~ClawtVmComputer~ had no teardown at all, and the base class answered
+  TRUE for a missing one -- so the removal *reported success* and left
+  the libvirt domain defined and the disk on disk. The only way to find
+  out was to open virt-manager and see a VM that should not have been
+  there. A backend that cannot destroy itself is now refused by name.
+- The state directory survived, so a later agent created with the same
+  id silently adopted the old guest instead of starting clean.
+
+If you have such a leftover, ~virsh -c qemu:///session undefine
+clawt-<agent>~ removes the definition and the directory under
+~$XDG_DATA_HOME/clawtilla/vms/<agent>~ holds the disk.
+
 ** Mount paths
 
 Mounts are how files get in and out.

@@ -882,15 +882,31 @@ cmd_agent(int argc, char *argv[])
         for (i = 3; i < argc; i++) {
             const gchar *flag = argv[i];
 
+            g_autofree gchar *field = NULL;
+
             if (!g_str_has_prefix(flag, "--") || i + 1 >= argc) {
                 g_printerr("clawtilla: unexpected argument '%s'\n", flag);
                 g_printerr("Usage: clawtilla agent create --id <id> "
                            "[--name X] [--model X] [--computer X] "
-                           "[--image X]\n");
+                           "[--image X] [--vm-image PATH]\n");
+                g_printerr("\n  --image     container image\n");
+                g_printerr("  --vm-image  disk image for --computer vm; "
+                           "required, because a VM with no disk boots "
+                           "nothing\n");
                 return EXIT_FAILURE;
             }
 
-            json_builder_set_member_name(builder, flag + 2);
+            /*
+             * Dashes are accepted where the field has an underscore.
+             * --vm-image is the spelling every other option here uses,
+             * and the payload member is vm_image; sending the dashed form
+             * verbatim produced a member the daemon has never heard of,
+             * which it ignores -- so the image was silently dropped and
+             * the agent created without one.
+             */
+            field = g_strdelimit(g_strdup(flag + 2), "-", '_');
+
+            json_builder_set_member_name(builder, field);
             json_builder_add_string_value(builder, argv[++i]);
         }
 

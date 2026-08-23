@@ -361,11 +361,10 @@ the same program.
   unprivileged user cannot reach that. Check both names.
 - Starting the source is safe for `container`: its `start()` spawns the
   event-stream thread and returns TRUE unconditionally.
-- **No automated coverage.** `/computer/vm/boots-and-runs` exercises the
-  qemu backend, which leaves no state behind. The libvirt path is
-  verified by hand, because `vm_virtmanager` exposes no `undefine` — a
-  test that defines a domain cannot clean up after itself. That is also
-  why removing a VM agent leaves its domain defined in libvirt.
+- `vm_virtmanager` now exposes `undefine`, which it did not for a long
+  time — so a test that defines a domain can finally clean up after
+  itself, and removing a VM agent removes its domain instead of leaving
+  it for somebody to find in virt-manager.
 
 ### `g_subprocess_newv()` succeeding does not mean qemu is running
 
@@ -467,6 +466,54 @@ the same program.
   the feature. Same shape as the designer's pinning: two tested halves
   with no wire between them. When something works in isolation and not in
   the product, grep for the caller before debugging the logic.
+
+### A missing vfunc must not answer TRUE
+
+- `clawt_computer_teardown()` went through `CALL_OR_TRUE`, which returns
+  TRUE when the vfunc is NULL — and `ClawtVmComputer` had no teardown at
+  all. So `agent rm --remove-computer` on a VM took the success branch,
+  recorded the computer as "removed", and removed nothing: the libvirt
+  domain stayed defined and the disk stayed on disk. A missing feature
+  that reports failure is a gap; one that reports success is a lie, and
+  the person only found out by opening virt-manager and seeing a VM that
+  should not have been there.
+- The default is now a refusal naming the computer type. The two
+  backends with genuinely nothing to destroy — null and host — say so in
+  two lines each, so a new backend inherits the refusal rather than the
+  lie. `tests/test-computer.c` asserts that every backend states its own
+  answer rather than relying on a default.
+- Teardown takes the guest's **disk** with the domain. Keeping it left an
+  agent's whole machine behind under a name nothing referred to, and a
+  later agent with the same id silently adopted it instead of starting
+  clean. Only files clawtilla wrote are removed, and the state directory
+  goes only if it is then empty — `g_rmdir` refuses a directory with
+  anything else in it, which is what keeps a file somebody put there by
+  hand.
+
+### A rule enforced at one creation path is not enforced
+
+- Refusing a diskless VM agent in the daemon's `agent.create` handler
+  left `clawt_agent_designer_commit()` free to make one, because the
+  designer writes through `clawt_config_add_agent()` and never touches
+  that handler. Its own comment says "the same path as creating an agent
+  by hand", which is true of the config call and not of the validation
+  around it. The rule lives in
+  `clawt_agent_config_validate_computer()` and both callers run it after
+  applying their fields, then roll back with
+  `clawt_config_remove_agent()` — an agent that exists and cannot work is
+  worse than one that was never added.
+- The provisioning refusal stays. It is the backstop for the paths that
+  do not create agents at all, such as `agent set computer.type vm`.
+
+### The CLI passed `--vm-image` straight through and lost it
+
+- `agent create` builds its payload by stripping `--` and using the rest
+  as a JSON member name, so `--vm-image` became a member called
+  `vm-image`, which the daemon has never heard of and silently ignores.
+  Every other option there happens to be a single word, so nothing had
+  exposed it. Dashes are now folded to underscores, and the usage text
+  names the flag — a VM agent could not be given a disk from the command
+  line at all before that.
 
 ### Two things called "memory"
 
