@@ -1853,9 +1853,14 @@ test_a_guest_desktop_gets_a_screen(void)
 
     headless = clawt_vm_computer_build_domain_xml(CLAWT_VM_COMPUTER(computer));
 
-    /* No desktop, no GPU: a headless VM has nothing to draw. */
-    g_assert_null(strstr(headless, "<video>"));
-    g_assert_null(strstr(headless, "<graphics"));
+    /*
+     * Even without a desktop.  A guest with no display device offers only
+     * a serial console, which is the boot log for ever -- so somebody
+     * looking at it cannot tell a broken guest from a working headless
+     * one. A framebuffer nobody reads costs a few megabytes.
+     */
+    g_assert_nonnull(strstr(headless, "<video>"));
+    g_assert_nonnull(strstr(headless, "<graphics"));
 
     clawt_vm_computer_set_desktop(CLAWT_VM_COMPUTER(computer), desktop);
     graphical =
@@ -1885,7 +1890,7 @@ test_the_qemu_backend_names_its_gpu(void)
     g_auto(GStrv) argv = NULL;
     g_autofree gchar *joined = NULL;
 
-    clawt_vm_computer_set_desktop(CLAWT_VM_COMPUTER(computer), desktop);
+    (void)desktop;
 
     argv = clawt_vm_computer_build_qemu_argv(CLAWT_VM_COMPUTER(computer),
                                              "/tmp/qmp.sock");

@@ -411,26 +411,32 @@ clawt_vm_computer_build_domain_xml(ClawtVmComputer *self)
      * virtio rather than the older models: it is what a current GNOME on
      * Wayland wants, and every cloud image has the driver.
      */
-    if (self->desktop != NULL) {
-        g_string_append(out,
-            "    <video>\n"
-            "      <model type='virtio' heads='1' primary='yes'/>\n"
-            "    </video>\n");
+    g_string_append(out,
+        "    <video>\n"
+        "      <model type='virtio' heads='1' primary='yes'/>\n"
+        "    </video>\n");
 
-        /*
-         * And a way for a person to look at it.  The agent does not need
-         * this -- it screenshots through the extension inside the guest
-         * -- but somebody wondering whether the desktop came up has
-         * otherwise only a serial console to wonder at.
-         *
-         * Bound to loopback. A VM's screen is a live view of whatever the
-         * agent is doing, and that does not belong on the network because
-         * a default was convenient.
-         */
-        g_string_append(out,
-            "    <graphics type='vnc' port='-1' autoport='yes' "
-            "listen='127.0.0.1'/>\n");
-    }
+    /*
+     * Given to every VM, not only the ones with a desktop.
+     *
+     * A guest with no display device has no /dev/dri and no graphical
+     * console, so virt-manager offers only the serial one -- which is the
+     * boot log, for ever, whether or not anything is wrong. Somebody
+     * looking at that cannot tell a broken guest from a working headless
+     * one, and on a guest that *does* have a desktop it looked exactly
+     * like GNOME failing to start.
+     *
+     * A headless VM costs a few megabytes for a framebuffer nobody reads,
+     * and gains a console that shows its login prompt. That is the better
+     * trade in both directions.
+     *
+     * Bound to loopback. A VM's screen is a live view of whatever the
+     * agent is doing, and that does not belong on the network because a
+     * default was convenient.
+     */
+    g_string_append(out,
+        "    <graphics type='vnc' port='-1' autoport='yes' "
+        "listen='127.0.0.1'/>\n");
 
     /*
      * User-mode networking either way, so no bridge appears on the host
@@ -496,12 +502,10 @@ clawt_vm_computer_build_qemu_argv(ClawtVmComputer *self,
      * happens to be right is what kept that hidden, so both backends now
      * say what they mean.
      */
-    if (self->desktop != NULL) {
-        g_ptr_array_add(argv, g_strdup("-vga"));
-        g_ptr_array_add(argv, g_strdup("none"));
-        g_ptr_array_add(argv, g_strdup("-device"));
-        g_ptr_array_add(argv, g_strdup("virtio-gpu-pci"));
-    }
+    g_ptr_array_add(argv, g_strdup("-vga"));
+    g_ptr_array_add(argv, g_strdup("none"));
+    g_ptr_array_add(argv, g_strdup("-device"));
+    g_ptr_array_add(argv, g_strdup("virtio-gpu-pci"));
     g_ptr_array_add(argv, g_strdup("-no-reboot"));
 
     if (mounts != NULL && mounts->len > 0) {

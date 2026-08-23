@@ -927,7 +927,7 @@ is active, ~systemctl get-default~ says ~graphical.target~, and the
 console sits on the boot log because with no video device the serial
 console is the only console there is.
 
-So a guest desktop adds two devices, and only when one is configured:
+So every VM gets two devices, desktop or not:
 
 - ~<video><model type='virtio'/></video>~ -- virtio because that is what
   a current GNOME on Wayland wants, and every cloud image has the driver.
@@ -937,8 +937,17 @@ So a guest desktop adds two devices, and only when one is configured:
   of what the agent is doing, and that does not belong on the network
   because a default was convenient.
 
-~virt-manager~ shows that display once it is there; without it, the
-console it offers is the serial one.
+Given to headless VMs as well, deliberately.  A guest with no display
+device offers only the serial console, which is the boot log for ever --
+so somebody looking at it cannot tell a broken guest from a working
+headless one, and on a guest that *does* have a desktop it looks exactly
+like GNOME failing to start.  A framebuffer nobody reads costs a few
+megabytes.
+
+~virt-manager~ picks the graphical console when a domain has one.  A
+domain first defined *without* one keeps the serial console it chose
+then, per-VM -- so an older agent needs *View -> Consoles -> Graphical
+Console* once, or its window closed and reopened.
 
 **** How the tools reach the agent
 

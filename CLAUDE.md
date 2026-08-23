@@ -424,8 +424,12 @@ the same program.
   it, so a person can see whether the desktop came up — the agent does
   not need it, since it screenshots through the extension inside the
   guest.
-- Emitted only when a desktop is configured. A headless VM has nothing
-  to draw, and `tests/test-computer.c` asserts both halves.
+- Given to **every** VM, not only the ones with a desktop. A guest with
+  no display offers only the serial console, so a person looking at it
+  cannot tell a broken guest from a working headless one. And
+  virt-manager picks the graphical console only if the domain had one
+  when the window was first opened — a domain defined without it keeps
+  serial, per-VM, which is why the fix looked like it had not worked.
 
 ### X-GNOME-Autostart-Phase now stops an autostart entry running
 
