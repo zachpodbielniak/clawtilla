@@ -400,6 +400,42 @@ tab, which lists what has been fetched:
 clawtilla agent set researcher computer.vm.image ~/.local/share/clawtilla/images/fedora-44
 #+end_src
 
+*** Rebuilding one
+
+cloud-init acts on its seed at *first boot only*.  So the login, the
+desktop, the package list -- everything in that seed -- is fixed for the
+life of the machine, and changing it in the config and restarting the
+agent looks like it did nothing at all.
+
+#+begin_src bash
+clawtilla agent stop deb-tester
+clawtilla computer rebuild deb-tester
+#+end_src
+
+In the GTK client the same thing is /Rebuild computer/ in the Agent tab,
+which is insensitive while the agent runs.  Destroying the machine
+underneath a working agent is not something to do carefully; it is
+something not to offer.
+
+It destroys the guest and builds it again from the image: the domain, the
+overlay, the seed and the generated SSH key all go, and the contents of
+the machine with them.  It is also how to get one back that was deleted
+outside clawtilla -- though that particular case now recovers on its own.
+
+*** A guest somebody deleted
+
+Deleting a VM in virt-manager, or a qcow2 with ~rm~, tells clawtilla
+nothing.  Starting the agent afterwards builds it again: the state
+clawtilla holds is a belief about something another program owns, so it
+asks the hypervisor rather than trusting what it remembers.
+
+That was not always true, and the difference was invisible: restarting
+the whole *daemon* recovered, because a freshly built computer starts out
+knowing nothing and provisions.  Restarting just the *agent* did not.
+
+The contents are gone either way -- what comes back is a fresh guest from
+the image, not the machine that was deleted.
+
 *** Where the suggestions come from
 
 The catalog is a starting point, never a restriction: any ~https~ URL to

@@ -1831,6 +1831,41 @@ test_exec_without_an_argv_falls_back(void)
     g_assert_null(argv);
 }
 
+
+/*
+ * Rebuilding destroys the machine an agent is working on, so the two
+ * cases that must never reach a teardown are refused before anything is
+ * built: an agent with no computer, and one that is running.
+ *
+ * The first matters because "rebuilt" would otherwise be reported for an
+ * agent that has nothing to rebuild -- a success that did nothing, which
+ * is the worst answer of the three.
+ */
+static void
+test_rebuild_refuses_what_it_must(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) no_agent = NULL;
+    g_autoptr(JsonNode) no_computer = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    no_agent = request(&fixture, "computer.rebuild",
+                       "{\"agent\":\"nobody\"}");
+    g_assert_true(clawt_ipc_frame_is_error(no_agent));
+
+    /*
+     * chief has no computer configured, so the default is `none`.
+     * Refused, and the message says so rather than reporting a rebuild.
+     */
+    no_computer = request(&fixture, "computer.rebuild",
+                          "{\"agent\":\"chief\"}");
+    g_assert_true(clawt_ipc_frame_is_error(no_computer));
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1882,6 +1917,8 @@ main(int argc, char *argv[])
                     test_reload_reaches_the_fleet);
     g_test_add_func("/daemon/state-dir-cannot-be-mounted",
                     test_the_state_directory_cannot_be_mounted);
+    g_test_add_func("/daemon/computer-rebuild-refusals",
+                    test_rebuild_refuses_what_it_must);
 
     g_test_add_func("/daemon/request-from-event-handler",
                     test_a_request_from_an_event_handler_completes);

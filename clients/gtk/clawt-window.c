@@ -3961,6 +3961,62 @@ build_files(ClawtWindow *self)
     gtk_box_append(self->inspector, group);
 }
 
+/*
+ * Rebuilding is the only way to apply anything cloud-init reads at first
+ * boot -- the login, the desktop, the package list.  Those are fixed for
+ * the life of the overlay, so changing them in the config and restarting
+ * looks like it did nothing.
+ */
+static void
+on_rebuild_confirmed(AdwAlertDialog *dialog, const gchar *response,
+                     gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+
+    if (g_strcmp0(response, "rebuild") != 0)
+        return;
+
+    reply = clawt_window_request(
+        self, "computer.rebuild",
+        clawt_build_payload("agent", self->selected_agent, NULL));
+
+    if (reply == NULL)
+        return;
+
+    clawt_window_toast(self, "Rebuilt. Its contents are gone, and "
+                             "cloud-init runs again on the next start.");
+    refresh_selected(self);
+}
+
+static void
+on_rebuild_computer(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    AdwAlertDialog *ask;
+
+    (void)button;
+
+    ask = ADW_ALERT_DIALOG(adw_alert_dialog_new(
+        "Rebuild this computer?",
+        "Everything in it is destroyed and it is built again from the "
+        "image.\n\n"
+        "This is what applies settings cloud-init only reads at first "
+        "boot -- the login, the desktop, the packages -- which are "
+        "otherwise fixed for the life of the machine. It is also how to "
+        "get one back that was deleted outside clawtilla.\n\n"
+        "The agent has to be stopped."));
+
+    adw_alert_dialog_add_response(ask, "cancel", "Cancel");
+    adw_alert_dialog_add_response(ask, "rebuild", "Rebuild");
+    adw_alert_dialog_set_response_appearance(ask, "rebuild",
+                                             ADW_RESPONSE_DESTRUCTIVE);
+    adw_alert_dialog_set_default_response(ask, "cancel");
+
+    g_signal_connect(ask, "response", G_CALLBACK(on_rebuild_confirmed), self);
+    adw_dialog_present(ADW_DIALOG(ask), GTK_WIDGET(self));
+}
+
 static void
 build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
 {
@@ -4203,6 +4259,40 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
         adw_preferences_group_add(ADW_PREFERENCES_GROUP(detail), label);
 
         gtk_box_append(self->inspector, detail);
+    }
+
+    /*
+     * Offered whenever there is a computer configured, not only when one
+     * currently exists -- the case it is most wanted for is a guest that
+     * has gone, where there is nothing left to report on above.
+     */
+    if (g_strcmp0(clawt_json_string(agent, "computer", "none"),
+                  "none") != 0) {
+        GtkWidget *rebuild_group = adw_preferences_group_new();
+        GtkWidget *rebuild = gtk_button_new_with_label("Rebuild computer");
+
+        adw_preferences_group_set_description(
+            ADW_PREFERENCES_GROUP(rebuild_group),
+            "Destroys it and builds it again from the image. The only way "
+            "to apply the login, the desktop or the package list, which "
+            "are read once at first boot.");
+
+        gtk_widget_add_css_class(rebuild, "destructive-action");
+        gtk_widget_set_halign(rebuild, GTK_ALIGN_CENTER);
+        gtk_widget_set_margin_top(rebuild, 6);
+
+        /* Destroying the machine underneath a running agent is not a
+         * thing to do carefully; it is a thing not to offer. */
+        gtk_widget_set_sensitive(
+            rebuild, g_strcmp0(clawt_json_string(agent, "state", ""),
+                               "stopped") == 0);
+
+        g_signal_connect(rebuild, "clicked",
+                         G_CALLBACK(on_rebuild_computer), self);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(rebuild_group),
+                                  rebuild);
+
+        gtk_box_append(self->inspector, rebuild_group);
     }
 
     /* ── Running it ── */

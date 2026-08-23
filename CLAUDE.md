@@ -1692,9 +1692,45 @@ the same program.
   prefer instead.
 
 
+### Remembered state about something another program owns
+
+- `vm_start()` provisioned only when it remembered the guest as ABSENT,
+  and a stop leaves STOPPED -- so an agent restarted against a domain
+  somebody had deleted in virt-manager skipped provisioning on the
+  strength of its own memory. On the qemu backend it then returned
+  **TRUE**: a computer reported as started with no machine anywhere,
+  which is the same shape of lie as a teardown that reports success and
+  removes nothing.
+- It looked like it worked, because restarting the whole *daemon*
+  recovers: a freshly built computer starts ABSENT and provisions.
+  Restarting just the *agent* does not, and nobody should have to know
+  the difference. Ask the hypervisor; provisioning is idempotent, so the
+  check costs one `list_domains`.
+- The test has to fail without the fix to mean anything. This one does,
+  and reverting the check to confirm that is two minutes well spent --
+  it was asserting on a refusal message, which is exactly the kind of
+  assertion that can pass for the wrong reason.
+
+### cloud-init reads its seed once, so some settings need the machine destroyed
+
+- The login, the desktop, the flavour and the package list are fixed for
+  the life of an overlay. Changing one and restarting the agent does
+  nothing visible, which reads as the setting not working rather than as
+  the setting arriving too late. `computer.rebuild` is the answer, and it
+  is refused while the agent runs -- destroying the machine underneath a
+  working agent is not a thing to do carefully, it is a thing not to
+  offer.
+- cpus, memory and disk size are *not* in the seed: they reach the domain
+  definition and apply at its next boot. Worth saying in the same breath,
+  or people rebuild for things that never needed it.
+
+
 ## Things to NEVER Do
 
 - Never hand-edit `data/example-config.yaml` or `data/default-config.yaml`
+- Never decide there is nothing to build from state clawtilla remembers.
+  A libvirt domain and a qcow2 both belong to something else, and either
+  can be deleted without telling us
 - Never write a distribution's package names, service units or binary
   locations straight into the cloud-init seed. cloud-init chooses the
   package manager and nothing else; everything else is per family

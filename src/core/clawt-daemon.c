@@ -5840,6 +5840,79 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
+    if (g_strcmp0(kind, "computer.rebuild") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        ClawtAgent *agent = (agent_id != NULL)
+                            ? clawt_agent_manager_get(self->agents, agent_id)
+                            : NULL;
+        ClawtAgentConfig *agent_config = (agent_id != NULL)
+            ? clawt_config_get_agent(self->config, agent_id) : NULL;
+        g_autoptr(ClawtComputer) built = NULL;
+        g_autoptr(GError) teardown_error = NULL;
+        g_autofree gchar *removed = NULL;
+
+        if (agent_config == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such agent");
+
+        /*
+         * Refused while it runs, rather than done carefully.  Rebuilding
+         * is destroying the machine the agent is working on; there is no
+         * version of that which is safe to do underneath it.
+         */
+        if (agent != NULL &&
+            clawt_agent_get_state(agent) != CLAWT_AGENT_STATE_STOPPED)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_AGENT_STATE,
+                                       "stop the agent first: rebuilding "
+                                       "destroys the computer it is using");
+
+        if ((ClawtComputerType)clawt_agent_config_get_enum(
+                agent_config, "computer.type") == CLAWT_COMPUTER_NONE)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
+                                       "this agent has no computer to "
+                                       "rebuild");
+
+        /*
+         * Built from the config rather than taken from the agent: a
+         * stopped agent has no computer object, and stopped is the only
+         * state this is allowed in.
+         */
+        built = clawt_computer_factory_create(agent_config, self->pod_bridge,
+                                              &error);
+
+        if (built == NULL)
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        /*
+         * A teardown that fails is reported and not fatal.  The common
+         * reason to reach for this is that the guest is already gone --
+         * deleted by hand in virt-manager -- and refusing to rebuild
+         * because there was nothing to tear down would be absurd.
+         */
+        if (!clawt_computer_teardown(built, &teardown_error)) {
+            removed = g_strdup(teardown_error->message);
+            g_message("agent %s: nothing to tear down before rebuilding "
+                      "(%s)", agent_id, removed);
+        }
+
+        if (!clawt_computer_provision(built, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        clawt_event_bus_emit(self->bus, "agent.changed", agent_id);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "rebuilt");
+        json_builder_add_boolean_value(builder, TRUE);
+        add_string_member(builder, "agent", agent_id);
+
+        if (removed != NULL)
+            add_string_member(builder, "note", removed);
+
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
     if (g_strcmp0(kind, "computer.status") == 0) {
         const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
         ClawtAgent *agent = (agent_id != NULL)

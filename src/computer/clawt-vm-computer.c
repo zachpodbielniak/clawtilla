@@ -1481,6 +1481,35 @@ vm_provision(ClawtComputer *computer, GError **error)
     return TRUE;
 }
 
+/*
+ * Whether there is a guest, as opposed to a remembered one.
+ *
+ * The state this object carries is a belief about something another
+ * program owns.  A libvirt domain can be deleted in virt-manager, and a
+ * qcow2 can be deleted with rm, neither of which tells clawtilla
+ * anything -- so a stop followed by a start would find the state
+ * STOPPED, skip provisioning on the strength of it, and then ask libvirt
+ * to start a domain that is not there.
+ *
+ * Restarting the whole daemon happened to recover, because a freshly
+ * built computer starts out ABSENT and provisions. Restarting just the
+ * agent did not, which is a difference nobody should have to know about.
+ */
+static gboolean
+vm_guest_exists(ClawtVmComputer *self)
+{
+    if (self->backend == CLAWT_VM_BACKEND_LIBVIRT)
+        return libvirt_has_domain(self);
+
+    /*
+     * For the qemu backend the overlay *is* the guest: there is no
+     * hypervisor holding a definition, so a missing disk is a missing
+     * machine.
+     */
+    return self->overlay != NULL &&
+           g_file_test(self->overlay, G_FILE_TEST_EXISTS);
+}
+
 static gboolean
 vm_start(ClawtComputer *computer, GError **error)
 {
@@ -1489,9 +1518,22 @@ vm_start(ClawtComputer *computer, GError **error)
     if (clawt_computer_get_state(computer) == CLAWT_COMPUTER_STATE_RUNNING)
         return TRUE;
 
-    if (clawt_computer_get_state(computer) == CLAWT_COMPUTER_STATE_ABSENT &&
-        !clawt_computer_provision(computer, error))
-        return FALSE;
+    /*
+     * Asked rather than assumed.  Provisioning is idempotent -- it
+     * adopts an existing domain's UUID and leaves a good overlay alone --
+     * so the cost of checking is one `list_domains`, and the cost of not
+     * checking is an agent that cannot be started again without
+     * restarting the daemon.
+     */
+    if (clawt_computer_get_state(computer) == CLAWT_COMPUTER_STATE_ABSENT ||
+        !vm_guest_exists(self)) {
+        if (clawt_computer_get_state(computer) != CLAWT_COMPUTER_STATE_ABSENT)
+            g_message("vm %s: it is not there any more; building it again",
+                      self->domain);
+
+        if (!clawt_computer_provision(computer, error))
+            return FALSE;
+    }
 
     clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_STARTING, NULL);
 

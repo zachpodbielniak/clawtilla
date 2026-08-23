@@ -284,6 +284,25 @@ What the guest was told is readable:
 cat ~/.local/share/clawtilla/vms/<agent>/cloud-init/user-data
 #+end_src
 
+** A setting changed and the VM ignored it
+
+cloud-init reads its seed at *first boot only*, so the login, the
+desktop, the flavour and the package list are fixed for the life of that
+machine.  Changing one and restarting the agent does nothing visible,
+which reads as the setting not working.
+
+#+begin_src bash
+clawtilla agent stop <agent>
+clawtilla computer rebuild <agent>
+#+end_src
+
+That destroys the guest and builds it again -- its contents included.
+The GTK client has the same thing as /Rebuild computer/ in the Agent tab.
+
+Settings that are *not* in the seed -- cpus, memory, the disk size --
+reach the domain definition and apply at its next boot, with no rebuild
+needed.
+
 ** A VM has a desktop installed and no session on it
 
 The guest boots, cloud-init reports success, and the agent's screenshots

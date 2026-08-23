@@ -2002,7 +2002,8 @@ cmd_computer(int argc, char *argv[])
     const gchar *agent_id = (argc > 3) ? argv[3] : NULL;
 
     if (verb == NULL || agent_id == NULL) {
-        g_printerr("Usage: clawtilla computer <exec|status|desktop-mcp> "
+        g_printerr("Usage: clawtilla computer "
+                   "<exec|status|rebuild|desktop-mcp> "
                    "<agent> [-- COMMAND...]\n");
         return EXIT_FAILURE;
     }
@@ -2044,6 +2045,32 @@ cmd_computer(int argc, char *argv[])
         g_clear_object(&client);
 
         return clawt_desktop_relay_run(relay_argv, tools);
+    }
+
+    if (g_strcmp0(verb, "rebuild") == 0) {
+        JsonObject *root;
+        const gchar *note;
+
+        reply = call(client, "computer.rebuild",
+                     build_payload("agent", agent_id, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        root = json_node_get_object(reply);
+        note = member_or(root, "note", NULL);
+
+        /*
+         * Said when there was nothing to tear down, because the two
+         * outcomes look identical afterwards and one of them means the
+         * guest had already gone.
+         */
+        if (note != NULL)
+            g_print("Nothing to remove first (%s).\n", note);
+
+        g_print("Rebuilt %s's computer. Its contents are gone; "
+                "cloud-init runs again on the next start.\n", agent_id);
+
+        return EXIT_SUCCESS;
     }
 
     if (g_strcmp0(verb, "status") == 0) {

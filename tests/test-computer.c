@@ -1974,6 +1974,41 @@ test_provisioning_resolves_the_ssh_key(void)
     g_assert_nonnull(strstr(joined, "id_ed25519"));
 }
 
+
+/*
+ * A guest deleted behind clawtilla's back is built again.
+ *
+ * The state a computer carries is a belief about something another
+ * program owns: a libvirt domain can be deleted in virt-manager and a
+ * qcow2 with rm, neither of which tells clawtilla anything.  vm_start()
+ * used to provision only when it remembered the machine as ABSENT --
+ * and a stop leaves STOPPED -- so an agent restarted against a deleted
+ * guest skipped provisioning and then asked for a machine that was not
+ * there.
+ *
+ * Restarting the whole daemon happened to recover, because a freshly
+ * built computer starts ABSENT.  Restarting just the agent did not,
+ * which is a difference nobody should have to know about.
+ *
+ * The evidence here is the refusal: with no image set, provisioning
+ * declines and names the setting.  Reaching that message at all means
+ * provisioning was attempted, which before this it was not.
+ */
+static void
+test_a_guest_that_vanished_is_built_again(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_QEMU, NULL);
+    g_autoptr(GError) error = NULL;
+
+    /* Exactly what a stop leaves behind. */
+    clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_STOPPED, NULL);
+
+    g_assert_false(clawt_computer_start(computer, &error));
+    g_assert_nonnull(error);
+    g_assert_nonnull(g_strstr_len(error->message, -1, "computer.vm.image"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -2104,6 +2139,8 @@ main(int argc, char *argv[])
                     test_the_qemu_backend_names_its_gpu);
     g_test_add_func("/computer/teardown/never-a-silent-success",
                     test_teardown_is_never_a_silent_success);
+    g_test_add_func("/computer/vm/vanished-guest-is-rebuilt",
+                    test_a_guest_that_vanished_is_built_again);
     g_test_add_func("/computer/vm/teardown-removes-the-disk",
                     test_vm_teardown_removes_the_disk);
     g_test_add_func("/computer/vm/teardown-leaves-theirs",
