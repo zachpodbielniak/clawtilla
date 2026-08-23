@@ -103,6 +103,31 @@ void clawt_client_set_auto_reconnect(ClawtClient *self, gboolean enabled);
  *
  * Returns: (transfer full) (nullable): the reply payload, or %NULL on error
  */
+/**
+ * clawt_client_request_full:
+ * @self: a #ClawtClient
+ * @kind: the frame kind
+ * @payload: (nullable) (transfer full): the request payload
+ * @timeout_seconds: how long to wait, or 0 for the default
+ * @error: (out) (optional): return location for a #GError
+ *
+ * clawt_client_request() with the waiting time named.
+ *
+ * The default suits a request the daemon answers out of what it already
+ * knows.  It does not suit one that waits on a person: authorising a
+ * connector takes as long as somebody takes to pick up a phone and type
+ * a code, and a client that gave up after the default would report a
+ * timeout for a flow that was about to succeed -- and then leave the
+ * daemon holding a credential nobody was told about.
+ *
+ * Returns: (transfer full) (nullable): the reply payload, or %NULL
+ */
+JsonNode *clawt_client_request_full(ClawtClient  *self,
+                                    const gchar  *kind,
+                                    JsonNode     *payload,
+                                    gint          timeout_seconds,
+                                    GError      **error);
+
 JsonNode *clawt_client_request(ClawtClient  *self,
                                const gchar  *kind,
                                JsonNode     *payload,

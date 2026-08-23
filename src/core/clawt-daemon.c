@@ -64,6 +64,17 @@ struct _ClawtDaemon {
     ClawtVmImageStore  *vm_images;
 
     /*
+     * The connector catalogue, and the authorizations in progress.
+     *
+     * The catalogue is cached because it is read on paths a person is
+     * waiting on; it is dropped on reload so that editing a file in
+     * connectors.dir takes effect without a restart.
+     */
+    GPtrArray  *connector_catalog;
+    GHashTable *connector_flows;   /* flow id -> ConnectorFlow */
+    GSource    *connector_refresh;
+
+    /*
      * Designs waiting to be reviewed.
      *
      * design.agent used to run the model, show a preview, and then --
@@ -1455,6 +1466,15 @@ clawt_daemon_quit_idle(gpointer user_data)
 static void
 release_components(ClawtDaemon *self)
 {
+    /*
+     * Belt as well as braces.  clawt_daemon_stop() takes this down for a
+     * daemon that ran; this catches one that was built and never did.
+     */
+    if (self->connector_refresh != NULL) {
+        g_source_destroy(self->connector_refresh);
+        g_clear_pointer(&self->connector_refresh, g_source_unref);
+    }
+
     g_clear_object(&self->plugins);
 
     /*
@@ -1537,6 +1557,658 @@ on_sweep(gpointer user_data)
 
     clawt_mailbox_router_sweep(self->router);
     clawt_event_log_sweep(self->log);
+
+    return G_SOURCE_CONTINUE;
+}
+
+/* ── Connectors ──────────────────────────────────────────────────── */
+
+/* Saves repeating the two-line dance for every optional string field. */
+static void
+add_string_member(JsonBuilder *builder, const gchar *name, const gchar *value)
+{
+    json_builder_set_member_name(builder, name);
+    json_builder_add_string_value(builder, value);
+}
+
+/*
+ * A flow in progress.
+ *
+ * Authorising takes as long as a person takes, which is far longer than
+ * an IPC request may block -- so `connector.begin` answers as soon as
+ * there is something to show them, and `connector.await` is the deferred
+ * one that finishes when they have done it.  Splitting it in two is what
+ * lets a client display the code the instant it exists rather than after
+ * the whole thing has completed, which would be no use to anybody.
+ */
+typedef struct {
+    ClawtDaemon     *daemon;      /* not owned; the daemon outlives a flow */
+    gchar           *id;
+    gchar           *name;
+    gchar           *token_url;
+    gchar           *client_id;
+    gchar           *client_secret;
+    gchar           *verifier;
+    gchar           *redirect_uri;
+    ClawtIpcPending *waiter;
+    gboolean         settled;
+    gboolean         ok;
+    gchar           *message;
+    gint64           settled_at;
+} ConnectorFlow;
+
+static void
+connector_flow_free(ConnectorFlow *flow)
+{
+    if (flow == NULL)
+        return;
+
+    g_free(flow->id);
+    g_free(flow->name);
+    g_free(flow->token_url);
+    g_free(flow->client_id);
+    g_free(flow->client_secret);
+    g_free(flow->verifier);
+    g_free(flow->redirect_uri);
+    g_free(flow->message);
+    g_free(flow);
+}
+
+/*
+ * Read once and kept, because it is read on paths a person is waiting
+ * on -- opening the connector list re-reads every file in connectors.d
+ * otherwise.  Dropped on reload, so editing a connector file and
+ * reloading the daemon picks it up.
+ */
+static GPtrArray *
+daemon_catalog(ClawtDaemon *self)
+{
+    if (self->connector_catalog == NULL) {
+        g_autofree gchar *dir =
+            clawt_config_get_path_value(self->config, "connectors.dir");
+
+        self->connector_catalog = clawt_connector_catalog_load(dir, NULL);
+    }
+
+    return self->connector_catalog;
+}
+
+/*
+ * The integration instance and its catalogue entry together, which is
+ * what every connector operation needs and neither half is any use
+ * without.
+ */
+static ClawtIntegrationBinding *
+connector_binding(ClawtDaemon               *self,
+                  const gchar               *name,
+                  const ClawtConnectorInfo **out_info,
+                  GError                   **error)
+{
+    ClawtIntegrationConfig *instance = (name != NULL)
+        ? clawt_config_get_integration(self->config, name) : NULL;
+    const ClawtIntegrationInfo *info;
+    const ClawtConnectorInfo *connector;
+    const gchar *provider;
+
+    if (instance == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                            "there is no integration called that");
+        return NULL;
+    }
+
+    info = clawt_integration_find(
+        clawt_integration_config_get_type_id(instance));
+
+    if (info == NULL || g_strcmp0(info->id, "connector") != 0) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "that integration is not a connector");
+        return NULL;
+    }
+
+    provider = clawt_integration_config_get_string(instance, NULL, "provider");
+    connector = clawt_connector_catalog_find(daemon_catalog(self), provider);
+
+    if (connector == NULL) {
+        g_autofree gchar *dir =
+            clawt_config_get_path_value(self->config, "connectors.dir");
+
+        /*
+         * Names the directory as well as the provider.  The fix is
+         * almost always a file that adds it, and somebody who has never
+         * needed one has no reason to know where it goes.
+         */
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "no connector called '%s'; add one in %s or pick from "
+                    "`clawtilla connector catalog`",
+                    provider != NULL ? provider : "(unset)", dir);
+        return NULL;
+    }
+
+    if (out_info != NULL)
+        *out_info = connector;
+
+    return clawt_integration_binding_for_instance(instance, info, NULL);
+}
+
+/*
+ * A client secret is a secret reference like any other, so it is
+ * resolved rather than read: somebody who put theirs in `pass` should
+ * not have to make an exception for this one field.
+ */
+static gchar *
+connector_client_secret(ClawtDaemon *self, ClawtIntegrationBinding *binding)
+{
+    g_autoptr(ClawtSecretRef) ref =
+        clawt_integration_binding_get_secret(binding, "client_secret");
+    g_autofree gchar *secrets_dir = NULL;
+
+    if (ref == NULL)
+        return NULL;
+
+    secrets_dir = clawt_config_get_path_value(self->config, "secrets.dir");
+
+    return clawt_secret_ref_resolve(
+        ref, secrets_dir,
+        (guint)clawt_config_get_int(self->config,
+                                    "secrets.command_timeout_seconds"),
+        NULL);
+}
+
+/*
+ * Writes the credential and remembers where it went.
+ *
+ * The path goes in the config; the value never does.  What is
+ * deliberately *not* written back is the granted scope list -- it lives
+ * in the token file, and copying it over `scopes:` would quietly rewrite
+ * what the person asked for into what they were given, so re-connecting
+ * later would ask for less each time.
+ */
+static gboolean
+store_connector_token(ClawtDaemon      *self,
+                      const gchar      *name,
+                      ClawtOauthToken  *token,
+                      GError          **error)
+{
+    g_autofree gchar *secrets_dir =
+        clawt_config_get_path_value(self->config, "secrets.dir");
+    g_autofree gchar *path = clawt_connector_token_path(secrets_dir, name);
+    ClawtIntegrationConfig *instance =
+        clawt_config_get_integration(self->config, name);
+
+    if (instance == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                            "the integration went away while connecting");
+        return FALSE;
+    }
+
+    if (!clawt_ensure_dir(secrets_dir, 0700, error))
+        return FALSE;
+
+    if (!clawt_oauth_token_save(token, path, error))
+        return FALSE;
+
+    clawt_integration_config_set_string(instance, NULL, "token_file", path);
+
+    if (!clawt_config_save(self->config, error))
+        return FALSE;
+
+    return clawt_daemon_reload(self, error);
+}
+
+/*
+ * Answers whoever is waiting, or remembers the answer for whoever asks
+ * next.  A client may call `await` before or after the flow finishes and
+ * must get the same answer either way -- a person who walked away and
+ * came back should not find that the result was delivered to nobody.
+ */
+static void
+connector_flow_settle(ConnectorFlow *flow, gboolean ok, const gchar *message)
+{
+    flow->settled = TRUE;
+    flow->ok = ok;
+    flow->settled_at = g_get_real_time() / G_USEC_PER_SEC;
+
+    g_free(flow->message);
+    flow->message = g_strdup(message);
+
+    if (flow->waiter == NULL)
+        return;
+
+    if (ok) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "connected");
+        json_builder_add_boolean_value(builder, TRUE);
+        json_builder_set_member_name(builder, "name");
+        json_builder_add_string_value(builder, flow->name);
+        json_builder_end_object(builder);
+
+        clawt_ipc_pending_respond(
+            flow->waiter,
+            clawt_ipc_response_new(clawt_ipc_pending_get_request(flow->waiter),
+                                   json_builder_get_root(builder)));
+    } else {
+        clawt_ipc_pending_respond(
+            flow->waiter,
+            clawt_ipc_error_new(clawt_ipc_pending_get_request(flow->waiter),
+                                CLAWT_ERROR_AUTH,
+                                message != NULL ? message
+                                                : "the flow did not complete"));
+    }
+
+    flow->waiter = NULL;
+
+    g_hash_table_remove(flow->daemon->connector_flows, flow->id);
+}
+
+static void
+connector_flow_finish_token(ConnectorFlow *flow, ClawtOauthToken *token)
+{
+    g_autoptr(GError) error = NULL;
+
+    if (!store_connector_token(flow->daemon, flow->name, token, &error)) {
+        connector_flow_settle(flow, FALSE, error->message);
+        return;
+    }
+
+    clawt_event_bus_emit(flow->daemon->bus, "integration.changed", flow->name);
+    connector_flow_settle(flow, TRUE, NULL);
+}
+
+/*
+ * The client waiting to be shown a user code.
+ *
+ * Separate from the flow because it is answered once, the moment the
+ * provider hands over the codes -- long before the flow itself settles.
+ */
+typedef struct {
+    ConnectorFlow   *flow;
+    ClawtIpcPending *pending;
+} BeginWait;
+
+/*
+ * Deletes the credential and forgets where it was.
+ *
+ * Both halves, and in that order: a config still naming a token_file
+ * that is gone reads as connected right up until something tries to use
+ * it.
+ */
+static gboolean
+forget_connector_token(ClawtDaemon *self, const gchar *name, GError **error)
+{
+    ClawtIntegrationConfig *instance =
+        clawt_config_get_integration(self->config, name);
+    const gchar *token_file;
+
+    if (instance == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                            "there is no integration called that");
+        return FALSE;
+    }
+
+    token_file = clawt_integration_config_get_string(instance, NULL,
+                                                     "token_file");
+
+    if (token_file != NULL)
+        g_unlink(token_file);
+
+    clawt_integration_config_set_string(instance, NULL, "token_file", NULL);
+
+    if (!clawt_config_save(self->config, error))
+        return FALSE;
+
+    return clawt_daemon_reload(self, error);
+}
+
+typedef struct {
+    gchar           *name;
+    ClawtIpcPending *pending;
+} RevokeJob;
+
+static void
+on_connector_revoked(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    RevokeJob *job = user_data;
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(GError) error = NULL;
+    gboolean told = clawt_oauth_revoke_finish(result, &error);
+
+    /*
+     * Not an error either way.  The credential is already gone from
+     * here, which is what was asked for; whether the provider was
+     * reachable is a separate fact and is reported as one.
+     */
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "forgotten");
+    json_builder_add_boolean_value(builder, TRUE);
+    json_builder_set_member_name(builder, "told_provider");
+    json_builder_add_boolean_value(builder, told);
+
+    if (!told)
+        add_string_member(builder, "note", error->message);
+
+    json_builder_end_object(builder);
+
+    clawt_ipc_pending_respond(
+        job->pending,
+        clawt_ipc_response_new(clawt_ipc_pending_get_request(job->pending),
+                               json_builder_get_root(builder)));
+
+    g_free(job->name);
+    g_free(job);
+}
+
+static void
+on_connector_polled(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    ConnectorFlow *flow = user_data;
+    g_autoptr(ClawtOauthToken) token = NULL;
+    g_autoptr(GError) error = NULL;
+
+    token = clawt_oauth_device_poll_finish(result, &error);
+
+    if (token == NULL) {
+        connector_flow_settle(flow, FALSE, error->message);
+        return;
+    }
+
+    connector_flow_finish_token(flow, token);
+}
+
+static void
+on_connector_exchanged(GObject *source, GAsyncResult *result,
+                       gpointer user_data)
+{
+    ConnectorFlow *flow = user_data;
+    g_autoptr(ClawtOauthToken) token = NULL;
+    g_autoptr(GError) error = NULL;
+
+    token = clawt_oauth_exchange_finish(result, &error);
+
+    if (token == NULL) {
+        connector_flow_settle(flow, FALSE, error->message);
+        return;
+    }
+
+    connector_flow_finish_token(flow, token);
+}
+
+static void
+on_connector_redirected(GObject *source, GAsyncResult *result,
+                        gpointer user_data)
+{
+    ConnectorFlow *flow = user_data;
+    g_autofree gchar *code = NULL;
+    g_autoptr(GError) error = NULL;
+
+    code = clawt_oauth_await_redirect_finish(result, &error);
+
+    if (code == NULL) {
+        connector_flow_settle(flow, FALSE, error->message);
+        return;
+    }
+
+    clawt_oauth_exchange_async(flow->token_url, flow->client_id,
+                               flow->client_secret, code, flow->redirect_uri,
+                               flow->verifier, NULL, on_connector_exchanged,
+                               flow);
+}
+
+/*
+ * Answers the client with the code, then starts polling.
+ *
+ * The device code is deliberately absent from the reply.  It is the
+ * secret half of the pair -- it authorises the exchange -- and the user
+ * code is the half meant to be read aloud.  Sending both would put a
+ * live credential in every client's memory and in anybody's scrollback.
+ */
+static void
+on_connector_begun(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    BeginWait *begin = user_data;
+    ConnectorFlow *flow = begin->flow;
+    g_autoptr(ClawtDeviceCode) code = NULL;
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(GError) error = NULL;
+
+    code = clawt_oauth_device_begin_finish(result, &error);
+
+    if (code == NULL) {
+        clawt_ipc_pending_respond(
+            begin->pending,
+            clawt_ipc_error_new(clawt_ipc_pending_get_request(begin->pending),
+                                CLAWT_ERROR_AUTH, error->message));
+
+        g_hash_table_remove(flow->daemon->connector_flows, flow->id);
+        g_free(begin);
+        return;
+    }
+
+    json_builder_begin_object(builder);
+    add_string_member(builder, "flow", flow->id);
+    add_string_member(builder, "method", "device");
+    add_string_member(builder, "user_code", code->user_code);
+    add_string_member(builder, "verification_uri", code->verification_uri);
+    add_string_member(builder, "verification_uri_complete",
+                      code->verification_uri_complete);
+    json_builder_set_member_name(builder, "expires_at");
+    json_builder_add_int_value(builder, code->expires_at);
+    json_builder_set_member_name(builder, "interval");
+    json_builder_add_int_value(builder, code->interval);
+    json_builder_end_object(builder);
+
+    clawt_ipc_pending_respond(
+        begin->pending,
+        clawt_ipc_response_new(clawt_ipc_pending_get_request(begin->pending),
+                               json_builder_get_root(builder)));
+
+    g_free(begin);
+
+    clawt_oauth_device_poll_async(flow->token_url, flow->client_id,
+                                  flow->client_secret, code, NULL,
+                                  on_connector_polled, flow);
+}
+
+/*
+ * Drops flows that finished long enough ago that nobody is coming back
+ * for the answer.  Without it a daemon that runs for months accumulates
+ * one entry per connection attempt that was started and abandoned.
+ */
+static void
+sweep_connector_flows(ClawtDaemon *self)
+{
+    GHashTableIter iter;
+    gpointer value;
+    gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+
+    g_hash_table_iter_init(&iter, self->connector_flows);
+
+    while (g_hash_table_iter_next(&iter, NULL, &value)) {
+        ConnectorFlow *flow = value;
+
+        if (flow->settled && now - flow->settled_at > 600)
+            g_hash_table_iter_remove(&iter);
+    }
+}
+
+/* ── Renewal ─────────────────────────────────────────────────────── */
+
+/*
+ * A renewal, which may or may not have somebody waiting on it: the timer
+ * starts these with no client attached, and `connector.refresh` starts
+ * one with a deferred request to answer.
+ */
+typedef struct {
+    ClawtDaemon     *daemon;
+    gchar           *name;
+    ClawtIpcPending *pending;
+} RefreshJob;
+
+static void
+refresh_job_free(RefreshJob *job)
+{
+    g_free(job->name);
+    g_free(job);
+}
+
+static void
+refresh_job_answer(RefreshJob *job, gboolean ok, const gchar *message)
+{
+    g_autoptr(JsonBuilder) builder = NULL;
+
+    if (job->pending == NULL)
+        return;
+
+    if (!ok) {
+        clawt_ipc_pending_respond(
+            job->pending,
+            clawt_ipc_error_new(clawt_ipc_pending_get_request(job->pending),
+                                CLAWT_ERROR_AUTH, message));
+        return;
+    }
+
+    builder = json_builder_new();
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "renewed");
+    json_builder_add_boolean_value(builder, TRUE);
+    json_builder_end_object(builder);
+
+    clawt_ipc_pending_respond(
+        job->pending,
+        clawt_ipc_response_new(clawt_ipc_pending_get_request(job->pending),
+                               json_builder_get_root(builder)));
+}
+
+static void
+on_connector_refreshed(GObject *source, GAsyncResult *result,
+                       gpointer user_data)
+{
+    RefreshJob *job = user_data;
+    g_autoptr(ClawtOauthToken) token = NULL;
+    g_autoptr(GError) error = NULL;
+
+    token = clawt_oauth_refresh_finish(result, &error);
+
+    if (token == NULL) {
+        g_warning("could not renew the credential for '%s': %s", job->name,
+                  error->message);
+        refresh_job_answer(job, FALSE, error->message);
+        refresh_job_free(job);
+        return;
+    }
+
+    /*
+     * A provider that issues no new refresh token expects the old one to
+     * keep working, and storing the blank would mean the next renewal
+     * has nothing to renew with -- so the person is asked to authorise
+     * again for a reason they cannot see.
+     */
+    if (token->refresh_token == NULL) {
+        g_autofree gchar *secrets_dir =
+            clawt_config_get_path_value(job->daemon->config, "secrets.dir");
+        g_autofree gchar *path =
+            clawt_connector_token_path(secrets_dir, job->name);
+        g_autoptr(ClawtOauthToken) previous =
+            clawt_oauth_token_load(path, NULL);
+
+        if (previous != NULL && previous->refresh_token != NULL)
+            token->refresh_token = g_strdup(previous->refresh_token);
+    }
+
+    if (!store_connector_token(job->daemon, job->name, token, &error)) {
+        g_warning("could not store the renewed credential for '%s': %s",
+                  job->name, error->message);
+        refresh_job_answer(job, FALSE, error->message);
+    } else {
+        g_debug("renewed the credential for connector '%s'", job->name);
+        clawt_event_bus_emit(job->daemon->bus, "integration.changed",
+                             job->name);
+        refresh_job_answer(job, TRUE, NULL);
+    }
+
+    refresh_job_free(job);
+}
+
+static void
+refresh_connector(ClawtDaemon *self, ClawtIntegrationConfig *instance,
+                  gint64 margin)
+{
+    const gchar *name = clawt_integration_config_get_name(instance);
+    const gchar *token_file =
+        clawt_integration_config_get_string(instance, NULL, "token_file");
+    const ClawtConnectorInfo *connector;
+    g_autoptr(ClawtOauthToken) token = NULL;
+    g_autoptr(ClawtIntegrationBinding) binding = NULL;
+    g_autofree gchar *token_url = NULL;
+    const gchar *client_id;
+    RefreshJob *job;
+    gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+
+    if (token_file == NULL)
+        return;
+
+    token = clawt_oauth_token_load(token_file, NULL);
+
+    if (token == NULL || token->refresh_token == NULL)
+        return;
+
+    if (!clawt_oauth_token_is_expired(token, now, margin))
+        return;
+
+    binding = connector_binding(self, name, &connector, NULL);
+
+    if (binding == NULL)
+        return;
+
+    client_id = clawt_integration_binding_get_string(binding, "client_id");
+    token_url = clawt_connector_resolve_url(
+        connector, connector->token_url,
+        clawt_integration_binding_get_string(binding, "instance"));
+
+    if (token_url == NULL || client_id == NULL)
+        return;
+
+    job = g_new0(RefreshJob, 1);
+    job->daemon = self;
+    job->name = g_strdup(name);
+
+    {
+        g_autofree gchar *secret = connector_client_secret(self, binding);
+
+        clawt_oauth_refresh_async(token_url, client_id, secret,
+                                  token->refresh_token, NULL,
+                                  on_connector_refreshed, job);
+    }
+}
+
+/*
+ * Renewal happens here rather than when a tool server starts, because a
+ * server started with a token that expires forty minutes later keeps
+ * running with it.  The agent's first failure would then come long after
+ * anything connected the two.
+ */
+static gboolean
+on_connector_refresh_tick(gpointer user_data)
+{
+    ClawtDaemon *self = user_data;
+    GPtrArray *integrations = clawt_config_get_integrations(self->config);
+    gint64 margin = clawt_config_get_int(self->config,
+                                         "connectors.refresh_margin_seconds");
+    guint i;
+
+    for (i = 0; integrations != NULL && i < integrations->len; i++) {
+        ClawtIntegrationConfig *instance = g_ptr_array_index(integrations, i);
+
+        if (g_strcmp0(clawt_integration_config_get_type_id(instance),
+                      "connector") != 0)
+            continue;
+
+        if (!clawt_integration_config_get_enabled(instance))
+            continue;
+
+        refresh_connector(self, instance, margin);
+    }
 
     return G_SOURCE_CONTINUE;
 }
@@ -2057,6 +2729,22 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
         g_source_unref(source);
     }
 
+    /*
+     * Started here rather than earlier, because start can still refuse
+     * after the components are built -- a second daemon on the same
+     * fleet is turned away at the socket.  A timer armed before that
+     * point belonged to a daemon that never ran, and nothing would take
+     * it down again: clawt_daemon_stop() returns early when `running`
+     * was never set.
+     *
+     * clawt_timeout_add_seconds() rather than g_timeout_add_seconds():
+     * the latter attaches to the global default context, so in an
+     * embedded daemon this would never fire and every credential would
+     * quietly be left to expire.
+     */
+    self->connector_refresh = clawt_timeout_add_seconds(
+        60, on_connector_refresh_tick, self);
+
     self->running = TRUE;
 
     render_all_agents(self);
@@ -2121,6 +2809,11 @@ clawt_daemon_stop(ClawtDaemon *self)
             g_source_destroy(source);
 
         self->sweep_source_id = 0;
+    }
+
+    if (self->connector_refresh != NULL) {
+        g_source_destroy(self->connector_refresh);
+        g_clear_pointer(&self->connector_refresh, g_source_unref);
     }
 
     if (self->agents != NULL)
@@ -2188,6 +2881,12 @@ clawt_daemon_reload(ClawtDaemon *self, GError **error)
 
     if (reloaded == NULL)
         return FALSE;
+
+    /*
+     * Dropped rather than rebuilt here: connectors.dir may itself have
+     * changed, and nothing needs the catalogue until something asks.
+     */
+    g_clear_pointer(&self->connector_catalog, g_ptr_array_unref);
 
     g_clear_object(&self->config);
     self->config = g_steal_pointer(&reloaded);
@@ -5997,6 +6696,501 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
+    if (g_strcmp0(kind, "connector.catalog") == 0) {
+        GPtrArray *catalog = daemon_catalog(self);
+        guint i;
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "connectors");
+        json_builder_begin_array(builder);
+
+        for (i = 0; catalog != NULL && i < catalog->len; i++) {
+            const ClawtConnectorInfo *info = g_ptr_array_index(catalog, i);
+
+            json_builder_begin_object(builder);
+            add_string_member(builder, "id", info->id);
+            add_string_member(builder, "name", info->name);
+            add_string_member(builder, "summary", info->summary);
+            add_string_member(builder, "category", info->category);
+            add_string_member(builder, "auth",
+                              clawt_enum_to_nick(CLAWT_TYPE_CONNECTOR_AUTH,
+                                                 (gint)info->auth));
+            add_string_member(builder, "scopes", info->scopes);
+            add_string_member(builder, "client_id_help", info->client_id_help);
+            add_string_member(builder, "docs_url", info->docs_url);
+            add_string_member(builder, "default_instance",
+                              info->default_instance);
+
+            /*
+             * Whether a server is known matters as much as the auth
+             * does: a connector with neither this nor a `command` in
+             * the integration authenticates perfectly and hands the
+             * agent nothing.
+             */
+            json_builder_set_member_name(builder, "has_server");
+            json_builder_add_boolean_value(builder,
+                                           info->server_command != NULL ||
+                                           info->server_url != NULL);
+
+            json_builder_end_object(builder);
+        }
+
+        json_builder_end_array(builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "connector.list") == 0) {
+        GPtrArray *integrations = clawt_config_get_integrations(self->config);
+        guint i;
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "connectors");
+        json_builder_begin_array(builder);
+
+        for (i = 0; integrations != NULL && i < integrations->len; i++) {
+            ClawtIntegrationConfig *instance =
+                g_ptr_array_index(integrations, i);
+            const gchar *token_file;
+            g_autoptr(ClawtOauthToken) token = NULL;
+
+            if (g_strcmp0(clawt_integration_config_get_type_id(instance),
+                          "connector") != 0)
+                continue;
+
+            json_builder_begin_object(builder);
+            add_string_member(builder, "name",
+                              clawt_integration_config_get_name(instance));
+            add_string_member(builder, "provider",
+                              clawt_integration_config_get_string(
+                                  instance, NULL, "provider"));
+            add_string_member(builder, "account",
+                              clawt_integration_config_get_string(
+                                  instance, NULL, "account"));
+            add_string_member(builder, "scope",
+                              clawt_enum_to_nick(
+                                  CLAWT_TYPE_INTEGRATION_SCOPE,
+                                  (gint)clawt_integration_config_get_scope(
+                                      instance)));
+
+            json_builder_set_member_name(builder, "enabled");
+            json_builder_add_boolean_value(
+                builder, clawt_integration_config_get_enabled(instance));
+
+            token_file = clawt_integration_config_get_string(instance, NULL,
+                                                             "token_file");
+
+            if (token_file != NULL)
+                token = clawt_oauth_token_load(token_file, NULL);
+
+            /*
+             * Everything about the credential except the credential.
+             * Whether it exists, when it stops working and whether it
+             * can renew itself are the three things somebody looking at
+             * this list needs; the value is the one thing that must
+             * never come back over IPC.
+             */
+            json_builder_set_member_name(builder, "connected");
+            json_builder_add_boolean_value(builder, token != NULL);
+
+            json_builder_set_member_name(builder, "expires_at");
+            json_builder_add_int_value(builder,
+                                       token != NULL ? token->expires_at : 0);
+
+            json_builder_set_member_name(builder, "renewable");
+            json_builder_add_boolean_value(
+                builder, token != NULL && token->refresh_token != NULL);
+
+            if (token != NULL)
+                add_string_member(builder, "granted_scopes", token->scopes);
+
+            json_builder_end_object(builder);
+        }
+
+        json_builder_end_array(builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "connector.begin") == 0) {
+        const gchar *name = clawt_ipc_payload_string(payload, "name");
+        const ClawtConnectorInfo *connector = NULL;
+        g_autoptr(ClawtIntegrationBinding) binding = NULL;
+        g_autofree gchar *auth_url = NULL;
+        g_autofree gchar *token_url = NULL;
+        const gchar *client_id;
+        const gchar *instance_url;
+        const gchar *scopes;
+        ConnectorFlow *flow;
+
+        sweep_connector_flows(self);
+
+        binding = connector_binding(self, name, &connector, &error);
+
+        if (binding == NULL)
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        if (connector->auth == CLAWT_CONNECTOR_AUTH_API_KEY ||
+            connector->auth == CLAWT_CONNECTOR_AUTH_NONE)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
+                                       "this connector takes a key rather "
+                                       "than an authorization; use "
+                                       "`clawtilla connector key`");
+
+        client_id = clawt_integration_binding_get_string(binding, "client_id");
+
+        if (client_id == NULL)
+            return clawt_ipc_error_new(
+                request, CLAWT_ERROR_CONFIG_INVALID,
+                connector->client_id_help != NULL
+                ? connector->client_id_help
+                : "this connector needs a client_id you registered with "
+                  "the provider");
+
+        instance_url = clawt_integration_binding_get_string(binding,
+                                                            "instance");
+        auth_url = clawt_connector_resolve_url(connector, connector->auth_url,
+                                               instance_url);
+        token_url = clawt_connector_resolve_url(connector,
+                                                connector->token_url,
+                                                instance_url);
+
+        if (auth_url == NULL || token_url == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_CONFIG_INVALID,
+                                       "this connector has no authorization "
+                                       "endpoints");
+
+        scopes = clawt_integration_binding_get_string(binding, "scopes");
+
+        if (scopes == NULL)
+            scopes = connector->scopes;
+
+        flow = g_new0(ConnectorFlow, 1);
+        flow->daemon = self;
+        flow->id = g_uuid_string_random();
+        flow->name = g_strdup(name);
+        flow->token_url = g_steal_pointer(&token_url);
+        flow->client_id = g_strdup(client_id);
+        flow->client_secret = connector_client_secret(self, binding);
+
+        g_hash_table_insert(self->connector_flows, g_strdup(flow->id), flow);
+
+        if (connector->auth == CLAWT_CONNECTOR_AUTH_DEVICE) {
+            BeginWait *begin = g_new0(BeginWait, 1);
+
+            begin->flow = flow;
+            begin->pending = clawt_ipc_server_defer(self->ipc_server, request);
+
+            if (begin->pending == NULL) {
+                g_free(begin);
+                g_hash_table_remove(self->connector_flows, flow->id);
+
+                return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                           "this request cannot be answered "
+                                           "later");
+            }
+
+            /*
+             * Deferred because the codes come from the provider, and
+             * there is nothing to show anybody until they do.  The poll
+             * that follows is *not* deferred onto this request -- it
+             * takes as long as a person takes, which is what
+             * connector.await is for.
+             */
+            clawt_oauth_device_begin_async(auth_url, client_id, scopes, NULL,
+                                           on_connector_begun, begin);
+            return NULL;
+        }
+
+        /* The authorization-code flow, for providers with no device grant. */
+        {
+            g_autofree gchar *state = clawt_oauth_pkce_verifier();
+            g_autofree gchar *challenge = NULL;
+            g_autofree gchar *url = NULL;
+            gint64 port = clawt_config_get_int(self->config,
+                                               "connectors.redirect_port");
+
+            flow->verifier = clawt_oauth_pkce_verifier();
+
+            if (flow->verifier == NULL || state == NULL) {
+                g_hash_table_remove(self->connector_flows, flow->id);
+
+                return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                           "this machine has no usable "
+                                           "randomness, and a guessable "
+                                           "verifier is no protection at "
+                                           "all");
+            }
+
+            flow->redirect_uri =
+                g_strdup_printf("http://127.0.0.1:%d/callback", (gint)port);
+
+            challenge = clawt_oauth_pkce_challenge(flow->verifier);
+            url = clawt_oauth_authorize_url(auth_url, client_id,
+                                            flow->redirect_uri, scopes, state,
+                                            challenge);
+
+            /*
+             * The listener goes up before the URL is handed out.  A
+             * person who is quick would otherwise be redirected to a
+             * port nothing is listening on, and the browser would show
+             * a connection refused for an authorization that in fact
+             * succeeded.
+             */
+            clawt_oauth_await_redirect_async((guint)port, state, 600, NULL,
+                                             on_connector_redirected, flow);
+
+            json_builder_begin_object(builder);
+            add_string_member(builder, "flow", flow->id);
+            add_string_member(builder, "method", "pkce");
+            add_string_member(builder, "authorize_url", url);
+            json_builder_end_object(builder);
+
+            return clawt_ipc_response_new(request,
+                                          json_builder_get_root(builder));
+        }
+    }
+
+    if (g_strcmp0(kind, "connector.await") == 0) {
+        const gchar *id = clawt_ipc_payload_string(payload, "flow");
+        ConnectorFlow *flow = (id != NULL)
+            ? g_hash_table_lookup(self->connector_flows, id) : NULL;
+
+        if (flow == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "there is no connection attempt with "
+                                       "that id");
+
+        /*
+         * A flow that finished before anybody asked keeps its answer.
+         * Somebody who started an authorization, walked away and came
+         * back should not find that the result was delivered to nobody.
+         */
+        if (flow->settled) {
+            gboolean ok = flow->ok;
+            g_autofree gchar *message = g_strdup(flow->message);
+            g_autofree gchar *flow_name = g_strdup(flow->name);
+
+            g_hash_table_remove(self->connector_flows, id);
+
+            if (!ok)
+                return clawt_ipc_error_new(request, CLAWT_ERROR_AUTH,
+                                           message != NULL ? message
+                                           : "the flow did not complete");
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "connected");
+            json_builder_add_boolean_value(builder, TRUE);
+            add_string_member(builder, "name", flow_name);
+            json_builder_end_object(builder);
+
+            return clawt_ipc_response_new(request,
+                                          json_builder_get_root(builder));
+        }
+
+        flow->waiter = clawt_ipc_server_defer(self->ipc_server, request);
+
+        if (flow->waiter == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                       "this request cannot be answered "
+                                       "later");
+
+        return NULL;
+    }
+
+    if (g_strcmp0(kind, "connector.key") == 0) {
+        const gchar *name = clawt_ipc_payload_string(payload, "name");
+        const gchar *key = clawt_ipc_payload_string(payload, "key");
+        const ClawtConnectorInfo *connector = NULL;
+        g_autoptr(ClawtIntegrationBinding) binding = NULL;
+        g_autoptr(ClawtOauthToken) token = NULL;
+        g_autofree gchar *secrets_dir = NULL;
+        g_autofree gchar *path = NULL;
+
+        binding = connector_binding(self, name, &connector, &error);
+
+        if (binding == NULL)
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        if (key == NULL || *key == '\0')
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "no key was given");
+
+        /*
+         * Accepted for any connector, not only the api_key ones.  A
+         * personal access token is a perfectly good credential for
+         * GitHub or GitLab, and taking one here means somebody who
+         * wants an agent reading their repositories does not first have
+         * to go and register an OAuth application.
+         *
+         * It is stored in the same shape as a negotiated token, so
+         * everything downstream -- the relay, the health check, the
+         * list -- has one thing to read rather than two.
+         */
+        token = g_new0(ClawtOauthToken, 1);
+        token->access_token = g_strdup(key);
+
+        if (!store_connector_token(self, name, token, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        clawt_event_bus_emit(self->bus, "integration.changed", name);
+
+        secrets_dir = clawt_config_get_path_value(self->config, "secrets.dir");
+        path = clawt_connector_token_path(secrets_dir, name);
+
+        /*
+         * The path, never the value.  Handing the key back to the client
+         * that sent it would put a live credential into the memory of
+         * every client that asked.
+         */
+        json_builder_begin_object(builder);
+        add_string_member(builder, "token_file", path);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "connector.refresh") == 0) {
+        const gchar *name = clawt_ipc_payload_string(payload, "name");
+        const ClawtConnectorInfo *connector = NULL;
+        g_autoptr(ClawtIntegrationBinding) binding = NULL;
+        g_autoptr(ClawtOauthToken) token = NULL;
+        g_autofree gchar *token_url = NULL;
+        const gchar *token_file;
+        const gchar *client_id;
+        RefreshJob *job;
+
+        binding = connector_binding(self, name, &connector, &error);
+
+        if (binding == NULL)
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        token_file = clawt_integration_binding_get_string(binding,
+                                                          "token_file");
+        token = (token_file != NULL) ? clawt_oauth_token_load(token_file, NULL)
+                                     : NULL;
+
+        if (token == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_AUTH,
+                                       "it is not connected yet");
+
+        if (token->refresh_token == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
+                                       "the provider issued nothing to renew "
+                                       "with; connect again instead");
+
+        client_id = clawt_integration_binding_get_string(binding, "client_id");
+        token_url = clawt_connector_resolve_url(
+            connector, connector->token_url,
+            clawt_integration_binding_get_string(binding, "instance"));
+
+        if (client_id == NULL || token_url == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_CONFIG_INVALID,
+                                       "there is nowhere to renew it");
+
+        job = g_new0(RefreshJob, 1);
+        job->daemon = self;
+        job->name = g_strdup(name);
+        job->pending = clawt_ipc_server_defer(self->ipc_server, request);
+
+        if (job->pending == NULL) {
+            refresh_job_free(job);
+
+            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                       "this request cannot be answered "
+                                       "later");
+        }
+
+        {
+            g_autofree gchar *secret = connector_client_secret(self, binding);
+
+            clawt_oauth_refresh_async(token_url, client_id, secret,
+                                      token->refresh_token, NULL,
+                                      on_connector_refreshed, job);
+        }
+
+        return NULL;
+    }
+
+    if (g_strcmp0(kind, "connector.revoke") == 0) {
+        const gchar *name = clawt_ipc_payload_string(payload, "name");
+        const ClawtConnectorInfo *connector = NULL;
+        g_autoptr(ClawtIntegrationBinding) binding = NULL;
+        g_autoptr(ClawtOauthToken) token = NULL;
+        g_autofree gchar *revoke_url = NULL;
+        const gchar *token_file;
+
+        binding = connector_binding(self, name, &connector, &error);
+
+        if (binding == NULL)
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        token_file = clawt_integration_binding_get_string(binding,
+                                                          "token_file");
+        token = (token_file != NULL) ? clawt_oauth_token_load(token_file, NULL)
+                                     : NULL;
+
+        revoke_url = clawt_connector_resolve_url(
+            connector, connector->revoke_url,
+            clawt_integration_binding_get_string(binding, "instance"));
+
+        /*
+         * The local copy goes whatever the provider says.  Somebody who
+         * asked to revoke wants the fleet to stop using it now, and a
+         * provider that is unreachable must not leave an agent holding
+         * a working credential until the network comes back.
+         */
+        if (!forget_connector_token(self, name, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        clawt_event_bus_emit(self->bus, "integration.changed", name);
+
+        if (token != NULL && revoke_url != NULL) {
+            RevokeJob *job = g_new0(RevokeJob, 1);
+
+            job->pending = clawt_ipc_server_defer(self->ipc_server, request);
+
+            if (job->pending != NULL) {
+                job->name = g_strdup(name);
+
+                clawt_oauth_revoke_async(
+                    revoke_url, clawt_integration_binding_get_string(
+                                    binding, "client_id"),
+                    NULL, token->access_token, NULL, on_connector_revoked,
+                    job);
+
+                return NULL;
+            }
+
+            g_free(job);
+        }
+
+        /*
+         * Says plainly when the provider was not told.  A person who
+         * believes a token is dead and finds it working months later
+         * has been misled by this reply, and the fix -- their settings
+         * page -- is somewhere only they can go.
+         */
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "forgotten");
+        json_builder_add_boolean_value(builder, TRUE);
+        json_builder_set_member_name(builder, "told_provider");
+        json_builder_add_boolean_value(builder, FALSE);
+
+        if (token != NULL && revoke_url == NULL)
+            add_string_member(builder, "note",
+                              "this provider offers no revocation endpoint; "
+                              "the credential is gone from here but remains "
+                              "valid until you withdraw it in their "
+                              "settings");
+
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
     if (g_strcmp0(kind, "integration.types") == 0) {
         const ClawtIntegrationInfo *info;
         gsize n_integrations = 0;
@@ -6846,6 +8040,8 @@ clawt_daemon_finalize(GObject *object)
     g_clear_object(&self->routines);
     g_clear_object(&self->automation);
     g_clear_pointer(&self->model_cache, g_hash_table_unref);
+    g_clear_pointer(&self->connector_flows, g_hash_table_unref);
+    g_clear_pointer(&self->connector_catalog, g_ptr_array_unref);
     g_clear_pointer(&self->bind_specs, g_ptr_array_unref);
     g_free(self->config_path);
     g_free(self->libreclaw_binary);
@@ -6885,5 +8081,8 @@ clawt_daemon_init(ClawtDaemon *self)
     self->model_cache = g_hash_table_new_full(g_str_hash, g_str_equal,
                                                g_free,
                                                (GDestroyNotify)g_strfreev);
+    self->connector_flows =
+        g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                              (GDestroyNotify)connector_flow_free);
     self->running = FALSE;
 }

@@ -185,7 +185,8 @@ static const gchar *const verbs[] = {
     "daemon", "remote", "status", "agent", "send", "chat", "mailbox", "room",
     "task",
     "memory",
-    "computer", "cp", "config", "plugin", "integration", "routine",
+    "computer", "cp", "config", "plugin", "integration", "connector",
+    "routine",
     "model", "image",
     NULL
 };
@@ -2849,6 +2850,541 @@ build_integration_payload(const gchar *name, const gchar *type_id,
 }
 
 static void
+print_connector_usage(void)
+{
+    g_print(
+"Usage: clawtilla connector <command> [options]\n"
+"\n"
+"A connector is an account clawtilla holds the credential for. Agents get\n"
+"its tools; they never get the credential.\n"
+"\n"
+"Commands:\n"
+"  catalog                 services clawtilla knows how to connect\n"
+"  list                    connectors you have, and whether they are live\n"
+"  add <name> --provider <id> [options]\n"
+"                          add one, and connect it if it can\n"
+"  connect <name>          authorize, or authorize again\n"
+"  key <name>              paste a token instead (read from stdin)\n"
+"  refresh <name>          renew the credential now\n"
+"  revoke <name>           forget it here and withdraw it there\n"
+"  rm <name>               remove the connector entirely\n"
+"\n"
+"Options for add:\n"
+"  --provider <id>         from `clawtilla connector catalog`\n"
+"  --account <label>       which account, in your words (work, personal)\n"
+"  --client-id <id>        the OAuth app you registered with the provider\n"
+"  --instance <url>        for a service you host yourself\n"
+"  --scopes \"<a b>\"        override what to ask for\n"
+"  --scope <all|selected|none>   which agents get it (default: none)\n"
+"  --agents <a,b>          with --scope selected\n"
+"  --command <cmd>         an MCP server of your own\n"
+"  --url <url>             an HTTP MCP server of your own\n"
+"  --tools <a,b>           narrow the agent to these tools only\n"
+"\n"
+"Examples:\n"
+"  clawtilla connector catalog\n"
+"\n"
+"  # A personal access token, no OAuth application to register:\n"
+"  clawtilla connector add gh --provider github --account work \\\n"
+"      --command github-mcp-server --scope all\n"
+"  clawtilla connector key gh\n"
+"\n"
+"  # Or the full device flow, once you have registered an app:\n"
+"  clawtilla connector add gl --provider gitlab --client-id abc123 \\\n"
+"      --scope selected --agents researcher,scribe\n"
+"\n"
+"  # Your own GitLab:\n"
+"  clawtilla connector add work --provider gitlab \\\n"
+"      --instance https://gitlab.example.com --client-id abc123\n"
+"\n"
+"  clawtilla connector list\n"
+"  clawtilla connector revoke gh\n");
+}
+
+/*
+ * Waits out an authorization, which takes as long as a person takes.
+ *
+ * The default request timeout is two minutes and a device code is good
+ * for fifteen, so this asks for the longer wait explicitly -- otherwise
+ * the CLI reports a timeout for a flow that was about to succeed, and
+ * the daemon is left holding a credential nobody was told about.
+ */
+static gint
+await_connector_flow(ClawtClient *client, const gchar *flow)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GError) error = NULL;
+
+    reply = clawt_client_request_full(client, "connector.await",
+                                      build_payload("flow", flow, NULL),
+                                      900, &error);
+
+    if (reply == NULL) {
+        g_printerr("clawtilla: %s\n", error->message);
+        return EXIT_FAILURE;
+    }
+
+    g_print("Connected.\n");
+
+    return EXIT_SUCCESS;
+}
+
+static gint
+connector_connect(ClawtClient *client, const gchar *name)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    JsonObject *root;
+    const gchar *method;
+    const gchar *flow;
+
+    reply = call(client, "connector.begin", build_payload("name", name, NULL));
+
+    if (reply == NULL)
+        return EXIT_FAILURE;
+
+    root = json_node_get_object(reply);
+    method = member_or(root, "method", "");
+    flow = member_or(root, "flow", NULL);
+
+    if (g_strcmp0(method, "device") == 0) {
+        const gchar *complete = member_or(root, "verification_uri_complete",
+                                          NULL);
+
+        /*
+         * The code goes on its own line and unadorned, because the next
+         * thing that happens to it is somebody reading it off a screen
+         * and typing it into a phone.
+         */
+        g_print("\n    %s\n\n", member_or(root, "user_code", "?"));
+        g_print("Enter that at %s\n",
+                member_or(root, "verification_uri", "?"));
+
+        if (complete != NULL)
+            g_print("or open %s, which fills it in for you.\n", complete);
+    } else {
+        g_print("Open this to approve:\n\n    %s\n\n",
+                member_or(root, "authorize_url", "?"));
+    }
+
+    g_print("\nWaiting...\n");
+
+    return await_connector_flow(client, flow);
+}
+
+/*
+ * The relay, which is what an agent's .mcp.json names.
+ *
+ * Nothing here may write to stdout: that is the MCP channel, and a
+ * stray line of ours is a protocol error to the client on the other end
+ * of it. Everything diagnostic goes to stderr.
+ */
+static gint
+connector_relay(const gchar *name)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(GPtrArray) catalog = NULL;
+    g_autoptr(ClawtIntegrationBinding) binding = NULL;
+    g_autoptr(ClawtOauthToken) token = NULL;
+    g_autoptr(ClawtConnectorPlan) plan = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *catalog_dir = NULL;
+    ClawtIntegrationConfig *instance;
+    const ClawtIntegrationInfo *info;
+    const ClawtConnectorInfo *connector;
+    const gchar *token_file;
+
+    if (name == NULL) {
+        g_printerr("clawtilla: connector relay needs a name\n");
+        return EXIT_FAILURE;
+    }
+
+    /*
+     * Renewal is asked of the daemon before the credential is read,
+     * because the daemon is the only thing that may write one -- two
+     * processes refreshing the same token would each invalidate the
+     * other's. A daemon that is not there is not fatal: the token on
+     * disk may well still be good, and failing here would take away a
+     * server that would have worked.
+     */
+    {
+        g_autoptr(ClawtClient) client = connect_to_daemon();
+
+        if (client != NULL) {
+            g_autoptr(JsonNode) ignored = NULL;
+            g_autoptr(GError) refresh_error = NULL;
+
+            ignored = clawt_client_request(client, "connector.refresh",
+                                           build_payload("name", name, NULL),
+                                           &refresh_error);
+        }
+    }
+
+    config = clawt_config_load(opt_config_path, &error);
+
+    if (config == NULL) {
+        g_printerr("clawtilla: %s\n", error->message);
+        return EXIT_FAILURE;
+    }
+
+    instance = clawt_config_get_integration(config, name);
+
+    if (instance == NULL) {
+        g_printerr("clawtilla: there is no connector called '%s'\n", name);
+        return EXIT_FAILURE;
+    }
+
+    info = clawt_integration_find(
+        clawt_integration_config_get_type_id(instance));
+
+    if (info == NULL || g_strcmp0(info->id, "connector") != 0) {
+        g_printerr("clawtilla: '%s' is not a connector\n", name);
+        return EXIT_FAILURE;
+    }
+
+    catalog_dir = clawt_config_get_path_value(config, "connectors.dir");
+    catalog = clawt_connector_catalog_load(catalog_dir, NULL);
+    connector = clawt_connector_catalog_find(
+        catalog, clawt_integration_config_get_string(instance, NULL,
+                                                     "provider"));
+
+    if (connector == NULL) {
+        g_printerr("clawtilla: '%s' names a provider clawtilla does not "
+                   "know\n", name);
+        return EXIT_FAILURE;
+    }
+
+    binding = clawt_integration_binding_for_instance(instance, info, NULL);
+    token_file = clawt_integration_binding_get_string(binding, "token_file");
+
+    if (token_file == NULL) {
+        g_printerr("clawtilla: '%s' is not connected yet; run `clawtilla "
+                   "connector connect %s`\n", name, name);
+        return EXIT_FAILURE;
+    }
+
+    token = clawt_oauth_token_load(token_file, &error);
+
+    if (token == NULL) {
+        g_printerr("clawtilla: cannot read the credential for '%s': %s\n",
+                   name, error->message);
+        return EXIT_FAILURE;
+    }
+
+    plan = clawt_connector_plan_new(connector, binding, token->access_token,
+                                    &error);
+
+    if (plan == NULL) {
+        g_printerr("clawtilla: %s\n", error->message);
+        return EXIT_FAILURE;
+    }
+
+    return clawt_connector_relay_run(plan);
+}
+
+static gint
+cmd_connector(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verb = (argc > 2) ? argv[2] : "list";
+    const gchar *name = (argc > 3) ? argv[3] : NULL;
+    guint i;
+
+    if (g_strcmp0(verb, "help") == 0 || g_strcmp0(verb, "--help") == 0) {
+        print_connector_usage();
+        return EXIT_SUCCESS;
+    }
+
+    /*
+     * Before connecting to anything: the relay is started by an agent's
+     * own CLI and speaks its own protocol on stdout.
+     */
+    if (g_strcmp0(verb, "relay") == 0)
+        return connector_relay(name);
+
+    client = connect_to_daemon();
+
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    if (g_strcmp0(verb, "catalog") == 0) {
+        JsonArray *connectors;
+        g_autofree gchar *previous = NULL;
+
+        reply = call(client, "connector.catalog", NULL);
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        connectors = json_object_get_array_member(json_node_get_object(reply),
+                                                  "connectors");
+
+        for (i = 0; i < json_array_get_length(connectors); i++) {
+            JsonObject *entry = json_array_get_object_element(connectors, i);
+            const gchar *category = member_or(entry, "category", "");
+
+            if (g_strcmp0(category, previous) != 0) {
+                g_print("%s%s\n", i > 0 ? "\n" : "", category);
+                g_free(previous);
+                previous = g_strdup(category);
+            }
+
+            g_print("  %-12s %-8s %s\n", member_or(entry, "id", "?"),
+                    member_or(entry, "auth", ""),
+                    member_or(entry, "summary", ""));
+        }
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "list") == 0) {
+        JsonArray *connectors;
+
+        reply = call(client, "connector.list", NULL);
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        connectors = json_object_get_array_member(json_node_get_object(reply),
+                                                  "connectors");
+
+        if (json_array_get_length(connectors) == 0) {
+            g_print("No connectors yet. `clawtilla connector catalog` lists "
+                    "what can be connected.\n");
+            return EXIT_SUCCESS;
+        }
+
+        for (i = 0; i < json_array_get_length(connectors); i++) {
+            JsonObject *entry = json_array_get_object_element(connectors, i);
+            gboolean connected =
+                json_object_get_boolean_member_with_default(entry,
+                                                            "connected",
+                                                            FALSE);
+            gint64 expires =
+                json_object_get_int_member_with_default(entry, "expires_at",
+                                                        0);
+            g_autofree gchar *status = NULL;
+
+            if (!connected) {
+                status = g_strdup("not connected");
+            } else if (expires == 0) {
+                status = g_strdup("connected");
+            } else {
+                gint64 left = expires - (g_get_real_time() / G_USEC_PER_SEC);
+
+                /*
+                 * An expired-but-renewable credential is not a problem
+                 * and must not read like one, or somebody learns to
+                 * ignore this column.
+                 */
+                if (left > 0)
+                    status = g_strdup_printf("connected, %" G_GINT64_FORMAT
+                                             "m left", left / 60);
+                else if (json_object_get_boolean_member_with_default(
+                             entry, "renewable", FALSE))
+                    status = g_strdup("connected, renewing");
+                else
+                    status = g_strdup("expired -- connect again");
+            }
+
+            g_print("%-14s %-10s %-10s %s\n", member_or(entry, "name", "?"),
+                    member_or(entry, "provider", "?"),
+                    member_or(entry, "scope", ""), status);
+        }
+
+        return EXIT_SUCCESS;
+    }
+
+    if (name == NULL) {
+        g_printerr("clawtilla: connector %s needs a name\n", verb);
+        return EXIT_FAILURE;
+    }
+
+    if (g_strcmp0(verb, "add") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        const gchar *client_id = NULL;
+        gboolean have_provider = FALSE;
+        int a;
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "name");
+        json_builder_add_string_value(builder, name);
+        json_builder_set_member_name(builder, "type");
+        json_builder_add_string_value(builder, "connector");
+
+        /*
+         * Dashes fold to underscores, because the member name the
+         * daemon looks for is the schema key: a `--client-id` passed
+         * straight through becomes `client-id`, which nothing has ever
+         * heard of and which is ignored without a word.
+         */
+        for (a = 4; a + 1 < argc; a += 2) {
+            g_autofree gchar *key = NULL;
+
+            if (argv[a] == NULL || !g_str_has_prefix(argv[a], "--"))
+                continue;
+
+            key = g_strdup(argv[a] + 2);
+            g_strdelimit(key, "-", '_');
+
+            if (g_strcmp0(key, "agents") == 0 ||
+                g_strcmp0(key, "tools") == 0) {
+                g_auto(GStrv) values = g_strsplit(argv[a + 1], ",", -1);
+                gsize v;
+
+                json_builder_set_member_name(builder, key);
+                json_builder_begin_array(builder);
+
+                for (v = 0; values[v] != NULL; v++)
+                    json_builder_add_string_value(builder,
+                                                  g_strstrip(values[v]));
+
+                json_builder_end_array(builder);
+                continue;
+            }
+
+            if (g_strcmp0(key, "provider") == 0)
+                have_provider = TRUE;
+
+            if (g_strcmp0(key, "client_id") == 0)
+                client_id = argv[a + 1];
+
+            json_builder_set_member_name(builder, key);
+            json_builder_add_string_value(builder, argv[a + 1]);
+        }
+
+        json_builder_end_object(builder);
+
+        if (!have_provider) {
+            g_printerr("clawtilla: connector add needs --provider; "
+                       "`clawtilla connector catalog` lists them\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "integration.add",
+                     json_builder_get_root(builder));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Added connector '%s'.\n", name);
+
+        /*
+         * Connecting straight away only when there is an application to
+         * connect with. Without a client id the provider has nothing to
+         * identify the request, and starting a flow that cannot succeed
+         * is worse than saying what is missing.
+         */
+        if (client_id != NULL)
+            return connector_connect(client, name);
+
+        g_print("\nNow give it a credential, either:\n"
+                "  clawtilla connector key %s        (paste a token)\n"
+                "  clawtilla connector connect %s    (needs --client-id)\n",
+                name, name);
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "connect") == 0)
+        return connector_connect(client, name);
+
+    if (g_strcmp0(verb, "key") == 0) {
+        g_autofree gchar *key = NULL;
+
+        /*
+         * Read from stdin with the echo off, and deliberately no
+         * --key flag: an argument is in the shell history and in the
+         * process table for anybody on the machine to read.
+         */
+        key = read_secret("Token: ");
+
+        if (key == NULL || *key == '\0') {
+            g_printerr("clawtilla: no token was given\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "connector.key",
+                     build_payload("name", name, "key", key, NULL));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Stored in %s\n",
+                member_or(json_node_get_object(reply), "token_file", "?"));
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "refresh") == 0) {
+        reply = call(client, "connector.refresh",
+                     build_payload("name", name, NULL));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Renewed.\n");
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "revoke") == 0) {
+        JsonObject *root;
+
+        reply = call(client, "connector.revoke",
+                     build_payload("name", name, NULL));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        root = json_node_get_object(reply);
+
+        if (json_object_get_boolean_member_with_default(root, "told_provider",
+                                                        FALSE)) {
+            g_print("Revoked, and the provider was told.\n");
+        } else {
+            const gchar *note = member_or(root, "note", NULL);
+
+            g_print("Forgotten here.\n");
+
+            if (note != NULL)
+                g_print("%s\n", note);
+        }
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "rm") == 0) {
+        /*
+         * The credential goes first. Removing the integration and
+         * leaving the token file would strand a live credential under a
+         * name nothing refers to any more.
+         */
+        g_autoptr(JsonNode) revoked = NULL;
+        g_autoptr(GError) ignored = NULL;
+
+        revoked = clawt_client_request(client, "connector.revoke",
+                                       build_payload("name", name, NULL),
+                                       &ignored);
+
+        reply = call(client, "integration.remove",
+                     build_payload("name", name, NULL));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Removed connector '%s'.\n", name);
+
+        return EXIT_SUCCESS;
+    }
+
+    g_printerr("clawtilla: unknown connector command '%s'\n", verb);
+    print_connector_usage();
+
+    return EXIT_FAILURE;
+}
+
+static void
 print_integration_usage(void)
 {
     g_printerr(
@@ -3984,6 +4520,9 @@ main(int argc, char *argv[])
 
     if (g_strcmp0(argv[1], "plugin") == 0)
         return cmd_plugin(argc, argv);
+
+    if (g_strcmp0(argv[1], "connector") == 0)
+        return cmd_connector(argc, argv);
 
     if (g_strcmp0(argv[1], "integration") == 0)
         return cmd_integration(argc, argv);

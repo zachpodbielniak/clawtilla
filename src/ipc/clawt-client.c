@@ -720,7 +720,7 @@ begin_request(ClawtClient *self, const gchar *kind, JsonNode *payload,
 
 static JsonNode *
 finish_request(ClawtClient *self, const gchar *id, const gchar *kind,
-               GError **error)
+               gint timeout_seconds, GError **error)
 {
     Pending *pending = g_hash_table_lookup(self->pending, id);
     JsonNode *result = NULL;
@@ -736,7 +736,7 @@ finish_request(ClawtClient *self, const gchar *id, const gchar *kind,
     } else if (!pending->done) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_TIMEOUT,
                     "the daemon did not answer %s within %d seconds",
-                    kind, REQUEST_TIMEOUT_SECONDS);
+                    kind, timeout_seconds);
     } else if (clawt_ipc_frame_is_error(pending->reply)) {
         g_propagate_error(error, clawt_ipc_frame_to_error(pending->reply));
     } else {
@@ -758,6 +758,17 @@ clawt_client_request(ClawtClient  *self,
                      JsonNode     *payload,
                      GError      **error)
 {
+    return clawt_client_request_full(self, kind, payload,
+                                     REQUEST_TIMEOUT_SECONDS, error);
+}
+
+JsonNode *
+clawt_client_request_full(ClawtClient  *self,
+                          const gchar  *kind,
+                          JsonNode     *payload,
+                          gint          timeout_seconds,
+                          GError      **error)
+{
     g_autofree gchar *id = NULL;
     Pending *pending;
     gint64 deadline;
@@ -765,13 +776,16 @@ clawt_client_request(ClawtClient  *self,
     g_return_val_if_fail(CLAWT_IS_CLIENT(self), NULL);
     g_return_val_if_fail(kind != NULL, NULL);
 
+    if (timeout_seconds <= 0)
+        timeout_seconds = REQUEST_TIMEOUT_SECONDS;
+
     pending = begin_request(self, kind, payload, &id, error);
 
     if (pending == NULL)
         return NULL;
 
     deadline = g_get_monotonic_time() +
-               ((gint64)REQUEST_TIMEOUT_SECONDS * G_USEC_PER_SEC);
+               ((gint64)timeout_seconds * G_USEC_PER_SEC);
 
     /*
      * Iterate the context rather than reading the socket.
@@ -799,7 +813,7 @@ clawt_client_request(ClawtClient  *self,
             break;
     }
 
-    return finish_request(self, id, kind, error);
+    return finish_request(self, id, kind, timeout_seconds, error);
 }
 
 void
