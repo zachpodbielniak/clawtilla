@@ -13,6 +13,8 @@
 
 #include <clawtilla.h>
 
+#include <string.h>
+
 #include <signal.h>
 
 #include <glib/gstdio.h>
@@ -686,7 +688,57 @@ test_stopping_waits_for_the_child_to_go(void)
     pid = clawt_agent_runtime_get_pid(CLAWT_AGENT_RUNTIME(runtime));
     g_assert_cmpint(pid, >, 0);
 
+    /*
+     * Wait until the child is actually stubborn before signalling it.
+     *
+     * `trap '' TERM` takes a moment to install, and the test used to send
+     * SIGTERM into that gap -- where the default action still applies and
+     * the child dies at once.  So a release build stopped it in 110ms,
+     * took the graceful branch, passed, and proved nothing about the
+     * force-kill path this test exists for.  Only under ASAN, which is
+     * slow enough that the trap wins the race, did the intended path run
+     * at all.
+     *
+     * The fixture prints its line after installing the trap, so the line
+     * appearing is the signal that it is ready.
+     */
+    {
+        guint waited;
+
+        for (waited = 0; waited < 200; waited++) {
+            g_auto(GStrv) tail =
+                clawt_agent_runtime_get_log_tail(CLAWT_AGENT_RUNTIME(runtime),
+                                                  16);
+            gboolean up = FALSE;
+            gsize i;
+
+            for (i = 0; tail != NULL && tail[i] != NULL; i++) {
+                if (strstr(tail[i], "stubborn-libreclaw up") != NULL)
+                    up = TRUE;
+            }
+
+            if (up)
+                break;
+
+            g_main_context_iteration(NULL, FALSE);
+            g_usleep(10 * 1000);
+        }
+
+        g_assert_cmpuint(waited, <, 200);
+    }
+
+    /*
+     * And the warning is expected, not incidental.  It is the audible
+     * half of the behaviour -- a child killed silently is the thing this
+     * codebase refuses everywhere else -- but GTest makes a warning fatal,
+     * so the test that provokes it has to say it wants it.
+     */
+    g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING,
+                          "*did not stop within*");
+
     clawt_agent_runtime_stop(CLAWT_AGENT_RUNTIME(runtime));
+
+    g_test_assert_expected_messages();
 
     /*
      * The whole assertion: once stop() has returned, the process is gone.

@@ -1084,6 +1084,28 @@ the same program.
   directory it resolved to, and a command substitution captures that as
   well as `pwd`'s output.
 
+### A test that races its own fixture proves nothing
+
+- `/agent/stop-waits-for-the-child` sent SIGTERM microseconds after
+  spawning `stubborn-libreclaw`, which is *before* bash has installed
+  `trap '' TERM`. In that gap the default action still applies, so the
+  child died at once, the graceful branch was taken, the test passed in
+  110ms -- and the force-kill path it exists to cover never ran. Only
+  under ASAN, slow enough that the trap wins the race, did the real path
+  execute, and then it *failed*. A test that passes for the wrong reason
+  in the build everyone runs is worse than no test.
+- The fixture prints its line after installing the trap, so the test
+  waits for that line rather than for a duration. And it wraps the
+  expected `g_warning` in `g_test_expect_message()` -- GTest makes a
+  warning fatal, so a test that provokes one on purpose has to say so.
+- What the fixed test then found: `g_subprocess_force_exit()` sends
+  SIGKILL but reaps nothing, and `kill(pid, 0)` succeeds on a zombie. So
+  `stop()` returned reporting the child gone while the kernel still held
+  an entry for it -- the same shape of lie the SIGTERM path had just been
+  fixed for. It now waits for the exit to be *observed*, bounded, because
+  SIGKILL cannot be caught and anything outlasting that is in
+  uninterruptible sleep and must not become a hung daemon.
+
 ## Things to NEVER Do
 
 - Never hand-edit `data/example-config.yaml` or `data/default-config.yaml`

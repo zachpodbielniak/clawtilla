@@ -45,6 +45,13 @@ struct _ClawtProcessRuntime {
 #define STOP_TICK_USEC   (50 * 1000)
 #define STOP_GRACE_TICKS (100)
 
+/*
+ * How long to wait for a SIGKILLed child to be reaped.  Short, because
+ * SIGKILL cannot be caught: anything that outlasts this is in
+ * uninterruptible sleep and is not going to be helped by waiting longer.
+ */
+#define KILL_REAP_TICKS  (40)
+
 G_DEFINE_FINAL_TYPE(ClawtProcessRuntime, clawt_process_runtime,
                     CLAWT_TYPE_AGENT_RUNTIME)
 
@@ -336,11 +343,41 @@ process_runtime_stop(ClawtAgentRuntime *runtime)
      * exactly the one that most needs stopping.
      */
     if (!self->exited) {
+        GMainContext *context = g_main_context_get_thread_default();
+        guint waited;
+
         g_warning("agent runtime: pid %d did not stop within %d seconds of "
                   "SIGTERM; killing it",
                   (gint)clawt_agent_runtime_get_pid(runtime),
                   STOP_GRACE_TICKS * STOP_TICK_USEC / 1000000);
         g_subprocess_force_exit(self->process);
+
+        if (context == NULL)
+            context = g_main_context_default();
+
+        /*
+         * And then wait for the kill to be *observed*, not merely sent.
+         *
+         * SIGKILL ends the process, but until someone reaps it the pid is
+         * still there -- kill(pid, 0) succeeds on a zombie -- and
+         * `exited` is only set by the wait callback, which runs on this
+         * context.  Returning before that is the same shape of lie the
+         * SIGTERM path above was fixed for: stop() reporting a child gone
+         * while the kernel still has an entry for it.
+         *
+         * Bounded anyway.  SIGKILL cannot be caught, so this ends almost
+         * at once; a child stuck in uninterruptible sleep is the kernel's
+         * problem and must not become a hung daemon.
+         */
+        for (waited = 0; waited < KILL_REAP_TICKS && !self->exited; waited++) {
+            g_main_context_iteration(context, FALSE);
+            g_usleep(STOP_TICK_USEC);
+        }
+
+        if (!self->exited)
+            g_warning("agent runtime: pid %d has not been reaped after "
+                      "SIGKILL; it is probably in uninterruptible sleep",
+                      (gint)clawt_agent_runtime_get_pid(runtime));
     }
 
     self->running = FALSE;
