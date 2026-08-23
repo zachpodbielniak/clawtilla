@@ -138,6 +138,50 @@ credentials:
   replayed into every context rebuild, so redacting only when showing
   them leaves the leak permanent
 
+** Connectors
+
+A connector holds a credential for a real account and hands agents the
+service's tools without handing them the token.  What that is worth
+depends on where the agent runs, and it is worth being exact rather than
+reassuring.
+
+For a *container or VM agent* the boundary is real.  The token file lives
+under ~secrets.dir~ on the host at 0600, and the relay that reads it runs
+on the host.  The agent can call the tools and cannot reach the
+credential, in the way one user cannot read another's files.
+
+For an *unconfined host agent* it is not a boundary, and does not claim
+to be.  It runs as the same user; ~secrets.dir~ is right there.  What the
+broker removes is every *accidental* path the credential used to take:
+
+- it is not in the agent's =.mcp.json=, which the agent reads as part of
+  its ordinary work and can quote into a message;
+- it is not in the agent's environment, so it is not in anything the
+  agent spawns;
+- it is not in any argument vector, so it is not in the process table for
+  every other process on the machine;
+- it is not in a transcript, an export or a log line.
+
+Those are the ways credentials actually escape.  An agent that goes
+deliberately looking is a different threat, and the answer to it is
+confinement -- see [[file:computers.org][computers.org]].
+
+The credential *is* in the environment of the tool server the relay
+starts, necessarily: that is how the server authenticates.  On a host
+agent that server's =/proc/<pid>/environ= is readable by the same user.
+
+Two things the broker buys regardless of confinement: one place to
+revoke, and a per-agent tool list enforced before the call reaches the
+service.
+
+*** Revoking is two things
+
+Deleting clawtilla's copy stops the fleet using it.  It does not stop the
+token working: one you forgot is still valid for anybody holding it, for
+as long as the provider says.  Where a provider offers a revocation
+endpoint clawtilla calls it and reports that it did; where it does not,
+clawtilla says so rather than letting "revoked" mean less than you think.
+
 ** The environment allowlist
 
 A child's environment is built from an allowlist, never inherited.  This

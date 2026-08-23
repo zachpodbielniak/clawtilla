@@ -44,7 +44,7 @@ transcript and send work, and the page says what does not.
 | Desktop | optional gowl or GNOME control, alongside any computer type |
 | Mounts | host paths shared into the container or VM, plus a shared exchange directory |
 | Mailbox | durable queue with priority, TTL, leases, retry and a dead-letter view |
-| Integrations | matrix, email, webhook, local, cmacs |
+| Integrations | matrix, email, webhook, local, cmacs, mcp, notify, connector |
 | Credentials | per-agent, by reference -- never literal secrets in the config |
 | Tools | per-agent allow/deny over the orchestration tools |
 
@@ -115,6 +115,7 @@ All under [[file:docs/][docs/]], in org-mode:
 | [[file:docs/computers.org][computers.org]] | host, container, VM, desktop, mounts |
 | [[file:docs/orchestration.org][orchestration.org]] | rooms, tasks, chief-of-staff, loop safety |
 | [[file:docs/integrations.org][integrations.org]] | Matrix, mail, MCP servers, notifications; scoping them |
+| [[file:docs/connectors.org][connectors.org]] | connected accounts: the credential stays here, the tools go to the agents |
 | [[file:docs/routines.org][routines.org]] | standing work on a schedule, presets and cron |
 | [[file:docs/automation.org][automation.org]] | clawtilla as a podomation module: react and act |
 | [[file:docs/plugins.org][plugins.org]] | the plugin ABI and a worked example |

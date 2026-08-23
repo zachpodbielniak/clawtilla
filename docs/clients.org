@@ -159,6 +159,25 @@ a bare ~fd7a:115c:a1e0::1~ is fine.
   usable in a pre-flight script
 - a subcommand with no arguments prints usage and exits non-zero
 
+*** Connecting an account
+
+#+begin_src bash
+clawtilla connector catalog
+clawtilla connector add gh --provider github --account work \
+    --command github-mcp-server --scope all
+clawtilla connector key gh          # reads stdin with the echo off
+clawtilla connector list
+#+end_src
+
+There is deliberately no =--key= flag, for the same reason there is no
+=--password= on the Matrix login: an argument is in your shell history
+and in the process table.
+
+=clawtilla connector relay <name>= is the verb an agent's =.mcp.json=
+names.  It speaks MCP on stdout and is not for people.
+
+See [[file:connectors.org][connectors.org]].
+
 *** Signing in to Matrix
 
 #+begin_src bash

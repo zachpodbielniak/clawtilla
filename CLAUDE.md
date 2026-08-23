@@ -1505,6 +1505,123 @@ the same program.
   `GtkListBox` lesson above: the container keeps a record you have to go
   back through.
 
+### The same NULL meant "deny everything" and "allow everything"
+
+- `clawt_mcp_relay_run()` reads a NULL permitted-list as *no tool is
+  allowed*, which is the right fail-closed default for a grant being
+  enforced: an observe-only desktop must not widen itself because a list
+  went missing. A connector with no `tools:` configured means the exact
+  opposite -- every tool the server offers. Reusing NULL for both would
+  have handed those agents an empty tool list, which is indistinguishable
+  from a server that failed to start. `clawt_mcp_relay_run_unfiltered()`
+  says which is meant, in its name.
+
+### A refusal that names the wrong feature sends somebody a long way off
+
+- The relay began life serving guest desktops, so its refusal message
+  told an agent to turn on `computer.desktop.allow_input`. Connectors
+  then started using the same relay, and an agent refused a *repository*
+  tool was told to enable a setting about seeing the screen --
+  confidently, and about a completely different feature. The reason for
+  a refusal belongs to whoever imposed the restriction, so it is a
+  parameter; each caller supplies its own sentence.
+
+### A relay that does not close the child's stdin never exits
+
+- A stdio MCP server exits when its stdin closes and nothing else tells
+  it to. The relay waited for both directions to close, so when the
+  agent's CLI went away it sat holding a stdout that would never end --
+  and the pair outlived the agent indefinitely. Measured: two minutes
+  and still running, versus 22ms after the fix. For a connector that
+  means an abandoned process holding a live credential, which is the
+  worse half of the bug.
+
+### `expires_in` is a duration and must not be stored as one
+
+- Kept as it arrives, an hour-long token looks an hour fresh after every
+  daemon restart -- so one that expired overnight reads as valid each
+  morning and every call made with it fails somewhere else entirely.
+  `ClawtOauthToken.expires_at` is absolute, computed when the response
+  arrives, and the field in the saved file is named `expires_at` so the
+  next reader is not invited to add it to the time they loaded it.
+- Providers also disagree about whether these are numbers or strings.
+  Reading only one silently treats the other as absent, giving a token
+  that never expires or one that expires immediately.
+
+### A device flow's normal case is an HTTP 400
+
+- A provider answers a poll for a code nobody has typed yet with **400
+  Bad Request** and `authorization_pending` in the body. A client that
+  reads the status and stops has built a device flow that can never once
+  succeed while looking entirely correct. The classification is in
+  `clawt_oauth_read_poll()` and is a pure function for that reason.
+- `slow_down` lengthens the interval *permanently*. A provider that has
+  asked once to be polled less often will ask again, and reverting after
+  a single slower poll spends the rest of the flow rate limited while
+  the person stands at the consent screen wondering what happened.
+
+### A format string from a config file must never reach printf
+
+- `credential_format` is read from a YAML file somebody edits and used
+  to decorate a credential (`Bearer %s`). Handed to `g_strdup_printf()`,
+  a `%d` reads whatever is in that register and a `%n` writes. It is
+  validated at load *and* expanded by hand, so a format string read from
+  a file is never a format string to anything -- the worst a wrong one
+  can do is produce a credential the service rejects. Validating and
+  then trusting printf anyway leaves all of printf standing behind a
+  check that has to be perfect for ever.
+
+### /dev/urandom or nothing, for anything that must be unguessable
+
+- GLib's `g_random_*` is a Mersenne Twister: given a little output the
+  rest is computable. A predictable PKCE verifier is not weaker PKCE, it
+  is *no* PKCE, since the whole mechanism is that only the client which
+  began the flow can finish it. A machine with no usable randomness gets
+  a refusal rather than a downgrade -- the same rule as a missing
+  `bwrap`.
+
+### A fixed request timeout cannot wait on a person
+
+- `clawt_client_request()` gives up after two minutes, which suits a
+  question the daemon answers from what it already knows. A device code
+  is good for fifteen. Without `clawt_client_request_full()` the client
+  would report a timeout for a flow that was about to succeed -- and
+  leave the daemon holding a credential nobody had been told about.
+- Which is also why authorising is two frames. `connector.begin` answers
+  as soon as there is a code to show; `connector.await` is the one that
+  waits. Deferring the whole thing would mean showing the person nothing
+  until it was over, which is no use to anybody.
+
+### Granted scopes must not be written back over requested scopes
+
+- A person can untick things on a consent screen, so what was granted is
+  often less than what was asked for. Storing the granted set into
+  `scopes:` would mean the next authorization asks for less, and the one
+  after that less again -- a permission that quietly erodes every time
+  it is renewed. The granted set lives in the token file and is reported
+  from there.
+
+### Deleting our copy of a token is not revocation
+
+- A token we forgot still works for anybody who has it, for as long as
+  the provider says, which for a refresh token can be months. Where a
+  provider offers a revocation endpoint clawtilla calls it and reports
+  that it did; where it does not, it says so plainly rather than letting
+  "revoked" mean less than the person thinks. The local copy goes either
+  way -- somebody who asked to revoke wants the fleet to stop now, and an
+  unreachable provider must not leave an agent holding a working
+  credential until the network comes back.
+
+### An argv is world-readable; an environment is not
+
+- Which is why `ClawtConnectorPlan` is built before anything is started
+  and tested with a *negative* assertion: the credential must be in
+  `envp` or a header and nowhere in `argv`. That is not visible by
+  reading the code which builds the argv -- it is visible by looking for
+  the value in the result. Verified against a real relay by having the
+  tool server report its own `/proc/self/cmdline` and `environ`.
+
+
 ## Things to NEVER Do
 
 - Never hand-edit `data/example-config.yaml` or `data/default-config.yaml`
@@ -1531,6 +1648,15 @@ the same program.
 - Never return a secret obtained on a client's behalf to that client. A
   Matrix token goes to a 0600 file and the reply names the file
 - Never write a hand-maintained list of an option's keys. Walk the schema
+- Never put a connector's credential anywhere the agent can read it: not
+  in `.mcp.json`, not in its environment, not in an argv, not in an IPC
+  response. The relay reads the 0600 file itself and hands it to the
+  server it starts, and that is the only copy outside `secrets.dir`
+- Never hand a format string that came from a config file to `printf`.
+  Validate it *and* expand it by hand
+- Never store a granted scope list over a requested one, and never store
+  a blank refresh token over a good one -- both cost the person an
+  authorization they cannot see the reason for
 - Never give a pod an action that runs arbitrary code. Every action is a
   fleet operation the daemon already owns; `computer_exec` is declared
   and refused, with a reason, so naming it does not read as a typo

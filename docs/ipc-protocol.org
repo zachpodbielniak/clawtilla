@@ -166,6 +166,14 @@ Integrations: ~integration.types~ (the kinds, with the keys each needs);
 ~integration.remove~; ~integration.health~; ~integration.matrix_login~,
 ~integration.matrix_rooms~.
 
+Connectors: ~connector.catalog~ (the services clawtilla knows how to
+connect, with the auth kind each uses); ~connector.list~ (the ones you
+have, with whether each is live, when it expires and whether it can renew
+itself -- never the credential); ~connector.begin~ and ~connector.await~;
+~connector.key~; ~connector.refresh~; ~connector.revoke~.  Adding and
+removing a connector go through ~integration.add~ and
+~integration.remove~ like any other integration.
+
 A secret is written by naming its *reference*: ~secret_key~,
 ~secret_backend~ (~file~, ~env~ or ~command~) and ~secret_locator~.  A
 reply carries the reference back, never the value.
@@ -191,6 +199,39 @@ both the schedule and ~enabled~ and returns the ~task~ it started.
 
 ~routine.ran~ and ~routine.changed~ are published as events.
 
+*** connector.begin, then connector.await
+
+Authorising takes as long as a person takes, which is far longer than a
+request may block -- so it is two frames rather than one.
+
+~connector.begin~ is deferred only as long as the provider takes to hand
+over a code, and its reply carries the ~user_code~ and
+~verification_uri~ (or, for the authorization-code flow, an
+~authorize_url~) plus a ~flow~ id.  That is what a client shows
+immediately; waiting for the whole thing before showing anything would
+be no use to anybody.
+
+~connector.await~ takes the ~flow~ and is deferred until the person has
+approved, refused, or run out of time.  Clients must ask for a longer
+timeout than the default -- ~clawt_client_request_full()~ exists for
+this, and 900 seconds matches a device code's usual life.
+
+A flow that finishes before anybody asks keeps its answer, so ~await~
+gets the same reply whether it arrives before or after: somebody who
+started an authorization, walked away and came back should not find the
+result was delivered to nobody.
+
+The ~device_code~ is deliberately absent from every reply.  It is the
+secret half of the pair -- it authorises the exchange -- while the user
+code is the half meant to be read aloud.
+
+*** connector.key
+
+Takes a token and stores it 0600 under ~secrets.dir~.  The reply names
+the *file*, never the value: handing the credential back to the client
+that sent it would put a live secret into every client's memory.  Same
+rule as ~integration.matrix_login~.
+
 *** integration.notify_test
 
 Takes ~integration~ and sends one notification through it, ignoring its
@@ -200,7 +241,9 @@ nothing happens, so this is the only honest way to check one.
 *** Some replies arrive later
 
 ~integration.health~, ~integration.matrix_login~,
-~integration.matrix_rooms~ and ~integration.notify_test~ all wait on the
+~integration.matrix_rooms~, ~integration.notify_test~,
+~connector.begin~, ~connector.await~, ~connector.refresh~ and
+~connector.revoke~ all wait on the
 network, so their handlers
 *defer*: the request is answered when the work finishes rather than
 before the handler returns.  A client sees nothing different -- the reply

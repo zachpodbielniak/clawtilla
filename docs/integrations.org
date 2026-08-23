@@ -120,6 +120,7 @@ list per agent is an ordinary thing to want.
 | =webhook=  | =port=                     |
 | =mcp=      | nothing; share it freely   |
 | =notify=   | nothing; share it freely   |
+| =connector= | nothing; sharing one is the point |
 
 Two agents that end up sharing one of these are reported by
 =clawtilla integration list= and in the Integrations page, because it is
@@ -268,6 +269,29 @@ offering.
 
 Everything else in that file is yours and is carried across untouched.
 Do not name a server of your own =clawtilla-anything=.
+
+** connector -- an account clawtilla holds the credential for
+
+Same shape as =mcp= from the agent's side: tools appear in its
+=.mcp.json= and it calls them.  Completely different on this side.  The
+daemon obtains the credential, keeps it at 0600, renews it before it
+expires and injects it into the tool server, so the value never reaches
+the agent's config, its environment or its transcript.
+
+#+begin_src bash
+clawtilla connector catalog
+clawtilla connector add gh --provider github --account work \
+    --command github-mcp-server --scope all
+clawtilla connector key gh
+#+end_src
+
+Use =connector= rather than =mcp= whenever the credential is one you
+would mind an agent reading -- which is most of them.  Use =mcp= for a
+server that needs no credential, or one whose key you are content to
+hand over.
+
+[[file:connectors.org][connectors.org]] covers the catalogue, the OAuth flows, renewal, revoking,
+and exactly what the broker does and does not protect against.
 
 ** notify -- when an agent is blocked on you, or has broken
 

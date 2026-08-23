@@ -1,0 +1,302 @@
+#+title: Connectors
+#+description: Connected accounts: clawtilla holds the credential, agents get the tools
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-23 Sat]
+#+updated: [2026-08-23 Sat]
+#+version: 0.2.0
+
+* Connectors
+
+A connector is an account on some service -- GitHub, a GitLab you run
+yourself, a calendar -- that clawtilla holds the credential for.  Agents
+get the service's tools.  They never get the token.
+
+That distinction is the whole feature.  An ~mcp~ integration's
+environment is resolved into the agent's =.mcp.json=, which is fine for
+a key you chose to hand it and much less fine for an authorization on
+your own account: the agent can read that file, and anything it reads
+can end up quoted into a message or an exported transcript.  A
+connector's =.mcp.json= entry carries no secret at all.
+
+#+begin_src bash
+clawtilla connector catalog
+clawtilla connector add gh --provider github --account work \
+    --command github-mcp-server --scope all
+clawtilla connector key gh
+#+end_src
+
+That last command reads a token from stdin with the echo off.  There is
+deliberately no =--key= flag: an argument is in your shell history and
+in the process table for anybody on the machine to read.
+
+** What it actually protects against
+
+Worth stating plainly, because the answer depends on where the agent
+runs and overstating it would be worse than not having it.
+
+For a *container or VM agent* the boundary is real.  The token file and
+the relay are on the host; the agent is not.  It can call the tools and
+cannot reach the credential, in the way an ordinary user cannot read
+another user's files.
+
+For an *unconfined host agent* it prevents the credential leaking by
+accident, which is the failure that actually happens: it is not in
+=.mcp.json=, not in the agent's environment, not in the process table,
+not in its transcript.  It does not stop an agent that goes looking,
+because it runs as the same user and =secrets.dir= is right there.
+Confinement is what makes that airtight -- see [[file:computers.org][computers.org]] and
+[[file:security.org][security.org]].
+
+What it buys everywhere: one place to revoke, renewal that happens
+before anything breaks, and a per-agent tool list.
+
+** How a credential is obtained
+
+Three ways, and the catalogue says which apply to a given service.
+
+*** A token you already have
+
+The simplest, and often the best.  A personal access token works as well
+as an authorization and needs no application registered with anybody:
+
+#+begin_src bash
+clawtilla connector key gh
+#+end_src
+
+*** The device flow
+
+The one that suits a daemon.  No redirect URI, no listening socket, no
+browser on the same machine: clawtilla asks for a code, you type it into
+a page on whatever device you are holding, and clawtilla polls until you
+have.  A workstation you reached over SSH can be connected from a phone.
+
+#+begin_src bash
+clawtilla connector add gl --provider gitlab --client-id abc123
+#+end_src
+
+#+begin_example
+    WDJB-MJHT
+
+Enter that at https://gitlab.com/oauth/authorize_device
+
+Waiting...
+Connected.
+#+end_example
+
+*** Authorization code with PKCE
+
+For the many services that never implemented device grant.  It costs a
+loopback listener and a redirect URI registered with the provider in
+advance, which is why it is second choice.  Register
+=http://127.0.0.1:8765/callback=, or whatever ~connectors.redirect_port~
+says.
+
+The listener binds 127.0.0.1 only.  A redirect carries an authorization
+code in a URL, and a listener on every interface offers that code to
+whoever on the network reaches the port first.
+
+** Client IDs
+
+clawtilla ships none, and will not.  It has no OAuth application of its
+own to lend, and borrowing another project's would mean every clawtilla
+in the world identifying itself as something it is not.
+
+Registering one takes a few minutes per provider.
+=clawtilla connector catalog= names where for each, and the
+~client_id_help~ field is repeated in the error you get if you try to
+authorize without one.
+
+If that is friction you do not want, paste a token instead.  It is not
+a lesser option.
+
+** The catalogue
+
+Two things at once: a table compiled into the library covering the
+services people reach for, and a directory of YAML files that adds to it
+and overrides it.
+
+#+begin_src bash
+clawtilla connector catalog
+#+end_src
+
+These are somebody else's URLs and somebody else's scopes.  A copy of
+them in C goes stale silently and in the wrong direction, so a provider
+that moves an endpoint should be fixable by editing a file rather than
+by waiting for a clawtilla release.  Drop one in
+=$XDG_CONFIG_HOME/clawtilla/connectors.d/=:
+
+#+begin_src yaml
+connectors:
+  - id: acme
+    name: Acme
+    summary: Tickets and deployments
+    category: Work
+    auth: api_key            # none | device | pkce | api_key
+    server_command: acme-mcp
+    server_args: [stdio]
+    placement: env           # env | header
+    credential_name: ACME_API_KEY
+#+end_src
+
+An entry whose ~id~ matches a built-in one *replaces* it rather than
+merging into it.  Half an override -- a new token endpoint against an old
+authorization endpoint -- is a combination nobody wrote down, and it
+fails pointing at neither file.
+
+A file that will not parse is a warning naming the file, not a failure:
+a typo in one connector must not take away the others, and this is read
+on the path that starts the daemon.
+
+*** Self-hosted services
+
+A connector with a ~default_instance~ is one you may run yourself, and
+its endpoint fields are read as *paths* joined onto whichever instance
+the configuration names:
+
+#+begin_src bash
+clawtilla connector add work --provider gitlab \
+    --instance https://gitlab.example.com --client-id abc123
+#+end_src
+
+A host with no scheme gets =https=.  Somebody who typed a bare hostname
+did not mean to send an OAuth exchange in the clear.
+
+*** The two generic entries
+
+~api-key~ and ~bearer~ exist so the catalogue is open rather than
+closed.  Most MCP servers are not behind OAuth at all -- they want a key
+from a dashboard in an environment variable, or a bearer token on an
+HTTP endpoint -- and those are worth brokering for exactly the same
+reason.  Override ~credential_name~ per instance and one entry covers
+every such service.
+
+#+begin_src bash
+clawtilla connector add weather --provider api-key \
+    --command weather-mcp --credential-name OPENWEATHER_KEY
+#+end_src
+
+** Who gets it
+
+The same three answers as any integration: one agent, some agents, or
+the fleet.
+
+#+begin_src bash
+clawtilla connector add gh --provider github --scope all
+clawtilla connector add gh --provider github --scope selected \
+    --agents researcher,scribe
+#+end_src
+
+Sharing one connector across agents is the *point* of it, and unlike a
+Matrix account there is nothing dangerous about it: a connector is a
+credential the fleet reads through, not an identity two agents would
+both answer as.
+
+** Narrowing the tools
+
+#+begin_src bash
+clawtilla connector add gh --provider github --tools list_issues,get_file
+#+end_src
+
+Enforced in the relay, and enforced by *removal* rather than refusal: the
+tools an agent may not use are taken out of its tool list rather than
+rejected when called.  A tool that is advertised and then refused is
+worse than one that was never there -- the agent plans around it, calls
+it, and has to work out from an error that it never had it.
+
+Leaving ~tools~ unset means every tool the server offers.  An empty list
+is treated the same, rather than as a lockout nobody asked for.
+
+** Renewal
+
+An access token often lasts an hour.  The daemon renews any that is
+within ~connectors.refresh_margin_seconds~ of expiring, on a timer of its
+own -- not when a tool server starts, because a server started with a
+token that expires forty minutes later keeps running with it, and the
+agent's first failure would arrive long after anything could connect the
+two.
+
+=clawtilla connector list= shows how long is left.  An expired
+credential that can renew itself reads as connected, not as broken:
+showing it as broken would light up the list every hour and teach you to
+ignore the one that genuinely is.
+
+** Revoking
+
+#+begin_src bash
+clawtilla connector revoke gh
+#+end_src
+
+The local copy goes whatever the provider says -- you asked for the fleet
+to stop using it now, and a provider that is unreachable must not leave
+an agent holding a working credential until the network comes back.
+
+Where the provider offers a revocation endpoint, clawtilla calls it and
+says so.  Where it does not, clawtilla says *that*, because deleting our
+copy is not revocation: a token you forgot still works for anybody who
+has it, for as long as the provider says, which for a refresh token can
+be months.  Finishing the job means withdrawing it in their settings.
+
+** What the agent is told
+
+The managed region of the agent's =TOOLS.org= gains a paragraph per
+connector, and it says three things the tool list cannot:
+
+- these tools reach a real account belonging to a real person, so
+  reading is cheap and anything that writes or sends is worth being sure
+  about;
+- the agent does not have the credential and cannot get it, said out
+  loud so it is not discovered by trying -- an agent that goes looking
+  wastes turns and leaves something alarming in a transcript;
+- which scopes were granted, so it does not spend turns discovering one
+  call at a time that something was refused.
+
+** Configuration
+
+See [[file:configuration-options.org][configuration-options.org]] for the generated reference.  The keys
+that matter here:
+
+| Key                                    | What it does                              |
+|----------------------------------------+-------------------------------------------|
+| ~connectors.dir~                       | where your own connector files live       |
+| ~connectors.refresh_margin_seconds~    | how early to renew                        |
+| ~connectors.redirect_port~             | the loopback port for the PKCE redirect   |
+| ~integrations.provider~                | which catalogue entry                     |
+| ~integrations.account~                 | which account, in your words              |
+| ~integrations.instance~                | for a service you host                    |
+| ~integrations.client_id~               | the application you registered            |
+| ~integrations.client_secret~           | a secret reference, if the provider needs one |
+| ~integrations.scopes~                  | what to ask for                           |
+| ~integrations.token_file~              | where the credential went; set for you    |
+| ~integrations.credential_name~         | the variable or header it goes in         |
+| ~integrations.tools~                   | narrow the agent to these                 |
+
+** Troubleshooting
+
+*** "not connected yet"
+
+No credential has been stored.  Either =clawtilla connector key <name>=
+or =clawtilla connector connect <name>=.
+
+*** "no connector called 'x'"
+
+The ~provider~ names a catalogue entry that does not exist.  The error
+names ~connectors.dir~ as well, because the fix is usually a file that
+adds it.
+
+*** The flow says the code expired
+
+Device codes are usually good for fifteen minutes.  Start again; nothing
+is left behind.
+
+*** The agent has the connector but no tools
+
+The catalogue entry has no server and the integration named none, so
+there was a credential and nothing to use it with.  Set ~command~ or
+~url~ on the integration.  =clawtilla connector catalog= shows which
+entries know a server.
+
+*** An agent says a tool is not permitted
+
+The connector was narrowed with ~tools~.  The refusal names the tool and
+says so.
