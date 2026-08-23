@@ -1294,12 +1294,17 @@ agents:
           # filename. Set it when neither does: clawtilla says which family it
           # assumed rather than guessing quietly.
           #
-          # `debian` covers Ubuntu, and `enterprise` covers CentOS Stream, RHEL
-          # and the rebuilds. It decides more than package names -- the display
+          # `enterprise` covers CentOS Stream, RHEL and the rebuilds. Ubuntu is
+          # separate from Debian for one reason: Debian stable has no `firefox`
+          # package, only `firefox-esr`, and Ubuntu has no `firefox-esr` -- so a
+          # single family would be wrong on half of it, and a package that does
+          # not exist fails the whole install rather than merely missing.
+          #
+          # It decides more than package names -- the display
           # manager is gdm on Fedora and gdm3 on Debian, PyGObject is
           # python3-gobject there and python3-gi here, and a Debian cloud image
           # has neither the dconf binary nor glib-compile-schemas until asked.
-          # Values: auto, fedora, enterprise, debian
+          # Values: auto, fedora, enterprise, debian, ubuntu
           flavour: "auto"
 
           # What to install to get a desktop, if not the usual set.

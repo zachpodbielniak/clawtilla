@@ -64,7 +64,7 @@ static const ClawtVmImageSource sources[] = {
       NULL, "Debian and Ubuntu",
       "https://cloud-images.ubuntu.com/noble/current/"
       "noble-server-cloudimg-amd64.img", NULL,
-      CLAWT_GUEST_FLAVOUR_DEBIAN }
+      CLAWT_GUEST_FLAVOUR_UBUNTU }
 };
 
 const ClawtVmImageSource *
@@ -100,13 +100,13 @@ static const struct {
     { "rocky",    CLAWT_GUEST_FLAVOUR_ENTERPRISE },
     { "alma",     CLAWT_GUEST_FLAVOUR_ENTERPRISE },
     { "debian",   CLAWT_GUEST_FLAVOUR_DEBIAN },
-    { "ubuntu",   CLAWT_GUEST_FLAVOUR_DEBIAN },
+    { "ubuntu",   CLAWT_GUEST_FLAVOUR_UBUNTU },
     /*
      * Ubuntu's own cloud images are named after the release adjective
      * and never say "ubuntu": the file is `noble-server-cloudimg`.
      */
-    { "noble",    CLAWT_GUEST_FLAVOUR_DEBIAN },
-    { "jammy",    CLAWT_GUEST_FLAVOUR_DEBIAN },
+    { "noble",    CLAWT_GUEST_FLAVOUR_UBUNTU },
+    { "jammy",    CLAWT_GUEST_FLAVOUR_UBUNTU },
     { "trixie",   CLAWT_GUEST_FLAVOUR_DEBIAN },
     { "bookworm", CLAWT_GUEST_FLAVOUR_DEBIAN }
 };

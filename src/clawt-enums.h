@@ -536,7 +536,8 @@ typedef enum {
  * @CLAWT_GUEST_FLAVOUR_AUTO: work it out from the image
  * @CLAWT_GUEST_FLAVOUR_FEDORA: Fedora
  * @CLAWT_GUEST_FLAVOUR_ENTERPRISE: CentOS Stream, RHEL and their rebuilds
- * @CLAWT_GUEST_FLAVOUR_DEBIAN: Debian and Ubuntu
+ * @CLAWT_GUEST_FLAVOUR_DEBIAN: Debian
+ * @CLAWT_GUEST_FLAVOUR_UBUNTU: Ubuntu
  *
  * Which family a guest belongs to, for the purpose of installing things
  * into it.
@@ -550,6 +551,14 @@ typedef enum {
  * those wrong and the guest boots, cloud-init reports success, and the
  * agent is looking at a machine with no session on it.
  *
+ * Ubuntu is separate from Debian even though almost everything about
+ * them is identical here, because the one thing that is not would fail
+ * on both: Debian stable ships Firefox as `firefox-esr` and has no
+ * `firefox` package at all, while on Ubuntu `firefox` is a transitional
+ * package that installs the snap and there is no `firefox-esr`.  A
+ * single family would have to pick one and be wrong on the other half
+ * of it.
+ *
  * There is no member for a family clawtilla has never heard of.  A guest
  * it cannot place is one where the seed says what it assumed, in a
  * warning naming the key that settles it.
@@ -558,7 +567,8 @@ typedef enum {
     CLAWT_GUEST_FLAVOUR_AUTO = 0,
     CLAWT_GUEST_FLAVOUR_FEDORA,
     CLAWT_GUEST_FLAVOUR_ENTERPRISE,
-    CLAWT_GUEST_FLAVOUR_DEBIAN
+    CLAWT_GUEST_FLAVOUR_DEBIAN,
+    CLAWT_GUEST_FLAVOUR_UBUNTU
 } ClawtGuestFlavour;
 
 /**

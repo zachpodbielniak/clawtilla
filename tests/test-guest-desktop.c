@@ -312,6 +312,8 @@ test_no_desktop_renders_nothing_extra(void)
 
 /* ── Which distribution is in there ──────────────────────────────── */
 
+static gchar *render_for(ClawtGuestFlavour flavour);
+
 /*
  * The catalog is authoritative, and every image in it must place itself.
  * An entry that resolves to AUTO would install Fedora names into
@@ -356,7 +358,7 @@ test_a_downloaded_image_is_placed_by_its_name(void)
 
     /* A directory is as good a clue as a filename. */
     g_assert_cmpint(clawt_vm_image_flavour("~/images/ubuntu/disk.qcow2"),
-                    ==, CLAWT_GUEST_FLAVOUR_DEBIAN);
+                    ==, CLAWT_GUEST_FLAVOUR_UBUNTU);
 }
 
 /*
@@ -370,7 +372,52 @@ test_an_ubuntu_image_does_not_say_ubuntu(void)
 {
     g_assert_cmpint(clawt_vm_image_flavour(
                         "noble-server-cloudimg-amd64.img"),
-                    ==, CLAWT_GUEST_FLAVOUR_DEBIAN);
+                    ==, CLAWT_GUEST_FLAVOUR_UBUNTU);
+}
+
+/*
+ * The one entry in the whole table where Debian and Ubuntu disagree, and
+ * it fails on both if a single family has to pick.  Debian stable has no
+ * `firefox` package -- only `firefox-esr` -- and Ubuntu has no
+ * `firefox-esr`; cloud-init treats a package it cannot find as a failure
+ * of the whole install, so the wrong name costs the desktop rather than
+ * the browser.
+ */
+static void
+test_debian_and_ubuntu_want_different_firefoxes(void)
+{
+    g_autofree gchar *debian = render_for(CLAWT_GUEST_FLAVOUR_DEBIAN);
+    g_autofree gchar *ubuntu = render_for(CLAWT_GUEST_FLAVOUR_UBUNTU);
+
+    g_assert_nonnull(strstr(debian, "- \"firefox-esr\""));
+    g_assert_null(strstr(debian, "- \"firefox\""));
+
+    g_assert_nonnull(strstr(ubuntu, "- \"firefox\""));
+    g_assert_null(strstr(ubuntu, "firefox-esr"));
+
+    /* Everything else about them is the same. */
+    g_assert_nonnull(strstr(ubuntu, "gdm3.service"));
+    g_assert_nonnull(strstr(ubuntu, "- \"python3-gi\""));
+    g_assert_nonnull(strstr(ubuntu, "- \"python3-venv\""));
+}
+
+/*
+ * A desktop with no browser on it gives an agent a wallpaper to look at.
+ */
+static void
+test_every_family_gets_a_browser(void)
+{
+    ClawtGuestFlavour families[] = {
+        CLAWT_GUEST_FLAVOUR_FEDORA, CLAWT_GUEST_FLAVOUR_ENTERPRISE,
+        CLAWT_GUEST_FLAVOUR_DEBIAN, CLAWT_GUEST_FLAVOUR_UBUNTU
+    };
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(families); i++) {
+        g_autofree gchar *data = render_for(families[i]);
+
+        g_assert_nonnull(strstr(data, "firefox"));
+    }
 }
 
 static void
@@ -565,6 +612,10 @@ main(int argc, char *argv[])
                     test_enterprise_asks_for_nothing_fedora_only);
     g_test_add_func("/guest-desktop/cloud-config/explicit-list-replaces",
                     test_an_explicit_list_replaces_the_familys);
+    g_test_add_func("/guest-desktop/cloud-config/firefox-differs",
+                    test_debian_and_ubuntu_want_different_firefoxes);
+    g_test_add_func("/guest-desktop/cloud-config/every-family-browses",
+                    test_every_family_gets_a_browser);
 
     return g_test_run();
 }

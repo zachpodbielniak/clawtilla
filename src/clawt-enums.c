@@ -530,6 +530,8 @@ clawt_guest_flavour_get_type(void)
               "CLAWT_GUEST_FLAVOUR_ENTERPRISE", "enterprise" },
             { CLAWT_GUEST_FLAVOUR_DEBIAN, "CLAWT_GUEST_FLAVOUR_DEBIAN",
               "debian" },
+            { CLAWT_GUEST_FLAVOUR_UBUNTU, "CLAWT_GUEST_FLAVOUR_UBUNTU",
+              "ubuntu" },
             { 0, NULL, NULL }
         };
         GType g_define_type_id =

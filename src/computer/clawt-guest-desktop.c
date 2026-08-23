@@ -66,7 +66,7 @@ static const gchar *const fedora_desktop[] = {
     "gdm", "gnome-shell", "gnome-session", "gnome-console",
     "gnome-control-center", "nautilus", "gnome-text-editor",
     "xdg-user-dirs-gtk", "gnome-tweaks", "gnome-shell-extension-common",
-    "dconf", NULL
+    "firefox", "dconf", NULL
 };
 
 static const gchar *const fedora_mcp[] = {
@@ -82,7 +82,8 @@ static const gchar *const fedora_mcp[] = {
  */
 static const gchar *const enterprise_desktop[] = {
     "gdm", "gnome-shell", "gnome-session", "gnome-terminal",
-    "gnome-control-center", "nautilus", "xdg-user-dirs-gtk", "dconf", NULL
+    "gnome-control-center", "nautilus", "xdg-user-dirs-gtk",
+    "firefox", "dconf", NULL
 };
 
 static const gchar *const enterprise_mcp[] = {
@@ -93,7 +94,27 @@ static const gchar *const debian_desktop[] = {
     "gdm3", "gnome-shell", "gnome-session", "gnome-terminal",
     "gnome-control-center", "nautilus", "gnome-text-editor",
     "xdg-user-dirs-gtk", "gnome-tweaks",
+    /*
+     * Debian stable ships Firefox as the extended-support release and
+     * has no `firefox` package at all, so asking for that name fails
+     * the whole package install rather than merely missing a browser.
+     */
+    "firefox-esr",
     /* The `dconf` binary is here, not in the gsettings backend. */
+    "dconf-cli", NULL
+};
+
+/*
+ * Ubuntu is Debian's list with one name changed, and the change is the
+ * reason it is a family of its own: there is no `firefox-esr` in
+ * Ubuntu's archive, and `firefox` there is a transitional package that
+ * installs the snap.  Either name is wrong on the other distribution.
+ */
+static const gchar *const ubuntu_desktop[] = {
+    "gdm3", "gnome-shell", "gnome-session", "gnome-terminal",
+    "gnome-control-center", "nautilus", "gnome-text-editor",
+    "xdg-user-dirs-gtk", "gnome-tweaks",
+    "firefox",
     "dconf-cli", NULL
 };
 
@@ -120,6 +141,9 @@ static const FlavourSpec flavours[] = {
     { CLAWT_GUEST_FLAVOUR_ENTERPRISE, enterprise_desktop, enterprise_mcp,
       "gdm.service" },
     { CLAWT_GUEST_FLAVOUR_DEBIAN, debian_desktop, debian_mcp,
+      "gdm3.service" },
+    /* Everything but the browser is Debian's, so the rest is shared. */
+    { CLAWT_GUEST_FLAVOUR_UBUNTU, ubuntu_desktop, debian_mcp,
       "gdm3.service" }
 };
 

@@ -1668,6 +1668,14 @@ the same program.
   rather than guessing quietly, and Enterprise Linux gets a shorter list
   on purpose: cloud-init treats a package it cannot find as a failure of
   the whole install, so one Fedora-only name takes the desktop with it.
+- Ubuntu is a family of its own for a single entry. Everything about it
+  is Debian's -- gdm3, python3-gi, python3-venv, dconf-cli -- except
+  Firefox: Debian stable has no `firefox` package, only `firefox-esr`,
+  and Ubuntu has no `firefox-esr`. Either name fails the whole install
+  on the other distribution, so a shared family would have to pick one
+  and be wrong half the time. Worth knowing: `firefox` on Ubuntu is a
+  transitional package that installs the snap, and there is no deb to
+  prefer instead.
 
 
 ## Things to NEVER Do
