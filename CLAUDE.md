@@ -441,6 +441,29 @@ the same program.
   itself was correct throughout; `gdbus call ... SetEnabled true` by hand
   returned `(true,)` on the same guest. Only the launcher was missing.
 
+### Two accounts for one machine is a workaround waiting to be invented
+
+- `computer.vm.ssh_user` defaulted to **root**, and GDM will not log root
+  in -- so a desktop VM got a second account for the screen while every
+  command arrived as the first. That was recorded at the time as a fact
+  to work around rather than as the bug it was: anything touching the
+  session (the display, the session bus, a file in that home directory)
+  needed the agent to bridge two logins by hand, and one duly did --
+  re-running things as `clawt` with `XAUTHORITY` pointed at the Xwayland
+  cookie it went and found. **A technique an agent explains back to you
+  is a thing the software should have done.**
+- The default is `clawt` now, with `NOPASSWD:ALL`, and the seed renders
+  *one* account: `clawt_guest_desktop_resolve_user()` already returned
+  ssh_user unchanged when it was not root, so the two collapse on their
+  own. An agent needing root writes `sudo`.
+- It also lines the uid up. The account is the guest's first, so uid
+  1000 -- the same as the host user owning the files on a virtiofs share,
+  which root was not.
+- `ssh_user: root` still works and still gets the second account, because
+  GDM's refusal is not ours to overrule. A guest built before this has no
+  such account unless it had a desktop, so that one needs root named
+  explicitly or a rebuild -- cloud-init reads its seed once.
+
 ### One package name this distribution lacks costs the whole desktop
 
 - RHEL 10 replaced GNOME Terminal with Ptyxis, so `gnome-terminal` is not

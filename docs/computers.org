@@ -510,9 +510,10 @@ With ~cloud_init: true~ -- the default -- clawtilla builds a small ISO
 labelled ~cidata~, attaches it as a CD-ROM, and cloud-init reads it on
 first boot:
 
-- creates ~ssh_user~ (default ~root~), and nothing else.  The image's own
-  default login -- ~fedora~, ~debian~, ~ubuntu~ -- is never created, so
-  the guest has exactly the one account clawtilla holds a key for
+- creates ~ssh_user~ (default ~clawt~) with passwordless sudo, and
+  nothing else.  The image's own default login -- ~fedora~, ~debian~,
+  ~ubuntu~ -- is never created, so the guest has exactly the one account
+  clawtilla holds a key for
 - authorises the public key, and disables password authentication
 - gives that account passwordless ~sudo~, unless it is already root
 
@@ -1086,18 +1087,30 @@ which is also how you take something out.  It does not reach the packages
 the MCP server needs: those are not the desktop, and trimming this list
 must not switch automation off by accident.
 
-**** Why there are two accounts
+**** One account, and why it used to be two
 
-GDM refuses to log root in, and ~ssh_user~ defaults to root.  So a VM
-left at its defaults gets a second account -- ~clawt~ -- which owns the
-graphical session, while commands the agent runs still arrive as root.
-Both are created by cloud-init and both authorise the same key.  Set
-~ssh_user~ to something other than root, or name
-~vm.desktop.user~, and there is one account instead.
+~ssh_user~ defaults to ~clawt~, with passwordless sudo.  Commands arrive
+as that account and the graphical session belongs to it, so they are the
+same login.
 
-The key has to reach the session account: the MCP server talks to GNOME
-Shell over the session bus of whoever is logged in at the screen, so it
-is reached by an SSH connection *as that account*.
+It used to default to ~root~, and that was the wrong way round.  GDM
+will not log root in -- it is right not to; a GNOME session as root is a
+long-standing way to fill a home directory with root-owned files -- so a
+desktop VM grew a second account for the screen while every command
+still arrived as root.  Anything touching the session then needed a
+workaround, and agents duly invented them: re-running things as ~clawt~
+with ~XAUTHORITY~ pointed at the Xwayland cookie by hand, which is the
+sort of discovery that means something belonged in the software.
+
+It also lines the uid up.  The account is the guest's first, so it is
+uid 1000 -- the same as the host user who owns the files on a shared
+directory, which root was not.
+
+An agent that needs root writes ~sudo~ and gets it without a password.
+Setting ~ssh_user: root~ restores the old arrangement, second account and
+all, since GDM's refusal is not clawtilla's to overrule.  A guest built
+before this changed has no ~clawt~ account unless it had a desktop, so
+name root there explicitly or rebuild it.
 
 **** The guest gets the host's CPU
 

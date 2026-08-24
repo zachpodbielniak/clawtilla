@@ -1103,6 +1103,76 @@ test_the_installer_checks_the_desktop_arrived(void)
     }
 }
 
+
+/* ── One login, not two ──────────────────────────────────────────── */
+
+/*
+ * The session and the commands are the same account now.
+ *
+ * ssh_user used to default to root, and GDM will not log root in -- so a
+ * desktop VM got a second account for the screen while every command
+ * still arrived as the first. Anything touching the session (the
+ * display, the session bus, a file in that home directory) then needed a
+ * workaround, and an agent duly invented one: it re-ran things as clawt
+ * with XAUTHORITY pointed at the Xwayland cookie by hand.
+ */
+static void
+test_the_session_and_the_commands_share_an_account(void)
+{
+    g_autoptr(ClawtGuestDesktop) desktop = NULL;
+    g_autofree gchar *session = NULL;
+    g_autofree gchar *data = NULL;
+    const gchar *first;
+
+    session = clawt_guest_desktop_resolve_user(NULL, "clawt");
+    g_assert_cmpstr(session, ==, "clawt");
+
+    desktop = clawt_guest_desktop_new(session);
+    clawt_guest_desktop_set_flavour(desktop, CLAWT_GUEST_FLAVOUR_FEDORA);
+
+    data = clawt_cloud_init_build_user_data("clawt", "ssh-ed25519 AAAA k",
+                                            "clawt-vm", desktop);
+
+    /* Exactly one account is created... */
+    first = strstr(data, "  - name: \"clawt\"");
+    g_assert_nonnull(first);
+    g_assert_null(strstr(first + 1, "  - name:"));
+
+    /* ...it can become root without a password... */
+    g_assert_nonnull(strstr(data, "sudo: \"ALL=(ALL) NOPASSWD:ALL\""));
+
+    /* ...and the key reaches it. */
+    g_assert_nonnull(strstr(data, "ssh_authorized_keys"));
+
+    /* Root is shut out, since nothing needs to arrive as root now. */
+    g_assert_nonnull(strstr(data, "disable_root: true"));
+}
+
+/*
+ * Naming root explicitly still works, and still needs the second
+ * account: GDM's refusal is not ours to overrule.
+ */
+static void
+test_naming_root_still_gets_a_session_account(void)
+{
+    g_autoptr(ClawtGuestDesktop) desktop = NULL;
+    g_autofree gchar *session = NULL;
+    g_autofree gchar *data = NULL;
+
+    session = clawt_guest_desktop_resolve_user(NULL, "root");
+    g_assert_cmpstr(session, ==, "clawt");
+
+    desktop = clawt_guest_desktop_new(session);
+    clawt_guest_desktop_set_flavour(desktop, CLAWT_GUEST_FLAVOUR_FEDORA);
+
+    data = clawt_cloud_init_build_user_data("root", "ssh-ed25519 AAAA k",
+                                            "clawt-vm", desktop);
+
+    g_assert_nonnull(strstr(data, "  - name: \"root\""));
+    g_assert_nonnull(strstr(data, "  - name: \"clawt\""));
+    g_assert_nonnull(strstr(data, "disable_root: false"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1171,6 +1241,10 @@ main(int argc, char *argv[])
     g_test_add_func("/guest-desktop/install/same-on-every-family",
                     test_every_family_installs_the_same_way);
 
+    g_test_add_func("/guest-desktop/login/one-account-by-default",
+                    test_the_session_and_the_commands_share_an_account);
+    g_test_add_func("/guest-desktop/login/root-still-gets-a-session",
+                    test_naming_root_still_gets_a_session_account);
     g_test_add_func("/guest-desktop/enterprise/names-it-has",
                     test_enterprise_asks_for_names_it_has);
     g_test_add_func("/guest-desktop/terminal/one-per-family",

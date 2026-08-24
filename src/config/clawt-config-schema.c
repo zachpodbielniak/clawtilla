@@ -1414,11 +1414,24 @@ static const ClawtSchemaEntry schema[] = {
   "0.1.0" },
 
 { "agents.computer.vm.ssh_user", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
-  "root", NULL,
+  "clawt", NULL,
   "User commands are run as inside the guest, over SSH.\n"
   "\n"
   "With cloud_init on, this account is created in the guest rather than\n"
-  "having to exist already, and gets passwordless sudo unless it is root.",
+  "having to exist already, and gets passwordless sudo -- so an agent\n"
+  "that needs root writes `sudo` and gets it, without a password.\n"
+  "\n"
+  "It used to be root, and that was the wrong way round. GDM will not\n"
+  "log root in, so a desktop VM ended up with two accounts: the screen\n"
+  "belonged to one and every command arrived as the other. Anything\n"
+  "touching the session -- the display, the session bus, a file in that\n"
+  "home directory -- then needed a workaround an agent had to invent.\n"
+  "It also lines the guest's uid up with the host's, so files on a\n"
+  "shared directory are owned by somebody on both sides.\n"
+  "\n"
+  "Set it to root to get the old behaviour. A guest built before this\n"
+  "changed has no such account unless it had a desktop, so name root\n"
+  "explicitly there or rebuild it.",
   "0.1.0" },
 
 { "agents.computer.vm.ssh_key", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE,
