@@ -668,6 +668,72 @@ clawt_mcp_tools_describe_for_agent(ClawtMcpTools *self, const gchar *agent_id)
 
     g_return_val_if_fail(CLAWT_IS_MCP_TOOLS(self), NULL);
 
+    /*
+     * Where this agent stands before what it can do, because the tools
+     * below mean different things depending on it -- and because an
+     * agent that does not know it leads a team will not behave like it
+     * does.
+     *
+     * Regenerated with the rest of the region, so a change of team or
+     * role reaches the file rather than waiting for somebody to
+     * remember.
+     */
+    {
+        ClawtAgent *me = (self->agents != NULL)
+                         ? clawt_agent_manager_get(self->agents, agent_id)
+                         : NULL;
+        ClawtAgentConfig *mine = (me != NULL)
+                                 ? clawt_agent_get_config(me) : NULL;
+        const gchar *team = (mine != NULL)
+                            ? clawt_agent_config_get_string(mine, "team")
+                            : NULL;
+
+        g_string_append(out, "* Where you sit\n\n");
+
+        if (mine != NULL &&
+            clawt_agent_config_get_boolean(mine, "chief_of_staff")) {
+            g_string_append(out,
+                "You are the *chief of staff*. You are the lead of every\n"
+                "team, and dividing work between them is the job. Read\n"
+                "~clawtilla_list_teams~ before you place anything: the\n"
+                "descriptions say what each team handles, which the names\n"
+                "on it do not.\n\n"
+                "Hand work to a team's *lead*, not to somebody on it. The\n"
+                "lead knows what their people are in the middle of and\n"
+                "you do not. A team with no lead is the exception -- you\n"
+                "assign into it directly, because nobody else can.\n\n");
+        } else if (team == NULL || *team == '\0') {
+            g_string_append(out,
+                "You are on no team. You take work from the chief of\n"
+                "staff, and you may message, ask and share a room with\n"
+                "anybody here. You cannot assign work to anyone.\n\n");
+        } else if (clawt_team_role_of(mine) == CLAWT_TEAM_LEAD) {
+            g_string_append_printf(out,
+                "You *lead* the ~%s~ team. Work for it arrives from the\n"
+                "chief of staff, and it is yours to place: use\n"
+                "~clawtilla_delegate~ on the people on your team, and\n"
+                "~clawtilla_list_teams~ to see who they are and who is\n"
+                "running.\n\n"
+                "You cannot assign outside your own team. Something that\n"
+                "belongs elsewhere goes back to the chief of staff, who\n"
+                "hands it to the right lead -- do not go around them by\n"
+                "messaging another team's people and asking nicely.\n\n",
+                team);
+        } else {
+            g_string_append_printf(out,
+                "You are on the ~%s~ team. Work reaches you from your\n"
+                "team's lead or from the chief of staff.\n\n"
+                "You cannot assign work to anybody, and that is the only\n"
+                "restriction: you can message, ask and share a room with\n"
+                "any agent in the fleet, on your team or not. Handing\n"
+                "something over in conversation, asking somebody who\n"
+                "knows, and working on something together are all fine\n"
+                "and are what the fleet is for. If a piece of work needs\n"
+                "to go on somebody's list, tell your lead.\n\n",
+                team);
+        }
+    }
+
     g_string_append(out, "* The tools clawtilla is giving you\n\n");
 
     for (i = 0; i < G_N_ELEMENTS(tools); i++) {

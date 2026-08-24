@@ -108,6 +108,7 @@ static const gchar *usage_text =
     "  chat <agent>                  Interactive chat with one agent\n"
     "  mailbox <verb>                Inspect and manage an agent's mailbox\n"
     "  room <verb>                   Manage rooms\n"
+    "  team <verb>                   Manage teams and who is on them\n"
     "  task <verb>                   Inspect delegated tasks\n"
     "  computer <verb>               Run commands on an agent's computer\n"
     "  cp <src> <dst>                Copy files to or from an agent's computer\n"
@@ -183,7 +184,7 @@ static const gchar *usage_text =
  */
 static const gchar *const verbs[] = {
     "daemon", "remote", "status", "agent", "send", "chat", "mailbox", "room",
-    "task",
+    "team", "task",
     "memory",
     "computer", "cp", "config", "plugin", "integration", "connector",
     "routine",
@@ -1880,6 +1881,186 @@ cmd_memory(int argc, char *argv[])
             json_object_get_int_member(json_node_get_object(reply), "total"));
 
     return EXIT_SUCCESS;
+}
+
+static gint
+cmd_team(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verb = (argc > 2) ? argv[2] : NULL;
+
+    if (verb == NULL) {
+        g_printerr("Usage: clawtilla team "
+                   "<list|create|set|rm|assign> [ARGS...]\n");
+        g_printerr("\n");
+        g_printerr("  list                          teams, who leads them "
+                   "and how many are running\n");
+        g_printerr("  create <id> [DESCRIPTION]     add one\n");
+        g_printerr("  set <id> <key> <value>        name, description or "
+                   "color\n");
+        g_printerr("  rm <id>                       remove it; its agents "
+                   "become teamless\n");
+        g_printerr("  assign <agent> <team> [lead]  put an agent on a "
+                   "team\n");
+        return EXIT_FAILURE;
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    if (g_strcmp0(verb, "list") == 0) {
+        JsonArray *teams;
+        JsonArray *warnings;
+        guint i;
+
+        reply = call(client, "team.list", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        teams = json_object_get_array_member(json_node_get_object(reply),
+                                             "teams");
+
+        if (json_array_get_length(teams) == 0)
+            g_print("No teams yet. Create one with:\n"
+                    "  clawtilla team create research \"reads sources\"\n");
+
+        for (i = 0; i < json_array_get_length(teams); i++) {
+            JsonObject *team = json_array_get_object_element(teams, i);
+            const gchar *lead = member_or(team, "lead", NULL);
+
+            g_print("%-16s %s\n", member_or(team, "id", "?"),
+                    member_or(team, "description", ""));
+            g_print("%-16s %" G_GINT64_FORMAT " of %" G_GINT64_FORMAT
+                    " running, lead: %s\n", "",
+                    json_object_get_int_member(team, "running"),
+                    json_object_get_int_member(team, "total"),
+                    lead != NULL ? lead : "nobody");
+        }
+
+        /*
+         * Printed to stderr and always, because a team with two leads or
+         * an agent on a team nobody declared is the sort of thing that
+         * only shows up as work quietly going nowhere.
+         */
+        warnings = json_object_get_array_member(json_node_get_object(reply),
+                                                "warnings");
+
+        for (i = 0; i < json_array_get_length(warnings); i++)
+            g_printerr("clawtilla: %s\n",
+                       json_array_get_string_element(warnings, i));
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "create") == 0) {
+        if (argc < 4) {
+            g_printerr("Usage: clawtilla team create <id> [DESCRIPTION]\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "team.create",
+                     build_payload("id", argv[3],
+                                   "description",
+                                   (argc > 4) ? argv[4] : NULL, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Created team %s.\n", argv[3]);
+
+        if (argc <= 4)
+            g_print("Give it a description -- it is what the chief of "
+                    "staff reads to decide what belongs here:\n"
+                    "  clawtilla team set %s description \"...\"\n",
+                    argv[3]);
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "set") == 0) {
+        if (argc < 6) {
+            g_printerr("Usage: clawtilla team set <id> <key> <value>\n");
+            g_printerr("  keys: name, description, color, order\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "team.set",
+                     build_payload("team", argv[3], "key", argv[4],
+                                   "value", argv[5], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("%s: %s = %s\n", argv[3], argv[4], argv[5]);
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "rm") == 0) {
+        if (argc < 4) {
+            g_printerr("Usage: clawtilla team rm <id>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "team.remove",
+                     build_payload("team", argv[3], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Removed team %s.\n", argv[3]);
+
+        {
+            gint64 orphaned = json_object_get_int_member(
+                json_node_get_object(reply), "orphaned");
+
+            /*
+             * Said rather than left to be discovered. The agents are
+             * fine and still running; they are simply on a team that is
+             * no longer declared, which is where hand-offs start going
+             * nowhere.
+             */
+            if (orphaned > 0)
+                g_print("%" G_GINT64_FORMAT " agent%s still name%s it. "
+                        "Put them somewhere:\n"
+                        "  clawtilla team assign <agent> <team>\n",
+                        orphaned, orphaned == 1 ? "" : "s",
+                        orphaned == 1 ? "s" : "");
+        }
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "assign") == 0) {
+        gboolean lead = (argc > 5 && g_strcmp0(argv[5], "lead") == 0);
+
+        if (argc < 5) {
+            g_printerr("Usage: clawtilla team assign <agent> <team> "
+                       "[lead]\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "agent.set",
+                     build_payload("agent", argv[3], "key", "team",
+                                   "value", argv[4], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        {
+            g_autoptr(JsonNode) role = call(
+                client, "agent.set",
+                build_payload("agent", argv[3], "key", "team_role",
+                              "value", lead ? "lead" : "member", NULL));
+
+            if (role == NULL)
+                return EXIT_FAILURE;
+        }
+
+        g_print("%s is now %s of %s.\n", argv[3],
+                lead ? "the lead" : "a member", argv[4]);
+        return EXIT_SUCCESS;
+    }
+
+    g_printerr("clawtilla: unknown team command '%s'\n", verb);
+    return EXIT_FAILURE;
 }
 
 static gint
@@ -4644,6 +4825,9 @@ main(int argc, char *argv[])
 
     if (g_strcmp0(argv[1], "room") == 0)
         return cmd_room(argc, argv);
+
+    if (g_strcmp0(argv[1], "team") == 0)
+        return cmd_team(argc, argv);
 
     if (g_strcmp0(argv[1], "memory") == 0)
         return cmd_memory(argc, argv);
