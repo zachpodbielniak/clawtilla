@@ -3587,6 +3587,36 @@ resolution_row(const gchar *current)
                      current);
 }
 
+/*
+ * Make a row respond to a click, and look like it will.
+ *
+ * libadwaita clears GtkListBoxRow:activatable unless an *activatable
+ * widget* is set, so a plain AdwActionRow never emits ::row-activated:
+ * the row highlights and nothing happens, which is what the integrations
+ * list did for its whole life.
+ *
+ * Setting the row as its own activatable widget makes it activatable and
+ * then recurses until the stack runs out -- measured at 2502 GTK
+ * criticals and a segfault. It has to be a *different* widget, and the
+ * chevron is the natural one: it is also what tells somebody the row
+ * goes somewhere.
+ *
+ * One function because there are three such lists and they had three
+ * answers between them, two of which were wrong in different ways.
+ *
+ * Returns: (transfer none): @row, so it can be used inline
+ */
+static GtkWidget *
+row_opens_something(GtkWidget *row)
+{
+    GtkWidget *chevron = gtk_image_new_from_icon_name("go-next-symbolic");
+
+    adw_action_row_add_suffix(ADW_ACTION_ROW(row), chevron);
+    adw_action_row_set_activatable_widget(ADW_ACTION_ROW(row), chevron);
+
+    return row;
+}
+
 static GtkWidget *
 entry_row(const gchar *title, const gchar *value)
 {
@@ -10167,8 +10197,6 @@ refresh_settings_integrations(ClawtWindow *self)
             const gchar *scope = clawt_json_string(integration, "scope",
                                                    "selected");
             GtkWidget *row = adw_action_row_new();
-            GtkWidget *chevron =
-                gtk_image_new_from_icon_name("go-next-symbolic");
             g_autofree gchar *subtitle = NULL;
             g_autofree gchar *reach = NULL;
 
@@ -10190,7 +10218,7 @@ refresh_settings_integrations(ClawtWindow *self)
                                                FALSE);
             adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), name);
             adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
-            adw_action_row_add_suffix(ADW_ACTION_ROW(row), chevron);
+            row_opens_something(row);
 
             g_object_set_data_full(G_OBJECT(row), "integration",
                                    g_strdup(name), g_free);
@@ -10684,12 +10712,11 @@ refresh_settings_connectors(ClawtWindow *self)
                                    g_strdup(provider), g_free);
 
             /*
-             * libadwaita clears GtkListBoxRow:activatable unless an
-             * activatable widget is set, so a plain AdwActionRow never
-             * emits ::row-activated -- the row would highlight and do
-             * nothing.
+             * This used to pass the row as its own activatable widget,
+             * which made it activatable and crashed the client on the
+             * first click. See row_opens_something().
              */
-            adw_action_row_set_activatable_widget(ADW_ACTION_ROW(row), row);
+            row_opens_something(row);
 
             gtk_list_box_append(GTK_LIST_BOX(self->settings_connectors), row);
         }
@@ -11869,9 +11896,7 @@ refresh_routines(ClawtWindow *self)
                 clawt_json_string(routine, "description",
                                   clawt_json_string(routine, "id", "?")));
             adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
-            adw_action_row_add_suffix(
-                ADW_ACTION_ROW(row),
-                gtk_image_new_from_icon_name("go-next-symbolic"));
+            row_opens_something(row);
 
             g_object_set_data_full(G_OBJECT(row), "routine",
                                    json_object_ref(routine),

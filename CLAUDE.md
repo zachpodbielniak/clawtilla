@@ -1386,6 +1386,25 @@ the same program.
   with it. `ClawtClient` re-arms first, and delivers events from an idle
   so application handlers never run inside the reader at all.
 
+### An AdwActionRow made its own activatable widget recurses until it segfaults
+
+- The fix for a dead row is an *activatable widget*, and it has to be a
+  **different** widget. `adw_action_row_set_activatable_widget(row, row)`
+  sets `activatable` to TRUE, so the row looks fixed -- and activating it
+  calls `gtk_widget_activate()` on itself, forever. Measured on real
+  libadwaita: 2502 `gtk_root_get_focus` criticals and then SIGSEGV. The
+  chevron works and returns cleanly.
+- Which made the connectors list crash the client on the first click,
+  while the integrations and routines lists next to it were plain
+  AdwActionRows that did nothing at all. Three lists, three answers, two
+  of them wrong in different ways -- so there is one
+  `row_opens_something()` now and it adds the chevron *and* sets it,
+  because a row that opens something should also look like it does.
+- The property to check is `gtk_list_box_row_get_activatable()`. It is
+  FALSE on a plain AdwActionRow, which is the whole bug, and a
+  four-line program against real libadwaita answers it in a second --
+  far quicker than reasoning about what the widget "should" do.
+
 ### AdwActionRow is not activatable
 
 - libadwaita clears `GtkListBoxRow:activatable` unless an
