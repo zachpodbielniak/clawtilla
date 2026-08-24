@@ -188,6 +188,12 @@ code.  It cannot exceed what you could create yourself -- every agent it
 makes goes through the same validation, the same refusal of a VM with no
 disk, and the same start -- but it can do it without being asked twice.
 
+Two settings, not one, and the obvious-sounding name is not the one that
+grants it: ~chief_of_staff~ marks who receives work addressed to the
+fleet, ~tools.manage_fleet~ is what adds the tool.  Enabling the first
+and asking for an agent gets you an agent that says, correctly, that it
+has no such tool.  Both are switches in the agent editor.
+
 Two tools come with it:
 
 | Tool                       | What it does                                     |

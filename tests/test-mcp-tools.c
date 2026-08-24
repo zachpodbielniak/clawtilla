@@ -1016,11 +1016,62 @@ test_the_options_report_what_can_be_chosen(void)
     fixture_teardown(&fixture);
 }
 
+
+/*
+ * What TOOLS.org says an agent has must be what it has.
+ *
+ * The file used to carry a table written when the workspace was
+ * scaffolded, so a tool granted afterwards never appeared in it -- and a
+ * chief-of-staff asked whether it could create agents read its own file
+ * and said no, on the day the tool was given to it. The description
+ * comes from the same gate that answers tools/list, so the two cannot
+ * disagree.
+ */
+static void
+test_the_described_tools_are_the_permitted_ones(void)
+{
+    Fixture fixture = { 0 };
+    FleetRecord record = { 0 };
+    g_autofree gchar *before = NULL;
+    g_autofree gchar *after = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    tools:\n"
+                  "      manage_fleet: true\n"
+                  "  - id: worker\n");
+
+    clawt_mcp_tools_set_create_agent_func(fixture.tools, fake_create_agent,
+                                          &record, NULL);
+
+    before = clawt_mcp_tools_describe_for_agent(fixture.tools, "worker");
+    after = clawt_mcp_tools_describe_for_agent(fixture.tools, "chief");
+
+    g_assert_null(strstr(before, "clawtilla_create_agent"));
+    g_assert_nonnull(strstr(after, "clawtilla_create_agent"));
+
+    /* Both are told the list is current, not a snapshot. */
+    g_assert_nonnull(strstr(after, "regenerated every time you start"));
+
+    /*
+     * And a tool that is missing is said to be missing, rather than the
+     * agent being left to look for another way round.
+     */
+    g_assert_nonnull(strstr(before, "clawtilla_list_agents"));
+
+    g_clear_pointer(&record.created_id, g_free);
+    g_clear_pointer(&record.created_settings, g_hash_table_unref);
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
+    g_test_add_func("/mcp/fleet/description-matches-the-gate",
+                    test_the_described_tools_are_the_permitted_ones);
     g_test_add_func("/mcp/fleet/needs-the-permission",
                     test_the_fleet_tools_need_the_permission);
     g_test_add_func("/mcp/fleet/none-without-a-daemon",

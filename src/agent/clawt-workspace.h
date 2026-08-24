@@ -161,6 +161,27 @@ clawt_workspace_update_tools_org(ClawtConfig      *config,
                                  GError          **error);
 
 /**
+ * clawt_workspace_update_tool_list:
+ * @agent: the agent's configuration
+ * @listing: org text naming the tools it actually has
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Writes the tools clawtilla is offering this agent *right now* into a
+ * marked region of `TOOLS.org` of its own.
+ *
+ * The file used to carry a table written when the workspace was
+ * scaffolded and never touched again, so a tool granted afterwards never
+ * appeared -- and an agent reading its own file concluded it did not
+ * have one, which was true of the file and false of the fleet.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+clawt_workspace_update_tool_list(ClawtAgentConfig *agent,
+                                 const gchar      *listing,
+                                 GError          **error);
+
+/**
  * clawt_workspace_file_path:
  * @agent: the agent's configuration
  * @name: a file name from the standard set, or any other name

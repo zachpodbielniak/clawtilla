@@ -616,6 +616,63 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
     return FALSE;
 }
 
+/*
+ * The same question tools/list answers, written for a person and for the
+ * agent's own prompt.
+ *
+ * It goes through the same gate rather than walking the table, so
+ * the file says what the agent can actually call. TOOLS.org used to
+ * carry a table written when the workspace was scaffolded, which meant a
+ * tool granted later never appeared there -- and an agent asked whether
+ * it could create agents read its own file and said no, on the day the
+ * tool was added to it.
+ */
+gchar *
+clawt_mcp_tools_describe_for_agent(ClawtMcpTools *self, const gchar *agent_id)
+{
+    g_autoptr(GString) out = g_string_new(NULL);
+    guint offered = 0;
+    gsize i;
+
+    g_return_val_if_fail(CLAWT_IS_MCP_TOOLS(self), NULL);
+
+    g_string_append(out, "* The tools clawtilla is giving you\n\n");
+
+    for (i = 0; i < G_N_ELEMENTS(tools); i++) {
+        if (!clawt_mcp_tools_is_permitted(self, agent_id,
+                                          tools[i].name))
+            continue;
+
+        if (offered == 0)
+            g_string_append(out,
+                "| Tool | What it does |\n"
+                "|------+--------------|\n");
+
+        g_string_append_printf(out, "| ~%s~ | %s |\n", tools[i].name,
+                               tools[i].description);
+        offered++;
+    }
+
+    if (offered == 0) {
+        /*
+         * Said rather than left blank. An empty list reads as "clawtilla
+         * has not worked this out yet", and an agent that suspects it
+         * has unlisted tools goes looking for them.
+         */
+        g_string_append(out,
+            "None. You have no orchestration tools at all -- you cannot\n"
+            "reach the other agents, and there is nothing here to try.\n");
+    } else {
+        g_string_append(out,
+            "\nThis list is regenerated every time you start, so it is\n"
+            "what you have now. If something you expect is missing it has\n"
+            "not been granted -- say so rather than looking for another\n"
+            "way round, because there is not one.\n");
+    }
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
 JsonNode *
 clawt_mcp_tools_list(ClawtMcpTools *self, const gchar *agent_id)
 {

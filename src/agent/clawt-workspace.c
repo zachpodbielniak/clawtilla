@@ -1364,6 +1364,26 @@ static const gchar TOOLS_END[] =
     "# END clawtilla integrations";
 
 /*
+ * The second region clawtilla owns, and the one that fixes a lie this
+ * file used to tell.
+ *
+ * TOOLS.org listed the orchestration tools in a table written when the
+ * workspace was scaffolded, and never again -- so a tool granted later
+ * did not appear, and an agent reading its own file concluded, correctly
+ * from what it could see, that it did not have one. A chief-of-staff
+ * said exactly that about creating agents on the day the tool was added
+ * to it.
+ *
+ * This region is written from the live tool list, by the daemon, which
+ * is the only thing that knows both an agent's capabilities and its
+ * permissions.
+ */
+static const gchar TOOL_LIST_BEGIN[] =
+    "# BEGIN clawtilla tools -- rewritten on every start";
+static const gchar TOOL_LIST_END[] =
+    "# END clawtilla tools";
+
+/*
  * What an agent is told about one integration.
  *
  * Written from the agent's side rather than the operator's: not "this
@@ -1628,19 +1648,26 @@ render_integrations_section(ClawtConfig *config, ClawtAgentConfig *agent)
     return g_string_free(g_steal_pointer(&out), FALSE);
 }
 
-gboolean
-clawt_workspace_update_tools_org(ClawtConfig      *config,
-                                 ClawtAgentConfig *agent,
-                                 GError          **error)
+/*
+ * Replace one marked region of TOOLS.org, or append it.
+ *
+ * Shared by the two clawtilla owns -- the integrations, and the list of
+ * tools this agent actually has -- because they differ only in what
+ * goes between the markers, and a second copy of this would be a second
+ * set of edge cases around somebody's prose.
+ */
+static gboolean
+replace_region(ClawtAgentConfig *agent,
+               const gchar      *begin_marker,
+               const gchar      *end_marker,
+               const gchar      *section,
+               GError          **error)
 {
     g_autofree gchar *path = NULL;
     g_autofree gchar *existing = NULL;
-    g_autofree gchar *section = NULL;
     g_autofree gchar *updated = NULL;
     const gchar *begin;
     const gchar *end;
-
-    g_return_val_if_fail(agent != NULL, FALSE);
 
     path = clawt_workspace_file_path(agent, "TOOLS.org");
 
@@ -1649,21 +1676,19 @@ clawt_workspace_update_tools_org(ClawtConfig      *config,
 
     /*
      * A workspace that has not been scaffolded yet is not an error: the
-     * scaffolder runs first on every path that matters, and refusing here
-     * would turn "this agent has no workspace" into "this agent will not
-     * start".
+     * scaffolder runs first on every path that matters, and refusing
+     * here would turn "this agent has no workspace" into "this agent
+     * will not start".
      */
     if (!g_file_get_contents(path, &existing, NULL, NULL))
         return TRUE;
 
-    section = render_integrations_section(config, agent);
-
-    begin = strstr(existing, TOOLS_BEGIN);
-    end = begin != NULL ? strstr(begin, TOOLS_END) : NULL;
+    begin = strstr(existing, begin_marker);
+    end = begin != NULL ? strstr(begin, end_marker) : NULL;
 
     if (begin != NULL && end != NULL) {
         g_autofree gchar *head = g_strndup(existing, begin - existing);
-        const gchar *tail = end + strlen(TOOLS_END);
+        const gchar *tail = end + strlen(end_marker);
 
         /* The newline after the end marker belongs to the marker. */
         if (*tail == '\n')
@@ -1672,20 +1697,52 @@ clawt_workspace_update_tools_org(ClawtConfig      *config,
         updated = g_strconcat(head, section, tail, NULL);
     } else {
         /*
-         * Appended when the markers are not there -- a file scaffolded by
-         * an older clawtilla, or one somebody edited them out of.
+         * Appended when the markers are not there -- a file scaffolded
+         * by an older clawtilla, or one somebody edited them out of.
          * Appending is the only safe move: this file is prose written by
-         * a person, and there is no position in it we could claim to know
-         * is the right one.
+         * a person, and there is no position in it we could claim to
+         * know is the right one.
          */
         gboolean ends_blank = *existing == '\0' ||
                               g_str_has_suffix(existing, "\n\n");
 
-        updated = g_strconcat(existing, ends_blank ? "" : "\n", section, NULL);
+        updated = g_strconcat(existing, ends_blank ? "" : "\n", section,
+                              NULL);
     }
 
     if (g_strcmp0(existing, updated) == 0)
         return TRUE;
 
     return clawt_write_file_atomic(path, updated, -1, 0600, FALSE, error);
+}
+
+gboolean
+clawt_workspace_update_tool_list(ClawtAgentConfig *agent,
+                                 const gchar      *listing,
+                                 GError          **error)
+{
+    g_autofree gchar *section = NULL;
+
+    g_return_val_if_fail(agent != NULL, FALSE);
+    g_return_val_if_fail(listing != NULL, FALSE);
+
+    section = g_strconcat(TOOL_LIST_BEGIN, "\n\n", listing, "\n",
+                          TOOL_LIST_END, "\n", NULL);
+
+    return replace_region(agent, TOOL_LIST_BEGIN, TOOL_LIST_END, section,
+                          error);
+}
+
+gboolean
+clawt_workspace_update_tools_org(ClawtConfig      *config,
+                                 ClawtAgentConfig *agent,
+                                 GError          **error)
+{
+    g_autofree gchar *section = NULL;
+
+    g_return_val_if_fail(agent != NULL, FALSE);
+
+    section = render_integrations_section(config, agent);
+
+    return replace_region(agent, TOOLS_BEGIN, TOOLS_END, section, error);
 }

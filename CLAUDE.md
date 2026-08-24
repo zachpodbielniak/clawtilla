@@ -441,6 +441,31 @@ the same program.
   itself was correct throughout; `gdbus call ... SetEnabled true` by hand
   returned `(true,)` on the same guest. Only the launcher was missing.
 
+### An agent believes its own file over the tool list
+
+- `TOOLS.org` listed the orchestration tools in a table written when the
+  workspace was scaffolded, and never again. So a tool granted later did
+  not appear in it -- and a chief-of-staff asked whether it could create
+  agents read its own file and said no, **on the day the tool was added
+  to it**. It was right about the file and wrong about the fleet.
+- Two sources of truth for the same question, and the static one wins,
+  because it is in the prompt and `tools/list` is a call the model has to
+  decide to make. There is now a second managed region,
+  `# BEGIN clawtilla tools`, written by the daemon from
+  `clawt_mcp_tools_describe_for_agent()` -- which goes through
+  `clawt_mcp_tools_is_permitted()` rather than walking the table, so the
+  file cannot disagree with the gate.
+- Written by the *daemon* and not the config renderer, because it is the
+  only thing that knows both an agent's capabilities and its
+  permissions. Deriving caps from config in the renderer would have been
+  a second implementation of the thing being described.
+- The other half was a naming failure: `chief_of_staff` and
+  `tools.manage_fleet` are separate settings and the obvious-sounding one
+  is not the one that grants the tool. Somebody enabled the first, asked
+  their chief for an agent, and was told it had no such tool. Both are
+  switches in the editor now, adjacent, with the second saying what it
+  actually permits.
+
 ### An agent asked to choose will invent, unless told what exists
 
 - `clawtilla_create_agent` is useless without `clawtilla_agent_options`,

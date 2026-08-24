@@ -438,6 +438,20 @@ container or VM.  Agents with no computer do not get one.
 A teardown that fails does not fail the removal -- the agent is still
 going -- and the reason is reported rather than swallowed.
 
+** What an agent is told it has
+
+~TOOLS.org~ carries a second marked region, ~# BEGIN clawtilla tools~,
+regenerated on every start from the same gate that answers ~tools/list~.
+
+It exists because the file used to list the tools in a table written when
+the workspace was scaffolded and never touched again.  A tool granted
+afterwards never appeared there -- so an agent asked whether it could
+create agents read its own file and said no, on the day it was given the
+tool.  It was right about the file and wrong about the fleet.
+
+Anything outside the markers is the agent's own, including whatever the
+scaffolder wrote there originally.
+
 ** An agent keeps its own files
 
 The scaffolded org files are written once and then belong to the agent.

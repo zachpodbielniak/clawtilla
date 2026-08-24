@@ -1270,6 +1270,29 @@ render_all_agents(ClawtDaemon *self)
                                             self->link_socket, NULL, &error))
             g_warning("agent %s: %s", clawt_agent_get_id(agent),
                       error->message);
+
+        /*
+         * ...and the tools it actually has, from the live gate.
+         *
+         * Written here rather than in the renderer because this is the
+         * only place that knows both the agent's capabilities and its
+         * permissions. Without it TOOLS.org carries whatever table was
+         * scaffolded, and a tool granted afterwards never appears --
+         * which a chief-of-staff read as not having it, on the day it
+         * was given the tool to create agents.
+         */
+        if (self->mcp_tools != NULL) {
+            g_autofree gchar *listing =
+                clawt_mcp_tools_describe_for_agent(self->mcp_tools,
+                                                   clawt_agent_get_id(agent));
+            g_autoptr(GError) tools_error = NULL;
+
+            if (listing != NULL &&
+                !clawt_workspace_update_tool_list(config, listing,
+                                                  &tools_error))
+                g_warning("agent %s: %s", clawt_agent_get_id(agent),
+                          tools_error->message);
+        }
     }
 }
 
@@ -3110,6 +3133,18 @@ add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
     json_builder_set_member_name(builder, "chief_of_staff");
     json_builder_add_boolean_value(builder,
                                    clawt_agent_is_chief_of_staff(agent));
+
+    /*
+     * Reported so a client can show it beside chief_of_staff. The two
+     * are separate settings and the obvious-sounding one is not the one
+     * that grants the tool -- which is how somebody enabled the wrong
+     * switch and was told by their own agent that it could not create
+     * agents.
+     */
+    json_builder_set_member_name(builder, "manage_fleet");
+    json_builder_add_boolean_value(
+        builder, clawt_agent_config_get_boolean(clawt_agent_get_config(agent),
+                                                "tools.manage_fleet"));
 
     json_builder_set_member_name(builder, "connected");
     json_builder_add_boolean_value(

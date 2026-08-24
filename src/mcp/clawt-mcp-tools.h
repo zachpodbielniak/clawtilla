@@ -101,6 +101,23 @@ typedef gchar *(*ClawtMcpCreateAgentFunc)(const gchar  *agent_id,
                                           GError      **error);
 
 /**
+ * clawt_mcp_tools_describe_for_agent:
+ * @self: a #ClawtMcpTools
+ * @agent_id: whose tools to describe
+ *
+ * The tools this agent is being offered *right now*, as org text for
+ * its `TOOLS.org`.
+ *
+ * From the same gate that answers `tools/list`, so the file and the
+ * live list cannot disagree -- which they did, for as long as the file
+ * carried a table written when the workspace was scaffolded.
+ *
+ * Returns: (transfer full): org text
+ */
+gchar *clawt_mcp_tools_describe_for_agent(ClawtMcpTools *self,
+                                          const gchar   *agent_id);
+
+/**
  * clawt_mcp_tools_set_create_agent_func:
  * @self: a #ClawtMcpTools
  * @func: (nullable) (scope notified): the hook

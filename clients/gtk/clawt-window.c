@@ -180,6 +180,7 @@ struct _ClawtWindow {
     GtkWidget         *restart_row;
     GtkWidget         *autostart_row;
     GtkWidget         *chief_row;
+    GtkWidget         *manage_fleet_row;
     ModelChooser       inspector_models;
     ImageChooser       inspector_image;
     gchar             *inspector_computer;   /* the selected agent's type */
@@ -3085,6 +3086,11 @@ on_save_agent(GtkButton *button, gpointer user_data)
                             ADW_SWITCH_ROW(self->chief_row))
                             ? "true" : "false");
 
+    ok &= apply_setting(self, "tools.manage_fleet",
+                        adw_switch_row_get_active(
+                            ADW_SWITCH_ROW(self->manage_fleet_row))
+                            ? "true" : "false");
+
     if (!ok)
         return;
 
@@ -4208,6 +4214,25 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
         json_object_has_member(agent, "chief_of_staff") &&
         json_object_get_boolean_member(agent, "chief_of_staff"));
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), self->chief_row);
+
+    /*
+     * Beside the chief-of-staff switch, because that is where somebody
+     * looking for it goes.
+     *
+     * Being the chief of staff and being allowed to create agents are
+     * two settings, and the first is the one with the obvious name -- a
+     * person enabled it, asked their chief to make an agent, and was
+     * told it had no such tool. Which was true: the tool is gated on
+     * this one, and nothing on screen said so.
+     */
+    self->manage_fleet_row = switch_row(
+        "May create agents",
+        "Adds clawtilla_create_agent. It can give a new agent a container "
+        "or a VM, which is a machine that runs code.",
+        json_object_has_member(agent, "manage_fleet") &&
+        json_object_get_boolean_member(agent, "manage_fleet"));
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              self->manage_fleet_row);
 
     save = gtk_button_new_with_label("Save changes");
     gtk_widget_add_css_class(save, "suggested-action");
