@@ -5075,19 +5075,100 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
 /* ── Mailbox ─────────────────────────────────────────────────────── */
 
 static void
-on_mailbox_ack(GtkButton *button, gpointer user_data)
+on_mailbox_item_action(GtkButton *button, gpointer user_data)
 {
     ClawtWindow *self = user_data;
     const gchar *item_id = g_object_get_data(G_OBJECT(button), "item-id");
+    const gchar *kind = g_object_get_data(G_OBJECT(button), "kind");
     g_autoptr(JsonNode) reply = NULL;
 
     reply = clawt_window_request(
-        self, "mailbox.ack",
+        self, kind,
         clawt_build_payload("agent", self->selected_agent, "item", item_id,
                             NULL));
 
     if (reply != NULL)
         refresh_selected(self);
+}
+
+/*
+ * Every expired item, across every mailbox.
+ *
+ * Fleet-wide rather than per-agent because that is what the daemon
+ * offers -- a sweep is a sweep -- so the button says so.
+ */
+static void
+on_mailbox_purge(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+
+    (void)button;
+
+    reply = clawt_window_request(self, "mailbox.purge", NULL);
+
+    if (reply == NULL)
+        return;
+
+    {
+        g_autofree gchar *said = g_strdup_printf(
+            "Purged %" G_GINT64_FORMAT " expired item(s).",
+            json_object_get_int_member(clawt_payload_of(reply), "purged"));
+
+        clawt_window_toast(self, said);
+    }
+
+    refresh_selected(self);
+}
+
+/*
+ * Adds one mailbox row.
+ *
+ * Shared by the waiting list and the dead-letter list, which differ only
+ * in whether requeueing is offered -- an item that has not run out of
+ * attempts has nothing to be put back into.
+ */
+static void
+add_mailbox_row(ClawtWindow *self, GtkListBox *list, JsonObject *item,
+                gboolean dead)
+{
+    GtkWidget *row = adw_action_row_new();
+    GtkWidget *ack = gtk_button_new_with_label("Ack");
+    g_autofree gchar *title = NULL;
+
+    title = g_strdup_printf("from %s", clawt_json_string(item, "from", "?"));
+    set_row_text(row, title, clawt_json_string(item, "body", ""));
+
+    if (clawt_json_string(item, "last_error", NULL) != NULL) {
+        GtkWidget *warn = badge("failed", "error",
+                                clawt_json_string(item, "last_error", ""));
+
+        adw_action_row_add_prefix(ADW_ACTION_ROW(row), warn);
+    }
+
+    if (dead) {
+        GtkWidget *requeue = gtk_button_new_with_label("Requeue");
+
+        g_object_set_data_full(G_OBJECT(requeue), "item-id",
+                               g_strdup(clawt_json_string(item, "id", "")),
+                               g_free);
+        g_object_set_data(G_OBJECT(requeue), "kind", "mailbox.requeue");
+        g_signal_connect(requeue, "clicked",
+                         G_CALLBACK(on_mailbox_item_action), self);
+        gtk_widget_set_valign(requeue, GTK_ALIGN_CENTER);
+        adw_action_row_add_suffix(ADW_ACTION_ROW(row), requeue);
+    }
+
+    g_object_set_data_full(G_OBJECT(ack), "item-id",
+                           g_strdup(clawt_json_string(item, "id", "")),
+                           g_free);
+    g_object_set_data(G_OBJECT(ack), "kind", "mailbox.ack");
+    g_signal_connect(ack, "clicked", G_CALLBACK(on_mailbox_item_action),
+                     self);
+    gtk_widget_set_valign(ack, GTK_ALIGN_CENTER);
+    adw_action_row_add_suffix(ADW_ACTION_ROW(row), ack);
+
+    gtk_list_box_append(list, row);
 }
 
 static void
@@ -5120,33 +5201,29 @@ refresh_mailbox_once(ClawtWindow *self)
         gtk_label_set_text(self->mailbox_summary, summary);
     }
 
-    for (i = 0; i < json_array_get_length(items); i++) {
-        JsonObject *item = json_array_get_object_element(items, i);
-        GtkWidget *row = adw_action_row_new();
-        GtkWidget *ack = gtk_button_new_with_label("Ack");
-        g_autofree gchar *title = NULL;
+    for (i = 0; i < json_array_get_length(items); i++)
+        add_mailbox_row(self, self->mailbox_list,
+                        json_array_get_object_element(items, i), FALSE);
 
-        title = g_strdup_printf("from %s",
-                                clawt_json_string(item, "from", "?"));
+    /*
+     * Dead letters in the same list, after the waiting ones.  Nothing is
+     * dropped silently, so an item that ran out of attempts has to be
+     * somewhere a person can see it and put it back.
+     */
+    {
+        g_autoptr(JsonNode) dead = clawt_window_request(
+            self, "mailbox.dead",
+            clawt_build_payload("agent", self->selected_agent, NULL));
 
-        set_row_text(row, title, clawt_json_string(item, "body", ""));
+        if (dead != NULL) {
+            JsonArray *letters = json_object_get_array_member(
+                clawt_payload_of(dead), "items");
 
-        if (clawt_json_string(item, "last_error", NULL) != NULL) {
-            GtkWidget *warn = badge("failed", "error",
-                                    clawt_json_string(item, "last_error",
-                                                      ""));
-
-            adw_action_row_add_prefix(ADW_ACTION_ROW(row), warn);
+            for (i = 0; i < json_array_get_length(letters); i++)
+                add_mailbox_row(self, self->mailbox_list,
+                                json_array_get_object_element(letters, i),
+                                TRUE);
         }
-
-        g_object_set_data_full(G_OBJECT(ack), "item-id",
-                               g_strdup(clawt_json_string(item, "id", "")),
-                               g_free);
-        g_signal_connect(ack, "clicked", G_CALLBACK(on_mailbox_ack), self);
-        gtk_widget_set_valign(ack, GTK_ALIGN_CENTER);
-        adw_action_row_add_suffix(ADW_ACTION_ROW(row), ack);
-
-        gtk_list_box_append(self->mailbox_list, row);
     }
 }
 
@@ -5232,6 +5309,29 @@ refresh_computer(ClawtWindow *self, JsonObject *agent)
 
 /* ── Tasks ───────────────────────────────────────────────────────── */
 
+/*
+ * Cancels a task that is still going.
+ *
+ * Offered only while it is, because cancelling a finished one is not a
+ * refusal the daemon needs to explain -- it is a button that should not
+ * have been there.
+ */
+static void         refresh_tasks(ClawtWindow *self);
+
+static void
+on_task_cancel(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *task_id = g_object_get_data(G_OBJECT(button), "task-id");
+    g_autoptr(JsonNode) reply = NULL;
+
+    reply = clawt_window_request(self, "task.cancel",
+                                 clawt_build_payload("task", task_id, NULL));
+
+    if (reply != NULL)
+        refresh_tasks(self);
+}
+
 static void
 refresh_tasks_once(ClawtWindow *self)
 {
@@ -5262,6 +5362,23 @@ refresh_tasks_once(ClawtWindow *self)
             ADW_ACTION_ROW(row),
             badge(clawt_json_string(task, "state", "?"), "dim-label",
                   clawt_json_string(task, "reason", "")));
+
+        {
+            const gchar *state = clawt_json_string(task, "state", "");
+
+            if (g_strcmp0(state, "running") == 0 ||
+                g_strcmp0(state, "pending") == 0) {
+                GtkWidget *cancel = gtk_button_new_with_label("Cancel");
+
+                g_object_set_data_full(
+                    G_OBJECT(cancel), "task-id",
+                    g_strdup(clawt_json_string(task, "id", "")), g_free);
+                g_signal_connect(cancel, "clicked",
+                                 G_CALLBACK(on_task_cancel), self);
+                gtk_widget_set_valign(cancel, GTK_ALIGN_CENTER);
+                adw_action_row_add_suffix(ADW_ACTION_ROW(row), cancel);
+            }
+        }
 
         gtk_list_box_append(self->task_list, row);
     }
@@ -8224,6 +8341,21 @@ build_mailbox_page(ClawtWindow *self)
 
     self->mailbox_summary = GTK_LABEL(gtk_label_new("No agent selected."));
     gtk_widget_set_margin_top(GTK_WIDGET(self->mailbox_summary), 12);
+
+    {
+        GtkWidget *purge = gtk_button_new_with_label("Purge expired items");
+        GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+
+        gtk_widget_set_tooltip_text(
+            purge, "Removes every item past its time-to-live, from every "
+                   "mailbox in the fleet.");
+        g_signal_connect(purge, "clicked", G_CALLBACK(on_mailbox_purge),
+                         self);
+        gtk_widget_set_halign(row, GTK_ALIGN_CENTER);
+        gtk_widget_set_margin_top(row, 6);
+        gtk_box_append(GTK_BOX(row), purge);
+        gtk_box_append(GTK_BOX(box), row);
+    }
 
     self->mailbox_list = GTK_LIST_BOX(gtk_list_box_new());
     gtk_list_box_set_selection_mode(self->mailbox_list, GTK_SELECTION_NONE);

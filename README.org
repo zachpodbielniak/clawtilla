@@ -34,11 +34,14 @@ second process in the way.
 
 Complete and working.  The daemon, both agent runtimes, all four computer
 backends, mailboxes, rooms, teams, tasks, the orchestration tools, the
-plugin system, the integrations, the AI agent designer, the CLI and the
-GTK client are all built and tested.
+plugin system, the integrations, the AI agent designer, the CLI, the GTK
+client and the web client are all built and tested.
 
-The web client is the one deliberately incomplete surface: agent list,
-transcript and send work, and the page says what does not.
+The two graphical clients are held to the same feature set by ~make
+parity~, which compares the parts of the daemon each one reaches and
+fails when a capability exists in only one of them.  Two clients drifting
+apart is otherwise invisible until somebody reaches for the half that was
+not built.
 
 ** What an agent gets
 
@@ -108,7 +111,9 @@ is spelled out in [[file:docs/security.org][docs/security.org]].
 - =clawtilla= -- the CLI.  Agents, rooms, mailboxes, tasks, computers, config.
 - =clawtillad= -- the daemon.  Everything above is a client of this.
 - =clawtilla-gtk= -- a full GTK4 + libadwaita client.
-- =clawtilla-web= -- a minimal htmx web client.  Intentionally incomplete.
+- =clawtilla-web= -- the same client over HTTP, built with htmx-glib.
+  Listens on the loopback and this machine's tailnet address, so a laptop
+  reaches the fleet without a tunnel set up by hand.
 
 ** Documentation
 
@@ -132,6 +137,7 @@ All under [[file:docs/][docs/]], in org-mode:
 | [[file:docs/plugins.org][plugins.org]] | the plugin ABI and a worked example |
 | [[file:docs/ipc-protocol.org][ipc-protocol.org]] | the client wire format |
 | [[file:docs/clients.org][clients.org]] | CLI, GTK, web, and embedding =libclawt= |
+| [[file:docs/web-client.org][web-client.org]] | the web client, where it listens, and client parity |
 | [[file:docs/security.org][security.org]] | threat model, secrets, confinement |
 | [[file:docs/development.org][development.org]] | building, style, adding options and tests |
 | [[file:docs/maintenance.org][maintenance.org]] | submodule upgrades, backups, releasing |

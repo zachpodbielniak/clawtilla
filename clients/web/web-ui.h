@@ -1,0 +1,347 @@
+/*
+ * web-ui.h - The page shell and the pieces every view is built from
+ *
+ * Copyright (C) 2026
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * This file is part of clawtilla.
+ *
+ * Elements are built with htmx-glib's typed classes rather than by
+ * appending to a string, which is not only the library's own house style
+ * -- it is what escapes agent output.  Every name, description and
+ * message body in this client was written by a person or a model and is
+ * served back over HTTP, so a "<" that reaches the page unescaped is
+ * script injection into whoever opened it.  htmx_node_set_text_content()
+ * escapes; a g_string_append() does not, and forgetting once is enough.
+ */
+
+#pragma once
+
+#include "clawt-web.h"
+
+G_BEGIN_DECLS
+
+/* ── Views ───────────────────────────────────────────────────────── */
+
+/**
+ * ClawtWebView:
+ * @CLAWT_WEB_VIEW_CHAT: the transcript and composer
+ * @CLAWT_WEB_VIEW_AGENT: the inspector
+ * @CLAWT_WEB_VIEW_MAILBOX: the queue and its dead letters
+ * @CLAWT_WEB_VIEW_COMPUTER: exec console, mounts, exchange
+ * @CLAWT_WEB_VIEW_ROUTINES: scheduled work
+ * @CLAWT_WEB_VIEW_TASKS: delegated work
+ * @CLAWT_WEB_VIEW_FLOW: what the agents are saying to each other
+ *
+ * The seven pages, in the order the GTK client's view switcher has them.
+ * Kept as one enum so the nav cannot list a view no handler serves.
+ */
+typedef enum {
+    CLAWT_WEB_VIEW_CHAT,
+    CLAWT_WEB_VIEW_AGENT,
+    CLAWT_WEB_VIEW_MAILBOX,
+    CLAWT_WEB_VIEW_COMPUTER,
+    CLAWT_WEB_VIEW_ROUTINES,
+    CLAWT_WEB_VIEW_TASKS,
+    CLAWT_WEB_VIEW_FLOW,
+    CLAWT_WEB_N_VIEWS
+} ClawtWebView;
+
+const gchar *clawt_web_view_slug(ClawtWebView view);
+const gchar *clawt_web_view_title(ClawtWebView view);
+ClawtWebView clawt_web_view_from_slug(const gchar *slug);
+
+/* ── The document ────────────────────────────────────────────────── */
+
+/**
+ * clawt_web_page:
+ * @app: a #ClawtWebApp
+ * @agent_id: (nullable): the selected agent
+ * @view: which page to show
+ * @body: (transfer none): the view's own content
+ *
+ * Wraps @body in the whole document: stylesheet, sidebar, nav, scripts.
+ *
+ * Returns: (transfer full): a complete HTML document
+ */
+gchar *clawt_web_page(ClawtWebApp  *app,
+                      const gchar  *agent_id,
+                      ClawtWebView  view,
+                      HtmxElement  *body);
+
+/**
+ * clawt_web_shell_page:
+ * @app: a #ClawtWebApp
+ * @title: what to call the page
+ * @body: (transfer none): the content
+ *
+ * A document with no sidebar, for settings and the standalone flows.
+ *
+ * Returns: (transfer full): a complete HTML document
+ */
+gchar *clawt_web_shell_page(ClawtWebApp *app,
+                            const gchar *title,
+                            HtmxElement *body);
+
+/**
+ * clawt_web_html_response:
+ * @html: (transfer none): rendered markup
+ *
+ * Returns: (transfer full): a 200 carrying @html as HTML
+ */
+HtmxResponse *clawt_web_html_response(const gchar *html);
+
+/**
+ * clawt_web_fragment_response:
+ * @element: (transfer none): the fragment to render
+ *
+ * Returns: (transfer full): a 200 carrying @element
+ */
+HtmxResponse *clawt_web_fragment_response(HtmxElement *element);
+
+/**
+ * clawt_web_redirect:
+ * @request: the request being answered
+ * @location: where to send the browser
+ *
+ * A redirect that works for htmx and for a plain form post alike.
+ *
+ * htmx follows a 303 by fetching it and swapping the body into the
+ * target, which for a whole page is the wrong shape -- so an htmx
+ * request is answered with HX-Redirect, which makes the browser
+ * navigate, and everything else with the ordinary 303.
+ *
+ * Returns: (transfer full): the response
+ */
+HtmxResponse *clawt_web_redirect(HtmxRequest *request,
+                                 const gchar *location);
+
+/**
+ * clawt_web_agent_url:
+ * @agent_id: (nullable): an agent
+ * @view: which page
+ *
+ * Returns: (transfer full): the path for that agent and view
+ */
+gchar *clawt_web_agent_url(const gchar *agent_id, ClawtWebView view);
+
+/* ── Pieces ──────────────────────────────────────────────────────── */
+
+/**
+ * clawt_web_card:
+ * @title: (nullable): a heading
+ * @subtitle: (nullable): a line under it
+ *
+ * A bordered panel: one border, generous padding, no shadow.
+ *
+ * Returns: (transfer full): the card, ready to have children added
+ */
+HtmxDiv *clawt_web_card(const gchar *title, const gchar *subtitle);
+
+/**
+ * clawt_web_card_body:
+ * @card: a card from clawt_web_card()
+ *
+ * Where a card's content goes, which is not the card itself -- the
+ * heading is already a child of it.
+ *
+ * Returns: (transfer none): the body element
+ */
+HtmxElement *clawt_web_card_body(HtmxDiv *card);
+
+/**
+ * clawt_web_badge:
+ * @text: what it says
+ * @tone: one of "neutral", "good", "warn", "bad", "info"
+ *
+ * Returns: (transfer full): a small uppercase tag
+ */
+HtmxSpan *clawt_web_badge(const gchar *text, const gchar *tone);
+
+/**
+ * clawt_web_state_tone:
+ * @state: an agent state nickname
+ *
+ * Returns: the tone a badge for @state should use
+ */
+const gchar *clawt_web_state_tone(const gchar *state);
+
+/**
+ * clawt_web_row:
+ * @title: the label
+ * @value: (nullable): what to show on the right
+ *
+ * A label-and-value line, the web equivalent of an AdwActionRow.
+ *
+ * Returns: (transfer full): the row
+ */
+HtmxDiv *clawt_web_row(const gchar *title, const gchar *value);
+
+/**
+ * clawt_web_empty:
+ * @text: what is not here
+ * @detail: (nullable): why, or what to do about it
+ *
+ * Returns: (transfer full): a stated absence
+ *
+ * Every list says why it is empty rather than drawing nothing.  An
+ * agent's mailbox is empty while it is running because delivery hands
+ * items straight over, and a blank panel there reads as a broken queue.
+ */
+HtmxDiv *clawt_web_empty(const gchar *text, const gchar *detail);
+
+/**
+ * clawt_web_button:
+ * @label: the text
+ * @variant: "primary", "default" or "danger"
+ *
+ * Returns: (transfer full): a button
+ */
+HtmxButton *clawt_web_button(const gchar *label, const gchar *variant);
+
+/**
+ * clawt_web_post_button:
+ * @label: the text
+ * @action: where to post
+ * @variant: "primary", "default" or "danger"
+ * @confirm: (nullable): a question to ask first
+ *
+ * A button that posts on its own, so an action needs no surrounding form.
+ *
+ * Returns: (transfer full): the button
+ */
+HtmxButton *clawt_web_post_button(const gchar *label,
+                                  const gchar *action,
+                                  const gchar *variant,
+                                  const gchar *confirm);
+
+/**
+ * clawt_web_field:
+ * @label: what to call it
+ * @name: the form field name
+ * @value: (nullable): what it holds now
+ * @placeholder: (nullable): a hint
+ *
+ * Returns: (transfer full): a labelled text input
+ */
+HtmxDiv *clawt_web_field(const gchar *label,
+                         const gchar *name,
+                         const gchar *value,
+                         const gchar *placeholder);
+
+/**
+ * clawt_web_textarea_field:
+ * @label: what to call it
+ * @name: the form field name
+ * @value: (nullable): what it holds now
+ * @rows: how tall
+ *
+ * Returns: (transfer full): a labelled multi-line input
+ */
+HtmxDiv *clawt_web_textarea_field(const gchar *label,
+                                  const gchar *name,
+                                  const gchar *value,
+                                  guint        rows);
+
+/**
+ * clawt_web_switch_field:
+ * @label: what to call it
+ * @name: the form field name
+ * @subtitle: (nullable): what it means
+ * @on: whether it is set
+ *
+ * Returns: (transfer full): a labelled checkbox
+ */
+HtmxDiv *clawt_web_switch_field(const gchar *label,
+                                const gchar *name,
+                                const gchar *subtitle,
+                                gboolean     on);
+
+/**
+ * clawt_web_select_field:
+ * @label: what to call it
+ * @name: the form field name
+ * @values: the option values
+ * @labels: (nullable): what to call each, or %NULL to use @values
+ * @current: (nullable): which is selected
+ *
+ * A combo whose current value is always among its options.
+ *
+ * A value that is not in @values is added to the list rather than
+ * dropped.  Without that the control opens showing the first entry and
+ * saving the form writes it back over whatever somebody had chosen --
+ * the same failure the GTK client's screen-size row was fixed for.
+ *
+ * Returns: (transfer full): a labelled select
+ */
+HtmxDiv *clawt_web_select_field(const gchar        *label,
+                                const gchar        *name,
+                                const gchar *const *values,
+                                const gchar *const *labels,
+                                const gchar        *current);
+
+/**
+ * clawt_web_hidden:
+ * @name: the field name
+ * @value: its value
+ *
+ * Returns: (transfer full): a hidden input
+ */
+HtmxInput *clawt_web_hidden(const gchar *name, const gchar *value);
+
+/**
+ * clawt_web_form:
+ * @action: where it posts
+ *
+ * A form that posts over htmx and falls back to an ordinary submit.
+ *
+ * Returns: (transfer full): the form
+ */
+HtmxForm *clawt_web_form(const gchar *action);
+
+/**
+ * clawt_web_section_title:
+ * @text: the heading
+ *
+ * Returns: (transfer full): a section heading
+ */
+HtmxHeading *clawt_web_section_title(const gchar *text);
+
+/**
+ * clawt_web_text:
+ * @text: (nullable): what to say
+ * @css_class: (nullable): a class for it
+ *
+ * Returns: (transfer full): a paragraph
+ */
+HtmxP *clawt_web_text(const gchar *text, const gchar *css_class);
+
+/**
+ * clawt_web_add:
+ * @parent: (transfer none): where it goes
+ * @child: (transfer full): what to add
+ *
+ * Adds @child to @parent and releases the caller's reference, so a
+ * builder reads as a sequence of additions rather than as a sequence of
+ * autoptr blocks.
+ */
+void clawt_web_add(gpointer parent, gpointer child);
+
+/**
+ * clawt_web_relative_time:
+ * @timestamp: unix seconds
+ *
+ * Returns: (transfer full): "3m ago", or an empty string for 0
+ */
+gchar *clawt_web_relative_time(gint64 timestamp);
+
+/**
+ * clawt_web_one_line:
+ * @text: (nullable): anything
+ * @limit: how many characters to keep
+ *
+ * Returns: (transfer full): @text with newlines folded out, elided
+ */
+gchar *clawt_web_one_line(const gchar *text, glong limit);
+
+G_END_DECLS

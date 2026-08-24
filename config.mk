@@ -171,6 +171,7 @@ CFLAGS = $(CFLAGS_BASE) $(CFLAGS_OPT) $(CFLAGS_SAN) $(PKG_CFLAGS) \
          -DCLAWT_GIT_SHA=\"$(GIT_SHA)\" \
          -DCLAWT_PLUGIN_DIR=\"$(PLUGIN_SYSTEM_DIR)\" \
          -DCLAWT_POD_MODULE_DIR=\"$(POD_MODULE_SYSTEM_DIR)\" \
+         -DCLAWT_DATA_DIR=\"$(DATADIR)/$(PROJECT_NAME)\" \
          -DG_LOG_DOMAIN=\"Clawtilla\" \
          -I$(SRCDIR) -I$(OUTDIR)
 

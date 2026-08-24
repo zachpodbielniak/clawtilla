@@ -1,0 +1,269 @@
+#+title: The web client
+#+description: clawtilla-web -- the whole client over HTTP, and how it stays level with the GTK one
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-24 Mon]
+#+updated: [2026-08-24 Mon]
+#+version: 0.1.0
+
+* The web client
+
+~clawtilla-web~ serves everything ~clawtilla-gtk~ does, over HTTP, from
+the same daemon over the same socket.  A laptop on the tailnet reaches
+the fleet on a workstation without a tunnel set up by hand, and without
+GTK installed on either end.
+
+#+begin_src bash
+clawtilla-web
+#+end_src
+
+#+begin_example
+clawtilla-web is listening on:
+  http://127.0.0.1:8790/
+  http://100.84.12.7:8790/
+
+There is no login here: anything that can reach a listed
+address can drive the whole fleet.
+#+end_example
+
+** Its own binary, on purpose
+
+Not a mode of ~clawtillad~.  This page can start, stop, reconfigure and
+delete every agent on the machine, and run commands inside their
+computers.  A surface like that should exist because somebody decided
+they wanted it, not because the daemon happened to start.
+
+** Where it listens
+
+The loopback, and this machine's tailnet address when there is one.
+
+A tailnet is the one network where listening past the loopback is
+defensible without a login of our own: every peer is a device the user
+enrolled and WireGuard authenticated, and nothing off the tailnet can
+route to a =100.64/10= address at all.  ~clawtillad~ binds its own
+convenience listener on exactly that reasoning.
+
+The address is found with ~getifaddrs()~ rather than by running
+=tailscale ip=, and both the interface name and the address range are
+checked -- =utun= is any tunnel on a BSD, and a container can hold a
+=100.64/10= address for reasons of its own.
+
+*** A machine with no tailnet gets the loopback alone
+
+It does not fall back to every interface.  Widening the audience because
+an address was missing is the opposite of what somebody would want, and
+this client has no authentication to make that safe.
+
+*** Naming an address yourself
+
+#+begin_src bash
+# This machine only
+clawtilla-web --no-tailscale
+
+# Somewhere else, on another port
+clawtilla-web --bind 192.168.1.10 --port 9000
+
+# Two addresses
+clawtilla-web --bind 127.0.0.1 --bind 10.0.0.4
+#+end_src
+
+Using ~--bind~ at all replaces the defaults, so the tailnet address is
+not quietly added to whatever was named.
+
+An address a person named is never optional: failing to bind it exits
+non-zero, because a client that ignored where it was told to listen and
+started anyway is running somewhere nobody knows about.  The tailnet
+address -- which clawtilla chose, not the person -- is a warning, and the
+loopback still comes up.
+
+*** What it reports is what it bound
+
+The startup banner is built from the addresses the server is actually
+listening on, not from the ones it was asked for.  A convenience address
+whose bind failed is exactly the interesting case, and announcing the
+request would say it was reachable there.
+
+** It has no login
+
+Anything that can reach a listed address drives the whole fleet.  On a
+tailnet that is bounded by WireGuard.  Anywhere else, put it behind
+something that can require a login.
+
+There is deliberately no password flag: a password on the command line is
+in the shell history and in the process table, and a real login for this
+would need session handling, storage and a reset path -- which is a
+reverse proxy's job, done properly, rather than ours done badly.
+
+** The views
+
+The same seven the GTK client's view switcher has, in the same order.
+
+| View     | What is on it                                              |
+|----------+------------------------------------------------------------|
+| Chat     | transcript, composer, slash commands, attachments          |
+| Agent    | every setting, the workspace files, the memory store       |
+| Mailbox  | what is waiting, what died, purge and requeue              |
+| Computer | exec console, mounts, the exchange, rebuild                |
+| Routines | scheduled work, and running one now                        |
+| Tasks    | delegated work, the budget, cancelling                     |
+| Flow     | what the agents are saying to each other                   |
+
+And six settings pages: VM images, teams, spending, integrations,
+connectors, appearance.
+
+*** The agent editor is built from the schema
+
+Not from a list of rows.  ~agent.show~ reports every settable key with
+this agent's value for it, walked from ~clawt_config_schema_get()~, and
+the page renders a control per type.  An option added to the schema
+appears here without anybody editing the client.
+
+That is the same rule the daemon's integrations and its starter config
+already follow, and for the same reason: a hand-written list of an
+option's keys drifts silently, and the symptom is a setting that is
+accepted, reported as saved, and then read from nowhere.
+
+Nine keys are the exception, and the page says nothing about them because
+it cannot: ~orchestration.mailbox.*~ and ~memories.*~ carry
+=CLAWT_SCHEMA_FLAG_PER_AGENT=, and their spelling inside an agent block
+lives in hand-written tables in =clawt-agent-manager.c= and
+=clawt-config.c= rather than in the schema.  Guessing a name would
+produce fields that are accepted and read from nowhere, which is the
+failure the rule exists to prevent, arrived at from the other direction.
+
+*** Only what changed is sent
+
+Saving compares each field against what the daemon reported.  ~agent.set~
+rewrites every agent's files on each call, so posting a hundred unchanged
+keys would do that a hundred times for a form somebody opened and closed.
+
+A permission changed under a running agent says so: an AI CLI lists its
+tools once, when its session starts, so the change reaches the agent's
+files and not its session.
+
+** Live updates
+
+One SSE stream per open page, at =/events=.  What goes down it is a name
+and a subject, never the change itself -- a browser told "the fleet
+changed" re-fetches the fragments it is showing, which against a daemon
+on the same machine is one cheap round trip.  An event carrying the row
+would mean this client rendering the same row two ways, once from a reply
+and once from an event, and the two disagreeing the first time either
+changed.
+
+Every daemon event is also republished under the name ~fleet~, and that
+is what the pages listen for.  Two reasons: the daemon's own kinds are
+dotted (~mailbox.queued~, ~agent.changed~) and a dot in an ~hx-trigger~
+is a class selector; and a client that enumerated them would quietly stop
+updating for whichever kind was added last.
+
+A comment goes down every idle stream twice a minute.  A quiet fleet can
+go hours without an event, and anything in between -- a proxy, a NAT
+holding a mapping -- times an idle connection out without saying so.
+
+** Without JavaScript
+
+Every action is a real form or a real link.  With scripting off the whole
+client still works: each action posts and the page re-renders.  htmx is
+what makes it feel live rather than what makes it work.
+
+*** The scripts are vendored
+
+=data/web/htmx.min.js= and =data/web/htmx-ext-sse.js= are checked in and
+served from the binary's own directory.  Never a CDN, for three reasons
+in order of how much they matter: a fleet console must work without the
+public internet, which is the whole point of binding the tailnet; a CDN
+script that can change what runs on this page can change what runs on
+every agent; and a build that reaches the network can produce different
+output tomorrow.
+
+They are found beside the binary first and in =$PREFIX/share/clawtilla=
+second, so a fresh clone works before the first ~make install~.  When
+neither has them the page still loads and says what is missing, naming
+all three places it looked.
+
+** Parity with the GTK client
+
+The two answer for the same daemon, so they should reach the same parts
+of it.  Two clients drifting apart is invisible -- nothing breaks,
+nothing warns, and somebody finds out by reaching for the half that was
+not built.
+
+#+begin_src bash
+make parity
+#+end_src
+
+#+begin_example
+client parity: OK (68 kinds in gtk, 70 in web)
+#+end_example
+
+What is compared is the set of IPC frame kinds each client sends.  That
+is a proxy for "feature" rather than a definition of one -- a client
+could name a kind and do nothing useful with it -- but every real feature
+has to talk to the daemon to do anything, so a kind one client sends and
+the other never mentions is a capability that exists in one place only.
+
+It runs from ~make parity~, from ~make docs-check~, and as a case in
+~make test~.  A check that only runs in one target is one somebody can go
+a long time without seeing.
+
+*** Adding a feature
+
+Build it in both.  When that is genuinely not the right answer, add the
+kind to the exception map at the top of
+=tools/clawt-client-parity.sh= with the reason:
+
+#+begin_src bash
+declare -A GTK_MAY_LACK=(
+    ["exchange.list"]="the GTK client offers drag-and-drop into the exchange rather than a listing"
+)
+#+end_src
+
+An entry there is a decision, not a to-do.  Anything without a reason
+somebody would agree with belongs in the client instead.
+
+** Escaping
+
+Every element is built with htmx-glib's typed classes -- ~HtmxDiv~,
+~HtmxSpan~, ~htmx_node_set_text_content()~ -- rather than by appending to
+a string.  That is htmx-glib's own house style, and here it is also the
+security property: agent names, descriptions and message bodies were
+written by a person or a model, and this client serves them back over
+HTTP.
+
+=tests/test-web-render.c= asserts it on the rendered markup rather than
+on the code that produces it.  "We call the escaping function" is a claim
+about the source; "no ~<~ reached the page" is a claim about what a
+browser would receive.
+
+** Troubleshooting
+
+*** The page loads but nothing updates by itself
+
+The scripts are missing.  Check the startup output: it names every
+directory it looked in.  Running out of a checkout they are in
+=data/web=; after ~make install~ they are in
+=$PREFIX/share/clawtilla/web=.  =CLAWT_WEB_STATIC_DIR= overrides both.
+
+Everything still works without them -- each action posts and the page
+re-renders -- so this looks like a slow client rather than a broken one.
+
+*** It is not reachable from the tailnet
+
+#+begin_src bash
+ss -ltn | grep 8790
+#+end_src
+
+If only =127.0.0.1= is bound, either there is no tailnet address on this
+machine (Tailscale in userspace-networking mode has none, correctly:
+there is no address to bind either), or the bind failed and said so.
+
+*** It cannot reach the daemon
+
+#+begin_src bash
+clawtilla-web --socket "$XDG_RUNTIME_DIR/clawtilla/daemon.sock"
+#+end_src
+
+The sidebar says "The daemon is not answering" with the reason, rather
+than drawing an empty fleet -- a fleet with no agents in it is a
+different problem with a different fix.

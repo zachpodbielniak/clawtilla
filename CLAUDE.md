@@ -2405,6 +2405,119 @@ the same program.
   naming a setting the model never saw.
 
 
+### A stream that delivers its first event and then stops
+
+- htmx-glib's SSE never worked, and looked like it did. The handler's own
+  inline event arrived; nothing after it ever did. libsoup takes the
+  response body's length at the moment the handler returns as the
+  Content-Length, writes exactly that many bytes and finishes -- so the
+  fix is one line, `soup_message_headers_set_encoding(headers,
+  SOUP_ENCODING_CHUNKED)`, and without it a browser sees a server that
+  pushes one event and dies.
+- It was also unreachable from a route at all: `handle_request()` applies
+  whatever the handler returned, and applying a response *replaces*
+  Content-Type and appends a body -- so an SSE handler's
+  `text/event-stream` was overwritten before the first event. Returning
+  NULL is no better; that is the 404 path.
+  `htmx_response_new_streaming()` means "the handler owns this message"
+  and `htmx_response_apply()` leaves it alone.
+- Measured both ways against a real client: five later events arrive with
+  the encoding line and none without it. The test asserts on events
+  produced *after* the handler returned, deliberately, because an event
+  written inline arrives even when streaming is broken -- which is
+  exactly how this stayed hidden.
+
+### A signal with three ways to fire must fire once
+
+- `HtmxSseConnection::closed` reaches the same end from the peer hanging
+  up, from soup finishing the message, and from our own close. Emitting
+  it from the close path *and* letting soup's `::finished` emit it again
+  meant a subscriber list told twice that one connection had gone, which
+  removes somebody else's entry with the second. All three go through one
+  door now. The test asserted "exactly once" and caught it on the first
+  run.
+
+### A library that does not check is a library trusting somebody else's version
+
+- `htmx_router_serve_static()` built a filename from the request path and
+  read it, with no containment check at all. Nothing had ever got through
+  -- libsoup normalises a literal `../` out of the request and answers an
+  encoded one with 400 -- but that is a guarantee made by a version of
+  libsoup nothing pins, about the one function whose whole job is turning
+  a request into a filename. The check is on the *canonical* path and on
+  the separator after the root, so `/srv/static-secrets` does not count
+  as inside `/srv/static`.
+- Testing it needed `htmx_request_new_for_path()`, which did not exist:
+  routing could only be exercised by standing up a server and talking to
+  it over a socket, so the cases worth testing hardest -- the ones a real
+  client cannot send -- could not be tested at all.
+
+### `setsid` means `$!` is not the process you started
+
+- Three rounds of "the fix did not work" came from testing a *stale*
+  server: `$!` after `setsid` is the setsid process, which has already
+  exited, so the kill hit nothing and the old binary went on serving.
+  `readlink /proc/<pid>/exe` said `(deleted)` -- the binary had been
+  replaced under it. Kill whoever the kernel says holds the port
+  (`ss -ltnp`), and read `/proc/<pid>/exe` to confirm what is running.
+  `pkill -f` is worse: its pattern matches the invoking shell's own
+  command line, and it killed that instead. Both traps are already in
+  this file for `pgrep`; they apply to every one of its relatives.
+
+### Emitting a heading when the key changes needs the keys grouped
+
+- The sidebar gets away with it because the daemon returns the fleet
+  already grouped. The config schema does not: it is in the order the
+  generated YAML wants, which interleaves `agents.persona.*` with the
+  bare `agents.prompt_suffix` -- so the web inspector drew two cards both
+  called Identity with the fields split between them. Collect into
+  buckets and render, or sort first; do not assume an order nobody
+  promised.
+
+### Two clients drifting apart is invisible
+
+- Nothing breaks, nothing warns, and somebody finds out by reaching for
+  the half that was not built. `make parity` compares the set of IPC
+  frame kinds `clients/gtk/*.c` and `clients/web/*.c` each send and fails
+  when one has a capability the other lacks. It found ten features the
+  web client was missing and four the GTK client was -- dead letters,
+  purge, requeue and cancelling a task, all of which the GTK client had
+  simply never grown.
+- A frame kind is a proxy for a feature rather than a definition of one.
+  But every real feature has to talk to the daemon to do anything, so a
+  kind one client sends and the other never mentions is a capability in
+  one place only. Deliberate exceptions live in an exception map with
+  their reasons; an entry there is a decision, not a to-do.
+
+### The agent-relative spelling of a config key is not in the schema
+
+- `agent.show` reports every settable key with its value so a client can
+  build an editor from the schema rather than from a list of its own.
+  Nine keys are left out, and cannot be included: `orchestration.mailbox.*`
+  becomes `mailbox.*` inside an agent block while `memories.enabled`
+  keeps its whole name, and both rules live in hand-written tables in
+  `clawt-agent-manager.c` and `clawt-config.c`. Guessing produced a
+  collision -- `memories.enabled` and `agents.enabled` both landing on
+  `enabled`, with json-glib keeping the last.
+- Reporting a guessed name would give an editor whose fields are
+  accepted, reported as saved, and read from nowhere: the exact failure
+  the "walk the schema" rule exists to prevent, arrived at from the other
+  direction. Leaving them out and saying why is the honest answer until
+  those two tables are folded into the schema.
+
+### A CDN script on a fleet console is an open door
+
+- The page that serves `clawtilla-web` can start, stop, reconfigure and
+  delete every agent on the machine and run commands inside their
+  computers. A script fetched from a third party on every load can change
+  all of that. htmx-glib's own examples all point at unpkg; clawtilla
+  vendors the file instead, with its checksum recorded in
+  `data/web/README.org`.
+- It is also the difference between working and not working on a tailnet
+  with no route to the open internet -- which is the case the client was
+  built for.
+
+
 ## Things to NEVER Do
 
 - Never hand-edit `data/example-config.yaml` or `data/default-config.yaml`
@@ -2452,3 +2565,14 @@ the same program.
 - Never give a pod an action that runs arbitrary code. Every action is a
   fleet operation the daemon already owns; `computer_exec` is declared
   and refused, with a reason, so naming it does not read as a typo
+- Never add a capability to one graphical client and not the other.
+  `make parity` fails on it; the exception map is for decisions, not for
+  silencing the check
+- Never build an element in the web client by appending to a string. The
+  typed htmx-glib classes escape; a `g_string_append` does not, and
+  everything on that page was written by a person or a model
+- Never let the web client fetch anything at page load. It must work on a
+  tailnet with no route to the internet, and a script it fetches can
+  drive the whole fleet
+- Never widen where `clawtilla-web` listens because an address was
+  missing. No tailnet means the loopback alone, never every interface

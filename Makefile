@@ -472,9 +472,20 @@ config-files: $(GENCONFIG_BIN)
 	@echo "  $(DATADIR_SRC)/default-config.yaml"
 	@echo "  $(DOCSDIR)/configuration-options.org"
 
-.PHONY: docs-check
+.PHONY: docs-check parity
+
+#
+# The two graphical clients answer for the same daemon, so they should
+# reach the same parts of it. Two clients drifting apart is invisible
+# until somebody reaches for the half that was not built, which is
+# exactly the kind of thing a check is better at than a habit.
+#
+parity:
+	@bash $(TOOLSDIR)/clawt-client-parity.sh
+
 docs-check: $(GENCONFIG_BIN)
 	@sh $(TOOLSDIR)/clawt-docs-check.sh
+	@bash $(TOOLSDIR)/clawt-client-parity.sh
 
 # ============================================================
 # pkg-config

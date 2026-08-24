@@ -3294,6 +3294,152 @@ clawt_daemon_reload(ClawtDaemon *self, GError **error)
 
 /* ── The client surface ──────────────────────────────────────────── */
 
+/*
+ * Every per-agent option, with the value this agent has for it.
+ *
+ * Walked from the schema rather than listed, which is the same rule the
+ * integrations and the starter config already follow: a hand-written list
+ * of an option's keys drifts silently, and the symptom is a setting that
+ * is accepted, reported as saved, and then ignored at the default.
+ *
+ * Reported as strings throughout. A client puts these into form fields
+ * and hands them back to `agent.set`, which parses them against the same
+ * schema -- so a second opinion here about what an integer looks like
+ * would be a second parser to disagree with.
+ */
+static void
+add_agent_settings(JsonBuilder *builder, ClawtAgent *agent)
+{
+    ClawtAgentConfig *config = clawt_agent_get_config(agent);
+    g_autoptr(GHashTable) seen = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                                       g_free, NULL);
+    const ClawtSchemaEntry *schema;
+    gsize n_entries = 0;
+    gsize i;
+
+    schema = clawt_config_schema_get(&n_entries);
+
+    json_builder_set_member_name(builder, "settings");
+    json_builder_begin_object(builder);
+
+    for (i = 0; i < n_entries; i++) {
+        const ClawtSchemaEntry *entry = &schema[i];
+        const gchar *key;
+
+        if (entry->type == CLAWT_SCHEMA_SECTION ||
+            entry->type == CLAWT_SCHEMA_MAPPING ||
+            entry->type == CLAWT_SCHEMA_LIST_OF)
+            continue;
+
+        /*
+         * Two spellings reach an agent block. A key already under
+         * "agents." is per-agent by construction; a fleet-level key
+         * carrying PER_AGENT may also be written inside an agent, under
+         * its own last section -- `orchestration.mailbox.max_depth` is
+         * `mailbox.max_depth` there.
+         *
+         * Both are reported, because an editor that offered only the
+         * first would silently lack every mailbox override and the
+         * person would have no way to tell that from the option not
+         * existing.
+         */
+        if (g_str_has_prefix(entry->key, "agents.")) {
+            key = entry->key + strlen("agents.");
+        } else {
+            /*
+             * PER_AGENT keys -- the six `orchestration.mailbox.*` and
+             * the three `memories.*` -- are deliberately not reported.
+             *
+             * Their spelling inside an agent block is not derivable from
+             * the schema: `orchestration.mailbox.max_depth` is
+             * `mailbox.max_depth` there and `memories.enabled` keeps its
+             * whole name, and the two rules live in hand-written tables
+             * in clawt-agent-manager.c and clawt-config.c rather than in
+             * the schema. Reporting a guessed name would produce an
+             * editor whose fields are accepted, reported as saved, and
+             * then read from nowhere -- which is the exact failure the
+             * "walk the schema" rule exists to prevent, arrived at from
+             * the other direction.
+             */
+            continue;
+        }
+
+        /*
+         * Two entries resolving to one agent-relative name would emit
+         * the member twice, and json-glib keeps the last -- the same
+         * silent overwrite this project already refuses in generated
+         * YAML.
+         */
+        if (g_hash_table_contains(seen, key)) {
+            g_warning("agent.show: two schema keys claim '%s'; "
+                      "reporting the first", key);
+            continue;
+        }
+
+        g_hash_table_add(seen, g_strdup(key));
+
+        json_builder_set_member_name(builder, key);
+
+        if (entry->type == CLAWT_SCHEMA_SECRET) {
+            g_autoptr(ClawtSecretRef) secret =
+                clawt_agent_config_get_secret(config, key);
+
+            /*
+             * Whether one is configured, never what it is. A client
+             * needs only that much to offer replacing it, and a value
+             * put into an IPC response is a value in every client's
+             * memory and in every transcript of this exchange.
+             */
+            json_builder_add_string_value(builder,
+                                          secret != NULL ? "(set)" : "");
+            continue;
+        }
+
+        switch (entry->type) {
+        case CLAWT_SCHEMA_BOOLEAN:
+            json_builder_add_string_value(
+                builder,
+                clawt_agent_config_get_boolean(config, key) ? "true" : "false");
+            break;
+
+        case CLAWT_SCHEMA_INT: {
+            g_autofree gchar *text = g_strdup_printf(
+                "%" G_GINT64_FORMAT, clawt_agent_config_get_int(config, key));
+
+            json_builder_add_string_value(builder, text);
+            break;
+        }
+
+        case CLAWT_SCHEMA_ENUM: {
+            const gchar *nick = clawt_agent_config_get_string(config, key);
+
+            json_builder_add_string_value(builder, nick != NULL ? nick : "");
+            break;
+        }
+
+        case CLAWT_SCHEMA_STRING_LIST: {
+            g_auto(GStrv) values =
+                clawt_agent_config_get_string_list(config, key);
+            g_autofree gchar *joined =
+                (values != NULL) ? g_strjoinv(", ", values) : NULL;
+
+            json_builder_add_string_value(builder,
+                                          joined != NULL ? joined : "");
+            break;
+        }
+
+        default: {
+            const gchar *value = clawt_agent_config_get_string(config, key);
+
+            json_builder_add_string_value(builder, value != NULL ? value : "");
+            break;
+        }
+        }
+    }
+
+    json_builder_end_object(builder);
+}
+
 static void
 add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
 {
@@ -4565,6 +4711,15 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "agent");
         add_agent_object(builder, agent);
+
+        /*
+         * Every settable key, so a client can build an editor from the
+         * schema instead of from a list of its own. The GTK inspector
+         * predates this and names its rows by hand, which is why a
+         * setting added to the schema shows up there only when somebody
+         * remembers to add a row for it.
+         */
+        add_agent_settings(builder, agent);
 
         computer = clawt_agent_get_computer(agent);
 

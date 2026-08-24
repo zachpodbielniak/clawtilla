@@ -3,13 +3,17 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-23 Sun]
+#+updated: [2026-08-24 Mon]
 #+version: 0.1.0
 
 * Clients
 
 Four front ends, one daemon.  None of them holds state or a transport of
 its own, which is why two of them open at once agree with each other.
+
+The two graphical ones -- ~clawtilla-gtk~ and ~clawtilla-web~ -- are held
+to the same feature set by ~make parity~, so a capability added to one is
+a build failure until it exists in the other.
 
 ** The CLI
 
@@ -847,22 +851,85 @@ different fix.
 ** The web client
 
 #+begin_src bash
-clawtilla-web [--port 8790] [--socket PATH]
+clawtilla-web [--port 8790] [--bind ADDR] [--no-tailscale] [--socket PATH]
 #+end_src
 
-*This is the one deliberately incomplete surface.*  Agent list,
-transcript and send work.  Mailboxes, tasks, the computer console, agent
-creation and live streaming are TODO, and the page says so rather than
-quietly lacking them -- a web client missing the mailbox panel would look
-like the daemon lacks one.
+Everything ~clawtilla-gtk~ does, served over HTTP.  The same seven views
+-- chat, agent, mailbox, computer, routines, tasks, flow -- with the same
+six settings pages behind them, driven by the same ~ClawtClient~ over the
+same socket.  See [[file:web-client.org][web-client.org]] for the whole
+of it.
 
-It has *no authentication*.  Anything that can reach the port drives the
-whole fleet.  It binds to localhost and warns on startup.  Put it behind
-a reverse proxy that can require a login before exposing it.
+It is a separate binary rather than a mode of the daemon, deliberately.
+The page can start, stop, reconfigure and delete every agent on the
+machine and run commands inside their computers, so it exists only when
+somebody has decided they want it.
 
-Everything it renders is escaped: agent names, descriptions and message
-bodies are written by people and models, and an unescaped ~<~ there is
-script injection into whoever opens the page.
+*** Where it listens
+
+By default the loopback *and*, when there is one, this machine's tailnet
+address.  A tailnet is the one network where listening past the loopback
+is defensible without a login of our own: every peer is a device the user
+enrolled and WireGuard authenticated, and nothing off the tailnet can
+route to a 100.64/10 address at all.  That is the same reasoning
+~clawtillad~ already uses for its own convenience listener.
+
+A machine with no tailnet gets the loopback alone.  It does not fall back
+to every interface -- widening the audience because an address was
+missing is the opposite of what anybody would want.
+
+| Flag              | What it does                                       |
+|-------------------+----------------------------------------------------|
+| ~--bind ADDR~     | replaces the defaults; repeatable                  |
+| ~--no-tailscale~  | this machine only                                  |
+| ~--port PORT~     | default 8790                                       |
+
+An address named with ~--bind~ is never optional: failing to bind it is
+an error, because a client that ignored where it was told to listen and
+started anyway is running somewhere nobody knows about.  The tailnet
+address, which clawtilla chose rather than the person, is a warning.
+
+*** It has no login
+
+Anything that can reach a listed address drives the whole fleet.  On a
+tailnet that is bounded by WireGuard; anywhere else, put it behind
+something that can require one.  It says so on startup, and names every
+address it actually bound rather than the ones it was asked for -- a
+convenience address whose bind failed is exactly the interesting case.
+
+*** Escaping
+
+Every element is built with htmx-glib's typed classes rather than by
+appending to a string, which is not only that library's house style: it
+is what escapes agent output.  Names, descriptions and message bodies are
+written by people and models, and this client serves them back over HTTP,
+so an unescaped ~<~ is script injection into whoever opened the page.
+=tests/test-web-render.c= asserts it on the rendered markup rather than
+on the code that produces it.
+
+*** Without JavaScript
+
+Every action is a real form or link, so the whole client works with
+scripting off -- each action posts and the page re-renders.  htmx is what
+makes it feel live: partial swaps instead of full reloads, and an SSE
+stream so the fleet updates itself.  Both scripts are served from
+=data/web=, never a CDN.  See that directory's README for why.
+
+*** Parity with the GTK client
+
+They answer for the same daemon, so they reach the same parts of it.
+That is checked rather than remembered:
+
+#+begin_src bash
+make parity
+#+end_src
+
+It compares the set of IPC frame kinds each client sends and fails when
+one has a capability the other lacks.  Deliberate exceptions live in an
+exception map inside =tools/clawt-client-parity.sh=, each with its
+reason; anything without a reason somebody would agree with belongs in
+the client instead.  It also runs as part of ~make docs-check~ and as a
+case in ~make test~.
 
 ** Embedding libclawt
 

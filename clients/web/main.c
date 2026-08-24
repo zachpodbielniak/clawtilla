@@ -1,31 +1,42 @@
 /*
- * main.c - clawtilla-web, the HTMX web client
+ * main.c - clawtilla-web, the web client
  *
  * Copyright (C) 2026
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
  * This file is part of clawtilla.
  *
- * A ClawtClient talking to the daemon over the same socket protocol every
- * other client uses, rendered server-side with htmx-glib.  This is the one
- * surface that is deliberately incomplete: agent list, transcript and send
- * work; everything else is marked TODO rather than faked.
+ * A separate binary rather than a mode of the daemon, deliberately.  This
+ * page can start, stop, reconfigure and delete every agent on the machine
+ * and run commands inside their computers, so it exists only when
+ * somebody has decided they want it -- not because the daemon happened to
+ * start.
  */
 
-#include <clawtilla.h>
-#include <htmx-glib.h>
+#include "web-pages.h"
 
 #include <stdlib.h>
 #include <string.h>
 
-static gint   opt_port = 8790;
-static gchar *opt_socket = NULL;
-static gboolean opt_version = FALSE;
+static gint      opt_port = 8790;
+static gchar    *opt_socket = NULL;
+static gchar   **opt_bind = NULL;
+static gboolean  opt_no_tailscale = FALSE;
+static gboolean  opt_version = FALSE;
+static gboolean  opt_license = FALSE;
 
 static GOptionEntry entries[] = {
     {
         "port", 'p', 0, G_OPTION_ARG_INT, &opt_port,
         "Port to listen on (default: 8790)", "PORT"
+    },
+    {
+        "bind", 'b', 0, G_OPTION_ARG_STRING_ARRAY, &opt_bind,
+        "Address to listen on; repeatable. Replaces the defaults", "ADDR"
+    },
+    {
+        "no-tailscale", 0, 0, G_OPTION_ARG_NONE, &opt_no_tailscale,
+        "Do not bind the tailnet address; localhost only", NULL
     },
     {
         "socket", 's', 0, G_OPTION_ARG_FILENAME, &opt_socket,
@@ -35,293 +46,177 @@ static GOptionEntry entries[] = {
         "version", 'V', 0, G_OPTION_ARG_NONE, &opt_version,
         "Print version information and exit", NULL
     },
+    {
+        "license", 0, 0, G_OPTION_ARG_NONE, &opt_license,
+        "Print licensing information and exit", NULL
+    },
     { NULL }
 };
 
-static const gchar *description_text =
+static const gchar *license_text =
+    "clawtilla-web is part of clawtilla.\n"
     "\n"
-    "Examples:\n"
-    "  # Serve the web client on the default port\n"
-    "  clawtilla-web\n"
+    "Copyright (C) 2026 Zach Podbielniak\n"
     "\n"
-    "  # Serve on another port against an explicit daemon socket\n"
-    "  clawtilla-web --port 9000 --socket /run/user/1000/clawtilla/daemon.sock\n";
+    "This program is free software: you can redistribute it and/or modify\n"
+    "it under the terms of the GNU Affero General Public License as\n"
+    "published by the Free Software Foundation, either version 3 of the\n"
+    "License, or (at your option) any later version.\n"
+    "\n"
+    "This program is distributed in the hope that it will be useful, but\n"
+    "WITHOUT ANY WARRANTY; without even the implied warranty of\n"
+    "MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU\n"
+    "Affero General Public License for more details.\n"
+    "\n"
+    "You should have received a copy of the GNU Affero General Public\n"
+    "License along with this program.  If not, see\n"
+    "<https://www.gnu.org/licenses/>.\n";
 
+/* ── Where the vendored scripts are ──────────────────────────────── */
 
-/* ── Rendering ───────────────────────────────────────────────────── */
+static gchar *
+executable_dir(void)
+{
+    g_autofree gchar *exe = g_file_read_link("/proc/self/exe", NULL);
+
+    if (exe == NULL)
+        return NULL;
+
+    return g_path_get_dirname(exe);
+}
 
 /*
- * Everything the daemon returns is escaped before it reaches the page.
+ * The directory holding htmx.min.js, best guess first.
  *
- * Agent names, descriptions and message bodies all come from somewhere a
- * person or a model wrote.  This client serves them back over HTTP, so an
- * unescaped "<" is not a cosmetic problem -- it is script injection into
- * whoever opens the page.
+ * Beside the binary before the install location, which is the same order
+ * clawt-pod-bridge.c settled on and for the same reason: anybody running
+ * out of a checkout -- which is everyone until the first `make install`
+ * -- has the files right there in `data/web`, and looking only in
+ * $PREFIX/share made a fresh clone serve a page with no scripts on it.
  */
-static void
-append_escaped(GString *out, const gchar *text)
+static gchar *
+find_static_dir(void)
 {
-    g_autofree gchar *escaped = NULL;
-
-    if (text == NULL)
-        return;
-
-    escaped = g_markup_escape_text(text, -1);
-    g_string_append(out, escaped);
-}
-
-static const gchar *page_style =
-    "<style>"
-    "body{font-family:system-ui,sans-serif;margin:0;background:#1b1b1b;"
-    "color:#eee;display:flex;height:100vh}"
-    "aside{width:16rem;border-right:1px solid #333;overflow-y:auto}"
-    "main{flex:1;display:flex;flex-direction:column}"
-    "h1{font-size:1rem;padding:1rem;margin:0;border-bottom:1px solid #333}"
-    "a{display:block;padding:.6rem 1rem;color:#eee;text-decoration:none;"
-    "border-bottom:1px solid #262626}"
-    "a:hover{background:#262626}"
-    ".state{font-size:.75rem;color:#999}"
-    ".queue{color:#7aa2f7}"
-    ".host{color:#f7768e;font-weight:600}"
-    "#log{flex:1;overflow-y:auto;padding:1rem}"
-    ".msg{margin-bottom:.8rem}"
-    ".who{font-size:.75rem;color:#999}"
-    "form{display:flex;gap:.5rem;padding:1rem;border-top:1px solid #333}"
-    "input[type=text]{flex:1;padding:.5rem;background:#262626;color:#eee;"
-    "border:1px solid #333;border-radius:4px}"
-    "button{padding:.5rem 1rem;background:#7aa2f7;color:#1b1b1b;border:0;"
-    "border-radius:4px;cursor:pointer}"
-    ".todo{padding:1rem;color:#999;font-size:.85rem;border-top:1px solid #333}"
-    "</style>";
-
-static const gchar *
-member_or(JsonObject *object, const gchar *key, const gchar *fallback)
-{
-    if (object == NULL || !json_object_has_member(object, key))
-        return fallback;
-
-    if (json_node_get_value_type(json_object_get_member(object, key)) !=
-        G_TYPE_STRING)
-        return fallback;
-
-    return json_object_get_string_member(object, key);
-}
-
-static JsonNode *
-call(ClawtClient *client, const gchar *kind, JsonNode *payload)
-{
-    g_autoptr(GError) error = NULL;
-    JsonNode *reply;
-
-    reply = clawt_client_request(client, kind, payload, &error);
-
-    if (reply == NULL)
-        g_warning("clawtilla-web: %s: %s", kind, error->message);
-
-    return reply;
-}
-
-static void
-render_sidebar(GString *out, ClawtClient *client, const gchar *selected)
-{
-    g_autoptr(JsonNode) reply = NULL;
-    JsonArray *agents;
+    g_autoptr(GPtrArray) tried = g_ptr_array_new_with_free_func(g_free);
+    const gchar *override = g_getenv("CLAWT_WEB_STATIC_DIR");
+    g_autofree gchar *exe_dir = NULL;
     guint i;
 
-    g_string_append(out, "<aside><h1>Agents</h1>");
+    if (override != NULL)
+        g_ptr_array_add(tried, g_strdup(override));
 
-    reply = call(client, "agent.list", NULL);
+    exe_dir = executable_dir();
 
-    if (reply == NULL) {
-        g_string_append(out,
-                        "<p class=\"todo\">The daemon is not answering.</p>"
-                        "</aside>");
-        return;
+    if (exe_dir != NULL) {
+        /* build/release/clawtilla-web -> the checkout's data/web */
+        g_ptr_array_add(tried, g_build_filename(exe_dir, "..", "..",
+                                                "data", "web", NULL));
+        g_ptr_array_add(tried, g_build_filename(exe_dir, "web", NULL));
     }
 
-    agents = json_object_get_array_member(json_node_get_object(reply),
-                                          "agents");
+    g_ptr_array_add(tried, g_build_filename(CLAWT_DATA_DIR, "web", NULL));
 
-    for (i = 0; i < json_array_get_length(agents); i++) {
-        JsonObject *agent = json_array_get_object_element(agents, i);
-        const gchar *id = member_or(agent, "id", "?");
-        gint64 depth = json_object_get_int_member(agent, "mailbox_depth");
+    for (i = 0; i < tried->len; i++) {
+        g_autofree gchar *probe = g_build_filename(
+            g_ptr_array_index(tried, i), "htmx.min.js", NULL);
 
-        g_string_append(out, "<a href=\"/?agent=");
-        append_escaped(out, id);
-        g_string_append(out, "\"");
-
-        if (g_strcmp0(id, selected) == 0)
-            g_string_append(out, " style=\"background:#262626\"");
-
-        g_string_append_c(out, '>');
-        append_escaped(out, member_or(agent, "name", id));
-        g_string_append(out, "<br><span class=\"state\">");
-        append_escaped(out, member_or(agent, "state", "?"));
-
-        if (depth > 0)
-            g_string_append_printf(out,
-                                   " <span class=\"queue\">%"
-                                   G_GINT64_FORMAT " waiting</span>", depth);
-
-        if (strstr(member_or(agent, "caps", ""), "host-control") != NULL)
-            g_string_append(out, " <span class=\"host\">HOST</span>");
-
-        g_string_append(out, "</span></a>");
-    }
-
-    g_string_append(out, "</aside>");
-}
-
-static void
-render_transcript(GString *out, ClawtClient *client, const gchar *agent_id)
-{
-    g_autoptr(JsonNode) reply = NULL;
-    JsonArray *messages;
-    guint i;
-
-    g_string_append(out, "<div id=\"log\">");
-
-    if (agent_id == NULL) {
-        g_string_append(out, "<p class=\"todo\">Pick an agent.</p></div>");
-        return;
-    }
-
-    {
-        g_autoptr(JsonBuilder) builder = json_builder_new();
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "room");
-        json_builder_add_string_value(builder, agent_id);
-        json_builder_end_object(builder);
-
-        reply = call(client, "room.history", json_builder_get_root(builder));
-    }
-
-    if (reply == NULL) {
-        g_string_append(out, "<p class=\"todo\">No transcript.</p></div>");
-        return;
-    }
-
-    messages = json_object_get_array_member(json_node_get_object(reply),
-                                            "messages");
-
-    for (i = 0; i < json_array_get_length(messages); i++) {
-        JsonObject *message = json_array_get_object_element(messages, i);
-
-        g_string_append(out, "<div class=\"msg\"><div class=\"who\">");
-        append_escaped(out, member_or(message, "sender", "?"));
-        g_string_append(out, "</div><div>");
-        append_escaped(out, member_or(message, "body", ""));
-        g_string_append(out, "</div></div>");
-    }
-
-    g_string_append(out, "</div>");
-}
-
-static HtmxResponse *
-on_index(HtmxRequest *request, GHashTable *params, gpointer user_data)
-{
-    ClawtClient *client = user_data;
-
-    (void)params;
-    g_autoptr(GString) out = g_string_new(NULL);
-    const gchar *agent_id = htmx_request_get_query_param(request, "agent");
-
-    g_string_append(out, "<!doctype html><html><head>"
-                         "<meta charset=\"utf-8\">"
-                         "<title>clawtilla</title>");
-    g_string_append(out, page_style);
-    g_string_append(out, "</head><body>");
-
-    render_sidebar(out, client, agent_id);
-
-    g_string_append(out, "<main>");
-    render_transcript(out, client, agent_id);
-
-    if (agent_id != NULL) {
-        g_string_append(out, "<form method=\"post\" action=\"/send\">"
-                             "<input type=\"hidden\" name=\"agent\" value=\"");
-        append_escaped(out, agent_id);
-        g_string_append(out, "\">"
-                             "<input type=\"text\" name=\"body\" "
-                             "placeholder=\"Message\" autofocus>"
-                             "<button type=\"submit\">Send</button></form>");
+        if (g_file_test(probe, G_FILE_TEST_EXISTS))
+            return g_strdup(g_ptr_array_index(tried, i));
     }
 
     /*
-     * The unfinished parts are named rather than hidden.  A web client
-     * that silently lacks the mailbox and the computer panel would look
-     * like the daemon lacks them.
+     * Named, all of them. "The scripts are missing" sends somebody to
+     * install something; naming the three places it looked sends them to
+     * the one that is wrong.
      */
-    g_string_append(out,
-        "<p class=\"todo\">This is the minimal web client: agent list, "
-        "transcript and send. Mailboxes, tasks, the computer console, "
-        "agent creation and live streaming are TODO -- use "
-        "<code>clawtilla-gtk</code> or the <code>clawtilla</code> CLI for "
-        "those.</p>");
-
-    g_string_append(out, "</main></body></html>");
-
     {
-        HtmxResponse *response = htmx_response_new_with_content(out->str);
+        g_autoptr(GString) places = g_string_new(NULL);
 
-        htmx_response_set_content_type(response, "text/html; charset=utf-8");
+        for (i = 0; i < tried->len; i++)
+            g_string_append_printf(places, "\n  %s",
+                                   (const gchar *)g_ptr_array_index(tried, i));
 
-        return response;
+        g_warning("clawtilla-web: cannot find htmx.min.js. Looked in:%s\n"
+                  "The page will load, but nothing on it will update "
+                  "without a reload.", places->str);
     }
+
+    return NULL;
 }
 
-static HtmxResponse *
-on_send(HtmxRequest *request, GHashTable *params, gpointer user_data)
+/* ── Listening ───────────────────────────────────────────────────── */
+
+/*
+ * Binds the addresses this client should answer on.
+ *
+ * The default is the loopback and the tailnet address, and nothing else.
+ * A tailnet is the one network where listening beyond the loopback is
+ * defensible without a login of our own: every peer is a device the user
+ * enrolled and WireGuard authenticated, and nothing off the tailnet can
+ * route to a 100.64/10 address at all. That is the same reasoning
+ * clawtillad already uses for its own convenience listener.
+ *
+ * A machine with no tailnet gets the loopback alone rather than a
+ * fallback to every interface. Widening the audience because an address
+ * was missing is the opposite of what somebody would want.
+ */
+static gboolean
+bind_addresses(HtmxServer *server, GPtrArray *out_where, GError **error)
 {
-    ClawtClient *client = user_data;
+    guint i;
 
-    (void)params;
-    const gchar *agent_id = htmx_request_get_form_value(request, "agent");
-    const gchar *body = htmx_request_get_form_value(request, "body");
-    g_autoptr(JsonNode) reply = NULL;
-    HtmxResponse *response;
+    if (opt_bind != NULL) {
+        for (i = 0; opt_bind[i] != NULL; i++) {
+            /*
+             * An address a person named is never optional. A client that
+             * ignored where it was told to listen and started anyway is
+             * running somewhere nobody knows about.
+             */
+            if (!htmx_server_listen_on(server, opt_bind[i],
+                                       (guint16)opt_port, error))
+                return FALSE;
 
-    if (agent_id != NULL && body != NULL && *body != '\0') {
-        g_autoptr(JsonBuilder) builder = json_builder_new();
+            g_ptr_array_add(out_where, g_strdup(opt_bind[i]));
+        }
 
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "target");
-        json_builder_add_string_value(builder, agent_id);
-        json_builder_set_member_name(builder, "body");
-        json_builder_add_string_value(builder, body);
-        json_builder_set_member_name(builder, "from");
-        json_builder_add_string_value(builder, "user");
-        json_builder_end_object(builder);
-
-        reply = call(client, "msg.send", json_builder_get_root(builder));
+        return TRUE;
     }
 
-    /*
-     * Redirected rather than rendered in place, so a refresh does not
-     * send the message a second time.
-     */
-    response = htmx_response_new();
-    htmx_response_set_status(response, 303);
+    if (!htmx_server_listen_on(server, "127.0.0.1", (guint16)opt_port, error))
+        return FALSE;
+
+    g_ptr_array_add(out_where, g_strdup("127.0.0.1"));
+
+    if (opt_no_tailscale)
+        return TRUE;
 
     {
+        g_autofree gchar *tailnet = clawt_tailscale_find_address();
+        g_autoptr(GError) local = NULL;
+
+        if (tailnet == NULL)
+            return TRUE;
+
         /*
-         * Percent-encoded, like everything else this client emits.  The
-         * value came from a form post, and splicing it raw into a header
-         * lets any reserved character -- or a control character -- take
-         * the redirect somewhere the user did not ask to go.
+         * A failure here is a warning, not an error. Somebody else
+         * holding this port on the tailnet is a reason not to be
+         * reachable from a laptop -- it is not a reason to refuse to
+         * serve the machine you are sitting at.
          */
-        g_autofree gchar *escaped =
-            g_uri_escape_string(agent_id != NULL ? agent_id : "", NULL,
-                                FALSE);
-        g_autofree gchar *location = g_strdup_printf("/?agent=%s", escaped);
+        if (!htmx_server_listen_on(server, tailnet, (guint16)opt_port,
+                                   &local)) {
+            g_warning("clawtilla-web: cannot listen on the tailnet address "
+                      "%s: %s", tailnet, local->message);
+            return TRUE;
+        }
 
-        htmx_response_add_header(response, "Location", location);
+        g_ptr_array_add(out_where, g_steal_pointer(&tailnet));
     }
 
-    return response;
+    return TRUE;
 }
+
+/* ── Entry ───────────────────────────────────────────────────────── */
 
 int
 main(int argc, char *argv[])
@@ -329,13 +224,42 @@ main(int argc, char *argv[])
     g_autoptr(GOptionContext) context = NULL;
     g_autoptr(GError) error = NULL;
     g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(ClawtWebApp) app = NULL;
     g_autoptr(HtmxServer) server = NULL;
     g_autoptr(GMainLoop) loop = NULL;
+    g_autoptr(GPtrArray) where = NULL;
+    g_autofree gchar *static_dir = NULL;
     HtmxRouter *router;
+    GSList *uris;
 
     context = g_option_context_new("- the clawtilla web client");
     g_option_context_add_main_entries(context, entries, NULL);
-    g_option_context_set_description(context, description_text);
+    g_option_context_set_description(context,
+        "\n"
+        "Serves the whole clawtilla client over HTTP: the fleet, chat,\n"
+        "the agent inspector, mailboxes, computers, routines, tasks and\n"
+        "settings. Everything clawtilla-gtk does.\n"
+        "\n"
+        "By default it listens on the loopback and, when there is one,\n"
+        "this machine's tailnet address -- so a laptop on the same\n"
+        "tailnet reaches the fleet without a tunnel set up by hand, and\n"
+        "nothing else can reach it at all.\n"
+        "\n"
+        "It has no login of its own. Do not put it on an interface that\n"
+        "is not already authenticated.\n"
+        "\n"
+        "Examples:\n"
+        "  # Loopback and the tailnet, on the default port\n"
+        "  clawtilla-web\n"
+        "\n"
+        "  # This machine only\n"
+        "  clawtilla-web --no-tailscale\n"
+        "\n"
+        "  # Somewhere else entirely, on another port\n"
+        "  clawtilla-web --bind 192.168.1.10 --port 9000\n"
+        "\n"
+        "  # Against a daemon whose socket is not in the usual place\n"
+        "  clawtilla-web --socket /run/user/1000/clawtilla/daemon.sock\n");
 
     if (!g_option_context_parse(context, &argc, &argv, &error)) {
         g_printerr("clawtilla-web: %s\n", error->message);
@@ -349,33 +273,94 @@ main(int argc, char *argv[])
         return EXIT_SUCCESS;
     }
 
+    if (opt_license) {
+        g_print("%s", license_text);
+        return EXIT_SUCCESS;
+    }
+
+    if (opt_port <= 0 || opt_port > 65535) {
+        g_printerr("clawtilla-web: --port must be between 1 and 65535\n");
+        return EXIT_FAILURE;
+    }
+
     client = clawt_client_new(opt_socket);
     clawt_client_set_auto_reconnect(client, TRUE);
 
     if (!clawt_client_connect(client, &error)) {
         g_printerr("clawtilla-web: %s\n", error->message);
+        g_printerr("Is clawtillad running?\n");
         return EXIT_FAILURE;
     }
 
-    server = htmx_server_new_with_port((guint16)opt_port);
+    /*
+     * Subscribed before anything is served, so a browser that connects
+     * immediately is already covered by the event stream.
+     */
+    if (!clawt_client_subscribe(client, 0, NULL, &error)) {
+        /*
+         * A warning rather than a failure. Without the stream the page
+         * stops updating on its own -- which is a worse client, not a
+         * broken one, and every action still works because each posts
+         * and re-renders.
+         */
+        g_warning("clawtilla-web: not subscribed to daemon events: %s\n"
+                  "Pages will not refresh by themselves.", error->message);
+        g_clear_error(&error);
+    }
+
+    app = clawt_web_app_new(client);
+
+    server = htmx_server_new();
     router = htmx_server_get_router(server);
 
-    htmx_router_get(router, "/", on_index, client);
-    htmx_router_post(router, "/send", on_send, client);
+    static_dir = find_static_dir();
 
-    if (!htmx_server_start(server, &error)) {
+    if (static_dir != NULL)
+        htmx_router_serve_static(router, "/static", static_dir);
+
+    clawt_web_register_fleet(router, app);
+    clawt_web_register_chat(router, app);
+    clawt_web_register_agent(router, app);
+    clawt_web_register_mailbox(router, app);
+    clawt_web_register_computer(router, app);
+    clawt_web_register_work(router, app);
+    clawt_web_register_settings(router, app);
+    clawt_web_register_events(router, app);
+    clawt_web_register_creation(router, app);
+    clawt_web_register_extras(router, app);
+
+    where = g_ptr_array_new_with_free_func(g_free);
+
+    if (!bind_addresses(server, where, &error)) {
         g_printerr("clawtilla-web: %s\n", error->message);
         return EXIT_FAILURE;
     }
 
     /*
-     * Bound to localhost by htmx-glib's default and left there.  This
-     * client has no authentication of its own -- anything that can reach
-     * the port can drive the whole fleet -- so exposing it is a decision
-     * for a reverse proxy that can require a login, not a default.
+     * Reported from what was bound rather than from what was asked for.
+     * A convenience address whose bind failed is exactly the interesting
+     * case, and announcing the request would say it was reachable there.
      */
-    g_print("clawtilla-web listening on http://127.0.0.1:%d\n", opt_port);
-    g_print("No authentication: do not expose this port.\n");
+    uris = htmx_server_get_listen_uris(server);
+
+    if (uris == NULL) {
+        g_printerr("clawtilla-web: nothing is listening\n");
+        return EXIT_FAILURE;
+    }
+
+    g_print("clawtilla-web is listening on:\n");
+
+    {
+        GSList *iter;
+
+        for (iter = uris; iter != NULL; iter = iter->next)
+            g_print("  %s\n", (const gchar *)iter->data);
+    }
+
+    g_slist_free_full(uris, g_free);
+
+    g_print("\nThere is no login here: anything that can reach a listed\n"
+            "address can drive the whole fleet.\n");
 
     loop = g_main_loop_new(NULL, FALSE);
     g_main_loop_run(loop);
