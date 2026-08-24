@@ -17,6 +17,13 @@ Agents are managed the way chats are.  Each has a durable mailbox, so you
 can message an agent that is switched off and it picks the message up when
 it starts.  Give a chief-of-staff agent an instruction and watch it delegate.
 
+Past a handful of agents it wants a shape, so agents can belong to
+*teams*.  A team has a lead who assigns work inside it and members who
+talk to anybody and assign to nobody; the chief of staff sits above all
+of them and hands work to the leads, choosing a team by reading what each
+one says it handles.  Teams are optional -- a fleet that declares none
+behaves exactly as it did before there were any.
+
 *Library first.*  Everything lives in =libclawt=; the daemon, the CLI, the
 GTK client and the web client are all thin things on top.  An in-process
 host -- GNU Emacs, most immediately -- gets the identical daemon by calling
@@ -26,9 +33,9 @@ second process in the way.
 ** Status
 
 Complete and working.  The daemon, both agent runtimes, all four computer
-backends, mailboxes, rooms, tasks, the orchestration tools, the plugin
-system, the integrations, the AI agent designer, the CLI and the GTK
-client are all built and tested.
+backends, mailboxes, rooms, teams, tasks, the orchestration tools, the
+plugin system, the integrations, the AI agent designer, the CLI and the
+GTK client are all built and tested.
 
 The web client is the one deliberately incomplete surface: agent list,
 transcript and send work, and the page says what does not.
@@ -46,6 +53,7 @@ transcript and send work, and the page says what does not.
 | Mailbox | durable queue with priority, TTL, leases, retry and a dead-letter view |
 | Integrations | matrix, email, webhook, local, cmacs, mcp, notify, connector |
 | Credentials | per-agent, by reference -- never literal secrets in the config |
+| Team | optional, with a role: a lead assigns inside it, a member assigns to nobody |
 | Tools | per-agent allow/deny over the orchestration tools |
 
 ** Quick start

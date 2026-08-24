@@ -14,7 +14,12 @@
 #      Docs that name a removed option are worse than no docs: the reader
 #      trusts them and then debugs why their setting does nothing.
 #
-#   3. No source file contains double-encoded UTF-8.  A tool that reads a
+#   3. Every clawtilla_* tool named in docs/ is actually registered.  A
+#      doc that names a tool nobody built is worse than one that names
+#      none: the reader tells their agent to use it and the agent
+#      reports, accurately, that it does not exist.
+#
+#   4. No source file contains double-encoded UTF-8.  A tool that reads a
 #      file as Latin-1 and writes it back turns an ellipsis into three
 #      characters, and the compiler is perfectly happy: it is a string
 #      literal either way.  It shows up as mojibake in the sidebar, which
@@ -72,6 +77,35 @@ check_doc_config_keys () {
     done
 }
 
+# Every clawtilla_* tool the docs name still exists.
+#
+# The same failure as a stale config key and a worse one to read: a
+# reader trusts the name, tells their agent to use it, and the agent
+# reports -- accurately -- that there is no such tool.  docs/computers.org
+# promised clawtilla_computer_put_file, get_file and exchange_list for a
+# long time and none of the three were ever built.
+#
+# A trailing underscore is skipped: `clawtilla_memory_*` in prose is a
+# family, not a name.
+check_doc_tool_names () {
+    [ -f src/mcp/clawt-mcp-tools.c ] || return 0
+    [ -d docs ] || return 0
+
+    for local_tool in $(grep -rhoE 'clawtilla_[a-z_]+' docs/ README.org \
+                        2>/dev/null | sort -u)
+    do
+        case "${local_tool}" in
+            *_) continue ;;
+        esac
+
+        if ! grep -q "\"${local_tool}\"" src/mcp/clawt-mcp-tools.c
+        then
+            echo "docs-check: docs name tool '${local_tool}', which is not registered"
+            FAIL=1
+        fi
+    done
+}
+
 # UTF-8 that has been through Latin-1 and back.
 #
 # Two signatures, because the two cases look different:
@@ -104,6 +138,7 @@ check_double_encoded_utf8 () {
 main () {
     check_public_headers
     check_doc_config_keys
+    check_doc_tool_names
     check_double_encoded_utf8
 
     if [ "${FAIL}" -ne 0 ]

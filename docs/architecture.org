@@ -90,6 +90,23 @@ saying ~container~ while the agent has nothing; deriving from the object
 means no interface offers a control the agent cannot honour, and the
 agent is never told it has a tool that is not really there.
 
+*** Teams
+
+Teams have no object.  They are a list in the configuration and two
+fields on an agent, and everything that acts on them is a pure function
+over that: ~clawt_team_may_assign()~ answers who may hand work to whom,
+~clawt_team_validate_fleet()~ answers what only the whole fleet shows.
+
+Deliberately so.  A ~ClawtTeam~ would be a second place holding
+membership, and the first thing it would do is disagree with the config
+about who is on what -- the same shape as every "two answers to one
+question" bug in this codebase.  A team is not a thing that runs; it is a
+way of reading the fleet.
+
+Which means the rule is testable without a daemon, a fleet or a running
+agent.  A permission check that needs all three to exercise is one that
+gets exercised once.
+
 *** ClawtAgentRuntime
 
 Abstract.  Two implementations:

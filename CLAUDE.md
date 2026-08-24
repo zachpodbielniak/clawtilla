@@ -533,6 +533,25 @@ the same program.
   factory -- the option worked and was unreachable from the place
   somebody would look for it.
 
+### A doc naming a tool nobody built is worse than a doc naming none
+
+- `docs/computers.org` promised `clawtilla_computer_put_file`, `get_file`
+  and `exchange_list` for a long time, and none of the three were ever
+  built. `docs/orchestration.org` and `docs/configuration.org` both told
+  people to allow or deny `clawtilla_spawn_agent`, which does not exist
+  either -- the real key is `tools.manage_fleet`. A reader trusts the
+  name, tells their agent to use it, and the agent reports, accurately,
+  that there is no such tool.
+- `make docs-check` now fails on any `clawtilla_*` named in `docs/` or
+  `README.org` that is not registered in `clawt-mcp-tools.c` -- the same
+  shape as the stale-config-key check that already existed, and it would
+  have caught all four. A trailing underscore is skipped, because
+  `clawtilla_memory_*` in prose is a family rather than a name.
+- The general rule: whenever a doc can name something the code owns,
+  that naming is checkable, and a check beats a habit. Config keys were
+  already covered; tools were the obvious second set and nobody had
+  looked.
+
 ### A permission about *assigning* must say that talking is still allowed
 
 - Teams give an agent a lead who may hand it work; a member may hand work

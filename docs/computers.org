@@ -930,7 +930,10 @@ Reachable three ways:
 clawtilla cp ~/notes.org researcher:/mnt/clawtilla/exchange/researcher/
 #+end_src
 
-- the ~clawtilla_computer_put_file~ / ~get_file~ / ~exchange_list~ tools
+- an agent's own ~read~ and ~write~, which run on the *host*, against
+  the host-side path -- ~clawtilla_computer_exec~ enters the container or
+  VM and sees the path inside it, so the two are different and the
+  agent's description states both
 - drag-and-drop into the GTK computer panel
 
 ~exchange_max_bytes~ plus a retention sweep keep it bounded; the sweep

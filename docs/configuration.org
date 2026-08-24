@@ -39,6 +39,7 @@ plugins:        # where to look, what to disable
 orchestration:  # limits, the chief of staff, mailbox policy
 memories:       # the searchable per-agent store
 rooms:          # standing rooms
+teams:          # how the fleet is divided, and what each part handles
 integrations:   # named instances, pointed at one agent, some, or all
 connectors:     # connected accounts: the catalogue and renewal
 routines:       # standing work, on presets or cron
@@ -160,7 +161,8 @@ agents:
         require_mention: true
 
     tools:
-      deny: [clawtilla_spawn_agent]
+      deny: [clawtilla_delegate]
+      manage_fleet: false
 
     mailbox:
       max_depth: 200
@@ -182,6 +184,42 @@ clawtilla does not model every libreclaw option and never will.  The
 ~libreclaw:~ block is copied into the rendered file unchanged, last, so
 it wins.  A libreclaw setting clawtilla has never heard of is still
 reachable without waiting for a clawtilla release.
+
+** teams
+
+#+begin_src yaml
+teams:
+  - id: research
+    name: Research
+    description: Reads sources and answers questions about what is in
+                 them. Not for anything that writes code.
+    order: 10
+
+agents:
+  - id: lead-r
+    team: research
+    team_role: lead      # lead | member, default member
+#+end_src
+
+The ~description~ is the field that does the work.  A chief-of-staff
+deciding where a piece of work belongs reads these, and it has nothing
+else to go on -- the names on a team say who is there, not what the team
+handles.  Say what it does *and* what it does not; the second half is
+what stops work arriving in the wrong place.
+
+~team_role~ decides assignment and nothing else.  A lead may hand work to
+the members of its own team; a member may hand work to nobody.  Both may
+message, ask and share a room with any agent in the fleet, because
+handing something over in conversation is collaboration rather than
+assignment.
+
+At most one lead per team.  A second is reported rather than picked
+between: which of them may assign is exactly the question, and answering
+it by whichever comes first in the file is a decision nobody can see
+being made.
+
+Teams are optional.  A fleet that declares none behaves exactly as it did
+before there were any -- one group, and only the chief of staff assigns.
 
 ** integrations and connectors
 

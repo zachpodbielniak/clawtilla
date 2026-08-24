@@ -173,6 +173,80 @@ That means the token did not match.  Stop the agent, delete its token
 file, and start it again -- the daemon writes a new one and the child
 reads it at start.
 
+** An agent says it cannot delegate
+
+That is a role, not a fault.  Only the chief of staff and a team's lead
+may assign work; a member may assign to nobody, and is not offered
+~clawtilla_delegate~ at all.
+
+#+begin_src bash
+clawtilla team list                       # who leads what
+clawtilla team assign <agent> <team> lead # if it should
+#+end_src
+
+A member is not cut off from anybody, though.  It can message, ask and
+share a room with any agent in the fleet, so a hand-off in conversation
+works and always did.  If an agent has concluded otherwise, check what it
+was told: the top of its ~TOOLS.org~ says which of the three it is.
+
+** A lead is refused when it delegates
+
+#+begin_example
+builder is not on your team (research), and a lead assigns only within
+their own.
+#+end_example
+
+Working as intended.  A lead assigns inside its own team; anything else
+goes back to the chief of staff, who hands it to the right team's lead.
+
+If those two really are the same team, one of them is on a different one
+than you think:
+
+#+begin_src bash
+clawtilla agent show <agent> | grep -i team
+#+end_src
+
+** Work never reaches a team
+
+Nothing is broken; the chief has nothing to match against.  It chooses a
+team by reading descriptions, so a team without one is a team it never
+picks.
+
+#+begin_src bash
+clawtilla team list      # a team with no description shows as blank
+clawtilla team set <id> description "what it handles, and what it does not"
+#+end_src
+
+The second half earns its place.  "Reads sources" and "Reads sources, not
+for anything that writes code" behave very differently when the chief is
+deciding between two plausible teams.
+
+~clawtilla team list~ also prints, to stderr, the things only the whole
+fleet shows:
+
+#+begin_example
+clawtilla: team 'research' has two leads, 'one' and 'two'. Only one may
+assign work; make the other a member.
+clawtilla: agent 'x' is on team 'reserch', which is not declared under
+teams:
+#+end_example
+
+Two leads is not picked between -- which of them may assign is exactly
+the question.  A misspelled team leaves the agent running and grouped
+under its own name in the sidebar, rather than hidden, because hiding it
+is how a typo survives being looked at.
+
+** A team's changes did not reach its agents
+
+~team.set~ rewrites the agents' files, so ~TOOLS.org~ follows a changed
+description at once.  Their *sessions* are another matter: an AI CLI
+reads its instructions when it starts, so an agent already running has
+the old text until it restarts.
+
+#+begin_src bash
+clawtilla agent restart <agent>
+#+end_src
+
 ** A mailbox is stuck
 
 [[file:mailboxes.org][mailboxes.org]] has the full sequence.  Briefly:

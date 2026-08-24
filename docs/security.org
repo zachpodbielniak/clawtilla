@@ -211,9 +211,23 @@ person through a client.
 Per agent, ~deny~ after ~allow~ so a broad allow cannot re-enable
 something specifically turned off.  Plugin tools obey the same lists.
 
-~clawtilla_spawn_agent~ is off by default: an agent that can create
-agents can create agents that create agents, and the hop limit does not
-apply to that.
+~tools.manage_fleet~ is off by default: an agent that can create agents
+can create agents that create agents, and the hop limit does not apply to
+that.  It also means giving one a container or a VM, which is a machine
+that runs code.
+
+*** Team roles are not a security boundary
+
+Worth stating plainly, because the vocabulary invites the other reading.
+A team lead may assign work inside its team and a member may assign to
+nobody -- but every agent can already message every other agent, and an
+agent that asks a peer to do something and is obliged is indistinguishable
+from one that assigned it.
+
+The roles exist so work lands somewhere sensible and a fleet has a shape,
+not to contain an agent that is trying to get around them.  What actually
+contains an agent is its computer and its confinement: see *Host control*
+above and [[file:computers.org][computers.org]].
 
 ** The tailnet listener
 

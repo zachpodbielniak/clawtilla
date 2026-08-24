@@ -163,6 +163,25 @@ link.  Watch what it does:
 properly, including the limits that stop two agents talking to each
 other for ever.
 
+*** Once there are more than a handful
+
+Give them teams.  A team has a lead who assigns work inside it, and the
+chief hands whole pieces of work to the lead rather than picking people
+itself:
+
+#+begin_src bash
+./build/release/clawtilla team create research \
+    "Reads sources and answers questions about them. Not for writing code."
+./build/release/clawtilla team assign researcher research lead
+./build/release/clawtilla team list
+#+end_src
+
+Write the description properly.  It is what the chief reads to decide
+which team a piece of work belongs to, and a team without one is a team
+nothing gets sent to.
+
+Teams are optional, and a fleet of three does not need them.
+
 ** Giving an agent a computer
 
 #+begin_src bash

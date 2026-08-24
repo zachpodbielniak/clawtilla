@@ -513,13 +513,15 @@ messages already exist and cleaning up rather than preventing.
 ~ClawtMessage~ carries a ~parent_id~, so an edit forks a branch rather
 than destroying history.  The transcript keeps both.
 
-** Spawning agents from a tool
+** Creating agents from a tool
 
-~clawtilla_spawn_agent~ exists and is *off by default*.  An agent that
-can create agents can create agents that create agents, and the hop limit
-does not apply to that.  Turn it on per agent, deliberately:
+Covered above under *Growing the fleet from a conversation*:
+~clawtilla_create_agent~ and ~clawtilla_agent_options~, behind
+~tools.manage_fleet~, which is *off by default*.  An agent that can
+create agents can create agents that create agents, and the hop limit
+does not apply to that.
 
 #+begin_src yaml
 tools:
-  allow: [clawtilla_spawn_agent, …]
+  manage_fleet: true
 #+end_src

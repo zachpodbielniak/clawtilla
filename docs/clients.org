@@ -45,6 +45,11 @@ Global options: ~-c/--config~, ~-s/--socket~, ~-V/--version~,
 | ~chat <agent>~ | interactive |
 | ~mailbox list/dead/ack/requeue/purge <agent> [item]~ | |
 | ~room list/create/add/history~ | |
+| ~team list~ | teams, what each handles, who leads it, how many running |
+| ~team create <id> [DESCRIPTION]~ | |
+| ~team set <id> <key> <value>~ | ~name~, ~description~, ~color~, ~order~ |
+| ~team rm <id>~ | its agents keep running and become teamless |
+| ~team assign <agent> <team> [lead]~ | |
 | ~task list/show/cancel~ | |
 | ~computer exec <agent> -- CMD…~ | |
 | ~computer status <agent>~ | |
