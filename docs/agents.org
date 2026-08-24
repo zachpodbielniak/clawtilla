@@ -555,6 +555,36 @@ clawtilla agent set researcher model.effort high
 clawtilla agent rm researcher
 #+end_src
 
+Creating an agent *starts* it.  That matters most for a computer,
+because a container or a VM is built when the agent first starts and not
+before: an agent created and left alone is a configuration file and no
+machine -- no overlay, no seed, no domain -- which from the outside is
+indistinguishable from a VM that failed to build.
+
+~--no-start~ declines it, and the reply says what happened rather than
+what to do next:
+
+#+begin_example
+Created researcher.
+Read what it thinks it is: clawtilla agent edit researcher
+Started it.
+#+end_example
+
+A failure to start is reported and does not undo the creation.  The
+agent exists and its configuration is on disk; throwing that away
+because a hypervisor was busy would discard everything just typed.
+
+#+begin_example
+Created researcher.
+clawtilla: it did not start: podman is not running
+clawtilla: fix that, then: clawtilla agent start researcher
+#+end_example
+
+This is separate from ~runtime.autostart~ (and ~defaults.autostart~,
+which is *false*).  That answers whether an agent comes back when the
+daemon restarts, which is a different question from whether the thing
+you just asked for exists yet.
+
 ~agent rm~ removes the agent from the configuration and leaves its state
 directory -- its mailbox, its transcripts -- on disk.  Removing an agent
 is reversible; deleting its history is not.

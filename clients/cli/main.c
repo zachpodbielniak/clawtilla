@@ -410,6 +410,20 @@ member_or(JsonObject *object, const gchar *key, const gchar *fallback)
     return json_object_get_string_member(object, key);
 }
 
+/* The boolean twin, guarded the same way and for the same reason. */
+static gboolean
+member_flag(JsonObject *object, const gchar *key, gboolean fallback)
+{
+    if (object == NULL || !json_object_has_member(object, key))
+        return fallback;
+
+    if (json_node_get_value_type(json_object_get_member(object, key)) !=
+        G_TYPE_BOOLEAN)
+        return fallback;
+
+    return json_object_get_boolean_member(object, key);
+}
+
 /*
  * A string array member, or %NULL when it is absent or is something else.
  */
@@ -936,21 +950,50 @@ cmd_agent(int argc, char *argv[])
                 return EXIT_SUCCESS;
             }
 
+            /*
+             * One block, because `id` points *into* the reply.
+             *
+             * It was read out of `created` in a block of its own and
+             * then printed after that block had ended, which unrefs the
+             * node and frees the string it was still naming. It printed
+             * the right thing every time, which is how a use-after-free
+             * survives being looked at.
+             */
             {
                 g_autoptr(JsonNode) created =
                     call(client, "design.commit",
                          build_payload("draft", draft, NULL));
+                JsonObject *committed;
+                const gchar *failure;
 
                 if (created == NULL)
                     return EXIT_FAILURE;
 
-                id = member_or(json_node_get_object(created), "id", id);
-            }
+                committed = json_node_get_object(created);
+                id = member_or(committed, "id", id);
+                failure = member_or(committed, "start_error", NULL);
 
-            g_print("Created %s.\n", id);
-            g_print("Read what it thinks it is: clawtilla agent edit %s\n",
-                    id);
-            g_print("Start it with: clawtilla agent start %s\n", id);
+                g_print("Created %s.\n", id);
+                g_print("Read what it thinks it is: clawtilla agent edit "
+                        "%s\n", id);
+
+                /*
+                 * What happened, rather than what to do next. The daemon
+                 * starts a new agent now -- a computer is built at start,
+                 * so one created and left alone had a config file and no
+                 * machine -- and printing the old instruction would send
+                 * somebody to run a command that has already run.
+                 */
+                if (failure != NULL) {
+                    g_printerr("clawtilla: it did not start: %s\n", failure);
+                    g_printerr("clawtilla: fix that, then: clawtilla agent "
+                               "start %s\n", id);
+                } else if (member_flag(committed, "started", FALSE)) {
+                    g_print("Started it.\n");
+                } else {
+                    g_print("Start it with: clawtilla agent start %s\n", id);
+                }
+            }
         }
 
         return EXIT_SUCCESS;
@@ -967,15 +1010,28 @@ cmd_agent(int argc, char *argv[])
 
             g_autofree gchar *field = NULL;
 
+            /*
+             * A flag with no value of its own, so it cannot go through
+             * the --key value loop below.
+             */
+            if (g_strcmp0(flag, "--no-start") == 0) {
+                json_builder_set_member_name(builder, "start");
+                json_builder_add_boolean_value(builder, FALSE);
+                continue;
+            }
+
             if (!g_str_has_prefix(flag, "--") || i + 1 >= argc) {
                 g_printerr("clawtilla: unexpected argument '%s'\n", flag);
                 g_printerr("Usage: clawtilla agent create --id <id> "
                            "[--name X] [--model X] [--computer X] "
-                           "[--image X] [--vm-image PATH]\n");
+                           "[--image X] [--vm-image PATH] [--no-start]\n");
                 g_printerr("\n  --image     container image\n");
                 g_printerr("  --vm-image  disk image for --computer vm; "
                            "required, because a VM with no disk boots "
                            "nothing\n");
+                g_printerr("  --no-start  leave it stopped; its computer "
+                           "is built when it first starts, so a VM agent "
+                           "will have no machine yet\n");
                 return EXIT_FAILURE;
             }
 
@@ -999,10 +1055,32 @@ cmd_agent(int argc, char *argv[])
         if (reply == NULL)
             return EXIT_FAILURE;
 
-        g_print("Created %s.\n",
-                member_or(json_node_get_object(reply), "id", "?"));
-        g_print("Start it with: clawtilla agent start %s\n",
-                member_or(json_node_get_object(reply), "id", "?"));
+        {
+            JsonObject *result = json_node_get_object(reply);
+            const gchar *created_id = member_or(result, "id", "?");
+            const gchar *failure = member_or(result, "start_error", NULL);
+
+            g_print("Created %s.\n", created_id);
+
+            /*
+             * The daemon starts it now, because its computer is built at
+             * start and an agent created and left alone had a config
+             * file and no machine. So this reports what happened rather
+             * than instructing somebody to run what has already run.
+             */
+            if (failure != NULL) {
+                g_printerr("clawtilla: it did not start: %s\n", failure);
+                g_printerr("clawtilla: fix that, then: clawtilla agent "
+                           "start %s\n", created_id);
+                return EXIT_FAILURE;
+            }
+
+            if (member_flag(result, "started", FALSE))
+                g_print("Started it.\n");
+            else
+                g_print("Start it with: clawtilla agent start %s\n",
+                        created_id);
+        }
 
         return EXIT_SUCCESS;
     }

@@ -37,6 +37,23 @@ clawt_json_int(JsonObject *object, const gchar *key, gint64 fallback)
     return json_object_get_int_member(object, key);
 }
 
+gboolean
+clawt_json_boolean(JsonObject *object, const gchar *key, gboolean fallback)
+{
+    JsonNode *member;
+
+    if (object == NULL || !json_object_has_member(object, key))
+        return fallback;
+
+    member = json_object_get_member(object, key);
+
+    if (JSON_NODE_TYPE(member) != JSON_NODE_VALUE ||
+        json_node_get_value_type(member) != G_TYPE_BOOLEAN)
+        return fallback;
+
+    return json_object_get_boolean_member(object, key);
+}
+
 JsonObject *
 clawt_payload_of(JsonNode *reply)
 {

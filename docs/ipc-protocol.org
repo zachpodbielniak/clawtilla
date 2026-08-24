@@ -63,6 +63,12 @@ what is missing, not merely that something failed.
 
 ~agent.list~, ~agent.show~, ~agent.start~, ~agent.stop~, ~agent.restart~,
 ~agent.logs~, ~agent.create~, ~agent.remove~, ~agent.set~,
+
+~agent.create~ and ~design.commit~ take an optional ~start~ (default
+true) and answer with ~started~, plus ~start_error~ when it did not.  A
+computer is built at start, so an agent created and not started is a
+configuration file and no machine; a failure to start is reported and
+never undoes the creation.
 ~agent.files~, ~agent.mount.list~, ~agent.mount.add~,
 ~agent.mount.remove~.
 

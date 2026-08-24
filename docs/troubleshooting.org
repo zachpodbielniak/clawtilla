@@ -227,6 +227,24 @@ not by switching to ~confine: none~.
 
 Also intended.
 
+** An agent was created and its container or VM is not there
+
+Nothing was ever built.  A computer is built when the agent first
+*starts*, so an agent that was created and left alone is a configuration
+file and nothing else -- and that looks exactly like a machine that
+failed to build.
+
+#+begin_src bash
+clawtilla agent list          # "stopped" means it has never run
+clawtilla agent start <id>
+#+end_src
+
+Creating an agent now starts it, and reports a failure to start rather
+than passing over it -- but a guest created by an older build, or with
+~--no-start~, is still waiting.  ~defaults.autostart~ will not do it
+either: that is false by default, and answers whether an agent comes
+back with the daemon rather than whether it exists yet.
+
 ** A VM will not provision
 
 - libvirt backend: ~systemctl --user status libvirtd~ (or the system

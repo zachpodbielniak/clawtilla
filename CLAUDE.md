@@ -441,6 +441,37 @@ the same program.
   itself was correct throughout; `gdbus call ... SetEnabled true` by hand
   returned `(true,)` on the same guest. Only the launcher was missing.
 
+### Creating a thing and building it were two steps, and one had no button
+
+- A computer is built at agent *start*, never at create -- so `agent.create`
+  wrote a config file and a VM agent had no overlay, no seed and no
+  domain. `defaults.autostart` does not cover it: it is **false** by
+  default and answers whether an agent comes back with the daemon, which
+  is a different question from whether the thing somebody just asked for
+  exists yet.
+- The daemon's own handler said "the client that created it will
+  immediately ask to start it" -- a contract nobody implemented. The CLI
+  printed `Start it with: ...` as its third line and the GTK client
+  toasted "Agent created." and stopped, so one client's users were
+  finished and had nothing. **Two clients disagreeing about whether the
+  work is done is the daemon's to settle**, not a third place to
+  remember.
+- `agent.create` and `design.commit` now start what they made, take
+  `start: false` to decline, and report `started` / `start_error`. A
+  failure to start never undoes the creation -- rolling back because a
+  hypervisor was busy discards everything the person typed.
+- Found by reading the two clients side by side after a person said a VM
+  had not been created. Neither client was wrong on its own.
+
+### `id` pointed into a reply that had already been freed
+
+- The CLI's designer path read `id` out of the `design.commit` reply
+  inside a block, let the `g_autoptr(JsonNode)` go at the closing brace,
+  and printed `id` three times afterwards. It printed the right thing
+  every run, which is how a use-after-free survives being looked at.
+  Anything from `member_or()` and its kin borrows from the node -- the
+  node has to outlive every use, not just the assignment.
+
 ### A synthetic event stamped in the future makes the next call arrive in the past
 
 - gnome-desktop-mcp's input entry points each started from

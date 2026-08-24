@@ -1867,6 +1867,73 @@ test_rebuild_refuses_what_it_must(void)
 }
 
 
+
+/*
+ * Creating an agent starts it.
+ *
+ * A computer is built at *start*, never at create -- so a VM agent
+ * created and left alone was a config file and no machine: no overlay,
+ * no seed, no domain. `defaults.autostart` does not cover it either. It
+ * is false by default and means "comes back with the daemon", which is a
+ * different question from whether the thing somebody just asked for
+ * exists yet.
+ *
+ * The CLI knew, and printed "Start it with: ..." as its third line. The
+ * GTK client said "Agent created." and stopped, so a person there was
+ * finished and had nothing.
+ */
+static void
+test_creating_an_agent_starts_it(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) created = NULL;
+    JsonObject *payload;
+
+    fixture_setup(&fixture, NULL);
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    created = request(&fixture, "agent.create", "{\"id\":\"scribe\"}");
+    g_assert_false(clawt_ipc_frame_is_error(created));
+
+    payload = clawt_ipc_frame_get_payload(created);
+    g_assert_nonnull(payload);
+
+    /*
+     * The field, not the outcome: whether a libreclaw actually spawns
+     * depends on a binary this suite does not ship. What matters here is
+     * that the daemon tried and said so, because saying nothing is what
+     * left a person believing they were done.
+     */
+    g_assert_true(json_object_has_member(payload, "started"));
+
+    fixture_teardown(&fixture);
+}
+
+/* ...unless the caller says not to. */
+static void
+test_creating_an_agent_can_leave_it_stopped(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) created = NULL;
+    JsonObject *payload;
+
+    fixture_setup(&fixture, NULL);
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    created = request(&fixture, "agent.create",
+                      "{\"id\":\"scribe\",\"start\":false}");
+    g_assert_false(clawt_ipc_frame_is_error(created));
+
+    payload = clawt_ipc_frame_get_payload(created);
+    g_assert_nonnull(payload);
+
+    /* Nothing was attempted, so there is nothing to report. */
+    g_assert_false(json_object_has_member(payload, "started"));
+    g_assert_false(json_object_has_member(payload, "start_error"));
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1885,6 +1952,10 @@ main(int argc, char *argv[])
 
     g_test_add_func("/daemon/starts", test_starts_with_an_empty_config);
     g_test_add_func("/daemon/one-at-a-time", test_refuses_a_second_daemon);
+    g_test_add_func("/daemon/create-starts-the-agent",
+                    test_creating_an_agent_starts_it);
+    g_test_add_func("/daemon/create-can-leave-it-stopped",
+                    test_creating_an_agent_can_leave_it_stopped);
     g_test_add_func("/daemon/shadow-agent",
                     test_a_bad_agent_does_not_stop_the_fleet);
 

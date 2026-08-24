@@ -5220,6 +5220,45 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "id");
         json_builder_add_string_value(builder, agent_id);
+
+        /*
+         * ...and started, because creating an agent and building the
+         * thing it works in were two steps and only one of them had a
+         * button.
+         *
+         * A computer is built at *start*, not at create: a VM agent
+         * created and left alone has a config file and no machine --
+         * no overlay, no seed, no domain. `defaults.autostart` does not
+         * cover it either; it is false by default and means "comes back
+         * with the daemon", which is a different question from whether
+         * the thing somebody just asked for exists.
+         *
+         * The CLI knew and printed "Start it with: ..." as its third
+         * line. The GTK client said "Agent created." and stopped, so a
+         * person there was finished and had nothing. Two clients
+         * disagreeing about whether the work is done is the daemon's
+         * problem to settle.
+         */
+        if (clawt_ipc_payload_boolean(payload, "start", TRUE)) {
+            g_autoptr(GError) start_error = NULL;
+            gboolean started = clawt_daemon_start_agent(self, agent_id,
+                                                        &start_error);
+
+            json_builder_set_member_name(builder, "started");
+            json_builder_add_boolean_value(builder, started);
+
+            /*
+             * Reported, never fatal. The agent exists and its
+             * configuration is on disk; rolling that back because a
+             * hypervisor was busy would throw away everything the person
+             * had just typed. They can start it again once it is fixed.
+             */
+            if (!started && start_error != NULL) {
+                json_builder_set_member_name(builder, "start_error");
+                json_builder_add_string_value(builder, start_error->message);
+            }
+        }
+
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
@@ -6501,6 +6540,30 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
                                       clawt_agent_config_get_id(created));
         json_builder_set_member_name(builder, "committed");
         json_builder_add_boolean_value(builder, TRUE);
+
+        /*
+         * The same start agent.create does, and for the same reason: an
+         * agent designed and committed is an agent somebody wanted. The
+         * designer's own comment says it commits "the same path as
+         * creating an agent by hand", which was true of the config call
+         * and had already stopped being true of the validation around
+         * it once before.
+         */
+        if (clawt_ipc_payload_boolean(payload, "start", TRUE)) {
+            const gchar *created_id = clawt_agent_config_get_id(created);
+            g_autoptr(GError) start_error = NULL;
+            gboolean started = clawt_daemon_start_agent(self, created_id,
+                                                        &start_error);
+
+            json_builder_set_member_name(builder, "started");
+            json_builder_add_boolean_value(builder, started);
+
+            if (!started && start_error != NULL) {
+                json_builder_set_member_name(builder, "start_error");
+                json_builder_add_string_value(builder, start_error->message);
+            }
+        }
+
         json_builder_end_object(builder);
 
         g_hash_table_remove(self->drafts, draft_id);

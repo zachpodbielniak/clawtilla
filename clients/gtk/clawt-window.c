@@ -5681,6 +5681,46 @@ model_chooser_build_full(ModelChooser *chooser, ClawtWindow *window,
     }
 }
 
+/*
+ * What actually happened, rather than a fixed sentence.
+ *
+ * Creating an agent used to toast "Agent created." whatever followed,
+ * and the daemon built its computer only at *start* -- so a VM agent
+ * created here left a config file and no machine, and nothing on screen
+ * suggested a step was missing. The CLI had known all along and printed
+ * "Start it with: ..." as its third line, which is the sort of divergence
+ * that leaves one client's users convinced a feature is broken.
+ */
+static void
+report_created(ClawtWindow *self, JsonNode *reply, const gchar *agent_id)
+{
+    JsonObject *payload = clawt_payload_of(reply);
+    const gchar *failure = clawt_json_string(payload, "start_error", NULL);
+
+    if (failure != NULL) {
+        g_autofree gchar *message =
+            g_strdup_printf("%s was created but did not start: %s",
+                            agent_id, failure);
+
+        clawt_window_toast(self, message);
+        return;
+    }
+
+    if (clawt_json_boolean(payload, "started", FALSE)) {
+        g_autofree gchar *message =
+            g_strdup_printf("%s created and started.", agent_id);
+
+        clawt_window_toast(self, message);
+        return;
+    }
+
+    /*
+     * A daemon older than this client sends neither member.  Saying
+     * "created" and nothing more is right there: it is what happened.
+     */
+    clawt_window_toast(self, "Agent created.");
+}
+
 static void
 on_create_manually(GtkButton *button, gpointer user_data)
 {
@@ -5727,7 +5767,7 @@ on_create_manually(GtkButton *button, gpointer user_data)
     if (reply == NULL)
         return;
 
-    clawt_window_toast(self, "Agent created.");
+    report_created(self, reply, agent_id);
     refresh_agents(self);
 
     /*
@@ -5775,7 +5815,9 @@ on_preview_response(AdwAlertDialog *dialog, gchar *response,
     if (reply == NULL)
         return;
 
-    clawt_window_toast(self, "Agent created.");
+    report_created(self, reply,
+                   clawt_json_string(clawt_payload_of(reply), "id",
+                                     "The agent"));
     refresh_agents(self);
 
     /*

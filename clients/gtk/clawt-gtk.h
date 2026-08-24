@@ -100,6 +100,22 @@ gint64 clawt_json_int(JsonObject  *object,
                       gint64       fallback);
 
 /**
+ * clawt_json_boolean:
+ * @object: (nullable): a JSON object
+ * @key: the member to read
+ * @fallback: what to return if it is absent or not a boolean
+ *
+ * The third of the set, and guarded for the same reason: a daemon older
+ * than this client does not send the member at all, and reading it
+ * unguarded aborts rather than returning anything.
+ *
+ * Returns: the value, or @fallback
+ */
+gboolean clawt_json_boolean(JsonObject  *object,
+                            const gchar *key,
+                            gboolean     fallback);
+
+/**
  * clawt_payload_of:
  * @reply: a reply frame
  *
