@@ -441,6 +441,33 @@ the same program.
   itself was correct throughout; `gdbus call ... SetEnabled true` by hand
   returned `(true,)` on the same guest. Only the launcher was missing.
 
+### Naming no CPU is not neutral -- libvirt names one for you
+
+- The domain XML emitted no `<cpu>`, so libvirt filled in its default:
+  `<model fallback='forbid'>qemu64</model>`, x86-64-v1, no SSE4.2, no
+  AVX. Fedora, Debian, Ubuntu and Arch all boot on it. **CentOS Stream 10
+  does not** -- RHEL 10 raised its baseline, and the guest's own serial
+  console says `Fatal glibc error: CPU does not support x86-64-v2`
+  followed by a kernel panic killing init.
+- From outside: a VM that is definitely running, a console reading
+  "Display output is not active", and ssh answering
+  `kex_exchange_identification: Connection reset by peer`. Those are the
+  *same three symptoms* as a VM with no disk image, which is already a
+  documented cause -- so the obvious diagnosis was the wrong one, and
+  nothing in the whole path named a CPU.
+- Proved by booting the image both ways with nothing else changed:
+  `-cpu qemu64` panics, `-cpu max` reaches a login prompt. Two minutes,
+  and it turns a plausible theory into the answer.
+- `host-passthrough` rather than a named model. The domain is already
+  `type='kvm'`, so the host CPU is available by definition, and choosing
+  a model would be choosing a baseline to be wrong about again the next
+  time somebody raises theirs. The qemu backend gets `-cpu max`, not
+  `host`, because its machine line falls back to TCG where `host` is not
+  valid.
+- `host-passthrough` contains the substring `passt`, which broke a test
+  asserting the domain had no passt *network backend*. Assert on the
+  element, not the word.
+
 ### An order belongs where the thing being ordered lives
 
 - `agents.order` is in `clawtilla.yaml`, not in the client, because it

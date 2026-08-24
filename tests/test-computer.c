@@ -498,7 +498,13 @@ test_vm_domain_xml_without_a_forward_stays_plain(void)
 
     g_assert_nonnull(strstr(xml, "<interface type='user'>"));
     g_assert_null(strstr(xml, "portForward"));
-    g_assert_null(strstr(xml, "passt"));
+    /*
+     * The backend element, not the bare word: `host-passthrough` on the
+     * CPU contains "passt", so a substring match here started failing
+     * the moment the guest was given a decent processor.
+     */
+    g_assert_null(strstr(xml, "<backend type='passt'/>"));
+    g_assert_null(strstr(xml, "<portForward"));
 }
 
 /*
@@ -2454,6 +2460,61 @@ test_a_bad_resolution_is_refused_at_validation(void)
     g_assert_nonnull(strstr(error->message, "WIDTHxHEIGHT"));
 }
 
+
+/*
+ * A guest gets the host's CPU, because naming none is not neutral.
+ *
+ * libvirt fills in a default when the domain says nothing, and that
+ * default is `qemu64` -- x86-64-v1, from 2003. Four of the five
+ * distributions in the catalog boot on it happily. CentOS Stream 10 does
+ * not: its own console says `Fatal glibc error: CPU does not support
+ * x86-64-v2` and the kernel panics killing init.
+ *
+ * From outside that is a VM which is definitely running, a console
+ * reading "Display output is not active", and ssh answering
+ * `kex_exchange_identification: Connection reset by peer` -- the same
+ * three symptoms as a VM with no disk at all, and nothing anywhere
+ * naming a CPU.
+ */
+static void
+test_a_guest_is_given_a_cpu_worth_having(void)
+{
+    g_autoptr(ClawtComputer) libvirt = NULL;
+    g_autoptr(ClawtComputer) qemu = NULL;
+    g_autofree gchar *xml = NULL;
+    g_auto(GStrv) argv = NULL;
+    gboolean saw_cpu = FALSE;
+    guint i;
+
+    libvirt = clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_LIBVIRT, NULL);
+    xml = clawt_vm_computer_build_domain_xml(CLAWT_VM_COMPUTER(libvirt));
+
+    g_assert_nonnull(strstr(xml, "mode='host-passthrough'"));
+
+    /*
+     * And never a named model. Picking one is picking a baseline to be
+     * wrong about again the next time a distribution raises theirs.
+     */
+    g_assert_null(strstr(xml, "qemu64"));
+
+    qemu = clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_QEMU, NULL);
+    argv = clawt_vm_computer_build_qemu_argv(CLAWT_VM_COMPUTER(qemu),
+                                             "/tmp/clawt-qmp.sock");
+
+    for (i = 0; argv[i] != NULL; i++) {
+        if (g_strcmp0(argv[i], "-cpu") == 0) {
+            /*
+             * `max` rather than `host`: the machine line falls back to
+             * TCG, where `-cpu host` is not valid at all.
+             */
+            g_assert_cmpstr(argv[i + 1], ==, "max");
+            saw_cpu = TRUE;
+        }
+    }
+
+    g_assert_true(saw_cpu);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -2484,6 +2545,8 @@ main(int argc, char *argv[])
                     test_host_description_mentions_the_confinement);
     g_test_add_func("/computer/truncation", test_output_truncation_is_reported);
 
+    g_test_add_func("/computer/cpu/host-passthrough",
+                    test_a_guest_is_given_a_cpu_worth_having);
     g_test_add_func("/computer/resolution/read-or-refused",
                     test_a_resolution_is_read_or_refused);
     g_test_add_func("/computer/resolution/reaches-both-backends",

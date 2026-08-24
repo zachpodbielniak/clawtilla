@@ -300,6 +300,39 @@ Check what it is trying:
 cat ~/.local/share/clawtilla/vms/<agent>/ssh-port
 #+end_src
 
+** The console says "Display output is not active" and ssh is reset
+
+#+begin_example
+kex_exchange_identification: read: Connection reset by peer
+#+end_example
+
+Three symptoms, one cause, and the same three a VM with no disk gives:
+the machine is definitely running, the console shows nothing, and the
+forwarded port reaches a guest with no sshd.
+
+If it *has* a disk, look at the CPU.  A domain that names none gets
+libvirt's default, ~qemu64~ -- x86-64-v1, from 2003.  Most cloud images
+boot on it; a current Enterprise Linux does not:
+
+#+begin_example
+Fatal glibc error: CPU does not support x86-64-v2
+Kernel panic - not syncing: Attempted to kill init!
+#+end_example
+
+That is on the *serial* console, which is why nothing appears on the
+graphical one -- the guest panics before it has initialised the display.
+
+#+begin_src bash
+virsh -c qemu:///session dumpxml clawt-<agent> | grep -A2 "<cpu"
+#+end_src
+
+~host-passthrough~ is what clawtilla emits now.  A domain defined by an
+older build keeps ~qemu64~ until it is provisioned again:
+
+#+begin_src bash
+clawtilla agent start <agent>      # provision rewrites the domain
+#+end_src
+
 ** A VM boots and the login is refused
 
 The guest has no account for clawtilla to use.  Almost always the image:

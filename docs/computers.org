@@ -1091,6 +1091,19 @@ The key has to reach the session account: the MCP server talks to GNOME
 Shell over the session bus of whoever is logged in at the screen, so it
 is reached by an SSH connection *as that account*.
 
+**** The guest gets the host's CPU
+
+Naming no CPU is not neutral: libvirt fills in ~qemu64~, which is
+x86-64-v1 and has neither SSE4.2 nor AVX.  Most cloud images still boot
+on it, which is exactly why it survived -- a current Enterprise Linux
+does not, and says so on the serial console while the graphical one
+shows nothing at all.
+
+So every domain names ~host-passthrough~, and the qemu fallback backend
+passes ~-cpu max~ (rather than ~host~, which is invalid under TCG).  A
+named model is deliberately not used: it would be a baseline to be wrong
+about again the next time a distribution raises theirs.
+
 **** The size of the screen
 
 ~computer.vm.resolution~, as ~WIDTHxHEIGHT~.  1280x800 is the

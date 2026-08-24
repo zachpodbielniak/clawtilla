@@ -385,6 +385,30 @@ clawt_vm_computer_build_domain_xml(ClawtVmComputer *self)
     g_string_append_printf(out, "  <vcpu>%u</vcpu>\n", self->cpus);
 
     /*
+     * The host's own CPU, because naming none is not neutral.
+     *
+     * libvirt fills in a default when the domain says nothing, and that
+     * default is `qemu64` -- an x86-64-v1 model from 2003 with no SSE4.2
+     * and no AVX. Every distribution in the catalog booted on it except
+     * one: RHEL 10 raised its baseline to **x86-64-v3**, so a CentOS
+     * Stream 10 guest stops in the kernel before it has initialised
+     * anything.
+     *
+     * What that looks like from outside is a VM that is definitely
+     * running, a console reading "Display output is not active", and ssh
+     * answering `kex_exchange_identification: Connection reset by peer`
+     * -- the same three symptoms as a VM with no disk at all, and
+     * nothing anywhere naming a CPU.
+     *
+     * host-passthrough rather than a named model: the domain is already
+     * type='kvm', so the host CPU is available by definition, and
+     * picking a model would be picking a baseline to be wrong about
+     * again the next time somebody raises theirs.
+     */
+    g_string_append(out,
+        "  <cpu mode='host-passthrough' check='none' migratable='on'/>\n");
+
+    /*
      * virtiofs needs shared memory backing, and libvirt rejects the device
      * without it.  Emitted whenever there is a mount at all, since the
      * failure is otherwise a rejected domain definition whose message does
@@ -586,6 +610,15 @@ clawt_vm_computer_build_qemu_argv(ClawtVmComputer *self,
     g_ptr_array_add(argv, g_strdup("qemu-system-x86_64"));
     g_ptr_array_add(argv, g_strdup("-machine"));
     g_ptr_array_add(argv, g_strdup("q35,accel=kvm:tcg"));
+
+    /*
+     * `max` rather than `host`, because the machine above falls back to
+     * TCG and `-cpu host` is only valid under KVM. Either way it is the
+     * fullest CPU available, which is what a current guest needs: qemu's
+     * default is x86-64-v1 and RHEL 10 wants v3.
+     */
+    g_ptr_array_add(argv, g_strdup("-cpu"));
+    g_ptr_array_add(argv, g_strdup("max"));
     g_ptr_array_add(argv, g_strdup("-smp"));
     g_ptr_array_add(argv, g_strdup_printf("%u", self->cpus));
     g_ptr_array_add(argv, g_strdup("-m"));
