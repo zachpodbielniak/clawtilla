@@ -267,10 +267,13 @@ static const ClawtSchemaEntry schema[] = {
   NULL, NULL,
   "Which libreclaw to run for process-runtime agents.\n"
   "\n"
-  "Unset means whatever is on PATH, which is what you want once libreclaw\n"
-  "is installed. Point it at a build tree while developing against an\n"
-  "unreleased libreclaw -- otherwise the daemon runs the installed copy\n"
-  "and the change you are testing is not the one being exercised.",
+  "Unset means: beside clawtillad, then the deps/libreclaw build this\n"
+  "checkout produced, then PATH. A normal build and a normal install\n"
+  "both work without setting this.\n"
+  "\n"
+  "Set it when the one to run is somewhere else -- a second checkout, or\n"
+  "an installed copy you want in preference to the build tree. Naming it\n"
+  "here wins over all three.",
   "0.1.0" },
 
 { "defaults.restart", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,

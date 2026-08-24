@@ -196,6 +196,65 @@ apply_environment(ClawtProcessRuntime  *self,
     g_subprocess_launcher_set_environ(launcher, environment);
 }
 
+/*
+ * Where clawtillad is, so the things built beside it can be found.
+ *
+ * NULL when /proc is not available, which only costs those entries.
+ */
+static gchar *
+executable_dir(void)
+{
+    g_autofree gchar *exe = g_file_read_link("/proc/self/exe", NULL);
+
+    if (exe == NULL)
+        return NULL;
+
+    return g_path_get_dirname(exe);
+}
+
+/*
+ * The libreclaw to run, best first.
+ *
+ * PATH used to be the only answer, which meant a fresh clone failed at
+ * the first agent start with "not on PATH" -- while the binary sat in
+ * deps/libreclaw/build/release, built minutes earlier by the same `make`
+ * that produced the daemon doing the complaining. Anybody who had ever
+ * installed libreclaw, or set defaults.libreclaw_binary once and
+ * forgotten, never saw it.
+ *
+ * The same fix pod modules already have, and for the same reason: a
+ * normal build and a normal install should both work without being
+ * configured. `deps/libreclaw/build/release` is where clawtilla's own
+ * config.mk points LIBRECLAW_OUTDIR, whatever build type the daemon
+ * itself was built as.
+ */
+static gchar *
+resolve_libreclaw(void)
+{
+    g_autofree gchar *exe_dir = executable_dir();
+
+    if (exe_dir != NULL) {
+        /* Installed: /usr/local/bin/clawtillad beside libreclaw. */
+        g_autofree gchar *beside = g_build_filename(exe_dir, "libreclaw",
+                                                    NULL);
+
+        if (g_file_test(beside, G_FILE_TEST_IS_EXECUTABLE))
+            return g_steal_pointer(&beside);
+
+        /* A checkout: build/<type>/clawtillad, two levels under the root. */
+        {
+            g_autofree gchar *in_tree = g_build_filename(
+                exe_dir, "..", "..", "deps", "libreclaw", "build", "release",
+                "libreclaw", NULL);
+
+            if (g_file_test(in_tree, G_FILE_TEST_IS_EXECUTABLE))
+                return g_canonicalize_filename(in_tree, NULL);
+        }
+    }
+
+    return g_find_program_in_path("libreclaw");
+}
+
 static gboolean
 process_runtime_start(ClawtAgentRuntime *runtime, GError **error)
 {
@@ -212,12 +271,15 @@ process_runtime_start(ClawtAgentRuntime *runtime, GError **error)
 
     binary = (self->binary != NULL)
              ? g_strdup(self->binary)
-             : g_find_program_in_path("libreclaw");
+             : resolve_libreclaw();
 
     if (binary == NULL) {
         g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_RUNTIME_SPAWN,
-                            "the libreclaw binary is not on PATH; install it "
-                            "or set the binary path explicitly");
+                            "cannot find the libreclaw binary. It was not "
+                            "beside clawtillad, not in deps/libreclaw's "
+                            "build, and not on PATH. Build it with `make -C "
+                            "deps/libreclaw`, install it, or set "
+                            "defaults.libreclaw_binary to where it is.");
         return FALSE;
     }
 

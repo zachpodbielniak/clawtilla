@@ -150,6 +150,25 @@ shows up there, not in the daemon's log.
 clawtilla config render researcher
 #+end_src
 
+** "cannot find the libreclaw binary"
+
+The daemon runs a ~libreclaw~ per process-runtime agent and looks in
+three places: beside ~clawtillad~, then ~deps/libreclaw/build/release~
+relative to it, then ~PATH~.
+
+Hitting this means none of the three had one -- usually a ~clawtillad~
+copied out of its build tree, or a checkout where ~deps/libreclaw~ was
+never built:
+
+#+begin_src bash
+git submodule update --init --recursive
+make -C deps/libreclaw
+#+end_src
+
+~defaults.libreclaw_binary~ overrides all three.  Worth knowing that
+setting it once and forgetting is how this failure becomes invisible on
+one machine and immediate on another.
+
 ** The link will not connect
 
 The agent is ~running~ but ~LINK~ stays down.

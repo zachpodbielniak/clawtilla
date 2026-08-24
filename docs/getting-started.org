@@ -85,6 +85,17 @@ comment.
 
 Leave that running and open another terminal.
 
+*** libreclaw does not need installing first
+
+The daemon runs a ~libreclaw~ per process-runtime agent, and finds it
+without being told: beside ~clawtillad~ first, then the
+~deps/libreclaw~ build this checkout just produced, then ~PATH~.
+
+So a fresh clone works.  If it ever cannot find one it says all three
+places it looked, and ~defaults.libreclaw_binary~ overrides the lot --
+worth setting only when the one to run is somewhere else, such as a
+second checkout.
+
 ** Your first agent
 
 #+begin_src bash

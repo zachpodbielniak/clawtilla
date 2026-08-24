@@ -533,6 +533,32 @@ the same program.
   factory -- the option worked and was unreachable from the place
   somebody would look for it.
 
+### A setting somebody set once makes a first-run failure invisible
+
+- `defaults.libreclaw_binary` was unset by default and fell back to
+  `PATH` alone, so a fresh clone failed at the first agent start with
+  "the libreclaw binary is not on PATH" -- while the binary sat in
+  `deps/libreclaw/build/release`, built minutes earlier by the same
+  `make` that produced the daemon doing the complaining.
+- Invisible here for months because this machine's config sets the key to
+  an absolute build-tree path. Anybody who ever set it, or ever installed
+  libreclaw, cannot reproduce it; anybody cloning fresh hits it
+  immediately. **A key somebody set once and forgot is a config that
+  answers for a machine rather than for the software.**
+- The fix already existed one directory over: `clawt-pod-bridge.c`
+  resolves pod modules beside the running binary, then in the install
+  location, with a comment recording the identical bug -- "missing for
+  anyone running straight out of a checkout, which is everyone, until the
+  first `make install`". The binary needed the same treatment and had
+  never had it.
+- The refusal now names all three places it looked. "Not on PATH" sent
+  somebody to install something they had already built.
+- Verified by reading `/proc/<child>/exe` rather than grepping `pgrep`
+  output -- twice in a row a `pgrep -af libreclaw` matched the *probe's
+  own command line* and then a different daemon's child, and the second
+  one looked exactly like a pass. That trap is already in this file; I
+  still fell into it. Read the kernel's answer, not a string.
+
 ### A doc naming a tool nobody built is worse than a doc naming none
 
 - `docs/computers.org` promised `clawtilla_computer_put_file`, `get_file`
