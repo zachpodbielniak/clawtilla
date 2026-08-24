@@ -99,6 +99,15 @@ settings_shell(const gchar *current, HtmxElement *content)
     return HTMX_ELEMENT(g_steal_pointer(&page));
 }
 
+/*
+ * Renders one settings page.
+ *
+ * @content is borrowed, not taken: htmx_node_add_child() refs what it is
+ * given, so the caller's g_autoptr still owns its own reference and
+ * releases it at the end of the scope. Handing this a stolen pointer --
+ * which half these call sites did -- leaks the element, because nothing
+ * here ever drops that second reference.
+ */
 static HtmxResponse *
 settings_response(ClawtWebApp *app, const gchar *slug, HtmxElement *content,
                   const gchar *toast, gboolean bad)
@@ -958,11 +967,11 @@ on_settings_action(HtmxRequest *request, GHashTable *params,
 
     if (reply == NULL)
         return settings_response(action->app, action->page,
-                                 g_steal_pointer(&content),
+                                 content,
                                  clawt_web_app_last_error(action->app), TRUE);
 
     return settings_response(action->app, action->page,
-                             g_steal_pointer(&content), action->done, FALSE);
+                             content, action->done, FALSE);
 }
 
 static SettingsAction *
@@ -1004,10 +1013,10 @@ on_image_download(HtmxRequest *request, GHashTable *params, gpointer user_data)
     content = images_content(app);
 
     if (reply == NULL)
-        return settings_response(app, "images", g_steal_pointer(&content),
+        return settings_response(app, "images", content,
                                  clawt_web_app_last_error(app), TRUE);
 
-    return settings_response(app, "images", g_steal_pointer(&content),
+    return settings_response(app, "images", content,
                              "Downloading. It keeps going if you leave "
                              "this page.", FALSE);
 }
@@ -1032,10 +1041,10 @@ on_team_add(HtmxRequest *request, GHashTable *params, gpointer user_data)
     content = teams_content(app);
 
     if (reply == NULL)
-        return settings_response(app, "teams", g_steal_pointer(&content),
+        return settings_response(app, "teams", content,
                                  clawt_web_app_last_error(app), TRUE);
 
-    return settings_response(app, "teams", g_steal_pointer(&content),
+    return settings_response(app, "teams", content,
                              "Team created.", FALSE);
 }
 
@@ -1068,14 +1077,14 @@ on_team_save(HtmxRequest *request, GHashTable *params, gpointer user_data)
         if (reply == NULL) {
             content = teams_content(app);
 
-            return settings_response(app, "teams", g_steal_pointer(&content),
+            return settings_response(app, "teams", content,
                                      clawt_web_app_last_error(app), TRUE);
         }
     }
 
     content = teams_content(app);
 
-    return settings_response(app, "teams", g_steal_pointer(&content),
+    return settings_response(app, "teams", content,
                              "Saved.", FALSE);
 }
 
@@ -1101,10 +1110,10 @@ on_integration_add(HtmxRequest *request, GHashTable *params,
 
     if (reply == NULL)
         return settings_response(app, "integrations",
-                                 g_steal_pointer(&content),
+                                 content,
                                  clawt_web_app_last_error(app), TRUE);
 
-    return settings_response(app, "integrations", g_steal_pointer(&content),
+    return settings_response(app, "integrations", content,
                              "Added. Fill in its settings on the agent that "
                              "should use it.", FALSE);
 }
@@ -1139,10 +1148,10 @@ on_connector_add(HtmxRequest *request, GHashTable *params, gpointer user_data)
     content = connectors_content(app);
 
     if (reply == NULL)
-        return settings_response(app, "connectors", g_steal_pointer(&content),
+        return settings_response(app, "connectors", content,
                                  clawt_web_app_last_error(app), TRUE);
 
-    return settings_response(app, "connectors", g_steal_pointer(&content),
+    return settings_response(app, "connectors", content,
                              "Added. Authorize it to get a credential.",
                              FALSE);
 }
@@ -1176,7 +1185,7 @@ on_connector_authorize(HtmxRequest *request, GHashTable *params,
     if (reply == NULL) {
         g_autoptr(HtmxElement) content = connectors_content(app);
 
-        return settings_response(app, "connectors", g_steal_pointer(&content),
+        return settings_response(app, "connectors", content,
                                  clawt_web_app_last_error(app), TRUE);
     }
 
@@ -1227,8 +1236,8 @@ on_connector_authorize(HtmxRequest *request, GHashTable *params,
         htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
     }
 
-    return settings_response(app, "connectors", HTMX_ELEMENT(g_steal_pointer(&box)),
-                             NULL, FALSE);
+    return settings_response(app, "connectors", HTMX_ELEMENT(box), NULL,
+                             FALSE);
 }
 
 static HtmxResponse *
@@ -1250,10 +1259,10 @@ on_connector_await(HtmxRequest *request, GHashTable *params,
     content = connectors_content(app);
 
     if (reply == NULL)
-        return settings_response(app, "connectors", g_steal_pointer(&content),
+        return settings_response(app, "connectors", content,
                                  clawt_web_app_last_error(app), TRUE);
 
-    return settings_response(app, "connectors", g_steal_pointer(&content),
+    return settings_response(app, "connectors", content,
                              "Authorized.", FALSE);
 }
 
@@ -1268,7 +1277,7 @@ on_appearance(HtmxRequest *request, GHashTable *params, gpointer user_data)
     (void)params;
 
     content = appearance_content(request);
-    response = settings_response(app, "appearance", g_steal_pointer(&content),
+    response = settings_response(app, "appearance", content,
                                  "Applied.", FALSE);
 
     {
