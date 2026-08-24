@@ -1483,6 +1483,19 @@ At most one agent may hold this.
 
 Accent colour in the clients, as a hex string.
 
+*** =agents.order=
+
+- Type :: integer
+- Default :: =0=
+- Since :: 0.1.0
+
+Where this agent sits in the list, lowest first.
+
+Set by dragging a row in the clients rather than written by hand,
+though there is nothing wrong with writing it. Agents sharing a
+number keep the order they appear in this file, so leaving them all
+at 0 changes nothing.
+
 *** =agents.avatar=
 
 - Type :: path

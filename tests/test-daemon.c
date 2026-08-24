@@ -1977,6 +1977,218 @@ test_setting_a_key_rewrites_what_it_affects(void)
     fixture_teardown(&fixture);
 }
 
+
+/*
+ * Removing an agent can take everything it owns, and only when asked.
+ *
+ * Removing one from the fleet is reversible; deleting what it wrote is
+ * not, so it is opt-in -- but a throwaway agent made to test something
+ * should be throwable away, and a handful of abandoned workspaces is its
+ * own kind of mess.
+ */
+static void
+test_removing_an_agent_can_take_its_files(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) created = NULL;
+    g_autoptr(JsonNode) removed = NULL;
+    g_autofree gchar *workspace = NULL;
+
+    fixture_setup(&fixture, NULL);
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    created = request(&fixture, "agent.create",
+                      "{\"id\":\"throwaway\",\"start\":false}");
+    g_assert_false(clawt_ipc_frame_is_error(created));
+
+    workspace = g_build_filename(fixture.dir, "agents", "throwaway", NULL);
+    g_assert_true(g_file_test(workspace, G_FILE_TEST_IS_DIR));
+
+    removed = request(&fixture, "agent.remove",
+                      "{\"agent\":\"throwaway\",\"remove_files\":true}");
+    g_assert_false(clawt_ipc_frame_is_error(removed));
+
+    g_assert_cmpstr(clawt_ipc_payload_string(
+                        clawt_ipc_frame_get_payload(removed), "files"),
+                    ==, "removed");
+    g_assert_false(g_file_test(workspace, G_FILE_TEST_EXISTS));
+
+    fixture_teardown(&fixture);
+}
+
+/* ...and leaves them alone when it is not asked. */
+static void
+test_removing_an_agent_keeps_its_files_by_default(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) created = NULL;
+    g_autoptr(JsonNode) removed = NULL;
+    g_autofree gchar *workspace = NULL;
+
+    fixture_setup(&fixture, NULL);
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    created = request(&fixture, "agent.create",
+                      "{\"id\":\"keeper\",\"start\":false}");
+    g_assert_false(clawt_ipc_frame_is_error(created));
+
+    workspace = g_build_filename(fixture.dir, "agents", "keeper", NULL);
+
+    removed = request(&fixture, "agent.remove", "{\"agent\":\"keeper\"}");
+    g_assert_false(clawt_ipc_frame_is_error(removed));
+
+    g_assert_true(g_file_test(workspace, G_FILE_TEST_IS_DIR));
+
+    fixture_teardown(&fixture);
+}
+
+
+/*
+ * The guard, tested directly, because it is the thing standing between
+ * "remove this agent's files" and a configured path that turned out to
+ * be somebody's home directory. There is no undo on the other side.
+ */
+static void
+test_removing_a_tree_refuses_to_leave_its_root(void)
+{
+    g_autofree gchar *root = g_dir_make_tmp("clawt-purge-XXXXXX", NULL);
+    g_autofree gchar *outside = g_dir_make_tmp("clawt-keep-XXXXXX", NULL);
+    g_autofree gchar *inside = g_build_filename(root, "agent", NULL);
+    g_autofree gchar *file = g_build_filename(inside, "note", NULL);
+    g_autofree gchar *escape = g_build_filename(root, "..", NULL);
+    g_autoptr(GError) error = NULL;
+
+    g_mkdir_with_parents(inside, 0700);
+    g_file_set_contents(file, "x", -1, NULL);
+
+    /* A path outside the root is refused, and nothing is touched. */
+    g_assert_false(clawt_remove_tree(outside, root, &error));
+    g_assert_nonnull(error);
+    g_assert_true(g_file_test(outside, G_FILE_TEST_IS_DIR));
+    g_clear_error(&error);
+
+    /* Including one that only leaves it after canonicalisation. */
+    g_assert_false(clawt_remove_tree(escape, root, &error));
+    g_clear_error(&error);
+
+    /* Inside, it does what it says. */
+    g_assert_true(clawt_remove_tree(inside, root, &error));
+    g_assert_no_error(error);
+    g_assert_false(g_file_test(inside, G_FILE_TEST_EXISTS));
+
+    /* And a path that is already gone is success, not an error. */
+    g_assert_true(clawt_remove_tree(inside, root, &error));
+    g_assert_no_error(error);
+
+    clawt_test_remove_tree(root);
+    clawt_test_remove_tree(outside);
+}
+
+
+/*
+ * Reordering the fleet, and the listing following it.
+ *
+ * The order is in clawtilla.yaml rather than in a client, because it is
+ * about the agents rather than about reaching them -- so it is the same
+ * in every client and on every machine, which is the difference between
+ * this and a connection profile.
+ */
+static void
+test_agents_can_be_reordered(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) reordered = NULL;
+    g_autoptr(JsonNode) listed = NULL;
+    JsonArray *agents;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: alpha\n"
+                  "  - id: beta\n"
+                  "  - id: chief\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    reordered = request(&fixture, "agent.reorder",
+                        "{\"agents\":\"chief,alpha,beta\"}");
+    g_assert_false(clawt_ipc_frame_is_error(reordered));
+
+    listed = request(&fixture, "agent.list", "{}");
+    agents = json_object_get_array_member(
+        clawt_ipc_frame_get_payload(listed), "agents");
+
+    g_assert_cmpuint(json_array_get_length(agents), ==, 3);
+    g_assert_cmpstr(json_object_get_string_member(
+                        json_array_get_object_element(agents, 0), "id"),
+                    ==, "chief");
+    g_assert_cmpstr(json_object_get_string_member(
+                        json_array_get_object_element(agents, 2), "id"),
+                    ==, "beta");
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * An id the client had and the daemon no longer does is skipped rather
+ * than refused: the list comes from a view that may be a moment behind
+ * a removal, and failing the whole reorder over that would lose the
+ * arrangement somebody had just made.
+ */
+static void
+test_reordering_survives_an_agent_that_has_gone(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) reordered = NULL;
+    g_autoptr(JsonNode) listed = NULL;
+    JsonArray *agents;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    reordered = request(&fixture, "agent.reorder",
+                        "{\"agents\":\"beta,ghost,alpha\"}");
+    g_assert_false(clawt_ipc_frame_is_error(reordered));
+
+    listed = request(&fixture, "agent.list", "{}");
+    agents = json_object_get_array_member(
+        clawt_ipc_frame_get_payload(listed), "agents");
+
+    g_assert_cmpstr(json_object_get_string_member(
+                        json_array_get_object_element(agents, 0), "id"),
+                    ==, "beta");
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A fleet nobody has reordered comes back in the order the file has it.
+ * The sort is stable and they all sit at the default, so the arrangement
+ * somebody wrote by hand survives being listed.
+ */
+static void
+test_an_unordered_fleet_keeps_its_file_order(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) listed = NULL;
+    JsonArray *agents;
+
+    fixture_setup(&fixture,
+                  "agents:\n  - id: zulu\n  - id: alpha\n  - id: mike\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    listed = request(&fixture, "agent.list", "{}");
+    agents = json_object_get_array_member(
+        clawt_ipc_frame_get_payload(listed), "agents");
+
+    g_assert_cmpstr(json_object_get_string_member(
+                        json_array_get_object_element(agents, 0), "id"),
+                    ==, "zulu");
+    g_assert_cmpstr(json_object_get_string_member(
+                        json_array_get_object_element(agents, 2), "id"),
+                    ==, "mike");
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1995,6 +2207,18 @@ main(int argc, char *argv[])
 
     g_test_add_func("/daemon/starts", test_starts_with_an_empty_config);
     g_test_add_func("/daemon/one-at-a-time", test_refuses_a_second_daemon);
+    g_test_add_func("/daemon/agents-can-be-reordered",
+                    test_agents_can_be_reordered);
+    g_test_add_func("/daemon/reorder-survives-a-missing-agent",
+                    test_reordering_survives_an_agent_that_has_gone);
+    g_test_add_func("/daemon/unordered-keeps-file-order",
+                    test_an_unordered_fleet_keeps_its_file_order);
+    g_test_add_func("/daemon/remove-tree-stays-in-its-root",
+                    test_removing_a_tree_refuses_to_leave_its_root);
+    g_test_add_func("/daemon/remove-can-take-the-files",
+                    test_removing_an_agent_can_take_its_files);
+    g_test_add_func("/daemon/remove-keeps-files-by-default",
+                    test_removing_an_agent_keeps_its_files_by_default);
     g_test_add_func("/daemon/set-rewrites-derived-files",
                     test_setting_a_key_rewrites_what_it_affects);
     g_test_add_func("/daemon/create-starts-the-agent",

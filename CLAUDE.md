@@ -441,6 +441,46 @@ the same program.
   itself was correct throughout; `gdbus call ... SetEnabled true` by hand
   returned `(true,)` on the same guest. Only the launcher was missing.
 
+### An order belongs where the thing being ordered lives
+
+- `agents.order` is in `clawtilla.yaml`, not in the client, because it
+  is about the agents rather than about *reaching* them -- which is the
+  line that puts connection profiles and appearance on the other side.
+  So a chief dragged to the top is at the top in every client and on
+  every machine.
+- Numbered in tens so one agent can be placed between two others by
+  hand, and sorted **stably** so a fleet nobody has dragged -- every
+  agent at the default 0 -- comes back in the order the file has it.
+  `g_ptr_array_sort()` is documented stable since GLib 2.32.
+- The drag carries the **id**, never the widget. A row is rebuilt from
+  the daemon's reply on every refresh, and a refresh can arrive
+  mid-drag, because events are delivered from an idle -- so a pointer to
+  the row being dragged may not exist by the time it is dropped.
+- The drop sends the *whole list*, not "move this one here". The daemon
+  numbers from what it is given, so one frame describes the arrangement
+  completely and a stale client cannot produce a half-applied reorder.
+  An id the daemon no longer has is skipped, not refused: the alternative
+  loses the arrangement over an agent that was removed a second ago.
+- Dropping on the upper or lower half decides above or below. Without
+  that a row can never be placed last, because every drop lands before
+  something.
+
+### A tidy-up with no undo needs a fence, not care
+
+- `agent rm --purge` removes a workspace, a state directory and a set of
+  transcripts, and every one of those paths comes from configuration
+  somebody edits. `clawt_remove_tree()` takes the root it must stay
+  inside and refuses anything else -- checked on the *canonical* path, so
+  a symlink or a `..` cannot carry it out, and checked per child against
+  the same root rather than against its parent, since a symlink pointing
+  out of the tree is only visible from there.
+- The files go before the config entry does. Every path is derived from
+  that entry, and afterwards there is nothing left to derive them from --
+  the same ordering the computer teardown already needed.
+- Opt-in, and both clients say which half happened: removing an agent
+  from the fleet is reversible and deleting what it wrote is not, so
+  "removed" and "kept, because ..." are different sentences.
+
 ### Saving a setting did not rewrite what the setting produces
 
 - `agent.set` wrote clawtilla.yaml and stopped, so nothing the agent

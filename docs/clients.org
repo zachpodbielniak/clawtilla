@@ -213,6 +213,46 @@ GTK4 and libadwaita.  Agents are presented as chats: a sidebar of who is
 here, a transcript in the middle, and everything else about an agent
 behind a tab rather than a settings dialog somewhere else.
 
+*** Reordering the fleet
+
+Drag a row in the sidebar to move it -- a chief-of-staff to the top, the
+testers to the bottom.  Dropping on the upper half of a row puts it
+above, the lower half below, which is what makes the last position
+reachable at all.
+
+The order lives in ~clawtilla.yaml~ as ~agents.order~, not in the
+client.  It is about the agents rather than about reaching them, so it
+is the same in every client and on every machine -- the opposite of a
+connection profile, which exists precisely because the daemon is
+somewhere else.  Numbers go up in tens, leaving room to place one agent
+between two others by hand.
+
+Agents that share a number keep the order the file has them in, so a
+fleet nobody has dragged comes back exactly as it was written.
+
+*** Deleting an agent, and what goes with it
+
+The confirmation offers two things, both off:
+
+- *its container or VM* -- otherwise it keeps running under a name
+  derived from an agent that no longer exists
+- *everything it owns* -- its persona, notes, mailbox, memories,
+  transcripts and credentials
+
+The second is there so a throwaway agent made to test something can be
+thrown away.  Removing an agent from the fleet is reversible and
+deleting what it wrote is not, which is why it is asked for rather than
+assumed.
+
+#+begin_src bash
+clawtilla agent rm scratch --with-computer --purge
+#+end_src
+
+Every removal is fenced: a path that is not inside the state directory
+or the configured workspace root is refused rather than removed.  Those
+paths come from a file somebody edits, and there is no undo on the far
+side of this.
+
 *** Settings
 
 The hamburger beside the *+* button, at the top of the sidebar.  It holds

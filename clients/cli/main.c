@@ -1087,23 +1087,34 @@ cmd_agent(int argc, char *argv[])
 
     if (g_strcmp0(verb, "rm") == 0) {
         gboolean with_computer = FALSE;
+        gboolean purge = FALSE;
         gint i;
 
         if (target == NULL) {
             g_printerr("Usage: clawtilla agent rm <agent> "
-                       "[--with-computer]\n");
+                       "[--with-computer] [--purge]\n");
+            g_printerr("\n  --with-computer  tear down its container "
+                       "or VM\n");
+            g_printerr("  --purge          delete everything it owns: "
+                       "workspace, persona, mailbox,\n"
+                       "                   memories, transcripts and "
+                       "credentials. Not undoable.\n");
             return EXIT_FAILURE;
         }
 
         for (i = 4; i < argc; i++) {
             if (g_strcmp0(argv[i], "--with-computer") == 0)
                 with_computer = TRUE;
+            else if (g_strcmp0(argv[i], "--purge") == 0)
+                purge = TRUE;
         }
 
         reply = call(client, "agent.remove",
                      build_payload("agent", target,
                                    "remove_computer",
-                                   with_computer ? "true" : NULL, NULL));
+                                   with_computer ? "true" : NULL,
+                                   "remove_files", purge ? "true" : NULL,
+                                   NULL));
         if (reply == NULL)
             return EXIT_FAILURE;
 
@@ -1123,6 +1134,22 @@ cmd_agent(int argc, char *argv[])
                         target, computer);
             else
                 g_print("%s: rm\n", target);
+
+            {
+                const gchar *files = member_or(json_node_get_object(reply),
+                                               "files", NULL);
+
+                /*
+                 * Said separately, because it is the half that cannot be
+                 * undone -- and a purge that refused a path has to be
+                 * reported rather than left looking like it worked.
+                 */
+                if (files != NULL && g_strcmp0(files, "removed") == 0)
+                    g_print("Its files are gone too.\n");
+                else if (files != NULL)
+                    g_printerr("clawtilla: its files were kept: %s\n",
+                               files);
+            }
         }
 
         return EXIT_SUCCESS;

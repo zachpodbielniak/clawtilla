@@ -166,6 +166,29 @@ gchar *clawt_canonicalize_missing(const gchar *path);
 gboolean clawt_path_is_within(const gchar *path, const gchar *root);
 
 /**
+ * clawt_remove_tree:
+ * @path: the directory to remove
+ * @root: the directory it must be inside
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Removes @path and everything in it, refusing anything that is not
+ * within @root.
+ *
+ * The guard is the point.  This is reached from "remove this agent and
+ * everything it owns", where the paths come from configuration somebody
+ * edits -- a workspace root left empty, or pointing at a home
+ * directory, turns a tidy-up into a catastrophe, and there is no undo
+ * to reach for afterwards.
+ *
+ * A @path that does not exist is success: the caller asked for it gone.
+ *
+ * Returns: %TRUE when nothing is left at @path
+ */
+gboolean clawt_remove_tree(const gchar  *path,
+                           const gchar  *root,
+                           GError      **error);
+
+/**
  * clawt_generate_token:
  * @error: (out) (optional): return location for a #GError
  *

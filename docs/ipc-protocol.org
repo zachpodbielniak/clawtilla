@@ -64,6 +64,15 @@ what is missing, not merely that something failed.
 ~agent.list~, ~agent.show~, ~agent.start~, ~agent.stop~, ~agent.restart~,
 ~agent.logs~, ~agent.create~, ~agent.remove~, ~agent.set~,
 
+~agent.reorder~ takes ~agents~, the ids comma separated in the order
+wanted, and numbers them in tens.  An id it does not know is skipped
+rather than refused: the list comes from a client's view, which may be a
+moment behind a removal, and failing the whole reorder over that would
+lose the arrangement somebody had just made.
+
+~agent.remove~ takes ~remove_files~ beside ~remove_computer~ and answers
+with ~files~, which is ~removed~ or the reason it was not.
+
 ~agent.create~ and ~design.commit~ take an optional ~start~ (default
 true) and answer with ~started~, plus ~start_error~ when it did not.  A
 computer is built at start, so an agent created and not started is a

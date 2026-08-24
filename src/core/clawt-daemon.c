@@ -1122,6 +1122,114 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
  * straight into a mailbox, so the hop limits, rate limits and cycle
  * detection apply to tool calls exactly as they do to ordinary chat.
  */
+/*
+ * Everything one agent owns on disk.
+ *
+ * Three places, and they are three because they can be configured
+ * apart: the workspace (its persona and its org files), the state
+ * directory (its mailbox, its memories, its token and its rendered
+ * libreclaw config), and its transcripts. By default the first two are
+ * the same directory, which is exactly the sort of coincidence that
+ * hides a missing one.
+ *
+ * Every removal is fenced with clawt_remove_tree(), which refuses a path
+ * outside the root it was derived from. The paths come from
+ * configuration somebody edits, and there is no undo on the other side
+ * of this.
+ */
+static gboolean
+clawt_daemon_purge_agent_files(ClawtDaemon      *self,
+                               ClawtAgentConfig *config,
+                               GError          **error)
+{
+    const gchar *agent_id = clawt_agent_config_get_id(config);
+    g_autofree gchar *state_root = NULL;
+    g_autofree gchar *workspace = NULL;
+    g_autofree gchar *state_dir = NULL;
+    g_autofree gchar *transcripts = NULL;
+
+    state_root = clawt_config_get_path_value(self->config, "daemon.state_dir");
+
+    if (state_root == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                            "no state directory to remove anything from");
+        return FALSE;
+    }
+
+    /*
+     * The workspace is fenced by its own root rather than by the state
+     * directory: somebody may keep agent workspaces in a source tree,
+     * and the check has to be against the root they configured.
+     */
+    workspace = clawt_agent_config_get_workspace(config);
+
+    if (workspace != NULL) {
+        g_autofree gchar *workspace_root =
+            clawt_config_get_path_value(self->config, "defaults.workspace_root");
+
+        if (workspace_root != NULL &&
+            !clawt_remove_tree(workspace, workspace_root, error))
+            return FALSE;
+    }
+
+    state_dir = g_build_filename(state_root, "agents", agent_id, NULL);
+
+    if (!clawt_remove_tree(state_dir, state_root, error))
+        return FALSE;
+
+    /*
+     * Transcripts are named for the room rather than the agent, so this
+     * is the one place a name has to be matched rather than built.
+     */
+    transcripts = g_build_filename(state_root, "transcripts", NULL);
+
+    if (g_file_test(transcripts, G_FILE_TEST_IS_DIR)) {
+        g_autoptr(GDir) dir = g_dir_open(transcripts, 0, NULL);
+        g_autofree gchar *needle = g_strdup_printf(":%s:", agent_id);
+        g_autofree gchar *prefix = g_strdup_printf("%s:", agent_id);
+        const gchar *name;
+
+        while (dir != NULL && (name = g_dir_read_name(dir)) != NULL) {
+            g_autofree gchar *path = NULL;
+
+            if (strstr(name, needle) == NULL &&
+                !g_str_has_prefix(name, prefix))
+                continue;
+
+            path = g_build_filename(transcripts, name, NULL);
+
+            if (!clawt_remove_tree(path, state_root, error))
+                return FALSE;
+        }
+    }
+
+    return TRUE;
+}
+
+/*
+ * Lowest `order` first, and ties keep the order the configuration file
+ * has them in.
+ *
+ * Stable on purpose: agents all sitting at the default 0 must come back
+ * exactly as they were written, or a fleet nobody has reordered would
+ * shuffle itself on every listing.
+ */
+static gint
+compare_by_order(gconstpointer a, gconstpointer b)
+{
+    ClawtAgent *const *first = a;
+    ClawtAgent *const *second = b;
+    gint64 left = clawt_agent_config_get_int(clawt_agent_get_config(*first),
+                                             "order");
+    gint64 right = clawt_agent_config_get_int(clawt_agent_get_config(*second),
+                                              "order");
+
+    if (left == right)
+        return 0;
+
+    return left < right ? -1 : 1;
+}
+
 /* Defined below, beside the frame that is its other caller. */
 static ClawtAgentConfig *daemon_create_agent(ClawtDaemon  *self,
                                              const gchar  *agent_id,
@@ -4296,8 +4404,22 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         json_builder_set_member_name(builder, "agents");
         json_builder_begin_array(builder);
 
-        for (i = 0; i < agents->len; i++)
-            add_agent_object(builder, g_ptr_array_index(agents, i));
+        {
+            /*
+             * Sorted here rather than in the manager, which keeps the
+             * fleet in the order the file has it -- that order is what a
+             * tie falls back to, so it has to survive.
+             */
+            g_autoptr(GPtrArray) ordered = g_ptr_array_new();
+
+            for (i = 0; i < agents->len; i++)
+                g_ptr_array_add(ordered, g_ptr_array_index(agents, i));
+
+            g_ptr_array_sort(ordered, compare_by_order);
+
+            for (i = 0; i < ordered->len; i++)
+                add_agent_object(builder, g_ptr_array_index(ordered, i));
+        }
 
         json_builder_end_array(builder);
         json_builder_end_object(builder);
@@ -5419,6 +5541,7 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         gboolean with_computer =
             clawt_ipc_payload_boolean(payload, "remove_computer", FALSE);
         g_autofree gchar *computer_detail = NULL;
+        g_autofree gchar *files_detail = NULL;
 
         if (agent_id == NULL)
             return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
@@ -5486,6 +5609,23 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
 
         clawt_daemon_stop_agent(self, agent_id);
 
+        /*
+         * The files, before the config entry goes: every path is
+         * derived from that entry, and afterwards there is nothing left
+         * to derive them from.
+         */
+        if (clawt_ipc_payload_boolean(payload, "remove_files", FALSE)) {
+            ClawtAgentConfig *doomed = clawt_config_get_agent(self->config,
+                                                              agent_id);
+            g_autoptr(GError) purge_error = NULL;
+
+            if (doomed != NULL &&
+                !clawt_daemon_purge_agent_files(self, doomed, &purge_error))
+                files_detail = g_strdup(purge_error->message);
+            else if (doomed != NULL)
+                files_detail = g_strdup("removed");
+        }
+
         if (!clawt_config_remove_agent(self->config, agent_id))
             return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
                                        "no such agent");
@@ -5494,9 +5634,10 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             return clawt_ipc_error_new(request, error->code, error->message);
 
         /*
-         * The agent's state directory -- its mailbox, its transcripts, its
-         * rendered config -- is deliberately left on disk.  Removing an
-         * agent from the fleet is reversible; deleting its history is not.
+         * Without remove_files the agent's state directory -- its
+         * mailbox, its transcripts, its rendered config -- is left on
+         * disk. Removing an agent from the fleet is reversible; deleting
+         * its history is not, so it is asked for rather than assumed.
          */
         clawt_agent_manager_load(self->agents, NULL);
         clawt_event_bus_emit(self->bus, "agent.removed", agent_id);
@@ -5511,9 +5652,68 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             json_builder_add_string_value(builder, computer_detail);
         }
 
+        /* ...and to the files, which is the irreversible half. */
+        if (files_detail != NULL) {
+            json_builder_set_member_name(builder, "files");
+            json_builder_add_string_value(builder, files_detail);
+        }
+
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "agent.reorder") == 0) {
+        const gchar *ids = clawt_ipc_payload_string(payload, "agents");
+        g_auto(GStrv) wanted = NULL;
+        gsize i;
+
+        if (ids == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "agents is required: the ids in the "
+                                       "order you want them, comma "
+                                       "separated");
+
+        wanted = g_strsplit(ids, ",", -1);
+
+        /*
+         * Numbered from one, in steps of ten.
+         *
+         * The gap is not decoration: it leaves room to place one agent
+         * between two others by setting a single number by hand, which
+         * is the only way to do it in a text editor without renumbering
+         * the whole file.
+         */
+        for (i = 0; wanted[i] != NULL; i++) {
+            const gchar *agent_id = g_strstrip(wanted[i]);
+            ClawtAgentConfig *config;
+            g_autofree gchar *position = NULL;
+
+            if (*agent_id == '\0')
+                continue;
+
+            config = clawt_config_get_agent(self->config, agent_id);
+
+            /*
+             * An id that is not there is skipped rather than refused.
+             * The list comes from a client's view of the fleet, which
+             * may be a moment behind one that has just been removed --
+             * and failing the whole reorder over that would lose the
+             * arrangement somebody had just made.
+             */
+            if (config == NULL)
+                continue;
+
+            position = g_strdup_printf("%u", (guint)((i + 1) * 10));
+            clawt_agent_config_set_string(config, "order", position);
+        }
+
+        if (!clawt_config_save(self->config, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        clawt_event_bus_emit(self->bus, "agent.changed", NULL);
+
+        return clawt_ipc_response_new(request, NULL);
     }
 
     if (g_strcmp0(kind, "agent.set") == 0) {

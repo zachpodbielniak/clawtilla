@@ -1004,6 +1004,16 @@ static const ClawtSchemaEntry schema[] = {
 { "agents.color", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Accent colour in the clients, as a hex string.", "0.1.0" },
 
+{ "agents.order", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "0", NULL,
+  "Where this agent sits in the list, lowest first.\n"
+  "\n"
+  "Set by dragging a row in the clients rather than written by hand,\n"
+  "though there is nothing wrong with writing it. Agents sharing a\n"
+  "number keep the order they appear in this file, so leaving them all\n"
+  "at 0 changes nothing.",
+  "0.1.0" },
+
 { "agents.avatar", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Path to an avatar image.", "0.1.0" },
 

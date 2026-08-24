@@ -887,6 +887,14 @@ agents:
     # Accent colour in the clients, as a hex string.
     color: null
 
+    # Where this agent sits in the list, lowest first.
+    #
+    # Set by dragging a row in the clients rather than written by hand,
+    # though there is nothing wrong with writing it. Agents sharing a
+    # number keep the order they appear in this file, so leaving them all
+    # at 0 changes nothing.
+    order: 0
+
     # Path to an avatar image.
     avatar: null
 

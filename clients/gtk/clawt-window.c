@@ -521,6 +521,165 @@ agent_row(JsonObject *agent)
     return row;
 }
 
+/* ── Dragging a row to reorder the fleet ─────────────────────────── */
+
+/*
+ * The id travels, not the widget.
+ *
+ * A row is rebuilt from the daemon's reply on every refresh -- and a
+ * refresh can arrive mid-drag, because events are delivered from an idle
+ * -- so a pointer to the row being dragged is a pointer that may not
+ * exist by the time it is dropped. An id survives that.
+ */
+static GdkContentProvider *
+on_row_drag_prepare(GtkDragSource *source, gdouble x, gdouble y,
+                    gpointer user_data)
+{
+    GtkWidget *row = user_data;
+    const gchar *agent_id = g_object_get_data(G_OBJECT(row), "agent-id");
+
+    (void)source;
+    (void)x;
+    (void)y;
+
+    if (agent_id == NULL)
+        return NULL;
+
+    return gdk_content_provider_new_typed(G_TYPE_STRING, agent_id);
+}
+
+static void
+on_row_drag_begin(GtkDragSource *source, GdkDrag *drag, gpointer user_data)
+{
+    GtkWidget *row = user_data;
+
+    (void)source;
+    (void)drag;
+
+    /* Faded, so it is obvious which row is in flight. */
+    gtk_widget_set_opacity(row, 0.4);
+}
+
+static void
+on_row_drag_end(GtkDragSource *source, GdkDrag *drag, gboolean delete,
+                gpointer user_data)
+{
+    (void)source;
+    (void)drag;
+    (void)delete;
+
+    gtk_widget_set_opacity(GTK_WIDGET(user_data), 1.0);
+}
+
+/*
+ * Collect the ids in their new order and hand the whole list over.
+ *
+ * The whole list rather than "move this one here", because the daemon
+ * numbers them from what it is given -- so one frame describes the
+ * arrangement completely, and a client whose view was a moment stale
+ * cannot produce a half-applied reorder.
+ */
+static gboolean
+on_row_drop(GtkDropTarget *target, const GValue *value, gdouble x, gdouble y,
+            gpointer user_data)
+{
+    GtkWidget *onto = user_data;
+    ClawtWindow *self = g_object_get_data(G_OBJECT(onto), "window");
+    const gchar *dragged = g_value_get_string(value);
+    const gchar *landed = g_object_get_data(G_OBJECT(onto), "agent-id");
+    g_autoptr(GString) ids = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    GtkWidget *child;
+    gint onto_index;
+    gboolean after;
+
+    (void)target;
+    (void)x;
+
+    if (dragged == NULL || landed == NULL || self == NULL)
+        return FALSE;
+
+    if (g_strcmp0(dragged, landed) == 0)
+        return FALSE;
+
+    /*
+     * Above or below, decided by which half of the row was dropped on.
+     * Without this a row can never be placed last, because every drop
+     * would put it before something.
+     */
+    after = y > (gdouble)(gtk_widget_get_height(onto) / 2);
+
+    onto_index = gtk_list_box_row_get_index(GTK_LIST_BOX_ROW(onto));
+    ids = g_string_new(NULL);
+
+    for (child = gtk_widget_get_first_child(GTK_WIDGET(self->sidebar));
+         child != NULL;
+         child = gtk_widget_get_next_sibling(child)) {
+        const gchar *agent_id;
+        gint index;
+
+        if (!GTK_IS_LIST_BOX_ROW(child))
+            continue;
+
+        agent_id = g_object_get_data(G_OBJECT(child), "agent-id");
+
+        if (agent_id == NULL)
+            continue;
+
+        index = gtk_list_box_row_get_index(GTK_LIST_BOX_ROW(child));
+
+        /* Taken out of where it was... */
+        if (g_strcmp0(agent_id, dragged) == 0)
+            continue;
+
+        if (index == onto_index && !after) {
+            g_string_append_printf(ids, "%s%s", ids->len > 0 ? "," : "",
+                                   dragged);
+        }
+
+        g_string_append_printf(ids, "%s%s", ids->len > 0 ? "," : "",
+                               agent_id);
+
+        /* ...and put back beside the row it was dropped on. */
+        if (index == onto_index && after)
+            g_string_append_printf(ids, ",%s", dragged);
+    }
+
+    reply = clawt_window_request(
+        self, "agent.reorder",
+        clawt_build_payload("agents", ids->str, NULL));
+
+    if (reply == NULL)
+        return FALSE;
+
+    refresh_agents(self);
+
+    return TRUE;
+}
+
+/*
+ * Both halves on every row: anything can be picked up, and anything can
+ * be dropped on.
+ */
+static void
+make_row_draggable(ClawtWindow *self, GtkWidget *row)
+{
+    GtkDragSource *source = gtk_drag_source_new();
+    GtkDropTarget *target = gtk_drop_target_new(G_TYPE_STRING,
+                                                GDK_ACTION_MOVE);
+
+    g_object_set_data(G_OBJECT(row), "window", self);
+
+    gtk_drag_source_set_actions(source, GDK_ACTION_MOVE);
+    g_signal_connect(source, "prepare", G_CALLBACK(on_row_drag_prepare), row);
+    g_signal_connect(source, "drag-begin", G_CALLBACK(on_row_drag_begin), row);
+    g_signal_connect(source, "drag-end", G_CALLBACK(on_row_drag_end), row);
+    gtk_widget_add_controller(row, GTK_EVENT_CONTROLLER(source));
+
+    g_signal_connect(target, "drop", G_CALLBACK(on_row_drop), row);
+    gtk_widget_add_controller(row, GTK_EVENT_CONTROLLER(target));
+}
+
 /*
  * Selection, not activation, is what drives the view.
  *
@@ -609,6 +768,12 @@ refresh_agents_once(ClawtWindow *self)
         GtkWidget *row = agent_row(agent);
 
         gtk_list_box_append(self->sidebar, row);
+
+        /*
+         * After the append, because a drop reads the row's index and a
+         * row that is not in the list yet does not have one.
+         */
+        make_row_draggable(self, row);
 
         /*
          * Keep the current selection across a refresh, and make the very
@@ -3148,9 +3313,12 @@ on_delete_confirmed_twice(AdwAlertDialog *dialog, gchar *response,
 {
     ClawtWindow *self = user_data;
     GtkWidget *check = g_object_get_data(G_OBJECT(dialog), "remove-computer");
+    GtkWidget *purge_check = g_object_get_data(G_OBJECT(dialog),
+                                               "remove-files");
     g_autoptr(JsonNode) reply = NULL;
     g_autofree gchar *agent_id = NULL;
     gboolean with_computer;
+    gboolean purge;
 
     if (g_strcmp0(response, "delete") != 0)
         return;
@@ -3158,11 +3326,14 @@ on_delete_confirmed_twice(AdwAlertDialog *dialog, gchar *response,
     agent_id = g_strdup(self->selected_agent);
     with_computer = check != NULL &&
                     gtk_check_button_get_active(GTK_CHECK_BUTTON(check));
+    purge = purge_check != NULL &&
+            gtk_check_button_get_active(GTK_CHECK_BUTTON(purge_check));
 
     reply = clawt_window_request(
         self, "agent.remove",
         clawt_build_payload("agent", agent_id,
                             "remove_computer", with_computer ? "true" : NULL,
+                            "remove_files", purge ? "true" : NULL,
                             NULL));
 
     if (reply == NULL)
@@ -3234,26 +3405,51 @@ on_delete_confirmed_once(AdwAlertDialog *dialog, gchar *response,
      * again was to remember what it had been called. Off by default,
      * because a container may hold work that was never anywhere else.
      */
-    if (g_strcmp0(self->inspector_computer, "container") == 0 ||
-        g_strcmp0(self->inspector_computer, "vm") == 0) {
-        GtkWidget *check;
-        g_autofree gchar *label = g_strdup_printf(
-            "Also delete its %s, clawt-%s",
-            g_strcmp0(self->inspector_computer, "vm") == 0
-                ? "virtual machine" : "container",
-            self->selected_agent);
+    {
+        GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+        GtkWidget *purge;
 
-        check = gtk_check_button_new_with_label(label);
-        gtk_widget_set_margin_top(check, 12);
-        adw_alert_dialog_set_extra_child(second, check);
+        gtk_widget_set_margin_top(box, 12);
+
+        if (g_strcmp0(self->inspector_computer, "container") == 0 ||
+            g_strcmp0(self->inspector_computer, "vm") == 0) {
+            GtkWidget *check;
+            g_autofree gchar *label = g_strdup_printf(
+                "Also delete its %s, clawt-%s",
+                g_strcmp0(self->inspector_computer, "vm") == 0
+                    ? "virtual machine" : "container",
+                self->selected_agent);
+
+            check = gtk_check_button_new_with_label(label);
+            gtk_box_append(GTK_BOX(box), check);
+
+            /*
+             * Kept on the dialog rather than in the window: the dialog
+             * is what the response handler is given, and a second delete
+             * started before the first finished would otherwise read the
+             * wrong checkbox.
+             */
+            g_object_set_data(G_OBJECT(second), "remove-computer", check);
+        }
 
         /*
-         * Kept on the dialog rather than in the window: the dialog is
-         * what the response handler is given, and a second delete
-         * started before the first finished would otherwise read the
-         * wrong checkbox.
+         * And the files, which is the half with no undo.
+         *
+         * Off by default and worded without euphemism: removing an agent
+         * from the fleet is reversible and deleting what it wrote is
+         * not. It is here because a throwaway agent made to test
+         * something should be throwable away, and leaving seven
+         * abandoned workspaces behind is its own kind of mess.
          */
-        g_object_set_data(G_OBJECT(second), "remove-computer", check);
+        purge = gtk_check_button_new_with_label(
+            "Also delete everything it owns: its persona, notes, "
+            "mailbox, memories, transcripts and credentials");
+        gtk_label_set_wrap(
+            GTK_LABEL(gtk_widget_get_last_child(purge)), TRUE);
+        gtk_box_append(GTK_BOX(box), purge);
+        g_object_set_data(G_OBJECT(second), "remove-files", purge);
+
+        adw_alert_dialog_set_extra_child(second, box);
     }
 
     adw_alert_dialog_add_response(second, "cancel", "Keep it");

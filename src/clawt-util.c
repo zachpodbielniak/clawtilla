@@ -588,3 +588,73 @@ clawt_copy_tree(const gchar *source, const gchar *target, gboolean keep_git,
 
     return TRUE;
 }
+
+/* ── Removing what an agent owns ─────────────────────────────────── */
+
+gboolean
+clawt_remove_tree(const gchar *path, const gchar *root, GError **error)
+{
+    g_autoptr(GDir) dir = NULL;
+    g_autofree gchar *resolved = NULL;
+    const gchar *name;
+
+    g_return_val_if_fail(path != NULL, FALSE);
+    g_return_val_if_fail(root != NULL, FALSE);
+
+    /*
+     * Refused before anything is touched, and refused on the
+     * *canonical* path -- a symlink or a `..` inside a configured
+     * workspace root would otherwise carry this somewhere nobody meant.
+     */
+    resolved = clawt_canonicalize_missing(path);
+
+    if (resolved == NULL || !clawt_path_is_within(resolved, root)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "refusing to remove '%s': it is not inside '%s'",
+                    path, root);
+        return FALSE;
+    }
+
+    /* Asked for it gone, and it is gone. */
+    if (!g_file_test(resolved, G_FILE_TEST_EXISTS))
+        return TRUE;
+
+    if (!g_file_test(resolved, G_FILE_TEST_IS_DIR)) {
+        if (g_unlink(resolved) != 0) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                        "could not remove '%s': %s", resolved,
+                        g_strerror(errno));
+            return FALSE;
+        }
+
+        return TRUE;
+    }
+
+    dir = g_dir_open(resolved, 0, error);
+
+    if (dir == NULL)
+        return FALSE;
+
+    while ((name = g_dir_read_name(dir)) != NULL) {
+        g_autofree gchar *child = g_build_filename(resolved, name, NULL);
+
+        /*
+         * The child is checked against the same root rather than against
+         * its parent: a symlink pointing out of the tree is the case
+         * this exists for, and it is only visible from the root.
+         */
+        if (!clawt_remove_tree(child, root, error))
+            return FALSE;
+    }
+
+    g_clear_pointer(&dir, g_dir_close);
+
+    if (g_rmdir(resolved) != 0) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                    "could not remove '%s': %s", resolved,
+                    g_strerror(errno));
+        return FALSE;
+    }
+
+    return TRUE;
+}
