@@ -180,9 +180,18 @@ test_autologin_names_the_session_account(void)
     g_assert_nonnull(strstr(data, "AutomaticLoginEnable=true"));
     g_assert_nonnull(strstr(data, "AutomaticLogin=clawt"));
 
-    /* Both families that ship GDM spell its config file differently. */
+    /*
+     * One file: the one this family's GDM reads.  An unplaced image
+     * falls back to Fedora, which is /etc/gdm/custom.conf.
+     *
+     * This used to assert that *both* Fedora's and Debian's were
+     * written, which encoded the shotgun as the intention -- and a test
+     * that says "we write both" cannot notice that there is a third.
+     * Ubuntu's is /etc/gdm3/custom.conf, and it was never written at
+     * all. See /guest-desktop/autologin/one-file-per-family.
+     */
     g_assert_nonnull(strstr(data, "/etc/gdm/custom.conf"));
-    g_assert_nonnull(strstr(data, "/etc/gdm3/daemon.conf"));
+    g_assert_null(strstr(data, "/etc/gdm3/"));
 
     /* A cloud image boots to multi-user.target and would never start it. */
     g_assert_nonnull(strstr(data, "set-default, graphical.target"));
@@ -922,6 +931,64 @@ test_enterprise_does_not_ask_for_a_package_from_epel(void)
     g_assert_nonnull(strstr(data, "- \"python3-gobject\""));
 }
 
+
+/*
+ * The autologin file, in the one place this family's GDM reads it.
+ *
+ * Three spellings across five families and no two agree by accident:
+ * Fedora, Enterprise Linux and Arch ship /etc/gdm/custom.conf, Debian
+ * renamed it to /etc/gdm3/daemon.conf, and Ubuntu kept the upstream name
+ * under Debian's directory. The seed used to write two of them and let
+ * the unread one lie there, which reads as thorough and is exactly why
+ * the third was never missed: an Ubuntu guest installed a desktop
+ * perfectly and stopped at a login prompt for an account whose password
+ * is deliberately locked, which nobody can get past.
+ *
+ * Each path was checked against that distribution's own package file
+ * list rather than recalled.
+ */
+static void
+test_each_family_configures_the_gdm_it_has(void)
+{
+    struct { ClawtGuestFlavour flavour; const gchar *path; } expected[] = {
+        { CLAWT_GUEST_FLAVOUR_FEDORA,     "/etc/gdm/custom.conf" },
+        { CLAWT_GUEST_FLAVOUR_ENTERPRISE, "/etc/gdm/custom.conf" },
+        { CLAWT_GUEST_FLAVOUR_DEBIAN,     "/etc/gdm3/daemon.conf" },
+        { CLAWT_GUEST_FLAVOUR_UBUNTU,     "/etc/gdm3/custom.conf" },
+        { CLAWT_GUEST_FLAVOUR_ARCH,       "/etc/gdm/custom.conf" }
+    };
+    static const gchar *const all[] = {
+        "/etc/gdm/custom.conf", "/etc/gdm3/daemon.conf",
+        "/etc/gdm3/custom.conf"
+    };
+    gsize i;
+    gsize j;
+
+    for (i = 0; i < G_N_ELEMENTS(expected); i++) {
+        g_autofree gchar *data = render_for(expected[i].flavour);
+        g_autofree gchar *wanted =
+            g_strdup_printf("- path: \"%s\"", expected[i].path);
+
+        g_assert_nonnull(strstr(data, wanted));
+        g_assert_nonnull(strstr(data, "AutomaticLoginEnable=true"));
+
+        /*
+         * And *only* that one. Writing the others costs nothing at
+         * runtime and cost this feature a distribution, because a seed
+         * naming several paths looks like a seed naming every path.
+         */
+        for (j = 0; j < G_N_ELEMENTS(all); j++) {
+            g_autofree gchar *other =
+                g_strdup_printf("- path: \"%s\"", all[j]);
+
+            if (g_strcmp0(all[j], expected[i].path) == 0)
+                continue;
+
+            g_assert_null(strstr(data, other));
+        }
+    }
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -990,6 +1057,8 @@ main(int argc, char *argv[])
     g_test_add_func("/guest-desktop/install/same-on-every-family",
                     test_every_family_installs_the_same_way);
 
+    g_test_add_func("/guest-desktop/autologin/one-file-per-family",
+                    test_each_family_configures_the_gdm_it_has);
     g_test_add_func("/guest-desktop/ocr/every-family-that-can-reads",
                     test_every_family_that_can_read_the_screen_does);
     g_test_add_func("/guest-desktop/ocr/enterprise-avoids-epel",

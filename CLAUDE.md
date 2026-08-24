@@ -441,6 +441,29 @@ the same program.
   itself was correct throughout; `gdbus call ... SetEnabled true` by hand
   returned `(true,)` on the same guest. Only the launcher was missing.
 
+### Writing two of a distribution's file names looks like writing all of them
+
+- `render_autologin()` wrote `/etc/gdm/custom.conf` *and*
+  `/etc/gdm3/daemon.conf`, with a comment saying an unread file on each
+  costs nothing and saves "the failure where the desktop installs
+  perfectly and stops at a login prompt nobody is there to answer". That
+  is exactly the failure it then produced: **Ubuntu's gdm3 ships
+  `/etc/gdm3/custom.conf` and no `daemon.conf`**, so both files were
+  inert. The guest installed a full desktop and stopped at a login prompt
+  for an account whose password is deliberately locked -- which nobody,
+  and nothing, can get past.
+- Three spellings across five families: `/etc/gdm/custom.conf` on Fedora,
+  Enterprise Linux and Arch; `/etc/gdm3/daemon.conf` on Debian;
+  `/etc/gdm3/custom.conf` on Ubuntu, which kept the upstream name under
+  Debian's directory. All four checked against each distribution's own
+  package file list rather than recalled.
+- The shotgun is what hid it. Two paths *read* as every path, and the
+  test asserted both were written -- so it encoded the shotgun as the
+  intention and could never have noticed a third. **A test that says "we
+  write both" cannot tell you there are three.** The path now sits in the
+  flavour table beside the unit name, where a family added later cannot
+  leave a hole in its row.
+
 ### A virtiofs tag is not a path, and has 36 bytes
 
 - qemu refuses a tag over 36 bytes -- and refuses the **device**, so the

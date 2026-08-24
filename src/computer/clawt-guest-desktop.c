@@ -183,6 +183,23 @@ typedef struct {
     const gchar *const *mcp;
     const gchar        *display_manager;
     /*
+     * Where that display manager reads its configuration.
+     *
+     * Three spellings across five families, and no two of them agree by
+     * accident: Fedora, Enterprise Linux and Arch ship
+     * /etc/gdm/custom.conf, Debian renamed it to /etc/gdm3/daemon.conf,
+     * and Ubuntu kept the upstream name under Debian's directory --
+     * /etc/gdm3/custom.conf. Verified against each distribution's own
+     * package file list rather than recalled.
+     *
+     * This used to be handled by writing two of them and letting the
+     * unread one lie there, which reads as thorough and is why the third
+     * was never noticed missing: an Ubuntu guest installed a desktop
+     * perfectly and stopped at a login prompt whose password is locked,
+     * with nobody there to answer it.
+     */
+    const gchar        *autologin_conf;
+    /*
      * Whether to upgrade everything before installing anything.
      *
      * Only Arch, and not as a nicety.  cloud-init's package_update runs
@@ -203,16 +220,20 @@ typedef struct {
 
 static const FlavourSpec flavours[] = {
     { CLAWT_GUEST_FLAVOUR_FEDORA, fedora_desktop, fedora_mcp,
-      "gdm.service", FALSE },
+      "gdm.service", "/etc/gdm/custom.conf", FALSE },
     { CLAWT_GUEST_FLAVOUR_ENTERPRISE, enterprise_desktop, enterprise_mcp,
-      "gdm.service", FALSE },
+      "gdm.service", "/etc/gdm/custom.conf", FALSE },
     { CLAWT_GUEST_FLAVOUR_DEBIAN, debian_desktop, debian_mcp,
-      "gdm3.service", FALSE },
-    /* Everything but the browser is Debian's, so the rest is shared. */
+      "gdm3.service", "/etc/gdm3/daemon.conf", FALSE },
+    /*
+     * Everything but the browser is Debian's, so the rest is shared --
+     * except this, which is the second thing Ubuntu does its own way and
+     * the reason the family exists at all.
+     */
     { CLAWT_GUEST_FLAVOUR_UBUNTU, ubuntu_desktop, debian_mcp,
-      "gdm3.service", FALSE },
+      "gdm3.service", "/etc/gdm3/custom.conf", FALSE },
     { CLAWT_GUEST_FLAVOUR_ARCH, arch_desktop, arch_mcp,
-      "gdm.service", TRUE }
+      "gdm.service", "/etc/gdm/custom.conf", TRUE }
 };
 
 /*
@@ -484,16 +505,24 @@ clawt_guest_desktop_render_account(ClawtGuestDesktop *self,
 }
 
 /*
- * GDM's autologin, spelled for both families that ship it.
+ * GDM's autologin, in the one file this family's GDM actually reads.
  *
- * Fedora reads /etc/gdm/custom.conf and Debian reads
- * /etc/gdm3/daemon.conf.  Writing both costs one unread file on each and
- * saves the failure where the desktop installs perfectly and stops at a
- * login prompt nobody is there to answer.
+ * It used to write two -- Fedora's and Debian's -- on the reasoning that
+ * an unread file costs nothing.  It does not, but it hides something:
+ * two paths look like every path, and Ubuntu's is a third.  Its gdm3
+ * ships /etc/gdm3/custom.conf and no daemon.conf, so both files were
+ * inert, autologin never happened, and the guest stopped at a login
+ * prompt for an account whose password is deliberately locked -- which
+ * nobody, and nothing, can get past.
+ *
+ * The path is in the flavour table beside the unit name, because they
+ * are the same fact about the same program, and a family added later
+ * cannot leave one of them out without leaving a hole in the row.
  */
 static void
 render_autologin(ClawtGuestDesktop *self, GString *out)
 {
+    const FlavourSpec *spec = spec_for(self->flavour);
     g_autofree gchar *body = NULL;
 
     body = g_strdup_printf(
@@ -508,8 +537,7 @@ render_autologin(ClawtGuestDesktop *self, GString *out)
         "AutomaticLogin=%s\n",
         self->session_user);
 
-    append_file(out, "/etc/gdm/custom.conf", "0644", body);
-    append_file(out, "/etc/gdm3/daemon.conf", "0644", body);
+    append_file(out, spec->autologin_conf, "0644", body);
 }
 
 /*

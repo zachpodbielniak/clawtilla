@@ -1091,6 +1091,32 @@ The key has to reach the session account: the MCP server talks to GNOME
 Shell over the session bus of whoever is logged in at the screen, so it
 is reached by an SSH connection *as that account*.
 
+**** Three families, three names for one file
+
+Autologin is not optional here: the session account's password is
+*locked* on purpose -- nothing in the guest can answer a prompt, and
+neither can anybody else.  A guest that reaches a login screen is a guest
+nobody can get into.
+
+Which makes it worth knowing that GDM's configuration file has three
+spellings and no two of them agree by accident:
+
+| Family                   | File                    |
+|--------------------------+-------------------------|
+| Fedora, Enterprise, Arch | =/etc/gdm/custom.conf=  |
+| Debian                   | =/etc/gdm3/daemon.conf= |
+| Ubuntu                   | =/etc/gdm3/custom.conf= |
+
+Ubuntu kept the upstream name under Debian's directory, which is the
+second thing it does its own way and the reason it is a family of its
+own rather than Debian with a different browser.
+
+clawtilla writes exactly one, named in the flavour table beside the unit
+name.  It used to write Fedora's and Debian's and let the unread one lie
+there, on the reasoning that an unread file costs nothing -- which is
+true, and hid the fact that there was a third: an Ubuntu guest installed
+a desktop perfectly, ignored both files, and stopped at a login prompt.
+
 **** What is switched on, and why each one matters
 
 Four things would each, on their own, leave the agent looking at a

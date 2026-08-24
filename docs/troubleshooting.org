@@ -393,6 +393,30 @@ again, not restarting.
 follows a monthly rebuild, so a cached copy ages faster than the others
 and a first boot eventually fails on package signatures.
 
+** The guest reaches a GDM login screen
+
+Autologin did not happen, and there is no way past it: the session
+account's password is locked on purpose, so the prompt cannot be
+answered by anyone.
+
+Almost always the wrong config file.  GDM has three names for it --
+=/etc/gdm/custom.conf= on Fedora, Enterprise Linux and Arch,
+=/etc/gdm3/daemon.conf= on Debian, =/etc/gdm3/custom.conf= on Ubuntu --
+so a guest placed as the wrong family writes a file its GDM never reads.
+
+#+begin_src bash
+grep -A3 AutomaticLogin \
+    ~/.local/share/clawtilla/vms/<agent>/cloud-init/user-data
+#+end_src
+
+If the path does not match the table above, set
+~computer.vm.desktop.flavour~ rather than leaving it at ~auto~, and
+rebuild: cloud-init acts on the seed at first boot only.
+
+#+begin_src bash
+clawtilla computer rebuild <agent>
+#+end_src
+
 ** The desktop is up and every tool says "DBus object has no attribute"
 
 The session is fine.  A screenshot of the console shows GNOME, ~gdm~ is
