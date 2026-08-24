@@ -213,6 +213,21 @@ GTK4 and libadwaita.  Agents are presented as chats: a sidebar of who is
 here, a transcript in the middle, and everything else about an agent
 behind a tab rather than a settings dialog somewhere else.
 
+*** A VM agent's hardware
+
+Cores, memory, disk and screen size sit together in the agent editor,
+because they are what the machine is made of.
+
+Screen size is a list of the common ones.  A size set by hand or from
+another client that is not among them is added to the list rather than
+ignored -- a combo box cannot say "something else", and without that,
+opening the page and saving it would quietly replace a chosen size with
+the first entry.
+
+It is also the only one of the four that does not need the guest
+rebuilt: it reaches the virtual GPU rather than the cloud-init seed, so
+it applies at the VM's next boot.
+
 *** Reordering the fleet
 
 Drag a row in the sidebar to move it -- a chief-of-staff to the top, the

@@ -189,6 +189,7 @@ struct _ClawtWindow {
     GtkWidget         *vm_cpus_row;
     GtkWidget         *vm_memory_row;
     GtkWidget         *vm_disk_row;
+    GtkWidget         *vm_resolution_row;
     GtkWidget         *vm_ssh_host_row;
     GtkWidget         *vm_desktop_row;
     GtkWidget         *vm_desktop_input_row;
@@ -3227,6 +3228,26 @@ on_save_agent(GtkButton *button, gpointer user_data)
         if (disk != NULL && *disk != '\0')
             ok &= apply_setting(self, "computer.vm.disk_gb", disk);
 
+        /*
+         * Read out of the model rather than from a fixed table, because
+         * the list is built per agent: one whose size is not among the
+         * common ones has it added, so saving cannot silently replace
+         * it with the first entry.
+         */
+        if (self->vm_resolution_row != NULL) {
+            GtkStringList *sizes = GTK_STRING_LIST(
+                adw_combo_row_get_model(
+                    ADW_COMBO_ROW(self->vm_resolution_row)));
+            const gchar *resolution = gtk_string_list_get_string(
+                sizes,
+                adw_combo_row_get_selected(
+                    ADW_COMBO_ROW(self->vm_resolution_row)));
+
+            if (resolution != NULL && *resolution != '\0')
+                ok &= apply_setting(self, "computer.vm.resolution",
+                                    resolution);
+        }
+
         if (ssh_host != NULL && *ssh_host != '\0')
             ok &= apply_setting(self, "computer.vm.ssh_host", ssh_host);
 
@@ -3528,6 +3549,42 @@ combo_row(const gchar *title, const gchar *const *values,
                                index_of(values, selected));
 
     return row;
+}
+
+/*
+ * The screen sizes worth offering, plus whatever this agent already has.
+ *
+ * The second half matters: a resolution set by hand or by another client
+ * that is not in this list would otherwise be shown as the first entry,
+ * and saving the page -- without touching this row -- would quietly
+ * change it. A combo box has no way to say "something else", so the
+ * something else joins the list.
+ */
+static GtkWidget *
+resolution_row(const gchar *current)
+{
+    static const gchar *const common[] = {
+        "1280x800", "1280x1024", "1440x900", "1600x900", "1680x1050",
+        "1920x1080", "1920x1200", "2560x1440", "3840x2160", NULL
+    };
+    g_autoptr(GPtrArray) values = g_ptr_array_new();
+    gboolean known = FALSE;
+    gsize i;
+
+    for (i = 0; common[i] != NULL; i++) {
+        if (g_strcmp0(common[i], current) == 0)
+            known = TRUE;
+
+        g_ptr_array_add(values, (gpointer)common[i]);
+    }
+
+    if (current != NULL && *current != '\0' && !known)
+        g_ptr_array_insert(values, 0, (gpointer)current);
+
+    g_ptr_array_add(values, NULL);
+
+    return combo_row("Screen size", (const gchar *const *)values->pdata,
+                     current);
 }
 
 static GtkWidget *
@@ -4361,6 +4418,7 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
     self->vm_cpus_row = NULL;
     self->vm_memory_row = NULL;
     self->vm_disk_row = NULL;
+    self->vm_resolution_row = NULL;
     self->vm_ssh_host_row = NULL;
     self->vm_desktop_row = NULL;
     self->vm_desktop_input_row = NULL;
@@ -4383,6 +4441,17 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
             "Disk (GB)", clawt_json_string(agent, "vm_disk_gb", ""));
         adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
                                   self->vm_disk_row);
+
+        /*
+         * Beside the other things the machine is made of, because that is
+         * what it is -- and unlike almost everything else about a VM it
+         * is not baked into the cloud-init seed, so it applies at the
+         * guest's next boot rather than needing the machine rebuilt.
+         */
+        self->vm_resolution_row = resolution_row(
+            clawt_json_string(agent, "vm_resolution", "1280x800"));
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                  self->vm_resolution_row);
 
         /*
          * A cloud image has no desktop at all, so this installs one --

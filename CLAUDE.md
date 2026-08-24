@@ -468,6 +468,21 @@ the same program.
   asserting the domain had no passt *network backend*. Assert on the
   element, not the word.
 
+### A combo box cannot say "something else"
+
+- The screen-size row offers the common resolutions, and a value that is
+  not among them is **inserted into the list** rather than dropped.
+  Without that, `index_of()` returns 0 for an unknown value, the row
+  opens showing the first entry, and saving the page -- without touching
+  that row -- writes it back over whatever somebody had chosen. Same
+  shape as the appearance lesson: a control that cannot represent the
+  current value will silently replace it.
+- And the daemon has to *report* the value for the row to show it.
+  Adding a config option, wiring it through both VM backends and never
+  putting it in the editor is the same "no caller" gap as the desktop
+  factory -- the option worked and was unreachable from the place
+  somebody would look for it.
+
 ### An order belongs where the thing being ordered lives
 
 - `agents.order` is in `clawtilla.yaml`, not in the client, because it

@@ -3311,6 +3311,17 @@ add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
         json_builder_add_string_value(builder, memory);
         json_builder_set_member_name(builder, "vm_disk_gb");
         json_builder_add_string_value(builder, disk);
+
+        /*
+         * Reported so the editor can show what this VM actually has.
+         * Without it the row would open at the default every time and
+         * saving the page would write that back over a size somebody
+         * had chosen.
+         */
+        json_builder_set_member_name(builder, "vm_resolution");
+        json_builder_add_string_value(
+            builder, clawt_agent_config_get_string(config,
+                                                   "computer.vm.resolution"));
         json_builder_set_member_name(builder, "vm_ssh_host");
         json_builder_add_string_value(
             builder, clawt_agent_config_get_string(config,
