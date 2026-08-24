@@ -2189,6 +2189,186 @@ test_an_unordered_fleet_keeps_its_file_order(void)
     fixture_teardown(&fixture);
 }
 
+
+/*
+ * The listing is grouped by team, then ordered within each group.
+ *
+ * Grouped in the daemon so a client can put a header out whenever the
+ * team changes rather than gathering the fleet itself -- two answers to
+ * what order the fleet is in is one too many.
+ *
+ * Teamless first, because that is where the chief of staff lives:
+ * putting it last would bury the agent somebody talks to most under
+ * every team in the fleet.
+ */
+static void
+test_the_listing_is_grouped_by_team(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) listed = NULL;
+    JsonArray *agents;
+    const gchar *order[5];
+    guint i;
+
+    fixture_setup(&fixture,
+                  "teams:\n"
+                  "  - id: build\n    order: 20\n"
+                  "  - id: research\n    order: 10\n"
+                  "agents:\n"
+                  "  - id: builder\n    team: build\n"
+                  "  - id: reader\n    team: research\n"
+                  "  - id: chief\n    chief_of_staff: true\n"
+                  "  - id: writer\n    team: research\n    order: 5\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    listed = request(&fixture, "agent.list", "{}");
+    agents = json_object_get_array_member(
+        clawt_ipc_frame_get_payload(listed), "agents");
+
+    g_assert_cmpuint(json_array_get_length(agents), ==, 4);
+
+    for (i = 0; i < 4; i++)
+        order[i] = json_object_get_string_member(
+            json_array_get_object_element(agents, i), "id");
+
+    /* Teamless first... */
+    g_assert_cmpstr(order[0], ==, "chief");
+
+    /* ...then research, because its order is lower than build's... */
+    g_assert_cmpstr(order[1], ==, "reader");
+    g_assert_cmpstr(order[2], ==, "writer");
+
+    /* ...and build last. */
+    g_assert_cmpstr(order[3], ==, "builder");
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * An agent on a team nobody declared still appears. Hiding it is how a
+ * typo in agents.team survives being looked at.
+ */
+static void
+test_an_agent_on_an_unknown_team_still_shows(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) listed = NULL;
+    JsonArray *agents;
+
+    fixture_setup(&fixture,
+                  "teams:\n  - id: research\n"
+                  "agents:\n"
+                  "  - id: one\n    team: research\n"
+                  "  - id: two\n    team: reserch\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    listed = request(&fixture, "agent.list", "{}");
+    agents = json_object_get_array_member(
+        clawt_ipc_frame_get_payload(listed), "agents");
+
+    g_assert_cmpuint(json_array_get_length(agents), ==, 2);
+
+    /* Declared teams first, the mistyped one after. */
+    g_assert_cmpstr(json_object_get_string_member(
+                        json_array_get_object_element(agents, 1), "id"),
+                    ==, "two");
+
+    fixture_teardown(&fixture);
+}
+
+/* Each agent carries its team and standing, so a client can group and
+ * an inspector can say what it may assign. */
+static void
+test_an_agent_reports_its_team(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) listed = NULL;
+    JsonObject *first;
+
+    fixture_setup(&fixture,
+                  "teams:\n  - id: research\n"
+                  "agents:\n"
+                  "  - id: boss\n    team: research\n    team_role: lead\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    listed = request(&fixture, "agent.list", "{}");
+    first = json_array_get_object_element(
+        json_object_get_array_member(clawt_ipc_frame_get_payload(listed),
+                                     "agents"), 0);
+
+    g_assert_cmpstr(json_object_get_string_member(first, "team"), ==,
+                    "research");
+    g_assert_cmpstr(json_object_get_string_member(first, "team_role"), ==,
+                    "lead");
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * team.list counts the running agents itself. Three clients counting the
+ * same thing is three chances to disagree about what "active" means.
+ */
+static void
+test_team_list_counts_and_warns(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) listed = NULL;
+    JsonObject *payload;
+    JsonObject *team;
+    JsonArray *warnings;
+
+    fixture_setup(&fixture,
+                  "teams:\n  - id: research\n    name: Research\n"
+                  "agents:\n"
+                  "  - id: one\n    team: research\n    team_role: lead\n"
+                  "  - id: two\n    team: research\n    team_role: lead\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    listed = request(&fixture, "team.list", "{}");
+    payload = clawt_ipc_frame_get_payload(listed);
+    team = json_array_get_object_element(
+        json_object_get_array_member(payload, "teams"), 0);
+
+    g_assert_cmpstr(json_object_get_string_member(team, "name"), ==,
+                    "Research");
+    g_assert_cmpint(json_object_get_int_member(team, "total"), ==, 2);
+
+    /* Two leads is reported rather than picked between. */
+    warnings = json_object_get_array_member(payload, "warnings");
+    g_assert_cmpuint(json_array_get_length(warnings), ==, 1);
+    g_assert_nonnull(strstr(json_array_get_string_element(warnings, 0),
+                            "two leads"));
+
+    fixture_teardown(&fixture);
+}
+
+/* A team's id is not editable, and removing one says who is left. */
+static void
+test_team_edits_are_guarded(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) renamed = NULL;
+    g_autoptr(JsonNode) removed = NULL;
+
+    fixture_setup(&fixture,
+                  "teams:\n  - id: research\n"
+                  "agents:\n  - id: one\n    team: research\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    renamed = request(&fixture, "team.set",
+                      "{\"team\":\"research\",\"key\":\"id\","
+                      "\"value\":\"other\"}");
+    g_assert_true(clawt_ipc_frame_is_error(renamed));
+
+    removed = request(&fixture, "team.remove", "{\"team\":\"research\"}");
+    g_assert_false(clawt_ipc_frame_is_error(removed));
+    g_assert_cmpint(json_object_get_int_member(
+                        clawt_ipc_frame_get_payload(removed), "orphaned"),
+                    ==, 1);
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -2207,6 +2387,16 @@ main(int argc, char *argv[])
 
     g_test_add_func("/daemon/starts", test_starts_with_an_empty_config);
     g_test_add_func("/daemon/one-at-a-time", test_refuses_a_second_daemon);
+    g_test_add_func("/daemon/listing-grouped-by-team",
+                    test_the_listing_is_grouped_by_team);
+    g_test_add_func("/daemon/unknown-team-still-shows",
+                    test_an_agent_on_an_unknown_team_still_shows);
+    g_test_add_func("/daemon/agent-reports-its-team",
+                    test_an_agent_reports_its_team);
+    g_test_add_func("/daemon/team-list-counts-and-warns",
+                    test_team_list_counts_and_warns);
+    g_test_add_func("/daemon/team-edits-guarded",
+                    test_team_edits_are_guarded);
     g_test_add_func("/daemon/agents-can-be-reordered",
                     test_agents_can_be_reordered);
     g_test_add_func("/daemon/reorder-survives-a-missing-agent",

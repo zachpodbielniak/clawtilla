@@ -533,6 +533,49 @@ the same program.
   factory -- the option worked and was unreachable from the place
   somebody would look for it.
 
+### A permission about *assigning* must say that talking is still allowed
+
+- Teams give an agent a lead who may hand it work; a member may hand work
+  to nobody. Stated as a bare refusal, an agent reads "you cannot
+  delegate" as "you are cut off from your peers" and stops messaging them
+  at all -- which is the opposite of what a fleet is for. Every refusal
+  from `clawt_team_may_assign()` therefore says what is *not* restricted,
+  and names where to send the work instead. A refusal that only says no
+  gets retried in a different shape.
+- The rule is a pure function over two `ClawtAgentConfig`s, so it is
+  exercised without a daemon, a fleet or a running agent. A permission
+  check that needs all three to test is one that gets tested once.
+- Two gates, not one: the *tool* is offered only to an agent that can
+  assign to somebody (chief or lead), and the *target* is checked at call
+  time, because which targets are allowed depends on the target rather
+  than on the caller. Neither alone is enough — the tool list cannot know
+  who is about to be named, and a member offered a tool it can never use
+  will keep trying it.
+- Fleet-level mistakes -- two leads on one team, an agent naming a team
+  nobody declared -- are **warnings**, not errors. A fleet is edited by
+  hand and half-built states are ordinary; refusing to start over one
+  would be far worse than saying so. They are printed by `team list`, and
+  shown in the client, because the symptom otherwise is work quietly
+  going nowhere.
+
+### Grouping belongs to whoever already decides the order
+
+- The sidebar groups agents by team by emitting a header whenever the
+  team changes, which only works because `agent.list` returns them
+  *grouped*. Letting the client gather them would be a second answer to
+  what order the fleet is in, and the two would differ the first time a
+  team was reordered.
+- Teamless agents sort **first**, because that is where the chief of
+  staff lives. Last would bury the agent somebody talks to most under
+  every team in the fleet.
+- An agent on an undeclared team still appears, under that team's id.
+  Hiding it is how a typo in `agents.team` survives being looked at.
+- Which teams are collapsed is client-side, like the fonts: it belongs to
+  the person at that screen, not to the fleet. The *tally* on the header
+  is what makes collapsing safe -- a folded team still says what is
+  behind it -- and it is counted from the same reply the rows are built
+  from, so the two cannot disagree by one.
+
 ### An order belongs where the thing being ordered lives
 
 - `agents.order` is in `clawtilla.yaml`, not in the client, because it

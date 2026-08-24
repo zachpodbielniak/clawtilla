@@ -113,6 +113,7 @@ typedef enum {
     CLAWT_REFRESH_INTEGRATIONS,
     CLAWT_REFRESH_ROUTINES,
     CLAWT_REFRESH_CONNECTORS,
+    CLAWT_REFRESH_TEAMS,
     CLAWT_N_REFRESH
 } ClawtRefreshKind;
 
@@ -157,6 +158,7 @@ struct _ClawtWindow {
     ClawtAppearance   *appearance;
     GtkWidget         *settings_images;
     GtkWidget         *settings_integrations;
+    GtkWidget         *settings_teams;
     GtkWidget         *settings_connectors;
     GtkListBox        *routine_list;
     GtkWidget         *settings_catalog_row;
@@ -181,7 +183,11 @@ struct _ClawtWindow {
     GtkWidget         *autostart_row;
     GtkWidget         *chief_row;
     GtkWidget         *manage_fleet_row;
+    GtkWidget         *team_row;
+    GtkWidget         *team_role_row;
+    GStrv              team_ids;
     gboolean           settings_need_restart;
+    GHashTable        *collapsed_teams;   /* team id -> GINT_TO_POINTER(1) */
     ModelChooser       inspector_models;
     ImageChooser       inspector_image;
     gchar             *inspector_computer;   /* the selected agent's type */
@@ -522,6 +528,257 @@ agent_row(JsonObject *agent)
     return row;
 }
 
+/* ── Grouping the fleet by team ──────────────────────────────────── */
+
+/*
+ * Whether a team is folded away.
+ *
+ * Kept in the client rather than in clawtilla.yaml. Which teams somebody
+ * has collapsed while working on something else is a view preference,
+ * like the fonts -- it belongs to the person at this screen, not to the
+ * fleet, and syncing it between machines would be actively wrong.
+ */
+static gboolean
+team_is_collapsed(ClawtWindow *self, const gchar *team_id)
+{
+    if (self->collapsed_teams == NULL || team_id == NULL)
+        return FALSE;
+
+    return g_hash_table_contains(self->collapsed_teams, team_id);
+}
+
+static void
+on_team_header_toggled(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *team_id = g_object_get_data(G_OBJECT(button), "team-id");
+
+    if (team_id == NULL)
+        return;
+
+    if (self->collapsed_teams == NULL)
+        self->collapsed_teams = g_hash_table_new_full(g_str_hash,
+                                                      g_str_equal,
+                                                      g_free, NULL);
+
+    if (g_hash_table_contains(self->collapsed_teams, team_id))
+        g_hash_table_remove(self->collapsed_teams, team_id);
+    else
+        g_hash_table_add(self->collapsed_teams, g_strdup(team_id));
+
+    refresh_agents(self);
+}
+
+/*
+ * The teams to choose from, as ids, with "" first for none.
+ *
+ * Whatever the agent already has is included even when the daemon does
+ * not declare it, for the same reason the screen-size row includes an
+ * unusual resolution: a combo box that cannot represent the current
+ * value replaces it the moment somebody saves the page without touching
+ * it.
+ */
+static GtkStringList *
+team_choices(ClawtWindow *self, const gchar *current, GStrv *out_ids)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GPtrArray) ids = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(GPtrArray) labels = g_ptr_array_new_with_free_func(g_free);
+    GtkStringList *model;
+    gboolean known = FALSE;
+    guint i;
+
+    g_ptr_array_add(ids, g_strdup(""));
+    g_ptr_array_add(labels, g_strdup("No team"));
+
+    reply = clawt_window_request(self, "team.list", NULL);
+
+    if (reply != NULL) {
+        JsonArray *teams =
+            json_object_get_array_member(clawt_payload_of(reply), "teams");
+
+        for (i = 0; i < json_array_get_length(teams); i++) {
+            JsonObject *team = json_array_get_object_element(teams, i);
+            const gchar *id = clawt_json_string(team, "id", "");
+
+            g_ptr_array_add(ids, g_strdup(id));
+            g_ptr_array_add(labels,
+                            g_strdup(clawt_json_string(team, "name", id)));
+
+            if (g_strcmp0(id, current) == 0)
+                known = TRUE;
+        }
+    }
+
+    if (current != NULL && *current != '\0' && !known) {
+        g_ptr_array_add(ids, g_strdup(current));
+        g_ptr_array_add(labels,
+                        g_strdup_printf("%s (not declared)", current));
+    }
+
+    g_ptr_array_add(ids, NULL);
+    g_ptr_array_add(labels, NULL);
+
+    model = gtk_string_list_new((const gchar *const *)labels->pdata);
+
+    if (out_ids != NULL)
+        *out_ids = (GStrv)g_ptr_array_free(g_steal_pointer(&ids), FALSE);
+
+    return model;
+}
+
+/* Which entry in that model matches an agent's current team. */
+static guint
+team_index_of(GStrv ids, const gchar *current)
+{
+    guint i;
+
+    for (i = 0; ids != NULL && ids[i] != NULL; i++) {
+        if (g_strcmp0(ids[i], current != NULL ? current : "") == 0)
+            return i;
+    }
+
+    return 0;
+}
+
+/* The team's display name from the team.list reply, or its id. */
+static const gchar *
+team_display_name(JsonArray *teams, const gchar *team_id)
+{
+    guint i;
+
+    for (i = 0; teams != NULL && i < json_array_get_length(teams); i++) {
+        JsonObject *team = json_array_get_object_element(teams, i);
+
+        if (g_strcmp0(clawt_json_string(team, "id", ""), team_id) == 0)
+            return clawt_json_string(team, "name", team_id);
+    }
+
+    /*
+     * A team the daemon does not declare. The agent still shows, under
+     * its own name, rather than vanishing into an "unknown" bucket --
+     * the usual cause is a typo, and hiding it is how a typo survives.
+     */
+    return team_id;
+}
+
+static const gchar *
+team_description(JsonArray *teams, const gchar *team_id)
+{
+    guint i;
+
+    if (team_id == NULL)
+        return NULL;
+
+    for (i = 0; teams != NULL && i < json_array_get_length(teams); i++) {
+        JsonObject *team = json_array_get_object_element(teams, i);
+
+        if (g_strcmp0(clawt_json_string(team, "id", ""), team_id) == 0)
+            return clawt_json_string(team, "description", NULL);
+    }
+
+    return NULL;
+}
+
+/*
+ * How many of a team are running, counted from the same reply the rows
+ * are built from.
+ *
+ * Not from team.list, even though it answers this: the sidebar would
+ * then show a tally from one moment and rows from another, and the two
+ * disagreeing by one is exactly the kind of thing somebody notices and
+ * cannot explain.
+ */
+static void
+team_tally(JsonArray *agents, const gchar *team_id,
+           guint *running, guint *total)
+{
+    guint i;
+
+    *running = 0;
+    *total = 0;
+
+    for (i = 0; i < json_array_get_length(agents); i++) {
+        JsonObject *agent = json_array_get_object_element(agents, i);
+
+        if (g_strcmp0(clawt_json_string(agent, "team", NULL), team_id) != 0)
+            continue;
+
+        (*total)++;
+
+        if (g_strcmp0(clawt_json_string(agent, "state", ""), "running") == 0)
+            (*running)++;
+    }
+}
+
+/*
+ * A team's header: its name, how many of it are running, and a twisty.
+ *
+ * A GtkButton rather than an activatable row, because the sidebar's rows
+ * drive selection -- a header that could be "selected" would put an
+ * agent's transcript on screen under a team's name, and there is no
+ * agent to show.
+ */
+static GtkWidget *
+team_header_row(ClawtWindow *self,
+                const gchar *team_id,
+                const gchar *name,
+                const gchar *description,
+                guint        running,
+                guint        total)
+{
+    GtkWidget *row = gtk_list_box_row_new();
+    GtkWidget *button = gtk_button_new();
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *twisty;
+    GtkWidget *label = gtk_label_new(name);
+    g_autofree gchar *tally = NULL;
+    gboolean collapsed = team_is_collapsed(self, team_id);
+
+    twisty = gtk_image_new_from_icon_name(
+        collapsed ? "pan-end-symbolic" : "pan-down-symbolic");
+
+    gtk_widget_add_css_class(label, "heading");
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+    gtk_widget_set_hexpand(label, TRUE);
+
+    gtk_box_append(GTK_BOX(box), twisty);
+    gtk_box_append(GTK_BOX(box), label);
+
+    /*
+     * Running out of total, rather than a single number. "3" could be
+     * either, and the question somebody scanning a sidebar is asking is
+     * how much of this team is awake.
+     */
+    tally = g_strdup_printf("%u/%u", running, total);
+    gtk_box_append(GTK_BOX(box),
+                   badge(tally, running > 0 ? "accent" : "dim",
+                         "agents running on this team"));
+
+    gtk_button_set_child(GTK_BUTTON(button), box);
+    gtk_widget_add_css_class(button, "flat");
+
+    if (description != NULL && *description != '\0')
+        gtk_widget_set_tooltip_text(button, description);
+
+    g_object_set_data_full(G_OBJECT(button), "team-id", g_strdup(team_id),
+                           g_free);
+    g_signal_connect(button, "clicked",
+                     G_CALLBACK(on_team_header_toggled), self);
+
+    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), button);
+
+    /*
+     * Not selectable and not activatable: it is a heading with a button
+     * in it, and arrow-key navigation should step over it to the next
+     * agent rather than landing on something that shows nothing.
+     */
+    gtk_list_box_row_set_selectable(GTK_LIST_BOX_ROW(row), FALSE);
+    gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
+
+    return row;
+}
+
 /* ── Dragging a row to reorder the fleet ─────────────────────────── */
 
 /*
@@ -745,12 +1002,27 @@ refresh_agents_once(ClawtWindow *self)
 {
     g_autoptr(JsonNode) reply = NULL;
     JsonArray *agents;
+    g_autoptr(JsonNode) team_reply = NULL;
+    g_autofree gchar *shown_team = NULL;
+    JsonArray *teams = NULL;
     guint i;
 
     reply = clawt_window_request(self, "agent.list", NULL);
 
     if (reply == NULL)
         return;
+
+    /*
+     * The teams' names and descriptions, which the agent list does not
+     * carry -- it names an agent's team by id and nothing more. A daemon
+     * too old to know the frame simply answers nothing and the sidebar
+     * falls back to ids, which is a worse label and not a broken window.
+     */
+    team_reply = clawt_window_request(self, "team.list", NULL);
+
+    if (team_reply != NULL)
+        teams = json_object_get_array_member(clawt_payload_of(team_reply),
+                                             "teams");
 
     clear_list(self->sidebar);
 
@@ -766,8 +1038,43 @@ refresh_agents_once(ClawtWindow *self)
 
     for (i = 0; i < json_array_get_length(agents); i++) {
         JsonObject *agent = json_array_get_object_element(agents, i);
-        GtkWidget *row = agent_row(agent);
+        const gchar *team = clawt_json_string(agent, "team", NULL);
+        GtkWidget *row;
 
+        /*
+         * A header whenever the team changes, which works because the
+         * daemon returns agents grouped by team already. Doing the
+         * grouping here as well would be a second answer to what order
+         * the fleet is in.
+         */
+        if (g_strcmp0(team, shown_team) != 0 || i == 0) {
+            const gchar *label = (team != NULL && *team != '\0')
+                                 ? team_display_name(teams, team)
+                                 : "No team";
+            guint running = 0;
+            guint total = 0;
+
+            team_tally(agents, team, &running, &total);
+
+            gtk_list_box_append(
+                self->sidebar,
+                team_header_row(self, team != NULL ? team : "",
+                                label,
+                                team_description(teams, team),
+                                running, total));
+
+            g_free(shown_team);
+            shown_team = g_strdup(team);
+        }
+
+        /*
+         * Folded away, but still counted -- the header's tally is what
+         * makes collapsing safe, because it says what is behind it.
+         */
+        if (team_is_collapsed(self, team != NULL ? team : ""))
+            continue;
+
+        row = agent_row(agent);
         gtk_list_box_append(self->sidebar, row);
 
         /*
@@ -3285,6 +3592,29 @@ on_save_agent(GtkButton *button, gpointer user_data)
                             ADW_SWITCH_ROW(self->autostart_row))
                             ? "true" : "false");
 
+    if (self->team_row != NULL && self->team_ids != NULL) {
+        guint chosen = adw_combo_row_get_selected(
+            ADW_COMBO_ROW(self->team_row));
+        guint count = g_strv_length(self->team_ids);
+
+        /*
+         * Written even when empty -- that is how an agent is taken off a
+         * team, and skipping a blank would make "No team" the one choice
+         * in this dialog that does nothing.
+         */
+        if (chosen < count)
+            ok &= apply_setting(self, "team", self->team_ids[chosen]);
+    }
+
+    if (self->team_role_row != NULL) {
+        static const gchar *const roles[] = { "member", "lead" };
+
+        ok &= apply_setting(self, "team_role",
+                            roles[MIN(adw_combo_row_get_selected(
+                                          ADW_COMBO_ROW(self->team_role_row)),
+                                      1)]);
+    }
+
     ok &= apply_setting(self, "chief_of_staff",
                         adw_switch_row_get_active(
                             ADW_SWITCH_ROW(self->chief_row))
@@ -4538,6 +4868,45 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
                               self->autostart_row);
 
+    /*
+     * Which team, and what standing on it. Beside the chief switch
+     * because the three answer one question between them: who this
+     * agent may hand work to.
+     */
+    {
+        GtkStringList *choices;
+
+        g_clear_pointer(&self->team_ids, g_strfreev);
+        choices = team_choices(self, clawt_json_string(agent, "team", ""),
+                               &self->team_ids);
+
+        self->team_row = adw_combo_row_new();
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(self->team_row),
+                                      "Team");
+        adw_combo_row_set_model(ADW_COMBO_ROW(self->team_row),
+                                G_LIST_MODEL(choices));
+        adw_combo_row_set_selected(
+            ADW_COMBO_ROW(self->team_row),
+            team_index_of(self->team_ids,
+                          clawt_json_string(agent, "team", "")));
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                  self->team_row);
+    }
+
+    {
+        static const gchar *const roles[] = { "member", "lead", NULL };
+
+        self->team_role_row = combo_row(
+            "Role on that team", roles,
+            clawt_json_string(agent, "team_role", "member"));
+        adw_action_row_set_subtitle(
+            ADW_ACTION_ROW(self->team_role_row),
+            "A lead assigns work inside its own team. A member talks to "
+            "anyone and assigns to nobody.");
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                  self->team_role_row);
+    }
+
     self->chief_row = switch_row(
         "Chief of staff", "Hands work to the other agents",
         json_object_has_member(agent, "chief_of_staff") &&
@@ -5364,6 +5733,8 @@ typedef struct {
     GtkWidget    *name_entry;
     GtkWidget    *description_entry;
     GtkWidget    *computer_row;
+    GtkWidget    *team_row;
+    GStrv         team_ids;
     GtkWidget    *describe_entry;   /* purpose: the one required answer */
     GtkWidget    *boundaries_entry;
     GtkWidget    *needs_entry;
@@ -5401,6 +5772,32 @@ new_agent_dialog_free(gpointer data)
  * reference on a VM, or the other way round, writes a key that backend
  * never reads and then looks like a setting being ignored.
  */
+/*
+ * The team the dialog is offering, or NULL for none.
+ *
+ * Read through one function for the same reason the computer is: the
+ * manual path and the designer path both build a payload from these
+ * widgets, and the last time there were two readers one of them silently
+ * dropped a field.
+ */
+static const gchar *
+dialog_team(NewAgentDialog *dialog)
+{
+    guint chosen;
+
+    if (dialog->team_row == NULL || dialog->team_ids == NULL)
+        return NULL;
+
+    chosen = adw_combo_row_get_selected(ADW_COMBO_ROW(dialog->team_row));
+
+    if (chosen >= g_strv_length(dialog->team_ids))
+        return NULL;
+
+    /* "" is the "No team" entry, and means send nothing. */
+    return (*dialog->team_ids[chosen] != '\0') ? dialog->team_ids[chosen]
+                                                : NULL;
+}
+
 static const gchar *
 dialog_computer(NewAgentDialog *dialog, gchar **out_image, gchar **out_disk)
 {
@@ -6112,6 +6509,7 @@ on_create_manually(GtkButton *button, gpointer user_data)
             "computer", computer,
             "image", image,
             "vm_image", disk,
+            "team", dialog_team(dialog),
             NULL));
 
     /*
@@ -6252,6 +6650,12 @@ on_design_with_ai(GtkButton *button, gpointer user_data)
             "computer", g_strcmp0(computer, "none") != 0 ? computer : NULL,
             "image", image,
             "vm_image", disk,
+            /*
+             * The team too, for the same reason: it is a choice the
+             * person made on this form, and the model has no way to
+             * know which teams exist.
+             */
+            "team", dialog_team(dialog),
             NULL));
 
     gtk_button_set_label(GTK_BUTTON(button), "Design it");
@@ -6422,6 +6826,23 @@ on_new_agent(GtkButton *button, gpointer user_data)
         "What it is for");
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(manual),
                               dialog->description_entry);
+
+    /*
+     * Which team, chosen here rather than only afterwards. An agent made
+     * for a team and then left out of it is one the team's lead cannot
+     * hand anything to, which reads as the lead being broken.
+     */
+    {
+        GtkStringList *choices = team_choices(self, NULL, &dialog->team_ids);
+
+        dialog->team_row = adw_combo_row_new();
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->team_row),
+                                      "Team");
+        adw_combo_row_set_model(ADW_COMBO_ROW(dialog->team_row),
+                                G_LIST_MODEL(choices));
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(manual),
+                                  dialog->team_row);
+    }
 
     /*
      * Provider first, then model: the model list depends on it, and
@@ -8496,6 +8917,7 @@ on_settings_closed(AdwDialog *dialog, gpointer user_data)
     self->settings = NULL;
     self->settings_images = NULL;
     self->settings_integrations = NULL;
+    self->settings_teams = NULL;
     self->settings_connectors = NULL;
     self->settings_catalog_row = NULL;
     self->settings_url_row = NULL;
@@ -10995,6 +11417,405 @@ build_connectors_page(ClawtWindow *self)
     return page;
 }
 
+static void refresh_settings_teams(ClawtWindow *self);
+
+/* Edit one team: its name, what it is for, and removing it. */
+typedef struct {
+    ClawtWindow *window;
+    gchar       *team_id;
+    GtkWidget   *name_entry;
+    GtkWidget   *description_entry;
+} TeamDialog;
+
+static void
+team_dialog_free(gpointer data)
+{
+    TeamDialog *editor = data;
+
+    g_free(editor->team_id);
+    g_free(editor);
+}
+
+static void
+on_team_removed(AdwAlertDialog *dialog, gchar *response, gpointer user_data)
+{
+    TeamDialog *editor = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+
+    if (g_strcmp0(response, "delete") != 0)
+        return;
+
+    reply = clawt_window_request(
+        editor->window, "team.remove",
+        clawt_build_payload("team", editor->team_id, NULL));
+
+    if (reply == NULL)
+        return;
+
+    {
+        gint64 orphaned = clawt_json_int(clawt_payload_of(reply),
+                                         "orphaned", 0);
+        g_autofree gchar *message = NULL;
+
+        /*
+         * Said rather than left to be discovered. The agents are fine and
+         * still running; they are simply on a team that is no longer
+         * declared, which is where hand-offs quietly stop working.
+         */
+        message = (orphaned > 0)
+            ? g_strdup_printf("Team removed. %" G_GINT64_FORMAT " agent%s "
+                              "still name it -- put them on another team.",
+                              orphaned, orphaned == 1 ? "" : "s")
+            : g_strdup("Team removed.");
+
+        clawt_window_toast(editor->window, message);
+    }
+
+    refresh_settings_teams(editor->window);
+    refresh_agents(editor->window);
+}
+
+static void
+on_team_saved(GtkButton *button, gpointer user_data)
+{
+    TeamDialog *editor = user_data;
+    g_autoptr(JsonNode) named = NULL;
+    g_autoptr(JsonNode) described = NULL;
+
+    named = clawt_window_request(
+        editor->window, "team.set",
+        clawt_build_payload("team", editor->team_id, "key", "name",
+                            "value", answer_of(editor->name_entry), NULL));
+
+    described = clawt_window_request(
+        editor->window, "team.set",
+        clawt_build_payload("team", editor->team_id, "key", "description",
+                            "value", answer_of(editor->description_entry),
+                            NULL));
+
+    if (named == NULL || described == NULL)
+        return;
+
+    clawt_window_toast(editor->window, "Saved.");
+    refresh_settings_teams(editor->window);
+    refresh_agents(editor->window);
+}
+
+static void
+on_team_delete_clicked(GtkButton *button, gpointer user_data)
+{
+    TeamDialog *editor = user_data;
+    AdwAlertDialog *confirm;
+    g_autofree gchar *heading = NULL;
+
+    heading = g_strdup_printf("Remove the %s team?", editor->team_id);
+
+    confirm = ADW_ALERT_DIALOG(adw_alert_dialog_new(
+        heading,
+        "The agents on it keep running and keep their settings. They "
+        "simply stop being on a team, so its lead can no longer assign "
+        "to them."));
+
+    adw_alert_dialog_add_response(confirm, "cancel", "Keep it");
+    adw_alert_dialog_add_response(confirm, "delete", "Remove it");
+    adw_alert_dialog_set_response_appearance(confirm, "delete",
+                                             ADW_RESPONSE_DESTRUCTIVE);
+    adw_alert_dialog_set_default_response(confirm, "cancel");
+    adw_alert_dialog_set_close_response(confirm, "cancel");
+
+    g_signal_connect(confirm, "response", G_CALLBACK(on_team_removed),
+                     editor);
+
+    adw_dialog_present(ADW_DIALOG(confirm), GTK_WIDGET(editor->window));
+}
+
+static void
+on_team_activated(GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *team_id = g_object_get_data(G_OBJECT(row), "clawt-team");
+    TeamDialog *editor;
+    AdwDialog *dialog;
+    GtkWidget *page = adw_preferences_page_new();
+    GtkWidget *group = adw_preferences_group_new();
+    GtkWidget *save;
+    GtkWidget *remove;
+
+    if (team_id == NULL)
+        return;
+
+    editor = g_new0(TeamDialog, 1);
+    editor->window = self;
+    editor->team_id = g_strdup(team_id);
+
+    dialog = ADW_DIALOG(adw_preferences_dialog_new());
+    adw_dialog_set_title(dialog, team_id);
+
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group), team_id);
+
+    editor->name_entry = adw_entry_row_new();
+    adw_preferences_row_set_use_markup(
+        ADW_PREFERENCES_ROW(editor->name_entry), FALSE);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(editor->name_entry),
+                                  "Name");
+    gtk_editable_set_text(
+        GTK_EDITABLE(editor->name_entry),
+        (const gchar *)g_object_get_data(G_OBJECT(row), "clawt-team-name"));
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              editor->name_entry);
+
+    editor->description_entry = adw_entry_row_new();
+    adw_preferences_row_set_use_markup(
+        ADW_PREFERENCES_ROW(editor->description_entry), FALSE);
+    adw_preferences_row_set_title(
+        ADW_PREFERENCES_ROW(editor->description_entry), "What it handles");
+    gtk_editable_set_text(
+        GTK_EDITABLE(editor->description_entry),
+        (const gchar *)g_object_get_data(G_OBJECT(row), "clawt-team-desc"));
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              editor->description_entry);
+
+    /*
+     * Said here rather than left implicit. This description is not a
+     * label: the chief of staff reads it to decide what belongs to this
+     * team, so a blank one means work never gets sent here.
+     */
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(group),
+        "The chief of staff reads the description to decide which team a "
+        "piece of work belongs to. Say what this team handles and what it "
+        "does not -- the names on it do not say that.");
+
+    save = gtk_button_new_with_label("Save changes");
+    gtk_widget_add_css_class(save, "suggested-action");
+    gtk_widget_set_margin_top(save, 12);
+    g_signal_connect(save, "clicked", G_CALLBACK(on_team_saved), editor);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), save);
+
+    remove = gtk_button_new_with_label("Remove this team");
+    gtk_widget_add_css_class(remove, "destructive-action");
+    gtk_widget_set_margin_top(remove, 6);
+    g_signal_connect(remove, "clicked", G_CALLBACK(on_team_delete_clicked),
+                     editor);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), remove);
+
+    g_object_set_data_full(G_OBJECT(dialog), "clawt-team-editor", editor,
+                           team_dialog_free);
+
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(group));
+    adw_preferences_dialog_add(ADW_PREFERENCES_DIALOG(dialog),
+                               ADW_PREFERENCES_PAGE(page));
+    adw_dialog_present(ADW_DIALOG(dialog), GTK_WIDGET(self));
+}
+
+static void
+on_team_add_response(AdwAlertDialog *dialog, gchar *response,
+                     gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    GtkWidget *entry = g_object_get_data(G_OBJECT(dialog), "clawt-team-id");
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *team_id;
+
+    if (g_strcmp0(response, "create") != 0 || entry == NULL)
+        return;
+
+    team_id = gtk_editable_get_text(GTK_EDITABLE(entry));
+
+    if (team_id == NULL || *team_id == '\0') {
+        clawt_window_toast(self, "A team needs an id.");
+        return;
+    }
+
+    reply = clawt_window_request(self, "team.create",
+                                 clawt_build_payload("id", team_id, NULL));
+
+    if (reply == NULL)
+        return;
+
+    clawt_window_toast(self, "Team created. Give it a description so the "
+                             "chief of staff knows what belongs here.");
+    refresh_settings_teams(self);
+    refresh_agents(self);
+}
+
+static void
+on_team_add_clicked(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    AdwAlertDialog *dialog;
+    GtkWidget *entry = gtk_entry_new();
+
+    dialog = ADW_ALERT_DIALOG(adw_alert_dialog_new(
+        "New team",
+        "An id, in lowercase with hyphens. Agents name their team by it "
+        "and it cannot be changed afterwards."));
+
+    gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "research");
+    adw_alert_dialog_set_extra_child(dialog, entry);
+
+    adw_alert_dialog_add_response(dialog, "cancel", "Cancel");
+    adw_alert_dialog_add_response(dialog, "create", "Create");
+    adw_alert_dialog_set_response_appearance(dialog, "create",
+                                             ADW_RESPONSE_SUGGESTED);
+    adw_alert_dialog_set_default_response(dialog, "create");
+    adw_alert_dialog_set_close_response(dialog, "cancel");
+
+    g_object_set_data(G_OBJECT(dialog), "clawt-team-id", entry);
+    g_signal_connect(dialog, "response", G_CALLBACK(on_team_add_response),
+                     self);
+
+    adw_dialog_present(ADW_DIALOG(dialog), GTK_WIDGET(self));
+}
+
+static void
+refresh_settings_teams(ClawtWindow *self)
+{
+    if (self->settings_teams == NULL)
+        return;
+
+    if (!refresh_enter(self, CLAWT_REFRESH_TEAMS))
+        return;
+
+    do {
+        g_autoptr(JsonNode) reply = NULL;
+        JsonArray *teams;
+        JsonArray *warnings;
+        guint i;
+
+        clear_list(GTK_LIST_BOX(self->settings_teams));
+
+        reply = clawt_window_request(self, "team.list", NULL);
+
+        if (reply == NULL)
+            continue;
+
+        teams = json_object_get_array_member(clawt_payload_of(reply),
+                                             "teams");
+
+        if (json_array_get_length(teams) == 0) {
+            GtkWidget *row = adw_action_row_new();
+
+            adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                          "No teams yet");
+            adw_action_row_set_subtitle(
+                ADW_ACTION_ROW(row),
+                "A fleet works without them. They start earning their "
+                "keep once there are more agents than you can hold in "
+                "your head.");
+            gtk_widget_set_sensitive(row, FALSE);
+            gtk_list_box_append(GTK_LIST_BOX(self->settings_teams), row);
+        }
+
+        for (i = 0; i < json_array_get_length(teams); i++) {
+            JsonObject *team = json_array_get_object_element(teams, i);
+            const gchar *id = clawt_json_string(team, "id", "?");
+            const gchar *lead = clawt_json_string(team, "lead", NULL);
+            const gchar *description =
+                clawt_json_string(team, "description", NULL);
+            GtkWidget *row = adw_action_row_new();
+            g_autofree gchar *subtitle = NULL;
+
+            subtitle = g_strdup_printf(
+                "%s \342\200\224 %" G_GINT64_FORMAT " of %"
+                G_GINT64_FORMAT " running, lead: %s",
+                (description != NULL && *description != '\0')
+                    ? description
+                    : "no description, so nothing will be sent here",
+                clawt_json_int(team, "running", 0),
+                clawt_json_int(team, "total", 0),
+                lead != NULL ? lead : "nobody");
+
+            adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row),
+                                               FALSE);
+            adw_preferences_row_set_title(
+                ADW_PREFERENCES_ROW(row),
+                clawt_json_string(team, "name", id));
+            adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
+            row_opens_something(row);
+
+            g_object_set_data_full(G_OBJECT(row), "clawt-team",
+                                   g_strdup(id), g_free);
+            g_object_set_data_full(
+                G_OBJECT(row), "clawt-team-name",
+                g_strdup(clawt_json_string(team, "name", id)), g_free);
+            g_object_set_data_full(
+                G_OBJECT(row), "clawt-team-desc",
+                g_strdup(description != NULL ? description : ""), g_free);
+
+            gtk_list_box_append(GTK_LIST_BOX(self->settings_teams), row);
+        }
+
+        /*
+         * Two leads on one team, or an agent on a team nobody declared.
+         * Shown here rather than only in the daemon's log: it is the
+         * failure where work quietly goes nowhere.
+         */
+        warnings = json_object_get_array_member(clawt_payload_of(reply),
+                                                "warnings");
+
+        for (i = 0; i < json_array_get_length(warnings); i++) {
+            GtkWidget *row = adw_action_row_new();
+
+            adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row),
+                                               FALSE);
+            adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                          "Worth fixing");
+            adw_action_row_set_subtitle(
+                ADW_ACTION_ROW(row),
+                json_array_get_string_element(warnings, i));
+            adw_action_row_add_prefix(
+                ADW_ACTION_ROW(row),
+                gtk_image_new_from_icon_name("dialog-warning-symbolic"));
+            gtk_list_box_append(GTK_LIST_BOX(self->settings_teams), row);
+        }
+    } while (refresh_repeat(self, CLAWT_REFRESH_TEAMS));
+}
+
+static GtkWidget *
+build_teams_page(ClawtWindow *self)
+{
+    GtkWidget *page = adw_preferences_page_new();
+    GtkWidget *group = adw_preferences_group_new();
+    GtkWidget *add;
+
+    adw_preferences_page_set_title(ADW_PREFERENCES_PAGE(page), "Teams");
+    adw_preferences_page_set_icon_name(ADW_PREFERENCES_PAGE(page),
+                                       "system-users-symbolic");
+
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group),
+                                    "How the fleet is divided");
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(group),
+        "A team has a lead who assigns work inside it, and members who "
+        "talk to anyone and assign to nobody. The chief of staff sits "
+        "above all of them and hands work to the leads -- it picks which "
+        "team by reading these descriptions, so they are worth writing "
+        "properly.");
+
+    add = gtk_button_new_from_icon_name("list-add-symbolic");
+    gtk_widget_add_css_class(add, "flat");
+    gtk_widget_set_tooltip_text(add, "Add a team");
+    g_signal_connect(add, "clicked", G_CALLBACK(on_team_add_clicked), self);
+    adw_preferences_group_set_header_suffix(ADW_PREFERENCES_GROUP(group),
+                                            add);
+
+    self->settings_teams = gtk_list_box_new();
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(self->settings_teams),
+                                    GTK_SELECTION_NONE);
+    gtk_widget_add_css_class(self->settings_teams, "boxed-list");
+    g_signal_connect(self->settings_teams, "row-activated",
+                     G_CALLBACK(on_team_activated), self);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              self->settings_teams);
+
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(group));
+
+    return page;
+}
+
 static GtkWidget *
 build_integrations_page(ClawtWindow *self)
 {
@@ -11158,6 +11979,9 @@ on_settings_activate(GSimpleAction *action, GVariant *parameter,
                                ADW_PREFERENCES_PAGE(page));
     adw_preferences_dialog_add(ADW_PREFERENCES_DIALOG(dialog),
                                ADW_PREFERENCES_PAGE(
+                                   build_teams_page(self)));
+    adw_preferences_dialog_add(ADW_PREFERENCES_DIALOG(dialog),
+                               ADW_PREFERENCES_PAGE(
                                    build_integrations_page(self)));
     adw_preferences_dialog_add(ADW_PREFERENCES_DIALOG(dialog),
                                ADW_PREFERENCES_PAGE(
@@ -11170,6 +11994,7 @@ on_settings_activate(GSimpleAction *action, GVariant *parameter,
     g_signal_connect(dialog, "closed", G_CALLBACK(on_settings_closed), self);
 
     refresh_settings_images(self);
+    refresh_settings_teams(self);
     refresh_settings_integrations(self);
     refresh_settings_connectors(self);
     adw_dialog_present(dialog, GTK_WIDGET(self));
@@ -12259,6 +13084,8 @@ clawt_window_dispose(GObject *object)
     g_clear_pointer(&self->connections, g_ptr_array_unref);
     g_clear_pointer(&self->active_connection, clawt_connection_free);
     g_clear_pointer(&self->local_socket, g_free);
+    g_clear_pointer(&self->team_ids, g_strfreev);
+    g_clear_pointer(&self->collapsed_teams, g_hash_table_unref);
 
     g_clear_pointer(&self->selected_agent, g_free);
     g_clear_pointer(&self->selected_room, g_free);

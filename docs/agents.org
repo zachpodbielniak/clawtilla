@@ -438,6 +438,25 @@ container or VM.  Agents with no computer do not get one.
 A teardown that fails does not fail the removal -- the agent is still
 going -- and the reason is reported rather than swallowed.
 
+** What an agent is told about its team
+
+The managed region of ~TOOLS.org~ opens with where the agent sits, in one
+of three versions, regenerated whenever its team or role changes.
+
+The chief is told to read the team descriptions before placing anything,
+and to hand work to a team's *lead* rather than to somebody on it -- the
+lead knows what their people are in the middle of and the chief does not.
+
+A lead is told it may place work inside its team, and that anything else
+goes back to the chief rather than around them by messaging another
+team's people and asking nicely.
+
+A member is told the one restriction is assigning, and that messaging,
+asking and sharing a room with anybody in the fleet is not restricted at
+all. That second half matters: an agent that reads "you cannot delegate"
+without it concludes it cannot collaborate either, which is the opposite
+of the point.
+
 ** What an agent is told it has
 
 ~TOOLS.org~ carries a second marked region, ~# BEGIN clawtilla tools~,

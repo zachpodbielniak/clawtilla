@@ -64,6 +64,18 @@ what is missing, not merely that something failed.
 ~agent.list~, ~agent.show~, ~agent.start~, ~agent.stop~, ~agent.restart~,
 ~agent.logs~, ~agent.create~, ~agent.remove~, ~agent.set~,
 
+~team.list~, ~team.create~, ~team.set~ and ~team.remove~ manage teams.
+~team.list~ answers with each team's members, its lead, and how many are
+running -- counted in the daemon, because three clients counting the same
+thing is three chances to disagree about what "active" means -- plus
+~warnings~ for what only the whole fleet shows. ~team.set~ refuses ~id~:
+everything refers to a team by it. ~team.remove~ answers with
+~orphaned~, the number of agents still naming it.
+
+~agent.list~ carries ~team~ and ~team_role~ per agent, and returns the
+fleet grouped by team so a client can emit a header when the team
+changes rather than gathering the fleet itself.
+
 ~agent.reorder~ takes ~agents~, the ids comma separated in the order
 wanted, and numbers them in tens.  An id it does not know is skipped
 rather than refused: the list comes from a client's view, which may be a

@@ -1214,15 +1214,59 @@ clawt_daemon_purge_agent_files(ClawtDaemon      *self,
  * exactly as they were written, or a fleet nobody has reordered would
  * shuffle itself on every listing.
  */
+/*
+ * Where an agent's group sits: teamless first, then teams in their own
+ * order.
+ *
+ * Teamless first because that is where the chief of staff lives, and
+ * anything not yet assigned -- putting it at the bottom would bury the
+ * one agent somebody talks to most under every team in the fleet.
+ */
 static gint
-compare_by_order(gconstpointer a, gconstpointer b)
+group_position(GPtrArray *teams, ClawtAgentConfig *config)
 {
-    ClawtAgent *const *first = a;
-    ClawtAgent *const *second = b;
-    gint64 left = clawt_agent_config_get_int(clawt_agent_get_config(*first),
-                                             "order");
-    gint64 right = clawt_agent_config_get_int(clawt_agent_get_config(*second),
-                                              "order");
+    const gchar *team = clawt_agent_config_get_string(config, "team");
+    guint i;
+
+    if (team == NULL || *team == '\0')
+        return G_MININT;
+
+    for (i = 0; i < teams->len; i++) {
+        ClawtTeamSpec *spec = g_ptr_array_index(teams, i);
+
+        if (g_strcmp0(spec->id, team) == 0)
+            return (gint)i;
+    }
+
+    /*
+     * A team nobody declared. Sorted after every declared one rather
+     * than dropped, because the agent is real and hiding it is how a
+     * typo in `agents.team` survives being looked at.
+     */
+    return G_MAXINT;
+}
+
+static gint
+compare_by_order(gconstpointer a, gconstpointer b, gpointer user_data)
+{
+    GPtrArray *teams = user_data;
+    ClawtAgentConfig *first = clawt_agent_get_config(*(ClawtAgent *const *)a);
+    ClawtAgentConfig *second = clawt_agent_get_config(*(ClawtAgent *const *)b);
+    gint left_group = group_position(teams, first);
+    gint right_group = group_position(teams, second);
+    gint64 left;
+    gint64 right;
+
+    /*
+     * Grouped before ordered, so the sidebar can put a header out
+     * whenever the team changes rather than gathering the fleet itself.
+     * Two answers to what order the fleet is in is one too many.
+     */
+    if (left_group != right_group)
+        return left_group < right_group ? -1 : 1;
+
+    left = clawt_agent_config_get_int(first, "order");
+    right = clawt_agent_config_get_int(second, "order");
 
     if (left == right)
         return 0;
@@ -4441,7 +4485,12 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             for (i = 0; i < agents->len; i++)
                 g_ptr_array_add(ordered, g_ptr_array_index(agents, i));
 
-            g_ptr_array_sort(ordered, compare_by_order);
+            {
+                g_autoptr(GPtrArray) teams =
+                    clawt_config_get_teams(self->config);
+
+                g_ptr_array_sort_with_data(ordered, compare_by_order, teams);
+            }
 
             for (i = 0; i < ordered->len; i++)
                 add_agent_object(builder, g_ptr_array_index(ordered, i));
@@ -5499,6 +5548,8 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
                 { "vm_memory_mb",   "computer.vm.memory_mb" },
                 { "vm_disk_gb",     "computer.vm.disk_gb" },
                 { "vm_resolution",  "computer.vm.resolution" },
+                { "team",           "team" },
+                { "team_role",      "team_role" },
                 { "workspace",      "workspace" },
                 { NULL, NULL }
             };
@@ -7005,6 +7056,13 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
                 { "vm_cpus",   "computer.vm.cpus" },
                 { "vm_memory", "computer.vm.memory_mb" },
                 { "vm_disk",   "computer.vm.disk_gb" },
+                /*
+                 * The team is a choice made on the form, and the model
+                 * has no way to know which teams exist -- so it is
+                 * carried through rather than left for the designer to
+                 * guess at, the same as the disk image.
+                 */
+                { "team",      "team" },
                 { NULL, NULL }
             };
             gsize c;

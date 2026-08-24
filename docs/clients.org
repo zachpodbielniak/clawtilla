@@ -228,6 +228,42 @@ It is also the only one of the four that does not need the guest
 rebuilt: it reaches the virtual GPU rather than the cloud-init seed, so
 it applies at the VM's next boot.
 
+*** Teams in the sidebar
+
+Agents are grouped under their team, with a header showing how many of
+that team are running out of how many there are -- running out of total
+rather than one number, because "3" could be either and the question
+somebody scanning a sidebar is asking is how much of this team is awake.
+
+Click a header to fold the team away. The tally stays, which is what
+makes folding safe: a collapsed team still says what is behind it.
+
+Which teams are folded is kept in the client, not in ~clawtilla.yaml~.
+It is a view preference like the fonts -- it belongs to the person at
+this screen rather than to the fleet, and syncing it between machines
+would be actively wrong.
+
+Agents with no team come *first*, because that is where the chief of
+staff lives; putting them last would bury the agent you talk to most
+under every team in the fleet. Teams follow in ~teams.order~, and agents
+within a team in their own ~agents.order~, so dragging still works
+inside a group.
+
+An agent on a team the daemon does not declare still appears, under that
+team's id. Hiding it is how a typo in ~agents.team~ survives being looked
+at.
+
+*** Teams
+
+The Teams page in Settings creates them, edits their name and
+description, and removes them. Removing one leaves its agents running and
+says how many are now teamless, rather than silently moving them
+somewhere nobody chose.
+
+An agent's team and its role on it are also in the agent editor, beside
+the chief-of-staff switch -- the three answer one question between them:
+who this agent may hand work to.
+
 *** Reordering the fleet
 
 Drag a row in the sidebar to move it -- a chief-of-staff to the top, the

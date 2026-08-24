@@ -170,6 +170,84 @@ re-enable something specifically turned off.  Plugin tools obey the same
 lists -- a plugin must not be able to hand an agent something its
 operator turned off.
 
+** Teams
+
+A handful of agents needs no structure. A fleet does, and teams are it:
+an agent names its team in ~agents.team~ and its standing there in
+~agents.team_role~.
+
+#+begin_src yaml
+teams:
+  - id: research
+    name: Research
+    description: Reads sources and answers questions about what is in them.
+                 Not for anything that writes code.
+
+agents:
+  - id: chief
+    chief_of_staff: true
+  - id: lead-r
+    team: research
+    team_role: lead
+  - id: reader
+    team: research
+#+end_src
+
+*** Who may assign to whom
+
+Three rules, and no more:
+
+- the *chief of staff* may assign to anybody. It is the lead of every
+  team, and dividing work between them is the whole of the role
+- a *lead* may assign within its own team and nowhere else
+- a *member* may assign to nobody
+
+That is about *assigning*, not about talking. Every agent may message,
+ask and share a room with every other agent, on its team or not. Handing
+something over in conversation, asking somebody who knows, working on
+something together -- none of that is restricted, and a fleet where it
+was would be much less useful than one where it is not.
+
+So ~clawtilla_delegate~ is offered only to the chief and to leads, and a
+lead calling it on another team's agent is refused with somewhere to send
+it instead:
+
+#+begin_example
+builder is not on your team (research), and a lead assigns only within
+their own. Send it to the chief of staff, who can hand it to the right
+team's lead -- or message builder directly if it is a question rather
+than a task.
+#+end_example
+
+*** Descriptions are what the chief reads
+
+~clawtilla_list_teams~ leads with the description, because that is the
+only part that says what a team *handles*. The names on it do not, and a
+chief-of-staff choosing between four teams by their members is guessing.
+
+A team with no description says so, in the tool output and in the client,
+rather than appearing as an option nothing is ever sent to.
+
+*** What only the whole fleet shows
+
+~clawtilla team list~ prints these to stderr, and the Teams page shows
+them:
+
+- a team with *two leads* -- not picked between, because which of them
+  may assign is exactly the question
+- an agent on a team *nobody declared*, which is almost always a typo
+- a team with members and *no lead*, which works (the chief assigns into
+  it directly) and is usually not what somebody meant
+
+Warnings rather than errors. A fleet is edited by hand and half-built
+states are ordinary; refusing to start over one would be far worse than
+saying so.
+
+*** Teams are optional
+
+A fleet that declares none behaves exactly as it did before there were
+any: one group, and only the chief of staff assigns.
+
 ** Growing the fleet from a conversation
 
 A chief-of-staff can create agents, which is off by default:
