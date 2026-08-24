@@ -109,17 +109,22 @@ render_mounts(GString *out, GPtrArray *mounts)
         if (clawt_mount_get_mount_type(mount) != CLAWT_MOUNT_VIRTIOFS)
             continue;
 
+        g_autofree gchar *tag =
+            clawt_mount_tag(clawt_mount_get_target(mount));
+
         if (!opened) {
             g_string_append(out,
                 "\n"
-                "# The shares this VM carries. The tag is the target path,\n"
-                "# which is what the domain's <filesystem> device names.\n"
+                "# The shares this VM carries. The first field is the\n"
+                "# virtiofs tag, which is what the domain's <filesystem>\n"
+                "# device names -- derived from the target rather than\n"
+                "# being it, because qemu refuses a tag over 36 bytes.\n"
                 "mounts:\n");
             opened = TRUE;
         }
 
         g_string_append(out, "  - [ ");
-        append_quoted(out, clawt_mount_get_target(mount));
+        append_quoted(out, tag);
         g_string_append(out, ", ");
         append_quoted(out, clawt_mount_get_target(mount));
         g_string_append(out, ", \"virtiofs\", ");

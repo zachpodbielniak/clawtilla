@@ -245,6 +245,28 @@ than passing over it -- but a guest created by an older build, or with
 either: that is false by default, and answers whether an agent comes
 back with the daemon rather than whether it exists yet.
 
+** The VM starts and immediately pauses
+
+#+begin_example
+internal error: process exited while connecting to monitor:
+qemu-system-x86_64: -device {"driver":"vhost-user-fs-pci",...}:
+tag property must be 36 bytes or less
+#+end_example
+
+A virtiofs tag longer than qemu accepts, and qemu refuses the *device*
+rather than the tag -- so the domain never runs.  clawtilla used to use
+the target path as the tag, which fits until an agent id reaches
+thirteen characters: ~/mnt/clawtilla/exchange/ubuntu-tester~ is 37
+bytes.
+
+Fixed by deriving a bounded tag instead.  A guest defined by an older
+build keeps the long tag in its domain XML until it is provisioned
+again:
+
+#+begin_src bash
+clawtilla agent start <id>      # provision rewrites the domain
+#+end_src
+
 ** A VM will not provision
 
 - libvirt backend: ~systemctl --user status libvirtd~ (or the system

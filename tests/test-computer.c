@@ -379,7 +379,19 @@ test_vm_domain_xml_includes_shared_memory_for_mounts(void)
     g_assert_nonnull(strstr(xml, "<memoryBacking>"));
     g_assert_nonnull(strstr(xml, "access mode='shared'"));
     g_assert_nonnull(strstr(xml, "driver type='virtiofs'"));
-    g_assert_nonnull(strstr(xml, "/work"));
+
+    /*
+     * The host directory by name, and the guest's side by *tag* -- which
+     * is derived from the target rather than being it, because qemu
+     * refuses a tag over 36 bytes and refuses the device with it.
+     */
+    g_assert_nonnull(strstr(xml, "<source dir='/tmp'/>"));
+    {
+        g_autofree gchar *tag = clawt_mount_tag("/work");
+
+        g_assert_nonnull(strstr(xml, tag));
+    }
+
     g_assert_nonnull(strstr(xml, "<vcpu>4</vcpu>"));
     g_assert_nonnull(strstr(xml, "4096"));
 }
@@ -2218,6 +2230,113 @@ test_the_workspace_share_can_be_turned_off(void)
     }
 }
 
+
+/* ── The name the guest mounts a share by ────────────────────────── */
+
+/*
+ * qemu refuses a virtiofs tag over 36 bytes, and refuses the *device*
+ * with it: the domain does not start, and the error names a property
+ * nobody set by hand.
+ *
+ * The tag used to be the target path.
+ * `/mnt/clawtilla/exchange/ubuntu-tester` is 37 bytes, so the first VM
+ * agent whose id reached thirteen characters would not boot -- and
+ * deb-tester (34) and arch-tester (35) both fitted, which is why it took
+ * a third name to surface.
+ */
+static void
+test_a_tag_fits_in_what_qemu_accepts(void)
+{
+    static const gchar *const targets[] = {
+        "/mnt/clawtilla/workspace",
+        "/mnt/clawtilla/exchange",
+        "/mnt/clawtilla/exchange/shared",
+        "/mnt/clawtilla/exchange/ubuntu-tester",
+        "/mnt/clawtilla/exchange/an-agent-with-a-really-long-name-indeed",
+        "/work/projects",
+        "/"
+    };
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(targets); i++) {
+        g_autofree gchar *tag = clawt_mount_tag(targets[i]);
+
+        g_assert_nonnull(tag);
+        g_assert_cmpuint(strlen(tag), >, 0);
+        g_assert_cmpuint(strlen(tag), <=, CLAWT_MOUNT_TAG_MAX);
+    }
+}
+
+/*
+ * Stable for ever, because it is written into the guest's fstab at first
+ * boot and into the domain XML on every provision.  A tag that moved
+ * would leave the guest mounting a device that is not there any more --
+ * and `nofail` makes that silent.
+ */
+static void
+test_a_tag_is_the_same_every_time(void)
+{
+    g_autofree gchar *once = clawt_mount_tag("/mnt/clawtilla/workspace");
+    g_autofree gchar *again = clawt_mount_tag("/mnt/clawtilla/workspace");
+
+    g_assert_cmpstr(once, ==, again);
+}
+
+/*
+ * And two targets never share one.  The readable part is a lossy
+ * transformation -- `/a/b` and `/a-b` reduce to the same letters -- so
+ * the hash is always there rather than only when the name had to be cut.
+ */
+static void
+test_two_targets_do_not_share_a_tag(void)
+{
+    g_autofree gchar *nested = clawt_mount_tag("/mnt/clawtilla/exchange/x");
+    g_autofree gchar *dashed = clawt_mount_tag("/mnt/clawtilla/exchange-x");
+    g_autofree gchar *long_a = clawt_mount_tag(
+        "/mnt/clawtilla/exchange/an-agent-with-a-really-long-name-alpha");
+    g_autofree gchar *long_b = clawt_mount_tag(
+        "/mnt/clawtilla/exchange/an-agent-with-a-really-long-name-beta");
+
+    g_assert_cmpstr(nested, !=, dashed);
+
+    /* Even where the readable half was truncated to the same prefix. */
+    g_assert_cmpstr(long_a, !=, long_b);
+}
+
+/*
+ * The domain and the seed have to name the same tag.  Two spellings of
+ * this would differ exactly once, and the share would simply not be
+ * there -- with `nofail` keeping the guest quiet about it.
+ */
+static void
+test_the_domain_and_the_seed_agree_on_the_tag(void)
+{
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(ClawtMount) mount = NULL;
+    g_autofree gchar *xml = NULL;
+    g_autofree gchar *seed = NULL;
+    g_autofree gchar *tag = NULL;
+    const gchar *target = "/mnt/clawtilla/exchange/ubuntu-tester";
+
+    computer = clawt_vm_computer_new("ubuntu-tester",
+                                     CLAWT_VM_BACKEND_LIBVIRT, NULL);
+
+    mount = clawt_mount_new("/host/exchange/ubuntu-tester", target);
+    clawt_mount_set_mount_type(mount, CLAWT_MOUNT_VIRTIOFS);
+    clawt_computer_add_mount(computer, mount);
+
+    tag = clawt_mount_tag(target);
+    xml = clawt_vm_computer_build_domain_xml(CLAWT_VM_COMPUTER(computer));
+    seed = clawt_cloud_init_build_user_data_full(
+        "root", NULL, NULL, NULL, clawt_computer_get_mounts(computer));
+
+    g_assert_nonnull(strstr(xml, tag));
+    g_assert_nonnull(strstr(seed, tag));
+
+    /* And neither carries the path where the tag belongs. */
+    g_assert_null(strstr(xml, "<target dir='/mnt"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -2248,6 +2367,14 @@ main(int argc, char *argv[])
                     test_host_description_mentions_the_confinement);
     g_test_add_func("/computer/truncation", test_output_truncation_is_reported);
 
+    g_test_add_func("/computer/tag/fits-what-qemu-accepts",
+                    test_a_tag_fits_in_what_qemu_accepts);
+    g_test_add_func("/computer/tag/stable",
+                    test_a_tag_is_the_same_every_time);
+    g_test_add_func("/computer/tag/distinct",
+                    test_two_targets_do_not_share_a_tag);
+    g_test_add_func("/computer/tag/domain-and-seed-agree",
+                    test_the_domain_and_the_seed_agree_on_the_tag);
     g_test_add_func("/computer/mounts/workspace-is-shared",
                     test_a_computer_is_given_the_agents_workspace);
     g_test_add_func("/computer/mounts/vm-workspace-is-virtiofs",

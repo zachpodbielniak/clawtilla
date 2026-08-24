@@ -92,6 +92,39 @@ gboolean clawt_mount_validate(ClawtMount  *self,
 void clawt_mount_set_forbidden_sources(const gchar * const *paths);
 
 /**
+ * CLAWT_MOUNT_TAG_MAX:
+ *
+ * How long a virtiofs tag may be, in bytes.
+ *
+ * qemu's limit, and it refuses the *device* rather than truncating:
+ * "tag property must be 36 bytes or less", at which point the domain
+ * does not start at all.
+ */
+#define CLAWT_MOUNT_TAG_MAX (36)
+
+/**
+ * clawt_mount_tag:
+ * @target: the path the share appears at inside the guest
+ *
+ * The name the guest mounts the share by.
+ *
+ * A `<filesystem>` device is addressed by tag, and the tag used to be
+ * the target path itself -- which works until the path is 37 bytes.
+ * `/mnt/clawtilla/exchange/ubuntu-tester` is, and the domain then fails
+ * to start with an error about a property nobody set by hand.
+ *
+ * Pure, and stable for ever: the tag is written into the guest's fstab
+ * at first boot and into the domain XML on every provision, so a tag
+ * that changed would leave the guest mounting a device that no longer
+ * exists.  Both callers go through here for the same reason -- two
+ * spellings of it would differ exactly once and the share would be
+ * silently missing.
+ *
+ * Returns: (transfer full): a tag of at most %CLAWT_MOUNT_TAG_MAX bytes
+ */
+gchar *clawt_mount_tag(const gchar *target);
+
+/**
  * clawt_mount_resolved_source:
  * @self: a #ClawtMount
  *

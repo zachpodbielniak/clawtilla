@@ -366,3 +366,69 @@ clawt_mount_validate(ClawtMount *self, GError **error)
 
     return TRUE;
 }
+
+/* ── The name the guest mounts a share by ────────────────────────── */
+
+/*
+ * Readable, bounded, and stable.
+ *
+ * The three matter for different reasons.  Readable, because somebody
+ * reading `findmnt` in the guest or `virsh dumpxml` on the host should
+ * be able to tell which share they are looking at.  Bounded, because
+ * qemu refuses a tag over 36 bytes and refuses the whole *device* with
+ * it -- the domain does not start, and the error names a property nobody
+ * set by hand.  Stable, because the tag is written into the guest's
+ * fstab at first boot and into the domain XML on every provision: a tag
+ * that moved would leave the guest mounting something that is not there
+ * any more, and `nofail` makes that silent.
+ *
+ * The hash is always present rather than only when the readable part
+ * had to be cut.  It is what makes two different targets produce two
+ * different tags, and a branch that only runs for long paths is a branch
+ * that is exercised by nobody until the day it matters.
+ */
+gchar *
+clawt_mount_tag(const gchar *target)
+{
+    g_autofree gchar *digest = NULL;
+    g_autoptr(GString) slug = NULL;
+    const gchar *p;
+    gsize keep;
+
+    g_return_val_if_fail(target != NULL, NULL);
+
+    digest = g_compute_checksum_for_string(G_CHECKSUM_SHA256, target, -1);
+
+    /*
+     * The common prefix carries no information -- everything clawtilla
+     * mounts is under it -- and spending 14 of 36 bytes on it would push
+     * the part that identifies the share off the end.
+     */
+    p = target;
+
+    if (g_str_has_prefix(p, "/mnt/clawtilla/"))
+        p += strlen("/mnt/clawtilla/");
+
+    slug = g_string_new(NULL);
+
+    for (; *p != '\0'; p++) {
+        if (g_ascii_isalnum(*p) || *p == '-' || *p == '_' || *p == '.')
+            g_string_append_c(slug, *p);
+        else if (slug->len > 0 && slug->str[slug->len - 1] != '-')
+            g_string_append_c(slug, '-');
+    }
+
+    while (slug->len > 0 && slug->str[slug->len - 1] == '-')
+        g_string_truncate(slug, slug->len - 1);
+
+    if (slug->len == 0)
+        g_string_append(slug, "share");
+
+    /* Seven for the hash and its separator, the rest for the name. */
+    keep = CLAWT_MOUNT_TAG_MAX - 7;
+
+    if (slug->len > keep)
+        g_string_truncate(slug, keep);
+
+    return g_strdup_printf("%s-%.6s", slug->str, digest);
+}

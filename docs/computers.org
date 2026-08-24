@@ -866,6 +866,25 @@ before child -- the exchange nests, and a child mounted first vanishes
 under its parent -- with ~nofail~, so a share whose backing daemon did
 not start cannot stop the guest booting.
 
+A share is addressed by *tag*, not by path.  clawtilla derives one from
+the target -- readable, and short enough for qemu, which refuses a tag
+over 36 bytes and refuses the whole device with it, so the domain does
+not start:
+
+#+begin_example
+/mnt/clawtilla/workspace              ->  workspace-14abab
+/mnt/clawtilla/exchange/ubuntu-tester ->  exchange-ubuntu-tester-4106a9
+#+end_example
+
+The hash is always there rather than only when the readable half had to
+be cut: it is what keeps two different targets from producing one tag,
+and a branch that runs only for long paths is exercised by nobody until
+the day it matters.  The tag is a pure function of the target and never
+changes, because the guest's fstab is written at first boot and the
+domain XML on every provision -- a tag that moved would leave the guest
+mounting something that is no longer there, quietly, because of
+~nofail~.
+
 Two consequences worth knowing:
 
 - Shares are fixed at provision time, like everything else in the seed.

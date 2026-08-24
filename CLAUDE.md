@@ -441,6 +441,33 @@ the same program.
   itself was correct throughout; `gdbus call ... SetEnabled true` by hand
   returned `(true,)` on the same guest. Only the launcher was missing.
 
+### A virtiofs tag is not a path, and has 36 bytes
+
+- qemu refuses a tag over 36 bytes -- and refuses the **device**, so the
+  domain does not start at all: *"tag property must be 36 bytes or
+  less"*, about a property nobody set by hand. The tag was the target
+  path, and `/mnt/clawtilla/exchange/ubuntu-tester` is 37. Same shape as
+  `sockaddr_un.sun_path`: a hard length limit on an identifier derived
+  from a path.
+- It bit at an agent id of **thirteen characters**. `deb-tester` (34) and
+  `arch-tester` (35) both fitted, so the feature looked finished across
+  two agents and died on the third name. A near-miss boundary is worse
+  than a wide one: it reads as something specific to that agent.
+- I noticed the limit while writing the mounts, checked the two constant
+  targets against it, and reasoned a long one was somebody else's
+  problem -- then made the default mounts include the agent id in the
+  target. **A limit needs a test that reaches it, not a moment's
+  arithmetic that it exists.** Nothing in the suite rendered a domain
+  with a long target, because every fixture used a short id.
+- `clawt_mount_tag()` is a pure function and both writers -- the domain
+  XML and the guest's fstab -- go through it. Two spellings would differ
+  exactly once, and `nofail` would keep the guest quiet about the share
+  that never appeared. It is stable for ever for the same reason: fstab
+  is written at first boot, the XML on every provision.
+- The hash is always appended, not only when the readable half was
+  truncated. It is what makes two targets produce two tags, and a branch
+  that runs only for long paths is exercised by nobody until it matters.
+
 ### Creating a thing and building it were two steps, and one had no button
 
 - A computer is built at agent *start*, never at create -- so `agent.create`

@@ -375,11 +375,25 @@ clawt_vm_computer_build_domain_xml(ClawtVmComputer *self)
         escaped_source = g_markup_escape_text(source, -1);
 
         /*
-         * The guest mounts by tag, not by path, so the tag is derived from
-         * the target and kept stable.
+         * The guest mounts by tag, not by path.
+         *
+         * The tag *was* the path, which qemu refuses over 36 bytes --
+         * and it refuses the device, so the domain does not start:
+         * "tag property must be 36 bytes or less" for
+         * /mnt/clawtilla/exchange/ubuntu-tester, which is 37. Two of the
+         * three agents that existed at the time fitted, which is why it
+         * took a third name to surface.
+         *
+         * clawt_mount_tag() is shared with the seed that writes the
+         * guest's fstab; two spellings of this would differ exactly once
+         * and the share would simply not be there.
          */
-        escaped_target = g_markup_escape_text(
-            clawt_mount_get_target(mount), -1);
+        {
+            g_autofree gchar *tag =
+                clawt_mount_tag(clawt_mount_get_target(mount));
+
+            escaped_target = g_markup_escape_text(tag, -1);
+        }
 
         g_string_append_printf(out,
             "    <filesystem type='mount' accessmode='passthrough'>\n"
