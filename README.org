@@ -55,6 +55,7 @@ transcript and send work, and the page says what does not.
 | Credentials | per-agent, by reference -- never literal secrets in the config |
 | Team | optional, with a role: a lead assigns inside it, a member assigns to nobody |
 | Tools | per-agent allow/deny over the orchestration tools |
+| Spending | per-agent and fleet cost, from the figure each provider reported |
 
 ** Quick start
 
@@ -123,6 +124,7 @@ All under [[file:docs/][docs/]], in org-mode:
 | [[file:docs/mailboxes.org][mailboxes.org]] | queue semantics and how to unstick one |
 | [[file:docs/computers.org][computers.org]] | host, container, VM, desktop, mounts |
 | [[file:docs/orchestration.org][orchestration.org]] | rooms, tasks, chief-of-staff, loop safety |
+| [[file:docs/spending.org][spending.org]] | what the fleet costs, and the budget that reads it |
 | [[file:docs/integrations.org][integrations.org]] | Matrix, mail, MCP servers, notifications; scoping them |
 | [[file:docs/connectors.org][connectors.org]] | connected accounts: the credential stays here, the tools go to the agents |
 | [[file:docs/routines.org][routines.org]] | standing work on a schedule, presets and cron |

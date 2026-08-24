@@ -53,6 +53,7 @@ struct _ClawtDaemon {
     ClawtTaskManager   *tasks;
     ClawtMailboxRouter *router;
     ClawtLoopGuard     *guard;
+    ClawtUsage         *usage;
     ClawtEventBus      *bus;
     ClawtEventLog      *log;
     ClawtExchange      *exchange;
@@ -1036,6 +1037,46 @@ on_link_typing(ClawtLinkServer *server,
     clawt_event_free(event);
 }
 
+/*
+ * Charge what an agent has spent since its last turn to the task it is
+ * answering about.
+ *
+ * `orchestration.task_budget_usd` has been enabled by default since the
+ * schema was written, the guard has always checked it, and nothing had
+ * ever called clawt_loop_guard_record_spend() outside a test -- so the
+ * one limit built to stop an expensive loop could never fire.  Same
+ * shape as the hop counter before it: a limit nothing reaches.
+ *
+ * Drained on every reply, not only on the ones carrying a task, because
+ * the drain is what advances the watermark.  Skipping the untasked
+ * turns would bank them and hand the whole accumulated bill to whatever
+ * task happened to be answered next.
+ */
+static void
+charge_turn_to_task(ClawtDaemon *self, const gchar *agent_id,
+                    const gchar *task_id)
+{
+    g_autofree gchar *state_dir = NULL;
+    g_autofree gchar *db_path = NULL;
+    gint64 cost_micros;
+
+    if (self->usage == NULL)
+        return;
+
+    state_dir = clawt_config_agent_state_dir(self->config, agent_id);
+    if (state_dir == NULL)
+        return;
+
+    db_path = clawt_usage_database_path(state_dir);
+    cost_micros = clawt_usage_drain(self->usage, agent_id, db_path);
+
+    if (task_id == NULL || cost_micros <= 0)
+        return;
+
+    clawt_loop_guard_record_spend(self->guard, task_id,
+                                  (gdouble)cost_micros / 1000000.0);
+}
+
 static void
 on_link_message(ClawtLinkServer *server, const gchar *agent_id,
                 const gchar *room_id, const gchar *body,
@@ -1102,6 +1143,12 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
      * would otherwise leave the delegator waiting on a task that is
      * already done.
      */
+    /*
+     * Before the reply is routed, so the spend is on the books by the
+     * time the guard is asked whether the next message may be sent.
+     */
+    charge_turn_to_task(self, agent_id, thread_id);
+
     if (thread_id != NULL)
         clawt_task_manager_complete(self->tasks, thread_id, body);
 
@@ -1723,6 +1770,7 @@ release_components(ClawtDaemon *self)
     g_clear_object(&self->pod_bridge);
     g_clear_object(&self->router);
     g_clear_object(&self->guard);
+    g_clear_object(&self->usage);
     g_clear_object(&self->tasks);
     g_clear_object(&self->rooms);
     g_clear_object(&self->agents);
@@ -2769,6 +2817,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
 
     self->tasks = clawt_task_manager_new();
     self->guard = clawt_loop_guard_new();
+    self->usage = clawt_usage_new();
     configure_limits(self);
 
     self->notifier = clawt_notifier_new(self->config);
@@ -4939,7 +4988,7 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
 
         state_dir = clawt_config_agent_state_dir(self->config, agent_id);
         sessions = g_build_filename(state_dir, "sessions", NULL);
-        db_path = g_build_filename(state_dir, "libreclaw.db", NULL);
+        db_path = clawt_usage_database_path(state_dir);
 
         /*
          * Moved aside rather than deleted. A reset is what you reach for
@@ -4963,6 +5012,17 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
          * Through libreclaw's own API rather than by opening its schema:
          * the daemon links liblc, and the agent is stopped, so this is
          * the same code the agent itself would run.
+         *
+         * The path comes from clawt_usage_database_path() because this
+         * block spelled it itself for a long time, as
+         * `<state_dir>/libreclaw.db` -- which is not where libreclaw
+         * puts it.  Its sqlite backend builds the name from
+         * `session.persist_dir` and never reads `database.path`, so the
+         * file tested for here has never existed on any machine: the
+         * branch was skipped every time and `sessions_cleared` was
+         * always 0.  Reset appeared to work only because moving the
+         * sessions directory aside takes the database with it, which is
+         * luck rather than the two-places-to-clear this was written for.
          */
         if (g_file_test(db_path, G_FILE_TEST_EXISTS)) {
             g_autoptr(LcDatabase) db = LC_DATABASE(lc_sqlite_database_new());
@@ -4987,6 +5047,15 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
                           agent_id, db_error->message);
             }
         }
+
+        /*
+         * The database that comes back is a new one, numbering its rows
+         * from 1 again.  A watermark from the old one would suppress
+         * every row in it, so the agent would appear to spend nothing
+         * ever again.
+         */
+        if (self->usage != NULL)
+            clawt_usage_forget(self->usage, agent_id);
 
         if (was_running && !clawt_daemon_start_agent(self, agent_id, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
@@ -6440,6 +6509,95 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "cancelled");
         json_builder_add_int_value(builder, cancelled);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    /* ── usage ── */
+
+    if (g_strcmp0(kind, "usage.summary") == 0) {
+        GPtrArray *agents = clawt_agent_manager_list(self->agents);
+        ClawtUsageTotals fleet = { 0, 0, 0, 0 };
+        gint64 since = clawt_ipc_payload_int(payload, "since", 0);
+        guint i;
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "agents");
+        json_builder_begin_array(builder);
+
+        for (i = 0; i < agents->len; i++) {
+            ClawtAgent *agent = g_ptr_array_index(agents, i);
+            const gchar *agent_id = clawt_agent_get_id(agent);
+            g_autofree gchar *state_dir = NULL;
+            g_autofree gchar *db_path = NULL;
+            g_autoptr(GError) read_error = NULL;
+            ClawtUsageTotals totals = { 0, 0, 0, 0 };
+
+            state_dir = clawt_config_agent_state_dir(self->config, agent_id);
+            if (state_dir == NULL)
+                continue;
+
+            db_path = clawt_usage_database_path(state_dir);
+
+            /*
+             * One unreadable database does not fail the summary.  A
+             * fleet report that refuses because one agent's file is
+             * mid-write tells you nothing about the other nine.
+             */
+            if (!clawt_usage_read_totals(db_path, since, &totals,
+                                         &read_error)) {
+                g_debug("usage: %s: %s", agent_id,
+                        read_error != NULL ? read_error->message : "unknown");
+            }
+
+            clawt_usage_totals_add(&fleet, &totals);
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "id");
+            json_builder_add_string_value(builder, agent_id);
+            json_builder_set_member_name(builder, "name");
+            json_builder_add_string_value(builder,
+                                          clawt_agent_get_name(agent));
+            json_builder_set_member_name(builder, "turns");
+            json_builder_add_int_value(builder, totals.turns);
+            json_builder_set_member_name(builder, "input_tokens");
+            json_builder_add_int_value(builder, totals.input_tokens);
+            json_builder_set_member_name(builder, "output_tokens");
+            json_builder_add_int_value(builder, totals.output_tokens);
+            json_builder_set_member_name(builder, "cost_micros");
+            json_builder_add_int_value(builder, totals.cost_micros);
+            json_builder_end_object(builder);
+        }
+
+        json_builder_end_array(builder);
+
+        json_builder_set_member_name(builder, "total");
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "turns");
+        json_builder_add_int_value(builder, fleet.turns);
+        json_builder_set_member_name(builder, "input_tokens");
+        json_builder_add_int_value(builder, fleet.input_tokens);
+        json_builder_set_member_name(builder, "output_tokens");
+        json_builder_add_int_value(builder, fleet.output_tokens);
+        json_builder_set_member_name(builder, "cost_micros");
+        json_builder_add_int_value(builder, fleet.cost_micros);
+        json_builder_end_object(builder);
+
+        json_builder_set_member_name(builder, "since");
+        json_builder_add_int_value(builder, since);
+
+        /*
+         * What the budget would refuse right now, so a client can show
+         * the cap beside the spend rather than making somebody go and
+         * read the config to find out what the number means.
+         */
+        json_builder_set_member_name(builder, "task_budget_usd");
+        json_builder_add_double_value(
+            builder,
+            clawt_config_get_double(self->config,
+                                    "orchestration.task_budget_usd"));
+
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));

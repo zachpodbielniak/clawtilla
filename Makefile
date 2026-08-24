@@ -79,6 +79,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.h \
 	$(SRCDIR)/memory/clawt-memory.h \
 	$(SRCDIR)/memory/clawt-memory-store.h \
+	$(SRCDIR)/usage/clawt-usage.h \
 	$(SRCDIR)/mailbox/clawt-mailbox.h \
 	$(SRCDIR)/mailbox/clawt-mailbox-router.h \
 	$(SRCDIR)/agent/clawt-agent-runtime.h \
@@ -161,6 +162,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/ipc/clawt-connection.c \
 	$(SRCDIR)/memory/clawt-memory.c \
 	$(SRCDIR)/memory/clawt-memory-store.c \
+	$(SRCDIR)/usage/clawt-usage.c \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.c \
 	$(SRCDIR)/mailbox/clawt-mailbox.c \
 	$(SRCDIR)/mailbox/clawt-mailbox-router.c \
@@ -263,10 +265,19 @@ check-submodules:
 # archives and the podomation loadable modules.  Its `static` target alone
 # builds none of those, so we ask for `all`.  Always DEBUG=0: deps use
 # release output regardless of our own build type, as libreclaw does.
+#
+# ASAN=0 and UBSAN=0 for the same reason, and they are not decoration.
+# A command-line variable is passed down to every sub-make, so
+# `make DEBUG=1 ASAN=1` built libreclaw's *release* tree -- the one
+# LIBRECLAW_OUTDIR points at unconditionally -- with the sanitizer
+# linked in.  The next ordinary `make` then died in libreclaw's own GIR
+# scanner, which runs a binary it has just linked: "ASan runtime does not
+# come first in initial library list".  One documented command left the
+# tree unable to build until somebody worked out to clean the dep.
 .PHONY: deps
 deps:
 	@echo "Building libreclaw and its dependencies..."
-	$(MAKE) -C $(LIBRECLAW_DIR) all DEBUG=0
+	$(MAKE) -C $(LIBRECLAW_DIR) all DEBUG=0 ASAN=0 UBSAN=0
 
 $(LIBRECLAW_STATIC):
 	@$(MAKE) --no-print-directory deps

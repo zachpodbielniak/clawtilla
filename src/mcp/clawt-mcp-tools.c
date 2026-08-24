@@ -249,6 +249,12 @@ static const ToolDefinition tools[] = {
          "staff rather than to that team directly.",
          NEEDS_ASSIGNMENT, delegate_params),
 
+    TOOL("clawtilla_fleet_cost",
+         "What the fleet has spent so far, per agent and in total, and "
+         "what one delegated task is allowed to spend. Worth checking "
+         "before fanning work out widely -- delegating is spending.",
+         NEEDS_NOTHING, no_params),
+
     TOOL("clawtilla_list_teams",
          "The teams in this fleet: what each is for, who leads it, who is "
          "on it and how many are running. Read the descriptions to decide "
@@ -989,6 +995,91 @@ tool_list_agents(ClawtMcpTools *self, const gchar *agent_id)
 
     return g_string_free(g_steal_pointer(&out), FALSE);
 }
+
+
+/*
+ * What the fleet has spent, for an agent that is deciding whether to
+ * spend more.
+ *
+ * A chief-of-staff handing out ten subtasks is committing real money,
+ * and until now nothing in its tool surface could tell it how much --
+ * so "delegate this to five agents" and "delegate this to fifty" felt
+ * identical from where it sat.  Reported per agent, because the useful
+ * answer is nearly always which one is most of it.
+ */
+static gchar *
+tool_fleet_cost(ClawtMcpTools *self, const gchar *agent_id)
+{
+    g_autoptr(GString) out = g_string_new(NULL);
+    ClawtUsageTotals fleet = { 0, 0, 0, 0 };
+    ClawtConfig *config;
+    GPtrArray *agents;
+    gdouble budget;
+    guint i;
+
+    (void)agent_id;
+
+    config = (self->agents != NULL)
+             ? clawt_agent_manager_get_config(self->agents) : NULL;
+
+    if (config == NULL)
+        return g_strdup("This fleet has no configuration to read spending "
+                        "from.");
+
+    agents = clawt_agent_manager_list(self->agents);
+
+    for (i = 0; i < agents->len; i++) {
+        ClawtAgent *agent = g_ptr_array_index(agents, i);
+        const gchar *id = clawt_agent_get_id(agent);
+        g_autofree gchar *state_dir = NULL;
+        g_autofree gchar *db_path = NULL;
+        g_autofree gchar *cost = NULL;
+        ClawtUsageTotals totals = { 0, 0, 0, 0 };
+
+        state_dir = clawt_config_agent_state_dir(config, id);
+        if (state_dir == NULL)
+            continue;
+
+        db_path = clawt_usage_database_path(state_dir);
+        clawt_usage_read_totals(db_path, 0, &totals, NULL);
+        clawt_usage_totals_add(&fleet, &totals);
+
+        cost = clawt_usage_format_cost(totals.cost_micros);
+        g_string_append_printf(out, "%s: %s over %" G_GINT64_FORMAT
+                                    " turns\n", id, cost, totals.turns);
+    }
+
+    {
+        g_autofree gchar *cost = clawt_usage_format_cost(fleet.cost_micros);
+
+        g_string_append_printf(out, "\nFleet total: %s over %"
+                                    G_GINT64_FORMAT " turns.\n", cost,
+                               fleet.turns);
+    }
+
+    budget = clawt_config_get_double(config, "orchestration.task_budget_usd");
+
+    if (budget > 0.0)
+        g_string_append_printf(
+            out,
+            "Each delegated task may spend $%.2f before its messages are "
+            "refused, so a task near that figure needs splitting rather "
+            "than retrying.\n", budget);
+
+    /*
+     * Said here as well as in the clients, because an agent asked to
+     * reconcile this against an invoice would otherwise report a
+     * discrepancy it cannot explain.
+     */
+    g_string_append(out,
+                    "\nThese are the figures the provider reported per "
+                    "turn. They are money actually billed; the token "
+                    "counts elsewhere exclude cached context, which is "
+                    "billed but not reported as tokens.\n");
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
 
 /*
  * The teams, written for whoever is deciding where a piece of work goes.
@@ -2399,6 +2490,8 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
     else if (g_strcmp0(tool_name, "clawtilla_message_agent") == 0 ||
              g_strcmp0(tool_name, "clawtilla_ask_agent") == 0)
         text = tool_message_agent(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_fleet_cost") == 0)
+        text = tool_fleet_cost(self, agent_id);
     else if (g_strcmp0(tool_name, "clawtilla_list_teams") == 0)
         text = tool_list_teams(self, agent_id);
     else if (g_strcmp0(tool_name, "clawtilla_delegate") == 0)

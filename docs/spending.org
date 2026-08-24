@@ -1,0 +1,208 @@
+#+title: Spending
+#+description: What the fleet costs, where the figure comes from, and the budget that reads it
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-24 Mon]
+#+updated: [2026-08-24 Mon]
+#+version: 0.1.0
+
+* Spending
+
+A fleet of agents is a fleet of paid API calls.  Every agent is a
+libreclaw process, and libreclaw records one row per AI turn --  tokens
+and cost -- into that agent's own database.  clawtilla reads those rows
+and adds them up.
+
+#+begin_src bash
+clawtilla cost
+#+end_src
+
+#+begin_example
+AGENT                   TURNS           IN          OUT         COST
+chief                       7           28         2834        $0.04
+tester                     45          182        15296        $0.23
+fleet                      52          210        18130        $0.27
+#+end_example
+
+** Where the figure comes from
+
+The cost is *the number the provider itself reported for that turn*, not
+an estimate.  Claude Code and the Grok build CLI both state a
+=total_cost_usd= per turn; that figure is carried through ai-glib's
+=AiResponse= and recorded as it stands.
+
+This matters more than it sounds.  A CLI backend bills for *cache reads*
+and *cache writes*, and neither appears in the token counts it reports.
+An agent with a persistent session has a warm context on every turn
+after the first, so a cost recomputed from a rate card over the two
+reported token counts lands well under the real one -- and the gap grows
+with the size of the context, which is exactly the case anybody watching
+a bill cares about.
+
+A provider that reports no cost at all still gets an estimate from
+libreclaw's price table.  That is a floor, and it is used only where
+there is nothing better.
+
+*** Why the token columns look too small
+
+=IN= counts *new* input tokens.  Cached context is billed and is not
+reported as tokens, so a turn can honestly show eight input tokens
+against a bill of two cents.  The cost column is the one to trust; the
+token columns describe what was new, not what was charged for.
+
+This is stated in the CLI output, in the GTK page and in the
+=clawtilla_fleet_cost= tool for the same reason: somebody reconciling
+these numbers against a provider invoice should not have to guess why
+they differ.
+
+** Windows
+
+#+begin_src bash
+clawtilla cost --today          # since local midnight
+clawtilla cost --days 7         # the last week
+clawtilla cost --agent chief    # one agent, with the fleet total for scale
+#+end_src
+
+The fleet line is printed even when a single agent was asked for, because
+"is this agent most of the bill" is usually why somebody narrowed the
+report.
+
+A cost below a cent keeps four decimal places rather than rounding to
+=$0.00=.  Per-turn costs here are routinely a fraction of a cent, and a
+column of zeroes reads as *nothing is being recorded* -- which is the one
+thing this report exists to disprove.
+
+** In the clients
+
+The GTK client has a *Spending* page under Settings: one row per agent
+with its cost and turn count, a fleet total, and a period selector.
+
+An agent can ask too.  =clawtilla_fleet_cost= reports the same per-agent
+breakdown plus what one delegated task is allowed to spend.  A
+chief-of-staff handing out ten subtasks is committing real money, and
+until it could see the figure, "delegate this to five agents" and
+"delegate this to fifty" felt identical from where it sat.
+
+** The task budget
+
+=orchestration.task_budget_usd= caps what one delegated task -- and
+everything it spawns -- may spend.  It defaults to =$5.00=; =0= disables
+it.
+
+When a task passes its cap, further messages belonging to it are refused
+with =CLAWT_ERROR_LOOP_LIMIT=, and the refusal names both the spend and
+the cap:
+
+#+begin_example
+this task has spent $5.40, which is its budget of $5.00.
+#+end_example
+
+The spend is charged when the agent answers.  Each reply drains what that
+agent has spent since its previous turn and books it against the task the
+reply is about.
+
+*** Charged to the task, not to the agent
+
+A chief-of-staff delegating ten subtasks is bounded as one piece of work
+rather than ten.  That is the useful shape: the runaway case is a task
+that keeps going, not an agent that is busy.
+
+*** The first turn after a restart charges nothing
+
+A daemon restarted mid-task must not bill that task for every turn the
+agent has ever taken.  The first drain on an agent sets a watermark and
+charges nothing; an agent with any history at all would otherwise
+exhaust its budget on its first reply, over work that finished days ago.
+
+*** Turns are charged exactly once
+
+Rows are filtered by =recorded_at=, which has one-second resolution, so
+two turns in the same second are indistinguishable by time.  The row id
+settles which have already been charged.  Without it the earlier turn
+would be counted again on every drain and a task's budget would drain
+itself.
+
+** Where the data lives
+
+=<state_dir>/agents/<id>/sessions/libreclaw.db=, in the =token_usage=
+table.
+
+Note the =sessions/= component.  Those are libreclaw's settings rather
+than clawtilla's: its SQLite backend builds that filename from
+~session.persist_dir~ and *never reads* ~database.path~, so the database
+is inside the sessions directory rather than beside it.  clawtilla
+renders ~database.path~ to the same place so that the line in each
+agent's config does not name a file that does not exist.
+
+Everything that needs the path goes through
+=clawt_usage_database_path()=.  It is one function because it was once
+two spellings: =/reset= tested for =<state_dir>/libreclaw.db=, a file
+that has never existed on any machine, so its session-clearing branch was
+skipped every time and always reported nothing cleared.  Reset appeared
+to work only because moving the sessions directory aside takes the
+database with it.
+
+** Reading it yourself
+
+The table belongs to libreclaw, and clawtilla reads it through
+libreclaw's own API rather than by opening its schema -- so there is no
+copy of that column list here to fall out of step.  If you want to query
+it by hand:
+
+Single quotes around ~unixepoch~, double quotes around the whole query:
+in SQLite a double-quoted word is an *identifier*, so the obvious spelling
+fails with "no such column".
+
+#+begin_src bash
+sqlite3 ~/.clawtilla/agents/chief/sessions/libreclaw.db "
+  SELECT date(recorded_at, 'unixepoch') AS day,
+         count(*) AS turns,
+         sum(cost_usd_micros) / 1000000.0 AS usd
+  FROM token_usage GROUP BY day ORDER BY day DESC;"
+#+end_src
+
+Cost is stored as an integer count of micro-dollars so that =SUM()= is
+exact and identical on SQLite and PostgreSQL.  clawtilla carries it the
+same way for the same reason: a fleet total built from floats disagrees
+with itself depending on the order the agents happened to be visited in.
+
+** An agent that has never run
+
+It has spent nothing, and that is reported as a total rather than as a
+failure.  Nothing is created on disk to answer the question either --
+opening a SQLite database brings it into existence, and asking what a
+stopped agent cost should not leave one behind.
+
+** Troubleshooting
+
+*** Every agent reports zero
+
+Check that the databases exist:
+
+#+begin_src bash
+ls ~/.clawtilla/agents/*/sessions/libreclaw.db
+#+end_src
+
+An agent that has never completed a turn has no rows.  A turn that
+reported no tokens at all is deliberately not recorded -- that is a
+tool-only turn, and a zero row would inflate the turn count with no data
+behind it.
+
+*** The numbers reset after =/reset=
+
+They do.  =/reset= moves the sessions directory aside, and the history
+goes with it.  The old directory is kept as
+=sessions.reset-<timestamp>=, so the rows are still there to be read by
+hand if you want them.
+
+*** The budget never fires
+
+Check it is not zero:
+
+#+begin_src bash
+clawtilla config show | grep task_budget_usd
+#+end_src
+
+Then check the work is actually a *task*.  Spend is booked against a task
+id, and an ordinary chat has none -- so ordinary conversation is
+deliberately uncapped, and only delegated work is bounded.

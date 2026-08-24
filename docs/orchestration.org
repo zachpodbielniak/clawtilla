@@ -491,8 +491,18 @@ is stuck.
 *** task_budget_usd
 
 Charged against the *task*, not the agent, so a chief delegating ten
-subtasks is bounded as one piece of work rather than ten.  Exhausting it
-fails the task with the reason recorded.
+subtasks is bounded as one piece of work rather than ten.  Past the cap,
+the task's messages are refused with an error naming both the spend and
+the budget.
+
+The spend is real money: each reply drains what that agent has been
+billed since its previous turn -- the figure the provider itself
+reported -- and books it against the task the reply is about.  The first
+turn after a daemon restart charges nothing, so a restart mid-task does
+not bill it for everything the agent has ever done.  See [[file:spending.org][Spending]].
+
+Ordinary conversation is deliberately uncapped: spend is booked against a
+task id, and a chat has none.
 
 *** cycle_window
 

@@ -559,6 +559,106 @@ the same program.
   one looked exactly like a pass. That trap is already in this file; I
   still fell into it. Read the kernel's answer, not a string.
 
+### A command-line variable reaches every sub-make, including the deps
+
+- The `deps` target pins `DEBUG=0` with a comment saying deps use release
+  output whatever we are building -- and said nothing about the
+  sanitizers. make passes command-line variables down, so
+  `make DEBUG=1 ASAN=1` built **libreclaw's release tree** with ASan
+  linked in, which is the one tree `LIBRECLAW_OUTDIR` points at
+  unconditionally.
+- The next ordinary `make` then failed inside libreclaw's own GIR
+  scanner, which runs a binary it has just linked: *"ASan runtime does
+  not come first in initial library list"*. Nothing in that message
+  mentions sanitizers being on, or a previous build, or the dep -- and
+  the failing target is `Lc-1.0.gir`, several layers from anything the
+  person changed. One documented command (`make DEBUG=1 ASAN=1 clean
+  all`) left the tree unable to build until somebody guessed to clean
+  the dep.
+- `ASAN=0 UBSAN=0` beside the `DEBUG=0`. Pinning one of three knobs is
+  the same gap as writing two of a distribution's three file names:
+  it reads as "we pin the build type" and is not.
+- Verified by running the sequence that broke it -- ASAN build, then
+  plain build -- and watching both exit 0.
+
+### A limit nothing increments is a limit that cannot fire
+
+- `orchestration.task_budget_usd` has been **enabled by default at $5.00**
+  since the schema was written, generated into `data/*.yaml`, documented
+  in `docs/`, and checked by `clawt_loop_guard_check()` on every routed
+  message -- while `clawt_loop_guard_record_spend()` was called by
+  **nothing outside a test**. So the counter the check reads was
+  permanently zero and the one limit built to stop an expensive loop
+  could never once refuse anything.
+- Exactly the shape of the `max_hops` bug already in this file, and found
+  the same way: grep for the writer, not the reader. A limit needs a test
+  that *reaches* it. `/usage/budget-refuses-when-spent` does, and it
+  caught its own first draft -- three identical message bodies were
+  refused by the **cycle detector** instead, which would have passed
+  while proving nothing about the budget.
+- Charged from `on_link_message()`, which is where an agent's turn
+  actually ends. Drained on **every** reply, not only the ones carrying a
+  task id: the drain is what advances the watermark, so skipping the
+  untasked turns would bank them and hand the whole accumulated bill to
+  whichever task happened to be answered next.
+
+### Every agent had been recording its own cost, and nothing had ever read it
+
+- libreclaw writes one `token_usage` row per AI turn -- tokens and cost
+  in micro-dollars -- into each agent's own database, and has since
+  0.24.0. Nine agents on this machine had 105 turns and $1.10 between
+  them, on disk, invisible to every clawtilla surface. The first question
+  an operator running a paid fleet asks had no answer anywhere in the
+  product.
+- Read through libreclaw's own API rather than by opening its schema, the
+  same rule `/reset` already followed -- so there is no copy of that
+  column list here to fall out of step with a table we do not own. The
+  test fixture writes its rows through `lc_database_add_token_usage()`
+  for the same reason: one that spelled the table itself would keep
+  passing after libreclaw changed it.
+- A missing database is **zero, not an error** -- and must not be opened,
+  because opening a sqlite database creates it, and asking what a stopped
+  agent cost should not leave one behind.
+
+### libreclaw ignores `database.path`, so clawtilla was naming a file that never existed
+
+- Its sqlite backend builds the filename from `session.persist_dir`, so
+  the database is at `<state_dir>/sessions/libreclaw.db`. clawtilla
+  rendered `database.path` as `<state_dir>/libreclaw.db` and `/reset`
+  then tested for that -- a path that has never existed on any machine.
+  The session-clearing branch was therefore skipped **every single time**
+  and `sessions_cleared` was always 0.
+- It looked like it worked because moving the sessions directory aside
+  takes the database with it. So the "two places to clear" this file
+  already documents was only ever clearing one, by luck. A branch that
+  never runs and a branch that always succeeds are indistinguishable from
+  the outside.
+- One `clawt_usage_database_path()` now, used by the renderer, by
+  `/reset` and by the usage reader. It was two spellings that made this
+  possible, and the second one was never checked against a real machine.
+
+### The provider states what a turn cost; libreclaw was recomputing it
+
+- `lc_app_record_usage()` priced the two reported token counts through
+  its rate card and discarded the CLI's own `total_cost_usd` -- which
+  ai-glib had already parsed and was carrying on the usage *event* that
+  nothing in libreclaw's session path listens to.
+- The recomputed figure is not merely different, it is **structurally
+  low**: a CLI backend bills cache reads and cache writes, and neither
+  appears in `input_tokens`. An agent with a persistent session has a
+  warm context on every turn after the first, so the gap grows with the
+  context -- worst exactly where somebody is watching the bill. A real
+  row on this machine: 4 input tokens, 278 output, priced at $0.004182,
+  which is the rate card to the micro-dollar and nowhere near the truth.
+- Fixed at the source: `ai_response_set_cost_micros()` in ai-glib,
+  carried on `LcSession`, preferred over the price table in libreclaw.
+  The table stays for providers that report nothing, and `-1` means
+  unknown rather than free -- zero would be indistinguishable from a turn
+  that genuinely cost nothing, and a fleet summing those would report
+  spending nothing at all.
+- Verified by reverting the setter and watching the test fail
+  (`-1 == 20400`), not merely by watching it pass.
+
 ### A doc naming a tool nobody built is worse than a doc naming none
 
 - `docs/computers.org` promised `clawtilla_computer_put_file`, `get_file`

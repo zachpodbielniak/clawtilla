@@ -184,7 +184,7 @@ static const gchar *usage_text =
  */
 static const gchar *const verbs[] = {
     "daemon", "remote", "status", "agent", "send", "chat", "mailbox", "room",
-    "team", "task",
+    "team", "task", "cost",
     "memory",
     "computer", "cp", "config", "plugin", "integration", "connector",
     "routine",
@@ -2185,6 +2185,169 @@ cmd_room(int argc, char *argv[])
     g_printerr("clawtilla: unknown room verb '%s'\n", verb);
     return EXIT_FAILURE;
 }
+
+
+/*
+ * clawtilla cost -- what the fleet has spent.
+ *
+ * Every agent is a libreclaw process, and libreclaw has recorded a row
+ * per AI turn all along.  Nothing had ever read them, so the one
+ * question an operator running a paid fleet asks first had no answer
+ * anywhere in the product.
+ */
+static gint
+cmd_cost(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(JsonBuilder) builder = NULL;
+    /* Not autoptr: clawt_client_request() takes the payload (transfer
+     * full), so releasing it here as well is a second unref. */
+    JsonNode *payload;
+    JsonObject *root;
+    JsonObject *total;
+    JsonArray *agents;
+    gint64 since = 0;
+    gint64 days = 0;
+    const gchar *only_agent = NULL;
+    gdouble budget;
+    guint i;
+    gint shown = 0;
+
+    /*
+     * Parsed here rather than through GOption because every other verb
+     * in this file does the same: the subcommand owns its own words.
+     */
+    for (i = 2; i < (guint)argc; i++) {
+        if (g_strcmp0(argv[i], "--today") == 0) {
+            GDateTime *now = g_date_time_new_now_local();
+            GDateTime *midnight = g_date_time_new_local(
+                g_date_time_get_year(now), g_date_time_get_month(now),
+                g_date_time_get_day_of_month(now), 0, 0, 0.0);
+
+            since = g_date_time_to_unix(midnight);
+            g_date_time_unref(midnight);
+            g_date_time_unref(now);
+        } else if (g_strcmp0(argv[i], "--days") == 0 && i + 1 < (guint)argc) {
+            days = g_ascii_strtoll(argv[++i], NULL, 10);
+            if (days > 0)
+                since = (g_get_real_time() / G_USEC_PER_SEC) - days * 86400;
+        } else if (g_strcmp0(argv[i], "--agent") == 0 && i + 1 < (guint)argc) {
+            only_agent = argv[++i];
+        } else if (g_strcmp0(argv[i], "-h") == 0 ||
+                   g_strcmp0(argv[i], "--help") == 0) {
+            g_print("Usage: clawtilla cost [--today | --days N] "
+                    "[--agent ID]\n"
+                    "\n"
+                    "What the fleet has spent, per agent and in total.\n"
+                    "\n"
+                    "Examples:\n"
+                    "  clawtilla cost                # everything on record\n"
+                    "  clawtilla cost --today        # since local midnight\n"
+                    "  clawtilla cost --days 7       # the last week\n"
+                    "  clawtilla cost --agent chief  # one agent\n");
+            return EXIT_SUCCESS;
+        } else {
+            g_printerr("clawtilla cost: unknown option '%s'\n", argv[i]);
+            return EXIT_FAILURE;
+        }
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    builder = json_builder_new();
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "since");
+    json_builder_add_int_value(builder, since);
+    json_builder_end_object(builder);
+    payload = json_builder_get_root(builder);
+
+    reply = call(client, "usage.summary", payload);
+    if (reply == NULL)
+        return EXIT_FAILURE;
+
+    root = json_node_get_object(reply);
+    agents = json_object_get_array_member(root, "agents");
+    total = json_object_get_object_member(root, "total");
+    budget = json_object_get_double_member_with_default(root,
+                                                        "task_budget_usd", 0.0);
+
+    g_print("%-20s %8s %12s %12s %12s\n",
+            "AGENT", "TURNS", "IN", "OUT", "COST");
+
+    for (i = 0; i < json_array_get_length(agents); i++) {
+        JsonObject *a = json_array_get_object_element(agents, i);
+        const gchar *id = member_or(a, "id", "?");
+        g_autofree gchar *cost = NULL;
+
+        if (only_agent != NULL && g_strcmp0(id, only_agent) != 0)
+            continue;
+
+        cost = clawt_usage_format_cost(
+            json_object_get_int_member_with_default(a, "cost_micros", 0));
+
+        g_print("%-20s %8" G_GINT64_FORMAT " %12" G_GINT64_FORMAT
+                " %12" G_GINT64_FORMAT " %12s\n",
+                id,
+                json_object_get_int_member_with_default(a, "turns", 0),
+                json_object_get_int_member_with_default(a, "input_tokens", 0),
+                json_object_get_int_member_with_default(a, "output_tokens", 0),
+                cost);
+        shown++;
+    }
+
+    if (shown == 0) {
+        g_print("(no agents)\n");
+        return EXIT_SUCCESS;
+    }
+
+    /*
+     * The fleet line is printed even when one agent was asked for,
+     * because "is this agent most of the bill" is the reason somebody
+     * narrows the report in the first place.
+     */
+    {
+        g_autofree gchar *cost = clawt_usage_format_cost(
+            json_object_get_int_member_with_default(total, "cost_micros", 0));
+
+        g_print("%-20s %8" G_GINT64_FORMAT " %12" G_GINT64_FORMAT
+                " %12" G_GINT64_FORMAT " %12s\n",
+                "fleet",
+                json_object_get_int_member_with_default(total, "turns", 0),
+                json_object_get_int_member_with_default(total, "input_tokens",
+                                                        0),
+                json_object_get_int_member_with_default(total, "output_tokens",
+                                                        0),
+                cost);
+    }
+
+    if (since > 0) {
+        g_autoptr(GDateTime) from = g_date_time_new_from_unix_local(since);
+        g_autofree gchar *stamp = g_date_time_format(from, "%Y-%m-%d %H:%M");
+
+        g_print("\nSince %s.\n", stamp);
+    }
+
+    if (budget > 0.0)
+        g_print("Each delegated task may spend $%.2f "
+                "(orchestration.task_budget_usd).\n", budget);
+
+    /*
+     * Said plainly, because the alternative is somebody reconciling this
+     * against a provider invoice and concluding the fleet is lying.
+     * Input tokens are what the CLI reported as *new* input; cache reads
+     * are billed and are not in that number, which is why the cost can
+     * look large next to the token counts beside it.
+     */
+    g_print("\nCost is the figure the provider reported for each turn.\n"
+            "IN counts new input tokens only -- cached context is billed\n"
+            "but is not reported as tokens, so IN understates the context.\n");
+
+    return EXIT_SUCCESS;
+}
+
 
 /* ── tasks ───────────────────────────────────────────────────────── */
 
@@ -4834,6 +4997,9 @@ main(int argc, char *argv[])
 
     if (g_strcmp0(argv[1], "task") == 0)
         return cmd_task(argc, argv);
+
+    if (g_strcmp0(argv[1], "cost") == 0)
+        return cmd_cost(argc, argv);
 
     if (g_strcmp0(argv[1], "computer") == 0)
         return cmd_computer(argc, argv);

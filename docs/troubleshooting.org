@@ -799,3 +799,43 @@ And the event log, which is the durable version of the same thing:
 ls ~/.clawtilla/events/
 tail -f ~/.clawtilla/events/$(date -u +%F).ndjson | yq .
 #+end_src
+
+** The task budget never seems to fire
+
+Check it is not disabled:
+
+#+begin_src bash
+clawtilla config show | grep task_budget_usd
+#+end_src
+
+Then check the work is a *task*.  Spend is booked against a task id, and
+ordinary chat has none -- conversation is deliberately uncapped and only
+delegated work is bounded.  ~clawtilla task list~ shows what is running.
+
+Also worth knowing: the first turn an agent takes after the daemon starts
+charges nothing.  It sets a watermark instead, so a restart mid-task does
+not bill that task for everything the agent has ever done.  See
+[[file:spending.org][spending.org]].
+
+** clawtilla cost reports zero for everything
+
+The rows come from each agent's libreclaw database:
+
+#+begin_src bash
+ls ~/.clawtilla/agents/*/sessions/libreclaw.db
+#+end_src
+
+Note the ~sessions/~ component -- libreclaw builds that path from
+~session.persist_dir~, not from ~database.path~.  If the files are there
+but empty, no turn has completed: a turn reporting no tokens at all is
+deliberately not recorded, because a zero row would inflate the count
+with no data behind it.
+
+If the files are missing entirely, the agents have never run.
+
+** The cost looks too large for the tokens beside it
+
+That is correct and expected.  The cost is the figure the provider
+reported; the ~IN~ column counts only *new* input tokens.  Cached context
+is billed and is not reported as tokens, so a turn can honestly show
+eight input tokens against a bill of two cents.

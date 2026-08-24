@@ -51,6 +51,7 @@ Global options: ~-c/--config~, ~-s/--socket~, ~-V/--version~,
 | ~team rm <id>~ | its agents keep running and become teamless |
 | ~team assign <agent> <team> [lead]~ | |
 | ~task list/show/cancel~ | |
+| ~cost [--today \vert{} --days N] [--agent ID]~ | what the fleet has spent |
 | ~computer exec <agent> -- CMD…~ | |
 | ~computer status <agent>~ | |
 | ~cp <src> <dst>~ | either side may be ~<agent>:<path>~ |
@@ -269,6 +270,17 @@ An agent's team and its role on it are also in the agent editor, beside
 the chief-of-staff switch -- the three answer one question between them:
 who this agent may hand work to.
 
+*** Spending
+
+The Spending page lists one row per agent with what it has cost and how
+many turns it took, a fleet total, and a period selector -- all time,
+today, the last 7 or 30 days.
+
+The cost is the figure the provider reported for each turn, not an
+estimate.  The token counts beside it cover new input and output only:
+cached context is billed but is not reported as tokens, so the cost is
+larger than those numbers suggest.  See [[file:spending.org][Spending]].
+
 *** Reordering the fleet
 
 Drag a row in the sidebar to move it -- a chief-of-staff to the top, the
@@ -312,12 +324,13 @@ side of this.
 *** Settings
 
 The hamburger beside the *+* button, at the top of the sidebar.  It holds
-what belongs to the application rather than to any one agent, in four
-pages:
+what belongs to the application rather than to any one agent:
 
 | Page | What it is for |
 |------+----------------|
 | Cloud images | VM disk images on this machine, and fetching more |
+| Teams | how the fleet is divided, and what each team handles |
+| Spending | what each agent has cost, and the fleet total |
 | Integrations | Matrix, mail, MCP servers and notifiers, and who gets each |
 | Connectors | connected accounts, and the credential for each |
 | Appearance | colour scheme and fonts |

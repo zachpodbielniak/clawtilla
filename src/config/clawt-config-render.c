@@ -627,14 +627,21 @@ clawt_config_render_agent(ClawtConfig       *config,
     {
         g_autofree gchar *sessions = g_build_filename(state_dir, "sessions",
                                                       NULL);
-        g_autofree gchar *database = g_build_filename(state_dir,
-                                                      "libreclaw.db", NULL);
+        g_autofree gchar *database = clawt_usage_database_path(state_dir);
         g_autofree gchar *skills = g_build_filename(state_dir, "skills", NULL);
 
         g_string_append(out, "session:\n");
         append_key_value(out, 2, "persist_dir", sessions);
         g_string_append(out, "\n");
 
+        /*
+         * Written to where libreclaw actually puts it, which is inside
+         * persist_dir rather than beside it.  The sqlite backend builds
+         * the filename from `session.persist_dir` and never reads this
+         * key, so a different value here would be a line in every
+         * agent's config naming a file that does not exist -- which is
+         * exactly how `/reset` came to look in the wrong place.
+         */
         g_string_append(out, "database:\n");
         append_key_value(out, 2, "path", database);
         g_string_append(out, "\n");

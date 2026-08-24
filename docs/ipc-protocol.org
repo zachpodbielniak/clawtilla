@@ -174,6 +174,22 @@ means the direct room with that agent, the same way it does for
 
 ~task.list~, ~task.show~, ~task.cancel~.
 
+*** usage.*
+
+~usage.summary~ (~since~, unix seconds, 0 for everything) → ~agents~, one
+object per agent with ~id~, ~name~, ~turns~, ~input_tokens~,
+~output_tokens~ and ~cost_micros~; plus a ~total~ of the same shape,
+the ~since~ it was answered for, and ~task_budget_usd~ so a client can
+show the cap beside the spend.
+
+Cost crosses the wire in *micro-dollars as an integer*, not as a float.
+It is summed across every agent, and a running total of floats disagrees
+with itself depending on the order the agents happened to be visited in.
+
+One unreadable database does not fail the summary -- a fleet report that
+refused because one agent's file was mid-write would say nothing about
+the other nine.
+
 *** computer.*
 
 ~computer.exec~ (~agent~, ~command~, ~cwd~, ~timeout~) → ~exit~,
