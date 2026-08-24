@@ -441,6 +441,33 @@ the same program.
   itself was correct throughout; `gdbus call ... SetEnabled true` by hand
   returned `(true,)` on the same guest. Only the launcher was missing.
 
+### One package name this distribution lacks costs the whole desktop
+
+- RHEL 10 replaced GNOME Terminal with Ptyxis, so `gnome-terminal` is not
+  in CentOS Stream 10's repositories at all -- and cloud-init treats a
+  package it cannot find as a failure of the **whole** package install.
+  A guest therefore booted to a text login prompt with no GNOME on it, on
+  account of a terminal emulator nobody was going to open.
+- The rule was already written down, in the comment above the very list
+  that broke: "cloud-init treats a package it cannot find as a failure of
+  the whole install, so asking for one takes the desktop with it." The
+  Enterprise list was built by *removing* Fedora names that EL lacks, and
+  `gnome-terminal` was never checked because Fedora has it too -- but EL
+  is not Fedora minus things, it is its own distribution. Every name in
+  that column is now checked against the real BaseOS and AppStream
+  metadata.
+- The worse half: the installer said `ok`. Its own work -- the clone, the
+  venv, the extension -- had all succeeded, so it reported success about
+  a guest with no desktop. **Saying ok about the wrong thing is worse
+  than saying nothing**, because it sends whoever reads it to investigate
+  a different layer. It now checks `gnome-shell` exists and that the
+  family's own display-manager unit does, before writing `ok`.
+- `test-guest-desktop.c` asserted the installer was byte-identical across
+  families. That was true and is not any more, because the unit name is
+  now in it -- so the test folds `gdm3` to `gdm` and compares the rest.
+  The intent was never "identical", it was "nothing varies per family by
+  accident".
+
 ### Naming no CPU is not neutral -- libvirt names one for you
 
 - The domain XML emitted no `<cpu>`, so libvirt filled in its default:

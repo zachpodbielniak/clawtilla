@@ -208,7 +208,14 @@ test_autologin_can_be_turned_off(void)
                                             desktop);
 
     g_assert_null(strstr(data, "AutomaticLoginEnable"));
-    g_assert_null(strstr(data, "gdm.service"));
+
+    /*
+     * The *starting* of it, not the name. The installer names the unit
+     * too, to check a desktop arrived at all, and that check is wanted
+     * whether or not anybody is logged in automatically -- so a bare
+     * substring match here failed the moment it was added.
+     */
+    g_assert_null(strstr(data, "systemctl, enable, --now"));
 }
 
 /*
@@ -718,13 +725,29 @@ test_the_install_records_its_result(void)
 }
 
 /*
- * The installer is byte-for-byte the same on every family, and has to
- * be.  Everything that differs between distributions is a package name,
- * and those are chosen before this runs.  A step that varied per family
- * here would be a step exercised on one distribution and not the others
- * -- which is precisely how the missing directory survived: it only
- * ever ran where it happened not to matter.
+ * The installer is the same on every family bar the display manager's
+ * unit name, and has to be.  Everything else that differs between
+ * distributions is a package name, and those are chosen before this
+ * runs.  A step that varied per family here would be a step exercised
+ * on one distribution and not the others -- which is precisely how the
+ * missing extensions directory survived: it only ever ran where it
+ * happened not to matter.
  */
+/*
+ * The display manager's unit name is the one thing in the installer that
+ * is allowed to differ, because it genuinely does -- Debian's is gdm3 --
+ * and it comes from the flavour table rather than from anything this
+ * script decides. Folded out so the comparison below still means what it
+ * did: no *other* step varies per family.
+ */
+static gchar *
+normalise_unit(const gchar *script)
+{
+    g_auto(GStrv) parts = g_strsplit(script, "gdm3.service", -1);
+
+    return g_strjoinv("gdm.service", parts);
+}
+
 static gchar *
 install_script_of(ClawtGuestFlavour flavour)
 {
@@ -749,11 +772,13 @@ test_every_family_installs_the_same_way(void)
         CLAWT_GUEST_FLAVOUR_UBUNTU,
         CLAWT_GUEST_FLAVOUR_ARCH
     };
-    g_autofree gchar *first = install_script_of(families[0]);
+    g_autofree gchar *raw = install_script_of(families[0]);
+    g_autofree gchar *first = normalise_unit(raw);
     gsize i;
 
     for (i = 1; i < G_N_ELEMENTS(families); i++) {
-        g_autofree gchar *other = install_script_of(families[i]);
+        g_autofree gchar *other_raw = install_script_of(families[i]);
+        g_autofree gchar *other = normalise_unit(other_raw);
 
         g_assert_cmpstr(first, ==, other);
     }
@@ -989,6 +1014,95 @@ test_each_family_configures_the_gdm_it_has(void)
     }
 }
 
+
+/*
+ * Enterprise Linux is not Fedora with a shorter list.
+ *
+ * RHEL 10 replaced GNOME Terminal, so `gnome-terminal` is simply not in
+ * the repositories -- and cloud-init treats a package it cannot find as
+ * a failure of the *whole* package install. A CentOS Stream 10 guest
+ * therefore booted to a text login prompt with no GNOME on it at all, on
+ * account of a terminal emulator nobody was going to open.
+ *
+ * Every name in that list was checked against the real CentOS Stream 10
+ * BaseOS and AppStream metadata rather than assumed from Fedora's.
+ */
+static void
+test_enterprise_asks_for_names_it_has(void)
+{
+    g_autofree gchar *data = render_for(CLAWT_GUEST_FLAVOUR_ENTERPRISE);
+
+    g_assert_nonnull(strstr(data, "- \"ptyxis\""));
+    g_assert_null(strstr(data, "gnome-terminal"));
+
+    /* The ones Fedora has and EL does not, still absent. */
+    g_assert_null(strstr(data, "gnome-console"));
+    g_assert_null(strstr(data, "gnome-text-editor"));
+    g_assert_null(strstr(data, "gnome-tweaks"));
+}
+
+/*
+ * ...and every other family keeps the terminal it actually ships, so
+ * fixing one did not quietly change the rest.
+ */
+static void
+test_each_family_keeps_its_own_terminal(void)
+{
+    struct { ClawtGuestFlavour flavour; const gchar *terminal; } want[] = {
+        { CLAWT_GUEST_FLAVOUR_FEDORA,     "gnome-console" },
+        { CLAWT_GUEST_FLAVOUR_ENTERPRISE, "ptyxis" },
+        { CLAWT_GUEST_FLAVOUR_DEBIAN,     "gnome-terminal" },
+        { CLAWT_GUEST_FLAVOUR_UBUNTU,     "gnome-terminal" },
+        { CLAWT_GUEST_FLAVOUR_ARCH,       "gnome-terminal" }
+    };
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(want); i++) {
+        g_autofree gchar *data = render_for(want[i].flavour);
+        g_autofree gchar *entry =
+            g_strdup_printf("- \"%s\"", want[i].terminal);
+
+        g_assert_nonnull(strstr(data, entry));
+    }
+}
+
+/*
+ * The installer reports on the desktop, not only on its own half.
+ *
+ * Its own half installed perfectly on that guest -- the clone, the
+ * venv, the extension -- so it wrote `ok` while the machine sat at a
+ * text login prompt with no GNOME. Saying ok about the wrong thing is
+ * worse than saying nothing, because it sends whoever reads it
+ * somewhere else entirely.
+ */
+static void
+test_the_installer_checks_the_desktop_arrived(void)
+{
+    struct { ClawtGuestFlavour flavour; const gchar *unit; } want[] = {
+        { CLAWT_GUEST_FLAVOUR_FEDORA, "gdm.service" },
+        { CLAWT_GUEST_FLAVOUR_DEBIAN, "gdm3.service" }
+    };
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(want); i++) {
+        g_autofree gchar *data = render_for(want[i].flavour);
+        g_autofree gchar *check =
+            g_strdup_printf("systemctl cat %s", want[i].unit);
+
+        /* The display manager, by this family's own unit name. */
+        g_assert_nonnull(strstr(data, check));
+
+        /* And that a desktop is there at all. */
+        g_assert_nonnull(strstr(data, "command -v gnome-shell"));
+
+        /*
+         * The reason, so the status file is an answer rather than a
+         * prompt to go and investigate the wrong layer.
+         */
+        g_assert_nonnull(strstr(data, "fails all of them"));
+    }
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1057,6 +1171,12 @@ main(int argc, char *argv[])
     g_test_add_func("/guest-desktop/install/same-on-every-family",
                     test_every_family_installs_the_same_way);
 
+    g_test_add_func("/guest-desktop/enterprise/names-it-has",
+                    test_enterprise_asks_for_names_it_has);
+    g_test_add_func("/guest-desktop/terminal/one-per-family",
+                    test_each_family_keeps_its_own_terminal);
+    g_test_add_func("/guest-desktop/install/checks-the-desktop-arrived",
+                    test_the_installer_checks_the_desktop_arrived);
     g_test_add_func("/guest-desktop/autologin/one-file-per-family",
                     test_each_family_configures_the_gdm_it_has);
     g_test_add_func("/guest-desktop/ocr/every-family-that-can-reads",

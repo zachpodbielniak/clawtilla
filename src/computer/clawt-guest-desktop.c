@@ -101,7 +101,20 @@ static const gchar *const fedora_mcp[] = {
  * desktop with it.
  */
 static const gchar *const enterprise_desktop[] = {
-    "gdm", "gnome-shell", "gnome-session", "gnome-terminal",
+    "gdm", "gnome-shell", "gnome-session",
+    /*
+     * ptyxis, not gnome-terminal.
+     *
+     * RHEL 10 replaced GNOME Terminal, and the name is simply not in the
+     * repositories -- which cloud-init treats as a failure of the *whole*
+     * package install. So a CentOS Stream 10 guest booted to a text login
+     * prompt with no GNOME on it at all, on account of a terminal
+     * emulator nobody was going to open.
+     *
+     * Each name here was checked against the real CentOS Stream 10
+     * BaseOS and AppStream metadata rather than assumed from Fedora's.
+     */
+    "ptyxis",
     "gnome-control-center", "nautilus", "xdg-user-dirs-gtk",
     "firefox", "dconf", NULL
 };
@@ -704,6 +717,7 @@ static void
 render_install_script(ClawtGuestDesktop *self, GString *out)
 {
     g_autoptr(GString) body = g_string_new(NULL);
+    const FlavourSpec *spec = spec_for(self->flavour);
     g_autofree gchar *repo = NULL;
 
     /*
@@ -788,6 +802,29 @@ render_install_script(ClawtGuestDesktop *self, GString *out)
         "\n"
         "[ -x \"$checkout/venv/bin/gnome-desktop-mcp\" ] \\\n"
         "    || fail 'the server installed but left no gnome-desktop-mcp'\n"
+        "\n"
+        "# And the desktop itself, which is not this script's to install\n"
+        "# but is the thing everything above exists to drive.\n"
+        "#\n"
+        "# cloud-init treats a package it cannot find as a failure of the\n"
+        "# whole package install, so one wrong name leaves a guest with no\n"
+        "# GNOME on it -- and this script goes on to succeed, because its\n"
+        "# own half installed perfectly. It said ok while the machine sat\n"
+        "# at a text login prompt, which is worse than saying nothing.\n"
+        "command -v gnome-shell >/dev/null 2>&1 \\\n"
+        "    || fail 'gnome-shell is not installed, so the desktop"
+        " packages did not install -- one name this distribution does"
+        " not have fails all of them. See cloud-init.log.'\n"
+        "\n"
+        "systemctl cat ");
+    g_string_append(body, spec->display_manager);
+    g_string_append(body,
+        " >/dev/null 2>&1 \\\n"
+        "    || fail 'there is no ");
+    g_string_append(body, spec->display_manager);
+    g_string_append(body,
+        ", so nothing will start a session and"
+        " there is no desktop to drive.'\n"
         "\n"
         "printf 'ok\\n' > \"$status\"\n");
 

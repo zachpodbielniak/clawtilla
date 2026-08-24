@@ -376,6 +376,38 @@ Settings that are *not* in the seed -- cpus, memory, the disk size --
 reach the domain definition and apply at its next boot, with no rebuild
 needed.
 
+** The guest boots to a text login prompt with no desktop at all
+
+Not a session problem -- nothing was installed.  cloud-init treats a
+package it cannot find as a failure of the *whole* package install, so
+one name this distribution does not have costs the entire desktop.
+
+The guest writes down which half failed:
+
+#+begin_src bash
+clawtilla computer exec <agent> -- cat /var/lib/clawtilla/desktop-install.status
+#+end_src
+
+#+begin_example
+failed: gnome-shell is not installed, so the desktop packages did not
+install -- one name this distribution does not have fails all of them.
+See cloud-init.log.
+#+end_example
+
+Then the name itself:
+
+#+begin_src bash
+clawtilla computer exec <agent> -- \
+    grep -iE "no match|not found|Error:" /var/log/cloud-init-output.log
+#+end_src
+
+Fixing it means fixing the flavour's list and rebuilding, since
+cloud-init reads its seed at first boot only:
+
+#+begin_src bash
+clawtilla computer rebuild <agent>
+#+end_src
+
 ** A VM has a desktop installed and no session on it
 
 The guest boots, cloud-init reports success, and the agent's screenshots
