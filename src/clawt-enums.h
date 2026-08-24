@@ -109,6 +109,24 @@ typedef enum {
 } ClawtRuntimeType;
 
 /**
+ * ClawtTeamRole:
+ * @CLAWT_TEAM_MEMBER: talks to anyone, assigns to nobody
+ * @CLAWT_TEAM_LEAD: may hand work to the members of its own team
+ *
+ * An agent's standing within its team.
+ *
+ * The distinction is about *assigning*, not about talking. A member
+ * messages, asks and shares rooms with anybody in the fleet -- handing
+ * something over in conversation is not the same as putting it on
+ * somebody's list -- and cannot delegate. A lead can, within its own
+ * team and nowhere else.
+ */
+typedef enum {
+    CLAWT_TEAM_MEMBER = 0,
+    CLAWT_TEAM_LEAD
+} ClawtTeamRole;
+
+/**
  * ClawtRestartPolicy:
  * @CLAWT_RESTART_NEVER: leave it stopped
  * @CLAWT_RESTART_ON_FAILURE: restart only on a non-zero exit or a signal
@@ -628,6 +646,7 @@ typedef enum {
 GType clawt_agent_state_get_type(void) G_GNUC_CONST;
 GType clawt_agent_caps_get_type(void) G_GNUC_CONST;
 GType clawt_runtime_type_get_type(void) G_GNUC_CONST;
+GType clawt_team_role_get_type(void) G_GNUC_CONST;
 GType clawt_restart_policy_get_type(void) G_GNUC_CONST;
 GType clawt_computer_type_get_type(void) G_GNUC_CONST;
 GType clawt_computer_state_get_type(void) G_GNUC_CONST;
@@ -656,6 +675,7 @@ GType clawt_credential_placement_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_AGENT_STATE      (clawt_agent_state_get_type())
 #define CLAWT_TYPE_AGENT_CAPS       (clawt_agent_caps_get_type())
 #define CLAWT_TYPE_RUNTIME_TYPE     (clawt_runtime_type_get_type())
+#define CLAWT_TYPE_TEAM_ROLE        (clawt_team_role_get_type())
 #define CLAWT_TYPE_RESTART_POLICY   (clawt_restart_policy_get_type())
 #define CLAWT_TYPE_COMPUTER_TYPE    (clawt_computer_type_get_type())
 #define CLAWT_TYPE_COMPUTER_STATE   (clawt_computer_state_get_type())

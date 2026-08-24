@@ -994,6 +994,291 @@ clawt_room_spec_free(ClawtRoomSpec *self)
     g_free(self);
 }
 
+/* ── teams ───────────────────────────────────────────────────────── */
+
+void
+clawt_team_spec_free(ClawtTeamSpec *self)
+{
+    if (self == NULL)
+        return;
+
+    g_free(self->id);
+    g_free(self->name);
+    g_free(self->description);
+    g_free(self->color);
+    g_free(self);
+}
+
+/*
+ * Lowest order first, ties keeping the order the file has them in.
+ *
+ * Stable for the same reason the agent list is: teams nobody has ordered
+ * all sit at the default, and a fleet that reshuffled its own sidebar on
+ * every listing would be worse than one with no ordering at all.
+ */
+static gint
+compare_teams(gconstpointer a, gconstpointer b)
+{
+    const ClawtTeamSpec *first = *(ClawtTeamSpec *const *)a;
+    const ClawtTeamSpec *second = *(ClawtTeamSpec *const *)b;
+
+    if (first->order == second->order)
+        return 0;
+
+    return first->order < second->order ? -1 : 1;
+}
+
+GPtrArray *
+clawt_config_get_teams(ClawtConfig *self)
+{
+    GPtrArray *out;
+    YamlNode *teams;
+    YamlSequence *sequence;
+    guint i;
+    guint length;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+
+    out = g_ptr_array_new_with_free_func((GDestroyNotify)clawt_team_spec_free);
+
+    teams = node_at_path(self->root, "teams", FALSE);
+    if (teams == NULL || yaml_node_get_node_type(teams) != YAML_NODE_SEQUENCE)
+        return out;
+
+    sequence = yaml_node_get_sequence(teams);
+    length = yaml_sequence_get_length(sequence);
+
+    for (i = 0; i < length; i++) {
+        YamlNode *entry = yaml_sequence_get_element(sequence, i);
+        ClawtTeamSpec *spec;
+        const gchar *id;
+
+        if (entry == NULL ||
+            yaml_node_get_node_type(entry) != YAML_NODE_MAPPING)
+            continue;
+
+        id = member_string(yaml_node_get_mapping(entry), "id");
+
+        if (id == NULL) {
+            /*
+             * A team with no id cannot be joined or addressed, so it is
+             * skipped with a warning rather than given a generated one.
+             */
+            g_warning("teams[%u]: no id, so this team is ignored", i);
+            continue;
+        }
+
+        spec = g_new0(ClawtTeamSpec, 1);
+        spec->id = g_strdup(id);
+        spec->name = g_strdup(member_string(yaml_node_get_mapping(entry),
+                                            "name"));
+        spec->description =
+            g_strdup(member_string(yaml_node_get_mapping(entry),
+                                   "description"));
+        spec->color = g_strdup(member_string(yaml_node_get_mapping(entry),
+                                             "color"));
+
+        {
+            YamlNode *node = node_at_path(entry, "order", FALSE);
+
+            spec->order = (node != NULL) ? (gint)yaml_node_get_int(node) : 0;
+        }
+
+        g_ptr_array_add(out, spec);
+    }
+
+    g_ptr_array_sort(out, compare_teams);
+
+    return out;
+}
+
+ClawtTeamSpec *
+clawt_config_get_team(ClawtConfig *self, const gchar *team_id)
+{
+    g_autoptr(GPtrArray) teams = NULL;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+
+    if (team_id == NULL || *team_id == '\0')
+        return NULL;
+
+    teams = clawt_config_get_teams(self);
+
+    for (i = 0; i < teams->len; i++) {
+        ClawtTeamSpec *spec = g_ptr_array_index(teams, i);
+
+        if (g_strcmp0(spec->id, team_id) == 0) {
+            /* Stolen out of the array rather than copied. */
+            g_ptr_array_set_free_func(teams, NULL);
+            g_ptr_array_remove_index(teams, i);
+            g_ptr_array_set_free_func(
+                teams, (GDestroyNotify)clawt_team_spec_free);
+            return spec;
+        }
+    }
+
+    return NULL;
+}
+
+gboolean
+clawt_config_add_team(ClawtConfig *self, const gchar *team_id, GError **error)
+{
+    YamlNode *teams_node;
+    g_autoptr(YamlNode) entry = NULL;
+    g_autoptr(YamlNode) id_node = NULL;
+    g_autoptr(ClawtTeamSpec) existing = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+
+    if (!clawt_is_valid_id(team_id)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "'%s' is not a usable team id: ids may hold only "
+                    "lowercase letters, digits, '-' and '_', and must not "
+                    "start with punctuation",
+                    team_id != NULL ? team_id : "");
+        return FALSE;
+    }
+
+    existing = clawt_config_get_team(self, team_id);
+
+    if (existing != NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_ALREADY_EXISTS,
+                    "a team called '%s' already exists", team_id);
+        return FALSE;
+    }
+
+    teams_node = node_at_path(self->root, "teams", FALSE);
+
+    if (teams_node == NULL ||
+        yaml_node_get_node_type(teams_node) != YAML_NODE_SEQUENCE) {
+        g_autoptr(YamlNode) fresh = yaml_node_new_sequence(NULL);
+
+        yaml_mapping_set_member(yaml_node_get_mapping(self->root),
+                                "teams", fresh);
+        teams_node = node_at_path(self->root, "teams", FALSE);
+        apply_schema_comment(teams_node, "teams");
+    }
+
+    entry = yaml_node_new_mapping(NULL);
+    id_node = yaml_node_new_string(team_id);
+    yaml_mapping_set_member(yaml_node_get_mapping(entry), "id", id_node);
+
+    yaml_sequence_add_element(yaml_node_get_sequence(teams_node), entry);
+
+    return TRUE;
+}
+
+/* The team's own mapping node, or NULL. */
+static YamlNode *
+team_node(ClawtConfig *self, const gchar *team_id)
+{
+    YamlNode *teams_node = node_at_path(self->root, "teams", FALSE);
+    YamlSequence *sequence;
+    guint i;
+    guint length;
+
+    if (teams_node == NULL ||
+        yaml_node_get_node_type(teams_node) != YAML_NODE_SEQUENCE)
+        return NULL;
+
+    sequence = yaml_node_get_sequence(teams_node);
+    length = yaml_sequence_get_length(sequence);
+
+    for (i = 0; i < length; i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+
+        if (yaml_node_get_node_type(element) != YAML_NODE_MAPPING)
+            continue;
+
+        if (g_strcmp0(member_string(yaml_node_get_mapping(element), "id"),
+                      team_id) == 0)
+            return element;
+    }
+
+    return NULL;
+}
+
+gboolean
+clawt_config_set_team_string(ClawtConfig *self,
+                             const gchar *team_id,
+                             const gchar *key,
+                             const gchar *value)
+{
+    YamlNode *entry;
+    g_autoptr(YamlNode) node = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    entry = team_node(self, team_id);
+
+    if (entry == NULL)
+        return FALSE;
+
+    /*
+     * The id is what everything else refers to the team by, so changing
+     * it here would leave every agent naming a team that no longer
+     * exists. Renaming is a create, a move and a remove, and it is not
+     * this function's to do silently.
+     */
+    if (g_strcmp0(key, "id") == 0)
+        return FALSE;
+
+    if (value == NULL || *value == '\0') {
+        yaml_mapping_remove_member(yaml_node_get_mapping(entry), key);
+        return TRUE;
+    }
+
+    node = yaml_node_new_string(value);
+    yaml_mapping_set_member(yaml_node_get_mapping(entry), key, node);
+
+    {
+        g_autofree gchar *schema_key = g_strdup_printf("teams.%s", key);
+
+        apply_schema_comment(
+            yaml_mapping_get_member(yaml_node_get_mapping(entry), key),
+            schema_key);
+    }
+
+    return TRUE;
+}
+
+gboolean
+clawt_config_remove_team(ClawtConfig *self, const gchar *team_id)
+{
+    YamlNode *teams_node;
+    YamlSequence *sequence;
+    guint i;
+    guint length;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+    g_return_val_if_fail(team_id != NULL, FALSE);
+
+    teams_node = node_at_path(self->root, "teams", FALSE);
+    if (teams_node == NULL ||
+        yaml_node_get_node_type(teams_node) != YAML_NODE_SEQUENCE)
+        return FALSE;
+
+    sequence = yaml_node_get_sequence(teams_node);
+    length = yaml_sequence_get_length(sequence);
+
+    for (i = 0; i < length; i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+
+        if (yaml_node_get_node_type(element) != YAML_NODE_MAPPING)
+            continue;
+
+        if (g_strcmp0(member_string(yaml_node_get_mapping(element), "id"),
+                      team_id) == 0) {
+            yaml_sequence_remove_element(sequence, i);
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
 GPtrArray *
 clawt_config_get_rooms(ClawtConfig *self)
 {

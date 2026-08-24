@@ -514,6 +514,40 @@ static const ClawtSchemaEntry schema[] = {
 { "rooms.max_hops", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Overrides orchestration.max_hops for this room.", "0.1.0" },
 
+/* ── teams ───────────────────────────────────────────────────────── */
+{ "teams", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
+  "Teams, so a fleet larger than a handful has a shape.\n"
+  "\n"
+  "An agent names its team in agents.team, and its standing there in\n"
+  "agents.team_role. A lead may hand work to the members of its own team;\n"
+  "a member may talk to anyone and assign to nobody. The chief of staff\n"
+  "sits above all of them and hands work to the leads.\n"
+  "\n"
+  "Teams are optional. A fleet that declares none behaves exactly as it\n"
+  "did before there were any.", "0.1.0" },
+
+{ "teams.id", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
+  "Identifier used to address the team, and what agents.team names.",
+  "0.1.0" },
+
+{ "teams.name", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Display name. Defaults to the id.", "0.1.0" },
+
+{ "teams.description", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "What this team is for, and what to send it.\n"
+  "\n"
+  "Written for a chief-of-staff deciding where a piece of work goes: it\n"
+  "reads these to choose a team, so say what the team handles and what it\n"
+  "does not, rather than naming the people on it.", "0.1.0" },
+
+{ "teams.color", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Accent colour in the clients, as a hex string.", "0.1.0" },
+
+{ "teams.order", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "0", NULL,
+  "Where this team sits in the list, lowest first. Ties keep file order.",
+  "0.1.0" },
+
 /* ── integrations ────────────────────────────────────────────────── */
 { "integrations", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Named integrations, each handed to one agent, some agents or all of them.\n"
@@ -1012,6 +1046,25 @@ static const ClawtSchemaEntry schema[] = {
   "though there is nothing wrong with writing it. Agents sharing a\n"
   "number keep the order they appear in this file, so leaving them all\n"
   "at 0 changes nothing.",
+  "0.1.0" },
+
+{ "agents.team", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Which team this agent belongs to, by teams.id.\n"
+  "\n"
+  "Unset means no team: the agent still messages and is messaged, it is\n"
+  "simply not grouped and no team lead may assign to it.", "0.1.0" },
+
+{ "agents.team_role", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "member", clawt_team_role_get_type,
+  "Standing within that team.\n"
+  "\n"
+  "A lead may hand work to the members of its own team and to nobody\n"
+  "else. A member may message, ask and share a room with anyone --\n"
+  "handing something over in conversation is not assigning it -- but may\n"
+  "not delegate at all.\n"
+  "\n"
+  "At most one lead per team; a second is refused rather than picked\n"
+  "between. The chief of staff outranks every lead and needs no team.",
   "0.1.0" },
 
 { "agents.avatar", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,

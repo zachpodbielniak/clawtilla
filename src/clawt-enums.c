@@ -94,6 +94,24 @@ clawt_runtime_type_get_type(void)
     return g_define_type_id__volatile;
 }
 
+/* Register ClawtTeamRole as a GLib enum type */
+GType
+clawt_team_role_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_TEAM_MEMBER, "CLAWT_TEAM_MEMBER", "member" },
+            { CLAWT_TEAM_LEAD, "CLAWT_TEAM_LEAD", "lead" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtTeamRole", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
 /* Register ClawtRestartPolicy as a GLib enum type */
 GType
 clawt_restart_policy_get_type(void)

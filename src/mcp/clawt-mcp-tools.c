@@ -27,7 +27,8 @@ typedef enum {
     NEEDS_PEER_COMMS,
     NEEDS_COMPUTER,
     NEEDS_MEMORY,
-    NEEDS_FLEET_ADMIN
+    NEEDS_FLEET_ADMIN,
+    NEEDS_ASSIGNMENT
 } ToolRequirement;
 
 typedef struct {
@@ -242,9 +243,18 @@ static const ToolDefinition tools[] = {
     TOOL("clawtilla_delegate",
          "Hand a piece of work to another agent and get a task id back. "
          "They work on it independently; check on it with "
-         "clawtilla_task_status. Use this rather than asking, when the work "
-         "will take a while.",
-         NEEDS_PEER_COMMS, delegate_params),
+         "clawtilla_task_status. Use this rather than asking, when the "
+         "work will take a while. You can assign within your own team; "
+         "for anything belonging to another team, send it to the chief of "
+         "staff rather than to that team directly.",
+         NEEDS_ASSIGNMENT, delegate_params),
+
+    TOOL("clawtilla_list_teams",
+         "The teams in this fleet: what each is for, who leads it, who is "
+         "on it and how many are running. Read the descriptions to decide "
+         "where a piece of work belongs -- they say what a team handles, "
+         "which is not always obvious from the names on it.",
+         NEEDS_PEER_COMMS, no_params),
 
     TOOL("clawtilla_post_room",
          "Post a message to a room, reaching every member.",
@@ -570,6 +580,28 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
             return FALSE;
         break;
 
+    case NEEDS_ASSIGNMENT:
+        /*
+         * Offered only to an agent that can assign to *somebody*: the
+         * chief of staff, or a team lead. A member never can, and a tool
+         * it can only ever be refused for is a tool it will try, be told
+         * no, and try again in a different shape.
+         *
+         * Which *particular* target is allowed is settled at call time,
+         * because it depends on the target rather than on the caller.
+         */
+        {
+            ClawtAgentConfig *mine = clawt_agent_get_config(agent);
+
+            if (!clawt_agent_config_get_boolean(mine, "chief_of_staff") &&
+                clawt_team_role_of(mine) != CLAWT_TEAM_LEAD)
+                return FALSE;
+        }
+
+        if ((clawt_agent_get_caps(agent) & CLAWT_AGENT_CAPS_PEER_COMMS) == 0)
+            return FALSE;
+        break;
+
     case NEEDS_FLEET_ADMIN:
         /*
          * Two conditions, and both have to hold.  There must be
@@ -888,6 +920,117 @@ tool_list_agents(ClawtMcpTools *self, const gchar *agent_id)
 
     if (out->len == 0)
         return g_strdup("You are the only agent in this fleet.");
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+/*
+ * The teams, written for whoever is deciding where a piece of work goes.
+ *
+ * The descriptions are the point. A chief-of-staff choosing between
+ * teams has their names and the agents on them, and neither says what a
+ * team actually handles -- so the description is what it reads, and it
+ * comes first in each entry for that reason.
+ */
+static gchar *
+tool_list_teams(ClawtMcpTools *self, const gchar *agent_id)
+{
+    g_autoptr(GString) out = g_string_new(NULL);
+    g_autoptr(GPtrArray) teams = NULL;
+    ClawtConfig *config;
+    GPtrArray *agents;
+    ClawtAgent *me;
+    const gchar *my_team = NULL;
+    guint i;
+
+    config = (self->agents != NULL)
+             ? clawt_agent_manager_get_config(self->agents) : NULL;
+
+    if (config == NULL)
+        return g_strdup("This fleet has no configuration to read teams "
+                        "from.");
+
+    teams = clawt_config_get_teams(config);
+    agents = clawt_agent_manager_list(self->agents);
+
+    me = clawt_agent_manager_get(self->agents, agent_id);
+
+    if (me != NULL)
+        my_team = clawt_agent_config_get_string(clawt_agent_get_config(me),
+                                                "team");
+
+    if (teams->len == 0) {
+        /*
+         * Said rather than left blank. A fleet with no teams is a normal
+         * fleet, and an agent that suspects there are teams it cannot
+         * see will go looking for them.
+         */
+        return g_strdup("This fleet has no teams. Everyone is in one "
+                        "group, and only the chief of staff assigns work.");
+    }
+
+    for (i = 0; i < teams->len; i++) {
+        ClawtTeamSpec *team = g_ptr_array_index(teams, i);
+        g_autoptr(GString) members = g_string_new(NULL);
+        const gchar *lead = NULL;
+        guint running = 0;
+        guint total = 0;
+        guint j;
+
+        for (j = 0; agents != NULL && j < agents->len; j++) {
+            ClawtAgent *agent = g_ptr_array_index(agents, j);
+            ClawtAgentConfig *agent_config = clawt_agent_get_config(agent);
+
+            if (g_strcmp0(clawt_agent_config_get_string(agent_config,
+                                                        "team"),
+                          team->id) != 0)
+                continue;
+
+            total++;
+
+            if (clawt_agent_get_state(agent) == CLAWT_AGENT_STATE_RUNNING)
+                running++;
+
+            if (clawt_team_role_of(agent_config) == CLAWT_TEAM_LEAD)
+                lead = clawt_agent_get_id(agent);
+            else
+                g_string_append_printf(members, "%s%s",
+                                       members->len > 0 ? ", " : "",
+                                       clawt_agent_get_id(agent));
+        }
+
+        g_string_append_printf(out, "* %s (%s)%s\n",
+                               team->name != NULL ? team->name : team->id,
+                               team->id,
+                               g_strcmp0(my_team, team->id) == 0
+                                   ? "  -- yours" : "");
+
+        if (team->description != NULL && *team->description != '\0')
+            g_string_append_printf(out, "  %s\n", team->description);
+        else
+            g_string_append(out,
+                "  No description, so there is nothing here to match work "
+                "against. Worth asking the user for one.\n");
+
+        if (lead != NULL)
+            g_string_append_printf(out, "  Lead: %s -- send work here.\n",
+                                   lead);
+        else
+            g_string_append(out,
+                "  No lead, so work for this team has to go to the chief "
+                "of staff.\n");
+
+        g_string_append_printf(out, "  Members: %s\n",
+                               members->len > 0 ? members->str
+                                                : "nobody yet");
+        g_string_append_printf(out, "  Running: %u of %u\n\n",
+                               running, total);
+    }
+
+    g_string_append(out,
+        "Work belongs to a team, not to a person: hand it to the lead and "
+        "let them choose who does it. They know what their people are in "
+        "the middle of and you do not.\n");
 
     return g_string_free(g_steal_pointer(&out), FALSE);
 }
@@ -1258,6 +1401,27 @@ tool_delegate(ClawtMcpTools *self,
         return g_strdup_printf("There is no agent called '%s'. Use "
                                "clawtilla_list_agents to see who is here.",
                                assignee);
+    }
+
+    /*
+     * Checked here and not only when the tool was offered, because who
+     * may assign to *whom* depends on the target: a lead has the tool
+     * and still may not reach outside its own team. The refusal carries
+     * the reason and says what to do instead -- an agent told only "no"
+     * tries the same thing in a different shape.
+     */
+    {
+        ClawtAgent *from = clawt_agent_manager_get(self->agents, agent_id);
+        ClawtAgent *to = clawt_agent_manager_get(self->agents, assignee);
+        g_autofree gchar *refusal = NULL;
+
+        if (!clawt_team_may_assign(
+                from != NULL ? clawt_agent_get_config(from) : NULL,
+                to != NULL ? clawt_agent_get_config(to) : NULL, &refusal)) {
+            *is_error = TRUE;
+            return g_strdup(refusal != NULL ? refusal
+                                            : "that is not yours to assign");
+        }
     }
 
     task = clawt_task_manager_create(self->tasks, agent_id, assignee, work,
@@ -2169,6 +2333,8 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
     else if (g_strcmp0(tool_name, "clawtilla_message_agent") == 0 ||
              g_strcmp0(tool_name, "clawtilla_ask_agent") == 0)
         text = tool_message_agent(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_list_teams") == 0)
+        text = tool_list_teams(self, agent_id);
     else if (g_strcmp0(tool_name, "clawtilla_delegate") == 0)
         text = tool_delegate(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_task_status") == 0)

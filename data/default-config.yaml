@@ -421,6 +421,17 @@ memories:
 # # so there is one mechanism rather than two.
 # rooms: []
 
+# # Teams, so a fleet larger than a handful has a shape.
+# #
+# # An agent names its team in agents.team, and its standing there in
+# # agents.team_role. A lead may hand work to the members of its own team;
+# # a member may talk to anyone and assign to nobody. The chief of staff
+# # sits above all of them and hands work to the leads.
+# #
+# # Teams are optional. A fleet that declares none behaves exactly as it
+# # did before there were any.
+# teams: []
+
 # # Named integrations, each handed to one agent, some agents or all of them.
 # #
 # # An integration is a connection to something outside the fleet, kept in

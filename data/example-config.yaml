@@ -445,6 +445,37 @@ rooms:
     # Overrides orchestration.max_hops for this room.
     max_hops: null
 
+# Teams, so a fleet larger than a handful has a shape.
+#
+# An agent names its team in agents.team, and its standing there in
+# agents.team_role. A lead may hand work to the members of its own team;
+# a member may talk to anyone and assign to nobody. The chief of staff
+# sits above all of them and hands work to the leads.
+#
+# Teams are optional. A fleet that declares none behaves exactly as it
+# did before there were any.
+teams:
+
+    # Identifier used to address the team, and what agents.team names.
+    # Required.
+  - id: null
+
+    # Display name. Defaults to the id.
+    name: null
+
+    # What this team is for, and what to send it.
+    #
+    # Written for a chief-of-staff deciding where a piece of work goes: it
+    # reads these to choose a team, so say what the team handles and what it
+    # does not, rather than naming the people on it.
+    description: null
+
+    # Accent colour in the clients, as a hex string.
+    color: null
+
+    # Where this team sits in the list, lowest first. Ties keep file order.
+    order: 0
+
 # Named integrations, each handed to one agent, some agents or all of them.
 #
 # An integration is a connection to something outside the fleet, kept in
@@ -894,6 +925,24 @@ agents:
     # number keep the order they appear in this file, so leaving them all
     # at 0 changes nothing.
     order: 0
+
+    # Which team this agent belongs to, by teams.id.
+    #
+    # Unset means no team: the agent still messages and is messaged, it is
+    # simply not grouped and no team lead may assign to it.
+    team: null
+
+    # Standing within that team.
+    #
+    # A lead may hand work to the members of its own team and to nobody
+    # else. A member may message, ask and share a room with anyone --
+    # handing something over in conversation is not assigning it -- but may
+    # not delegate at all.
+    #
+    # At most one lead per team; a second is refused rather than picked
+    # between. The chief of staff outranks every lead and needs no team.
+    # Values: member, lead
+    team_role: "member"
 
     # Path to an avatar image.
     avatar: null

@@ -74,6 +74,16 @@ void clawt_agent_manager_set_config(ClawtAgentManager *self,
  * Returns: (transfer none) (element-type ClawtAgent): every agent,
  *   in configuration order
  */
+/**
+ * clawt_agent_manager_get_config:
+ * @self: a #ClawtAgentManager
+ *
+ * The fleet configuration the manager built its agents from.
+ *
+ * Returns: (transfer none) (nullable): the configuration
+ */
+ClawtConfig *clawt_agent_manager_get_config(ClawtAgentManager *self);
+
 GPtrArray *clawt_agent_manager_list(ClawtAgentManager *self);
 
 /**

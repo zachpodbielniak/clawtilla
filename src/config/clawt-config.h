@@ -314,6 +314,92 @@ void clawt_room_spec_free(ClawtRoomSpec *self);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtRoomSpec, clawt_room_spec_free)
 
 /**
+ * ClawtTeamSpec:
+ * @id: the team id, and what `agents.team` names
+ * @name: (nullable): display name; the id when unset
+ * @description: (nullable): what the team is for, written for whoever
+ *   is deciding where a piece of work goes
+ * @color: (nullable): accent colour, as a hex string
+ * @order: where it sits in a list, lowest first
+ *
+ * One entry from the config's `teams:` list.
+ */
+typedef struct {
+    gchar *id;
+    gchar *name;
+    gchar *description;
+    gchar *color;
+    gint   order;
+} ClawtTeamSpec;
+
+void clawt_team_spec_free(ClawtTeamSpec *self);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtTeamSpec, clawt_team_spec_free)
+
+/**
+ * clawt_config_get_teams:
+ * @self: a #ClawtConfig
+ *
+ * The teams declared in the config, in the order they should be shown.
+ *
+ * Returns: (transfer full) (element-type ClawtTeamSpec): the teams
+ */
+GPtrArray *clawt_config_get_teams(ClawtConfig *self);
+
+/**
+ * clawt_config_get_team:
+ * @self: a #ClawtConfig
+ * @team_id: which team
+ *
+ * Returns: (transfer full) (nullable): the team, or %NULL
+ */
+ClawtTeamSpec *clawt_config_get_team(ClawtConfig *self,
+                                     const gchar *team_id);
+
+/**
+ * clawt_config_add_team:
+ * @self: a #ClawtConfig
+ * @team_id: the id for the new team
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Adds a team. Refuses an id that is already taken, and one that is not
+ * a usable identifier -- a team is addressed by this from agents, tools
+ * and the command line.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean clawt_config_add_team(ClawtConfig  *self,
+                               const gchar  *team_id,
+                               GError      **error);
+
+/**
+ * clawt_config_set_team_string:
+ * @self: a #ClawtConfig
+ * @team_id: which team
+ * @key: the field, as it appears in the schema under `teams.`
+ * @value: (nullable): the new value
+ *
+ * Returns: %TRUE when the team exists
+ */
+gboolean clawt_config_set_team_string(ClawtConfig *self,
+                                      const gchar *team_id,
+                                      const gchar *key,
+                                      const gchar *value);
+
+/**
+ * clawt_config_remove_team:
+ * @self: a #ClawtConfig
+ * @team_id: which team
+ *
+ * Removes the team. Agents naming it are left alone and become
+ * teamless, which is a state they are allowed to be in -- rewriting
+ * every one of them from here would be a second thing to get wrong.
+ *
+ * Returns: %TRUE when a team was removed
+ */
+gboolean clawt_config_remove_team(ClawtConfig *self, const gchar *team_id);
+
+/**
  * clawt_config_get_rooms:
  * @self: a #ClawtConfig
  *

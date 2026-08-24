@@ -705,12 +705,170 @@ test_a_mount_without_relabel_is_shared(void)
                     ==, CLAWT_RELABEL_NONE);
 }
 
+
+/* ── teams ───────────────────────────────────────────────────────── */
+
+/*
+ * Teams are optional, and a fleet that declares none must behave exactly
+ * as it did before there were any -- which is the whole reason an empty
+ * list is a normal answer rather than a missing section.
+ */
+static void
+test_a_fleet_with_no_teams_has_none(void)
+{
+    g_autoptr(ClawtConfig) config =
+        clawt_config_load_from_string("agents:\n  - id: alpha\n", NULL);
+    g_autoptr(GPtrArray) teams = clawt_config_get_teams(config);
+
+    g_assert_nonnull(teams);
+    g_assert_cmpuint(teams->len, ==, 0);
+}
+
+static void
+test_teams_round_trip(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(GPtrArray) teams = NULL;
+    g_autoptr(ClawtTeamSpec) one = NULL;
+    g_autoptr(GError) error = NULL;
+
+    config = clawt_config_load_from_string("agents:\n  - id: alpha\n", NULL);
+
+    g_assert_true(clawt_config_add_team(config, "research", &error));
+    g_assert_no_error(error);
+
+    g_assert_true(clawt_config_set_team_string(config, "research", "name",
+                                               "Research"));
+    g_assert_true(clawt_config_set_team_string(
+        config, "research", "description",
+        "Reads things and answers questions about them."));
+
+    teams = clawt_config_get_teams(config);
+    g_assert_cmpuint(teams->len, ==, 1);
+
+    one = clawt_config_get_team(config, "research");
+    g_assert_nonnull(one);
+    g_assert_cmpstr(one->id, ==, "research");
+    g_assert_cmpstr(one->name, ==, "Research");
+    g_assert_nonnull(strstr(one->description, "answers questions"));
+}
+
+/*
+ * A duplicate id is refused rather than added, because everything else
+ * -- an agent's team, a delegation, the sidebar -- addresses a team by
+ * that id, and two teams answering to one name is not a state anything
+ * downstream can be right about.
+ */
+static void
+test_a_duplicate_team_is_refused(void)
+{
+    g_autoptr(ClawtConfig) config =
+        clawt_config_load_from_string("agents:\n  - id: alpha\n", NULL);
+    g_autoptr(GError) error = NULL;
+
+    g_assert_true(clawt_config_add_team(config, "research", NULL));
+    g_assert_false(clawt_config_add_team(config, "research", &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_ALREADY_EXISTS);
+}
+
+/* ...and so is an id nothing could address it by. */
+static void
+test_a_team_id_must_be_usable(void)
+{
+    g_autoptr(ClawtConfig) config =
+        clawt_config_load_from_string("agents:\n  - id: alpha\n", NULL);
+    g_autoptr(GError) error = NULL;
+
+    g_assert_false(clawt_config_add_team(config, "Not A Team", &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT);
+}
+
+/*
+ * The id is not settable through the field setter. Everything refers to
+ * a team by it, so changing it in place would leave every agent naming a
+ * team that no longer exists.
+ */
+static void
+test_a_team_id_cannot_be_edited_in_place(void)
+{
+    g_autoptr(ClawtConfig) config =
+        clawt_config_load_from_string("agents:\n  - id: alpha\n", NULL);
+
+    g_assert_true(clawt_config_add_team(config, "research", NULL));
+    g_assert_false(clawt_config_set_team_string(config, "research", "id",
+                                                "other"));
+}
+
+/*
+ * Removing a team leaves its agents alone. Being teamless is a state an
+ * agent is allowed to be in, and rewriting every one of them from here
+ * would be a second thing to get wrong.
+ */
+static void
+test_removing_a_team_leaves_its_agents(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    ClawtAgentConfig *agent;
+
+    config = clawt_config_load_from_string(
+        "teams:\n  - id: research\n"
+        "agents:\n  - id: alpha\n    team: research\n", NULL);
+
+    g_assert_true(clawt_config_remove_team(config, "research"));
+    g_assert_false(clawt_config_remove_team(config, "research"));
+
+    agent = clawt_config_get_agent(config, "alpha");
+    g_assert_nonnull(agent);
+    g_assert_cmpstr(clawt_agent_config_get_string(agent, "team"), ==,
+                    "research");
+}
+
+/*
+ * Order decides the list, and ties keep the order the file has -- so a
+ * fleet nobody has arranged does not reshuffle its own sidebar between
+ * listings.
+ */
+static void
+test_teams_come_back_in_order(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(GPtrArray) teams = NULL;
+
+    config = clawt_config_load_from_string(
+        "teams:\n"
+        "  - id: zulu\n"
+        "  - id: alpha\n    order: -10\n"
+        "  - id: mike\n", NULL);
+
+    teams = clawt_config_get_teams(config);
+    g_assert_cmpuint(teams->len, ==, 3);
+
+    g_assert_cmpstr(((ClawtTeamSpec *)g_ptr_array_index(teams, 0))->id, ==,
+                    "alpha");
+    g_assert_cmpstr(((ClawtTeamSpec *)g_ptr_array_index(teams, 1))->id, ==,
+                    "zulu");
+    g_assert_cmpstr(((ClawtTeamSpec *)g_ptr_array_index(teams, 2))->id, ==,
+                    "mike");
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/config/reads-configured", test_reads_configured_values);
+    g_test_add_func("/config/teams/none-by-default",
+                    test_a_fleet_with_no_teams_has_none);
+    g_test_add_func("/config/teams/round-trip", test_teams_round_trip);
+    g_test_add_func("/config/teams/duplicate-refused",
+                    test_a_duplicate_team_is_refused);
+    g_test_add_func("/config/teams/id-must-be-usable",
+                    test_a_team_id_must_be_usable);
+    g_test_add_func("/config/teams/id-not-editable",
+                    test_a_team_id_cannot_be_edited_in_place);
+    g_test_add_func("/config/teams/remove-leaves-agents",
+                    test_removing_a_team_leaves_its_agents);
+    g_test_add_func("/config/teams/ordered", test_teams_come_back_in_order);
     g_test_add_func("/config/mounts-writable",
                     test_mounts_can_be_added_and_removed);
     g_test_add_func("/config/mount-relabel-default",

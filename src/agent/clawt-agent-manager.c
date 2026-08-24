@@ -262,6 +262,14 @@ clawt_agent_manager_load(ClawtAgentManager *self, GError **error)
     return TRUE;
 }
 
+ClawtConfig *
+clawt_agent_manager_get_config(ClawtAgentManager *self)
+{
+    g_return_val_if_fail(CLAWT_IS_AGENT_MANAGER(self), NULL);
+
+    return self->config;
+}
+
 GPtrArray *
 clawt_agent_manager_list(ClawtAgentManager *self)
 {

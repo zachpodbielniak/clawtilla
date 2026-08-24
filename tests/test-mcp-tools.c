@@ -353,7 +353,8 @@ test_message_agent_routes(void)
     gboolean is_error = TRUE;
 
     fixture_setup(&fixture,
-        "agents:\n  - id: chief\n  - id: researcher\n");
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: researcher\n");
 
     response = call_tool(&fixture, "chief", "clawtilla_message_agent",
                          "{\"agent_id\":\"researcher\","
@@ -378,7 +379,8 @@ test_missing_arguments_are_named(void)
     const gchar *text;
 
     fixture_setup(&fixture,
-        "agents:\n  - id: chief\n  - id: researcher\n");
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: researcher\n");
 
     response = call_tool(&fixture, "chief", "clawtilla_message_agent",
                          "{\"agent_id\":\"researcher\"}");
@@ -399,8 +401,15 @@ test_delegate_creates_a_task(void)
     gboolean is_error = TRUE;
     const gchar *text;
 
+    /*
+     * Marked as the chief, because assigning work is now a role rather
+     * than something any agent may do. An agent that is neither the
+     * chief nor a team lead is refused, which is what the team tests
+     * cover.
+     */
     fixture_setup(&fixture,
-        "agents:\n  - id: chief\n  - id: researcher\n");
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: researcher\n");
 
     response = call_tool(&fixture, "chief", "clawtilla_delegate",
                          "{\"agent_id\":\"researcher\","
@@ -426,7 +435,8 @@ test_delegate_to_unknown_agent_suggests_listing(void)
     gboolean is_error = FALSE;
     const gchar *text;
 
-    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+    fixture_setup(&fixture,
+                  "agents:\n  - id: chief\n    chief_of_staff: true\n");
 
     response = call_tool(&fixture, "chief", "clawtilla_delegate",
                          "{\"agent_id\":\"ghost\",\"task\":\"do a thing\"}");
@@ -453,7 +463,8 @@ test_undeliverable_delegation_fails_its_task(void)
     gboolean is_error = FALSE;
 
     fixture_setup(&fixture,
-        "agents:\n  - id: chief\n  - id: researcher\n");
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: researcher\n");
 
     fixture.deliver_fails = TRUE;
 
@@ -485,7 +496,8 @@ test_task_status_and_result(void)
     g_autofree gchar *status_args = NULL;
 
     fixture_setup(&fixture,
-        "agents:\n  - id: chief\n  - id: researcher\n");
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: researcher\n");
 
     delegate_response = call_tool(&fixture, "chief", "clawtilla_delegate",
                                   "{\"agent_id\":\"researcher\","
@@ -539,7 +551,8 @@ test_assignee_can_complete_its_task(void)
     gboolean is_error = TRUE;
 
     fixture_setup(&fixture,
-        "agents:\n  - id: chief\n  - id: researcher\n");
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: researcher\n");
 
     delegate_response = call_tool(&fixture, "chief", "clawtilla_delegate",
                                   "{\"agent_id\":\"researcher\","
@@ -583,7 +596,8 @@ test_room_history_takes_an_agent_id(void)
     ClawtRoom *room;
     const gchar *text;
 
-    fixture_setup(&fixture, "agents:\n  - id: chief\n  - id: researcher\n");
+    fixture_setup(&fixture, "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: researcher\n");
 
     room = clawt_room_manager_get_direct(fixture.rooms, "chief",
                                          "researcher");
@@ -1065,11 +1079,172 @@ test_the_described_tools_are_the_permitted_ones(void)
     fixture_teardown(&fixture);
 }
 
+
+/* ── Teams ───────────────────────────────────────────────────────── */
+
+/*
+ * A member is not offered the delegate tool at all.
+ *
+ * It could never succeed for them, and a tool that is listed and always
+ * refused teaches an agent to keep trying it in different shapes.
+ */
+static void
+test_a_member_is_not_offered_delegation(void)
+{
+    Fixture fixture = { 0 };
+
+    fixture_setup(&fixture,
+        "teams:\n  - id: research\n"
+        "agents:\n"
+        "  - id: boss\n    team: research\n    team_role: lead\n"
+        "  - id: hand\n    team: research\n");
+
+    g_assert_true(offers_tool(&fixture, "boss", "clawtilla_delegate"));
+    g_assert_false(offers_tool(&fixture, "hand", "clawtilla_delegate"));
+
+    /*
+     * ...but everything about talking stays. The two roles differ over
+     * assigning work, not over collaborating, and a member cut off from
+     * its peers would be a much smaller thing than intended.
+     */
+    g_assert_true(offers_tool(&fixture, "hand", "clawtilla_message_agent"));
+    g_assert_true(offers_tool(&fixture, "hand", "clawtilla_ask_agent"));
+    g_assert_true(offers_tool(&fixture, "hand", "clawtilla_post_room"));
+    g_assert_true(offers_tool(&fixture, "hand", "clawtilla_list_teams"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A lead has the tool and is still refused outside its own team, because
+ * which targets are allowed depends on the target rather than on the
+ * caller -- so the tool list cannot answer it and the call must.
+ */
+static void
+test_a_lead_is_refused_outside_its_team(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    const gchar *text;
+    gboolean is_error = FALSE;
+
+    fixture_setup(&fixture,
+        "teams:\n  - id: research\n  - id: build\n"
+        "agents:\n"
+        "  - id: boss\n    team: research\n    team_role: lead\n"
+        "  - id: builder\n    team: build\n");
+
+    response = call_tool(&fixture, "boss", "clawtilla_delegate",
+                         "{\"agent_id\":\"builder\",\"task\":\"x\"}");
+    text = response_text(response, &is_error);
+
+    g_assert_true(is_error);
+    g_assert_nonnull(strstr(text, "not on your team"));
+    g_assert_nonnull(strstr(text, "chief of staff"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * The teams listing leads with the description, because that is the part
+ * a chief-of-staff actually matches work against -- names and members
+ * say nothing about what a team handles.
+ */
+static void
+test_the_team_listing_carries_the_descriptions(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    const gchar *text;
+    gboolean is_error = TRUE;
+
+    fixture_setup(&fixture,
+        "teams:\n"
+        "  - id: research\n    name: Research\n"
+        "    description: Reads sources and answers questions.\n"
+        "agents:\n"
+        "  - id: chief\n    chief_of_staff: true\n"
+        "  - id: boss\n    team: research\n    team_role: lead\n"
+        "  - id: hand\n    team: research\n");
+
+    response = call_tool(&fixture, "chief", "clawtilla_list_teams", "{}");
+    text = response_text(response, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_nonnull(strstr(text, "Reads sources"));
+    g_assert_nonnull(strstr(text, "Lead: boss"));
+    g_assert_nonnull(strstr(text, "hand"));
+    g_assert_nonnull(strstr(text, "Running: 0 of 2"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A fleet with no teams says so, rather than answering with nothing --
+ * an agent that suspects there are teams it cannot see goes looking for
+ * them.
+ */
+static void
+test_a_fleet_with_no_teams_says_so(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    const gchar *text;
+    gboolean is_error = TRUE;
+
+    fixture_setup(&fixture,
+                  "agents:\n  - id: chief\n    chief_of_staff: true\n");
+
+    response = call_tool(&fixture, "chief", "clawtilla_list_teams", "{}");
+    text = response_text(response, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_nonnull(strstr(text, "no teams"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A team with no description says that too. The chief cannot match work
+ * against a blank, and the fix is a sentence from the user rather than a
+ * guess from the agent.
+ */
+static void
+test_a_team_with_no_description_says_so(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    const gchar *text;
+    gboolean is_error = TRUE;
+
+    fixture_setup(&fixture,
+        "teams:\n  - id: research\n"
+        "agents:\n  - id: chief\n    chief_of_staff: true\n");
+
+    response = call_tool(&fixture, "chief", "clawtilla_list_teams", "{}");
+    text = response_text(response, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_nonnull(strstr(text, "No description"));
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
+    g_test_add_func("/mcp/team/member-cannot-delegate",
+                    test_a_member_is_not_offered_delegation);
+    g_test_add_func("/mcp/team/lead-stops-at-its-team",
+                    test_a_lead_is_refused_outside_its_team);
+    g_test_add_func("/mcp/team/listing-carries-descriptions",
+                    test_the_team_listing_carries_the_descriptions);
+    g_test_add_func("/mcp/team/no-teams-says-so",
+                    test_a_fleet_with_no_teams_says_so);
+    g_test_add_func("/mcp/team/no-description-says-so",
+                    test_a_team_with_no_description_says_so);
     g_test_add_func("/mcp/fleet/description-matches-the-gate",
                     test_the_described_tools_are_the_permitted_ones);
     g_test_add_func("/mcp/fleet/needs-the-permission",
