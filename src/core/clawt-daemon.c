@@ -1122,6 +1122,62 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
  * straight into a mailbox, so the hop limits, rate limits and cycle
  * detection apply to tool calls exactly as they do to ordinary chat.
  */
+/* Defined below, beside the frame that is its other caller. */
+static ClawtAgentConfig *daemon_create_agent(ClawtDaemon  *self,
+                                             const gchar  *agent_id,
+                                             GHashTable   *fields,
+                                             GError      **error);
+
+/*
+ * An agent creating an agent, through the same door a person uses.
+ *
+ * It goes to daemon_create_agent() rather than reimplementing any of it,
+ * which is the whole point: the validation, the rollback on a bad
+ * computer, the reload and the start are one implementation. An agent
+ * asking is not a reason to trust the request more, and the last time
+ * two creation paths existed one of them skipped the check that refuses
+ * a VM with no disk.
+ */
+static gchar *
+create_agent_for_tools(const gchar  *agent_id,
+                       GHashTable   *settings,
+                       gboolean      start,
+                       gpointer      user_data,
+                       GError      **error)
+{
+    ClawtDaemon *self = user_data;
+    g_autoptr(GString) out = NULL;
+
+    if (daemon_create_agent(self, agent_id, settings, error) == NULL)
+        return NULL;
+
+    out = g_string_new(NULL);
+    g_string_append_printf(out, "Created %s.", agent_id);
+
+    if (start) {
+        g_autoptr(GError) start_error = NULL;
+
+        if (clawt_daemon_start_agent(self, agent_id, &start_error)) {
+            g_string_append(out, " It is running.");
+        } else {
+            /*
+             * Said rather than swallowed, and not an error: the agent
+             * exists and its configuration is on disk. Whoever asked for
+             * it needs to know it is not working *and* that it is there,
+             * because the second half is what stops them making it
+             * twice.
+             */
+            g_string_append_printf(out,
+                " It exists but did not start: %s. It can be started "
+                "again once that is fixed -- do not create it a second "
+                "time.",
+                start_error != NULL ? start_error->message : "unknown");
+        }
+    }
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
 static gboolean
 deliver_for_tools(const gchar *from_agent, const gchar *target,
                   const gchar *body, const gchar *task_id, gint depth,
@@ -2213,6 +2269,76 @@ on_connector_refresh_tick(gpointer user_data)
     return G_SOURCE_CONTINUE;
 }
 
+/*
+ * Creating an agent, once.
+ *
+ * Two callers: the agent.create frame, and the orchestration tool a
+ * chief-of-staff uses. They disagreed about nothing yet, which is the
+ * moment to make sure they cannot -- the designer's commit path is on
+ * record for claiming to be "the same path as creating an agent by hand"
+ * while skipping the validation around it.
+ *
+ * @fields is keyed by configuration key, not by whatever each caller
+ * calls things, so the translation stays with the caller that has the
+ * vocabulary.
+ */
+static ClawtAgentConfig *
+daemon_create_agent(ClawtDaemon  *self,
+                    const gchar  *agent_id,
+                    GHashTable   *fields,
+                    GError      **error)
+{
+    ClawtAgentConfig *created;
+    GHashTableIter iter;
+    gpointer key;
+    gpointer value;
+
+    created = clawt_config_add_agent(self->config, agent_id, error);
+
+    if (created == NULL)
+        return NULL;
+
+    if (fields != NULL) {
+        g_hash_table_iter_init(&iter, fields);
+
+        while (g_hash_table_iter_next(&iter, &key, &value)) {
+            if (value != NULL)
+                clawt_agent_config_set_string(created, key, value);
+        }
+    }
+
+    /*
+     * After the fields, so it sees what was written rather than what was
+     * asked for -- and rolled back rather than saved, because an agent
+     * that exists and cannot work is worse than one that was never
+     * added: somebody has to find out it is broken and then remove it.
+     */
+    if (!clawt_agent_config_validate_computer(created, error)) {
+        clawt_config_remove_agent(self->config, agent_id);
+        return NULL;
+    }
+
+    if (!clawt_config_save(self->config, error))
+        return NULL;
+
+    /*
+     * Reloaded so the agent exists as an object rather than only as a
+     * line in a file: whoever created it is about to start it.
+     */
+    if (!clawt_daemon_reload(self, error))
+        return NULL;
+
+    clawt_agent_manager_load(self->agents, NULL);
+    clawt_event_bus_emit(self->bus, "agent.created", agent_id);
+
+    /*
+     * The config object from before the reload belongs to a ClawtConfig
+     * that has just been freed.
+     */
+    return clawt_config_get_agent(self->config, agent_id);
+}
+
+
 static JsonNode *
 on_ipc_request(JsonNode *request, gpointer user_data)
 {
@@ -2527,6 +2653,16 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     clawt_mcp_tools_set_deliver_func(self->mcp_tools, deliver_for_tools,
                                      self, NULL);
     clawt_mcp_tools_set_room_manager(self->mcp_tools, self->rooms);
+
+    /*
+     * The fleet tools are not offered at all without these, whatever an
+     * agent's permissions say -- a library embedded without a daemon has
+     * no fleet to add to, and a tool that is listed and then fails
+     * teaches an agent to keep trying.
+     */
+    clawt_mcp_tools_set_create_agent_func(self->mcp_tools,
+                                          create_agent_for_tools, self, NULL);
+    clawt_mcp_tools_set_image_store(self->mcp_tools, self->vm_images);
 
     {
         /*
@@ -5152,70 +5288,55 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
 
     if (g_strcmp0(kind, "agent.create") == 0) {
         const gchar *agent_id = clawt_ipc_payload_string(payload, "id");
+        g_autoptr(GHashTable) fields = NULL;
         ClawtAgentConfig *created;
 
         if (agent_id == NULL)
             return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
                                        "an agent needs an id");
 
-        created = clawt_config_add_agent(self->config, agent_id, &error);
-
-        if (created == NULL)
-            return clawt_ipc_error_new(request, error->code, error->message);
-
+        /*
+         * The frame's vocabulary, translated into configuration keys
+         * here so the shared implementation never has to know it.
+         */
         {
             static const struct {
                 const gchar *from;
                 const gchar *to;
-            } fields[] = {
-                { "name",        "name" },
-                { "description", "description" },
-                { "model",       "model.model" },
-                { "provider",    "model.provider" },
-                { "computer",    "computer.type" },
-                { "confine",     "computer.host.confine" },
-                { "image",       "computer.container.image" },
-                { "vm_image",    "computer.vm.image" },
-                { "workspace",   "workspace" },
+            } names[] = {
+                { "name",           "name" },
+                { "description",    "description" },
+                { "model",          "model.model" },
+                { "provider",       "model.provider" },
+                { "computer",       "computer.type" },
+                { "confine",        "computer.host.confine" },
+                { "image",          "computer.container.image" },
+                { "vm_image",       "computer.vm.image" },
+                { "vm_cpus",        "computer.vm.cpus" },
+                { "vm_memory_mb",   "computer.vm.memory_mb" },
+                { "vm_disk_gb",     "computer.vm.disk_gb" },
+                { "vm_resolution",  "computer.vm.resolution" },
+                { "workspace",      "workspace" },
                 { NULL, NULL }
             };
             gsize i;
 
-            for (i = 0; fields[i].from != NULL; i++) {
+            fields = g_hash_table_new(g_str_hash, g_str_equal);
+
+            for (i = 0; names[i].from != NULL; i++) {
                 const gchar *value = clawt_ipc_payload_string(payload,
-                                                              fields[i].from);
+                                                              names[i].from);
 
                 if (value != NULL)
-                    clawt_agent_config_set_string(created, fields[i].to,
-                                                  value);
+                    g_hash_table_insert(fields, (gpointer)names[i].to,
+                                        (gpointer)value);
             }
         }
 
-        /*
-         * Checked after the fields are applied, so it sees what was
-         * actually written rather than what the payload claimed, and
-         * rolled back rather than saved: an agent that exists and cannot
-         * work is worse than one that was never added, because the person
-         * has to find out it is broken and then delete it.
-         */
-        if (!clawt_agent_config_validate_computer(created, &error)) {
-            clawt_config_remove_agent(self->config, agent_id);
-            return clawt_ipc_error_new(request, error->code, error->message);
-        }
+        created = daemon_create_agent(self, agent_id, fields, &error);
 
-        if (!clawt_config_save(self->config, &error))
+        if (created == NULL)
             return clawt_ipc_error_new(request, error->code, error->message);
-
-        /*
-         * Reloaded so the new agent exists as an object, not merely as a
-         * line in a file: the client that created it will immediately ask
-         * to start it.
-         */
-        if (!clawt_daemon_reload(self, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        clawt_agent_manager_load(self->agents, NULL);
-        clawt_event_bus_emit(self->bus, "agent.created", agent_id);
 
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "id");
@@ -5227,17 +5348,11 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
          * button.
          *
          * A computer is built at *start*, not at create: a VM agent
-         * created and left alone has a config file and no machine --
-         * no overlay, no seed, no domain. `defaults.autostart` does not
-         * cover it either; it is false by default and means "comes back
-         * with the daemon", which is a different question from whether
-         * the thing somebody just asked for exists.
-         *
-         * The CLI knew and printed "Start it with: ..." as its third
-         * line. The GTK client said "Agent created." and stopped, so a
-         * person there was finished and had nothing. Two clients
-         * disagreeing about whether the work is done is the daemon's
-         * problem to settle.
+         * created and left alone has a config file and no machine.
+         * `defaults.autostart` does not cover it either -- it is false
+         * by default and means "comes back with the daemon", which is a
+         * different question from whether the thing somebody just asked
+         * for exists.
          */
         if (clawt_ipc_payload_boolean(payload, "start", TRUE)) {
             g_autoptr(GError) start_error = NULL;
@@ -5251,7 +5366,7 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
              * Reported, never fatal. The agent exists and its
              * configuration is on disk; rolling that back because a
              * hypervisor was busy would throw away everything the person
-             * had just typed. They can start it again once it is fixed.
+             * had just typed.
              */
             if (!started && start_error != NULL) {
                 json_builder_set_member_name(builder, "start_error");

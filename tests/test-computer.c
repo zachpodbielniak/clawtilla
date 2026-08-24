@@ -2337,6 +2337,123 @@ test_the_domain_and_the_seed_agree_on_the_tag(void)
     g_assert_null(strstr(xml, "<target dir='/mnt"));
 }
 
+
+/* ── The size of the screen ──────────────────────────────────────── */
+
+/*
+ * A screen size a person typed, read before anything can act on it.
+ *
+ * The hypervisor reports a malformed one as a domain that will not
+ * define, which is an error about XML a long way from the line that
+ * caused it.
+ */
+static void
+test_a_resolution_is_read_or_refused(void)
+{
+    static const gchar *const good[] = {
+        "1280x800", "1920x1080", "3840x2160", "800X600", "1024*768"
+    };
+    static const gchar *const bad[] = {
+        NULL, "", "1920", "1920x", "x1080", "1920x1080x60", "-1920x1080",
+        "1920 x 1080", "widthxheight", "320x240", "99999x99999", "0x0"
+    };
+    guint width = 0;
+    guint height = 0;
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(good); i++)
+        g_assert_true(clawt_vm_computer_parse_resolution(good[i], NULL,
+                                                         NULL));
+
+    for (i = 0; i < G_N_ELEMENTS(bad); i++)
+        g_assert_false(clawt_vm_computer_parse_resolution(bad[i], NULL,
+                                                          NULL));
+
+    g_assert_true(clawt_vm_computer_parse_resolution("1920x1080", &width,
+                                                     &height));
+    g_assert_cmpuint(width, ==, 1920);
+    g_assert_cmpuint(height, ==, 1080);
+}
+
+/*
+ * And it reaches both backends, because a feature that works on one of
+ * them is how the missing GPU stayed hidden for as long as it did.
+ */
+static void
+test_the_resolution_reaches_both_backends(void)
+{
+    g_autoptr(ClawtComputer) libvirt = NULL;
+    g_autoptr(ClawtComputer) qemu = NULL;
+    g_autofree gchar *xml = NULL;
+    g_auto(GStrv) argv = NULL;
+    gboolean saw = FALSE;
+    guint i;
+
+    libvirt = clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_LIBVIRT, NULL);
+    clawt_vm_computer_set_resolution(CLAWT_VM_COMPUTER(libvirt),
+                                     "1920x1080");
+    xml = clawt_vm_computer_build_domain_xml(CLAWT_VM_COMPUTER(libvirt));
+
+    g_assert_nonnull(strstr(xml, "<resolution x='1920' y='1080'/>"));
+
+    qemu = clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_QEMU, NULL);
+    clawt_vm_computer_set_resolution(CLAWT_VM_COMPUTER(qemu), "1920x1080");
+    argv = clawt_vm_computer_build_qemu_argv(CLAWT_VM_COMPUTER(qemu),
+                                             "/tmp/clawt-qmp.sock");
+
+    for (i = 0; argv[i] != NULL; i++) {
+        if (strstr(argv[i], "virtio-gpu-pci") != NULL) {
+            g_assert_nonnull(strstr(argv[i], "xres=1920"));
+            g_assert_nonnull(strstr(argv[i], "yres=1080"));
+            saw = TRUE;
+        }
+    }
+
+    g_assert_true(saw);
+}
+
+/*
+ * A size that will not parse leaves the hypervisor's own default rather
+ * than putting nonsense in a domain.  It is refused at validation, so
+ * arriving here with one means somebody went around that -- and a VM
+ * with a screen beats no VM at all.
+ */
+static void
+test_an_unreadable_resolution_leaves_the_default(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_LIBVIRT, NULL);
+    g_autofree gchar *xml = NULL;
+
+    clawt_vm_computer_set_resolution(CLAWT_VM_COMPUTER(computer), "huge");
+    xml = clawt_vm_computer_build_domain_xml(CLAWT_VM_COMPUTER(computer));
+
+    g_assert_null(strstr(xml, "<resolution"));
+    g_assert_nonnull(strstr(xml, "<model type='virtio'"));
+}
+
+/* ...and the config refuses it while somebody is still looking at it. */
+static void
+test_a_bad_resolution_is_refused_at_validation(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent;
+
+    agent = agent_from_yaml(&config,
+                            "agents:\n"
+                            "  - id: chief\n"
+                            "    computer:\n"
+                            "      type: vm\n"
+                            "      vm:\n"
+                            "        image: /tmp/x.qcow2\n"
+                            "        resolution: \"1920\"\n");
+
+    g_assert_false(clawt_agent_config_validate_computer(agent, &error));
+    g_assert_nonnull(error);
+    g_assert_nonnull(strstr(error->message, "WIDTHxHEIGHT"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -2367,6 +2484,14 @@ main(int argc, char *argv[])
                     test_host_description_mentions_the_confinement);
     g_test_add_func("/computer/truncation", test_output_truncation_is_reported);
 
+    g_test_add_func("/computer/resolution/read-or-refused",
+                    test_a_resolution_is_read_or_refused);
+    g_test_add_func("/computer/resolution/reaches-both-backends",
+                    test_the_resolution_reaches_both_backends);
+    g_test_add_func("/computer/resolution/unreadable-keeps-the-default",
+                    test_an_unreadable_resolution_leaves_the_default);
+    g_test_add_func("/computer/resolution/refused-at-validation",
+                    test_a_bad_resolution_is_refused_at_validation);
     g_test_add_func("/computer/tag/fits-what-qemu-accepts",
                     test_a_tag_fits_in_what_qemu_accepts);
     g_test_add_func("/computer/tag/stable",

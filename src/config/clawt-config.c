@@ -563,6 +563,26 @@ clawt_agent_config_validate_computer(ClawtAgentConfig *self, GError **error)
         CLAWT_COMPUTER_VM)
         return TRUE;
 
+    /*
+     * Refused here rather than at the hypervisor, which reports a
+     * malformed screen size as a domain that will not define -- an error
+     * about XML, a long way from the line somebody typed.
+     */
+    {
+        const gchar *resolution =
+            clawt_agent_config_get_string(self, "computer.vm.resolution");
+
+        if (resolution != NULL && *resolution != '\0' &&
+            !clawt_vm_computer_parse_resolution(resolution, NULL, NULL)) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "computer.vm.resolution is '%s', which is not a "
+                        "screen size. Write it as WIDTHxHEIGHT, between "
+                        "640x480 and 16384x16384 -- for example 1920x1080.",
+                        resolution);
+            return FALSE;
+        }
+    }
+
     image = clawt_agent_config_get_path_value(self, "computer.vm.image");
 
     if (image != NULL && *image != '\0')

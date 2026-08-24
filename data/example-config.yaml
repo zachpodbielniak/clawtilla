@@ -1227,6 +1227,18 @@ agents:
         # end.
         disk_gb: 128
 
+        # The size of the VM's screen, as WIDTHxHEIGHT.
+        #
+        # 1280x800 is the hypervisor's own default, which is why an agent's
+        # screenshots come back that size unless this says otherwise. The
+        # virtual GPU reports it as the preferred mode and GNOME takes it, so
+        # nothing inside the guest has to be configured -- and unlike anything
+        # in the cloud-init seed, changing it applies at the VM's next boot
+        # rather than needing the machine rebuilt.
+        #
+        # It costs guest memory: the framebuffer is width x height x 4 bytes.
+        resolution: "1280x800"
+
         # User commands are run as inside the guest, over SSH.
         #
         # With cloud_init on, this account is created in the guest rather than
@@ -1511,6 +1523,18 @@ agents:
 
       # Tool names refused. Applied after allow, so a deny always wins.
       deny: []
+
+      # Whether this agent may create other agents.
+      #
+      # Off by default, and worth thinking about before turning on: an agent
+      # that can create agents can give one a computer, and a container or a
+      # VM is a machine that runs code. It cannot exceed what you could
+      # create yourself -- every agent it makes goes through the same
+      # validation -- but it can do it without being asked twice.
+      #
+      # Intended for a chief-of-staff you talk to about what the fleet needs.
+      # DANGEROUS: read docs/security.org before enabling this.
+      manage_fleet: false
 
     # Per-agent overrides of orchestration.mailbox.
     mailbox:

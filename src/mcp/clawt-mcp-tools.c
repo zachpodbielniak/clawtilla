@@ -26,7 +26,8 @@ typedef enum {
     NEEDS_NOTHING = 0,
     NEEDS_PEER_COMMS,
     NEEDS_COMPUTER,
-    NEEDS_MEMORY
+    NEEDS_MEMORY,
+    NEEDS_FLEET_ADMIN
 } ToolRequirement;
 
 typedef struct {
@@ -158,6 +159,41 @@ static const ClawtParamInfo memory_pin_params[] = {
       FALSE }
 };
 
+static const ClawtParamInfo create_agent_params[] = {
+    { "agent_id",    "string",
+      "The id: lowercase, hyphenated, and how everything else will refer "
+      "to it. It cannot be changed later.", TRUE },
+    { "description", "string",
+      "What this agent is for, in one line. The others see it when they "
+      "are deciding who to delegate to, so write it for them.", TRUE },
+    { "name",        "string", "Display name. Defaults to the id.", FALSE },
+    { "purpose",     "string",
+      "The persona, in prose: what it does, how it should work, anything "
+      "it must never do. This becomes the agent's own instructions, so "
+      "write it as though addressing them.", FALSE },
+    { "provider",    "string",
+      "Which backend. Call clawtilla_agent_options first -- only some "
+      "can run an agent at all.", FALSE },
+    { "model",       "string", "Which model from that provider.", FALSE },
+    { "computer",    "string",
+      "none, host, container or vm. Default none, which is chat only. "
+      "A VM needs a disk image that has already been fetched.", FALSE },
+    { "container_image", "string",
+      "For computer=container: the image to run, e.g. fedora:latest.",
+      FALSE },
+    { "vm_image",    "string",
+      "For computer=vm: the path of an image from "
+      "clawtilla_agent_options. Do not invent one -- an image that is "
+      "not there produces an agent that refuses to provision.", FALSE },
+    { "settings",    "string",
+      "Anything else, as key=value lines using the configuration keys "
+      "clawtilla_agent_options lists. One per line.", FALSE },
+    { "start",       "boolean",
+      "Start it once it exists. Defaults to true, which is what builds "
+      "its container or VM -- an agent that is never started has no "
+      "machine.", FALSE }
+};
+
 /* ── The tools ───────────────────────────────────────────────────── */
 
 #define TOOL(name_, desc_, req_, params_) \
@@ -169,6 +205,21 @@ static const ToolDefinition tools[] = {
          "whether it is running. Use this before delegating, so you pick "
          "someone suited to the work.",
          NEEDS_NOTHING, no_params),
+
+    TOOL("clawtilla_agent_options",
+         "What can be chosen when creating an agent: the providers that "
+         "can run one and their models, the disk images that have "
+         "actually been fetched, and the configuration keys you may pass "
+         "in `settings`. Call this before clawtilla_create_agent -- it "
+         "reports what exists rather than what sounds plausible.",
+         NEEDS_FLEET_ADMIN, no_params),
+
+    TOOL("clawtilla_create_agent",
+         "Add a new agent to the fleet and start it. Use "
+         "clawtilla_agent_options first. Creating an agent is not "
+         "reversible from here -- say what you are about to make and why "
+         "before you make it.",
+         NEEDS_FLEET_ADMIN, create_agent_params),
 
     TOOL("clawtilla_get_agent",
          "Look up one agent: its description, state and what it can do.",
@@ -311,9 +362,39 @@ struct _ClawtMcpTools {
     ClawtMcpDeliverFunc deliver;
     gpointer            deliver_data;
     GDestroyNotify      deliver_destroy;
+
+    ClawtMcpCreateAgentFunc create_agent;
+    gpointer                create_agent_data;
+    GDestroyNotify          create_agent_destroy;
+
+    ClawtVmImageStore *images;   /* unowned */
 };
 
 G_DEFINE_FINAL_TYPE(ClawtMcpTools, clawt_mcp_tools, G_TYPE_OBJECT)
+
+void
+clawt_mcp_tools_set_create_agent_func(ClawtMcpTools           *self,
+                                      ClawtMcpCreateAgentFunc  func,
+                                      gpointer                 user_data,
+                                      GDestroyNotify           destroy)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    if (self->create_agent_destroy != NULL && self->create_agent_data != NULL)
+        self->create_agent_destroy(self->create_agent_data);
+
+    self->create_agent = func;
+    self->create_agent_data = user_data;
+    self->create_agent_destroy = destroy;
+}
+
+void
+clawt_mcp_tools_set_image_store(ClawtMcpTools *self, ClawtVmImageStore *store)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    self->images = store;
+}
 
 ClawtMcpTools *
 clawt_mcp_tools_new(ClawtAgentManager *agents,
@@ -486,6 +567,23 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
 
     case NEEDS_PEER_COMMS:
         if ((clawt_agent_get_caps(agent) & CLAWT_AGENT_CAPS_PEER_COMMS) == 0)
+            return FALSE;
+        break;
+
+    case NEEDS_FLEET_ADMIN:
+        /*
+         * Two conditions, and both have to hold.  There must be
+         * something to create agents *with* -- a library embedded
+         * without a daemon has no fleet to add to -- and this agent must
+         * have been given the permission, which is off by default
+         * because an agent that can create agents can give one a
+         * machine that runs code.
+         */
+        if (self->create_agent == NULL)
+            return FALSE;
+
+        if (!clawt_agent_config_get_boolean(clawt_agent_get_config(agent),
+                                            "tools.manage_fleet"))
             return FALSE;
         break;
 
@@ -735,6 +833,273 @@ tool_list_agents(ClawtMcpTools *self, const gchar *agent_id)
         return g_strdup("You are the only agent in this fleet.");
 
     return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+/* ── Growing the fleet ───────────────────────────────────────────── */
+
+/*
+ * What can actually be chosen, rather than what sounds plausible.
+ *
+ * An agent asked to create another will otherwise invent a provider, a
+ * model name and a disk image path, and every one of those produces an
+ * agent that looks created and does not work -- a disk image most of
+ * all, because the images that exist are the ones somebody fetched.
+ * The designer hit exactly this and had to be stopped from choosing
+ * `vm` at all; this is the other answer to the same problem.
+ */
+static gchar *
+tool_agent_options(ClawtMcpTools *self)
+{
+    g_autoptr(GString) out = g_string_new(NULL);
+    const ClawtProviderInfo *providers;
+    gsize n_providers = 0;
+    gsize i;
+
+    g_string_append(out,
+        "Computer types: none (chat only), host (this machine, confined), "
+        "container, vm.\n\n");
+
+    g_string_append(out, "Providers that can run an agent:\n");
+
+    providers = clawt_model_catalog_get(&n_providers);
+
+    for (i = 0; i < n_providers; i++) {
+        gsize j;
+
+        /*
+         * Only the ones that can be an agent.  The HTTP providers exist
+         * for the designer, which needs tool calls, and naming them here
+         * would produce an agent configured for something that quietly
+         * runs as Claude Code instead.
+         */
+        if (!providers[i].agent)
+            continue;
+
+        g_string_append_printf(out, "  %s (%s)", providers[i].id,
+                               providers[i].label);
+
+        if (providers[i].n_models > 0) {
+            g_string_append(out, " -- models:");
+
+            for (j = 0; j < providers[i].n_models; j++)
+                g_string_append_printf(out, "%s %s", j > 0 ? "," : "",
+                                       providers[i].models[j].id);
+        }
+
+        g_string_append_c(out, '\n');
+    }
+
+    g_string_append(out, "\nDisk images already fetched");
+
+    if (self->images == NULL) {
+        g_string_append(out,
+            ": unknown from here. Without one, create a container agent "
+            "rather than a VM.\n");
+    } else {
+        g_autoptr(GPtrArray) have = clawt_vm_image_store_list(self->images);
+        guint k;
+        guint ready = 0;
+
+        g_string_append(out, " (use the path exactly):\n");
+
+        for (k = 0; have != NULL && k < have->len; k++) {
+            ClawtVmImage *image = g_ptr_array_index(have, k);
+
+            /*
+             * Only the ones that have finished arriving. Naming a
+             * half-downloaded file would produce an agent that refuses
+             * to provision for a reason nobody could see.
+             */
+            if (image->path == NULL || image->downloading)
+                continue;
+
+            g_string_append_printf(out, "  %s\n", image->path);
+            ready++;
+        }
+
+        if (ready == 0) {
+            g_string_append(out,
+                "  none. A VM agent cannot be created until one is "
+                "fetched -- tell the user, and make a container agent "
+                "instead if that will do.\n");
+        }
+    }
+
+    g_string_append(out,
+        "\nKeys you may pass in `settings`, as key=value lines:\n");
+
+    {
+        gsize n_entries = 0;
+        const ClawtSchemaEntry *schema = clawt_config_schema_get(&n_entries);
+
+        for (i = 0; i < n_entries; i++) {
+            const gchar *key = schema[i].key;
+            g_autofree gchar *first = NULL;
+            const gchar *newline;
+
+            if (!g_str_has_prefix(key, "agents."))
+                continue;
+
+            if (schema[i].type == CLAWT_SCHEMA_SECTION ||
+                schema[i].type == CLAWT_SCHEMA_MAPPING ||
+                schema[i].type == CLAWT_SCHEMA_LIST_OF)
+                continue;
+
+            /*
+             * Not the id: it is a separate argument, and offering it
+             * here as well invites setting it to something other than
+             * the agent being created -- which would name one agent and
+             * configure another.
+             */
+            if (g_strcmp0(key, "agents.id") == 0)
+                continue;
+
+            /* One line each: the whole table is long enough as it is. */
+            newline = (schema[i].doc != NULL)
+                      ? strchr(schema[i].doc, '\n') : NULL;
+            first = (schema[i].doc == NULL)
+                    ? g_strdup("")
+                    : (newline != NULL
+                       ? g_strndup(schema[i].doc,
+                                   (gsize)(newline - schema[i].doc))
+                       : g_strdup(schema[i].doc));
+
+            g_string_append_printf(out, "  %s = %s  -- %s\n",
+                                   key + strlen("agents."),
+                                   schema[i].default_value != NULL
+                                   ? schema[i].default_value : "unset",
+                                   first);
+        }
+    }
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+/*
+ * The persona, which is the part a conversation is actually for.
+ *
+ * Everything else here has a default that works; what the new agent is
+ * *for* does not, and an agent created without one starts its life with
+ * nothing to go on but its description.
+ */
+static void
+apply_purpose(GHashTable *settings, const gchar *purpose)
+{
+    if (purpose == NULL || *purpose == '\0')
+        return;
+
+    g_hash_table_insert(settings, g_strdup("persona"), g_strdup(purpose));
+}
+
+static gchar *
+tool_create_agent(ClawtMcpTools *self,
+                  JsonObject    *arguments,
+                  gboolean      *is_error)
+{
+    const gchar *agent_id = argument_string(arguments, "agent_id");
+    const gchar *description = argument_string(arguments, "description");
+    const gchar *settings_text = argument_string(arguments, "settings");
+    g_autoptr(GHashTable) settings = NULL;
+    g_autoptr(GError) error = NULL;
+    gchar *result;
+    gsize i;
+
+    static const struct {
+        const gchar *argument;
+        const gchar *key;
+    } direct[] = {
+        { "name",            "name" },
+        { "description",     "description" },
+        { "provider",        "model.provider" },
+        { "model",           "model.model" },
+        { "computer",        "computer.type" },
+        { "container_image", "computer.container.image" },
+        { "vm_image",        "computer.vm.image" },
+        { NULL, NULL }
+    };
+
+    if (agent_id == NULL || *agent_id == '\0') {
+        *is_error = TRUE;
+        return g_strdup("agent_id is required, and it cannot be changed "
+                        "afterwards.");
+    }
+
+    if (description == NULL || *description == '\0') {
+        *is_error = TRUE;
+        return g_strdup("description is required: it is what the other "
+                        "agents read when they are deciding who to "
+                        "delegate to.");
+    }
+
+    settings = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+
+    for (i = 0; direct[i].argument != NULL; i++) {
+        const gchar *value = argument_string(arguments, direct[i].argument);
+
+        if (value != NULL && *value != '\0')
+            g_hash_table_insert(settings, g_strdup(direct[i].key),
+                                g_strdup(value));
+    }
+
+    apply_purpose(settings, argument_string(arguments, "purpose"));
+
+    /*
+     * The free-form half, so every option in the schema is reachable
+     * without a list here that would drift from it the first time
+     * somebody added a key.
+     */
+    if (settings_text != NULL && *settings_text != '\0') {
+        g_auto(GStrv) lines = g_strsplit(settings_text, "\n", -1);
+        gsize line;
+
+        for (line = 0; lines[line] != NULL; line++) {
+            g_autofree gchar *trimmed = g_strdup(g_strstrip(lines[line]));
+            gchar *equals;
+
+            if (*trimmed == '\0' || *trimmed == '#')
+                continue;
+
+            equals = strchr(trimmed, '=');
+
+            if (equals == NULL) {
+                *is_error = TRUE;
+                return g_strdup_printf(
+                    "settings line '%s' is not key=value. One per line, "
+                    "using the keys clawtilla_agent_options lists.",
+                    trimmed);
+            }
+
+            *equals = '\0';
+            g_strstrip(trimmed);
+
+            /*
+             * Refused rather than ignored. Silently dropping it would
+             * leave the agent believing it had named the thing it just
+             * made.
+             */
+            if (g_strcmp0(trimmed, "id") == 0) {
+                *is_error = TRUE;
+                return g_strdup("the id is the agent_id argument, not a "
+                                "setting -- setting it here would name one "
+                                "agent and configure another.");
+            }
+
+            g_hash_table_insert(settings, g_strdup(trimmed),
+                                g_strdup(g_strstrip(equals + 1)));
+        }
+    }
+
+    result = self->create_agent(agent_id, settings,
+                                argument_boolean(arguments, "start", TRUE),
+                                self->create_agent_data, &error);
+
+    if (result == NULL) {
+        *is_error = TRUE;
+        return g_strdup(error != NULL ? error->message
+                                      : "the agent could not be created");
+    }
+
+    return result;
 }
 
 static gchar *
@@ -1738,6 +2103,10 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
 
     if (g_strcmp0(tool_name, "clawtilla_list_agents") == 0)
         text = tool_list_agents(self, agent_id);
+    else if (g_strcmp0(tool_name, "clawtilla_agent_options") == 0)
+        text = tool_agent_options(self);
+    else if (g_strcmp0(tool_name, "clawtilla_create_agent") == 0)
+        text = tool_create_agent(self, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_get_agent") == 0)
         text = tool_get_agent(self, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_message_agent") == 0 ||

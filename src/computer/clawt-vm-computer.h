@@ -86,6 +86,40 @@ ClawtGuestDesktop *clawt_vm_computer_get_desktop(ClawtVmComputer *self);
 GStrv clawt_vm_computer_build_desktop_argv(ClawtVmComputer *self);
 void clawt_vm_computer_set_uri(ClawtVmComputer *self, const gchar *uri);
 void clawt_vm_computer_set_image(ClawtVmComputer *self, const gchar *image);
+/**
+ * clawt_vm_computer_parse_resolution:
+ * @text: (nullable): a resolution as `WIDTHxHEIGHT`
+ * @width: (out) (optional): the width
+ * @height: (out) (optional): the height
+ *
+ * Reads a screen size written by a person.
+ *
+ * Pure, and separate from anything that needs a hypervisor, so a typo
+ * can be refused while somebody is still looking at the line they typed
+ * rather than when a domain fails to define.
+ *
+ * Returns: %TRUE when @text is a resolution
+ */
+gboolean clawt_vm_computer_parse_resolution(const gchar *text,
+                                            guint       *width,
+                                            guint       *height);
+
+/**
+ * clawt_vm_computer_set_resolution:
+ * @self: a #ClawtVmComputer
+ * @resolution: (nullable): `WIDTHxHEIGHT`, or %NULL for the default
+ *
+ * The size the virtual GPU reports as its preferred mode.
+ *
+ * Set on the *host* rather than inside the guest: GNOME takes the
+ * preferred mode when nothing says otherwise, so there is no
+ * distribution-specific file to write and nothing that has to happen at
+ * first boot -- which means it applies on the VM's next boot rather than
+ * needing the machine rebuilt.
+ */
+void clawt_vm_computer_set_resolution(ClawtVmComputer *self,
+                                      const gchar     *resolution);
+
 void clawt_vm_computer_set_resources(ClawtVmComputer *self,
                                      guint            cpus,
                                      guint            memory_mb,

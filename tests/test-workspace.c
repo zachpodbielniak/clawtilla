@@ -737,11 +737,63 @@ test_mcp_config_leaves_an_unchanged_file_alone(void)
     fixture_teardown(&fixture);
 }
 
+
+/*
+ * The org files are the agent's to keep current, and it has to be told
+ * so: clawtilla writes them once and then leaves them alone, and
+ * everything an agent learns is lost at the end of a conversation
+ * unless it lands in one of them.
+ */
+static void
+test_the_agent_is_told_to_maintain_its_own_files(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *agents = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: scribe\n");
+    agent = first_agent(&fixture);
+
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+    g_assert_no_error(error);
+
+    /*
+     * TOOLS.org, beside the memory guidance it is deliberately
+     * contrasted with -- and it is the file that carries a
+     * clawtilla-managed region, so the warning about not editing inside
+     * one is in the file that has one.
+     */
+    agents = read_workspace_file(agent, "TOOLS.org");
+
+    g_assert_nonnull(strstr(agents, "yours to edit"));
+    g_assert_nonnull(strstr(agents, "TOOL_GOTCHAS.org"));
+
+    /*
+     * With the boundary, because the alternative is an agent editing
+     * inside a region that is rewritten on every start and losing the
+     * work without being told.
+     */
+    g_assert_nonnull(strstr(agents, "BEGIN clawtilla"));
+    g_assert_nonnull(strstr(agents, ".mcp.json"));
+
+    /*
+     * And the reason, not just the rule. A rule with its reason survives
+     * being read by a version of this agent that has forgotten
+     * everything else.
+     */
+    g_assert_nonnull(strstr(agents, "Write the reason"));
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
+    g_test_add_func("/workspace/agent-maintains-its-own-files",
+                    test_the_agent_is_told_to_maintain_its_own_files);
     g_test_add_func("/workspace/scaffold-writes-the-set",
                     test_scaffold_writes_the_standard_set);
     g_test_add_func("/workspace/scaffold-never-overwrites",

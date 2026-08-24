@@ -441,6 +441,43 @@ the same program.
   itself was correct throughout; `gdbus call ... SetEnabled true` by hand
   returned `(true,)` on the same guest. Only the launcher was missing.
 
+### An agent asked to choose will invent, unless told what exists
+
+- `clawtilla_create_agent` is useless without `clawtilla_agent_options`,
+  and the reason is on record: the designer could not name a disk image
+  -- the ones that exist are the ones somebody fetched -- so `vm` was a
+  choice it could never satisfy and had to be refused outright. A
+  creation tool has the same problem across providers, models and images
+  at once, and every wrong guess produces an agent that looks created and
+  does not work.
+- So the options tool reports what *exists*: providers whose `agent` flag
+  is set (the HTTP ones are for the designer and would silently run as
+  Claude Code), their models, images that have finished downloading, and
+  every settable key straight from `clawt_config_schema_get()`. The last
+  one means `settings` reaches any option without a list in the tool that
+  would drift from the schema.
+- Creation goes through `daemon_create_agent()`, shared with the
+  `agent.create` frame. Two creation paths is exactly how validation got
+  skipped before; the field-name translation stays with the caller that
+  has the vocabulary and the implementation has none.
+- Gated on `tools.manage_fleet`, off by default, **and** on the hook
+  being set at all -- a library embedded without a daemon has no fleet to
+  add to, and a tool that is listed and then fails teaches an agent to
+  keep trying.
+
+### A VM's screen size belongs to the host, not the guest
+
+- `computer.vm.resolution` reaches the virtio GPU as its preferred mode,
+  through `<resolution x= y=>` on libvirt and `xres=/yres=` on qemu.
+  GNOME takes the preferred mode when there is no `monitors.xml`, so
+  there is no per-distribution file to write and nothing to do at first
+  boot -- which makes it one of the few VM settings that does *not* need
+  the machine rebuilt. qemu's own default is 1280x800, which is why
+  screenshots were that size.
+- Refused at config validation rather than by the hypervisor, which
+  reports a bad one as a domain that will not define: an error about XML,
+  a long way from the line somebody typed.
+
 ### Writing two of a distribution's file names looks like writing all of them
 
 - `render_autologin()` wrote `/etc/gdm/custom.conf` *and*

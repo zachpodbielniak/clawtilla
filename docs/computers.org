@@ -1091,6 +1091,28 @@ The key has to reach the session account: the MCP server talks to GNOME
 Shell over the session bus of whoever is logged in at the screen, so it
 is reached by an SSH connection *as that account*.
 
+**** The size of the screen
+
+~computer.vm.resolution~, as ~WIDTHxHEIGHT~.  1280x800 is the
+hypervisor's own default, which is why an agent's screenshots come back
+that size unless this says otherwise.
+
+#+begin_src yaml
+computer:
+  vm:
+    resolution: "1920x1080"
+#+end_src
+
+Set on the *host*: the virtual GPU reports it as its preferred mode and
+GNOME takes it, so there is no per-distribution file to write and
+nothing that has to happen at first boot.  Which also means it is one of
+the few VM settings that is *not* fixed by the seed -- it applies at the
+VM's next boot rather than needing the machine rebuilt.
+
+It costs guest memory: the framebuffer is width x height x 4 bytes.  A
+value that is not a screen size is refused when the configuration is
+read, rather than by the hypervisor as a domain that will not define.
+
 **** Three families, three names for one file
 
 Autologin is not optional here: the session account's password is

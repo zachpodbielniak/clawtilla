@@ -1389,6 +1389,20 @@ static const ClawtSchemaEntry schema[] = {
   "refused, because shrinking a disk destroys whatever was past the new\n"
   "end.", "0.1.0" },
 
+{ "agents.computer.vm.resolution", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  "1280x800", NULL,
+  "The size of the VM's screen, as WIDTHxHEIGHT.\n"
+  "\n"
+  "1280x800 is the hypervisor's own default, which is why an agent's\n"
+  "screenshots come back that size unless this says otherwise. The\n"
+  "virtual GPU reports it as the preferred mode and GNOME takes it, so\n"
+  "nothing inside the guest has to be configured -- and unlike anything\n"
+  "in the cloud-init seed, changing it applies at the VM's next boot\n"
+  "rather than needing the machine rebuilt.\n"
+  "\n"
+  "It costs guest memory: the framebuffer is width x height x 4 bytes.",
+  "0.1.0" },
+
 { "agents.computer.vm.ssh_user", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   "root", NULL,
   "User commands are run as inside the guest, over SSH.\n"
@@ -1709,6 +1723,19 @@ static const ClawtSchemaEntry schema[] = {
 { "agents.tools.deny", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
   "Tool names refused. Applied after allow, so a deny always wins.", "0.1.0" },
+
+{ "agents.tools.manage_fleet", CLAWT_SCHEMA_BOOLEAN,
+  CLAWT_SCHEMA_FLAG_DANGEROUS, "false", NULL,
+  "Whether this agent may create other agents.\n"
+  "\n"
+  "Off by default, and worth thinking about before turning on: an agent\n"
+  "that can create agents can give one a computer, and a container or a\n"
+  "VM is a machine that runs code. It cannot exceed what you could\n"
+  "create yourself -- every agent it makes goes through the same\n"
+  "validation -- but it can do it without being asked twice.\n"
+  "\n"
+  "Intended for a chief-of-staff you talk to about what the fleet needs.",
+  "0.1.0" },
 
 { "agents.mailbox", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Per-agent overrides of orchestration.mailbox.", "0.1.0" },

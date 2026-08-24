@@ -331,6 +331,11 @@ clawt_computer_factory_create(ClawtAgentConfig  *agent_config,
             clawt_vm_computer_set_image(CLAWT_VM_COMPUTER(computer), image);
         }
 
+        clawt_vm_computer_set_resolution(
+            CLAWT_VM_COMPUTER(computer),
+            clawt_agent_config_get_string(agent_config,
+                                          "computer.vm.resolution"));
+
         clawt_vm_computer_set_resources(
             CLAWT_VM_COMPUTER(computer),
             (guint)clawt_agent_config_get_int(agent_config, "computer.vm.cpus"),

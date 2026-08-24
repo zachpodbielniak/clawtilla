@@ -438,6 +438,30 @@ container or VM.  Agents with no computer do not get one.
 A teardown that fails does not fail the removal -- the agent is still
 going -- and the reason is reported rather than swallowed.
 
+** An agent keeps its own files
+
+The scaffolded org files are written once and then belong to the agent.
+Nothing rewrites them, so nothing keeps them current either -- and what
+an agent learns is gone at the end of a conversation unless it lands in
+one of them.
+
+So ~TOOLS.org~ tells the agent to write it down as it goes: a tool it
+was given, a footgun, a hard rule, how the person works.  With the
+reason rather than just the rule, because a rule with its reason
+survives being read by a version of the agent that has forgotten
+everything else.
+
+It is not the same as a memory, and the difference matters: a memory is
+something the agent *learned*, searchable and dated; the org files are
+what it *is*, loaded into every turn whether it goes looking or not.  A
+hard rule belongs in a file, because a rule you have to remember to
+search for is a rule you will break.
+
+The boundaries are stated in the same breath: a clawtilla-managed region
+is rewritten on every start, ~.mcp.json~'s ~clawtilla~ keys are
+clawtilla's, and a file rewritten wholesale is a file the person who set
+the agent up stops trusting.
+
 ** Creating agents with AI
 
 #+begin_src bash

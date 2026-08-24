@@ -76,6 +76,60 @@ void clawt_mcp_tools_set_deliver_func(ClawtMcpTools       *self,
                                       GDestroyNotify       destroy);
 
 /**
+ * ClawtMcpCreateAgentFunc:
+ * @agent_id: the id for the new agent
+ * @settings: (element-type utf8 utf8): configuration keys and values,
+ *   keyed exactly as they appear in the schema
+ * @start: whether to start it once it exists
+ * @user_data: as supplied
+ * @error: return location for a #GError
+ *
+ * Creates an agent on behalf of one that asked.
+ *
+ * A hook rather than a call into the daemon, for the same reason
+ * delivering a message is: the tools belong to the library and the
+ * daemon owns the fleet.  Whatever supplies this must put the request
+ * through the same validation a person's would go through -- an agent
+ * asking is not a reason to trust the answer more.
+ *
+ * Returns: (transfer full) (nullable): what to tell the agent, or %NULL
+ */
+typedef gchar *(*ClawtMcpCreateAgentFunc)(const gchar  *agent_id,
+                                          GHashTable   *settings,
+                                          gboolean      start,
+                                          gpointer      user_data,
+                                          GError      **error);
+
+/**
+ * clawt_mcp_tools_set_create_agent_func:
+ * @self: a #ClawtMcpTools
+ * @func: (nullable) (scope notified): the hook
+ * @user_data: passed to @func
+ * @destroy: frees @user_data
+ *
+ * Without this the fleet tools are not offered at all, whatever an
+ * agent's permissions say: a tool that is listed and then fails teaches
+ * an agent to keep trying.
+ */
+void clawt_mcp_tools_set_create_agent_func(ClawtMcpTools           *self,
+                                           ClawtMcpCreateAgentFunc  func,
+                                           gpointer                 user_data,
+                                           GDestroyNotify           destroy);
+
+/**
+ * clawt_mcp_tools_set_image_store:
+ * @self: a #ClawtMcpTools
+ * @store: (nullable): the disk images that have been fetched
+ *
+ * So an agent creating a VM agent can be told which images exist rather
+ * than inventing a path.  The designer could not name one and had to be
+ * stopped from choosing `vm` at all; this is the other answer to the
+ * same problem.
+ */
+void clawt_mcp_tools_set_image_store(ClawtMcpTools     *self,
+                                     ClawtVmImageStore *store);
+
+/**
  * clawt_mcp_tools_set_room_manager:
  * @self: a #ClawtMcpTools
  * @rooms: (transfer none) (nullable): the fleet's rooms

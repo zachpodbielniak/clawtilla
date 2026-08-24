@@ -170,6 +170,48 @@ re-enable something specifically turned off.  Plugin tools obey the same
 lists -- a plugin must not be able to hand an agent something its
 operator turned off.
 
+** Growing the fleet from a conversation
+
+A chief-of-staff can create agents, which is off by default:
+
+#+begin_src yaml
+agents:
+  - id: chief-of-staff
+    chief_of_staff: true
+    tools:
+      manage_fleet: true
+#+end_src
+
+Worth a moment before turning on.  An agent that can create agents can
+give one a computer, and a container or a VM is a machine that runs
+code.  It cannot exceed what you could create yourself -- every agent it
+makes goes through the same validation, the same refusal of a VM with no
+disk, and the same start -- but it can do it without being asked twice.
+
+Two tools come with it:
+
+| Tool                       | What it does                                     |
+|----------------------------+--------------------------------------------------|
+| ~clawtilla_agent_options~  | What can actually be chosen                      |
+| ~clawtilla_create_agent~   | Adds one and starts it                           |
+
+The first exists because the second is otherwise a guessing game.  An
+agent asked to create another will invent a provider, a model name and a
+disk image path, and each of those produces an agent that looks created
+and does not work -- an image most of all, since the ones that exist are
+the ones somebody fetched.  So ~clawtilla_agent_options~ reports the
+providers that can *run* an agent (not the ones that only do tool
+calls), their models, the images actually on disk, and every settable
+key straight from the schema.
+
+~settings~ takes ~key=value~ lines using those keys, so anything in the
+schema is reachable without a list in the tool that would drift from it
+the first time somebody added an option.
+
+Creating goes through the same path a person's ~agent create~ does --
+one implementation, because the last time there were two, one of them
+skipped the check that refuses a VM with no disk.
+
 ** How the tools reach an agent
 
 An agent runs an AI CLI, and the only way such a CLI can be given tools

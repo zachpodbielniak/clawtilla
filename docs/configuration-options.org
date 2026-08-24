@@ -2086,6 +2086,23 @@ for. Raising it grows the disk on the next provision; lowering it is
 refused, because shrinking a disk destroys whatever was past the new
 end.
 
+*** =agents.computer.vm.resolution=
+
+- Type :: string
+- Default :: =1280x800=
+- Since :: 0.1.0
+
+The size of the VM's screen, as WIDTHxHEIGHT.
+
+1280x800 is the hypervisor's own default, which is why an agent's
+screenshots come back that size unless this says otherwise. The
+virtual GPU reports it as the preferred mode and GNOME takes it, so
+nothing inside the guest has to be configured -- and unlike anything
+in the cloud-init seed, changing it applies at the VM's next boot
+rather than needing the machine rebuilt.
+
+It costs guest memory: the framebuffer is width x height x 4 bytes.
+
 *** =agents.computer.vm.ssh_user=
 
 - Type :: string
@@ -2571,6 +2588,23 @@ capability this agent does not have.
 - Since :: 0.1.0
 
 Tool names refused. Applied after allow, so a deny always wins.
+
+*** =agents.tools.manage_fleet=
+
+- Type :: boolean
+- Default :: =false=
+- Warning :: hands over real authority; see [[file:security.org][security.org]]
+- Since :: 0.1.0
+
+Whether this agent may create other agents.
+
+Off by default, and worth thinking about before turning on: an agent
+that can create agents can give one a computer, and a container or a
+VM is a machine that runs code. It cannot exceed what you could
+create yourself -- every agent it makes goes through the same
+validation -- but it can do it without being asked twice.
+
+Intended for a chief-of-staff you talk to about what the fleet needs.
 
 ** =agents.mailbox=
 

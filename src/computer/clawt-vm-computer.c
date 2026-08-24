@@ -49,6 +49,8 @@ struct _ClawtVmComputer {
     guint    cpus;
     guint    memory_mb;
     guint    disk_gb;
+    guint    width;
+    guint    height;
     guint    ssh_port;
 
     /*
@@ -126,6 +128,76 @@ clawt_vm_computer_set_resources(ClawtVmComputer *self,
         self->memory_mb = memory_mb;
     if (disk_gb > 0)
         self->disk_gb = disk_gb;
+}
+
+gboolean
+clawt_vm_computer_parse_resolution(const gchar *text,
+                                   guint       *width,
+                                   guint       *height)
+{
+    guint64 w;
+    guint64 h;
+    const gchar *x;
+    gchar *end = NULL;
+
+    if (text == NULL || *text == '\0')
+        return FALSE;
+
+    /*
+     * Either separator, because both get typed and neither is wrong in
+     * any way worth refusing somebody over.
+     */
+    x = strpbrk(text, "xX*");
+
+    if (x == NULL || x == text || x[1] == '\0')
+        return FALSE;
+
+    w = g_ascii_strtoull(text, &end, 10);
+
+    if (end != x)
+        return FALSE;
+
+    h = g_ascii_strtoull(x + 1, &end, 10);
+
+    if (end == NULL || *end != '\0')
+        return FALSE;
+
+    /*
+     * Bounded at both ends.  Zero is not a screen, and a number large
+     * enough to overflow the framebuffer arithmetic would be refused by
+     * the hypervisor a long way from the line that caused it.
+     */
+    if (w < 640 || h < 480 || w > 16384 || h > 16384)
+        return FALSE;
+
+    if (width != NULL)
+        *width = (guint)w;
+    if (height != NULL)
+        *height = (guint)h;
+
+    return TRUE;
+}
+
+void
+clawt_vm_computer_set_resolution(ClawtVmComputer *self,
+                                 const gchar     *resolution)
+{
+    guint w = 0;
+    guint h = 0;
+
+    g_return_if_fail(CLAWT_IS_VM_COMPUTER(self));
+
+    /*
+     * A bad value leaves the hypervisor's own default rather than
+     * emitting nonsense into a domain.  It is refused at config
+     * validation, so reaching here with one means somebody bypassed
+     * that, and a VM with a screen is better than no VM at all.
+     */
+    if (!clawt_vm_computer_parse_resolution(resolution, &w, &h))
+        return;
+
+    self->width = w;
+    self->height = h;
 }
 
 void
@@ -425,10 +497,27 @@ clawt_vm_computer_build_domain_xml(ClawtVmComputer *self)
      * virtio rather than the older models: it is what a current GNOME on
      * Wayland wants, and every cloud image has the driver.
      */
-    g_string_append(out,
-        "    <video>\n"
-        "      <model type='virtio' heads='1' primary='yes'/>\n"
-        "    </video>\n");
+    if (self->width > 0 && self->height > 0) {
+        /*
+         * The size the guest's GPU reports as its preferred mode, which
+         * is what GNOME takes when there is no monitors.xml -- so the
+         * screen is the right size before anything inside the guest has
+         * run, and stays that way without a per-distribution file to
+         * write.
+         */
+        g_string_append_printf(out,
+            "    <video>\n"
+            "      <model type='virtio' heads='1' primary='yes'>\n"
+            "        <resolution x='%u' y='%u'/>\n"
+            "      </model>\n"
+            "    </video>\n",
+            self->width, self->height);
+    } else {
+        g_string_append(out,
+            "    <video>\n"
+            "      <model type='virtio' heads='1' primary='yes'/>\n"
+            "    </video>\n");
+    }
 
     /*
      * Given to every VM, not only the ones with a desktop.
@@ -518,7 +607,13 @@ clawt_vm_computer_build_qemu_argv(ClawtVmComputer *self,
     g_ptr_array_add(argv, g_strdup("-vga"));
     g_ptr_array_add(argv, g_strdup("none"));
     g_ptr_array_add(argv, g_strdup("-device"));
-    g_ptr_array_add(argv, g_strdup("virtio-gpu-pci"));
+
+    if (self->width > 0 && self->height > 0)
+        g_ptr_array_add(argv,
+            g_strdup_printf("virtio-gpu-pci,xres=%u,yres=%u",
+                            self->width, self->height));
+    else
+        g_ptr_array_add(argv, g_strdup("virtio-gpu-pci"));
     g_ptr_array_add(argv, g_strdup("-no-reboot"));
 
     if (mounts != NULL && mounts->len > 0) {

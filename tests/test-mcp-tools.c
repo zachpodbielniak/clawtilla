@@ -720,11 +720,319 @@ test_failing_command_reports_why(void)
     fixture_teardown(&fixture);
 }
 
+
+/* ── Growing the fleet ───────────────────────────────────────────── */
+
+typedef struct {
+    gchar      *created_id;
+    GHashTable *created_settings;
+    gboolean    started;
+    gboolean    refuse;
+} FleetRecord;
+
+static gchar *
+fake_create_agent(const gchar  *agent_id,
+                  GHashTable   *settings,
+                  gboolean      start,
+                  gpointer      user_data,
+                  GError      **error)
+{
+    FleetRecord *record = user_data;
+
+    if (record->refuse) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "a VM needs a disk image to boot");
+        return NULL;
+    }
+
+    g_free(record->created_id);
+    record->created_id = g_strdup(agent_id);
+    record->started = start;
+
+    g_clear_pointer(&record->created_settings, g_hash_table_unref);
+    record->created_settings = g_hash_table_ref(settings);
+
+    return g_strdup_printf("Created %s.", agent_id);
+}
+
+static gboolean
+offers_tool(Fixture *fixture, const gchar *agent_id, const gchar *tool_name)
+{
+    g_autoptr(JsonNode) listed = clawt_mcp_tools_list(fixture->tools,
+                                                      agent_id);
+    JsonArray *tools =
+        json_object_get_array_member(json_node_get_object(listed), "tools");
+    guint i;
+
+    for (i = 0; i < json_array_get_length(tools); i++) {
+        JsonObject *tool = json_array_get_object_element(tools, i);
+
+        if (g_strcmp0(json_object_get_string_member(tool, "name"),
+                      tool_name) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+/*
+ * Creating agents is off unless it was granted, and a tool that is not
+ * granted is not *offered*.
+ *
+ * Listing it and refusing the call costs the agent a turn to learn
+ * something it could have been told, and teaches it to keep trying.
+ */
+static void
+test_the_fleet_tools_need_the_permission(void)
+{
+    Fixture fixture = { 0 };
+    FleetRecord record = { 0 };
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    tools:\n"
+                  "      manage_fleet: true\n"
+                  "  - id: worker\n");
+
+    clawt_mcp_tools_set_create_agent_func(fixture.tools, fake_create_agent,
+                                          &record, NULL);
+
+    g_assert_true(offers_tool(&fixture, "chief", "clawtilla_create_agent"));
+    g_assert_true(offers_tool(&fixture, "chief", "clawtilla_agent_options"));
+
+    g_assert_false(offers_tool(&fixture, "worker",
+                               "clawtilla_create_agent"));
+    g_assert_false(offers_tool(&fixture, "worker",
+                               "clawtilla_agent_options"));
+
+    g_clear_pointer(&record.created_id, g_free);
+    g_clear_pointer(&record.created_settings, g_hash_table_unref);
+    fixture_teardown(&fixture);
+}
+
+/*
+ * ...and not offered at all when nothing can create one, whatever the
+ * permission says.  A library embedded without a daemon has no fleet to
+ * add to, and the failure would arrive as a confident call.
+ */
+static void
+test_no_fleet_tools_without_somewhere_to_create(void)
+{
+    Fixture fixture = { 0 };
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    tools:\n"
+                  "      manage_fleet: true\n");
+
+    g_assert_false(offers_tool(&fixture, "chief", "clawtilla_create_agent"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * The named arguments and the free-form ones end in the same place, so
+ * every option in the schema is reachable without a list here that would
+ * drift from it the first time somebody added a key.
+ */
+static void
+test_creating_an_agent_passes_every_setting_through(void)
+{
+    Fixture fixture = { 0 };
+    FleetRecord record = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    gboolean is_error = TRUE;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    tools:\n"
+                  "      manage_fleet: true\n");
+
+    clawt_mcp_tools_set_create_agent_func(fixture.tools, fake_create_agent,
+                                          &record, NULL);
+
+    response = call_tool(&fixture, "chief", "clawtilla_create_agent",
+        "{\"agent_id\":\"scribe\","
+        "\"description\":\"writes things down\","
+        "\"purpose\":\"You keep the notes.\","
+        "\"computer\":\"container\","
+        "\"container_image\":\"fedora:latest\","
+        "\"settings\":\"computer.vm.resolution=1920x1080\\n"
+        "# a comment\\n\\nmodel.effort=high\"}");
+
+    response_text(response, &is_error);
+    g_assert_false(is_error);
+
+    g_assert_cmpstr(record.created_id, ==, "scribe");
+    g_assert_true(record.started);
+
+    g_assert_cmpstr(g_hash_table_lookup(record.created_settings,
+                                        "description"),
+                    ==, "writes things down");
+    g_assert_cmpstr(g_hash_table_lookup(record.created_settings, "persona"),
+                    ==, "You keep the notes.");
+    g_assert_cmpstr(g_hash_table_lookup(record.created_settings,
+                                        "computer.type"),
+                    ==, "container");
+    g_assert_cmpstr(g_hash_table_lookup(record.created_settings,
+                                        "computer.container.image"),
+                    ==, "fedora:latest");
+
+    /* ...including the ones nothing here has heard of. */
+    g_assert_cmpstr(g_hash_table_lookup(record.created_settings,
+                                        "computer.vm.resolution"),
+                    ==, "1920x1080");
+    g_assert_cmpstr(g_hash_table_lookup(record.created_settings,
+                                        "model.effort"),
+                    ==, "high");
+
+    g_clear_pointer(&record.created_id, g_free);
+    g_clear_pointer(&record.created_settings, g_hash_table_unref);
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A refusal reaches the agent as the reason, not as a bare failure --
+ * and it has to say the agent was not created, or the agent tries again
+ * with the same arguments.
+ */
+static void
+test_a_refused_creation_says_why(void)
+{
+    Fixture fixture = { 0 };
+    FleetRecord record = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    const gchar *text;
+    gboolean is_error = FALSE;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    tools:\n"
+                  "      manage_fleet: true\n");
+
+    record.refuse = TRUE;
+    clawt_mcp_tools_set_create_agent_func(fixture.tools, fake_create_agent,
+                                          &record, NULL);
+
+    response = call_tool(&fixture, "chief", "clawtilla_create_agent",
+        "{\"agent_id\":\"vmbox\",\"description\":\"x\","
+        "\"computer\":\"vm\"}");
+
+    text = response_text(response, &is_error);
+
+    g_assert_true(is_error);
+    g_assert_nonnull(strstr(text, "disk image"));
+
+    g_clear_pointer(&record.created_id, g_free);
+    g_clear_pointer(&record.created_settings, g_hash_table_unref);
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And an id or a description that was left out is refused here rather
+ * than becoming an agent nobody can identify the purpose of.
+ */
+static void
+test_a_new_agent_needs_an_id_and_a_description(void)
+{
+    Fixture fixture = { 0 };
+    FleetRecord record = { 0 };
+    g_autoptr(JsonNode) without_id = NULL;
+    g_autoptr(JsonNode) without_description = NULL;
+    gboolean is_error = FALSE;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    tools:\n"
+                  "      manage_fleet: true\n");
+
+    clawt_mcp_tools_set_create_agent_func(fixture.tools, fake_create_agent,
+                                          &record, NULL);
+
+    without_id = call_tool(&fixture, "chief", "clawtilla_create_agent",
+                           "{\"description\":\"x\"}");
+    response_text(without_id, &is_error);
+    g_assert_true(is_error);
+
+    is_error = FALSE;
+    without_description = call_tool(&fixture, "chief",
+                                    "clawtilla_create_agent",
+                                    "{\"agent_id\":\"scribe\"}");
+    response_text(without_description, &is_error);
+    g_assert_true(is_error);
+
+    g_assert_null(record.created_id);
+
+    g_clear_pointer(&record.created_settings, g_hash_table_unref);
+    fixture_teardown(&fixture);
+}
+
+/*
+ * The options tool reports what exists.  An agent asked to create
+ * another will otherwise invent a provider and a disk image path, and
+ * both produce something that looks created and does not work.
+ */
+static void
+test_the_options_report_what_can_be_chosen(void)
+{
+    Fixture fixture = { 0 };
+    FleetRecord record = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    const gchar *text;
+    gboolean is_error = TRUE;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    tools:\n"
+                  "      manage_fleet: true\n");
+
+    clawt_mcp_tools_set_create_agent_func(fixture.tools, fake_create_agent,
+                                          &record, NULL);
+
+    response = call_tool(&fixture, "chief", "clawtilla_agent_options", "{}");
+    text = response_text(response, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_nonnull(strstr(text, "claude-code"));
+    g_assert_nonnull(strstr(text, "container"));
+
+    /* Settable keys come from the schema, so they cannot drift from it. */
+    g_assert_nonnull(strstr(text, "computer.vm.resolution"));
+
+    /*
+     * And with no image store it says it cannot tell, rather than
+     * offering an empty list that reads as "there are none".
+     */
+    g_assert_nonnull(strstr(text, "unknown from here"));
+
+    g_clear_pointer(&record.created_id, g_free);
+    g_clear_pointer(&record.created_settings, g_hash_table_unref);
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
+    g_test_add_func("/mcp/fleet/needs-the-permission",
+                    test_the_fleet_tools_need_the_permission);
+    g_test_add_func("/mcp/fleet/none-without-a-daemon",
+                    test_no_fleet_tools_without_somewhere_to_create);
+    g_test_add_func("/mcp/fleet/every-setting-passes-through",
+                    test_creating_an_agent_passes_every_setting_through);
+    g_test_add_func("/mcp/fleet/refusal-says-why",
+                    test_a_refused_creation_says_why);
+    g_test_add_func("/mcp/fleet/id-and-description-required",
+                    test_a_new_agent_needs_an_id_and_a_description);
+    g_test_add_func("/mcp/fleet/options-report-what-exists",
+                    test_the_options_report_what_can_be_chosen);
     g_test_add_func("/mcp/omits-unusable-tools",
                     test_tools_without_a_computer_are_omitted);
     g_test_add_func("/mcp/schemas", test_every_listed_tool_has_a_schema);
