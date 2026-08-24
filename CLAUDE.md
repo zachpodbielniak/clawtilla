@@ -441,6 +441,27 @@ the same program.
   itself was correct throughout; `gdbus call ... SetEnabled true` by hand
   returned `(true,)` on the same guest. Only the launcher was missing.
 
+### Saving a setting did not rewrite what the setting produces
+
+- `agent.set` wrote clawtilla.yaml and stopped, so nothing the agent
+  reads was touched. Every setting that only matters at the *next* start
+  hid this; `tools.manage_fleet` exposed it, because the gate answers
+  from the live config and was right immediately while `TOOLS.org` went
+  on listing the tools as they stood at the last daemon start. Two
+  answers to "what do I have", and the file is the one in the prompt --
+  so a chief-of-staff that had just been granted the tool went on saying
+  it had none.
+- It calls `render_all_agents()` now. And the reply carries
+  `restart_required`, because an AI CLI lists its tools **once**, when
+  its session starts: a permission granted under a running agent reaches
+  its files and not its session, and the agent then reports, accurately,
+  not having the tool. Both clients say so.
+- Three rounds of "still broken" came from this, each one me telling
+  somebody to flip a switch that was already flipped by the time they
+  read it. When the answer to a bug report is an instruction rather than
+  a change, check whether the instruction is one the software should not
+  have needed to give.
+
 ### An agent believes its own file over the tool list
 
 - `TOOLS.org` listed the orchestration tools in a table written when the

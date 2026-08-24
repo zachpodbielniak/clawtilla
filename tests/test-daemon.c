@@ -1934,6 +1934,49 @@ test_creating_an_agent_can_leave_it_stopped(void)
     fixture_teardown(&fixture);
 }
 
+
+/*
+ * Changing a setting rewrites the files derived from it.
+ *
+ * agent.set used to save clawtilla.yaml and stop, so nothing the agent
+ * reads was touched. tools.manage_fleet made that visible: the gate
+ * answers from the live config and was right at once, while TOOLS.org
+ * went on listing the tools as they stood at the last daemon start. Two
+ * answers to "what do I have", and the file is the one that reaches the
+ * agent's prompt -- so a chief-of-staff granted the tool went on saying
+ * it had no such tool.
+ */
+static void
+test_setting_a_key_rewrites_what_it_affects(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) granted = NULL;
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *before = NULL;
+    g_autofree gchar *after = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    chief_of_staff: true\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    path = g_build_filename(fixture.dir, "agents", "chief", "TOOLS.org",
+                            NULL);
+    g_assert_true(g_file_get_contents(path, &before, NULL, NULL));
+    g_assert_null(strstr(before, "clawtilla_create_agent"));
+
+    granted = request(&fixture, "agent.set",
+                      "{\"agent\":\"chief\",\"key\":\"tools.manage_fleet\","
+                      "\"value\":\"true\"}");
+    g_assert_false(clawt_ipc_frame_is_error(granted));
+
+    g_assert_true(g_file_get_contents(path, &after, NULL, NULL));
+    g_assert_nonnull(strstr(after, "clawtilla_create_agent"));
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1952,6 +1995,8 @@ main(int argc, char *argv[])
 
     g_test_add_func("/daemon/starts", test_starts_with_an_empty_config);
     g_test_add_func("/daemon/one-at-a-time", test_refuses_a_second_daemon);
+    g_test_add_func("/daemon/set-rewrites-derived-files",
+                    test_setting_a_key_rewrites_what_it_affects);
     g_test_add_func("/daemon/create-starts-the-agent",
                     test_creating_an_agent_starts_it);
     g_test_add_func("/daemon/create-can-leave-it-stopped",

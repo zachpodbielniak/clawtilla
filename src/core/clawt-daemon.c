@@ -5537,9 +5537,42 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         if (!clawt_config_save(self->config, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
 
+        /*
+         * ...and the agent's own files, which are derived from what was
+         * just changed.
+         *
+         * Saving used to be the whole of it, so a setting was written to
+         * clawtilla.yaml and nothing the agent reads was touched. The
+         * one that made that visible was tools.manage_fleet: the gate
+         * answers from the live config and was right immediately, while
+         * TOOLS.org went on listing the tools as they were at the last
+         * daemon start. Two answers to "what do I have", and the file is
+         * the one that reaches the agent's prompt.
+         */
+        render_all_agents(self);
+
         clawt_event_bus_emit(self->bus, "agent.changed", agent_id);
 
-        return clawt_ipc_response_new(request, NULL);
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "agent");
+        json_builder_add_string_value(builder, agent_id);
+
+        /*
+         * An AI CLI lists its tools once, when its session starts. So a
+         * permission changed under a running agent reaches its files and
+         * not its session, and saying nothing here is how somebody
+         * concludes the setting does not work.
+         */
+        json_builder_set_member_name(builder, "restart_required");
+        json_builder_add_boolean_value(
+            builder, g_str_has_prefix(key, "tools.") &&
+                     clawt_agent_get_state(
+                         clawt_agent_manager_get(self->agents, agent_id)) ==
+                     CLAWT_AGENT_STATE_RUNNING);
+
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
     /* ── messages and rooms ── */

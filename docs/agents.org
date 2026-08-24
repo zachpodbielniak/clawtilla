@@ -452,6 +452,22 @@ tool.  It was right about the file and wrong about the fleet.
 Anything outside the markers is the agent's own, including whatever the
 scaffolder wrote there originally.
 
+** Changing a setting under a running agent
+
+~agent set~ rewrites the agent's files immediately, so ~TOOLS.org~ and
+the rendered libreclaw config always match the configuration.
+
+Its *session* is another matter.  An AI CLI lists its tools once, when it
+starts, so a tool granted to a running agent reaches its files and not
+the session it is in the middle of -- and the agent will say, accurately,
+that it does not have the tool.  Both clients say when a restart is
+needed:
+
+#+begin_example
+chief: tools.manage_fleet = true
+Restart it: it lists its tools when it starts.
+#+end_example
+
 ** An agent keeps its own files
 
 The scaffolded org files are written once and then belong to the agent.

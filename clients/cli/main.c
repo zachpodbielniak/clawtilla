@@ -1533,6 +1533,16 @@ cmd_agent(int argc, char *argv[])
             return EXIT_FAILURE;
 
         g_print("%s: %s = %s\n", argv[3], argv[4], argv[5]);
+
+        /*
+         * An AI CLI lists its tools once, when its session starts, so a
+         * permission changed under a running agent reaches its files and
+         * not its session -- and the agent then reports, accurately, not
+         * having the tool.
+         */
+        if (member_flag(json_node_get_object(reply), "restart_required",
+                        FALSE))
+            g_print("Restart it: it lists its tools when it starts.\n");
         return EXIT_SUCCESS;
     }
 

@@ -181,6 +181,7 @@ struct _ClawtWindow {
     GtkWidget         *autostart_row;
     GtkWidget         *chief_row;
     GtkWidget         *manage_fleet_row;
+    gboolean           settings_need_restart;
     ModelChooser       inspector_models;
     ImageChooser       inspector_image;
     gchar             *inspector_computer;   /* the selected agent's type */
@@ -2976,13 +2977,30 @@ apply_setting(ClawtWindow *self, const gchar *key, const gchar *value)
         clawt_build_payload("agent", self->selected_agent, "key", key,
                             "value", value, NULL));
 
-    return reply != NULL;
+    if (reply == NULL)
+        return FALSE;
+
+    /*
+     * An AI CLI lists its tools once, when its session starts, so a
+     * permission changed under a running agent reaches its files and not
+     * its session. Remembered rather than toasted here, because a save
+     * applies a dozen settings and a dozen toasts is not an answer.
+     */
+    if (clawt_json_boolean(clawt_payload_of(reply), "restart_required",
+                           FALSE))
+        self->settings_need_restart = TRUE;
+
+    return TRUE;
 }
 
 static void
 on_save_agent(GtkButton *button, gpointer user_data)
 {
     ClawtWindow *self = user_data;
+
+    /* Per save, not per session. */
+    self->settings_need_restart = FALSE;
+
     g_autofree gchar *model = NULL;
     static const gchar *const computers[] = { "none", "host", "container",
                                               "vm" };
@@ -3100,9 +3118,25 @@ on_save_agent(GtkButton *button, gpointer user_data)
      * restart running agents on purpose, and an interface that implied
      * otherwise would have people wondering why nothing changed.
      */
-    clawt_window_toast(self,
-                       "Saved. Restart the agent for the model or computer "
-                       "to take effect.");
+    /*
+     * The tool list is named separately when it changed, because it is
+     * the one where "restart it" is not general advice but the whole
+     * answer: an AI CLI lists its tools once, at session start, so a
+     * permission granted under a running agent reaches its files and not
+     * its session -- and the agent then says, accurately, that it does
+     * not have the tool.
+     */
+    if (self->settings_need_restart) {
+        clawt_window_toast(self,
+                           "Saved. Restart the agent -- it lists its tools "
+                           "when it starts, so it cannot see the change "
+                           "until then.");
+    } else {
+        clawt_window_toast(self,
+                           "Saved. Restart the agent for the model or "
+                           "computer to take effect.");
+    }
+
     refresh_agents(self);
 }
 
