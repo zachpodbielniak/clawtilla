@@ -1038,9 +1038,17 @@ clawt_config_render_agent(ClawtConfig       *config,
          * webhook listener receives nothing useful -- impossible to
          * express at all.
          */
-        blocks = passthrough_channels(
-            clawt_agent_config_get_raw_yaml(agent, "libreclaw"),
-            &merged_keys, NULL);
+        {
+            /*
+             * Held, because get_raw_yaml() generates a fresh string on
+             * every call -- it is transfer-full, and passing it straight
+             * in leaks one per agent per render.
+             */
+            g_autofree gchar *raw =
+                clawt_agent_config_get_raw_yaml(agent, "libreclaw");
+
+            blocks = passthrough_channels(raw, &merged_keys, NULL);
+        }
 
         if (!merge_passthrough_channels(channels, blocks, merged_keys,
                                         error))

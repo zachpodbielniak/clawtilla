@@ -2009,6 +2009,7 @@ release_components(ClawtDaemon *self)
 
     g_clear_pointer(&self->state_dir, g_free);
     g_clear_pointer(&self->link_socket, g_free);
+    g_clear_pointer(&self->attachment_dir, g_free);
 }
 
 /*
