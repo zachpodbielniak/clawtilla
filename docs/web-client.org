@@ -167,6 +167,17 @@ already follow, and for the same reason: a hand-written list of an
 option's keys drifts silently, and the symptom is a setting that is
 accepted, reported as saved, and then read from nowhere.
 
+One key gets a control the schema cannot describe.  ~team~ is a plain
+string there, so the generic path would draw a text box -- asking
+somebody to know a team's id and to type it without a typo, when the
+daemon can say what the ids are.  It is a select of the teams
+~team.list~ reports, by name, which is the same control the GTK client's
+agent editor has.  A team an agent names but the fleet does not declare
+is *added to the list* rather than dropped, marked =(set by hand)=:
+without that the control would open showing the first entry and saving
+the page -- without touching that row -- would move the agent somewhere
+nobody chose.
+
 Nine keys are the exception, and the page says nothing about them because
 it cannot: ~orchestration.mailbox.*~ and ~memories.*~ carry
 =CLAWT_SCHEMA_FLAG_PER_AGENT=, and their spelling inside an agent block

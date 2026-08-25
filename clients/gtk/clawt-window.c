@@ -234,6 +234,18 @@ struct _ClawtWindow {
     GtkWidget         *agent_menu;
     GSimpleActionGroup *agent_actions;
 
+    /*
+     * The Team submenu, and the fleet's teams as the sidebar last saw
+     * them.
+     *
+     * Rebuilt on every right-click rather than asked for then: a menu
+     * has to appear at once, and the sidebar was drawn from a team.list
+     * a moment ago -- the same reason the lifecycle entries decide what
+     * to grey out from the row rather than from the daemon.
+     */
+    GMenu             *agent_menu_teams;
+    JsonNode          *teams_seen;
+
     gboolean           refreshing[CLAWT_N_REFRESH];
     gboolean           refresh_again[CLAWT_N_REFRESH];
 
@@ -538,6 +550,16 @@ agent_row(JsonObject *agent)
     g_object_set_data_full(G_OBJECT(row), "agent-state", g_strdup(state),
                            g_free);
 
+    /*
+     * The team, for the same reason: the context menu's Team submenu
+     * ticks the one this agent is already on, and asking the daemon
+     * which that is would be a round trip between the click and the
+     * menu appearing.
+     */
+    g_object_set_data_full(G_OBJECT(row), "agent-team",
+                           g_strdup(clawt_json_string(agent, "team", "")),
+                           g_free);
+
     return row;
 }
 
@@ -652,6 +674,22 @@ team_index_of(GStrv ids, const gchar *current)
     }
 
     return 0;
+}
+
+/* Whether the fleet declares this team, as opposed to an agent naming it. */
+static gboolean
+team_is_declared(JsonArray *teams, const gchar *team_id)
+{
+    guint i;
+
+    for (i = 0; teams != NULL && i < json_array_get_length(teams); i++) {
+        JsonObject *team = json_array_get_object_element(teams, i);
+
+        if (g_strcmp0(clawt_json_string(team, "id", ""), team_id) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
 }
 
 /* The team's display name from the team.list reply, or its id. */
@@ -1036,6 +1074,18 @@ refresh_agents_once(ClawtWindow *self)
     if (team_reply != NULL)
         teams = json_object_get_array_member(clawt_payload_of(team_reply),
                                              "teams");
+
+    /*
+     * Kept for the context menu, which needs the same list and cannot
+     * afford to fetch it.  A daemon that answered nothing leaves the
+     * previous list in place rather than emptying it: a menu offering
+     * only "No team" reads as a fleet with no teams, which is a
+     * different and wrong statement from "we could not ask".
+     */
+    if (team_reply != NULL) {
+        g_clear_pointer(&self->teams_seen, json_node_unref);
+        self->teams_seen = json_node_ref(team_reply);
+    }
 
     clear_list(self->sidebar);
 
@@ -5746,11 +5796,128 @@ set_agent_action_states(ClawtWindow *self, const gchar *state)
     enable_agent_action(self, "delete", TRUE);
 }
 
+/*
+ * Fills the Team submenu, ticking the team this agent is already on.
+ *
+ * The entries are radio items -- a stateful action taking the team id,
+ * whose state is the current team -- so the menu answers "which team is
+ * this on" as well as offering to change it.  A plain list of teams
+ * would make somebody open the inspector to find out where they were
+ * before deciding where to go.
+ */
+static void
+fill_team_menu(ClawtWindow *self, const gchar *current)
+{
+    GAction *action;
+    JsonArray *teams = NULL;
+    guint i;
+
+    if (self->agent_menu_teams == NULL)
+        return;
+
+    g_menu_remove_all(self->agent_menu_teams);
+
+    if (self->teams_seen != NULL)
+        teams = json_object_get_array_member(
+            clawt_payload_of(self->teams_seen), "teams");
+
+    /*
+     * "No team" first, and always present.  It is how an agent comes off
+     * a team, and it is where the chief of staff lives -- the same
+     * reason the sidebar sorts the teamless agents above every team.
+     */
+    {
+        g_autoptr(GMenuItem) item = g_menu_item_new("No team", NULL);
+
+        g_menu_item_set_action_and_target_value(item, "agent.team",
+                                                g_variant_new_string(""));
+        g_menu_append_item(self->agent_menu_teams, item);
+    }
+
+    for (i = 0; teams != NULL && i < json_array_get_length(teams); i++) {
+        JsonObject *team = json_array_get_object_element(teams, i);
+        const gchar *id = clawt_json_string(team, "id", NULL);
+        g_autoptr(GMenuItem) item = NULL;
+
+        if (id == NULL || *id == '\0')
+            continue;
+
+        item = g_menu_item_new(clawt_json_string(team, "name", id), NULL);
+        g_menu_item_set_action_and_target_value(item, "agent.team",
+                                                g_variant_new_string(id));
+        g_menu_append_item(self->agent_menu_teams, item);
+    }
+
+    /*
+     * A team nobody declared still gets an entry, under the id the agent
+     * named, so that the menu can show where this agent actually is.
+     * Without it the tick lands on "No team" and moving the agent away
+     * looks like it did nothing -- the typo in `agents.team` being
+     * exactly what somebody opened this menu to fix.
+     */
+    if (current != NULL && *current != '\0' &&
+        !team_is_declared(teams, current)) {
+        g_autoptr(GMenuItem) item = g_menu_item_new(current, NULL);
+
+        g_menu_item_set_action_and_target_value(item, "agent.team",
+                                                g_variant_new_string(current));
+        g_menu_append_item(self->agent_menu_teams, item);
+    }
+
+    action = g_action_map_lookup_action(G_ACTION_MAP(self->agent_actions),
+                                        "team");
+
+    if (action != NULL)
+        g_simple_action_set_state(
+            G_SIMPLE_ACTION(action),
+            g_variant_new_string(current != NULL ? current : ""));
+}
+
+/*
+ * Moves the right-clicked agent onto a team.
+ */
+static void
+on_menu_team(GSimpleAction *action, GVariant *parameter, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *team = g_variant_get_string(parameter, NULL);
+    g_autoptr(GVariant) state = g_action_get_state(G_ACTION(action));
+    g_autofree gchar *message = NULL;
+
+    if (self->selected_agent == NULL)
+        return;
+
+    /*
+     * Activating the item already ticked is an ordinary thing to do with
+     * a radio menu, and writing the value back would render every agent,
+     * emit a change and toast about a move that did not happen.
+     */
+    if (state != NULL &&
+        g_strcmp0(g_variant_get_string(state, NULL), team) == 0)
+        return;
+
+    if (!apply_setting(self, "team", team))
+        return;
+
+    g_simple_action_set_state(action, g_variant_new_string(team));
+
+    message = (*team != '\0')
+              ? g_strdup_printf("%s moved to %s.", self->selected_agent, team)
+              : g_strdup_printf("%s taken off its team.",
+                                self->selected_agent);
+
+    clawt_window_toast(self, message);
+
+    /* The sidebar groups by team, so the row belongs somewhere else now. */
+    refresh_agents(self);
+}
+
 static void
 popup_agent_menu(ClawtWindow *self, gdouble x, gdouble y)
 {
     GtkListBoxRow *row = gtk_list_box_get_row_at_y(self->sidebar, (gint)y);
     g_autofree gchar *state = NULL;
+    g_autofree gchar *team = NULL;
     const gchar *agent_id;
     GdkRectangle rect;
 
@@ -5769,11 +5936,13 @@ popup_agent_menu(ClawtWindow *self, gdouble x, gdouble y)
      * a refresh rebuild the sidebar and free this row underneath us.
      */
     state = g_strdup(g_object_get_data(G_OBJECT(row), "agent-state"));
+    team = g_strdup(g_object_get_data(G_OBJECT(row), "agent-team"));
 
     /* Act on what was right-clicked, not on what happened to be selected. */
     gtk_list_box_select_row(self->sidebar, row);
 
     set_agent_action_states(self, state);
+    fill_team_menu(self, team);
 
     rect.x = (gint)x;
     rect.y = (gint)y;
@@ -5811,6 +5980,7 @@ build_agent_menu(ClawtWindow *self)
                                           "delete" };
     g_autoptr(GMenu) menu = g_menu_new();
     g_autoptr(GMenu) lifecycle = g_menu_new();
+    g_autoptr(GMenu) grouping = g_menu_new();
     g_autoptr(GMenu) danger = g_menu_new();
     GtkGesture *click;
     GtkGesture *press;
@@ -5826,10 +5996,34 @@ build_agent_menu(ClawtWindow *self)
                                 G_ACTION(action));
     }
 
+    /*
+     * Stateful, and taking the team id as its parameter, so GTK draws
+     * the entries as radio items with the current team ticked.
+     */
+    {
+        g_autoptr(GSimpleAction) action = g_simple_action_new_stateful(
+            "team", G_VARIANT_TYPE_STRING, g_variant_new_string(""));
+
+        g_signal_connect(action, "activate", G_CALLBACK(on_menu_team), self);
+        g_action_map_add_action(G_ACTION_MAP(self->agent_actions),
+                                G_ACTION(action));
+    }
+
     g_menu_append(lifecycle, "Start", "agent.start");
     g_menu_append(lifecycle, "Stop", "agent.stop");
     g_menu_append(lifecycle, "Restart", "agent.restart");
     g_menu_append_section(menu, NULL, G_MENU_MODEL(lifecycle));
+
+    /*
+     * Its own section between the lifecycle verbs and Delete.  The
+     * entries are filled in per right-click, from the fleet the sidebar
+     * last saw -- an empty model here is what an unopened menu looks
+     * like, not a fleet with no teams.
+     */
+    self->agent_menu_teams = g_menu_new();
+    g_menu_append_submenu(grouping, "Team",
+                          G_MENU_MODEL(self->agent_menu_teams));
+    g_menu_append_section(menu, NULL, G_MENU_MODEL(grouping));
 
     /* Its own section, so Delete is never the neighbour of Restart. */
     g_menu_append(danger, "Delete\342\200\246", "agent.delete");
@@ -7728,6 +7922,17 @@ forget_daemon_state(ClawtWindow *self)
 
     g_hash_table_remove_all(self->shown);
     g_hash_table_remove_all(self->drafts);
+
+    /*
+     * Teams are per-daemon too.  The refresh below repopulates this, but
+     * only if the new daemon answers team.list -- and offering another
+     * machine's teams in the context menu is how an agent gets moved
+     * onto one this fleet has never declared.
+     */
+    g_clear_pointer(&self->teams_seen, json_node_unref);
+
+    if (self->collapsed_teams != NULL)
+        g_hash_table_remove_all(self->collapsed_teams);
 
     clear_box(self->transcript);
     clear_list(self->sidebar);
@@ -13629,6 +13834,8 @@ clawt_window_dispose(GObject *object)
      */
     g_clear_pointer(&self->agent_menu, gtk_widget_unparent);
     g_clear_object(&self->agent_actions);
+    g_clear_object(&self->agent_menu_teams);
+    g_clear_pointer(&self->teams_seen, json_node_unref);
 
     g_clear_pointer(&self->appearance, clawt_appearance_free);
     g_clear_pointer(&self->connections, g_ptr_array_unref);

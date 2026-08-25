@@ -1593,6 +1593,37 @@ the same program.
   four-line program against real libadwaita answers it in a second --
   far quicker than reasoning about what the widget "should" do.
 
+### GtkPopoverMenu follows a submenu model filled after it was built
+
+- Which is what lets the sidebar's Team submenu be an empty `GMenu` at
+  construction and be refilled on every right-click, from the fleet the
+  sidebar last saw, instead of rebuilding the whole popover per click or
+  asking the daemon between the press and the menu appearing. Not
+  obvious, and the defensive alternative is the expensive one -- so it
+  was measured rather than assumed: a 120-line program against real GTK4
+  fills the submenu after `gtk_popover_menu_new_from_model()` and finds
+  all three entries in the popover's widget tree.
+- The same program answered the other two questions in the same second.
+  A stateful action with a string parameter renders its items as radios
+  (`GtkModelButton:role` is 2), exactly one is `active` -- the one whose
+  target matches the action state -- and activating an entry hands the
+  action the *target*, so the menu is built from team **ids** while the
+  labels are names. A menu offering a choice has to say which one is
+  currently taken; without the state a person would open the inspector
+  to find out where they were before deciding where to go.
+- A team an agent names but the fleet does not declare gets its own
+  entry. Without it the tick lands on "No team", moving the agent away
+  looks like it did nothing, and the typo in `agents.team` -- the reason
+  somebody opened the menu -- is the one thing the menu cannot show.
+  Same rule as the screen-size row: a control that cannot represent the
+  current value will silently replace it.
+- Verified end to end afterwards, not only in the probe: a temporary
+  `g_message` in `fill_team_menu()` against a real daemon printed the
+  entries and the tick for a teamless agent, one on a declared team, and
+  one on an undeclared one. The probe proves the widget; only the real
+  fleet proves the wiring, and this file records more than one feature
+  that worked perfectly in isolation and reached nobody.
+
 ### AdwActionRow is not activatable
 
 - libadwaita clears `GtkListBoxRow:activatable` unless an

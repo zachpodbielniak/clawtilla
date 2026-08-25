@@ -186,13 +186,81 @@ enum_choices(const ClawtSchemaEntry *entry)
     return (gchar **)g_ptr_array_free(g_steal_pointer(&values), FALSE);
 }
 
+/*
+ * The teams this fleet declares, as ids and as names, with "" first.
+ *
+ * A team is a string in the schema, so the generic path draws it as a
+ * text box -- which asks somebody to know a team's id and to type it
+ * without a typo, when the daemon can say what the ids are.  The GTK
+ * client has had a combo here since teams were added; this is the same
+ * control.
+ *
+ * Returns %FALSE when the daemon does not answer, and the caller falls
+ * back to the text box rather than offering a list with nothing in it.
+ */
+static gboolean
+team_choices(ClawtWebApp *app, GStrv *out_ids, GStrv *out_names)
+{
+    g_autoptr(JsonNode) reply = clawt_web_app_call(app, "team.list", NULL);
+    JsonArray *teams = clawt_web_member_array(clawt_web_root(reply), "teams");
+    g_autoptr(GPtrArray) ids = g_ptr_array_new();
+    g_autoptr(GPtrArray) names = g_ptr_array_new();
+    guint i;
+
+    if (reply == NULL)
+        return FALSE;
+
+    /*
+     * "No team" first, and it is a real choice rather than a prompt: it
+     * is how an agent comes off a team, and it is where the chief of
+     * staff belongs.
+     */
+    g_ptr_array_add(ids, g_strdup(""));
+    g_ptr_array_add(names, g_strdup("No team"));
+
+    for (i = 0; teams != NULL && i < json_array_get_length(teams); i++) {
+        JsonObject *team = json_array_get_object_element(teams, i);
+        const gchar *id = clawt_web_member(team, "id", NULL);
+
+        if (id == NULL || *id == '\0')
+            continue;
+
+        g_ptr_array_add(ids, g_strdup(id));
+        g_ptr_array_add(names, g_strdup(clawt_web_member(team, "name", id)));
+    }
+
+    g_ptr_array_add(ids, NULL);
+    g_ptr_array_add(names, NULL);
+
+    *out_ids = (GStrv)g_ptr_array_free(g_steal_pointer(&ids), FALSE);
+    *out_names = (GStrv)g_ptr_array_free(g_steal_pointer(&names), FALSE);
+
+    return TRUE;
+}
+
 static HtmxElement *
-control_for(const ClawtSchemaEntry *entry, const gchar *key,
+control_for(ClawtWebApp *app, const ClawtSchemaEntry *entry, const gchar *key,
             const gchar *value)
 {
     g_autofree gchar *label = key_label(key);
     g_autofree gchar *doc = first_line(entry->doc);
     g_autofree gchar *field_name = g_strdup_printf("k:%s", key);
+
+    /*
+     * The one string whose values the daemon knows.  An id that is not
+     * among them -- a team somebody named and never declared -- is added
+     * to the list by clawt_web_select_field() rather than dropped, so
+     * saving the page cannot silently move the agent somewhere else.
+     */
+    if (g_strcmp0(key, "team") == 0) {
+        g_auto(GStrv) ids = NULL;
+        g_auto(GStrv) names = NULL;
+
+        if (team_choices(app, &ids, &names))
+            return HTMX_ELEMENT(clawt_web_select_field(
+                label, field_name, (const gchar *const *)ids,
+                (const gchar *const *)names, value));
+    }
 
     switch (entry->type) {
     case CLAWT_SCHEMA_BOOLEAN:
@@ -496,7 +564,8 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
                 const gchar *value = (settings != NULL)
                                      ? clawt_web_member(settings, key, "") : "";
 
-                clawt_web_add(group_body, control_for(entry, key, value));
+                clawt_web_add(group_body,
+                              control_for(app, entry, key, value));
 
                 /*
                  * An option that hands over real authority says so where

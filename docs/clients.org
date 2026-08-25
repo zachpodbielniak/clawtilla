@@ -272,7 +272,9 @@ somewhere nobody chose.
 
 An agent's team and its role on it are also in the agent editor, beside
 the chief-of-staff switch -- the three answer one question between them:
-who this agent may hand work to.
+who this agent may hand work to.  Moving one agent is quicker from the
+sidebar's right-click menu; the editor is where the *role* is set, and
+where a team is changed as part of a wider edit.
 
 *** Spending
 
@@ -445,11 +447,26 @@ Each agent shows a state dot, its description, and badges:
 Colour is never the only signal: the state is in the tooltip and in the
 inspector too.
 
-*Right-click an agent* for Start, Stop, Restart and Delete.  These are on
-the Agent tab as well, but reaching them there means leaving the
-conversation, acting and coming back -- three navigations for the thing
-you do to an agent most often.  A long press does the same on touch,
-where there is no second button.
+*Right-click an agent* for Start, Stop, Restart, its *Team*, and Delete.
+These are on the Agent tab as well, but reaching them there means leaving
+the conversation, acting and coming back -- three navigations for the
+thing you do to an agent most often.  A long press does the same on
+touch, where there is no second button.
+
+The *Team* submenu lists every team the fleet declares, with =No team=
+first, and *ticks the one this agent is already on* -- so the menu
+answers "where is this" as well as offering to move it.  Choosing an
+entry writes ~agents.team~ and the sidebar regroups; the agent keeps
+running throughout, since a team decides who may hand it work rather than
+anything about how it runs.
+
+An agent naming a team nobody declared gets an entry of its own, under
+the id it named.  Without that the tick would land on =No team= and
+moving the agent away would look like it had done nothing -- and a typo
+in ~agents.team~ is exactly what somebody opens this menu to fix.
+
+The teams offered are the ones the sidebar was drawn from a moment ago,
+not a fresh question to the daemon: a menu has to appear at once.
 
 Right-clicking selects the agent first, so the menu always acts on the
 row under the pointer rather than on whatever was selected before.

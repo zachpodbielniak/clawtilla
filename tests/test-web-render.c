@@ -155,6 +155,82 @@ test_select_marks_the_current_value(void)
 }
 
 /*
+ * A select whose labels differ from its values posts the *value*.
+ *
+ * The team control is the first one that needs them to differ: the
+ * fleet declares a team by id and calls it something readable, so the
+ * page shows "Operations" and `agent.set` has to receive `ops`. Swap
+ * the two and every save writes a display name into `agents.team` --
+ * accepted, saved, and naming a team that does not exist. Every other
+ * select in the client passes NULL for the labels, so this path had no
+ * coverage at all until the team select used it.
+ */
+static void
+test_select_posts_the_value_not_the_label(void)
+{
+    static const gchar *const ids[] = { "", "ops", "research", NULL };
+    static const gchar *const names[] = { "No team", "Operations",
+                                          "Research", NULL };
+    g_autoptr(HtmxDiv) field = clawt_web_select_field(
+        "Team", "k:team", ids, names, "ops");
+    g_autofree gchar *html = htmx_element_render(HTMX_ELEMENT(field));
+    g_auto(GStrv) options = g_strsplit(html, "<option", -1);
+    guint i;
+    guint marked = 0;
+
+    /* The readable name is what a person reads... */
+    g_assert_nonnull(strstr(html, ">Operations<"));
+
+    /* ...and the id is what the form carries. */
+    g_assert_nonnull(strstr(html, "value=\"ops\""));
+    g_assert_null(strstr(html, "value=\"Operations\""));
+
+    for (i = 1; options[i] != NULL; i++) {
+        if (strstr(options[i], "selected") == NULL)
+            continue;
+
+        marked++;
+        g_assert_nonnull(strstr(options[i], "value=\"ops\""));
+    }
+
+    g_assert_cmpuint(marked, ==, 1);
+}
+
+/*
+ * A team an agent names that the fleet does not declare keeps its own
+ * entry, and stays selected.
+ *
+ * The same rule as the screen-size row, reached from the config rather
+ * than from the widget: without it the control opens on "No team" and
+ * saving the page -- without anybody touching that row -- takes the
+ * agent off a team it was deliberately put on.
+ */
+static void
+test_select_keeps_an_undeclared_team(void)
+{
+    static const gchar *const ids[] = { "", "ops", NULL };
+    static const gchar *const names[] = { "No team", "Operations", NULL };
+    g_autoptr(HtmxDiv) field = clawt_web_select_field(
+        "Team", "k:team", ids, names, "ghost-team");
+    g_autofree gchar *html = htmx_element_render(HTMX_ELEMENT(field));
+    g_auto(GStrv) options = g_strsplit(html, "<option", -1);
+    guint i;
+    guint marked = 0;
+
+    g_assert_nonnull(strstr(html, "ghost-team"));
+
+    for (i = 1; options[i] != NULL; i++) {
+        if (strstr(options[i], "selected") == NULL)
+            continue;
+
+        marked++;
+        g_assert_nonnull(strstr(options[i], "value=\"ghost-team\""));
+    }
+
+    g_assert_cmpuint(marked, ==, 1);
+}
+
+/*
  * An unticked checkbox posts nothing at all, which a form cannot tell
  * from a field that was not on the page. The companion hidden input is
  * what makes "off" expressible.
@@ -528,6 +604,10 @@ main(int argc, char *argv[])
 
     g_test_add_func("/web/select-keeps-a-value-it-does-not-offer",
                     test_select_keeps_a_value_it_does_not_offer);
+    g_test_add_func("/web/select-posts-the-value-not-the-label",
+                    test_select_posts_the_value_not_the_label);
+    g_test_add_func("/web/select-keeps-an-undeclared-team",
+                    test_select_keeps_an_undeclared_team);
     g_test_add_func("/web/select-marks-the-current-value",
                     test_select_marks_the_current_value);
     g_test_add_func("/web/a-switch-can-say-off", test_a_switch_can_say_off);
