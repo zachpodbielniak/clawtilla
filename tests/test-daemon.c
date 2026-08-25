@@ -25,15 +25,16 @@ typedef struct {
     GMainContext *context;
 } Fixture;
 
+/*
+ * Writes the fleet's config.yaml.  Separate from the setup so a test can
+ * rewrite it and reload, which is what an operator editing the file and
+ * running `clawtilla config edit` actually does.
+ */
 static void
-fixture_setup(Fixture *fixture, const gchar *extra_yaml)
+fixture_write_config(Fixture *fixture, const gchar *extra_yaml)
 {
     g_autofree gchar *yaml = NULL;
     g_autoptr(GError) error = NULL;
-
-    fixture->dir = g_dir_make_tmp("clawt-daemon-XXXXXX", NULL);
-    fixture->config_path = g_build_filename(fixture->dir, "config.yaml",
-                                            NULL);
 
     /*
      * The IPC socket goes in the temporary directory rather than the real
@@ -67,6 +68,16 @@ fixture_setup(Fixture *fixture, const gchar *extra_yaml)
 
     g_file_set_contents(fixture->config_path, yaml, -1, &error);
     g_assert_no_error(error);
+}
+
+static void
+fixture_setup(Fixture *fixture, const gchar *extra_yaml)
+{
+    fixture->dir = g_dir_make_tmp("clawt-daemon-XXXXXX", NULL);
+    fixture->config_path = g_build_filename(fixture->dir, "config.yaml",
+                                            NULL);
+
+    fixture_write_config(fixture, extra_yaml);
 
     fixture->context = g_main_context_new();
     fixture->daemon = clawt_daemon_new(fixture->config_path,
@@ -605,6 +616,72 @@ test_a_broken_reload_keeps_the_old_config(void)
     reply = request(&fixture, "control.status", NULL);
     g_assert_cmpint(json_object_get_int_member(payload_of(reply), "agents"),
                     ==, 1);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A render clawtilla refuses has to reach whoever asked for the reload.
+ *
+ * The refusal itself is right: a `libreclaw:` passthrough that redeclares
+ * `session:` would win outright and delete the agent's own persist_dir.
+ * What was wrong is that nothing said so.  `control.reload` answered plain
+ * success, `clawtilla config edit` printed "Reloaded.", and the agent's
+ * config.yaml was left at its previous contents -- so the passthrough
+ * looked ignored rather than rejected, and the only clue was a g_warning
+ * in the journal nobody was told to read.
+ */
+static void
+test_reload_reports_a_refused_render(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *rendered_path = NULL;
+    g_autofree gchar *rendered = NULL;
+    JsonObject *payload;
+    JsonArray *refused;
+    JsonObject *entry;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    rendered_path = g_build_filename(fixture.dir, "state", "agents",
+                                     "chief", "config.yaml", NULL);
+    g_assert_true(g_file_test(rendered_path, G_FILE_TEST_EXISTS));
+
+    /* The operator edits the file and asks the daemon to reload it. */
+    fixture_write_config(&fixture,
+        "agents:\n"
+        "  - id: chief\n"
+        "    libreclaw:\n"
+        "      session:\n"
+        "        persist_dir: \"/tmp/somewhere-else\"\n");
+
+    g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING, "*redeclares*");
+    reply = request(&fixture, "control.reload", NULL);
+    g_test_assert_expected_messages();
+
+    /*
+     * A response, not an error: the reload itself happened, and every
+     * other agent in the fleet was rendered from the new file.  What the
+     * caller has to be told is which agents were left behind.
+     */
+    payload = payload_of(reply);
+    g_assert_nonnull(payload);
+    g_assert_true(json_object_has_member(payload, "refused"));
+
+    refused = json_object_get_array_member(payload, "refused");
+    g_assert_cmpuint(json_array_get_length(refused), ==, 1);
+
+    entry = json_array_get_object_element(refused, 0);
+    g_assert_cmpstr(json_object_get_string_member(entry, "agent"), ==,
+                    "chief");
+    g_assert_nonnull(strstr(json_object_get_string_member(entry, "message"),
+                            "redeclares"));
+
+    /* And it is telling the truth: the file on disk did not change. */
+    g_assert_true(g_file_get_contents(rendered_path, &rendered, NULL, NULL));
+    g_assert_null(strstr(rendered, "/tmp/somewhere-else"));
 
     fixture_teardown(&fixture);
 }
@@ -2477,6 +2554,8 @@ main(int argc, char *argv[])
                     test_stop_removes_the_sockets);
     g_test_add_func("/daemon/broken-reload",
                     test_a_broken_reload_keeps_the_old_config);
+    g_test_add_func("/daemon/reload/refused-render",
+                    test_reload_reports_a_refused_render);
 
     g_test_add_func("/daemon/agents-talking-stays-between-them",
                     test_agents_talking_stays_out_of_the_users_chat);

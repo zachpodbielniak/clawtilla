@@ -2679,6 +2679,55 @@ cmd_computer(int argc, char *argv[])
 
 /* ── config ──────────────────────────────────────────────────────── */
 
+/*
+ * What `control.reload` answered, turned into an exit status.
+ *
+ * A reload can succeed and still leave an agent behind: clawtilla refuses
+ * to render a `libreclaw:` passthrough that redeclares a section it
+ * renders itself, and that agent keeps the config.yaml it already had.
+ * Printing "Reloaded." over the top of that was the whole problem -- it
+ * read as "your edit was ignored" rather than "your edit was rejected,
+ * here is why", and the reason was only ever in the daemon's journal.
+ */
+static gint
+report_reload(JsonNode *reply)
+{
+    JsonObject *payload;
+    JsonArray *refused = NULL;
+    guint length;
+    guint i;
+
+    payload = (reply != NULL && JSON_NODE_HOLDS_OBJECT(reply))
+        ? json_node_get_object(reply) : NULL;
+
+    if (payload != NULL && json_object_has_member(payload, "refused"))
+        refused = json_object_get_array_member(payload, "refused");
+
+    length = (refused != NULL) ? json_array_get_length(refused) : 0;
+
+    if (length == 0) {
+        g_print("Reloaded.\n");
+        return EXIT_SUCCESS;
+    }
+
+    for (i = 0; i < length; i++) {
+        JsonObject *entry = json_array_get_object_element(refused, i);
+
+        g_printerr("clawtilla: %s: %s\n",
+                   member_or(entry, "agent", "?"),
+                   member_or(entry, "message", "its config was refused"));
+    }
+
+    if (length == 1)
+        g_printerr("clawtilla: reloaded, but 1 agent was left running "
+                   "against the config.yaml it already had\n");
+    else
+        g_printerr("clawtilla: reloaded, but %u agents were left running "
+                   "against the config.yaml they already had\n", length);
+
+    return EXIT_FAILURE;
+}
+
 static gint
 cmd_config(int argc, char *argv[])
 {
@@ -2756,8 +2805,7 @@ cmd_config(int argc, char *argv[])
             return EXIT_FAILURE;
         }
 
-        g_print("Reloaded.\n");
-        return EXIT_SUCCESS;
+        return report_reload(reply);
     }
 
     client = connect_to_daemon();
