@@ -115,6 +115,12 @@ struct _ClawtDaemon {
     gchar   *libreclaw_binary;
     gchar   *state_dir;
     gchar   *link_socket;
+
+    /*
+     * Where a file an agent sent its operator is kept, so `attachment.get`
+     * can serve the bytes to a client that may be on another machine.
+     */
+    gchar   *attachment_dir;
     guint    sweep_source_id;
     gboolean running;
 };
@@ -3076,6 +3082,25 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     clawt_mcp_tools_set_room_manager(self->mcp_tools, self->rooms);
 
     /*
+     * Where a file an agent sends its operator is kept.
+     *
+     * Under the daemon's own state directory rather than the exchange:
+     * the exchange is mounted into computers and readable by every agent
+     * that shares it, and a message's attachment belongs to the
+     * conversation rather than to the fleet.
+     */
+    {
+        g_autofree gchar *state_dir =
+            clawt_config_get_path_value(self->config, "daemon.state_dir");
+        g_autofree gchar *dir = (state_dir != NULL)
+            ? g_build_filename(state_dir, "attachments", NULL) : NULL;
+
+        clawt_mcp_tools_set_attachment_dir(self->mcp_tools, dir);
+        g_free(self->attachment_dir);
+        self->attachment_dir = g_steal_pointer(&dir);
+    }
+
+    /*
      * The fleet tools are not offered at all without these, whatever an
      * agent's permissions say -- a library embedded without a daemon has
      * no fleet to add to, and a tool that is listed and then fails
@@ -4916,6 +4941,57 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
 
         return clawt_ipc_response_new(request,
                                       json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "attachment.get") == 0) {
+        const gchar *id = clawt_ipc_payload_string(payload, "id");
+        g_autofree gchar *path = NULL;
+        g_autofree gchar *name = NULL;
+        g_autofree gchar *contents = NULL;
+        g_autofree gchar *encoded = NULL;
+        gsize length = 0;
+
+        /*
+         * The bytes, not the path.
+         *
+         * A client may be on another machine entirely -- that is what
+         * connection profiles are for -- so handing it a filename would
+         * work on this host and show nothing anywhere else, which reads
+         * as a broken image rather than as an unsupported setup.
+         *
+         * The id is checked rather than trusted: clawt_attachment_path()
+         * refuses anything outside the character set an id is made of,
+         * which is what stops a request for a path of somebody's
+         * choosing reading a file this was never meant to serve.
+         */
+        if (id == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "which attachment?");
+
+        if (self->attachment_dir == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "this daemon keeps no attachments");
+
+        path = clawt_attachment_path(self->attachment_dir, id);
+
+        if (path == NULL || !g_file_get_contents(path, &contents, &length,
+                                                 NULL))
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such attachment");
+
+        name = clawt_attachment_name(id);
+        encoded = g_base64_encode((const guchar *)contents, length);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "name");
+        json_builder_add_string_value(builder, name);
+        json_builder_set_member_name(builder, "bytes");
+        json_builder_add_int_value(builder, (gint64)length);
+        json_builder_set_member_name(builder, "base64");
+        json_builder_add_string_value(builder, encoded);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
     if (g_strcmp0(kind, "event.list") == 0) {

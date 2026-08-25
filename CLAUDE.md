@@ -659,6 +659,29 @@ the same program.
 - Verified by reverting the setter and watching the test fail
   (`-1 == 20400`), not merely by watching it pass.
 
+### A response body that is a C string cannot carry a PNG
+
+- htmx-glib's `HtmxResponse` held its body as a `gchar *` and wrote it
+  with `strlen()`. That is right for HTML and silently truncates
+  anything binary at its first zero byte -- for the eight-byte PNG
+  signature, at **two bytes**. So an image served through it arrives
+  broken at a length that depends on the picture, which is the worst kind
+  of wrong: it works for some files.
+- `htmx_response_set_bytes()` upstream, with bytes winning over content
+  when both are set, and a test whose sample has a NUL at index 2 on
+  purpose. Verified end to end by fetching a real PNG over HTTP and
+  running `cmp` against the original.
+- The attachment itself follows the rule the issue named: **the daemon
+  copies the bytes at send time**, because a path only resolves when the
+  client and the file are on the same machine and the failure when they
+  are not looks like a broken image rather than an unsupported setup.
+  The id is checked, not trusted -- it arrives in an IPC payload and
+  becomes a filename.
+- No `attachments` on the agent-to-agent verbs, deliberately. The
+  receiving side is an agent whose `read` and `bash` run on the host, so
+  it would get an id it can do nothing with -- the exact shape of missing
+  feature an agent invents a workaround for and reports as a discovery.
+
 ### Two of 89 toasts were notifications, and only those two moved
 
 - The complaint was that toasts cover the composer, and the first answer

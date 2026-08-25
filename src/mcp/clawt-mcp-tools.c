@@ -118,7 +118,14 @@ static const ClawtParamInfo computer_exec_params[] = {
 };
 
 static const ClawtParamInfo message_user_params[] = {
-    { "body", "string", "What to tell them.", TRUE }
+    { "body", "string", "What to tell them.", TRUE },
+    { "attachments", "array",
+      "Files to send with it, as paths you can read. The bytes are "
+      "copied when you send, so you may delete or rewrite your own copy "
+      "afterwards. Images are shown inline in the operator's client; "
+      "anything else arrives as a file they can save. Use it for what "
+      "you produced rather than what you are describing -- a screenshot, "
+      "a rendered diagram, an exported log.", FALSE }
 };
 
 static const ClawtParamInfo memory_add_params[] = {
@@ -384,6 +391,8 @@ struct _ClawtMcpTools {
     GDestroyNotify          create_agent_destroy;
 
     ClawtVmImageStore *images;   /* unowned */
+
+    gchar *attachment_dir;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtMcpTools, clawt_mcp_tools, G_TYPE_OBJECT)
@@ -443,6 +452,15 @@ clawt_mcp_tools_set_deliver_func(ClawtMcpTools       *self,
     self->deliver = func;
     self->deliver_data = user_data;
     self->deliver_destroy = destroy;
+}
+
+void
+clawt_mcp_tools_set_attachment_dir(ClawtMcpTools *self, const gchar *dir)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    g_free(self->attachment_dir);
+    self->attachment_dir = g_strdup(dir);
 }
 
 void
@@ -1807,6 +1825,7 @@ tool_message_user(ClawtMcpTools *self, const gchar *agent_id,
 {
     const gchar *body = argument_string(arguments, "body");
     ClawtRoom *room;
+    g_autofree gchar *full = NULL;
     g_autoptr(GError) error = NULL;
 
     if (body == NULL || body[0] == '\0') {
@@ -1817,6 +1836,69 @@ tool_message_user(ClawtMcpTools *self, const gchar *agent_id,
     if (self->room_manager == NULL || self->deliver == NULL) {
         *is_error = TRUE;
         return g_strdup("There is no way to reach your operator from here.");
+    }
+
+    /*
+     * Files, if any were named.
+     *
+     * The bytes are taken now rather than the path being passed through:
+     * a path only resolves when the client and the file are on the same
+     * machine, and the failure when they are not looks like a broken
+     * image rather than an unsupported configuration.  A file that
+     * cannot be read is reported rather than dropped -- an attachment
+     * that silently did not arrive is worse than one that was refused.
+     */
+    {
+        g_autoptr(GString) block = NULL;
+        JsonArray *files = NULL;
+        guint i;
+
+        if (arguments != NULL && json_object_has_member(arguments,
+                                                        "attachments")) {
+            JsonNode *node = json_object_get_member(arguments, "attachments");
+
+            if (JSON_NODE_HOLDS_ARRAY(node))
+                files = json_node_get_array(node);
+        }
+
+        for (i = 0; files != NULL && i < json_array_get_length(files); i++) {
+            const gchar *path = json_array_get_string_element(files, i);
+            g_autoptr(GError) store_error = NULL;
+            g_autofree gchar *id = NULL;
+            g_autofree gchar *name = NULL;
+
+            if (self->attachment_dir == NULL) {
+                *is_error = TRUE;
+                return g_strdup("This daemon cannot carry files, so nothing "
+                                "was sent. Say what you would have "
+                                "attached.");
+            }
+
+            id = clawt_attachment_store(self->attachment_dir, path,
+                                        &store_error);
+
+            if (id == NULL) {
+                *is_error = TRUE;
+                return g_strdup_printf("Nothing was sent: %s",
+                                       store_error != NULL
+                                           ? store_error->message
+                                           : "that file could not be read");
+            }
+
+            if (block == NULL) {
+                block = g_string_new("\n\n");
+                g_string_append(block, CLAWT_ATTACHMENT_MARKER);
+                g_string_append_c(block, '\n');
+            }
+
+            name = clawt_attachment_name(id);
+            g_string_append_printf(block, "- %s\n  clawt:%s\n", name, id);
+        }
+
+        if (block != NULL) {
+            full = g_strconcat(body, block->str, NULL);
+            body = full;
+        }
     }
 
     room = clawt_room_manager_get_direct(self->room_manager, agent_id,
@@ -2588,6 +2670,8 @@ clawt_mcp_tools_dispose(GObject *object)
     g_clear_object(&self->agents);
     g_clear_object(&self->tasks);
     g_clear_object(&self->guard);
+
+    g_clear_pointer(&self->attachment_dir, g_free);
 
     G_OBJECT_CLASS(clawt_mcp_tools_parent_class)->dispose(object);
 }

@@ -22,6 +22,136 @@
 /* ── The transcript ──────────────────────────────────────────────── */
 
 /*
+ * The `clawt:<id>` entries in an attachment block, and the prose without
+ * it.
+ *
+ * The marker is CLAWT_ATTACHMENT_MARKER, from libclawt, so this client
+ * and the GTK one recognise the same line -- one that spelled it
+ * differently would draw no attachments and say nothing about why.
+ *
+ * Returns: (transfer full) (nullable) (element-type utf8): the ids
+ */
+static GPtrArray *
+attachment_ids(const gchar *body, gchar **out_prose)
+{
+    g_auto(GStrv) lines = NULL;
+    g_autoptr(GString) prose = NULL;
+    GPtrArray *ids = NULL;
+    gboolean in_block = FALSE;
+    gsize i;
+
+    *out_prose = NULL;
+
+    if (body == NULL || strstr(body, CLAWT_ATTACHMENT_MARKER) == NULL)
+        return NULL;
+
+    lines = g_strsplit(body, "\n", -1);
+    prose = g_string_new(NULL);
+
+    for (i = 0; lines[i] != NULL; i++) {
+        const gchar *at;
+
+        if (strstr(lines[i], CLAWT_ATTACHMENT_MARKER) != NULL) {
+            in_block = TRUE;
+            continue;
+        }
+
+        if (!in_block) {
+            if (prose->len > 0)
+                g_string_append_c(prose, '\n');
+
+            g_string_append(prose, lines[i]);
+            continue;
+        }
+
+        /*
+         * The block is its list items and their indented continuations.
+         * Anything at the left margin ends it, so a line an agent wrote
+         * after the files is prose again.
+         */
+        if (lines[i][0] != '\0' && lines[i][0] != ' ' &&
+            lines[i][0] != '-' && lines[i][0] != '\t') {
+            in_block = FALSE;
+            g_string_append_c(prose, '\n');
+            g_string_append(prose, lines[i]);
+            continue;
+        }
+
+        at = strstr(lines[i], "clawt:");
+
+        if (at == NULL)
+            continue;
+
+        if (ids == NULL)
+            ids = g_ptr_array_new_with_free_func(g_free);
+
+        {
+            gchar *id = g_strdup(at + strlen("clawt:"));
+
+            g_ptr_array_add(ids, g_strchomp(id));
+        }
+    }
+
+    *out_prose = g_strdup(g_strchomp(prose->str));
+
+    return ids;
+}
+
+static gboolean
+looks_like_an_image(const gchar *name)
+{
+    static const gchar *const extensions[] = {
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", NULL
+    };
+    g_autofree gchar *lowered = g_ascii_strdown(name, -1);
+    gsize i;
+
+    for (i = 0; extensions[i] != NULL; i++) {
+        if (g_str_has_suffix(lowered, extensions[i]))
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+/*
+ * One file, as a picture or as a link.
+ *
+ * Both point at /f/attachment/<id>, which streams the bytes from the
+ * daemon: the browser may be on another machine, so a filesystem path
+ * would render as a broken image rather than as an unsupported setup.
+ */
+static HtmxElement *
+attachment_element(const gchar *id)
+{
+    g_autofree gchar *escaped = g_uri_escape_string(id, NULL, FALSE);
+    g_autofree gchar *url = g_strdup_printf("/f/attachment/%s", escaped);
+    g_autofree gchar *name = NULL;
+    const gchar *dash = strchr(id, '-');
+
+    name = g_strdup((dash != NULL && dash[1] != '\0') ? dash + 1 : id);
+
+    if (looks_like_an_image(name)) {
+        g_autoptr(HtmxImg) picture = htmx_img_new_with_src(url, name);
+
+        htmx_element_add_class(HTMX_ELEMENT(picture), "attachment-image");
+        htmx_element_set_attribute(HTMX_ELEMENT(picture), "loading", "lazy");
+
+        return HTMX_ELEMENT(g_steal_pointer(&picture));
+    }
+
+    {
+        g_autoptr(HtmxA) link = htmx_a_new_with_href(url);
+
+        htmx_element_add_class(HTMX_ELEMENT(link), "attachment-file");
+        htmx_element_set_attribute(HTMX_ELEMENT(link), "download", name);
+        htmx_node_set_text_content(HTMX_NODE(link), name);
+
+        return HTMX_ELEMENT(g_steal_pointer(&link));
+    }
+}
+
+/*
  * "Today", "Yesterday" or a weekday, between two rules.
  *
  * The label comes from libclawt so this and the GTK client cannot answer
@@ -172,8 +302,35 @@ message_element(JsonObject *message, const gchar *agent_id,
         htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(who));
 
     htmx_element_add_class(HTMX_ELEMENT(text), "msg-body");
-    htmx_node_set_text_content(HTMX_NODE(text), body);
-    htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(text));
+
+    /*
+     * Files an agent sent arrive as a `clawt:<id>` block at the end of
+     * the body.  The prose goes in the bubble; the files go beneath it,
+     * as pictures where they are pictures and as links otherwise -- and
+     * the block itself is taken out of the text, because a reader has no
+     * use for a list of ids.
+     */
+    {
+        g_autofree gchar *prose = NULL;
+        g_autoptr(GPtrArray) files = attachment_ids(body, &prose);
+
+        htmx_node_set_text_content(HTMX_NODE(text),
+                                   prose != NULL ? prose : body);
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(text));
+
+        if (files != NULL) {
+            g_autoptr(HtmxDiv) tray = htmx_div_new();
+            guint n;
+
+            htmx_element_add_class(HTMX_ELEMENT(tray), "attachments");
+
+            for (n = 0; n < files->len; n++)
+                clawt_web_add(tray,
+                              attachment_element(g_ptr_array_index(files, n)));
+
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(tray));
+        }
+    }
 
     return g_steal_pointer(&row);
 }
@@ -1069,11 +1226,89 @@ on_transcript_fragment(HtmxRequest *request, GHashTable *params,
     return clawt_web_fragment_response(fragment);
 }
 
+/*
+ * The bytes of one attachment.
+ *
+ * Fetched from the daemon rather than read off disk: clawtilla-web and
+ * clawtillad need not be the same process or the same machine, and this
+ * is the whole reason the daemon copies an agent's file at send time
+ * instead of passing the path along.
+ */
+static HtmxResponse *
+on_attachment(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *id = clawt_web_param(params, "id");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GBytes) bytes = NULL;
+    HtmxResponse *response;
+    const gchar *encoded;
+    const gchar *name;
+    guchar *raw;
+    gsize length = 0;
+
+    (void)request;
+
+    clawt_web_payload_set(payload, "id", id);
+
+    reply = clawt_web_app_call(app, "attachment.get",
+                               clawt_web_payload_take(
+                                   g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        return htmx_response_not_found();
+
+    encoded = clawt_web_member(clawt_web_root(reply), "base64", NULL);
+    name = clawt_web_member(clawt_web_root(reply), "name", "file");
+
+    if (encoded == NULL)
+        return htmx_response_not_found();
+
+    raw = g_base64_decode(encoded, &length);
+    bytes = g_bytes_new_take(raw, length);
+
+    response = htmx_response_new();
+    htmx_response_set_bytes(response, bytes);
+
+    /*
+     * The type from the name, and `application/octet-stream` when it is
+     * not one we recognise.  Guessing from the bytes would mean sniffing
+     * content a model produced, which is how a browser is talked into
+     * rendering something as HTML.
+     */
+    htmx_response_set_content_type(
+        response, looks_like_an_image(name)
+                      ? (g_str_has_suffix(name, ".png") ? "image/png"
+                         : g_str_has_suffix(name, ".gif") ? "image/gif"
+                         : g_str_has_suffix(name, ".webp") ? "image/webp"
+                         : g_str_has_suffix(name, ".svg")
+                             ? "image/svg+xml" : "image/jpeg")
+                      : "application/octet-stream");
+
+    /*
+     * Never inline for anything that is not an image.  A file an agent
+     * produced is content this server did not write, and letting a
+     * browser render it in this origin is how a transcript becomes a
+     * script.
+     */
+    if (!looks_like_an_image(name)) {
+        g_autofree gchar *disposition = g_strdup_printf(
+            "attachment; filename=\"%s\"", name);
+
+        htmx_response_add_header(response, "Content-Disposition",
+                                 disposition);
+    }
+
+    return response;
+}
+
 void
 clawt_web_register_chat(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_post(router, "/a/:id/send", on_send, app);
     htmx_router_get(router, "/f/a/:id/transcript", on_transcript_fragment, app);
+    htmx_router_get(router, "/f/attachment/:id", on_attachment, app);
     htmx_router_get(router, "/a/:id/export", on_export, app);
     htmx_router_get(router, "/a/:id/copy", on_copy, app);
     htmx_router_get(router, "/a/:id/compose", on_compose, app);

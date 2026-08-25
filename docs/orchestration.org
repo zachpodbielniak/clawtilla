@@ -414,6 +414,38 @@ user, which is the room the client is already watching. The scaffolded
 ~TOOLS.org~ says when to use it: when the operator is waiting on
 something you have now been told.
 
+*** Sending a file
+
+~clawtilla_message_user~ takes an optional ~attachments~ array: paths the
+agent can read.  Agents produce non-text artefacts routinely ---
+screenshots, rendered diagrams, exported logs --- and without this the
+only way to get one in front of a person was a separate channel with its
+own credentials, which arrives detached from the conversation that
+produced it.
+
+**The daemon reads the bytes at send time.**  Passing the path through
+would work for a client on the same host and show nothing for a remote
+one, and that failure looks like a broken image rather than an
+unsupported configuration.  It also means the agent may delete or rewrite
+its own copy afterwards without changing what was sent.
+
+The copy is kept under the daemon's state directory, not in the exchange:
+the exchange is mounted into computers and readable by every agent that
+shares one, and a message's attachment belongs to the conversation.  A
+client fetches it with ~attachment.get~ --- the GTK client caches it and
+shows a thumbnail, the web client serves it from ~/f/attachment/<id>~.
+
+A file that cannot be read is *reported* rather than dropped.  An
+attachment that silently did not arrive is worse than one that was
+refused, because the agent goes on believing it sent it.
+
+There is deliberately **no** attachments argument on the agent-to-agent
+verbs.  The receiving side is an agent whose ~read~ and ~bash~ run on the
+host, and the daemon's copy is not somewhere it can open --- so it would
+receive an id it can do nothing with, which is exactly the shape of
+missing feature an agent invents a workaround for.  Put the file in the
+exchange and name its path.
+
 
 ** Your mailbox is empty while you are running
 

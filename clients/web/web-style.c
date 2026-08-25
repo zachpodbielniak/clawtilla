@@ -227,6 +227,22 @@ clawt_web_stylesheet(void)
     ".field-inline{display:grid;grid-template-columns:repeat(auto-fit,minmax(12rem,1fr));"
       "gap:0 16px}"
 
+    /*
+     * Files an agent sent.  Images inline, at a size that is worth
+     * looking at without taking the whole column; anything else as a
+     * link, because a browser rendering a file a model produced in this
+     * origin is how a transcript becomes a script.
+     */
+    ".attachments{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;"
+      "margin-left:36px}"
+    ".msg-self .attachments{margin-left:0;justify-content:flex-end}"
+    ".attachment-image{max-width:100%;max-height:20rem;border-radius:"
+      "var(--radius-sm);border:1px solid var(--line);display:block}"
+    ".attachment-file{display:inline-block;padding:6px 12px;font-size:12px;"
+      "border:1px solid var(--line);border-radius:var(--radius-sm);"
+      "background:var(--surface-2);text-decoration:none}"
+    "@media (max-width:26rem){.attachments{margin-left:0}}"
+
     /* ── Alerts ── */
     /*
      * Three tiers, two of them coloured.  If everything carries a

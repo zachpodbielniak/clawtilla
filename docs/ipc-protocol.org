@@ -104,6 +104,19 @@ does not refuse to come up.  A fleet that would not start because one
 operator-typed block is wrong is a far worse failure than one that starts
 and says which agents are stale.
 
+*** attachment.*
+
+~attachment.put~ carries a file from a client *into* an agent's exchange
+directory --- what somebody drags into the composer.  ~attachment.get~ is
+the other direction: it takes an ~id~ and answers with ~name~, ~bytes~
+and ~base64~, which is how a client gets at a file an agent sent.
+
+The bytes travel rather than the path because a client may be on another
+machine, and an id is checked rather than trusted: anything outside the
+character set an id is made of is refused, which is what stops a request
+of somebody's choosing reading a file the daemon was never asked to
+serve.
+
 *** event.*
 
 ~event.list~ takes an optional ~subject~ (an agent, room or task) and a

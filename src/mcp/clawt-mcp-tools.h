@@ -155,6 +155,22 @@ void clawt_mcp_tools_set_image_store(ClawtMcpTools     *self,
                                      ClawtVmImageStore *store);
 
 /**
+ * clawt_mcp_tools_set_attachment_dir:
+ * @self: a #ClawtMcpTools
+ * @dir: (nullable): where files sent to an operator are kept
+ *
+ * Gives agents a way to send a file rather than only text.
+ *
+ * The bytes are copied here at send time.  Passing the path through
+ * would work for a client on the same host and show nothing for a remote
+ * one -- a failure that looks like a broken image rather than an
+ * unsupported configuration.  Without a directory the `attachments`
+ * argument is refused with a reason instead of silently ignored.
+ */
+void clawt_mcp_tools_set_attachment_dir(ClawtMcpTools *self,
+                                        const gchar   *dir);
+
+/**
  * clawt_mcp_tools_set_room_manager:
  * @self: a #ClawtMcpTools
  * @rooms: (transfer none) (nullable): the fleet's rooms

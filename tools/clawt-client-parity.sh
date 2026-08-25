@@ -139,6 +139,7 @@ declare -A AFFORDANCES=(
     ["alerts surface"]="build_alerts_panel|alert-row"
     ["alert severity tiers"]="ALERT_ROUTINE|CLAWT_WEB_ALERT_ROUTINE"
     ["alert filter"]="alerts_show_all|show_all"
+    ["agent attachments"]="fetch_attachment|attachment_element"
 )
 
 usage () {

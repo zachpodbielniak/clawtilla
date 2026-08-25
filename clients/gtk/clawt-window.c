@@ -2414,7 +2414,66 @@ on_message_action(ClawtWindow *self, const gchar *action, gpointer target)
  * line we wrote. Matched on the prefix rather than the whole sentence,
  * so rewording the guidance does not silently turn previews off.
  */
-#define ATTACHMENT_MARKER "[clawtilla] Files sent with this message"
+#define ATTACHMENT_MARKER CLAWT_ATTACHMENT_MARKER
+
+/*
+ * Brings an agent-sent file to this machine, once.
+ *
+ * An attachment the *operator* sent is a path on this host, because the
+ * client put it there.  One an *agent* sent is a `clawt:<id>` naming a
+ * copy the daemon took at send time -- and the daemon may be on another
+ * machine, which is the whole reason the bytes travel rather than the
+ * path.  Cached under the user's cache directory so a transcript
+ * redrawn on every fleet event does not re-fetch every picture in it.
+ *
+ * Returns: (transfer full) (nullable): a local path, or %NULL
+ */
+static gchar *
+fetch_attachment(ClawtWindow *self, const gchar *id)
+{
+    g_autofree gchar *dir = NULL;
+    g_autofree gchar *path = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *encoded;
+    guchar *bytes;
+    gsize length = 0;
+
+    if (id == NULL || *id == '\0')
+        return NULL;
+
+    dir = g_build_filename(g_get_user_cache_dir(), "clawtilla",
+                           "attachments", NULL);
+    path = g_build_filename(dir, id, NULL);
+
+    if (g_file_test(path, G_FILE_TEST_EXISTS))
+        return g_steal_pointer(&path);
+
+    reply = clawt_window_request(self, "attachment.get",
+                                 clawt_build_payload("id", id, NULL));
+
+    if (reply == NULL)
+        return NULL;
+
+    encoded = clawt_json_string(clawt_payload_of(reply), "base64", NULL);
+
+    if (encoded == NULL)
+        return NULL;
+
+    if (g_mkdir_with_parents(dir, 0700) != 0)
+        return NULL;
+
+    bytes = g_base64_decode(encoded, &length);
+
+    if (!g_file_set_contents(path, (const gchar *)bytes, (gssize)length,
+                             NULL)) {
+        g_free(bytes);
+        return NULL;
+    }
+
+    g_free(bytes);
+
+    return g_steal_pointer(&path);
+}
 
 static gboolean
 looks_like_an_image(const gchar *path)
@@ -2758,13 +2817,32 @@ append_attachment_previews(ClawtWindow *self, GtkWidget *row,
             continue;
         }
 
-        start = strchr(lines[i], '/');
+        /*
+         * An agent's attachment is `clawt:<id>`, not a path: the file
+         * lives in the daemon's keeping and may be on another machine.
+         * Fetched to a local cache and then treated exactly like one the
+         * operator attached, so there is one preview path rather than
+         * two to disagree.
+         */
+        start = strstr(lines[i], "clawt:");
 
-        if (start == NULL)
-            continue;
+        if (start != NULL) {
+            g_autofree gchar *id = g_strdup(start + strlen("clawt:"));
 
-        candidate = g_strdup(start);
-        g_strchomp(candidate);
+            g_strchomp(id);
+            candidate = fetch_attachment(self, id);
+
+            if (candidate == NULL)
+                continue;
+        } else {
+            start = strchr(lines[i], '/');
+
+            if (start == NULL)
+                continue;
+
+            candidate = g_strdup(start);
+            g_strchomp(candidate);
+        }
 
         /* The container path is in brackets; the host one is not. */
         if (g_str_has_suffix(candidate, ")"))
