@@ -311,6 +311,37 @@ clawt_room_manager_direct_id(const gchar *a, const gchar *b)
 }
 
 ClawtRoom *
+clawt_room_manager_get_routine(ClawtRoomManager *self,
+                               const gchar      *routine_id,
+                               const gchar      *agent_id)
+{
+    g_autofree gchar *room_id = NULL;
+    ClawtRoom *room;
+
+    g_return_val_if_fail(CLAWT_IS_ROOM_MANAGER(self), NULL);
+    g_return_val_if_fail(routine_id != NULL, NULL);
+    g_return_val_if_fail(agent_id != NULL, NULL);
+
+    room_id = g_strdup_printf("routine:%s", routine_id);
+    room = g_hash_table_lookup(self->rooms, room_id);
+
+    if (room != NULL)
+        return room;
+
+    room = clawt_room_new(room_id, NULL);
+
+    /*
+     * `routine` rather than `user`: the sender is the other half of
+     * libreclaw's session key, and a distinct room reached from the
+     * operator's own sender would still put the run in their session.
+     */
+    clawt_room_add_member(room, "routine");
+    clawt_room_add_member(room, agent_id);
+
+    return insert_room(self, room);
+}
+
+ClawtRoom *
 clawt_room_manager_get_direct(ClawtRoomManager *self, const gchar *a,
                               const gchar *b)
 {

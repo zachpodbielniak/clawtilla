@@ -48,6 +48,34 @@ conversational surface.*  A dedicated agent per routine, or one agent for
 all of them, both work; the chief of staff is the wrong choice precisely
 because it is the one somebody types at.
 
+*** ...or give the routine a conversation of its own
+
+#+begin_src yaml
+routines:
+  - id: morning-brief
+    agent: chief-of-staff
+    isolate: true
+#+end_src
+
+=isolate= sends the run to a room of its own from a sender of its own,
+which is a session of its own: no inherited context, no waiting behind a
+conversation.  *Both halves are needed* --- libreclaw's session key is
+channel, room and sender together, so a distinct room reached from =user=
+would put every routine on that agent in one session, and a distinct
+sender in the operator's room would still be in their transcript.
+
+One room per routine, not per run.  A room per run would be perfect
+isolation and no continuity at all, and continuity between a routine's
+*own* runs is the thing worth having --- it is what lets Tuesday's brief
+know what Monday's said.
+
+**The cost is where the output goes.**  The prompt and the answer are no
+longer in the operator's chat; they are in the task result and on the
+Flow tab, which is where a delegated task's output already lives.  That
+is why it is off by default: moving somebody's output is not a thing to
+do to them silently, and pointing the routine at an agent nobody talks to
+solves the same problem with no setting at all.
+
 ** Presets are cron
 
 Every schedule becomes a cron expression, including the friendly ones:

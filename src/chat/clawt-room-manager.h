@@ -106,6 +106,37 @@ ClawtRoom *clawt_room_manager_get_direct(ClawtRoomManager *self,
                                          const gchar      *b);
 
 /**
+ * clawt_room_manager_get_routine:
+ * @self: a #ClawtRoomManager
+ * @routine_id: which routine
+ * @agent_id: the agent it runs against
+ *
+ * The room an isolated routine's runs happen in, making it if it is not
+ * there.
+ *
+ * libreclaw keys a session on channel, room and sender, so a room of its
+ * own with a sender of its own is a *session* of its own: a run no
+ * longer inherits the last conversation's context, nor waits behind it.
+ * Without one a routine is sent from `user` to the agent and lands in
+ * the operator's room, from the operator's sender.
+ *
+ * The id is `routine:<id>`, with a colon for the same reason a direct
+ * room's is: an agent or room id cannot contain one, so a room the
+ * daemon owns can never collide with one somebody created.  That is also
+ * why this exists rather than callers building the id and calling
+ * clawt_room_manager_create(), which refuses a colon.
+ *
+ * One room per routine rather than per run.  A room per run would be
+ * perfect isolation and no continuity at all, and continuity between a
+ * routine's own runs is the thing worth having.
+ *
+ * Returns: (transfer none): the room
+ */
+ClawtRoom *clawt_room_manager_get_routine(ClawtRoomManager *self,
+                                          const gchar      *routine_id,
+                                          const gchar      *agent_id);
+
+/**
  * clawt_room_manager_list:
  * @self: a #ClawtRoomManager
  *

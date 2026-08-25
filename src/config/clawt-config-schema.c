@@ -985,6 +985,26 @@ static const ClawtSchemaEntry schema[] = {
   "worktree is left behind deliberately -- throwing away work because a\n"
   "schedule fired is not recoverable.", "0.2.0" },
 
+{ "routines.isolate", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "false", NULL,
+  "Give this routine a conversation of its own.\n"
+  "\n"
+  "A run is sent from `user` to the agent by default, so it lands in the\n"
+  "operator's room from the operator's sender -- and libreclaw keys a\n"
+  "session on channel, room and sender. One session, one queue: Monday's\n"
+  "run is in Tuesday's context, a 09:00 brief starts whenever the agent\n"
+  "next goes idle, and both happen in the operator's transcript.\n"
+  "\n"
+  "Set this and the run goes to a room of its own from a sender of its\n"
+  "own, which is a session of its own: no shared context, no waiting\n"
+  "behind a conversation. The cost is that the prompt and the answer are\n"
+  "no longer in the operator's chat -- they are in the task result and on\n"
+  "the Flow tab, which is where a delegated task's output already lives.\n"
+  "\n"
+  "Off by default because moving somebody's output is not a thing to do\n"
+  "to them silently. Pointing the routine at an agent nobody talks to\n"
+  "solves the same problem and needs no setting.", "0.1.0" },
+
 { "routines.catch_up", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "false", NULL,
   "Run once at startup when its time passed while the daemon was down.\n"

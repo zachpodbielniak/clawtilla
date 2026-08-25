@@ -575,6 +575,127 @@ test_a_colliding_channel_key_is_refused(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * An isolated routine gets a room of its own, and therefore a session.
+ *
+ * A run is sent from `user` to the agent by default, so it lands in the
+ * operator's room from the operator's sender -- and libreclaw keys a
+ * session on channel, room and sender together.  One session, one queue:
+ * Monday's run is in Tuesday's context and a 09:00 brief starts whenever
+ * the agent next goes idle.  docs/routines.org promised the opposite for
+ * a long time and it was never true.
+ *
+ * Both halves are asserted, because either alone is not isolation: a
+ * distinct room reached from `user` would put every routine on that
+ * agent in one session, and a distinct sender in the operator's room
+ * would still be in their transcript.
+ */
+static void
+test_an_isolated_routine_gets_its_own_room(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) ran = NULL;
+    g_autoptr(JsonNode) rooms = NULL;
+    JsonArray *listed;
+    gboolean found = FALSE;
+    guint i;
+
+    fixture_setup(&fixture,
+        "agents:\n"
+        "  - id: worker\n"
+        "routines:\n"
+        "  - id: morning\n"
+        "    agent: worker\n"
+        "    instructions: \"say good morning\"\n"
+        "    schedule: manual\n"
+        "    isolate: true\n");
+
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    ran = request(&fixture, "routine.run", "{\"id\":\"morning\"}");
+    g_assert_false(clawt_ipc_frame_is_error(ran));
+
+    rooms = request(&fixture, "room.list", "{}");
+    listed = json_object_get_array_member(clawt_ipc_frame_get_payload(rooms),
+                                          "rooms");
+
+    for (i = 0; i < json_array_get_length(listed); i++) {
+        JsonObject *room = json_array_get_object_element(listed, i);
+
+        if (g_strcmp0(clawt_ipc_payload_string(room, "id"),
+                      "routine:morning") != 0)
+            continue;
+
+        found = TRUE;
+
+        /*
+         * Its members are the agent and `routine`, not the operator --
+         * the sender is half of what makes the session key differ.
+         */
+        {
+            JsonArray *members = json_object_get_array_member(room,
+                                                              "members");
+            gboolean has_routine = FALSE;
+            gboolean has_user = FALSE;
+            guint m;
+
+            for (m = 0; m < json_array_get_length(members); m++) {
+                const gchar *who = json_array_get_string_element(members, m);
+
+                if (g_strcmp0(who, "routine") == 0)
+                    has_routine = TRUE;
+                if (g_strcmp0(who, "user") == 0)
+                    has_user = TRUE;
+            }
+
+            g_assert_true(has_routine);
+            g_assert_false(has_user);
+        }
+    }
+
+    g_assert_true(found);
+
+    fixture_teardown(&fixture);
+}
+
+/* ...and a routine that did not ask still shares the operator's room. */
+static void
+test_an_ordinary_routine_stays_in_the_conversation(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) ran = NULL;
+    g_autoptr(JsonNode) rooms = NULL;
+    JsonArray *listed;
+    guint i;
+
+    fixture_setup(&fixture,
+        "agents:\n"
+        "  - id: worker\n"
+        "routines:\n"
+        "  - id: morning\n"
+        "    agent: worker\n"
+        "    instructions: \"say good morning\"\n"
+        "    schedule: manual\n");
+
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    ran = request(&fixture, "routine.run", "{\"id\":\"morning\"}");
+    g_assert_false(clawt_ipc_frame_is_error(ran));
+
+    rooms = request(&fixture, "room.list", "{}");
+    listed = json_object_get_array_member(clawt_ipc_frame_get_payload(rooms),
+                                          "rooms");
+
+    for (i = 0; i < json_array_get_length(listed); i++) {
+        JsonObject *room = json_array_get_object_element(listed, i);
+
+        g_assert_cmpstr(clawt_ipc_payload_string(room, "id"), !=,
+                        "routine:morning");
+    }
+
+    fixture_teardown(&fixture);
+}
+
 /* The token is created once and then left alone: regenerating it would
  * lock out an agent that is already connected. */
 static void
@@ -3221,6 +3342,10 @@ main(int argc, char *argv[])
                     test_passthrough_channels_are_merged);
     g_test_add_func("/daemon/passthrough-channel-key-collides",
                     test_a_colliding_channel_key_is_refused);
+    g_test_add_func("/daemon/isolated-routine-gets-a-room",
+                    test_an_isolated_routine_gets_its_own_room);
+    g_test_add_func("/daemon/ordinary-routine-shares-the-room",
+                    test_an_ordinary_routine_stays_in_the_conversation);
     g_test_add_func("/daemon/token-stable",
                     test_token_is_stable_across_renders);
 

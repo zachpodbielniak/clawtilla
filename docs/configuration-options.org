@@ -1450,6 +1450,30 @@ landing on top of whatever you had checked out at the time. The
 worktree is left behind deliberately -- throwing away work because a
 schedule fired is not recoverable.
 
+*** =routines.isolate=
+
+- Type :: boolean
+- Default :: =false=
+- Since :: 0.1.0
+
+Give this routine a conversation of its own.
+
+A run is sent from `user` to the agent by default, so it lands in the
+operator's room from the operator's sender -- and libreclaw keys a
+session on channel, room and sender. One session, one queue: Monday's
+run is in Tuesday's context, a 09:00 brief starts whenever the agent
+next goes idle, and both happen in the operator's transcript.
+
+Set this and the run goes to a room of its own from a sender of its
+own, which is a session of its own: no shared context, no waiting
+behind a conversation. The cost is that the prompt and the answer are
+no longer in the operator's chat -- they are in the task result and on
+the Flow tab, which is where a delegated task's output already lives.
+
+Off by default because moving somebody's output is not a thing to do
+to them silently. Pointing the routine at an agent nobody talks to
+solves the same problem and needs no setting.
+
 *** =routines.catch_up=
 
 - Type :: boolean

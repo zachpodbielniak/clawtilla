@@ -792,6 +792,29 @@ pod_action(const gchar *action, GHashTable *params, GHashTable **out_result,
 }
 
 /*
+ * Whether this routine asked for a conversation of its own.
+ *
+ * Read from the config each run rather than remembered, so turning it on
+ * takes effect at the next run rather than at the next daemon start --
+ * which is when somebody would look for it, having just changed it.
+ */
+static gboolean
+routine_is_isolated(ClawtDaemon *self, const gchar *routine_id)
+{
+    GPtrArray *routines = clawt_config_get_routines(self->config);
+    guint i;
+
+    for (i = 0; routines != NULL && i < routines->len; i++) {
+        ClawtRoutine *routine = g_ptr_array_index(routines, i);
+
+        if (g_strcmp0(clawt_routine_get_id(routine), routine_id) == 0)
+            return clawt_routine_get_boolean(routine, "isolate");
+    }
+
+    return FALSE;
+}
+
+/*
  * Starting one scheduled run.
  *
  * A routine is a delegated task rather than a message: it appears in the
@@ -805,9 +828,12 @@ pod_action(const gchar *action, GHashTable *params, GHashTable **out_result,
  * So a run shares the operator's session and its queue: it inherits the
  * last conversation's context and waits for whatever is in flight.
  *
- * Point a routine at an agent nobody talks to.  Making this true instead
- * means giving the run a room of its own, which moves its output out of
- * the operator's transcript -- a product decision rather than a fix.
+ * ...unless `routines.isolate` is set, which is what makes the isolation
+ * real: a room of its own and a sender of its own is a session key of
+ * its own, so no shared context and no waiting behind a conversation.
+ * It is opt-in because it moves the run's output out of the operator's
+ * transcript into the task result and the Flow tab, and moving somebody's
+ * output is not a thing to do to them silently.
  */
 static const gchar *
 run_routine(const gchar *routine_id, const gchar *agent_id,
@@ -815,6 +841,9 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
 {
     ClawtDaemon *self = user_data;
     ClawtTask *task;
+    g_autofree gchar *room_id = NULL;
+    const gchar *sender = "user";
+    const gchar *target = agent_id;
 
     if (clawt_agent_manager_get(self->agents, agent_id) == NULL) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
@@ -823,7 +852,33 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
         return NULL;
     }
 
-    task = clawt_task_manager_create(self->tasks, "user", agent_id, prompt,
+    /*
+     * A room and a sender of its own, when the routine asked for them.
+     *
+     * Both, not either: libreclaw's session key is channel, room and
+     * sender together, so a distinct room reached from `user` would
+     * still be a distinct session but every routine on that agent would
+     * share one, and a distinct sender in the operator's room would put
+     * the run in their transcript anyway.
+     *
+     * One room per routine rather than per run.  A room per run would
+     * give perfect isolation and no continuity at all -- and continuity
+     * between a routine's own runs is the thing worth having, since it
+     * is what lets Tuesday's brief know what Monday's said.
+     */
+    if (routine_is_isolated(self, routine_id)) {
+        ClawtRoom *room = clawt_room_manager_get_routine(self->rooms,
+                                                         routine_id,
+                                                         agent_id);
+
+        if (room != NULL) {
+            room_id = g_strdup(clawt_room_get_id(room));
+            sender = "routine";
+            target = room_id;
+        }
+    }
+
+    task = clawt_task_manager_create(self->tasks, sender, agent_id, prompt,
                                      NULL, error);
 
     if (task == NULL)
@@ -836,7 +891,7 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
      */
     clawt_task_manager_start(self->tasks, clawt_task_get_id(task));
 
-    if (clawt_mailbox_router_send_to(self->router, "user", agent_id, prompt,
+    if (clawt_mailbox_router_send_to(self->router, sender, target, prompt,
                                      clawt_task_get_id(task), 0, error) < 0) {
         clawt_task_manager_fail(self->tasks, clawt_task_get_id(task),
                                 (error != NULL && *error != NULL)
