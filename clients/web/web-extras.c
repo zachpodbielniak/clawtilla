@@ -286,6 +286,84 @@ on_reorder(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                   CLAWT_WEB_VIEW_CHAT, NULL);
 }
 
+/*
+ * Move one agent onto a team from the sidebar.
+ *
+ * The counterpart of the GTK client's drag onto a team heading.  Not a
+ * drag here for the same reason the ordering is buttons: dragging needs
+ * JavaScript to be worth anything, and this page works without it.  The
+ * result is identical either way -- both write `agents.team`, so an
+ * agent moved here has moved in the GTK client too.
+ *
+ * Registered from web-extras rather than beside the views, because
+ * `/a/:id/:view` matches everything under an agent and answers 200 with
+ * the chat page for anything it swallows.
+ */
+static HtmxResponse *
+on_set_team(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    const gchar *team = clawt_web_form_value(request, "team");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *said = NULL;
+
+    /*
+     * An absent field is a form that was not filled in; an empty one is
+     * somebody choosing "No team", which is a value rather than a
+     * refusal to answer.
+     */
+    if (team == NULL)
+        return clawt_web_after_action(app, request, agent_id,
+                                      CLAWT_WEB_VIEW_CHAT, NULL);
+
+    clawt_web_payload_set(payload, "agent", agent_id);
+    clawt_web_payload_set(payload, "key", "team");
+    clawt_web_payload_set(payload, "value", team);
+
+    reply = clawt_web_app_call(app, "agent.set",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL) {
+        /* Copied here: rendering the page below frees it and writes another. */
+        g_autofree gchar *why = g_strdup(clawt_web_app_last_error(app));
+
+        return clawt_web_error_page(app, request, agent_id,
+                                    CLAWT_WEB_VIEW_CHAT, why);
+    }
+
+    /*
+     * Named the way the sidebar names it.  The form carries the id
+     * because that is what `agents.team` holds, but "moved to research"
+     * and a heading reading "Research" are two names for one thing, and
+     * a person reading the toast has no way to know that.
+     */
+    if (*team != '\0') {
+        g_autoptr(JsonNode) teams = clawt_web_app_call(app, "team.list", NULL);
+        JsonArray *list = clawt_web_member_array(clawt_web_root(teams),
+                                                 "teams");
+        guint i;
+        const gchar *name = team;
+
+        for (i = 0; list != NULL && i < json_array_get_length(list); i++) {
+            JsonObject *one = json_array_get_object_element(list, i);
+
+            if (g_strcmp0(clawt_web_member(one, "id", ""), team) == 0) {
+                name = clawt_web_member(one, "name", team);
+                break;
+            }
+        }
+
+        said = g_strdup_printf("%s moved to %s.", agent_id, name);
+    } else {
+        said = g_strdup_printf("%s taken off its team.", agent_id);
+    }
+
+    return clawt_web_after_action(app, request, agent_id,
+                                  CLAWT_WEB_VIEW_CHAT, said);
+}
+
 /* ── Attachments ─────────────────────────────────────────────────── */
 
 /*
@@ -1103,6 +1181,7 @@ void
 clawt_web_register_extras(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_post(router, "/a/:id/reorder", on_reorder, app);
+    htmx_router_post(router, "/a/:id/team", on_set_team, app);
     htmx_router_post(router, "/a/:id/attach", on_attach, app);
     htmx_router_post(router, "/a/:id/attach/remove", on_attach_remove, app);
     htmx_router_post(router, "/a/:id/memories", on_memories, app);

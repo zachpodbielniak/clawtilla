@@ -274,6 +274,116 @@ team_header(JsonArray *teams, JsonArray *agents, const gchar *team_id)
     return HTMX_ELEMENT(g_steal_pointer(&head));
 }
 
+/*
+ * The headings for declared teams that sort before @next and have nobody
+ * in them.
+ *
+ * The order is the daemon's rather than a second opinion about it:
+ * teamless first, then the declared teams in the order team.list gives
+ * them, which is the array the daemon's own group_position() indexes
+ * into.  @next of %NULL means "everything that is left", which is how
+ * the teams nobody is on reach the bottom.
+ *
+ * The teamless group gets no heading here, because this sidebar has
+ * never given it one -- teamless agents simply come first, unlabelled.
+ */
+static void
+emit_empty_headers_before(HtmxDiv *scroll, JsonArray *teams,
+                          JsonArray *agents, const gchar *next,
+                          GHashTable *shown)
+{
+    gboolean to_the_end = (next == NULL);
+    guint i;
+
+    /*
+     * Nothing sorts before the teamless group, and its id is "" -- which
+     * no declared team has, so without this the loop would run to the
+     * end and draw every heading above the first teamless agent.  The
+     * GTK sidebar had the identical bug from the identical cause, and
+     * there it was visible: four headings in a row above the fleet.
+     */
+    if (!to_the_end && *next == '\0')
+        return;
+
+    for (i = 0; teams != NULL && i < json_array_get_length(teams); i++) {
+        JsonObject *team = json_array_get_object_element(teams, i);
+        const gchar *id = clawt_web_member(team, "id", "");
+
+        if (*id == '\0')
+            continue;
+
+        if (!to_the_end && g_strcmp0(id, next) == 0)
+            return;
+
+        if (g_hash_table_contains(shown, id))
+            continue;
+
+        clawt_web_add(scroll, team_header(teams, agents, id));
+        g_hash_table_add(shown, g_strdup(id));
+    }
+}
+
+/*
+ * "Move to <team>" for one agent, as a select and a button.
+ *
+ * Every team the fleet declares, plus "No team" -- which is a choice
+ * rather than a prompt, because it is how an agent comes off a team.
+ * A team an agent names that nobody declared is kept by
+ * clawt_web_select_field(), so pressing Move without touching the list
+ * cannot quietly reassign it.
+ */
+static HtmxElement *
+team_picker(JsonArray *teams, JsonObject *agent)
+{
+    const gchar *id = clawt_web_member(agent, "id", "");
+    const gchar *current = clawt_web_member(agent, "team", "");
+    g_autofree gchar *escaped = g_uri_escape_string(id, NULL, FALSE);
+    g_autofree gchar *action = g_strdup_printf("/a/%s/team", escaped);
+    g_autoptr(HtmxForm) form = clawt_web_form(action);
+    g_autoptr(HtmxDiv) row = htmx_div_new();
+    g_autoptr(GPtrArray) ids = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(GPtrArray) names = g_ptr_array_new_with_free_func(g_free);
+    guint i;
+
+    g_ptr_array_add(ids, g_strdup(""));
+    g_ptr_array_add(names, g_strdup("No team"));
+
+    for (i = 0; teams != NULL && i < json_array_get_length(teams); i++) {
+        JsonObject *team = json_array_get_object_element(teams, i);
+        const gchar *team_id = clawt_web_member(team, "id", NULL);
+
+        if (team_id == NULL || *team_id == '\0')
+            continue;
+
+        g_ptr_array_add(ids, g_strdup(team_id));
+        g_ptr_array_add(names, g_strdup(clawt_web_member(team, "name",
+                                                         team_id)));
+    }
+
+    g_ptr_array_add(ids, NULL);
+    g_ptr_array_add(names, NULL);
+
+    htmx_element_set_attribute(HTMX_ELEMENT(form), "style",
+                               "padding:0 20px 12px");
+
+    clawt_web_add(form, clawt_web_select_field(
+        "Team", "team", (const gchar *const *)ids->pdata,
+        (const gchar *const *)names->pdata, current));
+
+    htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+
+    {
+        g_autoptr(HtmxButton) go = clawt_web_button("Move", "default");
+
+        htmx_element_set_attribute(HTMX_ELEMENT(go), "type", "submit");
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(go));
+    }
+
+    htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(row));
+
+    return HTMX_ELEMENT(g_steal_pointer(&form));
+}
+
 HtmxElement *
 clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtWebView view)
 {
@@ -287,6 +397,9 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtWebView view)
     JsonArray *agents;
     JsonArray *teams;
     const gchar *current_team = NULL;
+    g_autoptr(GHashTable) shown = g_hash_table_new_full(g_str_hash,
+                                                        g_str_equal,
+                                                        g_free, NULL);
     gboolean first = TRUE;
     guint i;
 
@@ -350,8 +463,13 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtWebView view)
          * most under every team in the fleet.
          */
         if (first || g_strcmp0(team, current_team) != 0) {
-            if (team != NULL && *team != '\0')
+            emit_empty_headers_before(scroll, teams, agents,
+                                      team != NULL ? team : "", shown);
+
+            if (team != NULL && *team != '\0') {
                 clawt_web_add(scroll, team_header(teams, agents, team));
+                g_hash_table_add(shown, g_strdup(team));
+            }
 
             current_team = team;
             first = FALSE;
@@ -382,8 +500,26 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtWebView view)
             clawt_web_add(move, clawt_web_post_button("Move down", down,
                                                       "default", NULL));
             htmx_node_add_child(HTMX_NODE(scroll), HTMX_NODE(move));
+
+            /*
+             * And which team it is on, in the same strip. The GTK client
+             * drags an agent onto a heading; a select and a button is
+             * the same operation for a page that has to work without
+             * JavaScript, and it writes the same `agents.team`.
+             */
+            clawt_web_add(scroll, team_picker(teams, agent));
         }
     }
+
+    /*
+     * And whatever the fleet declares that nobody is on yet.  A team
+     * created in Settings and then nowhere in the sidebar reads as a
+     * team that was not created -- which is exactly when somebody goes
+     * looking for it, because filling it is the next thing they meant
+     * to do.
+     */
+    if (agents != NULL)
+        emit_empty_headers_before(scroll, teams, agents, NULL, shown);
 
     htmx_node_add_child(HTMX_NODE(aside), HTMX_NODE(scroll));
 

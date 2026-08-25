@@ -304,6 +304,52 @@ between two others by hand.
 Agents that share a number keep the order the file has them in, so a
 fleet nobody has dragged comes back exactly as it was written.
 
+*** Dragging an agent onto a team
+
+The same drag also *changes* an agent's team, which is the quickest way
+to divide a fleet up.
+
+- Drop it on a *team heading* to put it on that team.  The heading names
+  a group rather than a position, so where it lands inside the team is
+  left alone.
+- Drop it on an *agent row belonging to another team* to do both at once:
+  it joins that team and goes exactly where you put it, above or below by
+  which half of the row you let go over.
+- Drop it on a row in its *own* team and nothing changes but the order,
+  as before.
+
+Dropping among another team's agents has to change the team, not only the
+order.  The daemon returns the fleet grouped, so an agent merely
+reordered under somebody else's heading is sorted straight back under its
+own the moment the sidebar redraws -- a drop that visibly worked and then
+undid itself, which reads as the sidebar being broken rather than as the
+gesture meaning something narrower than it looked.
+
+The heading lights up as a drop target while an agent is over it, using
+GtkListBox's own highlight so it follows the theme.  Without that the
+only way to discover the gesture is to try it and watch the drag snap
+back -- which is also what "not a drop target" looks like.
+
+*** Every team has a heading, including the empty ones
+
+A team the fleet declares gets a heading whether or not anybody is on it,
+and there is always a *No team* heading.
+
+Both are there because a heading is what an agent is dropped onto.
+Without the first, a team created a moment ago in Settings cannot be
+filled by dragging -- which is exactly when somebody would reach for it.
+Without the second, a fleet where every agent has a team has nowhere to
+drag one back out to, and the gesture works in one direction only.
+
+Their tallies read =0/0=, which is honest, and the fleet's shape is
+visible at a glance rather than only through the teams somebody happens
+to have populated.
+
+The order is the daemon's, not a second opinion about it: teamless first,
+then teams as ~team.list~ gives them, which is the array the daemon sorts
+by.  A team an agent names that nobody declared still appears, under the
+id it named, after all the declared ones.
+
 *** Deleting an agent, and what goes with it
 
 The confirmation offers two things, both off:

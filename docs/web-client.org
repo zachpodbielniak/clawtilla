@@ -275,6 +275,25 @@ Every action is a real form or a real link.  With scripting off the whole
 client still works: each action posts and the page re-renders.  htmx is
 what makes it feel live rather than what makes it work.
 
+*** Ordering and teams are controls, not gestures
+
+The GTK sidebar drags a row to reorder the fleet and drags it onto a team
+heading to change its team.  Here both are buttons: *Move up* / *Move
+down*, and a *Team* select with a *Move* beside it, shown under the agent
+somebody is looking at so the sidebar stays a list of agents rather than
+a list of controls.
+
+Dragging is not the parity gap it looks like.  It needs JavaScript to be
+worth anything, and this page has to work without it; the two write the
+same ~agents.order~ and ~agents.team~, so an agent moved in either client
+has moved in the other.
+
+The sidebar also draws a heading for every team the fleet declares,
+including one nobody is on yet -- a team created in Settings and then
+nowhere in the sidebar reads as a team that was not created, and filling
+it is the next thing somebody meant to do.  Teamless agents come first,
+unlabelled, as they always have here.
+
 *** The scripts are vendored
 
 =data/web/htmx.min.js= and =data/web/htmx-ext-sse.js= are checked in and

@@ -762,6 +762,13 @@ team_tally(JsonArray *agents, const gchar *team_id,
     }
 }
 
+/* Defined with the rest of the drag handling, below. */
+static gboolean on_team_header_drop(GtkDropTarget *target, const GValue *value,
+                                    gdouble x, gdouble y, gpointer user_data);
+static GdkDragAction on_drop_hover_enter(GtkDropTarget *target, gdouble x,
+                                         gdouble y, gpointer user_data);
+static void on_drop_hover_leave(GtkDropTarget *target, gpointer user_data);
+
 /*
  * A team's header: its name, how many of it are running, and a twisty.
  *
@@ -827,10 +834,202 @@ team_header_row(ClawtWindow *self,
     gtk_list_box_row_set_selectable(GTK_LIST_BOX_ROW(row), FALSE);
     gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
 
+    /*
+     * And a drop target, so an agent can be dragged onto the team rather
+     * than picked from a menu.  On the *row* rather than on the button:
+     * the button fills the header, and a target on it would miss the
+     * strip of row around it -- which is exactly where somebody aiming
+     * at a heading lets go.
+     */
+    {
+        GtkDropTarget *drop = gtk_drop_target_new(G_TYPE_STRING,
+                                                  GDK_ACTION_MOVE);
+
+        g_object_set_data(G_OBJECT(row), "window", self);
+        g_object_set_data_full(G_OBJECT(row), "team-id", g_strdup(team_id),
+                               g_free);
+        g_object_set_data_full(G_OBJECT(row), "team-label", g_strdup(name),
+                               g_free);
+
+        g_signal_connect(drop, "drop", G_CALLBACK(on_team_header_drop), row);
+        g_signal_connect(drop, "enter", G_CALLBACK(on_drop_hover_enter), row);
+        g_signal_connect(drop, "leave", G_CALLBACK(on_drop_hover_leave), row);
+        gtk_widget_add_controller(row, GTK_EVENT_CONTROLLER(drop));
+    }
+
     return row;
 }
 
-/* ── Dragging a row to reorder the fleet ─────────────────────────── */
+/* ── Dragging a row to reorder the fleet, or to change its team ──── */
+
+/*
+ * Which team an agent is on, from the row the sidebar drew for it.
+ *
+ * By id rather than by pointer, for the same reason the drag carries an
+ * id: a refresh arriving mid-drag rebuilds every row.  A row that is not
+ * there returns NULL, which the caller reads as "we cannot tell" and
+ * declines to guess -- a collapsed team's rows are absent, though the
+ * row being *dragged* is on screen by definition.
+ */
+static const gchar *
+team_of_agent_row(ClawtWindow *self, const gchar *agent_id)
+{
+    GtkWidget *child;
+
+    for (child = gtk_widget_get_first_child(GTK_WIDGET(self->sidebar));
+         child != NULL;
+         child = gtk_widget_get_next_sibling(child)) {
+        const gchar *id;
+
+        if (!GTK_IS_LIST_BOX_ROW(child))
+            continue;
+
+        id = g_object_get_data(G_OBJECT(child), "agent-id");
+
+        if (id != NULL && g_strcmp0(id, agent_id) == 0)
+            return g_object_get_data(G_OBJECT(child), "agent-team");
+    }
+
+    return NULL;
+}
+
+/*
+ * Puts @agent_id on @team, and says so.
+ *
+ * Shared by the header drop and the cross-team row drop, because they
+ * are the same operation with different precision about where the agent
+ * lands -- and two spellings of "move an agent to a team" would be two
+ * behaviours, of which the less-used one would be the wrong one.
+ *
+ * Returns: %TRUE if the daemon accepted it
+ */
+static gboolean
+move_agent_to_team(ClawtWindow *self, const gchar *agent_id,
+                   const gchar *team, const gchar *team_label)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *message = NULL;
+
+    reply = clawt_window_request(
+        self, "agent.set",
+        clawt_build_payload("agent", agent_id, "key", "team",
+                            "value", team != NULL ? team : "", NULL));
+
+    if (reply == NULL)
+        return FALSE;
+
+    message = (team != NULL && *team != '\0')
+              ? g_strdup_printf("%s moved to %s.", agent_id,
+                                team_label != NULL ? team_label : team)
+              : g_strdup_printf("%s taken off its team.", agent_id);
+
+    clawt_window_toast(self, message);
+
+    return TRUE;
+}
+
+/*
+ * Dropping an agent on a team's header puts it on that team.
+ *
+ * The team only -- where it lands inside the team is left alone.  A
+ * header names a group rather than a position, and the group may be
+ * folded away, in which case there is no row to place it beside and
+ * nothing on screen that would show where it went.  Dropping on a *row*
+ * is the gesture that says exactly where.
+ */
+static gboolean
+on_team_header_drop(GtkDropTarget *target, const GValue *value, gdouble x,
+                    gdouble y, gpointer user_data)
+{
+    GtkWidget *header = user_data;
+    ClawtWindow *self = g_object_get_data(G_OBJECT(header), "window");
+    const gchar *dragged = g_value_get_string(value);
+    const gchar *team = g_object_get_data(G_OBJECT(header), "team-id");
+    const gchar *label = g_object_get_data(G_OBJECT(header), "team-label");
+    const gchar *was;
+
+    (void)target;
+    (void)x;
+    (void)y;
+
+    /*
+     * Cleared here as well as on ::leave.  A drop does not promise a
+     * leave after it, and a heading left lit under a row that has just
+     * moved away reads as the drag still being in flight.
+     */
+    on_drop_hover_leave(NULL, header);
+
+    if (dragged == NULL || team == NULL || self == NULL)
+        return FALSE;
+
+    /*
+     * Already there.  Accepted rather than refused: the drag animating
+     * back to where it started reads as "that did not work", and it did
+     * work -- there was simply nothing to do.
+     */
+    was = team_of_agent_row(self, dragged);
+
+    if (g_strcmp0(was != NULL ? was : "", team) == 0)
+        return TRUE;
+
+    if (!move_agent_to_team(self, dragged, team, label))
+        return FALSE;
+
+    refresh_agents(self);
+
+    return TRUE;
+}
+
+/*
+ * Highlights a row while something is being dragged over it.
+ *
+ * Dropping an agent onto a team heading is a gesture nothing else on
+ * this screen suggests, so the heading has to say it will accept one.
+ * Without it the only way to discover the feature is to try it and watch
+ * the drag snap back -- which is also what "not a drop target" looks
+ * like, so the two are indistinguishable to whoever tried.
+ *
+ * Through GtkListBox's own API rather than a class of our own.  It is
+ * the styling every list in the desktop uses for this, and it carries
+ * the theme with it -- a hand-rolled colour would be right in one theme
+ * and wrong in the other, and the whole appearance system here exists
+ * because people change theirs.
+ */
+static GdkDragAction
+on_drop_hover_enter(GtkDropTarget *target, gdouble x, gdouble y,
+                    gpointer user_data)
+{
+    GtkWidget *row = user_data;
+    GtkWidget *box = gtk_widget_get_ancestor(row, GTK_TYPE_LIST_BOX);
+
+    (void)target;
+    (void)x;
+    (void)y;
+
+    if (box != NULL)
+        gtk_list_box_drag_highlight_row(GTK_LIST_BOX(box),
+                                        GTK_LIST_BOX_ROW(row));
+
+    return GDK_ACTION_MOVE;
+}
+
+static void
+on_drop_hover_leave(GtkDropTarget *target, gpointer user_data)
+{
+    GtkWidget *box = gtk_widget_get_ancestor(GTK_WIDGET(user_data),
+                                             GTK_TYPE_LIST_BOX);
+
+    (void)target;
+
+    /*
+     * The list box holds at most one highlight, so unhighlighting is
+     * per-list rather than per-row -- and it must happen on leave as
+     * well as on drop, or a drag abandoned over a heading leaves it lit
+     * until the next one passes through.
+     */
+    if (box != NULL)
+        gtk_list_box_drag_unhighlight_row(GTK_LIST_BOX(box));
+}
 
 /*
  * The id travels, not the widget.
@@ -896,6 +1095,8 @@ on_row_drop(GtkDropTarget *target, const GValue *value, gdouble x, gdouble y,
     ClawtWindow *self = g_object_get_data(G_OBJECT(onto), "window");
     const gchar *dragged = g_value_get_string(value);
     const gchar *landed = g_object_get_data(G_OBJECT(onto), "agent-id");
+    const gchar *onto_team = g_object_get_data(G_OBJECT(onto), "agent-team");
+    const gchar *from_team;
     g_autoptr(GString) ids = NULL;
     g_autoptr(JsonNode) reply = NULL;
     GtkWidget *child;
@@ -905,11 +1106,45 @@ on_row_drop(GtkDropTarget *target, const GValue *value, gdouble x, gdouble y,
     (void)target;
     (void)x;
 
+    on_drop_hover_leave(NULL, onto);
+
     if (dragged == NULL || landed == NULL || self == NULL)
         return FALSE;
 
     if (g_strcmp0(dragged, landed) == 0)
         return FALSE;
+
+    /*
+     * Dropped among another team's agents, so it joins that team.
+     *
+     * Without this the reorder alone is undone the moment the sidebar
+     * redraws: the daemon returns the fleet grouped, so an agent placed
+     * below one from another team is sorted straight back under its own
+     * heading -- a drop that visibly worked and then reverted, which
+     * reads as the sidebar being broken rather than as the drag meaning
+     * something narrower than it looked.
+     *
+     * Read from the row rather than asked for, and before the reorder,
+     * so a refusal leaves the arrangement untouched instead of half
+     * applied.  The team is set first for the same reason: it is the
+     * coarser of the two, and an agent in the right team at the wrong
+     * position is a better failure than the reverse.
+     */
+    from_team = team_of_agent_row(self, dragged);
+
+    if (g_strcmp0(from_team != NULL ? from_team : "",
+                  onto_team != NULL ? onto_team : "") != 0) {
+        const gchar *label = NULL;
+
+        if (self->teams_seen != NULL && onto_team != NULL)
+            label = team_display_name(
+                json_object_get_array_member(
+                    clawt_payload_of(self->teams_seen), "teams"),
+                onto_team);
+
+        if (!move_agent_to_team(self, dragged, onto_team, label))
+            return FALSE;
+    }
 
     /*
      * Above or below, decided by which half of the row was dropped on.
@@ -986,6 +1221,8 @@ make_row_draggable(ClawtWindow *self, GtkWidget *row)
     gtk_widget_add_controller(row, GTK_EVENT_CONTROLLER(source));
 
     g_signal_connect(target, "drop", G_CALLBACK(on_row_drop), row);
+    g_signal_connect(target, "enter", G_CALLBACK(on_drop_hover_enter), row);
+    g_signal_connect(target, "leave", G_CALLBACK(on_drop_hover_leave), row);
     gtk_widget_add_controller(row, GTK_EVENT_CONTROLLER(target));
 }
 
@@ -1048,6 +1285,89 @@ clear_box(GtkBox *box)
         gtk_box_remove(box, child);
 }
 
+/*
+ * One team's heading, remembered so it is never drawn twice.
+ */
+static void
+append_team_header(ClawtWindow *self, JsonArray *teams, JsonArray *agents,
+                   const gchar *team_id, GHashTable **emitted)
+{
+    const gchar *id = (team_id != NULL) ? team_id : "";
+    guint running = 0;
+    guint total = 0;
+
+    if (g_hash_table_contains(*emitted, id))
+        return;
+
+    team_tally(agents, team_id, &running, &total);
+
+    gtk_list_box_append(
+        self->sidebar,
+        team_header_row(self, id,
+                        (*id != '\0') ? team_display_name(teams, id)
+                                      : "No team",
+                        team_description(teams, team_id),
+                        running, total));
+
+    g_hash_table_add(*emitted, g_strdup(id));
+}
+
+/*
+ * The headings for every group that sorts before @next and has nobody in
+ * it, so that an empty team is still somewhere an agent can be dropped.
+ *
+ * The order is the daemon's, not a second opinion about it: teamless
+ * first, then the declared teams in the order team.list gives them,
+ * which is the array `group_position()` indexes into.  Passing NULL for
+ * @next means "everything that is left", which is how the teams nobody
+ * is on reach the bottom of the list.
+ *
+ * The teamless group is spelled "", never NULL, and the caller has to
+ * fold it: `clawt_json_string(agent, "team", NULL)` answers NULL for an
+ * agent whose config has never had the key, so passing it straight
+ * through read as "flush everything" and drew all four headings in a
+ * row above the whole fleet.  Only for an agent that had never been on
+ * a team -- one taken *off* one has `team: ""` and looked perfectly
+ * correct, which is why the first probe run showed it in one line and
+ * not the four below it.
+ *
+ * A team an agent names that nobody declared is not in that array at
+ * all, and gets no heading from here -- it already gets one from the
+ * agent standing in it, and inventing a position for something the
+ * daemon sorts by a rule of its own is how the two orders drift apart.
+ */
+static void
+emit_empty_headers_before(ClawtWindow *self, JsonArray *teams,
+                          JsonArray *agents, const gchar *next,
+                          GHashTable **emitted)
+{
+    const gchar *want = (next != NULL) ? next : "";
+    gboolean to_the_end = (next == NULL);
+    guint i;
+
+    /*
+     * Teamless comes first, and is emitted even when nobody is teamless
+     * -- it is the only place to drop an agent that is being taken off
+     * a team, and it disappears exactly when every agent has one, which
+     * is when it is needed.
+     */
+    if (to_the_end || g_strcmp0(want, "") != 0)
+        append_team_header(self, teams, agents, "", emitted);
+
+    if (!to_the_end && g_strcmp0(want, "") == 0)
+        return;
+
+    for (i = 0; teams != NULL && i < json_array_get_length(teams); i++) {
+        JsonObject *team = json_array_get_object_element(teams, i);
+        const gchar *id = clawt_json_string(team, "id", "");
+
+        if (!to_the_end && g_strcmp0(id, want) == 0)
+            return;
+
+        append_team_header(self, teams, agents, id, emitted);
+    }
+}
+
 static void
 refresh_agents_once(ClawtWindow *self)
 {
@@ -1056,6 +1376,9 @@ refresh_agents_once(ClawtWindow *self)
     g_autoptr(JsonNode) team_reply = NULL;
     g_autofree gchar *shown_team = NULL;
     JsonArray *teams = NULL;
+    g_autoptr(GHashTable) emitted = g_hash_table_new_full(g_str_hash,
+                                                          g_str_equal,
+                                                          g_free, NULL);
     guint i;
 
     reply = clawt_window_request(self, "agent.list", NULL);
@@ -1109,22 +1432,20 @@ refresh_agents_once(ClawtWindow *self)
          * daemon returns agents grouped by team already. Doing the
          * grouping here as well would be a second answer to what order
          * the fleet is in.
+         *
+         * The headers a team with no agents would not get are filled in
+         * around it, in the daemon's own group order.  They are not
+         * decoration: a heading is what an agent is dragged onto, so
+         * without them a team somebody has just created cannot be filled
+         * -- which is precisely when they would reach for it -- and a
+         * fleet where everyone has a team has nothing to drag back out
+         * to.  A gesture that works in one direction only reads as
+         * broken rather than as narrow.
          */
         if (g_strcmp0(team, shown_team) != 0 || i == 0) {
-            const gchar *label = (team != NULL && *team != '\0')
-                                 ? team_display_name(teams, team)
-                                 : "No team";
-            guint running = 0;
-            guint total = 0;
-
-            team_tally(agents, team, &running, &total);
-
-            gtk_list_box_append(
-                self->sidebar,
-                team_header_row(self, team != NULL ? team : "",
-                                label,
-                                team_description(teams, team),
-                                running, total));
+            emit_empty_headers_before(self, teams, agents,
+                                      team != NULL ? team : "", &emitted);
+            append_team_header(self, teams, agents, team, &emitted);
 
             g_free(shown_team);
             shown_team = g_strdup(team);
@@ -1159,6 +1480,9 @@ refresh_agents_once(ClawtWindow *self)
             (self->selected_agent == NULL && i == 0))
             gtk_list_box_select_row(self->sidebar, GTK_LIST_BOX_ROW(row));
     }
+
+    /* Whatever the fleet declares and nobody is on yet, at the bottom. */
+    emit_empty_headers_before(self, teams, agents, NULL, &emitted);
 }
 
 static void

@@ -222,6 +222,14 @@ main () {
     expect_post '/settings/teams/add' 'not a usable team id' \
         'a refusal with the reason' --data-urlencode 'id=' \
         --data-urlencode 'name=x'
+    #
+    # Idempotent on purpose, unlike the save above: taking an agent off a
+    # team says the same thing however many times it is done, so the
+    # smoke run does not depend on what the last one left behind -- and
+    # it puts the agent back where a fresh fleet has it.
+    #
+    expect_post "/a/${AGENT}/team" 'taken off its team' \
+        'moving an agent between teams' --data-urlencode 'team='
     echo
 
     if [[ "${failures}" -gt 0 ]]

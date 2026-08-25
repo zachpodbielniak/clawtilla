@@ -1593,6 +1593,58 @@ the same program.
   four-line program against real libadwaita answers it in a second --
   far quicker than reasoning about what the widget "should" do.
 
+### A group with nothing in it has no heading, and a heading is the drop target
+
+- The sidebar drew a heading when the *team changed between two agents*,
+  so an empty team had none -- and once a heading became the thing an
+  agent is dragged onto, that made the feature unreachable exactly where
+  it is wanted: a team created a minute ago in Settings could not be
+  filled by dragging, and a fleet where everyone had a team had no "No
+  team" heading to drag back out to. A gesture that works in one
+  direction only reads as broken rather than as narrow.
+- Both clients emit the missing headings now, in the daemon's own group
+  order -- teamless first, then `team.list`'s order, which is the array
+  `group_position()` indexes into. Not a second opinion about the order:
+  the two would differ the first time a team was reordered, which is the
+  same reason the client does not gather the fleet into groups itself.
+- The spelling of "no team" cost a wrong sidebar in **both** clients,
+  from the same cause. `clawt_json_string(agent, "team", NULL)` answers
+  NULL for an agent whose config never had the key, and NULL was also
+  the sentinel for "flush every remaining heading" -- so all four
+  headings were drawn in a row above the whole fleet. Only for an agent
+  that had *never* been on a team: one taken off a team has `team: ""`
+  and looked perfectly correct, which is why the first probe run showed
+  it on one line and not on the four below it. The web copy had it too,
+  one layer along: `""` matches no declared team id, so the loop ran to
+  the end instead of stopping. **When a sentinel and a real value can
+  both be absent, they need different spellings.**
+
+### A drop target on a row still fires when a button fills the row
+
+- The team heading is a `GtkListBoxRow` whose whole area is a
+  `GtkButton`, and the drop target is on the row -- because a target on
+  the button would miss the strip of row around it, which is where
+  somebody aiming at a heading lets go. Whether the button swallows the
+  drag is the load-bearing question, and it was measured rather than
+  reasoned about: `GtkDropTarget` is BUBBLE phase, and picking the
+  widget under a point in the middle of the button and walking up gives
+  `GtkLabel -> GtkButton -> GtkListBoxRow`, with the button carrying
+  only `GtkEventControllerKey`, `GtkGestureClick` and
+  `GtkShortcutController` -- none of which handle a drag event.
+- `gtk_list_box_drag_highlight_row()` for the hover feedback, not a
+  class of our own. It is what every list on the desktop uses and it
+  carries the theme; a hand-rolled colour would be right in one theme
+  and wrong in the other, in an application whose whole appearance
+  system exists because people change theirs. Unhighlight on the *drop*
+  as well as on leave -- a drop does not promise a leave after it, and a
+  heading left lit under a row that has just moved away reads as the
+  drag still being in flight.
+- Dropping among another team's agents has to change the **team**, not
+  only the order. The daemon returns the fleet grouped, so an agent
+  merely reordered under somebody else's heading is sorted straight back
+  under its own on the next redraw: a drop that visibly worked and then
+  undid itself, which reads as the sidebar being broken.
+
 ### GtkPopoverMenu follows a submenu model filled after it was built
 
 - Which is what lets the sidebar's Team submenu be an empty `GMenu` at
