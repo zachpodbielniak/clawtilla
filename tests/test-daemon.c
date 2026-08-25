@@ -1590,6 +1590,172 @@ test_a_reply_counts_as_a_hop(void)
 }
 
 /*
+ * A finished turn leaves no depth behind for the next one.
+ *
+ * hop_depth answers "how far had the message I am handling already
+ * come", which is a property of a turn and not of an agent. It was
+ * stored on the agent and never cleared, so it survived the turn it
+ * described: the next unrelated turn started from wherever the last
+ * chain had reached, and an agent nine messages into a daemon's life
+ * could no longer start a delegation at all.
+ *
+ * The router sets it on delivery and the turn ends at the typing
+ * indicator, so that edge is where it goes back to zero.
+ */
+static void
+test_a_finished_turn_clears_the_depth(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentManager *agents;
+    ClawtAgent *alpha;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    agents = clawt_daemon_get_agents(fixture.daemon);
+    alpha = clawt_agent_manager_get(agents, "alpha");
+    g_assert_nonnull(alpha);
+
+    /* Seven hops in, mid-turn: the depth is real and must be kept. */
+    clawt_agent_set_hop_depth(alpha, 7);
+    clawt_agent_set_activity(alpha, TRUE, "beta");
+    g_assert_cmpint(clawt_agent_get_hop_depth(alpha), ==, 7);
+
+    /* The turn ends. What it had travelled is no longer true of the
+     * agent, only of the turn that just finished. */
+    clawt_agent_set_activity(alpha, FALSE, NULL);
+    g_assert_cmpint(clawt_agent_get_hop_depth(alpha), ==, 0);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A turn that did not come through the router starts a fresh chain.
+ *
+ * Matrix, webhook, local and cmacs belong to libreclaw; the daemon never
+ * sees those messages, so nothing records a depth for them. With the
+ * depth left over from the last agent-to-agent delivery, an agent
+ * answering a person in Matrix stamped its reply from that stale value
+ * and was refused for a delegation one hop deep.
+ *
+ * There is only one setter, so "did not pass through the router" and
+ * "hop_depth is whatever it was" are the same statement -- which is why
+ * this is reproduced by ending a turn rather than by driving Matrix.
+ */
+static void
+test_a_channel_turn_starts_from_zero(void)
+{
+    Fixture fixture = { 0 };
+    ClawtMailboxRouter *router;
+    ClawtAgentManager *agents;
+    ClawtAgent *alpha;
+    g_autoptr(GError) error = NULL;
+    gint depth;
+    gint sent;
+
+    fixture_setup(&fixture,
+                  "orchestration:\n"
+                  "  max_hops: 4\n"
+                  "  cycle_window: 0\n"
+                  "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    router = clawt_daemon_get_router(fixture.daemon);
+    agents = clawt_daemon_get_agents(fixture.daemon);
+    alpha = clawt_agent_manager_get(agents, "alpha");
+    g_assert_nonnull(alpha);
+
+    /* A deep chain reached alpha and alpha answered it. */
+    clawt_agent_set_hop_depth(alpha, 4);
+    clawt_agent_set_activity(alpha, TRUE, "beta");
+    clawt_agent_set_activity(alpha, FALSE, NULL);
+
+    /*
+     * Now a person says something in Matrix. Nothing in that path
+     * touches the router, so the only depth available is whatever the
+     * agent still carries -- and the first hop of a new conversation
+     * must be allowed.
+     */
+    depth = clawt_agent_get_hop_depth(alpha) + 1;
+    g_assert_cmpint(depth, ==, 1);
+
+    sent = clawt_mailbox_router_send_to(router, "alpha", "beta", "Can you "
+                                        "take this?", NULL, depth, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(sent, >, 0);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Clearing the depth at the end of a turn does not soften the limit.
+ *
+ * This is the case the depth exists for -- two agents answering each
+ * other for ever -- run the way it actually happens, with a turn
+ * boundary between every hop. The chain still climbs, because its depth
+ * travels in the mailbox item and the router stamps it onto whoever it
+ * hands the item to; only the carry-over between unrelated turns is
+ * gone.
+ *
+ * Without this, the previous fix could be undone by a patch that made
+ * max_hops unreachable again, and every other test here would still
+ * pass.
+ */
+static void
+test_the_limit_still_fires_across_turns(void)
+{
+    Fixture fixture = { 0 };
+    ClawtMailboxRouter *router;
+    ClawtAgentManager *agents;
+    guint i;
+    gint depth = 0;
+
+    fixture_setup(&fixture,
+                  "orchestration:\n"
+                  "  max_hops: 4\n"
+                  "  cycle_window: 0\n"
+                  "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    router = clawt_daemon_get_router(fixture.daemon);
+    agents = clawt_daemon_get_agents(fixture.daemon);
+
+    for (i = 0; i < 8; i++) {
+        const gchar *from = (i % 2 == 0) ? "alpha" : "beta";
+        const gchar *to = (i % 2 == 0) ? "beta" : "alpha";
+        ClawtAgent *sender = clawt_agent_manager_get(agents, from);
+        ClawtAgent *receiver = clawt_agent_manager_get(agents, to);
+        g_autoptr(GError) error = NULL;
+        gint sent;
+
+        depth = clawt_agent_get_hop_depth(sender) + 1;
+        sent = clawt_mailbox_router_send_to(router, from, to, "Idle.", NULL,
+                                            depth, &error);
+
+        if (sent < 0) {
+            g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT);
+            break;
+        }
+
+        /*
+         * Delivery, then the whole turn: the receiver is told how far
+         * the item came, answers, and goes idle. The sender's own turn
+         * ended when it sent, so its depth is cleared too -- and the
+         * chain still climbs, because the next depth comes from the
+         * item the router just delivered.
+         */
+        clawt_agent_set_activity(sender, FALSE, NULL);
+        clawt_agent_set_hop_depth(receiver, depth);
+        clawt_agent_set_activity(receiver, TRUE, from);
+    }
+
+    g_assert_cmpint(depth, ==, 4);
+    g_assert_cmpuint(i, <, 8);
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * An attachment's name is rebuilt, not trusted.
  *
  * It comes from a filename somebody dragged in or a clipboard
@@ -2593,6 +2759,12 @@ main(int argc, char *argv[])
                     test_direct_rooms_come_back_after_a_restart);
     g_test_add_func("/daemon/a-reply-counts-as-a-hop",
                     test_a_reply_counts_as_a_hop);
+    g_test_add_func("/daemon/hop-depth/limit-still-fires-across-turns",
+                    test_the_limit_still_fires_across_turns);
+    g_test_add_func("/daemon/hop-depth/cleared-when-a-turn-ends",
+                    test_a_finished_turn_clears_the_depth);
+    g_test_add_func("/daemon/hop-depth/channel-turn-starts-fresh",
+                    test_a_channel_turn_starts_from_zero);
     g_test_add_func("/daemon/attachment-cannot-escape",
                     test_an_attachment_cannot_escape_its_directory);
     g_test_add_func("/daemon/vm-agent-needs-a-disk",
