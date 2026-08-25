@@ -184,6 +184,61 @@ test_scaffold_never_overwrites(void)
 }
 
 /*
+ * The scaffolded files must not promise a tool does something it does
+ * not do.
+ *
+ * clawtilla_ask_agent is dispatched to the same handler as
+ * clawtilla_message_agent -- see the shared branch in
+ * clawt_mcp_tools_call() -- so it queues the message, answers "Queued
+ * for ...", and returns.  Nothing blocks, nothing waits, and there is no
+ * timeout to hit.  The tool's own description says so; three lines in
+ * these templates said the opposite, and an agent that read both
+ * believed the wrong one and sat waiting for a reply that was never
+ * coming back through that call.
+ */
+static void
+test_scaffold_does_not_promise_ask_agent_blocks(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *agents_org = NULL;
+    g_autofree gchar *tools = NULL;
+    g_autofree gchar *gotchas = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: scribe\n");
+    agent = first_agent(&fixture);
+
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+    g_assert_no_error(error);
+
+    agents_org = read_workspace_file(agent, "AGENTS.org");
+    tools = read_workspace_file(agent, "TOOLS.org");
+    gotchas = read_workspace_file(agent, "TOOL_GOTCHAS.org");
+
+    g_assert_nonnull(agents_org);
+    g_assert_nonnull(tools);
+    g_assert_nonnull(gotchas);
+
+    /* It does not block. */
+    g_assert_null(strstr(agents_org, "blocks until the other"));
+    g_assert_null(strstr(tools, "Send and *wait* for the reply"));
+
+    /* There is no timeout, so there is nothing to time out. */
+    g_assert_null(strstr(gotchas, "can time out"));
+
+    /*
+     * And the true shape is said, not merely un-said: an agent told
+     * nothing about how the answer comes back goes looking in its
+     * mailbox, which delivery has already emptied.
+     */
+    g_assert_nonnull(strstr(tools, "does not wait"));
+    g_assert_nonnull(strstr(gotchas, "does not wait"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * The templates are filled in from the agent's own configuration.  A
  * workspace full of "your agent id here" is one nobody edits, and an
  * agent that has to be told what computer it has wastes its first turns
@@ -1102,6 +1157,8 @@ main(int argc, char *argv[])
                     test_scaffold_writes_the_standard_set);
     g_test_add_func("/workspace/scaffold-never-overwrites",
                     test_scaffold_never_overwrites);
+    g_test_add_func("/workspace/ask-agent-is-not-promised-to-block",
+                    test_scaffold_does_not_promise_ask_agent_blocks);
     g_test_add_func("/workspace/describes-this-agent",
                     test_scaffold_describes_this_agent);
     g_test_add_func("/workspace/no-computer-is-said-out-loud",
