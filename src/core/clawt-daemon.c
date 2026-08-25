@@ -3719,6 +3719,23 @@ add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
     }
 
     /*
+     * How the agent looks, for the clients that draw a face beside its
+     * turns.  Both keys were declared in the schema from the beginning
+     * and read by nothing at all -- a config surface that existed and
+     * reached no code, which is the same "no caller" gap this codebase
+     * has already found twice.
+     *
+     * Neither is required: a client with neither derives the initials
+     * and a colour from the name, which is what makes an avatar cost
+     * nothing to have and these two an improvement rather than a
+     * prerequisite.
+     */
+    add_string_member(builder, "avatar",
+                      clawt_agent_config_get_string(config, "avatar"));
+    add_string_member(builder, "color",
+                      clawt_agent_config_get_string(config, "color"));
+
+    /*
      * Reported so a client can show it beside chief_of_staff. The two
      * are separate settings and the obvious-sounding one is not the one
      * that grants the tool -- which is how somebody enabled the wrong

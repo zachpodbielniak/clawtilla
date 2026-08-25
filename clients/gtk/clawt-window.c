@@ -309,6 +309,24 @@ struct _ClawtWindow {
      */
     gint64             connected_at;
 
+    /*
+     * Where the current run of messages is up to.
+     *
+     * A run is consecutive messages from one sender, and it gets one
+     * header rather than one per message: the header is what does most
+     * of the work of making a conversation read as a conversation, and
+     * a column of identical faces is noise rather than identity.  A run
+     * ends at a different sender or at a day boundary -- not at a time
+     * gap, which would be a fourth constant with nothing behind it and
+     * would fire constantly on traffic that arrives in bursts.
+     */
+    gchar             *run_sender;
+    gchar             *run_day;
+
+    /* How the selected agent's avatar is drawn, from its own config. */
+    gchar             *selected_avatar;
+    gchar             *selected_color;
+
     /* The flow page: who has been talking to whom, and about what. */
     GtkListBox        *flow_list;
     GtkBox            *flow_transcript;
@@ -771,6 +789,20 @@ agent_row(JsonObject *agent, guint unread)
                            g_strdup(clawt_json_string(agent, "team", "")),
                            g_free);
 
+    /*
+     * And how it is drawn, which the transcript needs when a run header
+     * is built for it.  Kept on the row rather than fetched with
+     * agent.show at selection time: the sidebar was drawn from the same
+     * reply a moment ago, and a round trip between clicking an agent and
+     * seeing its first message is a round trip nobody asked for.
+     */
+    g_object_set_data_full(G_OBJECT(row), "agent-avatar",
+                           g_strdup(clawt_json_string(agent, "avatar", "")),
+                           g_free);
+    g_object_set_data_full(G_OBJECT(row), "agent-color",
+                           g_strdup(clawt_json_string(agent, "color", "")),
+                           g_free);
+
     return row;
 }
 
@@ -1083,7 +1115,7 @@ team_header_row(ClawtWindow *self,
  * row being *dragged* is on screen by definition.
  */
 static const gchar *
-team_of_agent_row(ClawtWindow *self, const gchar *agent_id)
+agent_row_data(ClawtWindow *self, const gchar *agent_id, const gchar *key)
 {
     GtkWidget *child;
 
@@ -1098,10 +1130,16 @@ team_of_agent_row(ClawtWindow *self, const gchar *agent_id)
         id = g_object_get_data(G_OBJECT(child), "agent-id");
 
         if (id != NULL && g_strcmp0(id, agent_id) == 0)
-            return g_object_get_data(G_OBJECT(child), "agent-team");
+            return g_object_get_data(G_OBJECT(child), key);
     }
 
     return NULL;
+}
+
+static const gchar *
+team_of_agent_row(ClawtWindow *self, const gchar *agent_id)
+{
+    return agent_row_data(self, agent_id, "agent-team");
 }
 
 /*
@@ -1814,6 +1852,35 @@ static const gchar CLAWT_STRUCTURE_CSS[] =
      */
     ".clawt-unread .title {\n"
     "  font-weight: bold;\n"
+    "}\n"
+    /*
+     * The operator's own turns.
+     *
+     * 12px is libadwaita's card radius, so a bubble matches every other
+     * rounded surface in the application rather than inventing one.
+     * Named colours throughout, which is what makes a palette a palette
+     * swap rather than a second pass over this block.
+     */
+    ".clawt-bubble {\n"
+    "  background-color: @accent_bg_color;\n"
+    "  color: @accent_fg_color;\n"
+    "  border-radius: 12px;\n"
+    "  padding: 8px 12px;\n"
+    "}\n"
+    /*
+     * A run of bubbles reads as one utterance because the second and
+     * later ones drop the corner nearest the one above.
+     */
+    ".clawt-bubble-cont {\n"
+    "  border-top-right-radius: 4px;\n"
+    "}\n"
+    /*
+     * Links and inline code inside a bubble.  Without this they render
+     * in the accent colour on the accent colour, which is invisible
+     * rather than merely low contrast.
+     */
+    ".clawt-bubble .body {\n"
+    "  color: @accent_fg_color;\n"
     "}\n";
 
 /*
@@ -2783,6 +2850,149 @@ append_attachment_previews(ClawtWindow *self, GtkWidget *row,
 }
 
 
+/*
+ * "Today", "Yesterday", or "Wednesday 25 August".
+ *
+ * A date change is a bigger break than a speaker change, so it gets more
+ * room than the gap it sits among: 24 above, and the run header below it
+ * drops to 6 so the divider belongs to the block it labels.
+ */
+static GtkWidget *
+day_divider(GDateTime *when)
+{
+    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    GtkWidget *left = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    GtkWidget *right = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    GtkWidget *label;
+    g_autofree gchar *text = clawt_chat_day_label(when, NULL);
+
+    label = gtk_label_new(text);
+    gtk_widget_add_css_class(label, "caption");
+    gtk_widget_add_css_class(label, "dim-label");
+
+    gtk_widget_set_valign(left, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(right, GTK_ALIGN_CENTER);
+    gtk_widget_set_hexpand(left, TRUE);
+    gtk_widget_set_hexpand(right, TRUE);
+
+    gtk_box_append(GTK_BOX(row), left);
+    gtk_box_append(GTK_BOX(row), label);
+    gtk_box_append(GTK_BOX(row), right);
+
+    gtk_widget_set_margin_start(row, 12);
+    gtk_widget_set_margin_end(row, 12);
+    gtk_widget_set_margin_top(row, 24);
+
+    return row;
+}
+
+/*
+ * The face beside a run's first message.
+ *
+ * AdwAvatar derives both the initials and a colour from the text it is
+ * given, so identity costs one widget, no palette and no hashing scheme
+ * of ours -- which is why an avatar could ship before either of the two
+ * config keys was wired up, and why neither is a prerequisite.
+ *
+ * `agents.avatar` wins when it loads, then `agents.color`, then the
+ * derived colour.  A file that is missing or unreadable falls through
+ * rather than producing an empty circle: the fallback is already a
+ * complete answer, so there is nothing to report.
+ */
+/*
+ * A style class painting an avatar in one configured colour.
+ *
+ * One provider on the display carrying a rule per colour, rather than a
+ * provider per widget: gtk_style_context_add_provider() is deprecated,
+ * and adding one provider per avatar would leave a sheet on the display
+ * for every message ever drawn.  The class name is derived from the
+ * colour, so two agents sharing one produce one rule and a colour that
+ * has already been seen costs a hash lookup.
+ *
+ * @color reached clawt_color_ink() before this, which is what makes it
+ * safe to splice: nothing but `#rgb` and `#rrggbb` gets this far.
+ */
+static GHashTable     *avatar_tints = NULL;
+static GtkCssProvider *avatar_tint_provider = NULL;
+
+static gchar *
+tint_class(const gchar *color, const gchar *ink)
+{
+    gchar *name = g_strdup_printf("clawt-tint-%s", color + 1);
+
+    if (avatar_tints == NULL)
+        avatar_tints = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                             g_free, g_free);
+
+    if (!g_hash_table_contains(avatar_tints, name)) {
+        g_autoptr(GString) sheet = g_string_new(NULL);
+        GHashTableIter iter;
+        gpointer key;
+        gpointer value;
+
+        g_hash_table_insert(avatar_tints, g_strdup(name),
+                            g_strdup_printf("%s %s", color, ink));
+
+        g_hash_table_iter_init(&iter, avatar_tints);
+
+        while (g_hash_table_iter_next(&iter, &key, &value)) {
+            g_auto(GStrv) pair = g_strsplit(value, " ", 2);
+
+            g_string_append_printf(
+                sheet,
+                "avatar.%s { background-image: none; background-color: %s; "
+                "color: %s; }\n",
+                (const gchar *)key, pair[0], pair[1]);
+        }
+
+        if (avatar_tint_provider == NULL) {
+            avatar_tint_provider = gtk_css_provider_new();
+            gtk_style_context_add_provider_for_display(
+                gdk_display_get_default(),
+                GTK_STYLE_PROVIDER(avatar_tint_provider),
+                GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+        }
+
+        gtk_css_provider_load_from_string(avatar_tint_provider, sheet->str);
+    }
+
+    return name;
+}
+
+static GtkWidget *
+run_avatar(const gchar *name, const gchar *image_path, const gchar *color)
+{
+    GtkWidget *avatar = adw_avatar_new(32, name, TRUE);
+    const gchar *ink;
+
+    if (image_path != NULL && *image_path != '\0') {
+        g_autoptr(GdkTexture) texture =
+            gdk_texture_new_from_filename(image_path, NULL);
+
+        if (texture != NULL) {
+            adw_avatar_set_custom_image(ADW_AVATAR(avatar),
+                                        GDK_PAINTABLE(texture));
+            return avatar;
+        }
+    }
+
+    /*
+     * A colour somebody typed into a YAML file, so it is checked before
+     * it is spliced into a stylesheet -- clawt_color_ink() refuses
+     * anything that is not #rgb or #rrggbb, and answers which of black
+     * or white is legible on it.  Nothing else validates this key.
+     */
+    ink = clawt_color_ink(color);
+
+    if (ink != NULL) {
+        g_autofree gchar *class_name = tint_class(color, ink);
+
+        gtk_widget_add_css_class(avatar, class_name);
+    }
+
+    return avatar;
+}
+
 static void
 append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
                gboolean from_user, gint64 ts)
@@ -2792,63 +3002,25 @@ append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
         { "Copy as text",     "copy-text" },
         { "Copy as org",      "copy-org" }
     };
-    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
-    GtkWidget *who = gtk_label_new(sender);
+    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     GtkWidget *text = gtk_label_new(NULL);
+    g_autoptr(GDateTime) when = (ts > 0)
+        ? g_date_time_new_from_unix_local(ts)
+        : g_date_time_new_now_local();
+    g_autofree gchar *day = g_date_time_format(when, "%Y-%m-%d");
+    g_autofree gchar *stamp = g_date_time_format(when, "%H:%M");
+    gboolean new_day;
+    gboolean run_start = clawt_chat_run_is_start(self->run_sender,
+                                                 self->run_day, sender, day,
+                                                 &new_day);
 
-    /*
-     * The author line marks the only structural boundary in this view,
-     * and `dim-label` made it the faintest text on screen -- the one
-     * thing you scan for was the hardest thing to see.  `caption-heading`
-     * is libadwaita's own token for a small heading, so this is a
-     * platform style rather than another constant to maintain.
-     */
-    gtk_widget_add_css_class(who, "caption-heading");
+    if (new_day)
+        gtk_box_append(self->transcript, day_divider(when));
 
-    /*
-     * Both speakers share one left edge.
-     *
-     * Aligning the operator's turns to the right edge sounds like a
-     * messenger and does not behave like one: a wrapping label is
-     * allocated its natural width, so GTK_ALIGN_END moved nothing on any
-     * body long enough to fill the column -- but it still moved the
-     * caption, which put the author line out at the right margin above
-     * left-aligned text and read as a rendering fault.  Short turns did
-     * shift, so the same speaker looked different depending on how much
-     * they had typed.  One left edge, and the accent below carries the
-     * distinction instead.
-     */
-    gtk_widget_set_halign(who, GTK_ALIGN_START);
-
-    /*
-     * Colour on the name, not on the prose.  It is the same token either
-     * way; on a one-line caption it is a marker, and on twenty lines of
-     * body text it is a reading surface -- see the body class below.
-     */
-    if (from_user)
-        gtk_widget_add_css_class(who, "accent");
-
-    /*
-     * The time, beside the name.  The Flow tab has had it since it was
-     * written and the chat has not, which made "when did it say that"
-     * a question you could only answer by exporting.
-     */
-    {
-        g_autoptr(GDateTime) when = (ts > 0)
-            ? g_date_time_new_from_unix_local(ts)
-            : g_date_time_new_now_local();
-        g_autofree gchar *stamp = (when != NULL)
-            ? g_date_time_format(when, "%H:%M") : g_strdup("");
-        /*
-         * Name first for both.  The swap only existed to keep the name
-         * against the right margin when the operator's turns were
-         * aligned there; with one left edge the name should always be
-         * the thing sitting on it, because the name is what is scanned.
-         */
-        g_autofree gchar *both = g_strdup_printf("%s  %s", sender, stamp);
-
-        gtk_label_set_text(GTK_LABEL(who), both);
-    }
+    g_free(self->run_day);
+    self->run_day = g_steal_pointer(&day);
+    g_free(self->run_sender);
+    self->run_sender = g_strdup(sender);
 
     /*
      * Rendered from markdown, never *as* markup.
@@ -2873,14 +3045,111 @@ append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
      * operator's own words were rendered at less than half the contrast
      * of everything they were reading, all day.  It clears WCAG AA, so
      * this is not an accessibility failure; it is simply the wrong text
-     * to make harder to read.  `accent` is also how links and inline
-     * code already render, so inside an operator's turn the code spans
-     * and the prose around them collapsed into one colour.
+     * to make harder to read.
      */
     gtk_widget_add_css_class(text, "body");
 
-    gtk_box_append(GTK_BOX(row), who);
-    gtk_box_append(GTK_BOX(row), text);
+    if (from_user) {
+        /*
+         * The operator's turns are bubbles, and only the operator's.
+         *
+         * An agent's turn runs to dozens of lines with headings, lists
+         * and code blocks.  A container that long stops reading as a
+         * message and starts reading as a panel, and a bubble wide
+         * enough to read as a bubble is too wide to have a measure --
+         * the two constraints pull opposite ways and only one side of
+         * this conversation is short enough to satisfy both.  So the
+         * bubble goes where it works, and the asymmetry is the thing
+         * that says who is speaking at a glance.
+         *
+         * This is also why an earlier attempt at right alignment did
+         * nothing: a bare wrapping label is allocated its natural width,
+         * so GTK_ALIGN_END moved no body long enough to fill the column.
+         * A bubble has a width of its own to be aligned.
+         */
+        GtkWidget *bubble = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+
+        gtk_label_set_max_width_chars(GTK_LABEL(text), 59);
+        gtk_box_append(GTK_BOX(bubble), text);
+        gtk_widget_add_css_class(bubble, "clawt-bubble");
+        gtk_widget_set_halign(bubble, GTK_ALIGN_END);
+
+        /*
+         * Within a run the second and later bubbles drop their top-right
+         * corner, which is what makes a run read as one utterance rather
+         * than a stack.
+         */
+        gtk_widget_add_css_class(bubble,
+                                 run_start ? "clawt-bubble-start"
+                                           : "clawt-bubble-cont");
+
+        if (run_start) {
+            /*
+             * The time once, above the first bubble.  No name and no
+             * avatar: it is always the same person, the alignment
+             * already said so, and a face on every one of your own
+             * messages carries no information while costing the side
+             * that can least afford it.
+             */
+            GtkWidget *at = gtk_label_new(stamp);
+
+            gtk_widget_add_css_class(at, "caption");
+            gtk_widget_add_css_class(at, "dim-label");
+            gtk_widget_set_halign(at, GTK_ALIGN_END);
+            gtk_widget_set_margin_bottom(at, 2);
+            gtk_box_append(GTK_BOX(row), at);
+        }
+
+        gtk_box_append(GTK_BOX(row), bubble);
+    } else {
+        /*
+         * The agent's side: one header per run, and every body in the
+         * run indented to the same 44px so the left edge of the text is
+         * unbroken down it.
+         */
+        GtkWidget *line = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+        GtkWidget *gutter = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+
+        if (run_start) {
+            GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+            GtkWidget *who = gtk_label_new(sender);
+            GtkWidget *at = gtk_label_new(stamp);
+            GtkWidget *avatar = run_avatar(sender,
+                                           self->selected_avatar,
+                                           self->selected_color);
+
+            /*
+             * `heading` rather than `caption-heading`: shrinking the
+             * name to caption size makes every turn look like metadata
+             * about a message rather than a person saying something.
+             */
+            gtk_widget_add_css_class(who, "heading");
+            gtk_widget_set_margin_start(who, 12);
+
+            gtk_widget_add_css_class(at, "caption");
+            gtk_widget_add_css_class(at, "dim-label");
+            gtk_widget_set_margin_start(at, 8);
+
+            gtk_widget_set_valign(avatar, GTK_ALIGN_CENTER);
+            gtk_box_append(GTK_BOX(header), avatar);
+            gtk_box_append(GTK_BOX(header), who);
+            gtk_box_append(GTK_BOX(header), at);
+            gtk_widget_set_margin_bottom(header, 2);
+            gtk_box_append(GTK_BOX(row), header);
+        }
+
+        /*
+         * A real 44px slot rather than a margin on the label.  Avatar
+         * plus its 12px gap; a widget is something a narrow layout could
+         * collapse, and a margin set from C is not.
+         */
+        gtk_widget_set_size_request(gutter, 44, -1);
+        gtk_box_append(GTK_BOX(line), gutter);
+        gtk_box_append(GTK_BOX(line), text);
+        gtk_widget_set_hexpand(text, TRUE);
+        gtk_box_append(GTK_BOX(row), line);
+    }
+
     append_attachment_previews(self, row, body, from_user);
 
     /*
@@ -2910,13 +3179,16 @@ append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
      * 30 is the smallest step on the HIG's 6px grid that beats that
      * 27px, and it was measured rather than derived: 18 was tried first,
      * because it is the HIG's own step for separating groups, and it
-     * still lost.  30 renders a 35px turn gap against the unchanged 27px
-     * paragraph gap, which puts the two back in the right order.
+     * still lost.  The run redesign specified 18 again for run-to-run;
+     * the measurement has not changed and neither has the paragraph gap,
+     * so the measured number stands.
      *
-     * Nothing is added below the row -- a bottom margin would only
-     * double-count against the next row's top one.
+     * Inside a run it is 6, and after a day divider 6 as well -- the
+     * divider already carries 24 above it, and a run header adding 30 to
+     * that would put the date adrift between two blocks instead of
+     * belonging to the one beneath it.
      */
-    gtk_widget_set_margin_top(row, 30);
+    gtk_widget_set_margin_top(row, !run_start ? 6 : (new_day ? 6 : 30));
 
     gtk_box_append(self->transcript, row);
 }
@@ -3124,6 +3396,8 @@ static void
 reset_transcript(ClawtWindow *self)
 {
     self->unread_marker = NULL;
+    g_clear_pointer(&self->run_sender, g_free);
+    g_clear_pointer(&self->run_day, g_free);
     clear_box(self->transcript);
     set_following(self, TRUE);
 }
@@ -6571,6 +6845,13 @@ select_agent(ClawtWindow *self, const gchar *agent_id)
     if (g_hash_table_remove(self->unread, agent_id))
         update_unread_tab(self);
 
+    g_free(self->selected_avatar);
+    self->selected_avatar = g_strdup(agent_row_data(self, agent_id,
+                                                    "agent-avatar"));
+    g_free(self->selected_color);
+    self->selected_color = g_strdup(agent_row_data(self, agent_id,
+                                                   "agent-color"));
+
     entry_set_text(self, g_hash_table_lookup(self->drafts, agent_id));
 
     adw_window_title_set_title(
@@ -9683,10 +9964,28 @@ build_chat_page(ClawtWindow *self)
         gtk_box_append(GTK_BOX(box), overlay);
     }
 
-    gtk_box_append(GTK_BOX(box), self->activity_bar);
-    gtk_box_append(GTK_BOX(box), self->command_revealer);
-    gtk_box_append(GTK_BOX(box), self->attachments);
-    gtk_box_append(GTK_BOX(box), entry_box);
+    /*
+     * The composer follows the transcript's column.
+     *
+     * It becomes visible the moment the transcript is clamped: a
+     * full-width entry under a narrow column of text looks like a
+     * rendering fault rather than a layout.  The thing you read and the
+     * thing you type into should be the same column, so the same clamp
+     * wraps the whole composer cluster -- the activity line, the
+     * slash-command list, the staged attachments and the entry.
+     */
+    {
+        GtkWidget *composer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+        GtkWidget *clamp = adw_clamp_new();
+
+        gtk_box_append(GTK_BOX(composer), self->activity_bar);
+        gtk_box_append(GTK_BOX(composer), self->command_revealer);
+        gtk_box_append(GTK_BOX(composer), self->attachments);
+        gtk_box_append(GTK_BOX(composer), entry_box);
+
+        adw_clamp_set_child(ADW_CLAMP(clamp), composer);
+        gtk_box_append(GTK_BOX(box), clamp);
+    }
 
     return box;
 }
@@ -14835,6 +15134,10 @@ clawt_window_dispose(GObject *object)
     g_clear_pointer(&self->selected_agent, g_free);
     g_clear_pointer(&self->selected_room, g_free);
     g_clear_pointer(&self->flow_room, g_free);
+    g_clear_pointer(&self->run_sender, g_free);
+    g_clear_pointer(&self->run_day, g_free);
+    g_clear_pointer(&self->selected_avatar, g_free);
+    g_clear_pointer(&self->selected_color, g_free);
     g_clear_pointer(&self->shown, g_hash_table_unref);
     g_clear_pointer(&self->drafts, g_hash_table_unref);
     g_clear_pointer(&self->unread, g_hash_table_unref);

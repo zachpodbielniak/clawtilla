@@ -230,19 +230,95 @@ clawt_web_stylesheet(void)
     /* ── Chat ── */
     ".chat{display:flex;flex-direction:column;height:100%;min-height:0}"
     ".transcript{flex:1;overflow-y:auto;padding:28px 32px;min-height:0}"
-    ".transcript-inner{max-width:52rem;margin:0 auto}"
-    ".msg{margin-bottom:22px;animation:rise 420ms cubic-bezier(.16,1,.3,1)}"
+    /*
+     * The measure, measured.
+     *
+     * 52rem rendered 117 characters a line at this font -- comfortable
+     * continuous prose is 45 to 90, past which the eye crosses the full
+     * width and then hunts back for the start of the next.  40rem is 89
+     * at the same font, taken from the browser's own text metrics rather
+     * than estimated: 640px less the 36px gutter, at 6.778px a character.
+     */
+    ".transcript-inner{max-width:40rem;margin:0 auto}"
+    /*
+     * A run is consecutive messages from one sender: one header, tight
+     * spacing inside, a bigger gap between runs.  That grouping is what
+     * makes a stack of paragraphs read as a conversation, and it is the
+     * one thing here the GTK client and this one had to agree about --
+     * so where a run *begins* is decided in libclawt and only the
+     * spacing is decided here.
+     */
+    ".msg{animation:rise 420ms cubic-bezier(.16,1,.3,1)}"
+    ".msg.run-start{margin-top:26px}"
+    ".msg.run-cont{margin-top:6px}"
+    ".transcript-inner>.msg:first-child{margin-top:0}"
     "@keyframes rise{from{opacity:0;transform:translateY(8px)}"
       "to{opacity:1;transform:none}}"
-    ".msg-who{font-size:11px;letter-spacing:0.06em;text-transform:uppercase;"
-      "color:var(--muted);margin-bottom:5px;font-weight:600}"
-    ".msg-body{white-space:pre-wrap;word-wrap:break-word}"
+    /*
+     * The run header: face, name, time.  Not uppercased any more -- a
+     * name set in small caps reads as metadata about a message rather
+     * than as a person saying something.
+     */
+    ".msg-who{display:flex;align-items:center;gap:8px;font-size:13px;"
+      "color:var(--ink-2);margin-bottom:3px;font-weight:600}"
+    ".msg-avatar{display:inline-flex;align-items:center;"
+      "justify-content:center;width:28px;height:28px;border-radius:50%;"
+      "font-size:12px;font-weight:700;flex:0 0 auto;"
+      "background:var(--neutral-bg);color:var(--neutral-fg)}"
+    /*
+     * The derived tones, from the palette rather than computed, so a
+     * colour scheme recolours the faces with everything else.
+     */
+    ".avatar-tone-0{background:var(--info-bg);color:var(--info-fg)}"
+    ".avatar-tone-1{background:var(--good-bg);color:var(--good-fg)}"
+    ".avatar-tone-2{background:var(--warn-bg);color:var(--warn-fg)}"
+    ".avatar-tone-3{background:var(--bad-bg);color:var(--bad-fg)}"
+    ".avatar-tone-4{background:var(--neutral-bg);color:var(--neutral-fg)}"
+    ".avatar-tone-5{background:var(--surface-2);color:var(--ink-2)}"
+    /*
+     * Every body in a run indented to the same 36px -- avatar plus its
+     * gap -- so the left edge of the text is unbroken down the run.
+     */
+    ".msg-body{white-space:pre-wrap;word-wrap:break-word;"
+      "margin-left:36px}"
     ".msg-body code{font-family:var(--mono);font-size:var(--mono-size);"
       "background:var(--surface-2);padding:1px 5px;border-radius:4px}"
     ".msg-body pre{font-family:var(--mono);font-size:var(--mono-size);"
       "background:var(--surface-2);border:1px solid var(--line);"
       "border-radius:var(--radius-sm);padding:12px 14px;overflow-x:auto}"
-    ".msg-self .msg-who{color:var(--info-fg)}"
+    /*
+     * The operator's turns are bubbles, and only the operator's.  An
+     * agent's turn runs to dozens of lines with headings and code
+     * blocks: a container that long stops reading as a message and
+     * starts reading as a panel, and a bubble wide enough to be a bubble
+     * is too wide to have a measure.  So the bubble goes where it works,
+     * and the asymmetry is what says who is speaking at a glance.
+     */
+    ".msg-self{display:flex;flex-direction:column;align-items:flex-end}"
+    ".msg-self .msg-who{color:var(--muted);font-weight:400;font-size:11px}"
+    ".msg-self .msg-body{margin-left:0;max-width:26rem;"
+      "background:var(--info-fg);color:var(--surface);"
+      "padding:8px 12px;border-radius:12px}"
+    /* A run of bubbles reads as one utterance. */
+    ".msg-self.run-cont .msg-body{border-top-right-radius:4px}"
+    ".msg-self .msg-body code,.msg-self .msg-body pre{"
+      "background:rgba(255,255,255,0.18);color:inherit;border-color:"
+      "transparent}"
+    /*
+     * A date change is a bigger break than a speaker change, so it gets
+     * more room than the gap it sits among.
+     */
+    ".day-divider{display:flex;align-items:center;gap:12px;"
+      "margin:30px 0 4px;font-size:11px;color:var(--muted)}"
+    ".day-divider::before,.day-divider::after{content:'';flex:1;height:1px;"
+      "background:var(--line)}"
+    /*
+     * The gutter stops being affordable on a narrow screen: at 360px the
+     * indent takes the measure below the comfortable range, and the
+     * avatar is the first thing that should go rather than the text.
+     */
+    "@media (max-width:26rem){.msg-body{margin-left:0}"
+      ".msg-avatar{display:none}}"
 
     /*
      * The rule drawn where reading left off, and the pill that offers to
@@ -284,7 +360,13 @@ clawt_web_stylesheet(void)
       "flex:1;min-height:0}"
     ".composer{border-top:1px solid var(--line);background:var(--surface);"
       "padding:16px 32px}"
-    ".composer-inner{max-width:52rem;margin:0 auto;display:flex;gap:10px;"
+    /*
+     * The composer follows the transcript's column.  A full-width entry
+     * under a narrow column of text reads as a rendering fault rather
+     * than as a layout: the thing you read and the thing you type into
+     * should be the same column.
+     */
+    ".composer-inner{max-width:40rem;margin:0 auto;display:flex;gap:10px;"
       "align-items:flex-end}"
     ".composer textarea{flex:1;min-height:2.6rem;max-height:14rem;"
       "font-family:var(--sans);font-size:14px}"

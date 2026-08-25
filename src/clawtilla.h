@@ -54,6 +54,7 @@
 #include "computer/clawt-computer-factory.h"
 
 #include "chat/clawt-message.h"
+#include "chat/clawt-chat-run.h"
 #include "chat/clawt-markdown.h"
 #include "chat/clawt-export.h"
 #include "chat/clawt-loop-guard.h"

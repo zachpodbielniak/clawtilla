@@ -594,6 +594,71 @@ weekday mornings.  A routine that did not fire because the machine was
 asleep is shown as *missed*, not failed: showing it as broken would train
 you to ignore the one that is.  See [[file:routines.org][routines.org]].
 
+*** The transcript
+
+A conversation is drawn as *runs* rather than as one row per message.  A
+run is consecutive messages from one sender: it gets one header --- an
+avatar, the name, the time --- and the messages tuck under it at the same
+indent, tight inside the run and further apart between them.  That
+grouping is what makes a stack of paragraphs read as a conversation.
+
+A run ends at a different sender or at a day boundary, and deliberately
+*not* at a time gap: a fifteen-minute rule would be a constant with
+nothing behind it, and agent traffic arrives in bursts where it would
+fire constantly.  ~clawt_chat_run_is_start()~ decides it, in libclawt, so
+the two clients cannot disagree about where a run begins.
+
+**** Bubbles on one side only
+
+The operator's own turns are bubbles; the agent's are not.
+
+An agent's turn runs to dozens of lines with headings, lists and code
+blocks.  A container that long stops reading as a message and starts
+reading as a panel, and a bubble wide enough to *be* a bubble is too wide
+to have a measure --- the two constraints pull opposite ways, and only
+one side of this conversation is short enough to satisfy both.  So the
+bubble goes where it works.  The asymmetry is not a compromise; it is
+what tells you who is speaking at a glance.
+
+Within a run the second and later bubbles drop the corner nearest the one
+above, which makes a run read as one utterance rather than a stack.
+
+**** Avatars
+
+Initials and a colour derived from the name, which needs no
+configuration at all.  ~agents.color~ paints the background when it is
+set, and in the GTK client ~agents.avatar~ replaces it with a real image.
+Both keys had been in the schema since the beginning and were read by
+nothing; this is what finally reads them.
+
+A colour goes through ~clawt_color_ink()~, which accepts only ~#rgb~ and
+~#rrggbb~ and answers which of black or white is legible on it.  It is
+also the validation: nothing else checks that key, and it is spliced into
+a stylesheet.
+
+**** The measure
+
+Both clients cap the column.  In the GTK client that is ~AdwClamp~ at its
+own defaults; in the web client it is 40rem, which was *measured* rather
+than chosen --- at 52rem a line ran to 117 characters against a
+comfortable range of 45 to 90, and 40rem renders 89 at the same font,
+taken from the browser's own text metrics.
+
+The composer follows the same column.  A full-width entry under a narrow
+column of text reads as a rendering fault rather than as a layout.
+
+On a narrow screen the avatar gutter collapses and the face is hidden:
+measured at 375px, the indent would otherwise take the measure to 42
+characters, and the avatar is the first thing that should go rather than
+the text.
+
+**** Day dividers
+
+"Today", "Yesterday", or "Wednesday 25 August", between two rules,
+inserted when the date changes and once at the top of a loaded history.
+A date change is a bigger break than a speaker change, so it gets more
+room than the gap it sits among.
+
 *** Markdown
 
 Agent replies are rendered: bold, italic, inline code, fenced code,

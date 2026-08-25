@@ -659,6 +659,41 @@ the same program.
 - Verified by reverting the setter and watching the test fail
   (`-1 == 20400`), not merely by watching it pass.
 
+### GLib pads `%e` with a figure space, and `g_strstrip` cannot reach it
+
+- `g_date_time_format(when, "%A %e %B")` renders "Wednesday" then an
+  ordinary space then **U+2007 FIGURE SPACE** then "5" -- so a
+  single-digit day comes out looking double-spaced, on the nine days a
+  month it happens, and stripping the result does nothing because the
+  padding is in the middle of the string. `%-d` is the fix.
+- Found by the test asserting the string rather than the shape, on its
+  first run. A test that had checked "contains the month name" would have
+  passed for ever.
+
+### Where a run begins is one rule, so it lives in the library
+
+- Both clients group consecutive messages from one sender into a run, and
+  two implementations of "is this a new run" would differ exactly once,
+  on the case nobody looked at. `clawt_chat_run_is_start()` and
+  `clawt_chat_day_label()` are pure, in libclawt, and tested without a
+  window -- which is also the only way the year-boundary case gets
+  covered, since a comparison on day-of-year alone reads 1 January as a
+  jump backwards rather than as a change.
+- The measure was **measured**, in the browser, from its own text
+  metrics: 52rem rendered 117 characters a line against a comfortable 45
+  to 90, and 40rem renders 89. The GTK client's `AdwClamp` defaults were
+  already right and are left alone -- a default is a number the platform
+  can revise, a hardcoded one is a number somebody has to maintain.
+- The redesign asked for 18px between runs. The tree already had 30,
+  measured against the 27px a markdown paragraph break costs, and that
+  measurement has not changed -- so the measured number stands and the
+  drawn one does not. A spec that cannot see the rendered output is a
+  proposal, not a finding.
+- Contrast was checked in all three palettes through the page's own
+  computed styles rather than by eye: the operator's bubble is 5.67:1 in
+  light, 8.29:1 in dark and 8.34:1 on Catppuccin, because every colour is
+  a token rather than a hex value.
+
 ### The badge that said "something happened elsewhere" counted the wrong queue
 
 - The sidebar drew an accent number from `mailbox_depth`, tooltipped

@@ -21,14 +21,87 @@
 
 /* ── The transcript ──────────────────────────────────────────────── */
 
+/*
+ * "Today", "Yesterday" or a weekday, between two rules.
+ *
+ * The label comes from libclawt so this and the GTK client cannot answer
+ * the same date differently.
+ */
 static HtmxElement *
-message_element(JsonObject *message, const gchar *agent_id)
+day_divider(gint64 ts)
+{
+    g_autoptr(HtmxDiv) row = htmx_div_new();
+    g_autoptr(HtmxSpan) label = htmx_span_new();
+    g_autoptr(GDateTime) when = (ts > 0)
+        ? g_date_time_new_from_unix_local(ts)
+        : g_date_time_new_now_local();
+    g_autofree gchar *text = clawt_chat_day_label(when, NULL);
+
+    htmx_element_add_class(HTMX_ELEMENT(row), "day-divider");
+    htmx_node_set_text_content(HTMX_NODE(label), text);
+    htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(label));
+
+    return HTMX_ELEMENT(g_steal_pointer(&row));
+}
+
+/*
+ * The face beside a run's first message.
+ *
+ * Initials and a colour derived from the name when nothing is
+ * configured, which is what makes an avatar cost no config at all;
+ * `agents.color` as the background when it is set.
+ *
+ * The colour goes through clawt_color_ink(), which refuses anything that
+ * is not `#rgb` or `#rrggbb` -- it is spliced into a style attribute and
+ * nothing else validates that key.
+ */
+static HtmxElement *
+run_avatar(const gchar *name, const gchar *color)
+{
+    g_autoptr(HtmxSpan) face = htmx_span_new();
+    const gchar *ink = clawt_color_ink(color);
+    gunichar first;
+    gchar initial[8] = { 0 };
+
+    htmx_element_add_class(HTMX_ELEMENT(face), "msg-avatar");
+
+    first = g_utf8_get_char_validated(name, -1);
+
+    if (first != (gunichar)-1 && first != (gunichar)-2)
+        g_unichar_to_utf8(g_unichar_toupper(first), initial);
+
+    htmx_node_set_text_content(HTMX_NODE(face), initial);
+
+    if (ink != NULL) {
+        g_autofree gchar *style = g_strdup_printf("background:%s;color:%s",
+                                                  color, ink);
+
+        htmx_element_set_attribute(HTMX_ELEMENT(face), "style", style);
+    } else {
+        /*
+         * One of the sheet's own tones, chosen by the name, rather than
+         * a colour computed here -- so a palette recolours the avatars
+         * with everything else.
+         */
+        g_autofree gchar *cls = g_strdup_printf("avatar-tone-%u",
+                                                g_str_hash(name) % 6);
+
+        htmx_element_add_class(HTMX_ELEMENT(face), cls);
+    }
+
+    return HTMX_ELEMENT(g_steal_pointer(&face));
+}
+
+static HtmxElement *
+message_element(JsonObject *message, const gchar *agent_id,
+                gboolean run_start, const gchar *color)
 {
     const gchar *sender = clawt_web_member(message, "sender", "?");
     const gchar *body = clawt_web_member(message, "body", "");
     const gchar *task = clawt_web_member(message, "task", NULL);
     gint64 ts = clawt_web_member_int(message, "ts", 0);
     gint64 depth = clawt_web_member_int(message, "depth", 0);
+    gboolean from_user = (g_strcmp0(sender, "user") == 0);
     g_autoptr(HtmxElement) row = HTMX_ELEMENT(htmx_article_new());
     g_autoptr(HtmxDiv) who = htmx_div_new();
     g_autoptr(HtmxDiv) text = htmx_div_new();
@@ -37,22 +110,34 @@ message_element(JsonObject *message, const gchar *agent_id)
     (void)agent_id;
 
     htmx_element_add_class(row, "msg");
+    htmx_element_add_class(row, run_start ? "run-start" : "run-cont");
 
-    if (g_strcmp0(sender, "user") == 0)
+    if (from_user)
         htmx_element_add_class(row, "msg-self");
 
     htmx_element_add_class(HTMX_ELEMENT(who), "msg-who");
 
-    {
+    /*
+     * One header per run.  Consecutive messages from one sender carry no
+     * name and no face, at the same indent, so the left edge of the text
+     * is unbroken down the run -- a column of identical faces is noise
+     * rather than identity.  The operator's own turns get neither: the
+     * bubble already says who is speaking, and a face on every one of
+     * your own messages carries no information.
+     */
+    if (run_start && !from_user) {
         g_autoptr(HtmxSpan) name = htmx_span_new();
 
+        clawt_web_add(who, run_avatar(sender, color));
         htmx_node_set_text_content(HTMX_NODE(name), sender);
         htmx_node_add_child(HTMX_NODE(who), HTMX_NODE(name));
     }
 
-    if (*when != '\0') {
+    if (run_start && *when != '\0') {
         g_autoptr(HtmxSpan) stamp = htmx_span_new();
-        g_autofree gchar *dotted = g_strdup_printf(" · %s", when);
+        g_autofree gchar *dotted = from_user
+            ? g_strdup(when)
+            : g_strdup_printf(" · %s", when);
 
         htmx_element_add_class(HTMX_ELEMENT(stamp), "muted");
         htmx_node_set_text_content(HTMX_NODE(stamp), dotted);
@@ -76,7 +161,15 @@ message_element(JsonObject *message, const gchar *agent_id)
         clawt_web_add(who, clawt_web_badge(hops, "warn"));
     }
 
-    htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(who));
+    /*
+     * A continuation carries no header -- unless it has a task or a hop
+     * count on it, which are the two things a reader needs per message
+     * rather than per run: a delegated reply is otherwise just another
+     * line, and a hop count climbing towards max_hops is the only
+     * visible difference between a conversation and a loop.
+     */
+    if (run_start || task != NULL || depth > 1)
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(who));
 
     htmx_element_add_class(HTMX_ELEMENT(text), "msg-body");
     htmx_node_set_text_content(HTMX_NODE(text), body);
@@ -160,11 +253,44 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared)
                                       "in its mailbox until it starts."));
     }
 
-    for (i = 0; messages != NULL && i < json_array_get_length(messages); i++) {
-        clawt_web_add(inner,
-                      message_element(
-                          json_array_get_object_element(messages, i),
-                          agent_id));
+    {
+        g_autofree gchar *run_sender = NULL;
+        g_autofree gchar *run_day = NULL;
+        g_autoptr(JsonNode) agent_reply = clawt_web_find_agent(app, agent_id);
+        g_autofree gchar *color = g_strdup(clawt_web_member(
+            clawt_web_member_object(clawt_web_root(agent_reply), "settings"),
+            "color", NULL));
+
+        for (i = 0; messages != NULL && i < json_array_get_length(messages);
+             i++) {
+            JsonObject *one = json_array_get_object_element(messages, i);
+            gint64 ts = clawt_web_member_int(one, "ts", 0);
+            g_autoptr(GDateTime) when = (ts > 0)
+                ? g_date_time_new_from_unix_local(ts)
+                : g_date_time_new_now_local();
+            g_autofree gchar *day = g_date_time_format(when, "%Y-%m-%d");
+            const gchar *sender = clawt_web_member(one, "sender", "?");
+            gboolean new_day;
+            gboolean run_start;
+
+            /*
+             * The rule comes from libclawt, so this client and the GTK
+             * one cannot disagree about where a run begins.
+             */
+            run_start = clawt_chat_run_is_start(run_sender, run_day, sender,
+                                                day, &new_day);
+
+            if (new_day)
+                clawt_web_add(inner, day_divider(ts));
+
+            g_free(run_sender);
+            run_sender = g_strdup(sender);
+            g_free(run_day);
+            run_day = g_steal_pointer(&day);
+
+            clawt_web_add(inner,
+                          message_element(one, agent_id, run_start, color));
+        }
     }
 
     /*

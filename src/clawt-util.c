@@ -658,3 +658,48 @@ clawt_remove_tree(const gchar *path, const gchar *root, GError **error)
 
     return TRUE;
 }
+
+const gchar *
+clawt_color_ink(const gchar *hex)
+{
+    guint8 channel[3];
+    gsize digits;
+    gsize i;
+    gdouble luminance;
+
+    if (hex == NULL || hex[0] != '#')
+        return NULL;
+
+    digits = strlen(hex + 1);
+
+    if (digits != 3 && digits != 6)
+        return NULL;
+
+    for (i = 0; i < digits; i++) {
+        if (!g_ascii_isxdigit(hex[1 + i]))
+            return NULL;
+    }
+
+    for (i = 0; i < 3; i++) {
+        if (digits == 3) {
+            gint v = g_ascii_xdigit_value(hex[1 + i]);
+
+            channel[i] = (guint8)(v * 17);
+        } else {
+            channel[i] = (guint8)(g_ascii_xdigit_value(hex[1 + i * 2]) * 16 +
+                                  g_ascii_xdigit_value(hex[2 + i * 2]));
+        }
+    }
+
+    /*
+     * The sRGB relative luminance WCAG uses, without the gamma
+     * expansion.  The linearised form is more correct and the two
+     * disagree only well away from the 0.5 boundary this compares
+     * against, so the simpler one is used and said to be simpler rather
+     * than presented as the real formula.
+     */
+    luminance = (0.2126 * channel[0] + 0.7152 * channel[1] +
+                 0.0722 * channel[2]) / 255.0;
+
+    return (luminance > 0.55) ? "#000000" : "#ffffff";
+}

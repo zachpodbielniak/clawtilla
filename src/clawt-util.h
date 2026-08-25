@@ -284,4 +284,27 @@ gchar *clawt_redact_secrets(const gchar *text);
  */
 gboolean clawt_is_valid_id(const gchar *id);
 
+/**
+ * clawt_color_ink:
+ * @hex: (nullable): a colour written as `#rgb` or `#rrggbb`
+ *
+ * Which of black or white is legible on @hex.
+ *
+ * `agents.color` is a hex string somebody types into a YAML file, and
+ * both clients paint an agent's avatar with it -- so both have to decide
+ * what colour the initials go in, and a light background with white
+ * initials is unreadable.  One answer, from the sRGB relative luminance
+ * the WCAG contrast formula uses, because two would differ for exactly
+ * the colours near the boundary.
+ *
+ * A colour that is not one of the two accepted forms returns %NULL, and
+ * the caller falls back to the avatar's own derived colour rather than
+ * painting something.  It is also the validation: nothing else checks
+ * this key, and it is spliced into a stylesheet.
+ *
+ * Returns: (nullable): `#000000`, `#ffffff`, or %NULL if @hex is not a
+ *   colour this accepts
+ */
+const gchar *clawt_color_ink(const gchar *hex);
+
 G_END_DECLS

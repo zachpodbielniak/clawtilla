@@ -132,6 +132,10 @@ declare -A AFFORDANCES=(
     ["attachment previews"]="append_attachment_previews|attachment"
     ["unread count"]="clawt-unread-badge|unread-badge"
     ["unread tab total"]="adw_view_stack_page_set_badge_number|unread_total"
+    ["message runs"]="clawt_chat_run_is_start|clawt_chat_run_is_start"
+    ["day dividers"]="day_divider|day-divider"
+    ["sender avatars"]="adw_avatar_new|msg-avatar"
+    ["own-turn bubbles"]="clawt-bubble|msg-self"
 )
 
 usage () {

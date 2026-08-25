@@ -104,6 +104,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/computer/clawt-desktop-relay.h \
 	$(SRCDIR)/computer/clawt-computer-factory.h \
 	$(SRCDIR)/chat/clawt-message.h \
+	$(SRCDIR)/chat/clawt-chat-run.h \
 	$(SRCDIR)/chat/clawt-markdown.h \
 	$(SRCDIR)/chat/clawt-export.h \
 	$(SRCDIR)/chat/clawt-loop-guard.h \
@@ -188,6 +189,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/computer/clawt-desktop-relay.c \
 	$(SRCDIR)/computer/clawt-computer-factory.c \
 	$(SRCDIR)/chat/clawt-message.c \
+	$(SRCDIR)/chat/clawt-chat-run.c \
 	$(SRCDIR)/chat/clawt-markdown.c \
 	$(SRCDIR)/chat/clawt-export.c \
 	$(SRCDIR)/chat/clawt-loop-guard.c \
