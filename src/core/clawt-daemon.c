@@ -3699,6 +3699,26 @@ add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
                                    clawt_agent_is_chief_of_staff(agent));
 
     /*
+     * Which room the operator's conversation with this agent is.
+     *
+     * Reported rather than derived, because how a direct room is named
+     * is the daemon's business and a client that takes "dm:a:b" apart
+     * breaks when that changes -- the comment saying so is already in
+     * clawt-window.c.  A client needs it to tell a message meant for the
+     * person from the fleet's own peer traffic, and it needs it for
+     * agents it has *never opened*, which is exactly the agent an unread
+     * count exists for.  Asking room.history would resolve one agent and
+     * create the room as a side effect.
+     */
+    {
+        g_autofree gchar *dm =
+            clawt_room_manager_direct_id("user", clawt_agent_get_id(agent));
+
+        json_builder_set_member_name(builder, "dm_room");
+        json_builder_add_string_value(builder, dm);
+    }
+
+    /*
      * Reported so a client can show it beside chief_of_staff. The two
      * are separate settings and the obvious-sounding one is not the one
      * that grants the tool -- which is how somebody enabled the wrong

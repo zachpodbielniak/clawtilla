@@ -659,6 +659,49 @@ the same program.
 - Verified by reverting the setter and watching the test fail
   (`-1 == 20400`), not merely by watching it pass.
 
+### The badge that said "something happened elsewhere" counted the wrong queue
+
+- The sidebar drew an accent number from `mailbox_depth`, tooltipped
+  "messages waiting", and the event handler's own comment called it "what
+  tells you something happened elsewhere". The intent was right and the
+  wire was wrong: the depth is the *agent's* inbound queue -- work
+  waiting for **it** to read -- which is close to the opposite. An agent
+  that has just answered you has depth 0 and showed nothing, while one
+  buried in peer traffic showed a large number and had said nothing to
+  you at all. It was also already written out in the row's subtitle, so
+  the number was a duplicate of the wrong thing.
+- The count is keyed by **agent**, not by room, because a client only
+  learns a room id for an agent it has already opened -- and the agent
+  this exists for is precisely the one nobody has opened. The daemon
+  reports `dm_room` beside every agent so no client takes `dm:a:b`
+  apart; `clawt_room_manager_direct_id()` is the one spelling, used by
+  the listing and by the creation.
+- **The reporter's design said `to` was the user's id and told me to read
+  it rather than trust the paragraph.** It is the *room* id --
+  `clawt_message_get_room_id()` -- so the rule built on it would have
+  counted nothing. The instruction to check was worth more than the fact.
+- **Replayed events are not counted.** A client subscribes from cursor 0
+  and the daemon replays; counting those opens a fresh window already
+  showing a number for a conversation nobody has touched, and makes the
+  count depend on whether the replay beat the first fleet listing.
+  Replayed events keep their timestamps, so one comparison against the
+  connect time settles it.
+- Verified by driving a real daemon and a real client rather than by
+  reading: a temporary `g_message` in the row builder printed 0 across
+  the replay and 2 after two live messages, and the web client was
+  checked the same way with `curl` against the sidebar fragment. The
+  first attempt proved nothing because it sent into `dm:beta:user`, a
+  direct room that **did not exist yet** -- they are made on demand, and
+  the daemon refused with "there is no agent or room called ...". An
+  end-to-end test that fails for a reason unrelated to the feature reads
+  exactly like the feature not working.
+- The libadwaita half was measured, not assumed: a 120-line probe against
+  real GTK4 showed the unread row's title at weight 700 against 400 for a
+  plain one, and `adw_view_stack_page_set_badge_number()` +
+  `set_needs_attention()` both taking. Neither could be screenshotted --
+  GNOME refuses `org.gnome.Shell.Screenshot` and wlr-screencopy is not
+  there -- so the check is the widget's own answer rather than a picture.
+
 ### One handler taught to report a failure teaches nobody else
 
 - `render_all_agents()` warned and carried on, which is right -- one

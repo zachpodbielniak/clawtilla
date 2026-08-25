@@ -118,6 +118,63 @@ const gchar *clawt_web_app_last_error(ClawtWebApp *self);
 const gchar *clawt_web_app_last_refusal(ClawtWebApp *self);
 
 /**
+ * clawt_web_app_unread:
+ * @self: a #ClawtWebApp
+ * @agent_id: (nullable): whose conversation
+ *
+ * How many messages have arrived from @agent_id since its conversation
+ * was last opened.
+ *
+ * The counterpart of the transcript's "New messages" rule, and the two
+ * never fire for the same message: a conversation on screen never
+ * accrues a count whatever the scroll position -- that case is the
+ * rule's -- and a conversation elsewhere accrues one.
+ *
+ * Session-scoped and in memory.  It knows nothing about what arrived
+ * while nobody was connected.
+ *
+ * Returns: the count, 0 if there is none
+ */
+guint clawt_web_app_unread(ClawtWebApp *self, const gchar *agent_id);
+
+/**
+ * clawt_web_app_unread_total:
+ * @self: a #ClawtWebApp
+ *
+ * Every agent's unread count added up, for the Chat tab.
+ *
+ * Returns: the total
+ */
+guint clawt_web_app_unread_total(ClawtWebApp *self);
+
+/**
+ * clawt_web_app_note_fleet:
+ * @self: a #ClawtWebApp
+ * @agents: (nullable): the `agents` array from an `agent.list` reply
+ *
+ * Learns which room is whose conversation, and forgets agents that have
+ * gone.
+ *
+ * Called wherever the fleet is listed rather than from the event
+ * handler: a request issued from there would run while a page render is
+ * blocked inside its own request on the same context.
+ */
+void clawt_web_app_note_fleet(ClawtWebApp *self, JsonArray *agents);
+
+/**
+ * clawt_web_app_set_viewing:
+ * @self: a #ClawtWebApp
+ * @agent_id: (nullable): whose conversation is on screen, or %NULL
+ *
+ * Says which conversation is being read, and clears its count.
+ *
+ * Opening a conversation is the only thing that clears one.  Not
+ * scrolling, not time passing: a counter that decays on its own is a
+ * counter you stop trusting.
+ */
+void clawt_web_app_set_viewing(ClawtWebApp *self, const gchar *agent_id);
+
+/**
  * clawt_web_app_switch:
  * @self: a #ClawtWebApp
  * @connection: (transfer none): the daemon to talk to instead

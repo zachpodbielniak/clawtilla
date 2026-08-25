@@ -888,6 +888,15 @@ clawt_web_page(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view,
                               clawt_web_view_title(view))
             : g_strdup("clawtilla");
 
+    /*
+     * Which conversation is being read, so an arrival in it does not
+     * accrue a count -- the same rule the GTK client applies from its
+     * selected room.  Set before the sidebar is built, because the
+     * sidebar is what draws the counts.
+     */
+    clawt_web_app_set_viewing(app, (view == CLAWT_WEB_VIEW_CHAT)
+                                       ? agent_id : NULL);
+
     open_document(builder, title, look);
 
     htmx_element_add_class(HTMX_ELEMENT(frame), "app");

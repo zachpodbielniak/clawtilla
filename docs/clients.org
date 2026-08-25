@@ -482,16 +482,68 @@ unreadable and therefore unable to fix itself.
 
 *** The sidebar
 
-Each agent shows a state dot, its description, and badges:
+Each agent shows a state dot, what it is doing, and badges:
 
-- a *queue badge* when mail is waiting -- a stopped agent with mail looks
-  identical to an idle one otherwise, and that difference is the whole
-  point of durable mailboxes
+- a filled *unread count* when that agent has said something to you that
+  you have not opened -- see below
 - a red *HOST* badge when the agent can run commands on the real machine
 - a *CHIEF* badge on the chief of staff
 
+Mail waiting for the *agent* is in the subtitle -- =3 waiting to be
+read=, or =working… · 3 waiting= when it is mid-turn -- rather than as a
+second number beside the unread count.  Two numbers in one narrow row,
+both about "messages" and meaning opposite things, is not readable.
+
 Colour is never the only signal: the state is in the tooltip and in the
-inspector too.
+inspector, and a row with unread messages has its name in *bold* as well
+as the pill.
+
+*** Unread
+
+A filled pill at the trailing edge of the row, and the fleet-wide total
+on the *Chat* tab.  It counts messages an agent sent *to you* while you
+were looking somewhere else -- a different agent's conversation, or a
+different page.
+
+This is not the same as the transcript's *New messages* rule, and the
+two never fire for the same message:
+
+| where the message landed | what says so |
+|--------------------------+--------------|
+| the conversation on screen, below the fold | the *New messages* rule and pill, no count |
+| any other conversation | the sidebar count, and the total on Chat |
+
+So a conversation that is on screen never accrues a count, whatever the
+scroll position.
+
+*Opening the conversation is the only thing that clears it.*  Not
+scrolling, not the window gaining focus, not time passing: a counter that
+decays on its own is a counter you stop trusting.
+
+*The Chat tab is not badged while you are reading Chat* with the sidebar
+open, because the sidebar beside it is saying exactly /which/ agent --
+strictly more information.  With the sidebar collapsed to a drawer the
+badge stays, since then nothing else is saying so.
+
+Two limits, stated rather than buried:
+
+- *It is what arrived while this client was connected.*  It does not
+  survive a restart, and it deliberately ignores the events the daemon
+  replays when a client subscribes -- those may well have been read in
+  the previous session, and counting them would open a fresh window
+  already showing a number for a conversation nobody has touched.
+- *In the web client the count belongs to the server, not the browser.*
+  ~clawtilla-web~ binds the loopback and the tailnet for one operator; a
+  second browser would share the counts rather than get its own.
+
+The number is not capped at =99+=.  The usual justification is width and
+it is measurably false: at the client's caption size =99+= is wider than
+the three-digit number it would replace.
+
+Agents with unread messages do *not* float to the top.  The list is
+grouped by team and hand-ordered, and a list that rearranges itself under
+your hand costs the spatial memory that makes a sidebar fast to save you
+a glance.
 
 *Right-click an agent* for Start, Stop, Restart, its *Team*, and Delete.
 These are on the Agent tab as well, but reaching them there means leaving

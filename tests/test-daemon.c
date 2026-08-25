@@ -2272,6 +2272,65 @@ count_broken_warnings(const gchar *domain, GLogLevelFlags level,
 }
 
 /*
+ * Every agent says which room the operator's conversation with it is.
+ *
+ * A client needs it to tell a message meant for the person from the
+ * fleet's own peer traffic, and it needs it for agents it has *never
+ * opened* -- which is exactly the agent an unread count exists for.  It
+ * is reported rather than derived because how a direct room is named is
+ * the daemon's business: the GTK client already carries a comment saying
+ * a client that takes "dm:a:b" apart is one that breaks when that
+ * changes.
+ *
+ * Asserted against clawt_room_manager_direct_id() rather than against a
+ * literal, so this is a test that the two agree rather than a second
+ * copy of the format to fall out of step with the first.
+ */
+static void
+test_agents_report_their_direct_room(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) listed = NULL;
+    g_autofree gchar *expected = NULL;
+    JsonArray *agents;
+    JsonObject *agent;
+
+    fixture_setup(&fixture, "agents:\n  - id: solo\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    listed = request(&fixture, "agent.list", "{}");
+    g_assert_false(clawt_ipc_frame_is_error(listed));
+
+    agents = json_object_get_array_member(clawt_ipc_frame_get_payload(listed),
+                                          "agents");
+    g_assert_cmpuint(json_array_get_length(agents), ==, 1);
+
+    agent = json_array_get_object_element(agents, 0);
+    expected = clawt_room_manager_direct_id("user", "solo");
+
+    g_assert_cmpstr(clawt_ipc_payload_string(agent, "dm_room"), ==, expected);
+
+    /*
+     * And it is the room a history request resolves to, which is the
+     * whole point: a client matching an arriving message against this
+     * has to be matching against the same room the daemon routes into.
+     */
+    {
+        g_autoptr(JsonNode) history = request(&fixture, "room.history",
+                                              "{\"room\":\"solo\","
+                                              "\"as\":\"user\"}");
+
+        g_assert_false(clawt_ipc_frame_is_error(history));
+        g_assert_cmpstr(clawt_ipc_payload_string(
+                            clawt_ipc_frame_get_payload(history), "room"),
+                        ==, expected);
+    }
+
+    fixture_teardown(&fixture);
+}
+
+
+/*
  * A handler that re-renders the fleet says which agents it could not.
  *
  * clawtilla refuses a `libreclaw:` passthrough that redeclares a section
@@ -2991,6 +3050,8 @@ main(int argc, char *argv[])
                     test_setting_a_key_rewrites_what_it_affects);
     g_test_add_func("/daemon/refused-render-is-reported",
                     test_a_refused_render_is_reported);
+    g_test_add_func("/daemon/agents-report-their-direct-room",
+                    test_agents_report_their_direct_room);
     g_test_add_func("/daemon/create-starts-the-agent",
                     test_creating_an_agent_starts_it);
     g_test_add_func("/daemon/create-can-leave-it-stopped",

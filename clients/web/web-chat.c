@@ -928,6 +928,16 @@ on_transcript_fragment(HtmxRequest *request, GHashTable *params,
 
     (void)request;
 
+    /*
+     * The transcript is re-fetched on every fleet event, so this fires
+     * whenever a message arrives for whoever is reading -- which makes
+     * it the moment their conversation counts as read.  Without it a
+     * reader sitting on a chat would watch its own pill appear in the
+     * sidebar and stay: the page render that clears the count only
+     * happens on a navigation.
+     */
+    clawt_web_app_set_viewing(app, agent_id);
+
     fragment = transcript(app, agent_id, FALSE);
 
     return clawt_web_fragment_response(fragment);

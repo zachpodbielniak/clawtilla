@@ -289,14 +289,9 @@ clawt_room_manager_get(ClawtRoomManager *self, const gchar *room_id)
     return g_hash_table_lookup(self->rooms, room_id);
 }
 
-ClawtRoom *
-clawt_room_manager_get_direct(ClawtRoomManager *self, const gchar *a,
-                              const gchar *b)
+gchar *
+clawt_room_manager_direct_id(const gchar *a, const gchar *b)
 {
-    g_autofree gchar *room_id = NULL;
-    ClawtRoom *room;
-
-    g_return_val_if_fail(CLAWT_IS_ROOM_MANAGER(self), NULL);
     g_return_val_if_fail(a != NULL, NULL);
     g_return_val_if_fail(b != NULL, NULL);
 
@@ -310,9 +305,23 @@ clawt_room_manager_get_direct(ClawtRoomManager *self, const gchar *a,
      * room they were handed.
      */
     if (g_strcmp0(a, b) <= 0)
-        room_id = g_strdup_printf("dm:%s:%s", a, b);
-    else
-        room_id = g_strdup_printf("dm:%s:%s", b, a);
+        return g_strdup_printf("dm:%s:%s", a, b);
+
+    return g_strdup_printf("dm:%s:%s", b, a);
+}
+
+ClawtRoom *
+clawt_room_manager_get_direct(ClawtRoomManager *self, const gchar *a,
+                              const gchar *b)
+{
+    g_autofree gchar *room_id = NULL;
+    ClawtRoom *room;
+
+    g_return_val_if_fail(CLAWT_IS_ROOM_MANAGER(self), NULL);
+    g_return_val_if_fail(a != NULL, NULL);
+    g_return_val_if_fail(b != NULL, NULL);
+
+    room_id = clawt_room_manager_direct_id(a, b);
 
     room = g_hash_table_lookup(self->rooms, room_id);
     if (room != NULL)

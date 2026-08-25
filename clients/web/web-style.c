@@ -252,6 +252,19 @@ clawt_web_stylesheet(void)
      * are the same pair, and appear only when something has actually
      * arrived rather than merely because the reader scrolled up.
      */
+    /*
+     * The unread pill -- what has arrived from an agent since its
+     * conversation was last opened.  Filled, because every other badge
+     * in that row is outlined: filled means for you, outlined means
+     * about the agent.  Tokens, never a hex value, so a palette
+     * recolours it for free.
+     */
+    ".unread-badge{display:inline-block;min-width:8px;padding:1px 6px;"
+    "border-radius:9px;font-size:11px;font-weight:700;line-height:16px;"
+    "text-align:center;background:var(--info-fg);color:var(--surface);"
+    "margin-left:6px;}"
+    /* Colour is never the only signal; the name goes bold beside it. */
+    ".agent-row.is-unread .agent-name{font-weight:700;}"
     ".unread-rule{display:flex;align-items:center;gap:12px;margin:26px 0 22px;"
       "font-size:11px;letter-spacing:0.08em;text-transform:uppercase;"
       "color:var(--bad-fg)}"

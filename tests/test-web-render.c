@@ -51,6 +51,18 @@ clawt_web_topbar(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view)
     return HTMX_ELEMENT(htmx_div_new());
 }
 
+/*
+ * Which conversation is on screen, which the page tells the app so an
+ * arrival in it does not accrue an unread count.  It needs the app,
+ * which needs a daemon.
+ */
+void
+clawt_web_app_set_viewing(ClawtWebApp *app, const gchar *agent_id)
+{
+    (void)app;
+    (void)agent_id;
+}
+
 /* ── Escaping ────────────────────────────────────────────────────── */
 
 /*

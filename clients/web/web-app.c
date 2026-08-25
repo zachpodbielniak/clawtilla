@@ -20,6 +20,37 @@ struct _ClawtWebApp {
     GPtrArray   *streams;     /* HtmxSseConnection*, owned */
     gchar       *last_error;
     gchar       *last_refusal;
+
+    /*
+     * What arrived while the reader was somewhere else.
+     *
+     * Keyed by agent id; `dm_rooms` maps the room an event names to the
+     * agent whose conversation it is, from the `dm_room` the daemon
+     * reports beside every agent -- so nothing here takes "dm:a:b"
+     * apart, which is the daemon's business and has changed before.
+     *
+     * `viewing` is the agent whose chat was last rendered, and is how
+     * this applies the same rule the GTK client does: a conversation on
+     * screen never accrues, a conversation elsewhere does.  It is one
+     * reader's state on a server that could in principle be answering
+     * two browsers, and that is the honest limit of it -- clawtilla-web
+     * binds the loopback and the tailnet for one operator, and a second
+     * reader would share the counts rather than get their own.
+     */
+    GHashTable  *unread;
+    GHashTable  *dm_rooms;
+    gchar       *viewing;
+
+    /*
+     * When this app connected, in microseconds.
+     *
+     * A client subscribes from cursor 0 and the daemon replays its
+     * recent events, so the first thing received is everything that has
+     * just happened.  Counting those would give a freshly started web
+     * client a number for a conversation nobody has touched.  Replayed
+     * events keep their original timestamps, so this is the whole test.
+     */
+    gint64       connected_at;
     gchar       *connection_name;
 };
 
@@ -106,6 +137,105 @@ clawt_web_app_last_refusal(ClawtWebApp *self)
     g_return_val_if_fail(CLAWT_IS_WEB_APP(self), NULL);
 
     return self->last_refusal;
+}
+
+guint
+clawt_web_app_unread(ClawtWebApp *self, const gchar *agent_id)
+{
+    g_return_val_if_fail(CLAWT_IS_WEB_APP(self), 0);
+
+    if (agent_id == NULL)
+        return 0;
+
+    return GPOINTER_TO_UINT(g_hash_table_lookup(self->unread, agent_id));
+}
+
+guint
+clawt_web_app_unread_total(ClawtWebApp *self)
+{
+    GHashTableIter iter;
+    gpointer value;
+    guint total = 0;
+
+    g_return_val_if_fail(CLAWT_IS_WEB_APP(self), 0);
+
+    g_hash_table_iter_init(&iter, self->unread);
+
+    while (g_hash_table_iter_next(&iter, NULL, &value))
+        total += GPOINTER_TO_UINT(value);
+
+    return total;
+}
+
+void
+clawt_web_app_note_fleet(ClawtWebApp *self, JsonArray *agents)
+{
+    g_autoptr(GHashTable) live = NULL;
+    GHashTableIter iter;
+    gpointer key;
+    guint i;
+
+    g_return_if_fail(CLAWT_IS_WEB_APP(self));
+
+    if (agents == NULL)
+        return;
+
+    live = g_hash_table_new(g_str_hash, g_str_equal);
+
+    g_hash_table_remove_all(self->dm_rooms);
+
+    for (i = 0; i < json_array_get_length(agents); i++) {
+        JsonObject *agent = json_array_get_object_element(agents, i);
+        JsonNode *room;
+        const gchar *id;
+
+        if (agent == NULL || !json_object_has_member(agent, "id"))
+            continue;
+
+        id = json_object_get_string_member(agent, "id");
+        g_hash_table_add(live, (gpointer)id);
+
+        if (!json_object_has_member(agent, "dm_room"))
+            continue;
+
+        room = json_object_get_member(agent, "dm_room");
+
+        if (json_node_get_value_type(room) != G_TYPE_STRING)
+            continue;
+
+        g_hash_table_insert(self->dm_rooms,
+                            g_strdup(json_node_get_string(room)),
+                            g_strdup(id));
+    }
+
+    /*
+     * And forget the count for an agent that is no longer in the fleet.
+     * Without this a removed agent's number stays in the total on the
+     * Chat tab for ever, pointing at a row nobody can open to clear it.
+     */
+    g_hash_table_iter_init(&iter, self->unread);
+
+    while (g_hash_table_iter_next(&iter, &key, NULL)) {
+        if (!g_hash_table_contains(live, key))
+            g_hash_table_iter_remove(&iter);
+    }
+}
+
+void
+clawt_web_app_set_viewing(ClawtWebApp *self, const gchar *agent_id)
+{
+    g_return_if_fail(CLAWT_IS_WEB_APP(self));
+
+    g_free(self->viewing);
+    self->viewing = g_strdup(agent_id);
+
+    /*
+     * Opening a conversation is the only thing that clears its count --
+     * the same single rule the GTK client follows.  A counter that
+     * decays on its own is a counter you stop trusting.
+     */
+    if (agent_id != NULL)
+        g_hash_table_remove(self->unread, agent_id);
 }
 
 ClawtClient *
@@ -249,6 +379,29 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
 
     (void)client;
 
+    /*
+     * A message in somebody's conversation with an agent, in a
+     * conversation that is not the one on screen.
+     *
+     * Nothing here asks the daemon anything: a request from an event
+     * handler would run while a page render is blocked inside its own
+     * request on the same context, which is the re-entrancy this client
+     * has already been bitten by.  The room map is filled in from the
+     * fleet listing the sidebar fetches anyway.
+     */
+    if (g_strcmp0(kind, "message") == 0) {
+        const gchar *from = clawt_event_get_detail(event, "from");
+        const gchar *agent_id = (subject != NULL)
+            ? g_hash_table_lookup(self->dm_rooms, subject) : NULL;
+
+        if (agent_id != NULL && g_strcmp0(from, "user") != 0 &&
+            g_strcmp0(agent_id, self->viewing) != 0 &&
+            clawt_event_get_timestamp(event) >= self->connected_at)
+            g_hash_table_insert(
+                self->unread, g_strdup(agent_id),
+                GUINT_TO_POINTER(clawt_web_app_unread(self, agent_id) + 1));
+    }
+
     for (i = 0; i < self->streams->len; i++) {
         HtmxSseConnection *connection = g_ptr_array_index(self->streams, i);
 
@@ -280,6 +433,7 @@ clawt_web_app_new(ClawtClient *client)
 
     self = g_object_new(CLAWT_TYPE_WEB_APP, NULL);
     self->client = g_object_ref(client);
+    self->connected_at = g_get_real_time();
 
     g_signal_connect(client, "event", G_CALLBACK(on_daemon_event), self);
 
@@ -298,6 +452,9 @@ clawt_web_app_finalize(GObject *object)
     g_clear_pointer(&self->streams, g_ptr_array_unref);
     g_clear_pointer(&self->last_error, g_free);
     g_clear_pointer(&self->last_refusal, g_free);
+    g_clear_pointer(&self->unread, g_hash_table_unref);
+    g_clear_pointer(&self->dm_rooms, g_hash_table_unref);
+    g_clear_pointer(&self->viewing, g_free);
     g_clear_pointer(&self->connection_name, g_free);
 
     G_OBJECT_CLASS(clawt_web_app_parent_class)->finalize(object);
@@ -313,6 +470,10 @@ static void
 clawt_web_app_init(ClawtWebApp *self)
 {
     self->streams = g_ptr_array_new_with_free_func(g_object_unref);
+    self->unread = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                         NULL);
+    self->dm_rooms = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                           g_free);
 }
 
 /* ── Reading a reply ─────────────────────────────────────────────── */

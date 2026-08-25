@@ -273,6 +273,42 @@ struct _ClawtWindow {
      */
     gchar             *selected_room;
 
+    /*
+     * What arrived while you were looking somewhere else.
+     *
+     * Keyed by agent id rather than by room, because the client only
+     * learns a room id for an agent it has already opened -- and the
+     * agent this exists for is precisely the one nobody has opened.
+     * `dm_rooms` maps the other way, from the room an event names to the
+     * agent whose conversation it is, and is rebuilt from every fleet
+     * listing: the daemon reports each agent's `dm_room` so no client
+     * has to take "dm:a:b" apart.
+     *
+     * Session-scoped on purpose.  A count that survived a restart would
+     * need a read position per agent that outlives the process, which is
+     * a protocol question rather than a display one.  Everything here is
+     * driven by one integer per agent, so that answer can change later
+     * without any of this changing.
+     */
+    GHashTable        *unread;
+    GHashTable        *dm_rooms;
+    AdwViewStackPage  *chat_page;
+
+    /*
+     * When this window last connected, in microseconds.
+     *
+     * A client subscribes from cursor 0 and the daemon replays its
+     * recent events, so the first thing a fresh window receives is
+     * everything that has just happened -- messages the operator may
+     * well have read in the last session.  Counting those would make a
+     * window open already showing a number for a conversation nobody
+     * has touched, and would make the count depend on whether the
+     * replay happened to arrive before or after the first fleet
+     * listing.  Replayed events keep their original timestamps, so this
+     * is the whole of the test.
+     */
+    gint64             connected_at;
+
     /* The flow page: who has been talking to whom, and about what. */
     GtkListBox        *flow_list;
     GtkBox            *flow_transcript;
@@ -357,6 +393,7 @@ refresh_repeat(ClawtWindow *self, ClawtRefreshKind kind)
 }
 
 static void refresh_agents(ClawtWindow *self);
+static void update_unread_tab(ClawtWindow *self);
 static void refresh_selected(ClawtWindow *self);
 static JsonObject *find_integration(JsonNode *reply, const gchar *name);
 static void refresh_routines(ClawtWindow *self);
@@ -484,8 +521,125 @@ badge(const gchar *text, const gchar *css_class, const gchar *tooltip)
     return label;
 }
 
+/* ── Unread ──────────────────────────────────────────────────────── */
+
+static guint
+unread_for(ClawtWindow *self, const gchar *agent_id)
+{
+    if (agent_id == NULL || self->unread == NULL)
+        return 0;
+
+    return GPOINTER_TO_UINT(g_hash_table_lookup(self->unread, agent_id));
+}
+
+/*
+ * The total on the Chat tab of the page switcher.
+ *
+ * libadwaita draws this itself and draws it *accent-coloured* only when
+ * `needs-attention` is set beside `badge-number` -- its own rule reads
+ * the accent token, so a palette recolours it and this client writes no
+ * CSS for it at all.
+ *
+ * Not shown while you are already on the chat page with the sidebar
+ * open: the sidebar beside it is saying exactly *which* agent, which is
+ * strictly more information, and a badge on the page you are looking at
+ * is noise.  It stays when the sidebar is collapsed to a drawer, because
+ * then there is nothing else saying so.
+ */
+static void
+update_unread_tab(ClawtWindow *self)
+{
+    GHashTableIter iter;
+    gpointer value;
+    guint total = 0;
+    gboolean hide;
+
+    if (self->chat_page == NULL || self->unread == NULL)
+        return;
+
+    g_hash_table_iter_init(&iter, self->unread);
+
+    while (g_hash_table_iter_next(&iter, NULL, &value))
+        total += GPOINTER_TO_UINT(value);
+
+    hide = g_strcmp0(adw_view_stack_get_visible_child_name(self->pages),
+                     "chat") == 0 &&
+           self->split != NULL &&
+           !adw_overlay_split_view_get_collapsed(self->split);
+
+    adw_view_stack_page_set_badge_number(self->chat_page,
+                                         hide ? 0 : total);
+    adw_view_stack_page_set_needs_attention(self->chat_page,
+                                            !hide && total > 0);
+}
+
+/*
+ * Counts a message that arrived somewhere you are not looking.
+ *
+ * The rule is the room, not the sender: a room that is on screen never
+ * accrues unread whatever the scroll position -- that case belongs to
+ * the transcript's own "New messages" pill, which deliberately carries
+ * no count -- and a room that is not on screen accrues one.  Only rooms
+ * that are somebody's conversation with the operator count, so the
+ * fleet's agent-to-agent traffic never does.
+ */
+static void
+note_unread(ClawtWindow *self, ClawtEvent *event, const gchar *from)
+{
+    const gchar *room_id = clawt_event_get_subject(event);
+    const gchar *agent_id;
+    guint count;
+
+    if (room_id == NULL || from == NULL || g_strcmp0(from, "user") == 0)
+        return;
+
+    /* Replayed, not new. */
+    if (clawt_event_get_timestamp(event) < self->connected_at)
+        return;
+
+    if (g_strcmp0(room_id, self->selected_room) == 0)
+        return;
+
+    agent_id = g_hash_table_lookup(self->dm_rooms, room_id);
+
+    if (agent_id == NULL)
+        return;
+
+    count = unread_for(self, agent_id) + 1;
+    g_hash_table_insert(self->unread, g_strdup(agent_id),
+                        GUINT_TO_POINTER(count));
+}
+
+/*
+ * The count of messages waiting for *you*, as a filled pill.
+ *
+ * Filled is the whole signal.  Everything else in that row -- HOST,
+ * CHIEF, the queue number that used to be here -- is a coloured caption,
+ * so a filled pill is unambiguous against all of them without anything
+ * moving: filled means for you, text means about the agent.
+ *
+ * No 99+ cap.  The usual reason is width and it is measurably false
+ * here: at the client's caption size "99+" is wider than the three-digit
+ * number it would replace.
+ */
 static GtkWidget *
-agent_row(JsonObject *agent)
+unread_badge(guint count)
+{
+    g_autofree gchar *text = g_strdup_printf("%u", count);
+    GtkWidget *label = gtk_label_new(text);
+
+    gtk_widget_add_css_class(label, "caption");
+    gtk_widget_add_css_class(label, "clawt-unread-badge");
+    gtk_widget_set_tooltip_text(
+        label, count == 1 ? "1 message you have not read"
+                          : "messages you have not read");
+    gtk_widget_set_valign(label, GTK_ALIGN_CENTER);
+
+    return label;
+}
+
+static GtkWidget *
+agent_row(JsonObject *agent, guint unread)
 {
     GtkWidget *row = adw_action_row_new();
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
@@ -510,11 +664,25 @@ agent_row(JsonObject *agent)
         const gchar *peer = clawt_json_string(agent, "peer", NULL);
         g_autofree gchar *activity = NULL;
 
-        if (busy && peer != NULL && g_strcmp0(peer, "user") != 0)
+        /*
+         * The queue moved here in full when the trailing edge became the
+         * unread count's.  Two numbers in one 281px row, both about
+         * "messages" and meaning opposite things, is not readable -- and
+         * the depth was already written out here anyway.
+         *
+         * Said for a stopped agent too, which the badge never was: mail
+         * waiting for an agent that is not running is exactly the case
+         * durable mailboxes exist for, and that row had no subtitle at
+         * all.
+         */
+        if (busy && depth > 0)
+            activity = g_strdup_printf(
+                "working… · %" G_GINT64_FORMAT " waiting", depth);
+        else if (busy && peer != NULL && g_strcmp0(peer, "user") != 0)
             activity = g_strdup_printf("working — for %s", peer);
         else if (busy)
             activity = g_strdup("working…");
-        else if (g_strcmp0(state, "running") == 0 && depth > 0)
+        else if (depth > 0)
             activity = g_strdup_printf(
                 "%" G_GINT64_FORMAT " waiting to be read", depth);
 
@@ -541,15 +709,26 @@ agent_row(JsonObject *agent)
     adw_action_row_add_prefix(ADW_ACTION_ROW(row), state_dot(state));
 
     /*
-     * A queue badge, because a stopped agent with mail waiting looks
-     * identical to an idle one otherwise -- and the difference is the
-     * whole point of having durable mailboxes.
+     * The unread count, and *not* the mailbox depth.
+     *
+     * This row drew the depth for a long time, tooltipped "messages
+     * waiting", and the event handler's own comment called it "what
+     * tells you something happened elsewhere".  The intent was right and
+     * it was wired to the wrong number: the depth is the agent's inbound
+     * queue -- work waiting for it to read -- which is close to the
+     * opposite.  An agent that has just answered you has depth 0 and
+     * showed nothing, while one buried in peer traffic showed a large
+     * number and had said nothing to you at all.
      */
-    if (depth > 0) {
-        g_autofree gchar *text = g_strdup_printf("%" G_GINT64_FORMAT, depth);
+    if (unread > 0) {
+        gtk_box_append(GTK_BOX(box), unread_badge(unread));
 
-        gtk_box_append(GTK_BOX(box),
-                       badge(text, "accent", "messages waiting"));
+        /*
+         * ...and the title goes bold.  Colour is never the only signal
+         * here -- the same rule the state dot already follows -- and
+         * bold survives both a colourblind reader and a glance.
+         */
+        gtk_widget_add_css_class(row, "clawt-unread");
     }
 
     /*
@@ -1446,6 +1625,26 @@ refresh_agents_once(ClawtWindow *self)
 
     agents = json_object_get_array_member(clawt_payload_of(reply), "agents");
 
+    /*
+     * Which room is whose conversation, from the daemon's own answer.
+     *
+     * Rebuilt on every listing rather than kept, so an agent added,
+     * removed or renamed cannot leave a stale entry behind pointing an
+     * arriving message at somebody who is not there.
+     */
+    g_hash_table_remove_all(self->dm_rooms);
+
+    for (i = 0; i < json_array_get_length(agents); i++) {
+        JsonObject *agent = json_array_get_object_element(agents, i);
+        const gchar *dm = clawt_json_string(agent, "dm_room", NULL);
+
+        if (dm != NULL)
+            g_hash_table_insert(self->dm_rooms, g_strdup(dm),
+                                g_strdup(clawt_json_string(agent, "id", "")));
+    }
+
+    update_unread_tab(self);
+
     if (json_array_get_length(agents) == 0) {
         GtkWidget *row = adw_action_row_new();
 
@@ -1490,7 +1689,8 @@ refresh_agents_once(ClawtWindow *self)
         if (team_is_collapsed(self, team != NULL ? team : ""))
             continue;
 
-        row = agent_row(agent);
+        row = agent_row(agent, unread_for(self, clawt_json_string(agent, "id",
+                                                                  "")));
         gtk_list_box_append(self->sidebar, row);
 
         /*
@@ -1580,6 +1780,43 @@ static GtkCssProvider *appearance_provider = NULL;
 static gchar          *appearance_code_font = NULL;
 
 /*
+ * Structure this client draws that libadwaita has no widget for.
+ *
+ * Concatenated ahead of the generated appearance sheet rather than given
+ * a provider of its own: a second provider at the same priority would
+ * make which sheet wins depend on the order they were added, and the
+ * appearance rules already had to be reduced to one provider once for
+ * exactly that reason.
+ *
+ * Every colour is a libadwaita named colour, never a hex value.  That is
+ * what makes a palette a palette swap rather than a second pass over
+ * every rule here -- the Catppuccin sheet redefines `accent_bg_color`
+ * and this follows it for free.
+ */
+static const gchar CLAWT_STRUCTURE_CSS[] =
+    /*
+     * The unread pill.  Filled, because everything else in that row is a
+     * coloured caption: filled means for you, text means about the
+     * agent.
+     */
+    ".clawt-unread-badge {\n"
+    "  background-color: @accent_bg_color;\n"
+    "  color: @accent_fg_color;\n"
+    "  border-radius: 9px;\n"
+    "  min-height: 18px;\n"
+    "  min-width: 6px;\n"
+    "  padding: 0 6px;\n"
+    "  font-weight: bold;\n"
+    "}\n"
+    /*
+     * ...and the name in bold beside it.  Colour is never the only
+     * signal in this client; the state dot already holds that rule.
+     */
+    ".clawt-unread .title {\n"
+    "  font-weight: bold;\n"
+    "}\n";
+
+/*
  * Applies fonts and colour scheme.
  *
  * Called on startup and on every change in the settings dialog, so the
@@ -1621,7 +1858,11 @@ apply_appearance(ClawtAppearance *appearance)
     appearance_code_font =
         g_strdup(clawt_appearance_get_monospace_font(appearance));
 
-    css = clawt_appearance_to_css(appearance);
+    {
+        g_autofree gchar *generated = clawt_appearance_to_css(appearance);
+
+        css = g_strconcat(CLAWT_STRUCTURE_CSS, generated, NULL);
+    }
 
     /*
      * One provider, reloaded, rather than a new one each time.  Adding a
@@ -6321,6 +6562,15 @@ select_agent(ClawtWindow *self, const gchar *agent_id)
     g_free(self->selected_agent);
     self->selected_agent = g_strdup(agent_id);
 
+    /*
+     * Opening a conversation is the only thing that clears its count.
+     *
+     * Not scrolling, not the window gaining focus, not time passing: a
+     * counter that decays on its own is a counter you stop trusting.
+     */
+    if (g_hash_table_remove(self->unread, agent_id))
+        update_unread_tab(self);
+
     entry_set_text(self, g_hash_table_lookup(self->drafts, agent_id));
 
     adw_window_title_set_title(
@@ -6700,6 +6950,12 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
 
             queue_scroll(self);
         }
+
+        /*
+         * Anything that was not for the room on screen counts.  Done
+         * before the refresh below, because that is what draws the pill.
+         */
+        note_unread(self, event, from);
 
         /*
          * The flow page is refreshed for every message, not only the one
@@ -8525,6 +8781,11 @@ forget_daemon_state(ClawtWindow *self)
 
     g_hash_table_remove_all(self->shown);
     g_hash_table_remove_all(self->drafts);
+    g_hash_table_remove_all(self->unread);
+    g_hash_table_remove_all(self->dm_rooms);
+
+    /* Whatever the next daemon replays belongs to before we got here. */
+    self->connected_at = g_get_real_time();
 
     /*
      * Teams are per-daemon too.  The refresh below repopulates this, but
@@ -14381,9 +14642,16 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
     /* ── Content ── */
     self->pages = ADW_VIEW_STACK(adw_view_stack_new());
 
-    adw_view_stack_add_titled_with_icon(self->pages, build_chat_page(self),
-                                        "chat", "Chat",
-                                        "user-available-symbolic");
+    /*
+     * The chat page is kept, not discarded, because the total unread is
+     * drawn on it -- adw_view_stack_add_titled_with_icon() returns the
+     * page and every other call here throws it away.
+     */
+    self->chat_page =
+        adw_view_stack_add_titled_with_icon(self->pages,
+                                            build_chat_page(self),
+                                            "chat", "Chat",
+                                            "user-available-symbolic");
     adw_view_stack_add_titled_with_icon(self->pages,
                                         build_inspector_page(self),
                                         "agent", "Agent",
@@ -14478,6 +14746,17 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
     g_object_bind_property(sidebar_button, "active", self->split,
                            "show-sidebar",
                            G_BINDING_BIDIRECTIONAL | G_BINDING_SYNC_CREATE);
+
+    /*
+     * Whether the Chat tab carries its badge depends on which page is up
+     * and whether the sidebar is a drawer, so both have to be watched --
+     * neither changes the counts themselves, and without this the badge
+     * is right only until somebody switches page.
+     */
+    g_signal_connect_swapped(self->pages, "notify::visible-child-name",
+                             G_CALLBACK(update_unread_tab), self);
+    g_signal_connect_swapped(self->split, "notify::collapsed",
+                             G_CALLBACK(update_unread_tab), self);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sidebar_button), TRUE);
 
     /*
@@ -14558,6 +14837,8 @@ clawt_window_dispose(GObject *object)
     g_clear_pointer(&self->flow_room, g_free);
     g_clear_pointer(&self->shown, g_hash_table_unref);
     g_clear_pointer(&self->drafts, g_hash_table_unref);
+    g_clear_pointer(&self->unread, g_hash_table_unref);
+    g_clear_pointer(&self->dm_rooms, g_hash_table_unref);
     g_clear_pointer(&self->pending, g_ptr_array_unref);
 
 
@@ -14603,6 +14884,11 @@ clawt_window_init(ClawtWindow *self)
                                         NULL);
     self->drafts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                          g_free);
+    self->unread = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                         NULL);
+    self->connected_at = g_get_real_time();
+    self->dm_rooms = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                           g_free);
     self->pending = g_ptr_array_new_with_free_func(
         (GDestroyNotify)attachment_free);
 

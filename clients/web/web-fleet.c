@@ -131,7 +131,8 @@ clawt_web_find_agent(ClawtWebApp *app, const gchar *agent_id)
 /* ── The sidebar ─────────────────────────────────────────────────── */
 
 static HtmxElement *
-agent_row(JsonObject *agent, const gchar *selected, ClawtWebView view)
+agent_row(JsonObject *agent, const gchar *selected, ClawtWebView view,
+          guint unread)
 {
     const gchar *id = clawt_web_member(agent, "id", "?");
     const gchar *name = clawt_web_member(agent, "name", id);
@@ -164,6 +165,30 @@ agent_row(JsonObject *agent, const gchar *selected, ClawtWebView view)
 
     if (clawt_web_member_bool(agent, "chief_of_staff", FALSE))
         clawt_web_add(line, clawt_web_badge("chief", "info"));
+
+    /*
+     * What has arrived from this agent since its conversation was last
+     * opened -- and *not* the queue depth below, which is the opposite
+     * thing: work waiting for the agent to read rather than for you.
+     *
+     * A filled pill, because everything else in this row is an outlined
+     * badge: filled means for you, outlined means about the agent.  The
+     * row also gains a class that bolds the name, so colour is never the
+     * only signal.
+     */
+    if (unread > 0) {
+        g_autoptr(HtmxSpan) pill = htmx_span_new();
+        g_autofree gchar *text = g_strdup_printf("%u", unread);
+
+        htmx_element_add_class(HTMX_ELEMENT(row), "is-unread");
+        htmx_element_add_class(HTMX_ELEMENT(pill), "unread-badge");
+        htmx_element_set_attribute(HTMX_ELEMENT(pill), "title",
+                                   unread == 1
+                                       ? "1 message you have not read"
+                                       : "messages you have not read");
+        htmx_node_set_text_content(HTMX_NODE(pill), text);
+        htmx_node_add_child(HTMX_NODE(line), HTMX_NODE(pill));
+    }
 
     htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(line));
 
@@ -438,6 +463,14 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtWebView view)
     agents = clawt_web_member_array(clawt_web_root(reply), "agents");
     teams = clawt_web_member_array(clawt_web_root(teams_reply), "teams");
 
+    /*
+     * Which room is whose conversation, learned here because this is
+     * where the fleet is listed anyway.  The event handler cannot ask
+     * the daemon itself: a request from there would run while a page
+     * render is blocked inside its own request on the same context.
+     */
+    clawt_web_app_note_fleet(app, agents);
+
     if (agents == NULL) {
         const gchar *why = clawt_web_app_last_error(app);
 
@@ -475,7 +508,10 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtWebView view)
             first = FALSE;
         }
 
-        clawt_web_add(scroll, agent_row(agent, selected, view));
+        clawt_web_add(scroll,
+                      agent_row(agent, selected, view,
+                                clawt_web_app_unread(
+                                    app, clawt_web_member(agent, "id", ""))));
 
         /*
          * Shown only for the row somebody is looking at, so the sidebar
@@ -615,6 +651,26 @@ clawt_web_topbar(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view)
         if ((ClawtWebView)i == view)
             htmx_element_set_attribute(HTMX_ELEMENT(tab), "aria-current",
                                        "page");
+
+        /*
+         * The fleet-wide total on Chat, and not while Chat is what you
+         * are reading: the sidebar beside it is saying exactly *which*
+         * agent, which is strictly more information, and a badge on the
+         * page you are looking at is noise.
+         */
+        if ((ClawtWebView)i == CLAWT_WEB_VIEW_CHAT &&
+            view != CLAWT_WEB_VIEW_CHAT) {
+            guint total = clawt_web_app_unread_total(app);
+
+            if (total > 0) {
+                g_autoptr(HtmxSpan) pill = htmx_span_new();
+                g_autofree gchar *text = g_strdup_printf("%u", total);
+
+                htmx_element_add_class(HTMX_ELEMENT(pill), "unread-badge");
+                htmx_node_set_text_content(HTMX_NODE(pill), text);
+                htmx_node_add_child(HTMX_NODE(tab), HTMX_NODE(pill));
+            }
+        }
 
         htmx_node_add_child(HTMX_NODE(tabs), HTMX_NODE(tab));
     }

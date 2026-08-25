@@ -72,6 +72,23 @@ ClawtRoom *clawt_room_manager_get(ClawtRoomManager *self,
                                   const gchar      *room_id);
 
 /**
+ * clawt_room_manager_direct_id:
+ * @a: one member
+ * @b: the other
+ *
+ * The id a direct room between @a and @b has, without making one.
+ *
+ * A client cannot work this out for itself -- how a direct room is named
+ * is the daemon's business, and a client that takes "dm:a:b" apart is a
+ * client that breaks when that changes.  So the daemon reports it, and
+ * both the reporting and the creation ask this rather than each
+ * spelling the format out.
+ *
+ * Returns: (transfer full): the id
+ */
+gchar *clawt_room_manager_direct_id(const gchar *a, const gchar *b);
+
+/**
  * clawt_room_manager_get_direct:
  * @self: a #ClawtRoomManager
  * @a: one agent id

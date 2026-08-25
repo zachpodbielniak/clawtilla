@@ -121,6 +121,14 @@ everything refers to a team by it. ~team.remove~ answers with
 fleet grouped by team so a client can emit a header when the team
 changes rather than gathering the fleet itself.
 
+It also carries ~dm_room~: the id of the room the operator's conversation
+with that agent is in.  Reported rather than derived, because how a
+direct room is named is the daemon's business -- a client that takes
+=dm:a:b= apart is a client that breaks when that changes.  It is what
+lets a client tell a message meant for the person from the fleet's own
+peer traffic, and it is answered for agents whose room does not exist
+yet, which is exactly the agent an unread count is for.
+
 ~agent.reorder~ takes ~agents~, the ids comma separated in the order
 wanted, and numbers them in tens.  An id it does not know is skipped
 rather than refused: the list comes from a client's view, which may be a

@@ -130,6 +130,8 @@ declare -A AFFORDANCES=(
     ["transcript measure"]="adw_clamp_new|transcript-inner"
     ["markdown rendering"]="clawt_markdown_to_pango|msg-body"
     ["attachment previews"]="append_attachment_previews|attachment"
+    ["unread count"]="clawt-unread-badge|unread-badge"
+    ["unread tab total"]="adw_view_stack_page_set_badge_number|unread_total"
 )
 
 usage () {
