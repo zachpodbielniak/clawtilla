@@ -2658,6 +2658,26 @@ Port to listen on. 0 asks the kernel for a free one, which is what you
 want with several agents: a fixed port means the second agent to start
 fails to bind.
 
+*** =agents.integrations.webhook.bind_address=
+
+- Type :: string
+- Default :: =127.0.0.1=
+- Since :: 0.1.0
+
+Which address to listen on.
+
+The loopback by default. An endpoint in shell_command mode runs a
+command, and bearer tokens are otherwise the only thing between that
+and whoever can reach the port -- so widening it is something you say
+rather than something you get. Set it to 0.0.0.0 for every interface,
+or to a private interface's address.
+
+The routing itself is libreclaw's channels.webhook.endpoints, which
+goes in the agent's `libreclaw:` block: it is a list of objects with
+nested targets and has no sensible spelling as a flat key. clawtilla
+merges that block into the channel it renders rather than refusing
+it.
+
 *** =agents.integrations.local=
 
 - Type :: boolean

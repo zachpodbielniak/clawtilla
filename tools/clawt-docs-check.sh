@@ -61,6 +61,55 @@ check_public_headers () {
     done
 }
 
+#
+# A key the docs name in `=daemon.socket=` markup exists somewhere.
+#
+# Most belong to clawtilla's schema.  Some belong to *libreclaw* and are
+# named here on purpose: the `libreclaw:` passthrough exists precisely so
+# an option clawtilla does not model is still reachable, and the webhook
+# routing at `channels.webhook.endpoints` is the case that has to be
+# written down.  Those are checked against libreclaw's own documented
+# defaults instead, by last segment, because the file is YAML rather than
+# a table this can look a full path up in.
+#
+# Checked rather than exempted: a doc naming a libreclaw key that
+# libreclaw does not have is exactly as misleading as one naming a
+# clawtilla key that clawtilla does not have.
+#
+LIBRECLAW_SECTIONS="agent ai session database skills channels tools
+                    memory logging otel plugins"
+LIBRECLAW_DEFAULTS="deps/libreclaw/data/default-config.yaml"
+
+# POSIX sh throughout, like the rest of this script: it runs from make
+# and has no reason to need bash.
+key_is_libreclaws () {
+    if [ $# -ne 1 ]
+    then
+        echo "key_is_libreclaws() requires 1 positional argument" >&2
+        exit 1
+    fi
+
+    local_head="${1%%.*}"
+    local_tail="${1##*.}"
+
+    [ -f "${LIBRECLAW_DEFAULTS}" ] || return 1
+
+    for local_section in ${LIBRECLAW_SECTIONS}
+    do
+        [ "${local_head}" = "${local_section}" ] || continue
+
+        if grep -qE "^[[:space:]]*#?[[:space:]]*${local_tail}:" \
+                "${LIBRECLAW_DEFAULTS}"
+        then
+            return 0
+        fi
+
+        return 1
+    done
+
+    return 1
+}
+
 check_doc_config_keys () {
     [ -f src/config/clawt-config-schema.c ] || return 0
     [ -d docs ] || return 0
@@ -69,11 +118,18 @@ check_doc_config_keys () {
     for local_key in $(grep -rhoE '=[a-z_]+(\.[a-z_]+)+=' docs/ 2>/dev/null \
                        | tr -d '=' | sort -u)
     do
-        if ! grep -q "\"${local_key}\"" src/config/clawt-config-schema.c
+        if grep -q "\"${local_key}\"" src/config/clawt-config-schema.c
         then
-            echo "docs-check: docs reference config key '${local_key}' which is not in the schema"
-            FAIL=1
+            continue
         fi
+
+        if key_is_libreclaws "${local_key}"
+        then
+            continue
+        fi
+
+        echo "docs-check: docs reference config key '${local_key}' which is not in the schema"
+        FAIL=1
     done
 }
 

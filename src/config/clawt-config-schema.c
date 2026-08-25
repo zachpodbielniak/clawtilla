@@ -1775,6 +1775,22 @@ static const ClawtSchemaEntry schema[] = {
   "want with several agents: a fixed port means the second agent to start\n"
   "fails to bind.", "0.1.0" },
 
+{ "agents.integrations.webhook.bind_address", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_NONE, "127.0.0.1", NULL,
+  "Which address to listen on.\n"
+  "\n"
+  "The loopback by default. An endpoint in shell_command mode runs a\n"
+  "command, and bearer tokens are otherwise the only thing between that\n"
+  "and whoever can reach the port -- so widening it is something you say\n"
+  "rather than something you get. Set it to 0.0.0.0 for every interface,\n"
+  "or to a private interface's address.\n"
+  "\n"
+  "The routing itself is libreclaw's channels.webhook.endpoints, which\n"
+  "goes in the agent's `libreclaw:` block: it is a list of objects with\n"
+  "nested targets and has no sensible spelling as a flat key. clawtilla\n"
+  "merges that block into the channel it renders rather than refusing\n"
+  "it.", "0.1.0" },
+
 { "agents.integrations.local", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "false", NULL,
   "libreclaw's stdin/stdout channel.\n"

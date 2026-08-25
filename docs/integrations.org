@@ -211,6 +211,70 @@ starting the agent.
 
 Give each agent a different port under =per_agent=.
 
+*** Where it listens
+
+=bind_address= is the loopback by default.  libreclaw's own default is
+every interface --- which is the behaviour it has always had, and is why
+the key exists here rather than only there: an endpoint in
+=shell_command= mode runs a command, and bearer tokens are otherwise the
+only thing between that and whoever can reach the port.  Widening it is
+something you say:
+
+#+begin_src yaml
+integrations:
+  - name: alerts
+    type: webhook
+    port: 9100
+    bind_address: "0.0.0.0"     # or a private interface's address
+#+end_src
+
+An address that is not an IP address is refused at connect time rather
+than falling back to every interface.  A listener that ignored where it
+was told to bind and started anyway is running somewhere nobody knows
+about.
+
+*** The routing
+
+clawtilla models the listener; libreclaw models what it *does* with a
+request, at =channels.webhook.endpoints=.  That is a list of objects with
+nested targets and has no sensible spelling as a flat schema key, so it
+goes in the agent's ~libreclaw:~ block:
+
+#+begin_src yaml
+agents:
+  - id: oncall
+    integrations:
+      webhook:
+        enabled: true
+        port: 9100
+    libreclaw:
+      channels:
+        webhook:
+          endpoints:
+            - name: alerts
+              path: /webhook/alerts
+              mode: prompt
+              prompt: "Summarize this alert: {{body}}"
+              targets:
+                - channel: clawtilla
+#+end_src
+
+**clawtilla merges that into the =webhook:= block it renders**, key by
+key, rather than refusing it.  The whole-section refusal that used to
+apply here was protecting against a real collision --- YAML keeps the
+last of two identical top-level keys --- but the hazard is *per key*, and
+refusing the section made the routing unexpressible: the listener could
+be configured, scoped and health-checked, and could never receive
+anything useful.
+
+A key clawtilla writes itself is still refused, by name.  Setting
+=listen_port= there would silently take the one the integration
+configured, which is the collision, at the resolution it actually has.
+
+The five sections clawtilla owns outright --- =agent:=, =ai:=,
+=session:=, =database:= and =skills:= --- are still refused whole.  Those
+are single blocks with no half to merge.
+
 ** mcp -- anything with an MCP server
 
 This is the general one.  A hosted connector, somebody's stdio binary, a

@@ -70,6 +70,25 @@ fixture_write_config(Fixture *fixture, const gchar *extra_yaml)
     g_assert_no_error(error);
 }
 
+/*
+ * Drops a warning on the floor.
+ *
+ * Used where a test provokes one on purpose and cares only that the
+ * operation still succeeded.  g_test_expect_message() matches the *next*
+ * message in the domain, so it turns the assertion into one about the
+ * order clawtilla happens to log in -- which is not what any of these
+ * tests are about and breaks the day somebody adds a line.
+ */
+static void
+swallow_warnings(const gchar *domain, GLogLevelFlags level,
+                 const gchar *message, gpointer user_data)
+{
+    (void)domain;
+    (void)level;
+    (void)message;
+    (void)user_data;
+}
+
 static void
 fixture_setup(Fixture *fixture, const gchar *extra_yaml)
 {
@@ -425,6 +444,133 @@ test_passthrough_reaches_the_agent(void)
     rendered = json_object_get_string_member(payload_of(reply), "yaml");
 
     g_assert_nonnull(strstr(rendered, "some_future_thing"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A `channels:` passthrough is merged, not refused.
+ *
+ * libreclaw's webhook routing lives at `channels.webhook.endpoints` -- a
+ * list of objects with nested targets, which has no sensible spelling in
+ * a flat schema.  clawtilla refused any passthrough redeclaring
+ * `channels:`, so the listener could be configured, scoped and
+ * health-checked and could never receive anything.  The collision hazard
+ * is per key, so that is where the check now is.
+ */
+static void
+test_passthrough_channels_are_merged(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *rendered;
+    const gchar *webhook;
+    const gchar *clawtilla;
+
+    fixture_setup(&fixture,
+        "agents:\n"
+        "  - id: chief\n"
+        "    integrations:\n"
+        "      webhook:\n"
+        "        enabled: true\n"
+        "        port: 9101\n"
+        "    libreclaw:\n"
+        "      channels:\n"
+        "        webhook:\n"
+        "          endpoints:\n"
+        "            - name: deploy\n"
+        "              path: /deploy\n"
+        "              mode: prompt\n");
+
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    reply = request(&fixture, "config.render", "{\"agent\":\"chief\"}");
+    rendered = json_object_get_string_member(payload_of(reply), "yaml");
+
+    /* The routing arrived... */
+    g_assert_nonnull(strstr(rendered, "endpoints:"));
+    g_assert_nonnull(strstr(rendered, "deploy"));
+
+    /* ...inside the webhook block clawtilla rendered, not beside it. */
+    webhook = strstr(rendered, "  webhook:\n");
+    g_assert_nonnull(webhook);
+    g_assert_true(strstr(webhook, "endpoints:") != NULL);
+    g_assert_nonnull(strstr(webhook, "listen_port:"));
+
+    /*
+     * And clawtilla's own channel is still there.  A second top-level
+     * `channels:` would win outright and take this with it, which is the
+     * collision the whole-section refusal existed to prevent -- so the
+     * merged text must not also be copied through verbatim.
+     */
+    clawtilla = strstr(rendered, "  clawtilla:\n");
+    g_assert_nonnull(clawtilla);
+
+    {
+        /* Exactly one top-level channels: in the whole document. */
+        const gchar *scan = rendered;
+        guint seen = 0;
+
+        while ((scan = strstr(scan, "\nchannels:\n")) != NULL) {
+            seen++;
+            scan += 2;
+        }
+
+        g_assert_cmpuint(seen, ==, 1);
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * ...and a key clawtilla writes itself is still refused, by name.
+ *
+ * That is the whole reason the section was refused wholesale: a
+ * passthrough setting `listen_port` would silently take the one the
+ * integration configured.  Refusing the key rather than the section is
+ * the same protection at the resolution the hazard actually has.
+ */
+static void
+test_a_colliding_channel_key_is_refused(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) reply = NULL;
+
+    fixture_setup(&fixture,
+        "agents:\n"
+        "  - id: chief\n"
+        "    integrations:\n"
+        "      webhook:\n"
+        "        enabled: true\n"
+        "        port: 9101\n"
+        "    libreclaw:\n"
+        "      channels:\n"
+        "        webhook:\n"
+        "          listen_port: 1234\n");
+
+    /*
+     * Start renders every agent and warns about the one it refused.  The
+     * fatal mask is lowered rather than the messages expected, for the
+     * reason /daemon/refused-render-is-reported gives: the expectation
+     * queue matches the *next* message in the domain and a start emits
+     * ordinary informational ones too.
+     */
+    {
+        GLogLevelFlags was_fatal = g_log_set_always_fatal(G_LOG_FATAL_MASK);
+        guint handler = g_log_set_handler("Clawtilla",
+                                          G_LOG_LEVEL_WARNING |
+                                          G_LOG_FLAG_FATAL |
+                                          G_LOG_FLAG_RECURSION,
+                                          swallow_warnings, NULL);
+
+        g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+        g_log_remove_handler("Clawtilla", handler);
+        g_log_set_always_fatal(was_fatal);
+    }
+
+    reply = request(&fixture, "config.render", "{\"agent\":\"chief\"}");
+    g_assert_true(clawt_ipc_frame_is_error(reply));
 
     fixture_teardown(&fixture);
 }
@@ -2335,8 +2481,10 @@ test_agents_report_their_direct_room(void)
  *
  * clawtilla refuses a `libreclaw:` passthrough that redeclares a section
  * it renders itself -- YAML keeps the last of two identical top-level
- * keys, so clawtilla's own `channels:` block would be discarded.  The
- * refusal is right; what was missing is that it reached nobody.
+ * keys, so a stray `session:` here would silently delete the per-agent
+ * persist_dir, and two agents sharing one means either resuming the
+ * other's conversation.  The refusal is right; what was missing is that
+ * it reached nobody.
  * `control.reload` was taught to report it and six other handlers were
  * not, so `agent.set` wrote the key to clawtilla.yaml, answered
  * `{"agent": ...}`, and left the agent running on the config.yaml it
@@ -2366,9 +2514,8 @@ test_a_refused_render_is_reported(void)
                   "  - id: healthy\n"
                   "  - id: broken\n"
                   "    libreclaw:\n"
-                  "      channels:\n"
-                  "        webhook:\n"
-                  "          enabled: true\n");
+                  "      session:\n"
+                  "        persist_dir: /tmp/somewhere-else\n");
 
     /*
      * A counting handler rather than g_test_expect_message().  The
@@ -3070,6 +3217,10 @@ main(int argc, char *argv[])
     g_test_add_func("/daemon/render-deterministic",
                     test_rendering_is_deterministic);
     g_test_add_func("/daemon/passthrough", test_passthrough_reaches_the_agent);
+    g_test_add_func("/daemon/passthrough-channels-merge",
+                    test_passthrough_channels_are_merged);
+    g_test_add_func("/daemon/passthrough-channel-key-collides",
+                    test_a_colliding_channel_key_is_refused);
     g_test_add_func("/daemon/token-stable",
                     test_token_is_stable_across_renders);
 

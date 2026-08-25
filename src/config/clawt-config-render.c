@@ -10,6 +10,8 @@
 #include "clawtilla.h"
 #include "config/clawt-config-render.h"
 
+#include <yaml-glib.h>
+
 #include <glib/gstdio.h>
 
 #include <string.h>
@@ -447,6 +449,277 @@ render_email_channel(GString                 *out,
     append_key_value(out, 4, "smtp_credentials_file", smtp_path);
 }
 
+/*
+ * The channels a `libreclaw:` passthrough declares, keyed by channel id.
+ *
+ * clawtilla refuses a passthrough that redeclares a section it renders
+ * itself -- YAML keeps the last of two identical top-level keys, so
+ * clawtilla's own block would be silently discarded.  That refusal is
+ * right and it made `channels:` unreachable: libreclaw's webhook routing
+ * lives at `channels.webhook.endpoints`, which is a list of objects with
+ * nested targets and has no sensible spelling in a flat schema.  So the
+ * listener could be configured, scoped and health-checked, and could
+ * never receive anything.
+ *
+ * The collision hazard is **per key**, not per section, so that is where
+ * the check belongs.  Each channel's own keys are merged into the block
+ * clawtilla rendered, and a key clawtilla already wrote is refused by
+ * name rather than the whole edit.
+ *
+ * Each value is the channel's keys already rendered at four spaces,
+ * which is the indent they land at -- produced by yaml-glib rather than
+ * by re-emitting the nodes here, so a nested sequence of mappings comes
+ * out as YAML rather than as an approximation of it.
+ *
+ * Returns: (transfer full) (nullable): id -> rendered keys, or %NULL
+ */
+static GHashTable *
+passthrough_channels(const gchar *passthrough, GHashTable **out_keys,
+                     GError **error)
+{
+    g_autoptr(YamlParser) parser = NULL;
+    g_autoptr(YamlDocument) document = NULL;
+    YamlNode *root;
+    YamlNode *channels;
+    YamlMapping *mapping;
+    g_autoptr(GList) ids = NULL;
+    GList *walk;
+    GHashTable *blocks;
+
+    *out_keys = NULL;
+
+    if (passthrough == NULL || *passthrough == '\0')
+        return NULL;
+
+    parser = yaml_parser_new();
+
+    if (!yaml_parser_load_from_data(parser, passthrough, -1, error))
+        return NULL;
+
+    document = yaml_parser_dup_document(parser, 0);
+
+    if (document == NULL)
+        return NULL;
+
+    root = yaml_document_get_root(document);
+
+    if (root == NULL ||
+        yaml_node_get_node_type(root) != YAML_NODE_MAPPING)
+        return NULL;
+
+    channels = yaml_mapping_get_member(yaml_node_get_mapping(root), "channels");
+
+    if (channels == NULL ||
+        yaml_node_get_node_type(channels) != YAML_NODE_MAPPING)
+        return NULL;
+
+    mapping = yaml_node_get_mapping(channels);
+    ids = yaml_mapping_get_members(mapping);
+
+    blocks = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    *out_keys = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                      (GDestroyNotify)g_strfreev);
+
+    for (walk = ids; walk != NULL; walk = walk->next) {
+        const gchar *id = walk->data;
+        YamlNode *channel = yaml_mapping_get_member(mapping, id);
+        g_autoptr(YamlMapping) wrapper_inner = NULL;
+        g_autoptr(YamlMapping) wrapper_outer = NULL;
+        g_autoptr(YamlNode) inner_node = NULL;
+        g_autoptr(YamlNode) outer_node = NULL;
+        g_autoptr(YamlGenerator) generator = NULL;
+        g_autofree gchar *text = NULL;
+        g_auto(GStrv) lines = NULL;
+        g_autoptr(GString) body = NULL;
+        gsize i;
+
+        if (channel == NULL ||
+            yaml_node_get_node_type(channel) != YAML_NODE_MAPPING)
+            continue;
+
+        /*
+         * Generated inside `channels: <id>:` and then the two heading
+         * lines are dropped, so the indentation is yaml-glib's own
+         * rather than something counted by hand here.
+         */
+        wrapper_inner = yaml_mapping_new();
+        yaml_mapping_set_member(wrapper_inner, id, channel);
+        inner_node = yaml_node_new_mapping(wrapper_inner);
+
+        wrapper_outer = yaml_mapping_new();
+        yaml_mapping_set_member(wrapper_outer, "channels", inner_node);
+        outer_node = yaml_node_new_mapping(wrapper_outer);
+
+        generator = yaml_generator_new();
+        yaml_generator_set_root(generator, outer_node);
+        text = yaml_generator_to_data(generator, NULL, NULL);
+
+        if (text == NULL)
+            continue;
+
+        lines = g_strsplit(text, "\n", -1);
+        body = g_string_new(NULL);
+
+        for (i = 0; lines[i] != NULL; i++) {
+            /* "channels:" and "  <id>:" are ours, not the channel's. */
+            if (i < 2 || *lines[i] == '\0')
+                continue;
+
+            g_string_append(body, lines[i]);
+            g_string_append_c(body, '\n');
+        }
+
+        g_hash_table_insert(blocks, g_strdup(id),
+                            g_strdup(body->str));
+
+        {
+            g_autoptr(GList) keys = yaml_mapping_get_members(
+                yaml_node_get_mapping(channel));
+            g_autoptr(GPtrArray) names = g_ptr_array_new();
+            GList *key;
+
+            for (key = keys; key != NULL; key = key->next)
+                g_ptr_array_add(names, g_strdup(key->data));
+
+            g_ptr_array_add(names, NULL);
+            g_hash_table_insert(*out_keys, g_strdup(id),
+                                g_strdupv((GStrv)names->pdata));
+
+            for (i = 0; i + 1 < names->len; i++)
+                g_free(g_ptr_array_index(names, i));
+        }
+    }
+
+    return blocks;
+}
+
+/*
+ * The passthrough with its `channels:` taken out.
+ *
+ * Its channels went into clawtilla's own block, and left here as well
+ * they would be a second top-level `channels:` -- YAML keeps the last,
+ * which is the exact collision the whole-section refusal existed to
+ * prevent.  Line-based rather than a reparse-and-regenerate: everything
+ * else in the passthrough is copied across verbatim on purpose, and
+ * round-tripping it through a parser would quietly reformat somebody's
+ * file.
+ */
+static gchar *
+passthrough_without_channels(const gchar *passthrough)
+{
+    g_auto(GStrv) lines = g_strsplit(passthrough, "\n", -1);
+    g_autoptr(GString) out = g_string_new(NULL);
+    gboolean skipping = FALSE;
+    gsize i;
+
+    for (i = 0; lines[i] != NULL; i++) {
+        if (g_str_has_prefix(lines[i], "channels:")) {
+            skipping = TRUE;
+            continue;
+        }
+
+        /* Anything back at the left margin ends the section. */
+        if (skipping) {
+            if (lines[i][0] == '\0' || g_ascii_isspace(lines[i][0]))
+                continue;
+
+            skipping = FALSE;
+        }
+
+        g_string_append(out, lines[i]);
+        g_string_append_c(out, '\n');
+    }
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+/*
+ * Splices those channels into the block clawtilla rendered.
+ *
+ * A key clawtilla already wrote for that channel is refused by name --
+ * that is the collision the whole-section refusal was protecting against,
+ * checked where it actually is.  The check reads the text that was
+ * *emitted* rather than a list of what the renderers write, because a
+ * hand-maintained list of an option's keys is exactly what drifts.
+ */
+static gboolean
+merge_passthrough_channels(GString *channels, GHashTable *blocks,
+                           GHashTable *keys, GError **error)
+{
+    GHashTableIter iter;
+    gpointer id;
+    gpointer text;
+
+    if (blocks == NULL)
+        return TRUE;
+
+    g_hash_table_iter_init(&iter, blocks);
+
+    while (g_hash_table_iter_next(&iter, &id, &text)) {
+        g_autofree gchar *heading = g_strdup_printf("\n  %s:\n",
+                                                    (const gchar *)id);
+        const gchar *start = strstr(channels->str, heading);
+        GStrv names = g_hash_table_lookup(keys, id);
+        gsize insert_at;
+        gsize i;
+
+        if (start == NULL) {
+            /* A channel clawtilla does not render at all: emitted whole. */
+            g_string_append_printf(channels, "  %s:\n%s", (const gchar *)id,
+                                   (const gchar *)text);
+            continue;
+        }
+
+        /*
+         * The block runs to the next line at two-space indent, or to the
+         * end of the section.
+         */
+        {
+            const gchar *scan = start + strlen(heading);
+            const gchar *end = scan;
+
+            while (*end != '\0') {
+                const gchar *line_end = strchr(end, '\n');
+
+                if (end[0] != ' ' || end[1] != ' ')
+                    break;
+
+                if (end[2] != ' ' && end[2] != '\0' && end[2] != '\n')
+                    break;
+
+                if (line_end == NULL) {
+                    end += strlen(end);
+                    break;
+                }
+
+                end = line_end + 1;
+            }
+
+            for (i = 0; names != NULL && names[i] != NULL; i++) {
+                g_autofree gchar *needle = g_strdup_printf("    %s:",
+                                                            names[i]);
+                const gchar *found = strstr(scan, needle);
+
+                if (found != NULL && found < end) {
+                    g_set_error(error, CLAWT_ERROR,
+                                CLAWT_ERROR_CONFIG_INVALID,
+                                "the libreclaw: block sets "
+                                "channels.%s.%s, which clawtilla renders "
+                                "itself; set it through the integration "
+                                "instead", (const gchar *)id, names[i]);
+                    return FALSE;
+                }
+            }
+
+            insert_at = (gsize)(end - channels->str);
+        }
+
+        g_string_insert(channels, (gssize)insert_at, (const gchar *)text);
+    }
+
+    return TRUE;
+}
+
 static void
 render_webhook_channel(GString *out, ClawtIntegrationBinding *binding)
 {
@@ -457,6 +730,22 @@ render_webhook_channel(GString *out, ClawtIntegrationBinding *binding)
     append_key_bool(out, 4, "enabled", TRUE);
     append_key_int(out, 4, "listen_port",
                    clawt_integration_binding_get_int(binding, "port"));
+
+    /*
+     * The loopback unless somebody widened it.  libreclaw's own default
+     * is every interface, which is the behaviour it has always had --
+     * clawtilla names an address so an agent's endpoint, which can run a
+     * shell command, is not reachable from wherever the machine happens
+     * to be reachable from because nobody said otherwise.
+     */
+    {
+        const gchar *address =
+            clawt_integration_binding_get_string(binding, "bind_address");
+
+        append_key_value(out, 4, "bind_address",
+                         (address != NULL && *address != '\0')
+                             ? address : "127.0.0.1");
+    }
 }
 
 
@@ -686,8 +975,19 @@ clawt_config_render_agent(ClawtConfig       *config,
     }
 
     /* ── channels ── */
-    g_string_append(out, "channels:\n");
-    render_clawtilla_channel(out, agent, link_socket, state_dir);
+    {
+        /*
+         * Built on its own so the passthrough's channels can be merged
+         * into it before it reaches the document -- the collision check
+         * reads the text that was *emitted* rather than a list of what
+         * the renderers write, and a hand-maintained list of an option's
+         * keys is exactly what drifts.
+         */
+        g_autoptr(GString) channels = g_string_new("channels:\n");
+        g_autoptr(GHashTable) blocks = NULL;
+        g_autoptr(GHashTable) merged_keys = NULL;
+
+        render_clawtilla_channel(channels, agent, link_socket, state_dir);
 
     {
         g_autoptr(GPtrArray) bindings =
@@ -702,14 +1002,14 @@ clawt_config_render_agent(ClawtConfig       *config,
             g_build_filename(state_dir, "credentials",
                              "smtp_credentials.json", NULL);
 
-        render_matrix_channel(out,
+        render_matrix_channel(channels,
                               clawt_integration_find_binding(bindings,
                                                              "matrix"),
                               matrix_token);
-        render_email_channel(out,
+        render_email_channel(channels,
                              clawt_integration_find_binding(bindings, "email"),
                              imap, smtp);
-        render_webhook_channel(out,
+        render_webhook_channel(channels,
                                clawt_integration_find_binding(bindings,
                                                               "webhook"));
 
@@ -720,17 +1020,35 @@ clawt_config_render_agent(ClawtConfig       *config,
          * explicitly.
          */
         if (clawt_integration_find_binding(bindings, "local") != NULL) {
-            g_string_append(out, "  local:\n");
-            append_key_bool(out, 4, "enabled", TRUE);
+            g_string_append(channels, "  local:\n");
+            append_key_bool(channels, 4, "enabled", TRUE);
         }
 
         if (clawt_integration_find_binding(bindings, "cmacs") != NULL) {
-            g_string_append(out, "  cmacs:\n");
-            append_key_bool(out, 4, "enabled", TRUE);
+            g_string_append(channels, "  cmacs:\n");
+            append_key_bool(channels, 4, "enabled", TRUE);
         }
     }
 
-    g_string_append(out, "\n");
+        /*
+         * ...and whatever the passthrough declares under `channels:`,
+         * merged into the blocks above rather than refused wholesale.
+         * Refusing the section is what made
+         * `channels.webhook.endpoints` -- the routing without which the
+         * webhook listener receives nothing useful -- impossible to
+         * express at all.
+         */
+        blocks = passthrough_channels(
+            clawt_agent_config_get_raw_yaml(agent, "libreclaw"),
+            &merged_keys, NULL);
+
+        if (!merge_passthrough_channels(channels, blocks, merged_keys,
+                                        error))
+            return NULL;
+
+        g_string_append(channels, "\n");
+        g_string_append(out, channels->str);
+    }
 
     /*
      * Passthrough last, so it wins.
@@ -751,9 +1069,15 @@ clawt_config_render_agent(ClawtConfig       *config,
      * hallucinating a history it never had.
      */
     if (passthrough != NULL && *passthrough != '\0') {
+        /*
+         * `channels:` is deliberately not here any more: it is merged
+         * per channel above, key by key, because the collision hazard is
+         * per key rather than per section -- and refusing the whole
+         * section made libreclaw's webhook routing unexpressible.  The
+         * five that remain are single blocks clawtilla owns outright.
+         */
         static const gchar *const rendered_sections[] = {
-            "agent:", "ai:", "session:", "database:", "skills:",
-            "channels:", NULL
+            "agent:", "ai:", "session:", "database:", "skills:", NULL
         };
         g_auto(GStrv) lines = g_strsplit(passthrough, "\n", -1);
         gsize i;
@@ -783,9 +1107,20 @@ clawt_config_render_agent(ClawtConfig       *config,
     }
 
     if (passthrough != NULL && *passthrough != '\0') {
-        g_string_append(out,
-            "# ── Passthrough from the agent's `libreclaw:` block ──\n");
-        append_block(out, 0, passthrough);
+        /*
+         * Without its `channels:`, which went into the block above.
+         * Left here as well it would be a second top-level `channels:`
+         * and YAML keeps the last -- which is the exact collision the
+         * whole-section refusal existed to prevent, reintroduced by the
+         * fix for it.
+         */
+        g_autofree gchar *rest = passthrough_without_channels(passthrough);
+
+        if (rest != NULL && *rest != '\0') {
+            g_string_append(out,
+                "# ── Passthrough from the agent's `libreclaw:` block ──\n");
+            append_block(out, 0, rest);
+        }
     }
 
     return g_string_free(g_steal_pointer(&out), FALSE);
