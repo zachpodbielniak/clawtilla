@@ -1593,6 +1593,52 @@ the same program.
   four-line program against real libadwaita answers it in a second --
   far quicker than reasoning about what the widget "should" do.
 
+### A check finds the layer it looks at, and only that layer
+
+- `make parity` compared frame kinds, then grew a slash-command layer
+  when thirteen commands went missing under a green check. It then
+  reported OK through **two more** gaps -- a palette in libclawt
+  selectable in one client, an unread marker built for one transcript --
+  because neither sends a frame or answers a command. Three layers, three
+  times the same lesson.
+- It compares five now, and the two that need no bookkeeping are the ones
+  worth having. A `_count()`/`_nth()` pair in the public API is the
+  library saying "here is a set, walk it", so if either client walks one
+  both must -- that is the palette shape exactly. And a client that
+  *spells out* a value the library enumerates is holding a copy of the
+  list, which is the cause rather than the symptom: the check fires on
+  the copy whether or not the new value has gone missing from it yet.
+  Values are read from the library's own table, so one added there is
+  checked from the moment it exists.
+- The fifth layer needs declaring and says so. Some capabilities are pure
+  interface -- a rule and a pill -- and touch no shared symbol at all.
+  A row naming a marker per client catches one half being removed or
+  never written, and cannot catch a feature nobody declared. Better to
+  have it and state the limit than to pretend the check is complete.
+- Prefix exceptions were considered and rejected. `clawt_appearance_*` as
+  one entry would collapse thirteen legitimate asymmetries into a line --
+  and would have silenced the exact bug being fixed.
+
+### Two ways a grep-based check reports the opposite of the truth
+
+- **Comments are text too.** This codebase explains itself at length, so
+  the comment saying why the stylesheet must spell `data-theme="light"`
+  contains "light", and the one about the fallback contains "system".
+  The first run of the hardcoded-vocabulary check reported two
+  hardcodings that were not there. A check that cries wolf is one people
+  learn to ignore, so it strips `/* */` with an awk state machine before
+  matching -- exact, because that is the only comment form the codebase
+  allows.
+- **`cmd | grep -q` under `set -o pipefail` fails on success.** grep
+  exits the moment it matches, the upstream process dies of SIGPIPE with
+  141, and the pipeline takes the worst status -- so every declared
+  marker that was *present* reported missing. Write to a file and grep
+  the file. It was three findings that made no sense that gave it away,
+  not reading the code.
+- Both were found by sabotaging the thing being checked and watching:
+  the palette gap reproduced, the marker removed. A parity check that has
+  never been shown to fail is a parity check that reports OK.
+
 ### A capability in the shared library still has to be reachable from both clients
 
 - Catppuccin Mocha went into `clawt-appearance.c`, which *both* clients

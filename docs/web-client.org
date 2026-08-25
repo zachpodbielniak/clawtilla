@@ -391,9 +391,15 @@ It runs from ~make parity~, from ~make docs-check~, and as a case in
 ~make test~.  A check that only runs in one target is one somebody can go
 a long time without seeing.
 
-*** Two layers are compared
+*** Five layers are compared
 
-Frame kinds, and slash commands.
+| Layer | What it compares | Needs declaring |
+|-------+------------------+-----------------|
+| 1 | IPC frame kinds each client sends | no |
+| 2 | slash commands each answers | no |
+| 3 | library choice enumerations each walks | no |
+| 4 | library vocabulary values either spells out | no |
+| 5 | declared interface affordances | *yes* |
 
 The command check exists because the frame-kind one missed them entirely:
 thirteen of the eighteen were absent from the web client and nothing said
@@ -401,9 +407,49 @@ so, since =/files=, =/agents= and =/export= are all built out of frames
 both clients already sent.  A check that only looks at one layer will
 keep finding nothing at the others.
 
+Layers 3 to 5 exist because that sentence came true a second time.
+Catppuccin Mocha went into libclawt, which both clients link, and was
+selectable in one of them; the unread marker was built for the GTK
+transcript and not the web one.  Neither sends a frame or answers a slash
+command.
+
+- *Layer 3* is the sharp one.  A ~_count()~/~_nth()~ pair in the public
+  API is the library saying "here is a set, walk it", so if either client
+  walks one, both must.  That is the Mocha shape exactly, and it needs
+  nobody to declare anything.
+- *Layer 4* catches the cause rather than the symptom.  A client that
+  spells out a value the library enumerates is holding a copy of the
+  list, and a copy is what drifts.  The values are read from the
+  library's own table, so a palette added there is checked from the
+  moment it exists -- the check fires on the copy whether or not the new
+  value is missing from it yet.
+- *Layer 5* is for the capabilities that are pure interface -- the unread
+  marker is a rule and a pill, and touches no shared symbol.  Each is a
+  row naming a marker per client.  It is honest about its limit: it
+  catches one half being removed or never written, and cannot catch a
+  feature nobody declared.
+
+Two things learned building it, both of which made the check report the
+opposite of the truth:
+
+- It greps the sources with the comments stripped.  This codebase
+  explains itself, so the comment saying why the stylesheet must spell
+  =data-theme="light"= contains "light", and the one about the fallback
+  contains "system" -- grepping the prose reported two hardcodings that
+  were not there.  A check that cries wolf is one people learn to ignore.
+- The stripped text goes to a file and is grepped there, never piped into
+  ~grep -q~.  Under ~set -o pipefail~ that pipeline reports *failure on
+  success*: grep exits the moment it matches, the upstream ~awk~ dies of
+  SIGPIPE with 141, and the pipeline takes the worst status.  Every
+  marker that was present reported missing.
+
 *** Adding a feature
 
-Build it in both.  When that is genuinely not the right answer, add the
+Build it in both.  If it is pure interface -- something with no frame, no
+command and no shared symbol -- add a row to ~AFFORDANCES~ naming a
+marker in each client, so its removal from either is a build failure.
+
+When building it in both is genuinely not the right answer, add the
 kind to the exception map at the top of
 =tools/clawt-client-parity.sh= with the reason:
 

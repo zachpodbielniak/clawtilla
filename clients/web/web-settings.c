@@ -893,7 +893,9 @@ appearance_content(HtmxRequest *request)
             "Colour scheme", "theme",
             (const gchar *const *)themes->pdata,
             (const gchar *const *)theme_labels->pdata,
-            look->theme != NULL ? look->theme : "system"));
+            look->theme != NULL
+                ? look->theme
+                : clawt_appearance_theme_nick(CLAWT_THEME_SYSTEM)));
         htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(row));
 
         /*
