@@ -129,6 +129,36 @@ clawt_workspace_scaffold(ClawtAgentConfig  *agent,
                          GError           **error);
 
 /**
+ * clawt_workspace_scaffold_with_mission:
+ * @agent: the agent's configuration
+ * @mission: (nullable): what this agent is for, in prose
+ * @mission_written: (out) (optional): %TRUE when @mission reached SOUL.org
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Scaffolds the workspace, with @mission as the agent's mission.
+ *
+ * @mission is the persona an operator writes when creating an agent. It
+ * belongs in SOUL.org and nowhere else: an inline `persona.system_prompt`
+ * *replaces* the identity files rather than adding to them, so putting it
+ * there would trade a discarded persona for a discarded IDENTITY.org and
+ * TOOLS.org -- and an agent that has to discover what computer it has
+ * spends its first turns finding out.
+ *
+ * An existing SOUL.org still wins, because it is somebody's work. That is
+ * what @mission_written is for: the caller can say the purpose did not
+ * land instead of leaving whoever wrote it believing it did.
+ *
+ * With @mission %NULL this is exactly clawt_workspace_scaffold().
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+clawt_workspace_scaffold_with_mission(ClawtAgentConfig  *agent,
+                                      const gchar       *mission,
+                                      gboolean          *mission_written,
+                                      GError           **error);
+
+/**
  * clawt_workspace_write_mcp_config:
  * @config: (nullable): the fleet configuration, for shared integrations
  * @agent: the agent's configuration

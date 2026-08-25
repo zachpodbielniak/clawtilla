@@ -1325,6 +1325,8 @@ compare_by_order(gconstpointer a, gconstpointer b, gpointer user_data)
 static ClawtAgentConfig *daemon_create_agent(ClawtDaemon  *self,
                                              const gchar  *agent_id,
                                              GHashTable   *fields,
+                                             const gchar  *purpose,
+                                             gboolean     *purpose_landed,
                                              GError      **error);
 
 /*
@@ -1339,6 +1341,7 @@ static ClawtAgentConfig *daemon_create_agent(ClawtDaemon  *self,
  */
 static gchar *
 create_agent_for_tools(const gchar  *agent_id,
+                       const gchar  *purpose,
                        GHashTable   *settings,
                        gboolean      start,
                        gpointer      user_data,
@@ -1346,12 +1349,28 @@ create_agent_for_tools(const gchar  *agent_id,
 {
     ClawtDaemon *self = user_data;
     g_autoptr(GString) out = NULL;
+    gboolean purpose_landed = FALSE;
 
-    if (daemon_create_agent(self, agent_id, settings, error) == NULL)
+    if (daemon_create_agent(self, agent_id, settings, purpose,
+                            &purpose_landed, error) == NULL)
         return NULL;
 
     out = g_string_new(NULL);
     g_string_append_printf(out, "Created %s.", agent_id);
+
+    /*
+     * Said rather than swallowed.  The workspace directory outlives the
+     * agent that was removed from it, so creating one under an id that
+     * has been used before finds a SOUL.org already there -- and it is
+     * left alone, because it is somebody's work.  Whoever wrote the
+     * purpose has to be told it is not in the file, or they go on
+     * believing the agent read it.
+     */
+    if (purpose != NULL && *purpose != '\0' && !purpose_landed)
+        g_string_append(out,
+            " Its workspace already had a SOUL.org, so that file was left "
+            "alone and the purpose is not in it -- edit SOUL.org if it "
+            "should be.");
 
     if (start) {
         g_autoptr(GError) start_error = NULL;
@@ -2509,12 +2528,17 @@ static ClawtAgentConfig *
 daemon_create_agent(ClawtDaemon  *self,
                     const gchar  *agent_id,
                     GHashTable   *fields,
+                    const gchar  *purpose,
+                    gboolean     *purpose_landed,
                     GError      **error)
 {
     ClawtAgentConfig *created;
     GHashTableIter iter;
     gpointer key;
     gpointer value;
+
+    if (purpose_landed != NULL)
+        *purpose_landed = FALSE;
 
     created = clawt_config_add_agent(self->config, agent_id, error);
 
@@ -2527,6 +2551,26 @@ daemon_create_agent(ClawtDaemon  *self,
         while (g_hash_table_iter_next(&iter, &key, &value)) {
             if (value != NULL)
                 clawt_agent_config_set_string(created, key, value);
+        }
+    }
+
+    /*
+     * The persona, into SOUL.org, before the save below reloads and
+     * scaffolds every agent from the templates.
+     *
+     * SOUL.org is the one file that decides what an agent does when
+     * nobody has told it what to do, and scaffolding never overwrites --
+     * so writing it afterwards would land on a file that already exists
+     * and lose the persona all over again.  Not `persona.system_prompt`:
+     * an inline prompt *replaces* the identity files rather than adding
+     * to them, and an agent without its TOOLS.org spends its first turns
+     * finding out what computer it has.
+     */
+    if (purpose != NULL && *purpose != '\0') {
+        if (!clawt_workspace_scaffold_with_mission(created, purpose,
+                                                    purpose_landed, error)) {
+            clawt_config_remove_agent(self->config, agent_id);
+            return NULL;
         }
     }
 
@@ -5885,7 +5929,8 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             }
         }
 
-        created = daemon_create_agent(self, agent_id, fields, &error);
+        created = daemon_create_agent(self, agent_id, fields, NULL, NULL,
+                                      &error);
 
         if (created == NULL)
             return clawt_ipc_error_new(request, error->code, error->message);
