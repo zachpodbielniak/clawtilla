@@ -330,6 +330,310 @@ test_rendered_config_loads_the_set(void)
 }
 
 /*
+ * Skills come from the workspace, not the state directory.
+ *
+ * Those are the same directory for every agent that does not set
+ * `agents.workspace`, which is why building skills.dir from the state
+ * dir was invisible for as long as it was. An agent given a workspace of
+ * its own had skills.dir naming a directory clawtilla never creates and
+ * nothing in the tree ever writes to -- so it silently had no skills at
+ * all, while the config looked perfectly reasonable.
+ */
+static void
+test_skills_come_from_the_workspace(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_autofree gchar *rendered = NULL;
+    g_autofree gchar *state_skills = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: scribe\n"
+                  "    workspace: \"/tmp/clawt-elsewhere\"\n");
+    agent = first_agent(&fixture);
+
+    rendered = clawt_config_render_agent(fixture.config, agent,
+                                         "/tmp/agents.sock", fixture.dir,
+                                         NULL);
+    g_assert_nonnull(rendered);
+
+    /* The workspace it was given... */
+    g_assert_nonnull(strstr(rendered, "\"/tmp/clawt-elsewhere/skills\""));
+
+    /* ...and never the state directory, which holds no skills. */
+    state_skills = g_build_filename(fixture.dir, "skills", NULL);
+    g_assert_null(strstr(rendered, state_skills));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A list set through the config API round-trips as a sequence.
+ *
+ * It used to be written as a scalar, which the reader refuses -- so the
+ * value was saved to the file and then read back as the schema default,
+ * with every surface reporting that it had been set.
+ */
+static void
+test_string_list_round_trips(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    const gchar *const wanted[] = { "SOUL.md", "USER.md", NULL };
+    g_auto(GStrv) read_back = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: scribe\n");
+    agent = first_agent(&fixture);
+
+    g_assert_true(clawt_agent_config_set_string_list(
+        agent, "persona.identity_files", wanted));
+
+    read_back = clawt_agent_config_get_string_list(agent,
+                                                   "persona.identity_files");
+
+    g_assert_nonnull(read_back);
+    g_assert_cmpuint(g_strv_length(read_back), ==, 2);
+    g_assert_cmpstr(read_back[0], ==, "SOUL.md");
+    g_assert_cmpstr(read_back[1], ==, "USER.md");
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Scaffolding writes no identity file that nothing will load.
+ *
+ * The blank .org set beside an imported persona is the whole of the
+ * import bug: seven templates saying "/(fill in)/" next to the real
+ * files, and the templates are the ones the agent read.
+ */
+static void
+test_scaffold_skips_unloaded_identity_files(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_autofree gchar *workspace = NULL;
+    g_autofree gchar *soul_org = NULL;
+    g_autofree gchar *tools_org = NULL;
+    g_autoptr(GError) error = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: scribe\n"
+                  "    persona:\n"
+                  "      identity_files: [\"TOOLS.org\"]\n");
+    agent = first_agent(&fixture);
+
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+    g_assert_no_error(error);
+
+    workspace = clawt_agent_config_get_workspace(agent);
+    soul_org = g_build_filename(workspace, "SOUL.org", NULL);
+    tools_org = g_build_filename(workspace, "TOOLS.org", NULL);
+
+    /* The one that is loaded is written; the six that are not are not. */
+    g_assert_true(g_file_test(tools_org, G_FILE_TEST_EXISTS));
+    g_assert_false(g_file_test(soul_org, G_FILE_TEST_EXISTS));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A workspace that already has a markdown persona is detected.
+ */
+static void
+test_detects_an_existing_markdown_persona(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *soul = NULL;
+    g_autofree gchar *user = NULL;
+    g_auto(GStrv) found = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: scribe\n");
+
+    soul = g_build_filename(fixture.dir, "SOUL.md", NULL);
+    user = g_build_filename(fixture.dir, "USER.md", NULL);
+    g_assert_true(g_file_set_contents(soul, "who I am", -1, NULL));
+    g_assert_true(g_file_set_contents(user, "who Ben is", -1, NULL));
+
+    found = clawt_workspace_detect_identity_files(fixture.dir);
+
+    g_assert_nonnull(found);
+    g_assert_cmpuint(g_strv_length(found), ==, 2);
+    /* Load order is the table's, not the directory's. */
+    g_assert_cmpstr(found[0], ==, "SOUL.md");
+    g_assert_cmpstr(found[1], ==, "USER.md");
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * ...but a workspace that already speaks org has made its choice, and
+ * adopting markdown beside it would load the same concern twice.
+ */
+static void
+test_detects_nothing_when_org_is_present(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *soul_md = NULL;
+    g_autofree gchar *soul_org = NULL;
+    g_auto(GStrv) found = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: scribe\n");
+
+    soul_md = g_build_filename(fixture.dir, "SOUL.md", NULL);
+    soul_org = g_build_filename(fixture.dir, "SOUL.org", NULL);
+    g_assert_true(g_file_set_contents(soul_md, "markdown", -1, NULL));
+    g_assert_true(g_file_set_contents(soul_org, "org", -1, NULL));
+
+    found = clawt_workspace_detect_identity_files(fixture.dir);
+
+    g_assert_null(found);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * An empty directory has no persona to adopt, which must read as
+ * "nothing here" rather than as an empty list somebody could set.
+ */
+static void
+test_detects_nothing_in_an_empty_workspace(void)
+{
+    Fixture fixture = { 0 };
+    g_auto(GStrv) found = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: scribe\n");
+
+    found = clawt_workspace_detect_identity_files(fixture.dir);
+
+    g_assert_null(found);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Every STRING_LIST an agent can hold round-trips, not just the one the
+ * bug was found through.
+ *
+ * The report reached this through persona.identity_files. The same
+ * handler writes eight more, and two of them -- computer.host.allow_paths
+ * and deny_paths -- are confinement: a denylist accepted, saved, and read
+ * back as nothing is a sandbox that reports success and confines
+ * nothing. That is the sharp end of the same defect, and it is worth a
+ * test naming it rather than trusting that one example covers the set.
+ */
+static void
+test_every_agent_list_round_trips(void)
+{
+    static const gchar *const keys[] = {
+        "persona.identity_files",
+        "model.fallbacks",
+        "computer.host.allow_paths",
+        "computer.host.deny_paths",
+        "tools.allow",
+        "tools.deny",
+        NULL
+    };
+    const gchar *const wanted[] = { "one", "two", NULL };
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    gsize i;
+
+    fixture_setup(&fixture, "agents:\n  - id: scribe\n");
+    agent = first_agent(&fixture);
+
+    for (i = 0; keys[i] != NULL; i++) {
+        g_auto(GStrv) read_back = NULL;
+
+        g_assert_true(clawt_agent_config_set_string_list(agent, keys[i],
+                                                         wanted));
+
+        read_back = clawt_agent_config_get_string_list(agent, keys[i]);
+
+        if (read_back == NULL)
+            g_test_fail_printf("%s was accepted and read back as nothing",
+                               keys[i]);
+        else
+            g_assert_cmpstr(read_back[0], ==, "one");
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Clearing a list reaches the reader as "unset", not as an empty list.
+ *
+ * The difference matters for the confinement keys: an empty deny_paths
+ * and an absent one both deny nothing, but an empty allow_paths would
+ * allow nothing, and the two must not be confused by a client that
+ * cleared a field.
+ */
+static void
+test_clearing_a_list_unsets_it(void)
+{
+    const gchar *const wanted[] = { "one", NULL };
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_auto(GStrv) read_back = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: scribe\n");
+    agent = first_agent(&fixture);
+
+    g_assert_true(clawt_agent_config_set_string_list(agent, "tools.allow",
+                                                     wanted));
+    g_assert_true(clawt_agent_config_set_string_list(agent, "tools.allow",
+                                                     NULL));
+
+    read_back = clawt_agent_config_get_string_list(agent, "tools.allow");
+    g_assert_null(read_back);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * The scaffolder and the renderer ask the same question.
+ *
+ * They each used to decide for themselves what an agent loads, and a
+ * workspace full of files nobody reads is what that produces. One
+ * function answers now, and this asserts the two agree for the case that
+ * distinguishes them.
+ */
+static void
+test_scaffold_and_renderer_agree(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_auto(GStrv) effective = NULL;
+    g_autofree gchar *rendered = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: scribe\n"
+                  "    persona:\n"
+                  "      identity_files: [\"SOUL.md\", \"NOTES.md\"]\n");
+    agent = first_agent(&fixture);
+
+    effective = clawt_workspace_effective_identity_files(agent);
+    g_assert_nonnull(effective);
+    g_assert_cmpstr(effective[0], ==, "SOUL.md");
+
+    rendered = clawt_config_render_agent(fixture.config, agent,
+                                         "/tmp/agents.sock", fixture.dir,
+                                         NULL);
+    g_assert_nonnull(rendered);
+    g_assert_nonnull(strstr(rendered, "\"SOUL.md\""));
+    g_assert_nonnull(strstr(rendered, "\"NOTES.md\""));
+
+    /* And nothing from the standard set it did not ask for. */
+    g_assert_null(strstr(rendered, "\"IDENTITY.org\""));
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * A configured list wins.  Defaulting is a convenience, not a policy,
  * and an agent whose persona is deliberately one file should not have
  * six more appended to it.
@@ -823,6 +1127,24 @@ main(int argc, char *argv[])
                     test_rendered_config_loads_the_set);
     g_test_add_func("/workspace/configured-files-win",
                     test_configured_identity_files_win);
+    g_test_add_func("/workspace/skills-come-from-the-workspace",
+                    test_skills_come_from_the_workspace);
+    g_test_add_func("/workspace/string-list-round-trips",
+                    test_string_list_round_trips);
+    g_test_add_func("/workspace/scaffold-skips-unloaded-identity",
+                    test_scaffold_skips_unloaded_identity_files);
+    g_test_add_func("/workspace/detects-markdown-persona",
+                    test_detects_an_existing_markdown_persona);
+    g_test_add_func("/workspace/detects-nothing-when-org-present",
+                    test_detects_nothing_when_org_is_present);
+    g_test_add_func("/workspace/detects-nothing-when-empty",
+                    test_detects_nothing_in_an_empty_workspace);
+    g_test_add_func("/workspace/every-agent-list-round-trips",
+                    test_every_agent_list_round_trips);
+    g_test_add_func("/workspace/clearing-a-list-unsets-it",
+                    test_clearing_a_list_unsets_it);
+    g_test_add_func("/workspace/scaffold-and-renderer-agree",
+                    test_scaffold_and_renderer_agree);
 
     return g_test_run();
 }

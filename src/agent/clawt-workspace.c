@@ -76,6 +76,76 @@ clawt_workspace_identity_files(void)
     return (GStrv)g_ptr_array_free(g_steal_pointer(&names), FALSE);
 }
 
+/*
+ * The persona an imported workspace already has.
+ *
+ * clawtilla names its identity files in org; a workspace that grew up
+ * somewhere else -- a Claude Code home, a standalone libreclaw instance
+ * -- keeps the same concerns in markdown. Those two sets never collide,
+ * so an import used to copy a complete persona in and then scaffold a
+ * blank .org beside every file of it, and the agent loaded the blanks.
+ * It looked created and it had no identity.
+ *
+ * Only reported when the workspace has *no* .org of its own: one that
+ * already speaks clawtilla's spelling has made its choice, and a
+ * leftover README.md is not a persona.
+ *
+ * Returns: (transfer full) (nullable): the files found, in load order,
+ *   or %NULL if this workspace has nothing to adopt
+ */
+GStrv
+clawt_workspace_detect_identity_files(const gchar *workspace)
+{
+    g_autoptr(GPtrArray) found = g_ptr_array_new_with_free_func(g_free);
+    guint i;
+
+    g_return_val_if_fail(workspace != NULL, NULL);
+
+    for (i = 0; i < G_N_ELEMENTS(workspace_files); i++) {
+        g_autofree gchar *org = NULL;
+        g_autofree gchar *markdown = NULL;
+        g_autofree gchar *stem = NULL;
+        const gchar *dot;
+
+        if (!workspace_files[i].identity)
+            continue;
+
+        org = g_build_filename(workspace, workspace_files[i].name, NULL);
+
+        /*
+         * One .org of clawtilla's own is enough to say this workspace
+         * is already ours. Adopting markdown alongside it would load
+         * the same concern twice and let the two disagree.
+         */
+        if (g_file_test(org, G_FILE_TEST_EXISTS))
+            return NULL;
+
+        dot = strrchr(workspace_files[i].name, '.');
+
+        if (dot == NULL)
+            continue;
+
+        stem = g_strndup(workspace_files[i].name,
+                         (gsize)(dot - workspace_files[i].name));
+        markdown = g_strconcat(stem, ".md", NULL);
+
+        {
+            g_autofree gchar *path = g_build_filename(workspace, markdown,
+                                                      NULL);
+
+            if (g_file_test(path, G_FILE_TEST_IS_REGULAR))
+                g_ptr_array_add(found, g_steal_pointer(&markdown));
+        }
+    }
+
+    if (found->len == 0)
+        return NULL;
+
+    g_ptr_array_add(found, NULL);
+
+    return (GStrv)g_ptr_array_free(g_steal_pointer(&found), FALSE);
+}
+
 gchar *
 clawt_workspace_file_path(ClawtAgentConfig *agent, const gchar *name)
 {
@@ -1296,11 +1366,52 @@ clawt_workspace_write_mcp_config(ClawtConfig      *config,
     return clawt_write_file_atomic(path, text, -1, 0600, FALSE, error);
 }
 
+/*
+ * The identity files this agent will actually load.
+ *
+ * Public, and used by the renderer as well as the scaffolder, because
+ * they have to agree: one deciding to write a file the other will not
+ * read is how a workspace ends up full of templates nobody loads. It was
+ * mirrored in both for a while and that is exactly the shape of bug this
+ * project keeps finding -- two implementations, and the less-exercised
+ * one is wrong.
+ */
+GStrv
+clawt_workspace_effective_identity_files(ClawtAgentConfig *agent)
+{
+    GStrv configured = clawt_agent_config_get_string_list(
+        agent, "persona.identity_files");
+
+    if (configured != NULL && configured[0] != NULL)
+        return configured;
+
+    g_strfreev(configured);
+
+    if (clawt_agent_config_get_string(agent, "persona.system_prompt") != NULL)
+        return g_new0(gchar *, 1);
+
+    return clawt_workspace_identity_files();
+}
+
+static gboolean
+strv_contains(const GStrv haystack, const gchar *needle)
+{
+    guint i;
+
+    for (i = 0; haystack != NULL && haystack[i] != NULL; i++) {
+        if (g_strcmp0(haystack[i], needle) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
 gboolean
 clawt_workspace_scaffold(ClawtAgentConfig *agent, GError **error)
 {
     g_autoptr(GHashTable) values = NULL;
     g_autofree gchar *workspace = NULL;
+    g_auto(GStrv) identity = NULL;
     guint i;
 
     g_return_val_if_fail(agent != NULL, FALSE);
@@ -1318,11 +1429,29 @@ clawt_workspace_scaffold(ClawtAgentConfig *agent, GError **error)
         return FALSE;
 
     values = build_values(agent);
+    identity = clawt_workspace_effective_identity_files(agent);
 
     for (i = 0; i < G_N_ELEMENTS(workspace_files); i++) {
         g_autofree gchar *path = NULL;
         g_autofree gchar *content = NULL;
         const gchar *template;
+
+        /*
+         * An identity file that is not in the effective list will never
+         * be read, so writing it is not a starting point -- it is
+         * clutter that contradicts the files that *are* read.
+         *
+         * This is what `agent import` did to a workspace that already
+         * had a persona. The source kept its identity in SOUL.md and
+         * friends; the scaffolder checks for SOUL.org, found none,
+         * and wrote a blank parallel set beside them. Nothing collided
+         * and nothing warned, and the imported agent loaded seven
+         * templates saying "/(fill in)/" instead of the persona sitting
+         * next to them.
+         */
+        if (workspace_files[i].identity &&
+            !strv_contains(identity, workspace_files[i].name))
+            continue;
 
         path = g_build_filename(workspace, workspace_files[i].name, NULL);
 

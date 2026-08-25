@@ -839,3 +839,52 @@ That is correct and expected.  The cost is the figure the provider
 reported; the ~IN~ column counts only *new* input tokens.  Cached context
 is billed and is not reported as tokens, so a turn can honestly show
 eight input tokens against a bill of two cents.
+
+** An imported agent has no personality
+
+It is reading the templates, not the persona you imported.
+
+#+begin_src bash
+ls ~/.clawtilla/agents/<id>/
+#+end_src
+
+Two complete sets -- =SOUL.md= beside =SOUL.org= -- means the workspace
+was imported before clawtilla adopted markdown personas, and the =.org=
+blanks are the ones being loaded.  Point it at the real ones:
+
+#+begin_src bash
+clawtilla agent set <id> persona.identity_files SOUL.md,USER.md,AGENTS.md
+clawtilla agent reset <id>
+#+end_src
+
+The reset is not optional.  An AI CLI is not handed a system prompt when
+it resumes a session, so the change reaches the agent's files and not its
+prompt until the session is cleared.
+
+** A setting was accepted and does nothing
+
+Check whether it is a list:
+
+#+begin_src bash
+clawtilla config show | grep -A3 <the key>
+#+end_src
+
+A list written as ~key: a,b~ rather than as a YAML sequence is read back
+as unset, and everything reports success -- the CLI echoes it, the file
+holds it, and the agent runs on the default.  ~agent set~ writes a real
+sequence now for every key the schema calls a list; a file edited by hand
+before that, or by an older build, still holds the scalar.
+
+The sharp version of this is confinement: ~computer.host.deny_paths~
+written as a scalar denies nothing.
+
+** An agent with its own workspace has no skills
+
+#+begin_src bash
+clawtilla config render <id> | grep -A2 skills
+#+end_src
+
+Skills come from =<workspace>/skills=.  A build before that fix took them
+from the state directory, which is the same place only for agents that
+never set ~workspace~ -- so an agent given one pointed at a directory
+nothing creates.

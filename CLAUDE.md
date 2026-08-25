@@ -2655,6 +2655,81 @@ the same program.
   aside and copy it back.
 
 
+### A setter that writes the wrong node type is accepted all the way down
+
+- `agent.set` called `clawt_agent_config_set_string()` for every key,
+  which writes a scalar -- and `node_to_strv()` returns NULL for anything
+  that is not a sequence. So a list was accepted by the daemon, echoed by
+  the CLI, written into clawtilla.yaml, and read back as the schema
+  default. Every surface agreed it had been saved.
+- Nine keys under `agents.` are lists, and the sharp one is
+  `computer.host.deny_paths`: denying `~/.ssh` through `agent set` was
+  accepted, saved, and denied nothing. A confinement setting that reports
+  success and confines nothing is worse than one that is missing.
+- The handler dispatches on `entry->type` now, and
+  `clawt_agent_config_set_string_list()` builds a real sequence. The
+  comment on `clawt_agent_config_add_mount()` had said mounts were the
+  only list an agent holds -- true when written, false from the day
+  `persona.identity_files` arrived, and nobody re-read it. **A comment
+  asserting "this is the only X" is a claim that expires.**
+
+### Two spellings of the same file never collide, so nothing warns
+
+- clawtilla names identity files in org; a workspace from anywhere else
+  names them in markdown. `clawt_workspace_scaffold()` correctly never
+  overwrites -- and it tested for `SOUL.org` against a directory holding
+  `SOUL.md`, found nothing, and wrote a blank set beside the real one.
+  The blanks are what `identity_files` defaults to, so the agent loaded
+  seven templates saying "(fill in)" with its actual persona in the same
+  directory.
+- An import reported every file copied and produced something wearing
+  the right name with no character. The fix is two halves: the scaffolder
+  writes no identity file that nothing will load, and the importer adopts
+  a markdown persona it finds -- and says which files, because an agent
+  that silently changed what it reads is its own problem.
+- Both halves ask *one* function what an agent loads.
+  `clawt_workspace_effective_identity_files()` is used by the scaffolder
+  and the renderer, because a file one writes and the other never reads
+  is exactly how a workspace fills up with things nobody looks at.
+
+### Two directories that are the same by default hide which one is meant
+
+- `skills.dir` was built from the state directory, grouped with
+  `session.persist_dir` and `database.path` under a comment explaining
+  why *those* must be per-agent. Skills are authored content and belong
+  in the workspace; the two are the same directory for every agent that
+  does not set `agents.workspace`, so the mistake was invisible until one
+  did -- and then `skills.dir` named a directory clawtilla never creates
+  and nothing writes to, and the agent silently had no skills.
+- The string appeared exactly once in the tree, at the point of use. That
+  is the tell: a path nothing else ever constructs is a path nothing else
+  ever creates.
+
+### An identity change needs a session cleared, not a restart
+
+- An AI CLI is not handed a system prompt when it *resumes* a session, so
+  editing an identity file or repointing `persona.identity_files` reaches
+  a running agent's files and not its prompt. Restarting is not enough.
+  `agent.reset` is what applies it, and it existed only in the GTK client
+  -- from a terminal there was no supported way to apply an identity
+  change at all. `clawtilla agent reset` now exists.
+- `agent.set` reports `restart_required` for `persona.*` as well as
+  `tools.*`, and the CLI gives different advice for each, because the
+  remedy differs: a tool list is read at session start, so a restart is
+  enough; a resumed session is never handed a prompt, so only clearing it
+  works.
+
+### Hiding a build behind >/dev/null makes a revert-proof meaningless
+
+- Confirming a test fails without its fix is only worth doing if the
+  sabotage compiled. Three times this session a `make ... >/dev/null 2>&1`
+  hid an error, the old binary ran, and the "proof" was a pass. The first
+  attempt at proving the list fix used `yaml_node_new_scalar()`, which
+  does not exist. Read the build output, or at minimum grep it for
+  `error` -- the same rule this file already records for linker errors
+  hidden by a diagnostics filter.
+
+
 ## Things to NEVER Do
 
 - Never hand-edit `data/example-config.yaml` or `data/default-config.yaml`
@@ -2690,6 +2765,11 @@ the same program.
 - Never return a secret obtained on a client's behalf to that client. A
   Matrix token goes to a 0600 file and the reply names the file
 - Never write a hand-maintained list of an option's keys. Walk the schema
+- Never write a config value without dispatching on what the schema says
+  it is. A list written as a scalar is accepted, saved, and read back as
+  the default, and `computer.host.deny_paths` is one of them
+- Never scaffold a file the agent will not read. Two personas in one
+  workspace disagree, and the templates are the ones that load
 - Never state a relationship between two config keys anywhere but the
   schema. Two private copies of "what an agent calls this fleet option"
   is how nine settings came to be unreachable from every client

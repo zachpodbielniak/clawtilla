@@ -481,6 +481,25 @@ gboolean clawt_agent_config_has_key(ClawtAgentConfig *self,
 gboolean clawt_agent_config_set_string(ClawtAgentConfig *self,
                                        const gchar      *key,
                                        const gchar      *value);
+
+/**
+ * clawt_agent_config_set_string_list:
+ * @self: an agent's configuration
+ * @key: a dotted path, relative to the agent
+ * @values: (array zero-terminated=1) (nullable): the entries, or %NULL to clear
+ *
+ * Writes @key as a YAML sequence.
+ *
+ * clawt_agent_config_set_string() writes a scalar at a dotted path, and
+ * the reader refuses anything that is not a sequence -- so setting a
+ * list through it was accepted, saved, and then read back as the schema
+ * default, with nothing anywhere reporting a problem.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean clawt_agent_config_set_string_list(ClawtAgentConfig   *self,
+                                            const gchar        *key,
+                                            const gchar *const *values);
 gboolean clawt_agent_config_set_boolean(ClawtAgentConfig *self,
                                         const gchar      *key,
                                         gboolean          value);

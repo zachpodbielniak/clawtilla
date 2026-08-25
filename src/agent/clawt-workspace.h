@@ -74,6 +74,44 @@ GStrv
 clawt_workspace_identity_files(void);
 
 /**
+ * clawt_workspace_detect_identity_files:
+ * @workspace: a directory that may already hold a persona
+ *
+ * The identity files an imported workspace already has, in load order.
+ *
+ * clawtilla spells its identity files in org; a workspace that grew up
+ * elsewhere keeps the same concerns in markdown, and the two sets never
+ * collide -- so an import copied a complete persona in and scaffolded a
+ * blank .org beside every file of it, and the agent loaded the blanks.
+ *
+ * Returns %NULL when the workspace holds any of clawtilla's own .org
+ * identity files: one that already speaks this spelling has chosen.
+ *
+ * Returns: (transfer full) (nullable) (array zero-terminated=1): the
+ *   files to adopt, or %NULL if there is nothing to adopt
+ */
+GStrv
+clawt_workspace_detect_identity_files(const gchar *workspace);
+
+/**
+ * clawt_workspace_effective_identity_files:
+ * @agent: the agent's configuration
+ *
+ * The identity files this agent will actually load.
+ *
+ * A configured list wins; an inline `persona.system_prompt` makes the
+ * question moot and the answer is empty; otherwise it is the standard
+ * set. The scaffolder and the renderer both ask, because a file one
+ * writes and the other never reads is not a starting point -- it is
+ * clutter contradicting the files that *are* read.
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the files, possibly
+ *   empty, never %NULL
+ */
+GStrv
+clawt_workspace_effective_identity_files(ClawtAgentConfig *agent);
+
+/**
  * clawt_workspace_scaffold:
  * @agent: the agent's configuration
  * @error: (out) (optional): return location for a #GError

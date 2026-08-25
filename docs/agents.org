@@ -103,6 +103,26 @@ persona:
 An inline ~system_prompt~ replaces the lot.  The two are mutually
 exclusive.
 
+The workspace holds exactly the identity files an agent loads.  Setting
+~identity_files~ narrows what is scaffolded as well as what is read: a
+template nothing loads is not a starting point, it is a second persona
+sitting beside the real one, and the two disagree.
+
+*** Making an identity change take effect
+
+An AI CLI is not handed a system prompt when it *resumes* a session.  So
+editing =SOUL.org=, or repointing ~identity_files~, reaches a running
+agent's files and not its prompt -- it keeps the identity it was created
+with, and restarting it is not enough.
+
+#+begin_src bash
+clawtilla agent reset scribe
+#+end_src
+
+That clears the AI session so the identity files are read again.  The
+previous sessions are moved aside rather than deleted, so the history is
+still there.  ~agent set~ says so when the key you changed needs it.
+
 Files that do not exist are skipped by libreclaw, so a list shared across
 a fleet is fine.
 
@@ -300,6 +320,18 @@ tr '\0' '\n' < /proc/$(pgrep -f 'libreclaw -c .*researcher')/environ
 ~max_restarts~ exists because an agent that fails instantly and is
 restarted for ever is a busy loop that starves everything else.  Backoff
 doubles on each consecutive failure.
+
+*** Where skills live
+
+Beside the persona, in the workspace -- =<workspace>/skills= -- because a
+skill is authored content that somebody writes and edits, the same as
+=SOUL.org=, rather than runtime state like the mailbox.
+
+That distinction was invisible for a long time, because the workspace
+root and =<state_dir>/agents= are the same directory for every agent
+that does not set ~workspace~.  Set one, and ~skills.dir~ named a
+directory clawtilla has never created and nothing in the tree writes to:
+the agent silently had no skills, and the config looked reasonable.
 
 *** embedded
 
@@ -712,6 +744,29 @@ takes what clawtilla
 also owns -- provider, model, effort, name. An import that ignored them
 would bring the persona across and leave the way it thinks behind.
 Nothing already set is overwritten.
+
+*** A persona that is not already in org
+
+clawtilla names its identity files =SOUL.org= and friends; a workspace
+that grew up somewhere else -- a Claude Code home, a standalone
+libreclaw instance -- keeps the same concerns in =.md=.  The two
+spellings never collide, so an import used to copy a complete persona in
+and then scaffold a blank =.org= beside every file of it, and the agent
+loaded the blanks: an import that reported every file copied and
+produced something wearing the right name with /(fill in)/ where its
+character should be.
+
+An import now adopts what it finds, and says so:
+
+#+begin_example
+import: 'ben' already had a persona; loading SOUL.md, USER.md, AGENTS.md
+rather than scaffolding blanks beside it
+#+end_example
+
+Only when ~identity_files~ was not configured on the import itself, and
+only when the workspace holds none of clawtilla's own =.org= identity
+files -- one that already speaks this spelling has made its choice, and
+adopting markdown beside it would load the same concern twice.
 
 Without =--from= the same verb adopts a directory clawtilla already has;
 see =agent discover= above.

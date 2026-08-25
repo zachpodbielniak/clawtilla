@@ -694,11 +694,17 @@ set_scalar(YamlNode *root, const gchar *key, YamlNode *value,
 /*
  * Adds one mount to computer.mounts, creating the sequence if needed.
  *
- * Mounts are the only list an agent's configuration holds, and
- * clawt_agent_config_set_string() cannot express one -- it writes a
+ * clawt_agent_config_set_string() cannot express a list -- it writes a
  * scalar at a dotted path. Without this the mount list could be read
  * but never written, so declaring a shared folder meant editing the
  * YAML by hand and no client offered it at all.
+ *
+ * This said "mounts are the only list an agent's configuration holds",
+ * which was true when it was written and stopped being true the moment
+ * persona.identity_files arrived. Nobody noticed, so every list added
+ * after mounts was written as a scalar and read back as the schema
+ * default. clawt_agent_config_set_string_list() is the general answer;
+ * this stays because a mount is a mapping rather than a string.
  */
 gboolean
 clawt_agent_config_add_mount(ClawtAgentConfig *self,
@@ -852,6 +858,54 @@ clawt_agent_config_set_string(ClawtAgentConfig *self,
 
     node = (value != NULL) ? yaml_node_new_string(value)
                            : yaml_node_new_null();
+    schema_key = g_strdup_printf("agents.%s", key);
+
+    return set_scalar(self->node, key, node, schema_key);
+}
+
+/*
+ * Writes a dotted-path key as a YAML sequence.
+ *
+ * clawt_agent_config_set_string() writes a scalar, and
+ * node_to_strv() refuses anything that is not a sequence -- so a list
+ * set through it was accepted, saved to the file, and then silently
+ * read back as the schema default. `agent set fai
+ * persona.identity_files SOUL.md,USER.md` did exactly that: the CLI
+ * echoed the value, clawtilla.yaml held it, and the agent loaded the
+ * seven .org files it would have loaded anyway.
+ *
+ * The comment on clawt_agent_config_add_mount() saying mounts are the
+ * only list an agent's configuration holds was true when it was
+ * written and stopped being true when persona.identity_files was
+ * added. A second list is what this exists for.
+ */
+gboolean
+clawt_agent_config_set_string_list(ClawtAgentConfig   *self,
+                                   const gchar        *key,
+                                   const gchar *const *values)
+{
+    g_autoptr(YamlNode) node = NULL;
+    g_autofree gchar *schema_key = NULL;
+    gsize i;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    if (values == NULL || values[0] == NULL) {
+        node = yaml_node_new_null();
+    } else {
+        /*
+         * NULL, not a fresh sequence: yaml_node_new_sequence() takes
+         * its argument (transfer none) and refs it, so one made here
+         * would leak this function's reference every call.
+         */
+        node = yaml_node_new_sequence(NULL);
+
+        for (i = 0; values[i] != NULL; i++)
+            yaml_sequence_add_string_element(yaml_node_get_sequence(node),
+                                             values[i]);
+    }
+
     schema_key = g_strdup_printf("agents.%s", key);
 
     return set_scalar(self->node, key, node, schema_key);

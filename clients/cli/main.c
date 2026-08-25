@@ -1176,6 +1176,51 @@ cmd_agent(int argc, char *argv[])
         return EXIT_SUCCESS;
     }
 
+    /*
+     * Clearing an agent's AI session, which is the only way to make an
+     * identity change reach a running agent.
+     *
+     * An AI CLI is not handed a system prompt when it resumes a session,
+     * so editing SOUL.org -- or repointing persona.identity_files --
+     * reaches the agent's files and not its prompt: it keeps the identity
+     * it was created with. This existed only in the GTK client, so from
+     * a terminal there was no supported way to apply an identity change
+     * at all.
+     */
+    if (g_strcmp0(verb, "reset") == 0) {
+        gint64 cleared;
+
+        if (target == NULL) {
+            g_printerr("Usage: clawtilla agent reset <agent>\n");
+            g_printerr("  Clears its AI session so it reads its identity "
+                       "files again.\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "agent.reset",
+                     build_payload("agent", target, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        cleared = json_object_has_member(json_node_get_object(reply),
+                                         "sessions_cleared")
+                  ? json_object_get_int_member(json_node_get_object(reply),
+                                               "sessions_cleared")
+                  : 0;
+
+        g_print("%s: cleared %" G_GINT64_FORMAT " session(s)\n", target,
+                cleared);
+
+        /*
+         * The old sessions directory is moved aside rather than deleted,
+         * so the history is still readable. Worth saying, because
+         * "cleared" otherwise reads as "gone".
+         */
+        g_print("Its previous sessions are kept beside the new ones.\n");
+
+        return EXIT_SUCCESS;
+    }
+
     if (g_strcmp0(verb, "logs") == 0) {
         JsonArray *lines;
         guint i;
@@ -1563,14 +1608,26 @@ cmd_agent(int argc, char *argv[])
         g_print("%s: %s = %s\n", argv[3], argv[4], argv[5]);
 
         /*
-         * An AI CLI lists its tools once, when its session starts, so a
-         * permission changed under a running agent reaches its files and
-         * not its session -- and the agent then reports, accurately, not
-         * having the tool.
+         * An AI CLI reads some things once, when its session starts, so a
+         * change under a running agent reaches its files and not its
+         * session -- and the agent then reports, accurately, not having
+         * whatever was just granted.
+         *
+         * The advice differs by key because the remedy does: a tool list
+         * is read at session start, so a restart is enough, while a
+         * resumed session is never handed a system prompt at all and
+         * only clearing it applies an identity change.
          */
         if (member_flag(json_node_get_object(reply), "restart_required",
-                        FALSE))
-            g_print("Restart it: it lists its tools when it starts.\n");
+                        FALSE)) {
+            if (g_str_has_prefix(argv[4], "persona."))
+                g_print("Run `clawtilla agent reset %s`: a resumed session "
+                        "is never handed a system prompt, so a restart "
+                        "alone keeps the old identity.\n", argv[3]);
+            else
+                g_print("Restart it: it lists its tools when it starts.\n");
+        }
+
         return EXIT_SUCCESS;
     }
 

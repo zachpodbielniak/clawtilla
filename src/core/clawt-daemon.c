@@ -5497,6 +5497,37 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             clawt_config_adopt_libreclaw(created, imported);
         }
 
+        /*
+         * And the persona it already had.
+         *
+         * clawtilla names its identity files in org, a workspace from
+         * anywhere else names them in markdown, and the two sets do not
+         * collide -- so the copy above brought a complete persona across
+         * and the scaffolder then wrote a blank .org beside every file
+         * of it. The agent loaded the blanks: an import that succeeded,
+         * reported every file copied, and produced something wearing the
+         * right name with "/(fill in)/" where its character should be.
+         *
+         * Only when nothing was configured. An id and a persona given on
+         * the import frame are the caller's, not ours to overrule.
+         */
+        if (!clawt_agent_config_has_key(created, "persona.identity_files")) {
+            g_auto(GStrv) adopted =
+                clawt_workspace_detect_identity_files(workspace);
+
+            if (adopted != NULL && adopted[0] != NULL) {
+                g_autofree gchar *joined = g_strjoinv(", ", adopted);
+
+                clawt_agent_config_set_string_list(
+                    created, "persona.identity_files",
+                    (const gchar *const *)adopted);
+
+                g_message("import: '%s' already had a persona; loading %s "
+                          "rather than scaffolding blanks beside it",
+                          agent_id, joined);
+            }
+        }
+
         if (!clawt_config_save(self->config, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
 
@@ -6304,7 +6335,47 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
                                        "no such agent");
 
-        clawt_agent_config_set_string(config, key, value);
+        /*
+         * Dispatch on what the schema says the key *is*, rather than
+         * writing every value as a scalar.
+         *
+         * A STRING_LIST written as a scalar is not merely ugly: the
+         * reader refuses anything that is not a YAML sequence, so the
+         * value was accepted here, echoed back to the client, saved to
+         * clawtilla.yaml, and then read back as the schema default. The
+         * one that exposed it was persona.identity_files -- an agent
+         * pointed at its real persona files went on loading the seven
+         * generated .org stubs, and every surface agreed the setting
+         * had been saved.
+         */
+        {
+            g_autofree gchar *schema_key = g_strconcat("agents.", key, NULL);
+            const ClawtSchemaEntry *entry = clawt_config_schema_lookup(schema_key);
+
+            if (entry != NULL && entry->type == CLAWT_SCHEMA_STRING_LIST) {
+                /*
+                 * Comma-separated, which is how the schema table spells
+                 * a list default and therefore the one spelling a person
+                 * has already seen. Blanks are trimmed so "a, b" and
+                 * "a,b" mean the same thing.
+                 */
+                g_auto(GStrv) values = NULL;
+
+                if (value != NULL && *value != '\0') {
+                    guint i;
+
+                    values = g_strsplit(value, ",", -1);
+
+                    for (i = 0; values[i] != NULL; i++)
+                        g_strstrip(values[i]);
+                }
+
+                clawt_agent_config_set_string_list(
+                    config, key, (const gchar *const *)values);
+            } else {
+                clawt_agent_config_set_string(config, key, value);
+            }
+        }
 
         if (!clawt_config_save(self->config, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
@@ -6330,14 +6401,23 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         json_builder_add_string_value(builder, agent_id);
 
         /*
-         * An AI CLI lists its tools once, when its session starts. So a
-         * permission changed under a running agent reaches its files and
-         * not its session, and saying nothing here is how somebody
-         * concludes the setting does not work.
+         * An AI CLI reads some things once, when its session starts. So a
+         * setting changed under a running agent reaches its files and not
+         * its session, and saying nothing here is how somebody concludes
+         * the setting does not work.
+         *
+         * Tools are the known case: a CLI lists them at session start.
+         * Persona is the same shape and was not reported -- an AI CLI is
+         * not handed a system prompt when it *resumes* a session, so
+         * editing an identity file, or repointing
+         * persona.identity_files, leaves a running agent with the
+         * identity it was created with. Clearing the session is what
+         * applies it, which is `clawtilla agent reset`.
          */
         json_builder_set_member_name(builder, "restart_required");
         json_builder_add_boolean_value(
-            builder, g_str_has_prefix(key, "tools.") &&
+            builder, (g_str_has_prefix(key, "tools.") ||
+                      g_str_has_prefix(key, "persona.")) &&
                      clawt_agent_get_state(
                          clawt_agent_manager_get(self->agents, agent_id)) ==
                      CLAWT_AGENT_STATE_RUNNING);

@@ -579,9 +579,6 @@ clawt_config_render_agent(ClawtConfig       *config,
             append_key_value(out, 2, "prompt_suffix", suffix);
     }
 
-    identity_files = clawt_agent_config_get_string_list(
-        agent, "persona.identity_files");
-
     /*
      * The standard set when nothing was configured.
      *
@@ -590,12 +587,13 @@ clawt_config_render_agent(ClawtConfig       *config,
      * none of them loaded -- which looks exactly like the files being
      * ignored, because they were.  An explicit list still wins, and an
      * inline system_prompt makes the whole thing moot.
+     *
+     * Asked of the workspace rather than decided here, because the
+     * scaffolder needs the same answer: it writes these files, and one
+     * of them deciding differently is how a workspace fills up with
+     * templates nothing loads.
      */
-    if ((identity_files == NULL || identity_files[0] == NULL) &&
-        clawt_agent_config_get_string(agent, "persona.system_prompt") == NULL) {
-        g_strfreev(identity_files);
-        identity_files = clawt_workspace_identity_files();
-    }
+    identity_files = clawt_workspace_effective_identity_files(agent);
 
     append_string_list(out, 2, "identity_files", identity_files);
 
@@ -628,7 +626,26 @@ clawt_config_render_agent(ClawtConfig       *config,
         g_autofree gchar *sessions = g_build_filename(state_dir, "sessions",
                                                       NULL);
         g_autofree gchar *database = clawt_usage_database_path(state_dir);
-        g_autofree gchar *skills = g_build_filename(state_dir, "skills", NULL);
+        /*
+         * Skills come from the *workspace*, not the state directory.
+         *
+         * They are authored content -- somebody writes a skill and edits
+         * it, the same as SOUL.org -- so they belong beside the persona
+         * rather than beside the mailbox. Building this from state_dir
+         * was invisible for as long as the two were the same directory,
+         * which they are for every agent that does not set
+         * `agents.workspace`. The moment one does, skills.dir named a
+         * directory clawtilla has never created and nothing else in the
+         * tree ever writes to, and the agent silently had no skills.
+         *
+         * The `workspace` this reads is the function's own, resolved at
+         * the top. A second one here shadowed it -- same value, and a
+         * warning, which this project treats as a latent bug rather than
+         * noise.
+         */
+        g_autofree gchar *skills =
+            (workspace != NULL) ? g_build_filename(workspace, "skills", NULL)
+                                : g_build_filename(state_dir, "skills", NULL);
 
         g_string_append(out, "session:\n");
         append_key_value(out, 2, "persist_dir", sessions);
