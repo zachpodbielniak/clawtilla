@@ -526,7 +526,42 @@ node_to_strv(YamlNode *node)
     guint i;
     guint length;
 
-    if (node == NULL || yaml_node_get_node_type(node) != YAML_NODE_SEQUENCE)
+    if (node == NULL)
+        return NULL;
+
+    /*
+     * A lone scalar is a list of one.
+     *
+     * `allow_paths: /srv/data` is what a person writes by hand for a key
+     * they have only ever seen hold one thing, and refusing it did not
+     * fail -- it parsed the value, discarded it, and handed back the
+     * schema default. For allow_paths that default is unset, so an
+     * operator's confinement was silently replaced by an empty
+     * allowlist.
+     *
+     * Not split on commas. The writer no longer produces a comma-joined
+     * scalar for a list key, and a path is allowed to contain a comma --
+     * splitting here would make such a path unwritable in exchange for
+     * guessing at a spelling nothing emits.
+     *
+     * An empty scalar stays unset rather than becoming a list holding
+     * "". `tools.allow:` with nothing after it is a key somebody started
+     * and left, and the difference between an empty allowlist and an
+     * absent one is the whole point of the key.
+     */
+    if (yaml_node_get_node_type(node) == YAML_NODE_SCALAR) {
+        const gchar *only = yaml_node_get_string(node);
+
+        if (only == NULL || *only == '\0')
+            return NULL;
+
+        out = g_ptr_array_new_with_free_func(g_free);
+        g_ptr_array_add(out, g_strdup(only));
+        g_ptr_array_add(out, NULL);
+        return (GStrv)g_ptr_array_free(out, FALSE);
+    }
+
+    if (yaml_node_get_node_type(node) != YAML_NODE_SEQUENCE)
         return NULL;
 
     sequence = yaml_node_get_sequence(node);
@@ -909,6 +944,61 @@ clawt_agent_config_set_string_list(ClawtAgentConfig   *self,
     schema_key = g_strdup_printf("agents.%s", key);
 
     return set_scalar(self->node, key, node, schema_key);
+}
+
+/*
+ * Writes a value given as text, as whatever the schema says the key is.
+ *
+ * Every caller that takes a setting as a string -- the `agent set` IPC
+ * handler, the create_agent tool -- had to decide for itself whether
+ * that string was a list, and a caller that did not decide called
+ * clawt_agent_config_set_string() and wrote a scalar. node_to_strv()
+ * then read the key back as its default, so the value was accepted,
+ * echoed to whoever set it, saved to the file, and never used.
+ *
+ * `agent set` grew the schema check for that reason; create_agent never
+ * had it, so `allow_paths` given at creation reached the sandbox as an
+ * empty allowlist. There is one right answer, the schema holds it, and
+ * this is the one place that asks -- rather than a second copy that can
+ * drift from the first.
+ */
+gboolean
+clawt_agent_config_set_from_string(ClawtAgentConfig *self,
+                                   const gchar      *key,
+                                   const gchar      *value)
+{
+    g_autofree gchar *schema_key = NULL;
+    const ClawtSchemaEntry *entry;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    schema_key = g_strdup_printf("agents.%s", key);
+    entry = clawt_config_schema_lookup(schema_key);
+
+    if (entry == NULL || entry->type != CLAWT_SCHEMA_STRING_LIST)
+        return clawt_agent_config_set_string(self, key, value);
+
+    /*
+     * Comma-separated, which is how the schema table spells a list
+     * default and therefore the one spelling a person has already seen.
+     * Blanks are trimmed so "a, b" and "a,b" mean the same thing.
+     */
+    {
+        g_auto(GStrv) values = NULL;
+
+        if (value != NULL && *value != '\0') {
+            guint i;
+
+            values = g_strsplit(value, ",", -1);
+
+            for (i = 0; values[i] != NULL; i++)
+                g_strstrip(values[i]);
+        }
+
+        return clawt_agent_config_set_string_list(
+            self, key, (const gchar *const *)values);
+    }
 }
 
 gboolean
