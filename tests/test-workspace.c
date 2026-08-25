@@ -1259,6 +1259,150 @@ test_the_agent_is_told_to_maintain_its_own_files(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * The purpose an operator wrote when creating the agent becomes the
+ * agent's mission, in the one file that decides what it does when
+ * nobody has told it what to do.
+ *
+ * It used to be written to a `persona` key nothing reads, so the whole
+ * persona was discarded and the new agent started with nothing but the
+ * scaffold.  Nothing warned, which is the part that cost a day.
+ */
+static void
+test_scaffold_writes_the_purpose_as_the_mission(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *soul = NULL;
+    gboolean written = FALSE;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: scribe\n"
+                  "    description: writes things down\n");
+    agent = first_agent(&fixture);
+
+    g_assert_true(clawt_workspace_scaffold_with_mission(
+        agent, "You keep the notes. Never speak first.", &written, &error));
+    g_assert_no_error(error);
+    g_assert_true(written);
+
+    soul = read_workspace_file(agent, "SOUL.org");
+    g_assert_nonnull(soul);
+    g_assert_nonnull(strstr(soul, "You keep the notes. Never speak first."));
+
+    /*
+     * And the nudge to rewrite the generated line goes with it: it is
+     * addressed to an agent whose mission was generated from a config
+     * field, and this one's was written by a person.
+     */
+    g_assert_null(strstr(soul, "Rewrite the line above"));
+
+    /* The rest of the set is still scaffolded around it. */
+    g_assert_nonnull(strstr(soul, "* Operating Parameters"));
+    {
+        g_autofree gchar *identity = read_workspace_file(agent,
+                                                          "IDENTITY.org");
+        g_assert_nonnull(identity);
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * With no mission the description still fills the slot, and the nudge
+ * stays -- an agent whose mission was generated needs to be told so.
+ */
+static void
+test_scaffold_without_a_mission_keeps_the_nudge(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *soul = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: scribe\n"
+                  "    description: writes things down\n");
+    agent = first_agent(&fixture);
+
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+    g_assert_no_error(error);
+
+    soul = read_workspace_file(agent, "SOUL.org");
+    g_assert_nonnull(soul);
+    g_assert_nonnull(strstr(soul, "writes things down"));
+    g_assert_nonnull(strstr(soul, "Rewrite the line above"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A SOUL.org that is already there wins, because it is somebody's work
+ * -- but the caller is told the mission did not land rather than left
+ * believing it did.  Silently losing it is the whole defect.
+ *
+ * Both directions in one test, deliberately.  Asserting only that a
+ * pre-existing SOUL.org reports FALSE passes just as well when the
+ * mission is never written at all, so on its own it proves nothing: it
+ * is exactly the test that would have survived this fix being reverted.
+ * The positive control below is what makes the negative one mean
+ * something.
+ */
+static void
+test_scaffold_says_when_the_mission_did_not_land(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *landed = NULL;
+    g_autofree gchar *after = NULL;
+    gboolean written = FALSE;
+
+    fixture_setup(&fixture, "agents:\n  - id: scribe\n");
+    agent = first_agent(&fixture);
+
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+    g_assert_no_error(error);
+
+    path = clawt_workspace_file_path(agent, "SOUL.org");
+
+    /*
+     * Positive control: with no SOUL.org in the way the mission lands,
+     * and the caller is told so.
+     */
+    g_assert_cmpint(g_unlink(path), ==, 0);
+
+    g_assert_true(clawt_workspace_scaffold_with_mission(
+        agent, "You keep the notes.", &written, &error));
+    g_assert_no_error(error);
+    g_assert_true(written);
+
+    g_assert_true(g_file_get_contents(path, &landed, NULL, NULL));
+    g_assert_nonnull(strstr(landed, "You keep the notes."));
+
+    /*
+     * And now the case this exists for: the file is somebody's, so it
+     * is left alone and the caller is told the purpose is not in it.
+     */
+    g_assert_true(g_file_set_contents(path, "MINE\n", -1, NULL));
+
+    written = TRUE;
+
+    g_assert_true(clawt_workspace_scaffold_with_mission(
+        agent, "You keep the notes.", &written, &error));
+    g_assert_no_error(error);
+    g_assert_false(written);
+
+    g_assert_true(g_file_get_contents(path, &after, NULL, NULL));
+    g_assert_cmpstr(after, ==, "MINE\n");
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1319,6 +1463,12 @@ main(int argc, char *argv[])
                     test_an_empty_scalar_is_still_unset);
     g_test_add_func("/workspace/set-from-string-follows-the-schema",
                     test_set_from_string_follows_the_schema);
+    g_test_add_func("/workspace/purpose-becomes-the-mission",
+                    test_scaffold_writes_the_purpose_as_the_mission);
+    g_test_add_func("/workspace/no-mission-keeps-the-nudge",
+                    test_scaffold_without_a_mission_keeps_the_nudge);
+    g_test_add_func("/workspace/mission-that-did-not-land-is-reported",
+                    test_scaffold_says_when_the_mission_did_not_land);
     g_test_add_func("/workspace/scaffold-and-renderer-agree",
                     test_scaffold_and_renderer_agree);
 

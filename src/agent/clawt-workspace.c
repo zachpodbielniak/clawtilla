@@ -229,10 +229,7 @@ static const gchar SOUL_ORG[] =
 "\n"
 "{{description}}\n"
 "\n"
-"Rewrite the line above. It is the one sentence that decides what you do\n"
-"when nobody has told you what to do, and the default was generated from\n"
-"a config field.\n"
-"\n"
+"{{mission_note}}"
 "* Operating Parameters\n"
 "\n"
 "- *Presence:* you run as a supervised process. Your mailbox is durable,\n"
@@ -878,6 +875,17 @@ build_values(ClawtAgentConfig *agent)
                         g_strdup((description != NULL && *description != '\0')
                                  ? description
                                  : "/Say what this agent is for./"));
+    /*
+     * Addressed to an agent whose mission came out of a config field
+     * rather than out of a person, so it goes when a real one is given.
+     */
+    g_hash_table_insert(values, g_strdup("mission_note"),
+                        g_strdup("Rewrite the line above. It is the one "
+                                 "sentence that decides what you do\n"
+                                 "when nobody has told you what to do, and "
+                                 "the default was generated from\n"
+                                 "a config field.\n"
+                                 "\n"));
     g_hash_table_insert(values, g_strdup("role"),
                         g_strdup((description != NULL && *description != '\0')
                                  ? description : "/(fill in)/"));
@@ -1418,12 +1426,27 @@ strv_contains(const GStrv haystack, const gchar *needle)
 gboolean
 clawt_workspace_scaffold(ClawtAgentConfig *agent, GError **error)
 {
+    return clawt_workspace_scaffold_with_mission(agent, NULL, NULL, error);
+}
+
+gboolean
+clawt_workspace_scaffold_with_mission(ClawtAgentConfig  *agent,
+                                      const gchar       *mission,
+                                      gboolean          *mission_written,
+                                      GError           **error)
+{
     g_autoptr(GHashTable) values = NULL;
     g_autofree gchar *workspace = NULL;
     g_auto(GStrv) identity = NULL;
+    gboolean have_mission;
     guint i;
 
     g_return_val_if_fail(agent != NULL, FALSE);
+
+    have_mission = (mission != NULL && *mission != '\0');
+
+    if (mission_written != NULL)
+        *mission_written = FALSE;
 
     workspace = clawt_agent_config_get_workspace(agent);
 
@@ -1439,6 +1462,18 @@ clawt_workspace_scaffold(ClawtAgentConfig *agent, GError **error)
 
     values = build_values(agent);
     identity = clawt_workspace_effective_identity_files(agent);
+
+    /*
+     * The mission takes the slot the description filled, and the nudge
+     * to rewrite it goes with it.  SOUL.org is the one file that decides
+     * what an agent does when nobody has told it what to do, so a
+     * purpose that lands anywhere else has been thrown away.
+     */
+    if (have_mission) {
+        g_hash_table_insert(values, g_strdup("description"),
+                            g_strdup(mission));
+        g_hash_table_insert(values, g_strdup("mission_note"), g_strdup(""));
+    }
 
     for (i = 0; i < G_N_ELEMENTS(workspace_files); i++) {
         g_autofree gchar *path = NULL;
@@ -1481,6 +1516,16 @@ clawt_workspace_scaffold(ClawtAgentConfig *agent, GError **error)
 
         if (!clawt_write_file_atomic(path, content, -1, 0600, FALSE, error))
             return FALSE;
+
+        /*
+         * Said rather than assumed.  An existing SOUL.org is somebody's
+         * work and is never overwritten, so a caller that was given a
+         * purpose has to be able to tell whether it landed -- silently
+         * losing it is the defect this exists to close.
+         */
+        if (have_mission && mission_written != NULL &&
+            g_strcmp0(workspace_files[i].name, "SOUL.org") == 0)
+            *mission_written = TRUE;
     }
 
     return TRUE;

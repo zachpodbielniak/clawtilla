@@ -776,6 +776,7 @@ test_failing_command_reports_why(void)
 
 typedef struct {
     gchar      *created_id;
+    gchar      *created_purpose;
     GHashTable *created_settings;
     gboolean    started;
     gboolean    refuse;
@@ -783,6 +784,7 @@ typedef struct {
 
 static gchar *
 fake_create_agent(const gchar  *agent_id,
+                  const gchar  *purpose,
                   GHashTable   *settings,
                   gboolean      start,
                   gpointer      user_data,
@@ -798,6 +800,8 @@ fake_create_agent(const gchar  *agent_id,
 
     g_free(record->created_id);
     record->created_id = g_strdup(agent_id);
+    g_free(record->created_purpose);
+    record->created_purpose = g_strdup(purpose);
     record->started = start;
 
     g_clear_pointer(&record->created_settings, g_hash_table_unref);
@@ -858,6 +862,7 @@ test_the_fleet_tools_need_the_permission(void)
                                "clawtilla_agent_options"));
 
     g_clear_pointer(&record.created_id, g_free);
+    g_clear_pointer(&record.created_purpose, g_free);
     g_clear_pointer(&record.created_settings, g_hash_table_unref);
     fixture_teardown(&fixture);
 }
@@ -923,8 +928,17 @@ test_creating_an_agent_passes_every_setting_through(void)
     g_assert_cmpstr(g_hash_table_lookup(record.created_settings,
                                         "description"),
                     ==, "writes things down");
-    g_assert_cmpstr(g_hash_table_lookup(record.created_settings, "persona"),
-                    ==, "You keep the notes.");
+    /*
+     * The purpose arrives as itself, not as a configuration key.
+     *
+     * It used to be inserted into the settings as `persona`, which is a
+     * section in the schema rather than a value -- so it was written to
+     * the config file and never read by anything, and the whole persona
+     * an operator wrote was discarded without a word.
+     */
+    g_assert_cmpstr(record.created_purpose, ==, "You keep the notes.");
+    g_assert_null(g_hash_table_lookup(record.created_settings, "persona"));
+    g_assert_null(g_hash_table_lookup(record.created_settings, "purpose"));
     g_assert_cmpstr(g_hash_table_lookup(record.created_settings,
                                         "computer.type"),
                     ==, "container");
@@ -941,6 +955,7 @@ test_creating_an_agent_passes_every_setting_through(void)
                     ==, "high");
 
     g_clear_pointer(&record.created_id, g_free);
+    g_clear_pointer(&record.created_purpose, g_free);
     g_clear_pointer(&record.created_settings, g_hash_table_unref);
     fixture_teardown(&fixture);
 }
@@ -979,6 +994,7 @@ test_a_refused_creation_says_why(void)
     g_assert_nonnull(strstr(text, "disk image"));
 
     g_clear_pointer(&record.created_id, g_free);
+    g_clear_pointer(&record.created_purpose, g_free);
     g_clear_pointer(&record.created_settings, g_hash_table_unref);
     fixture_teardown(&fixture);
 }
@@ -1063,6 +1079,7 @@ test_the_options_report_what_can_be_chosen(void)
     g_assert_nonnull(strstr(text, "unknown from here"));
 
     g_clear_pointer(&record.created_id, g_free);
+    g_clear_pointer(&record.created_purpose, g_free);
     g_clear_pointer(&record.created_settings, g_hash_table_unref);
     fixture_teardown(&fixture);
 }
@@ -1112,6 +1129,7 @@ test_the_described_tools_are_the_permitted_ones(void)
     g_assert_nonnull(strstr(before, "clawtilla_list_agents"));
 
     g_clear_pointer(&record.created_id, g_free);
+    g_clear_pointer(&record.created_purpose, g_free);
     g_clear_pointer(&record.created_settings, g_hash_table_unref);
     fixture_teardown(&fixture);
 }
