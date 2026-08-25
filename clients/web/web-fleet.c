@@ -454,6 +454,37 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtWebView view)
         htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(settings));
     }
 
+    /*
+     * And what has happened, with a count.
+     *
+     * The GTK client's bell sits in the header bar; here it sits beside
+     * Settings, which is where this client already puts the things that
+     * are about the whole fleet rather than about one agent.
+     */
+    {
+        g_autoptr(HtmxA) alerts = htmx_a_new_with_href("/alerts");
+        guint waiting = clawt_web_app_alert_count(app);
+
+        htmx_element_add_class(HTMX_ELEMENT(alerts), "tab");
+        htmx_node_set_text_content(HTMX_NODE(alerts), "Alerts");
+
+        if (waiting > 0) {
+            g_autoptr(HtmxSpan) pill = htmx_span_new();
+            /*
+             * Capped at 9+ here, unlike the sidebar's unread count: this
+             * sits on a small control rather than at the end of a row.
+             */
+            g_autofree gchar *text = (waiting > 9)
+                ? g_strdup("9+") : g_strdup_printf("%u", waiting);
+
+            htmx_element_add_class(HTMX_ELEMENT(pill), "unread-badge");
+            htmx_node_set_text_content(HTMX_NODE(pill), text);
+            htmx_node_add_child(HTMX_NODE(alerts), HTMX_NODE(pill));
+        }
+
+        htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(alerts));
+    }
+
     htmx_node_add_child(HTMX_NODE(aside), HTMX_NODE(head));
 
     htmx_element_add_class(HTMX_ELEMENT(scroll), "sidebar-scroll");

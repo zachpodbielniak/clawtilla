@@ -327,6 +327,31 @@ struct _ClawtWindow {
     gchar             *selected_avatar;
     gchar             *selected_color;
 
+    /*
+     * What has happened, for the panel on the right.
+     *
+     * Toasts answer something the operator just did -- "Saved.", "That
+     * is not a port." -- and there are 89 of those.  Exactly two call
+     * sites were notifications: a download that failed, and a message
+     * the loop guard refused.  Those two arrive on their own, disappear
+     * after a few seconds, and leave no trace anywhere if nobody was
+     * looking, which is what this is for.
+     *
+     * The routine stream goes in as well, quietly, so the panel can also
+     * answer "what is the fleet doing" -- the client already receives
+     * every event and acted on five kinds, dropping the rest.
+     *
+     * Session-scoped and capped: the daemon's own event log is the
+     * durable copy, and `event.list` reads it for anything older.
+     */
+    GPtrArray            *alerts;
+    AdwOverlaySplitView  *alerts_split;
+    GtkListBox           *alerts_list;
+    GtkWidget            *alerts_badge;
+    GtkWidget            *alerts_filter;
+    gboolean              alerts_show_all;
+    gchar                *alerts_agent;
+
     /* The flow page: who has been talking to whom, and about what. */
     GtkListBox        *flow_list;
     GtkBox            *flow_transcript;
@@ -7181,6 +7206,591 @@ build_agent_menu(ClawtWindow *self)
                               GTK_EVENT_CONTROLLER(press));
 }
 
+/* ── Alerts ──────────────────────────────────────────────────────── */
+
+/*
+ * An alert is an event that demanded attention; a routine entry is one
+ * that did not.  Same stream, different weight -- so one list with a
+ * filter rather than two tabs: deciding at write time which tab a thing
+ * belongs in means guessing before the interesting case, and a filter
+ * lets you widen after it.
+ */
+typedef enum {
+    ALERT_ERROR,
+    ALERT_NOTICE,
+    ALERT_ROUTINE
+} AlertTier;
+
+typedef struct {
+    AlertTier  tier;
+    gchar     *text;
+    gchar     *source;   /* the event kind, so a row says where to look */
+    gchar     *agent;    /* the event's subject */
+    gint64     ts;
+    gboolean   read;
+} Alert;
+
+/*
+ * The most recent 200 are held, matching the limit `agent.logs` already
+ * defaults to so the two surfaces agree on what "recent" means.  Older
+ * than that is the event log's, through `event.list`.
+ */
+#define ALERTS_KEPT 200
+
+static void refresh_alerts(ClawtWindow *self);
+static void update_alert_badge(ClawtWindow *self);
+static guint unread_alerts(ClawtWindow *self);
+
+static void
+alert_free(gpointer data)
+{
+    Alert *alert = data;
+
+    g_free(alert->text);
+    g_free(alert->source);
+    g_free(alert->agent);
+    g_free(alert);
+}
+
+static void
+clawt_window_alert(ClawtWindow *self, AlertTier tier, const gchar *source,
+                   const gchar *agent, const gchar *text)
+{
+    Alert *alert;
+
+    if (self->alerts == NULL || text == NULL)
+        return;
+
+    alert = g_new0(Alert, 1);
+    alert->tier = tier;
+    alert->text = g_strdup(text);
+    alert->source = g_strdup(source != NULL ? source : "");
+    alert->agent = g_strdup(agent != NULL ? agent : "");
+    alert->ts = g_get_real_time();
+    alert->read = FALSE;
+
+    /* Newest first: the list is read from the top and never scrolled to
+     * the bottom, which is the opposite of a transcript. */
+    g_ptr_array_insert(self->alerts, 0, alert);
+
+    while (self->alerts->len > ALERTS_KEPT)
+        g_ptr_array_remove_index(self->alerts, self->alerts->len - 1);
+
+    update_alert_badge(self);
+
+    /*
+     * The list is only rebuilt when somebody can see it.  Every event in
+     * the fleet lands here, and rebuilding two hundred rows per message
+     * would be work done for nobody.
+     */
+    if (self->alerts_split != NULL &&
+        adw_overlay_split_view_get_show_sidebar(self->alerts_split))
+        refresh_alerts(self);
+}
+
+/*
+ * How many *alerts* are unread -- never routine entries.
+ *
+ * A badge that counted the routine stream would be permanently non-zero
+ * and would stop being read, and widening the filter is a thing the
+ * operator chooses rather than something that should change the number
+ * on the bell.
+ */
+static guint
+unread_alerts(ClawtWindow *self)
+{
+    guint count = 0;
+    guint i;
+
+    for (i = 0; self->alerts != NULL && i < self->alerts->len; i++) {
+        Alert *alert = g_ptr_array_index(self->alerts, i);
+
+        if (!alert->read && alert->tier != ALERT_ROUTINE)
+            count++;
+    }
+
+    return count;
+}
+
+static void
+update_alert_badge(ClawtWindow *self)
+{
+    guint count;
+
+    if (self->alerts_badge == NULL)
+        return;
+
+    count = unread_alerts(self);
+
+    if (count == 0) {
+        gtk_widget_set_visible(self->alerts_badge, FALSE);
+        return;
+    }
+
+    {
+        /*
+         * Capped at 9+ here, unlike the sidebar's unread pill, because
+         * this one sits on a 34px round button rather than at the end of
+         * a row: three digits would be wider than the control.
+         */
+        g_autofree gchar *text = (count > 9)
+            ? g_strdup("9+") : g_strdup_printf("%u", count);
+
+        gtk_label_set_text(GTK_LABEL(self->alerts_badge), text);
+        gtk_widget_set_visible(self->alerts_badge, TRUE);
+    }
+}
+
+/* "4 minutes ago", roughly, because a wall-clock time in a list of
+ * things that just happened is a number you have to subtract. */
+static gchar *
+alert_when(gint64 ts)
+{
+    gint64 seconds = (g_get_real_time() - ts) / G_USEC_PER_SEC;
+
+    if (seconds < 60)
+        return g_strdup("just now");
+
+    if (seconds < 3600)
+        return g_strdup_printf("%" G_GINT64_FORMAT "m ago", seconds / 60);
+
+    if (seconds < 86400)
+        return g_strdup_printf("%" G_GINT64_FORMAT "h ago", seconds / 3600);
+
+    return g_strdup_printf("%" G_GINT64_FORMAT "d ago", seconds / 86400);
+}
+
+static void
+on_alert_dismissed(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    Alert *alert = g_object_get_data(G_OBJECT(button), "alert");
+
+    if (alert != NULL)
+        g_ptr_array_remove(self->alerts, alert);
+
+    update_alert_badge(self);
+    refresh_alerts(self);
+}
+
+static void
+on_alerts_cleared(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    (void)button;
+
+    g_ptr_array_set_size(self->alerts, 0);
+    update_alert_badge(self);
+    refresh_alerts(self);
+}
+
+static void
+on_alert_scope_cleared(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    (void)button;
+
+    g_clear_pointer(&self->alerts_agent, g_free);
+    refresh_alerts(self);
+}
+
+static void
+on_alert_scoped(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *agent = g_object_get_data(G_OBJECT(button), "agent");
+
+    g_free(self->alerts_agent);
+    self->alerts_agent = g_strdup(agent);
+    refresh_alerts(self);
+}
+
+static void
+on_alert_filter_changed(AdwToggleGroup *group, GParamSpec *pspec,
+                        gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    (void)pspec;
+
+    self->alerts_show_all = (adw_toggle_group_get_active(group) == 1);
+    refresh_alerts(self);
+}
+
+/*
+ * Reads the event log, once, when the expander is opened.
+ *
+ * On open rather than on every refresh: it is a round trip to the daemon
+ * and every event in the fleet triggers a refresh, so filling it eagerly
+ * would ask for fifty lines nobody had asked to see, repeatedly.
+ */
+static void
+on_alert_history_expanded(GObject *object, GParamSpec *pspec,
+                          gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    GtkExpander *expander = GTK_EXPANDER(object);
+    GtkWidget *body = g_object_get_data(object, "body");
+    g_autoptr(JsonNode) reply = NULL;
+    JsonArray *events;
+    guint i;
+
+    (void)pspec;
+
+    if (!gtk_expander_get_expanded(expander) || body == NULL)
+        return;
+
+    if (g_object_get_data(object, "filled") != NULL)
+        return;
+
+    reply = clawt_window_request(
+        self, "event.list",
+        clawt_build_payload("limit", "50",
+                            self->alerts_agent != NULL ? "subject" : NULL,
+                            self->alerts_agent, NULL));
+
+    if (reply == NULL)
+        return;
+
+    g_object_set_data(object, "filled", GINT_TO_POINTER(1));
+
+    events = json_object_get_array_member(clawt_payload_of(reply), "events");
+
+    /* Newest first, like the live list above it. */
+    for (i = json_array_get_length(events); i > 0; i--) {
+        JsonObject *one = json_array_get_object_element(events, i - 1);
+        g_autofree gchar *text = g_strdup_printf(
+            "%s \302\267 %s", clawt_json_string(one, "kind", "?"),
+            clawt_json_string(one, "subject", "the fleet"));
+        GtkWidget *label = gtk_label_new(text);
+
+        gtk_widget_add_css_class(label, "caption");
+        gtk_widget_add_css_class(label, "dim-label");
+        gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+        gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
+        gtk_box_append(GTK_BOX(body), label);
+    }
+}
+
+/*
+ * A row.
+ *
+ * Error and Notice get a card and a tinted disc; Routine gets neither --
+ * a dim dot, caption text, one line.  If everything carries a colour,
+ * colour stops meaning anything, and routine entries are the majority
+ * the moment the filter widens.  Making them quiet is what keeps the
+ * loud ones loud, and severity is carried by weight and container as
+ * much as by hue, so it survives a colourblind reader and a Catppuccin
+ * palette alike.
+ */
+static GtkWidget *
+alert_row(ClawtWindow *self, Alert *alert)
+{
+    GtkWidget *row = gtk_list_box_row_new();
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    GtkWidget *middle = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    GtkWidget *text = gtk_label_new(alert->text);
+    GtkWidget *meta;
+    g_autofree gchar *when = alert_when(alert->ts);
+    g_autofree gchar *line = NULL;
+
+    gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
+    gtk_label_set_xalign(GTK_LABEL(text), 0.0f);
+    gtk_label_set_wrap(GTK_LABEL(text), TRUE);
+    gtk_label_set_selectable(GTK_LABEL(text), TRUE);
+
+    if (alert->tier == ALERT_ROUTINE) {
+        GtkWidget *dot = gtk_label_new("\342\200\242");
+
+        gtk_widget_add_css_class(dot, "dim-label");
+        gtk_widget_set_valign(dot, GTK_ALIGN_START);
+        gtk_widget_add_css_class(text, "caption");
+        gtk_widget_add_css_class(text, "dim-label");
+        gtk_label_set_lines(GTK_LABEL(text), 2);
+        gtk_label_set_ellipsize(GTK_LABEL(text), PANGO_ELLIPSIZE_END);
+        gtk_box_append(GTK_BOX(box), dot);
+    } else {
+        GtkWidget *icon = gtk_image_new_from_icon_name(
+            alert->tier == ALERT_ERROR ? "dialog-error-symbolic"
+                                       : "dialog-information-symbolic");
+
+        gtk_widget_add_css_class(icon, alert->tier == ALERT_ERROR
+                                           ? "error" : "accent");
+        gtk_widget_set_valign(icon, GTK_ALIGN_START);
+        gtk_widget_add_css_class(row, "clawt-alert-card");
+
+        if (!alert->read)
+            gtk_widget_add_css_class(row, "clawt-alert-unread");
+
+        gtk_box_append(GTK_BOX(box), icon);
+    }
+
+    gtk_box_append(GTK_BOX(middle), text);
+
+    /*
+     * Relative time and the source, so a row says where to go and look
+     * without a second click.  The agent's name is a button: clicking it
+     * narrows the panel to that agent, which is the one control the
+     * scope needs -- a dropdown would be a second answer to the same
+     * question.
+     */
+    meta = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+
+    if (alert->agent != NULL && *alert->agent != '\0') {
+        GtkWidget *who = gtk_button_new_with_label(alert->agent);
+
+        gtk_widget_add_css_class(who, "flat");
+        gtk_widget_add_css_class(who, "caption");
+        gtk_widget_set_tooltip_text(who, "Show only this agent");
+        g_object_set_data_full(G_OBJECT(who), "agent",
+                               g_strdup(alert->agent), g_free);
+        g_signal_connect(who, "clicked", G_CALLBACK(on_alert_scoped), self);
+        gtk_box_append(GTK_BOX(meta), who);
+    }
+
+    line = g_strdup_printf("%s \302\267 %s", when, alert->source);
+    {
+        GtkWidget *label = gtk_label_new(line);
+
+        gtk_widget_add_css_class(label, "caption");
+        gtk_widget_add_css_class(label, "dim-label");
+        gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+        gtk_box_append(GTK_BOX(meta), label);
+    }
+
+    gtk_box_append(GTK_BOX(middle), meta);
+    gtk_widget_set_hexpand(middle, TRUE);
+    gtk_box_append(GTK_BOX(box), middle);
+
+    {
+        /*
+         * Always visible rather than on hover: a control that is
+         * invisible until you already know it exists is a control nobody
+         * finds.
+         */
+        GtkWidget *close = gtk_button_new_from_icon_name("window-close-symbolic");
+
+        gtk_widget_add_css_class(close, "flat");
+        gtk_widget_add_css_class(close, "circular");
+        gtk_widget_set_valign(close, GTK_ALIGN_START);
+        gtk_widget_set_tooltip_text(close, "Dismiss");
+        g_object_set_data(G_OBJECT(close), "alert", alert);
+        g_signal_connect(close, "clicked", G_CALLBACK(on_alert_dismissed),
+                         self);
+        gtk_box_append(GTK_BOX(box), close);
+    }
+
+    gtk_widget_set_margin_start(box, 12);
+    gtk_widget_set_margin_end(box, 12);
+    gtk_widget_set_margin_top(box, 8);
+    gtk_widget_set_margin_bottom(box, 8);
+    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), box);
+
+    return row;
+}
+
+static void
+refresh_alerts(ClawtWindow *self)
+{
+    guint shown = 0;
+    guint i;
+
+    if (self->alerts_list == NULL)
+        return;
+
+    clear_list(self->alerts_list);
+
+    /*
+     * The scope chip, when the panel has been narrowed to one agent.
+     * Dismissing it is how the scope is cleared -- there is one control
+     * for it and it is the one that set it.
+     */
+    if (self->alerts_agent != NULL) {
+        GtkWidget *row = gtk_list_box_row_new();
+        GtkWidget *chip = gtk_button_new();
+        g_autofree gchar *label = g_strdup_printf("Only %s  \303\227",
+                                                  self->alerts_agent);
+
+        gtk_button_set_label(GTK_BUTTON(chip), label);
+        gtk_widget_add_css_class(chip, "flat");
+        gtk_widget_add_css_class(chip, "caption");
+        gtk_widget_set_tooltip_text(chip, "Show the whole fleet again");
+        g_signal_connect(chip, "clicked", G_CALLBACK(on_alert_scope_cleared),
+                         self);
+        gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
+        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), chip);
+        gtk_list_box_append(self->alerts_list, row);
+    }
+
+    for (i = 0; self->alerts != NULL && i < self->alerts->len; i++) {
+        Alert *alert = g_ptr_array_index(self->alerts, i);
+
+        if (!self->alerts_show_all && alert->tier == ALERT_ROUTINE)
+            continue;
+
+        if (self->alerts_agent != NULL &&
+            g_strcmp0(self->alerts_agent, alert->agent) != 0)
+            continue;
+
+        gtk_list_box_append(self->alerts_list, alert_row(self, alert));
+        shown++;
+    }
+
+    /*
+     * And the durable copy, from the daemon's own event log.
+     *
+     * ClawtEventLog has recorded every published event since the daemon
+     * was written, sweeps on `daemon.event_log_days`, and was read back
+     * by nobody -- which is why diagnosing a message loop meant running
+     * sqlite3 and grep on the host.  The panel holds the recent ones in
+     * memory and reads the rest through `event.list`, so it stays a view
+     * onto a store that already exists and already has a retention
+     * policy rather than becoming one.
+     *
+     * Behind an expander: it is a round trip to the daemon and a reader
+     * looking at what just happened does not want fifty older lines
+     * above it.
+     */
+    {
+        GtkWidget *row = gtk_list_box_row_new();
+        GtkWidget *expander = gtk_expander_new("Earlier, from the daemon\342\200\231s log");
+        GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+
+        gtk_widget_add_css_class(gtk_expander_get_label_widget(
+                                     GTK_EXPANDER(expander)), "caption");
+        g_object_set_data(G_OBJECT(expander), "window", self);
+        g_signal_connect(expander, "notify::expanded",
+                         G_CALLBACK(on_alert_history_expanded), self);
+        gtk_expander_set_child(GTK_EXPANDER(expander), box);
+        g_object_set_data(G_OBJECT(expander), "body", box);
+        gtk_widget_set_margin_start(expander, 12);
+        gtk_widget_set_margin_end(expander, 12);
+        gtk_widget_set_margin_top(expander, 12);
+        gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
+        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), expander);
+        gtk_list_box_append(self->alerts_list, row);
+    }
+
+    if (shown == 0) {
+        /*
+         * Not an AdwStatusPage: in a 320px column that is more furniture
+         * than the message needs.
+         */
+        GtkWidget *row = gtk_list_box_row_new();
+        GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+        GtkWidget *bell = gtk_image_new_from_icon_name(
+            "preferences-system-notifications-symbolic");
+        GtkWidget *label = gtk_label_new(
+            self->alerts_show_all ? "Nothing has happened."
+                                  : "Nothing has needed you.");
+
+        gtk_image_set_pixel_size(GTK_IMAGE(bell), 32);
+        gtk_widget_add_css_class(bell, "dim-label");
+        gtk_widget_add_css_class(label, "caption");
+        gtk_widget_add_css_class(label, "dim-label");
+        gtk_widget_set_margin_top(box, 48);
+        gtk_box_append(GTK_BOX(box), bell);
+        gtk_box_append(GTK_BOX(box), label);
+        gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
+        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), box);
+        gtk_list_box_append(self->alerts_list, row);
+    }
+}
+
+/*
+ * Opening the panel marks everything read.
+ *
+ * The badge is "how much have you not seen", and you have now seen it.
+ * Rows stay until they are dismissed, so nothing is lost by the count
+ * going to zero.
+ */
+static void
+on_alerts_shown(GObject *object, GParamSpec *pspec, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    guint i;
+
+    (void)pspec;
+
+    if (!adw_overlay_split_view_get_show_sidebar(
+            ADW_OVERLAY_SPLIT_VIEW(object)))
+        return;
+
+    for (i = 0; self->alerts != NULL && i < self->alerts->len; i++)
+        ((Alert *)g_ptr_array_index(self->alerts, i))->read = TRUE;
+
+    update_alert_badge(self);
+    refresh_alerts(self);
+}
+
+static GtkWidget *
+build_alerts_panel(ClawtWindow *self)
+{
+    GtkWidget *view = adw_toolbar_view_new();
+    GtkWidget *header = adw_header_bar_new();
+    GtkWidget *scroll = gtk_scrolled_window_new();
+    GtkWidget *filter = adw_toggle_group_new();
+    GtkWidget *body = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+
+    adw_header_bar_set_show_start_title_buttons(ADW_HEADER_BAR(header),
+                                                FALSE);
+    adw_header_bar_set_show_end_title_buttons(ADW_HEADER_BAR(header), FALSE);
+    adw_header_bar_set_title_widget(ADW_HEADER_BAR(header),
+                                    gtk_label_new("Alerts"));
+
+    {
+        GtkWidget *clear = gtk_button_new_with_label("Clear all");
+
+        gtk_widget_add_css_class(clear, "flat");
+        g_signal_connect(clear, "clicked", G_CALLBACK(on_alerts_cleared),
+                         self);
+        adw_header_bar_pack_end(ADW_HEADER_BAR(header), clear);
+    }
+
+    /*
+     * Two options, not five.  A panel that opens onto every routine
+     * event is noise; one that opens onto only errors hides what you
+     * came for.
+     */
+    {
+        AdwToggle *alerts_only = adw_toggle_new();
+        AdwToggle *everything = adw_toggle_new();
+
+        adw_toggle_set_label(alerts_only, "Alerts");
+        adw_toggle_set_label(everything, "Everything");
+        adw_toggle_group_add(ADW_TOGGLE_GROUP(filter), alerts_only);
+        adw_toggle_group_add(ADW_TOGGLE_GROUP(filter), everything);
+    }
+    adw_toggle_group_set_active(ADW_TOGGLE_GROUP(filter), 0);
+    gtk_widget_set_margin_start(filter, 12);
+    gtk_widget_set_margin_end(filter, 12);
+    gtk_widget_set_margin_top(filter, 8);
+    gtk_widget_set_margin_bottom(filter, 4);
+    g_signal_connect(filter, "notify::active",
+                     G_CALLBACK(on_alert_filter_changed), self);
+    self->alerts_filter = filter;
+
+    self->alerts_list = GTK_LIST_BOX(gtk_list_box_new());
+    gtk_list_box_set_selection_mode(self->alerts_list, GTK_SELECTION_NONE);
+    gtk_widget_add_css_class(GTK_WIDGET(self->alerts_list), "navigation-sidebar");
+
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll),
+                                  GTK_WIDGET(self->alerts_list));
+    gtk_widget_set_vexpand(scroll, TRUE);
+
+    gtk_box_append(GTK_BOX(body), filter);
+    gtk_box_append(GTK_BOX(body), scroll);
+
+    adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(view), header);
+    adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(view), body);
+
+    refresh_alerts(self);
+
+    return view;
+}
+
 /* ── Events ──────────────────────────────────────────────────────── */
 
 static void
@@ -7190,6 +7800,51 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
     const gchar *kind = clawt_event_get_kind(event);
 
     (void)client;
+
+    /*
+     * The routine stream.
+     *
+     * The client already receives every event the daemon publishes and
+     * acted on five kinds, dropping the rest -- so an agent stopping, or
+     * erroring, produced nothing anywhere.  Recorded here, quietly, so
+     * the panel can answer "what has the fleet been doing" as well as
+     * "what needed me".  It is one branch rather than a new surface,
+     * which is the argument for a panel over relocating a toast.
+     *
+     * `image.progress` is excluded: a download emits one per percent and
+     * would fill the whole list with one file.
+     */
+    if (self->alerts != NULL &&
+        g_strcmp0(kind, "message.refused") != 0 &&
+        g_strcmp0(kind, "image.progress") != 0 &&
+        g_strcmp0(kind, "agent.typing") != 0) {
+        const gchar *subject = clawt_event_get_subject(event);
+        AlertTier tier = ALERT_ROUTINE;
+        g_autofree gchar *line = NULL;
+
+        /*
+         * An agent that stopped when nobody asked it to is the one
+         * routine event that is not routine.  Reported as a notice
+         * rather than an error: it may well have been asked to.
+         */
+        if (g_strcmp0(kind, "agent.state") == 0) {
+            const gchar *state = clawt_event_get_detail(event, "state");
+
+            line = g_strdup_printf("%s is %s",
+                                   subject != NULL ? subject : "?",
+                                   state != NULL ? state : "?");
+
+            if (g_strcmp0(state, "error") == 0 ||
+                g_strcmp0(state, "degraded") == 0)
+                tier = ALERT_NOTICE;
+        } else {
+            line = g_strdup_printf("%s \302\267 %s",
+                                   kind != NULL ? kind : "?",
+                                   subject != NULL ? subject : "the fleet");
+        }
+
+        clawt_window_alert(self, tier, kind, subject, line);
+    }
 
     if (g_strcmp0(kind, "message") == 0) {
         const gchar *from = clawt_event_get_detail(event, "from");
@@ -7308,13 +7963,14 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
                 clawt_event_get_subject(event), failure);
 
             /*
-             * Said out loud even when Settings is shut.  A download runs
-             * in the daemon and outlives the window that started it, so
-             * failing quietly would mean an image that never appears and
-             * nothing anywhere saying why.
+             * Into the panel rather than a toast.  A download runs in the
+             * daemon and outlives the window that started it, so the
+             * failure arrives on its own -- and a toast about something
+             * that arrived on its own vanishes after a few seconds and
+             * leaves no trace anywhere if nobody was looking.
              */
-            adw_toast_overlay_add_toast(self->toasts,
-                                        adw_toast_new(message));
+            clawt_window_alert(self, ALERT_ERROR, "download",
+                               clawt_event_get_subject(event), message);
         }
 
         refresh_settings_images(self);
@@ -7330,11 +7986,13 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
             to != NULL ? to : "?", reason != NULL ? reason : "a limit");
 
         /*
-         * Said out loud rather than only logged. A refusal on the link
-         * path is invisible otherwise: the two agents just stop, and the
-         * conversation appears to trail off for no reason.
+         * The other of the two.  A refusal on the link path is invisible
+         * otherwise: the two agents just stop, and the conversation
+         * appears to trail off for no reason.  It is also the one an
+         * operator most wants to find again an hour later, which a toast
+         * cannot offer.
          */
-        clawt_window_toast(self, message);
+        clawt_window_alert(self, ALERT_ERROR, "message", from, message);
         refresh_flow(self);
         return;
     }
@@ -9067,6 +9725,17 @@ forget_daemon_state(ClawtWindow *self)
 
     /* Whatever the next daemon replays belongs to before we got here. */
     self->connected_at = g_get_real_time();
+
+    /*
+     * Alerts belong to the daemon that raised them: an agent id in one
+     * of them names something the next daemon may not have.
+     */
+    if (self->alerts != NULL)
+        g_ptr_array_set_size(self->alerts, 0);
+
+    g_clear_pointer(&self->alerts_agent, g_free);
+    update_alert_badge(self);
+    refresh_alerts(self);
 
     /*
      * Teams are per-daemon too.  The refresh below repopulates this, but
@@ -15027,20 +15696,88 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
                                   self->connection_button);
     }
 
+    /*
+     * Alerts take the right-hand side, inside the existing split's
+     * content rather than wrapping it.
+     *
+     * Opening alerts must not hide the agent list: that is navigation,
+     * and losing your place while reading a notice about something else
+     * is the same failure as a toast covering the composer.  Right
+     * rather than a second pane in the left sidebar, because one
+     * collapsible surface holding two unrelated things means opening
+     * either hides the other.
+     *
+     * 320px is the conventional libadwaita sidebar width and is
+     * load-bearing: 281 (agent list) + 600 (transcript clamp) + 320
+     * comes to 1201, so all three fit side by side on an ordinary window
+     * and the transcript does not move when the panel opens.  That is
+     * the whole point of pushing rather than overlaying, and it is where
+     * the breakpoint below comes from.
+     */
+    self->alerts_split = ADW_OVERLAY_SPLIT_VIEW(adw_overlay_split_view_new());
+    adw_overlay_split_view_set_sidebar_position(self->alerts_split,
+                                                GTK_PACK_END);
+    adw_overlay_split_view_set_sidebar(self->alerts_split,
+                                       build_alerts_panel(self));
+    adw_overlay_split_view_set_content(self->alerts_split,
+                                       GTK_WIDGET(self->pages));
+    adw_overlay_split_view_set_show_sidebar(self->alerts_split, FALSE);
+    adw_overlay_split_view_set_sidebar_width_fraction(self->alerts_split,
+                                                      0.26);
+
     switcher = adw_view_switcher_new();
     adw_view_switcher_set_stack(ADW_VIEW_SWITCHER(switcher), self->pages);
     adw_view_switcher_set_policy(ADW_VIEW_SWITCHER(switcher),
                                  ADW_VIEW_SWITCHER_POLICY_WIDE);
     adw_header_bar_pack_end(ADW_HEADER_BAR(header), switcher);
 
+    /*
+     * The bell, at the header's end, bound to the alerts panel exactly
+     * as the sidebar button is bound to the agent list.
+     *
+     * The count is a GtkOverlay carrying a small rounded label, because
+     * libadwaita has no badge widget -- the same pill the sidebar's
+     * unread count uses, so the two read as the same kind of number.
+     */
+    {
+        GtkWidget *bell = gtk_toggle_button_new();
+        GtkWidget *overlay = gtk_overlay_new();
+
+        gtk_button_set_icon_name(
+            GTK_BUTTON(bell), "preferences-system-notifications-symbolic");
+        gtk_widget_set_tooltip_text(bell, "What has happened");
+
+        self->alerts_badge = gtk_label_new("");
+        gtk_widget_add_css_class(self->alerts_badge, "caption");
+        gtk_widget_add_css_class(self->alerts_badge, "clawt-unread-badge");
+        gtk_widget_set_halign(self->alerts_badge, GTK_ALIGN_END);
+        gtk_widget_set_valign(self->alerts_badge, GTK_ALIGN_START);
+        gtk_widget_set_can_target(self->alerts_badge, FALSE);
+        gtk_widget_set_visible(self->alerts_badge, FALSE);
+
+        gtk_overlay_set_child(GTK_OVERLAY(overlay), bell);
+        gtk_overlay_add_overlay(GTK_OVERLAY(overlay), self->alerts_badge);
+
+        g_object_bind_property(bell, "active", self->alerts_split,
+                               "show-sidebar",
+                               G_BINDING_BIDIRECTIONAL |
+                               G_BINDING_SYNC_CREATE);
+
+        adw_header_bar_pack_end(ADW_HEADER_BAR(header), overlay);
+    }
+
     content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_box_append(GTK_BOX(content), header);
-    gtk_box_append(GTK_BOX(content), GTK_WIDGET(self->pages));
+    gtk_box_append(GTK_BOX(content), GTK_WIDGET(self->alerts_split));
+    gtk_widget_set_vexpand(GTK_WIDGET(self->alerts_split), TRUE);
     gtk_widget_set_vexpand(GTK_WIDGET(self->pages), TRUE);
 
     self->split = ADW_OVERLAY_SPLIT_VIEW(adw_overlay_split_view_new());
     adw_overlay_split_view_set_sidebar(self->split, sidebar_box);
     adw_overlay_split_view_set_content(self->split, content);
+
+    g_signal_connect(self->alerts_split, "notify::show-sidebar",
+                     G_CALLBACK(on_alerts_shown), self);
 
     g_object_bind_property(sidebar_button, "active", self->split,
                            "show-sidebar",
@@ -15066,6 +15803,22 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
     breakpoint = adw_breakpoint_new(
         adw_breakpoint_condition_parse("max-width: 800px"));
     adw_breakpoint_add_setters(breakpoint, G_OBJECT(self->split),
+                               "collapsed", TRUE, NULL);
+    adw_application_window_add_breakpoint(ADW_APPLICATION_WINDOW(self),
+                                          breakpoint);
+
+    /*
+     * And below 1200px the alerts panel overlays rather than pushes.
+     *
+     * The number is derived rather than chosen: 281 for the agent list,
+     * 600 for the transcript's clamp and 320 for the panel come to 1201,
+     * so above it all three fit and the transcript does not move when
+     * the panel opens.  Below it something has to give, and the reader's
+     * place in the conversation is the wrong thing to take.
+     */
+    breakpoint = adw_breakpoint_new(
+        adw_breakpoint_condition_parse("max-width: 1200px"));
+    adw_breakpoint_add_setters(breakpoint, G_OBJECT(self->alerts_split),
                                "collapsed", TRUE, NULL);
     adw_application_window_add_breakpoint(ADW_APPLICATION_WINDOW(self),
                                           breakpoint);
@@ -15142,6 +15895,8 @@ clawt_window_dispose(GObject *object)
     g_clear_pointer(&self->drafts, g_hash_table_unref);
     g_clear_pointer(&self->unread, g_hash_table_unref);
     g_clear_pointer(&self->dm_rooms, g_hash_table_unref);
+    g_clear_pointer(&self->alerts, g_ptr_array_unref);
+    g_clear_pointer(&self->alerts_agent, g_free);
     g_clear_pointer(&self->pending, g_ptr_array_unref);
 
 
@@ -15190,6 +15945,7 @@ clawt_window_init(ClawtWindow *self)
     self->unread = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                          NULL);
     self->connected_at = g_get_real_time();
+    self->alerts = g_ptr_array_new_with_free_func(alert_free);
     self->dm_rooms = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                            g_free);
     self->pending = g_ptr_array_new_with_free_func(

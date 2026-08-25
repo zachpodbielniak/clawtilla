@@ -136,6 +136,9 @@ declare -A AFFORDANCES=(
     ["day dividers"]="day_divider|day-divider"
     ["sender avatars"]="adw_avatar_new|msg-avatar"
     ["own-turn bubbles"]="clawt-bubble|msg-self"
+    ["alerts surface"]="build_alerts_panel|alert-row"
+    ["alert severity tiers"]="ALERT_ROUTINE|CLAWT_WEB_ALERT_ROUTINE"
+    ["alert filter"]="alerts_show_all|show_all"
 )
 
 usage () {

@@ -80,6 +80,93 @@ JsonNode *clawt_web_app_call(ClawtWebApp *self,
                              JsonNode    *payload);
 
 /**
+ * ClawtWebAlertTier:
+ * @CLAWT_WEB_ALERT_ERROR: something failed
+ * @CLAWT_WEB_ALERT_NOTICE: something degraded, or is worth knowing
+ * @CLAWT_WEB_ALERT_ROUTINE: the ordinary event stream
+ *
+ * How loudly an entry is drawn.
+ *
+ * Only the first two are coloured and only they are counted on the bell.
+ * If everything carries a colour, colour stops meaning anything -- and
+ * routine entries are the majority the moment the filter widens, so
+ * making them quiet is what keeps the loud ones loud.
+ */
+typedef enum {
+    CLAWT_WEB_ALERT_ERROR,
+    CLAWT_WEB_ALERT_NOTICE,
+    CLAWT_WEB_ALERT_ROUTINE
+} ClawtWebAlertTier;
+
+/**
+ * ClawtWebAlert:
+ * @id: identifies the row for dismissal
+ * @tier: how loudly to draw it
+ * @text: what happened
+ * @source: the event kind, so a row says where to look
+ * @agent: the event's subject
+ * @ts: when, in microseconds
+ * @read: whether the page has been opened since it arrived
+ *
+ * One thing that happened.
+ */
+typedef struct {
+    guint              id;
+    ClawtWebAlertTier  tier;
+    gchar             *text;
+    gchar             *source;
+    gchar             *agent;
+    gint64             ts;
+    gboolean           read;
+} ClawtWebAlert;
+
+/**
+ * clawt_web_app_alerts:
+ * @self: a #ClawtWebApp
+ *
+ * Everything that has happened since this client started, newest first.
+ *
+ * Returns: (transfer none) (element-type ClawtWebAlert): the entries
+ */
+GPtrArray *clawt_web_app_alerts(ClawtWebApp *self);
+
+/**
+ * clawt_web_app_alert_count:
+ * @self: a #ClawtWebApp
+ *
+ * How many unread entries are loud enough to be worth a number.
+ *
+ * Returns: the count, never including routine entries
+ */
+guint clawt_web_app_alert_count(ClawtWebApp *self);
+
+/**
+ * clawt_web_app_alerts_mark_read:
+ * @self: a #ClawtWebApp
+ *
+ * Opening the page marks everything read.  Rows stay until dismissed, so
+ * nothing is lost by the count going to zero.
+ */
+void clawt_web_app_alerts_mark_read(ClawtWebApp *self);
+
+/**
+ * clawt_web_app_alert_dismiss:
+ * @self: a #ClawtWebApp
+ * @id: which entry
+ *
+ * Removes one entry.
+ */
+void clawt_web_app_alert_dismiss(ClawtWebApp *self, guint id);
+
+/**
+ * clawt_web_app_alerts_clear:
+ * @self: a #ClawtWebApp
+ *
+ * Removes them all.
+ */
+void clawt_web_app_alerts_clear(ClawtWebApp *self);
+
+/**
  * clawt_web_app_last_error:
  * @self: a #ClawtWebApp
  *

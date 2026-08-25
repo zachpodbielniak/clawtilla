@@ -116,6 +116,7 @@ void clawt_web_register_computer(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_work(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_events(HtmxRouter *router, ClawtWebApp *app);
+void clawt_web_register_alerts(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_creation(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_extras(HtmxRouter *router, ClawtWebApp *app);
 

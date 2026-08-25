@@ -4918,6 +4918,59 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
                                       json_builder_get_root(builder));
     }
 
+    if (g_strcmp0(kind, "event.list") == 0) {
+        const gchar *subject = clawt_ipc_payload_string(payload, "subject");
+        guint limit = (guint)clawt_ipc_payload_int(payload, "limit", 200);
+        g_autoptr(GPtrArray) events = NULL;
+        guint i;
+
+        /*
+         * What the fleet has been doing, from the log that has been
+         * recording it all along.
+         *
+         * ClawtEventLog has written every published event to NDJSON
+         * since the daemon was written, sweeps on `daemon.event_log_days`
+         * -- and was read back by nobody.  A client can hold the recent
+         * ones in memory; anything older than that was on disk and
+         * unreachable, which is why diagnosing a message loop meant
+         * running sqlite3 and grep on the host.
+         *
+         * Fleet-wide unless a subject is named, because the case that
+         * sends somebody to the shell is watching several agents at
+         * once.
+         */
+        if (self->log == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "this daemon keeps no event log");
+
+        events = clawt_event_log_read(self->log, subject, limit);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "events");
+        json_builder_begin_array(builder);
+
+        for (i = 0; events != NULL && i < events->len; i++) {
+            ClawtEvent *event = g_ptr_array_index(events, i);
+            g_autoptr(JsonNode) node = clawt_ipc_event_new(event);
+            JsonObject *frame = json_node_get_object(node);
+
+            /*
+             * The event frame's own payload, rather than a second
+             * spelling of what an event is.  clawt_ipc_event_new() is
+             * what a subscriber receives, so a client reading history
+             * and a client receiving live events parse one shape.
+             */
+            json_builder_add_value(
+                builder,
+                json_node_ref(json_object_get_member(frame, "payload")));
+        }
+
+        json_builder_end_array(builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
     if (g_strcmp0(kind, "control.shutdown") == 0) {
         JsonNode *reply = clawt_ipc_response_new(request, NULL);
 

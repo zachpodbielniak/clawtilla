@@ -659,6 +659,45 @@ the same program.
 - Verified by reverting the setter and watching the test fail
   (`-1 == 20400`), not merely by watching it pass.
 
+### Two of 89 toasts were notifications, and only those two moved
+
+- The complaint was that toasts cover the composer, and the first answer
+  was to rescope the overlay. Classifying all 89 `clawt_window_toast()`
+  call sites first showed why that would have been wrong: **two** are
+  notifications -- a failed download and a refused message, both in
+  `on_daemon_event()` -- and the other 87 are form validation and request
+  results. *"Saved."*, *"An agent needs an id."*, *"That is not a port."*
+  Those answer a question somebody is holding right now, in a dialog,
+  and filing them into a drawer would bury the one line that matters.
+- So the split is by **origin**, not by severity: arrived on its own →
+  the panel; answers what you just did → stays a toast.
+  `clawt_window_toast()` is unchanged and so are its other 87 callers.
+  Grouping the sites by *enclosing function* is what made the
+  classification cheap -- and re-checkable after a rebase, which reading
+  89 strings is not.
+- The panel is a second `AdwOverlaySplitView` **inside** the first one's
+  content, not wrapping it: opening alerts must not hide the agent list,
+  because that is navigation. 320px is derived rather than conventional
+  -- 281 + 600 + 320 = 1201, so on an ordinary window all three fit and
+  the transcript does not move when the panel opens. The breakpoint is
+  1200px for that reason and no other.
+- **`ClawtEventLog` had been recording every event since the daemon was
+  written and was read back by nobody.** `event.list` is the whole gap
+  between "a file nobody can see" and a history the panel can page into
+  -- one handler, and it is what turns "diagnose a message loop with
+  sqlite3 on the host" into a control.
+- Verified by driving a real daemon: the GTK panel drew 2 rows filtered
+  and 20 unfiltered from the same 20 events, and the web page 2 and 24,
+  with dismiss and clear-all checked over HTTP. The GTK check needed an
+  env-gated probe that opened the panel and counted the rows it drew,
+  because GNOME refuses `org.gnome.Shell.Screenshot` here.
+- One self-inflicted bug worth the note: `self->alerts` was created in
+  `forget_daemon_state()` rather than in `_init()`, so it was NULL until
+  the first daemon switch and **nothing was ever recorded**. The probe
+  printed nothing at all, which is what gave it away -- a feature that
+  produces no output is indistinguishable from a feature nobody
+  triggered.
+
 ### GLib pads `%e` with a figure space, and `g_strstrip` cannot reach it
 
 - `g_date_time_format(when, "%A %e %B")` renders "Wednesday" then an

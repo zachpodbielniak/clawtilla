@@ -227,6 +227,32 @@ clawt_web_stylesheet(void)
     ".field-inline{display:grid;grid-template-columns:repeat(auto-fit,minmax(12rem,1fr));"
       "gap:0 16px}"
 
+    /* ── Alerts ── */
+    /*
+     * Three tiers, two of them coloured.  If everything carries a
+     * colour, colour stops meaning anything -- and routine entries are
+     * the majority the moment the filter widens, so making them quiet is
+     * what keeps the loud ones loud.  Severity is carried by weight and
+     * container as much as by hue, which is what makes it survive a
+     * colourblind reader and a Catppuccin palette alike.
+     */
+    ".alert-row{display:flex;flex-direction:column;gap:4px;"
+      "margin-bottom:10px}"
+    ".alert-error,.alert-notice{border:1px solid var(--line);"
+      "border-radius:var(--radius);background:var(--surface);"
+      "padding:12px 16px}"
+    ".alert-error{border-left:3px solid var(--bad-fg)}"
+    ".alert-notice{border-left:3px solid var(--info-fg)}"
+    /* Unread is a bar, not a colour: it has to survive the tier's own. */
+    ".alert-unread{box-shadow:inset 3px 0 0 var(--info-fg)}"
+    ".alert-routine{font-size:12px;color:var(--muted);padding:2px 0;"
+      "margin-bottom:2px}"
+    ".alert-routine .alert-text{display:inline}"
+    ".alert-text{white-space:pre-wrap;word-wrap:break-word}"
+    ".alert-meta{display:flex;gap:8px;align-items:center;font-size:11px}"
+    ".alert-agent{color:var(--info-fg);text-decoration:none}"
+    ".alert-agent:hover{text-decoration:underline}"
+
     /* ── Chat ── */
     ".chat{display:flex;flex-direction:column;height:100%;min-height:0}"
     ".transcript{flex:1;overflow-y:auto;padding:28px 32px;min-height:0}"

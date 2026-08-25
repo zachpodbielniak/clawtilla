@@ -104,6 +104,20 @@ does not refuse to come up.  A fleet that would not start because one
 operator-typed block is wrong is a far worse failure than one that starts
 and says which agents are stale.
 
+*** event.*
+
+~event.list~ takes an optional ~subject~ (an agent, room or task) and a
+~limit~, and answers with ~events~ --- each one the same payload a
+subscriber receives, so a client reading history and a client receiving
+live events parse one shape rather than two.
+
+It reads ~ClawtEventLog~, which has written every published event to
+NDJSON under the daemon's state directory since the daemon was first
+built, sweeps on ~daemon.event_log_days~, and had been read back by
+nobody.  It is fleet-wide unless a subject is named, because the case
+that sends somebody to ~sqlite3~ and ~grep~ on the host is watching
+several agents at once.
+
 *** agent.*
 
 ~agent.list~, ~agent.show~, ~agent.start~, ~agent.stop~, ~agent.restart~,

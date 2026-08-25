@@ -498,6 +498,95 @@ Colour is never the only signal: the state is in the tooltip and in the
 inspector, and a row with unread messages has its name in *bold* as well
 as the pill.
 
+*** Alerts
+
+A collapsible panel on the right of the GTK client, bound to a bell in
+the header bar; an =/alerts= page in the web client, reached from the
+sidebar.  Both carry a count.
+
+**** Why a surface, and not a toast
+
+Of the 89 places the GTK client raises a toast, **two** are
+notifications: a download that failed, and a message the loop guard
+refused.  Everything else --- /Saved./, /An agent needs an id./, /That is
+not a port./ --- answers a question the operator is holding right now, in
+a dialog, waiting to know why the button did nothing.
+
+So the split is by *origin*, not by severity:
+
+| where it came from | where it goes |
+|--------------------+---------------|
+| it arrived on its own | the panel, and no toast |
+| it answers something you just did | it stays a toast |
+
+Filing the second kind into a drawer would be a serious regression, and a
+panel whose first twenty rows are /Saved./ buries the one line that
+matters.  ~clawt_window_toast()~ is unchanged and so are its other 87
+call sites.
+
+**** One list, with a filter
+
+An alert is an event that demanded attention; a routine entry is one that
+did not.  Same stream, different weight --- so one list and a filter that
+widens it, rather than two tabs.  Two tabs would mean deciding at write
+time which tab a thing belongs in, and the interesting case is exactly
+the routine event that turns out to matter: a filter lets you widen after
+the fact, a tab makes you guess before.
+
+Three tiers, and **only two are coloured**:
+
+| tier | how it is drawn |
+|------+-----------------|
+| Error | a card with a red edge, body-size text |
+| Notice | the same shape, accent instead of red |
+| Routine | no card --- one line of quiet caption text |
+
+If everything carries a colour, colour stops meaning anything, and
+routine entries are the majority the moment the filter widens.  Making
+them quiet is what keeps the loud ones loud.  Severity is carried by
+weight and container as much as by hue, so it survives a colourblind
+reader and a Catppuccin palette alike.
+
+**The count never includes routine entries.**  Otherwise it would be
+permanently non-zero and would stop being read, and widening the filter
+is a thing you choose rather than something that should change the
+number.
+
+**** Scope, and how far back
+
+Fleet-wide.  Alerts fire about agents other than the one being read ---
+that is the whole reason the surface exists --- so scoping to the
+selected agent by default would hide exactly the cross-agent case that is
+hardest to diagnose.  Every row names its agent, and clicking that name
+narrows to it and raises a chip that clears the scope again.  One control
+for scope, no second dropdown.
+
+The most recent 200 are held in memory, session-scoped.  For anything
+older there is ~event.list~, which reads the daemon's own
+~ClawtEventLog~ --- NDJSON under the state directory, written since the
+daemon was first built, swept on ~daemon.event_log_days~, and until now
+read back by nobody.  That is the honest answer to "does it survive a
+restart": the surface does not and does not need to, because the log
+does.
+
+**Opening it marks everything read.**  Rows stay until they are
+dismissed, or until *Clear all*, so nothing is lost by the count going to
+zero.
+
+**** Where it sits
+
+In the GTK client the panel is a second ~AdwOverlaySplitView~ *inside*
+the existing one's content, not wrapping it: opening alerts must not hide
+the agent list, because that is navigation, and losing your place while
+reading a notice about something else is the same failure as a toast
+covering the composer.
+
+320px, which is load-bearing rather than conventional: 281 for the agent
+list plus 600 for the transcript's clamp plus 320 comes to 1201, so on an
+ordinary window all three fit and *the transcript does not move when the
+panel opens*.  Below 1200px it overlays instead --- the number is derived
+from those three widths, not chosen.
+
 *** Unread
 
 A filled pill at the trailing edge of the row, and the fleet-wide total

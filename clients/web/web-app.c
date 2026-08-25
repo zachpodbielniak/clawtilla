@@ -51,10 +51,130 @@ struct _ClawtWebApp {
      * events keep their original timestamps, so this is the whole test.
      */
     gint64       connected_at;
+
+    /*
+     * What has happened, for the alerts page.
+     *
+     * Same split as the GTK client's panel: two of the daemon's events
+     * are notifications -- a download that failed, a message the loop
+     * guard refused -- and everything else is the routine stream, kept
+     * quietly so the page can also answer "what is the fleet doing".
+     * Session-scoped and capped; the daemon's event log is the durable
+     * copy and `event.list` reads it for anything older.
+     */
+    GPtrArray   *alerts;
+    guint        next_alert_id;
     gchar       *connection_name;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtWebApp, clawt_web_app, G_TYPE_OBJECT)
+
+/* ── Alerts ──────────────────────────────────────────────────────── */
+
+/*
+ * The most recent 200, matching the limit `agent.logs` already defaults
+ * to so the two surfaces agree on what "recent" means.
+ */
+#define ALERTS_KEPT 200
+
+static void
+alert_free(gpointer data)
+{
+    ClawtWebAlert *alert = data;
+
+    g_free(alert->text);
+    g_free(alert->source);
+    g_free(alert->agent);
+    g_free(alert);
+}
+
+static void
+note_alert(ClawtWebApp *self, ClawtWebAlertTier tier, const gchar *source,
+           const gchar *agent, const gchar *text)
+{
+    ClawtWebAlert *alert = g_new0(ClawtWebAlert, 1);
+
+    alert->id = ++self->next_alert_id;
+    alert->tier = tier;
+    alert->text = g_strdup(text);
+    alert->source = g_strdup(source != NULL ? source : "");
+    alert->agent = g_strdup(agent != NULL ? agent : "");
+    alert->ts = g_get_real_time();
+    alert->read = FALSE;
+
+    /* Newest first: this list is read from the top. */
+    g_ptr_array_insert(self->alerts, 0, alert);
+
+    while (self->alerts->len > ALERTS_KEPT)
+        g_ptr_array_remove_index(self->alerts, self->alerts->len - 1);
+}
+
+GPtrArray *
+clawt_web_app_alerts(ClawtWebApp *self)
+{
+    g_return_val_if_fail(CLAWT_IS_WEB_APP(self), NULL);
+
+    return self->alerts;
+}
+
+guint
+clawt_web_app_alert_count(ClawtWebApp *self)
+{
+    guint count = 0;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_WEB_APP(self), 0);
+
+    for (i = 0; i < self->alerts->len; i++) {
+        ClawtWebAlert *alert = g_ptr_array_index(self->alerts, i);
+
+        /*
+         * Never the routine stream.  A badge that counted it would be
+         * permanently non-zero and would stop being read, and widening
+         * the filter is a thing the reader chooses.
+         */
+        if (!alert->read && alert->tier != CLAWT_WEB_ALERT_ROUTINE)
+            count++;
+    }
+
+    return count;
+}
+
+void
+clawt_web_app_alerts_mark_read(ClawtWebApp *self)
+{
+    guint i;
+
+    g_return_if_fail(CLAWT_IS_WEB_APP(self));
+
+    for (i = 0; i < self->alerts->len; i++)
+        ((ClawtWebAlert *)g_ptr_array_index(self->alerts, i))->read = TRUE;
+}
+
+void
+clawt_web_app_alert_dismiss(ClawtWebApp *self, guint id)
+{
+    guint i;
+
+    g_return_if_fail(CLAWT_IS_WEB_APP(self));
+
+    for (i = 0; i < self->alerts->len; i++) {
+        ClawtWebAlert *alert = g_ptr_array_index(self->alerts, i);
+
+        if (alert->id == id) {
+            g_ptr_array_remove_index(self->alerts, i);
+            return;
+        }
+    }
+}
+
+void
+clawt_web_app_alerts_clear(ClawtWebApp *self)
+{
+    g_return_if_fail(CLAWT_IS_WEB_APP(self));
+
+    g_ptr_array_set_size(self->alerts, 0);
+}
 
 /* ── Requests ────────────────────────────────────────────────────── */
 
@@ -402,6 +522,52 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
                 GUINT_TO_POINTER(clawt_web_app_unread(self, agent_id) + 1));
     }
 
+    /*
+     * Two of the daemon's kinds are notifications; the rest is the
+     * routine stream, kept quietly.  `image.progress` is excluded -- a
+     * download emits one per percent and would fill the list with one
+     * file -- and so is `agent.typing`, which is a spinner rather than
+     * an event.
+     */
+    if (g_strcmp0(kind, "message.refused") == 0) {
+        const gchar *from = clawt_event_get_detail(event, "from");
+        const gchar *to = clawt_event_get_detail(event, "to");
+        const gchar *reason = clawt_event_get_detail(event, "reason");
+        g_autofree gchar *line = g_strdup_printf(
+            "%s to %s was stopped: %s", from != NULL ? from : "?",
+            to != NULL ? to : "?", reason != NULL ? reason : "a limit");
+
+        note_alert(self, CLAWT_WEB_ALERT_ERROR, kind, from, line);
+    } else if (g_strcmp0(kind, "image.finished") == 0 &&
+               clawt_event_get_detail(event, "error") != NULL) {
+        g_autofree gchar *line = g_strdup_printf(
+            "%s could not be downloaded: %s",
+            subject != NULL ? subject : "an image",
+            clawt_event_get_detail(event, "error"));
+
+        note_alert(self, CLAWT_WEB_ALERT_ERROR, kind, subject, line);
+    } else if (g_strcmp0(kind, "image.progress") != 0 &&
+               g_strcmp0(kind, "agent.typing") != 0) {
+        ClawtWebAlertTier tier = CLAWT_WEB_ALERT_ROUTINE;
+        g_autofree gchar *line = NULL;
+
+        if (g_strcmp0(kind, "agent.state") == 0) {
+            const gchar *state = clawt_event_get_detail(event, "state");
+
+            line = g_strdup_printf("%s is %s", subject != NULL ? subject : "?",
+                                   state != NULL ? state : "?");
+
+            if (g_strcmp0(state, "error") == 0 ||
+                g_strcmp0(state, "degraded") == 0)
+                tier = CLAWT_WEB_ALERT_NOTICE;
+        } else {
+            line = g_strdup_printf("%s · %s", kind != NULL ? kind : "?",
+                                   subject != NULL ? subject : "the fleet");
+        }
+
+        note_alert(self, tier, kind, subject, line);
+    }
+
     for (i = 0; i < self->streams->len; i++) {
         HtmxSseConnection *connection = g_ptr_array_index(self->streams, i);
 
@@ -455,6 +621,7 @@ clawt_web_app_finalize(GObject *object)
     g_clear_pointer(&self->unread, g_hash_table_unref);
     g_clear_pointer(&self->dm_rooms, g_hash_table_unref);
     g_clear_pointer(&self->viewing, g_free);
+    g_clear_pointer(&self->alerts, g_ptr_array_unref);
     g_clear_pointer(&self->connection_name, g_free);
 
     G_OBJECT_CLASS(clawt_web_app_parent_class)->finalize(object);
@@ -474,6 +641,7 @@ clawt_web_app_init(ClawtWebApp *self)
                                          NULL);
     self->dm_rooms = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                            g_free);
+    self->alerts = g_ptr_array_new_with_free_func(alert_free);
 }
 
 /* ── Reading a reply ─────────────────────────────────────────────── */
