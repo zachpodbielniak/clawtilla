@@ -1621,9 +1621,21 @@ test_a_finished_turn_clears_the_depth(void)
     clawt_agent_set_activity(alpha, TRUE, "beta");
     g_assert_cmpint(clawt_agent_get_hop_depth(alpha), ==, 7);
 
-    /* The turn ends. What it had travelled is no longer true of the
-     * agent, only of the turn that just finished. */
+    /*
+     * The turn ends -- and the depth must still be here.
+     *
+     * libreclaw drops the typing indicator before it posts the answer,
+     * so this transition happens in the window before the reply exists.
+     * Clearing on it, which is how this was first written, stamped every
+     * reply from zero and made max_hops unreachable on the one path it
+     * exists for.
+     */
     clawt_agent_set_activity(alpha, FALSE, NULL);
+    g_assert_cmpint(clawt_agent_get_hop_depth(alpha), ==, 7);
+
+    /* The reply is what carries it away: stamped one further, then gone. */
+    g_signal_emit_by_name(clawt_daemon_get_link_server(fixture.daemon),
+                          "message", "alpha", "beta", "Done.", NULL);
     g_assert_cmpint(clawt_agent_get_hop_depth(alpha), ==, 0);
 
     fixture_teardown(&fixture);
@@ -1665,10 +1677,13 @@ test_a_channel_turn_starts_from_zero(void)
     alpha = clawt_agent_manager_get(agents, "alpha");
     g_assert_nonnull(alpha);
 
-    /* A deep chain reached alpha and alpha answered it. */
+    /* A deep chain reached alpha and alpha answered it, and the answer
+     * is what takes the depth with it. */
     clawt_agent_set_hop_depth(alpha, 4);
     clawt_agent_set_activity(alpha, TRUE, "beta");
     clawt_agent_set_activity(alpha, FALSE, NULL);
+    g_signal_emit_by_name(clawt_daemon_get_link_server(fixture.daemon),
+                          "message", "alpha", "beta", "Done.", NULL);
 
     /*
      * Now a person says something in Matrix. Nothing in that path
@@ -2636,6 +2651,63 @@ test_a_silent_agent_still_finishes_its_task(void)
 }
 
 
+/*
+ * A reply still counts the hops the message it answers had travelled.
+ *
+ * The router records how far a delivery had come on the agent, and
+ * on_link_message() stamps the reply one further. libreclaw drops its
+ * typing indicator *before* posting the answer, so anything that clears
+ * per-turn state when the turn ends clears it in the window between the
+ * two -- and the reply is then stamped as though it began a fresh
+ * conversation. That is precisely the bug max_hops was unreachable
+ * through once before: two agents traded fifty messages of "Idle." and
+ * nothing stopped them.
+ */
+static void
+test_a_reply_after_the_turn_ends_still_counts_hops(void)
+{
+    Fixture fixture = { 0 };
+    ClawtLinkServer *links;
+    ClawtAgentManager *agents;
+    ClawtAgent *alpha;
+    ClawtAgent *beta;
+
+    fixture_setup(&fixture,
+                  "orchestration:\n"
+                  "  max_hops: 4\n"
+                  "  cycle_window: 0\n"
+                  "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    links = clawt_daemon_get_link_server(fixture.daemon);
+    agents = clawt_daemon_get_agents(fixture.daemon);
+    alpha = clawt_agent_manager_get(agents, "alpha");
+    beta = clawt_agent_manager_get(agents, "beta");
+    g_assert_nonnull(alpha);
+    g_assert_nonnull(beta);
+
+    /* A message reached alpha having already travelled to the limit. */
+    clawt_agent_set_hop_depth(alpha, 4);
+
+    /* Its turn runs, and ends -- the indicator drops before the answer. */
+    g_signal_emit_by_name(links, "typing", "alpha", "beta", TRUE);
+    g_signal_emit_by_name(links, "typing", "alpha", "beta", FALSE);
+
+    /* Now the answer. One hop further than 4 is past max_hops. */
+    g_signal_emit_by_name(links, "message", "alpha", "beta", "Idle.", NULL);
+
+    /*
+     * Refused, so nothing was queued for beta. A reply that arrives in
+     * beta's mailbox here means the chain restarted at depth 1 and the
+     * two of them can answer each other for ever.
+     */
+    g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(beta)),
+                     ==, 0);
+
+    fixture_teardown(&fixture);
+}
+
+
 int
 main(int argc, char *argv[])
 {
@@ -2653,6 +2725,8 @@ main(int argc, char *argv[])
     g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/daemon/starts", test_starts_with_an_empty_config);
+    g_test_add_func("/daemon/reply-after-turn-counts-hops",
+                    test_a_reply_after_the_turn_ends_still_counts_hops);
     g_test_add_func("/daemon/progress-note-is-not-an-answer",
                     test_a_progress_note_does_not_finish_a_task);
     g_test_add_func("/daemon/silent-agent-still-finishes",

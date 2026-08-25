@@ -1139,6 +1139,29 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
         clawt_message_set_depth(
             message,
             (sender != NULL) ? clawt_agent_get_hop_depth(sender) + 1 : 1);
+
+        /*
+         * And then forget it, now that the reply carries it.
+         *
+         * hop_depth answers "how far had the message I am handling
+         * come", which is true of a turn rather than of an agent. The
+         * router is its only other writer, so a turn that began
+         * somewhere the daemon never sees -- Matrix, webhook, local,
+         * cmacs -- used to inherit whatever the last agent-to-agent
+         * delivery had left, and add one to it. Enough of those and an
+         * agent could not start a delegation at all.
+         *
+         * Cleared *here* rather than when the turn ends, which is where
+         * it was first tried. libreclaw drops its typing indicator
+         * before it posts the answer, so clearing on that transition
+         * lands in the window between the two: the reply is then stamped
+         * from zero, every chain restarts at one, and max_hops stops
+         * being reachable on the one path it exists for -- two agents
+         * answering each other for ever. The reply is the last thing
+         * that needs the number, so it is the right place to drop it.
+         */
+        if (sender != NULL)
+            clawt_agent_set_hop_depth(sender, 0);
     }
 
     /*

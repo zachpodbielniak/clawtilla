@@ -240,28 +240,6 @@ clawt_agent_set_activity(ClawtAgent *self, gboolean busy, const gchar *peer)
 {
     g_return_if_fail(CLAWT_IS_AGENT(self));
 
-    /*
-     * A finished turn takes its depth with it.
-     *
-     * hop_depth answers "how far had the message I am handling already
-     * come" -- a property of the turn, which this is the end of. Kept on
-     * the agent it outlived the turn it described: the router is its
-     * only setter, so a turn arriving any other way (Matrix, webhook,
-     * local, cmacs -- libreclaw's channels, which the daemon never sees)
-     * inherited whatever the last agent-to-agent delivery had left, and
-     * every reply stamped one more on top. Nine messages into a daemon's
-     * life an agent could no longer begin a delegation at all.
-     *
-     * This does not soften the limit. The depth of a real chain travels
-     * in the mailbox item, so each delivery still sets it from the item
-     * and each reply still adds one: two agents answering each other for
-     * ever still climb, and are still refused at max_hops. What goes
-     * away is only the carry-over between turns that have nothing to do
-     * with each other.
-     */
-    if (self->busy && !busy)
-        self->hop_depth = 0;
-
     self->busy = busy;
 
     /*
