@@ -4916,6 +4916,95 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
+    /*
+     * Reading and writing one workspace file.
+     *
+     * The GTK client opens these in $EDITOR, which is a local program on
+     * the machine a person is sitting at -- so a client reached over the
+     * network has no way to offer the same thing without a wire path.
+     * These are that path, and nothing else uses them.
+     *
+     * The name goes through clawt_workspace_file_path(), which refuses
+     * anything containing a separator or "..": this is reached from an
+     * IPC request, and a client that could name "../../secrets" would be
+     * reading another agent's credentials.
+     */
+    if (g_strcmp0(kind, "agent.file_read") == 0 ||
+        g_strcmp0(kind, "agent.file_write") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        const gchar *name = clawt_ipc_payload_string(payload, "name");
+        ClawtAgentConfig *config = (agent_id != NULL)
+            ? clawt_config_get_agent(self->config, agent_id) : NULL;
+        g_autofree gchar *path = NULL;
+
+        if (config == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such agent");
+
+        if (name == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "name is required");
+
+        path = clawt_workspace_file_path(config, name);
+
+        if (path == NULL)
+            return clawt_ipc_error_new(
+                request, CLAWT_ERROR_INVALID_ARGUMENT,
+                "that is not a plain file name inside the workspace");
+
+        if (g_strcmp0(kind, "agent.file_write") == 0) {
+            const gchar *content = clawt_ipc_payload_string(payload,
+                                                            "content");
+
+            if (content == NULL)
+                return clawt_ipc_error_new(request,
+                                           CLAWT_ERROR_INVALID_ARGUMENT,
+                                           "content is required");
+
+            if (!g_file_set_contents(path, content, -1, &error))
+                return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                           error->message);
+
+            clawt_event_bus_emit(self->bus, "agent.changed", agent_id);
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "path");
+            json_builder_add_string_value(builder, path);
+            json_builder_set_member_name(builder, "bytes");
+            json_builder_add_int_value(builder, (gint64)strlen(content));
+            json_builder_end_object(builder);
+
+            return clawt_ipc_response_new(request,
+                                          json_builder_get_root(builder));
+        }
+
+        {
+            g_autofree gchar *content = NULL;
+
+            /*
+             * A file that is not there yet is empty rather than an
+             * error. The standard set is scaffolded at first start, so
+             * asking for one before then is an ordinary thing to do --
+             * and an editor that refused to open a file it is about to
+             * create would be a strange editor.
+             */
+            if (!g_file_get_contents(path, &content, NULL, NULL))
+                content = g_strdup("");
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "name");
+            json_builder_add_string_value(builder, name);
+            json_builder_set_member_name(builder, "path");
+            json_builder_add_string_value(builder, path);
+            json_builder_set_member_name(builder, "content");
+            json_builder_add_string_value(builder, content);
+            json_builder_end_object(builder);
+
+            return clawt_ipc_response_new(request,
+                                          json_builder_get_root(builder));
+        }
+    }
+
     if (g_strcmp0(kind, "agent.files") == 0) {
         const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
         ClawtAgent *agent = (agent_id != NULL)

@@ -526,14 +526,28 @@ clawt_web_view_body(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view)
 /* ── Responses after an action ───────────────────────────────────── */
 
 static HtmxResponse *
-page_with_banner(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view,
-                 const gchar *text, const gchar *tone)
+page_with_banner(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
+                 ClawtWebView view, const gchar *text, const gchar *tone)
 {
-    g_autoptr(HtmxElement) body = clawt_web_view_body(app, agent_id, view);
+    /*
+     * Copied before anything else happens.
+     *
+     * Callers pass clawt_web_app_last_error(), which points at a string
+     * the app object owns -- and building the body below makes half a
+     * dozen more daemon calls, each of which frees it and writes a new
+     * one. The banner then rendered whatever happened to be at that
+     * address: a refusal about a path traversal came out as "Which CLI
+     * backend answers, and with what", which is a static string from the
+     * inspector's group table.
+     */
+    g_autofree gchar *said = g_strdup(text);
+    g_autoptr(HtmxElement) body = NULL;
     g_autoptr(HtmxDiv) wrap = htmx_div_new();
     g_autofree gchar *html = NULL;
 
-    if (text != NULL) {
+    body = clawt_web_view_body(app, agent_id, view);
+
+    if (said != NULL) {
         g_autoptr(HtmxDiv) toast = htmx_div_new();
 
         htmx_element_add_class(HTMX_ELEMENT(toast), "toast");
@@ -541,13 +555,13 @@ page_with_banner(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view,
         if (g_strcmp0(tone, "bad") == 0)
             htmx_element_add_class(HTMX_ELEMENT(toast), "notice-bad");
 
-        htmx_node_set_text_content(HTMX_NODE(toast), text);
+        htmx_node_set_text_content(HTMX_NODE(toast), said);
         htmx_node_add_child(HTMX_NODE(wrap), HTMX_NODE(toast));
     }
 
     htmx_node_add_child(HTMX_NODE(wrap), HTMX_NODE(body));
 
-    html = clawt_web_page(app, agent_id, view, HTMX_ELEMENT(wrap));
+    html = clawt_web_page(app, agent_id, view, HTMX_ELEMENT(wrap), request);
 
     return clawt_web_html_response(html);
 }
@@ -557,9 +571,7 @@ clawt_web_after_action(ClawtWebApp *app, HtmxRequest *request,
                        const gchar *agent_id, ClawtWebView view,
                        const gchar *toast)
 {
-    (void)request;
-
-    return page_with_banner(app, agent_id, view, toast, NULL);
+    return page_with_banner(app, request, agent_id, view, toast, NULL);
 }
 
 HtmxResponse *
@@ -567,9 +579,7 @@ clawt_web_error_page(ClawtWebApp *app, HtmxRequest *request,
                      const gchar *agent_id, ClawtWebView view,
                      const gchar *message)
 {
-    (void)request;
-
-    return page_with_banner(app, agent_id, view, message, "bad");
+    return page_with_banner(app, request, agent_id, view, message, "bad");
 }
 
 /* ── Routes ──────────────────────────────────────────────────────── */
@@ -623,7 +633,7 @@ on_index(HtmxRequest *request, GHashTable *params, gpointer user_data)
         htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
 
         html = clawt_web_page(app, NULL, CLAWT_WEB_VIEW_CHAT,
-                              HTMX_ELEMENT(view));
+                              HTMX_ELEMENT(view), request);
 
         return clawt_web_html_response(html);
     }
@@ -639,10 +649,13 @@ on_agent_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
     g_autoptr(HtmxElement) body = NULL;
     g_autofree gchar *html = NULL;
 
-    (void)request;
+    if (view == CLAWT_WEB_VIEW_CHAT &&
+        htmx_request_get_query_param(request, "clear") != NULL)
+        body = clawt_web_chat_body_full(app, agent_id, TRUE);
+    else
+        body = clawt_web_view_body(app, agent_id, view);
 
-    body = clawt_web_view_body(app, agent_id, view);
-    html = clawt_web_page(app, agent_id, view, body);
+    html = clawt_web_page(app, agent_id, view, body, request);
 
     return clawt_web_html_response(html);
 }
@@ -728,7 +741,6 @@ clawt_web_register_fleet(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_get(router, "/", on_index, app);
     htmx_router_get(router, "/a/:id", on_agent_root, app);
-    htmx_router_get(router, "/a/:id/:view", on_agent_page, app);
     htmx_router_get(router, "/f/sidebar", on_sidebar_fragment, app);
 
     htmx_router_post(router, "/a/:id/start", on_lifecycle,
@@ -737,6 +749,21 @@ clawt_web_register_fleet(HtmxRouter *router, ClawtWebApp *app)
                      lifecycle_new(app, "agent.stop", "Stopped."));
     htmx_router_post(router, "/a/:id/restart", on_lifecycle,
                      lifecycle_new(app, "agent.restart", "Restarting."));
+}
+
+/*
+ * The view route, registered last on purpose.
+ *
+ * The router takes the first pattern that matches, and "/a/:id/:view"
+ * matches everything under an agent -- so registered with the rest of
+ * the fleet it swallowed /a/x/export, /a/x/copy and /a/x/file. The bug
+ * was invisible because an unrecognised view falls back to chat, so
+ * every one of those quietly rendered the chat page and returned 200.
+ */
+void
+clawt_web_register_views(HtmxRouter *router, ClawtWebApp *app)
+{
+    htmx_router_get(router, "/a/:id/:view", on_agent_page, app);
 }
 
 /* ── Creating an agent ───────────────────────────────────────────── */
@@ -981,7 +1008,7 @@ on_new_agent_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
 
-    html = clawt_web_shell_page(app, "New agent", HTMX_ELEMENT(view));
+    html = clawt_web_shell_page(app, "New agent", HTMX_ELEMENT(view), request);
 
     return clawt_web_html_response(html);
 }
@@ -1031,10 +1058,17 @@ on_create_agent(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                clawt_web_payload_take(g_steal_pointer(&payload)));
 
     if (reply == NULL) {
+        /*
+         * Copied before anything else asks the daemon anything.
+         * clawt_web_first_agent() makes a call of its own, and every call
+         * replaces the app's last error -- so reporting it afterwards
+         * reports the wrong failure, or worse, a freed pointer.
+         */
+        g_autofree gchar *failure = g_strdup(clawt_web_app_last_error(app));
         g_autofree gchar *first = clawt_web_first_agent(app);
 
         return clawt_web_error_page(app, request, first, CLAWT_WEB_VIEW_CHAT,
-                                    clawt_web_app_last_error(app));
+                                    failure);
     }
 
     root = clawt_web_root(reply);
@@ -1081,10 +1115,17 @@ on_design(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                clawt_web_payload_take(g_steal_pointer(&payload)));
 
     if (reply == NULL) {
+        /*
+         * Copied before anything else asks the daemon anything.
+         * clawt_web_first_agent() makes a call of its own, and every call
+         * replaces the app's last error -- so reporting it afterwards
+         * reports the wrong failure, or worse, a freed pointer.
+         */
+        g_autofree gchar *failure = g_strdup(clawt_web_app_last_error(app));
         g_autofree gchar *first = clawt_web_first_agent(app);
 
         return clawt_web_error_page(app, request, first, CLAWT_WEB_VIEW_CHAT,
-                                    clawt_web_app_last_error(app));
+                                    failure);
     }
 
     root = clawt_web_root(reply);
@@ -1145,7 +1186,7 @@ on_design(HtmxRequest *request, GHashTable *params, gpointer user_data)
         htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(card));
         htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
 
-        html = clawt_web_shell_page(app, "Design", HTMX_ELEMENT(view));
+        html = clawt_web_shell_page(app, "Design", HTMX_ELEMENT(view), request);
 
         return clawt_web_html_response(html);
     }
@@ -1170,10 +1211,17 @@ on_design_commit(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                clawt_web_payload_take(g_steal_pointer(&payload)));
 
     if (reply == NULL) {
+        /*
+         * Copied before anything else asks the daemon anything.
+         * clawt_web_first_agent() makes a call of its own, and every call
+         * replaces the app's last error -- so reporting it afterwards
+         * reports the wrong failure, or worse, a freed pointer.
+         */
+        g_autofree gchar *failure = g_strdup(clawt_web_app_last_error(app));
         g_autofree gchar *first = clawt_web_first_agent(app);
 
         return clawt_web_error_page(app, request, first, CLAWT_WEB_VIEW_CHAT,
-                                    clawt_web_app_last_error(app));
+                                    failure);
     }
 
     /*
@@ -1293,7 +1341,7 @@ on_import_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
 
-    html = clawt_web_shell_page(app, "Import", HTMX_ELEMENT(view));
+    html = clawt_web_shell_page(app, "Import", HTMX_ELEMENT(view), request);
 
     return clawt_web_html_response(html);
 }
@@ -1318,10 +1366,17 @@ on_import(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                clawt_web_payload_take(g_steal_pointer(&payload)));
 
     if (reply == NULL) {
+        /*
+         * Copied before anything else asks the daemon anything.
+         * clawt_web_first_agent() makes a call of its own, and every call
+         * replaces the app's last error -- so reporting it afterwards
+         * reports the wrong failure, or worse, a freed pointer.
+         */
+        g_autofree gchar *failure = g_strdup(clawt_web_app_last_error(app));
         g_autofree gchar *first = clawt_web_first_agent(app);
 
         return clawt_web_error_page(app, request, first, CLAWT_WEB_VIEW_CHAT,
-                                    clawt_web_app_last_error(app));
+                                    failure);
     }
 
     {

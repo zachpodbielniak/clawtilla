@@ -38,8 +38,9 @@ plugin system, the integrations, the AI agent designer, the CLI, the GTK
 client and the web client are all built and tested.
 
 The two graphical clients are held to the same feature set by ~make
-parity~, which compares the parts of the daemon each one reaches and
-fails when a capability exists in only one of them.  Two clients drifting
+parity~, which compares the parts of the daemon each one reaches *and*
+the slash commands each answers, failing when a capability exists in only
+one of them.  Two clients drifting
 apart is otherwise invisible until somebody reaches for the half that was
 not built.
 

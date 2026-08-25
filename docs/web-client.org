@@ -108,8 +108,52 @@ The same seven the GTK client's view switcher has, in the same order.
 | Tasks    | delegated work, the budget, cancelling                     |
 | Flow     | what the agents are saying to each other                   |
 
-And six settings pages: VM images, teams, spending, integrations,
-connectors, appearance.
+And seven settings pages: VM images, teams, spending, integrations,
+connectors, appearance and connections.
+
+*** Slash commands
+
+The same eighteen the GTK composer answers, typed into the message box.
+Three mean something slightly different in a browser, and the help says
+so rather than leaving anybody to find out.
+
+| Command             | What it does                                        |
+|---------------------+-----------------------------------------------------|
+| =/help=             | list them                                           |
+| =/start= =/stop= =/restart= | the agent's lifecycle                       |
+| =/reset=            | start its AI session again, from nothing            |
+| =/attach=           | send a file with the next message                   |
+| =/compose=          | a full-page box, where GTK opens =$EDITOR=          |
+| =/edit [file]=      | open a workspace file *in the page*                 |
+| =/files=            | this agent's workspace files                        |
+| =/memory <query>=   | search what it has remembered                       |
+| =/agents=           | who is in the fleet                                 |
+| =/flow= =/tasks=    | go to those views                                   |
+| =/retry=            | send your last message again                        |
+| =/export [org]=     | download the conversation                           |
+| =/copy [org]=       | show it to copy, where GTK reaches the clipboard    |
+| =/clear=            | hide the transcript *on screen only*                |
+| =/new=              | create an agent                                     |
+
+=/clear= sends nothing to the daemon.  The history is the daemon's, and a
+command that tidied the view must not be one that destroyed it -- =/reset=
+is the one that clears a session, and it says so.
+
+=/export= and =/copy= go through =clawt_export_transcript()=, the same
+function the GTK client uses, so the two produce the same bytes.  Three
+formats: markdown, org, plain.
+
+*** Editing workspace files
+
+The GTK client opens them in =$EDITOR=, which is a program on the machine
+somebody is sitting at.  A browser reached over the network has no such
+thing, so the file comes over the wire: ~agent.file_read~ and
+~agent.file_write~ exist for this and nothing else.
+
+The name goes through ~clawt_workspace_file_path()~, which refuses
+anything holding a separator or "..".  This is reached from an IPC
+request, and a client that could name =../../secrets= would be reading
+another agent's credentials.
 
 *** The agent editor is built from the schema
 
@@ -140,6 +184,59 @@ keys would do that a hundred times for a form somebody opened and closed.
 A permission changed under a running agent says so: an AI CLI lists its
 tools once, when its session starts, so the change reaches the agent's
 files and not its session.
+
+** Appearance
+
+Theme, interface font and size, code font and size -- the same four
+things the GTK client's appearance page has, kept in this browser's
+cookies rather than in the fleet's own configuration file.  A theme is about the screen you
+are sitting at, not about the fleet, so it comes with you when this
+server is pointed at a different daemon.
+
+*** Empty means follow, and keeps following
+
+An unset field emits *no rule at all*, rather than a rule naming what the
+browser currently uses.  The two look identical on screen and diverge for
+ever afterwards: one keeps following the system, the other has quietly
+frozen.  The GTK client's appearance page was fixed for exactly this.
+
+"Follow the browser for everything" clears all five cookies rather than
+storing empty strings, so "unset" stays the *absence* of a setting.
+
+*** A font family is sanitised, not escaped
+
+It comes out of a cookie, which is a string anybody can set to anything,
+and it is spliced into a CSS declaration.  The filter is an allowlist --
+letters, digits, space, hyphen, underscore, full stop, comma -- because
+CSS string escapes are their own small language and there is nothing in a
+font name to preserve.
+
+A denylist was the first attempt and was already wrong: it stopped a
+quote closing the string and let a comment-opener through, which swallows
+the rest of the sheet.
+
+** Connections
+
+Which daemon this server talks to, from the profiles in
+=$XDG_CONFIG_HOME/clawtilla/connections.yaml= -- the same 0600 file
+=clawtilla-gtk= and =clawtilla remote add= use.
+
+*** One connection, many browsers
+
+This is the one place the web client differs in kind rather than in
+mechanism.  The GTK client switches one window; here there is a single
+=ClawtClient= behind however many browsers are looking, so switching
+moves all of them.  The page says so before it asks, and the confirmation
+repeats it.
+
+The new client is connected *before* the old one is dropped: a daemon on
+another machine that is not running is the ordinary case, and releasing
+the working connection first would leave every open page connected to
+nothing because of a typo in a port.
+
+Afterwards every page is sent to the fleet index rather than left where
+it was.  Agent ids, room ids and message ids are all per-daemon, so a
+page still showing the previous fleet is showing another machine's.
 
 ** Live updates
 
@@ -207,6 +304,16 @@ It runs from ~make parity~, from ~make docs-check~, and as a case in
 ~make test~.  A check that only runs in one target is one somebody can go
 a long time without seeing.
 
+*** Two layers are compared
+
+Frame kinds, and slash commands.
+
+The command check exists because the frame-kind one missed them entirely:
+thirteen of the eighteen were absent from the web client and nothing said
+so, since =/files=, =/agents= and =/export= are all built out of frames
+both clients already sent.  A check that only looks at one layer will
+keep finding nothing at the others.
+
 *** Adding a feature
 
 Build it in both.  When that is genuinely not the right answer, add the
@@ -221,6 +328,23 @@ declare -A GTK_MAY_LACK=(
 
 An entry there is a decision, not a to-do.  Anything without a reason
 somebody would agree with belongs in the client instead.
+
+** Checking it by hand
+
+=make test= covers the renderers; it cannot cover routing.  A route
+registered after ~/a/:id/:view~ is unreachable, and the symptom is not an
+error -- an unrecognised view falls back to chat, so a swallowed route
+renders the chat page and answers =200=.  That is exactly how
+=/a/x/export=, =/a/x/copy= and =/a/x/file= were all quietly serving the
+chat page.
+
+#+begin_src bash
+make web-smoke WEB_SMOKE_URL=http://127.0.0.1:8790 WEB_SMOKE_AGENT=chief
+#+end_src
+
+It asks a running client for every page and checks the *content*, not the
+status: a marker string per route, the =Content-Disposition= on each
+download, and the daemon's own words on a refusal.
 
 ** Escaping
 

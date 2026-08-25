@@ -19,6 +19,7 @@ struct _ClawtWebApp {
     ClawtClient *client;
     GPtrArray   *streams;     /* HtmxSseConnection*, owned */
     gchar       *last_error;
+    gchar       *connection_name;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtWebApp, clawt_web_app, G_TYPE_OBJECT)
@@ -74,6 +75,83 @@ clawt_web_app_get_client(ClawtWebApp *self)
     g_return_val_if_fail(CLAWT_IS_WEB_APP(self), NULL);
 
     return self->client;
+}
+
+static void on_daemon_event(ClawtClient *client, ClawtEvent *event,
+                            gpointer user_data);
+
+const gchar *
+clawt_web_app_get_connection_name(ClawtWebApp *self)
+{
+    g_return_val_if_fail(CLAWT_IS_WEB_APP(self), NULL);
+
+    return self->connection_name;
+}
+
+void
+clawt_web_app_set_connection_name(ClawtWebApp *self, const gchar *name)
+{
+    g_return_if_fail(CLAWT_IS_WEB_APP(self));
+
+    g_free(self->connection_name);
+    self->connection_name = g_strdup(name);
+}
+
+gboolean
+clawt_web_app_switch(ClawtWebApp *self, ClawtConnection *connection,
+                     GError **error)
+{
+    g_autoptr(ClawtClient) fresh = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_WEB_APP(self), FALSE);
+    g_return_val_if_fail(connection != NULL, FALSE);
+
+    fresh = clawt_connection_create_client(connection);
+    clawt_client_set_auto_reconnect(fresh, TRUE);
+
+    /*
+     * Connected before the old one is let go. A daemon on another
+     * machine that is not running is the ordinary case, and dropping a
+     * working connection first would leave every open page talking to
+     * nothing because of a typo in a port.
+     */
+    if (!clawt_client_connect(fresh, error))
+        return FALSE;
+
+    if (!clawt_client_subscribe(fresh, 0, NULL, error))
+        return FALSE;
+
+    if (self->client != NULL) {
+        g_signal_handlers_disconnect_by_data(self->client, self);
+        clawt_client_disconnect(self->client);
+        g_object_unref(self->client);
+    }
+
+    self->client = g_steal_pointer(&fresh);
+    g_signal_connect(self->client, "event", G_CALLBACK(on_daemon_event),
+                     self);
+
+    clawt_web_app_set_connection_name(self,
+                                      clawt_connection_get_name(connection));
+
+    /*
+     * Every open page is told, so it re-fetches. Agent ids, room ids and
+     * message ids are all per-daemon, so a page still showing the
+     * previous fleet is showing another machine's.
+     */
+    {
+        guint i;
+
+        for (i = 0; i < self->streams->len; i++) {
+            HtmxSseConnection *stream = g_ptr_array_index(self->streams, i);
+
+            if (htmx_sse_connection_is_connected(stream))
+                htmx_sse_connection_send_event(stream, "fleet",
+                                               "connection.changed", NULL);
+        }
+    }
+
+    return TRUE;
 }
 
 /* ── Event streams ───────────────────────────────────────────────── */
@@ -180,6 +258,7 @@ clawt_web_app_finalize(GObject *object)
     g_clear_object(&self->client);
     g_clear_pointer(&self->streams, g_ptr_array_unref);
     g_clear_pointer(&self->last_error, g_free);
+    g_clear_pointer(&self->connection_name, g_free);
 
     G_OBJECT_CLASS(clawt_web_app_parent_class)->finalize(object);
 }

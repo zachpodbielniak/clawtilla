@@ -218,9 +218,6 @@ LIB_OBJECTS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(LIB_SOURCES))
 TEST_SOURCES = $(wildcard $(TESTDIR)/test-*.c)
 TEST_BINARIES = $(patsubst $(TESTDIR)/%.c,$(OUTDIR)/tests/%,$(TEST_SOURCES))
 
-# Include common rules
-include rules.mk
-
 # ============================================================
 # Phases
 #
@@ -365,6 +362,28 @@ MCP_SOURCES    = $(wildcard $(MCP_SRCDIR)/*.c)
 GTK_SOURCES    = $(wildcard $(GTK_SRCDIR)/*.c)
 WEB_SOURCES    = $(wildcard $(WEB_SRCDIR)/*.c)
 
+# Where `make web-smoke` looks, and which agent it pokes.
+WEB_SMOKE_URL   ?= http://127.0.0.1:8790
+WEB_SMOKE_AGENT ?= 
+
+#
+# test-web-render.c #includes the web client's renderers, because they
+# live in a binary rather than in libclawt. The generic test rule cannot
+# see that, so without this a change to web-ui.c leaves the test binary
+# untouched and passing -- which is the same "make does not relink"
+# failure this project has been caught by before, one directory over.
+#
+
+
+# Include common rules
+include rules.mk
+
+$(OUTDIR)/tests/test-web-render: $(WEB_SRCDIR)/web-ui.c \
+                                 $(WEB_SRCDIR)/web-style.c \
+                                 $(WEB_SRCDIR)/web-ui.h \
+                                 $(WEB_SRCDIR)/web-pages.h \
+                                 $(WEB_SRCDIR)/clawt-web.h
+
 .PHONY: daemon cli gtk web
 daemon: $(DAEMON_BIN_TARGET)
 cli:    $(CLI_BIN_TARGET)
@@ -472,7 +491,19 @@ config-files: $(GENCONFIG_BIN)
 	@echo "  $(DATADIR_SRC)/default-config.yaml"
 	@echo "  $(DOCSDIR)/configuration-options.org"
 
-.PHONY: docs-check parity
+.PHONY: docs-check parity web-smoke
+
+#
+# Ask a *running* clawtilla-web for every page it serves.
+#
+# Not part of `make test`, which is hermetic: this needs a daemon and a
+# web client up. It exists because the unit tests cannot see routing --
+# a route registered after "/a/:id/:view" is unreachable, and an
+# unrecognised view falls back to chat, so a swallowed route renders the
+# chat page and answers 200.
+#
+web-smoke:
+	@bash $(TOOLSDIR)/clawt-web-smoke.sh $(WEB_SMOKE_URL) $(WEB_SMOKE_AGENT)
 
 #
 # The two graphical clients answer for the same daemon, so they should

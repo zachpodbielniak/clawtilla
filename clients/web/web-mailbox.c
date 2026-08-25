@@ -186,16 +186,21 @@ clawt_web_mailbox_body(ClawtWebApp *app, const gchar *agent_id)
              TRUE);
 
     {
+        g_autofree gchar *escaped = g_uri_escape_string(agent_id, NULL,
+                                                        FALSE);
+        g_autofree gchar *action = g_strdup_printf("/a/%s/mailbox/purge",
+                                                   escaped);
         g_autoptr(HtmxDiv) card = clawt_web_card(
             "Expired items",
-            "Anything past its time-to-live, across the whole fleet.");
+            "Anything in this agent's mailbox past its time-to-live.");
         HtmxElement *body = clawt_web_card_body(card);
         g_autoptr(HtmxDiv) row = htmx_div_new();
+        g_autofree gchar *confirm = g_strdup_printf(
+            "Remove every expired item from %s's mailbox?", agent_id);
 
         htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
         clawt_web_add(row, clawt_web_post_button(
-            "Purge expired", "/mailbox/purge", "default",
-            "Remove every expired item from every mailbox?"));
+            "Purge expired", action, "default", confirm));
         htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(row));
         htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(card));
     }
@@ -237,18 +242,29 @@ on_item_action(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                   CLAWT_WEB_VIEW_MAILBOX, action->done);
 }
 
+/*
+ * Purging is per-agent, not fleet-wide.
+ *
+ * The daemon resolves a mailbox from the payload's agent and refuses
+ * without one -- "which agent's mailbox?" -- so a button that offered to
+ * sweep the whole fleet was offering something that does not exist.
+ */
 static HtmxResponse *
 on_purge(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
     ClawtWebApp *app = user_data;
-    g_autoptr(JsonNode) reply = clawt_web_app_call(app, "mailbox.purge", NULL);
-    const gchar *from = htmx_request_get_query_param(request, "agent");
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
     g_autofree gchar *said = NULL;
 
-    (void)params;
+    clawt_web_payload_set(payload, "agent", agent_id);
+
+    reply = clawt_web_app_call(app, "mailbox.purge",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
 
     if (reply == NULL)
-        return clawt_web_error_page(app, request, from,
+        return clawt_web_error_page(app, request, agent_id,
                                     CLAWT_WEB_VIEW_MAILBOX,
                                     clawt_web_app_last_error(app));
 
@@ -256,14 +272,7 @@ on_purge(HtmxRequest *request, GHashTable *params, gpointer user_data)
                            clawt_web_member_int(clawt_web_root(reply),
                                                 "purged", 0));
 
-    if (from == NULL) {
-        g_autofree gchar *first = clawt_web_first_agent(app);
-
-        return clawt_web_after_action(app, request, first,
-                                      CLAWT_WEB_VIEW_MAILBOX, said);
-    }
-
-    return clawt_web_after_action(app, request, from,
+    return clawt_web_after_action(app, request, agent_id,
                                   CLAWT_WEB_VIEW_MAILBOX, said);
 }
 
@@ -287,5 +296,5 @@ clawt_web_register_mailbox(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_post(router, "/a/:id/mailbox/:item/requeue", on_item_action,
                      item_action_new(app, "mailbox.requeue",
                                      "Back in the queue, attempts reset."));
-    htmx_router_post(router, "/mailbox/purge", on_purge, app);
+    htmx_router_post(router, "/a/:id/mailbox/purge", on_purge, app);
 }

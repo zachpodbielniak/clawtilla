@@ -36,7 +36,9 @@ static const SettingsPage settings_pages[] = {
     { "connectors",   "Connectors",
       "Outside services an agent can reach, and the credentials for them." },
     { "appearance",   "Appearance",
-      "How this browser draws the client." }
+      "How this browser draws the client." },
+    { "connections",  "Connections",
+      "Which daemon this server talks to." }
 };
 
 /* ── The frame ───────────────────────────────────────────────────── */
@@ -109,8 +111,8 @@ settings_shell(const gchar *current, HtmxElement *content)
  * here ever drops that second reference.
  */
 static HtmxResponse *
-settings_response(ClawtWebApp *app, const gchar *slug, HtmxElement *content,
-                  const gchar *toast, gboolean bad)
+settings_response(ClawtWebApp *app, HtmxRequest *request, const gchar *slug,
+                  HtmxElement *content, const gchar *toast, gboolean bad)
 {
     g_autoptr(HtmxDiv) wrap = htmx_div_new();
     g_autoptr(HtmxElement) shell = NULL;
@@ -118,7 +120,14 @@ settings_response(ClawtWebApp *app, const gchar *slug, HtmxElement *content,
     const gchar *title = slug;
     guint i;
 
-    if (toast != NULL) {
+    /*
+     * Copied first, for the same reason page_with_banner() copies: a
+     * caller passes clawt_web_app_last_error(), and the content it
+     * builds beforehand has already made calls of its own that freed it.
+     */
+    g_autofree gchar *said = g_strdup(toast);
+
+    if (said != NULL) {
         g_autoptr(HtmxDiv) note = htmx_div_new();
 
         htmx_element_add_class(HTMX_ELEMENT(note), "toast");
@@ -126,7 +135,7 @@ settings_response(ClawtWebApp *app, const gchar *slug, HtmxElement *content,
         if (bad)
             htmx_element_add_class(HTMX_ELEMENT(note), "notice-bad");
 
-        htmx_node_set_text_content(HTMX_NODE(note), toast);
+        htmx_node_set_text_content(HTMX_NODE(note), said);
         htmx_node_add_child(HTMX_NODE(wrap), HTMX_NODE(note));
     }
 
@@ -138,7 +147,7 @@ settings_response(ClawtWebApp *app, const gchar *slug, HtmxElement *content,
             title = settings_pages[i].title;
     }
 
-    html = clawt_web_shell_page(app, title, HTMX_ELEMENT(wrap));
+    html = clawt_web_shell_page(app, title, HTMX_ELEMENT(wrap), request);
 
     return clawt_web_html_response(html);
 }
@@ -843,45 +852,378 @@ appearance_content(HtmxRequest *request)
     static const gchar *const theme_labels[] = {
         "Follow the system", "Light", "Dark", NULL
     };
+    g_autoptr(ClawtWebLook) look = clawt_web_look_from_request(request);
     g_autoptr(HtmxDiv) box = htmx_div_new();
-    g_autoptr(HtmxDiv) card = clawt_web_card(
-        "Theme",
-        "Kept in this browser rather than in clawtilla.yaml, for the same "
-        "reason the GTK client keeps its fonts locally: a theme is about "
-        "the screen you are sitting at, not about the fleet. Connect to "
-        "another daemon and it comes with you.");
-    HtmxElement *body = clawt_web_card_body(card);
     g_autoptr(HtmxForm) form = clawt_web_form("/settings/appearance");
-    const gchar *current = htmx_request_get_query_param(request, "theme");
+    g_autofree gchar *font_size = NULL;
+    g_autofree gchar *mono_size = NULL;
 
-    clawt_web_add(form, clawt_web_select_field(
-        "Theme", "theme", themes, theme_labels,
-        current != NULL ? current : "system"));
+    {
+        g_autoptr(HtmxDiv) card = clawt_web_card(
+            "Theme",
+            "Kept in this browser rather than in clawtilla.yaml, for the "
+            "same reason the GTK client keeps its own: a theme is about "
+            "the screen you are sitting at, not about the fleet. Connect "
+            "to another daemon and it comes with you.");
+        HtmxElement *body = clawt_web_card_body(card);
+        g_autoptr(HtmxDiv) row = htmx_div_new();
 
-    /*
-     * "Follow the system" emits no theme at all rather than naming the
-     * current one. The two look identical on screen and diverge for ever
-     * afterwards: one keeps following, the other has quietly frozen.
-     */
-    clawt_web_add(form, clawt_web_text(
-        "Following the system means exactly that -- change your desktop "
-        "later and this follows. Choosing light or dark freezes it here.",
-        "small muted"));
+        htmx_element_add_class(HTMX_ELEMENT(row), "field");
+        clawt_web_add(row, clawt_web_select_field(
+            "Colour scheme", "theme", themes, theme_labels,
+            look->theme != NULL ? look->theme : "system"));
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(row));
+
+        /*
+         * "Follow the system" means exactly that. It emits no rule at
+         * all, rather than naming whatever the browser currently uses --
+         * the two look identical on screen and diverge for ever
+         * afterwards, because one keeps following and the other has
+         * quietly frozen.
+         */
+        clawt_web_add(body, clawt_web_text(
+            "Following the system keeps following it. Choosing light or "
+            "dark freezes it here.", "small muted"));
+
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(card));
+    }
+
+    font_size = (look->font_size > 0)
+                ? g_strdup_printf("%d", look->font_size) : NULL;
+    mono_size = (look->mono_size > 0)
+                ? g_strdup_printf("%d", look->mono_size) : NULL;
+
+    {
+        g_autoptr(HtmxDiv) card = clawt_web_card(
+            "Fonts",
+            "Left empty, each of these follows whatever this browser is "
+            "set to. A name here is a CSS family, so anything installed "
+            "on the machine looking at the page works.");
+        HtmxElement *body = clawt_web_card_body(card);
+
+        clawt_web_add(body, clawt_web_field(
+            "Interface font", "font", look->font,
+            "empty follows the browser -- try Cantarell, or Helvetica Neue"));
+        clawt_web_add(body, clawt_web_field(
+            "Interface size (px)", "font_size", font_size,
+            "empty follows the browser; 8 to 32"));
+        clawt_web_add(body, clawt_web_field(
+            "Code font", "mono", look->mono,
+            "empty follows the browser -- try JetBrains Mono, or Menlo"));
+        clawt_web_add(body, clawt_web_field(
+            "Code size (px)", "mono_size", mono_size,
+            "empty follows the browser; 8 to 32"));
+
+        /*
+         * The code font reaches chat messages as well as the console.
+         * In the GTK client it did not for a long time, because Pango's
+         * <tt> resolves through fontconfig's generic monospace alias and
+         * is not reachable from GTK CSS -- so a code font applied
+         * everywhere except where people actually read code.
+         */
+        clawt_web_add(body, clawt_web_text(
+            "The code font applies to the exec console, inline code in "
+            "messages, and every value shown in monospace.",
+            "small muted"));
+
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(card));
+    }
 
     {
         g_autoptr(HtmxDiv) row = htmx_div_new();
         g_autoptr(HtmxButton) save = clawt_web_button("Apply", "primary");
+        g_autoptr(HtmxButton) reset = clawt_web_post_button(
+            "Follow the browser for everything", "/settings/appearance/reset",
+            "default", NULL);
 
         htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
         htmx_element_set_attribute(HTMX_ELEMENT(save), "type", "submit");
         htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(save));
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(reset));
         htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(row));
     }
 
-    htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
-    htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
+    htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(form));
 
     return HTMX_ELEMENT(g_steal_pointer(&box));
+}
+
+
+/* ── Connections ─────────────────────────────────────────────────── */
+
+/*
+ * The profiles live in the client's own config, never in clawtilla.yaml.
+ *
+ * The point of a profile is to reach a daemon somewhere else, and a
+ * laptop connecting to a workstation may have no fleet and no
+ * clawtilla.yaml at all -- so reading the daemon's config to find out how
+ * to reach a different daemon is backwards. The file is 0600 and holds
+ * bearer tokens on purpose: the token *is* the thing being remembered,
+ * and a second file to manage would mean most people keeping it in shell
+ * history instead.
+ */
+static HtmxElement *
+connections_content(ClawtWebApp *app)
+{
+    g_autoptr(HtmxDiv) box = htmx_div_new();
+    g_autofree gchar *path = clawt_connection_list_default_path();
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GPtrArray) list = clawt_connection_list_load(path, &error);
+    const gchar *current = clawt_web_app_get_connection_name(app);
+    guint i;
+
+    /*
+     * Said before anything else, because it is the one way this differs
+     * from the GTK client: there is one connection here and many
+     * browsers, so switching moves everybody.
+     */
+    clawt_web_add(box, clawt_web_notice(
+        "There is one connection for this whole server. Switching moves "
+        "every browser looking at it, not just this one.", "info"));
+
+    if (error != NULL)
+        clawt_web_add(box, clawt_web_notice(error->message, "bad"));
+
+    {
+        g_autoptr(HtmxDiv) card = clawt_web_card(
+            "Saved daemons", path);
+        HtmxElement *body = clawt_web_card_body(card);
+
+        if (list == NULL || list->len == 0)
+            clawt_web_add(body, clawt_web_empty(
+                "No profiles saved",
+                "Add one below. Until then this server talks to whatever "
+                "--socket it was started with."));
+
+        for (i = 0; list != NULL && i < list->len; i++) {
+            ClawtConnection *connection = g_ptr_array_index(list, i);
+            const gchar *name = clawt_connection_get_name(connection);
+            g_autofree gchar *described =
+                clawt_connection_describe(connection);
+            g_autofree gchar *escaped = g_uri_escape_string(name, NULL,
+                                                            FALSE);
+            g_autofree gchar *use = g_strdup_printf(
+                "/settings/connections/%s/use", escaped);
+            g_autofree gchar *forget = g_strdup_printf(
+                "/settings/connections/%s/forget", escaped);
+            g_autoptr(HtmxDiv) row = htmx_div_new();
+            g_autoptr(HtmxDiv) head = htmx_div_new();
+            g_autoptr(HtmxDiv) actions = htmx_div_new();
+
+            htmx_element_add_class(HTMX_ELEMENT(row), "list-item");
+            htmx_element_add_class(HTMX_ELEMENT(head), "list-item-head");
+
+            {
+                g_autoptr(HtmxSpan) label = htmx_span_new();
+
+                htmx_element_add_class(HTMX_ELEMENT(label),
+                                       "list-item-title");
+                htmx_node_set_text_content(HTMX_NODE(label), name);
+                htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(label));
+            }
+
+            if (g_strcmp0(name, current) == 0)
+                clawt_web_add(head, clawt_web_badge("in use", "good"));
+
+            if (clawt_connection_get_token(connection) != NULL)
+                clawt_web_add(head, clawt_web_badge("token", "info"));
+
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(head));
+
+            /*
+             * describe() names the socket or the host and port. It never
+             * names the token -- nothing prints a bearer token from a
+             * listing.
+             */
+            clawt_web_add(row, clawt_web_text(described, "small muted mono"));
+
+            htmx_element_add_class(HTMX_ELEMENT(actions), "btn-row");
+            clawt_web_add(actions, clawt_web_post_button(
+                "Connect", use, "primary",
+                "Point this server at that daemon? Every open page moves "
+                "with it."));
+            clawt_web_add(actions, clawt_web_post_button(
+                "Forget", forget, "danger",
+                "Remove this profile? The daemon itself is untouched."));
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(actions));
+
+            htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(row));
+        }
+
+        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
+    }
+
+    {
+        g_autoptr(HtmxDiv) card = clawt_web_card(
+            "Add a daemon",
+            "A socket path for one on this machine, or a host and port "
+            "for one somewhere else.");
+        HtmxElement *body = clawt_web_card_body(card);
+        g_autoptr(HtmxForm) form = clawt_web_form("/settings/connections/add");
+
+        clawt_web_add(form, clawt_web_field("Name", "name", NULL,
+                                            "workstation"));
+        clawt_web_add(form, clawt_web_field(
+            "Socket path", "socket", NULL,
+            "for a daemon on this machine; leave empty for a remote one"));
+        clawt_web_add(form, clawt_web_field(
+            "Host", "host", NULL, "100.72.0.41, or a tailnet name"));
+        clawt_web_add(form, clawt_web_field("Port", "port", NULL, "7654"));
+        clawt_web_add(form, clawt_web_field(
+            "Bearer token", "token", NULL,
+            "what that daemon expects; stored 0600 and never shown again"));
+
+        {
+            g_autoptr(HtmxDiv) row = htmx_div_new();
+            g_autoptr(HtmxButton) add = clawt_web_button("Save", "primary");
+
+            htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+            htmx_element_set_attribute(HTMX_ELEMENT(add), "type", "submit");
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(add));
+            htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(row));
+        }
+
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
+        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
+    }
+
+    return HTMX_ELEMENT(g_steal_pointer(&box));
+}
+
+static HtmxResponse *
+on_connection_add(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    const gchar *name = clawt_web_form_value(request, "name");
+    const gchar *socket_path = clawt_web_form_value(request, "socket");
+    const gchar *host = clawt_web_form_value(request, "host");
+    const gchar *port = clawt_web_form_value(request, "port");
+    const gchar *token = clawt_web_form_value(request, "token");
+    g_autofree gchar *path = clawt_connection_list_default_path();
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GPtrArray) list = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+    ClawtConnection *fresh;
+
+    (void)params;
+
+    if (name == NULL || *name == '\0') {
+        content = connections_content(app);
+
+        return settings_response(app, request, "connections", content,
+                                 "It needs a name.", TRUE);
+    }
+
+    list = clawt_connection_list_load(path, NULL);
+
+    if (list == NULL)
+        list = g_ptr_array_new_with_free_func(
+            (GDestroyNotify)clawt_connection_free);
+
+    if (socket_path != NULL && *socket_path != '\0') {
+        fresh = clawt_connection_new_local(name, socket_path);
+    } else if (host != NULL && *host != '\0') {
+        fresh = clawt_connection_new_remote(
+            name, host,
+            (guint16)(port != NULL ? g_ascii_strtoll(port, NULL, 10) : 0),
+            (token != NULL && *token != '\0') ? token : NULL);
+    } else {
+        content = connections_content(app);
+
+        return settings_response(app, request, "connections", content,
+                                 "Give it a socket path or a host.", TRUE);
+    }
+
+    g_ptr_array_add(list, fresh);
+
+    if (!clawt_connection_list_save(path, list, &error)) {
+        g_autofree gchar *failure = g_strdup(error->message);
+
+        content = connections_content(app);
+
+        return settings_response(app, request, "connections", content,
+                                 failure, TRUE);
+    }
+
+    content = connections_content(app);
+
+    return settings_response(app, request, "connections", content,
+                             "Saved.", FALSE);
+}
+
+static HtmxResponse *
+on_connection_use(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *name = clawt_web_param(params, "connection");
+    g_autofree gchar *path = clawt_connection_list_default_path();
+    g_autoptr(GPtrArray) list = clawt_connection_list_load(path, NULL);
+    g_autoptr(GError) error = NULL;
+    ClawtConnection *chosen;
+    g_autoptr(HtmxElement) content = NULL;
+
+    chosen = (list != NULL) ? clawt_connection_list_find(list, name) : NULL;
+
+    if (chosen == NULL) {
+        content = connections_content(app);
+
+        return settings_response(app, request, "connections", content,
+                                 "There is no profile by that name.", TRUE);
+    }
+
+    if (!clawt_web_app_switch(app, chosen, &error)) {
+        g_autofree gchar *failure = g_strdup(error->message);
+
+        content = connections_content(app);
+
+        return settings_response(app, request, "connections", content,
+                                 failure, TRUE);
+    }
+
+    /*
+     * Back to the fleet rather than staying here: everything the browser
+     * was showing belonged to the previous daemon, and agent ids are
+     * per-daemon.
+     */
+    return clawt_web_redirect(request, "/");
+}
+
+static HtmxResponse *
+on_connection_forget(HtmxRequest *request, GHashTable *params,
+                     gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *name = clawt_web_param(params, "connection");
+    g_autofree gchar *path = clawt_connection_list_default_path();
+    g_autoptr(GPtrArray) list = clawt_connection_list_load(path, NULL);
+    g_autoptr(GError) error = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+    guint i;
+
+    for (i = 0; list != NULL && i < list->len; i++) {
+        ClawtConnection *connection = g_ptr_array_index(list, i);
+
+        if (g_strcmp0(clawt_connection_get_name(connection), name) != 0)
+            continue;
+
+        g_ptr_array_remove_index(list, i);
+        break;
+    }
+
+    if (list != NULL && !clawt_connection_list_save(path, list, &error)) {
+        g_autofree gchar *failure = g_strdup(error->message);
+
+        content = connections_content(app);
+
+        return settings_response(app, request, "connections", content,
+                                 failure, TRUE);
+    }
+
+    content = connections_content(app);
+
+    return settings_response(app, request, "connections", content,
+                             "Forgotten. The daemon itself is untouched.",
+                             FALSE);
 }
 
 /* ── Routes ──────────────────────────────────────────────────────── */
@@ -916,10 +1258,12 @@ on_settings_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
         content = connectors_content(app);
     else if (g_strcmp0(slug, "appearance") == 0)
         content = appearance_content(request);
+    else if (g_strcmp0(slug, "connections") == 0)
+        content = connections_content(app);
     else
         return clawt_web_redirect(request, "/settings/images");
 
-    return settings_response(app, slug, content, NULL, FALSE);
+    return settings_response(app, request, slug, content, NULL, FALSE);
 }
 
 /*
@@ -943,6 +1287,7 @@ static HtmxResponse *
 on_settings_action(HtmxRequest *request, GHashTable *params,
                    gpointer user_data)
 {
+    g_autofree gchar *failure = NULL;
     SettingsAction *action = user_data;
     g_autofree gchar *subject = clawt_web_param(params, action->param);
     g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
@@ -954,6 +1299,9 @@ on_settings_action(HtmxRequest *request, GHashTable *params,
     reply = clawt_web_app_call(action->app, action->kind,
                                clawt_web_payload_take(g_steal_pointer(&payload)));
 
+    if (reply == NULL)
+        failure = g_strdup(clawt_web_app_last_error(action->app));
+
     if (g_strcmp0(action->page, "images") == 0)
         content = images_content(action->app);
     else if (g_strcmp0(action->page, "teams") == 0)
@@ -963,15 +1311,12 @@ on_settings_action(HtmxRequest *request, GHashTable *params,
     else
         content = connectors_content(action->app);
 
-    (void)request;
+    if (failure != NULL)
+        return settings_response(action->app, request, action->page, content,
+                                 failure, TRUE);
 
-    if (reply == NULL)
-        return settings_response(action->app, action->page,
-                                 content,
-                                 clawt_web_app_last_error(action->app), TRUE);
-
-    return settings_response(action->app, action->page,
-                             content, action->done, FALSE);
+    return settings_response(action->app, request, action->page, content,
+                             action->done, FALSE);
 }
 
 static SettingsAction *
@@ -994,6 +1339,7 @@ settings_action_new(ClawtWebApp *app, const gchar *kind, const gchar *param,
 static HtmxResponse *
 on_image_download(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
+    g_autofree gchar *failure = NULL;
     ClawtWebApp *app = user_data;
     const gchar *name = clawt_web_form_value(request, "name");
     const gchar *url = clawt_web_form_value(request, "url");
@@ -1010,13 +1356,23 @@ on_image_download(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     reply = clawt_web_app_call(app, "image.vm_download",
                                clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    /*
+     * Taken before the content is built. Building it makes calls of its
+     * own, and each one replaces the app's last error -- so reporting it
+     * afterwards reports whichever read happened last, not the action
+     * that failed.
+     */
+    if (reply == NULL)
+        failure = g_strdup(clawt_web_app_last_error(app));
+
     content = images_content(app);
 
-    if (reply == NULL)
-        return settings_response(app, "images", content,
-                                 clawt_web_app_last_error(app), TRUE);
+    if (failure != NULL)
+        return settings_response(app, request, "images", content, failure,
+                                 TRUE);
 
-    return settings_response(app, "images", content,
+    return settings_response(app, request, "images", content,
                              "Downloading. It keeps going if you leave "
                              "this page.", FALSE);
 }
@@ -1024,6 +1380,7 @@ on_image_download(HtmxRequest *request, GHashTable *params, gpointer user_data)
 static HtmxResponse *
 on_team_add(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
+    g_autofree gchar *failure = NULL;
     ClawtWebApp *app = user_data;
     const gchar *id = clawt_web_form_value(request, "id");
     const gchar *name = clawt_web_form_value(request, "name");
@@ -1038,13 +1395,17 @@ on_team_add(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     reply = clawt_web_app_call(app, "team.create",
                                clawt_web_payload_take(g_steal_pointer(&payload)));
-    content = teams_content(app);
 
     if (reply == NULL)
-        return settings_response(app, "teams", content,
-                                 clawt_web_app_last_error(app), TRUE);
+        failure = g_strdup(clawt_web_app_last_error(app));
 
-    return settings_response(app, "teams", content,
+    content = teams_content(app);
+
+    if (failure != NULL)
+        return settings_response(app, request, "teams", content, failure,
+                                 TRUE);
+
+    return settings_response(app, request, "teams", content,
                              "Team created.", FALSE);
 }
 
@@ -1075,16 +1436,19 @@ on_team_save(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                        g_steal_pointer(&payload)));
 
         if (reply == NULL) {
+            g_autofree gchar *failure =
+                g_strdup(clawt_web_app_last_error(app));
+
             content = teams_content(app);
 
-            return settings_response(app, "teams", content,
-                                     clawt_web_app_last_error(app), TRUE);
+            return settings_response(app, request, "teams", content, failure,
+                                     TRUE);
         }
     }
 
     content = teams_content(app);
 
-    return settings_response(app, "teams", content,
+    return settings_response(app, request, "teams", content,
                              "Saved.", FALSE);
 }
 
@@ -1092,6 +1456,7 @@ static HtmxResponse *
 on_integration_add(HtmxRequest *request, GHashTable *params,
                    gpointer user_data)
 {
+    g_autofree gchar *failure = NULL;
     ClawtWebApp *app = user_data;
     g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
     g_autoptr(JsonNode) reply = NULL;
@@ -1106,14 +1471,17 @@ on_integration_add(HtmxRequest *request, GHashTable *params,
 
     reply = clawt_web_app_call(app, "integration.add",
                                clawt_web_payload_take(g_steal_pointer(&payload)));
-    content = integrations_content(app);
 
     if (reply == NULL)
-        return settings_response(app, "integrations",
-                                 content,
-                                 clawt_web_app_last_error(app), TRUE);
+        failure = g_strdup(clawt_web_app_last_error(app));
 
-    return settings_response(app, "integrations", content,
+    content = integrations_content(app);
+
+    if (failure != NULL)
+        return settings_response(app, request, "integrations", content,
+                                 failure, TRUE);
+
+    return settings_response(app, request, "integrations", content,
                              "Added. Fill in its settings on the agent that "
                              "should use it.", FALSE);
 }
@@ -1121,6 +1489,7 @@ on_integration_add(HtmxRequest *request, GHashTable *params,
 static HtmxResponse *
 on_connector_add(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
+    g_autofree gchar *failure = NULL;
     ClawtWebApp *app = user_data;
     g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
     g_autoptr(JsonNode) reply = NULL;
@@ -1145,13 +1514,17 @@ on_connector_add(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     reply = clawt_web_app_call(app, "integration.add",
                                clawt_web_payload_take(g_steal_pointer(&payload)));
-    content = connectors_content(app);
 
     if (reply == NULL)
-        return settings_response(app, "connectors", content,
-                                 clawt_web_app_last_error(app), TRUE);
+        failure = g_strdup(clawt_web_app_last_error(app));
 
-    return settings_response(app, "connectors", content,
+    content = connectors_content(app);
+
+    if (failure != NULL)
+        return settings_response(app, request, "connectors", content,
+                                 failure, TRUE);
+
+    return settings_response(app, request, "connectors", content,
                              "Added. Authorize it to get a credential.",
                              FALSE);
 }
@@ -1183,10 +1556,11 @@ on_connector_authorize(HtmxRequest *request, GHashTable *params,
                                clawt_web_payload_take(g_steal_pointer(&payload)));
 
     if (reply == NULL) {
+        g_autofree gchar *failure = g_strdup(clawt_web_app_last_error(app));
         g_autoptr(HtmxElement) content = connectors_content(app);
 
-        return settings_response(app, "connectors", content,
-                                 clawt_web_app_last_error(app), TRUE);
+        return settings_response(app, request, "connectors", content, failure,
+                                 TRUE);
     }
 
     root = clawt_web_root(reply);
@@ -1236,7 +1610,7 @@ on_connector_authorize(HtmxRequest *request, GHashTable *params,
         htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
     }
 
-    return settings_response(app, "connectors", HTMX_ELEMENT(box), NULL,
+    return settings_response(app, request, "connectors", HTMX_ELEMENT(box), NULL,
                              FALSE);
 }
 
@@ -1244,6 +1618,7 @@ static HtmxResponse *
 on_connector_await(HtmxRequest *request, GHashTable *params,
                    gpointer user_data)
 {
+    g_autofree gchar *failure = NULL;
     ClawtWebApp *app = user_data;
     g_autofree gchar *flow = clawt_web_param(params, "connector");
     g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
@@ -1256,14 +1631,55 @@ on_connector_await(HtmxRequest *request, GHashTable *params,
 
     reply = clawt_web_app_call(app, "connector.await",
                                clawt_web_payload_take(g_steal_pointer(&payload)));
-    content = connectors_content(app);
 
     if (reply == NULL)
-        return settings_response(app, "connectors", content,
-                                 clawt_web_app_last_error(app), TRUE);
+        failure = g_strdup(clawt_web_app_last_error(app));
 
-    return settings_response(app, "connectors", content,
+    content = connectors_content(app);
+
+    if (failure != NULL)
+        return settings_response(app, request, "connectors", content,
+                                 failure, TRUE);
+
+    return settings_response(app, request, "connectors", content,
                              "Authorized.", FALSE);
+}
+
+/*
+ * Writes one appearance cookie.
+ *
+ * An empty value clears it with Max-Age=0 rather than storing "", so
+ * that "follow the browser" is the *absence* of a setting rather than a
+ * setting whose value happens to be empty. The renderer emits no rule
+ * for an absent one, which is what makes following keep following.
+ */
+static void
+set_look_cookie(HtmxResponse *response, const gchar *name, const gchar *value)
+{
+    g_autofree gchar *cookie = NULL;
+
+    if (value == NULL || *value == '\0') {
+        cookie = g_strdup_printf("%s=; Path=/; Max-Age=0; SameSite=Lax",
+                                 name);
+    } else {
+        g_autofree gchar *escaped = g_uri_escape_string(value, NULL, FALSE);
+
+        /*
+         * A year, and SameSite=Lax. There is nothing secret in these --
+         * they say light, or a font name -- but a cookie another site
+         * can cause to be sent is a cookie worth not having.
+         */
+        cookie = g_strdup_printf(
+            "%s=%s; Path=/; Max-Age=31536000; SameSite=Lax", name, escaped);
+    }
+
+    /*
+     * Appended, not added: htmx_response_add_header() keeps one value per
+     * name, so five cookies set through it arrive as one and the other
+     * four are silently not set. Set-Cookie is the header whose whole
+     * purpose is to repeat.
+     */
+    htmx_response_append_header(response, "Set-Cookie", cookie);
 }
 
 static HtmxResponse *
@@ -1277,27 +1693,52 @@ on_appearance(HtmxRequest *request, GHashTable *params, gpointer user_data)
     (void)params;
 
     content = appearance_content(request);
-    response = settings_response(app, "appearance", content,
+    response = settings_response(app, request, "appearance", content,
                                  "Applied.", FALSE);
 
-    {
-        /*
-         * A year, and SameSite=Lax. There is nothing secret in it -- it
-         * says light or dark -- but a cookie that another site can cause
-         * to be sent is a cookie worth not having.
-         */
-        g_autofree gchar *cookie = g_strdup_printf(
-            "clawt_theme=%s; Path=/; Max-Age=31536000; SameSite=Lax",
-            (theme != NULL && *theme != '\0') ? theme : "system");
+    set_look_cookie(response, "clawt_theme",
+                    (theme != NULL && *theme != '\0') ? theme : "system");
+    set_look_cookie(response, "clawt_font",
+                    clawt_web_form_value(request, "font"));
+    set_look_cookie(response, "clawt_font_size",
+                    clawt_web_form_value(request, "font_size"));
+    set_look_cookie(response, "clawt_mono",
+                    clawt_web_form_value(request, "mono"));
+    set_look_cookie(response, "clawt_mono_size",
+                    clawt_web_form_value(request, "mono_size"));
 
-        htmx_response_add_header(response, "Set-Cookie", cookie);
+    /*
+     * Reloaded rather than swapped: the palette and the fonts are
+     * applied by <style> blocks in a head that has already been parsed.
+     */
+    htmx_response_add_header(response, "HX-Refresh", "true");
 
-        /*
-         * Reloaded rather than swapped, because the theme is applied by
-         * a script in <head> that has already run.
-         */
-        htmx_response_add_header(response, "HX-Refresh", "true");
-    }
+    return response;
+}
+
+static HtmxResponse *
+on_appearance_reset(HtmxRequest *request, GHashTable *params,
+                    gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autoptr(HtmxElement) content = NULL;
+    HtmxResponse *response;
+    static const gchar *const names[] = {
+        "clawt_theme", "clawt_font", "clawt_font_size",
+        "clawt_mono", "clawt_mono_size"
+    };
+    guint i;
+
+    (void)params;
+
+    content = appearance_content(request);
+    response = settings_response(app, request, "appearance", content,
+                                 "Following the browser again.", FALSE);
+
+    for (i = 0; i < G_N_ELEMENTS(names); i++)
+        set_look_cookie(response, names[i], NULL);
+
+    htmx_response_add_header(response, "HX-Refresh", "true");
 
     return response;
 }
@@ -1366,4 +1807,13 @@ clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app)
                                          "Removed."));
 
     htmx_router_post(router, "/settings/appearance", on_appearance, app);
+    htmx_router_post(router, "/settings/appearance/reset",
+                     on_appearance_reset, app);
+
+    htmx_router_post(router, "/settings/connections/add", on_connection_add,
+                     app);
+    htmx_router_post(router, "/settings/connections/:connection/use",
+                     on_connection_use, app);
+    htmx_router_post(router, "/settings/connections/:connection/forget",
+                     on_connection_forget, app);
 }

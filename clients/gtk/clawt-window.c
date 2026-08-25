@@ -5105,7 +5105,13 @@ on_mailbox_purge(GtkButton *button, gpointer user_data)
 
     (void)button;
 
-    reply = clawt_window_request(self, "mailbox.purge", NULL);
+    /*
+     * Per-agent: the daemon resolves a mailbox from the payload and
+     * refuses without one. A fleet-wide sweep is not a thing it offers.
+     */
+    reply = clawt_window_request(
+        self, "mailbox.purge",
+        clawt_build_payload("agent", self->selected_agent, NULL));
 
     if (reply == NULL)
         return;
@@ -8347,8 +8353,8 @@ build_mailbox_page(ClawtWindow *self)
         GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
 
         gtk_widget_set_tooltip_text(
-            purge, "Removes every item past its time-to-live, from every "
-                   "mailbox in the fleet.");
+            purge, "Removes every item past its time-to-live from this "
+                   "agent's mailbox.");
         g_signal_connect(purge, "clicked", G_CALLBACK(on_mailbox_purge),
                          self);
         gtk_widget_set_halign(row, GTK_ALIGN_CENTER);

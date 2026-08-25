@@ -595,12 +595,281 @@ on_connector_key(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
 /* ── Routes ──────────────────────────────────────────────────────── */
 
+/* ── Editing a workspace file ────────────────────────────────────── */
+
+/*
+ * The GTK client opens these in $EDITOR, which is a program on the
+ * machine somebody is sitting at. A browser reached over the network has
+ * no such thing, so the file comes over the wire and goes back the same
+ * way -- agent.file_read and agent.file_write exist for this and nothing
+ * else.
+ */
+static HtmxResponse *
+on_file_editor(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    const gchar *name = htmx_request_get_query_param(request, "name");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    JsonObject *root;
+    g_autoptr(HtmxElement) view = HTMX_ELEMENT(htmx_main_new());
+    g_autoptr(HtmxDiv) pad = htmx_div_new();
+    g_autofree gchar *html = NULL;
+
+    htmx_element_add_class(view, "view");
+    htmx_element_add_class(HTMX_ELEMENT(pad), "view-pad");
+
+    if (name == NULL || *name == '\0') {
+        clawt_web_add(pad, clawt_web_section_title("Workspace files"));
+        clawt_web_add_files_card(app, HTMX_ELEMENT(pad), agent_id);
+        htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
+
+        html = clawt_web_page(app, agent_id, CLAWT_WEB_VIEW_AGENT, view,
+                              request);
+
+        return clawt_web_html_response(html);
+    }
+
+    clawt_web_payload_set(payload, "agent", agent_id);
+    clawt_web_payload_set(payload, "name", name);
+
+    reply = clawt_web_app_call(app, "agent.file_read",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        return clawt_web_error_page(app, request, agent_id,
+                                    CLAWT_WEB_VIEW_AGENT,
+                                    clawt_web_app_last_error(app));
+
+    root = clawt_web_root(reply);
+
+    {
+        g_autofree gchar *escaped = g_uri_escape_string(agent_id, NULL,
+                                                        FALSE);
+        g_autofree gchar *action = g_strdup_printf("/a/%s/file", escaped);
+        g_autoptr(HtmxDiv) card = clawt_web_card(
+            name, clawt_web_member(root, "path", NULL));
+        HtmxElement *body = clawt_web_card_body(card);
+        g_autoptr(HtmxForm) form = clawt_web_form(action);
+
+        clawt_web_add(pad, clawt_web_section_title(name));
+
+        /*
+         * A file clawtilla writes into has a marked region it owns and
+         * nothing else. Saying so here is what stops somebody editing
+         * the managed half and wondering why it comes back.
+         */
+        clawt_web_add(pad, clawt_web_text(
+            "This is the agent's own file. Where clawtilla manages part "
+            "of one, it owns only the region between its BEGIN and END "
+            "markers and rewrites that on every start -- the rest is "
+            "yours.", "lede"));
+
+        clawt_web_add(form, clawt_web_hidden("name", name));
+        clawt_web_add(form, clawt_web_textarea_field(
+            "Contents", "content", clawt_web_member(root, "content", ""),
+            24));
+
+        {
+            g_autoptr(HtmxDiv) row = htmx_div_new();
+            g_autoptr(HtmxButton) save = clawt_web_button("Save", "primary");
+            g_autofree gchar *back = clawt_web_agent_url(
+                agent_id, CLAWT_WEB_VIEW_AGENT);
+            g_autoptr(HtmxA) cancel = htmx_a_new_with_href(back);
+
+            htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+            htmx_element_set_attribute(HTMX_ELEMENT(save), "type", "submit");
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(save));
+
+            htmx_element_add_class(HTMX_ELEMENT(cancel), "btn");
+            htmx_node_set_text_content(HTMX_NODE(cancel), "Back");
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(cancel));
+
+            htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(row));
+        }
+
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
+        htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(card));
+    }
+
+    htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
+
+    html = clawt_web_page(app, agent_id, CLAWT_WEB_VIEW_AGENT, view, request);
+
+    return clawt_web_html_response(html);
+}
+
+static HtmxResponse *
+on_file_save(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    const gchar *name = clawt_web_form_value(request, "name");
+    const gchar *content = clawt_web_form_value(request, "content");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *said = NULL;
+
+    clawt_web_payload_set(payload, "agent", agent_id);
+    clawt_web_payload_set(payload, "name", name);
+    clawt_web_payload_set(payload, "content",
+                          content != NULL ? content : "");
+
+    reply = clawt_web_app_call(app, "agent.file_write",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        return clawt_web_error_page(app, request, agent_id,
+                                    CLAWT_WEB_VIEW_AGENT,
+                                    clawt_web_app_last_error(app));
+
+    said = g_strdup_printf(
+        "Saved %s. An agent reads its identity files when its session "
+        "starts, so restart it for this to reach the running one.",
+        name != NULL ? name : "the file");
+
+    return clawt_web_after_action(app, request, agent_id,
+                                  CLAWT_WEB_VIEW_AGENT, said);
+}
+
+/* ── The fleet at a glance ───────────────────────────────────────── */
+
+/*
+ * What /agents shows: who is in the fleet, without picking one.
+ */
+static HtmxResponse *
+on_fleet(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autoptr(JsonNode) reply = clawt_web_app_call(app, "agent.list", NULL);
+    g_autoptr(JsonNode) teams = clawt_web_app_call(app, "team.list", NULL);
+    JsonArray *agents = clawt_web_member_array(clawt_web_root(reply),
+                                               "agents");
+    g_autoptr(HtmxDiv) view = htmx_div_new();
+    g_autoptr(HtmxDiv) pad = htmx_div_new();
+    g_autoptr(HtmxElement) wrap = HTMX_ELEMENT(htmx_div_new());
+    g_autoptr(HtmxTable) table = htmx_table_new();
+    g_autoptr(HtmxThead) head = htmx_thead_new();
+    g_autoptr(HtmxTbody) rows = htmx_tbody_new();
+    g_autofree gchar *html = NULL;
+    guint i;
+
+    (void)params;
+
+    htmx_element_add_class(HTMX_ELEMENT(view), "view");
+    htmx_element_add_class(HTMX_ELEMENT(pad), "view-pad");
+
+    clawt_web_add(pad, clawt_web_section_title("The fleet"));
+    clawt_web_warnings(HTMX_ELEMENT(pad), teams);
+
+    {
+        g_autoptr(HtmxTr) tr = htmx_tr_new();
+
+        clawt_web_add(tr, htmx_th_new_with_text("Agent"));
+        clawt_web_add(tr, htmx_th_new_with_text("State"));
+        clawt_web_add(tr, htmx_th_new_with_text("Team"));
+        clawt_web_add(tr, htmx_th_new_with_text("Model"));
+        clawt_web_add(tr, htmx_th_new_with_text("Computer"));
+        clawt_web_add(tr, htmx_th_new_with_text("Queue"));
+        htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(tr));
+    }
+
+    for (i = 0; agents != NULL && i < json_array_get_length(agents); i++) {
+        JsonObject *agent = json_array_get_object_element(agents, i);
+        const gchar *id = clawt_web_member(agent, "id", "?");
+        const gchar *state = clawt_web_member(agent, "state", "?");
+        g_autoptr(HtmxTr) tr = htmx_tr_new();
+        g_autoptr(HtmxTd) name_cell = htmx_td_new();
+        g_autofree gchar *url = clawt_web_agent_url(id,
+                                                    CLAWT_WEB_VIEW_CHAT);
+        g_autofree gchar *depth = g_strdup_printf(
+            "%" G_GINT64_FORMAT,
+            clawt_web_member_int(agent, "mailbox_depth", 0));
+
+        {
+            g_autoptr(HtmxA) link = htmx_a_new_with_href(url);
+
+            htmx_node_set_text_content(
+                HTMX_NODE(link), clawt_web_member(agent, "name", id));
+            htmx_node_add_child(HTMX_NODE(name_cell), HTMX_NODE(link));
+        }
+
+        htmx_node_add_child(HTMX_NODE(tr), HTMX_NODE(name_cell));
+
+        {
+            g_autoptr(HtmxTd) cell = htmx_td_new();
+
+            clawt_web_add(cell, clawt_web_badge(
+                state, clawt_web_state_tone(state)));
+            htmx_node_add_child(HTMX_NODE(tr), HTMX_NODE(cell));
+        }
+
+        clawt_web_add(tr, htmx_td_new_with_text(
+            clawt_web_member(agent, "team", "—")));
+        clawt_web_add(tr, htmx_td_new_with_text(
+            clawt_web_member(agent, "model", "—")));
+        clawt_web_add(tr, htmx_td_new_with_text(
+            clawt_web_member(agent, "computer", "none")));
+
+        {
+            g_autoptr(HtmxTd) cell = htmx_td_new_with_text(depth);
+
+            htmx_element_add_class(HTMX_ELEMENT(cell), "num");
+            htmx_node_add_child(HTMX_NODE(tr), HTMX_NODE(cell));
+        }
+
+        htmx_node_add_child(HTMX_NODE(rows), HTMX_NODE(tr));
+    }
+
+    htmx_node_add_child(HTMX_NODE(table), HTMX_NODE(head));
+    htmx_node_add_child(HTMX_NODE(table), HTMX_NODE(rows));
+    htmx_element_add_class(wrap, "table-wrap");
+    htmx_node_add_child(HTMX_NODE(wrap), HTMX_NODE(table));
+    htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(wrap));
+    htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
+
+    html = clawt_web_shell_page(app, "Fleet", HTMX_ELEMENT(view), request);
+
+    return clawt_web_html_response(html);
+}
+
+static HtmxResponse *
+on_files_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    g_autoptr(HtmxElement) view = HTMX_ELEMENT(htmx_main_new());
+    g_autoptr(HtmxDiv) pad = htmx_div_new();
+    g_autofree gchar *html = NULL;
+
+    htmx_element_add_class(view, "view");
+    htmx_element_add_class(HTMX_ELEMENT(pad), "view-pad");
+
+    clawt_web_add(pad, clawt_web_section_title("Workspace files"));
+    clawt_web_add_files_card(app, HTMX_ELEMENT(pad), agent_id);
+    htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
+
+    html = clawt_web_page(app, agent_id, CLAWT_WEB_VIEW_AGENT, view, request);
+
+    return clawt_web_html_response(html);
+}
+
+
+
 static HtmxResponse *
 on_memories(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
     ClawtWebApp *app = user_data;
     g_autofree gchar *agent_id = clawt_web_param(params, "id");
     const gchar *query = clawt_web_form_value(request, "q");
+
+    /*
+     * From the query string too, because /memory <words> arrives as a
+     * redirect rather than as a form post.
+     */
+    if (query == NULL)
+        query = htmx_request_get_query_param(request, "q");
     g_autoptr(HtmxElement) view = HTMX_ELEMENT(htmx_main_new());
     g_autoptr(HtmxDiv) pad = htmx_div_new();
     g_autofree gchar *html = NULL;
@@ -612,7 +881,7 @@ on_memories(HtmxRequest *request, GHashTable *params, gpointer user_data)
     clawt_web_add_memory_card(app, HTMX_ELEMENT(pad), agent_id, query);
     htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
 
-    html = clawt_web_page(app, agent_id, CLAWT_WEB_VIEW_AGENT, view);
+    html = clawt_web_page(app, agent_id, CLAWT_WEB_VIEW_AGENT, view, request);
 
     return clawt_web_html_response(html);
 }
@@ -650,7 +919,7 @@ on_integration_editor(HtmxRequest *request, GHashTable *params,
         htmx_node_add_child(HTMX_NODE(wrap), HTMX_NODE(pad));
     }
 
-    html = clawt_web_shell_page(app, name, HTMX_ELEMENT(wrap));
+    html = clawt_web_shell_page(app, name, HTMX_ELEMENT(wrap), request);
 
     return clawt_web_html_response(html);
 }
@@ -784,14 +1053,17 @@ on_matrix_rooms(HtmxRequest *request, GHashTable *params, gpointer user_data)
     HtmxElement *body;
     JsonArray *rooms;
     g_autofree gchar *html = NULL;
+    g_autofree gchar *failure = NULL;
     guint i;
-
-    (void)request;
 
     clawt_web_payload_set(payload, "integration", name);
 
     reply = clawt_web_app_call(app, "integration.matrix_rooms",
                                clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    /* Copied now; the app frees it on its next call. */
+    if (reply == NULL)
+        failure = g_strdup(clawt_web_app_last_error(app));
 
     htmx_element_add_class(HTMX_ELEMENT(wrap), "view");
     htmx_element_add_class(HTMX_ELEMENT(pad), "view-pad");
@@ -801,9 +1073,8 @@ on_matrix_rooms(HtmxRequest *request, GHashTable *params, gpointer user_data)
     body = clawt_web_card_body(card);
     rooms = clawt_web_member_array(clawt_web_root(reply), "rooms");
 
-    if (reply == NULL)
-        clawt_web_add(body, clawt_web_notice(clawt_web_app_last_error(app),
-                                             "bad"));
+    if (failure != NULL)
+        clawt_web_add(body, clawt_web_notice(failure, "bad"));
     else if (rooms == NULL || json_array_get_length(rooms) == 0)
         clawt_web_add(body, clawt_web_empty("No rooms", NULL));
 
@@ -823,7 +1094,7 @@ on_matrix_rooms(HtmxRequest *request, GHashTable *params, gpointer user_data)
     htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(card));
     htmx_node_add_child(HTMX_NODE(wrap), HTMX_NODE(pad));
 
-    html = clawt_web_shell_page(app, "Rooms", HTMX_ELEMENT(wrap));
+    html = clawt_web_shell_page(app, "Rooms", HTMX_ELEMENT(wrap), request);
 
     return clawt_web_html_response(html);
 }
@@ -835,6 +1106,11 @@ clawt_web_register_extras(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_post(router, "/a/:id/attach", on_attach, app);
     htmx_router_post(router, "/a/:id/attach/remove", on_attach_remove, app);
     htmx_router_post(router, "/a/:id/memories", on_memories, app);
+    htmx_router_get(router, "/a/:id/memories", on_memories, app);
+    htmx_router_get(router, "/a/:id/file", on_file_editor, app);
+    htmx_router_post(router, "/a/:id/file", on_file_save, app);
+    htmx_router_get(router, "/a/:id/files", on_files_page, app);
+    htmx_router_get(router, "/fleet", on_fleet, app);
 
     htmx_router_get(router, "/settings/integrations/:integration",
                     on_integration_editor, app);

@@ -19,6 +19,23 @@ make test-verbose
 make test-integration   # needs real podman / libvirt / gowl
 make config-files       # regenerate data/*.yaml and the docs table
 make docs-check         # undocumented public API, stale doc references
+make parity             # the two graphical clients cover the same daemon
+#+end_src
+
+~make parity~ compares the IPC frame kinds ~clawtilla-gtk~ and
+~clawtilla-web~ each send, and the slash commands each answers.  Adding a
+capability to one and not the other is a build failure, because two
+clients drifting apart is otherwise invisible until somebody reaches for
+the half that was not built.  ~make docs-check~ runs it too, and there is
+a case for it in ~make test~.
+
+The web client's routing needs a running client to check, because unit
+tests cannot see it -- a route registered after ~/a/:id/:view~ is
+unreachable, and an unrecognised view falls back to chat, so a swallowed
+route renders the chat page and answers 200:
+
+#+begin_src bash
+make web-smoke WEB_SMOKE_URL=http://127.0.0.1:8790 WEB_SMOKE_AGENT=chief
 #+end_src
 
 Both build types coexist.  ~DEBUG=1~ tests link against debug binaries,

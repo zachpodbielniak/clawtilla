@@ -855,10 +855,10 @@ clawtilla-web [--port 8790] [--bind ADDR] [--no-tailscale] [--socket PATH]
 #+end_src
 
 Everything ~clawtilla-gtk~ does, served over HTTP.  The same seven views
--- chat, agent, mailbox, computer, routines, tasks, flow -- with the same
-six settings pages behind them, driven by the same ~ClawtClient~ over the
-same socket.  See [[file:web-client.org][web-client.org]] for the whole
-of it.
+-- chat, agent, mailbox, computer, routines, tasks, flow -- the same
+eighteen slash commands, and seven settings pages behind them, driven by
+the same ~ClawtClient~ over the same socket.  See
+[[file:web-client.org][web-client.org]] for the whole of it.
 
 It is a separate binary rather than a mode of the daemon, deliberately.
 The page can start, stop, reconfigure and delete every agent on the
@@ -924,12 +924,22 @@ That is checked rather than remembered:
 make parity
 #+end_src
 
-It compares the set of IPC frame kinds each client sends and fails when
-one has a capability the other lacks.  Deliberate exceptions live in an
-exception map inside =tools/clawt-client-parity.sh=, each with its
-reason; anything without a reason somebody would agree with belongs in
-the client instead.  It also runs as part of ~make docs-check~ and as a
-case in ~make test~.
+It compares two things: the IPC frame kinds each client sends, and the
+slash commands each answers.  Both matter -- the command check exists
+because the frame-kind one missed thirteen missing commands entirely,
+since they are built out of frames both clients already sent.
+
+Deliberate exceptions live in an exception map inside
+=tools/clawt-client-parity.sh=, each with its reason; anything without a
+reason somebody would agree with belongs in the client instead.  It also
+runs as part of ~make docs-check~ and as a case in ~make test~.
+
+Routing is checked separately, against a running client, because unit
+tests cannot see it:
+
+#+begin_src bash
+make web-smoke WEB_SMOKE_URL=http://127.0.0.1:8790 WEB_SMOKE_AGENT=chief
+#+end_src
 
 ** Embedding libclawt
 

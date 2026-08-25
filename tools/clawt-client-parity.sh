@@ -14,12 +14,19 @@
 # than remembered, in the same spirit as the stale-config-key and
 # undefined-tool checks `make docs-check` already runs.
 #
-# What is compared is the set of IPC frame kinds each client sends.  It is
-# a proxy for "feature", not a definition of one: a client could name a
-# kind and do nothing useful with it.  But every real feature has to talk
-# to the daemon to do anything, so a kind one client sends and the other
-# never mentions is a capability that exists in one place only -- and that
-# is the failure worth catching.
+# Two things are compared.
+#
+# The set of IPC frame kinds each client sends is a proxy for "feature",
+# not a definition of one: a client could name a kind and do nothing
+# useful with it.  But every real feature has to talk to the daemon to do
+# anything, so a kind one client sends and the other never mentions is a
+# capability that exists in one place only.
+#
+# The set of slash commands is compared because the frame-kind check
+# missed them entirely -- thirteen of the eighteen were absent from the
+# web client and nothing said so, since /files and /agents and /export are
+# all built out of frames both clients already sent.  A check that only
+# looks at one layer will keep finding nothing at the others.
 
 set -euo pipefail
 
@@ -29,9 +36,13 @@ gtk=""
 web=""
 only_gtk=""
 only_web=""
+gtk_cmds=""
+web_cmds=""
+only_gtk_cmds=""
 
 cleanup () {
-    rm -f "${gtk}" "${web}" "${only_gtk}" "${only_web}"
+    rm -f "${gtk}" "${web}" "${only_gtk}" "${only_web}" \
+          "${gtk_cmds}" "${web_cmds}" "${only_gtk_cmds}"
 }
 
 trap cleanup EXIT
@@ -60,6 +71,8 @@ declare -A WEB_MAY_LACK=(
 declare -A GTK_MAY_LACK=(
     ["computer.status"]="the GTK computer panel shows state from agent.show; worth closing, not a blocker"
     ["exchange.list"]="the GTK client offers drag-and-drop into the exchange rather than a listing"
+    ["agent.file_read"]="same capability, different mechanism: /edit opens the file in \$EDITOR there, which is the better answer when the client and the daemon share a machine"
+    ["agent.file_write"]="the other half of the same; \$EDITOR writes the file directly"
 )
 
 usage () {
@@ -121,6 +134,26 @@ client_kinds () {
         <(daemon_kinds)
 }
 
+#
+# The slash commands a client answers.
+#
+# Both keep them in a table of "/name" literals, which is enough to
+# compare without either having to declare anything for this script's
+# benefit.
+#
+client_commands () {
+    if [[ $# -ne 1 ]]
+    then
+        # shellcheck disable=SC2016
+        echo '`client_commands()` requires 1 positional argument' >&2
+        exit 1
+    fi
+
+    grep -ohE '"/[a-z][a-z-]*"' "${1}"/*.c \
+        | tr -d '"' \
+        | sort -u
+}
+
 report_missing () {
     if [[ $# -ne 4 ]]
     then
@@ -180,12 +213,20 @@ main () {
     web="$(mktemp)"
     only_gtk="$(mktemp)"
     only_web="$(mktemp)"
+    gtk_cmds="$(mktemp)"
+    web_cmds="$(mktemp)"
+    only_gtk_cmds="$(mktemp)"
 
     client_kinds "${GTK_DIR}" > "${gtk}"
     client_kinds "${WEB_DIR}" > "${web}"
 
     comm -23 "${gtk}" "${web}" > "${only_gtk}"
     comm -13 "${gtk}" "${web}" > "${only_web}"
+
+    client_commands "${GTK_DIR}" > "${gtk_cmds}"
+    client_commands "${WEB_DIR}" > "${web_cmds}"
+
+    comm -23 "${gtk_cmds}" "${web_cmds}" > "${only_gtk_cmds}"
 
     if [[ "${list}" -eq 1 ]]
     then
@@ -194,6 +235,9 @@ main () {
         echo
         echo "clawtilla-web reaches $(wc -l < "${web}") frame kinds:"
         sed 's/^/  /' "${web}"
+        echo
+        echo "slash commands: $(wc -l < "${gtk_cmds}") in gtk, \
+$(wc -l < "${web_cmds}") in web"
         echo
     fi
 
@@ -209,6 +253,20 @@ main () {
     report_missing "clawtilla-gtk" "clawtilla-web" "${only_web}" \
         GTK_MAY_LACK || failures=$((failures + $?))
 
+    #
+    # Commands are only checked one way. The GTK composer is the one with
+    # the established set; the web client answering something extra is a
+    # thing to notice by reading, not a build failure.
+    #
+    while read -r command
+    do
+        [[ -z "${command}" ]] && continue
+
+        printf '  %-28s a command in clawtilla-gtk, missing from clawtilla-web\n' \
+            "${command}"
+        failures=$((failures + 1))
+    done < "${only_gtk_cmds}"
+
     if [[ "${failures}" -gt 0 ]]
     then
         echo
@@ -218,7 +276,9 @@ main () {
         exit 1
     fi
 
-    echo "client parity: OK ($(wc -l < "${gtk}") kinds in gtk, $(wc -l < "${web}") in web)"
+    echo "client parity: OK ($(wc -l < "${gtk}") kinds and \
+$(wc -l < "${gtk_cmds}") commands in gtk, $(wc -l < "${web}") kinds and \
+$(wc -l < "${web_cmds}") commands in web)"
 }
 
 main "$@"

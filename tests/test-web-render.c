@@ -326,6 +326,157 @@ test_dark_is_reachable_by_preference_and_by_choice(void)
     g_assert_nonnull(strstr(css, ":root:not([data-theme=\"light\"])"));
 }
 
+/* ── Appearance ──────────────────────────────────────────────────── */
+
+/*
+ * An unset field emits no rule at all.
+ *
+ * Naming the browser's current font instead would look identical on
+ * screen and diverge for ever afterwards: one keeps following, the other
+ * has quietly frozen. The GTK client's appearance page was fixed for
+ * exactly this, and the web one inherits the rule.
+ */
+static void
+test_an_unset_look_emits_nothing(void)
+{
+    ClawtWebLook look = { NULL, NULL, 0, NULL, 0 };
+    g_autofree gchar *css = clawt_web_look_css(&look);
+
+    g_assert_cmpstr(css, ==, "");
+}
+
+static void
+test_a_null_look_emits_nothing(void)
+{
+    g_autofree gchar *css = clawt_web_look_css(NULL);
+
+    g_assert_cmpstr(css, ==, "");
+}
+
+static void
+test_a_set_look_emits_its_tokens(void)
+{
+    ClawtWebLook look = { NULL, (gchar *)"Cantarell", 16,
+                          (gchar *)"JetBrains Mono", 13 };
+    g_autofree gchar *css = clawt_web_look_css(&look);
+
+    g_assert_nonnull(strstr(css, "--sans:\"Cantarell\""));
+    g_assert_nonnull(strstr(css, "--mono:\"JetBrains Mono\""));
+    g_assert_nonnull(strstr(css, "--font-size:16px"));
+    g_assert_nonnull(strstr(css, "--mono-size:13px"));
+}
+
+/*
+ * Half set is half emitted. A size without a family must not drag a
+ * family rule along with it, or choosing one size silently freezes the
+ * font too.
+ */
+static void
+test_only_what_is_set_is_emitted(void)
+{
+    ClawtWebLook look = { NULL, NULL, 18, NULL, 0 };
+    g_autofree gchar *css = clawt_web_look_css(&look);
+
+    g_assert_nonnull(strstr(css, "--font-size:18px"));
+    g_assert_null(strstr(css, "--sans:"));
+    g_assert_null(strstr(css, "--mono:"));
+    g_assert_null(strstr(css, "--mono-size:"));
+}
+
+/*
+ * A family comes out of a cookie, which is a string somebody can set to
+ * anything. It is sanitised by an allowlist rather than escaped: CSS
+ * string escapes are their own small language and there is nothing in a
+ * font name to preserve.
+ *
+ * The first attempt was a denylist and was already wrong -- it stopped a
+ * quote closing the string and let a comment-opener through, which
+ * swallows the rest of the sheet.
+ */
+static void
+test_a_hostile_family_cannot_escape_the_declaration(void)
+{
+    ClawtWebLook look = { NULL, (gchar *)"X\"}body{display:none}/*", 0,
+                          NULL, 0 };
+    g_autofree gchar *css = clawt_web_look_css(&look);
+
+    g_assert_null(strstr(css, "display:none"));
+
+    /*
+     * Counted rather than searched for. The block legitimately ends with
+     * a brace, so "contains no }" is asserting on the wrong thing --
+     * what matters is that the *injected* text added none, which is what
+     * a count of exactly two says.
+     */
+    {
+        const gchar *p;
+        guint quotes = 0;
+        guint braces = 0;
+
+        for (p = css; *p != '\0'; p++) {
+            if (*p == '"')
+                quotes++;
+            if (*p == '{' || *p == '}')
+                braces++;
+        }
+
+        g_assert_cmpuint(quotes, ==, 2);
+        g_assert_cmpuint(braces, ==, 2);
+    }
+}
+
+/*
+ * A family that sanitises down to nothing is treated as unset rather
+ * than emitted empty. An empty family is invalid CSS, and a browser
+ * drops the whole block it appears in -- so one bad field would take the
+ * sizes with it.
+ */
+static void
+test_a_family_of_only_punctuation_is_unset(void)
+{
+    ClawtWebLook look = { NULL, (gchar *)"{}<>;", 15, NULL, 0 };
+    g_autofree gchar *css = clawt_web_look_css(&look);
+
+    g_assert_null(strstr(css, "--sans:"));
+    g_assert_nonnull(strstr(css, "--font-size:15px"));
+}
+
+/*
+ * A size outside what a person could want is ignored rather than
+ * emitted. A cookie saying 0 or 4000 is not a preference.
+ */
+static void
+test_an_absurd_size_is_ignored(void)
+{
+    ClawtWebLook small = { NULL, NULL, 2, NULL, 0 };
+    ClawtWebLook huge = { NULL, NULL, 4000, NULL, 0 };
+    g_autofree gchar *small_css = clawt_web_look_css(&small);
+    g_autofree gchar *huge_css = clawt_web_look_css(&huge);
+
+    g_assert_cmpstr(small_css, ==, "");
+    g_assert_cmpstr(huge_css, ==, "");
+}
+
+/*
+ * A request with no message behind it -- which is what
+ * htmx_request_new_for_path() makes -- has no cookies, so every field
+ * defers. Zeroed meaning "defer" is what makes a field added later
+ * default to deferring too.
+ */
+static void
+test_a_request_without_cookies_defers_everything(void)
+{
+    g_autoptr(HtmxRequest) request =
+        htmx_request_new_for_path(HTMX_METHOD_GET, "/a/x/chat");
+    g_autoptr(ClawtWebLook) look = clawt_web_look_from_request(request);
+    g_autofree gchar *css = clawt_web_look_css(look);
+
+    g_assert_null(look->theme);
+    g_assert_null(look->font);
+    g_assert_cmpint(look->font_size, ==, 0);
+    g_assert_cmpstr(css, ==, "");
+}
+
 /* ── Parity ──────────────────────────────────────────────────────── */
 
 /*
@@ -405,6 +556,23 @@ main(int argc, char *argv[])
                     test_the_palette_is_defined_outside_a_media_query);
     g_test_add_func("/web/dark-is-reachable-by-preference-and-by-choice",
                     test_dark_is_reachable_by_preference_and_by_choice);
+
+    g_test_add_func("/web/an-unset-look-emits-nothing",
+                    test_an_unset_look_emits_nothing);
+    g_test_add_func("/web/a-null-look-emits-nothing",
+                    test_a_null_look_emits_nothing);
+    g_test_add_func("/web/a-set-look-emits-its-tokens",
+                    test_a_set_look_emits_its_tokens);
+    g_test_add_func("/web/only-what-is-set-is-emitted",
+                    test_only_what_is_set_is_emitted);
+    g_test_add_func("/web/a-hostile-family-cannot-escape-the-declaration",
+                    test_a_hostile_family_cannot_escape_the_declaration);
+    g_test_add_func("/web/a-family-of-only-punctuation-is-unset",
+                    test_a_family_of_only_punctuation_is_unset);
+    g_test_add_func("/web/an-absurd-size-is-ignored",
+                    test_an_absurd_size_is_ignored);
+    g_test_add_func("/web/a-request-without-cookies-defers-everything",
+                    test_a_request_without_cookies_defers_everything);
 
     g_test_add_func("/web/the-two-clients-stay-level",
                     test_the_two_clients_stay_level);

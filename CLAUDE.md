@@ -2518,6 +2518,93 @@ the same program.
   built for.
 
 
+### A catch-all route swallows everything registered after it
+
+- `/a/:id/:view` matches every path under an agent, and the router
+  answers with the first pattern that matches -- so `/a/x/export`,
+  `/a/x/copy` and `/a/x/file` were all being served by the *view*
+  handler. Nothing failed: an unrecognised view falls back to chat, so
+  each one rendered the chat page and returned 200, and the export even
+  came back with a `Content-Type` of `text/html` that read as a
+  formatting problem rather than a routing one.
+- It is registered last now, from its own `clawt_web_register_views()`,
+  with the reason in the header beside it. And routing is checked against
+  a running client by `make web-smoke`, which asserts on a *marker string
+  per route* rather than on the status -- a status can only tell you
+  something answered, not which thing.
+
+### An error message borrowed from the client is gone by the time it is drawn
+
+- `clawt_web_app_last_error()` returns a string the app owns, and every
+  `clawt_web_app_call()` frees it and writes a new one. Rendering a page
+  makes half a dozen calls -- so a handler that failed, then built the
+  page, then reported the error, was reporting whatever now lived at that
+  address. A refusal about a path traversal came out as *"Which CLI
+  backend answers, and with what"*, which is a static string from the
+  inspector's group table.
+- The same shape as the CLI's `id` pointing into a freed reply, and just
+  as invisible: it printed *something* every time. Copy at the point of
+  failure, before anything else asks the daemon anything. The header says
+  so now, and a scan for "a render between the call and the report" found
+  five more sites after the first.
+
+### One header name, one value -- except the one whose job is to repeat
+
+- `htmx_response_add_header()` is backed by a hash table, so five
+  `Set-Cookie` headers arrived as one and the other four were silently
+  not set. The appearance page stored the last field and lost the theme,
+  the fonts and one size, with nothing to say so.
+- `htmx_response_append_header()` added upstream for headers that may
+  repeat. `add_header` keeps replace semantics, which is right for
+  `Content-Type` and wrong for `Set-Cookie`.
+
+### A test that #includes a source needs it as a prerequisite
+
+- `tests/test-web-render.c` includes the web client's renderers, because
+  they live in a binary rather than in libclawt. The generic test rule
+  lists only the test's own `.c`, so editing `web-ui.c` left the test
+  binary untouched -- and *passing*.
+- Which meant the check that matters most was itself broken: reverting
+  the fix to prove the test catches it produced a pass, twice, because
+  the binary was never rebuilt. The Makefile names the included sources
+  now. Same family as "`make test` does not relink the daemon", one
+  directory over, and the reason it was found at all is that the
+  revert-and-confirm step is a habit here.
+
+### A denylist for a CSS value misses the one that matters
+
+- The font family comes out of a cookie and is spliced into a
+  declaration. The first sanitiser dropped `{}<>;"` -- which stops a
+  quote closing the string, and lets a comment-opener through, and a CSS
+  comment swallows the rest of the sheet. An allowlist of letters,
+  digits, space, hyphen, underscore, stop and comma loses nothing: no
+  font has a brace in its name.
+- The general rule: when the safe set is small and known, name the safe
+  set. A denylist is a claim to have thought of everything.
+
+### Parity checked at one layer finds nothing at the others
+
+- `make parity` compared IPC frame kinds and reported OK -- while the web
+  client had five of the GTK composer's eighteen slash commands and none
+  of its font settings. `/files`, `/agents` and `/export` are built out
+  of frames both clients already sent, so a frame-level check cannot see
+  them missing.
+- It compares commands as well now, and that check fails if one is
+  removed -- verified by removing `/retry` and watching it exit 1. The
+  appearance gap is still only caught by reading, which is worth knowing:
+  a check finds the layer it looks at.
+
+### mailbox.purge is per-agent, and both clients thought otherwise
+
+- The daemon resolves a mailbox from the payload's agent and refuses
+  without one -- "which agent's mailbox?". Both clients sent no agent,
+  and the GTK button's own tooltip said it swept "every mailbox in the
+  fleet". So a button existed in two clients for an operation the daemon
+  has never offered.
+- Found by a smoke test asserting on the *reply*, not the status: the
+  refusal came back as a rendered page with 200 on it.
+
+
 ## Things to NEVER Do
 
 - Never hand-edit `data/example-config.yaml` or `data/default-config.yaml`
@@ -2576,3 +2663,11 @@ the same program.
   drive the whole fleet
 - Never widen where `clawtilla-web` listens because an address was
   missing. No tailnet means the loopback alone, never every interface
+- Never register a route in the web client after `/a/:id/:view`. It
+  matches everything under an agent, and a swallowed route renders the
+  chat page and answers 200
+- Never pass `clawt_web_app_last_error()` to anything that renders. Copy
+  it at the point of failure; rendering makes calls that free it
+- Never emit a CSS rule for an appearance field somebody left empty.
+  Empty means follow the browser, and naming the current value freezes it
+  while looking identical

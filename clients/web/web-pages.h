@@ -73,6 +73,18 @@ HtmxElement *clawt_web_view_body(ClawtWebApp  *app,
                                  ClawtWebView  view);
 
 HtmxElement *clawt_web_chat_body(ClawtWebApp *app, const gchar *agent_id);
+
+/**
+ * clawt_web_chat_body_full:
+ * @app: a #ClawtWebApp
+ * @agent_id: (nullable): whose chat
+ * @cleared: whether /clear has hidden the transcript on this view
+ *
+ * Returns: (transfer full): the chat view
+ */
+HtmxElement *clawt_web_chat_body_full(ClawtWebApp *app,
+                                      const gchar *agent_id,
+                                      gboolean     cleared);
 HtmxElement *clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_mailbox_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_computer_body(ClawtWebApp *app, const gchar *agent_id);
@@ -83,6 +95,20 @@ HtmxElement *clawt_web_flow_body(ClawtWebApp *app, const gchar *agent_id);
 /* ── Routes ──────────────────────────────────────────────────────── */
 
 void clawt_web_register_fleet(HtmxRouter *router, ClawtWebApp *app);
+
+/**
+ * clawt_web_register_views:
+ * @router: the router
+ * @app: a #ClawtWebApp
+ *
+ * The `/a/:id/:view` route, which matches everything under an agent.
+ *
+ * Must be registered *after* every other route beginning `/a/:id/`, or
+ * it takes them: the router answers with the first pattern that matches,
+ * and an unrecognised view falls back to chat -- so a swallowed route
+ * renders the chat page and returns 200 rather than failing.
+ */
+void clawt_web_register_views(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_chat(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_agent(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_mailbox(HtmxRouter *router, ClawtWebApp *app);
@@ -120,6 +146,26 @@ void clawt_web_add_memory_card(ClawtWebApp *app,
                                const gchar *query);
 
 /* ── Shared bits the modules need from each other ────────────────── */
+
+/**
+ * clawt_web_send_message:
+ * @app: a #ClawtWebApp
+ * @request: the request being answered
+ * @agent_id: who to send it to
+ * @body: what to say
+ *
+ * Sends one message and re-renders the chat.
+ *
+ * Shared with /retry, which is the same act with a body read back out of
+ * the transcript -- two senders would be two chances for one of them to
+ * forget to report the daemon's refusal.
+ *
+ * Returns: (transfer full): the response
+ */
+HtmxResponse *clawt_web_send_message(ClawtWebApp *app,
+                                     HtmxRequest *request,
+                                     const gchar *agent_id,
+                                     const gchar *body);
 
 /**
  * clawt_web_param:

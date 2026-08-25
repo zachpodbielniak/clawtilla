@@ -59,6 +59,8 @@ ClawtWebView clawt_web_view_from_slug(const gchar *slug);
  * @agent_id: (nullable): the selected agent
  * @view: which page to show
  * @body: (transfer none): the view's own content
+ * @request: (nullable): the request being answered, whose cookies say
+ *   what this browser should look like
  *
  * Wraps @body in the whole document: stylesheet, sidebar, nav, scripts.
  *
@@ -67,7 +69,8 @@ ClawtWebView clawt_web_view_from_slug(const gchar *slug);
 gchar *clawt_web_page(ClawtWebApp  *app,
                       const gchar  *agent_id,
                       ClawtWebView  view,
-                      HtmxElement  *body);
+                      HtmxElement  *body,
+                      HtmxRequest  *request);
 
 /**
  * clawt_web_shell_page:
@@ -81,7 +84,8 @@ gchar *clawt_web_page(ClawtWebApp  *app,
  */
 gchar *clawt_web_shell_page(ClawtWebApp *app,
                             const gchar *title,
-                            HtmxElement *body);
+                            HtmxElement *body,
+                            HtmxRequest *request);
 
 /**
  * clawt_web_html_response:
@@ -326,6 +330,64 @@ HtmxP *clawt_web_text(const gchar *text, const gchar *css_class);
  * autoptr blocks.
  */
 void clawt_web_add(gpointer parent, gpointer child);
+
+/**
+ * ClawtWebLook:
+ * @theme: "system", "light" or "dark"
+ * @font: (nullable): interface font family, or %NULL to follow the browser
+ * @font_size: interface size in px, or 0 to follow the browser
+ * @mono: (nullable): code font family, or %NULL to follow the browser
+ * @mono_size: code size in px, or 0 to follow the browser
+ *
+ * What this browser has been told to look like.
+ *
+ * Zeroed means "defer" for every field, deliberately -- and a field added
+ * later therefore defaults to deferring too. Naming the browser's current
+ * font instead of saying nothing is the same mistake the GTK client's
+ * appearance page was fixed for: the two look identical on screen and
+ * diverge for ever afterwards, because one keeps following and the other
+ * has quietly frozen.
+ */
+typedef struct {
+    gchar *theme;
+    gchar *font;
+    gint   font_size;
+    gchar *mono;
+    gint   mono_size;
+} ClawtWebLook;
+
+/**
+ * clawt_web_look_free:
+ * @self: (transfer full) (nullable): a #ClawtWebLook
+ */
+void clawt_web_look_free(ClawtWebLook *self);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtWebLook, clawt_web_look_free)
+
+/**
+ * clawt_web_look_from_request:
+ * @request: the request, whose cookies carry the choices
+ *
+ * Returns: (transfer full): what this browser asked for
+ */
+ClawtWebLook *clawt_web_look_from_request(HtmxRequest *request);
+
+/**
+ * clawt_web_look_css:
+ * @look: (nullable): what this browser asked for
+ *
+ * The token overrides for @look, as a CSS block, or an empty string.
+ *
+ * A family is *sanitised* rather than escaped: quotes, braces,
+ * semicolons and angle brackets are dropped. CSS string escapes are
+ * their own small language and there is nothing here to preserve -- no
+ * font has a brace in its name -- while getting the escaping subtly
+ * wrong would let a cookie close the declaration and open a rule of its
+ * own.
+ *
+ * Returns: (transfer full): the CSS, never %NULL
+ */
+gchar *clawt_web_look_css(const ClawtWebLook *look);
 
 /**
  * clawt_web_relative_time:

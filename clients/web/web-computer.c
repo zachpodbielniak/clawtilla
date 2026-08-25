@@ -429,7 +429,7 @@ on_exec(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
 
-    html = clawt_web_page(app, agent_id, CLAWT_WEB_VIEW_COMPUTER, view);
+    html = clawt_web_page(app, agent_id, CLAWT_WEB_VIEW_COMPUTER, view, request);
 
     return clawt_web_html_response(html);
 }

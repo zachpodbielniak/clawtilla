@@ -11,6 +11,7 @@
 #include "web-pages.h"
 
 #include <string.h>
+#include <libsoup/soup.h>
 
 const gchar *clawt_web_stylesheet(void);
 
@@ -519,6 +520,175 @@ clawt_web_select_field(const gchar *label, const gchar *name,
     return (HtmxDiv *)g_steal_pointer(&field);
 }
 
+
+/* ── What this browser looks like ────────────────────────────────── */
+
+void
+clawt_web_look_free(ClawtWebLook *self)
+{
+    if (self == NULL)
+        return;
+
+    g_free(self->theme);
+    g_free(self->font);
+    g_free(self->mono);
+    g_free(self);
+}
+
+/*
+ * One cookie's value, or NULL.
+ *
+ * Read by hand rather than through a parser because there is one header
+ * and five names; what matters is matching a whole name, so that
+ * "clawt_font_size" is not found when looking for "clawt_font".
+ */
+static gchar *
+cookie_value(const gchar *header, const gchar *name)
+{
+    g_auto(GStrv) parts = NULL;
+    gsize i;
+
+    if (header == NULL)
+        return NULL;
+
+    parts = g_strsplit(header, ";", -1);
+
+    for (i = 0; parts[i] != NULL; i++) {
+        g_autofree gchar *pair = g_strdup(parts[i]);
+        const gchar *equals;
+
+        g_strstrip(pair);
+        equals = strchr(pair, '=');
+
+        if (equals == NULL)
+            continue;
+
+        if (strncmp(pair, name, (gsize)(equals - pair)) != 0 ||
+            strlen(name) != (gsize)(equals - pair))
+            continue;
+
+        return g_uri_unescape_string(equals + 1, NULL);
+    }
+
+    return NULL;
+}
+
+ClawtWebLook *
+clawt_web_look_from_request(HtmxRequest *request)
+{
+    ClawtWebLook *look = g_new0(ClawtWebLook, 1);
+    const gchar *cookies = NULL;
+
+    /*
+     * Off the SoupServerMessage rather than htmx_request_get_headers(),
+     * which is the parsed HX-* set. A request built by
+     * htmx_request_new_for_path() has no message, and then every field
+     * stays zeroed -- which is "defer", and correct.
+     */
+    if (request != NULL) {
+        SoupServerMessage *message = htmx_request_get_message(request);
+
+        if (message != NULL)
+            cookies = soup_message_headers_get_one(
+                soup_server_message_get_request_headers(message), "Cookie");
+    }
+
+    look->theme = cookie_value(cookies, "clawt_theme");
+    look->font = cookie_value(cookies, "clawt_font");
+    look->mono = cookie_value(cookies, "clawt_mono");
+
+    {
+        g_autofree gchar *size = cookie_value(cookies, "clawt_font_size");
+        g_autofree gchar *mono_size = cookie_value(cookies,
+                                                   "clawt_mono_size");
+
+        look->font_size = (size != NULL)
+                          ? (gint)g_ascii_strtoll(size, NULL, 10) : 0;
+        look->mono_size = (mono_size != NULL)
+                          ? (gint)g_ascii_strtoll(mono_size, NULL, 10) : 0;
+    }
+
+    return look;
+}
+
+/*
+ * A font family fit to put inside a CSS declaration.
+ *
+ * Sanitised rather than escaped, and by an allowlist rather than a
+ * denylist. CSS string escapes are their own small language and there is
+ * nothing in a font name to preserve, so the safe move is to keep only
+ * what a family can legitimately contain and drop the rest.
+ *
+ * A denylist was the first attempt and was already wrong: it stopped a
+ * quote closing the string but let a slash-star through, which opens a
+ * CSS comment and swallows the rest of the sheet. (Spelled out rather
+ * than written, because a comment-opener inside a C comment is its own
+ * warning.)
+ */
+static gchar *
+sanitise_family(const gchar *family)
+{
+    g_autoptr(GString) out = NULL;
+    const gchar *p;
+
+    if (family == NULL)
+        return NULL;
+
+    out = g_string_new(NULL);
+
+    for (p = family; *p != '\0'; p++) {
+        if (!g_ascii_isalnum(*p) && strchr(" -_.,", *p) == NULL)
+            continue;
+
+        g_string_append_c(out, *p);
+    }
+
+    g_strstrip(out->str);
+
+    if (out->str[0] == '\0')
+        return NULL;
+
+    return g_strdup(out->str);
+}
+
+gchar *
+clawt_web_look_css(const ClawtWebLook *look)
+{
+    g_autoptr(GString) css = g_string_new(NULL);
+    g_autofree gchar *family = NULL;
+    g_autofree gchar *mono = NULL;
+
+    if (look == NULL)
+        return g_strdup("");
+
+    family = sanitise_family(look->font);
+    mono = sanitise_family(look->mono);
+
+    /*
+     * Nothing at all is emitted for an unset field, rather than a rule
+     * naming what the browser would have used anyway. The two look
+     * identical and diverge for ever afterwards.
+     */
+    if (family != NULL)
+        g_string_append_printf(css, "--sans:\"%s\",system-ui,sans-serif;",
+                               family);
+
+    if (mono != NULL)
+        g_string_append_printf(css, "--mono:\"%s\",ui-monospace,monospace;",
+                               mono);
+
+    if (look->font_size >= 8 && look->font_size <= 32)
+        g_string_append_printf(css, "--font-size:%dpx;", look->font_size);
+
+    if (look->mono_size >= 8 && look->mono_size <= 32)
+        g_string_append_printf(css, "--mono-size:%dpx;", look->mono_size);
+
+    if (css->len == 0)
+        return g_strdup("");
+
+    return g_strdup_printf(":root{%s}", css->str);
+}
+
 /* ── The document ────────────────────────────────────────────────── */
 
 /*
@@ -529,7 +699,8 @@ clawt_web_select_field(const gchar *label, const gchar *name,
  * element classes deliberately do not model.
  */
 static void
-open_document(HtmxBuilder *builder, const gchar *title)
+open_document(HtmxBuilder *builder, const gchar *title,
+              const ClawtWebLook *look)
 {
     htmx_builder_doctype(builder);
     htmx_builder_begin(builder, "html");
@@ -554,6 +725,20 @@ open_document(HtmxBuilder *builder, const gchar *title)
     htmx_builder_begin(builder, "style");
     htmx_builder_raw_html(builder, clawt_web_stylesheet());
     htmx_builder_end(builder);
+
+    /*
+     * The person's own overrides after the stylesheet, so they win on
+     * specificity ties without !important.
+     */
+    {
+        g_autofree gchar *overrides = clawt_web_look_css(look);
+
+        if (*overrides != '\0') {
+            htmx_builder_begin(builder, "style");
+            htmx_builder_raw_html(builder, overrides);
+            htmx_builder_end(builder);
+        }
+    }
 
     /*
      * Local, never a CDN.  This page starts and stops agents and runs
@@ -601,8 +786,9 @@ close_document(HtmxBuilder *builder)
 
 gchar *
 clawt_web_page(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view,
-               HtmxElement *body)
+               HtmxElement *body, HtmxRequest *request)
 {
+    g_autoptr(ClawtWebLook) look = clawt_web_look_from_request(request);
     g_autoptr(HtmxBuilder) builder = htmx_builder_new();
     g_autoptr(HtmxDiv) frame = htmx_div_new();
     g_autoptr(HtmxDiv) content = htmx_div_new();
@@ -613,7 +799,7 @@ clawt_web_page(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view,
                               clawt_web_view_title(view))
             : g_strdup("clawtilla");
 
-    open_document(builder, title);
+    open_document(builder, title, look);
 
     htmx_element_add_class(HTMX_ELEMENT(frame), "app");
     clawt_web_add(frame, clawt_web_sidebar(app, agent_id, view));
@@ -638,15 +824,17 @@ clawt_web_page(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view,
 }
 
 gchar *
-clawt_web_shell_page(ClawtWebApp *app, const gchar *title, HtmxElement *body)
+clawt_web_shell_page(ClawtWebApp *app, const gchar *title, HtmxElement *body,
+                     HtmxRequest *request)
 {
+    g_autoptr(ClawtWebLook) look = clawt_web_look_from_request(request);
     g_autoptr(HtmxBuilder) builder = htmx_builder_new();
     g_autofree gchar *full = g_strdup_printf("%s · clawtilla",
                                              title != NULL ? title : "");
 
     (void)app;
 
-    open_document(builder, full);
+    open_document(builder, full, look);
 
     if (body != NULL) {
         g_autofree gchar *html = htmx_element_render(HTMX_ELEMENT(body));

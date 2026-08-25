@@ -85,9 +85,58 @@ JsonNode *clawt_web_app_call(ClawtWebApp *self,
  *
  * Why the most recent clawt_web_app_call() returned %NULL.
  *
- * Returns: (nullable): the message, owned by @self
+ * Valid only until the next call. Every clawt_web_app_call() frees this
+ * and writes a new one, so anything that renders a page -- which makes
+ * half a dozen calls of its own -- must copy the message *before* it
+ * starts rather than pass this pointer along. Getting that wrong does
+ * not read as a bug: the banner shows whatever string now lives at that
+ * address, which the first time was a static one from an unrelated
+ * table.
+ *
+ * Returns: (nullable): the message, owned by @self and freed by the next
+ *   clawt_web_app_call()
  */
 const gchar *clawt_web_app_last_error(ClawtWebApp *self);
+
+/**
+ * clawt_web_app_switch:
+ * @self: a #ClawtWebApp
+ * @connection: (transfer none): the daemon to talk to instead
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Points this server at a different daemon.
+ *
+ * The new client is connected *before* the old one is dropped: a remote
+ * daemon that is not running is the ordinary case here, and releasing
+ * the working connection first would leave every open page connected to
+ * nothing because of a typo in a port.
+ *
+ * Unlike the GTK client, where switching affects one window, this
+ * affects every browser looking at this server -- there is one
+ * connection here, not one per viewer. The page says so before it asks.
+ *
+ * Returns: %TRUE if the new daemon answered and is now in use
+ */
+gboolean clawt_web_app_switch(ClawtWebApp      *self,
+                              ClawtConnection  *connection,
+                              GError          **error);
+
+/**
+ * clawt_web_app_get_connection_name:
+ * @self: a #ClawtWebApp
+ *
+ * Returns: (nullable): what the current daemon is called, if it came
+ *   from a profile
+ */
+const gchar *clawt_web_app_get_connection_name(ClawtWebApp *self);
+
+/**
+ * clawt_web_app_set_connection_name:
+ * @self: a #ClawtWebApp
+ * @name: (nullable): what to call the current daemon
+ */
+void clawt_web_app_set_connection_name(ClawtWebApp *self,
+                                       const gchar *name);
 
 /**
  * clawt_web_app_add_stream:

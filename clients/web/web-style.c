@@ -39,6 +39,9 @@ clawt_web_stylesheet(void)
       "--serif:ui-serif,'Iowan Old Style','Palatino Linotype',Palatino,Georgia,serif;"
       "--mono:ui-monospace,'SF Mono','JetBrains Mono','DejaVu Sans Mono',monospace;"
       "--radius:8px;--radius-sm:5px;"
+      /* Overridable per browser from the appearance page; the rest of the
+       * sheet reads these rather than naming a size directly. */
+      "--font-size:14px;--mono-size:12.5px;"
     "}"
     "@media (prefers-color-scheme:dark){:root:not([data-theme=\"light\"]){"
       "--canvas:#151514;--surface:#1C1C1B;--surface-2:#232322;"
@@ -64,7 +67,7 @@ clawt_web_stylesheet(void)
     "*{box-sizing:border-box}"
     "html,body{height:100%}"
     "body{margin:0;background:var(--canvas);color:var(--ink);"
-      "font-family:var(--sans);font-size:14px;line-height:1.6;"
+      "font-family:var(--sans);font-size:var(--font-size);line-height:1.6;"
       "-webkit-font-smoothing:antialiased}"
 
     /* ── Frame ── */
@@ -150,7 +153,7 @@ clawt_web_stylesheet(void)
       "gap:16px;padding:10px 0;border-bottom:1px solid var(--line)}"
     ".row:last-child{border-bottom:0}"
     ".row-title{color:var(--ink-2)}"
-    ".row-value{color:var(--muted);font-family:var(--mono);font-size:12.5px;"
+    ".row-value{color:var(--muted);font-family:var(--mono);font-size:var(--mono-size);"
       "text-align:right;word-break:break-word}"
     ".list{border:1px solid var(--line);border-radius:var(--radius);"
       "background:var(--surface);overflow:hidden}"
@@ -187,7 +190,7 @@ clawt_web_stylesheet(void)
       "width:100%;font:inherit;font-size:13.5px;padding:8px 10px;"
       "border:1px solid var(--line-strong);border-radius:var(--radius-sm);"
       "background:var(--surface);color:var(--ink)}"
-    "textarea{font-family:var(--mono);font-size:13px;resize:vertical}"
+    "textarea{font-family:var(--mono);font-size:var(--mono-size);resize:vertical}"
     "input:focus,textarea:focus,select:focus{outline:2px solid var(--info-fg);"
       "outline-offset:-1px}"
     ".field-check{display:flex;gap:10px;align-items:flex-start;"
@@ -207,9 +210,9 @@ clawt_web_stylesheet(void)
     ".msg-who{font-size:11px;letter-spacing:0.06em;text-transform:uppercase;"
       "color:var(--muted);margin-bottom:5px;font-weight:600}"
     ".msg-body{white-space:pre-wrap;word-wrap:break-word}"
-    ".msg-body code{font-family:var(--mono);font-size:12.5px;"
+    ".msg-body code{font-family:var(--mono);font-size:var(--mono-size);"
       "background:var(--surface-2);padding:1px 5px;border-radius:4px}"
-    ".msg-body pre{font-family:var(--mono);font-size:12.5px;"
+    ".msg-body pre{font-family:var(--mono);font-size:var(--mono-size);"
       "background:var(--surface-2);border:1px solid var(--line);"
       "border-radius:var(--radius-sm);padding:12px 14px;overflow-x:auto}"
     ".msg-self .msg-who{color:var(--info-fg)}"
@@ -221,11 +224,11 @@ clawt_web_stylesheet(void)
       "font-family:var(--sans);font-size:14px}"
 
     /* ── Console ── */
-    ".console{font-family:var(--mono);font-size:12.5px;white-space:pre-wrap;"
+    ".console{font-family:var(--mono);font-size:var(--mono-size);white-space:pre-wrap;"
       "background:var(--surface-2);border:1px solid var(--line);"
       "border-radius:var(--radius-sm);padding:14px 16px;overflow-x:auto;"
       "max-height:26rem;overflow-y:auto;margin:0}"
-    ".mono{font-family:var(--mono);font-size:12.5px}"
+    ".mono{font-family:var(--mono);font-size:var(--mono-size)}"
     "kbd{font-family:var(--mono);font-size:11.5px;border:1px solid var(--line);"
       "border-radius:4px;background:var(--surface-2);padding:1px 5px}"
 

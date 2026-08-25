@@ -310,6 +310,14 @@ main(int argc, char *argv[])
 
     app = clawt_web_app_new(client);
 
+    /*
+     * Named so the connections page can show which profile is in use. A
+     * daemon reached by --socket has no profile, and says so rather than
+     * claiming to be one.
+     */
+    clawt_web_app_set_connection_name(
+        app, opt_socket != NULL ? opt_socket : "the default socket");
+
     server = htmx_server_new();
     router = htmx_server_get_router(server);
 
@@ -328,6 +336,12 @@ main(int argc, char *argv[])
     clawt_web_register_events(router, app);
     clawt_web_register_creation(router, app);
     clawt_web_register_extras(router, app);
+
+    /*
+     * Last, always: "/a/:id/:view" matches everything under an agent, so
+     * anything registered after it is unreachable.
+     */
+    clawt_web_register_views(router, app);
 
     where = g_ptr_array_new_with_free_func(g_free);
 
