@@ -229,10 +229,7 @@ static const gchar SOUL_ORG[] =
 "\n"
 "{{description}}\n"
 "\n"
-"Rewrite the line above. It is the one sentence that decides what you do\n"
-"when nobody has told you what to do, and the default was generated from\n"
-"a config field.\n"
-"\n"
+"{{mission_note}}"
 "* Operating Parameters\n"
 "\n"
 "- *Presence:* you run as a supervised process. Your mailbox is durable,\n"
@@ -327,10 +324,12 @@ static const gchar AGENTS_ORG[] =
 "\n"
 "See ~TOOLS.org~ for the tools. The etiquette:\n"
 "\n"
-"- *Ask, do not assume.* ~clawtilla_ask_agent~ blocks until the other\n"
-"  agent answers. Use it when you need the answer to continue.\n"
-"- *Delegate, do not wait.* ~clawtilla_delegate~ hands work over and\n"
-"  returns a task id immediately. Use it when you do not.\n"
+"- *Ask, do not assume.* ~clawtilla_ask_agent~ sends the question and\n"
+"  returns at once. It does not wait: the answer comes back later as an\n"
+"  ordinary message, in its own turn.\n"
+"- *Delegate when you need to know it finished.* ~clawtilla_delegate~\n"
+"  hands work over and gives you a task id, and ~clawtilla_task_status~\n"
+"  is the only handle that tells you where it got to.\n"
 "- *Say why.* Every delegation carries a reason. The agent on the other\n"
 "  end has none of your context.\n"
 "- *Do not loop.* If a conversation with another agent has been round\n"
@@ -372,14 +371,16 @@ static const gchar TOOLS_ORG[] =
 "| ~clawtilla_list_agents~    | Who exists, their state and what they are for       |\n"
 "| ~clawtilla_get_agent~      | One agent in detail, including its description      |\n"
 "| ~clawtilla_message_agent~  | Queue a message. Returns immediately; no reply      |\n"
-"| ~clawtilla_ask_agent~      | Send and *wait* for the reply, with a timeout       |\n"
+"| ~clawtilla_ask_agent~      | Ask a question; the answer arrives later as mail     |\n"
 "| ~clawtilla_post_room~      | Say something to every member of a room             |\n"
 "| ~clawtilla_create_room~    | Make a room with named members                      |\n"
 "| ~clawtilla_room_history~   | What was said in a room                             |\n"
 "\n"
-"*Pick the right one.* ~message_agent~ when you are informing; ~ask_agent~\n"
-"when you cannot continue without the answer; ~delegate~ when the work is\n"
-"theirs and you have other things to do.\n"
+"*Pick the right one.* ~message_agent~ when you are informing;\n"
+"~ask_agent~ when you want an answer but can carry on without it --\n"
+"it *does not wait*, it queues the question and returns, and the reply\n"
+"arrives later as an ordinary message; ~delegate~ when you need to know\n"
+"the work finished, because a task id is the only thing you can check.\n"
 "\n"
 "** Priority\n"
 "\n"
@@ -651,8 +652,13 @@ static const gchar TOOL_GOTCHAS_ORG[] =
 "worth having. It is not an acknowledgement that anyone read it. Check\n"
 "~clawtilla_get_agent~ if you need the message acted on now.\n"
 "\n"
-"*~ask_agent~ can time out.* The other agent may be stopped, busy, or\n"
-"working on something long. A timeout is not an answer of \"no\".\n"
+"*~ask_agent~ does not wait.* It queues the question and answers\n"
+"\"Queued for ...\" exactly like ~clawtilla_message_agent~ -- there is no\n"
+"timeout, and the reply is never the result of that call. The answer\n"
+"comes back later as an ordinary message. Until it does, your mailbox\n"
+"says nothing, because delivery empties it; read\n"
+"~clawtilla_room_history~ with the other agent's id to see whether they\n"
+"answered.\n"
 "\n"
 "*Your own reply ends the turn.* Post the result once you have it. A\n"
 "delegator waiting on ~clawtilla_task_result~ sees nothing until you do.\n"
@@ -869,6 +875,17 @@ build_values(ClawtAgentConfig *agent)
                         g_strdup((description != NULL && *description != '\0')
                                  ? description
                                  : "/Say what this agent is for./"));
+    /*
+     * Addressed to an agent whose mission came out of a config field
+     * rather than out of a person, so it goes when a real one is given.
+     */
+    g_hash_table_insert(values, g_strdup("mission_note"),
+                        g_strdup("Rewrite the line above. It is the one "
+                                 "sentence that decides what you do\n"
+                                 "when nobody has told you what to do, and "
+                                 "the default was generated from\n"
+                                 "a config field.\n"
+                                 "\n"));
     g_hash_table_insert(values, g_strdup("role"),
                         g_strdup((description != NULL && *description != '\0')
                                  ? description : "/(fill in)/"));
@@ -1409,12 +1426,27 @@ strv_contains(const GStrv haystack, const gchar *needle)
 gboolean
 clawt_workspace_scaffold(ClawtAgentConfig *agent, GError **error)
 {
+    return clawt_workspace_scaffold_with_mission(agent, NULL, NULL, error);
+}
+
+gboolean
+clawt_workspace_scaffold_with_mission(ClawtAgentConfig  *agent,
+                                      const gchar       *mission,
+                                      gboolean          *mission_written,
+                                      GError           **error)
+{
     g_autoptr(GHashTable) values = NULL;
     g_autofree gchar *workspace = NULL;
     g_auto(GStrv) identity = NULL;
+    gboolean have_mission;
     guint i;
 
     g_return_val_if_fail(agent != NULL, FALSE);
+
+    have_mission = (mission != NULL && *mission != '\0');
+
+    if (mission_written != NULL)
+        *mission_written = FALSE;
 
     workspace = clawt_agent_config_get_workspace(agent);
 
@@ -1430,6 +1462,18 @@ clawt_workspace_scaffold(ClawtAgentConfig *agent, GError **error)
 
     values = build_values(agent);
     identity = clawt_workspace_effective_identity_files(agent);
+
+    /*
+     * The mission takes the slot the description filled, and the nudge
+     * to rewrite it goes with it.  SOUL.org is the one file that decides
+     * what an agent does when nobody has told it what to do, so a
+     * purpose that lands anywhere else has been thrown away.
+     */
+    if (have_mission) {
+        g_hash_table_insert(values, g_strdup("description"),
+                            g_strdup(mission));
+        g_hash_table_insert(values, g_strdup("mission_note"), g_strdup(""));
+    }
 
     for (i = 0; i < G_N_ELEMENTS(workspace_files); i++) {
         g_autofree gchar *path = NULL;
@@ -1472,6 +1516,16 @@ clawt_workspace_scaffold(ClawtAgentConfig *agent, GError **error)
 
         if (!clawt_write_file_atomic(path, content, -1, 0600, FALSE, error))
             return FALSE;
+
+        /*
+         * Said rather than assumed.  An existing SOUL.org is somebody's
+         * work and is never overwritten, so a caller that was given a
+         * purpose has to be able to tell whether it landed -- silently
+         * losing it is the defect this exists to close.
+         */
+        if (have_mission && mission_written != NULL &&
+            g_strcmp0(workspace_files[i].name, "SOUL.org") == 0)
+            *mission_written = TRUE;
     }
 
     return TRUE;

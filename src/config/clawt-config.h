@@ -500,6 +500,25 @@ gboolean clawt_agent_config_set_string(ClawtAgentConfig *self,
 gboolean clawt_agent_config_set_string_list(ClawtAgentConfig   *self,
                                             const gchar        *key,
                                             const gchar *const *values);
+/**
+ * clawt_agent_config_set_from_string:
+ * @self: an agent's configuration
+ * @key: dotted path below the agent, e.g. `computer.host.allow_paths`
+ * @value: (nullable): the value as text; comma-separated for a list key
+ *
+ * Writes @value as whatever the schema says @key is: a sequence for a
+ * %CLAWT_SCHEMA_STRING_LIST key, a scalar for anything else.
+ *
+ * This is what a caller holding a setting as text wants.
+ * clawt_agent_config_set_string() writes a scalar unconditionally, and a
+ * list written as a scalar is read back as the schema default -- so the
+ * value is accepted, saved, and then quietly not used.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean clawt_agent_config_set_from_string(ClawtAgentConfig *self,
+                                            const gchar      *key,
+                                            const gchar      *value);
 gboolean clawt_agent_config_set_boolean(ClawtAgentConfig *self,
                                         const gchar      *key,
                                         gboolean          value);

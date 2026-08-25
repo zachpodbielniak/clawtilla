@@ -221,7 +221,6 @@ clawt_agent_set_memory(ClawtAgent *self, ClawtMemoryStore *memory)
     g_return_if_fail(CLAWT_IS_AGENT(self));
 
     g_clear_object(&self->memory);
-    g_clear_pointer(&self->activity_peer, g_free);
 
     if (memory != NULL)
         self->memory = g_object_ref(memory);
@@ -607,6 +606,18 @@ clawt_agent_finalize(GObject *object)
     ClawtAgent *self = CLAWT_AGENT(object);
 
     g_clear_pointer(&self->status_detail, g_free);
+
+    /*
+     * Not reached by anything until a test set an activity peer.
+     *
+     * clawt_agent_set_activity() has strdup'd it since it was written
+     * and frees the previous one on replacement, so the live agent was
+     * never wrong -- only the last value survived the agent.  Every
+     * fixture in the suite passed NULL, so the string was never
+     * allocated and the leak could not fire; the first test to name a
+     * peer found it immediately.
+     */
+    g_clear_pointer(&self->activity_peer, g_free);
 
     G_OBJECT_CLASS(clawt_agent_parent_class)->finalize(object);
 }

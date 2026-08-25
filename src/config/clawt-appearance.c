@@ -192,6 +192,123 @@ clawt_appearance_set_monospace_size(ClawtAppearance *self, gdouble points)
     self->monospace_size = clamp_points(points);
 }
 
+/* ── Themes ──────────────────────────────────────────────────────── */
+
+/*
+ * Catppuccin Mocha, as libadwaita's own named colours.
+ *
+ * Named colours rather than per-widget rules: libadwaita builds its
+ * whole stylesheet out of these, so redefining them re-colours widgets
+ * this client has never heard of, including the ones libadwaita adds
+ * next release.  A sheet of `.headerbar { background: ... }` rules would
+ * cover exactly the widgets somebody remembered.
+ *
+ * The full set rather than the handful that are obviously wrong without
+ * it.  Every name left undefined keeps libadwaita's dark value, and its
+ * dark greys are not this palette's -- the gaps show up as a card or a
+ * popover that is the wrong grey next to everything around it.  The
+ * foreground colours matter for the same reason in reverse: libadwaita's
+ * accent_fg_color is white, which on Catppuccin blue is unreadable.
+ *
+ * Palette (Mocha): base #1e1e2e, mantle #181825, crust #11111b,
+ * surface0 #313244, text #cdd6f4, blue #89b4fa, lavender #b4befe,
+ * green #a6e3a1, yellow #f9e2af, red #f38ba8.
+ *
+ * Catppuccin is MIT licensed, so the values are written here rather than
+ * vendored -- ten lines of hex in the file that uses them beats a data
+ * file and a loader for something that never changes at runtime.
+ */
+static const gchar catppuccin_mocha_css[] =
+    "@define-color window_bg_color #1e1e2e;\n"
+    "@define-color window_fg_color #cdd6f4;\n"
+    "@define-color view_bg_color #181825;\n"
+    "@define-color view_fg_color #cdd6f4;\n"
+    "@define-color headerbar_bg_color #181825;\n"
+    "@define-color headerbar_fg_color #cdd6f4;\n"
+    "@define-color headerbar_border_color #cdd6f4;\n"
+    "@define-color headerbar_backdrop_color #11111b;\n"
+    "@define-color headerbar_shade_color #11111b;\n"
+    "@define-color sidebar_bg_color #181825;\n"
+    "@define-color sidebar_fg_color #cdd6f4;\n"
+    "@define-color sidebar_backdrop_color #11111b;\n"
+    "@define-color sidebar_shade_color #11111b;\n"
+    "@define-color card_bg_color #313244;\n"
+    "@define-color card_fg_color #cdd6f4;\n"
+    "@define-color card_shade_color #11111b;\n"
+    "@define-color dialog_bg_color #313244;\n"
+    "@define-color dialog_fg_color #cdd6f4;\n"
+    "@define-color popover_bg_color #313244;\n"
+    "@define-color popover_fg_color #cdd6f4;\n"
+    "@define-color accent_bg_color #89b4fa;\n"
+    "@define-color accent_fg_color #11111b;\n"
+    "@define-color accent_color #b4befe;\n"
+    "@define-color destructive_bg_color #f38ba8;\n"
+    "@define-color destructive_fg_color #11111b;\n"
+    "@define-color destructive_color #f38ba8;\n"
+    "@define-color error_bg_color #f38ba8;\n"
+    "@define-color error_fg_color #11111b;\n"
+    "@define-color error_color #f38ba8;\n"
+    "@define-color success_bg_color #a6e3a1;\n"
+    "@define-color success_fg_color #11111b;\n"
+    "@define-color success_color #a6e3a1;\n"
+    "@define-color warning_bg_color #f9e2af;\n"
+    "@define-color warning_fg_color #11111b;\n"
+    "@define-color warning_color #f9e2af;\n"
+    "@define-color shade_color #11111b;\n"
+    "@define-color scrollbar_outline_color #11111b;\n";
+
+/*
+ * One row per colour scheme the client offers.
+ *
+ * @css is %NULL for the three that are not palettes: they ask
+ * libadwaita for a scheme and take its colours, which is the whole point
+ * of them.  @dark is what a palette needs underneath it and is not
+ * consulted for CLAWT_THEME_SYSTEM, whose answer is the desktop's.
+ */
+typedef struct {
+    ClawtTheme   theme;
+    const gchar *nick;
+    gboolean     dark;
+    const gchar *css;
+} ThemeInfo;
+
+static const ThemeInfo theme_table[] = {
+    { CLAWT_THEME_SYSTEM,           "system",           FALSE, NULL },
+    { CLAWT_THEME_LIGHT,            "light",            FALSE, NULL },
+    { CLAWT_THEME_DARK,             "dark",             TRUE,  NULL },
+    { CLAWT_THEME_CATPPUCCIN_MOCHA, "catppuccin-mocha", TRUE,
+      catppuccin_mocha_css }
+};
+
+static const ThemeInfo *
+theme_info(ClawtTheme theme)
+{
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(theme_table); i++) {
+        if (theme_table[i].theme == theme)
+            return &theme_table[i];
+    }
+
+    return NULL;
+}
+
+gboolean
+clawt_appearance_theme_has_palette(ClawtTheme theme)
+{
+    const ThemeInfo *info = theme_info(theme);
+
+    return info != NULL && info->css != NULL;
+}
+
+gboolean
+clawt_appearance_theme_is_dark(ClawtTheme theme)
+{
+    const ThemeInfo *info = theme_info(theme);
+
+    return info != NULL && info->dark;
+}
+
 /* ── CSS ─────────────────────────────────────────────────────────── */
 
 /*
@@ -248,6 +365,19 @@ clawt_appearance_to_css(ClawtAppearance *self)
     g_return_val_if_fail(self != NULL, NULL);
 
     out = g_string_new(NULL);
+
+    /*
+     * The palette first, so a colour is defined before anything could
+     * refer to it, and so a person reading the sheet sees what the theme
+     * is before how big it is.
+     *
+     * Conditional, like everything else here: the three schemes that are
+     * not palettes emit nothing, which is what keeps a fresh appearance
+     * producing an empty stylesheet.  A sheet that named the current
+     * default would freeze it.
+     */
+    if (clawt_appearance_theme_has_palette(self->theme))
+        g_string_append(out, theme_info(self->theme)->css);
 
     /*
      * Nothing at all when nothing is set, rather than a sheet full of
@@ -309,15 +439,9 @@ clawt_appearance_default_path(void)
 static const gchar *
 theme_to_nick(ClawtTheme theme)
 {
-    switch (theme) {
-    case CLAWT_THEME_LIGHT:
-        return "light";
-    case CLAWT_THEME_DARK:
-        return "dark";
-    case CLAWT_THEME_SYSTEM:
-    default:
-        return "system";
-    }
+    const ThemeInfo *info = theme_info(theme);
+
+    return (info != NULL) ? info->nick : "system";
 }
 
 /*
@@ -325,16 +449,19 @@ theme_to_nick(ClawtTheme theme)
  *
  * A newer build may write one this one has never heard of, and refusing
  * to load the file would take the fonts down with it -- the same
- * forward-compatibility rule shadow agents exist for.
+ * forward-compatibility rule shadow agents exist for.  It is also what
+ * makes a palette safe to add: an older build reading `catppuccin-mocha`
+ * gets the desktop's own scheme rather than a parse error.
  */
 static ClawtTheme
 theme_from_nick(const gchar *nick)
 {
-    if (g_strcmp0(nick, "light") == 0)
-        return CLAWT_THEME_LIGHT;
+    gsize i;
 
-    if (g_strcmp0(nick, "dark") == 0)
-        return CLAWT_THEME_DARK;
+    for (i = 0; i < G_N_ELEMENTS(theme_table); i++) {
+        if (g_strcmp0(nick, theme_table[i].nick) == 0)
+            return theme_table[i].theme;
+    }
 
     return CLAWT_THEME_SYSTEM;
 }

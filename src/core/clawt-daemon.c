@@ -1139,6 +1139,29 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
         clawt_message_set_depth(
             message,
             (sender != NULL) ? clawt_agent_get_hop_depth(sender) + 1 : 1);
+
+        /*
+         * And then forget it, now that the reply carries it.
+         *
+         * hop_depth answers "how far had the message I am handling
+         * come", which is true of a turn rather than of an agent. The
+         * router is its only other writer, so a turn that began
+         * somewhere the daemon never sees -- Matrix, webhook, local,
+         * cmacs -- used to inherit whatever the last agent-to-agent
+         * delivery had left, and add one to it. Enough of those and an
+         * agent could not start a delegation at all.
+         *
+         * Cleared *here* rather than when the turn ends, which is where
+         * it was first tried. libreclaw drops its typing indicator
+         * before it posts the answer, so clearing on that transition
+         * lands in the window between the two: the reply is then stamped
+         * from zero, every chain restarts at one, and max_hops stops
+         * being reachable on the one path it exists for -- two agents
+         * answering each other for ever. The reply is the last thing
+         * that needs the number, so it is the right place to drop it.
+         */
+        if (sender != NULL)
+            clawt_agent_set_hop_depth(sender, 0);
     }
 
     /*
@@ -1363,6 +1386,8 @@ compare_by_order(gconstpointer a, gconstpointer b, gpointer user_data)
 static ClawtAgentConfig *daemon_create_agent(ClawtDaemon  *self,
                                              const gchar  *agent_id,
                                              GHashTable   *fields,
+                                             const gchar  *purpose,
+                                             gboolean     *purpose_landed,
                                              GError      **error);
 
 /*
@@ -1377,6 +1402,7 @@ static ClawtAgentConfig *daemon_create_agent(ClawtDaemon  *self,
  */
 static gchar *
 create_agent_for_tools(const gchar  *agent_id,
+                       const gchar  *purpose,
                        GHashTable   *settings,
                        gboolean      start,
                        gpointer      user_data,
@@ -1384,12 +1410,28 @@ create_agent_for_tools(const gchar  *agent_id,
 {
     ClawtDaemon *self = user_data;
     g_autoptr(GString) out = NULL;
+    gboolean purpose_landed = FALSE;
 
-    if (daemon_create_agent(self, agent_id, settings, error) == NULL)
+    if (daemon_create_agent(self, agent_id, settings, purpose,
+                            &purpose_landed, error) == NULL)
         return NULL;
 
     out = g_string_new(NULL);
     g_string_append_printf(out, "Created %s.", agent_id);
+
+    /*
+     * Said rather than swallowed.  The workspace directory outlives the
+     * agent that was removed from it, so creating one under an id that
+     * has been used before finds a SOUL.org already there -- and it is
+     * left alone, because it is somebody's work.  Whoever wrote the
+     * purpose has to be told it is not in the file, or they go on
+     * believing the agent read it.
+     */
+    if (purpose != NULL && *purpose != '\0' && !purpose_landed)
+        g_string_append(out,
+            " Its workspace already had a SOUL.org, so that file was left "
+            "alone and the purpose is not in it -- edit SOUL.org if it "
+            "should be.");
 
     if (start) {
         g_autoptr(GError) start_error = NULL;
@@ -1482,15 +1524,45 @@ apply_mounts(ClawtDaemon *self, ClawtAgent *agent, ClawtComputer *computer)
 }
 
 /*
+ * An agent whose files clawtilla refused to render, and why.
+ *
+ * A refusal is not always the daemon's fault: the renderer turns down a
+ * `libreclaw:` passthrough that redeclares a section clawtilla renders
+ * itself, and that section is something the operator just typed.  Left as
+ * a g_warning, the refusal reached the journal and nowhere else -- so the
+ * agent kept running on its previous config.yaml and the edit looked
+ * ignored rather than rejected.  Collected here so the caller can say so.
+ */
+typedef struct {
+    gchar *agent_id;
+    gchar *message;
+} RenderRefusal;
+
+static void
+render_refusal_free(gpointer data)
+{
+    RenderRefusal *refusal = data;
+
+    g_free(refusal->agent_id);
+    g_free(refusal->message);
+    g_free(refusal);
+}
+
+/*
  * Renders every agent's files, whether or not it is running.
  *
  * Done up front rather than at start time only, because the link token is
  * written here and an agent started by hand -- or by systemd, or inside a
  * container someone else brought up -- has to be able to authenticate
  * without clawtilla having launched it.
+ *
+ * One agent's refusal never stops the others: a fleet that would not
+ * reload because one agent's block is wrong is a fleet one typo can hold
+ * hostage.  @refusals, when it is not %NULL, collects the ones that were
+ * turned down so whoever asked can be told.
  */
 static void
-render_all_agents(ClawtDaemon *self)
+render_all_agents_into(ClawtDaemon *self, GPtrArray *refusals)
 {
     GPtrArray *agents = clawt_agent_manager_list(self->agents);
     guint i;
@@ -1504,9 +1576,19 @@ render_all_agents(ClawtDaemon *self)
             continue;
 
         if (!clawt_config_write_agent_files(self->config, config,
-                                            self->link_socket, NULL, &error))
+                                            self->link_socket, NULL,
+                                            &error)) {
             g_warning("agent %s: %s", clawt_agent_get_id(agent),
                       error->message);
+
+            if (refusals != NULL) {
+                RenderRefusal *refusal = g_new0(RenderRefusal, 1);
+
+                refusal->agent_id = g_strdup(clawt_agent_get_id(agent));
+                refusal->message = g_strdup(error->message);
+                g_ptr_array_add(refusals, refusal);
+            }
+        }
 
         /*
          * ...and the tools it actually has, from the live gate.
@@ -1531,6 +1613,12 @@ render_all_agents(ClawtDaemon *self)
                           tools_error->message);
         }
     }
+}
+
+static void
+render_all_agents(ClawtDaemon *self)
+{
+    render_all_agents_into(self, NULL);
 }
 
 gboolean
@@ -2547,12 +2635,17 @@ static ClawtAgentConfig *
 daemon_create_agent(ClawtDaemon  *self,
                     const gchar  *agent_id,
                     GHashTable   *fields,
+                    const gchar  *purpose,
+                    gboolean     *purpose_landed,
                     GError      **error)
 {
     ClawtAgentConfig *created;
     GHashTableIter iter;
     gpointer key;
     gpointer value;
+
+    if (purpose_landed != NULL)
+        *purpose_landed = FALSE;
 
     created = clawt_config_add_agent(self->config, agent_id, error);
 
@@ -2563,8 +2656,34 @@ daemon_create_agent(ClawtDaemon  *self,
         g_hash_table_iter_init(&iter, fields);
 
         while (g_hash_table_iter_next(&iter, &key, &value)) {
+            /*
+             * Through the schema, not straight to a scalar: a
+             * STRING_LIST key written as a scalar is read back as its
+             * default, so `computer.host.allow_paths` given at creation
+             * reached the sandbox as an empty allowlist.
+             */
             if (value != NULL)
-                clawt_agent_config_set_string(created, key, value);
+                clawt_agent_config_set_from_string(created, key, value);
+        }
+    }
+
+    /*
+     * The persona, into SOUL.org, before the save below reloads and
+     * scaffolds every agent from the templates.
+     *
+     * SOUL.org is the one file that decides what an agent does when
+     * nobody has told it what to do, and scaffolding never overwrites --
+     * so writing it afterwards would land on a file that already exists
+     * and lose the persona all over again.  Not `persona.system_prompt`:
+     * an inline prompt *replaces* the identity files rather than adding
+     * to them, and an agent without its TOOLS.org spends its first turns
+     * finding out what computer it has.
+     */
+    if (purpose != NULL && *purpose != '\0') {
+        if (!clawt_workspace_scaffold_with_mission(created, purpose,
+                                                    purpose_landed, error)) {
+            clawt_config_remove_agent(self->config, agent_id);
+            return NULL;
         }
     }
 
@@ -3263,8 +3382,15 @@ clawt_daemon_quit(ClawtDaemon *self)
         g_main_loop_quit(self->loop);
 }
 
-gboolean
-clawt_daemon_reload(ClawtDaemon *self, GError **error)
+/*
+ * @refusals, when it is not %NULL, comes back holding one #RenderRefusal
+ * for every agent whose files this reload could not write.  Those are not
+ * a failed reload -- the new configuration is in force, and the rest of
+ * the fleet was rendered from it -- so they are reported alongside
+ * success rather than instead of it.
+ */
+static gboolean
+daemon_reload(ClawtDaemon *self, GPtrArray *refusals, GError **error)
 {
     g_autoptr(ClawtConfig) reloaded = NULL;
 
@@ -3321,12 +3447,18 @@ clawt_daemon_reload(ClawtDaemon *self, GError **error)
      * interrupted every agent mid-turn would make editing one description
      * cost the whole fleet's work.
      */
-    render_all_agents(self);
+    render_all_agents_into(self, refusals);
 
     clawt_event_bus_emit(self->bus, "daemon.reloaded", NULL);
     g_signal_emit(self, signals[SIGNAL_RELOADED], 0);
 
     return TRUE;
+}
+
+gboolean
+clawt_daemon_reload(ClawtDaemon *self, GError **error)
+{
+    return daemon_reload(self, NULL, error);
 }
 
 
@@ -4652,10 +4784,44 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
     }
 
     if (g_strcmp0(kind, "control.reload") == 0) {
-        if (!clawt_daemon_reload(self, &error))
+        g_autoptr(GPtrArray) refusals =
+            g_ptr_array_new_with_free_func(render_refusal_free);
+        guint i;
+
+        if (!daemon_reload(self, refusals, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
 
-        return clawt_ipc_response_new(request, NULL);
+        /*
+         * A response and not an error: the configuration was reloaded and
+         * every agent clawtilla could render was.  But an agent it
+         * refused is still running against the config.yaml it had, and
+         * the only person who can fix that is the one who just asked for
+         * the reload -- so they are handed the names and the reasons
+         * rather than a bare success and a warning in the journal.
+         *
+         * The array is always present, so a client can tell "nothing was
+         * refused" from "this daemon does not report refusals".
+         */
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "refused");
+        json_builder_begin_array(builder);
+
+        for (i = 0; i < refusals->len; i++) {
+            RenderRefusal *refusal = g_ptr_array_index(refusals, i);
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "agent");
+            json_builder_add_string_value(builder, refusal->agent_id);
+            json_builder_set_member_name(builder, "message");
+            json_builder_add_string_value(builder, refusal->message);
+            json_builder_end_object(builder);
+        }
+
+        json_builder_end_array(builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request,
+                                      json_builder_get_root(builder));
     }
 
     if (g_strcmp0(kind, "control.shutdown") == 0) {
@@ -5923,7 +6089,8 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             }
         }
 
-        created = daemon_create_agent(self, agent_id, fields, &error);
+        created = daemon_create_agent(self, agent_id, fields, NULL, NULL,
+                                      &error);
 
         if (created == NULL)
             return clawt_ipc_error_new(request, error->code, error->message);
@@ -6386,34 +6553,7 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
          * generated .org stubs, and every surface agreed the setting
          * had been saved.
          */
-        {
-            g_autofree gchar *schema_key = g_strconcat("agents.", key, NULL);
-            const ClawtSchemaEntry *entry = clawt_config_schema_lookup(schema_key);
-
-            if (entry != NULL && entry->type == CLAWT_SCHEMA_STRING_LIST) {
-                /*
-                 * Comma-separated, which is how the schema table spells
-                 * a list default and therefore the one spelling a person
-                 * has already seen. Blanks are trimmed so "a, b" and
-                 * "a,b" mean the same thing.
-                 */
-                g_auto(GStrv) values = NULL;
-
-                if (value != NULL && *value != '\0') {
-                    guint i;
-
-                    values = g_strsplit(value, ",", -1);
-
-                    for (i = 0; values[i] != NULL; i++)
-                        g_strstrip(values[i]);
-                }
-
-                clawt_agent_config_set_string_list(
-                    config, key, (const gchar *const *)values);
-            } else {
-                clawt_agent_config_set_string(config, key, value);
-            }
-        }
+        clawt_agent_config_set_from_string(config, key, value);
 
         if (!clawt_config_save(self->config, &error))
             return clawt_ipc_error_new(request, error->code, error->message);

@@ -1332,22 +1332,6 @@ tool_agent_options(ClawtMcpTools *self)
     return g_string_free(g_steal_pointer(&out), FALSE);
 }
 
-/*
- * The persona, which is the part a conversation is actually for.
- *
- * Everything else here has a default that works; what the new agent is
- * *for* does not, and an agent created without one starts its life with
- * nothing to go on but its description.
- */
-static void
-apply_purpose(GHashTable *settings, const gchar *purpose)
-{
-    if (purpose == NULL || *purpose == '\0')
-        return;
-
-    g_hash_table_insert(settings, g_strdup("persona"), g_strdup(purpose));
-}
-
 static gchar *
 tool_create_agent(ClawtMcpTools *self,
                   JsonObject    *arguments,
@@ -1398,8 +1382,6 @@ tool_create_agent(ClawtMcpTools *self,
                                 g_strdup(value));
     }
 
-    apply_purpose(settings, argument_string(arguments, "purpose"));
-
     /*
      * The free-form half, so every option in the schema is reachable
      * without a list here that would drift from it the first time
@@ -1446,7 +1428,18 @@ tool_create_agent(ClawtMcpTools *self,
         }
     }
 
-    result = self->create_agent(agent_id, settings,
+    /*
+     * The persona travels on its own, not as a setting.
+     *
+     * Everything else here has a default that works; what the new agent
+     * is *for* does not.  It used to be inserted into @settings as
+     * `persona`, which is a section in the schema rather than a value --
+     * so it was written to the config file, read by nothing, and the
+     * whole persona an operator had written was discarded in silence.
+     */
+    result = self->create_agent(agent_id,
+                                argument_string(arguments, "purpose"),
+                                settings,
                                 argument_boolean(arguments, "start", TRUE),
                                 self->create_agent_data, &error);
 

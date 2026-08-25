@@ -268,6 +268,100 @@ test_the_defaults_round_trip(void)
 }
 
 /*
+ * A named palette reaches the stylesheet as libadwaita's own colour
+ * names, so the whole widget tree picks it up without a rule per widget.
+ *
+ * This is the seam the theme enum did not have: every colour came from
+ * libadwaita's light/dark scheme and there was nowhere for a palette to
+ * be expressed at all.
+ */
+static void
+test_a_palette_reaches_the_stylesheet(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+    g_autofree gchar *css = NULL;
+
+    clawt_appearance_set_theme(appearance, CLAWT_THEME_CATPPUCCIN_MOCHA);
+    css = clawt_appearance_to_css(appearance);
+
+    g_assert_nonnull(strstr(css, "@define-color window_bg_color #1e1e2e;"));
+    g_assert_nonnull(strstr(css, "@define-color window_fg_color #cdd6f4;"));
+    g_assert_nonnull(strstr(css, "@define-color accent_bg_color #89b4fa;"));
+    g_assert_nonnull(strstr(css, "@define-color destructive_bg_color #f38ba8;"));
+}
+
+/*
+ * And the three schemes that are not palettes emit no colour at all.
+ *
+ * Paired with the test above deliberately: an assertion that something
+ * did *not* happen passes trivially in a build where it never happens,
+ * so it is only worth having next to one that proves it can.
+ */
+static void
+test_a_scheme_that_is_not_a_palette_emits_no_colour(void)
+{
+    static const ClawtTheme plain[] = {
+        CLAWT_THEME_SYSTEM, CLAWT_THEME_LIGHT, CLAWT_THEME_DARK
+    };
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(plain); i++) {
+        g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+        g_autofree gchar *css = NULL;
+
+        clawt_appearance_set_theme(appearance, plain[i]);
+        clawt_appearance_set_font(appearance, "Inter");
+        css = clawt_appearance_to_css(appearance);
+
+        g_assert_null(strstr(css, "@define-color"));
+        g_assert_nonnull(strstr(css, "font-family"));
+    }
+}
+
+/*
+ * A palette forces the scheme it was drawn for.  Mocha over a light
+ * libadwaita is not a darker Mocha, it is libadwaita's light colours
+ * fighting the palette's dark ones on every widget the palette does not
+ * name.
+ */
+static void
+test_a_palette_names_the_scheme_it_needs(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+
+    g_assert_false(clawt_appearance_theme_is_dark(CLAWT_THEME_LIGHT));
+    g_assert_true(clawt_appearance_theme_is_dark(CLAWT_THEME_DARK));
+    g_assert_true(clawt_appearance_theme_is_dark(CLAWT_THEME_CATPPUCCIN_MOCHA));
+
+    /* And a palette is distinguishable from a plain scheme. */
+    g_assert_false(clawt_appearance_theme_has_palette(CLAWT_THEME_SYSTEM));
+    g_assert_false(clawt_appearance_theme_has_palette(CLAWT_THEME_DARK));
+    g_assert_true(clawt_appearance_theme_has_palette(
+                      CLAWT_THEME_CATPPUCCIN_MOCHA));
+
+    (void)appearance;
+}
+
+/* The nick is what is on disk, so it has to survive the round trip. */
+static void
+test_a_palette_survives_the_round_trip(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+    g_autofree gchar *text = NULL;
+    g_autoptr(ClawtAppearance) back = NULL;
+
+    clawt_appearance_set_theme(appearance, CLAWT_THEME_CATPPUCCIN_MOCHA);
+    text = clawt_appearance_to_data(appearance);
+
+    g_assert_nonnull(strstr(text, "catppuccin-mocha"));
+
+    back = clawt_appearance_parse(text, NULL);
+    g_assert_nonnull(back);
+    g_assert_cmpint(clawt_appearance_get_theme(back), ==,
+                    CLAWT_THEME_CATPPUCCIN_MOCHA);
+}
+
+/*
  * A newer build may write a theme this one has never heard of, and
  * refusing the file would take the fonts down with it -- the same
  * forward-compatibility rule shadow agents exist for.
@@ -408,6 +502,14 @@ main(int argc, char *argv[])
                     test_settings_survive_the_round_trip);
     g_test_add_func("/appearance/defaults-round-trip",
                     test_the_defaults_round_trip);
+    g_test_add_func("/appearance/palette-reaches-the-stylesheet",
+                    test_a_palette_reaches_the_stylesheet);
+    g_test_add_func("/appearance/no-palette-no-colour",
+                    test_a_scheme_that_is_not_a_palette_emits_no_colour);
+    g_test_add_func("/appearance/palette-names-its-scheme",
+                    test_a_palette_names_the_scheme_it_needs);
+    g_test_add_func("/appearance/palette-round-trip",
+                    test_a_palette_survives_the_round_trip);
     g_test_add_func("/appearance/unknown-theme",
                     test_an_unknown_theme_falls_back);
     g_test_add_func("/appearance/empty-file",

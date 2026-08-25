@@ -765,11 +765,17 @@ clawt_config_render_agent(ClawtConfig       *config,
                 if (!g_str_has_prefix(lines[i], rendered_sections[j]))
                     continue;
 
+                /*
+                 * The agent is not named here.  Everything that surfaces
+                 * this error -- the daemon's warning, the reload's list
+                 * of refusals, `config render` -- already knows which
+                 * agent it asked about and says so, and saying it twice
+                 * read as "chief: chief: the libreclaw: block ...".
+                 */
                 g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
-                            "%s: the libreclaw: block redeclares '%s', "
-                            "which clawtilla renders itself; the two would "
+                            "the libreclaw: block redeclares '%s', which "
+                            "clawtilla renders itself; the two would "
                             "collide and clawtilla's would be discarded",
-                            clawt_agent_config_get_id(agent),
                             rendered_sections[j]);
                 return NULL;
             }

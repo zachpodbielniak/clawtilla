@@ -1564,17 +1564,25 @@ apply_appearance(ClawtAppearance *appearance)
     if (appearance == NULL || display == NULL)
         return;
 
-    switch (clawt_appearance_get_theme(appearance)) {
-    case CLAWT_THEME_LIGHT:
-        adw_style_manager_set_color_scheme(style, ADW_COLOR_SCHEME_FORCE_LIGHT);
-        break;
-    case CLAWT_THEME_DARK:
-        adw_style_manager_set_color_scheme(style, ADW_COLOR_SCHEME_FORCE_DARK);
-        break;
-    case CLAWT_THEME_SYSTEM:
-    default:
-        adw_style_manager_set_color_scheme(style, ADW_COLOR_SCHEME_DEFAULT);
-        break;
+    /*
+     * The scheme first, and asked for rather than switched on, so a
+     * palette added later needs no case here.  A palette still sets the
+     * scheme: its colours only name some of libadwaita's, and the rest
+     * come from whichever scheme is underneath -- so Mocha over a light
+     * libadwaita is not a lighter Mocha, it is two palettes arguing.
+     */
+    {
+        ClawtTheme theme = clawt_appearance_get_theme(appearance);
+
+        if (theme == CLAWT_THEME_SYSTEM)
+            adw_style_manager_set_color_scheme(style,
+                                               ADW_COLOR_SCHEME_DEFAULT);
+        else if (clawt_appearance_theme_is_dark(theme))
+            adw_style_manager_set_color_scheme(style,
+                                               ADW_COLOR_SCHEME_FORCE_DARK);
+        else
+            adw_style_manager_set_color_scheme(style,
+                                               ADW_COLOR_SCHEME_FORCE_LIGHT);
     }
 
     g_free(appearance_code_font);
@@ -2515,9 +2523,37 @@ append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
     GtkWidget *who = gtk_label_new(sender);
     GtkWidget *text = gtk_label_new(NULL);
 
-    gtk_widget_add_css_class(who, "caption");
-    gtk_widget_add_css_class(who, "dim-label");
-    gtk_widget_set_halign(who, from_user ? GTK_ALIGN_END : GTK_ALIGN_START);
+    /*
+     * The author line marks the only structural boundary in this view,
+     * and `dim-label` made it the faintest text on screen -- the one
+     * thing you scan for was the hardest thing to see.  `caption-heading`
+     * is libadwaita's own token for a small heading, so this is a
+     * platform style rather than another constant to maintain.
+     */
+    gtk_widget_add_css_class(who, "caption-heading");
+
+    /*
+     * Both speakers share one left edge.
+     *
+     * Aligning the operator's turns to the right edge sounds like a
+     * messenger and does not behave like one: a wrapping label is
+     * allocated its natural width, so GTK_ALIGN_END moved nothing on any
+     * body long enough to fill the column -- but it still moved the
+     * caption, which put the author line out at the right margin above
+     * left-aligned text and read as a rendering fault.  Short turns did
+     * shift, so the same speaker looked different depending on how much
+     * they had typed.  One left edge, and the accent below carries the
+     * distinction instead.
+     */
+    gtk_widget_set_halign(who, GTK_ALIGN_START);
+
+    /*
+     * Colour on the name, not on the prose.  It is the same token either
+     * way; on a one-line caption it is a marker, and on twenty lines of
+     * body text it is a reading surface -- see the body class below.
+     */
+    if (from_user)
+        gtk_widget_add_css_class(who, "accent");
 
     /*
      * The time, beside the name.  The Flow tab has had it since it was
@@ -2530,9 +2566,13 @@ append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
             : g_date_time_new_now_local();
         g_autofree gchar *stamp = (when != NULL)
             ? g_date_time_format(when, "%H:%M") : g_strdup("");
-        g_autofree gchar *both = from_user
-            ? g_strdup_printf("%s  %s", stamp, sender)
-            : g_strdup_printf("%s  %s", sender, stamp);
+        /*
+         * Name first for both.  The swap only existed to keep the name
+         * against the right margin when the operator's turns were
+         * aligned there; with one left edge the name should always be
+         * the thing sitting on it, because the name is what is scanned.
+         */
+        g_autofree gchar *both = g_strdup_printf("%s  %s", sender, stamp);
 
         gtk_label_set_text(GTK_LABEL(who), both);
     }
@@ -2550,8 +2590,21 @@ append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
     gtk_label_set_wrap(GTK_LABEL(text), TRUE);
     gtk_label_set_selectable(GTK_LABEL(text), TRUE);
     gtk_label_set_xalign(GTK_LABEL(text), 0.0f);
-    gtk_widget_set_halign(text, from_user ? GTK_ALIGN_END : GTK_ALIGN_START);
-    gtk_widget_add_css_class(text, from_user ? "accent" : "body");
+    gtk_widget_set_halign(text, GTK_ALIGN_START);
+
+    /*
+     * Full contrast for both speakers.
+     *
+     * `accent` on the operator's body measured 5.82:1 against the
+     * background where the agent's `body` measured 12.22:1 -- so the
+     * operator's own words were rendered at less than half the contrast
+     * of everything they were reading, all day.  It clears WCAG AA, so
+     * this is not an accessibility failure; it is simply the wrong text
+     * to make harder to read.  `accent` is also how links and inline
+     * code already render, so inside an operator's turn the code spans
+     * and the prose around them collapsed into one colour.
+     */
+    gtk_widget_add_css_class(text, "body");
 
     gtk_box_append(GTK_BOX(row), who);
     gtk_box_append(GTK_BOX(row), text);
@@ -2567,7 +2620,30 @@ append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
                      g_object_get_data(G_OBJECT(row), "body"));
     gtk_widget_set_margin_start(row, 12);
     gtk_widget_set_margin_end(row, 12);
-    gtk_widget_set_margin_top(row, 6);
+
+    /*
+     * Turns have to be further apart than the paragraphs inside one.
+     *
+     * They were not, and that -- not the 6px -- is why the transcript
+     * read as a single wall.  A message's own paragraph break is a
+     * literal blank line: clawt_markdown_to_pango() separates blocks
+     * with \n\n (src/chat/clawt-markdown.c), and a blank line costs a
+     * whole line height.  Measured off a rendered window at 1280px, ink
+     * to ink: 11px between lines of one paragraph, 27px between two
+     * paragraphs of one message, and 21px between two speakers.
+     * Proximity was inverted -- one person's paragraphs sat further
+     * apart than two different people's turns did.
+     *
+     * 30 is the smallest step on the HIG's 6px grid that beats that
+     * 27px, and it was measured rather than derived: 18 was tried first,
+     * because it is the HIG's own step for separating groups, and it
+     * still lost.  30 renders a 35px turn gap against the unchanged 27px
+     * paragraph gap, which puts the two back in the right order.
+     *
+     * Nothing is added below the row -- a bottom margin would only
+     * double-count against the next row's top one.
+     */
+    gtk_widget_set_margin_top(row, 30);
 
     gtk_box_append(self->transcript, row);
 }
@@ -3170,6 +3246,24 @@ static const SlashCommand slash_commands[] = {
 static void
 append_local(ClawtWindow *self, const gchar *text)
 {
+    /*
+     * Follow again, because the operator asked for this.
+     *
+     * scroll_to_bottom() and on_transcript_grew() both refuse to move
+     * the view while `following` is false, which is right for a message
+     * arriving on its own and wrong for output the operator just asked
+     * to see.  on_send() re-arms following at its end, but it returns
+     * early when the text was a slash command -- so with the view
+     * scrolled up, /help, /export, /copy and /clear appended their
+     * output below the fold and the queued scroll bailed on the first
+     * line.  The command looked like it had done nothing.
+     *
+     * Re-arming here rather than in on_send() covers every caller: the
+     * point is not which path ran, it is that the operator's own action
+     * put this on screen and they should be looking at it.
+     */
+    self->following = TRUE;
+
     append_message(self, "clawtilla", text, FALSE, 0);
     queue_scroll(self);
 }
@@ -8853,8 +8947,47 @@ build_chat_page(ClawtWindow *self)
     GtkWidget *send;
 
     self->transcript = GTK_BOX(gtk_box_new(GTK_ORIENTATION_VERTICAL, 0));
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll),
-                                  GTK_WIDGET(self->transcript));
+
+    /*
+     * The last turn should not sit against the composer.  18px because
+     * this is a container edge meeting a different control, not a gap
+     * between two turns.
+     */
+    gtk_widget_set_margin_bottom(GTK_WIDGET(self->transcript), 18);
+
+    /*
+     * A measure limit, so widening the window widens the margins rather
+     * than the lines.
+     *
+     * Nothing capped the column, so a body label's natural width was
+     * whatever the window was: a 1280px window measured 877px of text on
+     * its longest line, about 137 characters, and this scales with the
+     * display -- a wider one is worse rather than equal.  With the clamp
+     * the same line measures 569px, about 89 characters.
+     *
+     * Continuous prose reads comfortably at
+     * roughly 45 to 90 characters; past that the eye has to cross the
+     * full width and then hunt back for the start of the next line,
+     * which is the failure measure exists to prevent.
+     *
+     * The clamp goes inside the scrolled window rather than around it,
+     * so the scrollbar and the wheel target stay at the window edge
+     * where they are reachable.
+     *
+     * AdwClamp's own defaults are the right numbers and are deliberately
+     * left alone: maximum-size is 600, which after the row's 12px side
+     * margins leaves 576px of text -- about 90 characters in the default
+     * font, the top of that range -- and tightening-threshold is 400,
+     * which is what stops the column snapping in a narrow window.  A
+     * default left unset is a number the platform can revise; a
+     * hardcoded one is a number somebody has to maintain.
+     */
+    {
+        GtkWidget *clamp = adw_clamp_new();
+
+        adw_clamp_set_child(ADW_CLAMP(clamp), GTK_WIDGET(self->transcript));
+        gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), clamp);
+    }
 
     /*
      * Right-clicking the conversation itself, rather than one message.
@@ -9826,13 +9959,15 @@ on_theme_selected(GObject *row, GParamSpec *spec, gpointer user_data)
     ClawtWindow *self = user_data;
     guint selected = adw_combo_row_get_selected(ADW_COMBO_ROW(row));
     static const ClawtTheme themes[] = {
-        CLAWT_THEME_SYSTEM, CLAWT_THEME_LIGHT, CLAWT_THEME_DARK
+        CLAWT_THEME_SYSTEM, CLAWT_THEME_LIGHT, CLAWT_THEME_DARK,
+        CLAWT_THEME_CATPPUCCIN_MOCHA
     };
 
     (void)spec;
 
-    clawt_appearance_set_theme(self->appearance,
-                               themes[MIN(selected, 2)]);
+    clawt_appearance_set_theme(
+        self->appearance,
+        themes[MIN(selected, G_N_ELEMENTS(themes) - 1)]);
     appearance_changed(self);
 }
 
@@ -10076,8 +10211,13 @@ build_appearance_page(ClawtWindow *self)
     GtkWidget *page = adw_preferences_page_new();
     GtkWidget *theme_group = adw_preferences_group_new();
     GtkWidget *theme_row = adw_combo_row_new();
+    /*
+     * Same order as the ClawtTheme array in on_theme_selected(); the row
+     * index is the only thing tying them together.
+     */
     static const gchar *const themes[] = { "Follow the system", "Light",
-                                           "Dark", NULL };
+                                           "Dark", "Catppuccin Mocha",
+                                           NULL };
     guint selected = 0;
 
     adw_preferences_page_set_title(ADW_PREFERENCES_PAGE(page), "Appearance");
@@ -10104,6 +10244,9 @@ build_appearance_page(ClawtWindow *self)
         break;
     case CLAWT_THEME_DARK:
         selected = 2;
+        break;
+    case CLAWT_THEME_CATPPUCCIN_MOCHA:
+        selected = 3;
         break;
     case CLAWT_THEME_SYSTEM:
     default:

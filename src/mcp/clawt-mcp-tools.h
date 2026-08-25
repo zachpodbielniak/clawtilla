@@ -78,6 +78,8 @@ void clawt_mcp_tools_set_deliver_func(ClawtMcpTools       *self,
 /**
  * ClawtMcpCreateAgentFunc:
  * @agent_id: the id for the new agent
+ * @purpose: (nullable): the persona, in prose, for the new agent's
+ *   `SOUL.org`
  * @settings: (element-type utf8 utf8): configuration keys and values,
  *   keyed exactly as they appear in the schema
  * @start: whether to start it once it exists
@@ -92,9 +94,15 @@ void clawt_mcp_tools_set_deliver_func(ClawtMcpTools       *self,
  * through the same validation a person's would go through -- an agent
  * asking is not a reason to trust the answer more.
  *
+ * @purpose is separate from @settings because it is not a configuration
+ * key and never was.  Passing it through the same hash meant it was
+ * written to the config file under a name nothing reads, and an operator
+ * who wrote a whole persona got an agent that had never seen it.
+ *
  * Returns: (transfer full) (nullable): what to tell the agent, or %NULL
  */
 typedef gchar *(*ClawtMcpCreateAgentFunc)(const gchar  *agent_id,
+                                          const gchar  *purpose,
                                           GHashTable   *settings,
                                           gboolean      start,
                                           gpointer      user_data,
