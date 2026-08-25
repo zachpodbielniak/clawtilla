@@ -141,7 +141,7 @@ declare -A AFFORDANCES=(
     ["unread rule"]="clawt_unread_should_count|clawt_unread_should_count"
     ["alert filter"]="alerts_show_all|show_all"
     ["agent attachments"]="fetch_attachment|attachment_element"
-    ["one row builder"]="append_message_to|clawt_chat_run_is_start"
+    ["flow groups by sender"]="flow_run_sender|flow_run_sender"
 )
 
 usage () {

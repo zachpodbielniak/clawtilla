@@ -336,8 +336,8 @@ clawt_web_flow_body(ClawtWebApp *app, const gchar *agent_id)
     g_autoptr(HtmxDiv) pad = htmx_div_new();
     g_autoptr(JsonNode) reply = clawt_web_app_call(app, "room.list", NULL);
     JsonArray *rooms;
-    g_autofree gchar *run_sender = NULL;
-    g_autofree gchar *run_day = NULL;
+    g_autofree gchar *flow_run_sender = NULL;
+    g_autofree gchar *flow_run_day = NULL;
     guint shown = 0;
     guint i;
 
@@ -410,10 +410,10 @@ clawt_web_flow_body(ClawtWebApp *app, const gchar *agent_id)
          * from one agent do not repeat the name.  The rule comes from
          * libclawt so a digest and a transcript cannot disagree about it.
          */
-        g_free(run_sender);
-        run_sender = NULL;
-        g_free(run_day);
-        run_day = NULL;
+        g_free(flow_run_sender);
+        flow_run_sender = NULL;
+        g_free(flow_run_day);
+        flow_run_day = NULL;
 
         for (m = 0; m < json_array_get_length(messages); m++) {
             JsonObject *message = json_array_get_object_element(messages, m);
@@ -429,14 +429,15 @@ clawt_web_flow_body(ClawtWebApp *app, const gchar *agent_id)
             g_autofree gchar *when = clawt_web_relative_time(ts);
             g_autofree gchar *body_text = clawt_web_one_line(
                 clawt_web_member(message, "body", ""), 300);
-            gboolean run_start = clawt_chat_run_is_start(run_sender, run_day,
+            gboolean run_start = clawt_chat_run_is_start(flow_run_sender,
+                                                         flow_run_day,
                                                          sender_id, day,
                                                          NULL);
 
-            g_free(run_sender);
-            run_sender = g_strdup(sender_id);
-            g_free(run_day);
-            run_day = g_steal_pointer(&day);
+            g_free(flow_run_sender);
+            flow_run_sender = g_strdup(sender_id);
+            g_free(flow_run_day);
+            flow_run_day = g_steal_pointer(&day);
 
             htmx_element_add_class(HTMX_ELEMENT(row), "list-item");
             htmx_element_add_class(HTMX_ELEMENT(head), "list-item-head");

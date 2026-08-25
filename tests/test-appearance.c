@@ -536,6 +536,79 @@ test_an_unknown_theme_is_system(void)
 }
 
 
+
+/*
+ * Which of black or white is legible on a configured avatar colour.
+ *
+ * `agents.color` is a hex string somebody types into a YAML file and
+ * both clients paint an avatar with it, so both have to decide what
+ * colour the initials go in -- and white on a pale yellow is
+ * unreadable.  One answer, or the two would differ for exactly the
+ * colours near the boundary.
+ */
+static void
+test_which_ink_is_legible(void)
+{
+    /* Dark backgrounds take white. */
+    g_assert_cmpstr(clawt_color_ink("#000000"), ==, "#ffffff");
+    g_assert_cmpstr(clawt_color_ink("#1f6c9f"), ==, "#ffffff");
+    g_assert_cmpstr(clawt_color_ink("#9f2f2d"), ==, "#ffffff");
+
+    /* Light ones take black -- including the pale yellow that started it. */
+    g_assert_cmpstr(clawt_color_ink("#ffffff"), ==, "#000000");
+    g_assert_cmpstr(clawt_color_ink("#fbf3db"), ==, "#000000");
+    g_assert_cmpstr(clawt_color_ink("#89b4fa"), ==, "#000000");
+
+    /*
+     * Green weighs far more than blue in the sRGB luminance the WCAG
+     * contrast formula uses -- 0.7152 against 0.0722 -- so pure green
+     * and pure blue land on opposite sides despite both being one
+     * saturated channel.  That is the whole reason this is a function
+     * rather than a look at the first digit.
+     */
+    g_assert_cmpstr(clawt_color_ink("#00ff00"), ==, "#000000");
+    g_assert_cmpstr(clawt_color_ink("#0000ff"), ==, "#ffffff");
+
+    /* The three-digit form is the same colour as its six-digit twin. */
+    g_assert_cmpstr(clawt_color_ink("#fff"), ==, clawt_color_ink("#ffffff"));
+    g_assert_cmpstr(clawt_color_ink("#000"), ==, clawt_color_ink("#000000"));
+    g_assert_cmpstr(clawt_color_ink("#89f"), ==, clawt_color_ink("#8899ff"));
+}
+
+/*
+ * Anything that is not one of the two forms is refused.
+ *
+ * This is the *only* validation `agents.color` has, and the value is
+ * spliced into a stylesheet -- so a refusal here is what stops a config
+ * file closing a declaration and writing rules of its own.  The caller
+ * falls back to the avatar's derived colour rather than painting
+ * something.
+ */
+static void
+test_a_colour_that_is_not_one_is_refused(void)
+{
+    static const gchar *const rejected[] = {
+        "red",                    /* a name, not a colour we parse */
+        "#12345",                 /* neither three digits nor six */
+        "#1234567",
+        "#12",
+        "#",
+        "",
+        "ffffff",                 /* no hash */
+        "#gggggg",                /* not hex */
+        "#ff00ff;color:red",      /* the injection this exists to stop */
+        "#fff}body{display:none",
+        NULL
+    };
+    gsize i;
+
+    for (i = 0; rejected[i] != NULL; i++)
+        g_assert_null(clawt_color_ink(rejected[i]));
+
+    g_assert_null(clawt_color_ink(NULL));
+}
+
+
 int
 main(int argc, char *argv[])
 {
@@ -568,6 +641,9 @@ main(int argc, char *argv[])
                     test_a_palette_survives_the_round_trip);
     g_test_add_func("/appearance/unknown-theme",
                     test_an_unknown_theme_falls_back);
+    g_test_add_func("/appearance/avatar-ink", test_which_ink_is_legible);
+    g_test_add_func("/appearance/avatar-ink-refuses",
+                    test_a_colour_that_is_not_one_is_refused);
     g_test_add_func("/appearance/empty-file",
                     test_an_empty_file_is_the_defaults);
     g_test_add_func("/appearance/missing-file",
