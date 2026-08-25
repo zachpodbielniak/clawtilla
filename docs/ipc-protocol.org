@@ -59,17 +59,50 @@ what is missing, not merely that something failed.
 | ~control.reload~ | | ~refused~ -- see below |
 | ~control.shutdown~ | | answered before the daemon quits |
 
-~control.reload~ always answers with ~refused~, an array of ~{agent,
-message}~.  It is empty when every agent was rendered.  A reload can
-succeed and still leave an agent behind -- the renderer turns down a
-~libreclaw:~ passthrough that redeclares a section clawtilla renders
-itself -- and that agent goes on running against the ~config.yaml~ it
-already had.  Reporting it as a plain success made an edit that was
-*rejected* look like an edit that was *ignored*, with the reason only in
-the daemon's journal.  It is not an error reply: the configuration was
-reloaded, and every other agent is running on the new one.  The array is
-always present so a client can tell "nothing was refused" from "this
-daemon does not report refusals".
+**** refused
+
+Seven handlers rewrite every agent's files, and every one of them answers
+with ~refused~, an array of ~{agent, message}~.  It is empty when every
+agent was rendered.
+
+| Kind | Also carries |
+|------+--------------|
+| ~control.reload~ | |
+| ~agent.set~ | ~agent~, ~restart_required~ |
+| ~agent.mount.add~ / ~agent.mount.remove~ | ~target~ |
+| ~team.set~ | |
+| ~team.remove~ | ~orphaned~ |
+| ~design.commit~ | ~id~, ~committed~, ~started~ |
+
+A call can succeed and still leave an agent behind -- the renderer turns
+down a ~libreclaw:~ passthrough that redeclares a section clawtilla
+renders itself -- and that agent goes on running against the
+~config.yaml~ it already had.  Reporting it as a plain success made an
+edit that was *rejected* look like an edit that was *ignored*, with the
+reason only in the daemon's journal.
+
+It is not an error reply: the call did what it was asked, and every other
+agent is on the new configuration.  The array is always present so a
+client can tell "nothing was refused" from "this daemon does not report
+refusals".
+
+~agent.set~ is the one that matters most day to day.  Rendering is the
+whole point of the call there -- without it the setting reaches
+~clawtilla.yaml~ and nothing the agent reads -- so a refusal means the
+call accomplished nothing at all for that agent while answering
+successfully.
+
+~clawt_ipc_reply_refusal_text()~ turns the array into the sentence a
+person is shown, so the CLI, the GTK client and the web client all say
+the same thing about it.  ~clawtilla~ prints it and exits non-zero, the
+GTK client raises it as a toast from its one request wrapper, and the web
+client turns the banner it was about to draw.
+
+~clawtillad~ itself is the one caller with nobody to answer: a start
+warns once per refused agent and once more in summary, naming them.  It
+does not refuse to come up.  A fleet that would not start because one
+operator-typed block is wrong is a far worse failure than one that starts
+and says which agents are stale.
 
 *** agent.*
 

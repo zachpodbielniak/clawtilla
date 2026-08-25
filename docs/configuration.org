@@ -240,6 +240,33 @@ clawtilla does not model every libreclaw option and never will.  The
 it wins.  A libreclaw setting clawtilla has never heard of is still
 reachable without waiting for a clawtilla release.
 
+It may not redeclare ~agent:~, ~ai:~, ~session:~, ~database:~, ~skills:~
+or ~channels:~, which clawtilla renders itself.  YAML keeps the last of
+two identical top-level keys, so such a block would silently delete
+clawtilla's -- and two agents sharing a ~session.persist_dir~ means one
+resuming the other's conversation.
+
+That refusal stops *that agent's* files being written and nothing else:
+the rest of the fleet is rendered, and the call that triggered it
+succeeds.  The agent it names goes on running against the ~config.yaml~
+it already had, which is why every handler that re-renders reports it --
+see ~refused~ in [[file:ipc-protocol.org][the IPC protocol]].  From the
+command line it looks like this:
+
+#+begin_example
+$ clawtilla agent set researcher model.model opus
+researcher: model.model = opus
+clawtilla: broken: the libreclaw: block redeclares 'channels:', which
+clawtilla renders itself; the two would collide and clawtilla's would be
+discarded
+1 agent is still running against the config.yaml it already had.
+$ echo $?
+1
+#+end_example
+
+The command did what it was asked -- the exit status is non-zero because
+there is something left to fix, not because the setting failed.
+
 ** teams
 
 #+begin_src yaml

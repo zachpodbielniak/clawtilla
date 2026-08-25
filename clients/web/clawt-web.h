@@ -99,6 +99,25 @@ JsonNode *clawt_web_app_call(ClawtWebApp *self,
 const gchar *clawt_web_app_last_error(ClawtWebApp *self);
 
 /**
+ * clawt_web_app_last_refusal:
+ * @self: a #ClawtWebApp
+ *
+ * What the last call left unwritten, if anything.
+ *
+ * Seven daemon handlers re-render the fleet's agent files, and any of
+ * them can be refused for one agent while succeeding for the rest -- an
+ * operator-typed `libreclaw:` block that redeclares a section clawtilla
+ * renders itself is the ordinary cause.  The call succeeds; the agent it
+ * names is still running against the config.yaml it already had.
+ *
+ * Owned by the app and freed by the next call, exactly like
+ * clawt_web_app_last_error() -- so copy it before rendering anything.
+ *
+ * Returns: (nullable): the refusals as text, or %NULL
+ */
+const gchar *clawt_web_app_last_refusal(ClawtWebApp *self);
+
+/**
  * clawt_web_app_switch:
  * @self: a #ClawtWebApp
  * @connection: (transfer none): the daemon to talk to instead

@@ -392,6 +392,26 @@ clawt_window_request(ClawtWindow *self, const gchar *kind, JsonNode *payload)
         return NULL;
     }
 
+    /*
+     * A reply can succeed and still leave an agent behind.  Seven daemon
+     * handlers re-render the fleet's agent files, and clawtilla refuses to
+     * render a `libreclaw:` block that redeclares a section it renders
+     * itself -- so a perfectly ordinary edit saves to clawtilla.yaml,
+     * reports success, and reaches nothing the agent reads.
+     *
+     * Checked here rather than at each call site, for the reason the
+     * failure toast is: a handler that grows the array later is covered
+     * without anybody remembering to look, and one that never carries it
+     * costs a member lookup.
+     */
+    {
+        g_autofree gchar *refused =
+            clawt_ipc_reply_refusal_text(reply, NULL);
+
+        if (refused != NULL)
+            clawt_window_toast(self, refused);
+    }
+
     return reply;
 }
 

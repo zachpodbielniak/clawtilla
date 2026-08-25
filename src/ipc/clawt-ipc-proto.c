@@ -415,3 +415,61 @@ clawt_ipc_payload_boolean(JsonObject *payload, const gchar *key,
 
     return fallback;
 }
+
+gchar *
+clawt_ipc_reply_refusal_text(JsonNode *payload, guint *n_refused)
+{
+    JsonObject *object;
+    JsonArray *refused;
+    g_autoptr(GString) text = NULL;
+    guint length;
+    guint i;
+
+    if (n_refused != NULL)
+        *n_refused = 0;
+
+    if (payload == NULL || !JSON_NODE_HOLDS_OBJECT(payload))
+        return NULL;
+
+    object = json_node_get_object(payload);
+
+    if (!json_object_has_member(object, "refused"))
+        return NULL;
+
+    refused = json_object_get_array_member(object, "refused");
+    length = (refused != NULL) ? json_array_get_length(refused) : 0;
+
+    if (length == 0)
+        return NULL;
+
+    if (n_refused != NULL)
+        *n_refused = length;
+
+    text = g_string_new(NULL);
+
+    for (i = 0; i < length; i++) {
+        JsonObject *entry = json_array_get_object_element(refused, i);
+        const gchar *agent = clawt_ipc_payload_string(entry, "agent");
+        const gchar *message = clawt_ipc_payload_string(entry, "message");
+
+        g_string_append_printf(text, "%s: %s\n",
+                               (agent != NULL) ? agent : "?",
+                               (message != NULL) ? message
+                                                 : "its config was refused");
+    }
+
+    /*
+     * Said in full rather than left to the reader.  "1 agent refused" does
+     * not tell somebody that the agent is still running, which is the part
+     * that decides whether they have to do anything about it now.
+     */
+    if (length == 1)
+        g_string_append(text, "1 agent is still running against the "
+                              "config.yaml it already had.");
+    else
+        g_string_append_printf(text, "%u agents are still running against "
+                                     "the config.yaml they already had.",
+                               length);
+
+    return g_strdup(text->str);
+}

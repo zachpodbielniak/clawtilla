@@ -1615,10 +1615,50 @@ render_all_agents_into(ClawtDaemon *self, GPtrArray *refusals)
     }
 }
 
-static void
-render_all_agents(ClawtDaemon *self)
+/*
+ * There is deliberately no render_all_agents() convenience taking no
+ * refusal array.  Every caller in the tree passes one now, and a wrapper
+ * that discards them is exactly how six handlers came to report success
+ * about an agent left running on its previous config.
+ */
+static GPtrArray *
+render_refusals_new(void)
 {
-    render_all_agents_into(self, NULL);
+    return g_ptr_array_new_with_free_func(render_refusal_free);
+}
+
+/*
+ * Writes the `refused` array into whatever object the builder is inside.
+ *
+ * Every handler that re-renders the fleet gets one, always present even
+ * when it is empty, so a client can tell "nothing was refused" from "this
+ * daemon does not report refusals".  control.reload was the first to do
+ * this and for a while the only one -- six other handlers rewrite the
+ * same files and told the caller they had succeeded while the agent they
+ * were about to affect kept the config.yaml it already had.  agent.set is
+ * the one that mattered day to day: rendering is the whole point of the
+ * call there, and a refusal left it doing nothing at all.
+ */
+static void
+add_render_refusals(JsonBuilder *builder, GPtrArray *refusals)
+{
+    guint i;
+
+    json_builder_set_member_name(builder, "refused");
+    json_builder_begin_array(builder);
+
+    for (i = 0; refusals != NULL && i < refusals->len; i++) {
+        RenderRefusal *refusal = g_ptr_array_index(refusals, i);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "agent");
+        json_builder_add_string_value(builder, refusal->agent_id);
+        json_builder_set_member_name(builder, "message");
+        json_builder_add_string_value(builder, refusal->message);
+        json_builder_end_object(builder);
+    }
+
+    json_builder_end_array(builder);
 }
 
 gboolean
@@ -3264,7 +3304,40 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
 
     self->running = TRUE;
 
-    render_all_agents(self);
+    /*
+     * The one caller with nobody to answer.  Every other site that
+     * re-renders the fleet hands the refusals back in its reply; a start
+     * has no reply, so it says so on the console -- once, naming every
+     * agent, after the per-agent warnings rather than among them.  A
+     * start that refused to come up over one operator-typed block would
+     * be a far worse failure than a fleet that starts and says which
+     * agents are running against a stale config.
+     */
+    {
+        g_autoptr(GPtrArray) refusals = render_refusals_new();
+        g_autoptr(GString) names = g_string_new(NULL);
+        guint refused;
+
+        render_all_agents_into(self, refusals);
+
+        for (refused = 0; refused < refusals->len; refused++) {
+            RenderRefusal *refusal = g_ptr_array_index(refusals, refused);
+
+            if (names->len > 0)
+                g_string_append(names, ", ");
+
+            g_string_append(names, refusal->agent_id);
+        }
+
+        if (refusals->len == 1)
+            g_warning("%s is starting against the config.yaml it already "
+                      "had: clawtilla would not render its files",
+                      names->str);
+        else if (refusals->len > 1)
+            g_warning("%u agents are starting against the config.yaml they "
+                      "already had, because clawtilla would not render "
+                      "their files: %s", refusals->len, names->str);
+    }
 
     agents = clawt_agent_manager_list(self->agents);
 
@@ -4784,9 +4857,7 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
     }
 
     if (g_strcmp0(kind, "control.reload") == 0) {
-        g_autoptr(GPtrArray) refusals =
-            g_ptr_array_new_with_free_func(render_refusal_free);
-        guint i;
+        g_autoptr(GPtrArray) refusals = render_refusals_new();
 
         if (!daemon_reload(self, refusals, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
@@ -4803,21 +4874,7 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
          * refused" from "this daemon does not report refusals".
          */
         json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "refused");
-        json_builder_begin_array(builder);
-
-        for (i = 0; i < refusals->len; i++) {
-            RenderRefusal *refusal = g_ptr_array_index(refusals, i);
-
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "agent");
-            json_builder_add_string_value(builder, refusal->agent_id);
-            json_builder_set_member_name(builder, "message");
-            json_builder_add_string_value(builder, refusal->message);
-            json_builder_end_object(builder);
-        }
-
-        json_builder_end_array(builder);
+        add_render_refusals(builder, refusals);
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request,
@@ -5039,13 +5096,19 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             return clawt_ipc_error_new(request, error->code, error->message);
 
         clawt_agent_manager_load(self->agents, NULL);
-        render_all_agents(self);
-        clawt_event_bus_emit(self->bus, "agent.changed", agent_id);
 
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "target");
-        json_builder_add_string_value(builder, target);
-        json_builder_end_object(builder);
+        {
+            g_autoptr(GPtrArray) refusals = render_refusals_new();
+
+            render_all_agents_into(self, refusals);
+            clawt_event_bus_emit(self->bus, "agent.changed", agent_id);
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "target");
+            json_builder_add_string_value(builder, target);
+            add_render_refusals(builder, refusals);
+            json_builder_end_object(builder);
+        }
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
@@ -6419,10 +6482,19 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
          * a description that changed and did not reach the prompt is a
          * second answer to what the team is for.
          */
-        render_all_agents(self);
-        clawt_event_bus_emit(self->bus, "team.changed", team_id);
+        {
+            g_autoptr(GPtrArray) refusals = render_refusals_new();
 
-        return clawt_ipc_response_new(request, NULL);
+            render_all_agents_into(self, refusals);
+            clawt_event_bus_emit(self->bus, "team.changed", team_id);
+
+            json_builder_begin_object(builder);
+            add_render_refusals(builder, refusals);
+            json_builder_end_object(builder);
+        }
+
+        return clawt_ipc_response_new(request,
+                                      json_builder_get_root(builder));
     }
 
     if (g_strcmp0(kind, "team.remove") == 0) {
@@ -6439,9 +6511,6 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         if (!clawt_config_save(self->config, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
 
-        render_all_agents(self);
-        clawt_event_bus_emit(self->bus, "team.changed", team_id);
-
         /*
          * The agents that were on it are left naming a team that is no
          * longer declared, which is a state they are allowed to be in --
@@ -6449,9 +6518,15 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
          * them somewhere nobody chose.
          */
         {
-            GPtrArray *agents = clawt_agent_manager_list(self->agents);
+            GPtrArray *agents;
+            g_autoptr(GPtrArray) refusals = render_refusals_new();
             guint orphaned = 0;
             guint i;
+
+            render_all_agents_into(self, refusals);
+            clawt_event_bus_emit(self->bus, "team.changed", team_id);
+
+            agents = clawt_agent_manager_list(self->agents);
 
             for (i = 0; agents != NULL && i < agents->len; i++) {
                 ClawtAgent *agent = g_ptr_array_index(agents, i);
@@ -6465,6 +6540,7 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             json_builder_begin_object(builder);
             json_builder_set_member_name(builder, "orphaned");
             json_builder_add_int_value(builder, orphaned);
+            add_render_refusals(builder, refusals);
             json_builder_end_object(builder);
         }
 
@@ -6570,11 +6646,16 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
          * daemon start. Two answers to "what do I have", and the file is
          * the one that reaches the agent's prompt.
          */
-        render_all_agents(self);
+        {
+            g_autoptr(GPtrArray) refusals = render_refusals_new();
 
-        clawt_event_bus_emit(self->bus, "agent.changed", agent_id);
+            render_all_agents_into(self, refusals);
+            clawt_event_bus_emit(self->bus, "agent.changed", agent_id);
 
-        json_builder_begin_object(builder);
+            json_builder_begin_object(builder);
+            add_render_refusals(builder, refusals);
+        }
+
         json_builder_set_member_name(builder, "agent");
         json_builder_add_string_value(builder, agent_id);
 
@@ -7841,9 +7922,16 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             return clawt_ipc_error_new(request, error->code, error->message);
 
         clawt_agent_manager_load(self->agents, NULL);
-        render_all_agents(self);
 
-        json_builder_begin_object(builder);
+        {
+            g_autoptr(GPtrArray) refusals = render_refusals_new();
+
+            render_all_agents_into(self, refusals);
+
+            json_builder_begin_object(builder);
+            add_render_refusals(builder, refusals);
+        }
+
         json_builder_set_member_name(builder, "id");
         json_builder_add_string_value(builder,
                                       clawt_agent_config_get_id(created));

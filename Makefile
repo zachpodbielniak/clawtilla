@@ -587,6 +587,18 @@ endif
 # ============================================================
 # Tests
 # ============================================================
+#
+# Builds the suite without running it.
+#
+# CLAUDE.md has told people to run `make clean tests` for as long as the
+# zero-warning rule has existed, and there was no such target -- make
+# answered "Nothing to be done for 'tests'" and exited 0, so a documented
+# check for warnings compiled nothing and passed.  Found while chasing a
+# test that would not pick up an edit.
+#
+.PHONY: tests
+tests: $(TEST_BINARIES) test-plugins plugins
+
 .PHONY: test
 test: $(TEST_BINARIES) test-plugins plugins
 	@echo "Running tests..."

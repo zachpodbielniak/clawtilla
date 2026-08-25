@@ -169,4 +169,24 @@ gboolean     clawt_ipc_payload_boolean(JsonObject  *payload,
                                        const gchar *key,
                                        gboolean     fallback);
 
+/**
+ * clawt_ipc_reply_refusal_text:
+ * @payload: (nullable): the payload of a reply that may carry `refused`
+ * @n_refused: (out) (optional): how many agents were named
+ *
+ * Every handler that rewrites the fleet's agent files answers with a
+ * `refused` array -- one `{agent, message}` per agent clawtilla would not
+ * render -- alongside whatever else it reports.  A refusal is a normal
+ * outcome of a normal edit (an operator-typed `libreclaw:` block that
+ * redeclares a section clawtilla renders itself), and the agent it names
+ * is still running against the config.yaml it already had.
+ *
+ * One reader for every client, because the sentence a person is shown
+ * about it should not depend on which client they opened.
+ *
+ * Returns: (transfer full) (nullable): the refusals as text, one agent a
+ *   line and a closing sentence, or %NULL when nothing was refused
+ */
+gchar *clawt_ipc_reply_refusal_text(JsonNode *payload, guint *n_refused);
+
 G_END_DECLS

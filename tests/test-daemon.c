@@ -2237,6 +2237,162 @@ test_setting_a_key_rewrites_what_it_affects(void)
 
 
 /*
+ * A frame's payload as a node, which is the shape a client sees.
+ *
+ * clawt_client_request() hands back the payload as a #JsonNode, so the
+ * library reader takes one; a test holding a whole frame has the payload
+ * as a #JsonObject and has to wrap it.
+ */
+static JsonNode *
+payload_node(JsonNode *frame)
+{
+    JsonObject *payload = clawt_ipc_frame_get_payload(frame);
+    JsonNode *node;
+
+    if (payload == NULL)
+        return NULL;
+
+    node = json_node_new(JSON_NODE_OBJECT);
+    json_node_set_object(node, payload);
+
+    return node;
+}
+
+static void
+count_broken_warnings(const gchar *domain, GLogLevelFlags level,
+                      const gchar *message, gpointer user_data)
+{
+    guint *seen = user_data;
+
+    (void)domain;
+    (void)level;
+
+    if (message != NULL && strstr(message, "broken") != NULL)
+        (*seen)++;
+}
+
+/*
+ * A handler that re-renders the fleet says which agents it could not.
+ *
+ * clawtilla refuses a `libreclaw:` passthrough that redeclares a section
+ * it renders itself -- YAML keeps the last of two identical top-level
+ * keys, so clawtilla's own `channels:` block would be discarded.  The
+ * refusal is right; what was missing is that it reached nobody.
+ * `control.reload` was taught to report it and six other handlers were
+ * not, so `agent.set` wrote the key to clawtilla.yaml, answered
+ * `{"agent": ...}`, and left the agent running on the config.yaml it
+ * already had -- which is the exact state the render exists to prevent.
+ *
+ * Two agents on purpose.  One refusal must not stop the other's files
+ * being written, and a test with one agent cannot tell the two apart.
+ */
+static void
+test_a_refused_render_is_reported(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) set = NULL;
+    g_autoptr(JsonNode) clean = NULL;
+    JsonObject *payload;
+    JsonArray *refused;
+    g_autofree gchar *text = NULL;
+    g_autofree gchar *rendered = NULL;
+    g_autofree gchar *path = NULL;
+    guint counted = 0;
+    guint warned = 0;
+    GLogLevelFlags was_fatal;
+    guint handler;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: healthy\n"
+                  "  - id: broken\n"
+                  "    libreclaw:\n"
+                  "      channels:\n"
+                  "        webhook:\n"
+                  "          enabled: true\n");
+
+    /*
+     * A counting handler rather than g_test_expect_message().  The
+     * expectation queue matches the *next* message in the domain, and a
+     * daemon start emits ordinary informational ones too -- so the
+     * assertion becomes about the order clawtilla happens to log in,
+     * which is not what this test is about and breaks the day somebody
+     * adds a line.  Counting the warnings that name the refused agent
+     * says the same thing and does not care when they arrive.
+     */
+    was_fatal = g_log_set_always_fatal(G_LOG_FATAL_MASK);
+    handler = g_log_set_handler("Clawtilla",
+                                G_LOG_LEVEL_WARNING | G_LOG_FLAG_FATAL |
+                                G_LOG_FLAG_RECURSION,
+                                count_broken_warnings, &warned);
+
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    /* Once for the agent, once for the summary naming the fleet. */
+    g_assert_cmpuint(warned, >=, 2);
+
+    set = request(&fixture, "agent.set",
+                  "{\"agent\":\"healthy\",\"key\":\"model.model\","
+                  "\"value\":\"a-particular-model\"}");
+
+    g_assert_false(clawt_ipc_frame_is_error(set));
+
+    payload = clawt_ipc_frame_get_payload(set);
+    g_assert_nonnull(payload);
+
+    /* The call itself succeeded -- that half was never in doubt. */
+    g_assert_cmpstr(clawt_ipc_payload_string(payload, "agent"), ==,
+                    "healthy");
+
+    g_assert_true(json_object_has_member(payload, "refused"));
+    refused = json_object_get_array_member(payload, "refused");
+    g_assert_cmpuint(json_array_get_length(refused), ==, 1);
+    g_assert_cmpstr(clawt_ipc_payload_string(
+                        json_array_get_object_element(refused, 0), "agent"),
+                    ==, "broken");
+
+    /*
+     * And the agent that was fine had its files written, so a refusal
+     * for one is not a refusal for the fleet.
+     */
+    path = g_build_filename(fixture.dir, "state", "agents", "healthy",
+                            "config.yaml", NULL);
+    g_assert_true(g_file_get_contents(path, &rendered, NULL, NULL));
+    g_assert_nonnull(strstr(rendered, "a-particular-model"));
+
+    /* One sentence, from the library, so every client says the same. */
+    {
+        g_autoptr(JsonNode) node = payload_node(set);
+
+        text = clawt_ipc_reply_refusal_text(node, &counted);
+    }
+    g_assert_cmpuint(counted, ==, 1);
+    g_assert_nonnull(text);
+    g_assert_nonnull(strstr(text, "broken"));
+    g_assert_nonnull(strstr(text, "still running"));
+
+    /*
+     * A fleet with nothing wrong reports an empty array rather than no
+     * array: a client has to be able to tell "nothing was refused" from
+     * "this daemon does not report refusals".
+     */
+    clean = request(&fixture, "team.list", "{}");
+    g_assert_false(clawt_ipc_frame_is_error(clean));
+    {
+        g_autoptr(JsonNode) node = payload_node(clean);
+
+        g_assert_null(clawt_ipc_reply_refusal_text(node, &counted));
+    }
+    g_assert_cmpuint(counted, ==, 0);
+
+    g_log_remove_handler("Clawtilla", handler);
+    g_log_set_always_fatal(was_fatal);
+
+    fixture_teardown(&fixture);
+}
+
+
+/*
  * Removing an agent can take everything it owns, and only when asked.
  *
  * Removing one from the fleet is reversible; deleting what it wrote is
@@ -2833,6 +2989,8 @@ main(int argc, char *argv[])
                     test_removing_an_agent_keeps_its_files_by_default);
     g_test_add_func("/daemon/set-rewrites-derived-files",
                     test_setting_a_key_rewrites_what_it_affects);
+    g_test_add_func("/daemon/refused-render-is-reported",
+                    test_a_refused_render_is_reported);
     g_test_add_func("/daemon/create-starts-the-agent",
                     test_creating_an_agent_starts_it);
     g_test_add_func("/daemon/create-can-leave-it-stopped",

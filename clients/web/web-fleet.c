@@ -707,6 +707,31 @@ clawt_web_after_action(ClawtWebApp *app, HtmxRequest *request,
                        const gchar *agent_id, ClawtWebView view,
                        const gchar *toast)
 {
+    /*
+     * Copied before anything renders.  page_with_banner() asks the daemon
+     * for the sidebar and the topbar, and every one of those calls frees
+     * what the app is holding -- the same trap the last_error rule in
+     * CLAUDE.md exists for, one field along.
+     */
+    g_autofree gchar *refused = g_strdup(clawt_web_app_last_refusal(app));
+
+    if (refused != NULL) {
+        /*
+         * The action did happen, so the note still says so -- but an
+         * agent whose files were not written is the part that needs
+         * doing something about, so it goes first and the whole banner
+         * turns.  Reported here rather than at each of the dozen call
+         * sites, for the same reason the GTK client checks in its one
+         * request wrapper: a handler that starts carrying refusals later
+         * is covered without anybody remembering to look.
+         */
+        g_autofree gchar *both = (toast != NULL)
+            ? g_strdup_printf("%s\n%s", refused, toast)
+            : g_strdup(refused);
+
+        return page_with_banner(app, request, agent_id, view, both, "bad");
+    }
+
     return page_with_banner(app, request, agent_id, view, toast, NULL);
 }
 

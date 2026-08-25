@@ -19,6 +19,7 @@ struct _ClawtWebApp {
     ClawtClient *client;
     GPtrArray   *streams;     /* HtmxSseConnection*, owned */
     gchar       *last_error;
+    gchar       *last_refusal;
     gchar       *connection_name;
 };
 
@@ -32,10 +33,26 @@ clawt_web_app_request(ClawtWebApp  *self,
                       JsonNode     *payload,
                       GError      **error)
 {
+    JsonNode *reply;
+
     g_return_val_if_fail(CLAWT_IS_WEB_APP(self), NULL);
     g_return_val_if_fail(kind != NULL, NULL);
 
-    return clawt_client_request(self->client, kind, payload, error);
+    reply = clawt_client_request(self->client, kind, payload, error);
+
+    /*
+     * Recorded on both request paths, not only clawt_web_app_call().
+     * The agent editor saves through this one -- a key at a time -- and
+     * it is the page where a refused render matters most: writing the
+     * setting to clawtilla.yaml and not to the agent's own files is
+     * exactly the state the call exists to leave behind.
+     */
+    g_clear_pointer(&self->last_refusal, g_free);
+
+    if (reply != NULL)
+        self->last_refusal = clawt_ipc_reply_refusal_text(reply, NULL);
+
+    return reply;
 }
 
 JsonNode *
@@ -51,11 +68,25 @@ clawt_web_app_call(ClawtWebApp *self,
     reply = clawt_client_request(self->client, kind, payload, &error);
 
     g_clear_pointer(&self->last_error, g_free);
+    g_clear_pointer(&self->last_refusal, g_free);
 
     if (reply == NULL) {
         self->last_error = g_strdup(error != NULL ? error->message
                                                   : "the daemon did not answer");
         g_debug("web: %s: %s", kind, self->last_error);
+    } else {
+        /*
+         * A reply can succeed and still leave an agent behind: seven
+         * daemon handlers re-render the fleet's files, and one agent's
+         * `libreclaw:` block being refused stops that agent's files
+         * being written while the rest of the call succeeds.  Recorded
+         * beside the error rather than reported here, because this
+         * function does not know what page is about to be drawn.
+         */
+        self->last_refusal = clawt_ipc_reply_refusal_text(reply, NULL);
+
+        if (self->last_refusal != NULL)
+            g_debug("web: %s: %s", kind, self->last_refusal);
     }
 
     return reply;
@@ -67,6 +98,14 @@ clawt_web_app_last_error(ClawtWebApp *self)
     g_return_val_if_fail(CLAWT_IS_WEB_APP(self), NULL);
 
     return self->last_error;
+}
+
+const gchar *
+clawt_web_app_last_refusal(ClawtWebApp *self)
+{
+    g_return_val_if_fail(CLAWT_IS_WEB_APP(self), NULL);
+
+    return self->last_refusal;
 }
 
 ClawtClient *
@@ -258,6 +297,7 @@ clawt_web_app_finalize(GObject *object)
     g_clear_object(&self->client);
     g_clear_pointer(&self->streams, g_ptr_array_unref);
     g_clear_pointer(&self->last_error, g_free);
+    g_clear_pointer(&self->last_refusal, g_free);
     g_clear_pointer(&self->connection_name, g_free);
 
     G_OBJECT_CLASS(clawt_web_app_parent_class)->finalize(object);

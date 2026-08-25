@@ -659,6 +659,44 @@ the same program.
 - Verified by reverting the setter and watching the test fail
   (`-1 == 20400`), not merely by watching it pass.
 
+### One handler taught to report a failure teaches nobody else
+
+- `render_all_agents()` warned and carried on, which is right -- one
+  agent's bad block must not hold the fleet hostage -- and returned
+  nothing, so its seven callers each told their caller the operation had
+  succeeded. `control.reload` was given a `refused` array and the other
+  six were not, so `agent.set` wrote a key to clawtilla.yaml, answered
+  `{"agent": ...}`, and left the agent running on the config.yaml it
+  already had. Rendering is the *whole point* of the call there: a
+  refusal means it accomplished nothing and said it had.
+- The convenience is what made it possible, so it is gone. Every caller
+  passes a refusal array now and there is no wrapper that discards one;
+  a comment where it used to be says why. A helper whose only job is to
+  drop an error is a trap with a name.
+- Reported once per client, in one place each: the CLI has a
+  `report_refusals()` beside `member_or()`, the GTK client checks in
+  `clawt_window_request()`, and the web client records it on the app and
+  turns the banner in `clawt_web_after_action()`. A handler that starts
+  carrying refusals later is covered without anybody remembering to
+  look -- which is exactly what did not happen the first time.
+- The sentence itself is `clawt_ipc_reply_refusal_text()` in libclawt.
+  Three clients writing their own would be three answers to "what does
+  this mean", and the one nobody reads would be the one that is wrong.
+- `clawtillad` is the caller with nobody to answer. It warns once per
+  agent and once in summary rather than refusing to start.
+
+### `make tests` did nothing at all, and exited 0
+
+- CLAUDE.md has told people to run `make clean tests` for as long as the
+  zero-warning rule has existed. There was no such target: make answered
+  *"Nothing to be done for 'tests'"* and exited 0, so a documented check
+  for warnings compiled nothing and passed. Found while chasing a test
+  that would not pick up an edit -- the same shape as "`make test` does
+  not relink the daemon", except here the *documented* command was the
+  broken one.
+- A phony alias now, beside `test`. Worth the habit: run a build command
+  from the docs and read what it built, not what it exited with.
+
 ### A doc naming a tool nobody built is worse than a doc naming none
 
 - `docs/computers.org` promised `clawtilla_computer_put_file`, `get_file`

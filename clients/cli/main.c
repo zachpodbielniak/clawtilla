@@ -398,6 +398,34 @@ call(ClawtClient *client, const gchar *kind, JsonNode *payload)
     return reply;
 }
 
+/*
+ * Names every agent a command left running against a stale config.yaml.
+ *
+ * Seven handlers re-render the fleet's agent files, and any of them can
+ * be refused for one agent while succeeding for the rest -- an
+ * operator-typed `libreclaw:` block that redeclares a section clawtilla
+ * renders itself is the ordinary cause, so this is a normal outcome of a
+ * normal edit rather than an internal error.  The command still did what
+ * it was asked; the exit status is non-zero because there is something
+ * left for the person to fix.
+ *
+ * The sentence comes from libclawt so that the CLI, the GTK client and
+ * the web client all say the same thing about it.
+ *
+ * Returns: %TRUE when anything was refused.
+ */
+static gboolean
+report_refusals(JsonNode *reply)
+{
+    g_autofree gchar *text = clawt_ipc_reply_refusal_text(reply, NULL);
+
+    if (text == NULL)
+        return FALSE;
+
+    g_printerr("clawtilla: %s\n", text);
+    return TRUE;
+}
+
 static const gchar *
 member_or(JsonObject *object, const gchar *key, const gchar *fallback)
 {
@@ -994,6 +1022,9 @@ cmd_agent(int argc, char *argv[])
                 } else {
                     g_print("Start it with: clawtilla agent start %s\n", id);
                 }
+
+                if (report_refusals(created))
+                    return EXIT_FAILURE;
             }
         }
 
@@ -1305,6 +1336,10 @@ cmd_agent(int argc, char *argv[])
 
             g_print("%s no longer shares %s.\n", who, argv[5]);
             g_print("Takes effect when the agent next starts.\n");
+
+            if (report_refusals(reply))
+                return EXIT_FAILURE;
+
             return EXIT_SUCCESS;
         }
 
@@ -1326,6 +1361,10 @@ cmd_agent(int argc, char *argv[])
 
             g_print("%s now sees %s at %s.\n", who, argv[5], argv[6]);
             g_print("Takes effect when the agent next starts.\n");
+
+            if (report_refusals(reply))
+                return EXIT_FAILURE;
+
             return EXIT_SUCCESS;
         }
 
@@ -1606,6 +1645,13 @@ cmd_agent(int argc, char *argv[])
             return EXIT_FAILURE;
 
         g_print("%s: %s = %s\n", argv[3], argv[4], argv[5]);
+
+        /*
+         * ...but the point of the call is the render, so a refusal means
+         * the setting reached clawtilla.yaml and nothing the agent reads.
+         */
+        if (report_refusals(reply))
+            return EXIT_FAILURE;
 
         /*
          * An AI CLI reads some things once, when its session starts, so a
@@ -2049,6 +2095,10 @@ cmd_team(int argc, char *argv[])
             return EXIT_FAILURE;
 
         g_print("%s: %s = %s\n", argv[3], argv[4], argv[5]);
+
+        if (report_refusals(reply))
+            return EXIT_FAILURE;
+
         return EXIT_SUCCESS;
     }
 
@@ -2083,6 +2133,9 @@ cmd_team(int argc, char *argv[])
                         orphaned == 1 ? "s" : "");
         }
 
+        if (report_refusals(reply))
+            return EXIT_FAILURE;
+
         return EXIT_SUCCESS;
     }
 
@@ -2109,10 +2162,14 @@ cmd_team(int argc, char *argv[])
 
             if (role == NULL)
                 return EXIT_FAILURE;
+
+            g_print("%s is now %s of %s.\n", argv[3],
+                    lead ? "the lead" : "a member", argv[4]);
+
+            if (report_refusals(role))
+                return EXIT_FAILURE;
         }
 
-        g_print("%s is now %s of %s.\n", argv[3],
-                lead ? "the lead" : "a member", argv[4]);
         return EXIT_SUCCESS;
     }
 
@@ -2692,40 +2749,11 @@ cmd_computer(int argc, char *argv[])
 static gint
 report_reload(JsonNode *reply)
 {
-    JsonObject *payload;
-    JsonArray *refused = NULL;
-    guint length;
-    guint i;
+    if (report_refusals(reply))
+        return EXIT_FAILURE;
 
-    payload = (reply != NULL && JSON_NODE_HOLDS_OBJECT(reply))
-        ? json_node_get_object(reply) : NULL;
-
-    if (payload != NULL && json_object_has_member(payload, "refused"))
-        refused = json_object_get_array_member(payload, "refused");
-
-    length = (refused != NULL) ? json_array_get_length(refused) : 0;
-
-    if (length == 0) {
-        g_print("Reloaded.\n");
-        return EXIT_SUCCESS;
-    }
-
-    for (i = 0; i < length; i++) {
-        JsonObject *entry = json_array_get_object_element(refused, i);
-
-        g_printerr("clawtilla: %s: %s\n",
-                   member_or(entry, "agent", "?"),
-                   member_or(entry, "message", "its config was refused"));
-    }
-
-    if (length == 1)
-        g_printerr("clawtilla: reloaded, but 1 agent was left running "
-                   "against the config.yaml it already had\n");
-    else
-        g_printerr("clawtilla: reloaded, but %u agents were left running "
-                   "against the config.yaml they already had\n", length);
-
-    return EXIT_FAILURE;
+    g_print("Reloaded.\n");
+    return EXIT_SUCCESS;
 }
 
 static gint
