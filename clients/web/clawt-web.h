@@ -80,28 +80,9 @@ JsonNode *clawt_web_app_call(ClawtWebApp *self,
                              JsonNode    *payload);
 
 /**
- * ClawtWebAlertTier:
- * @CLAWT_WEB_ALERT_ERROR: something failed
- * @CLAWT_WEB_ALERT_NOTICE: something degraded, or is worth knowing
- * @CLAWT_WEB_ALERT_ROUTINE: the ordinary event stream
- *
- * How loudly an entry is drawn.
- *
- * Only the first two are coloured and only they are counted on the bell.
- * If everything carries a colour, colour stops meaning anything -- and
- * routine entries are the majority the moment the filter widens, so
- * making them quiet is what keeps the loud ones loud.
- */
-typedef enum {
-    CLAWT_WEB_ALERT_ERROR,
-    CLAWT_WEB_ALERT_NOTICE,
-    CLAWT_WEB_ALERT_ROUTINE
-} ClawtWebAlertTier;
-
-/**
  * ClawtWebAlert:
  * @id: identifies the row for dismissal
- * @tier: how loudly to draw it
+ * @tier: how loudly to draw it, from clawt_alert_tier_for_event()
  * @text: what happened
  * @source: the event kind, so a row says where to look
  * @agent: the event's subject
@@ -112,7 +93,7 @@ typedef enum {
  */
 typedef struct {
     guint              id;
-    ClawtWebAlertTier  tier;
+    ClawtAlertTier     tier;
     gchar             *text;
     gchar             *source;
     gchar             *agent;

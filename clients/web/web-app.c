@@ -89,7 +89,7 @@ alert_free(gpointer data)
 }
 
 static void
-note_alert(ClawtWebApp *self, ClawtWebAlertTier tier, const gchar *source,
+note_alert(ClawtWebApp *self, ClawtAlertTier tier, const gchar *source,
            const gchar *agent, const gchar *text)
 {
     ClawtWebAlert *alert = g_new0(ClawtWebAlert, 1);
@@ -133,7 +133,7 @@ clawt_web_app_alert_count(ClawtWebApp *self)
          * permanently non-zero and would stop being read, and widening
          * the filter is a thing the reader chooses.
          */
-        if (!alert->read && alert->tier != CLAWT_WEB_ALERT_ROUTINE)
+        if (!alert->read && alert->tier != CLAWT_ALERT_ROUTINE)
             count++;
     }
 
@@ -513,10 +513,23 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
         const gchar *from = clawt_event_get_detail(event, "from");
         const gchar *agent_id = (subject != NULL)
             ? g_hash_table_lookup(self->dm_rooms, subject) : NULL;
+        g_autofree gchar *viewing_room = NULL;
 
-        if (agent_id != NULL && g_strcmp0(from, "user") != 0 &&
-            g_strcmp0(agent_id, self->viewing) != 0 &&
-            clawt_event_get_timestamp(event) >= self->connected_at)
+        /*
+         * The rule is clawt_unread_should_count(), in libclawt, because
+         * the GTK client applies the same one.  It compares rooms, and
+         * this client tracks the agent whose chat was last rendered --
+         * so the room being read is that agent's, which is the reverse
+         * of the same lookup.
+         */
+        if (self->viewing != NULL)
+            viewing_room = clawt_room_manager_direct_id("user",
+                                                        self->viewing);
+
+        if (agent_id != NULL &&
+            clawt_unread_should_count(subject, viewing_room, from,
+                                      clawt_event_get_timestamp(event),
+                                      self->connected_at))
             g_hash_table_insert(
                 self->unread, g_strdup(agent_id),
                 GUINT_TO_POINTER(clawt_web_app_unread(self, agent_id) + 1));
@@ -529,43 +542,49 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
      * file -- and so is `agent.typing`, which is a spinner rather than
      * an event.
      */
-    if (g_strcmp0(kind, "message.refused") == 0) {
-        const gchar *from = clawt_event_get_detail(event, "from");
-        const gchar *to = clawt_event_get_detail(event, "to");
-        const gchar *reason = clawt_event_get_detail(event, "reason");
-        g_autofree gchar *line = g_strdup_printf(
-            "%s to %s was stopped: %s", from != NULL ? from : "?",
-            to != NULL ? to : "?", reason != NULL ? reason : "a limit");
-
-        note_alert(self, CLAWT_WEB_ALERT_ERROR, kind, from, line);
-    } else if (g_strcmp0(kind, "image.finished") == 0 &&
-               clawt_event_get_detail(event, "error") != NULL) {
-        g_autofree gchar *line = g_strdup_printf(
-            "%s could not be downloaded: %s",
-            subject != NULL ? subject : "an image",
-            clawt_event_get_detail(event, "error"));
-
-        note_alert(self, CLAWT_WEB_ALERT_ERROR, kind, subject, line);
-    } else if (g_strcmp0(kind, "image.progress") != 0 &&
-               g_strcmp0(kind, "agent.typing") != 0) {
-        ClawtWebAlertTier tier = CLAWT_WEB_ALERT_ROUTINE;
+    {
+        /*
+         * Which tier an event belongs in is clawt_alert_tier_for_event(),
+         * in libclawt, because the GTK panel classifies the same stream
+         * -- and two implementations of that rule would differ exactly
+         * once, on the kind somebody adds next.  Only the wording is
+         * decided here.
+         */
+        ClawtAlertTier tier = clawt_alert_tier_for_event(event);
         g_autofree gchar *line = NULL;
 
-        if (g_strcmp0(kind, "agent.state") == 0) {
-            const gchar *state = clawt_event_get_detail(event, "state");
+        if (tier == CLAWT_ALERT_ERROR &&
+            g_strcmp0(kind, "message.refused") == 0) {
+            const gchar *from = clawt_event_get_detail(event, "from");
+            const gchar *to = clawt_event_get_detail(event, "to");
+            const gchar *reason = clawt_event_get_detail(event, "reason");
 
-            line = g_strdup_printf("%s is %s", subject != NULL ? subject : "?",
-                                   state != NULL ? state : "?");
+            line = g_strdup_printf("%s to %s was stopped: %s",
+                                   from != NULL ? from : "?",
+                                   to != NULL ? to : "?",
+                                   reason != NULL ? reason : "a limit");
+            note_alert(self, tier, kind, from, line);
+        } else if (tier == CLAWT_ALERT_ERROR) {
+            line = g_strdup_printf("%s could not be downloaded: %s",
+                                   subject != NULL ? subject : "an image",
+                                   clawt_event_get_detail(event, "error"));
+            note_alert(self, tier, kind, subject, line);
+        } else if (tier == CLAWT_ALERT_NOTICE ||
+                   tier == CLAWT_ALERT_ROUTINE) {
+            if (g_strcmp0(kind, "agent.state") == 0) {
+                const gchar *state = clawt_event_get_detail(event, "state");
 
-            if (g_strcmp0(state, "error") == 0 ||
-                g_strcmp0(state, "degraded") == 0)
-                tier = CLAWT_WEB_ALERT_NOTICE;
-        } else {
-            line = g_strdup_printf("%s · %s", kind != NULL ? kind : "?",
-                                   subject != NULL ? subject : "the fleet");
+                line = g_strdup_printf("%s is %s",
+                                       subject != NULL ? subject : "?",
+                                       state != NULL ? state : "?");
+            } else {
+                line = g_strdup_printf("%s · %s", kind != NULL ? kind : "?",
+                                       subject != NULL ? subject
+                                                       : "the fleet");
+            }
+
+            note_alert(self, tier, kind, subject, line);
         }
-
-        note_alert(self, tier, kind, subject, line);
     }
 
     for (i = 0; i < self->streams->len; i++) {

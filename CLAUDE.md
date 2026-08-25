@@ -746,6 +746,29 @@ the same program.
   may not be the complaint. Recorded on the issue with the counter in the
   trace, so the next person can rule it out in one line.
 
+### A rule both clients apply belongs in the library, and then it is testable
+
+- The unread rule (four conditions) and the alert tier (six kinds) were
+  each written twice, once per client. Neither sends an IPC frame nor
+  answers a slash command, so `make parity` could not see them --
+  precisely the blind spot that check already has recorded against it,
+  and precisely the shape that drifts.
+- Moved to `clawt_unread_should_count()` and
+  `clawt_alert_tier_for_event()`, and the second one takes the **event**
+  rather than a kind and a loose string: which detail decides the tier
+  varies per kind, and a caller passing the wrong one would classify
+  silently and wrongly. That change also found a real bug on the way --
+  classifying `image.finished` on its kind alone made every *successful*
+  download an error.
+- The payoff is that both are now exercised by
+  `tests/test-client-rules.c` without a window, a browser or a daemon:
+  twelve cases including the ones nobody would drive by hand, like an
+  event with no timestamp and a kind the daemon grows later.
+- Declaring them in the parity table made the check earn its keep
+  immediately: the old row named `CLAWT_WEB_ALERT_ROUTINE`, which stopped
+  existing the moment the web client started using the library's enum,
+  and `make parity` failed on exactly that.
+
 ### Two row builders for one kind of content drift, and only deletion stops it
 
 - The chat transcript and the Flow tab each built their own message row.

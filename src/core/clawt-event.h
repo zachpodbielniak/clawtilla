@@ -113,4 +113,51 @@ JsonNode *clawt_event_to_json(ClawtEvent *self);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtEvent, clawt_event_free)
 
+/**
+ * ClawtAlertTier:
+ * @CLAWT_ALERT_SKIP: not worth a row at all
+ * @CLAWT_ALERT_ERROR: something failed
+ * @CLAWT_ALERT_NOTICE: something degraded, or is worth knowing
+ * @CLAWT_ALERT_ROUTINE: the ordinary stream, drawn quietly
+ *
+ * How loudly an event is drawn in a client's alerts surface.
+ */
+typedef enum {
+    CLAWT_ALERT_SKIP,
+    CLAWT_ALERT_ERROR,
+    CLAWT_ALERT_NOTICE,
+    CLAWT_ALERT_ROUTINE
+} ClawtAlertTier;
+
+/**
+ * clawt_alert_tier_for_event:
+ * @event: the event
+ *
+ * Which tier an event belongs in.
+ *
+ * Only the first two tiers are coloured and only they are counted on a
+ * bell: if everything carries a colour, colour stops meaning anything,
+ * and routine entries are the majority the moment a filter widens.
+ *
+ * `image.progress` and `agent.typing` are skipped outright -- a download
+ * emits one entry per percent and would fill the whole list with one
+ * file, and typing is a spinner rather than something that happened.
+ *
+ * An agent that stopped when nobody asked it to is the one routine event
+ * that is not routine, so `agent.state` reaching `error` or `degraded`
+ * is a notice rather than an error: it may well have been asked to.
+ *
+ * It takes the event rather than a kind and a loose string, because
+ * which detail decides the tier differs per kind -- `agent.state` reads
+ * `state` and `image.finished` reads `error` -- and a caller passing the
+ * wrong one would classify silently and wrongly.
+ *
+ * Here rather than in either client because both classify the same
+ * stream, and two implementations of one rule differ exactly once -- on
+ * the kind somebody adds next.
+ *
+ * Returns: the tier
+ */
+ClawtAlertTier clawt_alert_tier_for_event(ClawtEvent *event);
+
 G_END_DECLS

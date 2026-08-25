@@ -180,3 +180,29 @@ clawt_message_body_fingerprint(ClawtMessage *self)
 
     return g_compute_checksum_for_string(G_CHECKSUM_SHA256, combined, -1);
 }
+
+gboolean
+clawt_unread_should_count(const gchar *room_id, const gchar *viewing_room,
+                          const gchar *from, gint64 event_ts,
+                          gint64 connected_at)
+{
+    if (room_id == NULL || from == NULL)
+        return FALSE;
+
+    /* The operator's own turn. */
+    if (g_strcmp0(from, "user") == 0)
+        return FALSE;
+
+    /* The conversation on screen; the transcript's own rule has that. */
+    if (viewing_room != NULL && g_strcmp0(room_id, viewing_room) == 0)
+        return FALSE;
+
+    /*
+     * Replayed rather than new.  Replayed events keep their original
+     * timestamps, which is the whole of the test.
+     */
+    if (event_ts > 0 && event_ts < connected_at)
+        return FALSE;
+
+    return TRUE;
+}

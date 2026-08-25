@@ -226,3 +226,49 @@ clawt_event_to_json(ClawtEvent *self)
 
     return json_builder_get_root(builder);
 }
+
+ClawtAlertTier
+clawt_alert_tier_for_event(ClawtEvent *event)
+{
+    const gchar *kind;
+
+    g_return_val_if_fail(event != NULL, CLAWT_ALERT_SKIP);
+
+    kind = clawt_event_get_kind(event);
+
+    if (kind == NULL)
+        return CLAWT_ALERT_SKIP;
+
+    /*
+     * One per percent, and a spinner.  Neither is a thing that happened.
+     */
+    if (g_strcmp0(kind, "image.progress") == 0 ||
+        g_strcmp0(kind, "agent.typing") == 0)
+        return CLAWT_ALERT_SKIP;
+
+    /*
+     * The two that arrive on their own.  Every other place a client says
+     * something is answering a question somebody is holding right now,
+     * and belongs in a toast rather than in a list.
+     */
+    if (g_strcmp0(kind, "message.refused") == 0)
+        return CLAWT_ALERT_ERROR;
+
+    /*
+     * A download that *succeeded* is routine; only the failure arrived on
+     * its own with nobody watching.
+     */
+    if (g_strcmp0(kind, "image.finished") == 0)
+        return (clawt_event_get_detail(event, "error") != NULL)
+                   ? CLAWT_ALERT_ERROR : CLAWT_ALERT_ROUTINE;
+
+    if (g_strcmp0(kind, "agent.state") == 0) {
+        const gchar *state = clawt_event_get_detail(event, "state");
+
+        if (g_strcmp0(state, "error") == 0 ||
+            g_strcmp0(state, "degraded") == 0)
+            return CLAWT_ALERT_NOTICE;
+    }
+
+    return CLAWT_ALERT_ROUTINE;
+}

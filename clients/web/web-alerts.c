@@ -57,10 +57,10 @@ alert_row(ClawtWebAlert *alert)
     htmx_element_add_class(row, "alert-row");
 
     switch (alert->tier) {
-    case CLAWT_WEB_ALERT_ERROR:
+    case CLAWT_ALERT_ERROR:
         htmx_element_add_class(row, "alert-error");
         break;
-    case CLAWT_WEB_ALERT_NOTICE:
+    case CLAWT_ALERT_NOTICE:
         htmx_element_add_class(row, "alert-notice");
         break;
     default:
@@ -74,7 +74,7 @@ alert_row(ClawtWebAlert *alert)
         break;
     }
 
-    if (!alert->read && alert->tier != CLAWT_WEB_ALERT_ROUTINE)
+    if (!alert->read && alert->tier != CLAWT_ALERT_ROUTINE)
         htmx_element_add_class(row, "alert-unread");
 
     htmx_element_add_class(HTMX_ELEMENT(text), "alert-text");
@@ -192,7 +192,7 @@ alerts_body(ClawtWebApp *app, gboolean show_all, const gchar *agent)
     for (i = 0; alerts != NULL && i < alerts->len; i++) {
         ClawtWebAlert *alert = g_ptr_array_index(alerts, i);
 
-        if (!show_all && alert->tier == CLAWT_WEB_ALERT_ROUTINE)
+        if (!show_all && alert->tier == CLAWT_ALERT_ROUTINE)
             continue;
 
         if (agent != NULL && g_strcmp0(agent, alert->agent) != 0)

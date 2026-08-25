@@ -118,4 +118,44 @@ gchar *clawt_message_body_fingerprint(ClawtMessage *self);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtMessage, clawt_message_free)
 
+/**
+ * clawt_unread_should_count:
+ * @room_id: (nullable): the room the message arrived in
+ * @viewing_room: (nullable): the room on screen, or %NULL
+ * @from: (nullable): who sent it
+ * @event_ts: when it happened, in microseconds
+ * @connected_at: when this client connected, in microseconds
+ *
+ * Whether an arriving message counts as unread.
+ *
+ * Four conditions, and every one of them was a bug waiting to happen:
+ *
+ * - **Not your own.**  A message from `user` is one the operator sent.
+ * - **Not the room on screen.**  A conversation being read never accrues
+ *   a count whatever the scroll position -- that case belongs to the
+ *   transcript's "New messages" rule, which deliberately carries no
+ *   number.  The two must never fire for the same message.
+ * - **Not a replay.**  A client subscribes from cursor 0 and the daemon
+ *   replays its recent events, so the first thing a fresh window
+ *   receives is everything that just happened -- possibly read in the
+ *   previous session.  Counting those opens a window already showing a
+ *   number for a conversation nobody has touched, and makes the count
+ *   depend on whether the replay beat the first fleet listing.
+ * - **A room at all.**  The caller resolves @room_id to an agent before
+ *   asking; a room that is nobody's conversation with the operator is
+ *   the fleet's own peer traffic.
+ *
+ * Here rather than in either client because both apply it, and two
+ * implementations of one rule differ exactly once -- on the case nobody
+ * looked at.  Pure, so the four conditions can be exercised without a
+ * window, a browser or a daemon.
+ *
+ * Returns: %TRUE if the message should increment an unread count
+ */
+gboolean clawt_unread_should_count(const gchar *room_id,
+                                   const gchar *viewing_room,
+                                   const gchar *from,
+                                   gint64       event_ts,
+                                   gint64       connected_at);
+
 G_END_DECLS

@@ -644,14 +644,14 @@ note_unread(ClawtWindow *self, ClawtEvent *event, const gchar *from)
     const gchar *agent_id;
     guint count;
 
-    if (room_id == NULL || from == NULL || g_strcmp0(from, "user") == 0)
-        return;
-
-    /* Replayed, not new. */
-    if (clawt_event_get_timestamp(event) < self->connected_at)
-        return;
-
-    if (g_strcmp0(room_id, self->selected_room) == 0)
+    /*
+     * The rule is clawt_unread_should_count(), in libclawt, because the
+     * web client applies the same one -- and two implementations of it
+     * would differ exactly once, on the case nobody looked at.
+     */
+    if (!clawt_unread_should_count(room_id, self->selected_room, from,
+                                   clawt_event_get_timestamp(event),
+                                   self->connected_at))
         return;
 
     agent_id = g_hash_table_lookup(self->dm_rooms, room_id);
@@ -7393,14 +7393,8 @@ build_agent_menu(ClawtWindow *self)
  * belongs in means guessing before the interesting case, and a filter
  * lets you widen after it.
  */
-typedef enum {
-    ALERT_ERROR,
-    ALERT_NOTICE,
-    ALERT_ROUTINE
-} AlertTier;
-
 typedef struct {
-    AlertTier  tier;
+    ClawtAlertTier tier;
     gchar     *text;
     gchar     *source;   /* the event kind, so a row says where to look */
     gchar     *agent;    /* the event's subject */
@@ -7431,7 +7425,7 @@ alert_free(gpointer data)
 }
 
 static void
-clawt_window_alert(ClawtWindow *self, AlertTier tier, const gchar *source,
+clawt_window_alert(ClawtWindow *self, ClawtAlertTier tier, const gchar *source,
                    const gchar *agent, const gchar *text)
 {
     Alert *alert;
@@ -7483,7 +7477,7 @@ unread_alerts(ClawtWindow *self)
     for (i = 0; self->alerts != NULL && i < self->alerts->len; i++) {
         Alert *alert = g_ptr_array_index(self->alerts, i);
 
-        if (!alert->read && alert->tier != ALERT_ROUTINE)
+        if (!alert->read && alert->tier != CLAWT_ALERT_ROUTINE)
             count++;
     }
 
@@ -7679,7 +7673,7 @@ alert_row(ClawtWindow *self, Alert *alert)
     gtk_label_set_wrap(GTK_LABEL(text), TRUE);
     gtk_label_set_selectable(GTK_LABEL(text), TRUE);
 
-    if (alert->tier == ALERT_ROUTINE) {
+    if (alert->tier == CLAWT_ALERT_ROUTINE) {
         GtkWidget *dot = gtk_label_new("\342\200\242");
 
         gtk_widget_add_css_class(dot, "dim-label");
@@ -7691,10 +7685,10 @@ alert_row(ClawtWindow *self, Alert *alert)
         gtk_box_append(GTK_BOX(box), dot);
     } else {
         GtkWidget *icon = gtk_image_new_from_icon_name(
-            alert->tier == ALERT_ERROR ? "dialog-error-symbolic"
+            alert->tier == CLAWT_ALERT_ERROR ? "dialog-error-symbolic"
                                        : "dialog-information-symbolic");
 
-        gtk_widget_add_css_class(icon, alert->tier == ALERT_ERROR
+        gtk_widget_add_css_class(icon, alert->tier == CLAWT_ALERT_ERROR
                                            ? "error" : "accent");
         gtk_widget_set_valign(icon, GTK_ALIGN_START);
         gtk_widget_add_css_class(row, "clawt-alert-card");
@@ -7805,7 +7799,7 @@ refresh_alerts(ClawtWindow *self)
     for (i = 0; self->alerts != NULL && i < self->alerts->len; i++) {
         Alert *alert = g_ptr_array_index(self->alerts, i);
 
-        if (!self->alerts_show_all && alert->tier == ALERT_ROUTINE)
+        if (!self->alerts_show_all && alert->tier == CLAWT_ALERT_ROUTINE)
             continue;
 
         if (self->alerts_agent != NULL &&
@@ -7992,36 +7986,34 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
      * `image.progress` is excluded: a download emits one per percent and
      * would fill the whole list with one file.
      */
-    if (self->alerts != NULL &&
-        g_strcmp0(kind, "message.refused") != 0 &&
-        g_strcmp0(kind, "image.progress") != 0 &&
-        g_strcmp0(kind, "agent.typing") != 0) {
-        const gchar *subject = clawt_event_get_subject(event);
-        AlertTier tier = ALERT_ROUTINE;
-        g_autofree gchar *line = NULL;
+    if (self->alerts != NULL) {
+        ClawtAlertTier tier = clawt_alert_tier_for_event(event);
 
         /*
-         * An agent that stopped when nobody asked it to is the one
-         * routine event that is not routine.  Reported as a notice
-         * rather than an error: it may well have been asked to.
+         * The two loud kinds have branches of their own further down,
+         * which say what happened in words rather than naming the kind.
+         * Everything the classifier calls routine or a notice is
+         * recorded here, quietly.
          */
-        if (g_strcmp0(kind, "agent.state") == 0) {
-            const gchar *state = clawt_event_get_detail(event, "state");
+        if (tier == CLAWT_ALERT_ROUTINE || tier == CLAWT_ALERT_NOTICE) {
+            const gchar *subject = clawt_event_get_subject(event);
+            g_autofree gchar *line = NULL;
 
-            line = g_strdup_printf("%s is %s",
-                                   subject != NULL ? subject : "?",
-                                   state != NULL ? state : "?");
+            if (g_strcmp0(kind, "agent.state") == 0) {
+                const gchar *state = clawt_event_get_detail(event, "state");
 
-            if (g_strcmp0(state, "error") == 0 ||
-                g_strcmp0(state, "degraded") == 0)
-                tier = ALERT_NOTICE;
-        } else {
-            line = g_strdup_printf("%s \302\267 %s",
-                                   kind != NULL ? kind : "?",
-                                   subject != NULL ? subject : "the fleet");
+                line = g_strdup_printf("%s is %s",
+                                       subject != NULL ? subject : "?",
+                                       state != NULL ? state : "?");
+            } else {
+                line = g_strdup_printf("%s \302\267 %s",
+                                       kind != NULL ? kind : "?",
+                                       subject != NULL ? subject
+                                                       : "the fleet");
+            }
+
+            clawt_window_alert(self, tier, kind, subject, line);
         }
-
-        clawt_window_alert(self, tier, kind, subject, line);
     }
 
     if (g_strcmp0(kind, "message") == 0) {
@@ -8147,7 +8139,7 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
              * that arrived on its own vanishes after a few seconds and
              * leaves no trace anywhere if nobody was looking.
              */
-            clawt_window_alert(self, ALERT_ERROR, "download",
+            clawt_window_alert(self, CLAWT_ALERT_ERROR, "download",
                                clawt_event_get_subject(event), message);
         }
 
@@ -8170,7 +8162,7 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
          * operator most wants to find again an hour later, which a toast
          * cannot offer.
          */
-        clawt_window_alert(self, ALERT_ERROR, "message", from, message);
+        clawt_window_alert(self, CLAWT_ALERT_ERROR, "message", from, message);
         refresh_flow(self);
         return;
     }

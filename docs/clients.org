@@ -547,6 +547,15 @@ them quiet is what keeps the loud ones loud.  Severity is carried by
 weight and container as much as by hue, so it survives a colourblind
 reader and a Catppuccin palette alike.
 
+Which tier an event lands in is ~clawt_alert_tier_for_event()~, in
+libclawt, for the same reason: both clients classify the same stream, and
+two implementations of that rule differ exactly once --- on the kind
+somebody adds next.  It takes the *event* rather than a kind and a loose
+string, because which detail decides the tier varies per kind
+(~agent.state~ reads =state=, ~image.finished= reads =error=) and a
+caller passing the wrong one would classify silently and wrongly.  Only
+the wording of a row is decided in the client.
+
 **The count never includes routine entries.**  Otherwise it would be
 permanently non-zero and would stop being read, and widening the filter
 is a thing you choose rather than something that should change the
@@ -613,6 +622,13 @@ decays on its own is a counter you stop trusting.
 open, because the sidebar beside it is saying exactly /which/ agent --
 strictly more information.  With the sidebar collapsed to a drawer the
 badge stays, since then nothing else is saying so.
+
+**Both clients ask the same function.**  ~clawt_unread_should_count()~ is
+in libclawt and takes the four conditions --- not your own, not the room
+on screen, not a replay, and a room that is somebody's conversation with
+the operator.  It was written twice before that, once per client, which
+is the shape of drift =make parity= exists to catch and cannot see: a
+rule that decides a number sends no frame and answers no command.
 
 Two limits, stated rather than buried:
 
