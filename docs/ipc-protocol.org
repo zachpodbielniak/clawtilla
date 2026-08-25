@@ -56,8 +56,20 @@ what is missing, not merely that something failed.
 | ~control.hello~ | ~token~ (TCP only) | ~version~, ~daemon~ |
 | ~control.status~ | | version, config path, agent and client counts, cursor |
 | ~control.subscribe~ | ~cursor~ | ~cursor~, ~resumed~, then a replay |
-| ~control.reload~ | | |
+| ~control.reload~ | | ~refused~ -- see below |
 | ~control.shutdown~ | | answered before the daemon quits |
+
+~control.reload~ always answers with ~refused~, an array of ~{agent,
+message}~.  It is empty when every agent was rendered.  A reload can
+succeed and still leave an agent behind -- the renderer turns down a
+~libreclaw:~ passthrough that redeclares a section clawtilla renders
+itself -- and that agent goes on running against the ~config.yaml~ it
+already had.  Reporting it as a plain success made an edit that was
+*rejected* look like an edit that was *ignored*, with the reason only in
+the daemon's journal.  It is not an error reply: the configuration was
+reloaded, and every other agent is running on the new one.  The array is
+always present so a client can tell "nothing was refused" from "this
+daemon does not report refusals".
 
 *** agent.*
 
