@@ -41,13 +41,28 @@ G_BEGIN_DECLS
  * @CLAWT_THEME_SYSTEM: follow the desktop's light/dark preference
  * @CLAWT_THEME_LIGHT: always light
  * @CLAWT_THEME_DARK: always dark
+ * @CLAWT_THEME_CATPPUCCIN_MOCHA: the Catppuccin Mocha palette, dark
  *
  * Which colour scheme the client asks libadwaita for.
+ *
+ * A named palette is one more answer to that same question rather than a
+ * second setting beside it.  The alternative -- a `palette` string next
+ * to the enum -- immediately raises what `theme: light` plus
+ * `palette: mocha` is supposed to mean, and there is no good answer:
+ * every palette is drawn for one scheme and is wrong over the other.
+ * Keeping one axis means that state cannot be written down.
+ *
+ * The enum does not grow a case per palette anywhere it is used: the
+ * colours live in a table in clawt-appearance.c and everything else asks
+ * clawt_appearance_theme_has_palette() and
+ * clawt_appearance_theme_is_dark().  Another palette is one enum value
+ * and one row.
  */
 typedef enum {
     CLAWT_THEME_SYSTEM = 0,
     CLAWT_THEME_LIGHT,
-    CLAWT_THEME_DARK
+    CLAWT_THEME_DARK,
+    CLAWT_THEME_CATPPUCCIN_MOCHA
 } ClawtTheme;
 
 #define CLAWT_TYPE_APPEARANCE (clawt_appearance_get_type())
@@ -71,6 +86,32 @@ void             clawt_appearance_free(ClawtAppearance *self);
 ClawtTheme   clawt_appearance_get_theme(ClawtAppearance *self);
 void         clawt_appearance_set_theme(ClawtAppearance *self,
                                         ClawtTheme       theme);
+
+/**
+ * clawt_appearance_theme_has_palette:
+ * @theme: a #ClawtTheme
+ *
+ * Whether @theme brings colours of its own, as opposed to only asking
+ * libadwaita for a light or dark scheme.
+ *
+ * Returns: %TRUE for a named palette
+ */
+gboolean     clawt_appearance_theme_has_palette(ClawtTheme theme);
+
+/**
+ * clawt_appearance_theme_is_dark:
+ * @theme: a #ClawtTheme
+ *
+ * Which scheme @theme needs underneath it.  A palette is drawn for one
+ * of the two, and over the other one libadwaita's own colours fight it
+ * on every widget the palette does not name.
+ *
+ * Meaningless for %CLAWT_THEME_SYSTEM, which has no answer -- the
+ * desktop's preference is the answer, and the caller already has it.
+ *
+ * Returns: %TRUE if @theme needs the dark scheme
+ */
+gboolean     clawt_appearance_theme_is_dark(ClawtTheme theme);
 
 /**
  * clawt_appearance_get_font:
