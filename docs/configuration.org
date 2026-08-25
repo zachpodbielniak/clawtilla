@@ -56,6 +56,61 @@ first is the searchable per-agent store; the second is libreclaw's
 ~MEMORY.md~ size budget.  The plural one is plural for exactly this
 reason.
 
+** Options an agent can override
+
+Some fleet settings can also be written inside a single agent, which
+then follows its own value rather than the fleet's.  The full order is:
+the agent's own block, then the fleet setting, then the schema default.
+
+| Inside an agent            | Fleet-wide                                  |
+|----------------------------+---------------------------------------------|
+| ~mailbox.max_depth~        | ~orchestration.mailbox.max_depth~           |
+| ~mailbox.overflow~         | ~orchestration.mailbox.overflow~            |
+| ~mailbox.max_attempts~     | ~orchestration.mailbox.max_attempts~        |
+| ~mailbox.lease_seconds~    | ~orchestration.mailbox.lease_seconds~       |
+| ~mailbox.default_ttl_seconds~ | ~orchestration.mailbox.default_ttl_seconds~ |
+| ~mailbox.backoff_seconds~  | ~orchestration.mailbox.backoff_seconds~     |
+| ~memories.enabled~         | ~memories.enabled~                          |
+| ~memories.max_results~     | ~memories.max_results~                      |
+| ~memories.readers~         | ~memories.readers~                          |
+| ~model.provider~           | ~defaults.provider~                         |
+| ~model.model~              | ~defaults.model~                            |
+| ~computer.type~            | ~defaults.computer~                         |
+| ~runtime.restart~          | ~defaults.restart~                          |
+| ~computer.container.image~ | ~defaults.container_image~                  |
+
+The two spellings differ because the sections do.  ~orchestration~ is
+the fleet's own section, so an agent overriding one of its keys drops
+it; ~memories~ is a subsystem and keeps its whole name; and the
+~defaults~ section renames outright, since ~computer.type~ is not
+~defaults.computer.type~.
+
+#+begin_src yaml
+orchestration:
+  mailbox:
+    max_depth: 1000
+
+agents:
+  - id: chatty
+    mailbox:
+      max_depth: 50        # this agent only
+#+end_src
+
+*** Where the table lives
+
+In the schema, beside everything else --
+~clawt_config_schema_agent_keys()~ -- and not in the code that reads
+each option.  It was in two private tables for a long time, one for the
+mailbox keys and one for the rest, and between them they were the only
+thing that knew an agent's spelling for a fleet option.  So the daemon
+could not report those options to a client, and neither editor offered
+them: nine settings that worked when typed into the file and did not
+exist anywhere else.
+
+~tests/test-config-schema.c~ checks the table against the schema and
+against a real agent, so a per-agent option added without an entry is a
+test failure rather than an option nobody can reach.
+
 ** daemon
 
 #+begin_src yaml

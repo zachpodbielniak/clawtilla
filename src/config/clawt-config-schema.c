@@ -1837,6 +1837,124 @@ clawt_config_schema_get(gsize *n_entries)
     return schema;
 }
 
+
+/* ── Options settable in two places ──────────────────────────────── */
+
+/*
+ * The agent-relative name for every option that also has a fleet-level
+ * one.
+ *
+ * This is data rather than a rule because it is not derivable. The
+ * mailbox keys drop their section -- an agent writes `mailbox.max_depth`
+ * for `orchestration.mailbox.max_depth` -- while the memories keys keep
+ * their whole name, and the `defaults.*` inheritances rename outright:
+ * `computer.type` takes its default from `defaults.computer`.
+ *
+ * It lives here, beside the schema, because it *is* schema: it says
+ * where an option can be written. It used to live in two other files,
+ * privately, and the cost was concrete -- the daemon could not tell a
+ * client which options an agent had, so neither client could offer the
+ * nine that only appear here.
+ *
+ * tests/test-config-schema.c checks both halves of it against the schema
+ * and against a real agent, so a PER_AGENT key added without an entry
+ * here is a test failure rather than an option nobody can set.
+ */
+static const ClawtSchemaAgentKey agent_keys[] = {
+    /*
+     * Fleet policy an agent may override. The `orchestration.` section
+     * is the fleet's own, so the per-agent form drops it.
+     */
+    { "mailbox.max_depth",          "orchestration.mailbox.max_depth" },
+    { "mailbox.overflow",           "orchestration.mailbox.overflow" },
+    { "mailbox.max_attempts",       "orchestration.mailbox.max_attempts" },
+    { "mailbox.lease_seconds",      "orchestration.mailbox.lease_seconds" },
+    { "mailbox.default_ttl_seconds",
+      "orchestration.mailbox.default_ttl_seconds" },
+    { "mailbox.backoff_seconds",    "orchestration.mailbox.backoff_seconds" },
+
+    /*
+     * The memory store keeps its whole name inside an agent, because
+     * `memories` is a subsystem rather than a section of fleet policy --
+     * and there is no `defaults.memories` to inherit from, so the
+     * top-level key *is* the fleet-wide setting.
+     */
+    { "memories.enabled",           "memories.enabled" },
+    { "memories.max_results",       "memories.max_results" },
+    { "memories.readers",           "memories.readers" },
+
+    /*
+     * `agents.*` options whose default comes from the `defaults:`
+     * section. This is what makes that section mean anything: an agent
+     * that says nothing about its model follows the fleet's choice
+     * rather than the schema's.
+     */
+    { "model.provider",             "defaults.provider" },
+    { "model.model",                "defaults.model" },
+    { "computer.type",              "defaults.computer" },
+    { "runtime.restart",            "defaults.restart" },
+    { "computer.container.image",   "defaults.container_image" }
+};
+
+const ClawtSchemaAgentKey *
+clawt_config_schema_agent_keys(gsize *n_entries)
+{
+    g_return_val_if_fail(n_entries != NULL, NULL);
+
+    *n_entries = G_N_ELEMENTS(agent_keys);
+
+    return agent_keys;
+}
+
+const gchar *
+clawt_config_schema_agent_key_for(const gchar *fleet_key)
+{
+    gsize i;
+
+    g_return_val_if_fail(fleet_key != NULL, NULL);
+
+    for (i = 0; i < G_N_ELEMENTS(agent_keys); i++) {
+        if (g_strcmp0(agent_keys[i].fleet_key, fleet_key) == 0)
+            return agent_keys[i].agent_key;
+    }
+
+    return NULL;
+}
+
+const gchar *
+clawt_config_schema_agent_name(const ClawtSchemaEntry *entry)
+{
+    g_return_val_if_fail(entry != NULL, NULL);
+
+    if (entry->type == CLAWT_SCHEMA_SECTION ||
+        entry->type == CLAWT_SCHEMA_MAPPING ||
+        entry->type == CLAWT_SCHEMA_LIST_OF)
+        return NULL;
+
+    if (g_str_has_prefix(entry->key, "agents."))
+        return entry->key + strlen("agents.");
+
+    if (entry->flags & CLAWT_SCHEMA_FLAG_PER_AGENT)
+        return clawt_config_schema_agent_key_for(entry->key);
+
+    return NULL;
+}
+
+const gchar *
+clawt_config_schema_fleet_key_for(const gchar *agent_key)
+{
+    gsize i;
+
+    g_return_val_if_fail(agent_key != NULL, NULL);
+
+    for (i = 0; i < G_N_ELEMENTS(agent_keys); i++) {
+        if (g_strcmp0(agent_keys[i].agent_key, agent_key) == 0)
+            return agent_keys[i].fleet_key;
+    }
+
+    return NULL;
+}
+
 const ClawtSchemaEntry *
 clawt_config_schema_lookup(const gchar *key)
 {

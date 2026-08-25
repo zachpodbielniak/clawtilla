@@ -68,6 +68,37 @@ on_agent_state_changed(ClawtAgent  *agent,
 }
 
 /*
+ * One mailbox setting, as this agent sees it.
+ *
+ * The agent-relative spelling comes from the schema rather than from a
+ * list here -- and so does the fallback, since
+ * clawt_agent_config_get_int() now follows the same relation down to the
+ * fleet key and then to the schema default. That is why this no longer
+ * asks whether the agent set the key: the answer to "what is it for this
+ * agent" is one lookup, not a choice between two.
+ *
+ * A fleet key with no agent spelling is a schema mistake rather than a
+ * runtime one, so it warns and falls back to the fleet value instead of
+ * silently reading nothing.
+ */
+static gint64
+mailbox_setting(ClawtAgentManager *self,
+                ClawtAgentConfig  *agent_config,
+                const gchar       *fleet_key)
+{
+    const gchar *agent_key = clawt_config_schema_agent_key_for(fleet_key);
+
+    if (agent_key == NULL) {
+        g_warning("schema: %s has no agent-relative name, so an agent "
+                  "cannot override it", fleet_key);
+
+        return clawt_config_get_int(self->config, fleet_key);
+    }
+
+    return clawt_agent_config_get_int(agent_config, agent_key);
+}
+
+/*
  * Applies the mailbox policy from configuration, letting an agent override
  * the fleet defaults.
  */
@@ -76,34 +107,38 @@ configure_mailbox(ClawtAgentManager *self,
                   ClawtAgentConfig  *agent_config,
                   ClawtMailbox      *mailbox)
 {
-    static const struct {
-        const gchar *agent_key;
-        const gchar *global_key;
-    } keys[] = {
-        { "mailbox.max_depth",          "orchestration.mailbox.max_depth" },
-        { "mailbox.max_attempts",       "orchestration.mailbox.max_attempts" },
-        { "mailbox.lease_seconds",      "orchestration.mailbox.lease_seconds" },
-        { "mailbox.backoff_seconds",    "orchestration.mailbox.backoff_seconds" },
-        { "mailbox.default_ttl_seconds",
-          "orchestration.mailbox.default_ttl_seconds" }
-    };
-    gint64 values[G_N_ELEMENTS(keys)];
     ClawtOverflowPolicy overflow;
-    gsize i;
 
-    for (i = 0; i < G_N_ELEMENTS(keys); i++) {
-        values[i] = clawt_agent_config_has_key(agent_config, keys[i].agent_key)
-                    ? clawt_agent_config_get_int(agent_config, keys[i].agent_key)
-                    : clawt_config_get_int(self->config, keys[i].global_key);
+    /*
+     * Overflow was read from the fleet alone for the whole life of this
+     * function, while the schema has always flagged it PER_AGENT -- so
+     * an agent that set `mailbox.overflow` was told it could and then
+     * ignored. It is read the same way as the other five now.
+     */
+    {
+        const gchar *agent_key = clawt_config_schema_agent_key_for(
+            "orchestration.mailbox.overflow");
+
+        overflow = (ClawtOverflowPolicy)
+            ((agent_key != NULL)
+             ? clawt_agent_config_get_enum(agent_config, agent_key)
+             : clawt_config_get_enum(self->config,
+                                     "orchestration.mailbox.overflow"));
     }
 
-    overflow = (ClawtOverflowPolicy)
-        clawt_config_get_enum(self->config, "orchestration.mailbox.overflow");
-
-    clawt_mailbox_set_policy(mailbox,
-                             (guint)values[0], overflow,
-                             (guint)values[1], (guint)values[2],
-                             (guint)values[3], (guint)values[4]);
+    clawt_mailbox_set_policy(
+        mailbox,
+        (guint)mailbox_setting(self, agent_config,
+                               "orchestration.mailbox.max_depth"),
+        overflow,
+        (guint)mailbox_setting(self, agent_config,
+                               "orchestration.mailbox.max_attempts"),
+        (guint)mailbox_setting(self, agent_config,
+                               "orchestration.mailbox.lease_seconds"),
+        (guint)mailbox_setting(self, agent_config,
+                               "orchestration.mailbox.backoff_seconds"),
+        (guint)mailbox_setting(self, agent_config,
+                               "orchestration.mailbox.default_ttl_seconds"));
 }
 
 /*

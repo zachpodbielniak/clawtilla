@@ -66,6 +66,7 @@ static gchar *      disk_chooser_value(ImageChooser *chooser);
 static const gchar *editor_command(void);
 static void         on_send(GtkWidget *widget, gpointer user_data);
 static void         load_history(ClawtWindow *self);
+static gboolean     apply_schema_rows(ClawtWindow *self);
 static void         on_new_agent(GtkButton *button,
                                  gpointer   user_data);
 static void         on_import_agent(GtkButton *button,
@@ -191,6 +192,14 @@ struct _ClawtWindow {
     GtkWidget         *team_role_row;
     GStrv              team_ids;
     gboolean           settings_need_restart;
+
+    /*
+     * The rows built straight from the schema, and the key each one
+     * sets. Everything else in the inspector is hand-built, because it
+     * has copy worth writing by hand; these are the options that had no
+     * UI at all until the schema could say what an agent calls them.
+     */
+    GPtrArray         *schema_rows;         /* SchemaRow*, owned */
     GHashTable        *collapsed_teams;   /* team id -> GINT_TO_POINTER(1) */
     ModelChooser       inspector_models;
     ImageChooser       inspector_image;
@@ -3492,6 +3501,7 @@ on_save_agent(GtkButton *button, gpointer user_data)
     if (self->selected_agent == NULL)
         return;
 
+    ok &= apply_schema_rows(self);
     ok &= apply_setting(self, "name",
                         gtk_editable_get_text(GTK_EDITABLE(self->name_row)));
     ok &= apply_setting(self, "description",
@@ -3951,6 +3961,27 @@ row_opens_something(GtkWidget *row)
     return row;
 }
 
+/*
+ * One row built from a schema entry, and the key it writes.
+ */
+typedef struct {
+    GtkWidget       *row;
+    gchar           *key;
+    ClawtSchemaType  type;
+    GStrv            choices;               /* for an enum */
+} SchemaRow;
+
+static void
+schema_row_free(gpointer data)
+{
+    SchemaRow *row = data;
+
+    g_free(row->key);
+    g_strfreev(row->choices);
+    g_free(row);
+}
+
+
 static GtkWidget *
 entry_row(const gchar *title, const gchar *value)
 {
@@ -3971,6 +4002,166 @@ switch_row(const gchar *title, const gchar *subtitle, gboolean active)
     adw_switch_row_set_active(ADW_SWITCH_ROW(row), active);
 
     return row;
+}
+
+/*
+ * The nicknames an enum option accepts, from its own GType.
+ */
+static GStrv
+schema_enum_choices(const ClawtSchemaEntry *entry)
+{
+    g_autoptr(GPtrArray) values = g_ptr_array_new();
+    g_autoptr(GEnumClass) klass = NULL;
+    guint i;
+
+    if (entry->enum_type == NULL || !G_TYPE_IS_ENUM(entry->enum_type()))
+        return NULL;
+
+    klass = g_type_class_ref(entry->enum_type());
+
+    for (i = 0; i < klass->n_values; i++)
+        g_ptr_array_add(values, g_strdup(klass->values[i].value_nick));
+
+    g_ptr_array_add(values, NULL);
+
+    return (GStrv)g_ptr_array_free(g_steal_pointer(&values), FALSE);
+}
+
+/*
+ * Every option an agent can set that has no hand-built row of its own.
+ *
+ * Walked from the schema rather than listed, which is what makes these
+ * appear at all: the six mailbox overrides and three memories ones are
+ * not `agents.*` keys, so nothing here knew their names until
+ * clawt_config_schema_agent_name() could say. They were settable in a
+ * config file and absent from both clients for the whole life of the
+ * feature.
+ *
+ * The rows are generic on purpose. The hand-built ones above earn their
+ * copy -- "May create agents" explains which of two similarly-named
+ * settings actually grants the tool -- and a generated row cannot do
+ * that. These get the schema's own first line instead, which is better
+ * than not existing.
+ */
+static void
+build_schema_rows(ClawtWindow *self, JsonObject *settings)
+{
+    GtkWidget *group = adw_preferences_group_new();
+    const ClawtSchemaEntry *schema;
+    gsize n_entries = 0;
+    gsize i;
+    guint added = 0;
+
+    g_ptr_array_set_size(self->schema_rows, 0);
+
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group),
+                                    "Mailbox and memories");
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(group),
+        "Fleet settings this agent may override. Left as they are, each "
+        "follows the fleet.");
+
+    schema = clawt_config_schema_get(&n_entries);
+
+    for (i = 0; i < n_entries; i++) {
+        const ClawtSchemaEntry *entry = &schema[i];
+        const gchar *key = clawt_config_schema_agent_name(entry);
+        const gchar *value;
+        SchemaRow *record;
+
+        /*
+         * Only the ones with no row of their own. An `agents.*` option
+         * is already on screen above, written by hand.
+         */
+        if (key == NULL || g_str_has_prefix(entry->key, "agents."))
+            continue;
+
+        value = (settings != NULL && json_object_has_member(settings, key))
+                ? json_object_get_string_member(settings, key) : NULL;
+
+        record = g_new0(SchemaRow, 1);
+        record->key = g_strdup(key);
+        record->type = entry->type;
+
+        switch (entry->type) {
+        case CLAWT_SCHEMA_BOOLEAN:
+            record->row = switch_row(key, entry->doc,
+                                     g_strcmp0(value, "true") == 0);
+            break;
+
+        case CLAWT_SCHEMA_ENUM:
+            record->choices = schema_enum_choices(entry);
+
+            if (record->choices != NULL) {
+                record->row = combo_row(
+                    key, (const gchar *const *)record->choices, value);
+                break;
+            }
+
+            record->row = entry_row(key, value);
+            record->type = CLAWT_SCHEMA_STRING;
+            break;
+
+        default:
+            record->row = entry_row(key, value);
+            break;
+        }
+
+        g_ptr_array_add(self->schema_rows, record);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), record->row);
+        added++;
+    }
+
+    if (added == 0) {
+        gtk_widget_unparent(group);
+        return;
+    }
+
+    gtk_box_append(self->inspector, group);
+}
+
+/*
+ * Writes back whatever the generic rows hold.
+ */
+static gboolean
+apply_schema_rows(ClawtWindow *self)
+{
+    gboolean ok = TRUE;
+    guint i;
+
+    for (i = 0; i < self->schema_rows->len; i++) {
+        SchemaRow *record = g_ptr_array_index(self->schema_rows, i);
+        g_autofree gchar *value = NULL;
+
+        switch (record->type) {
+        case CLAWT_SCHEMA_BOOLEAN:
+            value = g_strdup(
+                adw_switch_row_get_active(ADW_SWITCH_ROW(record->row))
+                ? "true" : "false");
+            break;
+
+        case CLAWT_SCHEMA_ENUM: {
+            guint selected =
+                adw_combo_row_get_selected(ADW_COMBO_ROW(record->row));
+
+            if (record->choices == NULL ||
+                selected >= g_strv_length(record->choices))
+                continue;
+
+            value = g_strdup(record->choices[selected]);
+            break;
+        }
+
+        default:
+            value = g_strdup(
+                gtk_editable_get_text(GTK_EDITABLE(record->row)));
+            break;
+        }
+
+        ok &= apply_setting(self, record->key, value);
+    }
+
+    return ok;
 }
 
 /*
@@ -5054,6 +5245,17 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
     build_files(self);
 
     /* ── Removing it ── */
+    /*
+     * Built here rather than in the "Settings" group above, so the
+     * generated rows sit apart from the hand-written ones and nobody
+     * has to wonder which is which.
+     */
+    build_schema_rows(self,
+                      (payload != NULL &&
+                       json_object_has_member(payload, "settings"))
+                      ? json_object_get_object_member(payload, "settings")
+                      : NULL);
+
     danger = adw_preferences_group_new();
     adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(danger),
                                     "Danger zone");
@@ -13456,6 +13658,12 @@ clawt_window_finalize(GObject *object)
     g_clear_pointer(&self->settings_bars, g_hash_table_unref);
     g_clear_pointer(&self->settings_catalog, json_node_unref);
 
+    /*
+     * The records only, not the widgets: those belong to the group they
+     * were added to, which GTK has already taken apart.
+     */
+    g_clear_pointer(&self->schema_rows, g_ptr_array_unref);
+
     G_OBJECT_CLASS(clawt_window_parent_class)->finalize(object);
 }
 
@@ -13474,6 +13682,7 @@ clawt_window_init(ClawtWindow *self)
     self->following = TRUE;
     self->connections = g_ptr_array_new_with_free_func(
         (GDestroyNotify)clawt_connection_free);
+    self->schema_rows = g_ptr_array_new_with_free_func(schema_row_free);
     self->shown = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                         NULL);
     self->drafts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,

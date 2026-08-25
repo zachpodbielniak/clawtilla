@@ -2605,6 +2605,56 @@ the same program.
   refusal came back as a rendered page with 200 on it.
 
 
+### A relationship the schema could not state cost nine settings
+
+- `orchestration.mailbox.max_depth` is `mailbox.max_depth` inside an
+  agent; `memories.enabled` keeps its whole name; `computer.type` takes
+  its default from `defaults.computer`. None of that is derivable, and it
+  was written down in two private tables -- `configure_mailbox()` in
+  clawt-agent-manager.c and `inherited[]` in clawt-config.c. Between
+  them they were the only thing that knew an agent's spelling for a fleet
+  option, so `add_agent_settings()` had to skip all nine, and neither
+  client could offer them. They worked when typed into the file and
+  existed nowhere else.
+- `clawt_config_schema_agent_keys()` states it once, beside the schema,
+  because it *is* schema: it says where an option may be written. Both
+  tables now read it, and `clawt_config_schema_agent_name()` gives the
+  daemon and both clients one answer to "what is this called on an
+  agent" -- they had three, which is how the daemon reported an option
+  the web client did not draw.
+- A field on `ClawtSchemaEntry` would have been tidier and was not worth
+  it: `-Wextra` warns on a short positional initialiser, so one more
+  field means touching all 250 rows. The test is the guard instead --
+  a PER_AGENT key with no entry fails `make test`.
+
+### Three getters, three different wrong answers to the same lookup
+
+- Fixing the above exposed what "no `agents.mailbox.overflow` row" had
+  been doing. `get_string` fell back to the fleet key and was right;
+  `get_enum` looked only under `agents.` , found nothing, and returned 0
+  -- which for the overflow policy is `reject`, so an agent asking for
+  `block-sender` got the opposite, silently; `get_string_list` never
+  consulted the fleet value at all, so `memories.readers` set fleet-wide
+  reached no agent.
+- One resolver now, `agent_schema_entry()`, used by all of them. Three
+  copies of "find the schema entry for an agent-relative key" is the
+  same shape as the two key tables, one level down.
+- And `configure_mailbox()` read `overflow` from the fleet alone while
+  the schema had flagged it PER_AGENT since it was written. A flag that
+  says an agent may override an option, and code that ignores the
+  override, is a promise nothing keeps -- and the test that now writes
+  every relation key into an agent and reads it back is what makes that
+  checkable rather than noticed.
+
+### Do not `git checkout` a file to undo a test mutation
+
+- Reverting a deliberate break to confirm a test catches it is a habit
+  worth keeping; `git checkout <file>` is the wrong tool for it when the
+  file has uncommitted work, which during a change is always. It threw
+  away the relation table minutes after it was written. Copy the file
+  aside and copy it back.
+
+
 ## Things to NEVER Do
 
 - Never hand-edit `data/example-config.yaml` or `data/default-config.yaml`
@@ -2640,6 +2690,9 @@ the same program.
 - Never return a secret obtained on a client's behalf to that client. A
   Matrix token goes to a 0600 file and the reply names the file
 - Never write a hand-maintained list of an option's keys. Walk the schema
+- Never state a relationship between two config keys anywhere but the
+  schema. Two private copies of "what an agent calls this fleet option"
+  is how nine settings came to be unreachable from every client
 - Never put a connector's credential anywhere the agent can read it: not
   in `.mcp.json`, not in its environment, not in an argv, not in an IPC
   response. The relay reads the 0600 file itself and hands it to the

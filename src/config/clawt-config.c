@@ -394,32 +394,58 @@ clawt_agent_config_get_shadow_reason(ClawtAgentConfig *self)
  * an agent that says nothing about its model should follow the fleet's
  * choice rather than the schema's.
  */
+
+/*
+ * The schema entry describing an agent-relative key.
+ *
+ * Most are `agents.<key>`. The ones that can also be set fleet-wide are
+ * not: `mailbox.overflow` inside an agent is the schema's
+ * `orchestration.mailbox.overflow`, and there is no `agents.mailbox.*`
+ * row at all.
+ *
+ * Looking only under `agents.` therefore found nothing for those, and
+ * each getter did something different and wrong with that -- get_enum
+ * returned 0, which for the overflow policy is `reject`, whatever the
+ * fleet had chosen. One resolver now, used by all of them.
+ */
+static const ClawtSchemaEntry *
+agent_schema_entry(const gchar *key)
+{
+    g_autofree gchar *schema_key = NULL;
+    const ClawtSchemaEntry *entry;
+    const gchar *fleet_key;
+
+    if (key == NULL)
+        return NULL;
+
+    schema_key = g_strdup_printf("agents.%s", key);
+    entry = clawt_config_schema_lookup(schema_key);
+
+    if (entry != NULL)
+        return entry;
+
+    fleet_key = clawt_config_schema_fleet_key_for(key);
+
+    return (fleet_key != NULL) ? clawt_config_schema_lookup(fleet_key) : NULL;
+}
+
+/*
+ * The schema default for an agent-relative key, through the same
+ * resolver.
+ */
+static const gchar *
+agent_schema_default(const gchar *key)
+{
+    const ClawtSchemaEntry *entry = agent_schema_entry(key);
+
+    return (entry != NULL) ? entry->default_value : NULL;
+}
+
 const gchar *
 clawt_agent_config_get_string(ClawtAgentConfig *self, const gchar *key)
 {
-    static const struct {
-        const gchar *agent_key;
-        const gchar *default_key;
-    } inherited[] = {
-        { "model.provider",  "defaults.provider"  },
-        { "model.model",     "defaults.model"     },
-        { "computer.type",   "defaults.computer"  },
-        { "runtime.restart", "defaults.restart"   },
-        { "computer.container.image", "defaults.container_image" },
-
-        /*
-         * These two fall back to the top-level key rather than a
-         * defaults.* one, because that section *is* the fleet-wide
-         * setting -- there is no defaults.memories, and inventing one
-         * would be a second place to say the same thing.
-         */
-        { "memories.enabled",     "memories.enabled"     },
-        { "memories.max_results", "memories.max_results" },
-        { NULL, NULL }
-    };
-    g_autofree gchar *schema_key = NULL;
+    const gchar *fleet_key;
     const gchar *value;
-    gsize i;
 
     g_return_val_if_fail(self != NULL, NULL);
     g_return_val_if_fail(key != NULL, NULL);
@@ -428,17 +454,23 @@ clawt_agent_config_get_string(ClawtAgentConfig *self, const gchar *key)
     if (value != NULL)
         return value;
 
-    for (i = 0; inherited[i].agent_key != NULL; i++) {
-        if (g_strcmp0(key, inherited[i].agent_key) != 0)
-            continue;
+    /*
+     * Which fleet key this falls back to comes from the schema, not from
+     * a list here. There were two such lists -- this one and the mailbox
+     * one in clawt-agent-manager.c -- and between them they were the only
+     * thing that knew an agent's spelling for a fleet option, which is
+     * why the daemon could not report those options to a client at all.
+     */
+    fleet_key = clawt_config_schema_fleet_key_for(key);
 
-        value = clawt_config_get_string(self->config, inherited[i].default_key);
+    if (fleet_key != NULL) {
+        value = clawt_config_get_string(self->config, fleet_key);
+
         if (value != NULL)
             return value;
     }
 
-    schema_key = g_strdup_printf("agents.%s", key);
-    return schema_default_for(schema_key);
+    return agent_schema_default(key);
 }
 
 gchar *
@@ -464,15 +496,13 @@ clawt_agent_config_get_int(ClawtAgentConfig *self, const gchar *key)
 gint
 clawt_agent_config_get_enum(ClawtAgentConfig *self, const gchar *key)
 {
-    g_autofree gchar *schema_key = NULL;
     const ClawtSchemaEntry *entry;
     const gchar *nick;
     gint value = 0;
 
     g_return_val_if_fail(self != NULL, 0);
 
-    schema_key = g_strdup_printf("agents.%s", key);
-    entry = clawt_config_schema_lookup(schema_key);
+    entry = agent_schema_entry(key);
 
     if (entry == NULL || entry->enum_type == NULL)
         return 0;
@@ -525,7 +555,6 @@ clawt_agent_config_get_string_list(ClawtAgentConfig *self, const gchar *key)
 {
     GStrv value;
     const gchar *fallback;
-    g_autofree gchar *schema_key = NULL;
 
     g_return_val_if_fail(self != NULL, NULL);
 
@@ -533,6 +562,25 @@ clawt_agent_config_get_string_list(ClawtAgentConfig *self, const gchar *key)
 
     if (value != NULL)
         return value;
+
+    /*
+     * Then the fleet's value, for an option that has one.
+     *
+     * This step was missing here and present in every other getter, so
+     * `memories.readers` set fleet-wide reached no agent at all -- the
+     * only list among the options an agent can inherit, and the only
+     * getter that did not look.
+     */
+    {
+        const gchar *fleet_key = clawt_config_schema_fleet_key_for(key);
+
+        if (fleet_key != NULL) {
+            value = clawt_config_get_string_list(self->config, fleet_key);
+
+            if (value != NULL)
+                return value;
+        }
+    }
 
     /*
      * A list falls back to the schema's default like every other type.
@@ -543,8 +591,7 @@ clawt_agent_config_get_string_list(ClawtAgentConfig *self, const gchar *key)
      * for it. Defaults are comma-separated in the table, which is the
      * same spelling the generator renders from.
      */
-    schema_key = g_strconcat("agents.", key, NULL);
-    fallback = schema_default_for(schema_key);
+    fallback = agent_schema_default(key);
 
     if (fallback == NULL)
         return NULL;

@@ -108,6 +108,90 @@ typedef struct {
 } ClawtSchemaEntry;
 
 /**
+ * ClawtSchemaAgentKey:
+ * @agent_key: what the option is called inside an `agents:` block
+ * @fleet_key: the fleet-level key it falls back to when the agent is silent
+ *
+ * One option that can be set in two places.
+ *
+ * Two shapes reach this, and they are the same relationship seen from
+ * opposite ends. A fleet-policy key carrying %CLAWT_SCHEMA_FLAG_PER_AGENT
+ * may also be written inside an agent, under a shorter name --
+ * `orchestration.mailbox.max_depth` is `mailbox.max_depth` there. And an
+ * `agents.*` key may take its default from the `defaults:` section --
+ * `model.provider` from `defaults.provider`. Neither spelling is
+ * derivable from the other: `computer.type` inherits `defaults.computer`
+ * and `memories.enabled` keeps its whole name.
+ *
+ * So it is stated, once, here. It used to be stated twice and privately
+ * -- in clawt-agent-manager.c for the mailbox keys and in clawt-config.c
+ * for the rest -- which is how the daemon came to have no way to report
+ * the nine PER_AGENT options to a client, and so no client could offer
+ * them.
+ */
+typedef struct {
+    const gchar *agent_key;
+    const gchar *fleet_key;
+} ClawtSchemaAgentKey;
+
+/**
+ * clawt_config_schema_agent_keys:
+ * @n_entries: (out): number of entries
+ *
+ * Every option settable both on an agent and on the fleet.
+ *
+ * Returns: (transfer none) (array length=n_entries): the relation
+ */
+const ClawtSchemaAgentKey *
+clawt_config_schema_agent_keys(gsize *n_entries);
+
+/**
+ * clawt_config_schema_agent_key_for:
+ * @fleet_key: a fleet-level key
+ *
+ * What @fleet_key is called inside an `agents:` block.
+ *
+ * Returns: (transfer none) (nullable): the agent-relative name, or %NULL
+ *   if @fleet_key cannot be set per agent
+ */
+const gchar *
+clawt_config_schema_agent_key_for(const gchar *fleet_key);
+
+/**
+ * clawt_config_schema_fleet_key_for:
+ * @agent_key: an agent-relative key
+ *
+ * The fleet-level key @agent_key falls back to.
+ *
+ * Returns: (transfer none) (nullable): the fleet key, or %NULL if this
+ *   option has no fleet-wide setting
+ */
+const gchar *
+clawt_config_schema_fleet_key_for(const gchar *agent_key);
+
+/**
+ * clawt_config_schema_agent_name:
+ * @entry: a schema entry
+ *
+ * What @entry is called inside an `agents:` block, if anything.
+ *
+ * Two shapes are settable on an agent and they are spelled differently:
+ * an `agents.*` row is itself the option, while a fleet key flagged
+ * %CLAWT_SCHEMA_FLAG_PER_AGENT has a shorter name in the relation. Every
+ * caller that builds an editor, or reports what an agent has, needs the
+ * same answer -- so it is given once here rather than branched on in
+ * each of them, which is how the daemon and the web client came to
+ * disagree about whether nine options existed.
+ *
+ * Sections, mappings and lists-of return %NULL: they are structure
+ * rather than settings.
+ *
+ * Returns: (transfer none) (nullable): the agent-relative name
+ */
+const gchar *
+clawt_config_schema_agent_name(const ClawtSchemaEntry *entry);
+
+/**
  * clawt_config_schema_get:
  * @n_entries: (out): number of entries
  *

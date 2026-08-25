@@ -3326,43 +3326,17 @@ add_agent_settings(JsonBuilder *builder, ClawtAgent *agent)
         const ClawtSchemaEntry *entry = &schema[i];
         const gchar *key;
 
-        if (entry->type == CLAWT_SCHEMA_SECTION ||
-            entry->type == CLAWT_SCHEMA_MAPPING ||
-            entry->type == CLAWT_SCHEMA_LIST_OF)
-            continue;
-
         /*
-         * Two spellings reach an agent block. A key already under
-         * "agents." is per-agent by construction; a fleet-level key
-         * carrying PER_AGENT may also be written inside an agent, under
-         * its own last section -- `orchestration.mailbox.max_depth` is
-         * `mailbox.max_depth` there.
-         *
-         * Both are reported, because an editor that offered only the
-         * first would silently lack every mailbox override and the
-         * person would have no way to tell that from the option not
-         * existing.
+         * What this option is called inside an agent block, or nothing
+         * if it is not settable there. The rule lives in the schema so
+         * that a client building an editor derives the same set -- it
+         * did not, once, and the daemon and the web client disagreed
+         * about whether nine options existed.
          */
-        if (g_str_has_prefix(entry->key, "agents.")) {
-            key = entry->key + strlen("agents.");
-        } else {
-            /*
-             * PER_AGENT keys -- the six `orchestration.mailbox.*` and
-             * the three `memories.*` -- are deliberately not reported.
-             *
-             * Their spelling inside an agent block is not derivable from
-             * the schema: `orchestration.mailbox.max_depth` is
-             * `mailbox.max_depth` there and `memories.enabled` keeps its
-             * whole name, and the two rules live in hand-written tables
-             * in clawt-agent-manager.c and clawt-config.c rather than in
-             * the schema. Reporting a guessed name would produce an
-             * editor whose fields are accepted, reported as saved, and
-             * then read from nowhere -- which is the exact failure the
-             * "walk the schema" rule exists to prevent, arrived at from
-             * the other direction.
-             */
+        key = clawt_config_schema_agent_name(entry);
+
+        if (key == NULL)
             continue;
-        }
 
         /*
          * Two entries resolving to one agent-relative name would emit

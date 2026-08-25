@@ -440,16 +440,11 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
 
         for (i = 0; i < n_entries; i++) {
             const ClawtSchemaEntry *entry = &schema[i];
-            const gchar *key;
+            const gchar *key = clawt_config_schema_agent_name(entry);
             g_autofree gchar *prefix = NULL;
             GPtrArray *bucket;
 
-            if (!g_str_has_prefix(entry->key, "agents."))
-                continue;
-
-            key = entry->key + strlen("agents.");
-
-            if (skip_key(key, entry))
+            if (key == NULL || skip_key(key, entry))
                 continue;
 
             prefix = key_prefix(key);
@@ -497,7 +492,7 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
 
             for (k = 0; k < bucket->len; k++) {
                 const ClawtSchemaEntry *entry = g_ptr_array_index(bucket, k);
-                const gchar *key = entry->key + strlen("agents.");
+                const gchar *key = clawt_config_schema_agent_name(entry);
                 const gchar *value = (settings != NULL)
                                      ? clawt_web_member(settings, key, "") : "";
 
@@ -568,19 +563,18 @@ apply_form(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
 
     for (i = 0; i < n_entries; i++) {
         const ClawtSchemaEntry *entry = &schema[i];
-        const gchar *key;
+        const gchar *key = clawt_config_schema_agent_name(entry);
         g_autofree gchar *field = NULL;
         g_autofree gchar *posted = NULL;
         const gchar *current;
         g_autoptr(ClawtWebPayload) payload = NULL;
         g_autoptr(JsonNode) reply = NULL;
 
-        if (!g_str_has_prefix(entry->key, "agents."))
-            continue;
-
-        key = entry->key + strlen("agents.");
-
-        if (skip_key(key, entry))
+        /*
+         * The same derivation the renderer uses. Two answers here would
+         * mean a field that draws and does not save, or the reverse.
+         */
+        if (key == NULL || skip_key(key, entry))
             continue;
 
         field = g_strdup_printf("k:%s", key);
