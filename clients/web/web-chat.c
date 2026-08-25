@@ -280,7 +280,37 @@ clawt_web_chat_body_full(ClawtWebApp *app, const gchar *agent_id,
         return g_steal_pointer(&main_el);
     }
 
-    clawt_web_add(main_el, transcript(app, agent_id, cleared));
+    /*
+     * The transcript and the pill share a wrapper so the pill can be
+     * positioned against the transcript rather than the window: it
+     * should sit just above the composer, not float in the middle of a
+     * tall screen. The wrapper is also what survives the transcript
+     * being swapped out from under it on every fleet event -- the pill
+     * is outside the swap target on purpose, so its state is not thrown
+     * away by the arrival that set it.
+     */
+    {
+        g_autoptr(HtmxDiv) body = htmx_div_new();
+        g_autoptr(HtmxButton) pill = htmx_button_new_with_label("New messages");
+
+        htmx_element_add_class(HTMX_ELEMENT(body), "chat-body");
+
+        htmx_element_add_class(HTMX_ELEMENT(pill), "jump-pill");
+        htmx_element_set_id(HTMX_ELEMENT(pill), "jump-pill");
+        htmx_element_set_attribute(HTMX_ELEMENT(pill), "type", "button");
+        /*
+         * Words rather than a bare arrow, for the reason the GTK client
+         * gives: an arrow says "go down", which the scrollbar already
+         * says. What was missing is "something is down there".
+         */
+        htmx_element_set_attribute(HTMX_ELEMENT(pill), "aria-label",
+                                   "Jump to the newest message");
+
+        clawt_web_add(body, transcript(app, agent_id, cleared));
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(pill));
+        htmx_node_add_child(HTMX_NODE(main_el), HTMX_NODE(body));
+    }
+
     clawt_web_add(main_el, composer(agent_id));
 
     return g_steal_pointer(&main_el);

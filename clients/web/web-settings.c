@@ -848,11 +848,10 @@ connectors_content(ClawtWebApp *app)
 static HtmxElement *
 appearance_content(HtmxRequest *request)
 {
-    static const gchar *const themes[] = { "system", "light", "dark", NULL };
-    static const gchar *const theme_labels[] = {
-        "Follow the system", "Light", "Dark", NULL
-    };
+    g_autoptr(GPtrArray) themes = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(GPtrArray) theme_labels = g_ptr_array_new_with_free_func(g_free);
     g_autoptr(ClawtWebLook) look = clawt_web_look_from_request(request);
+    guint t;
     g_autoptr(HtmxDiv) box = htmx_div_new();
     g_autoptr(HtmxForm) form = clawt_web_form("/settings/appearance");
     g_autofree gchar *font_size = NULL;
@@ -869,8 +868,31 @@ appearance_content(HtmxRequest *request)
         g_autoptr(HtmxDiv) row = htmx_div_new();
 
         htmx_element_add_class(HTMX_ELEMENT(row), "field");
+
+        /*
+         * Built from the library's list rather than named here. The copy
+         * that used to sit at the top of this function offered three
+         * schemes while the GTK combo offered four, so the palette added
+         * to clawt-appearance.c was selectable in one client and not the
+         * other -- and `make parity` saw nothing, because a colour
+         * scheme sends no IPC frame and is no slash command.
+         */
+        for (t = 0; t < clawt_appearance_theme_count(); t++) {
+            ClawtTheme theme = clawt_appearance_theme_nth(t);
+
+            g_ptr_array_add(themes,
+                            g_strdup(clawt_appearance_theme_nick(theme)));
+            g_ptr_array_add(theme_labels,
+                            g_strdup(clawt_appearance_theme_label(theme)));
+        }
+
+        g_ptr_array_add(themes, NULL);
+        g_ptr_array_add(theme_labels, NULL);
+
         clawt_web_add(row, clawt_web_select_field(
-            "Colour scheme", "theme", themes, theme_labels,
+            "Colour scheme", "theme",
+            (const gchar *const *)themes->pdata,
+            (const gchar *const *)theme_labels->pdata,
             look->theme != NULL ? look->theme : "system"));
         htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(row));
 
@@ -1696,8 +1718,16 @@ on_appearance(HtmxRequest *request, GHashTable *params, gpointer user_data)
     response = settings_response(app, request, "appearance", content,
                                  "Applied.", FALSE);
 
+    /*
+     * Round-tripped through the library rather than stored as typed, so
+     * only a nick the library knows is ever written. It came off a form
+     * and ends up on the root element's data-theme; an unrecognised one
+     * becomes "system", which is the same answer clawt-appearance gives
+     * a config file naming a palette this build has not got.
+     */
     set_look_cookie(response, "clawt_theme",
-                    (theme != NULL && *theme != '\0') ? theme : "system");
+                    clawt_appearance_theme_nick(
+                        clawt_appearance_theme_from_nick(theme)));
     set_look_cookie(response, "clawt_font",
                     clawt_web_form_value(request, "font"));
     set_look_cookie(response, "clawt_font_size",

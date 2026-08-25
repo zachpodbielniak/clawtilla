@@ -64,6 +64,33 @@ clawt_web_stylesheet(void)
       "--neutral-bg:#252524;--neutral-fg:#9C9A95;"
     "}"
 
+    /*
+     * Catppuccin Mocha, the same palette clawt-appearance.c gives the
+     * GTK client -- the colours are shared, the mechanism cannot be.
+     * There it redefines libadwaita's named colours; here the sheet is
+     * ours, so the palette lands on our own tokens instead.
+     *
+     * Mocha: base #1e1e2e, mantle #181825, crust #11111b, surface0
+     * #313244, surface1 #45475a, text #cdd6f4, subtext0 #a6adc8,
+     * blue #89b4fa, green #a6e3a1, yellow #f9e2af, red #f38ba8.
+     *
+     * After the two dark blocks above, deliberately. A palette carries
+     * data-theme too, so `:root:not([data-theme="light"])` matches it as
+     * well; the specificity is identical and source order is what
+     * settles it. Moving this above them silently gives a Mocha reader
+     * the plain dark greys under prefers-color-scheme: dark.
+     */
+    ":root[data-theme=\"catppuccin-mocha\"]{"
+      "--canvas:#1e1e2e;--surface:#181825;--surface-2:#313244;"
+      "--line:#313244;--line-strong:#45475a;"
+      "--ink:#cdd6f4;--ink-2:#bac2de;--muted:#a6adc8;"
+      "--good-bg:#1f2a24;--good-fg:#a6e3a1;"
+      "--warn-bg:#2b2620;--warn-fg:#f9e2af;"
+      "--bad-bg:#2c2028;--bad-fg:#f38ba8;"
+      "--info-bg:#1d2436;--info-fg:#89b4fa;"
+      "--neutral-bg:#313244;--neutral-fg:#a6adc8;"
+    "}"
+
     "*{box-sizing:border-box}"
     "html,body{height:100%}"
     "body{margin:0;background:var(--canvas);color:var(--ink);"
@@ -216,6 +243,32 @@ clawt_web_stylesheet(void)
       "background:var(--surface-2);border:1px solid var(--line);"
       "border-radius:var(--radius-sm);padding:12px 14px;overflow-x:auto}"
     ".msg-self .msg-who{color:var(--info-fg)}"
+
+    /*
+     * The rule drawn where reading left off, and the pill that offers to
+     * go there. The GTK client grew both together in one state; here the
+     * state is the browser's scroll position, so the two are driven by
+     * the script in the page head rather than by the server -- but they
+     * are the same pair, and appear only when something has actually
+     * arrived rather than merely because the reader scrolled up.
+     */
+    ".unread-rule{display:flex;align-items:center;gap:12px;margin:26px 0 22px;"
+      "font-size:11px;letter-spacing:0.08em;text-transform:uppercase;"
+      "color:var(--bad-fg)}"
+    ".unread-rule::before,.unread-rule::after{content:'';flex:1;height:1px;"
+      "background:var(--bad-fg);opacity:0.45}"
+    ".jump-pill{position:absolute;left:50%;transform:translateX(-50%);"
+      "bottom:12px;z-index:5;display:none;align-items:center;gap:7px;"
+      "padding:7px 15px;border-radius:9999px;border:1px solid var(--line);"
+      "background:var(--surface);color:var(--ink);cursor:pointer;"
+      "font-family:var(--sans);font-size:12px;"
+      "box-shadow:0 2px 8px rgba(0,0,0,0.10)}"
+    ".jump-pill.on{display:inline-flex}"
+    ".jump-pill:hover{border-color:var(--line-strong)}"
+    /* The transcript is the pill's containing block, so it floats over
+     * the messages rather than over the whole frame. */
+    ".chat-body{position:relative;display:flex;flex-direction:column;"
+      "flex:1;min-height:0}"
     ".composer{border-top:1px solid var(--line);background:var(--surface);"
       "padding:16px 32px}"
     ".composer-inner{max-width:52rem;margin:0 auto;display:flex;gap:10px;"

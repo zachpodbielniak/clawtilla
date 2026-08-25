@@ -96,6 +96,61 @@ void         clawt_appearance_set_theme(ClawtAppearance *self,
  *
  * Returns: %TRUE for a named palette
  */
+/**
+ * clawt_appearance_theme_count:
+ *
+ * How many colour schemes the library offers.
+ *
+ * A client builds its own control from this rather than from a list of
+ * its own.  Two copies is how the GTK combo came to name four schemes
+ * while the web select named three, with nothing to say so: a colour
+ * scheme sends no IPC frame and is no slash command, so `make parity`
+ * looks straight past it.
+ *
+ * Returns: the number of schemes
+ */
+guint        clawt_appearance_theme_count(void);
+
+/**
+ * clawt_appearance_theme_nth:
+ * @n: an index below clawt_appearance_theme_count()
+ *
+ * Returns: the scheme at @n, in the order a client should offer them
+ */
+ClawtTheme   clawt_appearance_theme_nth(guint n);
+
+/**
+ * clawt_appearance_theme_nick:
+ * @theme: a #ClawtTheme
+ *
+ * The stable spelling, as written to disk and to a cookie.
+ *
+ * Returns: (transfer none): the nick, never %NULL
+ */
+const gchar *clawt_appearance_theme_nick(ClawtTheme theme);
+
+/**
+ * clawt_appearance_theme_label:
+ * @theme: a #ClawtTheme
+ *
+ * What to call it on screen.
+ *
+ * Returns: (transfer none): the label, never %NULL
+ */
+const gchar *clawt_appearance_theme_label(ClawtTheme theme);
+
+/**
+ * clawt_appearance_theme_from_nick:
+ * @nick: (nullable): a spelling from disk, a cookie or a form
+ *
+ * An unrecognised nick is %CLAWT_THEME_SYSTEM rather than an error, so a
+ * palette written by a newer build degrades to the desktop's own scheme
+ * instead of failing to load.
+ *
+ * Returns: the scheme
+ */
+ClawtTheme   clawt_appearance_theme_from_nick(const gchar *nick);
+
 gboolean     clawt_appearance_theme_has_palette(ClawtTheme theme);
 
 /**

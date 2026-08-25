@@ -268,16 +268,29 @@ static const gchar catppuccin_mocha_css[] =
 typedef struct {
     ClawtTheme   theme;
     const gchar *nick;
+    const gchar *label;
     gboolean     dark;
     const gchar *css;
 } ThemeInfo;
 
+/*
+ * @label is here rather than in each client because both of them offer
+ * this same list, and they had a hand-written copy each: the GTK combo
+ * named four schemes and the web select named three, so the palette
+ * added to this file reached one client and not the other.  `make
+ * parity` could not see it -- a colour scheme sends no IPC frame and is
+ * no slash command -- which is the blind spot that check already has
+ * recorded against it.  One list, read by both.
+ */
 static const ThemeInfo theme_table[] = {
-    { CLAWT_THEME_SYSTEM,           "system",           FALSE, NULL },
-    { CLAWT_THEME_LIGHT,            "light",            FALSE, NULL },
-    { CLAWT_THEME_DARK,             "dark",             TRUE,  NULL },
-    { CLAWT_THEME_CATPPUCCIN_MOCHA, "catppuccin-mocha", TRUE,
-      catppuccin_mocha_css }
+    { CLAWT_THEME_SYSTEM,           "system",           "Follow the system",
+      FALSE, NULL },
+    { CLAWT_THEME_LIGHT,            "light",            "Light",
+      FALSE, NULL },
+    { CLAWT_THEME_DARK,             "dark",             "Dark",
+      TRUE,  NULL },
+    { CLAWT_THEME_CATPPUCCIN_MOCHA, "catppuccin-mocha", "Catppuccin Mocha",
+      TRUE,  catppuccin_mocha_css }
 };
 
 static const ThemeInfo *
@@ -291,6 +304,49 @@ theme_info(ClawtTheme theme)
     }
 
     return NULL;
+}
+
+guint
+clawt_appearance_theme_count(void)
+{
+    return (guint)G_N_ELEMENTS(theme_table);
+}
+
+ClawtTheme
+clawt_appearance_theme_nth(guint n)
+{
+    g_return_val_if_fail(n < G_N_ELEMENTS(theme_table), CLAWT_THEME_SYSTEM);
+
+    return theme_table[n].theme;
+}
+
+const gchar *
+clawt_appearance_theme_nick(ClawtTheme theme)
+{
+    const ThemeInfo *info = theme_info(theme);
+
+    return (info != NULL) ? info->nick : "system";
+}
+
+const gchar *
+clawt_appearance_theme_label(ClawtTheme theme)
+{
+    const ThemeInfo *info = theme_info(theme);
+
+    return (info != NULL) ? info->label : "Follow the system";
+}
+
+ClawtTheme
+clawt_appearance_theme_from_nick(const gchar *nick)
+{
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(theme_table); i++) {
+        if (g_strcmp0(nick, theme_table[i].nick) == 0)
+            return theme_table[i].theme;
+    }
+
+    return CLAWT_THEME_SYSTEM;
 }
 
 gboolean
@@ -439,9 +495,7 @@ clawt_appearance_default_path(void)
 static const gchar *
 theme_to_nick(ClawtTheme theme)
 {
-    const ThemeInfo *info = theme_info(theme);
-
-    return (info != NULL) ? info->nick : "system";
+    return clawt_appearance_theme_nick(theme);
 }
 
 /*
@@ -456,14 +510,7 @@ theme_to_nick(ClawtTheme theme)
 static ClawtTheme
 theme_from_nick(const gchar *nick)
 {
-    gsize i;
-
-    for (i = 0; i < G_N_ELEMENTS(theme_table); i++) {
-        if (g_strcmp0(nick, theme_table[i].nick) == 0)
-            return theme_table[i].theme;
-    }
-
-    return CLAWT_THEME_SYSTEM;
+    return clawt_appearance_theme_from_nick(nick);
 }
 
 static const gchar *

@@ -484,11 +484,67 @@ test_a_font_name_cannot_break_the_markup(void)
     g_assert_null(strstr(markup, "foreground=\"red\""));
 }
 
+/*
+ * Every scheme the library declares is offerable by a client.
+ *
+ * Both clients build their control by walking this list, so a palette
+ * added to clawt-appearance.c appears in each without either being
+ * touched. That is the point: the GTK combo and the web select each used
+ * to name the schemes themselves, and when Catppuccin Mocha was added
+ * only one of the two grew a fourth entry. Nothing caught it -- a colour
+ * scheme sends no IPC frame and is no slash command, so `make parity`
+ * looks straight past it.
+ */
+static void
+test_every_theme_can_be_offered(void)
+{
+    guint n = clawt_appearance_theme_count();
+    guint i;
+
+    g_assert_cmpuint(n, >=, 4);
+
+    for (i = 0; i < n; i++) {
+        ClawtTheme theme = clawt_appearance_theme_nth(i);
+        const gchar *nick = clawt_appearance_theme_nick(theme);
+        const gchar *label = clawt_appearance_theme_label(theme);
+
+        g_assert_nonnull(nick);
+        g_assert_cmpstr(nick, !=, "");
+        g_assert_nonnull(label);
+        g_assert_cmpstr(label, !=, "");
+
+        /* The nick is what a cookie and a config file carry. */
+        g_assert_cmpint(clawt_appearance_theme_from_nick(nick), ==, theme);
+    }
+}
+
+/*
+ * A nick nobody knows is the desktop's own scheme, not an error.
+ *
+ * The web client stores what a form posted, so this is also what keeps
+ * an arbitrary string out of the cookie that ends up on data-theme.
+ */
+static void
+test_an_unknown_theme_is_system(void)
+{
+    g_assert_cmpint(clawt_appearance_theme_from_nick("nonesuch"), ==,
+                    CLAWT_THEME_SYSTEM);
+    g_assert_cmpint(clawt_appearance_theme_from_nick(""), ==,
+                    CLAWT_THEME_SYSTEM);
+    g_assert_cmpint(clawt_appearance_theme_from_nick(NULL), ==,
+                    CLAWT_THEME_SYSTEM);
+}
+
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
+    g_test_add_func("/appearance/every-theme-can-be-offered",
+                    test_every_theme_can_be_offered);
+    g_test_add_func("/appearance/unknown-theme-is-system",
+                    test_an_unknown_theme_is_system);
     g_test_add_func("/appearance/defaults-defer",
                     test_defaults_defer_to_the_desktop);
     g_test_add_func("/appearance/css", test_a_font_reaches_the_stylesheet);

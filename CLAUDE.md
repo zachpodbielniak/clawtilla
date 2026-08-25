@@ -1593,6 +1593,51 @@ the same program.
   four-line program against real libadwaita answers it in a second --
   far quicker than reasoning about what the widget "should" do.
 
+### A capability in the shared library still has to be reachable from both clients
+
+- Catppuccin Mocha went into `clawt-appearance.c`, which *both* clients
+  link, and was selectable in one of them. Each named the schemes itself
+  -- the GTK combo listed four, the web select listed three -- so the
+  palette existed in the library, shipped in both binaries, and a web
+  reader could not choose it. `make parity` reported OK throughout: a
+  colour scheme sends no IPC frame and is no slash command, which is the
+  blind spot that check already has recorded against it.
+- Fixed by deleting both lists. `clawt_appearance_theme_count()` /
+  `_nth()` / `_nick()` / `_label()` is the one list, and each client
+  builds its control by walking it, so the next palette reaches both
+  without either being edited. The same rule as the config schema, one
+  layer over: **never write a hand-maintained list of an option's
+  values.**
+- The colours are shareable and the mechanism is not -- GTK redefines
+  libadwaita's named colours, the web sheet has its own tokens -- so the
+  palette is written twice on purpose, in the vocabulary each renders in.
+  The web block must come *after* the dark ones: a palette carries
+  `data-theme` too, so `:root:not([data-theme="light"])` matches it,
+  specificity is identical, and source order is the only thing deciding.
+
+### A handler in the page head cannot reach document.body
+
+- It is `null` there, so `document.body.addEventListener(...)` throws and
+  takes every later handler in the same script with it. The unread-marker
+  script registered four and got none; the page looked completely normal,
+  because everything it does is invisible until something arrives. One
+  line in the console said so on the first real load, and nothing else
+  would have. Listen on `document` -- htmx's events bubble to it, and it
+  exists before the body does.
+- Two more in the same script, both found the same way and neither
+  visible by reading it. htmx swaps the transcript with `outerHTML`, so
+  **the element the listener was bound to is gone after the first
+  arrival** -- a `scroll` handler bound directly to it survives exactly
+  until the moment it is needed, and `scroll` does not bubble, so the
+  delegated version has to be `capture`. And the swap leaves the browser
+  nothing to restore the scroll offset from, so a reader who had scrolled
+  up was thrown to the top of the conversation on every fleet event --
+  the exact opposite of what declining to auto-scroll is for.
+- All three read as correct. What found them was driving a real browser:
+  scroll up, send a message, assert on the pill, the rule, and the
+  offset. A feature whose whole subject is where the viewport is cannot
+  be verified from the markup.
+
 ### A thread carries more than the answer
 
 - `on_link_message()` completed a task on **any** message carrying its

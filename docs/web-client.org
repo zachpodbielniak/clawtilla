@@ -275,6 +275,63 @@ Every action is a real form or a real link.  With scripting off the whole
 client still works: each action posts and the page re-renders.  htmx is
 what makes it feel live rather than what makes it work.
 
+*** The colour schemes are the library's list, not this client's
+
+Both clients build the scheme control by walking
+~clawt_appearance_theme_count()~ / ~_nth()~ / ~_label()~, so a palette
+added to =clawt-appearance.c= appears in each without either being
+edited.
+
+That is not tidiness.  Each client used to name the schemes itself, and
+when Catppuccin Mocha was added only the GTK combo grew a fourth entry --
+the palette was in the shared library, and a web reader could not select
+it.  ~make parity~ saw nothing, because a colour scheme sends no IPC
+frame and is no slash command.
+
+The colours are shared; the mechanism cannot be.  In GTK the palette
+redefines libadwaita's named colours; here the sheet is ours, so the same
+Mocha values land on our own tokens in a
+~:root[data-theme="catppuccin-mocha"]~ block.  That block sits *after*
+the two dark blocks deliberately: a palette carries ~data-theme~ too, so
+~:root:not([data-theme="light"])~ matches it as well, the specificity is
+identical, and source order is the only thing that settles it.
+
+What the form posts is round-tripped through
+~clawt_appearance_theme_from_nick()~ before it reaches the cookie, so
+only a nick the library knows is ever stored and anything else becomes
+=system=.
+
+*** Saying that something arrived while you were reading
+
+When the reader has scrolled up, an arrival does not move the view --
+and now it says so, with the same pair the GTK client uses: a rule in the
+transcript where reading stopped, and a pill offering to go to the
+newest message.  Both appear only when something actually arrived, never
+merely because the reader scrolled up.
+
+The state is the browser's scroll position rather than anything the
+daemon holds, so it lives in an inline script in the page head -- inline
+for the same reason the theme script is, and htmx is swapping the whole
+transcript on every fleet event, so "what is new" is *counted* rather
+than diffed: the number of messages before the swap is where the rule
+goes after it.
+
+Three things that had to be got right, each of which looked correct and
+was not until it was run in a browser:
+
+- The listeners are on ~document~, not ~document.body~.  The script runs
+  in the head, where ~document.body~ is still ~null~ -- the first
+  ~addEventListener~ threw and took every handler with it.
+- The scroll position is restored after the swap.  The swap replaces the
+  whole element, so the browser has nothing to restore from and a reader
+  who had scrolled up was thrown to the top of the conversation on every
+  fleet event, which is the opposite of what refusing to auto-scroll is
+  for.
+- The scroll listener is delegated, in the capture phase.  ~scroll~ does
+  not bubble, and the transcript element is replaced on every arrival, so
+  one bound directly to it survives exactly until the moment it is
+  needed.
+
 *** Ordering and teams are controls, not gestures
 
 The GTK sidebar drags a row to reorder the fleet and drags it onto a team

@@ -10182,16 +10182,20 @@ on_theme_selected(GObject *row, GParamSpec *spec, gpointer user_data)
 {
     ClawtWindow *self = user_data;
     guint selected = adw_combo_row_get_selected(ADW_COMBO_ROW(row));
-    static const ClawtTheme themes[] = {
-        CLAWT_THEME_SYSTEM, CLAWT_THEME_LIGHT, CLAWT_THEME_DARK,
-        CLAWT_THEME_CATPPUCCIN_MOCHA
-    };
 
     (void)spec;
 
+    /*
+     * An index into the library's own list rather than into a copy of
+     * it. The copy here named four schemes while the web client's named
+     * three, so the palette added to clawt-appearance.c reached one
+     * client and not the other -- and nothing said so, because a colour
+     * scheme sends no IPC frame and is no slash command.
+     */
     clawt_appearance_set_theme(
         self->appearance,
-        themes[MIN(selected, G_N_ELEMENTS(themes) - 1)]);
+        clawt_appearance_theme_nth(
+            MIN(selected, clawt_appearance_theme_count() - 1)));
     appearance_changed(self);
 }
 
@@ -10435,14 +10439,9 @@ build_appearance_page(ClawtWindow *self)
     GtkWidget *page = adw_preferences_page_new();
     GtkWidget *theme_group = adw_preferences_group_new();
     GtkWidget *theme_row = adw_combo_row_new();
-    /*
-     * Same order as the ClawtTheme array in on_theme_selected(); the row
-     * index is the only thing tying them together.
-     */
-    static const gchar *const themes[] = { "Follow the system", "Light",
-                                           "Dark", "Catppuccin Mocha",
-                                           NULL };
+    g_autoptr(GtkStringList) theme_names = gtk_string_list_new(NULL);
     guint selected = 0;
+    guint t;
 
     adw_preferences_page_set_title(ADW_PREFERENCES_PAGE(page), "Appearance");
     adw_preferences_page_set_icon_name(ADW_PREFERENCES_PAGE(page),
@@ -10459,24 +10458,23 @@ build_appearance_page(ClawtWindow *self)
 
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(theme_row),
                                   "Colour scheme");
-    adw_combo_row_set_model(ADW_COMBO_ROW(theme_row),
-                            G_LIST_MODEL(gtk_string_list_new(themes)));
+    /*
+     * Built from the library's list, so a palette added there appears
+     * here without this file being touched -- and cannot appear here and
+     * not in the web client, which builds its own select the same way.
+     */
+    for (t = 0; t < clawt_appearance_theme_count(); t++) {
+        ClawtTheme theme = clawt_appearance_theme_nth(t);
 
-    switch (clawt_appearance_get_theme(self->appearance)) {
-    case CLAWT_THEME_LIGHT:
-        selected = 1;
-        break;
-    case CLAWT_THEME_DARK:
-        selected = 2;
-        break;
-    case CLAWT_THEME_CATPPUCCIN_MOCHA:
-        selected = 3;
-        break;
-    case CLAWT_THEME_SYSTEM:
-    default:
-        selected = 0;
-        break;
+        gtk_string_list_append(theme_names,
+                               clawt_appearance_theme_label(theme));
+
+        if (theme == clawt_appearance_get_theme(self->appearance))
+            selected = t;
     }
+
+    adw_combo_row_set_model(ADW_COMBO_ROW(theme_row),
+                            G_LIST_MODEL(g_object_ref(theme_names)));
 
     adw_combo_row_set_selected(ADW_COMBO_ROW(theme_row), selected);
 

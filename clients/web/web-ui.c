@@ -770,6 +770,95 @@ open_document(HtmxBuilder *builder, const gchar *title,
         "setAttribute('data-theme',decodeURIComponent(m[1]));}})();");
     htmx_builder_end(builder);
 
+    /*
+     * Saying that something arrived while you were reading.
+     *
+     * The GTK client keeps a `following` flag and drives a rule in the
+     * transcript and a pill from it, in one place, because a marker with
+     * no pill or a pill with no marker is worse than neither. Here the
+     * same state is the browser's scroll position, so it has to live in
+     * the page -- but the pair and the rule about them are the same.
+     *
+     * Inline rather than a file, like the theme script above: this page
+     * must work on a tailnet with no route to the internet, and a script
+     * it fetches is a script that can drive the whole fleet.
+     *
+     * htmx swaps the whole transcript on every fleet event, so "what is
+     * new" is counted rather than diffed: the number of messages before
+     * the swap is where the rule goes after it. Both the rule and the
+     * pill appear only when a swap actually brought something, never
+     * merely because the reader scrolled up -- a control that is always
+     * there says nothing.
+     */
+    htmx_builder_begin(builder, "script");
+    htmx_builder_raw_html(builder,
+        /*
+         * Listeners on `document`, not on `document.body`. This script
+         * runs in the head, where document.body is still null -- the
+         * first addEventListener threw and took every handler with it,
+         * including the one that opens a conversation at its newest
+         * message. It reads perfectly and does nothing; the console said
+         * so on the first real page load.
+         */
+        "(function(){"
+        "var seen=-1,mark=false,keep=0;"
+        "function box(){return document.getElementById('transcript');}"
+        "function pill(){return document.getElementById('jump-pill');}"
+        "function at_end(b){return b.scrollHeight-b.scrollTop-b.clientHeight<40;}"
+        "function to_end(){var b=box();if(b){b.scrollTop=b.scrollHeight;}"
+        "var p=pill();if(p){p.classList.remove('on');}"
+        "var r=document.getElementById('unread-rule');"
+        "if(r&&r.parentNode){r.parentNode.removeChild(r);}mark=false;}"
+        "document.addEventListener('click',function(e){"
+        "var p=pill();if(p&&(e.target===p||p.contains(e.target))){to_end();}});"
+        /* Before the swap: how much was there, and were we at the end. */
+        "document.addEventListener('htmx:beforeSwap',function(e){"
+        "var b=box();if(!b||e.detail.target.id!=='transcript'){return;}"
+        "keep=b.scrollTop;"
+        "seen=at_end(b)?-1:b.querySelectorAll('.msg').length;});"
+        /* After: follow, or say what came in while we were not. */
+        "document.addEventListener('htmx:afterSwap',function(e){"
+        "var b=box();if(!b||e.detail.target.id!=='transcript'){return;}"
+        "var msgs=b.querySelectorAll('.msg');"
+        "if(seen<0){b.scrollTop=b.scrollHeight;return;}"
+        /*
+         * Put back where they were reading. The swap replaces the whole
+         * element, so the browser has nothing to restore from and a
+         * reader who had scrolled up was thrown to the top of the
+         * conversation on every fleet event -- which is the opposite of
+         * what refusing to auto-scroll is for. Messages only ever arrive
+         * at the end, so the offset above them has not moved.
+         */
+        "b.scrollTop=keep;"
+        "if(msgs.length<=seen){return;}"
+        "var p=pill();if(p){p.classList.add('on');}"
+        "if(mark){return;}"
+        "var r=document.createElement('div');"
+        "r.className='unread-rule';r.id='unread-rule';"
+        "r.appendChild(document.createTextNode('New messages'));"
+        "msgs[seen].parentNode.insertBefore(r,msgs[seen]);mark=true;});"
+        /* Opening a conversation starts at the newest message. */
+        "document.addEventListener('DOMContentLoaded',function(){"
+        "var b=box();if(b){b.scrollTop=b.scrollHeight;}});"
+        /*
+         * Scrolling back down by hand clears both, the way returning to
+         * the bottom does in the GTK client -- the marker describes
+         * where reading stopped, and it has not stopped there any more.
+         *
+         * On `document` in the capture phase, because scroll does not
+         * bubble and because the transcript element itself is replaced
+         * on every fleet event: a listener bound to it survives exactly
+         * until the next arrival, which is the one moment it is needed.
+         * Bound directly, it cleared nothing after the first swap and
+         * looked like it worked, since the first swap is also the first
+         * test anybody runs.
+         */
+        "document.addEventListener('scroll',function(e){"
+        "var b=box();if(!b||e.target!==b||!mark){return;}"
+        "if(at_end(b)){to_end();}},true);"
+        "})();");
+    htmx_builder_end(builder);
+
     htmx_builder_end(builder);  /* head */
 
     htmx_builder_begin(builder, "body");
