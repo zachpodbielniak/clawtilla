@@ -788,9 +788,20 @@ pod_action(const gchar *action, GHashTable *params, GHashTable **out_result,
 /*
  * Starting one scheduled run.
  *
- * A routine is a delegated task rather than a message, so it gets its
- * own session -- one morning's run never contaminates the next -- and it
- * has a result somebody can look at afterwards.
+ * A routine is a delegated task rather than a message: it appears in the
+ * task list while it runs and has a result afterwards.
+ *
+ * It does *not* get a libreclaw session of its own, whatever this
+ * comment and docs/routines.org used to claim.  libreclaw keys a session
+ * on channel, room and sender and deliberately not on the thread --
+ * lc_router_resolve_session_key() says so in a note of its own -- and
+ * this sends from "user" to the agent, which is the operator's own room.
+ * So a run shares the operator's session and its queue: it inherits the
+ * last conversation's context and waits for whatever is in flight.
+ *
+ * Point a routine at an agent nobody talks to.  Making this true instead
+ * means giving the run a room of its own, which moves its output out of
+ * the operator's transcript -- a product decision rather than a fix.
  */
 static const gchar *
 run_routine(const gchar *routine_id, const gchar *agent_id,
@@ -1138,19 +1149,46 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
      */
 
     /*
-     * A task id in the reply means the delegated work is finished.  An
-     * agent that replies without also calling clawtilla_task_complete
-     * would otherwise leave the delegator waiting on a task that is
-     * already done.
-     */
-    /*
      * Before the reply is routed, so the spend is on the books by the
      * time the guard is asked whether the next message may be sent.
      */
     charge_turn_to_task(self, agent_id, thread_id);
 
-    if (thread_id != NULL)
-        clawt_task_manager_complete(self->tasks, thread_id, body);
+    /*
+     * A task id on the *last* message of a turn means the delegated work
+     * is finished.  An agent that replies without also calling
+     * clawtilla_task_complete would otherwise leave the delegator
+     * waiting on a task that is already done.
+     *
+     * On the last message, and not on any message carrying the id, which
+     * is what this used to do.  libreclaw sends more than the answer in
+     * a thread: a progress note every five minutes by default, a
+     * guardian refusal, a restart notice.  Each of those completed the
+     * task the moment it arrived -- so a routine reported `completed`
+     * within seconds of starting, its result was the text "Still
+     * working...", and the work itself happened minutes later against a
+     * task nothing was waiting on any more.  A state that says finished
+     * while the work runs is worse than no state at all: anything
+     * polling it gets a false positive and stops looking.
+     *
+     * The turn is what separates them.  libreclaw brackets a turn with
+     * its typing indicator and stops it in on_process_message_finish()
+     * *before* the answer is posted, so a message that arrives while the
+     * agent is still marked busy is by construction not the answer.  An
+     * agent that never sends the indicator -- it needs a room, and is
+     * skipped without one -- is busy=FALSE throughout and completes as
+     * it always did, which is the safe way round: a task that ends late
+     * is a delay, one that ends early is a lie.
+     */
+    if (thread_id != NULL) {
+        ClawtAgent *replier = clawt_agent_manager_get(self->agents, agent_id);
+
+        if (replier != NULL && clawt_agent_get_busy(replier))
+            g_info("daemon: %s is still working, so this is not the answer "
+                   "to %s", agent_id, thread_id);
+        else
+            clawt_task_manager_complete(self->tasks, thread_id, body);
+    }
 
     if (clawt_mailbox_router_send(self->router, message, &error) < 0) {
         g_info("daemon: %s's message was not routed: %s", agent_id,

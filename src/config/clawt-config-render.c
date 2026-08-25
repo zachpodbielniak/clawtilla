@@ -364,6 +364,23 @@ render_clawtilla_channel(GString          *out,
      * somebody noticed it had.
      */
     append_key_int(out, 4, "reconnect_backoff_seconds", 5);
+
+    /*
+     * No "Still working..." notes.  libreclaw posts one every five
+     * minutes by default on every channel that is not email, into the
+     * room *and the thread* of the message being worked on -- and a
+     * thread here is a clawtilla task id, so each note arrived looking
+     * exactly like the agent's answer.  A routine therefore reported
+     * `completed` with the text "Still working..." as its result while
+     * the work had not started.  The daemon guards against that now, but
+     * a message nothing can tell from an answer is better not generated.
+     *
+     * Nothing is lost by it: the same turn already raises the typing
+     * indicator, which both clients show as a live activity line for as
+     * long as it runs.  The note was a second, worse answer to the same
+     * question, and it landed in the operator's transcript.
+     */
+    append_key_bool(out, 4, "progress_enabled", FALSE);
 }
 
 /*

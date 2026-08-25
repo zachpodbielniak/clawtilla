@@ -59,9 +59,20 @@ clawt_task_new(const gchar *origin_agent,
     self->created_at = g_get_real_time() / G_USEC_PER_SEC;
 
     /*
-     * A session key derived from the task id, so each task gets its own
-     * libreclaw session and one job never contaminates the next.  Deriving
-     * rather than storing separately means the two cannot drift apart.
+     * What a session key *would* be if a task had a session of its own.
+     *
+     * It does not.  Nothing outside a test has ever read this: libreclaw
+     * keys a session on channel, room and sender, and clawtilla delivers
+     * a task in the room the delegator and the assignee already share --
+     * so every task on an agent runs in that one session, and this
+     * string reaches nobody.  Kept because it is what the field would
+     * have to be, and removing a public getter is a break; the comment
+     * that used to sit here asserted the isolation as fact and was the
+     * only reason anybody believed it.
+     *
+     * Delivering it means routing a task into a room named for it. That
+     * moves a routine's output out of the operator's transcript, which
+     * is a decision rather than a repair.
      */
     self->session_key = g_strdup_printf("clawtilla-task-%s", self->id);
 

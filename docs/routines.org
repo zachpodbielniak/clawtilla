@@ -19,10 +19,34 @@ clawtilla routine add standup chief-of-staff \
     schedule=weekdays at=09:00
 #+end_src
 
-It runs as a *delegated task*, not a message.  That means it gets its own
-libreclaw session -- one morning's run never contaminates the next -- it
-appears in ~clawtilla task list~ while it works, and it has a result
-somebody can look at afterwards.
+It runs as a *delegated task*, not a message: it appears in
+~clawtilla task list~ while it works, and it has a result somebody can
+look at afterwards.
+
+*** What a run shares with the conversation
+
+A routine's turn does *not* get a libreclaw session of its own.  This
+page said it did for a long time, and it was never true.
+
+libreclaw keys a session on channel, room and sender, and *deliberately
+not* on the thread -- the note in its own router says so, because a
+thread there anchors a Matrix reply rather than dividing a conversation.
+A routine's prompt is sent from ~user~ to the agent, so it lands in the
+same room, from the same sender, as the person talking to it.  One
+session, one queue.  Three consequences, all real:
+
+- *Runs share context.* Monday's run is in Tuesday's session, and so is
+  whatever the operator said in between.
+- *A run waits its turn.* Queued behind an in-flight conversation, a
+  09:00 brief starts whenever the agent next goes idle.
+- *It happens in the operator's chat.* The prompt and the answer are in
+  that transcript, because that is the room it went to.
+
+None of that matters for an agent nobody talks to, which is what a
+routine wants: *point routines at an agent that is not also a
+conversational surface.*  A dedicated agent per routine, or one agent for
+all of them, both work; the chief of staff is the wrong choice precisely
+because it is the one somebody types at.
 
 ** Presets are cron
 

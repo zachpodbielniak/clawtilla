@@ -1593,6 +1593,61 @@ the same program.
   four-line program against real libadwaita answers it in a second --
   far quicker than reasoning about what the widget "should" do.
 
+### A thread carries more than the answer
+
+- `on_link_message()` completed a task on **any** message carrying its
+  thread id, and libreclaw puts more than the answer in a thread: a
+  progress note every five minutes (on by default for every channel that
+  is not email), a guardian refusal, a restart notice. So a routine
+  reported `completed` within seconds of starting, its result was the
+  string "⏳ Still working... (5m elapsed)", and the work itself ran for
+  minutes afterwards against a task nothing was waiting on. **A state
+  that says finished while the work runs is worse than no state**:
+  anything polling it gets a false positive and stops looking.
+- Fixed at both ends, and they are different defences rather than a
+  shotgun. The note is no longer generated -- `progress_enabled: false`
+  in the rendered `channels.clawtilla` block, which costs nothing because
+  the same turn already raises the typing indicator that both clients
+  draw as a live activity line. And the daemon no longer acts on a
+  mid-turn message: libreclaw brackets a turn with that indicator and
+  drops it in `on_process_message_finish()` **before** the answer is
+  posted, so anything arriving while the agent is still busy is by
+  construction not the answer.
+- An agent that never raises the indicator (it needs a room and is
+  skipped without one) completes exactly as before. That is the safe way
+  round on purpose: **a task that ends late is a delay, one that ends
+  early is a lie.**
+- The first reproduction reported RUNNING and looked like the report was
+  wrong. The test binary had not been relinked against the library --
+  the trap this file already records for the daemon, one directory over.
+  `strings <binary> | grep` on the probe string is what settled it, not
+  reading the code again.
+
+### A routine has never had a session of its own
+
+- `docs/routines.org` promised one -- "one morning's run never
+  contaminates the next" -- `run_routine()` asserted it in a comment, and
+  `clawt_task_new()` built `clawtilla-task-<id>` with a comment saying
+  that was how it happened. **Nothing outside a test has ever read that
+  string.** Three statements of a fact, no implementation, and the shape
+  is already in this file twice: the factory nothing called, the limit
+  nothing incremented.
+- The reason it cannot work as built is in libreclaw and is deliberate:
+  `lc_router_resolve_session_key()` keys on channel, room and sender and
+  carries a note saying the thread is *intentionally* excluded, because
+  there a thread anchors a Matrix reply rather than dividing a
+  conversation. (Its own doc block above that note still describes
+  appending the thread -- worth fixing upstream; the code is what runs.)
+  A routine is sent from `user` to the agent, so it lands in the
+  operator's room, from the operator's sender, in the operator's session
+  and its queue.
+- So a routine inherits the last conversation's context and waits for
+  whatever the operator is doing. Documented as the constraint it is:
+  point routines at an agent that is not also a conversational surface.
+  Delivering the isolation means routing a task into a room of its own,
+  which takes its output out of the operator's transcript -- a product
+  decision, not a repair, so it is not made here.
+
 ### A group with nothing in it has no heading, and a heading is the drop target
 
 - The sidebar drew a heading when the *team changed between two agents*,

@@ -2369,6 +2369,107 @@ test_team_edits_are_guarded(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * A task ends when the turn ends, not when anything in its thread arrives.
+ *
+ * libreclaw posts more than the answer into a thread -- a progress note
+ * every five minutes, a guardian refusal, a restart notice -- and each
+ * of those used to complete the task the instant it arrived.  A routine
+ * therefore reported `completed` seconds after starting, carrying
+ * "Still working..." as its result, while the work ran for minutes
+ * afterwards against a task nothing was waiting on.
+ *
+ * The typing indicator is what separates them: libreclaw raises it for
+ * the whole turn and drops it in on_process_message_finish() before the
+ * answer is posted, so anything arriving while the agent is still busy
+ * is by construction not the answer.
+ */
+static void
+test_a_progress_note_does_not_finish_a_task(void)
+{
+    Fixture fixture = { 0 };
+    ClawtLinkServer *links;
+    ClawtTaskManager *tasks;
+    ClawtTask *task;
+    g_autoptr(GError) error = NULL;
+    const gchar *task_id;
+
+    fixture_setup(&fixture, "agents:\n  - id: worker\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    links = clawt_daemon_get_link_server(fixture.daemon);
+    tasks = clawt_daemon_get_tasks(fixture.daemon);
+
+    task = clawt_task_manager_create(tasks, "user", "worker",
+                                     "write the morning brief", NULL, &error);
+    g_assert_nonnull(task);
+    task_id = clawt_task_get_id(task);
+    g_assert_true(clawt_task_manager_start(tasks, task_id));
+
+    /* The turn starts. */
+    g_signal_emit_by_name(links, "typing", "worker", "dm:user:worker", TRUE);
+
+    /*
+     * Five minutes in, libreclaw says so -- in the room and in the
+     * thread, which is the task id.
+     */
+    g_signal_emit_by_name(links, "message", "worker", "dm:user:worker",
+                          "\xe2\x8f\xb3 Still working... (5m elapsed)",
+                          task_id);
+
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_RUNNING);
+    g_assert_null(clawt_task_get_result(task));
+
+    /* The turn ends, and then the answer is posted. */
+    g_signal_emit_by_name(links, "typing", "worker", "dm:user:worker", FALSE);
+    g_signal_emit_by_name(links, "message", "worker", "dm:user:worker",
+                          "Brief written to notes/brief.org.", task_id);
+
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_COMPLETED);
+    g_assert_cmpstr(clawt_task_get_result(task), ==,
+                    "Brief written to notes/brief.org.");
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * An agent that never raises the indicator still finishes its tasks.
+ *
+ * The indicator needs a room and is skipped without one, so busy stays
+ * FALSE for such an agent throughout.  That has to complete as it always
+ * did: a task that ends late is a delay, one that ends early is a lie,
+ * and the fallback must fail towards the delay.
+ */
+static void
+test_a_silent_agent_still_finishes_its_task(void)
+{
+    Fixture fixture = { 0 };
+    ClawtTaskManager *tasks;
+    ClawtTask *task;
+    g_autoptr(GError) error = NULL;
+    const gchar *task_id;
+
+    fixture_setup(&fixture, "agents:\n  - id: worker\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    tasks = clawt_daemon_get_tasks(fixture.daemon);
+    task = clawt_task_manager_create(tasks, "user", "worker", "count them",
+                                     NULL, &error);
+    g_assert_nonnull(task);
+    task_id = clawt_task_get_id(task);
+    g_assert_true(clawt_task_manager_start(tasks, task_id));
+
+    g_signal_emit_by_name(clawt_daemon_get_link_server(fixture.daemon),
+                          "message", "worker", "dm:user:worker", "Forty-two.",
+                          task_id);
+
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_COMPLETED);
+    g_assert_cmpstr(clawt_task_get_result(task), ==, "Forty-two.");
+
+    fixture_teardown(&fixture);
+}
+
+
 int
 main(int argc, char *argv[])
 {
@@ -2386,6 +2487,10 @@ main(int argc, char *argv[])
     g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/daemon/starts", test_starts_with_an_empty_config);
+    g_test_add_func("/daemon/progress-note-is-not-an-answer",
+                    test_a_progress_note_does_not_finish_a_task);
+    g_test_add_func("/daemon/silent-agent-still-finishes",
+                    test_a_silent_agent_still_finishes_its_task);
     g_test_add_func("/daemon/one-at-a-time", test_refuses_a_second_daemon);
     g_test_add_func("/daemon/listing-grouped-by-team",
                     test_the_listing_is_grouped_by_team);
