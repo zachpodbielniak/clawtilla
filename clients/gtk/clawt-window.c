@@ -174,6 +174,18 @@ struct _ClawtWindow {
     /* Chat */
     GtkBox            *transcript;
     GtkScrolledWindow *transcript_scroll;
+
+    /*
+     * The two halves of "something arrived while you were reading".
+     *
+     * They are driven from one place -- set_following() -- because a
+     * marker with no pill, or a pill with no marker, is worse than
+     * neither: each would be telling the operator something the other
+     * contradicts.
+     */
+    GtkRevealer       *jump_revealer;
+    GtkWidget         *unread_marker;    /* borrowed; owned by transcript */
+
     GtkTextView       *entry;
     GtkWidget         *placeholder;
     GtkLabel          *streaming;
@@ -2726,6 +2738,153 @@ on_transcript_grew(GObject *object, GParamSpec *pspec, gpointer user_data)
         gtk_adjustment_set_value(adjustment, bottom);
 }
 
+/*
+ * The only place `following` changes, and the reason the two unread
+ * affordances cannot disagree.
+ *
+ * `following` false means the reader is deliberately somewhere above the
+ * live edge, and the client already refuses to move the view for them --
+ * see scroll_to_bottom().  That refusal is right; saying nothing about
+ * it was not.  Two things say it: a pill floating over the transcript,
+ * and a rule drawn in the transcript at the point reading stopped.
+ *
+ * Both are cleared by the same false -> true edge, so every path that
+ * already re-arms following clears them with no new cases: reaching the
+ * bottom by hand, sending a message, switching agent, /clear, and the
+ * pill's own click.
+ */
+static void
+set_following(ClawtWindow *self, gboolean following)
+{
+    self->following = following;
+
+    if (!following)
+        return;
+
+    if (self->unread_marker != NULL) {
+        gtk_box_remove(self->transcript, self->unread_marker);
+        self->unread_marker = NULL;
+    }
+
+    if (self->jump_revealer != NULL) {
+        gtk_revealer_set_reveal_child(self->jump_revealer, FALSE);
+
+        /*
+         * A GtkRevealer keeps its allocation while its child is hidden,
+         * so an overlay child that is merely not revealed can still take
+         * the clicks meant for the transcript underneath it.  Dropping
+         * can-target with the reveal removes that without having to
+         * reason about which transition does what.
+         */
+        gtk_widget_set_can_target(GTK_WIDGET(self->jump_revealer), FALSE);
+    }
+}
+
+/*
+ * The rule drawn where reading stopped.
+ *
+ *   ---------------------  New messages  ---------------------
+ *
+ * It stores nothing: no read receipt, no per-agent position, nothing on
+ * disk.  It is exactly as durable as `following` itself, which is what
+ * lets it promise something the client can always keep -- "these arrived
+ * while you were up there" -- rather than "this is where you left off",
+ * which would need state across restarts to be true.
+ *
+ * `accent` on the label rather than a colour, so the palette work
+ * redefines it for free; the separators keep the platform colour,
+ * because the label is the message and the rules are only the ruling.
+ */
+static GtkWidget *
+unread_marker_new(void)
+{
+    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    GtkWidget *before = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    GtkWidget *label = gtk_label_new("New messages");
+    GtkWidget *after = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+
+    gtk_widget_set_hexpand(before, TRUE);
+    gtk_widget_set_valign(before, GTK_ALIGN_CENTER);
+    gtk_widget_set_hexpand(after, TRUE);
+    gtk_widget_set_valign(after, GTK_ALIGN_CENTER);
+
+    gtk_widget_add_css_class(label, "caption-heading");
+    gtk_widget_add_css_class(label, "accent");
+
+    gtk_box_append(GTK_BOX(row), before);
+    gtk_box_append(GTK_BOX(row), label);
+    gtk_box_append(GTK_BOX(row), after);
+
+    gtk_widget_set_margin_start(row, 12);
+    gtk_widget_set_margin_end(row, 12);
+
+    /*
+     * Closer to the message below than to the one above, on purpose: the
+     * marker labels the block underneath it, so it should belong to it.
+     */
+    gtk_widget_set_margin_top(row, 18);
+
+    return row;
+}
+
+/*
+ * Something arrived that the reader is not looking at.
+ *
+ * Called only from the event path, so replayed history and the client's
+ * own local output can never trip it -- neither of those is an arrival.
+ * At most one marker is ever alive, because the second arrival in a run
+ * belongs under the same rule as the first.
+ */
+static void
+note_arrival(ClawtWindow *self)
+{
+    if (self->following || self->unread_marker != NULL)
+        return;
+
+    self->unread_marker = unread_marker_new();
+    gtk_box_append(self->transcript, self->unread_marker);
+
+    if (self->jump_revealer != NULL) {
+        gtk_widget_set_can_target(GTK_WIDGET(self->jump_revealer), TRUE);
+        gtk_revealer_set_reveal_child(self->jump_revealer, TRUE);
+    }
+}
+
+/*
+ * Emptying the transcript, rather than clear_box() on its own.
+ *
+ * The marker is a borrowed pointer into that box, so clearing the box
+ * behind its back leaves it dangling and the next false -> true edge
+ * removes a widget that is already gone.  Re-arming here is also what
+ * keeps load_history()'s replay from drawing a "New messages" rule at
+ * the top of a freshly loaded transcript.
+ */
+static void
+reset_transcript(ClawtWindow *self)
+{
+    self->unread_marker = NULL;
+    clear_box(self->transcript);
+    set_following(self, TRUE);
+}
+
+static void
+on_jump_to_latest(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    (void)button;
+
+    /*
+     * Jump, do not animate.  GTK4 has no adjustment animation, and a
+     * scroll through several screens of text disorients rather than
+     * orients.  set_following() removes the marker, which shrinks the
+     * content, so the scroll is queued rather than computed here --
+     * on_transcript_grew() lands it on the real bottom afterwards.
+     */
+    set_following(self, TRUE);
+    queue_scroll(self);
+}
+
 static void
 on_scrolled(GtkAdjustment *adjustment, gpointer user_data)
 {
@@ -2735,7 +2894,7 @@ on_scrolled(GtkAdjustment *adjustment, gpointer user_data)
                      gtk_adjustment_get_page_size(adjustment);
 
     /* A small tolerance, or a pixel of rounding stops the follow. */
-    self->following = (bottom - value) < 32.0;
+    set_following(self, (bottom - value) < 32.0);
 }
 
 /*
@@ -3262,7 +3421,7 @@ append_local(ClawtWindow *self, const gchar *text)
      * point is not which path ran, it is that the operator's own action
      * put this on screen and they should be looking at it.
      */
-    self->following = TRUE;
+    set_following(self, TRUE);
 
     append_message(self, "clawtilla", text, FALSE, 0);
     queue_scroll(self);
@@ -3332,7 +3491,7 @@ run_slash_command(ClawtWindow *self, const gchar *text)
     }
 
     if (g_strcmp0(name, "/clear") == 0) {
-        clear_box(self->transcript);
+        reset_transcript(self);
         g_hash_table_remove_all(self->shown);
         append_local(self, "Cleared on screen. The transcript on disk is "
                            "untouched -- reopen this agent to see it again.");
@@ -3736,7 +3895,7 @@ load_history(ClawtWindow *self)
     JsonArray *messages;
     guint i;
 
-    clear_box(self->transcript);
+    reset_transcript(self);
     set_activity(self, NULL);
     g_clear_pointer(&self->selected_room, g_free);
     g_hash_table_remove_all(self->shown);
@@ -3775,7 +3934,7 @@ load_history(ClawtWindow *self)
                        clawt_json_int(message, "ts", 0));
     }
 
-    self->following = TRUE;
+    set_following(self, TRUE);
     queue_scroll(self);
 }
 
@@ -3849,7 +4008,7 @@ on_send(GtkWidget *widget, gpointer user_data)
         }
     }
 
-    self->following = TRUE;
+    set_following(self, TRUE);
     queue_scroll(self);
 }
 
@@ -4175,7 +4334,7 @@ on_delete_confirmed_twice(AdwAlertDialog *dialog, gchar *response,
     g_clear_pointer(&self->selected_agent, g_free);
     g_clear_pointer(&self->selected_room, g_free);
     clear_box(self->inspector);
-    clear_box(self->transcript);
+    reset_transcript(self);
 
     {
         const gchar *computer = clawt_json_string(clawt_payload_of(reply),
@@ -6500,6 +6659,12 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
             g_strcmp0(clawt_event_get_subject(event),
                       self->selected_room) == 0 &&
             !already_shown(self, clawt_event_get_detail(event, "id"))) {
+            /*
+             * Before the message, so the rule sits above the first
+             * thing the reader has not seen rather than below it.
+             */
+            note_arrival(self);
+
             append_message(self, from != NULL ? from : "?",
                            body != NULL ? body : "",
                            g_strcmp0(from, "user") == 0, 0);
@@ -8352,7 +8517,7 @@ forget_daemon_state(ClawtWindow *self)
     if (self->collapsed_teams != NULL)
         g_hash_table_remove_all(self->collapsed_teams);
 
-    clear_box(self->transcript);
+    reset_transcript(self);
     clear_list(self->sidebar);
     set_activity(self, NULL);
 }
@@ -9177,7 +9342,66 @@ build_chat_page(ClawtWindow *self)
     gtk_widget_set_margin_top(entry_box, 6);
     gtk_widget_set_margin_bottom(entry_box, 12);
 
-    gtk_box_append(GTK_BOX(box), scroll);
+    /*
+     * The pill that says something arrived while you were reading.
+     *
+     * It floats over the transcript rather than sitting in the column,
+     * because it is about the transcript rather than part of it, and it
+     * carries the words -- a bare arrow says "go down", which the
+     * scrollbar already says.  What was missing was "something is down
+     * there", and that needs saying once, not counting: a message here
+     * is a whole turn, so "3" could be three lines or three screens.
+     *
+     * It appears only when a message has arrived while `following` is
+     * false, not merely because the reader has scrolled up.  A control
+     * that is always there while you read carries no information; one
+     * whose appearance is the signal carries exactly the bit that is
+     * missing.
+     */
+    {
+        GtkWidget *overlay = gtk_overlay_new();
+        GtkWidget *revealer = gtk_revealer_new();
+        GtkWidget *pill = gtk_button_new();
+        GtkWidget *content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+
+        gtk_box_append(GTK_BOX(content),
+                       gtk_image_new_from_icon_name("go-bottom-symbolic"));
+        gtk_box_append(GTK_BOX(content), gtk_label_new("New messages"));
+
+        gtk_button_set_child(GTK_BUTTON(pill), content);
+        gtk_widget_add_css_class(pill, "osd");
+        gtk_widget_add_css_class(pill, "pill");
+        gtk_widget_set_tooltip_text(pill, "Jump to latest");
+        gtk_accessible_update_property(GTK_ACCESSIBLE(pill),
+                                       GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                       "Jump to latest", -1);
+        g_signal_connect(pill, "clicked", G_CALLBACK(on_jump_to_latest),
+                         self);
+
+        gtk_revealer_set_child(GTK_REVEALER(revealer), pill);
+        gtk_revealer_set_transition_type(GTK_REVEALER(revealer),
+                                         GTK_REVEALER_TRANSITION_TYPE_CROSSFADE);
+        gtk_revealer_set_reveal_child(GTK_REVEALER(revealer), FALSE);
+
+        /*
+         * Centred over the transcript, 12px clear of the composer.  Not
+         * anchored to the end: the reader this is for is scrolled up and
+         * therefore the one most likely to be holding the scrollbar.
+         */
+        gtk_widget_set_halign(revealer, GTK_ALIGN_CENTER);
+        gtk_widget_set_valign(revealer, GTK_ALIGN_END);
+        gtk_widget_set_margin_bottom(revealer, 12);
+        gtk_widget_set_can_target(revealer, FALSE);
+
+        self->jump_revealer = GTK_REVEALER(revealer);
+
+        gtk_widget_set_vexpand(overlay, TRUE);
+        gtk_overlay_set_child(GTK_OVERLAY(overlay), scroll);
+        gtk_overlay_add_overlay(GTK_OVERLAY(overlay), revealer);
+
+        gtk_box_append(GTK_BOX(box), overlay);
+    }
+
     gtk_box_append(GTK_BOX(box), self->activity_bar);
     gtk_box_append(GTK_BOX(box), self->command_revealer);
     gtk_box_append(GTK_BOX(box), self->attachments);
@@ -14353,7 +14577,7 @@ clawt_window_class_init(ClawtWindowClass *klass)
 static void
 clawt_window_init(ClawtWindow *self)
 {
-    self->following = TRUE;
+    set_following(self, TRUE);
     self->connections = g_ptr_array_new_with_free_func(
         (GDestroyNotify)clawt_connection_free);
     self->schema_rows = g_ptr_array_new_with_free_func(schema_row_free);
