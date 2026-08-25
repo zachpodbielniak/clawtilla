@@ -3246,6 +3246,24 @@ static const SlashCommand slash_commands[] = {
 static void
 append_local(ClawtWindow *self, const gchar *text)
 {
+    /*
+     * Follow again, because the operator asked for this.
+     *
+     * scroll_to_bottom() and on_transcript_grew() both refuse to move
+     * the view while `following` is false, which is right for a message
+     * arriving on its own and wrong for output the operator just asked
+     * to see.  on_send() re-arms following at its end, but it returns
+     * early when the text was a slash command -- so with the view
+     * scrolled up, /help, /export, /copy and /clear appended their
+     * output below the fold and the queued scroll bailed on the first
+     * line.  The command looked like it had done nothing.
+     *
+     * Re-arming here rather than in on_send() covers every caller: the
+     * point is not which path ran, it is that the operator's own action
+     * put this on screen and they should be looking at it.
+     */
+    self->following = TRUE;
+
     append_message(self, "clawtilla", text, FALSE, 0);
     queue_scroll(self);
 }
