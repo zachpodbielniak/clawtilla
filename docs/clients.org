@@ -748,6 +748,36 @@ inserted when the date changes and once at the top of a loaded history.
 A date change is a bigger break than a speaker change, so it gets more
 room than the gap it sits among.
 
+**** One row builder, and the Flow tab uses it
+
+The GTK client had two: the chat's and the Flow tab's.  They had drifted
+into visibly different renderings of the same content --- one with runs,
+avatars, dividers and a measure, the other a flat list of captions ---
+so a reader moving between a conversation and the flow of one saw two
+conventions for one kind of thing.
+
+Fixed by deleting one of them rather than by teaching the second the same
+tricks, which is the only version that cannot drift again.  What differs
+between the two views is a small struct: which box, whose run state, and
+how the other party is drawn.  The Flow tab derives an avatar from each
+sender's name, because a room there has several participants rather than
+one configured agent.
+
+That also gave the chat two things the Flow tab had and it did not: a
+*task chip* and a *hop count*.  A delegated reply arriving in your own
+chat is exactly the one worth knowing was delegated, and a hop count
+climbing towards ~max_hops~ is the only thing on screen that
+distinguishes a loop from a conversation.  The web client already drew
+both in its chat, so this closed an asymmetry between the clients that
+=make parity= could not see.
+
+The web client's Flow view is a *digest* across every room --- one
+truncated line per message, so the whole of what the fleet has been
+saying fits on a page --- rather than a transcript of one room, which is
+why it does not draw through the chat's builder.  What it does share is
+where a run begins: consecutive messages from one agent do not repeat the
+name, from the same ~clawt_chat_run_is_start()~.
+
 *** Markdown
 
 Agent replies are rendered: bold, italic, inline code, fenced code,

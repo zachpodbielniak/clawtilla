@@ -696,6 +696,141 @@ test_an_ordinary_routine_stays_in_the_conversation(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * The event log is readable, which it had never been.
+ *
+ * ClawtEventLog has written every published event to NDJSON since the
+ * daemon was first built and swept on daemon.event_log_days, and nothing
+ * read it back -- so diagnosing a message loop meant running sqlite3 and
+ * grep on the host.  The alerts surface pages into it through this.
+ */
+static void
+test_the_event_log_can_be_read_back(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) sent = NULL;
+    g_autoptr(JsonNode) all = NULL;
+    g_autoptr(JsonNode) scoped = NULL;
+    JsonArray *events;
+    gboolean saw_message = FALSE;
+    guint i;
+
+    fixture_setup(&fixture,
+                  "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    sent = request(&fixture, "msg.send",
+                   "{\"target\":\"alpha\",\"body\":\"something\"}");
+    g_assert_false(clawt_ipc_frame_is_error(sent));
+
+    all = request(&fixture, "event.list", "{\"limit\":50}");
+    g_assert_false(clawt_ipc_frame_is_error(all));
+
+    events = json_object_get_array_member(clawt_ipc_frame_get_payload(all),
+                                          "events");
+    g_assert_cmpuint(json_array_get_length(events), >, 0);
+
+    for (i = 0; i < json_array_get_length(events); i++) {
+        JsonObject *event = json_array_get_object_element(events, i);
+
+        /*
+         * The same shape a subscriber receives, not a second spelling of
+         * what an event is: kind, subject, ts and detail.
+         */
+        g_assert_nonnull(clawt_ipc_payload_string(event, "kind"));
+        g_assert_true(json_object_has_member(event, "ts"));
+
+        if (g_strcmp0(clawt_ipc_payload_string(event, "kind"),
+                      "message") == 0)
+            saw_message = TRUE;
+    }
+
+    g_assert_true(saw_message);
+
+    /*
+     * And a subject narrows it.  Fleet-wide is the default because the
+     * case that sends somebody to the shell is watching several agents
+     * at once, but "only this one" has to be one request away.
+     */
+    scoped = request(&fixture, "event.list",
+                     "{\"subject\":\"beta\",\"limit\":50}");
+    g_assert_false(clawt_ipc_frame_is_error(scoped));
+
+    events = json_object_get_array_member(clawt_ipc_frame_get_payload(scoped),
+                                          "events");
+
+    for (i = 0; i < json_array_get_length(events); i++) {
+        JsonObject *event = json_array_get_object_element(events, i);
+
+        g_assert_cmpstr(clawt_ipc_payload_string(event, "subject"), ==,
+                        "beta");
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A file an agent sent reaches a client as bytes, and an id from the
+ * wire cannot name a file the daemon was never asked to serve.
+ *
+ * The path would work for a client on this host and show nothing for a
+ * remote one, which reads as a broken image rather than an unsupported
+ * setup -- so the bytes travel.  The id becomes a filename, which is the
+ * one thing here worth being paranoid about.
+ */
+static void
+test_an_attachment_is_served_as_bytes(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *dir = NULL;
+    g_autofree gchar *stored = NULL;
+    g_autoptr(JsonNode) got = NULL;
+    g_autoptr(JsonNode) refused = NULL;
+    g_autoptr(JsonNode) missing = NULL;
+    g_autofree gchar *decoded = NULL;
+    JsonObject *payload;
+    gsize length = 0;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    /*
+     * Written where the daemon keeps them, with an embedded NUL: a byte
+     * count is the thing that separates a copy from a string, and the
+     * PNG signature has one at index 2.
+     */
+    dir = g_build_filename(fixture.dir, "state", "attachments", NULL);
+    g_assert_cmpint(g_mkdir_with_parents(dir, 0700), ==, 0);
+
+    stored = g_build_filename(dir, "0abcdef-shot.png", NULL);
+    g_assert_true(g_file_set_contents(stored, "\211PNG\0\r\n\032\n", 9,
+                                      NULL));
+
+    got = request(&fixture, "attachment.get",
+                  "{\"id\":\"0abcdef-shot.png\"}");
+    g_assert_false(clawt_ipc_frame_is_error(got));
+
+    payload = clawt_ipc_frame_get_payload(got);
+    g_assert_cmpstr(clawt_ipc_payload_string(payload, "name"), ==,
+                    "shot.png");
+    g_assert_cmpint(clawt_ipc_payload_int(payload, "bytes", 0), ==, 9);
+
+    decoded = (gchar *)g_base64_decode(
+        clawt_ipc_payload_string(payload, "base64"), &length);
+    g_assert_cmpuint(length, ==, 9);
+    g_assert_cmpint(memcmp(decoded, "\211PNG\0\r\n\032\n", 9), ==, 0);
+
+    /* An id of somebody's choosing reaches nothing. */
+    refused = request(&fixture, "attachment.get",
+                      "{\"id\":\"../../config.yaml\"}");
+    g_assert_true(clawt_ipc_frame_is_error(refused));
+
+    missing = request(&fixture, "attachment.get", "{}");
+    g_assert_true(clawt_ipc_frame_is_error(missing));
+
+    fixture_teardown(&fixture);
+}
+
 /* The token is created once and then left alone: regenerating it would
  * lock out an agent that is already connected. */
 static void
@@ -3342,6 +3477,10 @@ main(int argc, char *argv[])
                     test_passthrough_channels_are_merged);
     g_test_add_func("/daemon/passthrough-channel-key-collides",
                     test_a_colliding_channel_key_is_refused);
+    g_test_add_func("/daemon/event-log-readable",
+                    test_the_event_log_can_be_read_back);
+    g_test_add_func("/daemon/attachment-served-as-bytes",
+                    test_an_attachment_is_served_as_bytes);
     g_test_add_func("/daemon/isolated-routine-gets-a-room",
                     test_an_isolated_routine_gets_its_own_room);
     g_test_add_func("/daemon/ordinary-routine-shares-the-room",

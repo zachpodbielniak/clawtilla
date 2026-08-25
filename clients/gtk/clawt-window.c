@@ -323,6 +323,16 @@ struct _ClawtWindow {
     gchar             *run_sender;
     gchar             *run_day;
 
+    /*
+     * The Flow view's own run state.  It draws through the same row
+     * builder as the chat -- two builders for one kind of content is how
+     * the two drifted into different renderings of the same messages --
+     * but it is a different transcript, so it keeps its own place in the
+     * run rather than sharing the chat's.
+     */
+    gchar             *flow_run_sender;
+    gchar             *flow_run_day;
+
     /* How the selected agent's avatar is drawn, from its own config. */
     gchar             *selected_avatar;
     gchar             *selected_color;
@@ -437,6 +447,7 @@ refresh_repeat(ClawtWindow *self, ClawtRefreshKind kind)
 
 static void refresh_agents(ClawtWindow *self);
 static void update_unread_tab(ClawtWindow *self);
+static void on_flow_task_clicked(GtkButton *button, gpointer user_data);
 static void refresh_selected(ClawtWindow *self);
 static JsonObject *find_integration(JsonNode *reply, const gchar *name);
 static void refresh_routines(ClawtWindow *self);
@@ -3096,9 +3107,81 @@ run_avatar(const gchar *name, const gchar *image_path, const gchar *color)
     return avatar;
 }
 
+/*
+ * The task and the hop count, which belong to a message rather than to a
+ * run.
+ *
+ * The Flow tab has had both since it was written and the chat has had
+ * neither, which is backwards: a delegated reply arriving in your own
+ * chat is exactly the one you want to know was delegated, and a hop
+ * count climbing towards max_hops is the only thing on screen that
+ * distinguishes a loop from a conversation.  The web client already
+ * drew both in its chat, so this also closes an asymmetry between the
+ * two clients that `make parity` cannot see.
+ */
 static void
-append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
-               gboolean from_user, gint64 ts)
+append_message_chips(ClawtWindow *self, GtkWidget *into, const gchar *task,
+                     gint64 depth)
+{
+    if (task != NULL) {
+        g_autofree gchar *chip = g_strdup_printf("task %.8s", task);
+        GtkWidget *button = gtk_button_new_with_label(chip);
+
+        gtk_widget_add_css_class(button, "flat");
+        gtk_widget_add_css_class(button, "caption");
+        gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
+        gtk_widget_set_tooltip_text(button, task);
+        g_signal_connect(button, "clicked", G_CALLBACK(on_flow_task_clicked),
+                         self);
+        gtk_box_append(GTK_BOX(into), button);
+    }
+
+    /*
+     * From the second hop on.  Every ordinary message is one hop, and a
+     * "hop 1" on all of them would make the number stop being read.
+     */
+    if (depth > 1) {
+        g_autofree gchar *hops = g_strdup_printf("hop %" G_GINT64_FORMAT,
+                                                 depth);
+        GtkWidget *chip = gtk_label_new(hops);
+
+        gtk_widget_add_css_class(chip, "caption");
+        gtk_widget_add_css_class(chip, "dim-label");
+        gtk_widget_set_tooltip_text(
+            chip,
+            "How far this is from the request that started it. "
+            "A count that keeps climbing is a loop; "
+            "orchestration.max_hops is where it stops.");
+        gtk_box_append(GTK_BOX(into), chip);
+    }
+}
+
+/*
+ * Where a message is being drawn, and where that view is up to.
+ *
+ * There were two row builders -- the chat's and the Flow tab's -- and
+ * they had drifted into visibly different renderings of the same
+ * content: one with runs, avatars, day dividers and a measure, the other
+ * a flat list of captions.  A reader moving between them saw two
+ * conventions for one kind of thing.
+ *
+ * Fixed by deleting one of them rather than by teaching the second the
+ * same tricks, because that is the only version that cannot drift again.
+ * What differs between the two views is exactly this struct: which box,
+ * whose run state, and how the other party is drawn.
+ */
+typedef struct {
+    GtkBox       *into;
+    gchar       **run_sender;   /* the view's own place in the run */
+    gchar       **run_day;
+    const gchar  *avatar;       /* NULL derives one from the name */
+    const gchar  *color;
+} TranscriptView;
+
+static void
+append_message_to(ClawtWindow *self, const TranscriptView *view,
+                  const gchar *sender, const gchar *body, gboolean from_user,
+                  gint64 ts, const gchar *task, gint64 depth)
 {
     static const MenuEntry message_menu[] = {
         { "Copy",             "copy-markdown" },
@@ -3113,17 +3196,17 @@ append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
     g_autofree gchar *day = g_date_time_format(when, "%Y-%m-%d");
     g_autofree gchar *stamp = g_date_time_format(when, "%H:%M");
     gboolean new_day;
-    gboolean run_start = clawt_chat_run_is_start(self->run_sender,
-                                                 self->run_day, sender, day,
+    gboolean run_start = clawt_chat_run_is_start(*view->run_sender,
+                                                 *view->run_day, sender, day,
                                                  &new_day);
 
     if (new_day)
-        gtk_box_append(self->transcript, day_divider(when));
+        gtk_box_append(view->into, day_divider(when));
 
-    g_free(self->run_day);
-    self->run_day = g_steal_pointer(&day);
-    g_free(self->run_sender);
-    self->run_sender = g_strdup(sender);
+    g_free(*view->run_day);
+    *view->run_day = g_steal_pointer(&day);
+    g_free(*view->run_sender);
+    *view->run_sender = g_strdup(sender);
 
     /*
      * Rendered from markdown, never *as* markup.
@@ -3194,13 +3277,16 @@ append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
              * messages carries no information while costing the side
              * that can least afford it.
              */
+            GtkWidget *line = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
             GtkWidget *at = gtk_label_new(stamp);
 
             gtk_widget_add_css_class(at, "caption");
             gtk_widget_add_css_class(at, "dim-label");
-            gtk_widget_set_halign(at, GTK_ALIGN_END);
-            gtk_widget_set_margin_bottom(at, 2);
-            gtk_box_append(GTK_BOX(row), at);
+            gtk_widget_set_halign(line, GTK_ALIGN_END);
+            gtk_widget_set_margin_bottom(line, 2);
+            append_message_chips(self, line, task, depth);
+            gtk_box_append(GTK_BOX(line), at);
+            gtk_box_append(GTK_BOX(row), line);
         }
 
         gtk_box_append(GTK_BOX(row), bubble);
@@ -3217,9 +3303,8 @@ append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
             GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
             GtkWidget *who = gtk_label_new(sender);
             GtkWidget *at = gtk_label_new(stamp);
-            GtkWidget *avatar = run_avatar(sender,
-                                           self->selected_avatar,
-                                           self->selected_color);
+            GtkWidget *avatar = run_avatar(sender, view->avatar,
+                                           view->color);
 
             /*
              * `heading` rather than `caption-heading`: shrinking the
@@ -3237,6 +3322,7 @@ append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
             gtk_box_append(GTK_BOX(header), avatar);
             gtk_box_append(GTK_BOX(header), who);
             gtk_box_append(GTK_BOX(header), at);
+            append_message_chips(self, header, task, depth);
             gtk_widget_set_margin_bottom(header, 2);
             gtk_box_append(GTK_BOX(row), header);
         }
@@ -3293,7 +3379,21 @@ append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
      */
     gtk_widget_set_margin_top(row, !run_start ? 6 : (new_day ? 6 : 30));
 
-    gtk_box_append(self->transcript, row);
+    gtk_box_append(view->into, row);
+}
+
+/*
+ * The chat transcript, which is the common case.
+ */
+static void
+append_message(ClawtWindow *self, const gchar *sender, const gchar *body,
+               gboolean from_user, gint64 ts)
+{
+    TranscriptView view = { self->transcript, &self->run_sender,
+                            &self->run_day, self->selected_avatar,
+                            self->selected_color };
+
+    append_message_to(self, &view, sender, body, from_user, ts, NULL, 0);
 }
 
 /*
@@ -11001,83 +11101,35 @@ show_flow_room(ClawtWindow *self, const gchar *room_id, const gchar *label)
         gtk_label_set_text(GTK_LABEL(self->flow_subtitle), count);
     }
 
+    /*
+     * Drawn through the chat's own row builder.
+     *
+     * This used to be a second builder, and the two had drifted into
+     * visibly different renderings of the same messages: one with runs,
+     * avatars, day dividers and a measure, the other a flat list of
+     * captions.  A reader moving between a conversation and the flow of
+     * one saw two conventions for one kind of content.
+     *
+     * Its avatars are derived from each sender's name rather than from
+     * one agent's configured image, because a room here has several
+     * participants -- which is what the NULLs in the view say.
+     */
+    g_clear_pointer(&self->flow_run_sender, g_free);
+    g_clear_pointer(&self->flow_run_day, g_free);
+
     for (i = 0; i < json_array_get_length(messages); i++) {
         JsonObject *message = json_array_get_object_element(messages, i);
         const gchar *sender = clawt_json_string(message, "sender", "?");
-        const gchar *task = clawt_json_string(message, "task", NULL);
-        GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
-        GtkWidget *head = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-        GtkWidget *who = gtk_label_new(
-            g_strcmp0(sender, "user") == 0 ? "you" : sender);
-        GtkWidget *body = gtk_label_new(NULL);
-        g_autofree gchar *when =
-            relative_time(clawt_json_int(message, "ts", 0));
-        GtkWidget *stamp = gtk_label_new(when);
+        TranscriptView view = { self->flow_transcript,
+                                &self->flow_run_sender,
+                                &self->flow_run_day, NULL, NULL };
 
-        gtk_widget_add_css_class(who, "heading");
-        gtk_widget_add_css_class(who, "caption");
-        gtk_widget_add_css_class(stamp, "caption");
-        gtk_widget_add_css_class(stamp, "dim-label");
-
-        gtk_box_append(GTK_BOX(head), who);
-        gtk_box_append(GTK_BOX(head), stamp);
-
-        /*
-         * The task chip is what makes this a flow rather than a list of
-         * remarks: it is the difference between "beta said something"
-         * and "beta said something because alpha delegated this".
-         */
-        if (task != NULL) {
-            g_autofree gchar *chip = g_strdup_printf("task %.8s", task);
-            GtkWidget *button = gtk_button_new_with_label(chip);
-
-            gtk_widget_add_css_class(button, "flat");
-            gtk_widget_add_css_class(button, "caption");
-            gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
-            gtk_widget_set_tooltip_text(button, task);
-            g_signal_connect(button, "clicked",
-                             G_CALLBACK(on_flow_task_clicked), self);
-            gtk_box_append(GTK_BOX(head), button);
-        }
-
-        /*
-         * The hop count, from the second hop on.
-         *
-         * This is what makes a runaway legible. Two agents politely
-         * agreeing to do nothing looks the same on the tenth exchange as
-         * on the first; the number climbing towards max_hops is the only
-         * thing on screen that says it is a loop rather than a
-         * conversation.
-         */
-        if (clawt_json_int(message, "depth", 0) > 1) {
-            g_autofree gchar *hops = g_strdup_printf(
-                "hop %" G_GINT64_FORMAT, clawt_json_int(message, "depth", 0));
-            GtkWidget *chip = gtk_label_new(hops);
-
-            gtk_widget_add_css_class(chip, "caption");
-            gtk_widget_add_css_class(chip, "dim-label");
-            gtk_widget_set_tooltip_text(
-                chip,
-                "How far this is from the request that started it. "
-                "A count that keeps climbing is a loop; orchestration."
-                "max_hops is where it stops.");
-            gtk_box_append(GTK_BOX(head), chip);
-        }
-
-        /* Rendered from markdown; see set_label_markdown(). */
-        set_label_markdown(GTK_LABEL(body),
-                           clawt_json_string(message, "body", ""));
-        gtk_label_set_wrap(GTK_LABEL(body), TRUE);
-        gtk_label_set_selectable(GTK_LABEL(body), TRUE);
-        gtk_label_set_xalign(GTK_LABEL(body), 0.0f);
-
-        gtk_box_append(GTK_BOX(row), head);
-        gtk_box_append(GTK_BOX(row), body);
-        gtk_widget_set_margin_start(row, 12);
-        gtk_widget_set_margin_end(row, 12);
-        gtk_widget_set_margin_top(row, 10);
-
-        gtk_box_append(self->flow_transcript, row);
+        append_message_to(self, &view, sender,
+                          clawt_json_string(message, "body", ""),
+                          g_strcmp0(sender, "user") == 0,
+                          clawt_json_int(message, "ts", 0),
+                          clawt_json_string(message, "task", NULL),
+                          clawt_json_int(message, "depth", 0));
     }
 
     gtk_stack_set_visible_child_name(GTK_STACK(self->flow_stack), "room");
@@ -14852,8 +14904,23 @@ build_flow_page(ClawtWindow *self)
 
     self->flow_transcript = GTK_BOX(gtk_box_new(GTK_ORIENTATION_VERTICAL, 0));
     self->flow_scroll = GTK_SCROLLED_WINDOW(gtk_scrolled_window_new());
-    gtk_scrolled_window_set_child(self->flow_scroll,
-                                  GTK_WIDGET(self->flow_transcript));
+
+    /*
+     * The same measure the chat has, and for the same reason: without a
+     * clamp a body label's natural width is whatever the window is, and
+     * the line runs past the point where the eye can find the start of
+     * the next one.  Inside the scrolled window rather than around it,
+     * so the scrollbar stays at the window edge.
+     */
+    {
+        GtkWidget *clamp = adw_clamp_new();
+
+        adw_clamp_set_child(ADW_CLAMP(clamp),
+                            GTK_WIDGET(self->flow_transcript));
+        gtk_scrolled_window_set_child(self->flow_scroll, clamp);
+    }
+
+    gtk_widget_set_margin_bottom(GTK_WIDGET(self->flow_transcript), 18);
     gtk_widget_set_vexpand(GTK_WIDGET(self->flow_scroll), TRUE);
 
     gtk_box_append(GTK_BOX(right), header);
@@ -15967,6 +16034,8 @@ clawt_window_dispose(GObject *object)
     g_clear_pointer(&self->flow_room, g_free);
     g_clear_pointer(&self->run_sender, g_free);
     g_clear_pointer(&self->run_day, g_free);
+    g_clear_pointer(&self->flow_run_sender, g_free);
+    g_clear_pointer(&self->flow_run_day, g_free);
     g_clear_pointer(&self->selected_avatar, g_free);
     g_clear_pointer(&self->selected_color, g_free);
     g_clear_pointer(&self->shown, g_hash_table_unref);

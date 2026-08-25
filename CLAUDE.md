@@ -721,6 +721,47 @@ the same program.
   produces no output is indistinguishable from a feature nobody
   triggered.
 
+### A window nobody is presenting does not lay out, so it does not scroll
+
+- The reported symptom was "sending a message does not reliably bring the
+  view down", and two hypotheses had already been tested and disproved
+  under instrumentation. Re-running it against a real compositor found
+  the shape immediately: a message appended, `following` TRUE, the widget
+  `mapped`, and `upper` never changing -- so `notify::upper` never fires
+  and `on_transcript_grew()`, which is the only thing that actually
+  works, never runs.
+- `gdk_frame_clock_get_frame_counter()` in the trace is what named it:
+  **2, 3, 3 and stopped**. GTK4 lays out from the frame clock, and a
+  Wayland compositor stops sending frame callbacks to a surface it is not
+  presenting. `mapped` stays TRUE for an occluded window, so every widget
+  looks healthy while no layout pass ever runs.
+- The earlier test could not have shown it: it drove
+  `gtk_adjustment_set_value()` directly, so the clock was never a
+  variable. **A synthetic driver removes the thing you are testing when
+  the thing you are testing is the platform.**
+- Not fixed, deliberately. It self-heals when the window is presented
+  again, and a focused window -- the case reported -- gets frames
+  continuously. Changing follow behaviour on the strength of a
+  throttled-clock trace would alter something that works, for a case that
+  may not be the complaint. Recorded on the issue with the counter in the
+  trace, so the next person can rule it out in one line.
+
+### Two row builders for one kind of content drift, and only deletion stops it
+
+- The chat transcript and the Flow tab each built their own message row.
+  The chat gained runs, avatars, day dividers and a measure; Flow stayed
+  a flat list of captions. Two visibly different renderings of the same
+  messages, and a reader moving between them saw two conventions.
+- Fixed by deleting one, not by teaching the second the same tricks --
+  which is the only version that cannot drift again. What genuinely
+  differed turned out to be a five-field struct: the box, the run state,
+  and how the other party is drawn.
+- It also went the other way: the chat had never shown the task chip or
+  the hop count, both of which Flow had since it was written -- and both
+  of which the *web* client already drew in its chat. Unifying the
+  builders closed an asymmetry between the two clients that `make parity`
+  cannot see, because neither chip sends a frame or answers a command.
+
 ### GLib pads `%e` with a figure space, and `g_strstrip` cannot reach it
 
 - `g_date_time_format(when, "%A %e %B")` renders "Wednesday" then an

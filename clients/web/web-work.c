@@ -336,6 +336,8 @@ clawt_web_flow_body(ClawtWebApp *app, const gchar *agent_id)
     g_autoptr(HtmxDiv) pad = htmx_div_new();
     g_autoptr(JsonNode) reply = clawt_web_app_call(app, "room.list", NULL);
     JsonArray *rooms;
+    g_autofree gchar *run_sender = NULL;
+    g_autofree gchar *run_day = NULL;
     guint shown = 0;
     guint i;
 
@@ -397,27 +399,54 @@ clawt_web_flow_body(ClawtWebApp *app, const gchar *agent_id)
 
         body = clawt_web_card_body(card);
 
+        /*
+         * This is a digest across every room, not a transcript of one --
+         * one truncated line per message, so the whole of what the fleet
+         * has been saying fits on a page.  The GTK client's Flow tab
+         * shows one room in full instead, which is why that one draws
+         * through the chat's row builder and this one does not.
+         *
+         * What both do share is where a run begins: consecutive messages
+         * from one agent do not repeat the name.  The rule comes from
+         * libclawt so a digest and a transcript cannot disagree about it.
+         */
+        g_free(run_sender);
+        run_sender = NULL;
+        g_free(run_day);
+        run_day = NULL;
+
         for (m = 0; m < json_array_get_length(messages); m++) {
             JsonObject *message = json_array_get_object_element(messages, m);
             g_autoptr(HtmxDiv) row = htmx_div_new();
             g_autoptr(HtmxDiv) head = htmx_div_new();
             gint64 depth = clawt_web_member_int(message, "depth", 0);
-            g_autofree gchar *when = clawt_web_relative_time(
-                clawt_web_member_int(message, "ts", 0));
+            gint64 ts = clawt_web_member_int(message, "ts", 0);
+            const gchar *sender_id = clawt_web_member(message, "sender", "?");
+            g_autoptr(GDateTime) at = (ts > 0)
+                ? g_date_time_new_from_unix_local(ts)
+                : g_date_time_new_now_local();
+            g_autofree gchar *day = g_date_time_format(at, "%Y-%m-%d");
+            g_autofree gchar *when = clawt_web_relative_time(ts);
             g_autofree gchar *body_text = clawt_web_one_line(
                 clawt_web_member(message, "body", ""), 300);
+            gboolean run_start = clawt_chat_run_is_start(run_sender, run_day,
+                                                         sender_id, day,
+                                                         NULL);
+
+            g_free(run_sender);
+            run_sender = g_strdup(sender_id);
+            g_free(run_day);
+            run_day = g_steal_pointer(&day);
 
             htmx_element_add_class(HTMX_ELEMENT(row), "list-item");
             htmx_element_add_class(HTMX_ELEMENT(head), "list-item-head");
 
-            {
+            if (run_start) {
                 g_autoptr(HtmxSpan) sender = htmx_span_new();
 
                 htmx_element_add_class(HTMX_ELEMENT(sender),
                                        "list-item-title");
-                htmx_node_set_text_content(
-                    HTMX_NODE(sender),
-                    clawt_web_member(message, "sender", "?"));
+                htmx_node_set_text_content(HTMX_NODE(sender), sender_id);
                 htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(sender));
             }
 

@@ -140,6 +140,7 @@ declare -A AFFORDANCES=(
     ["alert severity tiers"]="ALERT_ROUTINE|CLAWT_WEB_ALERT_ROUTINE"
     ["alert filter"]="alerts_show_all|show_all"
     ["agent attachments"]="fetch_attachment|attachment_element"
+    ["one row builder"]="append_message_to|clawt_chat_run_is_start"
 )
 
 usage () {
