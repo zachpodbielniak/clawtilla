@@ -594,6 +594,119 @@ test_clearing_a_list_unsets_it(void)
 }
 
 /*
+ * A list written as a lone scalar is one element, not nothing.
+ *
+ * `allow_paths: /srv/data` is what a person writes by hand, and it is
+ * what every editor's autocomplete produces for a key it has only ever
+ * seen hold one thing. node_to_strv() refused it -- it takes a YAML
+ * sequence and nothing else -- so the value was parsed, discarded, and
+ * the key read back as its schema default.
+ *
+ * For allow_paths that default is unset, and an unset allowlist is an
+ * empty one. The confinement an operator wrote was not narrowed or
+ * widened; it was dropped, and nothing anywhere said so.
+ */
+static void
+test_a_lone_scalar_is_a_one_element_list(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_auto(GStrv) read_back = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: scribe\n"
+                  "    computer:\n"
+                  "      host:\n"
+                  "        allow_paths: /srv/data\n");
+    agent = first_agent(&fixture);
+
+    read_back = clawt_agent_config_get_string_list(
+        agent, "computer.host.allow_paths");
+
+    if (read_back == NULL)
+        g_test_fail_printf("a hand-written allow_paths scalar read back "
+                           "as nothing");
+    else {
+        g_assert_cmpstr(read_back[0], ==, "/srv/data");
+        g_assert_null(read_back[1]);
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * An empty scalar still means unset, not a list holding "".
+ *
+ * The distinction is the one test_clearing_a_list_unsets_it() protects,
+ * and accepting a lone scalar must not blur it: `tools.allow:` with
+ * nothing after it is a key somebody started and left, not a grant of
+ * no tools at all.
+ */
+static void
+test_an_empty_scalar_is_still_unset(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_auto(GStrv) read_back = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: scribe\n"
+                  "    tools:\n"
+                  "      allow:\n");
+    agent = first_agent(&fixture);
+
+    read_back = clawt_agent_config_get_string_list(agent, "tools.allow");
+    g_assert_null(read_back);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Setting from a string asks the schema what the key is.
+ *
+ * Every caller that takes a value as text -- the CLI, the create_agent
+ * tool -- had to decide for itself whether that text was a list, and a
+ * caller that did not decide wrote a scalar the reader then threw away.
+ * There is one answer and the schema has it, so there is one place that
+ * asks.
+ */
+static void
+test_set_from_string_follows_the_schema(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_auto(GStrv) read_back = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: scribe\n");
+    agent = first_agent(&fixture);
+
+    /* A STRING_LIST key: comma-separated in, sequence out. */
+    g_assert_true(clawt_agent_config_set_from_string(agent, "tools.allow",
+                                                     "read, write"));
+
+    read_back = clawt_agent_config_get_string_list(agent, "tools.allow");
+
+    if (read_back == NULL)
+        g_test_fail_printf("tools.allow was accepted and read back as "
+                           "nothing");
+    else {
+        g_assert_cmpstr(read_back[0], ==, "read");
+        g_assert_cmpstr(read_back[1], ==, "write");
+        g_assert_null(read_back[2]);
+    }
+
+    /* A STRING key is left alone: a comma is part of the value. */
+    g_assert_true(clawt_agent_config_set_from_string(agent, "name",
+                                                     "Scribe, the second"));
+    g_assert_cmpstr(clawt_agent_config_get_string(agent, "name"), ==,
+                    "Scribe, the second");
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * The scaffolder and the renderer ask the same question.
  *
  * They each used to decide for themselves what an agent loads, and a
@@ -1143,6 +1256,12 @@ main(int argc, char *argv[])
                     test_every_agent_list_round_trips);
     g_test_add_func("/workspace/clearing-a-list-unsets-it",
                     test_clearing_a_list_unsets_it);
+    g_test_add_func("/workspace/a-lone-scalar-is-a-one-element-list",
+                    test_a_lone_scalar_is_a_one_element_list);
+    g_test_add_func("/workspace/an-empty-scalar-is-still-unset",
+                    test_an_empty_scalar_is_still_unset);
+    g_test_add_func("/workspace/set-from-string-follows-the-schema",
+                    test_set_from_string_follows_the_schema);
     g_test_add_func("/workspace/scaffold-and-renderer-agree",
                     test_scaffold_and_renderer_agree);
 

@@ -2525,8 +2525,14 @@ daemon_create_agent(ClawtDaemon  *self,
         g_hash_table_iter_init(&iter, fields);
 
         while (g_hash_table_iter_next(&iter, &key, &value)) {
+            /*
+             * Through the schema, not straight to a scalar: a
+             * STRING_LIST key written as a scalar is read back as its
+             * default, so `computer.host.allow_paths` given at creation
+             * reached the sandbox as an empty allowlist.
+             */
             if (value != NULL)
-                clawt_agent_config_set_string(created, key, value);
+                clawt_agent_config_set_from_string(created, key, value);
         }
     }
 
@@ -6348,34 +6354,7 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
          * generated .org stubs, and every surface agreed the setting
          * had been saved.
          */
-        {
-            g_autofree gchar *schema_key = g_strconcat("agents.", key, NULL);
-            const ClawtSchemaEntry *entry = clawt_config_schema_lookup(schema_key);
-
-            if (entry != NULL && entry->type == CLAWT_SCHEMA_STRING_LIST) {
-                /*
-                 * Comma-separated, which is how the schema table spells
-                 * a list default and therefore the one spelling a person
-                 * has already seen. Blanks are trimmed so "a, b" and
-                 * "a,b" mean the same thing.
-                 */
-                g_auto(GStrv) values = NULL;
-
-                if (value != NULL && *value != '\0') {
-                    guint i;
-
-                    values = g_strsplit(value, ",", -1);
-
-                    for (i = 0; values[i] != NULL; i++)
-                        g_strstrip(values[i]);
-                }
-
-                clawt_agent_config_set_string_list(
-                    config, key, (const gchar *const *)values);
-            } else {
-                clawt_agent_config_set_string(config, key, value);
-            }
-        }
+        clawt_agent_config_set_from_string(config, key, value);
 
         if (!clawt_config_save(self->config, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
