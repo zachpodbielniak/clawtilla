@@ -368,6 +368,43 @@ test_message_agent_routes(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * clawtilla_ask_agent queues and returns, exactly like
+ * clawtilla_message_agent.
+ *
+ * This is the behaviour the tool's description states and the workspace
+ * templates used to contradict, so it is worth pinning: the reply is
+ * "Queued for ...", the question has been delivered, and nothing in this
+ * call ever carries the other agent's answer back.  An agent told
+ * otherwise waits for something that is not coming.
+ */
+static void
+test_ask_agent_queues_rather_than_waiting(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    gboolean is_error = TRUE;
+    const gchar *text;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: researcher\n");
+
+    response = call_tool(&fixture, "chief", "clawtilla_ask_agent",
+                         "{\"agent_id\":\"researcher\","
+                         "\"message\":\"did the build pass?\"}");
+    text = response_text(response, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_cmpstr(fixture.last_target, ==, "researcher");
+    g_assert_cmpstr(fixture.last_body, ==, "did the build pass?");
+
+    /* Queued, not answered. */
+    g_assert_nonnull(strstr(text, "Queued for researcher"));
+
+    fixture_teardown(&fixture);
+}
+
 /* Missing arguments are named, so the model fixes the call rather than
  * guessing at what went wrong. */
 static void
@@ -1271,6 +1308,8 @@ main(int argc, char *argv[])
     g_test_add_func("/mcp/get-unknown-agent", test_get_unknown_agent_says_so);
 
     g_test_add_func("/mcp/message-routes", test_message_agent_routes);
+    g_test_add_func("/mcp/ask-agent-queues",
+                    test_ask_agent_queues_rather_than_waiting);
     g_test_add_func("/mcp/missing-arguments", test_missing_arguments_are_named);
     g_test_add_func("/mcp/delegate", test_delegate_creates_a_task);
     g_test_add_func("/mcp/delegate-unknown",
