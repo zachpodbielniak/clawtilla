@@ -1564,17 +1564,25 @@ apply_appearance(ClawtAppearance *appearance)
     if (appearance == NULL || display == NULL)
         return;
 
-    switch (clawt_appearance_get_theme(appearance)) {
-    case CLAWT_THEME_LIGHT:
-        adw_style_manager_set_color_scheme(style, ADW_COLOR_SCHEME_FORCE_LIGHT);
-        break;
-    case CLAWT_THEME_DARK:
-        adw_style_manager_set_color_scheme(style, ADW_COLOR_SCHEME_FORCE_DARK);
-        break;
-    case CLAWT_THEME_SYSTEM:
-    default:
-        adw_style_manager_set_color_scheme(style, ADW_COLOR_SCHEME_DEFAULT);
-        break;
+    /*
+     * The scheme first, and asked for rather than switched on, so a
+     * palette added later needs no case here.  A palette still sets the
+     * scheme: its colours only name some of libadwaita's, and the rest
+     * come from whichever scheme is underneath -- so Mocha over a light
+     * libadwaita is not a lighter Mocha, it is two palettes arguing.
+     */
+    {
+        ClawtTheme theme = clawt_appearance_get_theme(appearance);
+
+        if (theme == CLAWT_THEME_SYSTEM)
+            adw_style_manager_set_color_scheme(style,
+                                               ADW_COLOR_SCHEME_DEFAULT);
+        else if (clawt_appearance_theme_is_dark(theme))
+            adw_style_manager_set_color_scheme(style,
+                                               ADW_COLOR_SCHEME_FORCE_DARK);
+        else
+            adw_style_manager_set_color_scheme(style,
+                                               ADW_COLOR_SCHEME_FORCE_LIGHT);
     }
 
     g_free(appearance_code_font);
@@ -9933,13 +9941,15 @@ on_theme_selected(GObject *row, GParamSpec *spec, gpointer user_data)
     ClawtWindow *self = user_data;
     guint selected = adw_combo_row_get_selected(ADW_COMBO_ROW(row));
     static const ClawtTheme themes[] = {
-        CLAWT_THEME_SYSTEM, CLAWT_THEME_LIGHT, CLAWT_THEME_DARK
+        CLAWT_THEME_SYSTEM, CLAWT_THEME_LIGHT, CLAWT_THEME_DARK,
+        CLAWT_THEME_CATPPUCCIN_MOCHA
     };
 
     (void)spec;
 
-    clawt_appearance_set_theme(self->appearance,
-                               themes[MIN(selected, 2)]);
+    clawt_appearance_set_theme(
+        self->appearance,
+        themes[MIN(selected, G_N_ELEMENTS(themes) - 1)]);
     appearance_changed(self);
 }
 
@@ -10183,8 +10193,13 @@ build_appearance_page(ClawtWindow *self)
     GtkWidget *page = adw_preferences_page_new();
     GtkWidget *theme_group = adw_preferences_group_new();
     GtkWidget *theme_row = adw_combo_row_new();
+    /*
+     * Same order as the ClawtTheme array in on_theme_selected(); the row
+     * index is the only thing tying them together.
+     */
     static const gchar *const themes[] = { "Follow the system", "Light",
-                                           "Dark", NULL };
+                                           "Dark", "Catppuccin Mocha",
+                                           NULL };
     guint selected = 0;
 
     adw_preferences_page_set_title(ADW_PREFERENCES_PAGE(page), "Appearance");
@@ -10211,6 +10226,9 @@ build_appearance_page(ClawtWindow *self)
         break;
     case CLAWT_THEME_DARK:
         selected = 2;
+        break;
+    case CLAWT_THEME_CATPPUCCIN_MOCHA:
+        selected = 3;
         break;
     case CLAWT_THEME_SYSTEM:
     default:
