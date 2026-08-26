@@ -143,6 +143,8 @@ declare -A AFFORDANCES=(
     ["alert filter"]="alerts_show_all|show_all"
     ["agent attachments"]="fetch_attachment|attachment_element"
     ["flow groups by sender"]="flow_run_sender|flow_run_sender"
+    ["alert arrives read"]="clawt_alert_arrives_read|clawt_alert_arrives_read"
+    ["composer on the message column"]="CHAT_BODY_INSET|chat-gutter"
 )
 
 usage () {

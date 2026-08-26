@@ -28,8 +28,20 @@ $(OBJ_DIRS_STAMP): Makefile config.mk
 	@touch $@
 
 # Generic pattern rule for library object files
+#
+# -MMD -MP writes a .d beside each .o listing the headers it included,
+# and those are included at the bottom of this file.  Without them a
+# header edit rebuilt nothing at all: the sources were untouched, so make
+# had no reason to act, and `make test` went on exercising objects
+# compiled against the previous declarations.  That is the same class of
+# failure as a test binary that is not relinked, except it reaches every
+# source in the tree rather than one target -- and it is silent, because
+# a stale build and an unchanged one look identical from the outside.
+#
+# -MP emits a phony target for each header so that *deleting* one does
+# not leave make refusing to build anything with "No rule to make target".
 $(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJ_DIRS_STAMP)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 # Create build directories
 $(OUTDIR):
@@ -53,7 +65,7 @@ $(OBJDIR):
 # CLAWT_TEST_FIXTURES points at tests/fixtures/ so a test can find its
 # golden files and fake modules without guessing at the cwd it was run in.
 $(OUTDIR)/tests/%: $(TESTDIR)/%.c $(LIB_STATIC) $(LIBRECLAW_STATIC) | $(OUTDIR)/tests
-	$(CC) $(CFLAGS) -I$(SRCDIR) -I$(TESTDIR) \
+	$(CC) $(CFLAGS) -MMD -MP -I$(SRCDIR) -I$(TESTDIR) \
 		-DBUILD_OUTDIR='"$(OUTDIR)"' \
 		-DCLAWT_TEST_FIXTURES='"$(CURDIR)/$(TESTDIR)/fixtures"' \
 		-DCLAWT_TEST_SRCDIR='"$(CURDIR)"' \
@@ -120,3 +132,18 @@ help:
 	@echo "Output directories:"
 	@echo "  make          -> build/release/"
 	@echo "  make DEBUG=1  -> build/debug/"
+
+# ─────────────────────────────────────────────────────────────────────
+# Header dependencies
+#
+# Written by -MMD above, one .d beside each object and each test binary.
+# Included with a leading dash so that a first build, where none of them
+# exist yet, is not an error.
+#
+# This is what makes a header edit rebuild the things that include it.
+# Without it `make test` after changing a declaration compiles nothing
+# and passes, which is indistinguishable from a change that worked --
+# and it silently defeats the habit of proving a test fails without its
+# fix, because the sabotage never reaches the binary.
+# ─────────────────────────────────────────────────────────────────────
+-include $(shell find $(BUILDDIR)/$(BUILD_TYPE) -name '*.d' 2>/dev/null)

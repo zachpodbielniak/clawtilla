@@ -160,4 +160,34 @@ typedef enum {
  */
 ClawtAlertTier clawt_alert_tier_for_event(ClawtEvent *event);
 
+/**
+ * clawt_alert_arrives_read:
+ * @surface_showing: whether the alerts surface is in front of the reader
+ * @tier: the alert's tier
+ *
+ * Whether an arriving alert should be recorded as already read.
+ *
+ * An unread count means "one you have not seen".  Both clients used to
+ * record every alert unread and clear the lot on a show *transition*,
+ * which is right for one that arrives while the surface is closed and
+ * wrong for one that lands in front of somebody: it was inserted
+ * unread, bumped the badge, and went on counting until the reader
+ * closed the panel and opened it again -- a number pointing at a row
+ * they had watched appear.
+ *
+ * The routine tier is never counted by either client, so it arrives
+ * read whatever is on screen.  Saying that here rather than in each
+ * badge keeps "what counts" and "what has been seen" one answer rather
+ * than two that agree until somebody edits one.
+ *
+ * Pure, so both halves can be exercised without a window or a browser
+ * -- including the positive control, an alert arriving while the
+ * surface is closed, without which this would be a one-sided assertion
+ * that passes in a build whose badge never counts anything.
+ *
+ * Returns: %TRUE if the alert has already been seen
+ */
+gboolean clawt_alert_arrives_read(gboolean       surface_showing,
+                                  ClawtAlertTier tier);
+
 G_END_DECLS

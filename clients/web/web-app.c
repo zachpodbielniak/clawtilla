@@ -100,7 +100,16 @@ note_alert(ClawtWebApp *self, ClawtAlertTier tier, const gchar *source,
     alert->source = g_strdup(source != NULL ? source : "");
     alert->agent = g_strdup(agent != NULL ? agent : "");
     alert->ts = g_get_real_time();
-    alert->read = FALSE;
+
+    /*
+     * The same rule the GTK client applies, from the same function.
+     *
+     * This client has no panel that stays open, so the case it catches
+     * here is the routine tier: those are never counted, and recording
+     * one unread leaves a flag no badge reads and that a later widening
+     * of the filter would start believing.
+     */
+    alert->read = clawt_alert_arrives_read(FALSE, alert->tier);
 
     /* Newest first: this list is read from the top. */
     g_ptr_array_insert(self->alerts, 0, alert);

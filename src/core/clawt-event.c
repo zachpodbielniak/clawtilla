@@ -272,3 +272,20 @@ clawt_alert_tier_for_event(ClawtEvent *event)
 
     return CLAWT_ALERT_ROUTINE;
 }
+
+gboolean
+clawt_alert_arrives_read(
+    gboolean        surface_showing,
+    ClawtAlertTier  tier
+){
+    /*
+     * The routine stream is never counted, so there is nothing for it to
+     * have been seen *for*.  Recording it unread would leave a flag that
+     * no badge reads and that a later widening of the filter would
+     * silently start believing.
+     */
+    if (tier == CLAWT_ALERT_ROUTINE)
+        return TRUE;
+
+    return surface_showing;
+}

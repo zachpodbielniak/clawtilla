@@ -440,6 +440,29 @@ state:  shadow - unknown computer type 'teleporter'; this build knows
 A shadow is listed, explains itself, and refuses to run.  The fleet
 starts without it.
 
+*** A corrected config clears the shadow
+
+The shadow decision belongs to the configuration, so it is retaken
+whenever the configuration is replaced --- on reload, and in both
+directions.  A shadow whose config is now valid becomes ~stopped~ and
+can start; a stopped agent whose config has just become invalid becomes
+a shadow carrying the new reason.
+
+Before that the refusal outlived the configuration that produced it: an
+operator who corrected the offending key got a reload reporting
+success, an agent that still refused to start, and ~agent show~
+printing the corrected value six lines below the old refusal.  The only
+way out was restarting the daemon, which costs every other agent its
+turn.
+
+Doing only the first direction would leave a newly-broken agent
+reporting itself ready to start, which is the same bug pointing the
+other way --- so both are tested.
+
+A *running* agent is not touched.  A config change is documented as
+applying at the agent's next start, and ending a turn in progress
+because a key it has already read became invalid is the worse bargain.
+
 ** Removing agents
 
 #+begin_src bash

@@ -458,6 +458,54 @@ changing your desktop font later would leave this one app behind. The
 clear button beside each font goes back to following; a font chooser has
 no way to express that, which is why the button exists.
 
+**** A palette has to speak both dialects
+
+~@define-color~ and the ~--token~ custom properties are two namespaces,
+not two spellings of one, and *libadwaita's own rules read only the
+second*.  A palette emitted as ~@define-color~ alone therefore styles
+this client's own rules --- which do read ~@token~ --- and leaves every
+libadwaita-drawn accent, error, success and warning at stock GNOME.  A
+Catppuccin build drew GNOME blue and red icons on a Mocha surface.
+
+Measured on libadwaita 1.9.3 with the shipped values, forced dark: the
+palette as it stood was byte-identical to having no palette at all, and
+only a ~:root~ block moved anything.
+
+So both forms are emitted for every token, and the second is *derived*
+from the first --- thirty-seven hex values maintained twice would drift
+the first time somebody added a colour.  The transform is exactly
+libadwaita's own naming, ~accent_color~ to ~--accent-color~, and a line
+that is not a ~@define-color~ is skipped rather than guessed at.  Which
+tokens bridge between the two namespaces is undocumented and has moved
+between releases, which is why the only correct answer is both.
+
+**** Three stylesheets, with stated priorities
+
+- the structure sheet at ~PRIORITY_APPLICATION~, loaded once
+- the generated appearance sheet at ~PRIORITY_APPLICATION + 1~
+- ~$XDG_CONFIG_HOME/clawtilla/style.css~ at ~PRIORITY_USER~, when it
+  exists
+
+They were one concatenated string before, which re-parsed a constant on
+every settings change and left nowhere for a person to put a rule of
+their own: anything they wrote would have had to out-specify code they
+did not write, at the same priority.  Precedence between the first two
+is unchanged --- appearance came last in the concatenation and so won
+ties, and it sits above structure now.
+
+~@define-color~ does cross a provider boundary, which had to be checked
+rather than assumed: the structure sheet is written entirely in
+~@token~ references while the palette that defines them is in the other
+sheet, and an unresolved reference falls back to libadwaita's value
+with no parse error and no warning.
+
+The client also names its own widgets --- ~#clawt-transcript~,
+~#clawt-composer~, ~.clawt-chat-run~, ~.clawt-avatar~ and the rest ---
+because a stylesheet cannot target what has no name, and before that
+the only things addressable were libadwaita's element names.  Nothing
+is styled by having a name; a selector nobody has written a rule for
+draws nothing.
+
 The settings live in ~$XDG_CONFIG_HOME/clawtilla/appearance.yaml~:
 
 #+begin_src yaml
@@ -503,6 +551,28 @@ as the pill.
 A collapsible panel on the right of the GTK client, bound to a bell in
 the header bar; an =/alerts= page in the web client, reached from the
 sidebar.  Both carry a count.
+
+**** An alert that lands in front of you arrives read
+
+An unread count means "one you have not seen".  Both clients used to
+record every alert unread and clear the lot when the surface was
+*opened*, which is right for one that arrives while the panel is closed
+and wrong for one that lands in front of somebody: it was inserted
+unread, bumped the badge, and went on counting until the reader closed
+the panel and opened it again --- a number pointing at a row they had
+watched appear.
+
+~clawt_alert_arrives_read()~ decides it for both clients.  The routine
+tier arrives read whatever is on screen, because neither badge counts
+it and a flag no badge reads is one a later widening of the filter
+would silently start believing.
+
+One visible consequence, worth knowing rather than discovering: a row's
+unread highlight follows the same flag, so an alert arriving into an
+open panel no longer draws it.  That is consistent --- the highlight
+means /not yet seen/, and it has been --- but keeping both the honest
+badge and an arrival highlight would need a third state, which is a
+larger decision than the fix.
 
 **** Why a surface, and not a toast
 
@@ -846,6 +916,40 @@ injection and a browser; a person who can see where it goes is a person
 who can decide.
 
 
+*** The composer stands on the message column
+
+The transcript and the composer sit in the same clamp, centred alike,
+and they still did not line up --- in *either* client --- because only
+one of them spends anything on the avatar.  A row is inset from the
+clamp and an agent's body is then indented past a gutter, so a body
+starts a gutter and a margin in; the composer had neither, so the
+entry's frame stood on the avatar's left edge rather than the text's.
+That put the strongest vertical line on the page inside the one column
+deliberately kept empty.
+
+Both trailing edges were already right.  Only the leading edge was out,
+and by exactly the gutter.
+
+The two clients need different numbers --- GTK insets 12 and gutters
+44, the web sheet gutters 36 with no inset --- so what is shared is the
+derivation and not the values.  ~clawt_chat_body_inset()~ states it
+once; the GTK client builds ~CHAT_BODY_INSET~ from its pair and the web
+sheet declares ~--chat-gutter~, which its body, its attachments and its
+composer all read.
+
+It aligns the *frame*, not the text inside it: a bordered control reads
+as a box and the box's edge is the line the eye follows, so aligning
+the text would push the frame back into the gutter and restore the
+fault.
+
+Narrow enough that the avatar is hidden, there is no gutter to stand
+past and the composer returns to the clamp with the bodies.  In the web
+sheet that override has to sit *after* the rule it overrides ---
+identical specificity means source order is the only thing deciding,
+and grouped with the sheet's other narrow overrides it would lose every
+time while reading exactly like a fix.  ~/web/narrow-composer-override-can-win~
+asserts the ordering rather than trusting it.
+
 *** Writing the message
 
 The box is a text view, not an entry: Ctrl+G hands whatever comes back
@@ -1005,6 +1109,47 @@ database, so clearing only one leaves the agent resuming from the other
 and looking like the reset did nothing. The files are moved rather than
 deleted, because a reset is what you reach for when something is wedged,
 which is exactly when you might want to look at what it was doing.
+
+*** Where a toast lands
+
+~AdwToastOverlay~ places its toast at the bottom of whatever it wraps,
+and one overlay wrapped the whole window --- so on the chat page every
+confirmation landed on the text being typed.
+
+There are two overlays now, because one cannot mean two places: one
+wraps the chat page's transcript region, so a toast settles above the
+composer, and one wraps the view stack for every other page, where the
+bottom of the page is the right place and there is nothing there to
+cover.  ~clawt_window_toast()~ picks between them on the visible page,
+so all 87 call sites are untouched --- the choice belongs to where a
+toast lands, not to the places that raise one.
+
+Chat is singled out not because it matters more but because it is the
+only page holding something a toast can destroy the use of: everything
+else a toast covers can be scrolled back to, while the composer holds
+text that has not been sent anywhere yet.
+
+*** Following the live edge
+
+~notify::upper~ and ~notify::page-size~ are emitted by ~GtkViewport~
+from inside its own size-allocate, after it has positioned its child
+for that pass.  Writing the adjustment's value there moves the number
+and not the offset, and nothing queues a further pass --- so the view
+lands one message short: the adjustment reports the bottom, the newest
+reply stays clipped against the composer, and it stays that way rather
+than correcting a frame later.
+
+That state is invisible to every other correction in the file, because
+they all test the adjustment and the adjustment is already right.  The
+handler added to correct the idle was what stopped the idle working.
+It queues a scroll instead of writing the value, so the write happens
+outside the layout pass.
+
+Whether the reader is at the live edge at all is
+~clawt_transcript_is_at_bottom()~, in libclawt and tested on both sides
+of ~CLAWT_TRANSCRIPT_FOLLOW_TOLERANCE~ and at its boundary --- every
+pixel of that tolerance is a pixel of message an arrival can push off
+the bottom without the client noticing it stopped following.
 
 *** Smaller things
 
@@ -1183,6 +1328,55 @@ never asking about.
 
 Below 800px the sidebar becomes a drawer.  Without that the agent list
 eats a phone-sized window and the conversation has nowhere to go.
+
+Below ~CLAWT_ALERTS_PUSH_BREAKPOINT~ the alerts panel overlays the
+transcript rather than pushing it aside.  That number is *derived* rather
+than chosen, by ~clawt_alerts_push_min_width()~, from four numbers other
+lines of code own: the agent list's width, the panel's share of what is
+left, the transcript's clamp and a row's margin.
+
+Fitting the clamp is deliberately not the criterion.  That is met a long
+way below the threshold and looks wrong when it is met, the column
+finishing a few pixels from the panel's edge.  The criterion is
+~CLAWT_ALERTS_PANEL_GAP~ of clear space measured to the *ink*, which the
+row margin contributes to --- so the floor is 1124 and the client breaks
+at a round number above it.
+
+The reason it is a function rather than a constant is that every input
+belongs to something else.  Widen the panel and the floor moves; nothing
+warns, because nothing is broken --- the panel still opens, the
+transcript still renders, and the column simply sits against the panel
+with nowhere to breathe.  ~/client-rules/alerts-push/shipped-clears-it~
+is what fails instead.
+
+Opening the panel does shift the column left, by 122px at a 1280 window.
+That is accepted rather than overlooked: the clamp fixes the measure, so
+pushing *translates* the column without reflowing it, and neither the
+line breaks nor the reader's place in the conversation move.
+
+**** A closed sidebar stays closed
+
+~AdwOverlaySplitView~ opens its own sidebar when it stops being
+collapsed, so crossing a breakpoint upward drove ~show-sidebar~ back to
+TRUE and an operator's explicit close did not survive a resize.
+
+Both splits therefore remember what they were meant to be showing and
+put it back on ~notify::collapsed~ --- that signal rather than
+~notify::show-sidebar~, because libadwaita emits the collapsed notify
+first, so the correction is already made before anything downstream
+reads the property.
+
+That ordering is the whole point rather than a detail.  ~show-sidebar~
+on the alerts split is what marks every alert read, and libadwaita's
+write satisfied that guard exactly --- so widening a window past the
+breakpoint silently zeroed the unread count for alerts nobody had
+looked at.  A panel appearing by itself is cosmetic; an unread count
+zeroing itself is not.
+
+The client's own write is deliberately kept out of the record: closing
+the drawer when an agent is picked on a narrow window is an affordance
+getting out of the way, not the operator saying they want no agent
+list, so widening the window brings it back.
 
 *** If the daemon is not running
 

@@ -75,6 +75,17 @@ Two details worth knowing:
   them.  Without that, a fix in a dep rebuilt its archive but never
   relinked the tests, and the suite kept exercising the old code -- which
   looks exactly like the fix not working.
+- every object and every test binary is compiled with ~-MMD -MP~, and
+  the resulting ~.d~ files are included at the bottom of ~rules.mk~.
+  That is what makes editing a *header* rebuild the things that include
+  it.  Without it make saw no changed source and did nothing, so
+  ~make test~ after changing a declaration compiled nothing and passed
+  --- indistinguishable from a change that worked.
+
+  Worse than a stale binary in one target, because it reaches every
+  source in the tree and it silently defeats the habit below of proving
+  a test fails without its fix: the sabotage never reaches the binary,
+  so the "proof" is a pass.  That is exactly how it was found.
 
 ** Code style
 

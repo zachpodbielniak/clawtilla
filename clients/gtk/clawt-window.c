@@ -138,8 +138,34 @@ struct _ClawtWindow {
     GtkWidget         *connection_button;
     GtkWidget         *connection_list;
 
+    /*
+     * Two toast overlays, because one cannot mean two places.
+     *
+     * `toasts` wraps the chat page's transcript region, so a toast lands
+     * above the composer rather than over the text being typed.
+     * `page_toasts` wraps the stack for every other page, where the
+     * bottom of the page is the right place and there is nothing to
+     * cover.  clawt_window_toast() picks between them.
+     */
     AdwToastOverlay   *toasts;
+    AdwToastOverlay   *page_toasts;
     AdwOverlaySplitView *split;
+
+    /*
+     * Whether each split's sidebar is meant to be showing.
+     *
+     * AdwOverlaySplitView writes show-sidebar itself when it stops being
+     * collapsed, so the widget can only be asked what the toolkit last
+     * did -- never what the operator chose.  These remember the choice
+     * and the notify::collapsed handlers put it back.
+     *
+     * `sidebar_transient` covers the one write the client makes for
+     * reasons of its own, which is not a choice and must not be recorded
+     * as one.
+     */
+    gboolean           sidebar_open;
+    gboolean           alerts_open;
+    gboolean           sidebar_transient;
     GtkListBox        *sidebar;
     AdwViewStack      *pages;
 
@@ -458,9 +484,28 @@ static void select_agent(ClawtWindow *self, const gchar *agent_id);
 void
 clawt_window_toast(ClawtWindow *self, const gchar *text)
 {
+    AdwToastOverlay *where;
+    const gchar *page;
+
     g_return_if_fail(CLAWT_IS_WINDOW(self));
 
-    adw_toast_overlay_add_toast(self->toasts, adw_toast_new(text));
+    /*
+     * Which overlay depends on what is on screen, so all 87 callers stay
+     * as they are.  Chat is the only page with something a toast must
+     * not cover: everything else it hides can be scrolled back to, while
+     * the composer holds text that has not been sent anywhere yet.
+     */
+    page = self->pages != NULL
+               ? adw_view_stack_get_visible_child_name(self->pages) : NULL;
+
+    where = (page != NULL && g_strcmp0(page, "chat") == 0 &&
+             self->toasts != NULL)
+                ? self->toasts : self->page_toasts;
+
+    if (where == NULL)
+        return;
+
+    adw_toast_overlay_add_toast(where, adw_toast_new(text));
 }
 
 JsonNode *
@@ -520,6 +565,7 @@ state_dot(const gchar *state)
 {
     GtkWidget *dot = gtk_image_new();
     const gchar *icon = "media-record-symbolic";
+    gtk_widget_add_css_class(dot, "clawt-agent-state");
     const gchar *css = NULL;
 
     if (g_strcmp0(state, "running") == 0)
@@ -698,6 +744,8 @@ agent_row(JsonObject *agent, guint unread)
     GtkWidget *row = adw_action_row_new();
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     const gchar *state = clawt_json_string(agent, "state", "stopped");
+    gtk_widget_add_css_class(row, "clawt-agent-row");
+    gtk_widget_add_css_class(box, "clawt-agent-caps");
     const gchar *caps = clawt_json_string(agent, "caps", "");
     gint64 depth = json_object_has_member(agent, "mailbox_depth")
                    ? json_object_get_int_member(agent, "mailbox_depth") : 0;
@@ -1066,6 +1114,7 @@ team_header_row(ClawtWindow *self,
 {
     GtkWidget *row = gtk_list_box_row_new();
     GtkWidget *button = gtk_button_new();
+    gtk_widget_add_css_class(row, "clawt-team-header");
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     GtkWidget *twisty;
     GtkWidget *label = gtk_label_new(name);
@@ -1851,16 +1900,25 @@ set_activity(ClawtWindow *self, const gchar *text)
  * a value that cannot differ between two labels.
  */
 static GtkCssProvider *appearance_provider = NULL;
+static GtkCssProvider *structure_provider = NULL;
+static GtkCssProvider *user_provider = NULL;
 static gchar          *appearance_code_font = NULL;
 
 /*
  * Structure this client draws that libadwaita has no widget for.
  *
- * Concatenated ahead of the generated appearance sheet rather than given
- * a provider of its own: a second provider at the same priority would
- * make which sheet wins depend on the order they were added, and the
- * appearance rules already had to be reduced to one provider once for
- * exactly that reason.
+ * Its own provider at PRIORITY_APPLICATION, below the generated
+ * appearance sheet at PRIORITY_APPLICATION + 1.  The order the two are
+ * added no longer decides anything, which is what the concatenation was
+ * avoiding -- an explicit priority says it instead, and it says it
+ * without re-parsing this constant every time somebody changes a font.
+ *
+ * Splitting is safe for the named colours below even though the palette
+ * that defines them now lives in a different provider: a @define-color
+ * is visible across the whole cascade, not only within the sheet that
+ * wrote it.  Measured, because the failure mode is silent -- an
+ * unresolved reference falls back to libadwaita's own value with no
+ * parse error and no warning.
  *
  * Every colour is a libadwaita named colour, never a hex value.  That is
  * what makes a palette a palette swap rather than a second pass over
@@ -1961,10 +2019,20 @@ apply_appearance(ClawtAppearance *appearance)
     appearance_code_font =
         g_strdup(clawt_appearance_get_monospace_font(appearance));
 
-    {
-        g_autofree gchar *generated = clawt_appearance_to_css(appearance);
+    css = clawt_appearance_to_css(appearance);
 
-        css = g_strconcat(CLAWT_STRUCTURE_CSS, generated, NULL);
+    /*
+     * The structure sheet is a constant, so it is loaded once and left
+     * alone.  It used to be re-parsed on every settings change purely
+     * because it was glued to the front of the generated one.
+     */
+    if (structure_provider == NULL) {
+        structure_provider = gtk_css_provider_new();
+        gtk_style_context_add_provider_for_display(
+            display, GTK_STYLE_PROVIDER(structure_provider),
+            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+        gtk_css_provider_load_from_string(structure_provider,
+                                          CLAWT_STRUCTURE_CSS);
     }
 
     /*
@@ -1977,10 +2045,34 @@ apply_appearance(ClawtAppearance *appearance)
         appearance_provider = gtk_css_provider_new();
         gtk_style_context_add_provider_for_display(
             display, GTK_STYLE_PROVIDER(appearance_provider),
-            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
     }
 
     gtk_css_provider_load_from_string(appearance_provider, css);
+
+    /*
+     * And whatever the person running this wrote, above everything the
+     * client has an opinion about.
+     *
+     * PRIORITY_USER is what makes it worth having: a bare `.clawt-thing`
+     * there beats an `#id.clawt-thing` in either sheet above, so a rule
+     * can be overridden without having to out-specify code somebody else
+     * wrote.  Absent file, nothing loaded and nothing said -- not having
+     * one is the normal case, not a misconfiguration.
+     */
+    if (user_provider == NULL) {
+        g_autofree gchar *path =
+            g_build_filename(g_get_user_config_dir(), "clawtilla",
+                             "style.css", NULL);
+
+        if (g_file_test(path, G_FILE_TEST_IS_REGULAR)) {
+            user_provider = gtk_css_provider_new();
+            gtk_style_context_add_provider_for_display(
+                display, GTK_STYLE_PROVIDER(user_provider),
+                GTK_STYLE_PROVIDER_PRIORITY_USER);
+            gtk_css_provider_load_from_path(user_provider, path);
+        }
+    }
 }
 
 static void
@@ -2965,6 +3057,24 @@ append_attachment_previews(ClawtWindow *self, GtkWidget *row,
 
 
 /*
+ * The chat column's geometry, in one place.
+ *
+ * Every row in the transcript is inset from the clamp by CHAT_ROW_MARGIN
+ * on both sides, and an agent's body is indented past its avatar by a
+ * further CHAT_GUTTER.  CHAT_BODY_INSET is where a body therefore
+ * starts, and the composer below uses it so that the entry's frame and
+ * the text above it stand on the same line.
+ *
+ * They are constants rather than three literals because the composer is
+ * the only thing here that has to agree with a number it does not draw:
+ * a literal 56 would be a number nobody could trace back to the two it
+ * came from, and it would go stale the first time either changed.
+ */
+#define CHAT_ROW_MARGIN  12
+#define CHAT_GUTTER      44
+#define CHAT_BODY_INSET  clawt_chat_body_inset(CHAT_ROW_MARGIN, CHAT_GUTTER)
+
+/*
  * "Today", "Yesterday", or "Wednesday 25 August".
  *
  * A date change is a bigger break than a speaker change, so it gets more
@@ -2976,6 +3086,7 @@ day_divider(GDateTime *when)
 {
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
     GtkWidget *left = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_widget_add_css_class(row, "clawt-day-divider");
     GtkWidget *right = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
     GtkWidget *label;
     g_autofree gchar *text = clawt_chat_day_label(when, NULL);
@@ -2993,8 +3104,8 @@ day_divider(GDateTime *when)
     gtk_box_append(GTK_BOX(row), label);
     gtk_box_append(GTK_BOX(row), right);
 
-    gtk_widget_set_margin_start(row, 12);
-    gtk_widget_set_margin_end(row, 12);
+    gtk_widget_set_margin_start(row, CHAT_ROW_MARGIN);
+    gtk_widget_set_margin_end(row, CHAT_ROW_MARGIN);
     gtk_widget_set_margin_top(row, 24);
 
     return row;
@@ -3025,6 +3136,19 @@ day_divider(GDateTime *when)
  *
  * @color reached clawt_color_ink() before this, which is what makes it
  * safe to splice: nothing but `#rgb` and `#rrggbb` gets this far.
+ *
+ * Above the appearance sheet, at PRIORITY_APPLICATION + 2, because a
+ * tint is about one particular agent and a palette is an opinion about
+ * surfaces in general.  A single `avatar { background-color: ... }` in a
+ * theme would otherwise flatten every agent to one swatch -- and it
+ * would win despite being the less specific selector, because a
+ * provider's priority decides before specificity is consulted.
+ * Measured: a bare `avatar` rule one layer up beats `avatar.clawt-tint-*`
+ * one layer down.
+ *
+ * Still below PRIORITY_USER, so somebody who does want uniform avatars
+ * can say so.  The stack ascends from the most general to the closest to
+ * the data, with the person on top.
  */
 static GHashTable     *avatar_tints = NULL;
 static GtkCssProvider *avatar_tint_provider = NULL;
@@ -3064,7 +3188,7 @@ tint_class(const gchar *color, const gchar *ink)
             gtk_style_context_add_provider_for_display(
                 gdk_display_get_default(),
                 GTK_STYLE_PROVIDER(avatar_tint_provider),
-                GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+                GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 2);
         }
 
         gtk_css_provider_load_from_string(avatar_tint_provider, sheet->str);
@@ -3077,6 +3201,7 @@ static GtkWidget *
 run_avatar(const gchar *name, const gchar *image_path, const gchar *color)
 {
     GtkWidget *avatar = adw_avatar_new(32, name, TRUE);
+    gtk_widget_add_css_class(avatar, "clawt-avatar");
     const gchar *ink;
 
     if (image_path != NULL && *image_path != '\0') {
@@ -3190,6 +3315,7 @@ append_message_to(ClawtWindow *self, const TranscriptView *view,
     };
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     GtkWidget *text = gtk_label_new(NULL);
+    gtk_widget_add_css_class(row, "clawt-chat-run");
     g_autoptr(GDateTime) when = (ts > 0)
         ? g_date_time_new_from_unix_local(ts)
         : g_date_time_new_now_local();
@@ -3234,6 +3360,7 @@ append_message_to(ClawtWindow *self, const TranscriptView *view,
      * to make harder to read.
      */
     gtk_widget_add_css_class(text, "body");
+    gtk_widget_add_css_class(text, "clawt-chat-body");
 
     if (from_user) {
         /*
@@ -3280,6 +3407,8 @@ append_message_to(ClawtWindow *self, const TranscriptView *view,
             GtkWidget *line = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
             GtkWidget *at = gtk_label_new(stamp);
 
+            gtk_widget_add_css_class(line, "clawt-run-header");
+
             gtk_widget_add_css_class(at, "caption");
             gtk_widget_add_css_class(at, "dim-label");
             gtk_widget_set_halign(line, GTK_ALIGN_END);
@@ -3298,6 +3427,8 @@ append_message_to(ClawtWindow *self, const TranscriptView *view,
          */
         GtkWidget *line = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
         GtkWidget *gutter = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+
+        gtk_widget_add_css_class(line, "clawt-run-header");
 
         if (run_start) {
             GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
@@ -3332,7 +3463,7 @@ append_message_to(ClawtWindow *self, const TranscriptView *view,
          * plus its 12px gap; a widget is something a narrow layout could
          * collapse, and a margin set from C is not.
          */
-        gtk_widget_set_size_request(gutter, 44, -1);
+        gtk_widget_set_size_request(gutter, CHAT_GUTTER, -1);
         gtk_box_append(GTK_BOX(line), gutter);
         gtk_box_append(GTK_BOX(line), text);
         gtk_widget_set_hexpand(text, TRUE);
@@ -3349,8 +3480,8 @@ append_message_to(ClawtWindow *self, const TranscriptView *view,
     add_context_menu(self, row, message_menu, G_N_ELEMENTS(message_menu),
                      on_message_action,
                      g_object_get_data(G_OBJECT(row), "body"));
-    gtk_widget_set_margin_start(row, 12);
-    gtk_widget_set_margin_end(row, 12);
+    gtk_widget_set_margin_start(row, CHAT_ROW_MARGIN);
+    gtk_widget_set_margin_end(row, CHAT_ROW_MARGIN);
 
     /*
      * Turns have to be further apart than the paragraphs inside one.
@@ -3437,14 +3568,33 @@ scroll_to_bottom(gpointer user_data)
 }
 
 /*
- * Pins the view to the bottom when the transcript actually grows.
+ * Notices that the transcript has grown, and asks for a scroll.
  *
- * The queued idle is not enough on its own: it reads `upper` before
- * GTK's frame clock has laid the new message out, so it scrolls to where
- * the bottom *was* and leaves the newest message just below the fold --
- * which is why a reply, or even typing, needed a scroll by hand. The
- * adjustment says when it genuinely knows how tall the content is; that
- * is the moment to follow it.
+ * It asks rather than scrolls, and that distinction is the whole point.
+ * These two notifies are emitted by GtkViewport from inside its own
+ * size-allocate, at the moment it reconfigures the adjustment for a
+ * layout it has already positioned its child for. Writing `value` here
+ * moves the number and does not move the picture: the viewport has
+ * finished placing the child for this pass, and the allocation the
+ * write asks for is folded into the pass that is already running rather
+ * than starting another one. Nothing queues a further one, so the
+ * displayed offset stays where it was while the adjustment reports the
+ * new bottom.
+ *
+ * That mismatch is stable, not transient -- measured at 68px, exactly
+ * one message, and still there ten seconds later. It is also invisible
+ * to every correction in this file, because all of them test the
+ * adjustment and the adjustment is already right. `scroll_to_bottom()`
+ * in particular finds value == bottom and returns without doing
+ * anything, so the one write that would have happened outside a layout
+ * pass is the one this handler suppresses.
+ *
+ * Queueing instead puts the write in an idle, after the pass has
+ * finished. It is then a real value change, the viewport allocates
+ * again, and the newest message is on screen. `queue_scroll()` already
+ * holds a reference for the life of the idle and `scroll_to_bottom()`
+ * already re-reads `upper` and re-checks `following`, so deferring
+ * costs nothing but the hop.
  *
  * page-size as well as upper, because typing grows the composer and
  * shrinks the transcript above it, which moves the bottom without adding
@@ -3466,12 +3616,12 @@ on_transcript_grew(GObject *object, GParamSpec *pspec, gpointer user_data)
              gtk_adjustment_get_page_size(adjustment);
 
     /*
-     * Only when it is not already there. Setting the same value is a
-     * no-op to GTK but this runs on every layout pass, and doing nothing
-     * is cheaper than asking it to.
+     * Only when it is not already there. This runs on every layout
+     * pass, and a queued idle that would find nothing to do is worth
+     * not queueing.
      */
     if (gtk_adjustment_get_value(adjustment) < bottom)
-        gtk_adjustment_set_value(adjustment, bottom);
+        queue_scroll(self);
 }
 
 /*
@@ -3551,8 +3701,8 @@ unread_marker_new(void)
     gtk_box_append(GTK_BOX(row), label);
     gtk_box_append(GTK_BOX(row), after);
 
-    gtk_widget_set_margin_start(row, 12);
-    gtk_widget_set_margin_end(row, 12);
+    gtk_widget_set_margin_start(row, CHAT_ROW_MARGIN);
+    gtk_widget_set_margin_end(row, CHAT_ROW_MARGIN);
 
     /*
      * Closer to the message below than to the one above, on purpose: the
@@ -7069,9 +7219,19 @@ select_agent(ClawtWindow *self, const gchar *agent_id)
     load_history(self);
     refresh_selected(self);
 
-    /* On a narrow window the sidebar is a drawer, so close it. */
-    if (adw_overlay_split_view_get_collapsed(self->split))
+    /*
+     * On a narrow window the sidebar is a drawer, so close it.
+     *
+     * That is the client dismissing a drawer that is in the way, not the
+     * operator saying they want no agent list, so it deliberately does
+     * not touch sidebar_open: widen the window again and the list comes
+     * back.  Recording it would make an affordance into a preference.
+     */
+    if (adw_overlay_split_view_get_collapsed(self->split)) {
+        self->sidebar_transient = TRUE;
         adw_overlay_split_view_set_show_sidebar(self->split, FALSE);
+        self->sidebar_transient = FALSE;
+    }
 }
 
 /* ── The sidebar's context menu ───────────────────────────────────── */
@@ -7444,7 +7604,22 @@ clawt_window_alert(ClawtWindow *self, ClawtAlertTier tier, const gchar *source,
     alert->source = g_strdup(source != NULL ? source : "");
     alert->agent = g_strdup(agent != NULL ? agent : "");
     alert->ts = g_get_real_time();
-    alert->read = FALSE;
+
+    /*
+     * An alert that lands while the panel is open has been seen as it
+     * arrived, so it arrives read.
+     *
+     * on_alerts_shown() only fires on a show *transition*, so without
+     * this the badge counts something the operator is looking straight
+     * at, and keeps counting it until they close the panel and open it
+     * again.  This is the same rule that already decides whether the
+     * list is worth rebuilding a few lines below, applied one step
+     * earlier.
+     */
+    alert->read = clawt_alert_arrives_read(
+        self->alerts_split != NULL &&
+            adw_overlay_split_view_get_show_sidebar(self->alerts_split),
+        alert->tier);
 
     /* Newest first: the list is read from the top and never scrolled to
      * the bottom, which is the opposite of a transcript. */
@@ -7877,6 +8052,64 @@ refresh_alerts(ClawtWindow *self)
 }
 
 /*
+ * A split view that stops being collapsed opens its sidebar, whether or
+ * not anybody asked it to.
+ *
+ * adw_breakpoint_add_setters() restores the previous value when its
+ * breakpoint stops matching, so every upward crossing of the widths set
+ * below drives collapsed TRUE -> FALSE, and that transition sets
+ * show-sidebar TRUE inside libadwaita.  Measured on 1.8.7: a split with
+ * show-sidebar FALSE that is collapsed and then uncollapsed comes back
+ * showing, while one that was never collapsed does not.  So an operator
+ * who closed the panel finds it open again after a resize they made for
+ * an unrelated reason.
+ *
+ * These put the remembered choice back.  They are on notify::collapsed
+ * rather than notify::show-sidebar because libadwaita emits the collapsed
+ * notify first and the show notify after -- so the correction is already
+ * made by the time anything downstream reads the property, and nothing
+ * has to tell the toolkit's write apart from a person's.  Move this to
+ * the other signal and it will still compile, still look right, and
+ * quietly do nothing.
+ */
+static void
+on_alerts_collapsed(GObject *object, GParamSpec *pspec, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    (void)pspec;
+
+    adw_overlay_split_view_set_show_sidebar(ADW_OVERLAY_SPLIT_VIEW(object),
+                                            self->alerts_open);
+}
+
+static void
+on_sidebar_collapsed(GObject *object, GParamSpec *pspec, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    (void)pspec;
+
+    adw_overlay_split_view_set_show_sidebar(ADW_OVERLAY_SPLIT_VIEW(object),
+                                            self->sidebar_open);
+}
+
+/* The agent list's half of the same memory. */
+static void
+on_sidebar_shown(GObject *object, GParamSpec *pspec, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    (void)pspec;
+
+    if (self->sidebar_transient)
+        return;
+
+    self->sidebar_open = adw_overlay_split_view_get_show_sidebar(
+        ADW_OVERLAY_SPLIT_VIEW(object));
+}
+
+/*
  * Opening the panel marks everything read.
  *
  * The badge is "how much have you not seen", and you have now seen it.
@@ -7891,8 +8124,16 @@ on_alerts_shown(GObject *object, GParamSpec *pspec, gpointer user_data)
 
     (void)pspec;
 
-    if (!adw_overlay_split_view_get_show_sidebar(
-            ADW_OVERLAY_SPLIT_VIEW(object)))
+    /*
+     * Whatever the panel has settled at is what the operator wants, and
+     * this runs after the notify::collapsed handler below has already
+     * put their choice back -- so what is recorded here is the choice,
+     * not libadwaita's overwrite of it.
+     */
+    self->alerts_open = adw_overlay_split_view_get_show_sidebar(
+        ADW_OVERLAY_SPLIT_VIEW(object));
+
+    if (!self->alerts_open)
         return;
 
     for (i = 0; self->alerts != NULL && i < self->alerts->len; i++)
@@ -7910,6 +8151,8 @@ build_alerts_panel(ClawtWindow *self)
     GtkWidget *scroll = gtk_scrolled_window_new();
     GtkWidget *filter = adw_toggle_group_new();
     GtkWidget *body = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+
+    gtk_widget_set_name(view, "clawt-alerts-panel");
 
     adw_header_bar_set_show_start_title_buttons(ADW_HEADER_BAR(header),
                                                 FALSE);
@@ -10533,8 +10776,8 @@ build_chat_page(ClawtWindow *self)
      * Nothing capped the column, so a body label's natural width was
      * whatever the window was: a 1280px window measured 877px of text on
      * its longest line, about 137 characters, and this scales with the
-     * display -- a wider one is worse rather than equal.  With the clamp
-     * the same line measures 569px, about 89 characters.
+     * display -- a wider one is worse rather than equal.  The clamp
+     * bounds it instead.
      *
      * Continuous prose reads comfortably at
      * roughly 45 to 90 characters; past that the eye has to cross the
@@ -10546,12 +10789,24 @@ build_chat_page(ClawtWindow *self)
      * where they are reachable.
      *
      * AdwClamp's own defaults are the right numbers and are deliberately
-     * left alone: maximum-size is 600, which after the row's 12px side
-     * margins leaves 576px of text -- about 90 characters in the default
-     * font, the top of that range -- and tightening-threshold is 400,
+     * left alone: maximum-size is 600 and tightening-threshold is 400,
      * which is what stops the column snapping in a narrow window.  A
      * default left unset is a number the platform can revise; a
      * hardcoded one is a number somebody has to maintain.
+     *
+     * What 600 leaves for words is 600 less CHAT_BODY_INSET at the start
+     * and CHAT_ROW_MARGIN at the end: 532px, about 82 characters in the
+     * default font.  An earlier reading of this said 576 and 90, which
+     * forgot that an agent's body is indented past its avatar as well as
+     * inset from the clamp -- 44px of it, seven characters' worth, on
+     * every line.
+     *
+     * The body does not fill even that.  A wrapping GtkLabel set
+     * GTK_ALIGN_START is allocated its natural width rather than the
+     * column's, and measured here that is 437px against the 532px
+     * offered -- about 66 characters.  So 82 is what the clamp permits
+     * and 66 is what a reader sees; the two differ by the label's
+     * alignment, not by anything decided here.
      */
     {
         GtkWidget *clamp = adw_clamp_new();
@@ -10587,6 +10842,7 @@ build_chat_page(ClawtWindow *self)
     }
     gtk_widget_set_vexpand(scroll, TRUE);
     self->transcript_scroll = GTK_SCROLLED_WINDOW(scroll);
+    gtk_widget_set_name(scroll, "clawt-transcript");
 
     /*
      * Following is maintained from three places: the reader scrolling
@@ -10621,14 +10877,10 @@ build_chat_page(ClawtWindow *self)
     gtk_box_append(GTK_BOX(self->activity_bar),
                    GTK_WIDGET(self->activity_spinner));
     gtk_box_append(GTK_BOX(self->activity_bar), GTK_WIDGET(self->streaming));
-    gtk_widget_set_margin_start(self->activity_bar, 12);
-    gtk_widget_set_margin_end(self->activity_bar, 12);
     gtk_widget_set_visible(self->activity_bar, FALSE);
 
     /* The queued files, hidden until there are some. */
     self->attachments = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    gtk_widget_set_margin_start(self->attachments, 12);
-    gtk_widget_set_margin_end(self->attachments, 12);
     gtk_widget_set_margin_top(self->attachments, 6);
     gtk_widget_set_visible(self->attachments, FALSE);
 
@@ -10699,17 +10951,17 @@ build_chat_page(ClawtWindow *self)
             GTK_REVEALER_TRANSITION_TYPE_SLIDE_UP);
         gtk_revealer_set_child(GTK_REVEALER(self->command_revealer),
                                command_scroll);
-        gtk_widget_set_margin_start(self->command_revealer, 12);
-        gtk_widget_set_margin_end(self->command_revealer, 12);
     }
 
     attach = gtk_button_new_from_icon_name("mail-attachment-symbolic");
+    gtk_widget_set_name(attach, "clawt-attach");
     gtk_widget_set_tooltip_text(attach,
                                 "Send files with this message. You can also "
                                 "paste an image.");
     g_signal_connect(attach, "clicked", G_CALLBACK(on_attach_clicked), self);
 
     send = gtk_button_new_from_icon_name("document-send-symbolic");
+    gtk_widget_set_name(send, "clawt-send");
     g_signal_connect(send, "clicked", G_CALLBACK(on_send), self);
 
     {
@@ -10731,6 +10983,7 @@ build_chat_page(ClawtWindow *self)
         gtk_scrolled_window_set_propagate_natural_height(
             GTK_SCROLLED_WINDOW(entry_scroll), TRUE);
         gtk_widget_add_css_class(entry_scroll, "card");
+        gtk_widget_set_name(entry_scroll, "clawt-entry");
         gtk_widget_set_hexpand(entry_scroll, TRUE);
 
         gtk_overlay_set_child(GTK_OVERLAY(overlay), entry_scroll);
@@ -10743,8 +10996,6 @@ build_chat_page(ClawtWindow *self)
     gtk_widget_set_valign(send, GTK_ALIGN_END);
     gtk_box_append(GTK_BOX(entry_box), attach);
     gtk_box_append(GTK_BOX(entry_box), send);
-    gtk_widget_set_margin_start(entry_box, 12);
-    gtk_widget_set_margin_end(entry_box, 12);
     gtk_widget_set_margin_top(entry_box, 6);
     gtk_widget_set_margin_bottom(entry_box, 12);
 
@@ -10777,6 +11028,7 @@ build_chat_page(ClawtWindow *self)
         gtk_button_set_child(GTK_BUTTON(pill), content);
         gtk_widget_add_css_class(pill, "osd");
         gtk_widget_add_css_class(pill, "pill");
+        gtk_widget_add_css_class(pill, "clawt-jump-pill");
         gtk_widget_set_tooltip_text(pill, "Jump to latest");
         gtk_accessible_update_property(GTK_ACCESSIBLE(pill),
                                        GTK_ACCESSIBLE_PROPERTY_LABEL,
@@ -10805,7 +11057,11 @@ build_chat_page(ClawtWindow *self)
         gtk_overlay_set_child(GTK_OVERLAY(overlay), scroll);
         gtk_overlay_add_overlay(GTK_OVERLAY(overlay), revealer);
 
-        gtk_box_append(GTK_BOX(box), overlay);
+        self->toasts = ADW_TOAST_OVERLAY(adw_toast_overlay_new());
+        adw_toast_overlay_set_child(self->toasts, overlay);
+        gtk_widget_set_vexpand(GTK_WIDGET(self->toasts), TRUE);
+
+        gtk_box_append(GTK_BOX(box), GTK_WIDGET(self->toasts));
     }
 
     /*
@@ -10820,7 +11076,28 @@ build_chat_page(ClawtWindow *self)
      */
     {
         GtkWidget *composer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+        gtk_widget_set_name(composer, "clawt-composer");
         GtkWidget *clamp = adw_clamp_new();
+
+        /*
+         * And it stands on the same line as the words above it.
+         *
+         * The same clamp is not the same column: a row spends
+         * CHAT_ROW_MARGIN plus CHAT_GUTTER of its 600 before a body
+         * starts, and the composer spent only CHAT_ROW_MARGIN -- so the
+         * entry's frame, the strongest vertical in the whole page, stood
+         * CHAT_GUTTER left of every line of text and inside the one
+         * column deliberately left empty.  Insetting by CHAT_BODY_INSET
+         * puts it back under the text; CHAT_ROW_MARGIN on the trailing
+         * edge is what a row already ends at, so both ends agree.
+         *
+         * This aligns the frame, not the text inside it.  GtkText keeps
+         * an inset of its own, so the caret sits a little inside the
+         * rail -- which is right, because a bordered control reads as a
+         * box and the box's edge is the line the eye follows down.
+         */
+        gtk_widget_set_margin_start(composer, CHAT_BODY_INSET);
+        gtk_widget_set_margin_end(composer, CHAT_ROW_MARGIN);
 
         gtk_box_append(GTK_BOX(composer), self->activity_bar);
         gtk_box_append(GTK_BOX(composer), self->command_revealer);
@@ -15650,7 +15927,22 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
         g_strdup(clawt_connection_get_socket_path(self->active_connection));
 
     gtk_window_set_title(GTK_WINDOW(self), "clawtilla");
-    gtk_window_set_default_size(GTK_WINDOW(self), 1100, 720);
+
+    /*
+     * Wide enough that the alerts panel pushes rather than overlays on
+     * first launch.
+     *
+     * 1100 was below the breakpoint above it, so the side-by-side layout
+     * existed and nobody arrived at it -- a window had to be resized
+     * before the design the panel was drawn for appeared at all.  1280
+     * clears the 1150 threshold with room, and 1280x720 still fits a
+     * 1366x768 laptop with its panels, which 1280x800 does not.
+     *
+     * The overlay is not lost by this: it is what the breakpoint still
+     * gives anyone who makes the window narrower, which is now a choice
+     * rather than the only state.
+     */
+    gtk_window_set_default_size(GTK_WINDOW(self), 1280, 720);
 
     /* ── Sidebar ── */
     self->sidebar = GTK_LIST_BOX(gtk_list_box_new());
@@ -15748,6 +16040,7 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
     sidebar_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_box_append(GTK_BOX(sidebar_box), sidebar_header);
     gtk_box_append(GTK_BOX(sidebar_box), sidebar_scroll);
+    gtk_widget_set_name(sidebar_box, "clawt-sidebar");
 
     /* ── Content ── */
     self->pages = ADW_VIEW_STACK(adw_view_stack_new());
@@ -15785,6 +16078,7 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
                                         "system-users-symbolic");
 
     header = adw_header_bar_new();
+    gtk_widget_set_name(header, "clawt-headerbar");
     title = adw_window_title_new("clawtilla", NULL);
     adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), title);
     g_object_set_data(G_OBJECT(self), "title", title);
@@ -15849,26 +16143,39 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
      * collapsible surface holding two unrelated things means opening
      * either hides the other.
      *
-     * 320px is the conventional libadwaita sidebar width and is
-     * load-bearing: 281 (agent list) + 600 (transcript clamp) + 320
-     * comes to 1201, so all three fit side by side on an ordinary window
-     * and the transcript does not move when the panel opens.  That is
-     * the whole point of pushing rather than overlaying, and it is where
-     * the breakpoint below comes from.
+     * The panel is a fraction of what is left, not a width.
+     * AdwOverlaySplitView has no sidebar-width property: it takes
+     * sidebar-width-fraction, clamped by min-sidebar-width and
+     * max-sidebar-width, which default to 180 and 280.  So with the
+     * 0.26 set below the panel measures 259px beside a 1000px content
+     * area, against 0.26 x 1000 predicted, and 179px once the fraction
+     * would fall under the 180 floor.  Both are the measured allocation
+     * rather than the model, which is the point: they are a pixel under
+     * because that is what the widget was actually given.  Anything in
+     * here that names a fixed panel width
+     * is describing a widget that does not exist.
+     *
+     * What the breakpoint below is derived from is therefore the
+     * transcript's side of that split, and the derivation is in the
+     * comment on it.
      */
     self->alerts_split = ADW_OVERLAY_SPLIT_VIEW(adw_overlay_split_view_new());
     adw_overlay_split_view_set_sidebar_position(self->alerts_split,
                                                 GTK_PACK_END);
     adw_overlay_split_view_set_sidebar(self->alerts_split,
                                        build_alerts_panel(self));
+    self->page_toasts = ADW_TOAST_OVERLAY(adw_toast_overlay_new());
+    adw_toast_overlay_set_child(self->page_toasts, GTK_WIDGET(self->pages));
+
     adw_overlay_split_view_set_content(self->alerts_split,
-                                       GTK_WIDGET(self->pages));
+                                       GTK_WIDGET(self->page_toasts));
     adw_overlay_split_view_set_show_sidebar(self->alerts_split, FALSE);
-    adw_overlay_split_view_set_sidebar_width_fraction(self->alerts_split,
-                                                      0.26);
+    adw_overlay_split_view_set_sidebar_width_fraction(
+        self->alerts_split, CLAWT_ALERTS_PANEL_FRACTION);
 
     switcher = adw_view_switcher_new();
     adw_view_switcher_set_stack(ADW_VIEW_SWITCHER(switcher), self->pages);
+    gtk_widget_set_name(switcher, "clawt-page-switcher");
     adw_view_switcher_set_policy(ADW_VIEW_SWITCHER(switcher),
                                  ADW_VIEW_SWITCHER_POLICY_WIDE);
     adw_header_bar_pack_end(ADW_HEADER_BAR(header), switcher);
@@ -15883,6 +16190,7 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
      */
     {
         GtkWidget *bell = gtk_toggle_button_new();
+        gtk_widget_set_name(bell, "clawt-alerts-bell");
         GtkWidget *overlay = gtk_overlay_new();
 
         gtk_button_set_icon_name(
@@ -15920,6 +16228,12 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
 
     g_signal_connect(self->alerts_split, "notify::show-sidebar",
                      G_CALLBACK(on_alerts_shown), self);
+    g_signal_connect(self->alerts_split, "notify::collapsed",
+                     G_CALLBACK(on_alerts_collapsed), self);
+    g_signal_connect(self->split, "notify::show-sidebar",
+                     G_CALLBACK(on_sidebar_shown), self);
+    g_signal_connect(self->split, "notify::collapsed",
+                     G_CALLBACK(on_sidebar_collapsed), self);
 
     g_object_bind_property(sidebar_button, "active", self->split,
                            "show-sidebar",
@@ -15950,26 +16264,60 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
                                           breakpoint);
 
     /*
-     * And below 1200px the alerts panel overlays rather than pushes.
+     * And below 1150px the alerts panel overlays rather than pushes.
      *
-     * The number is derived rather than chosen: 281 for the agent list,
-     * 600 for the transcript's clamp and 320 for the panel come to 1201,
-     * so above it all three fit and the transcript does not move when
-     * the panel opens.  Below it something has to give, and the reader's
-     * place in the conversation is the wrong thing to take.
+     * Derived from what is left for the transcript once the agent list
+     * and the panel have taken their share.  With W the window, the
+     * content beside the list is W - 280, the panel takes 0.26 of it and
+     * the transcript keeps the other 0.74.  Fitting the 600px clamp is
+     * not the criterion -- it is met at W = 1090 and looks wrong there,
+     * because the column would sit 3.5px from the panel's edge.  The
+     * criterion is the gap from the panel to the row's ink, which the
+     * 12px row margin adds to: (T - 600) / 2 + 12 >= 24 gives T >= 624
+     * and so W >= 1124.  1150 clears that by 26px.
+     *
+     * Below it something has to give, and the reader's place in the
+     * conversation is the wrong thing to take.
+     *
+     * Opening the panel does shift the column left -- 122px at 1280,
+     * measured.  That is accepted rather than overlooked: the clamp
+     * fixes the measure, so pushing translates the column without
+     * reflowing it and neither the line breaks nor the scroll position
+     * move.  Left-aligning the column would buy stability for a
+     * deliberate, occasional toggle at the cost of balance on every
+     * window all the time.
      */
-    breakpoint = adw_breakpoint_new(
-        adw_breakpoint_condition_parse("max-width: 1200px"));
+    {
+        g_autofree gchar *condition =
+            g_strdup_printf("max-width: %dpx", CLAWT_ALERTS_PUSH_BREAKPOINT);
+
+        breakpoint =
+            adw_breakpoint_new(adw_breakpoint_condition_parse(condition));
+    }
+
     adw_breakpoint_add_setters(breakpoint, G_OBJECT(self->alerts_split),
                                "collapsed", TRUE, NULL);
     adw_application_window_add_breakpoint(ADW_APPLICATION_WINDOW(self),
                                           breakpoint);
 
-    self->toasts = ADW_TOAST_OVERLAY(adw_toast_overlay_new());
-    adw_toast_overlay_set_child(self->toasts, GTK_WIDGET(self->split));
+    /*
+     * Both remembered choices start from what the widgets have actually
+     * been left showing, rather than from a constant repeated here.
+     *
+     * Taken deliberately at the end of construction rather than left to
+     * the notifies above, which only give the right answer while the
+     * connects sit above the bind and the toggle's set_active() below
+     * it.  Reorder those three and sidebar_open stays FALSE while the
+     * list is visibly shown -- after which the first crossing of 800px
+     * makes the agent list disappear, with nothing in the diff that
+     * looks wrong.
+     */
+    self->sidebar_open = adw_overlay_split_view_get_show_sidebar(self->split);
+    self->alerts_open = adw_overlay_split_view_get_show_sidebar(
+        self->alerts_split);
 
     adw_application_window_set_content(ADW_APPLICATION_WINDOW(self),
-                                       GTK_WIDGET(self->toasts));
+                                       GTK_WIDGET(self->split));
 
     g_signal_connect(client, "event", G_CALLBACK(on_daemon_event), self);
 

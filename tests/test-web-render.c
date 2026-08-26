@@ -414,6 +414,69 @@ test_dark_is_reachable_by_preference_and_by_choice(void)
     g_assert_nonnull(strstr(css, ":root:not([data-theme=\"light\"])"));
 }
 
+/*
+ * The composer stands on the message column, not in the gutter.
+ *
+ * Both are the same 40rem clamp and centred alike, and they still did
+ * not line up: only the transcript spends anything on the avatar, so a
+ * body starts a gutter in while the entry started at the clamp -- the
+ * strongest vertical line on the page inside the one column
+ * deliberately kept empty.  The GTK client had the identical fault and
+ * `make parity` could not see either, because a margin sends no frame
+ * and answers no command.
+ *
+ * Asserted through the token rather than on a number, because the point
+ * is that the four rules cannot disagree.  A literal here would pass
+ * for a sheet that had drifted back to three spellings.
+ */
+static void
+test_the_composer_stands_on_the_message_column(void)
+{
+    const gchar *css = clawt_web_stylesheet();
+    const gchar *composer = strstr(css, ".composer-inner{");
+
+    /* One gutter, declared once. */
+    g_assert_nonnull(strstr(css, "--chat-gutter:"));
+
+    /* The body, its attachments and the composer all read it. */
+    g_assert_nonnull(strstr(css, ".msg-body{white-space:pre-wrap;"
+                                 "word-wrap:break-word;"
+                                 "margin-left:var(--chat-gutter)}"));
+    g_assert_nonnull(strstr(css, ".attachments{display:flex;flex-wrap:wrap;"
+                                 "gap:8px;margin-top:8px;"
+                                 "margin-left:var(--chat-gutter)}"));
+    g_assert_nonnull(composer);
+    g_assert_nonnull(strstr(composer, "padding-left:var(--chat-gutter)"));
+}
+
+/*
+ * And the narrow regime hides the avatar, so the composer goes back to
+ * the clamp with the bodies.
+ *
+ * The override has to come *after* the rule it overrides: the two
+ * selectors are identical in specificity, so source order is the only
+ * thing deciding.  Grouped with the sheet's other narrow overrides --
+ * which sit a hundred lines earlier -- it would lose every time and do
+ * nothing, while reading exactly like a fix.  That is the same trap the
+ * palette blocks are ordered around, so it is asserted rather than
+ * trusted.
+ */
+static void
+test_the_narrow_composer_override_can_win(void)
+{
+    const gchar *css = clawt_web_stylesheet();
+    const gchar *composer = strstr(css, ".composer-inner{");
+    const gchar *override = strstr(css, "@media (max-width:26rem){"
+                                        ".composer-inner{padding-left:0}}");
+
+    g_assert_nonnull(composer);
+    g_assert_nonnull(override);
+    g_assert_true(override > composer);
+
+    /* The avatar it defers to is hidden at the same width. */
+    g_assert_nonnull(strstr(css, ".msg-avatar{display:none}"));
+}
+
 /* ── Appearance ──────────────────────────────────────────────────── */
 
 /*
@@ -648,6 +711,10 @@ main(int argc, char *argv[])
                     test_the_palette_is_defined_outside_a_media_query);
     g_test_add_func("/web/dark-is-reachable-by-preference-and-by-choice",
                     test_dark_is_reachable_by_preference_and_by_choice);
+    g_test_add_func("/web/composer-stands-on-the-message-column",
+                    test_the_composer_stands_on_the_message_column);
+    g_test_add_func("/web/narrow-composer-override-can-win",
+                    test_the_narrow_composer_override_can_win);
 
     g_test_add_func("/web/an-unset-look-emits-nothing",
                     test_an_unset_look_emits_nothing);
