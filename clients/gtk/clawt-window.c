@@ -2020,6 +2020,25 @@ static const gchar CLAWT_STRUCTURE_CSS[] =
      * in the accent colour on the accent colour, which is invisible
      * rather than merely low contrast.
      */
+    /*
+     * The message times are a column, so every one of them has to be the
+     * same width.
+     *
+     * Proportional digits make that impossible: measured on this
+     * stylesheet's caption size, an HH:MM string ranges from 24px for
+     * 11:11 to 33px for 00:00 -- a nine pixel swing inside a rail that
+     * is meant to read as one straight edge.  Tabular figures render
+     * every one of them at 31px.
+     *
+     * Purely visual, so it is a rule here rather than a call in C.  The
+     * width and the margin beside it are not: they have to stay equal to
+     * the avatar's diameter, and a value that must move in lockstep with
+     * another belongs where that other one lives.
+     */
+    ".clawt-message-time {\n"
+    "  font-feature-settings: \"tnum\" 1;\n"
+    "}\n"
+
     ".clawt-bubble .body {\n"
     "  color: @accent_fg_color;\n"
     "}\n";
@@ -3118,7 +3137,8 @@ append_attachment_previews(ClawtWindow *self, GtkWidget *row,
  * came from, and it would go stale the first time either changed.
  */
 #define CHAT_ROW_MARGIN  12
-#define CHAT_GUTTER      44
+#define CHAT_AVATAR      32
+#define CHAT_GUTTER      (CHAT_AVATAR + CHAT_ROW_MARGIN)
 
 /*
  * The three breaks a reader sees, in one unit and in the right order.
@@ -3503,7 +3523,7 @@ tint_class(const gchar *color, const gchar *ink)
 static GtkWidget *
 run_avatar(const gchar *name, const gchar *image_path, const gchar *color)
 {
-    GtkWidget *avatar = adw_avatar_new(32, name, TRUE);
+    GtkWidget *avatar = adw_avatar_new(CHAT_AVATAR, name, TRUE);
     gtk_widget_add_css_class(avatar, "clawt-avatar");
     const gchar *ink;
 
@@ -3788,7 +3808,30 @@ append_message_to(ClawtWindow *self, const TranscriptView *view,
             gtk_widget_add_css_class(at, "dim-label");
             gtk_widget_add_css_class(at, "clawt-message-time");
             gtk_widget_set_valign(at, GTK_ALIGN_START);
-            gtk_widget_set_halign(at, GTK_ALIGN_START);
+
+            /*
+             * Right-aligned against the avatar's edge, so the times
+             * under one avatar read as a column rather than as ragged
+             * text in a margin.
+             *
+             * xalign inside a CHAT_AVATAR-wide label rather than
+             * halign END on the label itself: the gutter is a GtkBox and
+             * a non-expanding child is allocated exactly its natural
+             * width, so halign has no room to act in and does nothing.
+             * Giving the child hexpand would give it room -- and expand
+             * the gutter with it, measured at 515px against the 44 it is
+             * meant to be, taking the body column with it.  A width the
+             * label owns is the only one of the three that leaves the
+             * gutter alone.
+             *
+             * CHAT_AVATAR + CHAT_ROW_MARGIN is CHAT_GUTTER exactly, so
+             * the right edge of the time lands on the right edge of the
+             * avatar by arithmetic rather than by a 12 that happens to
+             * match.
+             */
+            gtk_widget_set_size_request(at, CHAT_AVATAR, -1);
+            gtk_label_set_xalign(GTK_LABEL(at), 1.0f);
+            gtk_widget_set_margin_end(at, CHAT_GUTTER - CHAT_AVATAR);
             gtk_box_append(GTK_BOX(gutter), at);
         }
 
