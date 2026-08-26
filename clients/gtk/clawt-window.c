@@ -10648,7 +10648,6 @@ build_chat_page(ClawtWindow *self)
     gtk_widget_set_visible(self->attachments, FALSE);
 
     self->entry = GTK_TEXT_VIEW(gtk_text_view_new());
-    gtk_widget_set_name(GTK_WIDGET(self->entry), "clawt-entry");
     gtk_text_view_set_wrap_mode(self->entry, GTK_WRAP_WORD_CHAR);
     gtk_text_view_set_top_margin(self->entry, 8);
     gtk_text_view_set_bottom_margin(self->entry, 8);
@@ -10749,6 +10748,7 @@ build_chat_page(ClawtWindow *self)
         gtk_scrolled_window_set_propagate_natural_height(
             GTK_SCROLLED_WINDOW(entry_scroll), TRUE);
         gtk_widget_add_css_class(entry_scroll, "card");
+        gtk_widget_set_name(entry_scroll, "clawt-entry");
         gtk_widget_set_hexpand(entry_scroll, TRUE);
 
         gtk_overlay_set_child(GTK_OVERLAY(overlay), entry_scroll);
@@ -15674,7 +15674,6 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
 
     /* ── Sidebar ── */
     self->sidebar = GTK_LIST_BOX(gtk_list_box_new());
-    gtk_widget_set_name(GTK_WIDGET(self->sidebar), "clawt-sidebar");
     gtk_list_box_set_selection_mode(self->sidebar, GTK_SELECTION_SINGLE);
     gtk_widget_add_css_class(GTK_WIDGET(self->sidebar), "navigation-sidebar");
     g_signal_connect(self->sidebar, "row-selected",
@@ -15769,6 +15768,7 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
     sidebar_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_box_append(GTK_BOX(sidebar_box), sidebar_header);
     gtk_box_append(GTK_BOX(sidebar_box), sidebar_scroll);
+    gtk_widget_set_name(sidebar_box, "clawt-sidebar");
 
     /* ── Content ── */
     self->pages = ADW_VIEW_STACK(adw_view_stack_new());
