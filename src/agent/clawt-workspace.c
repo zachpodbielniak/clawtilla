@@ -19,6 +19,8 @@
 #include <glib/gstdio.h>
 #include <json-glib/json-glib.h>
 #include <string.h>
+#include <errno.h>
+#include <unistd.h>
 
 /*
  * The order matters.  Character before role, role before the human,
@@ -1968,4 +1970,322 @@ clawt_workspace_update_tools_org(ClawtConfig      *config,
     section = render_integrations_section(config, agent);
 
     return replace_region(agent, TOOLS_BEGIN, TOOLS_END, section, error);
+}
+
+/* ── Importing an existing workspace ─────────────────────────────── */
+
+/*
+ * Safest first: a copy cannot touch the directory it read from, a link
+ * makes clawtilla write into somebody's own, and a clone runs git
+ * against a URL. Somebody scrolling the list should be able to stop at
+ * the first entry that is enough.
+ */
+static const struct {
+    ClawtImportMode mode;
+    const gchar    *nick;
+    const gchar    *label;
+} clawt_import_modes[] = {
+    { CLAWT_IMPORT_COPY, "copy",
+      "Copy it in \xe2\x80\x94 the original becomes a separate copy" },
+    { CLAWT_IMPORT_LINK, "link",
+      "Link to it \xe2\x80\x94 clawtilla writes into the directory itself" },
+    { CLAWT_IMPORT_GIT, "git",
+      "Clone a git repository \xe2\x80\x94 a submodule where that is possible" }
+};
+
+guint
+clawt_import_mode_count(void)
+{
+    return G_N_ELEMENTS(clawt_import_modes);
+}
+
+ClawtImportMode
+clawt_import_mode_nth(guint n)
+{
+    if (n >= G_N_ELEMENTS(clawt_import_modes))
+        return CLAWT_IMPORT_COPY;
+
+    return clawt_import_modes[n].mode;
+}
+
+const gchar *
+clawt_import_mode_nth_nick(guint n)
+{
+    if (n >= G_N_ELEMENTS(clawt_import_modes))
+        return clawt_import_modes[0].nick;
+
+    return clawt_import_modes[n].nick;
+}
+
+const gchar *
+clawt_import_mode_nth_label(guint n)
+{
+    if (n >= G_N_ELEMENTS(clawt_import_modes))
+        return clawt_import_modes[0].label;
+
+    return clawt_import_modes[n].label;
+}
+
+ClawtImportMode
+clawt_import_mode_from_nick(const gchar *nick)
+{
+    guint i;
+
+    if (nick == NULL)
+        return CLAWT_IMPORT_COPY;
+
+    for (i = 0; i < G_N_ELEMENTS(clawt_import_modes); i++) {
+        if (g_strcmp0(nick, clawt_import_modes[i].nick) == 0)
+            return clawt_import_modes[i].mode;
+    }
+
+    return CLAWT_IMPORT_COPY;
+}
+
+gboolean
+clawt_import_mode_takes_url(ClawtImportMode mode)
+{
+    return mode == CLAWT_IMPORT_GIT;
+}
+
+gchar *
+clawt_workspace_git_toplevel(const gchar *path)
+{
+    g_autofree gchar *out = NULL;
+    g_autofree gchar *existing = NULL;
+    const gchar *argv[] = { "git", "-C", NULL, "rev-parse",
+                            "--show-toplevel", NULL };
+    gint status = 0;
+
+    g_return_val_if_fail(path != NULL, NULL);
+
+    /*
+     * git needs a directory that exists, and the workspace itself
+     * usually does not yet -- the question is about where it is going
+     * to go. So the nearest existing ancestor is what gets asked.
+     */
+    existing = g_strdup(path);
+
+    while (!g_file_test(existing, G_FILE_TEST_IS_DIR)) {
+        g_autofree gchar *parent = g_path_get_dirname(existing);
+
+        if (g_strcmp0(parent, existing) == 0)
+            return NULL;
+
+        g_free(existing);
+        existing = g_steal_pointer(&parent);
+    }
+
+    argv[2] = existing;
+
+    if (!g_spawn_sync(NULL, (gchar **)argv, NULL,
+                      G_SPAWN_SEARCH_PATH | G_SPAWN_STDERR_TO_DEV_NULL,
+                      NULL, NULL, &out, NULL, &status, NULL))
+        return NULL;
+
+    if (!g_spawn_check_wait_status(status, NULL) || out == NULL)
+        return NULL;
+
+    g_strstrip(out);
+
+    if (*out == '\0')
+        return NULL;
+
+    return g_steal_pointer(&out);
+}
+
+/*
+ * Runs git with an argv, never a shell line.
+ *
+ * The URL comes from an IPC payload, so it is data: a shell would make
+ * a semicolon in it a second command, and `--` keeps one beginning with
+ * a dash from being read as a flag.
+ */
+static gboolean
+run_git(const gchar *cwd, const gchar * const *argv, GError **error)
+{
+    g_autofree gchar *err = NULL;
+    gint status = 0;
+
+    if (!g_spawn_sync(cwd, (gchar **)argv, NULL, G_SPAWN_SEARCH_PATH,
+                      NULL, NULL, NULL, &err, &status, error))
+        return FALSE;
+
+    if (!g_spawn_check_wait_status(status, NULL)) {
+        if (err != NULL)
+            g_strstrip(err);
+
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                    "git refused: %s",
+                    (err != NULL && *err != '\0') ? err
+                                                  : "no reason given");
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+gboolean
+clawt_workspace_adopt(ClawtImportMode   mode,
+                      const gchar      *source,
+                      const gchar      *workspace,
+                      gboolean          keep_git,
+                      guint            *out_files,
+                      gchar           **out_detail,
+                      GError          **error)
+{
+    g_return_val_if_fail(source != NULL, FALSE);
+    g_return_val_if_fail(workspace != NULL, FALSE);
+
+    if (out_files != NULL)
+        *out_files = 0;
+
+    if (out_detail != NULL)
+        *out_detail = NULL;
+
+    switch (mode) {
+    case CLAWT_IMPORT_LINK: {
+        g_autofree gchar *resolved = clawt_expand_path(source);
+        g_autofree gchar *parent = g_path_get_dirname(workspace);
+
+        if (!g_file_test(resolved, G_FILE_TEST_IS_DIR)) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                        "there is no directory at '%s' to link to",
+                        resolved);
+            return FALSE;
+        }
+
+        /*
+         * Refused rather than silently replaced. A workspace that is
+         * already there holds an agent's persona, and turning it into a
+         * link to somewhere else would discard it with nothing said.
+         */
+        if (g_file_test(workspace, G_FILE_TEST_EXISTS)) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_ALREADY_EXISTS,
+                        "'%s' already exists; move it aside first",
+                        workspace);
+            return FALSE;
+        }
+
+        if (!clawt_ensure_dir(parent, 0700, error))
+            return FALSE;
+
+        if (symlink(resolved, workspace) != 0) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                        "could not link '%s' to '%s': %s",
+                        workspace, resolved, g_strerror(errno));
+            return FALSE;
+        }
+
+        if (out_detail != NULL)
+            *out_detail = g_strdup_printf(
+                "linked to %s, which stays where it is -- clawtilla "
+                "writes into it rather than into a copy", resolved);
+
+        return TRUE;
+    }
+
+    case CLAWT_IMPORT_GIT: {
+        g_autofree gchar *toplevel = clawt_workspace_git_toplevel(workspace);
+        g_autofree gchar *parent = g_path_get_dirname(workspace);
+
+        if (g_file_test(workspace, G_FILE_TEST_EXISTS)) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_ALREADY_EXISTS,
+                        "'%s' already exists; move it aside first",
+                        workspace);
+            return FALSE;
+        }
+
+        if (!clawt_ensure_dir(parent, 0700, error))
+            return FALSE;
+
+        /*
+         * A submodule when the workspace root is inside a repository,
+         * and an ordinary clone when it is not.
+         *
+         * Both are asked for by `--git`, because which one is possible
+         * is a property of the machine rather than of the request --
+         * and refusing on a machine where the state directory is not
+         * version-controlled would make the mode unusable for most
+         * people. What must not happen is doing one and reporting the
+         * other, which is why the outcome is a sentence rather than a
+         * flag.
+         */
+        if (toplevel != NULL) {
+            g_autofree gchar *relative = NULL;
+            const gchar *argv[] = { "git", "submodule", "add", "--",
+                                    NULL, NULL, NULL };
+
+            if (g_str_has_prefix(workspace, toplevel)) {
+                const gchar *tail = workspace + strlen(toplevel);
+
+                while (*tail == G_DIR_SEPARATOR)
+                    tail++;
+
+                relative = g_strdup(tail);
+            } else {
+                relative = g_strdup(workspace);
+            }
+
+            argv[4] = source;
+            argv[5] = relative;
+
+            if (!run_git(toplevel, argv, error))
+                return FALSE;
+
+            if (out_detail != NULL)
+                *out_detail = g_strdup_printf(
+                    "added as a git submodule of %s at %s, so it is "
+                    "tracked there", toplevel, relative);
+
+            return TRUE;
+        }
+
+        {
+            const gchar *argv[] = { "git", "clone", "--", NULL, NULL,
+                                    NULL };
+
+            argv[3] = source;
+            argv[4] = workspace;
+
+            if (!run_git(NULL, argv, error))
+                return FALSE;
+        }
+
+        if (out_detail != NULL)
+            *out_detail = g_strdup_printf(
+                "cloned into %s. It is not a submodule: %s is not inside "
+                "a git repository, so there is nothing to add it to",
+                workspace, parent);
+
+        return TRUE;
+    }
+
+    case CLAWT_IMPORT_COPY:
+    default: {
+        g_autofree gchar *resolved = clawt_expand_path(source);
+        guint copied = 0;
+
+        if (!g_file_test(resolved, G_FILE_TEST_IS_DIR)) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                        "there is no directory at '%s' to copy",
+                        resolved);
+            return FALSE;
+        }
+
+        if (!clawt_copy_tree(resolved, workspace, keep_git, &copied, error))
+            return FALSE;
+
+        if (out_files != NULL)
+            *out_files = copied;
+
+        if (out_detail != NULL)
+            *out_detail = g_strdup_printf(
+                "copied %u file%s. The original at %s is untouched and "
+                "is now a separate copy", copied, copied == 1 ? "" : "s",
+                resolved);
+
+        return TRUE;
+    }
+    }
 }

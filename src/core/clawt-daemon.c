@@ -1329,6 +1329,7 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
 static gboolean
 clawt_daemon_purge_agent_files(ClawtDaemon      *self,
                                ClawtAgentConfig *config,
+                               gboolean         *out_was_linked,
                                GError          **error)
 {
     const gchar *agent_id = clawt_agent_config_get_id(config);
@@ -1351,6 +1352,18 @@ clawt_daemon_purge_agent_files(ClawtDaemon      *self,
      * and the check has to be against the root they configured.
      */
     workspace = clawt_agent_config_get_workspace(config);
+
+    /*
+     * Whether the workspace was a link, asked before it is removed.
+     *
+     * A linked agent's files are not deleted -- only the link is -- and
+     * the client's own line said "Its files are gone too" regardless,
+     * which is exactly wrong for the mode chosen precisely so they
+     * would not be.
+     */
+    if (out_was_linked != NULL)
+        *out_was_linked = (workspace != NULL &&
+                           g_file_test(workspace, G_FILE_TEST_IS_SYMLINK));
 
     if (workspace != NULL) {
         g_autofree gchar *workspace_root =
@@ -6271,10 +6284,13 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
     if (g_strcmp0(kind, "agent.import") == 0) {
         const gchar *agent_id = clawt_ipc_payload_string(payload, "id");
         const gchar *from = clawt_ipc_payload_string(payload, "from");
+        const gchar *mode_nick = clawt_ipc_payload_string(payload, "mode");
         gboolean keep_git = clawt_ipc_payload_boolean(payload, "keep_git",
                                                        FALSE);
+        ClawtImportMode mode = CLAWT_IMPORT_COPY;
         g_autofree gchar *source = NULL;
         g_autofree gchar *workspace = NULL;
+        g_autofree gchar *detail = NULL;
         ClawtAgentConfig *created;
         guint copied = 0;
 
@@ -6282,11 +6298,28 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
                                        "id and from are both required");
 
-        source = clawt_expand_path(from);
+        /*
+         * Refused rather than quietly defaulted. An unrecognised mode
+         * would otherwise become a copy, so somebody who typed `--lnik`
+         * would get a fork of their workspace instead of a link to it
+         * and find out only when their edits stopped reaching the agent.
+         */
+        if (mode_nick != NULL &&
+            g_strcmp0(mode_nick,
+                      clawt_import_mode_nth_nick(
+                          clawt_import_mode_from_nick(mode_nick))) != 0)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "mode must be copy, link or git");
 
-        if (!g_file_test(source, G_FILE_TEST_IS_DIR))
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "that is not a directory");
+        mode = clawt_import_mode_from_nick(mode_nick);
+
+        /*
+         * A git import names a URL rather than a directory, so the
+         * directory check belongs to the two modes that take one --
+         * clawt_workspace_adopt() makes it, where it can say which kind
+         * of thing was expected.
+         */
+        source = g_strdup(from);
 
         if (clawt_agent_manager_get(self->agents, agent_id) != NULL)
             return clawt_ipc_error_new(request, CLAWT_ERROR_ALREADY_EXISTS,
@@ -6305,7 +6338,8 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
 
         workspace = clawt_agent_config_get_workspace(created);
 
-        if (!clawt_copy_tree(source, workspace, keep_git, &copied, &error)) {
+        if (!clawt_workspace_adopt(mode, source, workspace, keep_git,
+                                   &copied, &detail, &error)) {
             clawt_config_remove_agent(self->config, agent_id);
             return clawt_ipc_error_new(request, error->code, error->message);
         }
@@ -6377,6 +6411,24 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         json_builder_add_string_value(builder, workspace);
         json_builder_set_member_name(builder, "files");
         json_builder_add_int_value(builder, copied);
+        json_builder_set_member_name(builder, "mode");
+        json_builder_add_string_value(builder,
+                                      clawt_import_mode_nth_nick(mode));
+
+        /*
+         * What actually happened, in a sentence.
+         *
+         * Two of the three modes have an outcome the client could not
+         * predict -- a git import is a submodule only where the
+         * workspace root is inside a repository -- and the difference
+         * between a workspace somebody's `git status` tracks and one it
+         * does not is worth saying rather than leaving to be discovered.
+         */
+        if (detail != NULL) {
+            json_builder_set_member_name(builder, "detail");
+            json_builder_add_string_value(builder, detail);
+        }
+
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
@@ -6764,6 +6816,7 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             clawt_ipc_payload_boolean(payload, "remove_computer", FALSE);
         g_autofree gchar *computer_detail = NULL;
         g_autofree gchar *files_detail = NULL;
+        gboolean linked_workspace = FALSE;
 
         if (agent_id == NULL)
             return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
@@ -6840,12 +6893,23 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             ClawtAgentConfig *doomed = clawt_config_get_agent(self->config,
                                                               agent_id);
             g_autoptr(GError) purge_error = NULL;
+            gboolean was_linked = FALSE;
 
+            /*
+             * Reported beside `files` rather than instead of it. `files`
+             * is the success sentinel every client already branches on,
+             * and a linked workspace genuinely was removed -- what
+             * differs is what survived, which is a sentence rather than
+             * an outcome.
+             */
             if (doomed != NULL &&
-                !clawt_daemon_purge_agent_files(self, doomed, &purge_error))
+                !clawt_daemon_purge_agent_files(self, doomed, &was_linked,
+                                                &purge_error))
                 files_detail = g_strdup(purge_error->message);
             else if (doomed != NULL)
                 files_detail = g_strdup("removed");
+
+            linked_workspace = was_linked;
         }
 
         if (!clawt_config_remove_agent(self->config, agent_id))
@@ -6878,6 +6942,11 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         if (files_detail != NULL) {
             json_builder_set_member_name(builder, "files");
             json_builder_add_string_value(builder, files_detail);
+        }
+
+        if (linked_workspace) {
+            json_builder_set_member_name(builder, "linked_workspace");
+            json_builder_add_boolean_value(builder, TRUE);
         }
 
         json_builder_end_object(builder);

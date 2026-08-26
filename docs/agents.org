@@ -816,6 +816,65 @@ also owns -- provider, model, effort, name. An import that ignored them
 would bring the persona across and leave the way it thinks behind.
 Nothing already set is overwritten.
 
+*** Three ways in
+:PROPERTIES:
+:CUSTOM_ID: import-modes
+:END:
+
+#+begin_src bash
+clawtilla agent import scribe --from ~/libreclaw/scribe   # copy (default)
+clawtilla agent import scribe --link ~/agents/scribe      # use it where it is
+clawtilla agent import scribe --git git@gitlab.com:me/scribe.git
+#+end_src
+
+A copy is a *fork*.  The original stops being the thing the agent reads
+the moment it is made, so editing either afterwards is editing one of
+two diverging directories.  That is right for adopting somebody else's
+agent and wrong for the case people actually hit --- a workspace they
+are already maintaining somewhere they like it.
+
+=--link= symlinks the workspace at that directory instead.  clawtilla
+writes into it, your editor writes into it, and there is one copy.  Two
+consequences worth knowing:
+
+- Removing the agent with =--purge= removes *the link* and leaves the
+  directory alone, and says so.  It used to say "Its files are gone
+  too" whatever had happened, which was exactly wrong for the mode
+  chosen so they would not be.
+- clawtilla will not link over a workspace that already exists.  That
+  directory holds an agent's persona, and replacing it with a link
+  would discard it with nothing said.
+
+=--git= clones a repository.  Where the workspace root is itself inside
+a git repository --- which it is if you keep =~/.clawtilla= in version
+control --- the workspace is added as a *submodule* of it, so your own
+=git status= tracks it.  Where it is not, it is an ordinary clone.
+
+Both are asked for by the same flag, because which one is possible is a
+property of your machine rather than of the request, and refusing on a
+machine whose state directory is not version-controlled would make the
+mode unusable for most people.  What the tool must not do is one and
+report the other, so it tells you which happened:
+
+#+begin_example
+Imported scribe into /home/me/.clawtilla/agents/scribe
+  added as a git submodule of /home/me/.clawtilla at agents/scribe, so it is tracked there
+#+end_example
+
+#+begin_example
+Imported scribe into /home/me/.clawtilla/agents/scribe
+  cloned into /home/me/.clawtilla/agents/scribe. It is not a submodule:
+  /home/me/.clawtilla/agents is not inside a git repository, so there is
+  nothing to add it to
+#+end_example
+
+Note that git refuses =file://= submodules by default (CVE-2022-39253),
+so a local path works with =--git= for a plain clone and is refused for
+a submodule.  git's own message is passed through rather than
+interpreted; ordinary =https:= and =ssh:= URLs are unaffected.
+=--keep-git= applies only to a copy: a link keeps whatever is already
+there, and a clone *is* a repository.
+
 *** A persona that is not already in org
 
 clawtilla names its identity files =SOUL.org= and friends; a workspace

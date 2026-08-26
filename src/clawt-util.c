@@ -11,6 +11,7 @@
 #include "clawt-util.h"
 
 #include <glib/gstdio.h>
+#include <errno.h>
 
 #include <limits.h>
 #include <stdlib.h>
@@ -600,6 +601,48 @@ clawt_remove_tree(const gchar *path, const gchar *root, GError **error)
 
     g_return_val_if_fail(path != NULL, FALSE);
     g_return_val_if_fail(root != NULL, FALSE);
+
+    /*
+     * A symlink is unlinked, never followed.
+     *
+     * An imported workspace may *be* a symlink into somebody's own
+     * directory -- that is what `agent import --link` makes -- and
+     * resolving it below would carry this into that directory and then
+     * refuse, because it is outside the root. So the link would neither
+     * be removed nor be safe to remove: `agent rm --purge` failed on
+     * exactly the agents where following the path would have been worst.
+     *
+     * The link's own *location* is what has to be inside the root, so
+     * that is what is checked. Removing the link leaves the directory it
+     * pointed at completely alone, which is the whole reason somebody
+     * chose to link rather than copy.
+     */
+    if (g_file_test(path, G_FILE_TEST_IS_SYMLINK)) {
+        g_autofree gchar *parent = g_path_get_dirname(path);
+        g_autofree gchar *parent_resolved =
+            clawt_canonicalize_missing(parent);
+        g_autofree gchar *base = g_path_get_basename(path);
+        g_autofree gchar *link_in_place = NULL;
+
+        if (parent_resolved == NULL ||
+            !clawt_path_is_within(parent_resolved, root)) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "refusing to remove '%s': it is not inside '%s'",
+                        path, root);
+            return FALSE;
+        }
+
+        link_in_place = g_build_filename(parent_resolved, base, NULL);
+
+        if (g_unlink(link_in_place) != 0) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                        "could not remove the link '%s': %s",
+                        path, g_strerror(errno));
+            return FALSE;
+        }
+
+        return TRUE;
+    }
 
     /*
      * Refused before anything is touched, and refused on the

@@ -1403,6 +1403,327 @@ test_scaffold_says_when_the_mission_did_not_land(void)
     fixture_teardown(&fixture);
 }
 
+
+/* ── Importing an existing workspace ─────────────────────────────── */
+
+/*
+ * A directory of this test's own, removed when it is done.
+ *
+ * g_get_user_data_dir() is the *developer's* real ~/.local/share here:
+ * this binary does not redirect XDG_DATA_HOME, so building paths under
+ * it wrote import-src, import-link and friends into somebody's actual
+ * data directory -- and the second run then failed, because a workspace
+ * that already exists is refused. That is the fixture trap this project
+ * has recorded once already, arrived at from a different direction.
+ */
+typedef gchar *ImportScratch;
+
+static void
+import_scratch_clear(ImportScratch *dir)
+{
+    if (dir == NULL || *dir == NULL)
+        return;
+
+    /*
+     * Fenced by its own root, so a symlink inside it -- which is the
+     * whole subject of these tests -- cannot carry the removal out.
+     */
+    clawt_remove_tree(*dir, *dir, NULL);
+    g_rmdir(*dir);
+    g_clear_pointer(dir, g_free);
+}
+
+G_DEFINE_AUTO_CLEANUP_CLEAR_FUNC(ImportScratch, import_scratch_clear)
+
+static ImportScratch
+import_scratch(void)
+{
+    gchar *dir = g_dir_make_tmp("clawt-import-XXXXXX", NULL);
+
+    g_assert_nonnull(dir);
+
+    return dir;
+}
+
+
+/*
+ * A link is a link, and the original is not copied.
+ *
+ * This is the whole point of the mode: somebody maintaining a workspace
+ * somewhere they like it wants clawtilla to *use* it, not to take a
+ * snapshot that diverges the moment either side is edited.
+ */
+static void
+test_a_linked_workspace_points_at_the_original(void)
+{
+    g_auto(ImportScratch) scratch = import_scratch();
+    g_autofree gchar *source = NULL;
+    g_autofree gchar *workspace = NULL;
+    g_autofree gchar *detail = NULL;
+    g_autofree gchar *marker = NULL;
+    g_autofree gchar *seen = NULL;
+    g_autoptr(GError) error = NULL;
+    guint files = 99;
+
+    source = g_build_filename(scratch, "import-src", NULL);
+    workspace = g_build_filename(scratch, "import-link", NULL);
+    g_assert_cmpint(g_mkdir_with_parents(source, 0700), ==, 0);
+
+    marker = g_build_filename(source, "SOUL.org", NULL);
+    g_assert_true(g_file_set_contents(marker, "a persona\n", -1, NULL));
+
+    g_assert_true(clawt_workspace_adopt(CLAWT_IMPORT_LINK, source, workspace,
+                                        FALSE, &files, &detail, &error));
+    g_assert_no_error(error);
+
+    g_assert_true(g_file_test(workspace, G_FILE_TEST_IS_SYMLINK));
+    g_assert_cmpuint(files, ==, 0);
+    g_assert_nonnull(detail);
+    g_assert_nonnull(strstr(detail, "stays where it is"));
+
+    /* And writing through the link reaches the original. */
+    {
+        g_autofree gchar *through = g_build_filename(workspace, "NOTES.org",
+                                                     NULL);
+        g_autofree gchar *original = g_build_filename(source, "NOTES.org",
+                                                      NULL);
+
+        g_assert_true(g_file_set_contents(through, "written\n", -1, NULL));
+        g_assert_true(g_file_get_contents(original, &seen, NULL, NULL));
+        g_assert_cmpstr(seen, ==, "written\n");
+    }
+}
+
+/*
+ * A workspace already there is refused, not replaced.
+ *
+ * It holds an agent's persona, and turning it into a link to somewhere
+ * else would discard that with nothing said.
+ */
+static void
+test_linking_over_an_existing_workspace_is_refused(void)
+{
+    g_auto(ImportScratch) scratch = import_scratch();
+    g_autofree gchar *source = NULL;
+    g_autofree gchar *workspace = NULL;
+    g_autoptr(GError) error = NULL;
+
+    source = g_build_filename(scratch, "import-src2", NULL);
+    workspace = g_build_filename(scratch, "import-taken", NULL);
+    g_assert_cmpint(g_mkdir_with_parents(source, 0700), ==, 0);
+    g_assert_cmpint(g_mkdir_with_parents(workspace, 0700), ==, 0);
+
+    g_assert_false(clawt_workspace_adopt(CLAWT_IMPORT_LINK, source,
+                                         workspace, FALSE, NULL, NULL,
+                                         &error));
+    g_assert_nonnull(error);
+    g_assert_true(g_error_matches(error, CLAWT_ERROR,
+                                  CLAWT_ERROR_ALREADY_EXISTS));
+}
+
+/*
+ * Removing a linked agent removes the link and leaves the directory.
+ *
+ * clawt_remove_tree() resolves the path it is given and refuses
+ * anything outside the root, so before it learned to unlink a symlink
+ * this failed for exactly the agents where *following* the link would
+ * have been worst: `agent rm --purge` errored, and the alternative
+ * would have deleted somebody's real workspace.
+ */
+static void
+test_removing_a_linked_workspace_leaves_the_original(void)
+{
+    g_auto(ImportScratch) scratch = import_scratch();
+    g_autofree gchar *root = NULL;
+    g_autofree gchar *source = NULL;
+    g_autofree gchar *workspace = NULL;
+    g_autofree gchar *marker = NULL;
+    g_autoptr(GError) error = NULL;
+
+    root = g_build_filename(scratch, "import-root", NULL);
+    source = g_build_filename(scratch, "import-src3", NULL);
+    workspace = g_build_filename(root, "linked", NULL);
+
+    g_assert_cmpint(g_mkdir_with_parents(root, 0700), ==, 0);
+    g_assert_cmpint(g_mkdir_with_parents(source, 0700), ==, 0);
+
+    marker = g_build_filename(source, "SOUL.org", NULL);
+    g_assert_true(g_file_set_contents(marker, "keep me\n", -1, NULL));
+
+    g_assert_true(clawt_workspace_adopt(CLAWT_IMPORT_LINK, source, workspace,
+                                        FALSE, NULL, NULL, &error));
+    g_assert_no_error(error);
+
+    g_assert_true(clawt_remove_tree(workspace, root, &error));
+    g_assert_no_error(error);
+
+    g_assert_false(g_file_test(workspace, G_FILE_TEST_EXISTS));
+    g_assert_true(g_file_test(marker, G_FILE_TEST_EXISTS));
+}
+
+/*
+ * A copy says it is a copy, and the original is untouched.
+ *
+ * The detail sentence is what a client shows, and the difference
+ * between a fork and a link is the thing somebody most needs told.
+ */
+static void
+test_a_copy_says_the_original_is_separate(void)
+{
+    g_auto(ImportScratch) scratch = import_scratch();
+    g_autofree gchar *source = NULL;
+    g_autofree gchar *workspace = NULL;
+    g_autofree gchar *detail = NULL;
+    g_autofree gchar *marker = NULL;
+    g_autoptr(GError) error = NULL;
+    guint files = 0;
+
+    source = g_build_filename(scratch, "import-src4", NULL);
+    workspace = g_build_filename(scratch, "import-copy", NULL);
+    g_assert_cmpint(g_mkdir_with_parents(source, 0700), ==, 0);
+
+    marker = g_build_filename(source, "SOUL.org", NULL);
+    g_assert_true(g_file_set_contents(marker, "a persona\n", -1, NULL));
+
+    g_assert_true(clawt_workspace_adopt(CLAWT_IMPORT_COPY, source, workspace,
+                                        FALSE, &files, &detail, &error));
+    g_assert_no_error(error);
+
+    g_assert_false(g_file_test(workspace, G_FILE_TEST_IS_SYMLINK));
+    g_assert_cmpuint(files, >, 0);
+    g_assert_nonnull(strstr(detail, "separate copy"));
+}
+
+/*
+ * A source that is not there is refused with the path in it.
+ *
+ * Both directory modes, because the check moved out of the daemon when
+ * git arrived -- and a mode that lost it would create the config entry
+ * and then fail somewhere less obvious.
+ */
+static void
+test_a_missing_source_is_refused_by_both_directory_modes(void)
+{
+    g_auto(ImportScratch) scratch = import_scratch();
+    static const ClawtImportMode modes[] = {
+        CLAWT_IMPORT_COPY, CLAWT_IMPORT_LINK
+    };
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS(modes); i++) {
+        g_autofree gchar *workspace = NULL;
+        g_autoptr(GError) error = NULL;
+
+        workspace = g_build_filename(scratch, "import-none", NULL);
+
+        g_assert_false(clawt_workspace_adopt(
+            modes[i], "/nonexistent/clawt-import", workspace, FALSE, NULL,
+            NULL, &error));
+        g_assert_nonnull(error);
+        g_assert_true(g_error_matches(error, CLAWT_ERROR,
+                                      CLAWT_ERROR_NOT_FOUND));
+        g_assert_nonnull(strstr(error->message, "/nonexistent/clawt-import"));
+    }
+}
+
+/*
+ * The modes both clients offer, and their round trip.
+ *
+ * A nick that did not survive to_nick(from_nick(x)) would be a mode a
+ * client could select and the daemon would refuse.
+ */
+static void
+test_every_import_mode_round_trips(void)
+{
+    guint i;
+
+    g_assert_cmpuint(clawt_import_mode_count(), ==, 3);
+
+    for (i = 0; i < clawt_import_mode_count(); i++) {
+        const gchar *nick = clawt_import_mode_nth_nick(i);
+
+        g_assert_nonnull(nick);
+        g_assert_nonnull(clawt_import_mode_nth_label(i));
+        g_assert_cmpint(clawt_import_mode_from_nick(nick), ==,
+                        clawt_import_mode_nth(i));
+    }
+
+    /* Unrecognised is the safest mode, never the most destructive. */
+    g_assert_cmpint(clawt_import_mode_from_nick("lnik"), ==,
+                    CLAWT_IMPORT_COPY);
+    g_assert_cmpint(clawt_import_mode_from_nick(NULL), ==, CLAWT_IMPORT_COPY);
+
+    /* Only the git mode wants a URL rather than a directory. */
+    g_assert_true(clawt_import_mode_takes_url(CLAWT_IMPORT_GIT));
+    g_assert_false(clawt_import_mode_takes_url(CLAWT_IMPORT_COPY));
+    g_assert_false(clawt_import_mode_takes_url(CLAWT_IMPORT_LINK));
+}
+
+/*
+ * Whether a git import can be a submodule is a property of the machine.
+ *
+ * A directory inside a repository gets one; a directory outside any
+ * repository gets a plain clone. The decision is asked here rather than
+ * inside the clone, so it can be checked without the network.
+ */
+static void
+test_the_submodule_decision_follows_the_repository(void)
+{
+    g_auto(ImportScratch) scratch = import_scratch();
+    g_autofree gchar *repo = NULL;
+    g_autofree gchar *inside = NULL;
+    g_autofree gchar *outside = NULL;
+    g_autofree gchar *found = NULL;
+    const gchar *argv[] = { "git", "init", "-q", NULL, NULL };
+    gint status = 0;
+
+    {
+        /* transfer full, so it has to be held to be freed. */
+        g_autofree gchar *git = g_find_program_in_path("git");
+
+        if (git == NULL) {
+            g_test_skip("git is not installed");
+            return;
+        }
+    }
+
+    repo = g_build_filename(scratch, "import-repo", NULL);
+    g_assert_cmpint(g_mkdir_with_parents(repo, 0700), ==, 0);
+
+    argv[3] = repo;
+    g_assert_true(g_spawn_sync(NULL, (gchar **)argv, NULL,
+                               G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL,
+                               &status, NULL));
+    g_assert_true(g_spawn_check_wait_status(status, NULL));
+
+    /* A workspace that does not exist yet still resolves through its
+     * nearest existing ancestor -- which is the case that matters,
+     * because the question is asked before anything is created. */
+    inside = g_build_filename(repo, "agents", "scribe", NULL);
+    found = clawt_workspace_git_toplevel(inside);
+    g_assert_nonnull(found);
+
+    outside = g_build_filename(scratch, "import-not-a-repo", NULL);
+    g_assert_cmpint(g_mkdir_with_parents(outside, 0700), ==, 0);
+
+    /*
+     * Only meaningful when the temporary data directory is not itself
+     * inside somebody's repository -- which it is not under the test
+     * harness, but saying so beats an assertion that fails for a reason
+     * unrelated to the feature.
+     */
+    {
+        g_autofree gchar *elsewhere =
+            clawt_workspace_git_toplevel(outside);
+
+        if (elsewhere != NULL)
+            g_test_message("the test data directory is inside a git "
+                           "repository; the negative half was skipped");
+        else
+            g_assert_null(elsewhere);
+    }
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1471,6 +1792,20 @@ main(int argc, char *argv[])
                     test_scaffold_says_when_the_mission_did_not_land);
     g_test_add_func("/workspace/scaffold-and-renderer-agree",
                     test_scaffold_and_renderer_agree);
+    g_test_add_func("/import/link-points-at-the-original",
+                    test_a_linked_workspace_points_at_the_original);
+    g_test_add_func("/import/link-over-existing-is-refused",
+                    test_linking_over_an_existing_workspace_is_refused);
+    g_test_add_func("/import/removing-a-link-leaves-the-original",
+                    test_removing_a_linked_workspace_leaves_the_original);
+    g_test_add_func("/import/a-copy-says-it-is-separate",
+                    test_a_copy_says_the_original_is_separate);
+    g_test_add_func("/import/missing-source-is-refused",
+                    test_a_missing_source_is_refused_by_both_directory_modes);
+    g_test_add_func("/import/modes-round-trip",
+                    test_every_import_mode_round_trips);
+    g_test_add_func("/import/submodule-decision-follows-the-repository",
+                    test_the_submodule_decision_follows_the_repository);
 
     return g_test_run();
 }

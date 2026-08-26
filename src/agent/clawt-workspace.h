@@ -267,4 +267,138 @@ gchar *
 clawt_workspace_file_path(ClawtAgentConfig *agent,
                           const gchar      *name);
 
+/**
+ * ClawtImportMode:
+ * @CLAWT_IMPORT_COPY: recursively copy the source into the workspace
+ * @CLAWT_IMPORT_LINK: symlink the workspace at the source
+ * @CLAWT_IMPORT_GIT: clone a git repository, as a submodule where that
+ *   is possible
+ *
+ * How an existing agent's files become a clawtilla workspace.
+ *
+ * A copy is the safe default and is a *fork*: the original stops being
+ * the thing the agent reads the moment it is made, so editing either
+ * afterwards is editing one of two diverging directories. That is right
+ * for adopting somebody else's agent and wrong for the case people
+ * actually hit -- a workspace they are already maintaining somewhere
+ * they like it, which they want clawtilla to *use* rather than to take
+ * a snapshot of.
+ */
+typedef enum {
+    CLAWT_IMPORT_COPY = 0,
+    CLAWT_IMPORT_LINK,
+    CLAWT_IMPORT_GIT
+} ClawtImportMode;
+
+/**
+ * clawt_import_mode_count:
+ *
+ * How many import modes a client should offer.
+ *
+ * Walked rather than named, for the reason the computer types and the
+ * colour schemes both record: two hand-written copies is how a mode
+ * came to be offered by one client and not the other.
+ *
+ * Returns: the number of modes
+ */
+guint clawt_import_mode_count(void);
+
+/**
+ * clawt_import_mode_nth:
+ * @n: an index below clawt_import_mode_count()
+ *
+ * Returns: the mode at @n, safest first
+ */
+ClawtImportMode clawt_import_mode_nth(guint n);
+
+/**
+ * clawt_import_mode_nth_nick:
+ * @n: an index below clawt_import_mode_count()
+ *
+ * Returns: (transfer none): the spelling sent on the wire
+ */
+const gchar *clawt_import_mode_nth_nick(guint n);
+
+/**
+ * clawt_import_mode_nth_label:
+ * @n: an index below clawt_import_mode_count()
+ *
+ * Says what the mode *does to the original*, which is the question
+ * somebody is answering when they choose one.
+ *
+ * Returns: (transfer none): the label, never %NULL
+ */
+const gchar *clawt_import_mode_nth_label(guint n);
+
+/**
+ * clawt_import_mode_from_nick:
+ * @nick: (nullable): a spelling from a form, a flag or an IPC payload
+ *
+ * Returns: the mode, or %CLAWT_IMPORT_COPY for anything unrecognised --
+ *   the safest of the three, and the one that cannot touch a directory
+ *   somebody else is using
+ */
+ClawtImportMode clawt_import_mode_from_nick(const gchar *nick);
+
+/**
+ * clawt_import_mode_takes_url:
+ * @mode: a #ClawtImportMode
+ *
+ * Whether @mode's source is a git URL rather than a directory.
+ *
+ * Asked rather than compared against "git" in each client, so a client
+ * cannot end up offering a folder chooser for a mode that needs a URL.
+ *
+ * Returns: %TRUE for %CLAWT_IMPORT_GIT
+ */
+gboolean clawt_import_mode_takes_url(ClawtImportMode mode);
+
+/**
+ * clawt_workspace_adopt:
+ * @mode: how to adopt @source
+ * @source: a directory, or a git URL for %CLAWT_IMPORT_GIT
+ * @workspace: where the agent's workspace goes
+ * @keep_git: whether a copy brings the source's .git directory with it
+ * @out_files: (out) (optional): how many files a copy wrote
+ * @out_detail: (out) (optional) (transfer full): one sentence saying
+ *   what actually happened, for a client to show
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The one implementation of every import mode, so the CLI, the GTK
+ * client and the web client cannot disagree about what `--link` means.
+ *
+ * @out_detail exists because two of the three modes have an outcome the
+ * caller could not predict: a git import becomes a submodule only when
+ * the workspace root is inside a repository, and saying which happened
+ * is the difference between a workspace somebody's `git status` will
+ * track and one it will not.
+ *
+ * Returns: %TRUE if the workspace now exists
+ */
+gboolean
+clawt_workspace_adopt(ClawtImportMode   mode,
+                      const gchar      *source,
+                      const gchar      *workspace,
+                      gboolean          keep_git,
+                      guint            *out_files,
+                      gchar           **out_detail,
+                      GError          **error);
+
+/**
+ * clawt_workspace_git_toplevel:
+ * @path: a directory, which need not exist
+ *
+ * The git repository @path would live inside, if any.
+ *
+ * Separate and pure-ish so the submodule decision can be asserted on
+ * without standing up a repository around the developer's own home
+ * directory -- and because "is this a repo" is asked twice, once to
+ * decide and once to report which happened.
+ *
+ * Returns: (transfer full) (nullable): the repository's top level, or
+ *   %NULL when @path is not inside one
+ */
+gchar *
+clawt_workspace_git_toplevel(const gchar *path);
+
 G_END_DECLS
