@@ -415,6 +415,39 @@ clawt_pod_bridge_call_for(ClawtPodBridge  *self,
     key = instance_key(module_name, connection_uri);
     module = g_hash_table_lookup(self->modules, key);
 
+    /*
+     * Load it if nobody has.  This used to refuse, and the refusal was
+     * reached by the most ordinary path there is.
+     *
+     * The container backend loaded its module in exactly one place --
+     * container_provision() -- so start, stop, exec and teardown all
+     * depended on a side effect of a function that may never have run
+     * in this daemon's lifetime.  Removing a *stopped* agent therefore
+     * answered "the podomation 'container' module is not loaded" and
+     * left the container on the machine under a name nothing refers to
+     * any more.  A daemon restart is enough to reach it, and a podman
+     * container outlives the daemon by design, so this was the common
+     * case rather than an edge one.
+     *
+     * Done here rather than at each call site because a new call site
+     * cannot forget what it does not have to remember -- the same
+     * reason the mount tag and the direct-room id each have one
+     * spelling.  load_module_for() is idempotent and takes exactly the
+     * arguments this function already holds, so the loaded case costs a
+     * hash lookup.
+     *
+     * A failure to load is reported as itself: it already names every
+     * directory searched and what to build, which is a great deal more
+     * use than the sentence it replaces.
+     */
+    if (module == NULL) {
+        if (!clawt_pod_bridge_load_module_for(self, module_name,
+                                              connection_uri, error))
+            return NULL;
+
+        module = g_hash_table_lookup(self->modules, key);
+    }
+
     if (module == NULL) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
                     "the podomation '%s' module is not loaded", module_name);

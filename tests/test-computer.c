@@ -1023,6 +1023,89 @@ test_factory_desktop_is_optional(void)
     g_assert_true(clawt_desktop_tool_is_permitted(desktop, "send_key"));
 }
 
+/*
+ * A call loads the module it needs, rather than assuming somebody else
+ * already did.
+ *
+ * clawt_pod_bridge_call_for() only ever looked the module up, and the
+ * container backend loaded it in exactly one place -- container_provision().
+ * Provisioning happens at an agent's *start*, so every other entry point
+ * -- start, stop, exec and teardown -- depended on a side effect of a
+ * function that may never have run in this daemon's lifetime.
+ *
+ * Removing a stopped agent therefore refused with "the podomation
+ * 'container' module is not loaded" and left the container on the
+ * machine under a name nothing refers to any more.  A daemon restart is
+ * enough to reach it, which makes it the ordinary case rather than an
+ * edge one: a libvirt domain and a podman container both outlive the
+ * daemon.
+ *
+ * Loading on demand in call_for() rather than adding a load to each of
+ * the five container call sites, because a new call site cannot forget
+ * what it does not have to remember.  load_module_for() is idempotent
+ * and takes exactly the arguments call_for() already holds.
+ *
+ * Hermetic: loading a .so and starting the container module's event
+ * source needs no podman -- its start() spawns the event-stream thread
+ * and returns TRUE unconditionally.  Only the *action* would need a
+ * daemon, and this asserts on the loading.
+ */
+static void
+test_a_call_loads_the_module_it_needs(void)
+{
+    g_autoptr(ClawtPodBridge) bridge = NULL;
+    g_autoptr(GError) probe_error = NULL;
+    g_autoptr(GHashTable) params = NULL;
+    GHashTable *result;
+    g_autoptr(GError) error = NULL;
+    /*
+     * The deps are built release whatever build type this is -- the
+     * `deps` target pins DEBUG=0 -- so this is the right directory for
+     * both trees rather than one that works only for `make test`.
+     */
+    g_autofree gchar *module_dir = g_build_filename(
+        CLAWT_TEST_SRCDIR, "deps", "libreclaw", "build", "release",
+        "modules", NULL);
+
+    bridge = clawt_pod_bridge_new(module_dir);
+
+    /*
+     * Skip where the module was never built, rather than failing for a
+     * reason that has nothing to do with the rule under test.
+     */
+    {
+        g_autoptr(ClawtPodBridge) probe = clawt_pod_bridge_new(module_dir);
+
+        if (!clawt_pod_bridge_load_module(probe, "container", &probe_error)) {
+            g_test_skip(probe_error->message);
+            return;
+        }
+    }
+
+    /* Nothing has provisioned, so nothing has loaded it. */
+    g_assert_false(clawt_pod_bridge_has_module(bridge, "container"));
+
+    params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    result = clawt_pod_bridge_call_for(bridge, "container", NULL, "list",
+                                       params, &error);
+
+    /*
+     * The action may well fail without a podman socket, and that is not
+     * what this is about.  What must not happen is a refusal saying the
+     * module is not loaded -- that is the bug, and it is the sentence
+     * the operator saw.
+     */
+    if (result == NULL) {
+        g_assert_nonnull(error);
+        g_assert_false(g_str_has_suffix(error->message, "is not loaded"));
+    } else {
+        g_hash_table_unref(result);
+    }
+
+    /* Loaded on demand, by the call itself. */
+    g_assert_true(clawt_pod_bridge_has_module(bridge, "container"));
+}
+
 /* ── Integration, only with real infrastructure ──────────────────── */
 
 static void
@@ -2647,6 +2730,8 @@ main(int argc, char *argv[])
 
     g_test_add_func("/computer/integration/container",
                     test_container_against_real_podman);
+    g_test_add_func("/computer/a-call-loads-the-module-it-needs",
+                    test_a_call_loads_the_module_it_needs);
 
     g_test_add_func("/computer/host-mount-target",
                     test_host_reaches_a_mount_by_its_target);

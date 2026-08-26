@@ -737,6 +737,28 @@ If you have such a leftover, ~virsh -c qemu:///session undefine
 clawt-<agent>~ removes the definition and the directory under
 ~$XDG_DATA_HOME/clawtilla/vms/<agent>~ holds the disk.
 
+A third, fixed later and with the same symptom for containers: a
+teardown could refuse with *"the podomation 'container' module is not
+loaded"* and leave the container on the machine.
+
+The module was loaded as a side effect of *provisioning*, which happens
+at an agent's start --- so start, stop, exec and teardown all depended
+on a function that may never have run in this daemon's lifetime.
+Removing a stopped agent, or any agent after a daemon restart, found no
+module.  A podman container outlives the daemon by design, so this was
+the ordinary case rather than an edge one.
+
+~clawt_pod_bridge_call_for()~ loads what it needs now, rather than
+assuming somebody else already did.  That is done in the bridge rather
+than at each of the five container call sites, because a new call site
+cannot forget what it does not have to remember --- and it covers every
+backend, including any added later.
+
+Unlike the VM case above this one *refused* rather than reporting
+success, which is the right half to get wrong: the operator was told,
+even if what they were told named a cause they could do nothing about.
+If you have such a leftover, ~podman rm clawt-<agent>~ removes it.
+
 ** Mount paths
 
 Mounts are how files get in and out.
