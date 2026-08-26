@@ -3403,6 +3403,95 @@ test_a_reply_after_the_turn_ends_still_counts_hops(void)
 }
 
 
+
+/*
+ * A restart policy changed in the config reaches the agent's runtime at
+ * its next start.
+ *
+ * It did not.  clawt_daemon_start_agent() builds the runtime inside
+ * `if (clawt_agent_get_runtime(agent) == NULL)` and set the policy in
+ * the same block, and nothing ever sets a runtime back to NULL -- so
+ * the policy, the backoff and the restart ceiling were read from the
+ * configuration exactly once, at an agent's first start, and never
+ * again.  A reload reconciles agents rather than rebuilding them, so
+ * the object carrying the stale answer is the one that survives.
+ *
+ * The visible cost is an agent left down while holding queued mail:
+ * `restart: always` was set, saved, reloaded and reported applied,
+ * while the runtime went on refusing to restart a clean exit because it
+ * still held the on-failure default.  Every surface agreed the change
+ * had landed.
+ *
+ * Same shape as the shadow state that outlived the config that caused
+ * it -- a live object keeping an answer it took at construction.
+ */
+static void
+test_a_changed_restart_policy_reaches_the_runtime(void)
+{
+    Fixture fixture;
+    g_autofree gchar *binary = g_build_filename(CLAWT_TEST_FIXTURES,
+                                                "fake-libreclaw", NULL);
+    g_autofree gchar *extra = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgent *agent;
+
+    extra = g_strdup_printf(
+        "  libreclaw_binary: \"%s\"\n"
+        "agents:\n"
+        "  - id: worker\n"
+        "    enabled: true\n"
+        "    runtime:\n"
+        "      restart: on-failure\n"
+        "    computer:\n"
+        "      type: none\n",
+        binary);
+
+    fixture_setup(&fixture, extra);
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    /* First start: the runtime is built and takes the configured policy. */
+    g_assert_true(clawt_daemon_start_agent(fixture.daemon, "worker", &error));
+    g_assert_no_error(error);
+
+    agent = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                    "worker");
+    g_assert_nonnull(agent);
+    g_assert_cmpint(
+        clawt_agent_runtime_get_restart_policy(clawt_agent_get_runtime(agent)),
+        ==, CLAWT_RESTART_ON_FAILURE);
+
+    clawt_daemon_stop_agent(fixture.daemon, "worker");
+
+    /* The operator changes it and reloads, exactly as the CLI does. */
+    {
+        g_autoptr(JsonNode) reply = request(
+            &fixture, "agent.set",
+            "{\"agent\": \"worker\", \"key\": \"runtime.restart\","
+            " \"value\": \"always\"}");
+
+        g_assert_nonnull(reply);
+        g_assert_false(clawt_ipc_frame_is_error(reply));
+    }
+
+    g_assert_true(clawt_daemon_reload(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    /* Second start: the runtime survives, so it has to be told again. */
+    g_assert_true(clawt_daemon_start_agent(fixture.daemon, "worker", &error));
+    g_assert_no_error(error);
+
+    agent = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                    "worker");
+    g_assert_nonnull(agent);
+    g_assert_cmpint(
+        clawt_agent_runtime_get_restart_policy(clawt_agent_get_runtime(agent)),
+        ==, CLAWT_RESTART_ALWAYS);
+
+    fixture_teardown(&fixture);
+}
+
+
 int
 main(int argc, char *argv[])
 {
@@ -3562,6 +3651,8 @@ main(int argc, char *argv[])
                     test_exec_argv_survives_the_wire);
     g_test_add_func("/daemon/exec-argv-fallback",
                     test_exec_without_an_argv_falls_back);
+    g_test_add_func("/daemon/restart-policy-reaches-the-runtime",
+                    test_a_changed_restart_policy_reaches_the_runtime);
 
     status = g_test_run();
 

@@ -110,6 +110,22 @@ void clawt_agent_runtime_set_restart_policy(ClawtAgentRuntime  *self,
                                             guint               max_restarts);
 
 /**
+ * clawt_agent_runtime_get_restart_policy:
+ * @self: a #ClawtAgentRuntime
+ *
+ * What this runtime will do when its child exits.
+ *
+ * The policy was write-only, which is part of why it went stale
+ * unnoticed: an agent carrying a policy nobody had asked for since its
+ * first start looks exactly like one carrying the right one.  Nothing
+ * could observe the difference, so nothing could test it.
+ *
+ * Returns: the policy in force
+ */
+ClawtRestartPolicy clawt_agent_runtime_get_restart_policy(
+    ClawtAgentRuntime *self);
+
+/**
  * clawt_agent_runtime_get_last_error:
  * @self: a #ClawtAgentRuntime
  *

@@ -321,6 +321,29 @@ tr '\0' '\n' < /proc/$(pgrep -f 'libreclaw -c .*researcher')/environ
 restarted for ever is a busy loop that starves everything else.  Backoff
 doubles on each consecutive failure.
 
+All three are re-read from the configuration at the agent's *next
+start*, which is the same contract every other start-time setting
+follows.  They used to be read exactly once, when the runtime was first
+built: nothing ever sets a runtime back to NULL, and a reload
+reconciles agents rather than rebuilding them, so the object carrying
+the first answer was precisely the one that survived.
+
+The visible cost was an agent left down while holding queued mail.
+~restart: always~ was accepted, written to ~clawtilla.yaml~, reloaded
+and reported applied, while the runtime went on refusing to restart a
+clean exit because it still held the ~on-failure~ default --- and every
+surface agreed the change had landed.  Only ~agent restart~, which
+rebuilds the runtime, applied it.
+
+A clean exit is worth thinking about separately from a failure.
+~on-failure~ is the default, and an AI CLI exiting 0 is the *normal*
+end of a turn rather than an error --- so an agent whose work arrives
+by mailbox will sit stopped after its first turn unless it is set to
+~always~.  The queue is durable, so nothing is lost, but nothing
+delivers it either.  ~agent list~ carries a QUEUE column for exactly
+this: a stopped agent with a non-zero queue is stalled rather than
+idle.
+
 *** Where skills live
 
 Beside the persona, in the workspace -- =<workspace>/skills= -- because a

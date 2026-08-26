@@ -194,6 +194,16 @@ clawt_agent_runtime_set_restart_policy(ClawtAgentRuntime  *self,
     priv->max_restarts = max_restarts;
 }
 
+ClawtRestartPolicy
+clawt_agent_runtime_get_restart_policy(
+    ClawtAgentRuntime *self
+){
+    g_return_val_if_fail(CLAWT_IS_AGENT_RUNTIME(self),
+                         CLAWT_RESTART_NEVER);
+
+    return PRIV(self)->restart_policy;
+}
+
 const gchar *
 clawt_agent_runtime_get_last_error(ClawtAgentRuntime *self)
 {

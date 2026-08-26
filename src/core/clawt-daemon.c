@@ -1898,18 +1898,37 @@ clawt_daemon_start_agent(ClawtDaemon *self, const gchar *agent_id,
             clawt_agent_set_runtime(agent, CLAWT_AGENT_RUNTIME(runtime));
         }
 
-        {
-            ClawtAgentRuntime *runtime = clawt_agent_get_runtime(agent);
+    }
 
-            clawt_agent_runtime_set_restart_policy(
-                runtime,
-                (ClawtRestartPolicy)clawt_agent_config_get_enum(
-                    config, "runtime.restart"),
-                (guint)clawt_agent_config_get_int(config,
-                                                  "runtime.backoff_seconds"),
-                (guint)clawt_agent_config_get_int(config,
-                                                  "runtime.max_restarts"));
-        }
+    /*
+     * The restart policy is retaken on every start, outside the block
+     * that builds the runtime.
+     *
+     * Nothing ever sets a runtime back to NULL, so inside that block
+     * this ran exactly once in an agent's life -- at its first start --
+     * and a reload reconciles agents rather than rebuilding them, so
+     * the object holding the stale answer is precisely the one that
+     * survives.  `restart: always` was accepted, written, reloaded and
+     * reported applied while the runtime went on refusing to restart a
+     * clean exit, because it still held the on-failure default.  Every
+     * surface agreed the change had landed.
+     *
+     * Reading it here is also the documented contract: a configuration
+     * change applies at the agent's next start.  The backoff and the
+     * ceiling come with it -- one of the three reaching the runtime and
+     * the other two not would be worse than none of them doing.
+     */
+    {
+        ClawtAgentRuntime *runtime = clawt_agent_get_runtime(agent);
+
+        clawt_agent_runtime_set_restart_policy(
+            runtime,
+            (ClawtRestartPolicy)clawt_agent_config_get_enum(
+                config, "runtime.restart"),
+            (guint)clawt_agent_config_get_int(config,
+                                              "runtime.backoff_seconds"),
+            (guint)clawt_agent_config_get_int(config,
+                                              "runtime.max_restarts"));
     }
 
     if (!clawt_agent_start(agent, error))
