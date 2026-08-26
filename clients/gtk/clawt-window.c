@@ -15868,9 +15868,12 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
      * AdwOverlaySplitView has no sidebar-width property: it takes
      * sidebar-width-fraction, clamped by min-sidebar-width and
      * max-sidebar-width, which default to 180 and 280.  So with the
-     * 0.26 set below the panel measures 260px beside a 1000px content
-     * area and 180px once the fraction would fall under that floor --
-     * measured, both.  Anything in here that names a fixed panel width
+     * 0.26 set below the panel measures 259px beside a 1000px content
+     * area, against 0.26 x 1000 predicted, and 179px once the fraction
+     * would fall under the 180 floor.  Both are the measured allocation
+     * rather than the model, which is the point: they are a pixel under
+     * because that is what the widget was actually given.  Anything in
+     * here that names a fixed panel width
      * is describing a widget that does not exist.
      *
      * What the breakpoint below is derived from is therefore the
