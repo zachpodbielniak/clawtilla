@@ -138,7 +138,17 @@ struct _ClawtWindow {
     GtkWidget         *connection_button;
     GtkWidget         *connection_list;
 
+    /*
+     * Two toast overlays, because one cannot mean two places.
+     *
+     * `toasts` wraps the chat page's transcript region, so a toast lands
+     * above the composer rather than over the text being typed.
+     * `page_toasts` wraps the stack for every other page, where the
+     * bottom of the page is the right place and there is nothing to
+     * cover.  clawt_window_toast() picks between them.
+     */
     AdwToastOverlay   *toasts;
+    AdwToastOverlay   *page_toasts;
     AdwOverlaySplitView *split;
 
     /*
@@ -474,9 +484,28 @@ static void select_agent(ClawtWindow *self, const gchar *agent_id);
 void
 clawt_window_toast(ClawtWindow *self, const gchar *text)
 {
+    AdwToastOverlay *where;
+    const gchar *page;
+
     g_return_if_fail(CLAWT_IS_WINDOW(self));
 
-    adw_toast_overlay_add_toast(self->toasts, adw_toast_new(text));
+    /*
+     * Which overlay depends on what is on screen, so all 87 callers stay
+     * as they are.  Chat is the only page with something a toast must
+     * not cover: everything else it hides can be scrolled back to, while
+     * the composer holds text that has not been sent anywhere yet.
+     */
+    page = self->pages != NULL
+               ? adw_view_stack_get_visible_child_name(self->pages) : NULL;
+
+    where = (page != NULL && g_strcmp0(page, "chat") == 0 &&
+             self->toasts != NULL)
+                ? self->toasts : self->page_toasts;
+
+    if (where == NULL)
+        return;
+
+    adw_toast_overlay_add_toast(where, adw_toast_new(text));
 }
 
 JsonNode *
@@ -10932,7 +10961,11 @@ build_chat_page(ClawtWindow *self)
         gtk_overlay_set_child(GTK_OVERLAY(overlay), scroll);
         gtk_overlay_add_overlay(GTK_OVERLAY(overlay), revealer);
 
-        gtk_box_append(GTK_BOX(box), overlay);
+        self->toasts = ADW_TOAST_OVERLAY(adw_toast_overlay_new());
+        adw_toast_overlay_set_child(self->toasts, overlay);
+        gtk_widget_set_vexpand(GTK_WIDGET(self->toasts), TRUE);
+
+        gtk_box_append(GTK_BOX(box), GTK_WIDGET(self->toasts));
     }
 
     /*
@@ -16008,8 +16041,11 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
                                                 GTK_PACK_END);
     adw_overlay_split_view_set_sidebar(self->alerts_split,
                                        build_alerts_panel(self));
+    self->page_toasts = ADW_TOAST_OVERLAY(adw_toast_overlay_new());
+    adw_toast_overlay_set_child(self->page_toasts, GTK_WIDGET(self->pages));
+
     adw_overlay_split_view_set_content(self->alerts_split,
-                                       GTK_WIDGET(self->pages));
+                                       GTK_WIDGET(self->page_toasts));
     adw_overlay_split_view_set_show_sidebar(self->alerts_split, FALSE);
     adw_overlay_split_view_set_sidebar_width_fraction(self->alerts_split,
                                                       0.26);
@@ -16134,11 +16170,8 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
     self->alerts_open = adw_overlay_split_view_get_show_sidebar(
         self->alerts_split);
 
-    self->toasts = ADW_TOAST_OVERLAY(adw_toast_overlay_new());
-    adw_toast_overlay_set_child(self->toasts, GTK_WIDGET(self->split));
-
     adw_application_window_set_content(ADW_APPLICATION_WINDOW(self),
-                                       GTK_WIDGET(self->toasts));
+                                       GTK_WIDGET(self->split));
 
     g_signal_connect(client, "event", G_CALLBACK(on_daemon_event), self);
 
