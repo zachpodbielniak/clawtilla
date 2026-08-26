@@ -88,6 +88,21 @@ struct _ClawtDaemon {
     GSource    *connector_refresh;
 
     /*
+     * The fleet coming up, one agent per idle turn.
+     *
+     * Autostart used to run inline in clawt_daemon_start(), which is
+     * called before the main loop exists -- so for the whole time the
+     * fleet took to provision, the daemon dispatched nothing.  No IPC
+     * frame was answered, no signal source ran, and on ~30 container
+     * agents that was minutes of a process that could not be talked to
+     * and could not be asked to stop; systemd eventually escalated to
+     * SIGABRT and the agents were SIGKILLed rather than stopped.
+     */
+    GSource    *autostart_source;
+    GPtrArray  *autostart_queue;   /* gchar*, agent ids, in order */
+    guint       autostart_next;
+
+    /*
      * Designs waiting to be reviewed.
      *
      * design.agent used to run the model, show a preview, and then --
@@ -1943,9 +1958,27 @@ add_render_refusals(JsonBuilder *builder, GPtrArray *refusals)
     json_builder_end_array(builder);
 }
 
-gboolean
-clawt_daemon_start_agent(ClawtDaemon *self, const gchar *agent_id,
-                         GError **error)
+
+/*
+ * Everything an agent needs doing before its computer is started.
+ *
+ * Split out because starting a computer is the one step in here that
+ * waits on something else's socket -- a podman API request per container
+ * agent, a libvirt round trip per VM -- and the daemon's main loop must
+ * not be inside it.  Held together as one function, an autostarting
+ * fleet meant the loop dispatched nothing until every agent was up: no
+ * IPC frame answered, and no signal source run, so the daemon could
+ * neither be talked to nor asked to stop.
+ *
+ * The computer that still has to be started comes back in @pending, or
+ * %NULL when the agent already had one and there is nothing to wait on.
+ */
+static gboolean
+start_agent_prepare(ClawtDaemon    *self,
+                    const gchar    *agent_id,
+                    gchar         **config_path_out,
+                    ClawtComputer **pending,
+                    GError        **error)
 {
     ClawtAgent *agent;
     ClawtAgentConfig *config;
@@ -2072,20 +2105,64 @@ clawt_daemon_start_agent(ClawtDaemon *self, const gchar *agent_id,
          * already says it, in words chosen for it, and says it better.
          */
 
-        if (!clawt_computer_start(computer, &local)) {
-            /*
-             * ERROR, not SHADOW.  A podman that is not running, an image
-             * that is not pulled, a name still held by yesterday's
-             * container -- these are all transient, and SHADOW refuses
-             * every later start with the message frozen from the first
-             * one, so a fixed problem still looked broken until the
-             * daemon was restarted.
-             */
-            clawt_agent_set_error(agent, local->message);
-            g_propagate_error(error, g_steal_pointer(&local));
-            return FALSE;
-        }
+        *pending = g_object_ref(computer);
     }
+
+    *config_path_out = g_steal_pointer(&config_path);
+
+    return TRUE;
+}
+
+/*
+ * A computer that would not start is an ERROR agent, not a failed daemon.
+ *
+ * Its own function because both the synchronous and the asynchronous
+ * start have to do exactly this with the result, and two copies of "what
+ * a refusal means" is how one of them ends up reporting a fleet-level
+ * failure for a container whose image was not pulled.
+ */
+static gboolean
+start_agent_computer_failed(ClawtDaemon *self, const gchar *agent_id,
+                            GError *started_error, GError **error)
+{
+    ClawtAgent *agent = clawt_agent_manager_get(self->agents, agent_id);
+
+    /*
+     * ERROR, not SHADOW.  A podman that is not running, an image that is
+     * not pulled, a name still held by yesterday's container -- these are
+     * all transient, and SHADOW refuses every later start with the
+     * message frozen from the first one, so a fixed problem still looked
+     * broken until the daemon was restarted.
+     */
+    if (agent != NULL)
+        clawt_agent_set_error(agent, started_error->message);
+
+    g_propagate_error(error, started_error);
+
+    return FALSE;
+}
+
+/*
+ * And everything after the computer is up.
+ *
+ * Takes the id rather than the agent: between preparing an agent and
+ * launching it the main loop has run, which is the whole point, and a
+ * client is free to have removed it in the meantime.
+ */
+static gboolean
+start_agent_launch(ClawtDaemon *self, const gchar *agent_id,
+                   const gchar *config_path, GError **error)
+{
+    ClawtAgent *agent = clawt_agent_manager_get(self->agents, agent_id);
+    ClawtAgentConfig *config;
+
+    if (agent == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "there is no agent called '%s'", agent_id);
+        return FALSE;
+    }
+
+    config = clawt_agent_get_config(agent);
 
     if (clawt_agent_get_runtime(agent) == NULL) {
         ClawtRuntimeType type = (ClawtRuntimeType)
@@ -2204,6 +2281,194 @@ clawt_daemon_start_agent(ClawtDaemon *self, const gchar *agent_id,
 }
 
 gboolean
+clawt_daemon_start_agent(ClawtDaemon *self, const gchar *agent_id,
+                         GError **error)
+{
+    g_autofree gchar *config_path = NULL;
+    g_autoptr(ClawtComputer) pending = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_DAEMON(self), FALSE);
+    g_return_val_if_fail(agent_id != NULL, FALSE);
+
+    if (!start_agent_prepare(self, agent_id, &config_path, &pending, error))
+        return FALSE;
+
+    /*
+     * Still blocking, deliberately.  Every caller of this one has
+     * somebody waiting on the answer -- an `agent start` frame, a test,
+     * a restart -- and for a single agent the wait is bounded by
+     * podomation's socket timeout.  It is the *fleet* coming up that
+     * must not hold the loop, and that goes through the async form
+     * below.
+     */
+    if (pending != NULL) {
+        g_autoptr(GError) local = NULL;
+
+        if (!clawt_computer_start(pending, &local))
+            return start_agent_computer_failed(self, agent_id,
+                                               g_steal_pointer(&local),
+                                               error);
+    }
+
+    return start_agent_launch(self, agent_id, config_path, error);
+}
+
+typedef struct {
+    gchar         *agent_id;
+    gchar         *config_path;
+    ClawtComputer *computer;   /* NULL when there is nothing to wait on */
+    gboolean       prepared;
+} StartAgentJob;
+
+static void
+start_agent_job_free(gpointer data)
+{
+    StartAgentJob *job = data;
+
+    g_free(job->agent_id);
+    g_free(job->config_path);
+    g_clear_object(&job->computer);
+    g_free(job);
+}
+
+/*
+ * The one step that waits on somebody else's socket, on somebody else's
+ * thread.
+ *
+ * Only the computer is touched here.  Everything that reads or writes
+ * daemon state -- the agent manager, the config, the workspace files --
+ * stays on the main thread, in prepare before this and in launch after
+ * it, so this adds a thread without adding shared state to reason about.
+ */
+static void
+start_agent_worker(GTask *task, gpointer source, gpointer data,
+                   GCancellable *cancellable)
+{
+    StartAgentJob *job = data;
+    GError *local = NULL;
+
+    (void)source;
+    (void)cancellable;
+
+    if (clawt_computer_start(job->computer, &local))
+        g_task_return_boolean(task, TRUE);
+    else
+        g_task_return_error(task, local);
+}
+
+/*
+ * Back on the main thread, whichever way the computer went.
+ */
+static void
+on_agent_computer_started(GObject *source, GAsyncResult *result,
+                          gpointer user_data)
+{
+    ClawtDaemon *self = CLAWT_DAEMON(source);
+    StartAgentJob *job = g_task_get_task_data(G_TASK(result));
+    GSourceFunc done = (GSourceFunc)user_data;
+    g_autoptr(GError) local = NULL;
+
+    if (!g_task_propagate_boolean(G_TASK(result), &local)) {
+        /*
+         * Reported here and not raised: the caller is the fleet coming
+         * up, and one agent whose image is not pulled must not stop the
+         * rest.  Preparation failures have already said their piece.
+         */
+        if (job->prepared) {
+            g_autoptr(GError) reported = NULL;
+
+            start_agent_computer_failed(self, job->agent_id,
+                                        g_steal_pointer(&local), &reported);
+            g_warning("agent %s did not start: %s", job->agent_id,
+                      reported->message);
+        }
+    } else if (job->prepared) {
+        g_autoptr(GError) launch_error = NULL;
+
+        if (!start_agent_launch(self, job->agent_id, job->config_path,
+                                &launch_error))
+            g_warning("agent %s did not start: %s", job->agent_id,
+                      launch_error->message);
+    }
+
+    if (done != NULL)
+        done(self);
+}
+
+/*
+ * Start an agent without holding the main loop while its computer comes
+ * up.
+ *
+ * @done runs on the main context once the agent is up or has failed,
+ * which is what lets a caller bring a fleet up one at a time without
+ * ever being inside a blocking read.  Failures are reported rather than
+ * returned, for the same reason.
+ *
+ * The task is created on whichever context this was dispatched from --
+ * for the autostart idle, the daemon's own -- so the completion lands
+ * back on the loop that scheduled it rather than on the process default.
+ * Three real bugs in this tree came from the other assumption.
+ */
+static void
+daemon_start_agent_async(ClawtDaemon *self, const gchar *agent_id,
+                         GSourceFunc done)
+{
+    g_autoptr(GTask) task = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *config_path = NULL;
+    g_autoptr(ClawtComputer) pending = NULL;
+    StartAgentJob *job = g_new0(StartAgentJob, 1);
+
+    /*
+     * g_task_new() captures g_main_context_ref_thread_default(), and
+     * dispatching a source does *not* make its context thread-default --
+     * GLib pushes nothing on the way in.  So a task created from inside
+     * the autostart idle takes the process default and completes on a
+     * loop the daemon may never run, which for an embedded daemon is
+     * every time.  The whole fleet then sat queued and nothing started.
+     *
+     * The same trap as the timers and the idle already recorded in this
+     * tree, one API along: name the context rather than assuming the
+     * ambient one.
+     */
+    if (self->main_context != NULL)
+        g_main_context_push_thread_default(self->main_context);
+
+    task = g_task_new(self, NULL, on_agent_computer_started, done);
+
+    if (self->main_context != NULL)
+        g_main_context_pop_thread_default(self->main_context);
+
+    job->agent_id = g_strdup(agent_id);
+    g_task_set_task_data(task, job, start_agent_job_free);
+
+    if (!start_agent_prepare(self, agent_id, &config_path, &pending,
+                             &error)) {
+        g_warning("agent %s did not start: %s", agent_id, error->message);
+        g_task_return_boolean(task, TRUE);
+        return;
+    }
+
+    job->prepared = TRUE;
+    job->config_path = g_steal_pointer(&config_path);
+    job->computer = (pending != NULL) ? g_object_ref(pending) : NULL;
+
+    /*
+     * Nothing to wait on, so nothing to put on a thread.  The completion
+     * is still deferred -- g_task_return_boolean() from this thread
+     * finishes in an idle -- because the caller drives one agent per turn
+     * and a synchronous answer would run the whole fleet inside one
+     * callback, which is the outage this exists to end.
+     */
+    if (job->computer == NULL) {
+        g_task_return_boolean(task, TRUE);
+        return;
+    }
+
+    g_task_run_in_thread(task, start_agent_worker);
+}
+
+gboolean
 clawt_daemon_stop_agent(ClawtDaemon *self, const gchar *agent_id)
 {
     ClawtAgent *agent;
@@ -2251,6 +2516,8 @@ clawt_daemon_quit_idle(gpointer user_data)
  * the managers hold references to the config.  Freeing the config first
  * would leave a live server calling into it.
  */
+
+static void autostart_cancel(ClawtDaemon *self);
 static void
 release_components(ClawtDaemon *self)
 {
@@ -2262,6 +2529,8 @@ release_components(ClawtDaemon *self)
         g_source_destroy(self->connector_refresh);
         g_clear_pointer(&self->connector_refresh, g_source_unref);
     }
+
+    autostart_cancel(self);
 
     g_clear_object(&self->plugins);
 
@@ -3200,6 +3469,145 @@ ensure_tcp_token(ClawtDaemon *self, GError **error)
     return token;
 }
 
+
+/*
+ * Everything the fleet has left to bring up, and nothing else.
+ */
+static void
+autostart_cancel(ClawtDaemon *self)
+{
+    if (self->autostart_source != NULL) {
+        g_source_destroy(self->autostart_source);
+        g_clear_pointer(&self->autostart_source, g_source_unref);
+    }
+
+    g_clear_pointer(&self->autostart_queue, g_ptr_array_unref);
+    self->autostart_next = 0;
+}
+
+/*
+ * One agent at a time, and never with the loop inside a blocking read.
+ *
+ * Two things had to be true and only one of them is about ordering.
+ * Autostart used to run inside clawt_daemon_start(), before any main
+ * loop existed, so nothing was dispatched until the whole fleet was up.
+ * Moving it to an idle fixes that and *not* the rest: a container
+ * agent's start is a blocking podman request, so an idle that called it
+ * directly still held the loop for the length of that request -- which,
+ * measured against a podman socket that accepted and went quiet, was 60
+ * seconds an agent.  `agent list` timed out and SIGTERM went unanswered
+ * exactly as before, from a version that looked fixed.
+ *
+ * So the wait itself goes to a worker thread, and the next agent is
+ * scheduled when the previous one comes back.  Between the two, the loop
+ * is doing what a loop does.
+ */
+static gboolean on_autostart_tick(gpointer user_data);
+
+static gboolean
+autostart_next(gpointer user_data)
+{
+    ClawtDaemon *self = user_data;
+
+    if (!self->running)
+        return G_SOURCE_REMOVE;
+
+    /*
+     * Through an idle rather than straight on, so a fleet whose agents
+     * all finish instantly still yields between them.  Without it the
+     * whole queue would run inside one completion callback and the
+     * blocking-read fix would be the only half that worked.
+     */
+    if (self->autostart_source != NULL) {
+        g_source_destroy(self->autostart_source);
+        g_clear_pointer(&self->autostart_source, g_source_unref);
+    }
+
+    self->autostart_source = g_idle_source_new();
+    g_source_set_callback(self->autostart_source, on_autostart_tick, self,
+                          NULL);
+    g_source_attach(self->autostart_source, self->main_context);
+
+    return G_SOURCE_REMOVE;
+}
+
+/*
+ * An idle rather than a timeout, and left at G_PRIORITY_DEFAULT_IDLE on
+ * purpose.  Sockets and signal sources sit at G_PRIORITY_DEFAULT, which
+ * is higher, so anything already waiting is served before the next agent
+ * is reached for rather than after it.
+ */
+static gboolean
+on_autostart_tick(gpointer user_data)
+{
+    ClawtDaemon *self = user_data;
+    const gchar *agent_id;
+
+    g_clear_pointer(&self->autostart_source, g_source_unref);
+
+    if (!self->running || self->autostart_queue == NULL ||
+        self->autostart_next >= self->autostart_queue->len) {
+        g_clear_pointer(&self->autostart_queue, g_ptr_array_unref);
+        self->autostart_next = 0;
+
+        return G_SOURCE_REMOVE;
+    }
+
+    agent_id = g_ptr_array_index(self->autostart_queue,
+                                 self->autostart_next);
+    self->autostart_next++;
+
+    daemon_start_agent_async(self, agent_id, autostart_next);
+
+    return G_SOURCE_REMOVE;
+}
+
+/*
+ * @self takes the ids rather than the agents, because an agent can be
+ * removed while the fleet is still coming up -- a client is answered
+ * throughout now, which is the whole point -- and a held ClawtAgent
+ * would then be started after it had been deleted.  A stale id is
+ * refused by start_agent_prepare() and warned about, which is the right
+ * amount of noise for something somebody just did on purpose.
+ */
+static void
+autostart_schedule(ClawtDaemon *self)
+{
+    GPtrArray *agents = clawt_agent_manager_list(self->agents);
+    guint i;
+
+    autostart_cancel(self);
+
+    self->autostart_queue = g_ptr_array_new_with_free_func(g_free);
+
+    for (i = 0; agents != NULL && i < agents->len; i++) {
+        ClawtAgent *agent = g_ptr_array_index(agents, i);
+        ClawtAgentConfig *config = clawt_agent_get_config(agent);
+
+        if (clawt_agent_get_state(agent) == CLAWT_AGENT_STATE_SHADOW)
+            continue;
+
+        if (!clawt_agent_config_get_boolean(config, "enabled"))
+            continue;
+
+        if (!clawt_agent_config_get_boolean(config, "runtime.autostart"))
+            continue;
+
+        g_ptr_array_add(self->autostart_queue,
+                        g_strdup(clawt_agent_get_id(agent)));
+    }
+
+    if (self->autostart_queue->len == 0) {
+        g_clear_pointer(&self->autostart_queue, g_ptr_array_unref);
+        return;
+    }
+
+    self->autostart_source = g_idle_source_new();
+    g_source_set_callback(self->autostart_source, on_autostart_tick, self,
+                          NULL);
+    g_source_attach(self->autostart_source, self->main_context);
+}
+
 gboolean
 clawt_daemon_start(ClawtDaemon *self, GError **error)
 {
@@ -3207,7 +3615,6 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     g_autofree gchar *tailnet_address = NULL;
     g_autofree gchar *event_dir = NULL;
     g_autofree gchar *exchange_dir = NULL;
-    GPtrArray *agents;
     guint i;
 
     g_return_val_if_fail(CLAWT_IS_DAEMON(self), FALSE);
@@ -3724,27 +4131,26 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
                       "their files: %s", refusals->len, names->str);
     }
 
-    agents = clawt_agent_manager_list(self->agents);
-
-    for (i = 0; i < agents->len; i++) {
-        ClawtAgent *agent = g_ptr_array_index(agents, i);
-        ClawtAgentConfig *config = clawt_agent_get_config(agent);
-        g_autoptr(GError) local = NULL;
-
-        if (clawt_agent_get_state(agent) == CLAWT_AGENT_STATE_SHADOW)
-            continue;
-
-        if (!clawt_agent_config_get_boolean(config, "enabled"))
-            continue;
-
-        if (!clawt_agent_config_get_boolean(config, "runtime.autostart"))
-            continue;
-
-        if (!clawt_daemon_start_agent(self, clawt_agent_get_id(agent),
-                                      &local))
-            g_warning("agent %s did not start: %s",
-                      clawt_agent_get_id(agent), local->message);
-    }
+    /*
+     * Queued, not started.
+     *
+     * This ran inline, and starting a container agent is a blocking
+     * podman request each -- so on a real fleet clawt_daemon_start() sat
+     * there for minutes, before the main loop existed.  For that whole
+     * window the daemon answered no IPC frame and dispatched no signal
+     * source: `agent list` hung with no reply and no error, `kill -TERM`
+     * did nothing because the handler could not run, and systemd's stop
+     * timed out and escalated to SIGABRT -- so the agents were SIGKILLed
+     * rather than stopped, and the daemon dumped core on the way out.
+     *
+     * The comment immediately below this one records the model cache
+     * being moved out of here for the same reason, and the rule was
+     * already written down as "an IPC handler must not wait on the
+     * network -- nor may daemon start".  It was applied to the caller
+     * that had been noticed rather than to the function, so the second
+     * blocking thing in the same function was never looked at.
+     */
+    autostart_schedule(self);
 
     /*
      * The model cache is not warmed here.
@@ -3775,6 +4181,13 @@ clawt_daemon_stop(ClawtDaemon *self)
         return;
 
     self->running = FALSE;
+
+    /*
+     * First, and before the fleet is stopped: a pending autostart would
+     * otherwise carry on starting agents behind a stop that had already
+     * walked past them.
+     */
+    autostart_cancel(self);
 
     if (self->sweep_source_id != 0) {
         GSource *source = g_main_context_find_source_by_id(

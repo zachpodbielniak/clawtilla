@@ -64,11 +64,19 @@ $(OBJDIR):
 #
 # CLAWT_TEST_FIXTURES points at tests/fixtures/ so a test can find its
 # golden files and fake modules without guessing at the cwd it was run in.
+#
+# CLAWT_TEST_POD_MODULE_DIR is the built podomation modules, which a test
+# binary cannot otherwise find: the daemon resolves them beside the
+# running binary, and for a test that is build/<type>/tests.  A test that
+# needs a real module names this and skips when it is absent -- passing
+# because the module could not be loaded is passing for the wrong reason,
+# and that is precisely what the first draft of the mute-socket test did.
 $(OUTDIR)/tests/%: $(TESTDIR)/%.c $(LIB_STATIC) $(LIBRECLAW_STATIC) | $(OUTDIR)/tests
 	$(CC) $(CFLAGS) -MMD -MP -I$(SRCDIR) -I$(TESTDIR) \
 		-DBUILD_OUTDIR='"$(OUTDIR)"' \
 		-DCLAWT_TEST_FIXTURES='"$(CURDIR)/$(TESTDIR)/fixtures"' \
 		-DCLAWT_TEST_SRCDIR='"$(CURDIR)"' \
+		-DCLAWT_TEST_POD_MODULE_DIR='"$(CURDIR)/$(CLAWT_POD_MODULE_DIR)"' \
 		$< -o $@ $(LIB_STATIC) $(LDFLAGS)
 
 $(OUTDIR)/tests: | $(OUTDIR)

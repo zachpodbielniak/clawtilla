@@ -21,7 +21,14 @@ echo "${FAKE_LIBRECLAW_OUTPUT:-fake-libreclaw: started with $*}"
 
 if [ -n "${FAKE_LIBRECLAW_SLEEP:-}" ]
 then
-    sleep "${FAKE_LIBRECLAW_SLEEP}"
+    # Backgrounded and waited on, rather than slept in directly.  A shell
+    # sitting in `sleep` runs no trap until the sleep returns, so a fake
+    # agent asked to stop took the runtime's full grace period and was
+    # SIGKILLed -- a warning about a hung child, from a fixture that was
+    # only meant to stay up.  `wait` is interruptible; `sleep` is not.
+    trap 'exit 0' TERM INT
+    sleep "${FAKE_LIBRECLAW_SLEEP}" &
+    wait $!
 fi
 
 exit "${FAKE_LIBRECLAW_EXIT_CODE:-0}"

@@ -34,6 +34,20 @@ struct _ClawtProcessRuntime {
      * there and the next start spawned a second one alongside it.
      */
     gboolean          exited;
+
+    /*
+     * The context the child's exit will arrive on.
+     *
+     * g_subprocess_wait_async() completes on whatever was thread-default
+     * when it was called, and stop() has to iterate *that* one -- it used
+     * to ask for the thread-default again from a different call stack and
+     * get a different answer.  On clawtillad both are the process default
+     * and it worked by luck; under an embedded daemon, or from a GTask
+     * callback (which pushes its own context), the exit arrived somewhere
+     * stop() was not looking, so every clean shutdown waited out the full
+     * grace period and then SIGKILLed a child that had already gone.
+     */
+    GMainContext     *context;
 };
 
 /*
@@ -342,6 +356,9 @@ process_runtime_start(ClawtAgentRuntime *runtime, GError **error)
         }
     }
 
+    g_clear_pointer(&self->context, g_main_context_unref);
+    self->context = g_main_context_ref_thread_default();
+
     g_subprocess_wait_async(self->process, NULL, on_process_exited,
                             g_object_ref(self));
 
@@ -386,7 +403,7 @@ process_runtime_stop(ClawtAgentRuntime *runtime)
      * every time and then kill a child that had gone in milliseconds.
      */
     {
-        GMainContext *context = g_main_context_get_thread_default();
+        GMainContext *context = self->context;
         guint waited;
 
         if (context == NULL)
@@ -405,7 +422,7 @@ process_runtime_stop(ClawtAgentRuntime *runtime)
      * exactly the one that most needs stopping.
      */
     if (!self->exited) {
-        GMainContext *context = g_main_context_get_thread_default();
+        GMainContext *context = self->context;
         guint waited;
 
         g_warning("agent runtime: pid %d did not stop within %d seconds of "
@@ -518,6 +535,7 @@ clawt_process_runtime_finalize(GObject *object)
 
     g_clear_pointer(&self->binary, g_free);
     g_clear_pointer(&self->config_path, g_free);
+    g_clear_pointer(&self->context, g_main_context_unref);
 
     G_OBJECT_CLASS(clawt_process_runtime_parent_class)->finalize(object);
 }

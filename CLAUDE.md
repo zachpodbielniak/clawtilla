@@ -1416,6 +1416,103 @@ the same program.
   anything else in it, which is what keeps a file somebody put there by
   hand.
 
+### Moving blocking work to an idle fixes when it runs, not where it waits
+
+- `clawt_daemon_start()` started every autostart agent inline, before any
+  main loop existed. For a container agent that is a blocking podman
+  request each, so on ~30 agents the daemon sat in there for minutes
+  answering no IPC frame and dispatching no signal source: `agent list`
+  hung with no reply, `kill -TERM` did nothing, and systemd's stop timed
+  out, escalated to **SIGABRT** and dumped core -- so the agents were
+  SIGKILLed rather than stopped.
+- The rule was already written down as "an IPC handler must not wait on
+  the network -- **nor may daemon start**", and the comment recording it
+  is four lines below the loop that broke it. It had been applied to the
+  caller somebody noticed (the model cache) rather than to the function.
+  **A rule about a function that is enforced at one call site is a rule
+  about that call site.**
+- Moving autostart to an idle source is the obvious fix and is **half of
+  one**. An idle that calls the blocking start directly still holds the
+  loop for the length of the call: measured against a podman socket that
+  accepted and went quiet, 60 seconds an agent, with all three symptoms
+  unchanged -- from a version that looks fixed and whose unit tests pass.
+  The wait itself has to leave the thread.
+- So `clawt_daemon_start_agent()` is split at the one step that waits on
+  somebody else's socket. `start_agent_prepare()` and
+  `start_agent_launch()` stay on the main thread and own all the state;
+  only `clawt_computer_start()` goes to a `GTask` worker. The sync entry
+  point keeps all three in a row on purpose -- every caller of *that* one
+  has somebody waiting on the answer.
+- The test that matters asserts on **an unrelated timeout source still
+  being dispatched**, not on anything about the agent. A test phrased in
+  terms of the fleet cannot tell the two versions apart;
+  `/daemon/loop-runs-while-a-computer-provisions` fails against the
+  idle-only one, which is the whole reason it exists.
+- Verified against a real daemon and a real mute socket, because that is
+  the only thing that could have caught the half-fix: `agent list` 14ms
+  (was a 30s timeout with no reply) and SIGTERM honoured in 1s (was still
+  running after 40).
+
+### g_task_new() captures the thread-default, and dispatching a source pushes nothing
+
+- A `GTask` created inside a source callback takes whatever context was
+  thread-default on that *thread*, which is the process default unless
+  somebody pushed one -- GLib does not push a source's own context on the
+  way into its dispatch. So the autostart task completed on a loop the
+  daemon never runs, and the whole fleet sat queued having plainly been
+  scheduled. Push the context explicitly around the `g_task_new()`.
+- Same family as the timers and the idle already in this file, one API
+  along, and it will keep happening: **anything that captures "the
+  current context" is a bug in an embedded daemon unless it was told
+  which one.**
+- `g_task_return_boolean()` from the calling thread still completes in an
+  idle, which is what lets the no-work path stay asynchronous without a
+  thread. Relying on that is deliberate: a synchronous answer there would
+  run the whole fleet inside one callback.
+
+### A runtime must wait on the context its child's exit will arrive on
+
+- `process_runtime_stop()` asked for `g_main_context_get_thread_default()`
+  from its own call stack, while `g_subprocess_wait_async()` had captured
+  a different one at start. On `clawtillad` both are the process default
+  and it worked by luck; the moment a start ran from a GTask callback --
+  which pushes the task's context -- the exit arrived somewhere stop()
+  was not looking, so **every clean shutdown waited out the full grace
+  period and SIGKILLed a child that had already gone.** The runtime holds
+  the context now.
+- It surfaced as `pid 0 did not stop within 5 seconds`, and the 0 is the
+  tell: `g_subprocess_get_identifier()` returns NULL once the child has
+  been reaped, so the message was reporting a process that had already
+  exited.
+
+### Four ways a test of this passed for the wrong reason
+
+- **The pod module was not on the test binary's search path**, so the
+  container backend refused before opening a socket and start was fast
+  for a reason unrelated to the fix. It passed against a deliberately
+  broken daemon. Tests that need a real module take
+  `CLAWT_TEST_POD_MODULE_DIR` and **skip** when it is absent.
+- **A "mute" server that unrefs the connection is not mute** -- it hangs
+  up, which is answered instantly. Hold the connections.
+- **`g_setenv()` does not reach an agent's child.** The process runtime
+  builds the environment from an allowlist, so the fake agent never got
+  its sleep, exited at once, and every agent read as STOPPED -- which
+  looks exactly like autostart never running. Per-agent `env:` is the
+  route.
+- **A fixed count of non-blocking iterations proves nothing** once work
+  is on a thread: they burn through while the worker is still running.
+  Pump against wall time.
+
+### A thread parked in accept() outlives an autoptr listener
+
+- `g_socket_listener_accept()` blocks, so dropping the last reference to
+  the listener at the end of the test hands the thread a finalised
+  object. Invisible in an ordinary build; under ASAN it is
+  `g_socket_accept: assertion 'G_IS_SOCKET (socket)' failed`, printed
+  *after* the last test reported ok, which reads as a suite-level fault
+  rather than as one test's teardown. Cancel and `g_thread_join()`
+  before the listener goes.
+
 ### A stop that only sends a signal is not a stop
 
 - `process_runtime_stop()` sent SIGTERM and cleared `running` in the next

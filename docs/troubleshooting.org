@@ -320,6 +320,53 @@ allowed to try again rather than being held indefinitely. Holding it
 down on an unknown reset is worse than one wasted turn, and the notice
 that comes back carries a time.
 
+** The daemon answers nothing and will not stop
+
+#+begin_example
+$ clawtilla agent list
+(no reply, no error; times out)
+$ kill -TERM $(pgrep clawtillad)
+(still running, still starting agents)
+$ systemctl --user stop clawtilla
+State 'stop-sigterm' timed out. Aborting.
+Killing process (clawtillad) with signal SIGABRT.
+#+end_example
+
+Something the daemon is waiting on is not answering, and it is waiting
+on the main loop's own thread.  In practice that means a container or VM
+backend: the API socket for it accepted the connection and then went
+quiet.
+
+Confirm it before treating it as anything else, because a daemon that
+will not reply looks the same whatever the cause:
+
+#+begin_src bash
+# What the main thread is actually doing.
+gdb -p "$(pgrep -x clawtillad)" -batch -ex 'thread 1' -ex bt
+# Or, if it has already been aborted:
+coredumpctl gdb clawtillad
+#+end_src
+
+A stack ending in ~container_read_http_response_full~ or
+~clawt_pod_bridge_call_for~ is this.
+
+Since 0.1.0 the fleet comes up from an idle source with the waiting done
+on a worker thread, so the daemon answers and stops normally while
+agents provision, and podomation bounds a silent API socket at
+~request_timeout_seconds~ (60 by default) instead of waiting for ever.
+A daemon showing the symptoms above is either older than that or is
+blocked somewhere else -- and the backtrace says which.
+
+The socket itself is worth checking either way:
+
+#+begin_src bash
+curl --unix-socket "${XDG_RUNTIME_DIR}/podman/podman.sock" \
+     -m 5 http://d/v1.0.0/libpod/info
+#+end_src
+
+An empty reply after five seconds is a wedged podman, not a clawtilla
+problem: ~systemctl --user restart podman.socket~.
+
 ** A mailbox is stuck
 
 [[file:mailboxes.org][mailboxes.org]] has the full sequence.  Briefly:

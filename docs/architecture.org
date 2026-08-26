@@ -176,6 +176,54 @@ The synchronous client (~clawt_client_request~) blocks on a read.  A
 client that also wants to iterate a main loop -- the GTK app, or a test
 -- runs the request on another thread and pumps the loop meanwhile.
 
+*** The one thing the daemon does on another thread
+
+Starting an agent's *computer*.  Everything else -- the agent manager,
+the config, the workspace files, the child process -- stays on the one
+context; only ~clawt_computer_start()~ is handed to a worker, and only
+from ~daemon_start_agent_async()~.
+
+It is there because it is the single step that waits on somebody else's
+socket: a podman API request per container agent, a libvirt round trip
+per VM.  Held on the main thread it is not slow, it is *fatal to the
+loop* -- and clawtilla learned that twice over.
+
+Autostart originally ran inside ~clawt_daemon_start()~, which is called
+before any main loop exists.  On a fleet of ~30 container agents the
+daemon sat in there for minutes, and for that whole window it answered
+no IPC frame and dispatched no signal source: ~clawtilla agent list~
+hung with no reply and no error, ~kill -TERM~ did nothing because the
+handler could not run, and ~systemctl --user stop~ timed out, escalated
+to ~SIGABRT~ and dumped core -- so the agents were ~SIGKILL~ed rather
+than stopped.
+
+Moving it to an idle source fixes *when* the fleet is started and not
+*where* the waiting happens.  An idle that called the blocking start
+directly still held the loop for the length of each request, which
+against a podman socket that accepted and went quiet is a minute per
+agent -- the same three symptoms, from a version that looks fixed.
+Both halves are needed, which is why
+~/daemon/loop-runs-while-a-computer-provisions~ asserts on an unrelated
+timeout source still being dispatched rather than on anything about the
+agent.
+
+The split is ~start_agent_prepare()~ / ~start_agent_launch()~, with the
+computer between them.  ~clawt_daemon_start_agent()~ runs all three in
+a row and stays blocking on purpose: every caller of *that* one has
+somebody waiting on the answer, and for a single agent the wait is
+bounded by podomation's ~request_timeout_seconds~.
+
+Two consequences worth keeping in mind when touching this:
+
+- ~g_task_new()~ captures ~g_main_context_ref_thread_default()~, and
+  *dispatching a source does not make its context thread-default*.  A
+  task created inside the autostart idle therefore takes the process
+  default and completes on a loop the daemon may never run.  The context
+  is pushed explicitly around the ~g_task_new()~ call.
+- The launch half takes an *agent id*, not an agent.  The main loop has
+  run between the two halves -- that is the entire point -- so a client
+  is free to have removed the agent in the meantime.
+
 ** How clawtilla and libreclaw divide up
 
 | Concern | Whose |

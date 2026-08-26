@@ -3627,6 +3627,444 @@ test_a_decision_round_trips_through_the_daemon(void)
     fixture_teardown(&fixture);
 }
 
+
+/* ── Autostart ───────────────────────────────────────────────────── */
+
+/*
+ * How many of the fleet have left STOPPED.
+ */
+/*
+ * Turns the loop until @wanted agents have started, or time runs out.
+ *
+ * Counted in wall time rather than in iterations: an agent's computer is
+ * started on a worker thread now, so most iterations have nothing ready
+ * and a fixed count of non-blocking turns burns through instantly while
+ * the thread is still running.  The first draft did exactly that and
+ * reported one agent started out of three.
+ */
+static void
+pump_until_started(Fixture *fixture, guint wanted, guint seconds);
+
+static guint
+started_count(ClawtDaemon *daemon)
+{
+    GPtrArray *agents = clawt_agent_manager_list(
+        clawt_daemon_get_agents(daemon));
+    guint started = 0;
+    guint i;
+
+    for (i = 0; agents != NULL && i < agents->len; i++) {
+        ClawtAgent *agent = g_ptr_array_index(agents, i);
+
+        if (clawt_agent_get_state(agent) != CLAWT_AGENT_STATE_STOPPED)
+            started++;
+    }
+
+    return started;
+}
+
+static void
+pump_until_started(Fixture *fixture, guint wanted, guint seconds)
+{
+    gint64 deadline = g_get_monotonic_time() + seconds * G_USEC_PER_SEC;
+
+    while (started_count(fixture->daemon) < wanted &&
+           g_get_monotonic_time() < deadline) {
+        if (!g_main_context_iteration(fixture->context, FALSE))
+            g_usleep(1000);
+    }
+}
+
+/*
+ * Three autostart agents, and clawt_daemon_start() starts none of them.
+ *
+ * It used to start all of them, inline, before any main loop existed --
+ * so for however long the fleet took to come up the daemon dispatched
+ * nothing at all.  On ~30 container agents that is minutes of a process
+ * that answers no IPC frame and cannot run its own SIGTERM handler,
+ * which from outside is a daemon that will not reply and will not die.
+ *
+ * The assertion that matters is the middle one: *one* agent per turn of
+ * the loop.  A single idle that started the whole fleet in one callback
+ * would pass "start does not block" and be the same outage -- the point
+ * is that the loop gets to dispatch between agents.
+ */
+static void
+test_autostart_does_not_run_inside_start(void)
+{
+    Fixture fixture;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *fake =
+        g_build_filename(CLAWT_TEST_FIXTURES, "fake-libreclaw", NULL);
+    g_autofree gchar *extra = NULL;
+    guint spun;
+
+    if (!g_file_test(fake, G_FILE_TEST_IS_EXECUTABLE)) {
+        g_test_skip("the fake libreclaw fixture is not executable");
+        return;
+    }
+
+    /*
+     * The child has to stay up, or an agent that started is
+     * indistinguishable from one that never did: the runtime notices a
+     * child that exits and puts the agent back to STOPPED, and with the
+     * loop now running that happens while the test is still watching.
+     *
+     * Through the agent's own `env:` block rather than g_setenv(),
+     * because the process runtime builds a child environment from an
+     * allowlist -- a variable set in the test's own environment reaches
+     * nothing.  The first draft did that and read every agent as
+     * stopped, which looks exactly like autostart never running.
+     */
+    extra = g_strdup_printf(
+        "  libreclaw_binary: \"%s\"\n"
+        "agents:\n"
+        "  - id: one\n"
+        "    enabled: true\n"
+        "    env:\n"
+        "      FAKE_LIBRECLAW_SLEEP: \"30\"\n"
+        "    runtime:\n"
+        "      autostart: true\n"
+        "  - id: two\n"
+        "    enabled: true\n"
+        "    env:\n"
+        "      FAKE_LIBRECLAW_SLEEP: \"30\"\n"
+        "    runtime:\n"
+        "      autostart: true\n"
+        "  - id: three\n"
+        "    enabled: true\n"
+        "    env:\n"
+        "      FAKE_LIBRECLAW_SLEEP: \"30\"\n"
+        "    runtime:\n"
+        "      autostart: true\n",
+        fake);
+
+    fixture_setup(&fixture, extra);
+
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    /* Nothing yet: the loop has not run. */
+    g_assert_cmpuint(started_count(fixture.daemon), ==, 0);
+
+    /*
+     * They arrive one at a time, so this counts turns rather than
+     * asserting a number after a fixed few: each agent costs an idle to
+     * reach it and an idle to come back, and pinning the exact ratio
+     * would be a test of GTask's scheduling rather than of this.
+     */
+    pump_until_started(&fixture, 3, 20);
+
+    g_assert_cmpuint(started_count(fixture.daemon), ==, 3);
+
+    /*
+     * And it stops asking.  A queue that rescheduled itself for ever
+     * would spin the loop for the life of the daemon, at a priority
+     * chosen to be polite about exactly that.
+     */
+    for (spun = 0; spun < 50; spun++)
+        g_main_context_iteration(fixture.context, FALSE);
+
+    g_assert_cmpuint(started_count(fixture.daemon), ==, 3);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Accepts the connection, and then says nothing.
+ *
+ * Which is what a wedged podman socket looks like, and is the case that
+ * turned a slow start into an unkillable process.
+ */
+typedef struct {
+    GSocketListener *listener;
+    GCancellable    *cancel;
+} MutePodman;
+
+static gpointer
+mute_podman(gpointer data)
+{
+    MutePodman *mute = data;
+    GPtrArray *held = g_ptr_array_new_with_free_func(g_object_unref);
+    GSocketConnection *conn;
+
+    /*
+     * Held, not dropped.  Unreffing each connection closes it, and a
+     * socket that hangs up is answered immediately -- which is a
+     * different failure from one that goes quiet, and not the one this
+     * test is about.  The first draft did exactly that and reported
+     * "Connection reset by peer" from a read that was supposed to hang.
+     */
+    while ((conn = g_socket_listener_accept(mute->listener, NULL,
+                                            mute->cancel, NULL)) != NULL)
+        g_ptr_array_add(held, conn);
+
+    g_ptr_array_unref(held);
+
+    return NULL;
+}
+
+/*
+ * Cancelled and *joined*, not left to finish on its own.
+ *
+ * The thread is parked inside g_socket_listener_accept(), so dropping
+ * the last reference to the listener while it is in there hands it a
+ * finalised object -- which is invisible in an ordinary build and is
+ * `g_socket_accept: assertion 'G_IS_SOCKET (socket)' failed` under ASAN,
+ * arriving after the last test has reported ok.
+ */
+static void
+mute_podman_stop(MutePodman *mute, GThread *thread)
+{
+    g_cancellable_cancel(mute->cancel);
+    g_thread_join(thread);
+    g_clear_object(&mute->cancel);
+}
+
+/*
+ * A podman socket that never answers no longer delays start at all.
+ *
+ * This is the reported failure in its own shape: several container
+ * agents, an API socket that accepts and goes quiet, and a
+ * clawt_daemon_start() that used to sit inside a blocking read for as
+ * long as that took -- which, before podomation grew a socket timeout,
+ * was for ever.
+ *
+ * The context is deliberately never iterated: the fleet is queued and
+ * the queue is dropped by the stop in teardown, so this measures start
+ * and nothing else.  Iterating would provision an agent against the mute
+ * socket and wait out podomation's timeout, which is a different test
+ * and a much slower one.
+ */
+static void
+test_start_returns_with_a_podman_socket_that_never_answers(void)
+{
+    Fixture fixture;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GSocketListener) listener = NULL;
+    g_autoptr(GSocketAddress) addr = NULL;
+    GThread *server;
+    MutePodman mute;
+    g_autofree gchar *dir = NULL;
+    g_autofree gchar *sock = NULL;
+    g_autofree gchar *extra = NULL;
+    g_autofree gchar *module = NULL;
+    gint64 began;
+    gint64 took;
+
+    /*
+     * Skipped rather than passed when the module is missing.
+     *
+     * Without it the container backend refuses before it opens a socket,
+     * so start is fast for a reason that has nothing to do with this
+     * fix -- which is how the first draft of this test passed against a
+     * deliberately broken daemon.
+     */
+    module = g_build_filename(CLAWT_TEST_POD_MODULE_DIR,
+                              "libpod-module-container.so", NULL);
+
+    if (!g_file_test(module, G_FILE_TEST_IS_REGULAR)) {
+        g_test_skip("podomation's container module has not been built");
+        return;
+    }
+
+    dir = g_dir_make_tmp("clawt-mute-podman-XXXXXX", NULL);
+    g_assert_nonnull(dir);
+    sock = g_build_filename(dir, "podman.sock", NULL);
+
+    listener = g_socket_listener_new();
+    addr = g_unix_socket_address_new(sock);
+
+    g_assert_true(g_socket_listener_add_address(listener, addr,
+                                                G_SOCKET_TYPE_STREAM,
+                                                G_SOCKET_PROTOCOL_DEFAULT,
+                                                NULL, NULL, NULL));
+
+    mute.listener = listener;
+    mute.cancel = g_cancellable_new();
+    server = g_thread_new("mute-podman", mute_podman, &mute);
+
+    /*
+     * The env override rather than daemon.pod_module_dir, because the
+     * fixture's extra YAML is appended inside the `defaults:` block and
+     * this key belongs to `daemon:` -- and re-opening a top-level key
+     * that is already in the file is how YAML silently discards the
+     * first one.
+     */
+    g_setenv("CLAWT_POD_MODULE_DIR", CLAWT_TEST_POD_MODULE_DIR, TRUE);
+
+    extra = g_strdup_printf(
+        "agents:\n"
+        "  - id: one\n"
+        "    enabled: true\n"
+        "    runtime:\n"
+        "      autostart: true\n"
+        "    computer:\n"
+        "      type: container\n"
+        "      container:\n"
+        "        connection: \"unix://%s\"\n"
+        "  - id: two\n"
+        "    enabled: true\n"
+        "    runtime:\n"
+        "      autostart: true\n"
+        "    computer:\n"
+        "      type: container\n"
+        "      container:\n"
+        "        connection: \"unix://%s\"\n",
+        sock, sock);
+
+    fixture_setup(&fixture, extra);
+
+    began = g_get_monotonic_time();
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    took = g_get_monotonic_time() - began;
+    g_assert_no_error(error);
+
+    /*
+     * Generous, because this is not a benchmark: the failure it guards
+     * against is measured in minutes, or in never.
+     */
+    g_assert_cmpint(took, <, 5 * G_USEC_PER_SEC);
+
+    fixture_teardown(&fixture);
+
+    mute_podman_stop(&mute, server);
+    g_socket_listener_close(listener);
+    clawt_test_remove_tree(dir);
+    g_unsetenv("CLAWT_POD_MODULE_DIR");
+}
+
+/*
+ * A source of our own, to prove the loop is still turning.
+ */
+static gboolean
+note_a_tick(gpointer user_data)
+{
+    guint *ticks = user_data;
+
+    (*ticks)++;
+
+    return G_SOURCE_CONTINUE;
+}
+
+/*
+ * The loop keeps running while an agent's computer is blocked.
+ *
+ * This is the reported failure stated as a property, and it is the one
+ * an idle source alone does not give you.  Moving autostart out of
+ * clawt_daemon_start() fixes *when* the fleet is started and not *where*
+ * the waiting happens: a container agent's start is a blocking podman
+ * request, so an idle that called it directly still held the loop for
+ * the length of that request.  Measured against a socket that accepts
+ * and says nothing, that was sixty seconds an agent -- long enough that
+ * `agent list` timed out and SIGTERM went unanswered, which is exactly
+ * the report, from a version that looked fixed.
+ *
+ * So the assertion is not about the agent at all.  It is that an
+ * unrelated source attached to the same context is still being
+ * dispatched while the provision is outstanding.
+ */
+static void
+test_the_loop_runs_while_a_computer_is_provisioning(void)
+{
+    Fixture fixture;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GSocketListener) listener = NULL;
+    g_autoptr(GSocketAddress) addr = NULL;
+    GSource *ticker;
+    GThread *server;
+    MutePodman mute;
+    g_autofree gchar *dir = NULL;
+    g_autofree gchar *sock = NULL;
+    g_autofree gchar *extra = NULL;
+    g_autofree gchar *module = NULL;
+    guint ticks = 0;
+    gint64 deadline;
+
+    module = g_build_filename(CLAWT_TEST_POD_MODULE_DIR,
+                              "libpod-module-container.so", NULL);
+
+    if (!g_file_test(module, G_FILE_TEST_IS_REGULAR)) {
+        g_test_skip("podomation's container module has not been built");
+        return;
+    }
+
+    dir = g_dir_make_tmp("clawt-provision-loop-XXXXXX", NULL);
+    g_assert_nonnull(dir);
+    sock = g_build_filename(dir, "podman.sock", NULL);
+
+    listener = g_socket_listener_new();
+    addr = g_unix_socket_address_new(sock);
+
+    g_assert_true(g_socket_listener_add_address(listener, addr,
+                                                G_SOCKET_TYPE_STREAM,
+                                                G_SOCKET_PROTOCOL_DEFAULT,
+                                                NULL, NULL, NULL));
+
+    mute.listener = listener;
+    mute.cancel = g_cancellable_new();
+    server = g_thread_new("mute-podman", mute_podman, &mute);
+
+    g_setenv("CLAWT_POD_MODULE_DIR", CLAWT_TEST_POD_MODULE_DIR, TRUE);
+
+    extra = g_strdup_printf(
+        "agents:\n"
+        "  - id: stuck\n"
+        "    enabled: true\n"
+        "    runtime:\n"
+        "      autostart: true\n"
+        "    computer:\n"
+        "      type: container\n"
+        "      container:\n"
+        "        connection: \"unix://%s\"\n",
+        sock);
+
+    fixture_setup(&fixture, extra);
+
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    ticker = g_timeout_source_new(50);
+    g_source_set_callback(ticker, note_a_tick, &ticks, NULL);
+    g_source_attach(ticker, fixture.context);
+
+    /*
+     * Well short of podomation's own socket timeout, so the provision is
+     * certainly still outstanding when this finishes.  Before the wait
+     * moved to a worker thread, nothing in here would have run at all.
+     */
+    deadline = g_get_monotonic_time() + 2 * G_USEC_PER_SEC;
+
+    while (g_get_monotonic_time() < deadline)
+        g_main_context_iteration(fixture.context, TRUE);
+
+    g_assert_cmpuint(ticks, >=, 10);
+
+    /*
+     * And the agent is genuinely still stuck, so the ticks above were
+     * not counted after it had quietly failed for some other reason --
+     * which would pass while proving nothing.
+     */
+    {
+        ClawtAgent *agent = clawt_agent_manager_get(
+            clawt_daemon_get_agents(fixture.daemon), "stuck");
+
+        g_assert_nonnull(agent);
+        g_assert_cmpint(clawt_agent_get_state(agent), ==,
+                        CLAWT_AGENT_STATE_STOPPED);
+    }
+
+    g_source_destroy(ticker);
+    g_source_unref(ticker);
+
+    fixture_teardown(&fixture);
+
+    mute_podman_stop(&mute, server);
+    g_socket_listener_close(listener);
+    clawt_test_remove_tree(dir);
+    g_unsetenv("CLAWT_POD_MODULE_DIR");
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -3788,6 +4226,12 @@ main(int argc, char *argv[])
                     test_exec_without_an_argv_falls_back);
     g_test_add_func("/daemon/decision-round-trip",
                     test_a_decision_round_trips_through_the_daemon);
+    g_test_add_func("/daemon/autostart-does-not-run-inside-start",
+                    test_autostart_does_not_run_inside_start);
+    g_test_add_func("/daemon/start-returns-with-a-mute-podman-socket",
+                    test_start_returns_with_a_podman_socket_that_never_answers);
+    g_test_add_func("/daemon/loop-runs-while-a-computer-provisions",
+                    test_the_loop_runs_while_a_computer_is_provisioning);
     g_test_add_func("/daemon/restart-policy-reaches-the-runtime",
                     test_a_changed_restart_policy_reaches_the_runtime);
 
