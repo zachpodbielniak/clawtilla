@@ -2965,6 +2965,24 @@ append_attachment_previews(ClawtWindow *self, GtkWidget *row,
 
 
 /*
+ * The chat column's geometry, in one place.
+ *
+ * Every row in the transcript is inset from the clamp by CHAT_ROW_MARGIN
+ * on both sides, and an agent's body is indented past its avatar by a
+ * further CHAT_GUTTER.  CHAT_BODY_INSET is where a body therefore
+ * starts, and the composer below uses it so that the entry's frame and
+ * the text above it stand on the same line.
+ *
+ * They are constants rather than three literals because the composer is
+ * the only thing here that has to agree with a number it does not draw:
+ * a literal 56 would be a number nobody could trace back to the two it
+ * came from, and it would go stale the first time either changed.
+ */
+#define CHAT_ROW_MARGIN  12
+#define CHAT_GUTTER      44
+#define CHAT_BODY_INSET  (CHAT_ROW_MARGIN + CHAT_GUTTER)
+
+/*
  * "Today", "Yesterday", or "Wednesday 25 August".
  *
  * A date change is a bigger break than a speaker change, so it gets more
@@ -2993,8 +3011,8 @@ day_divider(GDateTime *when)
     gtk_box_append(GTK_BOX(row), label);
     gtk_box_append(GTK_BOX(row), right);
 
-    gtk_widget_set_margin_start(row, 12);
-    gtk_widget_set_margin_end(row, 12);
+    gtk_widget_set_margin_start(row, CHAT_ROW_MARGIN);
+    gtk_widget_set_margin_end(row, CHAT_ROW_MARGIN);
     gtk_widget_set_margin_top(row, 24);
 
     return row;
@@ -3332,7 +3350,7 @@ append_message_to(ClawtWindow *self, const TranscriptView *view,
          * plus its 12px gap; a widget is something a narrow layout could
          * collapse, and a margin set from C is not.
          */
-        gtk_widget_set_size_request(gutter, 44, -1);
+        gtk_widget_set_size_request(gutter, CHAT_GUTTER, -1);
         gtk_box_append(GTK_BOX(line), gutter);
         gtk_box_append(GTK_BOX(line), text);
         gtk_widget_set_hexpand(text, TRUE);
@@ -3349,8 +3367,8 @@ append_message_to(ClawtWindow *self, const TranscriptView *view,
     add_context_menu(self, row, message_menu, G_N_ELEMENTS(message_menu),
                      on_message_action,
                      g_object_get_data(G_OBJECT(row), "body"));
-    gtk_widget_set_margin_start(row, 12);
-    gtk_widget_set_margin_end(row, 12);
+    gtk_widget_set_margin_start(row, CHAT_ROW_MARGIN);
+    gtk_widget_set_margin_end(row, CHAT_ROW_MARGIN);
 
     /*
      * Turns have to be further apart than the paragraphs inside one.
@@ -3551,8 +3569,8 @@ unread_marker_new(void)
     gtk_box_append(GTK_BOX(row), label);
     gtk_box_append(GTK_BOX(row), after);
 
-    gtk_widget_set_margin_start(row, 12);
-    gtk_widget_set_margin_end(row, 12);
+    gtk_widget_set_margin_start(row, CHAT_ROW_MARGIN);
+    gtk_widget_set_margin_end(row, CHAT_ROW_MARGIN);
 
     /*
      * Closer to the message below than to the one above, on purpose: the
@@ -10533,8 +10551,8 @@ build_chat_page(ClawtWindow *self)
      * Nothing capped the column, so a body label's natural width was
      * whatever the window was: a 1280px window measured 877px of text on
      * its longest line, about 137 characters, and this scales with the
-     * display -- a wider one is worse rather than equal.  With the clamp
-     * the same line measures 569px, about 89 characters.
+     * display -- a wider one is worse rather than equal.  The clamp
+     * bounds it instead.
      *
      * Continuous prose reads comfortably at
      * roughly 45 to 90 characters; past that the eye has to cross the
@@ -10546,12 +10564,24 @@ build_chat_page(ClawtWindow *self)
      * where they are reachable.
      *
      * AdwClamp's own defaults are the right numbers and are deliberately
-     * left alone: maximum-size is 600, which after the row's 12px side
-     * margins leaves 576px of text -- about 90 characters in the default
-     * font, the top of that range -- and tightening-threshold is 400,
+     * left alone: maximum-size is 600 and tightening-threshold is 400,
      * which is what stops the column snapping in a narrow window.  A
      * default left unset is a number the platform can revise; a
      * hardcoded one is a number somebody has to maintain.
+     *
+     * What 600 leaves for words is 600 less CHAT_BODY_INSET at the start
+     * and CHAT_ROW_MARGIN at the end: 532px, about 82 characters in the
+     * default font.  An earlier reading of this said 576 and 90, which
+     * forgot that an agent's body is indented past its avatar as well as
+     * inset from the clamp -- 44px of it, seven characters' worth, on
+     * every line.
+     *
+     * The body does not fill even that.  A wrapping GtkLabel set
+     * GTK_ALIGN_START is allocated its natural width rather than the
+     * column's, and measured here that is 437px against the 532px
+     * offered -- about 66 characters.  So 82 is what the clamp permits
+     * and 66 is what a reader sees; the two differ by the label's
+     * alignment, not by anything decided here.
      */
     {
         GtkWidget *clamp = adw_clamp_new();
@@ -10621,14 +10651,10 @@ build_chat_page(ClawtWindow *self)
     gtk_box_append(GTK_BOX(self->activity_bar),
                    GTK_WIDGET(self->activity_spinner));
     gtk_box_append(GTK_BOX(self->activity_bar), GTK_WIDGET(self->streaming));
-    gtk_widget_set_margin_start(self->activity_bar, 12);
-    gtk_widget_set_margin_end(self->activity_bar, 12);
     gtk_widget_set_visible(self->activity_bar, FALSE);
 
     /* The queued files, hidden until there are some. */
     self->attachments = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    gtk_widget_set_margin_start(self->attachments, 12);
-    gtk_widget_set_margin_end(self->attachments, 12);
     gtk_widget_set_margin_top(self->attachments, 6);
     gtk_widget_set_visible(self->attachments, FALSE);
 
@@ -10699,8 +10725,6 @@ build_chat_page(ClawtWindow *self)
             GTK_REVEALER_TRANSITION_TYPE_SLIDE_UP);
         gtk_revealer_set_child(GTK_REVEALER(self->command_revealer),
                                command_scroll);
-        gtk_widget_set_margin_start(self->command_revealer, 12);
-        gtk_widget_set_margin_end(self->command_revealer, 12);
     }
 
     attach = gtk_button_new_from_icon_name("mail-attachment-symbolic");
@@ -10743,8 +10767,6 @@ build_chat_page(ClawtWindow *self)
     gtk_widget_set_valign(send, GTK_ALIGN_END);
     gtk_box_append(GTK_BOX(entry_box), attach);
     gtk_box_append(GTK_BOX(entry_box), send);
-    gtk_widget_set_margin_start(entry_box, 12);
-    gtk_widget_set_margin_end(entry_box, 12);
     gtk_widget_set_margin_top(entry_box, 6);
     gtk_widget_set_margin_bottom(entry_box, 12);
 
@@ -10821,6 +10843,26 @@ build_chat_page(ClawtWindow *self)
     {
         GtkWidget *composer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
         GtkWidget *clamp = adw_clamp_new();
+
+        /*
+         * And it stands on the same line as the words above it.
+         *
+         * The same clamp is not the same column: a row spends
+         * CHAT_ROW_MARGIN plus CHAT_GUTTER of its 600 before a body
+         * starts, and the composer spent only CHAT_ROW_MARGIN -- so the
+         * entry's frame, the strongest vertical in the whole page, stood
+         * CHAT_GUTTER left of every line of text and inside the one
+         * column deliberately left empty.  Insetting by CHAT_BODY_INSET
+         * puts it back under the text; CHAT_ROW_MARGIN on the trailing
+         * edge is what a row already ends at, so both ends agree.
+         *
+         * This aligns the frame, not the text inside it.  GtkText keeps
+         * an inset of its own, so the caret sits a little inside the
+         * rail -- which is right, because a bordered control reads as a
+         * box and the box's edge is the line the eye follows down.
+         */
+        gtk_widget_set_margin_start(composer, CHAT_BODY_INSET);
+        gtk_widget_set_margin_end(composer, CHAT_ROW_MARGIN);
 
         gtk_box_append(GTK_BOX(composer), self->activity_bar);
         gtk_box_append(GTK_BOX(composer), self->command_revealer);
