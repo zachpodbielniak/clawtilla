@@ -29,6 +29,8 @@ static const SettingsPage settings_pages[] = {
       "no image defines, starts, and boots nothing." },
     { "teams",        "Teams",
       "Who may hand work to whom." },
+    { "folders",      "Shared folders",
+      "Directories every agent's computer gets." },
     { "spending",     "Spending",
       "What the fleet has cost, per agent." },
     { "integrations", "Integrations",
@@ -843,6 +845,119 @@ connectors_content(ClawtWebApp *app)
     return HTMX_ELEMENT(g_steal_pointer(&box));
 }
 
+/* ── Shared folders ──────────────────────────────────────────────── */
+
+static HtmxElement *
+folders_content(ClawtWebApp *app)
+{
+    g_autoptr(HtmxDiv) box = htmx_div_new();
+    g_autoptr(JsonNode) reply = clawt_web_app_call(app, "defaults.mount.list",
+                                                   NULL);
+    JsonArray *mounts = clawt_web_member_array(clawt_web_root(reply),
+                                               "mounts");
+    guint i;
+
+    if (mounts == NULL || json_array_get_length(mounts) == 0)
+        clawt_web_add(box, clawt_web_empty(
+            "Nothing shared yet",
+            "A directory added here reaches every agent that has a "
+            "computer, including ones you create later."));
+
+    for (i = 0; mounts != NULL && i < json_array_get_length(mounts); i++) {
+        JsonObject *mount = json_array_get_object_element(mounts, i);
+        const gchar *source = clawt_web_member(mount, "source", "");
+        const gchar *target = clawt_web_member(mount, "target", "");
+        const gchar *mode = clawt_web_member(mount, "mode", "rw");
+        g_autoptr(HtmxDiv) card = clawt_web_card(source, NULL);
+        HtmxElement *body = clawt_web_card_body(card);
+        g_autoptr(HtmxForm) form = clawt_web_form("/settings/folders/remove");
+        g_autoptr(HtmxDiv) row = htmx_div_new();
+
+        /*
+         * Both paths, always. An agent's own tools run on the host and
+         * its shell runs inside the computer, so a shared folder has two
+         * names -- and telling somebody only one is how they go looking
+         * for a file at a path that does not exist on the machine they
+         * are on.
+         */
+        clawt_web_add(body, clawt_web_row("Path inside", target));
+        clawt_web_add(body, clawt_web_row(
+            "Mode", g_strcmp0(mode, "ro") == 0 ? "read-only" : "writable"));
+
+        /*
+         * The target travels as a form field, not in the path.
+         *
+         * It is always an absolute path, so a route parameter holding
+         * one is always percent-encoded -- and an encoded slash does not
+         * match a `:target` segment, so the first version of this button
+         * answered 404 for every folder there could ever be. A form
+         * field has no such problem and needs no escaping decision.
+         */
+        {
+            g_autoptr(HtmxButton) stop =
+                clawt_web_button("Stop sharing", "danger");
+
+            htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+            htmx_element_set_attribute(HTMX_ELEMENT(stop), "type", "submit");
+            htmx_element_set_attribute(
+                HTMX_ELEMENT(stop), "hx-confirm",
+                "Stop sharing this folder with every agent?");
+
+            clawt_web_add(form, clawt_web_hidden("target", target));
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(stop));
+            htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(row));
+            htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
+        }
+
+        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
+    }
+
+    {
+        static const gchar *const modes[] = { "rw", "ro", NULL };
+        static const gchar *const mode_labels[] = {
+            "Writable", "Read-only", NULL
+        };
+        g_autoptr(HtmxDiv) card = clawt_web_card(
+            "Share a folder",
+            "Container, distrobox and VM agents get it. A host agent does "
+            "not: there a mount is the confinement allowlist rather than a "
+            "shared folder, and widening that is not something a default "
+            "should do quietly.");
+        HtmxElement *body = clawt_web_card_body(card);
+        g_autoptr(HtmxForm) form = clawt_web_form("/settings/folders/add");
+
+        clawt_web_add(form, clawt_web_field("Path on this machine", "source",
+                                            NULL, "~/source"));
+        clawt_web_add(form, clawt_web_field(
+            "Path inside", "target", NULL,
+            "empty means the same path, which is usually what you want"));
+        clawt_web_add(form, clawt_web_select_field("Mode", "mode", modes,
+                                                   mode_labels, "rw"));
+
+        {
+            g_autoptr(HtmxDiv) row = htmx_div_new();
+            g_autoptr(HtmxButton) add = clawt_web_button("Share", "primary");
+
+            htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+            htmx_element_set_attribute(HTMX_ELEMENT(add), "type", "submit");
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(add));
+            htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(row));
+        }
+
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
+
+        clawt_web_add(body, clawt_web_text(
+            "An agent that declares its own folder at the same path wins "
+            "there, and one can decline all of them with "
+            "computer.default_mounts: false. A folder reaches an agent's "
+            "computer when it is next started.", "small muted"));
+
+        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
+    }
+
+    return HTMX_ELEMENT(g_steal_pointer(&box));
+}
+
 /* ── Appearance ──────────────────────────────────────────────────── */
 
 static HtmxElement *
@@ -1343,6 +1458,8 @@ on_settings_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
         content = images_content(app);
     else if (g_strcmp0(slug, "teams") == 0)
         content = teams_content(app);
+    else if (g_strcmp0(slug, "folders") == 0)
+        content = folders_content(app);
     else if (g_strcmp0(slug, "spending") == 0) {
         const gchar *period = htmx_request_get_query_param(request, "period");
 
@@ -1877,6 +1994,79 @@ on_appearance_reset(HtmxRequest *request, GHashTable *params,
     return response;
 }
 
+static HtmxResponse *
+on_folder_add(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    g_autofree gchar *failure = NULL;
+    ClawtWebApp *app = user_data;
+    const gchar *source = clawt_web_form_value(request, "source");
+    const gchar *target = clawt_web_form_value(request, "target");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+
+    (void)params;
+
+    /*
+     * An empty target means the same path inside, which is what people
+     * mean nine times out of ten -- an agent told about ~/source finds
+     * it at a path that reads the same in both places, so a note about
+     * a file is a note either of you can follow.
+     */
+    clawt_web_payload_set(payload, "source", source);
+    clawt_web_payload_set(payload, "target",
+                          (target != NULL && *target != '\0') ? target
+                                                              : source);
+    clawt_web_payload_set(payload, "mode",
+                          clawt_web_form_value(request, "mode"));
+
+    reply = clawt_web_app_call(app, "defaults.mount.add",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        failure = g_strdup(clawt_web_app_last_error(app));
+
+    content = folders_content(app);
+
+    if (failure != NULL)
+        return settings_response(app, request, "folders", content, failure,
+                                 TRUE);
+
+    return settings_response(app, request, "folders", content,
+                             "Shared with every agent. Restart one for it "
+                             "to reach its computer.", FALSE);
+}
+
+static HtmxResponse *
+on_folder_remove(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    g_autofree gchar *failure = NULL;
+    ClawtWebApp *app = user_data;
+    const gchar *target = clawt_web_form_value(request, "target");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+
+    (void)params;
+
+    clawt_web_payload_set(payload, "target", target);
+
+    reply = clawt_web_app_call(app, "defaults.mount.remove",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        failure = g_strdup(clawt_web_app_last_error(app));
+
+    content = folders_content(app);
+
+    if (failure != NULL)
+        return settings_response(app, request, "folders", content, failure,
+                                 TRUE);
+
+    return settings_response(app, request, "folders", content,
+                             "No longer shared.", FALSE);
+}
+
 void
 clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app)
 {
@@ -1894,6 +2084,9 @@ clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app)
                      settings_action_new(app, "image.vm_cancel", "image",
                                          "name", "images", "Cancelled."));
 
+    htmx_router_post(router, "/settings/folders/add", on_folder_add, app);
+    htmx_router_post(router, "/settings/folders/remove", on_folder_remove,
+                     app);
     htmx_router_post(router, "/settings/teams/add", on_team_add, app);
     htmx_router_post(router, "/settings/teams/:team/save", on_team_save, app);
     htmx_router_post(router, "/settings/teams/:team/remove",

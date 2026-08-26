@@ -942,6 +942,104 @@ rewritten by a mount at ~/mnt/shared~.
   computer -- an agent that could read the state directory could read
   every other agent's mailbox and token
 
+** Shared with every agent
+
+The directory you want *every* agent to see is written once, in
+=defaults.mounts=, rather than copied into every agent block and then
+forgotten on the next agent you create:
+
+#+begin_src yaml
+defaults:
+  mounts:
+    - source: "~/source"
+      target: "/work/source"
+      mode: rw
+#+end_src
+
+Or from a client:
+
+#+begin_src bash
+clawtilla folders add ~/source
+clawtilla folders add ~/Documents/notes /work/notes --ro
+clawtilla folders list
+#+end_src
+
+Settings → Shared folders in both graphical clients does the same.  Omit
+the path inside and it is the same path in both places, which is usually
+what you want: an agent told about =~/source= then finds it at a name
+that reads the same on either side, so a note about a file is a note
+either of you can follow.
+
+*** Which agents get them
+:PROPERTIES:
+:CUSTOM_ID: default-mounts-who
+:END:
+
+Container, distrobox and VM agents.  *Not* host agents --- there the
+mount list is the confinement allowlist rather than a set of kernel
+mounts, so applying a fleet default would quietly widen what a host
+agent may reach.  A convenience has no business loosening a boundary,
+and the direction that would be wrong in is the dangerous one.
+
+Not chat-only agents either, which have nothing to mount into.
+
+*** Overriding one, and declining all of them
+:PROPERTIES:
+:CUSTOM_ID: default-mounts-override
+:END:
+
+An agent that declares its own mount at the same *target* wins there,
+and the default is not also applied:
+
+#+begin_src yaml
+agents:
+  - id: reviewer
+    computer:
+      type: container
+      mounts:
+        - source: "~/source/public"     # this agent sees only the public tree
+          target: "/work/source"
+          mode: ro
+#+end_src
+
+Both being applied would put two mounts at one path, which validation
+refuses --- so an agent that customised a single shared folder would
+stop starting, naming the path its owner had deliberately chosen.
+
+Declining the lot is a different question and has its own switch:
+
+#+begin_src yaml
+agents:
+  - id: sealed
+    computer:
+      type: container
+      default_mounts: false
+#+end_src
+
+Worth it for an agent whose whole point is that it sees only what it was
+given.
+
+*** When one takes effect
+:PROPERTIES:
+:CUSTOM_ID: default-mounts-timing
+:END:
+
+At the agent's next *start*.  A container's bind mounts and a VM's
+virtiofs devices are decided when the machine is created, so adding a
+folder does not reach one that is already running.  Every client says so
+when you add one rather than leaving it to be discovered.
+
+*** An agent's own page shows them
+:PROPERTIES:
+:CUSTOM_ID: default-mounts-visible
+:END:
+
+An agent's own /Shared folders/ list reports the mounts it *actually
+gets*, with each entry saying whether it came from the fleet.  Reporting
+only what the agent declared would show an empty list for an agent that
+has two --- two answers to "what do I have", with the wrong one on the
+screen somebody is looking at.
+
 ** What every computer gets
 
 Two shares, without anybody configuring them.

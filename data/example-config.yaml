@@ -216,6 +216,65 @@ defaults:
   # other files without anybody wiring up mounts by hand.
   exchange_dir: "$XDG_DATA_HOME/clawtilla/exchange"
 
+  # Host paths shared into *every* agent's computer.
+  #
+  #   defaults:
+  #     mounts:
+  #       - source: "~/source"
+  #         target: "/work/source"
+  #         mode: rw
+  #
+  # The directory you want every agent to see -- your projects tree,
+  # your notes -- written once instead of copied into every agent block
+  # and then forgotten on the next agent you create.
+  #
+  # Applied to container, distrobox and VM agents. Not to host agents:
+  # there a mount is the confinement allowlist rather than a kernel
+  # mount, and quietly widening what a host agent may reach is not
+  # something a convenience should do.
+  #
+  # An agent's own computer.mounts wins on a matching target, so one
+  # agent can point the same path somewhere else without turning the
+  # default off. agents.computer.default_mounts: false declines them all.
+  mounts:
+
+      # Host path to share. Not needed for tmpfs.
+    - source: null
+
+      # Absolute path inside the computer. Must not overlap another mount.
+      # Required.
+      target: null
+
+      # ro or rw.
+      # Values: ro, rw
+      mode: "rw"
+
+      # bind, volume, virtiofs, 9p or tmpfs. Chosen from the backend when
+      # unset, so the same entry is a bind mount in a container and a
+      # virtiofs share in a VM.
+      # Values: bind, volume, virtiofs, 9p, tmpfs
+      type: "bind"
+
+      # SELinux relabelling: none, shared (:z) or private (:Z).
+      #
+      # shared when unset, which matters on Silverblue and friends: an
+      # unlabelled bind mount appears inside the container with every access
+      # denied, which reads as a permissions bug rather than a labelling one.
+      # Values: none, shared, private
+      relabel: "shared"
+
+      # Create the source directory if it is missing.
+      create: false
+
+      # Size for a tmpfs mount, such as 512M.
+      size: null
+
+      # Whether a missing source stops the agent starting.
+      #
+      # Worth turning off for a fleet default that not every machine has --
+      # a laptop without your projects tree should still start its agents.
+      required: true
+
   # Where downloaded cloud images are kept.
   #
   # One copy serves the whole fleet: a VM agent writes to a qcow2 overlay
@@ -1098,6 +1157,18 @@ agents:
       # Turn it off for an agent whose computer should hold nothing of
       # clawtilla's.
       workspace: true
+
+      # Whether this agent gets the fleet's shared folders from
+      # defaults.mounts.
+      #
+      # On by default -- that is what makes them defaults. Turn it off for an
+      # agent that should see only what it declares itself, which is the
+      # point of giving one a container in the first place.
+      #
+      # Declining all of them is different from replacing one: an agent that
+      # declares its own mount at the same target already wins there, with
+      # no need to turn the rest off.
+      default_mounts: true
 
       # Host paths shared into the computer.
       #

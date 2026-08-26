@@ -1588,6 +1588,22 @@ depends on the machine, so the side that found out is the side that
 says; "Imported." would be true of both outcomes and useful for
 neither.
 
+*** Shared folders
+
+Settings → Shared folders holds the directories every agent's computer
+gets --- the tree you would otherwise wire into each agent by hand and
+then forget on the next one you make.
+
+Leave the path inside empty and it is the same path in both places.
+That is usually what you want: an agent told about =~/source= finds it
+at a name that reads the same on either side, so a note about a file is
+a note either of you can follow.
+
+Container, distrobox and VM agents get them.  A host agent does not, and
+the dialog says why: there a mount is the confinement allowlist rather
+than a shared folder, and widening that is not something a default
+should do quietly.
+
 *** Another machine's fleet
 
 Left of the app title is a menu naming the daemon the window is showing.

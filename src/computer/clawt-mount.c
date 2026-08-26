@@ -432,3 +432,41 @@ clawt_mount_tag(const gchar *target)
 
     return g_strdup_printf("%s-%.6s", slug->str, digest);
 }
+
+GPtrArray *
+clawt_mount_merge_defaults(GPtrArray *defaults, GPtrArray *own)
+{
+    GPtrArray *out = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_mount_free);
+    g_autoptr(GHashTable) taken = g_hash_table_new(g_str_hash, g_str_equal);
+    guint i;
+
+    /*
+     * The agent's own targets first, so a default at the same path is
+     * skipped rather than added beside it.  Both mounted at one path is
+     * refused by validation, so the agent would stop starting -- and the
+     * error would name a path the person had deliberately customised.
+     */
+    for (i = 0; own != NULL && i < own->len; i++) {
+        ClawtMount *mount = g_ptr_array_index(own, i);
+        const gchar *target = clawt_mount_get_target(mount);
+
+        if (target != NULL)
+            g_hash_table_add(taken, (gpointer)target);
+    }
+
+    for (i = 0; defaults != NULL && i < defaults->len; i++) {
+        ClawtMount *mount = g_ptr_array_index(defaults, i);
+        const gchar *target = clawt_mount_get_target(mount);
+
+        if (target != NULL && g_hash_table_contains(taken, target))
+            continue;
+
+        g_ptr_array_add(out, clawt_mount_copy(mount));
+    }
+
+    for (i = 0; own != NULL && i < own->len; i++)
+        g_ptr_array_add(out, clawt_mount_copy(g_ptr_array_index(own, i)));
+
+    return out;
+}

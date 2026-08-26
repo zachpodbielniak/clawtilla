@@ -138,6 +138,34 @@ gchar *clawt_mount_tag(const gchar *target);
  */
 gchar *clawt_mount_resolved_source(ClawtMount *self);
 
+/**
+ * clawt_mount_merge_defaults:
+ * @defaults: (element-type ClawtMount) (nullable): the fleet's shared
+ *   folders
+ * @own: (element-type ClawtMount) (nullable): what this agent declared
+ *
+ * The mounts an agent actually gets, with its own winning.
+ *
+ * A default that an agent has overridden by target must not also be
+ * applied, or the two would both be mounted at one path -- which
+ * validation refuses, so an agent that customised one shared folder
+ * would stop starting entirely. Keyed on the target because the target
+ * is what has to be unique; two sources cannot occupy one path inside
+ * the computer.
+ *
+ * Defaults come first so the order in the rendered config reads
+ * fleet-then-agent, which is the order somebody debugging one would
+ * expect to find them in.
+ *
+ * A pure function, so the override rule can be asserted without a
+ * container: the failure it prevents is an agent that will not start,
+ * and reproducing that needs podman.
+ *
+ * Returns: (transfer full) (element-type ClawtMount): the effective
+ *   list, holding copies
+ */
+GPtrArray *clawt_mount_merge_defaults(GPtrArray *defaults, GPtrArray *own);
+
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtMount, clawt_mount_free)
 
 G_END_DECLS

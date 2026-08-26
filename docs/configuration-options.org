@@ -321,6 +321,106 @@ shared/ is writable by every agent; <agent-id>/ is writable by that
 agent and readable by the others. It exists so agents can hand each
 other files without anybody wiring up mounts by hand.
 
+** =defaults.mounts=
+
+Host paths shared into *every* agent's computer.
+
+  defaults:
+    mounts:
+      - source: "~/source"
+        target: "/work/source"
+        mode: rw
+
+The directory you want every agent to see -- your projects tree,
+your notes -- written once instead of copied into every agent block
+and then forgotten on the next agent you create.
+
+Applied to container, distrobox and VM agents. Not to host agents:
+there a mount is the confinement allowlist rather than a kernel
+mount, and quietly widening what a host agent may reach is not
+something a convenience should do.
+
+An agent's own computer.mounts wins on a matching target, so one
+agent can point the same path somewhere else without turning the
+default off. agents.computer.default_mounts: false declines them all.
+
+*** =defaults.mounts.source=
+
+- Type :: path
+- Default :: unset
+- Since :: 0.1.0
+
+Host path to share. Not needed for tmpfs.
+
+*** =defaults.mounts.target=
+
+- Type :: path
+- Default :: unset
+- Required :: yes
+- Since :: 0.1.0
+
+Absolute path inside the computer. Must not overlap another mount.
+
+*** =defaults.mounts.mode=
+
+- Type :: enum
+- Values :: ro, rw
+- Default :: =rw=
+- Since :: 0.1.0
+
+ro or rw.
+
+*** =defaults.mounts.type=
+
+- Type :: enum
+- Values :: bind, volume, virtiofs, 9p, tmpfs
+- Default :: =bind=
+- Since :: 0.1.0
+
+bind, volume, virtiofs, 9p or tmpfs. Chosen from the backend when
+unset, so the same entry is a bind mount in a container and a
+virtiofs share in a VM.
+
+*** =defaults.mounts.relabel=
+
+- Type :: enum
+- Values :: none, shared, private
+- Default :: =shared=
+- Since :: 0.1.0
+
+SELinux relabelling: none, shared (:z) or private (:Z).
+
+shared when unset, which matters on Silverblue and friends: an
+unlabelled bind mount appears inside the container with every access
+denied, which reads as a permissions bug rather than a labelling one.
+
+*** =defaults.mounts.create=
+
+- Type :: boolean
+- Default :: =false=
+- Since :: 0.1.0
+
+Create the source directory if it is missing.
+
+*** =defaults.mounts.size=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+Size for a tmpfs mount, such as 512M.
+
+*** =defaults.mounts.required=
+
+- Type :: boolean
+- Default :: =true=
+- Since :: 0.1.0
+
+Whether a missing source stops the agent starting.
+
+Worth turning off for a fleet default that not every machine has --
+a laptop without your projects tree should still start its agents.
+
 *** =defaults.image_dir=
 
 - Type :: path
@@ -1850,6 +1950,23 @@ from inside goes somewhere the host never looks.
 
 Turn it off for an agent whose computer should hold nothing of
 clawtilla's.
+
+*** =agents.computer.default_mounts=
+
+- Type :: boolean
+- Default :: =true=
+- Since :: 0.1.0
+
+Whether this agent gets the fleet's shared folders from
+defaults.mounts.
+
+On by default -- that is what makes them defaults. Turn it off for an
+agent that should see only what it declares itself, which is the
+point of giving one a container in the first place.
+
+Declining all of them is different from replacing one: an agent that
+declares its own mount at the same target already wins there, with
+no need to turn the rest off.
 
 ** =agents.computer.mounts=
 

@@ -184,7 +184,7 @@ static const gchar *usage_text =
  */
 static const gchar *const verbs[] = {
     "daemon", "remote", "status", "agent", "send", "chat", "mailbox", "room",
-    "team", "task", "decision", "event", "cost",
+    "team", "task", "decision", "event", "cost", "folders",
     "memory",
     "computer", "cp", "config", "plugin", "integration", "connector",
     "routine",
@@ -2016,6 +2016,134 @@ cmd_memory(int argc, char *argv[])
 
     g_print("\n%" G_GINT64_FORMAT " remembered in total.\n",
             json_object_get_int_member(json_node_get_object(reply), "total"));
+
+    return EXIT_SUCCESS;
+}
+
+/*
+ * The fleet's shared folders.
+ *
+ * A verb of its own rather than a corner of `config`, because it is the
+ * one fleet setting that is a *list* somebody edits repeatedly -- and
+ * because `clawtilla folders add ~/source` is the whole point: sharing
+ * a directory with every agent should not take a YAML editor.
+ */
+static gint
+cmd_folders(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verb = (argc > 2) ? argv[2] : "list";
+
+    if (g_strcmp0(verb, "-h") == 0 || g_strcmp0(verb, "--help") == 0) {
+        g_printerr("Usage: clawtilla folders [list|add|rm] [ARGS...]\n");
+        g_printerr("\n");
+        g_printerr("  list                        what every agent gets\n");
+        g_printerr("  add <path> [inside] [--ro]  share a directory\n");
+        g_printerr("  rm <inside>                 stop sharing one\n");
+        g_printerr("\n");
+        g_printerr("Container, distrobox and VM agents get these. A host "
+                   "agent does not:\n");
+        g_printerr("there a mount is the confinement allowlist rather than "
+                   "a shared folder.\n");
+        g_printerr("\n");
+        g_printerr("Examples:\n");
+        g_printerr("  clawtilla folders add ~/source\n");
+        g_printerr("  clawtilla folders add ~/Documents/notes /work/notes "
+                   "--ro\n");
+        return EXIT_FAILURE;
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    if (g_strcmp0(verb, "add") == 0) {
+        const gchar *source = (argc > 3) ? argv[3] : NULL;
+        const gchar *target = NULL;
+        const gchar *mode = "rw";
+        gint arg;
+
+        if (source == NULL) {
+            g_printerr("Usage: clawtilla folders add <path> [inside] "
+                       "[--ro]\n");
+            return EXIT_FAILURE;
+        }
+
+        for (arg = 4; arg < argc; arg++) {
+            if (g_strcmp0(argv[arg], "--ro") == 0)
+                mode = "ro";
+            else if (g_strcmp0(argv[arg], "--rw") == 0)
+                mode = "rw";
+            else if (target == NULL)
+                target = argv[arg];
+        }
+
+        /*
+         * The same path inside when none is given. An agent told about
+         * ~/source finds it at a name that reads the same in both
+         * places, so a note about a file is a note either of you can
+         * follow.
+         */
+        reply = call(client, "defaults.mount.add",
+                     build_payload("source", source,
+                                   "target", target != NULL ? target : source,
+                                   "mode", mode, NULL));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Shared with every agent that has a computer.\n");
+        g_print("It reaches one when that agent is next started.\n");
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "rm") == 0) {
+        const gchar *target = (argc > 3) ? argv[3] : NULL;
+
+        if (target == NULL) {
+            g_printerr("Usage: clawtilla folders rm <inside>\n");
+            g_printerr("The path *inside* the computer, which is what "
+                       "`folders list` shows second.\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "defaults.mount.remove",
+                     build_payload("target", target, NULL));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("No longer shared.\n");
+        return EXIT_SUCCESS;
+    }
+
+    reply = call(client, "defaults.mount.list", NULL);
+
+    if (reply == NULL)
+        return EXIT_FAILURE;
+
+    {
+        JsonArray *mounts = json_object_get_array_member(
+            json_node_get_object(reply), "mounts");
+        guint i;
+
+        if (mounts == NULL || json_array_get_length(mounts) == 0) {
+            g_print("Nothing is shared with every agent.\n");
+            g_print("Add one with `clawtilla folders add ~/source`.\n");
+            return EXIT_SUCCESS;
+        }
+
+        for (i = 0; i < json_array_get_length(mounts); i++) {
+            JsonObject *mount = json_array_get_object_element(mounts, i);
+
+            g_print("%-30s -> %-24s %s\n",
+                    member_or(mount, "source", "?"),
+                    member_or(mount, "target", "?"),
+                    g_strcmp0(member_or(mount, "mode", "rw"), "ro") == 0
+                        ? "read-only" : "writable");
+        }
+    }
 
     return EXIT_SUCCESS;
 }
@@ -5347,6 +5475,9 @@ main(int argc, char *argv[])
 
     if (g_strcmp0(argv[1], "room") == 0)
         return cmd_room(argc, argv);
+
+    if (g_strcmp0(argv[1], "folders") == 0)
+        return cmd_folders(argc, argv);
 
     if (g_strcmp0(argv[1], "team") == 0)
         return cmd_team(argc, argv);

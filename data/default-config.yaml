@@ -214,6 +214,28 @@ defaults:
   # other files without anybody wiring up mounts by hand.
   exchange_dir: "$XDG_DATA_HOME/clawtilla/exchange"
 
+  # Host paths shared into *every* agent's computer.
+  #
+  #   defaults:
+  #     mounts:
+  #       - source: "~/source"
+  #         target: "/work/source"
+  #         mode: rw
+  #
+  # The directory you want every agent to see -- your projects tree,
+  # your notes -- written once instead of copied into every agent block
+  # and then forgotten on the next agent you create.
+  #
+  # Applied to container, distrobox and VM agents. Not to host agents:
+  # there a mount is the confinement allowlist rather than a kernel
+  # mount, and quietly widening what a host agent may reach is not
+  # something a convenience should do.
+  #
+  # An agent's own computer.mounts wins on a matching target, so one
+  # agent can point the same path somewhere else without turning the
+  # default off. agents.computer.default_mounts: false declines them all.
+  mounts: []
+
   # Where downloaded cloud images are kept.
   #
   # One copy serves the whole fleet: a VM agent writes to a qcow2 overlay

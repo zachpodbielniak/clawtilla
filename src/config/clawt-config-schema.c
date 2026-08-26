@@ -252,6 +252,74 @@ static const ClawtSchemaEntry schema[] = {
   "agent and readable by the others. It exists so agents can hand each\n"
   "other files without anybody wiring up mounts by hand.", "0.1.0" },
 
+{ "defaults.mounts", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Host paths shared into *every* agent's computer.\n"
+  "\n"
+  "  defaults:\n"
+  "    mounts:\n"
+  "      - source: \"~/source\"\n"
+  "        target: \"/work/source\"\n"
+  "        mode: rw\n"
+  "\n"
+  "The directory you want every agent to see -- your projects tree,\n"
+  "your notes -- written once instead of copied into every agent block\n"
+  "and then forgotten on the next agent you create.\n"
+  "\n"
+  "Applied to container, distrobox and VM agents. Not to host agents:\n"
+  "there a mount is the confinement allowlist rather than a kernel\n"
+  "mount, and quietly widening what a host agent may reach is not\n"
+  "something a convenience should do.\n"
+  "\n"
+  "An agent's own computer.mounts wins on a matching target, so one\n"
+  "agent can point the same path somewhere else without turning the\n"
+  "default off. agents.computer.default_mounts: false declines them all.",
+  "0.1.0" },
+
+{ "defaults.mounts.source", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Host path to share. Not needed for tmpfs.", "0.1.0" },
+
+{ "defaults.mounts.target", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_REQUIRED,
+  NULL, NULL,
+  "Absolute path inside the computer. Must not overlap another mount.",
+  "0.1.0" },
+
+{ "defaults.mounts.mode", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "rw", clawt_mount_mode_get_type,
+  "ro or rw.", "0.1.0" },
+
+{ "defaults.mounts.type", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "bind", clawt_mount_type_get_type,
+  "bind, volume, virtiofs, 9p or tmpfs. Chosen from the backend when\n"
+  "unset, so the same entry is a bind mount in a container and a\n"
+  "virtiofs share in a VM.", "0.1.0" },
+
+{ "defaults.mounts.relabel", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "shared", clawt_relabel_get_type,
+  "SELinux relabelling: none, shared (:z) or private (:Z).\n"
+  "\n"
+  "shared when unset, which matters on Silverblue and friends: an\n"
+  "unlabelled bind mount appears inside the container with every access\n"
+  "denied, which reads as a permissions bug rather than a labelling one.",
+  "0.1.0" },
+
+{ "defaults.mounts.create", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "false", NULL,
+  "Create the source directory if it is missing.", "0.1.0" },
+
+{ "defaults.mounts.size", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Size for a tmpfs mount, such as 512M.", "0.1.0" },
+
+{ "defaults.mounts.required", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "true", NULL,
+  "Whether a missing source stops the agent starting.\n"
+  "\n"
+  "Worth turning off for a fleet default that not every machine has --\n"
+  "a laptop without your projects tree should still start its agents.",
+  "0.1.0" },
+
 { "defaults.image_dir", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE,
   "$XDG_DATA_HOME/clawtilla/images", NULL,
   "Where downloaded cloud images are kept.\n"
@@ -1239,6 +1307,19 @@ static const ClawtSchemaEntry schema[] = {
   "Turn it off for an agent whose computer should hold nothing of\n"
   "clawtilla's.",
   "0.1.0" },
+
+{ "agents.computer.default_mounts", CLAWT_SCHEMA_BOOLEAN,
+  CLAWT_SCHEMA_FLAG_NONE, "true", NULL,
+  "Whether this agent gets the fleet's shared folders from\n"
+  "defaults.mounts.\n"
+  "\n"
+  "On by default -- that is what makes them defaults. Turn it off for an\n"
+  "agent that should see only what it declares itself, which is the\n"
+  "point of giving one a container in the first place.\n"
+  "\n"
+  "Declining all of them is different from replacing one: an agent that\n"
+  "declares its own mount at the same target already wins there, with\n"
+  "no need to turn the rest off.", "0.1.0" },
 
 { "agents.computer.mounts", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,

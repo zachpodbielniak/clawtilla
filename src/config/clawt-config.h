@@ -537,6 +537,47 @@ gboolean clawt_agent_config_set_int(ClawtAgentConfig *self,
 gchar *clawt_agent_config_get_workspace(ClawtAgentConfig *self);
 
 /**
+ * clawt_config_get_default_mounts:
+ * @self: a #ClawtConfig
+ *
+ * The fleet's shared folders: `defaults.mounts`.
+ *
+ * Applied to every agent whose computer takes mounts -- container,
+ * distrobox and VM -- so a directory somebody shares with all their
+ * agents is written once rather than copied into every agent block and
+ * then forgotten on the next one they create.
+ *
+ * Read through the same parser as the per-agent list, so the two cannot
+ * disagree about what an entry means.
+ *
+ * Returns: (transfer full) (element-type ClawtMount): the mounts, empty
+ *   when none are configured
+ */
+GPtrArray *clawt_config_get_default_mounts(ClawtConfig *self);
+
+/**
+ * clawt_config_add_default_mount:
+ * @self: a #ClawtConfig
+ * @mount: (transfer none): the mount to add
+ *
+ * Returns: %TRUE if it was written
+ */
+gboolean clawt_config_add_default_mount(ClawtConfig *self, ClawtMount *mount);
+
+/**
+ * clawt_config_remove_default_mount:
+ * @self: a #ClawtConfig
+ * @target: the path inside the computer
+ *
+ * Keyed on the target rather than the source, because the target is
+ * what has to be unique.
+ *
+ * Returns: %TRUE if one was removed
+ */
+gboolean clawt_config_remove_default_mount(ClawtConfig *self,
+                                           const gchar *target);
+
+/**
  * clawt_agent_config_get_mounts:
  * @self: a #ClawtAgentConfig
  *

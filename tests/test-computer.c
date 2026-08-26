@@ -866,7 +866,7 @@ test_factory_builds_the_configured_backend(void)
     ClawtAgentConfig *agent;
 
     agent = agent_from_yaml(&config, "agents:\n  - id: chief\n");
-    computer = clawt_computer_factory_create(agent, NULL, &error);
+    computer = clawt_computer_factory_create(agent, NULL, NULL, &error);
 
     g_assert_no_error(error);
     g_assert_cmpint(clawt_computer_get_computer_type(computer), ==,
@@ -886,7 +886,7 @@ test_factory_refuses_unconfirmed_host(void)
     agent = agent_from_yaml(&config,
         "agents:\n  - id: chief\n    computer:\n      type: host\n");
 
-    computer = clawt_computer_factory_create(agent, NULL, &error);
+    computer = clawt_computer_factory_create(agent, NULL, NULL, &error);
 
     g_assert_null(computer);
     g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED);
@@ -909,7 +909,7 @@ test_factory_builds_a_confirmed_host(void)
         "        confirm_host_control: true\n"
         "        confine: workspace\n");
 
-    computer = clawt_computer_factory_create(agent, NULL, &error);
+    computer = clawt_computer_factory_create(agent, NULL, NULL, &error);
 
     g_assert_no_error(error);
     g_assert_cmpint(clawt_computer_get_computer_type(computer), ==,
@@ -939,7 +939,7 @@ test_factory_picks_the_mount_type_for_the_backend(void)
         "        - source: \"/tmp\"\n"
         "          target: \"/work\"\n");
 
-    computer = clawt_computer_factory_create(agent, NULL, &error);
+    computer = clawt_computer_factory_create(agent, NULL, NULL, &error);
     g_assert_no_error(error);
 
     mounts = clawt_computer_get_mounts(computer);
@@ -991,7 +991,7 @@ test_factory_treats_host_mounts_as_an_allowlist(void)
         "        - source: \"/tmp\"\n"
         "          target: \"/work\"\n");
 
-    computer = clawt_computer_factory_create(agent, NULL, &error);
+    computer = clawt_computer_factory_create(agent, NULL, NULL, &error);
     g_assert_no_error(error);
 
     sandbox = clawt_host_computer_get_sandbox(CLAWT_HOST_COMPUTER(computer));
@@ -1939,7 +1939,7 @@ test_the_factory_wires_a_distrobox_from_config(void)
      * refuse before it built anything -- so the test would assert a
      * refusal message and nothing about the wiring it exists for.
      */
-    computer = clawt_computer_factory_create(agent, bridge, &error);
+    computer = clawt_computer_factory_create(agent, NULL, bridge, &error);
 
     g_assert_no_error(error);
     g_assert_nonnull(computer);
@@ -1968,7 +1968,7 @@ test_a_distrobox_without_a_bridge_names_the_module(void)
     agent = agent_from_yaml(&config,
         "agents:\n  - id: chief\n    computer:\n      type: distrobox\n");
 
-    computer = clawt_computer_factory_create(agent, NULL, &error);
+    computer = clawt_computer_factory_create(agent, NULL, NULL, &error);
 
     g_assert_null(computer);
     g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED);
@@ -2011,7 +2011,7 @@ test_share_home_reaches_the_computer_from_config(void)
         g_autofree gchar *home = NULL;
 
         agent = agent_from_yaml(&config, cases[i].yaml);
-        computer = clawt_computer_factory_create(agent, bridge, &error);
+        computer = clawt_computer_factory_create(agent, NULL, bridge, &error);
 
         g_assert_no_error(error);
         g_assert_nonnull(computer);
@@ -2108,6 +2108,248 @@ test_the_type_predicates_cover_every_type(void)
      */
     g_assert_false(clawt_computer_type_takes_mounts(CLAWT_COMPUTER_NONE));
     g_assert_false(clawt_computer_type_takes_mounts(CLAWT_COMPUTER_HOST));
+}
+
+/*
+ * Whether a computer ended up with a mount at this path.
+ *
+ * Asked of the computer rather than of the config, because the whole
+ * point of a fleet default is that it reaches an agent whose own block
+ * never mentions it.
+ */
+static gboolean
+has_target(GPtrArray *mounts, const gchar *target)
+{
+    guint i;
+
+    for (i = 0; mounts != NULL && i < mounts->len; i++) {
+        if (g_strcmp0(clawt_mount_get_target(g_ptr_array_index(mounts, i)),
+                      target) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+/* ── Fleet-wide shared folders ────────────────────────────────────── */
+
+/*
+ * A default reaches an agent that has a computer.
+ *
+ * The whole feature is that this happens without the agent block
+ * mentioning it, so the assertion has to be on the *computer* rather
+ * than on the config -- reading the config back would only prove the
+ * YAML was written.
+ */
+static void
+test_a_default_mount_reaches_a_container(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(ClawtPodBridge) bridge = clawt_pod_bridge_new(NULL);
+    g_autoptr(GPtrArray) defaults = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent;
+    GPtrArray *applied;
+
+    agent = agent_from_yaml(&config,
+        "defaults:\n"
+        "  mounts:\n"
+        "    - source: /tmp\n"
+        "      target: /work/source\n"
+        "      required: false\n"
+        "agents:\n"
+        "  - id: chief\n"
+        "    computer:\n"
+        "      type: container\n");
+
+    defaults = clawt_config_get_default_mounts(config);
+    g_assert_cmpuint(defaults->len, ==, 1);
+
+    computer = clawt_computer_factory_create(agent, defaults, bridge, &error);
+    g_assert_no_error(error);
+
+    applied = clawt_computer_get_mounts(computer);
+    g_assert_true(has_target(applied, "/work/source"));
+}
+
+/*
+ * And does not reach one that has no computer to mount into, or a host
+ * agent.
+ *
+ * The host case is the one that matters. There a mount is the
+ * confinement allowlist rather than a kernel mount, so applying a fleet
+ * default would quietly widen what a host agent may reach -- a
+ * convenience silently loosening a security boundary, which is the
+ * worst direction for this to be wrong in.
+ */
+static void
+test_a_default_mount_does_not_widen_a_host_agent(void)
+{
+    static const gchar *const yamls[] = {
+        "defaults:\n"
+        "  mounts:\n"
+        "    - source: /tmp\n"
+        "      target: /work/source\n"
+        "      required: false\n"
+        "agents:\n"
+        "  - id: chief\n"
+        "    computer:\n"
+        "      type: host\n"
+        "      host:\n"
+        "        confirm_host_control: true\n",
+
+        "defaults:\n"
+        "  mounts:\n"
+        "    - source: /tmp\n"
+        "      target: /work/source\n"
+        "      required: false\n"
+        "agents:\n"
+        "  - id: chief\n",
+        NULL
+    };
+    guint i;
+
+    for (i = 0; yamls[i] != NULL; i++) {
+        g_autoptr(ClawtConfig) config = NULL;
+        g_autoptr(ClawtComputer) computer = NULL;
+        g_autoptr(GPtrArray) defaults = NULL;
+        g_autoptr(GError) error = NULL;
+        ClawtAgentConfig *agent;
+
+        agent = agent_from_yaml(&config, yamls[i]);
+        defaults = clawt_config_get_default_mounts(config);
+        computer = clawt_computer_factory_create(agent, defaults, NULL,
+                                                 &error);
+
+        g_assert_no_error(error);
+        g_assert_nonnull(computer);
+        g_assert_false(has_target(clawt_computer_get_mounts(computer),
+                                  "/work/source"));
+    }
+}
+
+/*
+ * An agent can decline the lot.
+ *
+ * Which is different from overriding one: the point of giving an agent
+ * a container is sometimes that it sees only what it was given.
+ */
+static void
+test_an_agent_can_decline_the_fleet_folders(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(ClawtPodBridge) bridge = clawt_pod_bridge_new(NULL);
+    g_autoptr(GPtrArray) defaults = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent;
+
+    agent = agent_from_yaml(&config,
+        "defaults:\n"
+        "  mounts:\n"
+        "    - source: /tmp\n"
+        "      target: /work/source\n"
+        "      required: false\n"
+        "agents:\n"
+        "  - id: chief\n"
+        "    computer:\n"
+        "      type: container\n"
+        "      default_mounts: false\n");
+
+    defaults = clawt_config_get_default_mounts(config);
+    computer = clawt_computer_factory_create(agent, defaults, bridge, &error);
+
+    g_assert_no_error(error);
+    g_assert_false(has_target(clawt_computer_get_mounts(computer),
+                              "/work/source"));
+}
+
+/*
+ * An agent's own folder at the same path wins, and the default is not
+ * also applied.
+ *
+ * Adding both would put two mounts at one path, which validation
+ * refuses -- so an agent that customised a single shared folder would
+ * stop starting, naming the path its owner had deliberately chosen.
+ * That is the failure this rule exists to prevent, and it needs a
+ * container to reproduce, so it is asserted here instead.
+ */
+static void
+test_an_agents_own_folder_replaces_the_default(void)
+{
+    g_autoptr(GPtrArray) defaults = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_mount_free);
+    g_autoptr(GPtrArray) own = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_mount_free);
+    g_autoptr(GPtrArray) merged = NULL;
+    ClawtMount *fleet;
+    ClawtMount *mine;
+
+    fleet = clawt_mount_new("/srv/fleet", "/work/source");
+    g_ptr_array_add(defaults, fleet);
+    g_ptr_array_add(defaults, clawt_mount_new("/srv/notes", "/work/notes"));
+
+    mine = clawt_mount_new("/home/me/other", "/work/source");
+    g_ptr_array_add(own, mine);
+
+    merged = clawt_mount_merge_defaults(defaults, own);
+
+    /* Three configured, three minus the overridden one. */
+    g_assert_cmpuint(merged->len, ==, 2);
+
+    /* The surviving default, then the agent's own. */
+    g_assert_cmpstr(clawt_mount_get_target(g_ptr_array_index(merged, 0)),
+                    ==, "/work/notes");
+    g_assert_cmpstr(clawt_mount_get_target(g_ptr_array_index(merged, 1)),
+                    ==, "/work/source");
+    g_assert_cmpstr(clawt_mount_get_source(g_ptr_array_index(merged, 1)),
+                    ==, "/home/me/other");
+}
+
+/*
+ * The merge copies, and holds nothing belonging to its inputs.
+ *
+ * Both arrays own their elements, so returning borrowed pointers would
+ * free each mount twice the moment either side went out of scope --
+ * which is exactly the g_ptr_array_copy trap this project recorded
+ * against the fstab renderer.
+ */
+static void
+test_merging_folders_copies_rather_than_borrows(void)
+{
+    g_autoptr(GPtrArray) merged = NULL;
+
+    {
+        g_autoptr(GPtrArray) defaults = g_ptr_array_new_with_free_func(
+            (GDestroyNotify)clawt_mount_free);
+        g_autoptr(GPtrArray) own = g_ptr_array_new_with_free_func(
+            (GDestroyNotify)clawt_mount_free);
+
+        g_ptr_array_add(defaults, clawt_mount_new("/srv/a", "/work/a"));
+        g_ptr_array_add(own, clawt_mount_new("/srv/b", "/work/b"));
+
+        merged = clawt_mount_merge_defaults(defaults, own);
+    }
+
+    /* Both inputs are gone; the result is still readable. */
+    g_assert_cmpuint(merged->len, ==, 2);
+    g_assert_cmpstr(clawt_mount_get_source(g_ptr_array_index(merged, 0)),
+                    ==, "/srv/a");
+    g_assert_cmpstr(clawt_mount_get_source(g_ptr_array_index(merged, 1)),
+                    ==, "/srv/b");
+}
+
+/*
+ * Nothing configured is nothing applied, and neither array being there
+ * is not a crash.
+ */
+static void
+test_merging_folders_handles_nothing(void)
+{
+    g_autoptr(GPtrArray) empty = clawt_mount_merge_defaults(NULL, NULL);
+
+    g_assert_cmpuint(empty->len, ==, 0);
 }
 
 /* ── distrobox ────────────────────────────────────────────────────── */
@@ -2554,7 +2796,7 @@ test_a_computer_is_given_the_agents_workspace(void)
                             "      host:\n"
                             "        confirm_host_control: true\n");
 
-    computer = clawt_computer_factory_create(agent, NULL, &error);
+    computer = clawt_computer_factory_create(agent, NULL, NULL, &error);
     g_assert_no_error(error);
     g_assert_nonnull(computer);
 
@@ -2599,7 +2841,7 @@ test_a_vm_workspace_share_is_virtiofs(void)
                             "      vm:\n"
                             "        image: /tmp/does-not-matter.qcow2\n");
 
-    computer = clawt_computer_factory_create(agent, NULL, &error);
+    computer = clawt_computer_factory_create(agent, NULL, NULL, &error);
     g_assert_no_error(error);
     g_assert_nonnull(computer);
 
@@ -2635,7 +2877,7 @@ test_the_workspace_share_can_be_turned_off(void)
                             "      host:\n"
                             "        confirm_host_control: true\n");
 
-    computer = clawt_computer_factory_create(agent, NULL, &error);
+    computer = clawt_computer_factory_create(agent, NULL, NULL, &error);
     g_assert_no_error(error);
     g_assert_nonnull(computer);
 
@@ -3086,6 +3328,18 @@ main(int argc, char *argv[])
                     test_a_guest_desktop_gets_a_screen);
     g_test_add_func("/computer/vm/qemu-names-its-gpu",
                     test_the_qemu_backend_names_its_gpu);
+    g_test_add_func("/computer/folders/default-reaches-a-container",
+                    test_a_default_mount_reaches_a_container);
+    g_test_add_func("/computer/folders/default-does-not-widen-a-host",
+                    test_a_default_mount_does_not_widen_a_host_agent);
+    g_test_add_func("/computer/folders/an-agent-can-decline",
+                    test_an_agent_can_decline_the_fleet_folders);
+    g_test_add_func("/computer/folders/own-replaces-the-default",
+                    test_an_agents_own_folder_replaces_the_default);
+    g_test_add_func("/computer/folders/merge-copies",
+                    test_merging_folders_copies_rather_than_borrows);
+    g_test_add_func("/computer/folders/merge-handles-nothing",
+                    test_merging_folders_handles_nothing);
     g_test_add_func("/computer/factory-wires-a-distrobox",
                     test_the_factory_wires_a_distrobox_from_config);
     g_test_add_func("/computer/distrobox-without-a-bridge-names-it",

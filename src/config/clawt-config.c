@@ -741,20 +741,28 @@ set_scalar(YamlNode *root, const gchar *key, YamlNode *value,
  * default. clawt_agent_config_set_string_list() is the general answer;
  * this stays because a mount is a mapping rather than a string.
  */
-gboolean
-clawt_agent_config_add_mount(ClawtAgentConfig *self,
-                             ClawtMount       *mount)
+/*
+ * Appends a mount to a `mounts:` sequence, creating it if absent.
+ *
+ * @owner_path names the mapping the list hangs off -- "computer" for an
+ * agent, "defaults" for the fleet -- so one writer serves both. The
+ * alternative was a second copy of thirty lines of yaml-glib, which is
+ * where the (transfer none) trap below would have been reintroduced.
+ */
+static gboolean
+add_mount_to_node(YamlNode    *root,
+                  const gchar *owner_path,
+                  ClawtMount  *mount)
 {
     g_autoptr(YamlMapping) mapping = NULL;
     g_autoptr(YamlNode) element = NULL;
     YamlNode *computer;
     YamlNode *list;
 
-    g_return_val_if_fail(self != NULL, FALSE);
     g_return_val_if_fail(mount != NULL, FALSE);
     g_return_val_if_fail(clawt_mount_get_target(mount) != NULL, FALSE);
 
-    computer = node_at_path(self->node, "computer", TRUE);
+    computer = node_at_path(root, owner_path, TRUE);
 
     if (computer == NULL ||
         yaml_node_get_node_type(computer) != YAML_NODE_MAPPING)
@@ -839,6 +847,22 @@ clawt_agent_config_add_mount(ClawtAgentConfig *self,
     return TRUE;
 }
 
+gboolean
+clawt_agent_config_add_mount(ClawtAgentConfig *self, ClawtMount *mount)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    return add_mount_to_node(self->node, "computer", mount);
+}
+
+gboolean
+clawt_config_add_default_mount(ClawtConfig *self, ClawtMount *mount)
+{
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+
+    return add_mount_to_node(self->root, "defaults", mount);
+}
+
 /*
  * Removes the mount with this target.
  *
@@ -846,18 +870,18 @@ clawt_agent_config_add_mount(ClawtAgentConfig *self,
  * what has to be unique -- two sources cannot occupy one path inside
  * the computer, and validation already refuses that.
  */
-gboolean
-clawt_agent_config_remove_mount(ClawtAgentConfig *self,
-                                const gchar      *target)
+static gboolean
+remove_mount_from_node(YamlNode    *root,
+                       const gchar *path,
+                       const gchar *target)
 {
     YamlNode *list;
     YamlSequence *sequence;
     guint i;
 
-    g_return_val_if_fail(self != NULL, FALSE);
     g_return_val_if_fail(target != NULL, FALSE);
 
-    list = node_at_path(self->node, "computer.mounts", FALSE);
+    list = node_at_path(root, path, FALSE);
 
     if (list == NULL || yaml_node_get_node_type(list) != YAML_NODE_SEQUENCE)
         return FALSE;
@@ -879,6 +903,22 @@ clawt_agent_config_remove_mount(ClawtAgentConfig *self,
     }
 
     return FALSE;
+}
+
+gboolean
+clawt_agent_config_remove_mount(ClawtAgentConfig *self, const gchar *target)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    return remove_mount_from_node(self->node, "computer.mounts", target);
+}
+
+gboolean
+clawt_config_remove_default_mount(ClawtConfig *self, const gchar *target)
+{
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+
+    return remove_mount_from_node(self->root, "defaults.mounts", target);
 }
 
 gboolean
@@ -1056,8 +1096,17 @@ clawt_agent_config_get_workspace(ClawtAgentConfig *self)
     return g_build_filename(root, self->id, NULL);
 }
 
-GPtrArray *
-clawt_agent_config_get_mounts(ClawtAgentConfig *self)
+/*
+ * Reads a `mounts:` sequence, wherever it lives.
+ *
+ * One reader for the per-agent list and the fleet defaults, because two
+ * would differ exactly once -- and the case they would differ on is the
+ * relabel default below, where getting it wrong makes every shared
+ * folder unreadable inside the container with an error that says
+ * "permission denied" and nothing about labels.
+ */
+static GPtrArray *
+mounts_from_node(YamlNode *root, const gchar *path)
 {
     YamlNode *node;
     YamlSequence *sequence;
@@ -1065,11 +1114,9 @@ clawt_agent_config_get_mounts(ClawtAgentConfig *self)
     guint i;
     guint length;
 
-    g_return_val_if_fail(self != NULL, NULL);
-
     out = g_ptr_array_new_with_free_func((GDestroyNotify)clawt_mount_free);
 
-    node = node_at_path(self->node, "computer.mounts", FALSE);
+    node = node_at_path(root, path, FALSE);
     if (node == NULL || yaml_node_get_node_type(node) != YAML_NODE_SEQUENCE)
         return out;
 
@@ -1136,6 +1183,22 @@ clawt_agent_config_get_mounts(ClawtAgentConfig *self)
     }
 
     return out;
+}
+
+GPtrArray *
+clawt_agent_config_get_mounts(ClawtAgentConfig *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return mounts_from_node(self->node, "computer.mounts");
+}
+
+GPtrArray *
+clawt_config_get_default_mounts(ClawtConfig *self)
+{
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+
+    return mounts_from_node(self->root, "defaults.mounts");
 }
 
 static GHashTable *

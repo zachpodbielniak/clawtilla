@@ -16,11 +16,36 @@
 #include "computer/clawt-vm-computer.h"
 
 static void
-apply_mounts(ClawtComputer *computer, ClawtAgentConfig *agent_config)
+apply_mounts(ClawtComputer    *computer,
+             ClawtAgentConfig *agent_config,
+             GPtrArray        *default_mounts)
 {
-    g_autoptr(GPtrArray) mounts = clawt_agent_config_get_mounts(agent_config);
+    g_autoptr(GPtrArray) own = clawt_agent_config_get_mounts(agent_config);
+    g_autoptr(GPtrArray) mounts = NULL;
     ClawtComputerType type = clawt_computer_get_computer_type(computer);
     guint i;
+
+    /*
+     * The fleet's shared folders, then the agent's own.
+     *
+     * Only where a mount is a kernel mount. On a host computer the
+     * mount list *is* the confinement allowlist, so applying a fleet
+     * default there would quietly widen what a host agent may reach --
+     * which a convenience has no business doing.
+     *
+     * clawt_mount_merge_defaults() drops a default whose target the
+     * agent has already claimed. Adding both would put two mounts at
+     * one path, which validation refuses -- so an agent that customised
+     * a single shared folder would stop starting, naming the path its
+     * owner had deliberately chosen.
+     */
+    if (default_mounts != NULL &&
+        clawt_computer_type_takes_mounts(type) &&
+        clawt_agent_config_get_boolean(agent_config,
+                                       "computer.default_mounts"))
+        mounts = clawt_mount_merge_defaults(default_mounts, own);
+    else
+        mounts = g_ptr_array_ref(own);
 
     for (i = 0; mounts != NULL && i < mounts->len; i++) {
         ClawtMount *mount = g_ptr_array_index(mounts, i);
@@ -221,6 +246,7 @@ build_guest_desktop(ClawtAgentConfig *agent_config)
 
 ClawtComputer *
 clawt_computer_factory_create(ClawtAgentConfig  *agent_config,
+                              GPtrArray         *default_mounts,
                               ClawtPodBridge    *bridge,
                               GError           **error)
 {
@@ -449,7 +475,7 @@ clawt_computer_factory_create(ClawtAgentConfig  *agent_config,
     }
 
     if (computer != NULL)
-        apply_mounts(computer, agent_config);
+        apply_mounts(computer, agent_config, default_mounts);
 
     return computer;
 }

@@ -40,6 +40,7 @@ G_BEGIN_DECLS
  *   configuration cannot be satisfied
  */
 ClawtComputer *clawt_computer_factory_create(ClawtAgentConfig  *agent_config,
+                                             GPtrArray         *default_mounts,
                                              ClawtPodBridge    *bridge,
                                              GError           **error);
 

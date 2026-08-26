@@ -165,6 +165,7 @@ main () {
     echo "The settings pages:"
     expect_get '/settings/images'       'Fetch an image'   'VM images'
     expect_get '/settings/teams'        'New team'         'teams'
+    expect_get '/settings/folders'      'Share a folder'   'shared folders'
     expect_get '/settings/spending'     'Fleet'            'spending'
     expect_get '/settings/integrations' 'Add one'          'integrations'
     expect_get '/settings/connectors'   'Add a connector'  'connectors'
@@ -211,6 +212,20 @@ main () {
     expect_post "/a/${AGENT}/send" 'No such command' 'an unknown command' \
         --data-urlencode 'body=/nonsense'
     expect_post "/a/${AGENT}/mailbox/purge" 'Purged' 'purging expired items'
+    #
+    # Both halves of the shared-folder round trip.
+    #
+    # The remove was 404 for every folder there could ever be, because
+    # the target is always an absolute path and an encoded slash does not
+    # match a route parameter. Nothing about the page looked wrong; only
+    # posting to it found out.
+    #
+    expect_post '/settings/folders/add' 'Shared with every agent' \
+        'sharing a folder with the fleet' \
+        --data-urlencode 'source=/tmp' --data-urlencode 'target=/work/smoke' \
+        --data-urlencode 'mode=ro'
+    expect_post '/settings/folders/remove' 'No longer shared' \
+        'unsharing one' --data-urlencode 'target=/work/smoke'
     #
     # A value that differs every run. Saving only sends what changed, so
     # a fixed string passes once and then reports "nothing changed" -- a

@@ -1326,6 +1326,91 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
  * configuration somebody edits, and there is no undo on the other side
  * of this.
  */
+/*
+ * A mount from an IPC payload, validated.
+ *
+ * One parser for the per-agent frames and the fleet defaults. Two would
+ * differ exactly once, and the case they would differ on is the enum
+ * spellings -- a client sending "read-only" instead of "ro" gets a
+ * refusal naming what is accepted, and only from whichever copy was
+ * kept up to date.
+ *
+ * Validated here rather than at the agent's next start: a mount that
+ * could never work would otherwise be saved and then surface as a start
+ * failure mentioning neither the path nor the reason.
+ *
+ * Returns: (transfer full) (nullable): the mount, or %NULL with @error
+ */
+static ClawtMount *
+mount_from_payload(JsonObject   *payload,
+                   const gchar  *target,
+                   GError      **error)
+{
+    const gchar *source = clawt_ipc_payload_string(payload, "source");
+    const gchar *mode = clawt_ipc_payload_string(payload, "mode");
+    const gchar *type = clawt_ipc_payload_string(payload, "type");
+    const gchar *relabel = clawt_ipc_payload_string(payload, "relabel");
+    const gchar *size = clawt_ipc_payload_string(payload, "size");
+    g_autoptr(ClawtMount) mount = clawt_mount_new(source, target);
+    gint parsed = 0;
+
+    if (mode != NULL) {
+        if (!clawt_enum_from_nick(CLAWT_TYPE_MOUNT_MODE, mode, &parsed)) {
+            g_set_error_literal(error, CLAWT_ERROR,
+                                CLAWT_ERROR_INVALID_ARGUMENT,
+                                "mode is ro or rw");
+            return NULL;
+        }
+
+        clawt_mount_set_mode(mount, (ClawtMountMode)parsed);
+    }
+
+    if (type != NULL) {
+        if (!clawt_enum_from_nick(CLAWT_TYPE_MOUNT_TYPE, type, &parsed)) {
+            g_set_error_literal(error, CLAWT_ERROR,
+                                CLAWT_ERROR_INVALID_ARGUMENT,
+                                "type is bind, volume, virtiofs, 9p or "
+                                "tmpfs");
+            return NULL;
+        }
+
+        clawt_mount_set_mount_type(mount, (ClawtMountType)parsed);
+    }
+
+    /*
+     * Absent means shared, matching what the YAML reader does with an
+     * entry that omits it. On an SELinux system an unlabelled bind
+     * mount is visible inside the container with every access denied,
+     * so the two readers agreeing about this is what keeps a folder
+     * added from a client working like one written by hand.
+     */
+    if (relabel != NULL) {
+        if (!clawt_enum_from_nick(CLAWT_TYPE_RELABEL, relabel, &parsed)) {
+            g_set_error_literal(error, CLAWT_ERROR,
+                                CLAWT_ERROR_INVALID_ARGUMENT,
+                                "relabel is none, shared or private");
+            return NULL;
+        }
+
+        clawt_mount_set_relabel(mount, (ClawtRelabel)parsed);
+    } else {
+        clawt_mount_set_relabel(mount, CLAWT_RELABEL_SHARED);
+    }
+
+    if (size != NULL)
+        clawt_mount_set_size(mount, size);
+
+    clawt_mount_set_create(
+        mount, clawt_ipc_payload_boolean(payload, "create", FALSE));
+    clawt_mount_set_required(
+        mount, clawt_ipc_payload_boolean(payload, "required", TRUE));
+
+    if (!clawt_mount_validate(mount, error))
+        return NULL;
+
+    return g_steal_pointer(&mount);
+}
+
 static gboolean
 clawt_daemon_purge_agent_files(ClawtDaemon      *self,
                                ClawtAgentConfig *config,
@@ -1848,9 +1933,11 @@ clawt_daemon_start_agent(ClawtDaemon *self, const gchar *agent_id,
      * ready spends its first turns discovering it cannot reach it. */
     if (clawt_agent_get_computer(agent) == NULL) {
         g_autoptr(ClawtComputer) computer = NULL;
+        g_autoptr(GPtrArray) defaults =
+            clawt_config_get_default_mounts(self->config);
 
-        computer = clawt_computer_factory_create(config, self->pod_bridge,
-                                                 &local);
+        computer = clawt_computer_factory_create(config, defaults,
+                                                 self->pod_bridge, &local);
 
         /*
          * A computer that cannot be built from the config is a shadow
@@ -5604,58 +5691,10 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
                 return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
                                            "that agent has no such mount");
         } else {
-            const gchar *source = clawt_ipc_payload_string(payload, "source");
-            const gchar *mode = clawt_ipc_payload_string(payload, "mode");
-            const gchar *type = clawt_ipc_payload_string(payload, "type");
-            const gchar *relabel = clawt_ipc_payload_string(payload,
-                                                             "relabel");
-            const gchar *size = clawt_ipc_payload_string(payload, "size");
-            g_autoptr(ClawtMount) mount = clawt_mount_new(source, target);
-            gint parsed = 0;
+            g_autoptr(ClawtMount) mount =
+                mount_from_payload(payload, target, &error);
 
-            if (mode != NULL) {
-                if (!clawt_enum_from_nick(CLAWT_TYPE_MOUNT_MODE, mode,
-                                           &parsed))
-                    return clawt_ipc_error_new(request,
-                                               CLAWT_ERROR_INVALID_ARGUMENT,
-                                               "mode is ro or rw");
-
-                clawt_mount_set_mode(mount, (ClawtMountMode)parsed);
-            }
-
-            if (type != NULL) {
-                if (!clawt_enum_from_nick(CLAWT_TYPE_MOUNT_TYPE, type,
-                                           &parsed))
-                    return clawt_ipc_error_new(request,
-                                               CLAWT_ERROR_INVALID_ARGUMENT,
-                                               "type is bind, volume, "
-                                               "virtiofs, 9p or tmpfs");
-
-                clawt_mount_set_mount_type(mount, (ClawtMountType)parsed);
-            }
-
-            if (relabel != NULL) {
-                if (!clawt_enum_from_nick(CLAWT_TYPE_RELABEL, relabel,
-                                           &parsed))
-                    return clawt_ipc_error_new(request,
-                                               CLAWT_ERROR_INVALID_ARGUMENT,
-                                               "relabel is none, shared or "
-                                               "private");
-
-                clawt_mount_set_relabel(mount, (ClawtRelabel)parsed);
-            }
-
-            if (size != NULL)
-                clawt_mount_set_size(mount, size);
-
-            /*
-             * Validated before it is written, so a mount that could
-             * never work is refused here rather than at the agent's
-             * next start -- by which time the config has been saved and
-             * the cause is a start failure that mentions neither the
-             * path nor the reason.
-             */
-            if (!clawt_mount_validate(mount, &error))
+            if (mount == NULL)
                 return clawt_ipc_error_new(request, error->code,
                                            error->message);
 
@@ -5685,18 +5724,172 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
+    /*
+     * The fleet's shared folders.
+     *
+     * Same three verbs as the per-agent family and the same parser, so
+     * a folder added here behaves exactly like one added to an agent.
+     * Named `defaults.*` rather than reusing `agent.mount.*` with the
+     * agent omitted, because a frame whose name says "agent" and whose
+     * meaning changes when a field is missing is one every client has
+     * to be told about.
+     */
+    if (g_strcmp0(kind, "defaults.mount.add") == 0 ||
+        g_strcmp0(kind, "defaults.mount.remove") == 0) {
+        const gchar *target = clawt_ipc_payload_string(payload, "target");
+
+        if (target == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "target is required");
+
+        if (g_strcmp0(kind, "defaults.mount.remove") == 0) {
+            if (!clawt_config_remove_default_mount(self->config, target))
+                return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                           "there is no default shared "
+                                           "folder at that path");
+        } else {
+            g_autoptr(ClawtMount) mount =
+                mount_from_payload(payload, target, &error);
+
+            if (mount == NULL)
+                return clawt_ipc_error_new(request, error->code,
+                                           error->message);
+
+            if (!clawt_config_add_default_mount(self->config, mount))
+                return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                           "could not add the shared folder");
+        }
+
+        if (!clawt_config_save(self->config, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        /*
+         * Every agent is re-rendered, because this changed what all of
+         * them get. Skipping it would leave the fleet's config.yaml
+         * files describing the mounts they had before -- the "saved but
+         * nothing rewrote what it produces" gap agent.set had, one
+         * level up and affecting every agent at once.
+         */
+        clawt_agent_manager_load(self->agents, NULL);
+
+        {
+            g_autoptr(GPtrArray) refusals = render_refusals_new();
+
+            render_all_agents_into(self, refusals);
+            clawt_event_bus_emit(self->bus, "config.changed", NULL);
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "target");
+            json_builder_add_string_value(builder, target);
+
+            /*
+             * A mount reaches a running agent's computer when it is
+             * next built, which is at its next start -- the container
+             * or the domain already exists and its devices were decided
+             * when it was created. Said here rather than discovered.
+             */
+            json_builder_set_member_name(builder, "restart_required");
+            json_builder_add_boolean_value(builder, TRUE);
+            add_render_refusals(builder, refusals);
+            json_builder_end_object(builder);
+        }
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "defaults.mount.list") == 0) {
+        g_autoptr(GPtrArray) mounts =
+            clawt_config_get_default_mounts(self->config);
+        guint i;
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "mounts");
+        json_builder_begin_array(builder);
+
+        for (i = 0; mounts != NULL && i < mounts->len; i++) {
+            ClawtMount *mount = g_ptr_array_index(mounts, i);
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "source");
+            json_builder_add_string_value(builder,
+                                          clawt_mount_get_source(mount));
+            json_builder_set_member_name(builder, "target");
+            json_builder_add_string_value(builder,
+                                          clawt_mount_get_target(mount));
+            json_builder_set_member_name(builder, "mode");
+            json_builder_add_string_value(
+                builder, clawt_enum_to_nick(CLAWT_TYPE_MOUNT_MODE,
+                                            clawt_mount_get_mode(mount)));
+            json_builder_set_member_name(builder, "type");
+            json_builder_add_string_value(
+                builder, clawt_enum_to_nick(CLAWT_TYPE_MOUNT_TYPE,
+                                            clawt_mount_get_mount_type(mount)));
+            json_builder_set_member_name(builder, "relabel");
+            json_builder_add_string_value(
+                builder, clawt_enum_to_nick(CLAWT_TYPE_RELABEL,
+                                            clawt_mount_get_relabel(mount)));
+            json_builder_set_member_name(builder, "required");
+            json_builder_add_boolean_value(builder,
+                                           clawt_mount_get_required(mount));
+            json_builder_end_object(builder);
+        }
+
+        json_builder_end_array(builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
     if (g_strcmp0(kind, "agent.mount.list") == 0) {
         const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
         ClawtAgentConfig *agent_config = (agent_id != NULL)
             ? clawt_config_get_agent(self->config, agent_id) : NULL;
         g_autoptr(GPtrArray) mounts = NULL;
+        guint inherited = 0;
         guint i;
 
         if (agent_config == NULL)
             return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
                                        "no such agent");
 
-        mounts = clawt_agent_config_get_mounts(agent_config);
+        /*
+         * The mounts this agent actually gets, not only the ones it
+         * declared.
+         *
+         * Reporting its own list alone would show an empty "Shared
+         * folders" for an agent that has two, because the fleet's
+         * defaults reach it without appearing anywhere on its page --
+         * two answers to "what do I have", with the wrong one on the
+         * screen somebody is looking at.
+         *
+         * Each entry says where it came from, so a client can show a
+         * default as a default rather than as something removable here.
+         */
+        {
+            g_autoptr(GPtrArray) own =
+                clawt_agent_config_get_mounts(agent_config);
+            ClawtComputerType type = (ClawtComputerType)
+                clawt_agent_config_get_enum(agent_config, "computer.type");
+
+            if (clawt_computer_type_takes_mounts(type) &&
+                clawt_agent_config_get_boolean(agent_config,
+                                               "computer.default_mounts")) {
+                g_autoptr(GPtrArray) defaults =
+                    clawt_config_get_default_mounts(self->config);
+
+                inherited = defaults->len;
+                mounts = clawt_mount_merge_defaults(defaults, own);
+
+                /*
+                 * merge_defaults drops a default the agent overrode, so
+                 * the count of inherited entries is however many
+                 * survived -- not the number configured.
+                 */
+                inherited = mounts->len - own->len;
+            } else {
+                mounts = g_ptr_array_ref(own);
+            }
+        }
 
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "mounts");
@@ -5706,6 +5899,8 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             ClawtMount *mount = g_ptr_array_index(mounts, i);
 
             json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "inherited");
+            json_builder_add_boolean_value(builder, i < inherited);
             json_builder_set_member_name(builder, "source");
             json_builder_add_string_value(builder,
                                           clawt_mount_get_source(mount));
@@ -6853,9 +7048,13 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
                     clawt_config_get_agent(self->config, agent_id);
 
                 if (agent_config != NULL) {
+                    g_autoptr(GPtrArray) defaults =
+                        clawt_config_get_default_mounts(self->config);
+
                     built = clawt_computer_factory_create(agent_config,
-                                                           self->pod_bridge,
-                                                           NULL);
+                                                          defaults,
+                                                          self->pod_bridge,
+                                                          NULL);
                     computer = built;
                 }
             }
@@ -7927,8 +8126,13 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
          * stopped agent has no computer object, and stopped is the only
          * state this is allowed in.
          */
-        built = clawt_computer_factory_create(agent_config, self->pod_bridge,
-                                              &error);
+        {
+            g_autoptr(GPtrArray) defaults =
+                clawt_config_get_default_mounts(self->config);
+
+            built = clawt_computer_factory_create(agent_config, defaults,
+                                                  self->pod_bridge, &error);
+        }
 
         if (built == NULL)
             return clawt_ipc_error_new(request, error->code, error->message);
