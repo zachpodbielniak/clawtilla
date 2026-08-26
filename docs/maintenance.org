@@ -1,9 +1,9 @@
 #+title: Maintenance
-#+description: Upgrades, backups, migrations, log rotation and releasing
+#+description: Upgrades, backups, migrations, credential rotation, pruning and releasing
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-23 Sun]
+#+updated: [2026-08-26 Wed]
 #+version: 0.1.0
 
 * Maintenance
@@ -14,29 +14,51 @@
 ~/.clawtilla/                     (daemon.state_dir)
   config.yaml                     the fleet; the only thing you write by hand
   agents.sock                     agents dial in here
-  agents/<id>/
+  routines.yaml                   run state for the schedules; never in config.yaml
+  decisions.db                    the decision inbox
+  .git/ .gitignore                daemon.git; the ignore block is clawtilla's
+  agents/<id>/                    also the workspace, unless agents.workspace moves it
+    SOUL.org IDENTITY.org …       the persona; yours to edit
+    .mcp.json                     yours, except `clawtilla` and `clawtilla-*`
     config.yaml                   GENERATED; rewritten on every start
     token                         GENERATED once; 0600
     mailbox.db                    the durable queue
+    memory.db                     the searchable memory store
     credentials/                  GENERATED from secret references; 0600
-    sessions/                     libreclaw session state
-    libreclaw.db                  libreclaw's own database
+    sessions/libreclaw.db         libreclaw's own database
   transcripts/<room>.ndjson       what was said
   events/YYYY-MM-DD.ndjson        what happened
+  tcp-token                       GENERATED on the first network listener; 0600
   secrets/                        (secrets.dir) 0700
     connector-<name>.json         a connected account's credential; 0600
 
+$XDG_DATA_HOME/clawtilla/images/     (defaults.image_dir) cloud images, shared
+$XDG_DATA_HOME/clawtilla/vms/<id>/   a VM agent's overlay, seed and generated key
+$XDG_DATA_HOME/clawtilla/boxes/<id>/ a distrobox agent's home
 $XDG_DATA_HOME/clawtilla/exchange/   files agents pass around
 $XDG_RUNTIME_DIR/clawtilla/daemon.sock
 #+end_example
+
+Two of those are worth reading twice.  The database an agent's spending
+is computed from is ~sessions/libreclaw.db~, *not* ~libreclaw.db~ beside
+it: libreclaw builds that filename from ~session.persist_dir~ and ignores
+~database.path~ entirely, so the shorter spelling names a file that has
+never existed on any machine.  And a VM's disk is not under the state
+directory at all -- it is in ~$XDG_DATA_HOME~, which is why a backup of
+~~/.clawtilla~ contains no guests.
 
 ** Backing up
 
 Worth keeping:
 
 - ~config.yaml~ -- the only irreplaceable file
+- the workspaces -- ~SOUL.org~ and its siblings are who each agent *is*,
+  and are as irreplaceable as the config
 - ~agents/*/mailbox.db~ -- undelivered messages
+- ~agents/*/memory.db~ -- what each agent has remembered
 - ~transcripts/~ -- the record of what was said
+- ~routines.yaml~ -- when each routine last ran, which is not in
+  ~config.yaml~ on purpose
 - whatever your secret references point at
 - ~secrets/~ -- connector credentials, if you would rather not authorize
   every connected account again
@@ -44,24 +66,43 @@ Worth keeping:
 Not worth keeping: anything marked GENERATED, ~sessions/~, ~events/~
 beyond your retention window.
 
-A backup that includes ~secrets/~ is a backup that includes live
-credentials for every service the fleet is connected to, and a refresh
-token can be valid for months.  Encrypt it, or leave that directory out
-and re-run ~clawtilla connector connect~ afterwards -- which is a few
-minutes and costs nothing.
+The list is nearly "the state directory minus four things", so that is
+how it is easiest to write.  ~--exclude~ is matched by tar itself, unlike
+a shell glob, which is expanded in your current directory and not under
+~-C~:
 
 #+begin_src bash
 systemctl --user stop clawtilla
-tar czf clawtilla-backup-$(date -u +%F).tar.gz \
-    -C ~ .clawtilla/config.yaml \
-       .clawtilla/agents/*/mailbox.db \
-       .clawtilla/transcripts
+tar czf clawtilla-backup-$(date -u +%F).tar.gz -C ~ \
+    --exclude='.clawtilla/agents/*/sessions' \
+    --exclude='.clawtilla/agents/*/credentials' \
+    --exclude='.clawtilla/agents/*/token' \
+    --exclude='.clawtilla/tcp-token' \
+    --exclude='.clawtilla/events' \
+    --exclude='.clawtilla/secrets' \
+    .clawtilla
 systemctl --user start clawtilla
 #+end_src
 
 Stopping first matters for the mailboxes: SQLite in WAL mode has a
 ~-wal~ file, and copying the ~.db~ alone while the daemon is writing
-gives you a database missing its most recent commits.
+gives you a database missing its most recent commits.  ~tar~ says
+~socket ignored~ about ~agents.sock~, which is correct and not a warning
+about anything.
+
+A backup that includes ~secrets/~ is a backup that includes live
+credentials for every service the fleet is connected to, and a refresh
+token can be valid for months.  That is why it is excluded above.  Take
+it separately and encrypt it, or leave it out and re-run
+~clawtilla connector connect~ afterwards -- which is a few minutes and
+costs nothing.
+
+VM disks are *not* in this and should not be: they live under
+~$XDG_DATA_HOME~, they are tens of gigabytes, and every one of them is
+rebuildable from the image and the seed.  ~clawtilla computer rebuild~ is
+the restore path for a guest, and cloud-init acts on the seed at first
+boot, so a rebuilt guest is the guest the current configuration
+describes.
 
 ** Restoring
 
@@ -70,6 +111,37 @@ files are regenerated.
 
 A token that no longer matches simply means the agent gets a new one on
 its next start.
+
+#+begin_src bash
+systemctl --user stop clawtilla
+tar xzf clawtilla-backup-2026-08-26.tar.gz -C ~
+systemctl --user start clawtilla
+clawtilla config validate
+clawtilla agent list
+#+end_src
+
+~config validate~ *after* starting, and it has to be: it is a frame the
+daemon answers about the configuration it has loaded, not a check the CLI
+runs on a file.  ~-c~ on the client names the config for the local
+fallback, not for this.  So the sequence is start, validate, read the
+warnings:
+
+#+begin_example
+warning: agent 'researcher' disabled: unknown computer type 'teleporter';
+this build knows none, host, container and vm
+Configuration is valid.
+#+end_example
+
+"Valid" and "every agent came up" are different statements, which is what
+that pair is showing.  An agent disabled this way is a shadow with its
+reason attached and the rest of the fleet is unaffected.
+
+Two things a restore does not bring back, both by design: the guests, and
+whatever the secret references point at.  A VM agent starts, provisions a
+new overlay from the image, and is a fresh machine.  A secret reference
+resolves against this machine's environment, files or password manager,
+so an agent whose credential does not resolve refuses at start naming the
+*reference* -- never the value.
 
 ** Decommissioning a fleet
 
@@ -93,7 +165,8 @@ finish the job in that provider's own settings page.  See
 ** Log rotation
 
 The event log rotates itself: one file per UTC day, and files older than
-~daemon.event_log_days~ are swept hourly.  ~0~ keeps everything.
+~daemon.event_log_days~ (30) are swept by a timer that runs once a
+minute.  ~0~ keeps everything.
 
 The file currently open is never swept -- deleting it out from under the
 handle would send every subsequent line to a file nothing can find.
@@ -101,6 +174,15 @@ handle would send every subsequent line to a file nothing can find.
 Transcripts are not rotated.  They are the record of the conversation and
 clawtilla will not decide on your behalf when a conversation stops
 mattering.
+
+There is nothing to configure in ~logrotate~, and nothing that should be.
+The daemon's own diagnostics go to stderr, which under systemd means the
+journal, and the journal already has a retention policy you chose:
+
+#+begin_src bash
+journalctl --user -u clawtilla --since "1 hour ago"
+journalctl --user -u clawtilla --disk-usage
+#+end_src
 
 ** Upgrading clawtilla
 
@@ -111,25 +193,67 @@ make clean all && make test
 systemctl --user restart clawtilla
 #+end_src
 
-Configuration is forward and backward compatible by design: an option a
-build does not recognise disables one agent (as a shadow) rather than the
-daemon, so a config written by a newer clawtilla round-trips through an
+Configuration is forward and backward compatible by design.  An option a
+build does not recognise is ignored, and a *value* it does not recognise
+disables one agent -- as a shadow, with the reason -- rather than the
+daemon.  So a config written by a newer clawtilla round-trips through an
 older one without losing anything.
 
 ** Upgrading libreclaw
 
+~deps/libreclaw~ is clawtilla's only submodule, and it brings five of its
+own -- ai-glib, yaml-glib, mcp-glib, podomation and htmx-glib.  So every
+update is recursive; a non-recursive one leaves the five at whatever the
+old libreclaw pointed at, and the failure is a compile error inside a dep
+rather than anything naming a submodule.
+
 #+begin_src bash
 git -C deps/libreclaw pull --ff-only
+git submodule update --init --recursive
 make clean all && make test
 git add deps/libreclaw && git commit -m "build: bump libreclaw"
 #+end_src
+
+~make clean~ leaves ~deps/libreclaw~ built, because rebuilding it is slow
+and usually pointless.  After a bump it is exactly the thing that changed,
+so this is the one case for ~make clean-all~ -- or ~make clean-deps~ if
+you only want the dep rebuilt.
 
 Agents pick up the new binary on restart.  ~clawtilla agent restart~ one
 at a time to keep the fleet answering.
 
 Note that clawtilla requires libreclaw 0.26.0 or newer: that is where
 ~LcClawtillaChannel~ landed, and without it agents have no way to dial
-in.
+in.  ~deps/libreclaw/config.mk~ is where the version actually lives; the
+newest tag can be behind it.
+
+*** When the gitlink moves
+
+A ~git pull~ that changes the recorded commit does not change your
+checkout of it, so the tree builds a libreclaw nobody asked for.  That is
+what ~make check-submodules~ notices:
+
+#+begin_src bash
+make check-submodules
+#+end_src
+
+#+begin_example
+warning: deps/libreclaw is BEHIND the recorded commit.
+         run: git submodule update --init --recursive
+#+end_example
+
+Behind only.  A checkout *ahead* of the gitlink is the deliberate state
+you are in while bumping it, and warning about that would be crying wolf
+at the one workflow this exists to support.
+
+#+begin_src bash
+git submodule status              # a leading + means it differs from the record
+git -C deps/libreclaw log --oneline -1
+#+end_src
+
+~git submodule update~ is a checkout of the recorded commit, so it stops
+rather than trampling work in progress inside the submodule.  ~--force~
+is what discards it, and is the deliberate act it looks like.
 
 ** Configuration migrations
 
@@ -138,16 +262,43 @@ never silently renamed.  If one ever must change meaning,
 ~CLAWT_IPC_VERSION~ and the schema's ~Since:~ fields are where that gets
 recorded.
 
-To see what a build understands:
+A key the schema grows therefore needs nothing done to an existing
+~config.yaml~.  Every getter falls back to the schema default, so the new
+option is in effect from the upgrade with the value the release chose.
+To see what changed:
 
 #+begin_src bash
-clawtilla --generate-config | less
-clawtilla config validate
+clawtilla --generate-config | less     # the starter, as this build writes it
+clawtilla config show                  # what the daemon actually loaded
+clawtilla config validate              # and whether anything was refused
 #+end_src
+
+The reference for what a key *means* is
+[[file:configuration-options.org][configuration-options.org]], which is
+generated from the same table -- so it is current for the build you have
+rather than for the one the docs were written against.
+
+An option a build does not recognise is not an error either.  Unknown
+keys are ignored, which is what makes a config written by a newer
+clawtilla round-trip through an older one without losing anything.  What
+*is* refused is a value the schema does not accept, and it disables one
+agent rather than the daemon:
+
+#+begin_example
+config: agent 'researcher' disabled: unknown computer type 'teleporter';
+this build knows none, host, container and vm
+#+end_example
+
+That agent shows as ~shadow~ with the reason on it and the rest of the
+fleet runs normally.  It is found when the configuration is *loaded*, and
+~config validate~ reports it afterwards from what the daemon found --
+which is why the useful order is upgrade, restart, validate, and read the
+warnings rather than the verdict.
 
 ** Moving a fleet to another machine
 
-1. Copy ~config.yaml~, the mailboxes and the transcripts.
+1. Copy ~config.yaml~, the workspaces, the mailboxes and the
+   transcripts -- the backup above is exactly this.
 2. Recreate whatever the secret references point at -- they are not in
    the backup and should not be.
 3. Fix any absolute paths in the config: workspaces, mount sources,
@@ -157,7 +308,203 @@ clawtilla config validate
    is live credentials) or re-run ~clawtilla connector connect~ on the
    new machine.  The client ids in ~config.yaml~ come with it either way,
    so that part is not repeated.
-5. ~clawtilla config validate~ before starting.
+5. Start, then ~clawtilla config validate~ and ~clawtilla agent list~.
+   Validation is a question for a running daemon rather than a check on
+   a file, so there is nothing to run before it.
+
+** Rotating a credential
+
+*** The daemon's bearer token
+
+One token for every network listener -- the tailnet one and
+~daemon.tcp_enabled~ alike.  Where it lives, and therefore how to rotate
+it, depends on whether you named a file:
+
+| ~daemon.token_file~ | Where the token is | Rotating it |
+|---------------------+--------------------+-------------|
+| unset (default) | ~<state_dir>/tcp-token~, 0600 | delete it and restart |
+| set | the file you named | write a new one and restart |
+
+Unset, the daemon *generates* one from ~/dev/urandom~ the first time a
+listener needs it, so deleting the file is the whole of the rotation:
+
+#+begin_src bash
+clawtilla daemon token                        # what it is now
+rm ~/.clawtilla/tcp-token
+systemctl --user restart clawtilla
+clawtilla daemon token                        # the new one
+#+end_src
+
+Set, it is only ever *read*.  Nothing is generated, and a file that is
+missing or empty fails daemon start naming the key -- which is the right
+way round for a token you are managing yourself, but means the delete
+step above would take the daemon down instead of rotating anything.
+
+~daemon token~ follows the same two places, so it prints whichever one is
+in use.  It reads from disk rather than asking the daemon, deliberately:
+nothing may write a secret's value into an IPC response.  So it only
+works on the machine the daemon runs on, which is the point.
+
+Every saved connection then has to be told, because a client presents the
+token and nothing else:
+
+#+begin_src bash
+clawtilla remote add workstation 100.72.0.41 --token "PASTE-IT-HERE"
+#+end_src
+
+The unix socket is unaffected.  It has no token at all -- its 0600 mode is
+the whole of its access control -- so rotating this locks out remote
+clients and nothing else.
+
+*** An agent's link token
+
+~<state_dir>/agents/<id>/token~, created once and then left alone:
+regenerating it on every render would lock out an agent that is already
+connected, since it read the file at start and has no reason to look
+again.  To rotate one, stop the agent, delete the file, start it.
+
+#+begin_src bash
+clawtilla agent stop researcher
+rm ~/.clawtilla/agents/researcher/token
+clawtilla agent start researcher
+#+end_src
+
+*** A connector's credential
+
+~clawtilla connector connect~ again, or ~key~ again for a pasted token.
+Both overwrite ~secrets/connector-<name>.json~ in place, and agents pick
+the new one up on their next call -- the relay reads the file itself, so
+nothing was holding a copy.
+
+#+begin_src bash
+clawtilla connector list                      # expiry, and whether it renews itself
+clawtilla connector refresh <name>            # renew now, if it can
+clawtilla connector connect <name>            # authorize again
+#+end_src
+
+A credential that expires and *can* renew itself is not something to
+rotate: the daemon does it on a timer, and ~list~ says so rather than
+calling it broken.
+
+*** A secret behind a reference
+
+Nothing to rotate here -- change whatever the reference points at and
+restart the agent.  Resolved values are written to per-agent credential
+files with no ~.bak~, precisely so a rotation does not leave the retired
+secret in a second copy beside it.
+
+** Pruning what accumulates
+
+Four things grow on their own.
+
+*** Cloud images
+
+One copy per image serves the whole fleet, and they are large:
+
+#+begin_src bash
+clawtilla image vm list
+clawtilla image vm rm fedora-44
+#+end_src
+
+Removing one an agent's overlay is built on is *refused*, because the VM
+would stop booting and the error would come from qemu about a missing
+backing file, a long way from the button that caused it.  ~--force~
+overrides, and means what it says.
+
+*** VM overlays
+
+~$XDG_DATA_HOME/clawtilla/vms/<id>/~ per agent: the qcow2 overlay, the
+cloud-init seed, the generated ssh key and the remembered port.  Removed
+with the agent by ~agent rm --with-computer~; an overlay found there for
+an agent that no longer exists is left over from a removal that did not
+ask for it.
+
+Changing ~computer.vm.image~ rebuilds the overlay and *moves* the old one
+to ~overlay-superseded.qcow2~ rather than unlinking it -- destroying a
+guest because a config line changed should be recoverable.  Nothing ever
+sweeps that while the agent exists, so it is the one to look for:
+
+#+begin_src bash
+du -sh ~/.local/share/clawtilla/vms/*
+ls ~/.local/share/clawtilla/vms/*/overlay-superseded.qcow2
+#+end_src
+
+Tearing the computer down takes it too, so this only accumulates for
+agents that are still around and have changed image at least once.
+
+*** libvirt domains
+
+A domain outlives the daemon, so a fleet edited by hand can leave one
+defined with nothing referring to it:
+
+#+begin_src bash
+virsh -c qemu:///session list --all | grep clawt-
+clawtilla agent list
+#+end_src
+
+Domains are named ~clawt-<agent>~.  One whose agent is not in
+~agent list~ is an orphan; ~virsh -c qemu:///session undefine clawt-<id>~
+removes it.  Removing an agent properly takes its domain *and its disk*
+with it, which is what stops a later agent of the same name silently
+adopting the old guest:
+
+#+begin_src bash
+clawtilla agent rm <id> --with-computer
+#+end_src
+
+*** Distrobox homes
+
+~$XDG_DATA_HOME/clawtilla/boxes/<id>/~, one per distrobox agent, and the
+same rule: removed with the agent when the removal asks for the computer.
+
+** Removing an agent
+
+Three things can go, and they are asked for separately because they are
+not equally reversible.
+
+| Command | What goes |
+|---------+-----------|
+| ~agent rm <id>~ | the entry in ~config.yaml~.  Everything on disk stays |
+| ~agent rm <id> --with-computer~ | …and its container, or its domain and disk |
+| ~agent rm <id> --purge~ | …and its workspace, state directory and transcripts |
+
+~--purge~ is the irreversible one.  It removes the agent's workspace, its
+whole state directory -- mailbox, memories, token, credentials, sessions,
+rendered config -- and every transcript naming it.  What it does *not*
+touch: the exchange directory, the event log, anything under
+~secrets.dir~ (a connector belongs to the fleet, not to one agent), and a
+workspace that is a *symlink*, where only the link goes and the files stay
+exactly where you put them.  The CLI says which of those happened rather
+than assuming:
+
+#+begin_example
+chief-of-staff: rm
+Its files are gone too.
+#+end_example
+
+Every path removed is fenced against the root it was derived from, on the
+canonical path, so a symlink or a ~..~ in a configured workspace cannot
+carry the deletion outside it.  The files go before the config entry does,
+because afterwards there is nothing left to derive them from.
+
+Plain ~agent rm~ is therefore the reversible one: the agent leaves the
+fleet and its whole directory stays, so ~clawtilla agent import <id>~
+brings it back with its transcripts and memories intact.
+
+A directory left behind that way shows up in ~clawtilla agent discover~,
+and ~agent forget~ is what tidies one up.  It refuses anything still in
+the config -- it is the opposite of ~import~, not a second removal verb --
+and it moves the directory aside rather than deleting it:
+
+#+begin_example
+Moved aside: ~/.clawtilla/agents/scribe.discarded
+Nothing was deleted. Remove the .discarded directories yourself when you
+are sure.
+#+end_example
+
+Which is why ~agents/*.discarded/~ is in the ignore block.  What it
+leaves holds a token, a mailbox and resolved credentials, and it must not
+arrive in history on the next ~git add~ of the state directory.
 
 ** Health checks
 
@@ -174,13 +521,31 @@ The last is meant for a pre-flight script.
 
 1. Bump ~VERSION_*~ in ~config.mk~.
 2. ~make clean all && make clean tests && make test && make docs-check~
-3. ~make DEBUG=1 ASAN=1 clean all && make DEBUG=1 ASAN=1 test~
-4. Check ~data/*.yaml~ and ~docs/configuration-options.org~ are current
+3. ~make parity~ -- the two graphical clients still have the same
+   capabilities
+4. ~make DEBUG=1 ASAN=1 clean all && make DEBUG=1 ASAN=1 test~, then
+   ~make clean-deps~
+5. Check ~data/*.yaml~ and ~docs/configuration-options.org~ are current
    (~make config-files~ leaves nothing to commit).
-5. Tag, and note the minimum libreclaw version in the release notes.
+6. Tag, and note the minimum libreclaw version in the release notes.
+
+Step 4's second half is not tidiness.  make passes a command-line
+variable down to every sub-make, and ~deps~ pins ~DEBUG=0 ASAN=0
+UBSAN=0~ for exactly that reason -- but a tree that was ever built the
+other way keeps libreclaw's *release* output with the sanitizer linked
+in, and the next ordinary ~make~ then fails inside libreclaw's GIR
+scanner with "ASan runtime does not come first in initial library list".
+Nothing in that message mentions sanitizers, a previous build, or the
+dependency.
 
 The version header is generated from ~config.mk~ and depends on it, so
 bumping the version regenerates the header.  Without that dependency the
 library links as the new version while the header still claims the old
 one and ~CLAWT_CHECK_VERSION~ answers wrongly -- which is a bug libreclaw
 actually shipped, and why the dependency is there.
+
+The soname is ~libclawt-1.0.so.$(VERSION_MAJOR)~, so only a major bump
+changes it.  Minor and micro releases install over the same soname and
+anything linked against it keeps working, which is the contract worth
+being deliberate about: an incompatible change to a public struct or a
+removed symbol is a major bump, whatever else the release contains.

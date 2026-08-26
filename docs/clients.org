@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-24 Mon]
-#+version: 0.1.0
+#+updated: [2026-08-26 Wed]
+#+version: 0.2.0
 
 * Clients
 
@@ -22,8 +22,17 @@ clawtilla [OPTION...]
 clawtilla <command> [ARGS...]
 #+end_src
 
-Global options: ~-c/--config~, ~-s/--socket~, ~-V/--version~,
-~--license~, ~--generate-config~, ~--generate-systemd-service~.
+Global options: ~-c/--config~, ~-s/--socket~, ~-p/--profile~,
+~-H/--host~, ~--port~, ~--token~, ~-V/--version~, ~--license~,
+~--generate-config~, ~--generate-systemd-service~.
+
+They go *before* the verb.  Option parsing stops at the first word that
+is a command, and everything from there is handed to the subcommand
+untouched -- so ~clawtilla agent list -s /path~ does not set the socket.
+That costs post-verb globals and buys back a message body: GOption
+removes what it recognises wherever it appears, so
+~clawtilla send bot read --license and summarize~ used to print the
+licence, send nothing, and exit 0.
 
 *** Commands
 
@@ -35,16 +44,21 @@ Global options: ~-c/--config~, ~-s/--socket~, ~-V/--version~,
 | ~status~ | version, config path, agent and client counts |
 | ~agent list~ | id, state, queue depth, link, description |
 | ~agent show <id>~ | everything about one agent |
-| ~agent create --id X [--name…] [--model…] [--computer…] [--image…]~ | |
+| ~agent create --id X [--name…] [--model…] [--computer…] [--image…] [--vm-image PATH] [--no-start]~ | |
 | ~agent new~ | answer six questions; a model drafts it |
 | ~agent new --ai "<description>" [--commit]~ | the same, non-interactively |
-| ~agent rm <id>~ | remove from the config; state stays on disk |
+| ~agent rm <id> [--with-computer] [--purge]~ | remove from the config; the flags say how much else goes |
 | ~agent start/stop/restart <id>~ | |
+| ~agent reset <id>~ | clear its AI session so it reads its identity files again |
 | ~agent logs <id>~ | the child's recent output |
 | ~agent set <id> <key> <value>~ | e.g. ~model.effort high~ |
 | ~agent files <id>~ | the workspace's org files, and which reach the prompt |
 | ~agent mount list/add/rm <id>~ | folders shared with its computer |
 | ~agent edit <id> [FILE...]~ | open them in ~$EDITOR~ |
+| ~agent discover~ | agents on disk that the config does not know about |
+| ~agent import <id> [--from DIR \vert{} --link DIR \vert{} --git URL] [--keep-git]~ | adopt one, keeping its state |
+| ~agent forget <id>~ | move one aside; nothing is deleted |
+| ~agent git-init~ | make the state directory a git repository, with a ~.gitignore~ that keeps credentials out |
 | ~send <target> <message…>~ | to an agent or a room |
 | ~chat <agent>~ | interactive |
 | ~mailbox list/dead/ack/requeue/purge <agent> [item]~ | |
@@ -64,7 +78,12 @@ Global options: ~-c/--config~, ~-s/--socket~, ~-V/--version~,
 | ~computer status <agent>~ | |
 | ~cp <src> <dst>~ | either side may be ~<agent>:<path>~ |
 | ~config show/validate/render/edit~ | |
+| ~folders list/add/rm~ | folders every agent with a computer gets |
+| ~memory list/search <agent>~ | what an agent has remembered; read-only |
+| ~model~ | every provider and model, and which can run an agent |
 | ~image~ | container images clawtilla suggests, and your own |
+| ~image vm list/catalog/get/rm/cancel~ | disk images for VM agents |
+| ~connector catalog/list/add/connect/key/refresh/revoke/rm~ | accounts clawtilla holds the credential for |
 | ~plugin list~ | |
 | ~integration types/list/show~ | what kinds exist, and what is configured |
 | ~integration add/set/scope/rm~ | one bot, some bots or all of them |
@@ -75,10 +94,52 @@ Global options: ~-c/--config~, ~-s/--socket~, ~-V/--version~,
 | ~routine list/add/set/rm/run~ | standing work on a schedule |
 | ~computer rebuild <agent>~ | destroy the guest and build it again from the image |
 
-Subcommands are dispatched on ~argv[1]~ before option parsing, and each
-owns its own option context.  One shared table across a dozen verbs
-collapses into mutually exclusive flags that are each valid for one verb,
-and the ~--help~ output stops being readable.
+Two verbs are not for people.  ~connector relay <name>~ and
+~computer desktop-mcp <agent>~ speak MCP on stdout and are what an
+agent's =.mcp.json= names; running either by hand gets you a protocol
+stream.
+
+Each subcommand owns its own option parsing rather than sharing the
+global table.  One shared table across two dozen verbs collapses into
+mutually exclusive flags that are each valid for one verb, and the
+~--help~ output stops being readable.
+
+*** Applying an identity change: ~agent reset~, not ~agent restart~
+
+An AI CLI is handed a system prompt when a session *starts* and never
+when it resumes one.  So editing =SOUL.org=, or repointing
+~persona.identity_files~, reaches a running agent's files and not its
+prompt -- and restarting it does not help either, because the next turn
+resumes the session that already exists.  ~agent reset~ is the one that
+applies it: it stops the agent, moves its session files aside, clears
+its stored sessions from libreclaw's database, and starts it again if it
+was running.  A stopped agent stays stopped.
+
+~agent set~ says so on the way past.  A ~persona.*~ key reports
+~restart_required~ like a ~tools.*~ key does, and the CLI gives
+different advice for each, because the remedies differ: a tool list is
+read at session start, so a restart is enough there.
+
+Both places have to be cleared.  libreclaw restores a session from
+~session.persist_dir~ *or* from its database, so clearing one leaves the
+agent resuming from the other and looking like the reset did nothing.
+
+*** ~agent create~ takes any ~--key value~, with the dashes folded
+
+Each flag becomes a payload member with ~--~ stripped and every ~-~
+turned into ~_~, so ~--vm-image~ arrives as ~vm_image~ and the daemon
+decides what is valid.  Passing the dashed spelling through verbatim
+produced a member the daemon has never heard of, which it ignores -- so
+a VM agent could be given a disk from the command line, be told it had
+been created, and have no disk.
+
+~--no-start~ is the exception, because it carries no value of its own:
+it sends ~start: false~.  Without it the daemon starts what it just
+made, which is the point -- a computer is built at start, so an agent
+created and left alone has a config file and no machine.
+
+The same fold is in ~connector add~, where ~--client-id~ becomes
+~client_id~.
 
 *** Why the event log has a verb here
 
@@ -1388,6 +1449,14 @@ is a second way to do anything. A command never reaches the agent, and
 an unrecognised one says so rather than being sent: a mistyped command
 arriving as a message is how somebody learns not to trust the feature.
 
+Eighteen in total, counting the four under *More commands* below, and
+the web composer answers the same eighteen by the same names.  Three
+mean something slightly different in a browser -- ~/compose~ opens a
+full-page box rather than ~$EDITOR~, ~/copy~ shows the text to select
+rather than reaching a clipboard on a machine that may not be yours, and
+~/edit~ opens the file in the page for the same reason.  ~make parity~
+fails if the GTK composer grows one the web composer has not.
+
 *** Sending files and images
 
 Paste an image and it is queued as a PNG. Ctrl+V is intercepted only
@@ -1863,9 +1932,11 @@ missing is the opposite of what anybody would want.
 
 | Flag              | What it does                                       |
 |-------------------+----------------------------------------------------|
-| ~--bind ADDR~     | replaces the defaults; repeatable                  |
+| ~-b/--bind ADDR~  | replaces the defaults; repeatable                  |
 | ~--no-tailscale~  | this machine only                                  |
-| ~--port PORT~     | default 8790                                       |
+| ~-p/--port PORT~  | default 8790                                       |
+| ~-s/--socket PATH~ | which daemon to talk to                           |
+| ~-V/--version~, ~--license~ | print and exit                           |
 
 An address named with ~--bind~ is never optional: failing to bind it is
 an error, because a client that ignored where it was told to listen and
@@ -1907,10 +1978,19 @@ That is checked rather than remembered:
 make parity
 #+end_src
 
-It compares two things: the IPC frame kinds each client sends, and the
-slash commands each answers.  Both matter -- the command check exists
-because the frame-kind one missed thirteen missing commands entirely,
-since they are built out of frames both clients already sent.
+It compares five layers: the IPC frame kinds each client sends, the
+slash commands each answers, the library choice enumerations each walks,
+the library vocabulary values either spells out, and a list of declared
+interface affordances.  Each layer exists because the one before it
+reported OK through a real gap -- the frame-kind check missed thirteen
+missing slash commands, since they are built out of frames both clients
+already sent, and neither of those saw a colour scheme that shipped in
+the shared library and was selectable in one client.  The full account
+is in [[file:web-client.org][web-client.org]].
+
+Only the fifth needs anything declared, and it says so: an affordance is
+checked because somebody wrote a row for it, so the check cannot see a
+capability nobody wrote down.
 
 Deliberate exceptions live in an exception map inside
 =tools/clawt-client-parity.sh=, each with its reason; anything without a
@@ -1935,18 +2015,31 @@ ClawtDaemon *daemon;
 GMainContext *context = g_main_context_default();
 g_autoptr(GError) error = NULL;
 
-daemon = clawt_daemon_new("~/.clawtilla/config.yaml", context);
+daemon = clawt_daemon_new(config_path, context);
+
+/*
+ * Before start(), not after: "started" is emitted from inside
+ * clawt_daemon_start(), so a handler connected afterwards never runs.
+ */
+g_signal_connect(daemon, "started", G_CALLBACK(on_started), self);
 
 if (!clawt_daemon_start(daemon, &error)) {
     g_warning("clawtilla: %s", error->message);
     return;
 }
-
-g_signal_connect(daemon, "started", G_CALLBACK(on_started), self);
 #+end_src
 
 No process, no socket.  ~clawt_daemon_start()~ returns once the fleet is
 up; the host's own main loop drives everything from there.
+
+~config_path~ is a real path, and nothing expands a leading tilde for
+you -- that is the shell's job, and there is no shell here.  Build it,
+or pass ~NULL~ and let clawtilla resolve its own default:
+
+#+begin_src c
+g_autofree gchar *config_path =
+    g_build_filename(g_get_home_dir(), ".clawtilla", "config.yaml", NULL);
+#+end_src
 
 *** Driving it
 
@@ -1980,10 +2073,51 @@ in between.
 Everything is introspectable (~Clawt-1.0.typelib~), so the elisp side can
 work through GObject Introspection rather than through C.
 
-The two things to know when embedding:
+The things to know when embedding:
 
 - signal handlers are the host's business.  clawtilla installs none;
   ~clawtillad~ installs its own.
 - prefer ~runtime.type: embedded~ for agents when there is no
   ~libreclaw~ binary to run, and read the constraints in
   [[file:agents.org][agents.org]] first.
+- anything of yours that schedules work must attach to the *same*
+  context you handed to ~clawt_daemon_new()~, and the obvious GLib calls
+  do not.
+
+*** Timers and idles attach to the wrong context by default
+
+~g_timeout_add_seconds()~ and ~g_idle_add()~ attach to the *global
+default* main context, not the thread-default one.  For a host running
+its own loop on its own context that means the source never fires at
+all -- and nothing warns, because adding it succeeded.  Three real bugs
+came from this inside clawtilla: two timers that never fired for an
+embedded daemon, and an idle that never delivered a single event.
+
+So there is ~clawt_timeout_add_seconds()~, which attaches to the
+thread-default context, and every periodic timer in clawtilla goes
+through it.  It is public, and it is the one to use from a host too:
+
+#+begin_src c
+GSource *tick = clawt_timeout_add_seconds(30, on_tick, self);
+
+/* g_source_destroy() to cancel; the source is transfer-full. */
+#+end_src
+
+There is no ~clawt_idle_add()~; for a one-shot, build the source and
+attach it yourself:
+
+#+begin_src c
+GSource *idle = g_idle_source_new();
+
+g_source_set_callback(idle, on_idle, self, NULL);
+g_source_attach(idle, context);
+g_source_unref(idle);
+#+end_src
+
+The same trap has a second shape one API along.  ~g_task_new()~ captures
+whatever context is thread-default *on that thread*, and GLib does not
+push a source's own context on the way into its dispatch -- so a task
+created inside a callback completes on a loop nobody runs.  Push the
+context explicitly around the ~g_task_new()~.  The general rule:
+anything that captures "the current context" is a bug in an embedded
+daemon unless it was told which one.

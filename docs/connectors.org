@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-23 Sat]
-#+updated: [2026-08-23 Sun]
-#+version: 0.2.0
+#+updated: [2026-08-26 Wed]
+#+version: 0.3.0
 
 * Connectors
 
@@ -51,6 +51,32 @@ Confinement is what makes that airtight -- see [[file:computers.org][computers.o
 What it buys everywhere: one place to revoke, renewal that happens
 before anything breaks, and a per-agent tool list.
 
+*** Where the credential actually goes
+
+Into a 0600 file under =secrets.dir=, and nowhere else.  The agent's
+=.mcp.json= names ~clawtilla connector relay <name>~ and carries no
+secret; the relay reads that file *itself* and hands the value to the
+tool server it starts.  There are exactly four places it must never
+appear, and each is a different way it would leak:
+
+| Not here                | Because                                     |
+|-------------------------+---------------------------------------------|
+| the agent's =.mcp.json= | the agent can read its own workspace, and anything it reads can be quoted into a message or an exported transcript |
+| the agent's environment | it is inherited by everything the agent runs |
+| an ~argv~               | =/proc/*/cmdline= is world-readable, so anybody on the machine can read it while the server runs |
+| an IPC response         | it would put a live credential into every client's memory, and into whatever that client logs |
+
+The plan the relay builds -- ~ClawtConnectorPlan~ -- is tested with a
+*negative* assertion: the credential must be in ~envp~ or in a header,
+and nowhere in ~argv~.  That is not something you can see by reading the
+code that builds the argv; it is something you see by looking for the
+value in the result.
+
+The relay also closes the child's stdin when the agent's CLI goes away.
+A stdio MCP server exits when its stdin closes and nothing else tells it
+to, so waiting for both directions left an abandoned process holding a
+live credential indefinitely.
+
 ** How a credential is obtained
 
 Three ways, and the catalogue says which apply to a given service.
@@ -83,6 +109,27 @@ Enter that at https://gitlab.com/oauth/authorize_device
 Waiting...
 Connected.
 #+end_example
+
+*The normal case for a poll is an HTTP 400.*  A provider asked about a
+code nobody has typed yet answers =400 Bad Request= with
+~{"error": "authorization_pending"}~ in the body -- so a client that
+reads the status and gives up has built a device flow that can never
+once succeed, while looking entirely correct.  clawtilla never looks at
+the status here: ~clawt_oauth_read_poll()~ classifies the *body*, and it
+is a pure function so the classification can be tested without a
+provider.
+
+~slow_down~ lengthens the interval *permanently*.  A provider that has
+asked once to be polled less often will ask again, and reverting after a
+single slower poll spends the rest of the flow rate limited -- while the
+person is standing at the consent screen wondering why nothing happened.
+
+Two frames rather than one, for the same reason: ~connector.begin~
+answers as soon as there is a code to show, and ~connector.await~ is the
+one that waits.  A device code is good for about fifteen minutes and the
+ordinary client timeout is two, so waiting takes an explicit longer
+deadline -- and deferring the whole thing would mean showing the person
+nothing until it was over.
 
 *** Authorization code with PKCE
 
@@ -221,6 +268,43 @@ credential that can renew itself reads as connected, not as broken:
 showing it as broken would light up the list every hour and teach you to
 ignore the one that genuinely is.
 
+*** ~expires_in~ is a duration, and is stored as a moment
+
+The wire carries ~expires_in: 3600~.  Kept as it arrived, that reads as
+"an hour from now" every time anything looks -- so a token that expired
+overnight looks an hour fresh each morning, the renewal never fires, and
+every call made with it fails somewhere else entirely.  It is converted
+when the response arrives and stored as ~expires_at~, an absolute time,
+and the field in the token file is *named* ~expires_at~ so the next
+reader is not invited to add it to the moment they loaded it.
+
+Providers also disagree about whether these are numbers or strings.
+Reading only one silently treats the other as absent, which gives either
+a token that never expires or one that expires immediately; both forms
+are read.
+
+*** Granted scopes are never written back over requested scopes
+
+A person can untick things on a consent screen, so what was granted is
+often less than what was asked for.  Storing the granted set into
+~scopes:~ would mean the next authorization asks for less, and the one
+after that less again -- a permission that quietly erodes every time it
+is renewed, with nothing to say why.
+
+So ~scopes:~ stays what you asked for.  What was actually granted lives
+in the token file, and the daemon reports it separately, as
+~granted_scopes~ on the ~connector.list~ reply.
+
+Read the two as different questions.  ~scopes:~ answers "what will the
+next authorization ask for"; ~granted_scopes~ answers "what does this
+credential currently do".  They agree until somebody unticks something,
+which is exactly when the difference matters.
+
+An empty refresh token is likewise never written over a good one.  Some
+providers omit the field on a renewal, meaning "keep the one you have",
+and taking that literally costs an authorization nobody can see the
+reason for.
+
 ** Revoking
 
 #+begin_src bash
@@ -248,8 +332,15 @@ connector, and it says three things the tool list cannot:
 - the agent does not have the credential and cannot get it, said out
   loud so it is not discovered by trying -- an agent that goes looking
   wastes turns and leaves something alarming in a transcript;
-- which scopes were granted, so it does not spend turns discovering one
-  call at a time that something was refused.
+- which scopes the connector was configured with, so it does not spend
+  turns discovering one call at a time that something was refused.
+
+That last one is the ~scopes:~ key -- what was *asked for*, not what the
+provider granted.  The two are the same unless somebody unticked
+something on the consent screen, and where they differ the agent is
+reading the more generous of the two.  The granted set is on the
+~connector.list~ reply as ~granted_scopes~; nothing puts it in front of
+an agent yet.
 
 ** Configuration
 

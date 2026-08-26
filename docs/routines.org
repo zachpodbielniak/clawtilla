@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-23 Sat]
-#+updated: [2026-08-23 Sat]
-#+version: 0.2.0
+#+updated: [2026-08-26 Wed]
+#+version: 0.2.1
 
 * Routines
 
@@ -69,6 +69,12 @@ isolation and no continuity at all, and continuity between a routine's
 *own* runs is the thing worth having --- it is what lets Tuesday's brief
 know what Monday's said.
 
+If the room cannot be created the run falls back to the shared path and
+says nothing about it.  So a routine marked =isolate: true= whose output
+turns up in the operator's chat has not been ignored; it failed to get
+its room.  Check ~clawtilla room list~ for a =routine:<id>= room before
+looking anywhere else.
+
 **The cost is where the output goes.**  The prompt and the answer are no
 longer in the operator's chat; they are in the task result and on the
 Flow tab, which is where a delegated task's output already lives.  That
@@ -83,7 +89,7 @@ Every schedule becomes a cron expression, including the friendly ones:
 | Preset     | Becomes         | Notes                              |
 |------------+-----------------+------------------------------------|
 | =manual=   | nothing         | only when you ask                  |
-| =hourly=   | =20 * * * *=    | =at= supplies the minute           |
+| =hourly=   | =0 * * * *=     | =at= supplies the minute; =at: "00:20"= gives =20 * * * *= |
 | =daily=    | =0 9 * * *=     | =at: "09:00"=                      |
 | =weekdays= | =0 9 * * 1-5=   |                                    |
 | =weekly=   | =0 9 * * 1=     | =weekday: monday=                  |
@@ -108,6 +114,13 @@ weekdays may be named (=jan=, =mon=), and Sunday is both =0= and =7=.
 A range that wraps -- =22-2=, =fri-mon= -- means what it looks like.
 Vixie cron refuses those; refusing something whose meaning is obvious
 helps nobody.
+
+A wrap with a *step* is the one case where it does not.  The stride
+restarts at the bottom of the field instead of carrying across the seam,
+so =23-4/2= is 23, 0, 2, 4 -- not the 23, 1, 3 a stride counted
+continuously round the clock would give.  List the values (=23,1,3=) if
+that distinction matters.  A wrap with no step is unaffected, which is
+the form people actually write.
 
 *** The oddity worth knowing
 
@@ -139,6 +152,19 @@ Six fields are refused too.  A seconds field is a different dialect, and
 accepting both would make a five-field expression ambiguous -- =0 9 * * *=
 would be either nine in the morning or every ninth minute depending on
 which we guessed.
+
+*** How far ahead "next" looks
+
+Four years, not one.  =0 0 29 2 *= is a legitimate schedule that fires
+once every four years, and a one-year search would report it as
+impossible -- so the search window is 1464 days, which is just wide
+enough to step from one 29 February to the next.
+
+An expression that matches nothing inside that window has no next time,
+and =routine list= shows =-= in the NEXT column.  There are only two
+ways to see that: =schedule: manual=, which has no next time by design,
+and an expression that cannot fire at all -- =0 0 30 2 *=, say.  A =-=
+against a =custom= schedule means the second one.
 
 ** Local time, and what that costs twice a year
 
@@ -177,8 +203,19 @@ should not deliver a stack of good mornings at once.
 Off by default, and worth leaving off for anything that talks to
 somebody.
 
+Catch-up is evaluated *once*, at daemon start, before the first tick --
+so a routine whose time passed while the daemon was down is dealt with
+deliberately rather than found by the first tick and treated as due
+right now.  A routine added while the daemon is already running never
+passes through it; its first missed run is the ordinary kind.
+
 A routine that has *never* run has not missed anything, so adding one at
 four in the afternoon does not immediately fire its 09:00 slot.
+
+With =catch_up= off, a missed run still advances the last-run time.  The
+"missed" note is shown once and then cleared, which is why =routine
+list= stops mentioning a weekend outage after the routine next fires --
+it has not been forgotten, it has been superseded.
 
 ** Where it runs
 
@@ -193,22 +230,33 @@ routines:
     worktree: true
 #+end_src
 
-=directory= is a path on the *agent's computer*, which for a container or
-a VM is a path inside it and not on the host.
+*Both of these are instructions to the agent, not actions clawtilla
+takes.*  They become two sentences appended to the prompt, and the agent
+is what obeys them -- there is no =chdir= anywhere in the routine
+runner, and clawtilla never creates, lists or removes a git worktree.
 
-=worktree= runs in a fresh git worktree of it instead.  Worth turning on
-for a routine that changes files: it keeps a scheduled run from landing
-on top of whatever you had checked out at the time.  The worktree is left
-behind deliberately -- throwing away work because a schedule fired is not
-recoverable.
+=directory= tells the agent to work in a path on its *own computer*,
+which for a container or a VM is a path inside it and not on the host.
 
-** Jitter
+=worktree= tells it to make a fresh git worktree of that directory and
+work there instead.  Worth turning on for a routine that changes files:
+it keeps a scheduled run from landing on top of whatever you had checked
+out at the time.  The worktree is left behind deliberately -- throwing
+away work because a schedule fired is not recoverable.
 
-=jitter_seconds= defaults to *0*, unlike the hosted schedulers this
-borrows its shape from.  There is no shared server to spread load across:
-this is your machine, and a routine set for 09:00 should run at 09:00.
+Knowing that these are prompt text rather than machinery matters when
+one is not obeyed.  An agent that ignores =worktree= has not hit a bug
+in the scheduler; it has ignored an instruction, which is a question
+about the model and the rest of the prompt.
 
-Worth setting only when several routines share one rate-limited service.
+** What does not work yet
+
+=jitter_seconds= is in the schema, is accepted, is saved, and is read by
+nothing.  The runner starts a due routine immediately.  It is documented
+here rather than quietly, because a setting that is accepted and ignored
+is otherwise indistinguishable from one that is working: setting it to
+300 and watching a routine fire at 09:00 looks exactly like a very small
+random offset.
 
 ** What the agent is told
 
@@ -233,6 +281,17 @@ If it does use ~clawtilla_message_user~, a =notify= integration turns
 that into something that reaches you -- see
 [[file:integrations.org][integrations.org]].
 
+One thing to check before relying on that for anything overnight: a
+notify integration has its own =quiet_hours=, and they wrap midnight, so
+a 23:00--07:00 window holds everything a 03:00 routine escalates until
+morning.  That is the right default for a routine that reports; it is
+the wrong one for a routine whose whole purpose is to wake you.  Quiet
+hours belong to a notify *instance*, not to a routine, and they silence
+that instance completely -- so "wake me for the backup check but not for
+anything else" is two instances with different ~events~, one with quiet
+hours and one without.  There is no ~routines.quiet_hours~; a routine
+cannot exempt itself.
+
 ** Trying one before trusting it
 
 #+begin_src bash
@@ -246,14 +305,26 @@ whether the instructions are any good before putting them on a timer.
 
 ** Run state
 
-Last-run times live in ~<state_dir>/routines.yaml~, beside the config
-rather than in it.  A last-run time is *state*, and a ~clawtilla.yaml~
-that rewrote itself every time a routine fired is one people stop keeping
-in git.
+Run state lives in ~<state_dir>/routines.yaml~ -- the *state* directory,
+which is ~~/.clawtilla~ by default and is not where ~clawtilla.yaml~
+lives.  Separate on purpose: a last-run time is state, and a
+~clawtilla.yaml~ that rewrote itself every time a routine fired is one
+people stop keeping in git.
 
-A state file that cannot be parsed is a warning and an empty slate: it is
-a convenience, and refusing to schedule anything because a timestamp was
-lost would turn that into a stopped fleet.
+It holds four things per routine, not just the timestamp: ~last_run~,
+the outcome (~ok~, ~failed~, ~missed~, ~never~), a detail string, and
+the id of the task that run created.  That is what fills the LAST column
+of ~routine list~, and it is rewritten on every start, every failure and
+every missed-run sweep -- written atomically at 0600, since a run's task
+id is a handle onto somebody's work.
+
+A state file that cannot be parsed is a warning and an empty slate: it
+is a convenience, and refusing to schedule anything because a timestamp
+was lost would turn that into a stopped fleet.  The slate errs on the
+quiet side -- every routine reads as never having run, so nothing
+catches up and nothing is reported missed.  A run that really was missed
+is forgotten rather than doubled, which is the right way round for
+something that talks to people.
 
 ** From the GTK client
 
@@ -282,6 +353,22 @@ reference for what a routine holds.
 
 ** Reacting to a routine
 
-A routine that failed publishes ~routine.ran~ and its task publishes
-~task.changed~, both of which a podomation pod can bind to.  See
-[[file:automation.org][automation.org]].
+Three events, and it is worth being precise about which says what:
+
+| Event | When |
+|-------+------|
+| ~routine.ran~ | a run *started* -- the task was created and the prompt delivered |
+| ~routine.changed~ | the routine itself was added, edited or removed |
+| ~task.changed~ | the run's task moved, which is where its success or failure shows up |
+
+~routine.ran~ is not a completion and not a failure.  Every failure path
+-- an agent that does not exist, a task that cannot be created, a prompt
+that cannot be delivered -- returns before it is published, so a routine
+that failed to *start* publishes nothing at all and shows up in the run
+state as ~failed~.  A routine that started and then went wrong is a
+~task.changed~ to ~failed~.  Binding a pod to ~routine.ran~ expecting to
+hear about problems hears about successes.
+
+All three are bindable from a podomation pod as ~on_routine_ran~,
+~on_routine_changed~ and ~on_task_changed~ -- the DSL's lexer cannot
+parse a dot in an event name.  See [[file:automation.org][automation.org]].

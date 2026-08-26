@@ -215,6 +215,21 @@ ClawtRoomManager *clawt_daemon_get_rooms(ClawtDaemon *self);
 ClawtTaskManager *clawt_daemon_get_tasks(ClawtDaemon *self);
 
 /**
+ * clawt_daemon_sweep:
+ * @self: a #ClawtDaemon
+ *
+ * Runs the periodic maintenance pass now.
+ *
+ * Expires mailbox items, returns abandoned leases, trims the event log
+ * and applies `defaults.exchange_max_bytes`.  The daemon calls this on a
+ * timer; it is public because a pass that only ever runs from a
+ * one-minute timeout cannot be tested at all, and every one of the
+ * things it drives has been added to it at some point by somebody who
+ * could not tell whether the previous ones were being driven.
+ */
+void clawt_daemon_sweep(ClawtDaemon *self);
+
+/**
  * clawt_daemon_get_router:
  * @self: a #ClawtDaemon
  *

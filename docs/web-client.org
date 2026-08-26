@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-24 Mon]
-#+updated: [2026-08-24 Mon]
-#+version: 0.1.0
+#+updated: [2026-08-26 Wed]
+#+version: 0.2.0
 
 * The web client
 
@@ -111,6 +111,43 @@ The same seven the GTK client's view switcher has, in the same order.
 And seven settings pages: VM images, teams, spending, integrations,
 connectors, appearance and connections.
 
+*** The routes, and the one that has to be last
+
+Around eighty, in families.  A ~GET~ renders; a ~POST~ does something and
+answers with the page it did it on.
+
+| Family                        | What is under it                        |
+|-------------------------------+-----------------------------------------|
+| =/=, =/fleet=                 | the fleet index                         |
+| =/a/:id/:view=                | the seven agent views                   |
+| =/a/:id/...=                  | everything done to one agent: send, start, stop, restart, reset, set, team, reorder, remove, exec, rebuild, attach, mount, mailbox, memories, file, files, compose, export, copy |
+| =/f/...=                      | fragments htmx swaps in: the sidebar, a transcript, an attachment |
+| =/settings=, =/settings/:page= | the seven settings pages               |
+| =/settings/<page>/...=        | their actions: add, save, remove, health, test, authorize, revoke |
+| =/new=, =/import=, =/design=  | making an agent                         |
+| =/alerts=, =/decisions=, =/routines/...=, =/tasks/:task/cancel= | the standing surfaces |
+| =/events=                     | the SSE stream                          |
+| =/static=                     | the vendored scripts                    |
+
+~/a/:id/:view~ is registered *last*, from its own
+~clawt_web_register_views()~, and nothing may go after it.  A route
+pattern compiles to an anchored regex where ~:param~ becomes ~([^/]+)~,
+and the router answers with the *first* pattern that matches -- so
+~/a/:id/:view~ claims every three-segment ~GET~ under an agent.
+~/a/x/export~, ~/a/x/copy~ and ~/a/x/file~ were all quietly served by
+the view handler.
+
+The symptom is not an error.  An unrecognised view falls back to chat, so
+a swallowed route renders the chat page and answers =200= -- the export
+came back as ~text/html~, which reads as a formatting problem rather
+than a routing one.
+
+Depth is what bounds the hazard: because ~:param~ stops at a slash,
+~/a/:id/:view~ cannot reach ~/a/:id/mount/add~, and ~/settings/:page~
+does not swallow ~/settings/teams/add~ for the same reason.  The rule to
+follow is still the simple one -- register the catch-all last -- because
+counting segments is how somebody gets it wrong.
+
 *** Slash commands
 
 The same eighteen the GTK composer answers, typed into the message box.
@@ -204,6 +241,42 @@ kept in this browser's cookies rather than in the fleet's own
 configuration file.  A theme is about the screen you
 are sitting at, not about the fleet, so it comes with you when this
 server is pointed at a different daemon.
+
+*** Three theme states, and only two of them are written down
+
+A theme is not a boolean, and the stylesheet is built for all three.
+
+| State           | On the root element    | What decides the colours       |
+|-----------------+------------------------+--------------------------------|
+| follow the browser | *no attribute at all* | ~prefers-color-scheme~       |
+| light           | ~data-theme="light"~   | the explicit choice            |
+| dark            | ~data-theme="dark"~    | the explicit choice            |
+
+Every colour is a token defined on bare ~:root~, redefined under
+~@media (prefers-color-scheme: dark)~ guarded as
+~:root:not([data-theme="light"])~, and redefined again under
+~:root[data-theme="dark"]~.  Both halves are needed: the media query is
+what makes "follow" work, and the attribute block is what lets an
+explicit choice win *in both directions* -- without it, choosing light
+on a machine set to dark would change nothing.
+
+A colour whose only definition is inside a media query has no value at
+all for a reader whose browser does not match it, which is why the bare
+~:root~ block is the complete palette rather than the light half of one.
+
+The attribute is set by an inline script in the page head, before the
+body paints -- done after paint it is a visible flash of the wrong
+palette on every navigation.  The script reads the cookie and sets
+nothing when it says =system=, because "follow" is the *absence* of the
+attribute rather than a third value of it.
+
+A palette read from a file is the exception: it is given its *base*
+mode -- ~dark~ or ~light~ -- rather than its own nick.  The stylesheet
+has a rule for ~dark~ and none for ~inkwell~, so setting the nick would
+leave every colour the palette does not define falling back to the light
+defaults: light chrome under dark colours, which is worse than either.
+The palette's own sheet is emitted into the page and still wins on the
+colours it does define.
 
 *** Empty means follow, and keeps following
 
@@ -426,14 +499,19 @@ make parity
 #+end_src
 
 #+begin_example
-client parity: OK (68 kinds in gtk, 70 in web)
+client parity: OK (76 kinds and 18 commands in gtk, 80 kinds and 26 commands in web;
+4 enumeration(s), 2 vocabulary(ies), 28 affordance(s))
 #+end_example
 
-What is compared is the set of IPC frame kinds each client sends.  That
-is a proxy for "feature" rather than a definition of one -- a client
-could name a kind and do nothing useful with it -- but every real feature
-has to talk to the daemon to do anything, so a kind one client sends and
-the other never mentions is a capability that exists in one place only.
+Layer one is the set of IPC frame kinds each client sends.  That is a
+proxy for "feature" rather than a definition of one -- a client could
+name a kind and do nothing useful with it -- but every real feature has
+to talk to the daemon to do anything, so a kind one client sends and the
+other never mentions is a capability that exists in one place only.  The
+kinds themselves are read out of =src/core/clawt-daemon.c=, so one added
+there is compared from the moment it exists, and each client's set is
+intersected with it -- a client source is full of dotted strings that
+are not frame kinds.
 
 It runs from ~make parity~, from ~make docs-check~, and as a case in
 ~make test~.  A check that only runs in one target is one somebody can go
@@ -454,6 +532,23 @@ thirteen of the eighteen were absent from the web client and nothing said
 so, since =/files=, =/agents= and =/export= are all built out of frames
 both clients already sent.  A check that only looks at one layer will
 keep finding nothing at the others.
+
+*The =26 commands in web= in that line is not a command count.*  Layer
+two greps each client for ~"/name"~ string literals, which is enough to
+compare without either client declaring anything -- and in the web
+client it also matches route paths and hrefs, so =/fleet=, =/settings=,
+=/alerts=, =/events=, =/decisions=, =/design=, =/import= and =/static=
+are counted alongside the real ones.  Both composers answer the same
+eighteen; the eight extra are pages.
+
+That over-count is harmless rather than fixed, and deliberately so.
+Commands are compared *one way* -- a command the GTK composer answers
+and the web one does not is a build failure, and the web client
+answering something extra is a thing to notice by reading.  Anything the
+grep adds to the web side therefore cannot produce a false failure.
+Narrowing the pattern to the composer's own table would mean each client
+declaring its commands for this script's benefit, which is the property
+layers one to four exist to avoid.
 
 Layers 3 to 5 exist because that sentence came true a second time.
 Catppuccin Mocha went into libclawt, which both clients link, and was
@@ -493,9 +588,33 @@ opposite of the truth:
 
 *** Adding a feature
 
-Build it in both.  If it is pure interface -- something with no frame, no
-command and no shared symbol -- add a row to ~AFFORDANCES~ naming a
-marker in each client, so its removal from either is a build failure.
+Build it in both.  If it sends a frame, answers a command, or walks a
+~_count()~/~_nth()~ family, there is nothing to declare -- layers one to
+four find it on their own.
+
+If it is pure interface -- no frame, no command, no shared symbol -- add
+a row to ~AFFORDANCES~ naming a marker per client:
+
+#+begin_src bash
+declare -A AFFORDANCES=(
+    ["unread marker"]="unread_marker|unread-rule"
+)
+#+end_src
+
+The key is the capability in words; the value is the GTK marker, a pipe,
+and the web marker.  A marker must be something the feature *cannot work
+without* -- a function name, a CSS class, a constant -- and never a
+label somebody might reword, because then the check fails on a wording
+change and passes when the feature is gone.  The two halves are usually
+different spellings of the same idea (~adw_avatar_new~ against
+~msg-avatar~); where the rule itself lives in libclawt they are the same
+symbol on both sides, which is the strongest form the row can take.
+
+Markers are matched against each client's sources with the comments
+stripped, so a marker that also appears in prose is still safe.  Verify
+a new row by *removing* the feature from one client and watching the
+check fail -- a parity row that has never been shown to fail is a row
+that reports OK.
 
 When building it in both is genuinely not the right answer, add the
 kind to the exception map at the top of

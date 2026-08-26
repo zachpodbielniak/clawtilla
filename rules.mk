@@ -86,60 +86,79 @@ $(OUTDIR)/tests: | $(OUTDIR)
 # here: it owns a large dependency tree of its own and rebuilding it takes
 # minutes, so `make clean` staying inside clawtilla is the useful default.
 # `make clean-deps` is there when you actually mean it.
-.PHONY: clean
+.PHONY: clean  ## Remove this build type's output, leaving deps/libreclaw built
 clean:
 	rm -rf $(BUILDDIR)/$(BUILD_TYPE)
 	rm -f $(PROJECT_NAME)-1.0.pc
 
-.PHONY: clean-deps
+.PHONY: clean-deps  ## Clean deps/libreclaw too (minutes to rebuild -- opt in)
 clean-deps:
 	$(MAKE) -C $(LIBRECLAW_DIR) clean-all 2>/dev/null || true
 
 # Clean everything including deps
-.PHONY: clean-all
+.PHONY: clean-all  ## Remove every build artifact, deps included
 clean-all: clean-deps
 	rm -rf $(BUILDDIR)
 	rm -f $(PROJECT_NAME)-1.0.pc
 
-.PHONY: distclean
+.PHONY: distclean  ## Alias for clean-all
 distclean: clean-all
 
 # Help
-.PHONY: help
+#
+# The target list is *derived* rather than typed out.  The typed one had
+# drifted badly: it named nineteen targets out of thirty, called the web
+# client a stub long after it reached parity with the GTK one, and left
+# `tests`, `parity`, `web-smoke`, `gir`, `mcp-server` and `version`
+# undiscoverable -- the same failure this codebase keeps finding in
+# hand-maintained lists of things the build already knows.
+#
+# So the description lives beside the declaration: `.PHONY: <target>  ##
+# <what it does>`, and awk reads both makefiles for them.  A target added
+# without a `##` still appears, marked "(undocumented)", because a
+# missing description is worth seeing and a missing *target* is not.
+# `## @internal` is how a target says it is plumbing rather than
+# something to run -- a decision, spelled out, rather than silence.
+#
+# Targets a name cannot survive as a shell word ($(MAKECMDGOALS)) and the
+# serialization helper (__serialize) are skipped on their spelling.
+.PHONY: help  ## Show this help
 help:
 	@echo "clawtilla build system"
 	@echo ""
 	@echo "Targets:"
-	@echo "  all           - Build library, daemon, CLI, GTK client, web stub, plugins (default)"
-	@echo "  shared        - Build shared library only"
-	@echo "  static        - Build static library only"
-	@echo "  daemon        - Build clawtillad only"
-	@echo "  cli           - Build the clawtilla CLI only"
-	@echo "  gtk           - Build the GTK4 client only"
-	@echo "  web           - Build the web client stub only"
-	@echo "  plugins       - Build bundled plugins"
-	@echo "  config-files  - Regenerate data/{example,default}-config.yaml and the docs tables"
-	@echo "  docs-check    - Fail on undocumented public API or stale doc references"
-	@echo "  test          - Build and run the hermetic test suite"
-	@echo "  test-verbose  - Same, with verbose output"
-	@echo "  test-integration - Run tests needing podman/libvirt/gowl (CLAWT_TEST_INTEGRATION=1)"
-	@echo "  install       - Install library, headers, binaries, plugins and data"
-	@echo "  uninstall     - Remove installed files"
-	@echo "  clean         - Remove current build type ($(BUILD_TYPE)), keeping deps built"
-	@echo "  clean-deps    - Clean deps/libreclaw (slow to rebuild -- opt in)"
-	@echo "  clean-all     - Remove all build artifacts including deps"
-	@echo "  help          - Show this help"
+	@awk '/^\.PHONY:/ { \
+		line = $$0; desc = ""; \
+		i = index(line, "##"); \
+		if (i > 0) { \
+			desc = substr(line, i + 2); \
+			line = substr(line, 1, i - 1); \
+			sub(/^[ \t]+/, "", desc); \
+			sub(/[ \t]+$$/, "", desc); \
+		} \
+		sub(/^\.PHONY:/, "", line); \
+		n = split(line, t, "[ \t]+"); \
+		for (j = 1; j <= n; j++) { \
+			if (t[j] == "" || t[j] ~ /\$$/ || t[j] ~ /^__/) continue; \
+			if (desc == "@internal") continue; \
+			if (seen[t[j]]++) continue; \
+			printf "  %-17s %s\n", t[j], \
+				(desc == "" ? "(undocumented)" : desc); \
+		} }' Makefile rules.mk
 	@echo ""
 	@echo "Build options:"
 	@echo "  DEBUG=1       - Debug symbols, no optimization"
 	@echo "  ASAN=1        - Address sanitizer (turns GIR off; GIR=1 re-enables)"
 	@echo "  UBSAN=1       - Undefined behavior sanitizer"
 	@echo "  GIR=0|1       - Force GObject Introspection off/on (default: auto-detect)"
-	@echo "  PREFIX=/path  - Installation prefix (default: /usr/local)"
+	@echo "  PREFIX=/path  - Installation prefix (default: $(PREFIX))"
+	@echo ""
+	@echo "  WEB_SMOKE_URL / WEB_SMOKE_AGENT - what \`make web-smoke\` asks, and about which agent"
 	@echo ""
 	@echo "Output directories:"
 	@echo "  make          -> build/release/"
 	@echo "  make DEBUG=1  -> build/debug/"
+	@echo "  this run      -> $(OUTDIR)/  (BUILD_TYPE=$(BUILD_TYPE))"
 
 # ─────────────────────────────────────────────────────────────────────
 # Header dependencies

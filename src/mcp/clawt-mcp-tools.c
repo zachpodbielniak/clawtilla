@@ -436,6 +436,7 @@ struct _ClawtMcpTools {
     GDestroyNotify          ask_decision_destroy;
 
     ClawtVmImageStore *images;   /* unowned */
+    ClawtEventBus     *bus;      /* unowned */
 
     gchar *attachment_dir;
 };
@@ -522,6 +523,14 @@ clawt_mcp_tools_set_attachment_dir(ClawtMcpTools *self, const gchar *dir)
 
     g_free(self->attachment_dir);
     self->attachment_dir = g_strdup(dir);
+}
+
+void
+clawt_mcp_tools_set_event_bus(ClawtMcpTools *self, ClawtEventBus *bus)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    self->bus = bus;
 }
 
 void
@@ -1655,6 +1664,23 @@ tool_get_agent(ClawtMcpTools *self, JsonObject *arguments, gboolean *is_error)
         caps);
 }
 
+/*
+ * The delivery band a `priority` argument names.
+ *
+ * The argument is read here and judged in clawt_message_priority_from_nick(),
+ * which is also what a pod's `message_agent` calls.  Two parsers would be
+ * two vocabularies and two answers to what happens to "P1"; the one that
+ * gets less use would be the one that is wrong.
+ */
+static gboolean
+priority_from_arguments(JsonObject     *arguments,
+                        ClawtPriority  *out_priority,
+                        gchar         **out_refusal)
+{
+    return clawt_message_priority_from_nick(
+        argument_string(arguments, "priority"), out_priority, out_refusal);
+}
+
 static gchar *
 tool_message_agent(ClawtMcpTools *self,
                    const gchar   *agent_id,
@@ -1663,6 +1689,8 @@ tool_message_agent(ClawtMcpTools *self,
 {
     const gchar *target = argument_string(arguments, "agent_id");
     const gchar *body = argument_string(arguments, "body");
+    ClawtPriority priority = CLAWT_PRIORITY_NORMAL;
+    g_autofree gchar *refusal = NULL;
     g_autoptr(GError) error = NULL;
 
     /*
@@ -1678,17 +1706,44 @@ tool_message_agent(ClawtMcpTools *self,
         return g_strdup("agent_id and body (or message) are both required.");
     }
 
+    /*
+     * Checked before anything is queued.  A message that went out at the
+     * wrong band and then reported a bad priority would leave the agent
+     * with no way to correct it -- resending is the only remedy it has,
+     * and that would deliver the thing twice.
+     */
+    if (!priority_from_arguments(arguments, &priority, &refusal)) {
+        *is_error = TRUE;
+        return g_steal_pointer(&refusal);
+    }
+
     if (self->deliver == NULL) {
         *is_error = TRUE;
         return g_strdup("Messaging is not available.");
     }
 
     if (!self->deliver(agent_id, target, body, NULL,
-                       outbound_depth(self, agent_id), self->deliver_data,
-                       &error)) {
+                       outbound_depth(self, agent_id), priority,
+                       self->deliver_data, &error)) {
         *is_error = TRUE;
         return g_strdup(error->message);
     }
+
+    /*
+     * The band is named back only when it is not the ordinary one.
+     *
+     * Saying "queued as normal" on every call trains an agent to skim
+     * the sentence, and the line that matters -- that this one did jump
+     * the queue -- is the one that would then be skimmed.  It is safe to
+     * claim now because the band reaches the mailbox: while it did not,
+     * this reply deliberately said nothing, since an agent told its
+     * message was expedited has no reason to look again.
+     */
+    if (priority != CLAWT_PRIORITY_NORMAL)
+        return g_strdup_printf("Queued for %s at %s priority. They will see "
+                               "it when they are next running.", target,
+                               clawt_enum_to_nick(CLAWT_TYPE_PRIORITY,
+                                                  priority));
 
     return g_strdup_printf("Queued for %s. They will see it when they are "
                            "next running.", target);
@@ -1754,8 +1809,8 @@ tool_delegate(ClawtMcpTools *self,
     clawt_task_set_reason(task, reason);
 
     if (!self->deliver(agent_id, assignee, work, clawt_task_get_id(task),
-                       outbound_depth(self, agent_id), self->deliver_data,
-                       &error)) {
+                       outbound_depth(self, agent_id), CLAWT_PRIORITY_NORMAL,
+                       self->deliver_data, &error)) {
         /*
          * The task is failed rather than left pending.  A task nobody was
          * ever told about would sit in the list for ever looking like work
@@ -1840,6 +1895,36 @@ tool_task_result(ClawtMcpTools *self, JsonObject *arguments,
     return g_strdup(clawt_task_get_result(task));
 }
 
+/*
+ * One `computer.exec` event, in the client path's own shape.
+ *
+ * The subject is the *agent*, and the details are the command and the
+ * exit status and nothing else.  Verbatim from the client exec handler
+ * on purpose: an audit trail whose two writers disagree about the
+ * subject cannot be filtered by agent, and the whole reason this exists
+ * is that half of it -- an agent running its own command -- reached no
+ * bus at all while `docs/security.org` said both were recorded.
+ *
+ * No stdout, no stderr, no environment.  Nothing may write a secret's
+ * value into a log line, and a command's output is the likeliest place
+ * in this whole path for one to appear.
+ */
+static void
+publish_exec(ClawtMcpTools *self, const gchar *agent_id,
+             const gchar *command, gint exit_status)
+{
+    ClawtEvent *event;
+
+    if (self->bus == NULL)
+        return;
+
+    event = clawt_event_new("computer.exec", agent_id);
+    clawt_event_set_detail(event, "command", command);
+    clawt_event_set_detail_int(event, "exit", exit_status);
+    clawt_event_bus_publish(self->bus, event);
+    clawt_event_free(event);
+}
+
 static gchar *
 tool_computer_exec(ClawtMcpTools *self,
                    const gchar   *agent_id,
@@ -1878,9 +1963,22 @@ tool_computer_exec(ClawtMcpTools *self,
                                  working_dir, timeout, NULL, &error);
 
     if (result == NULL) {
+        /*
+         * Recorded before the refusal is returned.  A command that never
+         * ran is exactly the one somebody looks up afterwards, and a
+         * trail that only holds the successes answers the wrong
+         * question -- so the exit is -1 rather than the entry being
+         * absent, which reads as "we do not know what it did", not as
+         * "it did not happen".
+         */
+        publish_exec(self, agent_id, command, -1);
+
         *is_error = TRUE;
         return g_strdup(error->message);
     }
+
+    publish_exec(self, agent_id, command,
+                 clawt_exec_result_get_exit_status(result));
 
     if (clawt_exec_result_succeeded(result))
         return g_strdup(clawt_exec_result_get_stdout(result));
@@ -2057,8 +2155,8 @@ tool_message_user(ClawtMcpTools *self, const gchar *agent_id,
                                          "user");
 
     if (!self->deliver(agent_id, clawt_room_get_id(room), body, NULL,
-                       outbound_depth(self, agent_id), self->deliver_data,
-                       &error)) {
+                       outbound_depth(self, agent_id), CLAWT_PRIORITY_NORMAL,
+                       self->deliver_data, &error)) {
         *is_error = TRUE;
         return g_strdup_printf("Could not reach your operator: %s",
                                error != NULL ? error->message : "unknown");
@@ -2417,8 +2515,8 @@ tool_post_room(ClawtMcpTools *self, const gchar *agent_id,
     }
 
     if (!self->deliver(agent_id, room_id, body, NULL,
-                       outbound_depth(self, agent_id), self->deliver_data,
-                       &error)) {
+                       outbound_depth(self, agent_id), CLAWT_PRIORITY_NORMAL,
+                       self->deliver_data, &error)) {
         *is_error = TRUE;
         return g_strdup(error->message);
     }
@@ -2611,8 +2709,8 @@ tool_mailbox_reply(ClawtMcpTools *self, const gchar *agent_id,
 
     if (!self->deliver(agent_id, clawt_mailbox_item_get_from(item), body,
                        clawt_mailbox_item_get_task_id(item),
-                       outbound_depth(self, agent_id), self->deliver_data,
-                       &error)) {
+                       outbound_depth(self, agent_id), CLAWT_PRIORITY_NORMAL,
+                       self->deliver_data, &error)) {
         *is_error = TRUE;
         return g_strdup(error->message);
     }

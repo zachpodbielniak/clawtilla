@@ -68,6 +68,7 @@ typedef enum {
  * @CLAWT_SCHEMA_FLAG_COMMENTED: written out commented in the starter config
  * @CLAWT_SCHEMA_FLAG_DANGEROUS: enabling it hands over real authority
  * @CLAWT_SCHEMA_FLAG_PER_AGENT: also valid inside an agent block
+ * @CLAWT_SCHEMA_FLAG_INERT: parsed and stored, and nothing in this build reads it
  *
  * @CLAWT_SCHEMA_FLAG_COMMENTED is what keeps `--generate-config` usable:
  * a starter file that set every option would be a wall of defaults, so
@@ -76,13 +77,26 @@ typedef enum {
  * @CLAWT_SCHEMA_FLAG_DANGEROUS drives the extra warning text in the
  * generated config and the docs.  Handing an agent an unconfined host
  * should read like a decision, not a setting.
+ *
+ * @CLAWT_SCHEMA_FLAG_INERT is an admission rather than a behaviour.  An
+ * audit found nine options that were accepted, saved, reported back as
+ * set, and consulted by no code at all -- `rooms.max_hops` reached a
+ * #ClawtRoom and every hop was still counted against the fleet limit,
+ * and `agents.computer.container.network` reached the container object
+ * and was never put in the podman request.  Deleting such a key would
+ * be worse than keeping it: a config that sets one would gain an
+ * "unknown configuration key" warning explaining nothing.  So the key
+ * stays, its documentation says plainly that nothing reads it, and
+ * clawt_config_load() warns naming it when somebody actually sets one.
+ * Clearing the flag is what implementing the option looks like.
  */
 typedef enum {
     CLAWT_SCHEMA_FLAG_NONE      = 0,
     CLAWT_SCHEMA_FLAG_REQUIRED  = 1 << 0,
     CLAWT_SCHEMA_FLAG_COMMENTED = 1 << 1,
     CLAWT_SCHEMA_FLAG_DANGEROUS = 1 << 2,
-    CLAWT_SCHEMA_FLAG_PER_AGENT = 1 << 3
+    CLAWT_SCHEMA_FLAG_PER_AGENT = 1 << 3,
+    CLAWT_SCHEMA_FLAG_INERT     = 1 << 4
 } ClawtSchemaFlags;
 
 /**

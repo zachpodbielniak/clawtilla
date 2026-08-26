@@ -125,8 +125,13 @@ void clawt_ipc_server_set_handler(ClawtIpcServer  *self,
  * defaulting to open would turn one careless config line into a remote
  * shell.
  *
- * Unix clients never present it -- the kernel already vouches for them
- * through SO_PEERCRED.
+ * Unix clients never present it, because the socket's own permissions have
+ * already decided who may connect.  That is the entire check: nothing here
+ * calls getsockopt(SO_PEERCRED) or asks a #GCredentials who is on the other
+ * end, so a process that can open the file is trusted completely.  Two doc
+ * comments claimed otherwise for a long time, one of them generated
+ * verbatim into `data/default-config.yaml` -- so the security property a
+ * reader was told about was one nobody had built.
  */
 void clawt_ipc_server_set_token(ClawtIpcServer *self, const gchar *token);
 

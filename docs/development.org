@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-23 Sun]
+#+updated: [2026-08-26 Wed]
 #+version: 0.1.0
 
 * Development
@@ -14,20 +14,55 @@
 make                    # build/release
 make DEBUG=1            # build/debug, -O0 -g3
 make clean all
-make test
+make tests              # build every test binary and stop
+make test               # build them and run them
 make test-verbose
 make test-integration   # needs real podman / libvirt / gowl
 make config-files       # regenerate data/*.yaml and the docs table
 make docs-check         # undocumented public API, stale doc references
 make parity             # the two graphical clients cover the same daemon
+make help               # every target, with a line each
 #+end_src
 
-~make parity~ compares the IPC frame kinds ~clawtilla-gtk~ and
-~clawtilla-web~ each send, and the slash commands each answers.  Adding a
-capability to one and not the other is a build failure, because two
-clients drifting apart is otherwise invisible until somebody reaches for
-the half that was not built.  ~make docs-check~ runs it too, and there is
-a case for it in ~make test~.
+~make tests~ builds the suite without running it, which is what the
+zero-warnings check wants: ~make clean tests~ compiles every test binary
+and says nothing else.  It is worth knowing that this target did not
+exist for a long time -- make answered *"Nothing to be done for
+'tests'"* and exited 0, so a documented check for warnings compiled
+nothing and passed.  Run a build command from the docs and read what it
+built, not what it exited with.
+
+~make help~ is the full list.  Everything below is the part of it that
+needs more than a line: ~install~, ~uninstall~, ~clean~, ~clean-deps~,
+~clean-all~, ~distclean~, ~version~ and the per-artefact targets
+(~shared~, ~static~, ~daemon~, ~cli~, ~gtk~, ~web~, ~mcp-server~,
+~plugins~, ~pod-modules~, ~gir~) do what their names say.
+
+~make parity~ compares ~clawtilla-gtk~ and ~clawtilla-web~ across *five*
+layers, not one: the IPC frame kinds each sends, the slash commands each
+answers, the choice enumerations each walks (a ~_count()~/~_nth()~ pair
+in the public API is the library saying "here is a set"), values a client
+spells out that the library already enumerates, and declared affordances
+-- capabilities that are pure interface and touch no shared symbol at
+all.  Adding a capability to one client and not the other is a build
+failure, because two clients drifting apart is otherwise invisible until
+somebody reaches for the half that was not built.
+
+The layer count is the lesson rather than a detail.  The check was
+frame-kinds only and reported OK while thirteen slash commands were
+missing; it grew a command layer and reported OK through two more gaps, a
+palette selectable in one client and an unread marker built for one
+transcript, because neither sends a frame or answers a command.  *A check
+finds the layer it looks at.*  The fifth layer needs declaring by hand
+and says so -- better to have it and state the limit than to pretend the
+check is complete.
+
+Deliberate asymmetries live in an exception map in
+~tools/clawt-client-parity.sh~ with a reason each.  An entry there is a
+decision, not a to-do.
+
+~make docs-check~ runs parity too, and ~tests/test-web-render.c~ invokes
+the script from ~make test~ -- skipping when it is absent.
 
 The web client's routing needs a running client to check, because unit
 tests cannot see it -- a route registered after ~/a/:id/:view~ is
@@ -52,7 +87,21 @@ make DEBUG=1 UBSAN=1 clean all && make DEBUG=1 UBSAN=1 test
 GIR is auto-disabled under a sanitiser: ~g-ir-scanner~ runs a dump binary
 linked against the library, and with a sanitizer compiled in but its
 runtime not preloaded that binary aborts, failing the whole build at the
-~.gir~ step.  ~GIR=1~ forces it anyway.
+~.gir~ step.  ~GIR=1~ forces it anyway, and forcing it does more than
+override the switch -- ~config.mk~ then sets ~LD_PRELOAD~ to the ASan
+runtime and turns leak detection off for the scanner, so the dump binary
+survives rather than being asked to.  The skip is announced, not silent.
+
+The sanitiser targets are also the reason the ~deps~ target pins three
+knobs and not one.  make passes a command-line variable down to every
+sub-make, so ~make DEBUG=1 ASAN=1~ once built *libreclaw's release tree*
+with ASan linked in -- which is the one tree ~LIBRECLAW_OUTDIR~ points at
+unconditionally.  The next ordinary ~make~ then failed inside libreclaw's
+own GIR scanner with "ASan runtime does not come first in initial library
+list": a message naming no sanitiser, no previous build and no dep, on a
+target several layers from anything the person had changed.  ~deps~ now
+pins ~DEBUG=0 ASAN=0 UBSAN=0~.  Pinning one of three reads as "we pin the
+build type" and is not.
 
 ** The three-file build system
 
@@ -61,20 +110,26 @@ Same shape as libreclaw, deliberately.
 | File | What is in it |
 |------+---------------|
 | ~config.mk~ | versions, paths, ~PKG_DEPS~, dep blocks, build-type selection |
-| ~rules.mk~ | pattern rules, the test rule, clean targets |
-| ~Makefile~ | source lists, phases, install |
+| ~rules.mk~ | pattern rules, the test rule, clean targets, ~help~, the ~.d~ include |
+| ~Makefile~ | source lists, phases, every client and test target, install |
 
-Two details worth knowing:
+Some details worth knowing:
 
 - object directories are created by *one* stamp target.  Concurrent
   per-object ~mkdir -p~ under ~make -j~ races on shared parents and
   intermittently fails with "can't create …o: No such file or directory".
   The stamp depends on ~Makefile~ and ~config.mk~ so a new source
   subdirectory re-runs it.
-- test binaries depend on the bundled ~.a~ files, not just link against
-  them.  Without that, a fix in a dep rebuilt its archive but never
-  relinked the tests, and the suite kept exercising the old code -- which
-  looks exactly like the fix not working.
+- test binaries depend on ~libclawt-1.0.a~ and ~liblc-1.0.a~, not just
+  link against them.  Without that, a fix in a dep rebuilt its archive
+  but never relinked the tests, and the suite kept exercising the old
+  code -- which looks exactly like the fix not working.
+
+  The other five bundled archives -- ai-glib, yaml-glib, podomation,
+  mcp-glib, htmx-glib -- are link *arguments* and not prerequisites, so
+  that failure is still reachable for a fix landed in one of them.  A
+  libreclaw sub-make usually touches ~liblc-1.0.a~ as well, which masks
+  it; do not rely on that when checking a dep fix by hand.
 - every object and every test binary is compiled with ~-MMD -MP~, and
   the resulting ~.d~ files are included at the bottom of ~rules.mk~.
   That is what makes editing a *header* rebuild the things that include
@@ -86,6 +141,29 @@ Two details worth knowing:
   source in the tree and it silently defeats the habit below of proving
   a test fails without its fix: the sabotage never reaches the binary,
   so the "proof" is a pass.  That is exactly how it was found.
+- a test that ~#include~s a *source* file needs that source naming as a
+  prerequisite, by hand.  The generic test rule lists only the test's own
+  ~.c~, so editing ~clients/web/web-ui.c~ left ~test-web-render~
+  untouched and passing.  The Makefile names the five included files
+  after ~include rules.mk~, because the specific prerequisite has to come
+  after the pattern rule exists.
+
+  This one cost a double false pass: reverting the fix to prove the test
+  caught it produced a pass, twice, because the binary was never rebuilt.
+  Anything in ~clients/~ that a test reaches into needs the same
+  treatment.
+
+*** make test does not relink the daemon
+
+~test~, ~tests~, ~test-verbose~ and ~test-integration~ all depend on the
+test binaries, the bundled plugins and the test plugins -- and on nothing
+in ~build/<type>/clawtillad~.  So a change can be built, tested and
+passing while the daemon binary is the previous one, and checking a fix
+by hand against a running daemon then checks the old code.
+
+Run plain ~make~ before restarting the daemon.  Two rounds of "the fix
+did not work" came from this, with the library provably correct from a
+standalone probe and the running daemon minutes old.
 
 ** Code style
 
@@ -126,27 +204,69 @@ table arrives as fourteen separate arguments.
 
 *** Main contexts
 
-~g_timeout_add_seconds()~ attaches to the *default* context, not the
-thread-default one.  In an embedded daemon that means the timer never
-fires.  Use:
+~g_timeout_add_seconds()~ and ~g_idle_add()~ attach to the *default*
+context, not the thread-default one.  In an embedded daemon -- one whose
+host runs its own loop on its own context -- that means the source never
+runs at all.  Use ~clawt_timeout_add_seconds()~, which exists for exactly
+this and returns the source so it can be destroyed to cancel; for an idle
+or a one-shot, the longhand:
 
 #+begin_src c
-GSource *source = g_timeout_source_new_seconds(interval);
+GSource *source = g_idle_source_new();
 
-g_source_set_callback(source, on_tick, self, NULL);
-id = g_source_attach(source, context);
+g_source_set_callback(source, on_ready, self, NULL);
+g_source_attach(source, context);
 g_source_unref(source);
 #+end_src
 
-Two real bugs came from getting this wrong.
+Three real bugs came from getting this wrong: two timers that silently
+never fired for an embedded daemon -- a keepalive and a restart policy --
+and an idle that never delivered a single event to an embedded client.
+
+It is not only the source constructors.  ~g_task_new()~ captures
+~g_main_context_ref_thread_default()~, and *dispatching a source does not
+make its context thread-default* -- GLib pushes nothing on the way in.
+So a ~GTask~ created inside a callback takes the process default and
+completes on a loop the daemon may never run.  Push the context around
+the ~g_task_new()~ call.
+
+And anything that *waits* has to wait on the context the answer will
+arrive on rather than on whatever is thread-default where the wait
+happens.  ~ClawtProcessRuntime~ holds the context its child's exit will
+be delivered to, because it once asked for the ambient one in ~stop()~
+while ~g_subprocess_wait_async()~ had captured a different one at start:
+every clean shutdown then waited out the full grace period and SIGKILLed
+a child that had already gone.
+
+The general rule, and it will keep coming up: *anything that captures
+"the current context" is a bug in an embedded daemon unless it was told
+which one.*
 
 ** Adding a configuration option
 
 1. Add an entry to the table in ~src/config/clawt-config-schema.c~: key,
    type, flags, default, enum type, documentation, ~Since:~.
-2. ~make config-files~.
-3. Read it with ~clawt_config_get_*()~ or ~clawt_agent_config_get_*()~.
-4. Mention it wherever in ~docs/~ it belongs.
+2. If it carries ~PER_AGENT~, add its agent-relative spelling to
+   ~clawt_config_schema_agent_keys()~ in the same file.
+3. ~make config-files~.
+4. Read it with ~clawt_config_get_*()~ or ~clawt_agent_config_get_*()~.
+5. Mention it wherever in ~docs/~ it belongs.
+
+Step 2 is the one that gets skipped.  What an agent calls a fleet option
+is not derivable -- ~orchestration.mailbox.max_depth~ becomes
+~mailbox.max_depth~ inside an agent block while ~memories.enabled~ keeps
+its whole name -- and that relationship used to live in two private
+tables, which is how nine settings came to work when typed into the file
+and be unreachable from every client.  It is schema, because it says
+where an option may be written, so it belongs beside the schema.
+~tests/test-config-schema.c~ fails on a ~PER_AGENT~ key with no entry.
+
+Put a new top-level *section* after every key belonging to the one before
+it.  ~clawt-genconfig~ walks the table in order and opens a YAML section
+when it meets one, so a section inserted in the middle of another's keys
+emits the rest of them under the new heading and then reopens the old --
+a duplicate top-level key, which YAML resolves by silently discarding the
+first.
 
 Do not hand-edit ~data/*.yaml~ or ~docs/configuration-options.org~.
 ~tests/test-config-schema.c~ fails when they have drifted, which is what
@@ -203,15 +323,57 @@ to read correctly.
 g_test_add_func("/subsystem/what-it-checks", test_function);
 #+end_src
 
-Available at build time: ~CLAWT_TEST_SRCDIR~ (the repo root),
-~CLAWT_TEST_FIXTURES~ (~tests/fixtures~), ~BUILD_OUTDIR~ (the build tree
-matching this test's own build type).
+Available at build time, all absolute, so nothing has to guess at the
+cwd:
+
+| Define | What it names |
+|--------+---------------|
+| ~CLAWT_TEST_SRCDIR~ | the repo root |
+| ~CLAWT_TEST_FIXTURES~ | ~tests/fixtures~ |
+| ~BUILD_OUTDIR~ | the build tree matching this test's own build type |
+| ~CLAWT_TEST_POD_MODULE_DIR~ | libreclaw's built podomation modules |
+
+The last one comes with an obligation: a test that needs a real pod
+module must *skip* when the directory is absent rather than carry on.
+Without it the container backend refuses before it opens a socket, so
+start is fast for a reason unrelated to whatever is being tested -- which
+is precisely what the first draft of the mute-socket test did.  It passed
+against a deliberately broken daemon.
+
+*** Raise the floor
+
+~tools/clawt-test-floor.sh~ fails the suite when suspiciously few test
+binaries ran, because a green run that built almost nothing still looks
+green.  ~TEST_FLOOR~ is a number in that script and adding a test file is
+the moment to raise it.  It is run from ~make test~ only.
 
 *** Tests stay hermetic
 
 No network, no podman, no libvirt, no gowl.  Anything needing real
 infrastructure goes behind ~CLAWT_TEST_INTEGRATION=1~ and
 ~make test-integration~.
+
+A fixture also has to keep three things inside its temporary directory,
+and the third is the one that gets forgotten: the socket, the state
+directory, and ~defaults.workspace_root~ -- which defaults to
+~~/.clawtilla/agents~, so a test that creates an agent scaffolds it into
+the developer's real fleet on every ~make test~.  That went unnoticed for
+a long time, because the leftovers are indistinguishable afterwards from
+agents somebody meant to keep.
+
+*** Prove the test fails without its fix
+
+Reverting the change and watching the test go red is the only thing that
+tells you the test is testing the fix.  Two traps make that proof
+worthless without saying so:
+
+- hiding the build behind ~>/dev/null 2>&1~.  If the sabotage did not
+  compile, the old binary runs and the "proof" is a pass.  Read the build
+  output, or at minimum grep it for ~error~ -- and note that a filter
+  matching ~file:line:col: error~ misses *linker* errors entirely.
+- ~git checkout <file>~ to undo the sabotage.  During a change the file
+  has uncommitted work in it, and that throws the work away.  Copy the
+  file aside and copy it back.
 
 *** GTest makes g_warning fatal
 
@@ -252,9 +414,13 @@ make clean all && make test
 git add deps/libreclaw && git commit
 #+end_src
 
-~make check-submodules~ warns when the checkout is behind the recorded
-gitlink -- the failure it prevents is building against one version and
-shipping a gitlink to another.
+~make check-submodules~ is a prerequisite of ~all~, so it runs on every
+build rather than when somebody remembers it.  It *errors* when
+~deps/libreclaw~ is not checked out at all, naming the ~git submodule
+update~ to run; it *warns* when the checkout is behind the recorded
+gitlink -- the failure that prevents is building against one version and
+shipping a gitlink to another.  Being ahead is silent, because that is
+what upgrading looks like from inside.
 
 ** Commits
 

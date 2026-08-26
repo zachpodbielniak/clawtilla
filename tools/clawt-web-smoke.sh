@@ -19,8 +19,18 @@ set -uo pipefail
 
 CDPATH=
 
-BASE="${1:-http://127.0.0.1:8801}"
-AGENT="${2:-alpha}"
+#
+# This script owns the defaults, and `make web-smoke` reads them: it
+# passes WEB_SMOKE_URL/WEB_SMOKE_AGENT through the environment and sets
+# neither, so there is one place either default is written down.  They
+# were written down twice and disagreed -- the Makefile said 8790 and
+# this said 8801 -- so running the script by hand and running it through
+# make asked two different servers, and one of them was nowhere.
+#
+# 8790 because that is clawtilla-web's own default port (clients/web/main.c).
+#
+BASE="${1:-${WEB_SMOKE_URL:-http://127.0.0.1:8790}}"
+AGENT="${2:-${WEB_SMOKE_AGENT:-alpha}}"
 
 failures=0
 checks=0
@@ -32,8 +42,8 @@ clawt-web-smoke.sh - ask a running clawtilla-web for every page
 Usage:
   clawt-web-smoke.sh [BASE_URL] [AGENT_ID]
 
-  BASE_URL   default http://127.0.0.1:8801
-  AGENT_ID   an agent that exists; default "alpha"
+  BASE_URL   default http://127.0.0.1:8790 (or $WEB_SMOKE_URL)
+  AGENT_ID   an agent that exists; default "alpha" (or $WEB_SMOKE_AGENT)
 
 Exits non-zero if any page is missing, errors, or renders something other
 than what that route is for.

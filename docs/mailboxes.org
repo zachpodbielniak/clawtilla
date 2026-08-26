@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-21 Fri]
-#+version: 0.1.0
+#+updated: [2026-08-26 Wed]
+#+version: 0.1.1
 
 * Mailboxes
 
@@ -33,47 +33,134 @@ The store is SQLite in WAL mode at
 | ~attempts~, ~last_error~ | why it has not gone yet |
 | idempotency key | so a retried tool call does not enqueue twice |
 
+Timestamps are seconds since the epoch, not microseconds, because they
+are compared against SQLite's own ~strftime('%s','now')~ in the queue's
+SQL.  Zero means unset throughout: no ~not_before~ is no deferral, no
+~expires_at~ is no expiry.
+
+Four of the six states are reachable.  An item is ~pending~, becomes
+~leased~ when it is handed out, and ends ~acked~ or ~dead~; ~delivered~
+and ~failed~ are declared in ~ClawtMailboxState~ and nothing ever writes
+them.  ~failed~ is read by the expiry sweep and written by nobody, so it
+is worth knowing that seeing it would mean a bug rather than a stage.
+
 ** Ordering
 
 FIFO within a priority band; ~urgent~ jumps ahead of everything.  Ties
-break by ~created_at~.
+break by ~created_at~.  One index carries exactly that ordering --
+~(state, priority DESC, created_at ASC)~ -- so leasing is a single
+indexed row read rather than a scan.
 
-~not_before~ defers delivery, which is how both "remind me in an hour"
-and retry backoff are expressed -- one mechanism rather than two.
+A sender chooses the band.  ~clawtilla_message_agent~ takes ~priority~
+and so does the podomation ~message_agent~ action; both go through one
+parser, and an unrecognised nickname is *refused before anything is
+queued* rather than defaulted.  That refusal is the whole point:
+~low~ is the enum's first member, so falling through to zero would post
+a mis-typed ~urgent~ at the band ~drop-oldest~ sheds first -- the exact
+opposite of what the sender asked for.  Absent means ~normal~.
+
+This was inert for a long time and it is worth knowing why, because
+nothing looked wrong: ~ClawtMessage~ had no priority field at all, so
+~clawt_mailbox_router_send()~ built every item at the constructor
+default and ~clawt_mailbox_item_set_priority()~ was called by nothing
+outside the tests.  The store banded correctly, the documentation was
+accurate about the store, and every message in the fleet was ~normal~.
+
+~not_before~ defers delivery.  Today the retry backoff is the only thing
+that sets it -- one mechanism rather than two if a scheduled send is
+ever added, but nothing schedules a send now, so a pending item with a
+future ~not_before~ is always a message that is backing off.
 
 ** Leasing
 
-An item handed to a running agent is ~leased~ with a deadline rather than
-deleted.  If the agent dies or the lease expires, it returns to
-~pending~ with ~attempts~ incremented.
+An item handed to a running agent is ~leased~ with a deadline rather
+than deleted.  ~attempts~ is incremented at the moment it is leased, not
+when the lease expires, so an agent that crashes on the same message
+five times dead-letters it rather than looping on it for ever -- a crash
+that never reaches an acknowledgement still counts as a try.
 
-That is what makes delivery survive a crash mid-turn without silently
-duplicating work.
+If the agent dies or the lease expires, the item returns to ~pending~
+and is leased again with its attempt already counted.  That is what
+makes delivery survive a crash mid-turn without silently duplicating
+work.
+
+Nothing is handed out unless the lease is durably recorded.  A lease
+that cannot be written -- SQLite refusing with ~SQLITE_BUSY~ because a
+backup or somebody's ~sqlite3~ session holds a lock -- leaves the
+message queued and warns.  Returning the item anyway would let the next
+caller lease the same message, and two agents would work on it each
+believing they were the only one.
 
 *The daemon acknowledges on the agent's behalf once the message reaches
 the socket.*  The lease exists to survive a crash, not to wait for a
 reply: holding it until the agent answers would redeliver every message
 the agent chose not to respond to.
 
+An acknowledgement is refused unless the item is currently ~leased~.  An
+ack arriving after its lease expired refers to work that has already
+been handed to somebody else, and honouring it would mark that second
+delivery done before it had happened.
+
 ** Retry and dead letters
 
-Exponential backoff with jitter, based on ~backoff_seconds~.  After
-~max_attempts~ the item becomes ~dead~ and lands in the dead-letter view.
-It is never silently dropped.
+Exponential backoff with jitter.  The delay is ~backoff_seconds~ shifted
+left once per attempt already made, capped at six shifts -- so from the
+default of 30 the retries fall at roughly 60s, 120s, 240s, 480s, with a
+ceiling of 32 minutes however many attempts follow.  Jitter of up to a
+quarter of the delay is added on top: without it, a dependency that
+failed for every queued message brings them all back at the same
+instant, and the retry storm looks exactly like the original problem.
+
+After ~max_attempts~ the item becomes ~dead~ and lands in the
+dead-letter view, with the reason for the last failure kept on it.  It
+is never silently dropped, and dead letters are deliberately not swept
+-- they are there to be looked at.
+
+~max_attempts: 0~ means *never* dead-letter, not "no attempts".  The
+item retries for ever at the ceiling delay, which is a defensible choice
+for a queue whose failures are always transient and a bad one otherwise
+-- an item that cannot be delivered at all will sit there retrying until
+its TTL removes it, and the dead-letter list, which is where somebody
+would look for it, stays empty.
 
 #+begin_src bash
 clawtilla mailbox dead researcher
 clawtilla mailbox requeue researcher <item-id>    # attempts reset
 #+end_src
 
+Requeueing resets ~attempts~ to zero and clears ~not_before~ and
+~last_error~.  It is a deliberate act after somebody fixed whatever was
+broken, so it should get a full set of tries rather than dying again on
+the next failure.
+
 ~backoff_seconds: 0~ means zero.  It used to mean "substitute 30", which
 made an immediate-retry configuration wait half a minute for no stated
 reason.
 
-** TTL
+** TTL and the sweep
 
-Items past ~expires_at~ are removed by a periodic sweep and logged.  A
-message with no TTL lives until it is delivered or dead-lettered.
+The daemon sweeps every agent's mailbox once a minute, expiring old
+items and returning abandoned leases to the queue.  Both halves are
+~clawt_mailbox_router_sweep()~; there is no separate timer for either.
+
+Expiry removes ~pending~ and ~failed~ items past ~expires_at~, and logs
+how many went.  A ~leased~ item is left alone even when its expiry has
+passed -- it is in flight, and taking it out from under an agent
+mid-turn would be the one way to lose a message that was actually being
+worked on.  Leasing skips an expired item rather than handing it over,
+so an item that expired while queued is never delivered late.
+
+~default_ttl_seconds~ is applied at post time when the item carries no
+expiry of its own, which today is every item: nothing sets a per-message
+~expires_at~.  So with the default of 604800 every queued message
+expires after a week, and only ~default_ttl_seconds: 0~ produces a
+message that lives until it is delivered or dead-lettered.
+
+The same sweep reaps ~acked~ items older than 24 hours, measured from
+~created_at~.  Before that the queue only ever grew: a busy agent's
+~mailbox.db~ gained one permanent row per message handled and never
+shrank.  What was said lives in the room transcript and the event log,
+which is where anybody looks for it.
 
 #+begin_src bash
 clawtilla mailbox purge researcher
@@ -81,22 +168,32 @@ clawtilla mailbox purge researcher
 
 ** Backpressure
 
-~max_depth~ with one of three policies:
+Depth is ~pending~ plus ~leased~, not ~pending~ alone.  A leased item
+has not been dealt with and comes straight back if its lease expires;
+counting only pending would make a mailbox look empty while an agent sat
+on all of it.
+
+~max_depth~ is compared against that depth, with one of three policies:
 
 | Policy | What happens when full |
 |--------+------------------------|
-| ~reject~ | the sender gets a real error |
-| ~drop_oldest~ | the oldest pending item is discarded, and the loss is logged |
-| ~block_sender~ | the send fails with ~CLAWT_ERROR_MAILBOX_BUSY~ -- a distinct, retryable error -- rather than blocking a thread |
+| ~reject~ | the sender gets ~CLAWT_ERROR_MAILBOX_FULL~ and the message is not queued |
+| ~drop-oldest~ | one pending item is discarded to make room, and the loss is logged |
+| ~block-sender~ | the send fails with ~CLAWT_ERROR_MAILBOX_BUSY~ -- a distinct, retryable error -- rather than blocking a thread |
 
-The sender always finds out, and can tell the two refusals apart:
-~reject~ reports ~mailbox-full~ (do not bother retrying), ~block_sender~
-reports ~mailbox-busy~ (come back shortly).  A silent discard is the one
-option not offered.
+~drop-oldest~ takes the *lowest* priority band first and the oldest
+within it, not simply the oldest.  Dropping the newest would discard
+exactly the message somebody just sent and is waiting on.  If it cannot
+drop anything -- every item leased, so there is no pending row to take
+-- it falls through to the ~reject~ refusal rather than admitting the
+message over the limit.
 
-Acknowledged messages are swept a day after delivery.  The queue is a
-queue, not an archive -- what was said lives in the room transcript and
-the event log.
+Nothing here blocks a thread.  A daemon that stalled on a full queue
+would stall every other agent with it, so "block the sender" means
+telling the sender to come back.  The sender always finds out, and can
+tell the two refusals apart: ~reject~ reports ~mailbox-full~ (do not
+bother retrying), ~block-sender~ reports ~mailbox-busy~ (come back
+shortly).  A silent discard is the one option not offered.
 
 Note that a full mailbox does not fail a whole room post: a room of five
 where one member is backed up still reaches the other four, and the
@@ -104,23 +201,96 @@ failure is reported rather than hidden.
 
 ** Idempotency
 
-~clawt_mailbox_post()~ takes an optional idempotency key, enforced by a
-partial unique index.  A retried tool call posts once.
+~clawt_mailbox_post()~ takes an optional idempotency key.  A post
+carrying a key that is already in the queue returns the existing item's
+id and writes nothing, so a caller cannot tell a deduplicated post from
+a fresh one -- which is the point.  It is enforced by a unique index
+that applies only where a key was given: a plain ~UNIQUE~ column would
+make every keyless item collide with every other, because SQLite treats
+NULLs as distinct but empty strings as equal.
+
+The mechanism exists in the store and nothing in the product uses it
+yet.  The router posts without a key, so a duplicate send today produces
+a duplicate item.  It is worth knowing which way round that is before
+relying on it: the guarantee is available to a caller that opts in, not
+a property of the queue.
+
+** Durability
+
+WAL journalling with ~synchronous=NORMAL~, one file per agent at 0600,
+and a five-second busy timeout so a lock held by a backup or a
+checkpoint is a short pause rather than an instant failure.
+
+Every write is checked.  ~sqlite3_step()~ returning ~SQLITE_BUSY~ is not
+a rare event once a second connection touches the file, and ignoring the
+return value meant the queue reported success while the row was
+untouched -- which surfaced as the same message being leased twice and
+as acknowledgements that did not stick.  A write that did not complete
+is reported to its caller, never assumed.
+
+What that buys you: an item that was accepted is on disk before the post
+returns, and a daemon killed at any point loses at most the turn in
+flight -- which comes back when its lease expires.  What it does not buy
+you is a record of the conversation.  The queue is a queue, not an
+archive; the transcript and the event log are the durable record of what
+was said.
 
 ** Configuration
+
+The defaults, spelled out:
 
 #+begin_src yaml
 orchestration:
   mailbox:
     max_depth: 1000
-    overflow: reject          # reject | drop_oldest | block_sender
+    overflow: reject          # reject | drop-oldest | block-sender
     max_attempts: 5
     lease_seconds: 300
     default_ttl_seconds: 604800
-    backoff_seconds: 5
+    backoff_seconds: 30
 #+end_src
 
-Any of these can be overridden per agent under ~agents[].mailbox~.
+Any of these can be overridden per agent under ~agents[].mailbox~,
+dropping the ~orchestration.~ prefix --
+~orchestration.mailbox.max_depth~ is ~mailbox.max_depth~ inside an agent
+block.
+
+** A running agent's mailbox is almost always empty
+
+This is the single most misleading thing about the queue, and it has cost a session already.
+
+Delivery acknowledges an item the moment it reaches the socket, and the
+message arrives as an ordinary turn.  So the mailbox holds only what
+queued while the agent was *stopped* -- and for an agent that is up and
+connected, the steady state is zero.  An empty mailbox is not evidence
+that nothing arrived.
+
+An agent asked to consult a peer went looking in its own mailbox for the
+answer, found nothing, and concluded -- correctly, and uselessly -- that
+the peer had not replied.  The reply was in the turn it had just been
+handed.
+
+The consequences are worth stating separately for each reader:
+
+- *An agent* should use ~clawtilla_room_history~ with the peer's agent
+  id to find out what was said, never ~clawtilla_mailbox_list~.  The
+  empty result from ~clawtilla_mailbox_list~ says so in words for
+  exactly this reason, rather than returning a bare "no messages".
+- *An operator* should read a depth of zero as "nothing is queued", not
+  as "nothing was sent".  What was sent is in the room transcript and
+  the event log.
+- *A client* reports the depth as "N waiting" in the agent's row, and
+  that is work waiting for *it* to read -- close to the opposite of
+  "this agent said something to you".  The accent badge beside it is the
+  unread count and is a different number for a different question; the
+  two were once the same one, which is how a depth of zero came to be
+  read as an agent having nothing to say.
+
+The four tools an agent has over its own queue are
+~clawtilla_mailbox_list~, ~clawtilla_mailbox_read~,
+~clawtilla_mailbox_ack~ and ~clawtilla_mailbox_reply~.  Only the last
+needs a capability; it replies and acknowledges in one step, which is
+the one thing an agent should be doing with a message that did queue.
 
 ** Reasoning about a stuck queue
 
@@ -132,9 +302,12 @@ Work through it in this order.
 clawtilla mailbox list researcher
 #+end_src
 
-A depth of zero means the messages went somewhere else.  Check that you
-sent to the id you think you did, and that the room has the members you
-expect (~clawtilla room list~).
+A depth of zero means the messages went somewhere else -- or, far more
+often, that they were delivered already and there is nothing wrong.  See
+the section above before treating zero as a symptom.  If you are certain
+something should be queued, check that you sent to the id you think you
+did, and that the room has the members you expect (~clawtilla room
+list~).
 
 *** 2. Is the agent connected?
 
@@ -147,31 +320,55 @@ is down, the child cannot reach ~agents.sock~ -- check the rendered
 config (~clawtilla config render researcher~) and the agent's log
 (~clawtilla agent logs researcher~).
 
-*** 3. Are the items deferred?
+*** 3. Is the account out of session allowance?
 
-An item with a future ~not_before~ is waiting on purpose: either it was
-scheduled, or it is backing off after failures.  ~attempts~ and
-~last_error~ tell you which.
+#+begin_src bash
+clawtilla agent logs researcher
+#+end_src
 
-*** 4. Are they leased and never acknowledged?
+A paused agent is deliberately *not* drained.  Delivery acknowledges an
+item the moment it reaches the socket, so handing messages to an agent
+whose CLI answers from itself without reaching a model would consume the
+whole queue in a couple of minutes and leave the agent holding nothing.
+The allowance is per account, so the whole fleet stops at once and it
+looks like the daemon having failed.  Nothing is broken and nothing
+needs restarting; see ~docs/troubleshooting.org~.
 
-A ~leased~ item whose deadline has not passed is in flight.  If they are
-all leased and none is progressing, the agent took delivery and stopped.
-Restart it -- the leases expire and the items return to ~pending~ with
-~attempts~ incremented, so nothing is lost.
+*** 4. Are the items deferred?
 
-*** 5. Are they dead?
+An item with a future ~not_before~ is backing off after a failed
+delivery -- nothing else sets it.  ~attempts~ and ~last_error~ say why,
+and the delay doubles per attempt to a ceiling of 32 minutes at the
+default ~backoff_seconds~, so a queue that looks frozen may simply be
+late in a long backoff.
+
+*** 5. Are they leased and never acknowledged?
+
+A ~leased~ item whose deadline has not passed is in flight.  The drain
+leases, delivers and acknowledges one item at a time, so in the ordinary
+case a lease lasts microseconds and you will never catch one: an item
+sitting ~leased~ means the daemon died between reaching the socket and
+recording the acknowledgement.  There is nothing to do about it -- the
+sweep returns it to ~pending~ once ~lease_seconds~ is up, and its
+attempt was counted when it was leased, so nothing is lost and nothing
+is retried for ever.
+
+*** 6. Are they dead?
 
 #+begin_src bash
 clawtilla mailbox dead researcher
 #+end_src
 
-Each dead item carries the error that killed it.
+Each dead item carries the error that killed it.  Dead letters are never
+swept, so this list is as long as the fleet's history of failures --
+which is the point.
 
-*** 6. Is the queue full?
+*** 7. Is the queue full?
 
 A ~max_depth~ hit with ~overflow: reject~ makes senders fail rather than
-the queue grow, so the symptom is at the sending end, not here.
+the queue grow, so the symptom is at the sending end, not here.  The
+refusal names the agent and the limit; ~drop-oldest~ warns instead, once
+per message discarded.
 
 ** Corruption
 
@@ -184,13 +381,27 @@ and certainly not the fleet.
 #+begin_src c
 gchar *id = clawt_mailbox_post(mailbox, item, &error);
 
-ClawtMailboxItem *item = clawt_mailbox_lease(mailbox, 300);
+/* 0 means the configured lease_seconds, not "no lease". */
+ClawtMailboxItem *item = clawt_mailbox_lease(mailbox, 0);
 clawt_mailbox_ack(mailbox, clawt_mailbox_item_get_id(item), &error);
 clawt_mailbox_nack(mailbox, id, "the link dropped", &error);
 
+clawt_mailbox_requeue(mailbox, dead_id, &error);
+GPtrArray *dead = clawt_mailbox_dead_letters(mailbox);
+
 guint expired  = clawt_mailbox_purge_expired(mailbox);
 guint returned = clawt_mailbox_reclaim_expired_leases(mailbox);
+guint waiting  = clawt_mailbox_depth(mailbox);
 #+end_src
 
-Signals: ~item-added~, ~item-leased~, ~item-acked~, ~item-dead-lettered~,
-~depth-changed~.
+~clawt_mailbox_ack()~, ~_nack()~ and ~_requeue()~ all refuse an item
+that is not in the state they expect, with ~CLAWT_ERROR_MAILBOX_STATE~:
+a ~FALSE~ from any of them means the item moved on without you, not that
+the write failed.
+
+Signals: ~item-added~, ~item-leased~, ~item-acked~,
+~item-dead-lettered~, ~depth-changed~.  The last carries the new depth,
+and fires on post, ack, dead-lettering, requeue and the expiry sweep.
+It deliberately does not fire on a lease, on a retry, or when an
+abandoned lease is reclaimed: none of those changes the depth, because a
+leased item is counted the same as a pending one.

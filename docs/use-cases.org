@@ -1,0 +1,1456 @@
+#+title: Use Cases
+#+description: Worked scenarios, end to end: what a person actually does with a fleet
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-26 Wed]
+#+updated: [2026-08-26 Wed]
+#+version: 0.1.0
+
+* Use cases
+
+The rest of ~docs/~ is organised by subsystem: mailboxes here, computers
+there, integrations somewhere else.  That is the right shape for looking
+something up and the wrong shape for the question people actually arrive
+with, which is /what do I do with this/.  This file answers that
+instead: fourteen scenarios, each one a thing somebody wanted, worked
+through from an empty fleet to the result.
+
+Every case is self-contained and every case has the same five parts ---
+what you want, the configuration, the commands, what you see, and what
+to watch out for.  Read one; there is no order.  The last part is the
+one worth reading twice: it is drawn from failures this project has
+actually had rather than from a list of things that could theoretically
+go wrong, and each one names the deeper page that covers it properly.
+
+The YAML is a *fragment* of ~clawtilla.yaml~, not a whole file.  A block
+shown under ~agents:~ is one entry of the top-level ~agents:~ list; a
+block shown at top level goes at top level.  ~clawtilla
+--generate-config~ writes a starter with the sections already in place,
+and [[file:configuration-options.org][configuration-options.org]] has every option with its default.
+
+Where a case shows CLI output it was run against a real daemon.  Where a
+case involves something this machine has no hardware for --- a GNOME
+session inside a VM, a phone receiving a push --- the commands are still
+real and the output is described rather than quoted.
+
+** 1. One agent, and nothing else
+
+*** What you want
+
+Somewhere to think out loud that has a persona, keeps its own notes, and
+does not touch anything.  No container, no machine, nothing to
+provision.  This is the right first agent and it is a perfectly good
+permanent one.
+
+*** The configuration
+
+#+begin_src yaml
+defaults:
+  model: "sonnet"
+  computer: "none"
+
+agents:
+  - id: researcher
+    description: "reads code and summarises what it finds"
+    computer:
+      type: none
+#+end_src
+
+~description~ is doing more work than it looks.  It is what /other
+agents/ read when they are deciding who to hand something to, and it is
+what the scaffolded ~SOUL.org~ and ~IDENTITY.org~ are seeded from.
+"reads code and summarises what it finds" is useful; "the researcher
+agent" is not.
+
+*** The commands
+
+#+begin_src bash
+clawtilla agent create --id researcher --model sonnet --computer none
+clawtilla agent files researcher
+clawtilla agent edit researcher SOUL.org
+clawtilla agent reset researcher
+clawtilla chat researcher
+#+end_src
+
+*** What you see
+
+~agent create~ scaffolds the workspace and starts what it made.  ~agent
+files~ lists the identity files, in the order the agent reads them:
+
+#+begin_example
+/home/you/.clawtilla/agents/researcher
+
+SOUL.org           prompt  character, mission and voice
+IDENTITY.org       prompt  name, role and self-description
+USER.org           prompt  who the human is and how they work
+AGENTS.org         prompt  how to work: format, safety, the fleet
+TOOLS.org          prompt  what this agent actually has
+TOOL_GOTCHAS.org   prompt  footguns, appended as they are found
+PROJECTS.org       prompt  what is in flight and where it lives
+README.org                 what this directory is, for a person
+AGENTS.md                  loader: the org files, in order
+CLAUDE.md                  loader: points at AGENTS.md
+.mcp.json          shared  MCP servers this agent may call
+#+end_example
+
+~agent list~ shows ~LINK: up~ once the agent has dialled back into the
+daemon, which is what "reachable" means here.
+
+*** What to watch out for
+
+*Editing an identity file and restarting is not enough.*  An AI CLI is
+not handed a system prompt when it /resumes/ a session, so a changed
+~SOUL.org~ reaches the agent's files and not its prompt.  ~clawtilla
+agent reset~ clears the session so the files are read again; the
+previous sessions are moved aside rather than deleted.  ~agent set~ says
+so for the keys that need it.
+
+*The scaffolder never overwrites.*  The defaults are a starting point,
+and a start that quietly restored them would throw away the exact work
+this exists to make possible.  An agent created before a file joined the
+standard set gets that file on its next start rather than staying a
+version behind.
+
+*Setting ~persona.identity_files~ narrows what is scaffolded as well as
+what is read.*  A template nothing loads is not a starting point, it is
+a second persona sitting beside the real one --- and the two disagree.
+
+*If the first start cannot find ~libreclaw~*, the refusal names all
+three places it looked: beside ~clawtillad~, then the ~deps/libreclaw~
+build this checkout produced, then ~PATH~.  =defaults.libreclaw_binary=
+overrides the lot and is worth setting only when the one to run is
+somewhere else.
+
+More in [[file:agents.org][agents.org]].
+
+** 2. A chief of staff that divides the work
+
+*** What you want
+
+To describe a piece of work once and have it broken up and handed out,
+with something you can look at while it happens and a result at the end.
+This is the pattern clawtilla exists for.
+
+*** The configuration
+
+#+begin_src yaml
+orchestration:
+  chief_of_staff: chief
+  max_hops: 4
+  rate_limit_per_minute: 30
+  task_budget_usd: 5.0
+  cycle_window: 20
+
+agents:
+  - id: chief
+    chief_of_staff: true
+    description: "hands work to the others and reports back"
+    model:
+      model: opus
+
+  - id: researcher
+    description: "reads code and summarises what it finds"
+
+  - id: writer
+    description: "turns notes and findings into prose somebody can read"
+#+end_src
+
+*** The commands
+
+#+begin_src bash
+clawtilla room create standup --members chief,researcher,writer
+clawtilla send chief "summarise this week's commits and write it up"
+
+clawtilla task list
+clawtilla room history standup
+clawtilla mailbox list writer
+clawtilla decision
+#+end_src
+
+*** What you see
+
+The chief calls ~clawtilla_list_agents~, reads the descriptions, and
+calls ~clawtilla_delegate~, which returns a task id immediately.  The
+router enqueues that work into the assignee's mailbox carrying the task
+id and a depth of 1.  The assignee either calls
+~clawtilla_task_complete~ or simply replies --- the daemon completes the
+task from the reply, because an agent that only replied would otherwise
+leave the chief waiting for ever.
+
+#+begin_example
+ID                         FROM         TO           STATE      WORK
+task-01m100f78eeahka8scn2  user         researcher   running    Summarise this week's commits and write it up.
+#+end_example
+
+States are ~pending~ → ~running~ → ~completed~ / ~failed~ / ~cancelled~
+/ ~orphaned~.  ~clawtilla task show <id>~ has the same fields one per
+line; ~clawtilla task cancel <id>~ cancels everything that task spawned
+as well as the task itself.  Stopping an agent /orphans/ its tasks
+rather than leaving them assigned --- a task whose assignee is gone
+would sit in the list looking like work in progress for ever.
+
+An agent that reaches a genuine fork --- one where the branches produce
+materially different work, or the choice is not cheaply reversible ---
+files it with ~clawtilla_ask_decision~ and /keeps going/ under a stated
+default.  ~clawtilla decision~ is where those wait:
+
+#+begin_example
+Nothing is waiting on you.
+
+Agents file a decision only when the branches produce materially
+different work, or the choice is not cheaply reversible.
+#+end_example
+
+*** What to watch out for
+
+*The descriptions are load-bearing.*  They are the only thing the chief has to choose with.
+
+*~chief_of_staff~ and ~agents.tools.manage_fleet~ are different
+settings, and the obvious-sounding one is not the one that grants the
+tool.*  The first marks who receives work addressed to the fleet; the
+second is what adds ~clawtilla_create_agent~ and
+~clawtilla_agent_options~, and it is off by default.  Enabling only the
+first and then asking your chief for a new agent gets you an agent
+saying, correctly, that it has no such tool.
+
+*A permission granted under a running agent reaches its files and not
+its session.*  An AI CLI lists its tools once, when the session starts.
+~agent set~ reports ~restart_required~ for exactly this reason and both
+clients say so.
+
+*A running agent's mailbox is empty, and that means nothing.*  Delivery
+acknowledges an item the moment it reaches the socket and hands it over
+as an ordinary turn; the mailbox only holds what queued while the agent
+was stopped.  An agent that checks ~clawtilla_mailbox_list~ for a peer's
+reply will find nothing and conclude, correctly and uselessly, that none
+came --- while the reply was in the turn it had just been handed.
+~clawtilla_room_history~ is the answer, and it takes an agent id as well
+as a room id.
+
+*Four limits stop a runaway, and one of them fires in ordinary
+conversation.*  =orchestration.max_hops= counts how far a message has
+travelled, and every reply in a room counts as a hop --- so three agents
+in a standup reach the ceiling by talking rather than by looping.  The
+refusal says so and names the key.
+=orchestration.rate_limit_per_minute= catches a fast loop inside the hop
+limit; =orchestration.cycle_window= catches two agents politely agreeing
+with each other for ever; =orchestration.task_budget_usd= is money and
+has its own case below.  A refused send publishes ~message.refused~
+naming both agents and the reason, so the conversation does not merely
+trail off.
+
+More in [[file:orchestration.org][orchestration.org]].
+
+** 3. Teams: a chief above two leads
+
+*** What you want
+
+Past a handful of agents, "who do I give this to" stops being a question
+one agent can answer by reading a dozen descriptions.  A team is a group
+with a lead and a statement of what it handles; the chief hands whole
+pieces of work to leads, and a lead divides it inside its own team.
+
+*** The configuration
+
+#+begin_src yaml
+teams:
+  - id: research
+    name: Research
+    description: Reads sources and answers questions about what is in them. Not for anything that writes code.
+  - id: writing
+    name: Writing
+    description: Turns findings into prose somebody can read.
+
+agents:
+  - id: chief
+    chief_of_staff: true
+
+  - id: lead-r
+    team: research
+    team_role: lead
+    description: "reads code and summarises what it finds"
+
+  - id: reader
+    team: research
+    description: "answers questions about a codebase it has read"
+
+  - id: writer
+    team: writing
+    team_role: lead
+    description: "turns notes into prose"
+#+end_src
+
+*** The commands
+
+#+begin_src bash
+clawtilla team create research \
+    "Reads sources and answers questions about what is in them. Not for anything that writes code."
+clawtilla team create writing "Turns findings into prose somebody can read."
+
+clawtilla team assign lead-r research lead
+clawtilla team assign reader research
+clawtilla team assign writer writing lead
+
+clawtilla team list
+#+end_src
+
+*** What you see
+
+#+begin_example
+research         Reads sources and answers questions about what is in them. Not for anything that writes code.
+                 0 of 2 running, lead: lead-r
+writing          Turns findings into prose somebody can read.
+                 0 of 1 running, lead: writer
+#+end_example
+
+The sidebar in both graphical clients groups the fleet the same way,
+with teamless agents first --- that is where the chief of staff lives,
+and putting it last would bury the agent you talk to most under every
+team in the fleet.
+
+*** What to watch out for
+
+*The permission is about assigning, not about talking.*  A member may
+hand work to nobody; it may still message, ask and share a room with
+every agent in the fleet.  That distinction is stated in every refusal,
+because an agent told a bare "you cannot delegate" reads it as "you are
+cut off from your peers" and stops messaging them at all:
+
+#+begin_example
+builder is not on your team (research), and a lead assigns only within
+their own. Send it to the chief of staff, who can hand it to the right
+team's lead -- or message builder directly if it is a question rather
+than a task.
+#+end_example
+
+*Fleet-level mistakes are warnings, not errors.*  Two leads on one team,
+an agent naming a team nobody declared, a team with members and no lead:
+~clawtilla team list~ prints these to stderr and the Teams page shows
+them.  A fleet is edited by hand and half-built states are ordinary;
+refusing to start over one would be far worse than saying so.  An agent
+on an undeclared team still appears, under that team's id --- hiding it
+is how a typo in ~agents.team~ survives being looked at.
+
+*A team with no description is a team nothing gets sent to.*
+~clawtilla_list_teams~ leads with the description, because it is the
+only part that says what the team /handles/; the names on it do not.
+
+*Teams are optional.*  A fleet that declares none behaves exactly as it
+did before there were any: one group, and only the chief assigns.
+
+More in [[file:orchestration.org][orchestration.org]].
+
+** 4. An agent with a container
+
+*** What you want
+
+An agent that can run commands --- build something, run a test suite,
+poke at a package --- without those commands landing on your machine.
+
+*** The configuration
+
+#+begin_src yaml
+agents:
+  - id: builder
+    description: "builds things and runs their tests"
+    computer:
+      type: container
+      container:
+        image: "registry.fedoraproject.org/fedora:44"
+        network: "bridge"
+        keep: false
+      mounts:
+        - source: "~/src/clawtilla"
+          target: "/work"
+          mode: ro
+#+end_src
+
+*** The commands
+
+#+begin_src bash
+clawtilla image
+clawtilla agent create --id builder --computer container \
+    --image registry.fedoraproject.org/fedora:44
+clawtilla agent mount add builder ~/src/clawtilla /work ro
+clawtilla agent start builder
+
+clawtilla computer status builder
+clawtilla computer exec builder -- uname -a
+clawtilla computer exec builder -- bash -c 'cd /work && make test > /tmp/log 2>&1'
+clawtilla cp ~/notes.org builder:/mnt/clawtilla/exchange/builder/
+#+end_src
+
+*** What you see
+
+~clawtilla image~ prints the images clawtilla suggests, grouped by
+family, with the default marked.  It is a starting point and never a
+restriction --- any reference podman can pull works, and your own go in
+=defaults.container_images=.
+
+~agent mount add~ reports when the change lands:
+
+#+begin_example
+builder now sees /home/you/src/clawtilla at /work.
+Takes effect when the agent next starts.
+#+end_example
+
+Every computer also gets two shares nobody configures: the agent's own
+workspace at ~/mnt/clawtilla/workspace~, and the exchange at
+~/mnt/clawtilla/exchange~.  The exchange is a drop-box --- ~shared/~ is
+writable by everybody, each agent's own directory is writable by it and
+readable by the others.
+
+*** What to watch out for
+
+*The agent does not run inside its computer.*  It is a libreclaw process
+on the /host/, so its own ~bash~, ~read~ and ~write~ tools operate on
+the host filesystem.  The container is a thing it /operates/, reachable
+only through ~clawtilla_computer_exec~.  Nothing said so once, and the
+result was an agent with a perfectly good container sitting in its
+workspace, running commands on the host, reporting --- correctly ---
+that it did not appear to be in a container.  Three things say it now,
+and the one that matters most is =agents.prompt_suffix=, injected into
+/every turn/, because a resumed session never re-receives the system
+prompt.
+
+*~clawtilla_computer_exec~ takes a command and its arguments, not a
+shell line.*  Every argument is quoted and passed through as it stands,
+so ~>~, ~|~, ~&&~, ~;~, ~*~ and ~$VAR~ arrive at the command as literal
+text.  The failure is the bad kind: ~echo hi > /tmp/note~ exits 0 and
+prints ~hi > /tmp/note~ to stdout.  Wrap it in a shell when you want
+shell behaviour.  This is the same for every backend.
+
+*A computer is built at the agent's first start, not when the agent is
+created.*  ~clawtilla computer status~ on an agent that has never run
+answers /that agent has no computer/, which is accurate and reads like a
+fault.
+
+*Anything an agent needs to /read/ needs the host path; anything it
+passes to ~computer_exec~ needs the path inside.*
+~clawt_computer_describe()~ states both, as ~host path = the path
+inside~, because naming only the path inside once sent two agents
+looking on the host at a guest path, finding nothing, and reporting a
+share that was working as absent.
+
+*~distrobox~ is a fifth option* --- a container wired into your session,
+with your home directory --- and it is a different bargain from a plain
+container.  See [[file:computers.org][computers.org]].
+
+** 5. An agent with a VM, and a desktop inside it
+
+*** What you want
+
+A whole machine the agent can break, with a graphical session it can
+look at and click on.  Somewhere a misjudged click lands somewhere
+recoverable.
+
+*** The configuration
+
+#+begin_src yaml
+agents:
+  - id: deskbot
+    description: "drives a desktop in a machine of its own"
+    computer:
+      type: vm
+      vm:
+        image: "~/.local/share/clawtilla/images/fedora-44"
+        cpus: 2
+        memory_mb: 8192
+        disk_gb: 128
+        resolution: "1920x1080"
+        desktop:
+          autologin: true
+          flavour: auto
+      desktop:
+        enabled: true
+        allow_input: true
+#+end_src
+
+*** The commands
+
+#+begin_src bash
+clawtilla image vm catalog
+clawtilla image vm get fedora-44
+clawtilla agent create --id deskbot --computer vm \
+    --vm-image ~/.local/share/clawtilla/images/fedora-44
+
+clawtilla agent set deskbot computer.desktop.enabled true
+clawtilla agent set deskbot computer.desktop.allow_input true
+
+clawtilla agent stop deskbot
+clawtilla computer rebuild deskbot
+clawtilla agent start deskbot
+
+clawtilla computer exec deskbot -- bash -c 'echo ">>> hello <<<" > /dev/console'
+#+end_src
+
+*** What you see
+
+#+begin_example
+Fedora
+  fedora-44          Fedora 44 Cloud Base         the default, and what clawtilla is tested against
+  fedora-43          Fedora 43 Cloud Base         the previous release
+
+Enterprise Linux
+  centos-stream-10   CentOS Stream 10             closest to RHEL
+
+Debian and Ubuntu
+  debian-13          Debian 13 (trixie)           small, and apt is familiar
+#+end_example
+
+~clawtilla computer rebuild~ says what it cost:
+
+#+begin_example
+Rebuilt deskbot's computer. Its contents are gone; cloud-init runs again on the next start.
+#+end_example
+
+Once the guest is up, the agent's screenshot tool writes into
+~/mnt/clawtilla/workspace/screenshots~, which is the agent's workspace
+on the host --- so a picture it takes inside the guest is a file its own
+~read~ can open, with no copying step to forget.
+
+*** What to watch out for
+
+*=agents.computer.vm.image= is a path, not a catalogue id.*  ~clawtilla
+image vm get fedora-44~ writes a file called ~fedora-44~ under
+=defaults.image_dir=; point the setting at that file.  A bare id is
+accepted at creation and refused at provision, several minutes later,
+naming a disk that is not there.
+
+*cloud-init reads its seed at first boot only.*  The login, the desktop,
+the package list, the shares --- everything in that seed is fixed for
+the life of the machine, so changing one in the config and restarting
+the agent looks exactly like the setting not working.  ~clawtilla
+computer rebuild~ is the answer, and it destroys the guest.  ~cpus~,
+~memory_mb~, ~disk_gb~ and ~resolution~ are /not/ in the seed: they
+reach the domain definition and apply at its next boot, so those never
+need a rebuild.
+
+*Rebuild is refused while the agent runs*, and the /Rebuild computer/
+button is insensitive.  Destroying the machine underneath a working
+agent is not something to do carefully; it is something not to offer.
+
+*Lowering ~disk_gb~ is refused, with a warning.*  Shrinking a disk
+discards whatever was past the new end, and a number edited downwards in
+a config file is not consent to lose it.
+
+*A black console means no disk, not a console problem.*  A VM with
+nothing to boot defines, starts and boots nothing: a black console, SSH
+answering ~kex_exchange_identification: Connection reset by peer~, and
+virt-manager showing a running VM.  So does a guest whose CPU baseline
+the image will not accept.  The provisioner refuses a diskless VM
+outright now for exactly this reason.
+
+*The qemu fallback backend shares nothing.*  It has no virtiofsd of its
+own; it warns and carries on without the share.
+=agents.computer.vm.backend= defaults to ~libvirt~, which is the one
+that does.
+
+*Seeing and acting are separate grants.*
+=agents.computer.desktop.allow_input= off means observe only, and the
+tools an agent may not use are not offered to it at all.
+
+More in [[file:computers.org][computers.org]].
+
+** 6. Giving an agent the real machine
+
+*** What you want
+
+The agent to run commands on the machine clawtilla itself is on: your
+files, your processes, your network.  The most useful option and the
+most dangerous, which is why it takes two deliberate acts rather than
+one typo.
+
+*** The configuration
+
+#+begin_src yaml
+agents:
+  - id: handy
+    description: "runs the odd command on this machine"
+    computer:
+      type: host
+      host:
+        confirm_host_control: true
+        confine: bwrap
+        root: "~/agents/handy"
+        allow_paths: ["~/src"]
+        deny_paths: ["~/.ssh", "~/.gnupg", "~/.clawtilla/secrets"]
+        allow_network: true
+        allow_sudo: false
+        nice: 5
+#+end_src
+
+*** The commands
+
+#+begin_src bash
+clawtilla agent create --id handy --computer host
+clawtilla agent show handy
+
+clawtilla agent set handy computer.host.confirm_host_control true
+clawtilla agent set handy computer.host.confine bwrap
+clawtilla agent set handy computer.host.allow_paths "~/src"
+clawtilla agent set handy computer.host.deny_paths "~/.ssh,~/.gnupg"
+
+clawtilla config edit          # a reload is what retakes the decision
+systemctl --user reload clawtilla   # or SIGHUP, if it runs as a service
+clawtilla agent start handy
+#+end_src
+
+*** What you see
+
+An agent asking for a host computer without the confirmation does not
+fail to be created --- it is a *shadow*, which is an agent that exists,
+states why it will not start, and does not:
+
+#+begin_example
+id:          handy
+name:        handy
+description: -
+state:       shadow - a host computer needs computer.host.confirm_host_control: true -- it gives the agent your real machine
+model:       sonnet
+computer:    host
+can:         tools-mcp|peer-comms
+queue:       0
+#+end_example
+
+Once the configuration is reloaded the state becomes ~stopped~ and it
+can start.  The GTK sidebar draws a red ~HOST~ badge on any agent with
+host control and the inspector states the confinement mode in words ---
+an agent that can run commands on the real machine should be visibly
+different from one that cannot, at a glance, in the list.
+
+*** What each mode actually prevents
+
+| Mode | What it stops |
+|------+---------------|
+| ~none~ | Nothing.  A bare subprocess; the agent can do anything you can |
+| ~workspace~ | The working directory is pinned to ~root~, and every argument that looks like a path is canonicalised and rejected if it escapes |
+| ~allowlist~ | ~root~ plus ~allow_paths~, minus ~deny_paths~, with the same canonicalisation |
+| ~bwrap~ | A real kernel sandbox: each allowed path is a bind, ~allow_network: false~ is ~--unshare-net~, ~/tmp~ is private |
+
+*** What to watch out for
+
+*~workspace~ and ~allowlist~ inspect arguments, and a program that
+constructs a path once it is running gets through.*  ~python3 -c
+"open(chr(47)+'etc/passwd')"~ reads a file the check never had a chance
+to notice.  Argument inspection is a guard rail, not a wall.  ~bwrap~ is
+the only host mode where a path is genuinely not in the namespace.
+
+*A missing ~bwrap~ is a shadow, not a downgrade.*  A confinement that
+quietly becomes no confinement is worse than none, because you stop
+checking.
+
+*~confine: none~ additionally requires =daemon.allow_unconfined_host=.*
+Handing over the whole machine is two keys in two places on purpose.
+
+*Denials are checked first and win outright*, so ~~/.ssh~ stays out even
+when the whole home directory has been allowed.  The other order would
+let a broad allow silently defeat every specific deny.
+
+*The shadow decision is retaken when the configuration is replaced*, in
+both directions --- so correcting the key needs a reload rather than
+only an ~agent set~.  A /running/ agent is not touched: a config change
+applies at the agent's next start, and ending a turn in progress because
+a key it has already read became invalid is the worse bargain.
+
+*Every host exec is written to the event log*, including the ones a
+person runs through a client.  An audit trail that only covered agents
+would miss exactly the case somebody would want to look up.
+
+More in [[file:computers.org][computers.org]] and [[file:security.org][security.org]].
+
+** 7. Messaging an agent that is switched off
+
+*** What you want
+
+To hand something to an agent you are not currently running, and have it
+pick the message up when it next starts.  Not a feature you configure
+--- it is how every message in clawtilla works, and it is worth seeing
+on purpose once.
+
+*** The configuration
+
+#+begin_src yaml
+orchestration:
+  mailbox:
+    max_depth: 1000
+    overflow: reject          # reject | drop-oldest | block-sender
+    max_attempts: 5
+    lease_seconds: 300
+    default_ttl_seconds: 604800
+    backoff_seconds: 5
+
+agents:
+  - id: writer
+    mailbox:
+      max_depth: 50
+      overflow: block-sender
+#+end_src
+
+*** The commands
+
+#+begin_src bash
+clawtilla agent stop researcher
+clawtilla send researcher "look at this when you wake up"
+clawtilla mailbox list researcher
+clawtilla agent start researcher
+clawtilla mailbox list researcher
+
+clawtilla mailbox dead researcher
+clawtilla mailbox requeue researcher <item-id>
+clawtilla mailbox purge researcher
+#+end_src
+
+*** What you see
+
+Sending to a stopped agent is not an error, and says which of the two things happened:
+
+#+begin_example
+Queued: researcher is stopped, so it is held in the mailbox until the agent starts.
+#+end_example
+
+#+begin_example
+01m0zzbb6z84hkpb4yrk  user         normal   look at this when you wake up
+
+1 waiting.
+#+end_example
+
+After ~agent start~, the same command answers ~researcher's mailbox is
+empty.~ --- the queue drained into the link.
+
+*** What to watch out for
+
+*The overflow policies are spelled with hyphens: ~reject~,
+~drop-oldest~, ~block-sender~.*  An underscore is not rejected; it fails
+to parse and falls back to the schema default, which is ~reject~ --- so
+a mailbox configured to block its senders quietly refuses them instead.
+The same is true of every enum in the configuration: case is not
+significant, a wrong nickname is.
+
+*The daemon acknowledges on the agent's behalf once the message reaches
+the socket.*  The lease exists to survive a crash mid-turn, not to wait
+for a reply; holding it until the agent answered would redeliver every
+message the agent chose not to respond to.
+
+*A depth of zero means the messages went somewhere else*, not that
+nothing was sent.  Check the id you sent to, and the room's members with
+~clawtilla room list~.
+
+*An item with a future ~not_before~ is waiting on purpose*, either
+because it was scheduled or because it is backing off after failures.
+~attempts~ and ~last_error~ say which.
+
+*Nothing is ever silently dropped.*  After ~max_attempts~ an item
+becomes ~dead~ and lands in the dead-letter view carrying the error that
+killed it; ~mailbox requeue~ puts it back with ~attempts~ reset.  A full
+mailbox does not fail a whole room post either --- a room of five where
+one member is backed up still reaches the other four.
+
+*~mailbox purge~ removes expired items; ~agent rm --purge~ deletes
+everything an agent owns.*  Two very different commands with one word in
+common.
+
+More in [[file:mailboxes.org][mailboxes.org]].
+
+** 8. Standing work on a schedule
+
+*** What you want
+
+The thing you would otherwise remember to ask for every morning, asked
+for you.  A prompt, an agent, and when.
+
+*** The configuration
+
+#+begin_src yaml
+routines:
+  - id: morning-brief
+    agent: briefer
+    description: "Yesterday's commits"
+    instructions: "Summarise the last 24 hours of commits, and call out anything risky or missing tests."
+    schedule: weekdays
+    at: "09:00"
+    catch_up: false
+
+  - id: sweep
+    agent: briefer
+    schedule: custom
+    cron: "0 */6 * * *"
+    instructions: "Check the queue and report anything stuck."
+    directory: "/work"
+    worktree: true
+#+end_src
+
+*** The commands
+
+#+begin_src bash
+clawtilla routine add morning-brief briefer \
+    description="Yesterday's commits" \
+    instructions="Summarise the last 24 hours of commits, and call out
+                  anything risky or missing tests." \
+    schedule=weekdays at=09:00
+
+clawtilla routine add sweep briefer schedule=custom \
+    cron="0 */6 * * *" instructions="Check the queue and report anything stuck."
+
+clawtilla routine list
+clawtilla routine run morning-brief
+clawtilla routine set morning-brief catch_up=true
+#+end_src
+
+*** What you see
+
+#+begin_example
+ID                 AGENT            SCHEDULE         NEXT                 LAST
+morning-brief      briefer          weekdays         Thu 27 Aug 09:00     never
+sweep              briefer          0 */6 * * *      Wed 26 Aug 18:00     never
+#+end_example
+
+A run is a delegated /task/, not a message, so it appears in ~clawtilla
+task list~ while it works and has a result afterwards.  The agent is
+told, in the prompt itself, that nobody is waiting:
+
+#+begin_example
+Check the queue and report anything stuck.
+
+---
+This is the scheduled routine 'sweep', started by clawtilla rather than by
+a person. Nobody is waiting on this conversation, so asking a question here
+reaches nobody -- do the work with what you have, and if something is
+genuinely blocking, say so with clawtilla_message_user and stop.
+#+end_example
+
+That paragraph earns its place.  An agent that asks a clarifying
+question at three in the morning has not done the work, and it has no
+way to know from the instructions alone that nobody will answer.
+
+*** What to watch out for
+
+*A routine does not get a libreclaw session of its own.*  libreclaw keys
+a session on channel, room and sender and deliberately not on the
+thread, and a routine's prompt is sent from ~user~ --- so it lands in
+the same room, from the same sender, as the person talking to that
+agent.  Runs share context, a run waits its turn behind an in-flight
+conversation, and the prompt and the answer appear in the operator's
+chat.  *Point routines at an agent that is not also a conversational
+surface.*  =routines.isolate= gives the run a room and a sender of its
+own, at the cost of moving the output into the task result and the Flow
+tab.
+
+*A bad cron expression is refused while you are still looking at what
+you typed*, not at the next tick in a warning nobody is watching for.
+
+*When both day fields are restricted, the match is day-of-month OR
+day-of-week.*  ~0 0 13 * 5~ is the thirteenth /and/ every Friday, not
+Friday the thirteenth.  This is how every cron since Vixie's has
+behaved, and getting it backwards is wrong in a way nobody notices until
+the month a routine did not run.
+
+*Missed is not failed.*  A routine that did not fire because the machine
+was asleep is not broken, and showing it as broken trains somebody to
+ignore the one that is.  =routines.catch_up= runs it /once/, however
+many were missed.
+
+*~routine run~ ignores both the schedule and ~enabled~*, which is the
+point: a disabled routine you can still run by hand is how you find out
+whether the instructions are any good before putting them on a timer.
+
+*=routines.directory= is a path on the agent's computer*, which for a
+container or a VM is a path inside it and not on the host.
+
+*=routines.jitter_seconds= defaults to 0*, unlike the hosted schedulers
+this borrows its shape from.  There is no shared server to spread load
+across; a routine set for 09:00 should run at 09:00.
+
+More in [[file:routines.org][routines.org]].
+
+** 9. Reaching an agent from Matrix, or from mail
+
+*** What you want
+
+To talk to an agent from wherever you already read messages --- a Matrix
+room, which on a bridged homeserver means Discord or Signal too --- or
+to put one in front of an inbox.  And, separately, to be told when an
+agent is blocked on you rather than finding out next time you open a
+client.
+
+*** The configuration
+
+#+begin_src yaml
+integrations:
+  - name: home
+    type: matrix
+    scope: selected
+    agents: [researcher, writer]
+    homeserver: "https://matrix.example.org"
+    require_mention: true
+    per_agent:
+      researcher:
+        user_id: "@researcher:example.org"
+        access_token: {file: "home-researcher-matrix-token"}
+      writer:
+        user_id: "@writer:example.org"
+        access_token: {file: "home-writer-matrix-token"}
+
+  - name: support
+    type: email
+    scope: selected
+    agents: [triage]
+    imap_host: "imap.example.com"
+    imap_port: 993
+    smtp_host: "smtp.example.com"
+    smtp_port: 587
+    username: "agent@example.com"
+    password: {command: "pass show mail/agent"}
+    folders: ["INBOX"]
+
+  - name: phone
+    type: notify
+    scope: all
+    backend: ntfy
+    url: "https://ntfy.sh/your-topic"
+    events: [question, error]
+    quiet_hours: "23:00-07:00"
+#+end_src
+
+*** The commands
+
+#+begin_src bash
+clawtilla integration types
+clawtilla integration add home matrix homeserver=https://matrix.example.org
+clawtilla integration matrix-login home matrix.example.org researcher
+clawtilla integration matrix-rooms home
+clawtilla integration set home rooms=!abc:example.org
+clawtilla integration scope home researcher,writer
+
+clawtilla integration add phone notify scope=all \
+    backend=ntfy url=https://ntfy.sh/your-topic events=question,error
+clawtilla integration test phone
+
+clawtilla integration list
+clawtilla integration health triage
+#+end_src
+
+*** What you see
+
+~integration list~ shows each instance, whether it is on, and who gets
+it --- ~all (5)~ being the whole fleet, whatever size it currently is
+--- and warns about anything only the whole fleet can see:
+
+#+begin_example
+home             matrix   on   researcher,writer
+support          email    on   triage
+phone            notify   on   all (5)
+warning: researcher: integration 'home': user_id is not set
+warning: writer: integration 'home': user_id is not set
+warning: triage: integration 'support': password needs a secret reference such as {env: NAME}, {file: PATH} or {command: "..."}
+#+end_example
+
+~integration health~ is a real connection, per instance, and exits
+non-zero if any check failed so it is usable in a pre-flight script:
+
+#+begin_example
+support          email    FAILED: could not reach IMAP at imap.example.com:993: ...
+phone            notify   ok
+#+end_example
+
+Email is checked in both directions, because an agent that can read mail
+but cannot send looks like it is ignoring people.  A notifier has
+nothing to connect to, so its ~ok~ here means only that it is configured
+--- ~integration test~ is the one that proves it reaches you, which is
+why the GTK editor's /Check/ button becomes /Send a test/ for that type.
+
+*** What to watch out for
+
+*A Matrix account is one login.*  Two agents on the same ~user_id~ both
+receive every message in every room and both answer as the same person,
+which reads as the fleet misbehaving rather than as a mistake in a file.
+Each type declares the keys that must differ, and those go under
+=integrations.per_agent=: ~user_id~ and ~access_token~ for Matrix,
+~username~ for email, ~port~ for webhook.  ~mcp~, ~notify~ and
+~connector~ have none --- share them freely.
+
+*The token never comes back to the client that asked for the login.*
+~matrix-login~ reads the password from stdin with echo off, uses it
+once, and writes the access token to a 0600 file under =secrets.dir=;
+the reply names the file.  There is deliberately no ~--password~ flag,
+because an argument is in the shell history and in the process table.
+
+*The ~user_id~ written into the config is the server's answer, not what
+you typed.*  Signing in as ~researcher~ gives ~@researcher:example.org~
+--- the short form authenticates perfectly and matches no mention.
+
+*~require_mention~ defaults to on for Matrix*, unlike a clawtilla room.
+A Matrix room usually has people in it talking to each other, and an
+agent that takes a turn on every line of it is both expensive and
+unbearable.
+
+*An unrecognised =integrations.scope= reaches nobody, not everybody.*
+The two failure modes are not symmetric: a typo that hands a credential
+to the whole fleet is far worse than one that hands it to nothing and
+says so.  ~scope: none~ parks an instance with its settings and
+credentials intact.
+
+*Test the notifier.*  It is the one thing in a fleet you cannot tell is
+working by looking at it, because it is correct precisely when nothing
+happens.  ~integration test~ ignores both the event list and the quiet
+hours, because a button that did nothing at half past eleven at night
+would be indistinguishable from a broken one.  Quiet hours wrap
+midnight, and a range that cannot be parsed silences /nothing/ --- the
+failure nobody would ever find is a typo turning a notifier off for
+good.
+
+More in [[file:integrations.org][integrations.org]].
+
+** 10. An account's tools, without the account's credential
+
+*** What you want
+
+An agent that can file issues on your GitHub, or read your calendar,
+without ever holding the token that lets it.  A connector is an account
+clawtilla holds the credential for; agents get the service's tools and
+nothing else.
+
+*** The configuration
+
+#+begin_src yaml
+connectors:
+  refresh_margin_seconds: 300
+  redirect_port: 8765
+
+integrations:
+  - name: gh
+    type: connector
+    scope: all
+    provider: github
+    account: work
+    command: github-mcp-server
+    tools: [list_issues, get_file_contents]
+#+end_src
+
+*** The commands
+
+#+begin_src bash
+clawtilla connector catalog
+clawtilla connector add gh --provider github --account work \
+    --command github-mcp-server --scope all
+clawtilla connector key gh                     # paste a token, read from stdin
+
+clawtilla connector add gl --provider gitlab --client-id abc123 \
+    --scope selected --agents researcher,writer  # or the device flow
+
+clawtilla connector list
+clawtilla connector refresh gh
+clawtilla connector revoke gh
+#+end_src
+
+*** What you see
+
+#+begin_example
+Chat
+  slack        pkce     Read and post in channels.
+
+Code forges
+  forgejo      pkce     Repositories on Codeberg, or on a Forgejo you run yourself.
+  github       device   Repositories, issues and pull requests.
+  gitlab       device   Projects, issues and merge requests, on gitlab.com or your own.
+
+Generic
+  api-key      api_key  A service with a key and an MCP server of its own.
+  bearer       api_key  An HTTP MCP server behind an Authorization header.
+#+end_example
+
+Adding one says what is still missing:
+
+#+begin_example
+Added connector 'gh'.
+
+Now give it a credential, either:
+  clawtilla connector key gh        (paste a token)
+  clawtilla connector connect gh    (needs --client-id)
+#+end_example
+
+The agent's ~.mcp.json~ entry carries no secret at all, and the managed
+region of its ~TOOLS.org~ gains a paragraph saying so out loud --- along
+with which scopes were granted, so it does not spend turns discovering
+one call at a time that something was refused.
+
+*** What to watch out for
+
+*What the boundary is worth depends on where the agent runs, and
+overstating it would be worse than not having it.*  For a container or
+VM agent it is real: the token file and the relay are on the host and
+the agent is not.  For an unconfined host agent it prevents the
+credential leaking by /accident/ --- not in ~.mcp.json~, not in the
+environment, not in the process table, not in a transcript --- but it
+does not stop an agent that goes looking, because it runs as the same
+user and =secrets.dir= is right there.  Confinement is what makes that
+airtight.
+
+*There is no ~--key~ flag*, deliberately.  An argument is in your shell
+history and in the process table for anybody on the machine to read.
+
+*clawtilla ships no OAuth client IDs and will not.*  It has no
+application of its own to lend, and borrowing another project's would
+mean every clawtilla in the world identifying itself as something it is
+not.  Registering one takes a few minutes per provider; pasting a
+personal access token instead is not a lesser option.
+
+*Narrowing with =integrations.tools= works by removal, not refusal.*  A
+tool that is advertised and then refused is worse than one that was
+never there --- the agent plans around it, calls it, and has to work out
+from an error that it never had it.  Leaving the list unset means every
+tool the server offers, and an empty list is treated the same rather
+than as a lockout nobody asked for.
+
+*Deleting our copy of a token is not revocation.*  Where a provider
+offers a revocation endpoint clawtilla calls it and says so; where it
+does not, clawtilla says /that/, because a token you forgot still works
+for anybody who has it, for as long as the provider says --- which for a
+refresh token can be months.
+
+More in [[file:connectors.org][connectors.org]].
+
+** 11. Reacting to the fleet, and acting on it
+
+*** What you want
+
+Something to happen automatically when the fleet does something: an
+agent that fell over restarted, a message pushed somewhere, a note
+written down.  clawtilla registers itself into an embedded podomation
+engine as a module, so a pod binds to what the fleet does and acts on it
+in the same file.
+
+*** The configuration
+
+#+begin_src yaml
+daemon:
+  automation_dir: "~/.clawtilla/pods"
+#+end_src
+
+And a pod, which is not YAML:
+
+#+begin_src
+# ~/.clawtilla/pods/restart.pod
+pod fleet = clawtilla->new();
+
+fleet->on_agent_state where event->state == "error" =>
+    clawtilla->restart_agent(agent: "{event->agent}");
+
+fleet->on_agent_state where event->state == "error" =>
+    clawtilla->notify(title: "{event->agent} fell over",
+                      body: "{event->detail}",
+                      agent: "{event->agent}");
+#+end_src
+
+*** The commands
+
+There is nothing to run.  Every ~*.pod~ in =daemon.automation_dir= is
+loaded when the daemon starts, and the daemon says how it went:
+
+#+begin_src bash
+clawtillad --foreground
+#+end_src
+
+*** What you see
+
+#+begin_example
+automation: 1 pod file loaded from /home/you/.clawtilla/pods
+#+end_example
+
+A file that does not parse disables /that file/, names it, gives the
+line and column --- and the rest are loaded anyway:
+
+#+begin_example
+automation: /home/you/.clawtilla/pods/watch.pod could not be read: line 1, column 11: expected '=', got '{'
+automation: 1 pod file loaded from /home/you/.clawtilla/pods
+#+end_example
+
+*** What to watch out for
+
+*The guard is the point.*  Without ~where event->state == "error"~ the
+pod above restarts an agent every time it changes state --- including
+the ~starting~ and ~running~ transitions of the restart it has just
+asked for.
+
+*Event names take no dots and are spelled ~on_something~.*  The DSL
+cannot parse a dot in an event name, and every event podomation ships is
+named that way.  clawtilla's own event kinds keep their dots, because
+they are the wire format a dozen other things read; the pod-visible
+names are translated.
+
+*Scope applies in both directions.*  ~clawtilla->new("scribe")~ neither
+hears about the other agents nor can act on them, so a per-agent
+automation cannot reach across the fleet by accident.  An event with
+nothing to filter against --- a daemon reload, a routine that failed
+before it had an agent --- reaches every pod.
+
+*~computer_exec~ is declared and refused.*  It is in the action list so
+a pod naming it gets a /reason/ rather than "no such action", which
+would read as a typo.  Every other action is a fleet operation the
+daemon already owns; that one is arbitrary code on the machine, fired by
+an event, with nobody watching.
+
+*A broken pod never takes the fleet with it.*  A failure to start the
+engine at all disables the automation and nothing else.  Pods are a
+convenience on top of a fleet; a fleet that would not start because one
+of them had a syntax error would be the convenience taking down the
+thing it decorates.
+
+More in [[file:automation.org][automation.org]], which also lists which events are forwarded and which are not.
+
+** 12. Watching what the fleet costs
+
+*** What you want
+
+To know what a fleet of paid API calls has actually spent, and to put a
+ceiling under a chief of staff that has just been told to delegate
+something to everybody.
+
+*** The configuration
+
+#+begin_src yaml
+orchestration:
+  task_budget_usd: 5.0
+#+end_src
+
+*** The commands
+
+#+begin_src bash
+clawtilla cost
+clawtilla cost --today
+clawtilla cost --days 7
+clawtilla cost --agent chief
+#+end_src
+
+*** What you see
+
+#+begin_example
+AGENT                   TURNS           IN          OUT         COST
+chief                       7           28         2834        $0.04
+tester                     45          182        15296        $0.23
+fleet                      52          210        18130        $0.27
+Each delegated task may spend $5.00 (orchestration.task_budget_usd).
+
+Cost is the figure the provider reported for each turn.
+IN counts new input tokens only -- cached context is billed
+but is not reported as tokens, so IN understates the context.
+#+end_example
+
+When a task passes its cap, further messages belonging to it are refused
+and the refusal names both figures:
+
+#+begin_example
+this task has spent $5.40, which is its budget of $5.00.
+#+end_example
+
+An agent can ask too.  ~clawtilla_fleet_cost~ reports the same per-agent
+breakdown plus what one delegated task is allowed to spend --- until it
+could see the figure, "delegate this to five agents" and "delegate this
+to fifty" felt identical from where it sat.
+
+*** What to watch out for
+
+*The cost is the number the provider itself reported for that turn, not
+an estimate.*  That matters more than it sounds: a CLI backend bills for
+cache reads and cache writes and neither appears in the token counts it
+reports, so a figure recomputed from a rate card lands structurally
+/low/ --- and the gap grows with the size of the context, which is
+exactly the case anybody watching a bill cares about.
+
+*The token columns look too small on purpose.*  ~IN~ counts new input
+tokens; cached context is billed and is not reported as tokens.  The
+cost column is the one to trust.
+
+*The budget is charged to the task, not to the agent.*  A chief
+delegating ten subtasks is bounded as one piece of work rather than ten
+--- the runaway case is a task that keeps going, not an agent that is
+busy.
+
+*Ordinary conversation is deliberately uncapped.*  Spend is booked
+against a task id and a chat has none, which is also the first thing to
+check when the budget never seems to fire.
+
+*The first turn after a daemon restart charges nothing.*  An agent with
+any history at all would otherwise exhaust its budget on its first
+reply, over work that finished days ago.
+
+*~clawtilla agent reset~ takes the history with it.*  The sessions
+directory is moved aside as ~sessions.reset-<timestamp>~, so the rows
+are still there to read by hand --- but ~clawtilla cost~ starts again
+from zero.
+
+More in [[file:spending.org][spending.org]].
+
+** 13. Driving the workstation's fleet from a laptop
+
+*** What you want
+
+The fleet runs on the machine with the RAM and the disks.  You are on
+the sofa.  Both machines are on your tailnet.
+
+*** The configuration
+
+#+begin_src yaml
+daemon:
+  tailscale: true
+  tcp_port: 8792
+#+end_src
+
+That is the default.  =daemon.tailscale= off keeps the daemon on its unix socket alone.
+
+*** The commands
+
+On the machine running the fleet:
+
+#+begin_src bash
+clawtilla daemon token
+#+end_src
+
+On the machine you are sitting at:
+
+#+begin_src bash
+clawtilla remote add workstation 100.72.0.41 --token "PASTE-IT-HERE"
+clawtilla remote list
+clawtilla --profile workstation agent list
+clawtilla --profile workstation send researcher "how far did you get?"
+clawtilla-gtk --profile workstation
+#+end_src
+
+Or serve the whole client over HTTP from the machine that has the fleet:
+
+#+begin_src bash
+clawtilla-web --port 8790
+#+end_src
+
+*** What you see
+
+~clawtillad~ says where it is reachable when it starts, and ~clawtillad
+--help~ computes what /this/ machine would bind with no flags --- the
+real address, the real port, the real socket path, rather than a
+description of them:
+
+#+begin_example
+Listening, with no --bind:
+
+  unix     /run/user/1000/clawtilla/daemon.sock
+  tailnet  100.72.0.41:8792  (daemon.tailscale: true)
+  tcp      off (daemon.tcp_enabled: false)
+#+end_example
+
+~clawtilla-web~ names every address it actually bound, and says what it is not:
+
+#+begin_example
+clawtilla-web is listening on:
+  http://127.0.0.1:8790/
+  http://[::1]:8790/
+
+There is no login here: anything that can reach a listed
+address can drive the whole fleet.
+#+end_example
+
+*** What to watch out for
+
+*A token is always required*, so the network listener is reachable
+rather than open.  ~clawtilla daemon token~ reads it from disk rather
+than asking the daemon, because nothing may write a secret's value into
+an IPC response --- which also means it only works on the machine the
+daemon runs on, and that is the point.  ~remote list~ never prints one;
+it is the command you run over somebody's shoulder.
+
+*Connection profiles belong to the client, not to ~clawtilla.yaml~.*
+They live in ~$XDG_CONFIG_HOME/clawtilla/connections.yaml~ at mode 0600
+and are shared with the GTK client's connection menu.  A laptop
+connecting to a workstation may have no fleet, no state directory and no
+config of its own, so reading the daemon's config to find out how to
+reach a different daemon is backwards.
+
+*~--bind~ replaces the network addresses rather than adding to them*,
+and an address you name must bind or the daemon refuses to start.  The
+tailnet address is different: clawtilla chose that one, so a bind
+failure there is a warning --- a stale process holding the convenience
+port should not stop the fleet, but a daemon that ignored where you told
+it to listen and started anyway would be running somewhere you did not
+know about.
+
+*Names are refused rather than resolved.*  Resolution is a network round
+trip on the path that starts the daemon, and a name can resolve onto a
+different network than the one intended.  An IPv6 address with a port
+needs brackets --- ~[fd7a:115c:a1e0::1]:9000~ --- because an address
+full of colons has no last colon to split on.
+
+*~clawtilla-web~ has no login of its own.*  It binds the loopback and,
+when there is one, this machine's tailnet address.  A machine with no
+tailnet gets the loopback alone: it does not fall back to every
+interface, because widening the audience when an address is missing is
+the opposite of what anybody would want.  Anywhere that is not a
+tailnet, put it behind something that can require a login.
+
+More in [[file:clients.org][clients.org]] and [[file:web-client.org][web-client.org]].
+
+** 14. Running the fleet inside cmacs
+
+*** What you want
+
+No daemon process, no socket, no protocol.  An editor that already owns
+a main loop hosting the identical fleet in-process, so agents are
+buffers and the sidebar is a list.
+
+*** The configuration
+
+#+begin_src yaml
+agents:
+  - id: scribe
+    runtime:
+      type: embedded
+#+end_src
+
+=agents.runtime.type= is ~process~ by default --- a supervised
+~libreclaw~ child, where crashes stay contained and the agent can live
+inside its own container.  ~embedded~ runs it inside the daemon, which
+is cheaper and is what an in-process host wants, at the cost of sharing
+a fate with every other embedded agent.
+
+*** The commands
+
+#+begin_src c
+#include <clawtilla.h>
+
+ClawtDaemon *daemon = clawt_daemon_new("~/.clawtilla/config.yaml", NULL);
+g_autoptr(GError) error = NULL;
+
+if (!clawt_daemon_start(daemon, &error))
+    g_warning("clawtilla: %s", error->message);
+
+g_signal_connect(clawt_daemon_get_event_bus(daemon), "event",
+                 G_CALLBACK(on_event), self);
+#+end_src
+
+~NULL~ means the default main context, which is the one Emacs runs.
+~clawt_daemon_start()~ returns once the fleet is up; the host's own loop
+drives everything from there.  Everything is introspectable through
+~Clawt-1.0.typelib~, so the elisp side can work through GObject
+Introspection rather than through C --- and the same JSON frames a
+socket client sends go through ~clawt_daemon_handle_request()~, which
+keeps a host on exactly the surface every other client uses.
+
+*** What to watch out for
+
+*Signal handlers are the host's business.*  clawtilla installs none; ~clawtillad~ installs its own.
+
+*Several embedded agents in one process have constraints* --- ports,
+session directories, databases and channels that cannot be shared ---
+and they are listed in [[file:agents.org][agents.org]].  Read them before turning ~embedded~
+on for a second agent.
+
+[[file:clients.org][clients.org]] carries the detail, including the component accessors and the frame-based route.
+
+* When something does not work
+
+[[file:troubleshooting.org][troubleshooting.org]] is organised by symptom rather than by subsystem,
+which is the way you arrive at it: an agent that will not start, a queue
+that will not drain, a VM with a black console, a tool an agent says it
+does not have.
+
+[[file:getting-started.org][getting-started.org]] is the shorter path in --- the Fedora packages, the
+first build, the first daemon and the first conversation, in about ten
+minutes.

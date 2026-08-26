@@ -81,7 +81,8 @@ gint clawt_mailbox_router_send(ClawtMailboxRouter  *self,
  * @depth: how many hops the message has already travelled
  * @error: (out) (optional): return location for a #GError
  *
- * Convenience wrapper around clawt_mailbox_router_send().
+ * Convenience wrapper around clawt_mailbox_router_send(), at
+ * %CLAWT_PRIORITY_NORMAL.
  *
  * Returns: how many mailboxes it was queued into, or -1 on refusal
  */
@@ -92,6 +93,39 @@ gint clawt_mailbox_router_send_to(ClawtMailboxRouter  *self,
                                   const gchar         *task_id,
                                   gint                 depth,
                                   GError             **error);
+
+/**
+ * clawt_mailbox_router_send_to_full:
+ * @self: a #ClawtMailboxRouter
+ * @from: the sending agent, or "user" for a person
+ * @target: a room id or an agent id
+ * @body: what to say
+ * @task_id: (nullable): the task this belongs to
+ * @depth: how many hops the message has already travelled
+ * @priority: the band to queue at
+ * @error: (out) (optional): return location for a #GError
+ *
+ * clawt_mailbox_router_send_to() with the delivery band named.
+ *
+ * A separate entry point rather than a seventh argument on the wrapper,
+ * because @depth and @priority are adjacent small integers with nothing
+ * between them: the literal `0` at one of these call sites has already
+ * once been read as a priority when it was a depth, and %CLAWT_PRIORITY_LOW
+ * is 0 -- so that misreading posts at the band `drop-oldest` sheds
+ * first, which is the opposite of what a sender reaching for a band
+ * wants.  A caller that means a band has to say so by name; the seven
+ * callers that do not are unchanged and cannot pass one by accident.
+ *
+ * Returns: how many mailboxes it was queued into, or -1 on refusal
+ */
+gint clawt_mailbox_router_send_to_full(ClawtMailboxRouter  *self,
+                                       const gchar         *from,
+                                       const gchar         *target,
+                                       const gchar         *body,
+                                       const gchar         *task_id,
+                                       gint                 depth,
+                                       ClawtPriority        priority,
+                                       GError             **error);
 
 /**
  * clawt_mailbox_router_drain:

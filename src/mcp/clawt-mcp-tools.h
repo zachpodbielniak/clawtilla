@@ -24,10 +24,12 @@
 #include <glib-object.h>
 #include <json-glib/json-glib.h>
 
+#include "clawt-enums.h"
 #include "clawt-types.h"
 #include "agent/clawt-agent-manager.h"
 #include "chat/clawt-loop-guard.h"
 #include "chat/clawt-room.h"
+#include "core/clawt-event-bus.h"
 #include "task/clawt-task-manager.h"
 
 G_BEGIN_DECLS
@@ -44,20 +46,30 @@ G_DECLARE_FINAL_TYPE(ClawtMcpTools, clawt_mcp_tools,
  * @body: the message
  * @task_id: (nullable): the task it belongs to
  * @depth: how far this message is from the original request
+ * @priority: the delivery band, %CLAWT_PRIORITY_NORMAL unless the agent
+ *   named one
  * @user_data: data passed when the callback was installed
  * @error: (out) (optional): return location for a #GError
  *
  * Routes a message.  Installed by the daemon, which owns the mailboxes.
  *
+ * @priority is on the hook rather than only in the tool that reads it
+ * because this is the only route from an agent's tool call to a
+ * mailbox.  Without it `clawtilla_message_agent` parsed the band an
+ * agent asked for, refused a wrong one, and then dropped a right one on
+ * the floor -- so the tool description's promise that urgent jumps the
+ * queue was true of nothing.
+ *
  * Returns: %TRUE if the message was accepted for delivery
  */
-typedef gboolean (*ClawtMcpDeliverFunc)(const gchar  *from_agent,
-                                        const gchar  *target,
-                                        const gchar  *body,
-                                        const gchar  *task_id,
-                                        gint          depth,
-                                        gpointer      user_data,
-                                        GError      **error);
+typedef gboolean (*ClawtMcpDeliverFunc)(const gchar   *from_agent,
+                                        const gchar   *target,
+                                        const gchar   *body,
+                                        const gchar   *task_id,
+                                        gint           depth,
+                                        ClawtPriority  priority,
+                                        gpointer       user_data,
+                                        GError       **error);
 
 ClawtMcpTools *clawt_mcp_tools_new(ClawtAgentManager *agents,
                                    ClawtTaskManager  *tasks,
@@ -208,6 +220,27 @@ void clawt_mcp_tools_set_image_store(ClawtMcpTools     *self,
  */
 void clawt_mcp_tools_set_attachment_dir(ClawtMcpTools *self,
                                         const gchar   *dir);
+
+/**
+ * clawt_mcp_tools_set_event_bus:
+ * @self: a #ClawtMcpTools
+ * @bus: (transfer none) (nullable): where to publish what agents do
+ *
+ * Puts an agent's own tool calls on the audit trail.
+ *
+ * `clawtilla_computer_exec` run by a *person* through a client has been
+ * published as `computer.exec` since the daemon was written, because
+ * running something on the machine is the most consequential thing that
+ * socket can do.  The same command run by the agent itself reached no
+ * bus at all -- there was no route from here to one -- so
+ * `docs/security.org` asserted both were audited while the half a
+ * reader would most want to look up was the missing one.
+ *
+ * Unowned.  The bus outlives the tools, which the daemon builds and
+ * drops with the rest of its components.
+ */
+void clawt_mcp_tools_set_event_bus(ClawtMcpTools *self,
+                                   ClawtEventBus *bus);
 
 /**
  * clawt_mcp_tools_set_room_manager:

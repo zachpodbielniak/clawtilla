@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-24 Mon]
-#+updated: [2026-08-24 Mon]
-#+version: 0.1.0
+#+updated: [2026-08-26 Wed]
+#+version: 0.1.1
 
 * Spending
 
@@ -27,9 +27,16 @@ fleet                      52          210        18130        $0.27
 ** Where the figure comes from
 
 The cost is *the number the provider itself reported for that turn*, not
-an estimate.  Claude Code and the Grok build CLI both state a
-=total_cost_usd= per turn; that figure is carried through ai-glib's
-=AiResponse= and recorded as it stands.
+an estimate.  Claude Code, the Claude tmux client and the Grok build CLI
+all state a =total_cost_usd= per turn; that figure is carried through
+ai-glib's =AiResponse= and recorded as it stands.
+
+*=-1= means unknown, not free.*  That is the sentinel all the way through
+-- =ai_response_get_cost_micros()=, =lc_session_get_last_cost_micros()=,
+and the field's initialiser.  Zero would be indistinguishable from a turn
+that genuinely cost nothing, and a fleet summing those would report
+spending nothing at all.  Only a cost of =0= or more is taken as the
+provider's answer; anything below falls through to the estimate.
 
 This matters more than it sounds.  A CLI backend bills for *cache reads*
 and *cache writes*, and neither appears in the token counts it reports.
@@ -39,9 +46,16 @@ reported token counts lands well under the real one -- and the gap grows
 with the size of the context, which is exactly the case anybody watching
 a bill cares about.
 
-A provider that reports no cost at all still gets an estimate from
-libreclaw's price table.  That is a floor, and it is used only where
-there is nothing better.
+A provider that reports no cost at all gets an estimate from libreclaw's
+price table.  That is a floor, and it is used only where there is nothing
+better.
+
+*And only if there is a price table.*  It is built from libreclaw's own
+config and may be absent, in which case a turn with no reported cost is
+written as =0= -- indistinguishable in =token_usage= from a turn that was
+genuinely free.  So a fleet reporting a suspiciously round zero against a
+real turn count is worth checking against the provider that produced it,
+rather than believed.
 
 *** Why the token columns look too small
 
@@ -67,10 +81,13 @@ The fleet line is printed even when a single agent was asked for, because
 "is this agent most of the bill" is usually why somebody narrowed the
 report.
 
-A cost below a cent keeps four decimal places rather than rounding to
-=$0.00=.  Per-turn costs here are routinely a fraction of a cent, and a
-column of zeroes reads as *nothing is being recorded* -- which is the one
-thing this report exists to disprove.
+A *nonzero* cost below a cent keeps four decimal places rather than
+rounding to =$0.00=.  Per-turn costs here are routinely a fraction of a
+cent, and a column of zeroes reads as *nothing is being recorded* --
+which is the one thing this report exists to disprove.  An exact zero
+still renders =$0.00=, deliberately: there is nothing to reveal in four
+places, and =$0.0000= would read as a rounding artefact rather than as an
+answer.
 
 ** In the clients
 
@@ -83,19 +100,29 @@ chief-of-staff handing out ten subtasks is committing real money, and
 until it could see the figure, "delegate this to five agents" and
 "delegate this to fifty" felt identical from where it sat.
 
+It is *all-time only*: it takes no window and passes =since = 0=, unlike
+the CLI and the GTK page.  So an agent's figure and yours will not match
+unless you asked for everything.
+
 ** The task budget
 
 =orchestration.task_budget_usd= caps what one delegated task -- and
 everything it spawns -- may spend.  It defaults to =$5.00=; =0= disables
 it.
 
-When a task passes its cap, further messages belonging to it are refused
-with =CLAWT_ERROR_LOOP_LIMIT=, and the refusal names both the spend and
-the cap:
+When a task reaches its cap -- the test is spend *>=* budget, so it fires
+*at* the figure and not past it -- further messages belonging to it are
+refused with =CLAWT_ERROR_LOOP_LIMIT=, and the refusal names both the
+spend and the cap:
 
 #+begin_example
-this task has spent $5.40, which is its budget of $5.00.
+this task has spent $5.40, which is its budget of $5.00. Stop and report
+what you have.
 #+end_example
+
+The second sentence is the load-bearing half.  A refusal that only says
+no gets retried in a different shape; this one names the thing to do
+instead.
 
 The spend is charged when the agent answers.  Each reply drains what that
 agent has spent since its previous turn and books it against the task the
@@ -188,12 +215,25 @@ reported no tokens at all is deliberately not recorded -- that is a
 tool-only turn, and a zero row would inflate the turn count with no data
 behind it.
 
+There is a third cause, and it is quiet: a database that exists and
+cannot be *read* -- mid-write, or locked -- is skipped for that agent and
+counted as zero, so one bad file does not refuse a report about the other
+nine.  It is logged at =g_debug= level only, so run the daemon with
+=G_MESSAGES_DEBUG=Clawtilla= if an agent you know has turns reports none.
+
 *** The numbers reset after =/reset=
 
 They do.  =/reset= moves the sessions directory aside, and the history
 goes with it.  The old directory is kept as
 =sessions.reset-<timestamp>=, so the rows are still there to be read by
 hand if you want them.
+
+It also drops the in-memory watermark for that agent, and that half is
+not optional.  The replacement database numbers its rows from 1 again, so
+a watermark left over from the old one would suppress every row in the
+new one for ever -- an agent that reset once and then appeared to cost
+nothing, permanently, with a growing =token_usage= table on disk saying
+otherwise.
 
 *** The budget never fires
 
@@ -202,6 +242,11 @@ Check it is not zero:
 #+begin_src bash
 clawtilla config show | grep task_budget_usd
 #+end_src
+
+=config show= prints the file as written rather than the effective
+configuration, so *no output means the key was never set* and the default
+of =$5.00= applies -- which is a working budget, not a disabled one.  A
+line reading =task_budget_usd: 0= is the case that disables it.
 
 Then check the work is actually a *task*.  Spend is booked against a task
 id, and an ordinary chat has none -- so ordinary conversation is

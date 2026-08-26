@@ -917,6 +917,78 @@ test_factory_builds_a_confirmed_host(void)
 }
 
 /*
+ * A `confine: none` host computer is refused here as well as at config
+ * load, unless the fleet has said so too.
+ *
+ * Running unconfined on the real machine takes two deliberate acts --
+ * the agent's confirm_host_control and the fleet's
+ * daemon.allow_unconfined_host -- and only the first of the two was
+ * checked in the factory.  Validation catches it in a config file; this
+ * catches an agent constructed some other way, which is precisely the
+ * case the confirmation's own double-check exists for, and it is the
+ * stronger of the two grants.
+ */
+static void
+test_factory_refuses_unconfined_without_the_fleet_gate(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent;
+
+    agent = agent_from_yaml(&config,
+        "agents:\n"
+        "  - id: chief\n"
+        "    computer:\n"
+        "      type: host\n"
+        "      host:\n"
+        "        confirm_host_control: true\n"
+        "        confine: none\n");
+
+    computer = clawt_computer_factory_create(agent, NULL, NULL, &error);
+
+    g_assert_null(computer);
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED);
+    g_assert_nonnull(strstr(error->message, "daemon.allow_unconfined_host"));
+}
+
+/*
+ * And with both acts performed it builds, unconfined.
+ *
+ * Worth its own case rather than trusting the refusal above: the fleet
+ * key has no agent-relative spelling, so a check that asked for it
+ * through the agent's own getters would answer FALSE from the schema
+ * whatever the file said -- refusing every properly-granted host while
+ * looking exactly like a gate that works.
+ */
+static void
+test_factory_builds_an_unconfined_host_when_both_agree(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent;
+
+    agent = agent_from_yaml(&config,
+        "daemon:\n"
+        "  allow_unconfined_host: true\n"
+        "agents:\n"
+        "  - id: chief\n"
+        "    computer:\n"
+        "      type: host\n"
+        "      host:\n"
+        "        confirm_host_control: true\n"
+        "        confine: none\n");
+
+    computer = clawt_computer_factory_create(agent, NULL, NULL, &error);
+
+    g_assert_no_error(error);
+    g_assert_nonnull(computer);
+    g_assert_cmpint(clawt_computer_get_computer_type(computer), ==,
+                    CLAWT_COMPUTER_HOST);
+}
+
+/*
  * A mount written without a type becomes the right one for the backend, so
  * a user does not have to know that a container wants "bind" and a VM wants
  * "virtiofs".
@@ -1225,6 +1297,56 @@ test_a_mount_is_a_grant_in_workspace_mode(void)
  * "/mnt/sharedx" starts with "/mnt/shared" and is somewhere else; a
  * prefix match would rewrite it and hand the agent the wrong directory.
  */
+/*
+ * The state directory cannot be mounted into a computer -- as a *bind*
+ * mount, which is the shape somebody would actually write.
+ *
+ * The refusal existed, was documented on clawt_mount_set_forbidden_sources()
+ * and was populated by the daemon at start, and could not fire: the check
+ * sat inside the CLAWT_MOUNT_TMPFS branch behind `source != NULL`, which
+ * for a tmpfs is itself an error.  So it ran only in a case that was
+ * refused anyway.  A test that built a tmpfs would have passed against
+ * the broken code, which is the whole reason this one is a bind.
+ */
+static void
+test_forbidden_source_is_refused_for_a_bind(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-forbid-XXXXXX", NULL);
+    g_autofree gchar *state = g_build_filename(dir, "state", NULL);
+    g_autofree gchar *parent = g_build_filename(state, "..", NULL);
+    g_autofree gchar *inside = g_build_filename(state, "agents", NULL);
+    g_autofree gchar *elsewhere = g_build_filename(dir, "notes", NULL);
+    const gchar *forbidden[] = { NULL, NULL };
+    g_autoptr(ClawtMount) bad = NULL;
+    g_autoptr(ClawtMount) below = NULL;
+    g_autoptr(ClawtMount) fine = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GError) below_error = NULL;
+
+    g_mkdir_with_parents(inside, 0700);
+    g_mkdir_with_parents(elsewhere, 0700);
+
+    forbidden[0] = state;
+    clawt_mount_set_forbidden_sources(forbidden);
+
+    bad = clawt_mount_new(state, "/mnt/state");
+    g_assert_false(clawt_mount_validate(bad, &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_MOUNT);
+
+    /* A directory below it is the same disclosure by a longer path. */
+    below = clawt_mount_new(inside, "/mnt/agents");
+    g_assert_false(clawt_mount_validate(below, &below_error));
+    g_assert_error(below_error, CLAWT_ERROR, CLAWT_ERROR_MOUNT);
+
+    /* And an unrelated source still passes, or the check is just a wall. */
+    fine = clawt_mount_new(elsewhere, "/mnt/notes");
+    g_assert_true(clawt_mount_validate(fine, NULL));
+
+    forbidden[0] = NULL;
+    clawt_mount_set_forbidden_sources(forbidden);
+    clawt_test_remove_tree(dir);
+}
+
 static void
 test_a_mount_prefix_is_not_a_match(void)
 {
@@ -3525,6 +3647,10 @@ main(int argc, char *argv[])
                     test_factory_refuses_unconfirmed_host);
     g_test_add_func("/computer/factory/confirmed-host",
                     test_factory_builds_a_confirmed_host);
+    g_test_add_func("/computer/factory/unconfined-needs-the-fleet-gate",
+                    test_factory_refuses_unconfined_without_the_fleet_gate);
+    g_test_add_func("/computer/factory/unconfined-with-both-acts-builds",
+                    test_factory_builds_an_unconfined_host_when_both_agree);
     g_test_add_func("/computer/factory/mount-type",
                     test_factory_picks_the_mount_type_for_the_backend);
     g_test_add_func("/computer/factory/host-mounts-allowlist",
@@ -3542,6 +3668,8 @@ main(int argc, char *argv[])
                     test_a_mount_is_a_grant_in_workspace_mode);
     g_test_add_func("/computer/mount-prefix-not-a-match",
                     test_a_mount_prefix_is_not_a_match);
+    g_test_add_func("/computer/mounts/forbidden-source-refused-for-a-bind",
+                    test_forbidden_source_is_refused_for_a_bind);
     g_test_add_func("/computer/module-search-path", test_module_search_path);
     g_test_add_func("/computer/container-connection-default",
                     test_container_connection_default);

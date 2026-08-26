@@ -15,6 +15,7 @@
 
 #include <glib-object.h>
 
+#include "clawt-enums.h"
 #include "clawt-types.h"
 
 G_BEGIN_DECLS
@@ -72,6 +73,24 @@ gint64       clawt_message_get_timestamp(ClawtMessage *self);
 gint         clawt_message_get_depth(ClawtMessage *self);
 
 /**
+ * clawt_message_get_priority:
+ * @self: a #ClawtMessage
+ *
+ * The delivery band this message asked for.
+ *
+ * A message is the only thing that travels from a sender to a mailbox,
+ * so it is the only place a band can be carried.  Without this field
+ * every #ClawtMailboxItem the router ever queued was built at the
+ * constructor's %CLAWT_PRIORITY_NORMAL -- the mailbox leased by band,
+ * `drop-oldest` shed by band, the docs described the bands and
+ * `clawtilla_message_agent` promised that urgent jumps the queue, and
+ * nothing outside a test had ever set one.
+ *
+ * Returns: the band, %CLAWT_PRIORITY_NORMAL unless a sender named one
+ */
+ClawtPriority clawt_message_get_priority(ClawtMessage *self);
+
+/**
  * clawt_message_get_parent_id:
  * @self: a #ClawtMessage
  *
@@ -101,6 +120,58 @@ void clawt_message_set_task_id(ClawtMessage *self, const gchar *task_id);
 void clawt_message_set_parent_id(ClawtMessage *self, const gchar *parent_id);
 void clawt_message_set_timestamp(ClawtMessage *self, gint64 timestamp);
 void clawt_message_set_depth(ClawtMessage *self, gint depth);
+
+/**
+ * clawt_message_set_priority:
+ * @self: a #ClawtMessage
+ * @priority: the band to queue at
+ *
+ * Sets the delivery band, which the router copies onto every mailbox
+ * item the message produces.
+ *
+ * Separate from the depth beside it on purpose.  The two are adjacent
+ * small integers with nothing in the type system between them, and the
+ * `0` a caller passes for depth has already once been read as a
+ * priority -- which, since %CLAWT_PRIORITY_LOW is 0, would silently
+ * post at the band `drop-oldest` sheds first.
+ */
+void clawt_message_set_priority(ClawtMessage *self, ClawtPriority priority);
+
+/**
+ * clawt_message_priority_from_nick:
+ * @nick: (nullable): the band a sender named, or %NULL if they named none
+ * @out_priority: (out): return location for the band
+ * @out_refusal: (out) (optional) (nullable): return location for what to
+ *   tell the sender when @nick is not a band
+ *
+ * Turns the band a sender wrote into a #ClawtPriority, or refuses.
+ *
+ * Every surface that lets somebody name a band goes through this -- the
+ * `priority` argument of `clawtilla_message_agent` and the `priority`
+ * parameter of a pod's `message_agent` -- so the vocabulary is one
+ * answer rather than one per caller, and the two cannot come to differ
+ * on what "urgent" means or on what happens to "P1".
+ *
+ * Absent is %CLAWT_PRIORITY_NORMAL: a sender who did not mention a band
+ * did not ask for anything.
+ *
+ * An unrecognised nickname is a **refusal**, never a fallback, and that
+ * is the whole decision here.  %CLAWT_PRIORITY_LOW is 0, so falling
+ * through to a zeroed value turns a mistyped `urgent` into the band
+ * `drop-oldest` sheds *first* -- the exact opposite of what was asked
+ * for, invisible from both ends, and the same silence that once let an
+ * agent asking for `block-sender` get `reject`.  A refusal naming the
+ * bands costs the sender one turn and is the only answer it can act on.
+ *
+ * The bands come from %CLAWT_TYPE_PRIORITY rather than from a list of
+ * strings here, so a band added to the enum needs no edit in this file
+ * and the refusal cannot name a set that has stopped being true.
+ *
+ * Returns: %TRUE if @nick names a band, or names nothing
+ */
+gboolean clawt_message_priority_from_nick(const gchar    *nick,
+                                          ClawtPriority  *out_priority,
+                                          gchar         **out_refusal);
 
 /**
  * clawt_message_body_fingerprint:

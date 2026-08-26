@@ -25,21 +25,24 @@ typedef struct {
     ClawtTaskManager  *tasks;
     ClawtLoopGuard    *guard;
     ClawtRoomManager  *rooms;
+    ClawtEventBus     *bus;
     ClawtMcpTools     *tools;
 
     gchar             *last_target;
     gchar             *last_body;
+    ClawtPriority      last_priority;
     gboolean           deliver_fails;
 } Fixture;
 
 static gboolean
-fake_deliver(const gchar  *from_agent,
-             const gchar  *target,
-             const gchar  *body,
-             const gchar  *task_id,
-             gint          depth,
-             gpointer      user_data,
-             GError      **error)
+fake_deliver(const gchar   *from_agent,
+             const gchar   *target,
+             const gchar   *body,
+             const gchar   *task_id,
+             gint           depth,
+             ClawtPriority  priority,
+             gpointer       user_data,
+             GError       **error)
 {
     Fixture *fixture = user_data;
 
@@ -53,6 +56,7 @@ fake_deliver(const gchar  *from_agent,
     g_free(fixture->last_body);
     fixture->last_target = g_strdup(target);
     fixture->last_body = g_strdup(body);
+    fixture->last_priority = priority;
 
     return TRUE;
 }
@@ -65,8 +69,19 @@ fixture_setup(Fixture *fixture, const gchar *agents_yaml)
 
     fixture->dir = g_dir_make_tmp("clawt-mcp-XXXXXX", NULL);
 
-    yaml = g_strdup_printf("daemon:\n  state_dir: \"%s\"\n%s",
-                           fixture->dir, agents_yaml);
+    /*
+     * workspace_root as well as state_dir.  Three things escape a
+     * temporary directory unless a fixture names them, and this one
+     * named only the second: defaults.workspace_root falls back to
+     * ~/.clawtilla/agents, so any test here that scaffolds a workspace
+     * writes into the developer's real fleet, where the leftovers are
+     * indistinguishable from agents somebody meant to keep.  Nothing on
+     * this path scaffolds one today, which is exactly how it went
+     * unnoticed -- it is one call away from doing so.
+     */
+    yaml = g_strdup_printf("daemon:\n  state_dir: \"%s\"\n"
+                           "defaults:\n  workspace_root: \"%s/agents\"\n%s",
+                           fixture->dir, fixture->dir, agents_yaml);
 
     fixture->config = clawt_config_load_from_string(yaml, &error);
     g_assert_no_error(error);
@@ -77,9 +92,11 @@ fixture_setup(Fixture *fixture, const gchar *agents_yaml)
     fixture->tasks = clawt_task_manager_new();
     fixture->guard = clawt_loop_guard_new();
     fixture->rooms = clawt_room_manager_new(NULL);
+    fixture->bus = clawt_event_bus_new(64);
     fixture->tools = clawt_mcp_tools_new(fixture->agents, fixture->tasks,
                                          fixture->guard);
     clawt_mcp_tools_set_room_manager(fixture->tools, fixture->rooms);
+    clawt_mcp_tools_set_event_bus(fixture->tools, fixture->bus);
 
     clawt_mcp_tools_set_deliver_func(fixture->tools, fake_deliver, fixture,
                                      NULL);
@@ -89,6 +106,7 @@ static void
 fixture_teardown(Fixture *fixture)
 {
     g_clear_object(&fixture->tools);
+    g_clear_object(&fixture->bus);
     g_clear_object(&fixture->rooms);
     g_clear_object(&fixture->guard);
     g_clear_object(&fixture->tasks);
@@ -364,6 +382,115 @@ test_message_agent_routes(void)
     g_assert_false(is_error);
     g_assert_cmpstr(fixture.last_target, ==, "researcher");
     g_assert_cmpstr(fixture.last_body, ==, "have a look at the commits");
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * The band an agent names reaches the thing that routes the message.
+ *
+ * `priority` has been in this tool's schema, and its description has
+ * promised that "urgent jumps the queue", for the whole life of the
+ * feature -- while the band was parsed into a local and dropped:
+ * ClawtMcpDeliverFunc had no band to carry it on.  So every message
+ * every agent had ever sent was queued at NORMAL, and the promise was
+ * true of nothing.
+ *
+ * Asserted on what the deliver hook was *handed*, not on the reply
+ * text: a reply saying "queued as urgent" is exactly the sentence that
+ * was worth nothing before this, and a test that believed it would have
+ * passed throughout.
+ */
+static void
+test_message_agent_carries_the_priority(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    gboolean is_error = TRUE;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: researcher\n");
+
+    fixture.last_priority = CLAWT_PRIORITY_LOW;
+
+    response = call_tool(&fixture, "chief", "clawtilla_message_agent",
+                         "{\"agent_id\":\"researcher\","
+                         "\"body\":\"the build is broken\","
+                         "\"priority\":\"urgent\"}");
+    response_text(response, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_cmpint(fixture.last_priority, ==, CLAWT_PRIORITY_URGENT);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And a message that names no band is NORMAL rather than zero.
+ *
+ * CLAWT_PRIORITY_LOW is 0, so anything that reaches the queue through a
+ * zeroed field posts at the band `drop-oldest` sheds *first*.  Every
+ * ordinary message goes down this path, which makes it the one worth
+ * pinning: a regression here would demote the whole fleet's traffic
+ * while every test about urgency still passed.
+ */
+static void
+test_a_message_with_no_band_is_normal(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    gboolean is_error = TRUE;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: researcher\n");
+
+    fixture.last_priority = CLAWT_PRIORITY_URGENT;
+
+    response = call_tool(&fixture, "chief", "clawtilla_message_agent",
+                         "{\"agent_id\":\"researcher\","
+                         "\"body\":\"whenever you get a moment\"}");
+    response_text(response, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_cmpint(fixture.last_priority, ==, CLAWT_PRIORITY_NORMAL);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A band nobody has heard of is refused, and nothing is sent.
+ *
+ * The alternative -- falling through to a zeroed ClawtPriority -- is
+ * LOW, so a model that wrote "critical" or "P1" would have its one
+ * message that could not wait queued at the band shed first, and
+ * believe it had escalated.  Asserted on the delivery having not
+ * happened as well as on the refusal: a refusal that arrives *after*
+ * the message has gone leaves the agent with no remedy but to send it
+ * twice.
+ */
+static void
+test_an_unknown_band_is_refused_before_anything_is_sent(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    const gchar *text;
+    gboolean is_error = FALSE;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: researcher\n");
+
+    response = call_tool(&fixture, "chief", "clawtilla_message_agent",
+                         "{\"agent_id\":\"researcher\","
+                         "\"body\":\"the build is broken\","
+                         "\"priority\":\"P1\"}");
+    text = response_text(response, &is_error);
+
+    g_assert_true(is_error);
+    g_assert_nonnull(strstr(text, "urgent"));
+    g_assert_null(fixture.last_target);
 
     fixture_teardown(&fixture);
 }
@@ -771,6 +898,138 @@ test_failing_command_reports_why(void)
     fixture_teardown(&fixture);
 }
 
+
+/*
+ * Finds the one computer.exec event on the bus, or %NULL.
+ *
+ * Read back through clawt_event_bus_replay() rather than by connecting a
+ * signal, because what an operator later looks up is the recorded
+ * history rather than the moment it happened.
+ */
+static ClawtEvent *
+recorded_exec(Fixture *fixture)
+{
+    g_autoptr(GPtrArray) events =
+        clawt_event_bus_replay(fixture->bus, 0, NULL);
+    ClawtEvent *found = NULL;
+    guint i;
+
+    for (i = 0; events != NULL && i < events->len; i++) {
+        ClawtEvent *event = g_ptr_array_index(events, i);
+
+        if (g_strcmp0(clawt_event_get_kind(event), "computer.exec") == 0)
+            found = event;
+    }
+
+    return found;
+}
+
+/*
+ * An agent running its own command lands on the audit trail.
+ *
+ * The client `computer.exec` handler has published one of these per
+ * command since the daemon was written, and ClawtMcpTools had no route
+ * to an event bus at all -- so the same command run by the agent itself
+ * was invisible, while docs/security.org asserted both were recorded.
+ * The missing half is exactly the one somebody would want to look up:
+ * what the fleet did on its own initiative.
+ *
+ * Asserted on the subject and the two details, because the whole value
+ * of the trail is being able to filter it by agent -- an event whose
+ * subject were the command, or the computer, would be recorded and
+ * useless.
+ */
+static void
+test_an_agents_exec_is_audited(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(JsonNode) response = NULL;
+    ClawtAgent *agent;
+    ClawtEvent *event;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+
+    agent = clawt_agent_manager_get(fixture.agents, "chief");
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_WORKSPACE, fixture.dir);
+    computer = clawt_host_computer_new("chief", sandbox);
+    clawt_computer_start(computer, NULL);
+    clawt_agent_set_computer(agent, computer);
+
+    response = call_tool(&fixture, "chief", "clawtilla_computer_exec",
+                         "{\"command\":\"echo hello\",\"timeout\":10}");
+    g_assert_nonnull(response);
+
+    event = recorded_exec(&fixture);
+    g_assert_nonnull(event);
+    g_assert_cmpstr(clawt_event_get_subject(event), ==, "chief");
+    g_assert_cmpstr(clawt_event_get_detail(event, "command"), ==,
+                    "echo hello");
+    g_assert_cmpint(clawt_event_get_detail_int(event, "exit"), ==, 0);
+
+    /*
+     * And nothing else. A command's output is the likeliest place in
+     * this whole path for a secret to appear, and nothing may write one
+     * into a log line -- so the absence is the assertion, not an
+     * afterthought.
+     */
+    g_assert_null(clawt_event_get_detail(event, "stdout"));
+    g_assert_null(clawt_event_get_detail(event, "stderr"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And a command that could not run at all is recorded too.
+ *
+ * A refused or failing command is the one somebody looks up, so a trail
+ * holding only the successes answers the wrong question. The exit is -1
+ * rather than the entry being absent: "we do not know what it did" and
+ * "it did not happen" are different facts, and only one of them is true
+ * here.
+ */
+static void
+test_a_refused_exec_is_audited_too(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(JsonNode) response = NULL;
+    ClawtAgent *agent;
+    ClawtEvent *event;
+    gboolean is_error = FALSE;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+
+    agent = clawt_agent_manager_get(fixture.agents, "chief");
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_WORKSPACE, fixture.dir);
+    computer = clawt_host_computer_new("chief", sandbox);
+    clawt_computer_start(computer, NULL);
+    clawt_agent_set_computer(agent, computer);
+
+    /*
+     * A working directory outside the confinement boundary, which the
+     * sandbox refuses before anything is spawned -- so there is no exit
+     * status anywhere, which is the case the -1 exists for.  An agent
+     * trying to run something outside its boundary is also, of the
+     * three, the entry somebody is most likely to go looking for.
+     */
+    response = call_tool(&fixture, "chief", "clawtilla_computer_exec",
+                         "{\"command\":\"echo hello\","
+                         "\"working_dir\":\"/etc\",\"timeout\":10}");
+    response_text(response, &is_error);
+    g_assert_true(is_error);
+
+    event = recorded_exec(&fixture);
+    g_assert_nonnull(event);
+    g_assert_cmpstr(clawt_event_get_subject(event), ==, "chief");
+    g_assert_cmpstr(clawt_event_get_detail(event, "command"), ==,
+                    "echo hello");
+    g_assert_cmpint(clawt_event_get_detail_int(event, "exit"), ==, -1);
+
+    fixture_teardown(&fixture);
+}
 
 /* ── Growing the fleet ───────────────────────────────────────────── */
 
@@ -1326,6 +1585,12 @@ main(int argc, char *argv[])
     g_test_add_func("/mcp/get-unknown-agent", test_get_unknown_agent_says_so);
 
     g_test_add_func("/mcp/message-routes", test_message_agent_routes);
+    g_test_add_func("/mcp/message-carries-the-priority",
+                    test_message_agent_carries_the_priority);
+    g_test_add_func("/mcp/message-with-no-band-is-normal",
+                    test_a_message_with_no_band_is_normal);
+    g_test_add_func("/mcp/unknown-band-is-refused",
+                    test_an_unknown_band_is_refused_before_anything_is_sent);
     g_test_add_func("/mcp/ask-agent-queues",
                     test_ask_agent_queues_rather_than_waiting);
     g_test_add_func("/mcp/missing-arguments", test_missing_arguments_are_named);
@@ -1344,6 +1609,10 @@ main(int argc, char *argv[])
                     test_room_history_takes_an_agent_id);
 
     g_test_add_func("/mcp/computer-exec", test_computer_exec_through_the_tool);
+    g_test_add_func("/mcp/audit/an-agents-exec-is-recorded",
+                    test_an_agents_exec_is_audited);
+    g_test_add_func("/mcp/audit/a-refused-exec-is-recorded",
+                    test_a_refused_exec_is_audited_too);
     g_test_add_func("/mcp/failing-command", test_failing_command_reports_why);
 
     return g_test_run();

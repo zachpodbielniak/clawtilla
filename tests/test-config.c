@@ -429,6 +429,244 @@ test_host_computer_needs_confirmation(void)
         clawt_config_get_agent(confirmed, "bold")));
 }
 
+/*
+ * `confine: none` needs the fleet's permission as well as the agent's.
+ *
+ * daemon.allow_unconfined_host existed, was documented as the second of
+ * two deliberate acts, defaulted to false, and gated nothing at all --
+ * so one line in one agent block was enough to run unconfined on the
+ * real machine, which is the single typo the rule exists to stop.
+ */
+static void
+test_unconfined_host_needs_the_fleet_to_agree(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) refused = NULL;
+    g_autoptr(ClawtConfig) allowed = NULL;
+    g_autoptr(ClawtConfig) confined = NULL;
+    const gchar *agent_block =
+        "agents:\n"
+        "  - id: bold\n"
+        "    computer:\n"
+        "      type: host\n"
+        "      host:\n"
+        "        confirm_host_control: true\n"
+        "        confine: none\n";
+    g_autofree gchar *with_permission =
+        g_strconcat("daemon:\n"
+                    "  allow_unconfined_host: true\n", agent_block, NULL);
+
+    refused = clawt_config_load_from_string(agent_block, &error);
+    g_assert_no_error(error);
+
+    g_assert_true(clawt_agent_config_is_shadow(
+        clawt_config_get_agent(refused, "bold")));
+    g_assert_nonnull(strstr(
+        clawt_agent_config_get_shadow_reason(
+            clawt_config_get_agent(refused, "bold")),
+        "daemon.allow_unconfined_host"));
+
+    allowed = clawt_config_load_from_string(with_permission, &error);
+    g_assert_no_error(error);
+    g_assert_false(clawt_agent_config_is_shadow(
+        clawt_config_get_agent(allowed, "bold")));
+
+    /*
+     * And the gate is about `none` alone.  Applying it to every host
+     * agent would make the fleet key a second confirm_host_control, and
+     * a confined host computer is the ordinary case.
+     */
+    confined = clawt_config_load_from_string(
+        "agents:\n"
+        "  - id: careful\n"
+        "    computer:\n"
+        "      type: host\n"
+        "      host:\n"
+        "        confirm_host_control: true\n"
+        "        confine: bwrap\n", &error);
+
+    g_assert_no_error(error);
+    g_assert_false(clawt_agent_config_is_shadow(
+        clawt_config_get_agent(confined, "careful")));
+}
+
+/*
+ * The refusal has to name every type this build has, and it did not: it
+ * said "none, host, container and vm" for as long as distrobox has
+ * existed.  Asserted against the enum rather than against a list here,
+ * or this test would be the second copy that goes stale.
+ */
+static void
+test_unknown_computer_type_names_every_type(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(GEnumClass) klass = g_type_class_ref(CLAWT_TYPE_COMPUTER_TYPE);
+    const gchar *reason;
+    guint i;
+
+    config = clawt_config_load_from_string(
+        "agents:\n"
+        "  - id: future\n"
+        "    computer:\n"
+        "      type: quantum-mainframe\n", &error);
+
+    g_assert_no_error(error);
+
+    reason = clawt_agent_config_get_shadow_reason(
+        clawt_config_get_agent(config, "future"));
+    g_assert_nonnull(reason);
+
+    for (i = 0; i < klass->n_values; i++)
+        g_assert_nonnull(strstr(reason, klass->values[i].value_nick));
+}
+
+/* Does any warning mention @needle? */
+static gboolean
+warned_about(ClawtConfig *config, const gchar *needle)
+{
+    GPtrArray *warnings = clawt_config_get_warnings(config);
+    guint i;
+
+    for (i = 0; warnings != NULL && i < warnings->len; i++) {
+        if (strstr(g_ptr_array_index(warnings, i), needle) != NULL)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+/*
+ * An option this build does not implement says so when somebody sets it.
+ *
+ * Both of these are parsed, stored and read by nothing: the routine's
+ * jitter never reaches the runner, and the container's network reaches
+ * the container object and stops. The failure is not that they are
+ * unimplemented, it is that setting one looks exactly like setting one
+ * that works.
+ *
+ * `rooms.max_hops` used to be the third, and is now enforced -- so it
+ * has moved to the case below. Clearing the flag when an option is
+ * implemented is the half of the job that gets forgotten, which is
+ * exactly why the warning is asserted on from both directions.
+ */
+static void
+test_an_unimplemented_option_says_so(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = NULL;
+
+    config = clawt_config_load_from_string(
+        "routines:\n"
+        "  - id: morning\n"
+        "    agent: chief\n"
+        "    instructions: say hello\n"
+        "    jitter_seconds: 30\n"
+        "agents:\n"
+        "  - id: chief\n"
+        "    computer:\n"
+        "      type: container\n"
+        "      container:\n"
+        "        network: host\n", &error);
+
+    g_assert_no_error(error);
+    g_assert_nonnull(config);
+
+    /* Named with the element it was set on, not just the key. */
+    g_assert_true(warned_about(config, "routines.jitter_seconds"));
+    g_assert_true(warned_about(config, "morning"));
+    g_assert_true(warned_about(config, "agents.computer.container.network"));
+
+    /* And it is still a working config, not a refusal. */
+    g_assert_false(clawt_agent_config_is_shadow(
+        clawt_config_get_agent(config, "chief")));
+}
+
+/*
+ * And an option that *is* implemented says nothing.
+ *
+ * `rooms.max_hops` reached a #ClawtRoom and clawt_room_get_max_hops()
+ * had no caller, so every hop in every room was counted against the
+ * fleet limit whatever a room declared. Now that the loop guard is
+ * given it, the loader must stop telling people it does nothing --
+ * a warning that outlives the limitation it describes is the same
+ * documentation lie as the paragraph that outlives it, one layer down,
+ * and this is the one somebody reads at the moment they set the key.
+ */
+static void
+test_an_implemented_room_limit_is_quiet(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = NULL;
+
+    config = clawt_config_load_from_string(
+        "rooms:\n"
+        "  - id: standup\n"
+        "    max_hops: 3\n", &error);
+
+    g_assert_no_error(error);
+    g_assert_nonnull(config);
+
+    g_assert_false(warned_about(config, "rooms.max_hops"));
+}
+
+/*
+ * A config that sets nothing inert must say nothing, or the warning is
+ * noise people learn to scroll past.
+ */
+static void
+test_an_ordinary_config_is_quiet(void)
+{
+    g_autoptr(ClawtConfig) config = load_sample();
+
+    g_assert_false(warned_about(config, "nothing in this build reads"));
+    g_assert_false(warned_about(config, "reads back as unset"));
+}
+
+/*
+ * A comma-separated option written as a YAML list.
+ *
+ * yaml_node_get_string() answers NULL for a sequence, so every getter
+ * falls through to the default and `readers: [chief]` is a permission
+ * somebody granted, saved, and silently denied -- the worst outcome
+ * available, because there is nothing at all to see.
+ */
+static void
+test_a_scalar_written_as_a_list_warns(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) listed = NULL;
+    g_autoptr(ClawtConfig) commas = NULL;
+
+    listed = clawt_config_load_from_string(
+        "agents:\n"
+        "  - id: keeper\n"
+        "    memories:\n"
+        "      readers:\n"
+        "        - chief\n", &error);
+
+    g_assert_no_error(error);
+    g_assert_true(warned_about(listed, "memories.readers"));
+    g_assert_true(warned_about(listed, "reads back as unset"));
+
+    /* Which is true: it does. */
+    g_assert_null(clawt_agent_config_get_string(
+        clawt_config_get_agent(listed, "keeper"), "memories.readers"));
+
+    /* The documented spelling is quiet, and works. */
+    commas = clawt_config_load_from_string(
+        "agents:\n"
+        "  - id: keeper\n"
+        "    memories:\n"
+        "      readers: \"chief, deputy\"\n", &error);
+
+    g_assert_no_error(error);
+    g_assert_false(warned_about(commas, "memories.readers"));
+    g_assert_cmpstr(clawt_agent_config_get_string(
+        clawt_config_get_agent(commas, "keeper"), "memories.readers"),
+        ==, "chief, deputy");
+}
+
 static void
 test_mounts_are_parsed(void)
 {
@@ -904,6 +1142,18 @@ main(int argc, char *argv[])
                     test_two_chiefs_of_staff_is_a_shadow);
     g_test_add_func("/config/agents/host-needs-confirmation",
                     test_host_computer_needs_confirmation);
+    g_test_add_func("/config/agents/unconfined-host-needs-the-fleet",
+                    test_unconfined_host_needs_the_fleet_to_agree);
+    g_test_add_func("/config/agents/unknown-computer-type-names-every-type",
+                    test_unknown_computer_type_names_every_type);
+    g_test_add_func("/config/unimplemented-option-says-so",
+                    test_an_unimplemented_option_says_so);
+    g_test_add_func("/config/implemented-room-limit-is-quiet",
+                    test_an_implemented_room_limit_is_quiet);
+    g_test_add_func("/config/ordinary-config-is-quiet",
+                    test_an_ordinary_config_is_quiet);
+    g_test_add_func("/config/scalar-written-as-a-list-warns",
+                    test_a_scalar_written_as_a_list_warns);
     g_test_add_func("/config/agents/mounts", test_mounts_are_parsed);
     g_test_add_func("/config/agents/overlapping-mounts",
                     test_overlapping_mount_targets_are_a_shadow);

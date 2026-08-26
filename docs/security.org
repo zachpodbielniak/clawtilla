@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-23 Sun]
+#+updated: [2026-08-26 Wed]
 #+version: 0.1.0
 
 * Security
@@ -118,6 +118,18 @@ A unix socket rather than a loopback HTTP port, deliberately: a port has
 no owner, is reachable by anything on the machine, and brings DNS
 rebinding with it if a browser is ever involved.
 
+The file mode is the whole of it.  A unix client presents no token and
+the daemon runs no further check on who is calling -- so "0600, in a 0700
+directory, owned by you" is the entire statement, and anything that can
+open the path is a client.
+
+Which is a reason to reach for ~confine: bwrap~ on a host agent, since an
+agent that can open ~daemon.sock~ can reconfigure the fleet it belongs
+to.  bwrap builds its filesystem from nothing -- ~/usr~ and ~/etc~
+read-only, a tmpfs ~/tmp~, the agent's root and its ~allow_paths~ -- so
+~$XDG_RUNTIME_DIR~ is simply not there.  The other three modes leave it
+exactly where it is.
+
 A stale socket from an unclean shutdown is removed only after checking
 nothing is listening on it.  Unlinking a live socket would leave the
 running daemon's agents connected to a path that no longer exists while
@@ -193,6 +205,15 @@ Those are the ways credentials actually escape.  An agent that goes
 deliberately looking is a different threat, and the answer to it is
 confinement -- see [[file:computers.org][computers.org]].
 
+The third of those is asserted rather than reasoned about.  The plan for
+reaching a connector's tools is built before anything is started, so it
+can be checked without a token, a provider or a subprocess -- and the
+check that matters is a *negative* one: the credential appears in the
+environment or in a header, and nowhere in the argument vector.  An argv
+is in the process table for every process on the machine.  That is not
+visible by reading the code that builds the argv; it is visible only by
+looking for the value in the result, which is what the test does.
+
 The credential *is* in the environment of the tool server the relay
 starts, necessarily: that is how the server authenticates.  On a host
 agent that server's =/proc/<pid>/environ= is readable by the same user.
@@ -209,6 +230,42 @@ as long as the provider says.  Where a provider offers a revocation
 endpoint clawtilla calls it and reports that it did; where it does not,
 clawtilla says so rather than letting "revoked" mean less than you think.
 
+The local copy goes either way.  Somebody who asked to revoke wants the
+fleet to stop *now*, and an unreachable provider must not leave an agent
+holding a working credential until the network comes back.
+
+*** Authorizing
+
+- PKCE verifiers come from ~/dev/urandom~ or not at all.  GLib's
+  ~g_random_*~ is a Mersenne Twister: given a little output the rest is
+  computable, and a computable verifier is not weaker PKCE but *no*
+  PKCE, since the whole mechanism is that only the client which began
+  the flow can finish it.  A machine with no usable randomness gets a
+  refusal rather than a downgrade -- the same rule as a missing ~bwrap~.
+- ~expires_in~ is a duration and is stored as an *absolute* time,
+  computed when the response arrives.  Kept as it arrives, an hour-long
+  token looks an hour fresh after every daemon restart, so one that
+  expired overnight reads as valid each morning and every call made with
+  it fails somewhere else entirely.
+- Granted scopes are never written back over requested ones.  A person
+  can untick things on a consent screen, and storing the granted set
+  into ~scopes:~ would mean the next authorization asks for less and the
+  one after that less again -- a permission eroding every time it is
+  renewed.
+
+*** A format string from a config file never reaches printf
+
+~credential_format~ decorates a credential (~Bearer %s~) and is read from
+a YAML file somebody edits.  Handed to ~g_strdup_printf()~, a ~%d~ reads
+whatever is in that register and a ~%n~ writes.  It is validated -- one
+~%s~, doubled percent signs, nothing else -- *and* expanded by hand, so a
+format string read from a file is never a format string to anything.
+
+Validating and then trusting printf anyway would leave the whole of
+printf standing behind a check that has to be perfect for ever.  As it
+is, the worst a wrong one can do is produce a credential the service
+rejects.
+
 ** The environment allowlist
 
 A child's environment is built from an allowlist, never inherited.  This
@@ -223,15 +280,93 @@ access (~confine: none~) *additionally* requires
 ~daemon.allow_unconfined_host: true~, so it cannot happen through one
 config typo.
 
+*** The four confinement modes
+
+| Mode | Enforced by | Stops a runtime-built path | ~allow_network~ |
+|------+-------------+----------------------------+-----------------|
+| ~workspace~ (default) | inspecting the command | no | ignored |
+| ~allowlist~ | inspecting the command | no | ignored |
+| ~bwrap~ | the kernel | *yes* | *enforced* |
+| ~none~ | nothing | no | ignored |
+
+~workspace~ pins the working directory to the agent's root and
+canonicalises every argument that looks like a path.  ~allowlist~ is the
+same check over the root plus ~allow_paths~, minus ~deny_paths~ --
+checked in that order, so =~/.ssh= stays out even when the whole of your
+home directory is in.
+
+The middle column is the one that decides.  Two of these four modes stop
+a *command line* naming a forbidden path and nothing else, so they are
+worth having against a mistake and worth nothing against an attempt.
+Only ~bwrap~ involves the kernel, which is why it is also the only mode
+where ~allow_network: false~ means anything: cutting a process off the
+network needs a namespace, and there is no namespace in a string check.
+
 If ~bwrap~ is requested and missing, the agent starts in ~SHADOW~ with
 the reason.  It never silently downgrades -- a confinement that quietly
 becomes no confinement is worse than none, because you stop checking.
 
-~allow_sudo: false~ blocks ~sudo~, ~pkexec~, ~doas~, ~run0~ and
-~machinectl shell~ at the exec layer.
+*** Privilege escalation
 
-Every host exec is audited to the event log, including those run by a
-person through a client.
+~allow_sudo: false~ refuses ~sudo~, ~pkexec~, ~doas~, ~run0~,
+~machinectl~, ~su~ and ~setpriv~ at the exec layer, matched on the
+*basename*, so ~/usr/bin/sudo~ and a bare ~sudo~ are both caught.
+
+It is also checked inside a shell one-liner.  Refusing ~sudo id~ while
+allowing ~sh -c 'sudo id'~ would be security theatre, so the ~-c~
+argument of ~sh~, ~bash~, ~dash~, ~zsh~, ~ksh~, ~fish~, ~csh~ and ~tcsh~
+gets the same checks.
+
+The agent is told it was refused and why, rather than left guessing at a
+command that failed.
+
+Every host exec is audited to the event log: the ones a person runs
+through a client, and the ones an agent runs for itself with
+~clawtilla_computer_exec~.  The record is the agent, the command and the
+exit status, and nothing else -- no stdout, no stderr, no environment,
+because a transcript is replayed into every context rebuild and
+redacting at display time leaves the leak permanent.
+
+A command that was *refused* is recorded too, with an exit of ~-1~.
+"We do not know what it did" is a different fact from "it did not
+happen", and the refused one is what somebody looks up.
+
+** Desktop control
+
+~computer.desktop~ is a second grant beside the computer, and the whole
+question is *whose screen*.  ~backend: guest~ is the agent's own VM;
+~gowl~ and ~gnome~ are the session you are sitting in front of.  ~auto~
+picks ~guest~ whenever the agent has a VM, because an agent with its own
+machine should drive that screen rather than yours -- and it is the only
+backend where a misjudged click lands somewhere that does not matter.
+
+The agent is told which it got, in those words, because the tool names
+are identical either way: ~screenshot~ and ~key_press~ mean completely
+different amounts of caution depending on which screen is behind them.
+Getting that description backwards is the dangerous direction, and it has
+happened -- a guest agent was once told it was driving the operator's
+real screen.
+
+Two grants, both off by default, and they are not the same size:
+
+- ~allow_input~ permits key and pointer injection rather than only
+  observation.  With it false an agent can take screenshots and query
+  windows and cannot act, which is a useful amount of access on its own
+  and a much smaller one.
+- ~allow_spawn~ permits launching and signalling processes *through the
+  compositor*.  This is the one to be careful with: the compositor's
+  spawn tool starts a process through the compositor's own socket, so
+  *none of clawtilla's confinement applies to it* -- not the path
+  checks, not the sudo block, and not bwrap.  Turning it on gives the
+  agent a way to run anything, whatever ~computer.host.confine~ says.
+
+For a *guest* desktop the tools arrive over the agent's ~.mcp.json~ as an
+ssh to a server inside the VM, and that server has never heard of
+~allow_input~: it offers every tool it has to whoever connects.  So the
+grant is enforced on this side, by a relay that filters ~tools/list~ and
+refuses ~tools/call~.  A bare ssh entry in that file would hand an
+observe-only agent the ability to type, which is why clawtilla writes the
+entry itself and *removes* it when the grant is revoked.
 
 ** Tool permissions
 

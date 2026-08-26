@@ -38,12 +38,23 @@ G_DECLARE_FINAL_TYPE(ClawtAutomation, clawt_automation, CLAWT, AUTOMATION,
 /**
  * clawt_automation_new:
  * @bus: the daemon's event bus
+ * @context: (nullable): the main context the daemon runs on, or %NULL
+ *   for the thread-default
  * @action: (scope notified): how to carry out an action
  * @user_data: data for @action
+ *
+ * @context is not optional in the way a nullable argument usually is.
+ * podomation attaches every pod's event source to it, and dispatches a
+ * handler by blocking in a nested #GMainLoop on it -- so an engine given
+ * a context nobody iterates does not degrade, it stops: the pods load,
+ * they appear in the engine's own listing, and the first event to reach
+ * one never returns.  An embedded daemon owns its own context, which is
+ * exactly the case that breaks.
  *
  * Returns: (transfer full): a new #ClawtAutomation
  */
 ClawtAutomation *clawt_automation_new(ClawtEventBus      *bus,
+                                      GMainContext       *context,
                                       ClawtPodActionFunc  action,
                                       gpointer            user_data);
 

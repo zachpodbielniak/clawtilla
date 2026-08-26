@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-21 Fri]
-#+version: 0.1.0
+#+updated: [2026-08-26 Wed]
+#+version: 0.1.1
 
 * Agents
 
@@ -14,8 +14,10 @@ with its own persona, model, credentials, integrations and computer.
 ** Identity and persona
 
 An agent's personality is a set of org files in its workspace, one
-concern per file, concatenated into its system prompt in order.  Every
-workspace is scaffolded with the standard set:
+concern per file, concatenated into its system prompt in order.  A
+workspace is scaffolded with the files the agent will actually read --
+which is the standard set below unless ~persona.identity_files~ says
+otherwise:
 
 | File               | What it holds                                    |
 |--------------------+--------------------------------------------------|
@@ -27,8 +29,15 @@ workspace is scaffolded with the standard set:
 | ~TOOL_GOTCHAS.org~ | Footguns, appended as they are found             |
 | ~PROJECTS.org~     | What is in flight and where it lives             |
 
-Plus three that are not part of the prompt: ~README.org~ describes the
-directory to a person, and ~AGENTS.md~ / ~CLAUDE.md~ are loaders.
+Plus four that are not part of the prompt: ~README.org~ describes the
+directory to a person, ~AGENTS.md~ / ~CLAUDE.md~ are loaders, and
+~.mcp.json~ is how the agent's CLI finds the MCP servers it may call.
+
+~AGENTS.md~ is worth one caveat.  It is written once, from the *standard*
+list rather than the effective one, and never rewritten -- so an agent
+given a custom ~persona.identity_files~ gets a loader naming files that
+were deliberately not scaffolded, and it stays that way.  Edit it by hand
+after changing the list.
 
 *** Editing them
 
@@ -48,9 +57,12 @@ clawtilla agent edit researcher TOOLS.org
 #+end_src
 
 The editor runs in your terminal, not in the daemon -- the daemon only
-answers where the files are.  Only names in the standard set are
-accepted, so a path that climbs out of the workspace is refused rather
-than resolved.
+answers where the files are.  The name must be a plain filename: anything
+with a directory separator or a ~..~ in it is refused rather than
+resolved, because this is reached from an IPC request and
+~../../.clawtilla/agents/other/credentials~ is a perfectly good relative
+path.  Any other filename in the workspace is fair game, so this also
+opens a note you left yourself there.
 
 Files are scaffolded on demand, so this works on an agent that has never
 been started.  *Existing files are never overwritten*: the defaults are a
@@ -132,7 +144,21 @@ summarises it" is useful; "the researcher agent" is not.  It is also what
 the scaffolded ~SOUL.org~ and ~IDENTITY.org~ are seeded from, so writing
 a real one pays twice.
 
-** Memory
+** Two things are called memory
+
+They are unrelated, and the plural is the only thing that tells them
+apart, so it is worth reading this before either.
+
+| Key | What it is |
+|-----+------------|
+| ~agents.memory.*~ | libreclaw's ~MEMORY.md~ size budget: a file in the workspace, folded into the prompt |
+| ~memories.*~ | clawtilla's searchable per-agent SQLite store, reached through the ~clawtilla_memory_*~ tools |
+
+Turning off ~memories.enabled~ does not shrink ~MEMORY.md~, and raising
+~agents.memory.max_lines~ does not let an agent remember more facts.
+The one in the plural is the one with the tools.
+
+*** The MEMORY.md budget
 
 #+begin_src yaml
 memory:
@@ -145,6 +171,15 @@ A budget rather than a limit to grow into.  An agent whose memory file
 grows without bound eventually spends its whole context recalling and
 none of it working.
 
+*Not currently wired through.*  All three keys are in the schema, are
+accepted and are saved, and none of them is rendered into the agent's
+libreclaw config -- there is no ~memory:~ section in the renderer at
+all, so libreclaw runs on its own defaults whatever is written here.
+Said plainly because a size budget that is ignored looks exactly like
+one that is generous.
+
+The searchable store is the section further down, and it works.
+
 ** Models
 
 #+begin_src yaml
@@ -152,11 +187,17 @@ model:
   provider: claude-code
   model: opus
   effort: high              # low | medium | high | xhigh | max
-  routing_profile: default
-  fallbacks: [sonnet, haiku]
 #+end_src
 
-~fallbacks~ are tried in order when the primary is unavailable.
+Three keys, and only three.  ~model.routing_profile~ and
+~model.fallbacks~ are in the schema and are rendered nowhere: the
+agent's generated config carries ~ai.provider~, ~ai.model~ and
+~ai.default_effort~ and stops.  A fallback list is accepted, saved,
+reported back by ~agent show~, and never consulted -- so an agent whose
+primary model is unavailable fails rather than falling back.
+(~routing_profile~ would not have worked as documented either: libreclaw
+knows ~off~, ~eco~, ~auto~, ~premium~ and ~free~, and silently reads
+anything else, ~default~ included, as ~off~.)
 
 The Claude Code backend takes aliases rather than dated model ids --
 ~opus~, ~sonnet~, ~fable~, ~haiku~ -- because an alias keeps working when
@@ -181,6 +222,17 @@ log, so an agent configured for ~openai~ does not run OpenAI: it runs
 Claude Code and hands it ~gpt-4o~ as a model name, which fails somewhere
 much further along.
 
+Two of those rewrites are *silent*, and they are the ones somebody is
+most likely to type.  ~claude~ becomes ~claude-code~ and ~grok~ becomes
+~grok-build~ with no warning at all, because both are treated as
+spellings of the CLI rather than as mistakes.  That is defensible and it
+is also the trap: ~claude~ and ~grok~ are exactly the names offered for
+the agent *designer* further down this page, so putting one in
+~model.provider~ gives an agent quietly running a different backend with
+nothing in the log to say so.  The warning fires only for ~openai~,
+~gemini~ and ~ollama~ -- and it names ~claude-code-tmux~, which is
+libreclaw's own older spelling of what clawtilla calls ~claude-tmux~.
+
 So ~model.list~ reports ~agent~ per provider and clients offer only
 those four for an agent.  ~grok-build~ was missing from that list for a
 while and could not be chosen at all, which is the bug this table
@@ -192,10 +244,12 @@ To reach OpenAI or Gemini from an agent, use ~opencode~, which is a CLI
 that routes to them.  The HTTP providers are offered for *designing* an
 agent, where ai-glib drives them directly -- see below.
 
-** Memory
+** Memories, which are not the memory budget
 
 Each agent has a searchable store of its own: what it chose to write
-down, kept between conversations and across restarts.
+down, kept between conversations and across restarts.  This is
+~memories.*~ -- the plural -- and it is unrelated to the ~MEMORY.md~
+budget above.
 
 ** One database per agent
 
@@ -212,13 +266,23 @@ Sharing is opt-in and one-way:
 agents:
   - id: researcher
     memories:
-      readers: [chief-of-staff]
+      readers: "chief-of-staff,editor"
 #+end_src
 
 ~chief-of-staff~ may now search ~researcher~'s memories by passing
 ~agent: researcher~ to ~clawtilla_memory_search~. Reading only --
 nothing lets one agent write into another's memory, because a memory you
 did not form is not a memory.
+
+*It is a comma-separated string, not a YAML list.*  ~readers: [a, b]~
+parses, is saved, and reads back as unset -- the getter asks for a
+string and a sequence node answers NULL -- so every peer read is denied
+and nothing says why.  This is the one key in the file where the obvious
+YAML spelling is the wrong one.
+
+~memories.max_results~ caps what one search or listing returns, at 20 by
+default.  It is a context budget rather than a formality: every result
+lands in the agent's prompt.
 
 ** The tools
 
@@ -319,7 +383,22 @@ tr '\0' '\n' < /proc/$(pgrep -f 'libreclaw -c .*researcher')/environ
 
 ~max_restarts~ exists because an agent that fails instantly and is
 restarted for ever is a busy loop that starves everything else.  Backoff
-doubles on each consecutive failure.
+doubles on each consecutive failure, stops doubling after six, and is
+capped at five minutes -- so a persistently broken agent is retried every
+five minutes rather than every few hours.  ~0~ means never give up.
+
+Three things stop a failure counting, and each was a real bug before it did:
+
+- *An agent that ran for a while first.* A streak is zeroed once an
+  agent has been up for five minutes, so "failed ten times in a row"
+  means ten quick failures rather than ten crashes since the daemon was
+  installed.  Uptime is the honest signal.
+- *A clean exit under ~restart: always~.* An agent designed to run,
+  finish and be restarted would otherwise spend its whole allowance
+  doing exactly what it was told to.
+- *An exit while the account is out of session allowance.* See below; it is not this agent failing.
+
+The limit is strictly greater than, so ~max_restarts: 10~ permits eleven attempts.
 
 All three are re-read from the configuration at the agent's *next
 start*, which is the same contract every other start-time setting
@@ -343,6 +422,36 @@ by mailbox will sit stopped after its first turn unless it is set to
 delivers it either.  ~agent list~ carries a QUEUE column for exactly
 this: a stopped agent with a non-zero queue is stalled rather than
 idle.
+
+*** When the account runs out of session allowance
+
+Not a fault, and not a rate limit.  The CLI stops reaching the API at
+all: it answers from itself, states a reset time and exits.  Every
+attempt before that reset costs nothing and achieves nothing, and
+thirty-three of them in under four minutes is what this exists to stop.
+
+Every line the child writes is checked for that notice.  When one
+appears the agent is *paused* until the stated reset, and three things
+behave differently while it is:
+
+- The restart backoff stretches toward the reset rather than doubling
+  from a second -- still capped at five minutes, because a reset hours
+  away must not become a timer nothing revisits, and coming back early
+  costs one turn and answers whether the wall is still there.
+- The exit does not count as a failure, so the restart budget is not
+  spent on a wall that will not move.  The streak is left alone rather
+  than reset: an agent that was genuinely failing before the limit
+  arrived should not have its record wiped by it.
+- *Its mailbox is not drained.* Delivery acknowledges an item the moment
+  it reaches the socket, so feeding an agent that cannot answer consumes
+  the queue -- every message handed over, refused without reaching a
+  model, and gone.
+
+The allowance belongs to the *account*, so the whole fleet crosses the
+same wall within a few minutes of each other.  That is why it reads as
+the daemon having failed rather than as a limit being reached, and it is
+the single most useful thing to know before restarting anything.  See
+~docs/troubleshooting.org~ for what it looks like in the log.
 
 *** Where skills live
 
@@ -376,34 +485,63 @@ offers a control that would do nothing.
 
 **** Running several embedded agents in one process
 
-Verified constraints, all of which the daemon handles:
+What the daemon does:
 
-- ports must be ~0~ so each gets one assigned, and read back
-- ~session.persist_dir~, ~database.path~ and the skills directory must
-  differ per agent -- sharing a persist dir lets one agent resume
-  another's session, which looks exactly like the model hallucinating a
+- ~session.persist_dir~, ~database.path~ and the skills directory are
+  per agent -- sharing a persist dir lets one agent resume another's
+  session, which looks exactly like the model hallucinating a
   conversation it never had
-- signal handlers are installed only in non-embedded mode, so the daemon
-  owns SIGINT/SIGTERM/SIGHUP
-- OpenTelemetry is process-global, so at most one embedded agent may
-  enable it
-- ~channels.local~ owns fd 0 and 1, so it is never rendered for an
-  embedded agent
-- config errors surface at start, not at construction
+- ~channels.local~ owns fd 0 and 1, so it is rendered only when an
+  agent has an explicit ~local~ binding.  That is the gate, for both
+  runtimes; there is no separate embedded check, so asking for it on an
+  embedded agent is asking two agents to fight over one terminal
+- config errors surface at start, not at construction --
+  ~lc_app_new_embedded()~ strdups the path and does not read it
+
+What libreclaw does, which is why the above is enough: signal handlers
+are installed only in non-embedded mode, so the daemon keeps
+SIGINT/SIGTERM/SIGHUP.
+
+Two constraints this section used to list are *not* handled here, because
+neither exists in this tree: nothing zeroes and reads back a port (the
+renderer emits no dashboard, api, bridge or webhook port at all), and
+there is no OpenTelemetry code in clawtilla to be process-global about.
+Both are real libreclaw constraints for anyone rendering their own
+config; they are not things clawtilla arranges.
 
 ** Lifecycle
 
 #+begin_example
-  stopped ──start──▶ starting ──connected──▶ running
-     ▲                   │                      │
-     │                   └───failed─────────────┤
-     │                                          │
-     └──────── stopping ◀────stop───────────────┘
+  stopped ──start──▶ starting ──connected──▶ running ◀──link back──┐
+     ▲                   │                      │                  │
+     │                   └───failed─────────────┤                  │
+     │                                          │             degraded
+     └──────── stopping ◀────stop───────────────┘                  ▲
+                                                                   │
+                                                              link lost
 
-  shadow   — configuration could not be understood; refuses to run
-  degraded — running but something is wrong (its computer, an integration)
-  error    — it failed and the restart policy gave up
+  shadow   — something about it could not be built; refuses to run
+  degraded — its process is up but it is not connected to the daemon
+  error    — a start failed, or it exited uncleanly without being asked to
 #+end_example
+
+Three of those need saying more carefully than a diagram can.
+
+*degraded* is about the *link* and nothing else.  A running agent whose
+link drops goes DEGRADED, and returns to RUNNING when it dials back in
+-- both directions are live.  It is not a general "something is wrong
+with this agent" state: a broken computer or a misconfigured integration
+does not produce it.
+
+*error* is broader than "the restart policy gave up".  It is set on any
+failed start, on any unclean exit that nobody asked for -- whatever the
+restart policy says -- and by the retryable-failure path used when a
+computer could not be provisioned this time.  The restart policy
+actually giving up sets no state at all; it stops trying and says so in
+the log, and the agent keeps whatever state its last exit left it in.
+
+A *clean* exit goes straight to STOPPED without passing through
+STOPPING.  STOPPING means somebody asked.
 
 #+begin_src bash
 clawtilla agent start researcher
@@ -444,10 +582,59 @@ Two consequences:
 - an agent is never told it has a tool that does not exist; a tool it
   cannot use is not listed
 
-Derived from the *object*, not the config: a computer that failed to
-provision leaves the config saying ~container~ while the agent has
-nothing, and an agent that believes it has a computer it cannot reach
-burns whole turns hunting for it.
+~computer~ and ~host-control~ are derived from the *object*, not the
+config: a computer that failed to provision leaves the config saying
+~container~ while the agent has nothing, and an agent that believes it
+has a computer it cannot reach burns whole turns hunting for it.  The
+rest are read from the configuration -- ~mounts~, ~desktop~,
+~desktop-input~ and ~effort-levels~ -- and ~tools-mcp~ / ~peer-comms~
+are unconditional, set for every agent there is.
+
+** What order the fleet comes back in
+
+~agent.list~ returns the fleet *grouped and ordered*, and every client
+draws it in that order rather than sorting for itself.  Two answers to
+"what order is the fleet in" is one too many, and the two would differ
+the first time a team was reordered.
+
+Two keys decide it:
+
+#+begin_src yaml
+teams:
+  - id: research
+    order: 10
+agents:
+  - id: chief
+    order: 10
+  - id: researcher
+    team: research
+    order: 20
+#+end_src
+
+*Group first.*  Teamless agents come *first*, because that is where the
+chief of staff lives and anything not yet assigned -- putting them last
+would bury the agent somebody talks to most under every team in the
+fleet.  Then declared teams in ~teams.order~.  Then, last, agents naming
+a team nobody declared: they are shown under that team's id rather than
+hidden, because hiding one is how a typo in ~agents.team~ survives being
+looked at.
+
+*Then ~agents.order~*, lowest first, and the sort is *stable* -- so a
+fleet nobody has ever dragged, every agent at the default 0, comes back
+exactly as ~clawtilla.yaml~ has it.
+
+Dragging a row in a client rewrites the whole list and *renumbers it in
+tens*.  Tens rather than ones so one agent can afterwards be placed
+between two others by hand without renumbering the file.  The client
+sends the whole arrangement rather than "move this one here": the daemon
+numbers from what it is given, so one frame describes the result
+completely and a stale client cannot produce a half-applied reorder.
+
+This lives in ~clawtilla.yaml~ rather than in a client's own config
+because it is about the agents rather than about *reaching* them --
+which is the line that puts connection profiles and fonts on the other
+side.  A chief dragged to the top is at the top in every client and on
+every machine.
 
 ** Shadow agents
 
@@ -461,7 +648,21 @@ state:  shadow - unknown computer type 'teleporter'; this build knows
 #+end_example
 
 A shadow is listed, explains itself, and refuses to run.  The fleet
-starts without it.
+starts without it, and ~agent start~ on the whole fleet skips it rather
+than failing.
+
+A bad config value is the commonest reason and not the only one.  A
+mailbox that will not open, a computer that cannot be built from its
+config, and a secret that will not resolve all produce a shadow with
+their own reason.  The rule is the same in each case: one agent's
+problem costs that agent and not the fleet.
+
+Shadow is for something *unrecoverable* about how the agent is
+described.  A failure that might work next time -- a hypervisor that was
+busy, an image still downloading -- sets ~error~ instead, which can be
+retried.  A shadow keeps the reason from the first failure rather than
+being overwritten by later ones, so the message names the cause rather
+than the last symptom.
 
 *** A corrected config clears the shadow
 
@@ -516,14 +717,57 @@ container or VM.  Agents with no computer do not get one.
 A teardown that fails does not fail the removal -- the agent is still
 going -- and the reason is reported rather than swallowed.
 
+*** Deleting what it wrote
+
+#+begin_src bash
+clawtilla agent rm researcher --purge
+#+end_src
+
+Opt-in and not undoable.  It removes three things, which are three
+because they are configured apart and can be anywhere:
+
+- the *workspace* -- persona, skills, ~.mcp.json~, anything else in there
+- ~<state_dir>/agents/<id>~ -- the mailbox, ~memory.db~, the link token,
+  the rendered ~config.yaml~, the sessions and the usage history
+- every *transcript* naming that agent, matched by name rather than
+  built, because a transcript is named for the room rather than for the
+  agent
+
+Removing an agent from the fleet is reversible; deleting what it wrote
+is not, so the two are different flags and both clients report which
+half happened.  "Removed" and "kept, because ..." are different
+sentences.
+
+Two details worth knowing before running it:
+
+*Every path is fenced.* ~clawt_remove_tree()~ takes the root it must
+stay inside and refuses anything else, checked on the canonical path so
+a symlink or a ~..~ cannot carry it out, and checked per child against
+that same root rather than against its parent.  The workspace is fenced
+against ~defaults.workspace_root~ and deliberately *not* against
+~daemon.state_dir~, because a workspace can perfectly reasonably live in
+a source tree.
+
+*The files go before the config entry does.* Every one of those paths is
+derived from the agent's block in ~clawtilla.yaml~, and afterwards there
+is nothing left to derive them from.  The computer is torn down before
+that again, for the same reason.  A purge that fails partway reports
+~files: <reason>~ and the agent is still removed from the fleet -- the
+alternative is a fleet entry nobody can get rid of because a directory
+was read-only.
+
 ** What an agent is told about its team
 
-The managed region of ~TOOLS.org~ opens with where the agent sits, in one
-of three versions, regenerated whenever its team or role changes.
+The ~# BEGIN clawtilla tools~ region of ~TOOLS.org~ -- the same one that
+lists the tools, described in the next section -- opens with a "Where you
+sit" heading, in one of *four* versions, regenerated whenever the agent's
+team or role changes.
 
 The chief is told to read the team descriptions before placing anything,
 and to hand work to a team's *lead* rather than to somebody on it -- the
 lead knows what their people are in the middle of and the chief does not.
+A team with no lead is the exception: the chief assigns into it directly,
+because nobody else can.
 
 A lead is told it may place work inside its team, and that anything else
 goes back to the chief rather than around them by messaging another
@@ -535,10 +779,47 @@ all. That second half matters: an agent that reads "you cannot delegate"
 without it concludes it cannot collaborate either, which is the opposite
 of the point.
 
+The fourth is the one every fresh fleet is in: an agent on *no* team is
+told it takes work from the chief of staff, may message and ask anybody,
+and cannot assign.
+
+*** What actually refuses an assignment
+
+The blurb is the prompt; ~clawt_team_may_assign()~ is the gate, and it
+has five outcomes rather than three.  Beyond chief-assigns-anybody,
+lead-assigns-own-team and member-assigns-nobody:
+
+- *An agent cannot assign to itself.* Doing the work is not delegating it.
+- *A lead with no ~team~ set is refused.* The role says lead and there is
+  nothing to lead, which is a config mistake rather than a permission.
+
+Every refusal names where the work should go instead, and says that
+talking to the agent in question is still allowed.  A refusal that only
+says no gets retried in a different shape.
+
+*** Fleet-level mistakes are warnings, not errors
+
+Two leads on one team, a team with members and no lead, an agent naming
+a team nobody declared: all three are reported and none of them stops the
+daemon.  A fleet is edited by hand and half-built states are ordinary --
+refusing to start over one would be far worse than saying so.
+
+They surface on ~clawtilla team list~ and in the clients, because the
+symptom otherwise is work quietly going nowhere.  Note that two leads on
+one team is *not* picked between: both keep the role.  (The schema's own
+description says a second lead is "refused rather than picked between",
+which overstates what the code does.)
+
 ** What an agent is told it has
 
-~TOOLS.org~ carries a second marked region, ~# BEGIN clawtilla tools~,
+~TOOLS.org~ carries a marked region, ~# BEGIN clawtilla tools~,
 regenerated on every start from the same gate that answers ~tools/list~.
+It is one of *three* regions clawtilla owns in that one file.  The others
+are ~# BEGIN clawtilla integrations~ and ~# BEGIN clawtilla computer~ --
+the last rewritten on every start with the agent's mounts and the
+host-path-left-of-~=~ rule, because an agent that reads the wrong side
+of that ~=~ concludes a shared folder is missing.  Everything outside all
+three markers belongs to whoever edits the file.
 
 It exists because the file used to list the tools in a table written when
 the workspace was scaffolded and never touched again.  A tool granted
@@ -589,6 +870,26 @@ needed:
 chief: tools.manage_fleet = true
 Restart it: it lists its tools when it starts.
 #+end_example
+
+*The advice differs by key, because the remedy does.*  For a ~persona.*~
+key a restart is *not* enough, and the CLI says so instead:
+
+#+begin_example
+chief: persona.system_prompt = ...
+Run `clawtilla agent reset chief`: a resumed session is never handed a
+system prompt, so a restart alone keeps the old identity.
+#+end_example
+
+Those two prefixes -- ~tools.~ and ~persona.~ -- raise
+~restart_required~, and so do ~chief_of_staff~ and ~team_role~: between
+them those two decide whether the delegation tool is offered at all,
+which is the same thing ~tools.manage_fleet~ does, and an AI CLI lists
+its tools once, when its session starts.  So a chief granted its role
+while running reaches its files and not its session.  It is raised only
+while the agent is exactly ~running~.
+An agent that is ~starting~ or ~degraded~ is told nothing, so a setting
+changed at the wrong moment is applied to the files and silently not to
+the session.
 
 ** An agent keeps its own files
 
@@ -701,9 +1002,18 @@ clawtilla agent new --designer grok --designer-model grok-4
 Each needs its key in the daemon's environment, the same as an agent
 using it would.
 
-Asking a CLI provider to design is refused before the call rather than
-after it, naming the ones that work.  Agents themselves run perfectly
-well on a CLI provider; this affects designing only.
+*Nothing refuses a CLI provider here.*  ~--designer claude-code~ is
+built and used, and the design then comes back as prose with nothing
+set, because the tool list was dropped on the way in.  An empty
+~--designer~ falls back to ~claude-code~ for the same reason -- the
+string is handed straight to ai-glib's factory, which knows that name.
+The ~tools~ column exists and is reported, and the designer path does
+not consult it.  Until it does, the GTK client's /Designed by/ list is
+the only thing keeping somebody on a provider that works; from the CLI,
+pick one of the five above.
+
+Agents themselves run perfectly well on a CLI provider; this affects
+designing only.
 
 ~model.list~ reports ~tools~ per provider, so a client can tell the two
 apart without hardcoding the list.  It reports ~agent~ beside it, and
@@ -742,9 +1052,10 @@ what to do next:
 
 #+begin_example
 Created researcher.
-Read what it thinks it is: clawtilla agent edit researcher
 Started it.
 #+end_example
+
+With ~--no-start~ the second line is ~Start it with: clawtilla agent start researcher~ instead.
 
 A failure to start is reported and does not undo the creation.  The
 agent exists and its configuration is on disk; throwing that away

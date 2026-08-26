@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-23 Sun]
+#+updated: [2026-08-26 Wed]
 #+version: 0.1.0
 
 * Architecture
@@ -61,9 +61,12 @@ The assembly.  Owns:
 | ~ClawtTaskManager~ | delegated work |
 | ~ClawtMailboxRouter~ | turning a message into deliveries |
 | ~ClawtLoopGuard~ | hop, rate, budget and cycle limits |
+| ~ClawtUsage~ | what each agent has spent, read from its own database |
 | ~ClawtEventBus~ | what happened, with a resumable cursor |
 | ~ClawtEventLog~ | the same, on disk, secrets scrubbed on write |
+| ~ClawtDecisionStore~ | choices an agent needs a person to make |
 | ~ClawtExchange~ | the shared drop-box agents pass files through |
+| ~ClawtVmImageStore~ | the cloud images on disk, and the downloads in flight |
 | ~ClawtLinkServer~ | where agents dial in |
 | ~ClawtIpcServer~ | where clients connect |
 | ~ClawtMcpTools~ | the tools agents call to work together |
@@ -74,6 +77,32 @@ The assembly.  Owns:
 | ~ClawtAutomation~ | clawtilla as a podomation module, both directions |
 | the connector catalogue | services an account can be held for, and the flows in progress |
 
+Three of those are worth a sentence each, because they are the ones a
+reader does not expect to find on the daemon.
+
+~ClawtUsage~ holds a watermark per agent and nothing else.  Every agent
+has been writing one ~token_usage~ row per AI turn into its *own*
+libreclaw database since 0.24.0, and nothing had ever read them -- so the
+first question an operator running a paid fleet asks had no answer
+anywhere in the product.  It is read through libreclaw's own API rather
+than by opening its schema, so there is no copy of that column list here
+to fall out of step with a table clawtilla does not own.  A missing
+database is *zero, not an error*, and must not be opened: opening a
+sqlite database creates it, and asking what a stopped agent cost should
+not leave one behind.
+
+~ClawtDecisionStore~ sits beside the alerts rather than inside them.  An
+alert is something that happened; a decision is something that needs
+you, and one badge meaning both is a badge nobody can act on.  Durable
+for the same reason the mailbox is: an agent that asked and got no answer
+carried on with its default, and an operator who never saw the question
+has no way to know that happened.
+
+~ClawtVmImageStore~ exists because a VM needs a disk image, clawtilla
+ships none, and they are several hundred megabytes each -- so fetching
+one is a deliberate act with progress to watch rather than something that
+happens inside an agent's first start.
+
 ~clawt_daemon_new(path, main_context)~ takes a ~GMainContext~.  That
 parameter is what makes embedding work: a host that owns its own loop
 passes its context and gets the identical daemon with no process and no
@@ -81,8 +110,14 @@ socket in between.
 
 *** ClawtAgent
 
-One agent: identity, state, capabilities, and pointers to its runtime,
-computer, mailbox and link.
+One agent: identity, state, capabilities, hop depth, and pointers to its
+config, runtime, computer, desktop, mailbox, memory store and link.
+
+Its ~ClawtMemoryStore~ is per-agent and per-agent only -- a searchable
+sqlite store an agent writes to and reads back through its own tools.
+Note the plural in ~memories.*~: ~agents.memory~ is a completely
+unrelated setting, libreclaw's ~MEMORY.md~ size budget, and the two have
+been confused before.
 
 ~ClawtAgentCaps~ is derived from what the agent *has*, not from what its
 config asked for.  A computer that failed to provision leaves the config
@@ -118,38 +153,130 @@ Abstract.  Two implementations:
   ~lc_app_new_embedded()~.  Cheaper, and the only option where there is
   no binary to run.  In exchange it cannot have its own environment or
   credentials and cannot be interrupted.  ~get_caps~ reports that
-  honestly rather than offering controls that would do nothing.
+  honestly rather than offering controls that would do nothing: the
+  process runtime answers ~INTERRUPT | STREAMING~, the embedded one
+  ~STREAMING~ alone.
+
+**** Several LcApps in one process
+
+The embedded runtime is the case where libreclaw's own single-instance
+assumptions stop holding, and every one of them is somebody else's
+constraint that clawtilla has to render around:
+
+- ~port: 0~ for the dashboard, api, bridge and webhook listeners, then
+  read the real port back.  Two agents asking for the same fixed port is
+  one agent that will not start.
+- distinct ~session.persist_dir~, ~database.*~ and
+  ~ai.subagent.state_dir~ per agent.  Sharing a persist directory lets
+  one agent resume another's session, which looks like the model
+  hallucinating a conversation it never had.
+- OTel enabled in at most one.
+- ~channels.local~ in none of them.  It owns fd 0 and fd 1, so two agents
+  in one process fight over the terminal -- and an agent the daemon
+  started has no terminal at all.  clawtilla renders it only when an
+  integration explicitly asks.
+
+The daemon's own ~PodEngine~ is deliberately *not* shared with an
+embedded ~LcApp~.  Sharing would be cheaper and would also let one
+agent's container operations cancel another's, with no way to tell them
+apart afterwards.
 
 *** ClawtComputer
 
-Abstract, with ~none~, ~host~, ~container~ and ~vm~ implementations, plus
-an optional desktop add-on.  See [[file:computers.org][computers.org]].
+Abstract, with ~none~, ~host~, ~container~, ~distrobox~ and ~vm~
+implementations, plus an optional desktop add-on.  See
+[[file:computers.org][computers.org]].
+
+One rule about the base class belongs here rather than there, because it
+is about how a derivable type is written and not about computers.  *A
+missing vfunc must not answer TRUE.*  ~clawt_computer_teardown()~ went
+through a helper that returned TRUE when the vfunc was NULL, and the VM
+backend had no teardown at all -- so removing a VM agent took the success
+branch, recorded the computer as removed, and left the libvirt domain
+defined and the disk on disk.  A missing feature that reports failure is
+a gap; one that reports success is a lie, and it was found by opening
+virt-manager and seeing a VM that should not have been there.  The
+default is a refusal naming the type now, and the two backends with
+genuinely nothing to destroy say so in two lines each.
+
+** What is a GObject and what is not
+
+It matters more than it sounds, because the type system will let one be
+passed where the other is expected and the crash lands elsewhere.
+
+GObjects, and the ones with signals worth connecting to:
+~ClawtDaemon~ (~started~, ~stopped~, ~reloaded~), ~ClawtAgentManager~
+(~agent-added~, ~agent-removed~, ~agent-state-changed~), ~ClawtAgent~
+(~state-changed~, ~error~), ~ClawtAgentRuntime~ (~started~, ~exited~,
+~log-line~), ~ClawtComputer~ (~state-changed~), ~ClawtMailbox~
+(~item-added~, ~item-leased~, ~item-acked~, ~item-dead-lettered~,
+~depth-changed~), ~ClawtRoom~ and ~ClawtRoomManager~, ~ClawtTaskManager~
+(~task-changed~), ~ClawtLink~ and ~ClawtLinkServer~, ~ClawtEventBus~
+(~event~), ~ClawtVmImageStore~ (~progress~, ~finished~), ~ClawtClient~
+(~connected~, ~disconnected~, ~event~) and ~ClawtAgentDesigner~
+(~draft-changed~).
+
+*Emitting a signal is half the work.*  The manager's
+~agent-state-changed~ had been emitted since the manager was written and
+nothing had ever connected to it, so an agent that crashed produced no
+event on the bus at all: clients found out by polling, and nobody found
+out at 3am.  Grep for a connection before assuming a signal is wired.
+
+Everything else with a ~Clawt~ prefix is a *boxed* type -- reference
+counted or copied, with a ~G_DEFINE_AUTOPTR_CLEANUP_FUNC~ in its header:
+~ClawtAgentConfig~, ~ClawtMessage~, ~ClawtMailboxItem~, ~ClawtEvent~,
+~ClawtTask~, ~ClawtMount~, ~ClawtExecResult~, ~ClawtMemory~,
+~ClawtDecision~, ~ClawtCron~, ~ClawtRoutine~, ~ClawtSecretRef~,
+~ClawtParamInfo~, ~ClawtConnection~, ~ClawtAppearance~,
+~ClawtIntegrationConfig~, ~ClawtIntegrationBinding~, ~ClawtOauthToken~,
+~ClawtDeviceCode~, ~ClawtNotification~, ~ClawtMatrixLogin~,
+~ClawtMatrixRoom~, ~ClawtGuestDesktop~, ~ClawtUsageTotals~, ~ClawtVmImage~.
+
+Which is exactly why the distinction is written down.  ~g_task_new()~
+refs its source object, so passing a ~ClawtIntegrationBinding~ -- a plain
+reference-counted struct -- ran ~g_object_ref()~ on something that is not
+a GObject and took the daemon down on the first health check anybody
+asked for.  It builds, it type-checks, and the cast in the callback looks
+symmetrical with every other async function in the file.  Carry a
+non-GObject in the task *data* and pass NULL as the source.
 
 ** How a message moves
 
 #+begin_example
-  a person, or an agent's tool call
-              │
-              ▼
-    ClawtMailboxRouter::send
-              │
-       ┌──────┴───────┐
-       │ ClawtLoopGuard│  hops? rate? budget? cycle?    ─── refused here
-       └──────┬───────┘
-              ▼
-      resolve destination     room id, or agent id → the direct room
-              │
-              ▼
-      append to the room's transcript
-              │
-              ▼
-      for each member: post to their ClawtMailbox   (durable, SQLite)
-              │
-              ▼
-      drain to whoever is connected → ClawtLink → the libreclaw process
+  a client's msg.send          an agent's tool call        an agent's reply
+        │                              │                          │
+        ▼                              ▼                          │
+  ClawtIpcServer                  ClawtMcpTools                    │
+        │                              │                    ClawtLinkServer
+        └──────────────┬───────────────┘                          │
+                       ▼                                          │
+             ClawtMailboxRouter::send  ◀───────────────────────────┘
+                       │
+                       ▼
+             resolve destination     room id, or agent id → the direct room
+                       │
+              ┌────────┴────────┐
+              │  ClawtLoopGuard │  hops? rate? budget? cycle?  ── refused here
+              └────────┬────────┘
+                       ▼
+             append to the room's transcript
+                       │
+                       ▼
+             for each member: post to their ClawtMailbox   (durable, SQLite)
+                       │
+                       ▼
+             drain to whoever is connected
+                       │
+                       ▼
+             ClawtLink ──▶ libreclaw's clawtilla channel ──▶ the agent
 #+end_example
 
-Two things about that order matter.
+Three things about that order matter.
+
+*The destination is resolved before the guard runs.*  Not an accident of
+ordering: a refusal publishes ~message.refused~ with the *room* as its
+subject, and until the destination is resolved there is no room to name.
+A refusal a client cannot place in a transcript is a refusal nobody sees.
 
 *Loop safety is applied before anything is enqueued.*  A runaway fan-out
 has to be stopped at the source; by delivery time the messages already
@@ -159,22 +286,107 @@ exist and refusing means cleaning up rather than preventing.
 messaging a stopped agent works, and why a daemon killed mid-turn does
 not lose the queue.
 
+Every path converges on ~clawt_mailbox_router_send()~, including an
+agent's ordinary reply -- which arrives on the link and is routed like
+anything else.  That is not merely tidy.  The hop counter is what stops
+two agents answering each other for ever, and it was stamped as a flat
+depth of 1 on the link path for a long time, so the one limit built for
+exactly that case could never fire on the path where it happens.  Two
+agents traded fifty messages and nothing stopped them.  *Anything that
+stamps a depth must derive it from ~clawt_agent_get_hop_depth()~.*
+
+The same rule caught the budget.  ~orchestration.task_budget_usd~ was
+enabled by default, checked on every routed message, and
+~clawt_loop_guard_record_spend()~ was called by nothing outside a test --
+so the counter the check read was permanently zero.  It is charged from
+the link handler now, where an agent's turn actually ends, and drained on
+*every* reply rather than only the ones carrying a task id: the drain is
+what advances the watermark, so skipping the untasked turns would bank
+them and hand the whole accumulated bill to whichever task happened to be
+answered next.
+
+*** An agent's mailbox is empty while it is running
+
+Delivery acknowledges an item the moment it reaches the socket and hands
+it over as an ordinary turn, so the mailbox only holds what queued while
+the agent was stopped.  Anything that reads a running agent's queue is
+reading a queue that is almost always empty, and that means nothing.  An
+agent checking there for a peer's reply concluded, correctly and
+uselessly, that none had come -- while the reply was in the turn it had
+just been handed.
+
 ** Threading and main contexts
 
 clawtilla is single-threaded by design.  Everything runs on one
 ~GMainContext~ -- the daemon's own when embedded, the default one when
 standalone.
 
-The one rule that catches people: *~g_timeout_add_seconds()~ attaches to
-the default context, not the thread-default one.*  In an embedded daemon
-that means the timer never fires.  Everything periodic in clawtilla uses
-~g_timeout_source_new_seconds()~ plus ~g_source_attach(source, context)~
-instead.  Two real bugs came from getting this wrong -- exec timeouts and
-secret-command timeouts that silently never fired.
+The one rule that catches people: *~g_timeout_add_seconds()~ and
+~g_idle_add()~ attach to the default context, not the thread-default
+one.*  In an embedded daemon -- one whose host runs its own loop on its
+own context -- that means the source never runs at all.  Everything
+periodic goes through ~clawt_timeout_add_seconds()~, which exists for
+exactly this; an idle uses ~g_idle_source_new()~ plus
+~g_source_attach(source, context)~.  Three real bugs came from getting
+this wrong: a keepalive and a restart policy that silently never fired,
+and an idle that never delivered a single event to an embedded client.
+
+It generalises past the source constructors, and the generalisation is
+the part worth keeping: *anything that captures "the current context" is
+a bug in an embedded daemon unless it was told which one.*  Two more of
+the same shape have already been paid for.
+
+~g_task_new()~ captures ~g_main_context_ref_thread_default()~, and
+dispatching a source does *not* make its context thread-default -- GLib
+pushes nothing on the way in.  So a task created inside a source callback
+takes the process default and completes on a loop the daemon may never
+run.  The context is pushed explicitly around every ~g_task_new()~ here.
+
+And anything that *waits* must wait on the context the answer will arrive
+on.  ~ClawtProcessRuntime~ holds the context its child's exit will be
+delivered to, because ~stop()~ once asked for whatever was thread-default
+on its own call stack while ~g_subprocess_wait_async()~ had captured a
+different one at start.  On ~clawtillad~ both are the process default and
+it worked by luck; the moment a start ran from a ~GTask~ callback -- which
+pushes the task's context -- the exit arrived somewhere ~stop()~ was not
+looking, so every clean shutdown waited out the full grace period and
+SIGKILLed a child that had already gone.  It surfaced as ~pid 0 did not
+stop within 5 seconds~, and the zero is the tell:
+~g_subprocess_get_identifier()~ returns NULL once the child is reaped, so
+the message was reporting a process that had already exited.
 
 The synchronous client (~clawt_client_request~) blocks on a read.  A
 client that also wants to iterate a main loop -- the GTK app, or a test
 -- runs the request on another thread and pumps the loop meanwhile.
+
+*** An IPC handler must not wait on the network -- nor may daemon start
+
+Every handler runs on the daemon's main context while the client blocks,
+so a handler that calls out to the internet stalls that client for as
+long as the far end takes -- and stalls everybody else with it, because
+nothing else is dispatched meanwhile.  ~model.list~ asked five provider
+APIs, and both the new-agent dialog and the agent inspector call it on
+every build, so pressing + or clicking an agent appeared to hang.
+
+The rule has a corollary that cost a second bug, and it is the reason the
+sentence has two halves.  The daemon used to warm the model cache in
+~clawt_daemon_start()~, which called those same five APIs on every start
+whether or not anybody would look -- and made ~make test~ reach the
+network from every daemon fixture.  *Anything that leaves the machine
+happens when a client asks for it, not because the daemon woke up.*
+
+A handler that genuinely must wait has somewhere to wait.
+~clawt_ipc_server_defer()~ claims the right to answer later: the handler
+returns NULL and ~clawt_ipc_pending_respond()~ sends the frame when the
+work finishes.  The dispatcher already tolerated a NULL reply, so it is a
+few dozen lines rather than a protocol change, and it is what lets the
+health check, the Matrix calls and the connector flows do real network
+work.  Measured: a health check against a blackholed address took the
+full ten seconds while ~agent list~ answered in 16ms.
+
+The token holds a reference to the client, which is already refcounted
+for exactly this reason, so a connection that closes mid-flight is still
+there to be answered into and simply drops it.
 
 *** The one thing the daemon does on another thread
 
@@ -282,24 +494,29 @@ when showing them leaves the leak permanent.
 src/
   clawt-enums.h        every enum, with the reasoning in the doc comments
   clawt-error.h        one domain, and what each code means
+  clawt-util.h         path expansion, socket-path limits, context helpers
   config/              the schema table is the single source of truth
   link/                agents dial in here
-  ipc/                 clients connect here
-  mailbox/             the durable queue
-  agent/               agents and their runtimes
-  computer/            the four backends, mounts, confinement
-  chat/                rooms, messages, loop safety
-  task/                delegated work
+  ipc/                 clients connect here, and the client library
+  mailbox/             the durable queue, and the router that fills it
+  agent/               agents, their runtimes, teams and workspaces
+  computer/            the five backends, mounts, confinement, cloud images
+  chat/                rooms, messages, loop safety, markdown, export
+  memory/              an agent's own searchable store
+  decision/            questions an agent needs a person to answer
+  usage/               what a fleet has spent
+  task/                delegated work, and cron and routines
   integration/         how an agent reaches the world, and connectors
   mcp/                 the tools agents get, and the relay in front of them
-  task/                cron and routines live here too
   core/                events, the log, and ClawtDaemon assembling it all
-  plugin/, interfaces/ third-party extensions
-  ai/                  the agent designer
+  plugin/, interfaces/ third-party extensions, and podomation
+  ai/                  the agent designer and the model catalogue
 #+end_example
 
 That is roughly bottom-up: each layer only knows about the ones above it
-in the list.
+in the list.  ~core/~ is next to last because ~ClawtDaemon~ knows about
+everything -- it is the assembly, and reading it first is reading a list
+of names.
 
 Two files carry more of the reasoning than their size suggests.
 ~integration/clawt-connector-relay.c~ is where a credential is used

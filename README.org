@@ -48,7 +48,7 @@ not built.
 
 | Thing | Options |
 |-------+---------|
-| Persona | inline system prompt, or =SOUL.md= / =IDENTITY.md= / … identity files |
+| Persona | inline system prompt, or =SOUL.org= / =IDENTITY.org= / … identity files |
 | Model | any provider libreclaw supports, with effort, routing profile and fallbacks |
 | Runtime | a supervised =libreclaw= process (default), or embedded in the daemon |
 | Computer | =none=, =host=, =container= (podman), =distrobox= (a container wired into your session), or =vm= (libvirt or plain QEMU) |
@@ -78,9 +78,12 @@ Then, in another terminal:
 
 #+begin_src bash
 clawtilla agent create --id researcher --model sonnet --computer container
-clawtilla agent start researcher
 clawtilla chat researcher
 #+end_src
+
+=create= starts what it made, because an agent's computer is built at its
+first start and one created and left alone is a configuration file and no
+machine.  =--no-start= declines.
 
 See [[file:docs/getting-started.org][docs/getting-started.org]] for the longer version, including the Fedora
 packages to layer in.
@@ -123,6 +126,7 @@ All under [[file:docs/][docs/]], in org-mode:
 | File | Covers |
 |------+--------|
 | [[file:docs/getting-started.org][getting-started.org]] | install, first daemon, first agent |
+| [[file:docs/use-cases.org][use-cases.org]] | worked scenarios, end to end |
 | [[file:docs/architecture.org][architecture.org]] | object graph, message flow, threading model |
 | [[file:docs/configuration.org][configuration.org]] | every option, with worked examples |
 | [[file:docs/configuration-options.org][configuration-options.org]] | the option reference, generated from the schema |
@@ -141,7 +145,7 @@ All under [[file:docs/][docs/]], in org-mode:
 | [[file:docs/web-client.org][web-client.org]] | the web client, where it listens, and client parity |
 | [[file:docs/security.org][security.org]] | threat model, secrets, confinement |
 | [[file:docs/development.org][development.org]] | building, style, adding options and tests |
-| [[file:docs/maintenance.org][maintenance.org]] | submodule upgrades, backups, releasing |
+| [[file:docs/maintenance.org][maintenance.org]] | submodule upgrades, backups, credential rotation, pruning, releasing |
 | [[file:docs/troubleshooting.org][troubleshooting.org]] | symptom-first diagnosis |
 
 ** Building

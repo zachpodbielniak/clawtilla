@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-21 Fri]
-#+version: 0.1.0
+#+updated: [2026-08-26 Wed]
+#+version: 0.1.1
 
 * Orchestration
 
@@ -20,8 +20,22 @@ rooms:
     name: "Standup"
     members: [chief-of-staff, researcher, writer]
     require_mention: false
-    max_hops: 4
 #+end_src
+
+~rooms.max_hops~ overrides ~orchestration.max_hops~ for messages landing
+in that room, and it may *loosen* the fleet limit as well as tighten it.
+That is deliberate and is the case the key exists for: in a conversation
+three agents each reply one hop deeper, so an ordinary standup reaches
+the fleet ceiling on its own, and the only other remedy is raising the
+fleet value for every delegation chain to fix one room.
+
+It is not an escalation.  ~rooms:~ is the same file set by the same
+hand, and the room value reaches the hop count and nothing else -- the
+rate limit, the task budget and the cycle detector are untouched, so a
+loop that costs money still has three limits on it.
+
+For a long time it was parsed, stored, and read by nothing, so a
+per-room ceiling was accepted and never applied.
 
 Posting into a room appends to its transcript and enqueues into every
 member's mailbox except the sender's.
@@ -70,13 +84,58 @@ clawtilla task show task-01m0k5…
 clawtilla task cancel task-01m0k5…
 #+end_src
 
-States: ~pending~ → ~running~ → ~completed~ / ~failed~ / ~cancelled~ /
-~orphaned~.
+States: ~pending~ → ~running~ → ~completed~ / ~failed~ / ~cancelled~.
+There is no ~orphaned~ state: stopping an agent moves its tasks to
+~failed~ with the reason "the agent handling this stopped before
+finishing", rather than leaving them assigned to nobody and looking like
+work in progress for ever.
 
-Cancelling a task cancels everything it spawned.  Stopping an agent
-orphans its tasks rather than leaving them assigned -- a task whose
-assignee is gone would sit in the list looking like work in progress for
-ever.
+Two things about the list are worth knowing before reading it:
+
+*~running~ is only reached on the paths a person starts.* A task
+delegated by an *agent* stays ~pending~ until it completes, because the
+agent-facing ~clawtilla_delegate~ does not mark it started -- only the
+IPC/CLI delegate and a routine run do.  So a chief polling
+~clawtilla_task_status~ on work it handed out sees ~pending~ for the
+whole run, which is not a stall.
+
+*Cancelling does not cascade.* The cascade exists and walks a task's
+parent, and every path that creates a task passes no parent -- so no task
+in the fleet has one and nothing has ever cascaded.  Cancel the subtasks
+individually.
+
+Tasks are held in memory only.  A daemon restart loses the list; what the
+work produced is in the room transcript and the event log.
+
+*** A task does not get a session of its own
+
+This page and ~clawt-task.h~ both used to say it did.  It has never been
+true, and the reason is in libreclaw and is deliberate:
+~lc_router_resolve_session_key()~ keys a session on channel, room and
+sender, and its own note says the thread is *intentionally* excluded --
+there a thread anchors a Matrix reply rather than dividing a
+conversation.
+
+~clawtilla_delegate~ routes into the direct room the two agents already
+share, so every task between one delegator and one assignee lands in one
+session.  Three consequences, all real:
+
+- *Tasks share context.* Yesterday's assignment is in today's session,
+  and so is anything the operator said to that agent in between.
+- *A task waits its turn.* Queued behind whatever that pair is already
+  doing, and behind the operator's conversation if the agent is one
+  somebody talks to.
+- *It happens in that room's transcript*, because that is the room it
+  went to.
+
+For delegation between two workers that is usually fine and sometimes
+desirable -- continuity between assignments is worth having.  For a
+*routine* it is not, which is why ~docs/routines.org~ says to point
+routines at an agent that is not also a conversational surface, and why
+~routines.isolate~ exists.  Delivering the same isolation for an ordinary
+delegated task would mean routing it into a room of its own, which takes
+its output out of the transcript somebody is reading.  That is a product
+decision rather than a repair, and it has not been made.
 
 ** The chief-of-staff pattern, worked through
 
@@ -118,7 +177,8 @@ What happens:
 3. It calls ~clawtilla_delegate(agent_id: "researcher", task: "…")~ and
    gets a task id back immediately.
 4. The router enqueues that work into the researcher's mailbox, carrying
-   the task id and a depth of 1.
+   the task id and one hop beyond whatever the chief was handling.  From
+   a message you typed that is a depth of 1; from a chain it is deeper.
 5. The researcher works, then calls ~clawtilla_task_complete~ with its
    result -- or simply replies, in which case the daemon completes the
    task from the reply, because an agent that only replied would
@@ -126,13 +186,26 @@ What happens:
 6. The chief polls ~clawtilla_task_status~, gets the result with
    ~clawtilla_task_result~, and delegates the write-up.
 
+Step 6 is where the state names bite.  A task an *agent* delegated reads
+~pending~ for its whole life and then goes straight to ~completed~ --
+~running~ is only set on the paths a person or a routine starts.  A chief
+that treats ~pending~ as "not picked up yet" and re-delegates has made
+two of everything.
+
 At every step:
 
 #+begin_src bash
 clawtilla task list                # what is in flight
 clawtilla room history standup     # what was said
-clawtilla mailbox list writer      # what is waiting
+clawtilla mailbox list writer      # what is waiting (usually nothing)
+clawtilla cost                     # what it has cost so far
 #+end_src
+
+A reply that carries a task id completes it *only* on the last message of
+the turn, while the agent is no longer busy.  That is what stops
+libreclaw's own progress notes -- "Still working... (5m elapsed)" -- from
+completing a task seconds after it started and reporting the note as the
+result.
 
 ** The tools agents get
 
@@ -145,12 +218,40 @@ Served over each agent's link as an MCP endpoint.
 | ~clawtilla_message_agent~ | queue a message; returns without waiting |
 | ~clawtilla_ask_agent~ | ask a question; the answer arrives in your mailbox |
 | ~clawtilla_delegate~ | hand over work, get a task id |
-| ~clawtilla_task_status~ / ~_result~ / ~_cancel~ | follow it |
+| ~clawtilla_task_status~ / ~clawtilla_task_result~ / ~clawtilla_task_cancel~ | follow it |
 | ~clawtilla_task_complete~ | report your own assigned task done |
-| ~clawtilla_post_room~, ~_create_room~, ~_room_history~ | rooms |
-| ~clawtilla_mailbox_list~ / ~_read~ / ~_ack~ / ~_reply~ | your own mail |
-| ~clawtilla_computer_exec~, ~_computer_state~ | your computer |
+| ~clawtilla_post_room~, ~clawtilla_create_room~, ~clawtilla_room_history~ | rooms |
+| ~clawtilla_mailbox_list~ / ~clawtilla_mailbox_read~ / ~clawtilla_mailbox_ack~ / ~clawtilla_mailbox_reply~ | your own mail |
+| ~clawtilla_computer_exec~, ~clawtilla_computer_state~ | your computer |
+| ~clawtilla_memory_*~ | six tools over your own searchable memories |
+| ~clawtilla_message_user~ | reach the operator; replying does not |
+| ~clawtilla_ask_decision~ | put a choice in the operator's decision inbox |
+| ~clawtilla_list_teams~ | who is on which team, and who leads it |
+| ~clawtilla_fleet_cost~ | what the fleet has spent, and one task's budget |
+| ~clawtilla_create_agent~, ~_agent_options~ | grow the fleet |
 | plugin tools | whatever a ~ClawtToolProvider~ registers |
+
+That is the whole registered set.  Which of them an agent is actually
+offered depends on a gate per tool:
+
+| Requirement | Gated on |
+|-------------+----------|
+| peer comms | a capability every agent has, so it gates nothing today |
+| assigning (~clawtilla_delegate~) | ~agents.chief_of_staff~, or ~team_role: lead~ |
+| fleet admin (create agent, options) | ~agents.tools.manage_fleet~, *and* the daemon offering the hook |
+| a computer | ~computer.type~ not ~none~ |
+| memories | ~memories.enabled~ |
+| the decision inbox | the daemon offering the hook; no config key |
+
+There is no ~tools.delegate~ key.  Turning delegation off for one agent
+is ~deny: [clawtilla_delegate]~.
+
+There is also no ~clawtilla_spawn_~* tool, whatever an older copy of
+these docs said: the two that create agents are ~clawtilla_create_agent~
+and ~clawtilla_agent_options~, and the permission is
+~tools.manage_fleet~.  ~make docs-check~ fails on any ~clawtilla_*~ name
+in ~docs/~ that is not registered, which is what stopped that particular
+fiction coming back.
 
 *A tool an agent cannot use is not offered at all.*  Listing it and then
 refusing costs the agent a turn to discover something it could have been
@@ -557,15 +658,26 @@ answering a bare "your mailbox is empty".
 
 ** Loop safety
 
-Four limits, each answering a different failure.
+Four limits, each answering a different failure.  The defaults:
 
 #+begin_src yaml
 orchestration:
-  max_hops: 4
+  max_hops: 8
   rate_limit_per_minute: 30
   task_budget_usd: 5.0
-  cycle_window: 20
+  cycle_window: 10
 #+end_src
+
+Every one of them takes ~0~ to mean *disabled*, not "zero allowed".
+
+They are checked in one place, ~clawt_loop_guard_check()~, in a fixed
+order: hops, budget, rate, cycle.  The order is load-bearing twice over.
+The two checks with no side effects run first, so a message refused on
+hops has not consumed part of its sender's rate allowance -- and rate
+runs before cycle, because the cycle check *records* the fingerprint it
+was handed.  A message refused on rate used to have its text written into
+the cycle window anyway, so re-sending it later, legitimately, after the
+throttle cleared, was flagged as going in circles.
 
 *** max_hops
 
@@ -625,16 +737,37 @@ raises it as a toast.
 
 *** rate_limit_per_minute
 
-Per agent.  Catches a fast loop that stays within the hop limit -- an
-agent messaging the same peer thirty times in a minute is not working, it
-is stuck.
+A sliding sixty-second window keyed on the *sender alone* -- not per
+peer, not per room.  Thirty messages a minute is thirty messages a
+minute wherever they went, which is the right shape: an agent that is
+stuck is stuck regardless of who it is talking at.
+
+Sliding rather than a per-minute bucket, because a bucket lets an agent
+send its whole allowance twice across a boundary.
+
+When it fires:
+
+#+begin_example
+'researcher' has sent 30 messages in the last minute, which is its limit.
+Something is looping; wait before sending more.
+#+end_example
+
+Nothing waits and nothing queues.  The send fails, and it is the agent's
+turn that absorbs it.
 
 *** task_budget_usd
 
-Charged against the *task*, not the agent, so a chief delegating ten
-subtasks is bounded as one piece of work rather than ten.  Past the cap,
-the task's messages are refused with an error naming both the spend and
-the budget.
+Charged against the *task* by its id.  Past the cap -- at it, in fact:
+the test is spend >= budget -- every further message carrying that task
+id is refused:
+
+#+begin_example
+this task has spent $5.40, which is its budget of $5.00. Stop and report
+what you have.
+#+end_example
+
+The second sentence is the half that matters.  A refusal that only says
+no gets retried in a different shape; this one tells the agent to finish.
 
 The spend is real money: each reply drains what that agent has been
 billed since its previous turn -- the figure the provider itself
@@ -645,12 +778,37 @@ not bill it for everything the agent has ever done.  See [[file:spending.org][Sp
 Ordinary conversation is deliberately uncapped: spend is booked against a
 task id, and a chat has none.
 
+**** It is per task, not per tree of tasks
+
+The schema calls this a cap on "one delegated task and everything it
+spawns", and that is not what happens.  Spend is a flat table keyed on
+task id with no walk to a parent -- and no task in production *has* a
+parent, since every creation path passes NULL.  So a chief that delegates
+ten subtasks creates ten tasks each with its own full $5.00, and the
+$5.00 it was itself given bounds only its own turns.
+
+The practical reading: ~task_budget_usd~ bounds *one agent's work on one
+assignment*, which is still the runaway case it was built for.  It does
+not bound a fan-out.  Bound that with ~max_hops~ and by watching
+~clawtilla cost~.
+
 *** cycle_window
 
-A hash of (sender, room, recent body).  Catches the case the other three
-miss: two agents politely agreeing with each other for ever, each message
-fresh enough to pass the hop count and slow enough to pass the rate
-limit.
+A SHA-256 fingerprint of (sender, room, body), with the last ten per room
+remembered.  Catches the case the other three miss: two agents politely
+agreeing with each other for ever, each message fresh enough to pass the
+hop count and slow enough to pass the rate limit.
+
+It fires on a *byte-identical* repeat and nothing else.  Two agents
+varying their wording at all -- which a model does readily -- go straight
+past it, so this is a backstop against a genuinely stuck exchange rather
+than a general loop detector.  A message with no room is skipped
+entirely.
+
+#+begin_example
+this exact message has already been sent to 'standup' recently. The
+conversation is going in circles; say something different or stop.
+#+end_example
 
 *** What happens when one is hit
 

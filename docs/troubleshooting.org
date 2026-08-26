@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-23 Sun]
+#+updated: [2026-08-26 Wed]
 #+version: 0.1.0
 
 * Troubleshooting
@@ -52,15 +52,6 @@ Common causes: an unknown ~computer.type~, an unknown mount type, a
 missing required field, a duplicate id, a second chief of staff.
 
 The rest of the fleet is running normally; fix the block and reload.
-
-*** "the libreclaw binary is not on PATH"
-
-Install libreclaw, or point at a build tree:
-
-#+begin_src yaml
-defaults:
-  libreclaw_binary: "~/src/libreclaw/build/release/libreclaw"
-#+end_src
 
 *** "there is no libpod-module-container.so in any of: …"
 
@@ -152,7 +143,47 @@ shows up there, not in the daemon's log.
 clawtilla config render researcher
 #+end_src
 
+*** It exits 0 immediately and says nothing at all
+
+No error in the child's log, no error in the daemon's, and
+~agent show~ reporting *stopped -- exited with status 0*.  Look for a
+libreclaw that is still running from a previous daemon:
+
+#+begin_src bash
+ps -o pid=,ppid=,cmd= -C libreclaw
+#+end_src
+
+A ~PPID~ of ~1~ is the whole answer.  A daemon stopped cleanly stops its
+agents; one that is *killed* runs no handler, and its children were then
+reparented to init still holding that agent's ports, its session
+directory and its sqlite database.  The next daemon knows nothing of
+them, starts a second copy alongside, and the second copy exits at once
+-- which is the multi-instance collision libreclaw explicitly cannot
+survive.  Three accumulated in one afternoon of restarts.
+
+#+begin_src bash
+kill <pid>                     # the orphan, then start the agent again
+#+end_src
+
+Use ~ps -C~ and read ~PPID~ rather than ~pgrep -af libreclaw~: that
+matches your own command line, and then a different daemon's child, and
+the second one looks exactly like a pass.  ~readlink /proc/<pid>/exe~
+says which binary an orphan is actually running, which is usually the one
+from before the last upgrade.
+
+Current builds ask the kernel to signal the child when the daemon
+disappears, so this cannot happen to anything started by a daemon newer
+than 0.1.0 -- including one that is ~SIGKILL~ed.  What you may find are
+orphans from before that.
+
 ** "cannot find the libreclaw binary"
+
+#+begin_example
+cannot find the libreclaw binary. It was not beside clawtillad, not in
+deps/libreclaw's build, and not on PATH. Build it with `make -C
+deps/libreclaw`, install it, or set defaults.libreclaw_binary to where it
+is.
+#+end_example
 
 The daemon runs a ~libreclaw~ per process-runtime agent and looks in
 three places: beside ~clawtillad~, then ~deps/libreclaw/build/release~
@@ -167,9 +198,18 @@ git submodule update --init --recursive
 make -C deps/libreclaw
 #+end_src
 
-~defaults.libreclaw_binary~ overrides all three.  Worth knowing that
-setting it once and forgetting is how this failure becomes invisible on
-one machine and immediate on another.
+~defaults.libreclaw_binary~ overrides all three.  Setting it once and
+forgetting is how this failure becomes invisible on one machine and
+immediate on another -- so if the key is set, check that what it names is
+still there before anything else:
+
+#+begin_src bash
+clawtilla config show | grep libreclaw_binary
+#+end_src
+
+An *older* message said "the libreclaw binary is not on PATH", which sent
+people to install something they had already built, minutes earlier, with
+the same ~make~ that produced the daemon doing the complaining.
 
 ** The link will not connect
 
@@ -276,7 +316,7 @@ which is why this looks like the daemon having failed rather than a
 limit being reached.
 
 #+begin_src bash
-clawtilla agent logs chief --lines 40
+clawtilla agent logs chief
 #+end_src
 
 Look for:
@@ -468,9 +508,30 @@ clawtilla agent start <id>      # provision rewrites the domain
   works as your user
 - QEMU backend: check ~qemu-system-x86_64~ and ~qemu-img~ are on PATH
 - either: the base image must exist and be readable
-- ~computer.vm.image~ must be *set*.  clawtilla ships no disk image and
-  downloads none; unset, the domain is defined with no disk and never
-  boots
+- ~computer.vm.image~ must be *set*, and provisioning refuses outright
+  when it is not:
+
+#+begin_example
+this VM has no disk image, so there would be nothing for it to boot. Set
+computer.vm.image to a qcow2 -- `clawtilla image vm get fedora-44`
+fetches one, or pick one under Settings in the GTK client.
+#+end_example
+
+clawtilla ships no disk image and downloads none.  The refusal exists
+because a diskless domain *defines and starts perfectly*: it boots
+nothing, the console is black, and SSH answers "connection reset" because
+the forward reaches a guest with no sshd.  Three symptoms, one missing
+setting, and nothing anywhere connecting them.
+
+#+begin_src bash
+clawtilla image vm list                 # what is already fetched
+clawtilla image vm get fedora-44        # or fetch one
+clawtilla agent set <id> computer.vm.image /path/to/disk.qcow2
+#+end_src
+
+A guest defined by a build older than that refusal is already on disk
+with no disk attached, and shows exactly those three symptoms.
+~clawtilla computer rebuild <id>~ after setting the image.
 
 ** A VM runs but commands in it do nothing
 
@@ -526,6 +587,47 @@ older build keeps ~qemu64~ until it is provisioned again:
 #+begin_src bash
 clawtilla agent start <agent>      # provision rewrites the domain
 #+end_src
+
+** GDM says the system has no primary GPU
+
+#+begin_example
+It appears that your system does not have a primary GPU! Proceeding with
+any GPU
+#+end_example
+
+…and then nothing starts.  Every layer above it looks healthy:
+~cloud-init status~ reaches ~done~, ~gdm.service~ is active,
+~systemctl get-default~ is ~graphical.target~, and the console sits on the
+boot log for ever -- because with no video device the serial console is
+the only console there is.
+
+The domain has no ~<video>~ at all, so the guest has no ~/dev/dri~:
+
+#+begin_src bash
+virsh -c qemu:///session dumpxml clawt-<agent> | grep -A3 "<video"
+#+end_src
+
+Nothing there is the answer.  clawtilla now names a virtio GPU in the XML
+for *every* VM, desktop or not -- a guest with no display offers only the
+serial console, so a person looking at one cannot tell a broken guest
+from a working headless one.  A domain defined by an older build keeps
+the omission until it is provisioned again:
+
+#+begin_src bash
+clawtilla agent start <agent>      # provision rewrites the domain
+#+end_src
+
+This one stayed hidden for a long time because the two backends disagreed
+by accident: qemu gives a guest a VGA adapter unless told otherwise, so
+the qemu backend had a working desktop while libvirt -- which is the
+default, and builds its devices from nothing -- had none.  If a desktop
+works on one backend and not the other, this is why.
+
+Related, and a different symptom: virt-manager picks the graphical
+console only if the domain had one when the window was *first* opened.  A
+domain defined without video keeps the serial console per-VM, which is
+why the fix can look as though it did not work.  Close the window and
+open it again.
 
 ** A VM boots and the login is refused
 
@@ -860,6 +962,110 @@ A credential that expired and has no refresh token needs connecting
 again.  One that is expired *and* renewable is normal -- the daemon
 renews it on a timer, and the list says so rather than calling it broken.
 
+** An MCP server I added to .mcp.json keeps disappearing
+
+Only if you named it ~clawtilla-something~.  That prefix is *reserved*:
+clawtilla rewrites or removes every key beginning with it on each agent
+start, which is what lets a revoked integration's entry disappear instead
+of pointing the agent at a server the fleet has stopped offering.
+
+Rename it to anything else and it will be left alone for ever.  Every
+other key in that file is read back and written out untouched, because
+handing an agent MCP servers is exactly what people edit it for.
+
+** The agent has a clawtilla-desktop tool that reaches nothing
+
+An ssh to a VM that is not there, or a port nothing listens on.  The
+entry is rewritten on every agent start and dropped when the desktop
+grant goes, so a stale one means the agent has not been restarted since
+whatever changed:
+
+#+begin_src bash
+clawtilla agent restart <agent>
+grep -o '"clawtilla[^"]*"' ~/.clawtilla/agents/<agent>/.mcp.json
+#+end_src
+
+The port matters here.  It is chosen when the VM is provisioned, which is
+*after* the workspace files are written -- so an entry captured at render
+time would name a port nothing listens on.  That is why the entry names
+the clawtilla CLI rather than ~ssh~ directly, and why editing it by hand
+to a literal ssh command breaks on the next provision.
+
+** A permission was granted and the agent says it does not have it
+
+The agent is right about its session and wrong about the fleet.  An AI CLI
+lists its tools *once*, when its session starts, so a permission granted
+under a running agent reaches its files and not its session.
+
+#+begin_src bash
+clawtilla agent restart <agent>
+#+end_src
+
+~agent set~ says so in its reply for anything under ~tools.~ or
+~persona.~, and both graphical clients show it.  It does *not* say so for
+~chief_of_staff~, which behaves the same way -- so a chief granted its
+role while running has to be restarted, and nothing will have told you.
+
+To check what the agent was actually handed rather than what the config
+says, read the region clawtilla owns in its own file:
+
+#+begin_src bash
+sed -n '/BEGIN clawtilla tools/,/END clawtilla tools/p' \
+    ~/.clawtilla/agents/<agent>/TOOLS.org
+#+end_src
+
+That region is written by the daemon from the same gate that answers the
+call, so it cannot disagree with the permission.  If the tool is listed
+there and the agent still says it has none, it is the session -- restart.
+
+** An identity file was edited and the agent has not noticed
+
+Restarting is *not* enough, which is the surprising half.  An AI CLI is
+not handed a system prompt when it *resumes* a session, so editing
+~SOUL.org~, or repointing ~persona.identity_files~, leaves a running
+agent with the identity it was created with and leaves a restarted one
+resuming from where it was.
+
+#+begin_src bash
+clawtilla agent reset <agent>
+#+end_src
+
+That clears the session, which is what applies it.  It stops the agent
+itself and starts it again if it was running, so there is nothing to do
+around it.
+
+It has to clear two places -- the session directory and libreclaw's own
+database -- because libreclaw restores from either, and clearing one
+leaves the agent resuming from the other and looking exactly like a reset
+that did nothing.  The session directory is *moved aside* rather than
+deleted, to ~sessions.reset-<timestamp>~ beside it, so a reset that threw
+away something you wanted is recoverable.  Those are ignored by the state
+directory's git block and are yours to delete.
+
+** A task or routine says completed and the answer is a progress note
+
+#+begin_example
+completed: ⏳ Still working... (5m elapsed)
+#+end_example
+
+The work is still running; nothing is waiting on it any more.  A task
+completes on a message carrying its thread id, and libreclaw puts more
+than the answer in a thread -- a progress note every five minutes, a
+guardian refusal, a restart notice.
+
+Fixed at both ends, and a running agent picks up the first half at its
+next start: the note is no longer generated (~progress_enabled: false~ in
+the rendered ~channels.clawtilla~ block), and the daemon no longer acts
+on a message that arrives while the agent is still mid-turn.
+
+#+begin_src bash
+clawtilla config render <agent> | grep -A5 'clawtilla:'
+clawtilla agent restart <agent>
+#+end_src
+
+Nothing is lost by the note going: the same turn already raises the
+typing indicator, which both clients draw as a live activity line.
+
 ** gowl is unreachable
 
 - gowl must be built with ~MCP=1~ and have ~modules.mcp.enabled: true~
@@ -887,6 +1093,29 @@ If it shows a "daemon is not running" page, that is the daemon.  If it
 shows an empty agent list, the fleet really is empty --
 ~clawtilla agent list~ from the CLI will agree, because both are asking
 the same daemon.
+
+** A fix built and tested, and the running daemon still misbehaves
+
+~make test~ builds the library, the test binaries and the plugins.  It
+does *not* relink ~clawtillad~.  So a change can be built, tested and
+passing while ~build/release/clawtillad~ is still the previous one, and
+restarting it to check the fix by hand runs the old code.
+
+#+begin_src bash
+make                                    # then restart the daemon
+#+end_src
+
+The same applies to the CLI and both graphical clients.  Plain ~make~ is
+what relinks everything; ~make test~ is for the suite.
+
+To settle what a running daemon actually is rather than guessing:
+
+#+begin_src bash
+readlink /proc/$(pgrep -x clawtillad)/exe
+#+end_src
+
+~(deleted)~ after the path means the binary was replaced underneath it,
+which is exactly the case that looks like a fix not working.
 
 ** Getting more detail
 

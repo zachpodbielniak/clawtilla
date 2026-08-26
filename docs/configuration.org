@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-23 Sun]
+#+updated: [2026-08-26 Wed]
 #+version: 0.1.0
 
 * Configuration
@@ -22,7 +22,7 @@ Every option clawtilla understands is declared once, in
 - ~data/example-config.yaml~ -- every option, its default, its comment
 - ~data/default-config.yaml~ -- what ~--generate-config~ prints
 - the reference table in ~docs/configuration-options.org~
-- validation, which reports an unknown key with its line number
+- validation, which names an unknown key by its full path
 
 ~make config-files~ regenerates them, and ~tests/test-config-schema.c~
 fails when they have drifted.  That is why the rule is enforceable rather
@@ -55,6 +55,47 @@ the first.
 first is the searchable per-agent store; the second is libreclaw's
 ~MEMORY.md~ size budget.  The plural one is plural for exactly this
 reason.
+
+Most of those sections have a page of their own, and this one does not
+repeat them.  What is here is the file itself: its shape, the rules that
+hold across every section, and a snippet short enough to copy for each
+thing somebody actually sits down to write.
+
+| Section                     | Covered in full                                    |
+|-----------------------------+----------------------------------------------------|
+| ~daemon.tcp_*~, ~daemon.tailscale~ | [[file:security.org][security.org]], [[file:clients.org][clients.org]]                          |
+| ~ai_assist~                 | [[file:agents.org][agents.org]], under the designer                       |
+| ~plugins~                   | [[file:plugins.org][plugins.org]]                                          |
+| ~orchestration~             | [[file:orchestration.org][orchestration.org]]; the mailbox keys in [[file:mailboxes.org][mailboxes.org]]     |
+| ~memories~                  | [[file:agents.org][agents.org]]                                           |
+| ~rooms~                     | [[file:orchestration.org][orchestration.org]]                                    |
+| ~integrations~, ~connectors~ | [[file:integrations.org][integrations.org]], [[file:connectors.org][connectors.org]]                     |
+| ~routines~                  | [[file:routines.org][routines.org]]                                         |
+| everything under ~computer:~ | [[file:computers.org][computers.org]]                                        |
+| ~orchestration.task_budget_usd~ | [[file:spending.org][spending.org]]                                         |
+
+** The smallest fleet that works
+
+Every option has a default, so a file that names one agent is a working
+configuration:
+
+#+begin_src yaml
+agents:
+  - id: researcher
+    description: "reads code and summarises it"
+#+end_src
+
+That gets ~claude-code~, ~sonnet~, no computer, a workspace scaffolded
+under ~~/.clawtilla/agents/researcher~, and a mailbox.  It does not get
+started with the daemon -- ~defaults.autostart~ is ~false~ -- so:
+
+#+begin_src bash
+clawtilla agent start researcher
+clawtilla chat researcher
+#+end_src
+
+~clawtilla --generate-config~ prints a longer starting point with every
+section commented out and explained.
 
 ** Options an agent can override
 
@@ -119,11 +160,13 @@ daemon:
   state_dir: "~/.clawtilla"
   log_level: info
   event_log_days: 30
+  git: true
+  tailscale: true
 
   # Off by default. A TCP listener needs a token; see security.org.
   # tcp_enabled: false
   # tcp_address: "127.0.0.1"
-  # tcp_port: 8791
+  # tcp_port: 8792
   # tls_cert: "~/.clawtilla/cert.pem"
   # tls_key:  "~/.clawtilla/key.pem"
   # token_file: "~/.clawtilla/token"
@@ -132,10 +175,28 @@ daemon:
   # allow_unconfined_host: false
 #+end_src
 
+Those are the values in force when the section is absent entirely, which
+is the state a first run is in.
+
 *Socket paths have a length limit.*  The kernel accepts 107 bytes; a
 longer path does not fail at bind time, it simply is not created where
 you asked.  clawtilla refuses it up front with the number rather than
-letting that happen.
+letting that happen.  The link socket agents dial in on is derived from
+~state_dir~, so a state directory buried deep enough hits the same limit
+without ~socket~ being long at all.
+
+*Two listeners are on without being asked for.*  ~git: true~ makes
+~state_dir~ a git repository on first start -- and writes the
+~.gitignore~ that keeps credentials, tokens, mailboxes and memory
+databases out of it whether or not the repository is created.
+~tailscale: true~ binds this machine's tailnet address on ~tcp_port~
+when there is one, which is what lets a laptop reach the fleet on a
+workstation.  A token is still required and is generated into
+~<state_dir>/tcp-token~ if ~token_file~ names nothing, so the listener is
+reachable rather than open; print it with ~clawtilla daemon token~.
+Neither is a mandatory bind: failing to take the tailnet address is a
+warning, because a second daemon wanting the same convenience port must
+not stop the first one's fleet.
 
 ** defaults
 
@@ -146,16 +207,60 @@ defaults:
   provider: "claude-code"
   model: "sonnet"
   computer: none
-  workspace_root: "~/agents"
+  container_image: "registry.fedoraproject.org/fedora:44"
+  workspace_root: "~/.clawtilla/agents"
   exchange_dir: "$XDG_DATA_HOME/clawtilla/exchange"
+  image_dir: "$XDG_DATA_HOME/clawtilla/images"
   exchange_max_bytes: 1073741824
   restart: on-failure
-  autostart: true
+  autostart: false
 
   # Point at a build tree while developing against an unreleased
-  # libreclaw. Unset means whatever is on PATH.
+  # libreclaw. Unset means beside clawtillad, then the checkout's
+  # deps/libreclaw/build/release, then PATH.
   # libreclaw_binary: "~/src/libreclaw/build/release/libreclaw"
 #+end_src
+
+~autostart~ is *false*, which is the one people misremember: it answers
+whether an agent comes back with the daemon, and it is a different
+question from whether the agent somebody just created exists yet.  It
+does not.  ~agent.create~ starts what it made unless told not to.
+
+*** Mounts every agent gets
+
+~defaults.mounts~ is the fleet's own list, and it takes a scope, so one
+entry can reach everybody, one team, or three named agents:
+
+#+begin_src yaml
+defaults:
+  mounts:
+    - source: "~/reference"
+      target: "/work/reference"
+      mode: ro                  # every agent: scope defaults to all
+
+    - source: "~/src/backend"
+      target: "/work/backend"
+      mode: rw
+      teams: [backend]          # naming a team implies scope: selected
+#+end_src
+
+A scope nobody recognises reaches *nobody*, not everybody -- a typo that
+hands a home directory to the whole fleet is far worse than one that
+hands it to nothing and says so in a warning.
+
+An agent's own ~computer.mounts~ is merged with these rather than
+replacing them, and an agent's mount at the same target wins outright:
+both at one path is refused by validation, so the agent would stop
+starting and the error would name the path somebody had deliberately
+customised.  ~computer.default_mounts: false~ opts one agent out of the
+fleet list entirely.
+
+Every computer also gets two mounts nothing configures -- the shared
+exchange directory and the agent's own workspace -- from
+~computer.exchange~ and ~computer.workspace~, both true by default.
+[[file:computers.org][computers.org]] has the rest: what each backend does with a mount, SELinux
+relabelling, ~create~ and ~size~, and why a host agent's mounts become
+its allowlist instead.
 
 ** An agent
 
@@ -167,8 +272,10 @@ agents:
     enabled: true
 
     persona:
-      system_prompt: "You read code carefully and report what you find."
-      identity_files: [SOUL.md, IDENTITY.md, TOOLS.md]
+      # These two are alternatives, not a pair. Setting both makes the
+      # agent a shadow rather than quietly picking one.
+      # system_prompt: "You read code carefully and report what you find."
+      identity_files: [SOUL.org, IDENTITY.org, TOOLS.org]
 
     memory:
       enabled: true
@@ -233,6 +340,116 @@ agents:
 Other agents read it when deciding who to delegate to.  Say what the
 agent is for.
 
+*** Giving it a computer
+
+Five types -- ~none~, ~host~, ~container~, ~distrobox~ and ~vm~ -- and
+the choice is about how much of the machine an agent may touch rather
+than about performance.  [[file:computers.org][computers.org]] is the page for it; these are the
+three shapes worth having here.
+
+A container is the ordinary answer, and the only one with no
+prerequisite beyond podman:
+
+#+begin_src yaml
+agents:
+  - id: researcher
+    computer:
+      type: container
+      container:
+        image: "registry.fedoraproject.org/fedora:44"
+        network: none          # or a podman network name
+#+end_src
+
+The host is your real machine, so it needs saying twice -- once per
+agent, and once for the fleet if the agent wants no confinement at all:
+
+#+begin_src yaml
+agents:
+  - id: builder
+    computer:
+      type: host
+      host:
+        confirm_host_control: true   # without this the agent is a shadow
+        confine: bwrap               # workspace | allowlist | bwrap | none
+        root: "~/src/thing"
+        allow_paths: ["/usr/share/thing"]
+        deny_paths: ["~/.ssh", "~/.gnupg"]
+        allow_network: false
+#+end_src
+
+~workspace~ is the default and pins the working directory to ~root~,
+canonicalising every path on the command line and rejecting the ones
+that escape.  ~allowlist~ adds ~allow_paths~ and subtracts
+~deny_paths~.  Both inspect the command before running it, which closes
+~..~ and symlink escapes together and does nothing about a program that
+opens paths itself once it is running -- only ~bwrap~ does, because only
+~bwrap~ involves the kernel.  ~none~ additionally requires
+~daemon.allow_unconfined_host: true~.  An agent asking for ~bwrap~ on a
+machine without bubblewrap becomes a shadow saying so; it is never
+quietly downgraded.
+
+A VM needs a disk image, and refuses to provision without one:
+
+#+begin_src yaml
+agents:
+  - id: tester
+    computer:
+      type: vm
+      vm:
+        backend: libvirt          # libvirt | qemu
+        image: "~/.local/share/clawtilla/images/fedora-44.qcow2"
+        cpus: 2
+        memory_mb: 4096
+        disk_gb: 40
+        resolution: "1920x1080"
+        ssh_user: clawt
+#+end_src
+
+Fetch an image with ~clawtilla image vm~ rather than naming a path by
+hand; the bare ~clawtilla image~ lists *container* images, which is a
+different set.
+
+Everything in the ~vm.desktop~ block and the login reach the guest
+through a cloud-init seed, which is read at *first boot only* -- so
+changing one of those and restarting the agent does nothing visible.
+~clawtilla computer rebuild <agent>~ is what applies them, and it is
+refused while the agent runs.  ~cpus~, ~memory_mb~, ~disk_gb~ and
+~resolution~ are not in the seed and take effect at the next boot.
+
+*** Which tools it may call
+
+~tools.allow~ and ~tools.deny~ are about the orchestration tools
+clawtilla serves over the agent's ~.mcp.json~, not about the AI CLI's own
+~bash~, ~read~ and ~write~:
+
+#+begin_src yaml
+agents:
+  - id: researcher
+    tools:
+      allow: [clawtilla_ask_agent, clawtilla_message_user]
+      deny:  [clawtilla_delegate]
+      manage_fleet: false
+#+end_src
+
+An unset ~allow~ means everything the agent's capabilities permit, which
+is the usual case; naming one turns it into a whitelist.  ~deny~ is
+applied afterwards and always wins, so a broad allow cannot quietly
+re-enable something specifically turned off.  A tool the agent
+physically cannot use -- a computer tool for an agent with no computer --
+is not offered whatever either list says, because an agent that can see a
+tool will try it.
+
+~manage_fleet~ is separate from both, and off by default: it is what
+lets an agent create other agents, and an agent that can create agents
+can give one a machine that runs code.  ~chief_of_staff~ does *not* grant
+it -- that pair has cost more than one round of "my chief says it has no
+such tool".
+
+An AI CLI lists its tools once, when its session starts, so a permission
+changed under a running agent reaches its files and not its session.
+~agent.set~ reports ~restart_required~ for exactly this, and both
+graphical clients say so.
+
 *** The libreclaw passthrough
 
 clawtilla does not model every libreclaw option and never will.  The
@@ -240,23 +457,38 @@ clawtilla does not model every libreclaw option and never will.  The
 it wins.  A libreclaw setting clawtilla has never heard of is still
 reachable without waiting for a clawtilla release.
 
-It may not redeclare ~agent:~, ~ai:~, ~session:~, ~database:~, ~skills:~
-or ~channels:~, which clawtilla renders itself.  YAML keeps the last of
-two identical top-level keys, so such a block would silently delete
+It may not redeclare ~agent:~, ~ai:~, ~session:~, ~database:~ or
+~skills:~, which clawtilla renders itself.  YAML keeps the last of two
+identical top-level keys, so such a block would silently delete
 clawtilla's -- and two agents sharing a ~session.persist_dir~ means one
 resuming the other's conversation.
 
-That refusal stops *that agent's* files being written and nothing else:
-the rest of the fleet is rendered, and the call that triggered it
-succeeds.  The agent it names goes on running against the ~config.yaml~
-it already had, which is why every handler that re-renders reports it --
-see ~refused~ in [[file:ipc-protocol.org][the IPC protocol]].  From the
+~channels:~ is deliberately *not* on that list.  It is merged key by key
+instead, because the hazard there is per channel rather than per
+section, and refusing the whole thing made libreclaw's own webhook
+routing unexpressible:
+
+#+begin_src yaml
+    libreclaw:
+      channels:
+        webhook:
+          endpoints:
+            - path: "/hook"
+#+end_src
+
+renders beside clawtilla's own ~channels.clawtilla~ rather than over it.
+
+A refusal stops *that agent's* files being written and nothing else: the
+rest of the fleet is rendered, and the call that triggered it succeeds.
+The agent it names goes on running against the ~config.yaml~ it already
+had, which is why every handler that re-renders reports it -- see
+~refused~ in [[file:ipc-protocol.org][the IPC protocol]].  From the
 command line it looks like this:
 
 #+begin_example
 $ clawtilla agent set researcher model.model opus
 researcher: model.model = opus
-clawtilla: broken: the libreclaw: block redeclares 'channels:', which
+clawtilla: broken: the libreclaw: block redeclares 'session:', which
 clawtilla renders itself; the two would collide and clawtilla's would be
 discarded
 1 agent is still running against the config.yaml it already had.
@@ -303,6 +535,32 @@ being made.
 Teams are optional.  A fleet that declares none behaves exactly as it did
 before there were any -- one group, and only the chief of staff assigns.
 
+** rooms
+
+Standing rooms, created at startup if they are not there already.  A room
+is a conversation with members; posting into one enqueues to every
+member's mailbox.
+
+#+begin_src yaml
+rooms:
+  - id: standup
+    name: "Standup"
+    members: [chief, researcher, builder]
+    require_mention: false
+    max_hops: 3
+#+end_src
+
+Only rooms somebody wants to exist *before* anyone speaks belong here.
+A direct chat is a room with two members and is made on demand, so
+naming one is neither necessary nor useful -- and a direct room that has
+not been created yet is refused by id, which reads as the agent not
+existing.
+
+~require_mention~ makes an agent ignore anything that does not name it,
+which is what keeps a room of five from turning every message into five
+turns.  ~max_hops~ overrides ~orchestration.max_hops~ for this room
+alone.  [[file:orchestration.org][orchestration.org]] has the loop safety these two exist for.
+
 ** integrations and connectors
 
 Two sections for two halves of the same idea, and which one you want
@@ -338,16 +596,64 @@ integrations:
 [[file:connectors.org][connectors.org]] covers the catalogue, the flows, renewal, revoking, and
 what the arrangement does and does not protect against.
 
+** routines
+
+Standing work: an instruction sent to one agent on a schedule.
+
+#+begin_src yaml
+routines:
+  - id: morning
+    description: "What changed overnight"
+    instructions: "Summarise yesterday's commits in ~/src/thing."
+    agent: researcher
+    schedule: daily          # manual | hourly | daily | weekdays | weekly | custom
+    at: "09:00"
+    catch_up: true
+    jitter_seconds: 300
+
+  - id: sweep
+    instructions: "Check the disk and report anything over 90%."
+    agent: chief
+    schedule: custom
+    cron: "0 6 * * 1-5"
+#+end_src
+
+The presets are sugar over cron rather than a second scheduler, so
+~schedule: custom~ with a ~cron~ expression is the same machinery and not
+an escape hatch.  ~catch_up~ runs a missed slot *once* however many were
+missed -- a laptop opened after a long weekend should not deliver a stack
+of good mornings -- and a routine that has never run has not missed
+anything, so adding one at four in the afternoon does not fire its 09:00
+immediately.
+
+Run state is kept beside the config in ~<state_dir>/routines.yaml~, never
+in it.  A ~clawtilla.yaml~ that rewrote itself every time a routine fired
+is one people stop keeping in git.
+
+A routine does not get a session of its own: it is sent from ~user~ to
+the agent, so it lands in the operator's room and queue, and inherits
+whatever that conversation was about.  Point routines at an agent that is
+not also a conversational surface.  [[file:routines.org][routines.org]] has the rest, including
+~directory~, ~worktree~ and ~isolate~.
+
 ** Secret references
 
 Secrets never appear in the YAML.
 
 #+begin_src yaml
-credentials:
-  api_key:   {env: ANTHROPIC_API_KEY}
-  matrix:    {file: "~/.clawtilla/secrets/matrix-token"}
-  smtp:      {command: "pass show mail/smtp"}
+agents:
+  - id: researcher
+    credentials:
+      api_key:   {env: ANTHROPIC_API_KEY}
+      matrix:    {file: "~/.clawtilla/secrets/matrix-token"}
+      smtp:      {command: "pass show mail/smtp"}
+      other:     "another-token"        # bare: the default backend
 #+end_src
+
+There is deliberately no inline form.  A bare string is not one: it is a
+locator for whichever backend ~secrets.default_backend~ names, so under
+the default it is a filename resolved against ~secrets.dir~ rather than
+the secret itself.
 
 #+begin_src yaml
 secrets:
@@ -359,18 +665,43 @@ secrets:
 The timeout is not optional in spirit: a locked password manager blocks
 rather than failing, and without a bound so does daemon startup.
 
-Resolved values are written into per-agent credential files at 0600 under
-the agent's state directory, and passed to the child through its
-environment allowlist.  *IPC responses echo the reference, never the
-value* -- so a client can say "a Matrix token is configured" without the
-token crossing the socket or landing in a screenshot.
+~{env: ...}~ reads the *daemon's* environment, at render time -- so it is
+what ~clawtillad~ was started with, not what the agent's shell has.
+
+Each credential arrives at the agent twice, because the two things that
+want it want different shapes.  As a file at 0600, named after the key,
+under ~<state_dir>/agents/<id>/credentials/~; and as an environment
+variable named after the key *in upper case* -- so ~api_key~ becomes
+~API_KEY~ in the child, whatever the reference happened to point at.  A
+provider CLI wants the variable and anything file-based wants the path.
+
+A credential that cannot be resolved is refused rather than skipped, and
+the refusal names the reference and never the value:
+
+#+begin_example
+credentials.api_key: could not resolve env:ANTHROPIC_API_KEY:
+environment variable ANTHROPIC_API_KEY is not set
+#+end_example
+
+It is a *render* refusal, so it behaves like the ~libreclaw:~ one above:
+that agent's files are not written, the rest of the fleet is, and the
+agent goes on against the ~config.yaml~ it already had.  Trying to start
+it is what makes it a shadow.  Skipping the credential instead would
+produce an agent that starts perfectly cleanly and cannot talk to its
+provider, which is a much worse thing to be handed.
+
+*IPC responses echo the reference, never the value* -- so a client can
+say "a Matrix token is configured" without the token crossing the socket
+or landing in a screenshot.
 
 ** Rendering to libreclaw
 
 The daemon renders each agent's ~config.yaml~ into
 ~<state_dir>/agents/<id>/config.yaml~ on every start and reload.  It is
-deterministic: same input, same bytes, so rewriting it does not churn
-mtimes or restart agents whose configuration did not change.
+deterministic -- same input, same bytes -- but it is written every time
+regardless, atomically, so the file is replaced whether or not anything
+in it changed.  Its mtime says when the daemon last rendered, not when
+the agent's configuration last differed.
 
 It carries a header saying it is generated.  Editing it is lost on the
 next start, silently, which is exactly the kind of thing that costs an
@@ -382,20 +713,38 @@ clawtilla config render researcher     # see it without writing it
 
 ** Shadow agents
 
-An agent whose block clawtilla cannot understand -- an unknown computer
-type, an unknown mount type, a missing required field, a duplicate id, a
-second chief of staff -- becomes a *shadow*: listed, explaining itself,
-refusing to run.  The rest of the fleet starts normally.
+An agent whose block clawtilla cannot understand becomes a *shadow*:
+listed, explaining itself, refusing to run.  The rest of the fleet starts
+normally.
 
-That is what lets a config written by a newer clawtilla round-trip
-through an older one without losing anything, and it means one bad line
-disables one agent rather than causing an outage.
+The full set of reasons, because each one is a different thing to go and
+fix:
+
+| Reason                                       | What to change                        |
+|----------------------------------------------+---------------------------------------|
+| an id outside ~[a-z0-9_-]~, over 64 characters, or starting with punctuation | ~agents.id~            |
+| two agents with one id                       | ~agents.id~                           |
+| a second ~chief_of_staff: true~              | ~agents.chief_of_staff~               |
+| both ~persona.system_prompt~ and ~persona.identity_files~ | drop one -- they are alternatives |
+| an unknown ~computer.type~                   | ~none~, ~host~, ~container~, ~distrobox~ or ~vm~ |
+| an unknown ~computer.host.confine~           | ~none~, ~workspace~, ~allowlist~ or ~bwrap~ |
+| ~computer.type: host~ without the confirmation | ~computer.host.confirm_host_control~ |
+| ~confine: bwrap~ with no bubblewrap installed | install it, or choose another mode   |
+| a mount with no target, or two at one target | ~computer.mounts~                     |
+| a credential that will not resolve           | the reference, named in the reason    |
+
+That is also what lets a config written by a newer clawtilla round-trip
+through an older one without losing anything: a key it has never heard of
+is a warning and a computer type it has never heard of disables one
+agent, rather than either causing an outage.
+
+A shadow is not the same as ~enabled: false~.  That one is a decision and
+says nothing; a shadow is a fault and says what it is.
 
 ** Comments survive a write
 
-The GTK client and the CLI write this file back.  Both the schema's
-documentation comments *and* your own notes survive the round trip --
-yaml-glib gained comment preservation for exactly this.
+The GTK client and the CLI write this file back.  Your own notes survive
+the round trip -- yaml-glib gained comment preservation for exactly this.
 
 Comments are attached by line proximity: the run of comment lines
 immediately above a key belongs to that key, and a trailing comment on
@@ -403,14 +752,41 @@ the same line stays there.  A blank line ends a run.  That is the honest
 limitation of the approach and it is the same one every YAML round-tripper
 has.
 
+Two things change that are worth expecting rather than being surprised
+by.  A key that had *no* comment gains the schema's own explanation when
+a client writes it, so the file grows paragraphs nobody typed -- a key
+you commented yourself keeps yours, which is the rule that matters.  And
+double-quoted scalars come back single-quoted, because that is what the
+emitter writes; the value is unchanged.
+
 ** Validation
 
 #+begin_src bash
 clawtilla config validate
 #+end_src
 
-Reports unknown keys with line numbers, malformed values, and every agent
-that would become a shadow, with the reason.
+Reports every unknown key by its full path, every list entry it had to
+skip (~agents[2] has no id~), every duplicate id, and every agent that
+would become a shadow, with the reason.  Warnings go to stderr and do not
+make the configuration invalid: only an empty ~daemon.socket~ and an
+~orchestration.max_hops~ below 1 do that, because those two stop the
+daemon being useful at all.
+
+It reports no line numbers.  A key is named by where it sits in the file
+-- ~unknown configuration key 'daemon.loglevel'~ -- which is what ~grep~
+needs, and is what survives a client rewriting the file underneath you.
+
+*What it does not check is a value.*  An enum nickname it does not
+recognise is not an error: it silently becomes the enum's first member.
+That is harmless for ~mailbox.overflow~, where the first member is also
+the default, and is not for ~restart~ -- a typo there means ~never~ while
+the default is ~on-failure~, so an agent stops coming back and nothing
+says why.  The agent-level exceptions are the two with a shadow check of
+their own, ~computer.type~ and ~computer.host.confine~.  An integer that
+is not a number reads as zero the same way.  The generated reference in
+[[file:configuration-options.org][configuration-options.org]] lists the accepted values for every enum, and
+~clawtilla config render <agent>~ shows what the settings that reach
+libreclaw actually produced -- neither of which ~validate~ will tell you.
 
 ** Editing
 

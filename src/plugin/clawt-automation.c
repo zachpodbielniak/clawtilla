@@ -52,6 +52,7 @@ clawt_automation_init(ClawtAutomation *self)
 
 ClawtAutomation *
 clawt_automation_new(ClawtEventBus      *bus,
+                     GMainContext       *context,
                      ClawtPodActionFunc  action,
                      gpointer            user_data)
 {
@@ -59,6 +60,18 @@ clawt_automation_new(ClawtEventBus      *bus,
     ClawtPodModule *module;
 
     self->engine = pod_engine_new();
+
+    /*
+     * pod_engine_new() captures the thread-default context, which is the
+     * process default unless somebody pushed one -- so an embedded
+     * daemon would get a context it never iterates, and every pod would
+     * load, list, and never fire.  The same family as the timers and the
+     * GTask already recorded in CLAUDE.md, one library along: anything
+     * that captures "the current context" is wrong in an embedded daemon
+     * unless it was told which one.
+     */
+    if (context != NULL)
+        pod_engine_set_main_context(self->engine, context);
 
     /*
      * Registered, not loaded.  podomation lets an embedding application

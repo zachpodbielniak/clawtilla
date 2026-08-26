@@ -10,9 +10,15 @@
  * unbounded chat cascade: delegation creates a task, which can be listed,
  * followed and cancelled.
  *
- * Each task gets its own libreclaw session, so one job never contaminates
- * the next -- an agent that spent an hour on a refactor should not carry
- * that context into an unrelated question.
+ * A task does *not* get a libreclaw session of its own, though this said
+ * so for a long time and clawt_task_new() still builds a session key
+ * nothing reads.  lc_router_resolve_session_key() keys on channel, room
+ * and sender and excludes the thread on purpose -- there a thread anchors
+ * a reply rather than dividing a conversation -- so a task lands in the
+ * sender's session and inherits whatever context is already in it.
+ *
+ * Isolating a job therefore means routing it into a room of its own,
+ * which is what `routines.isolate` does.
  */
 
 #pragma once

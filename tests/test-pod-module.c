@@ -458,6 +458,121 @@ test_every_action_describes_itself(void)
 }
 
 /*
+ * The public getter names the actions table, not one action's
+ * parameters.
+ *
+ * It returned `message_agent_params` -- three rows called `agent`, `body`
+ * and `priority` -- under a doc comment promising every action.  Nothing
+ * outside the module calls it, which is the only reason that survived, so
+ * the assertion that matters is the count against podomation's own list
+ * of handlers rather than anything about the first row.
+ */
+static void
+test_the_actions_getter_returns_the_actions(void)
+{
+    g_autoptr(ClawtPodModule) module = clawt_pod_module_new(NULL, NULL, NULL);
+    const PodHandlerParamInfo *listed;
+    const gchar *const *handlers;
+    guint n_actions = 0;
+    guint n_handlers = 0;
+    guint i;
+
+    listed = clawt_pod_module_actions(&n_actions);
+    handlers = pod_event_handler_get_supported_handlers(
+        POD_EVENT_HANDLER(module));
+
+    g_assert_nonnull(listed);
+    g_assert_nonnull(handlers);
+
+    for (n_handlers = 0; handlers[n_handlers] != NULL; n_handlers++)
+        ;
+
+    /* One row per action, and the same actions in the same order. */
+    g_assert_cmpuint(n_actions, ==, n_handlers);
+
+    for (i = 0; i < n_actions; i++) {
+        g_assert_cmpstr(listed[i].name, ==, handlers[i]);
+
+        /*
+         * And each one says what it takes, because the flat row cannot
+         * nest a parameter array and the doc comment promises it anyway.
+         */
+        g_assert_nonnull(listed[i].description);
+        g_assert_nonnull(strstr(listed[i].description, "takes"));
+    }
+
+    /* Not a parameter list wearing the actions' name. */
+    for (i = 0; i < n_actions; i++)
+        g_assert_cmpstr(listed[i].name, !=, "body");
+}
+
+/*
+ * The forwarder carries a fixed set of detail keys, so a field the daemon
+ * adds to an event reaches a pod only when it is added to that list --
+ * and nothing warns.  Three had gone missing that way: `peer` and `room`
+ * on agent.typing, and `id` on message.  A pod could not tell an agent
+ * busy on your question from one busy on a peer's, and could not
+ * deduplicate the replay every new subscriber is sent.
+ */
+static void
+test_every_published_detail_reaches_the_pod(void)
+{
+    g_autoptr(ClawtEventBus) bus = clawt_event_bus_new(16);
+    g_autoptr(ClawtPodModule) template = clawt_pod_module_new(bus, NULL, NULL);
+    g_autoptr(ClawtPodModule) instance = instance_for(template, NULL);
+    g_autoptr(ClawtEvent) typing = clawt_event_new("agent.typing",
+                                                   "researcher");
+    g_autoptr(ClawtEvent) message = clawt_event_new("message", "dm:user:x");
+    Fired fired = { 0 };
+    static const gchar *const on_typing[] = { "typing", "peer", "room", NULL };
+    static const gchar *const on_message[] = { "id", "from", "to", "body",
+                                               "task", NULL };
+    guint i;
+
+    g_signal_connect(instance, "event-fired", G_CALLBACK(on_fired), &fired);
+    pod_event_source_start(POD_EVENT_SOURCE(instance), NULL, NULL);
+
+    /* Exactly what src/core/clawt-daemon.c puts on an agent.typing. */
+    clawt_event_set_detail(typing, "typing", "true");
+    clawt_event_set_detail(typing, "peer", "scribe");
+    clawt_event_set_detail(typing, "room", "dm:researcher:scribe");
+    clawt_event_bus_publish(bus, typing);
+
+    g_assert_cmpuint(fired.count, ==, 1);
+
+    for (i = 0; on_typing[i] != NULL; i++) {
+        g_autoptr(GVariant) value =
+            g_variant_lookup_value(fired.data, on_typing[i],
+                                   G_VARIANT_TYPE_STRING);
+
+        if (value == NULL)
+            g_error("on_agent_typing lost '%s'", on_typing[i]);
+    }
+
+    /* And what src/mailbox/clawt-mailbox-router.c puts on a message. */
+    clawt_event_set_detail(message, "id", "msg-1");
+    clawt_event_set_detail(message, "from", "researcher");
+    clawt_event_set_detail(message, "to", "user");
+    clawt_event_set_detail(message, "body", "done");
+    clawt_event_set_detail(message, "task", "task-1");
+    clawt_event_bus_publish(bus, message);
+
+    g_assert_cmpuint(fired.count, ==, 2);
+
+    for (i = 0; on_message[i] != NULL; i++) {
+        g_autoptr(GVariant) value =
+            g_variant_lookup_value(fired.data, on_message[i],
+                                   G_VARIANT_TYPE_STRING);
+
+        if (value == NULL)
+            g_error("on_message lost '%s'", on_message[i]);
+    }
+
+    g_free(fired.name);
+    g_clear_pointer(&fired.data, g_variant_unref);
+}
+
+/*
  * Deliberately absent.  Every other action is a fleet operation the
  * daemon already owns; this one is arbitrary code on the machine, fired
  * by an event, with nobody watching.
@@ -539,6 +654,10 @@ main(int argc, char *argv[])
                     test_an_unknown_action_is_refused);
     g_test_add_func("/pod-module/action-metadata",
                     test_every_action_describes_itself);
+    g_test_add_func("/pod-module/actions-getter",
+                    test_the_actions_getter_returns_the_actions);
+    g_test_add_func("/pod-module/carried-details",
+                    test_every_published_detail_reaches_the_pod);
     g_test_add_func("/pod-module/computer-exec",
                     test_computer_exec_says_why_it_will_not);
     g_test_add_func("/pod-module/no-daemon",

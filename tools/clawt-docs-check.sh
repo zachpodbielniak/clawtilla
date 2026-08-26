@@ -191,11 +191,163 @@ check_double_encoded_utf8 () {
     done
 }
 
+
+# ---------------------------------------------------------------------------
+# The other direction: something the code owns that no doc names.
+#
+# The three checks above all ask "does this name in a doc still exist".
+# None of them asked "does this thing that exists appear in a doc at all",
+# and that gap is how the tree came to hold 20 IPC frame kinds, five
+# orchestration tools and a CLI verb documented nowhere.  It reads
+# differently from a stale name and is worse for it: a stale name is
+# reported by whoever trusts it, while a feature nobody wrote down is
+# simply never used, and nothing anywhere says so.  `clawtilla event` was
+# the sharp one -- the command that reads the daemon's event history, and
+# the difference between diagnosing a message loop with a control and
+# doing it with sqlite3 against a file on the host.
+#
+# Matched as a fixed string, not a pattern.  A kind is `agent.list` and
+# a dot matches anything, so `task.changed` was satisfied by the prose
+# word `on_task_changed` -- the check reported OK about an event whose
+# documentation had been deleted.  Same family as the comment-stripping
+# lesson in CLAUDE.md: a grep-based check can report the opposite of the
+# truth, and only sabotaging the thing being checked reveals it.
+#
+# One mention is the bar.  This cannot tell prose from a row in a table,
+# and pretending otherwise would make it a style check people argue with.
+# Naming the thing once is the difference between discoverable and
+# invisible; whether it is *explained* is a reader's judgement.
+#
+# Not extended to keys in `~key~` markup, which was measured rather than
+# assumed.  The docs use `=key=` for config keys and `~key~` for
+# identifiers generally -- frame kinds, filenames, function names -- but
+# not strictly: 71 real config keys are written with tildes.  Filtering
+# those 252 names down by section, by the agent-relative spelling, by the
+# frame-kind and event vocabularies and by file suffix leaves seven, and
+# all seven are false positives.  Five are events this file enumerates
+# elsewhere; two are docs stating that a key *does not* exist ("there is
+# no ~routines.quiet_hours~", "~computer.type~ is not
+# ~defaults.computer.type~").  A negation is invisible to grep, so that
+# last pair cannot be filtered at all -- the check would report seven
+# wolves and no sheep, and a check that cries wolf is one people learn to
+# ignore.
+# ---------------------------------------------------------------------------
+
+# Every orchestration tool an agent can be given is named in a doc.
+#
+# An operator reading docs/orchestration.org decides what their fleet may
+# do.  A tool that is registered, offered to agents and named in no doc
+# is a capability granted by a switch nobody can find.
+check_tool_coverage () {
+    [ -f src/mcp/clawt-mcp-tools.c ] || return 0
+    [ -d docs ] || return 0
+
+    for local_tool in $(grep -oE 'TOOL\("clawtilla_[a-z_]+"' \
+                            src/mcp/clawt-mcp-tools.c \
+                        | sed 's/.*"\(.*\)"/\1/' | sort -u)
+    do
+        if ! grep -rqF "${local_tool}" docs/ README.org 2>/dev/null
+        then
+            echo "docs-check: tool '${local_tool}' is registered but named in no doc"
+            FAIL=1
+        fi
+    done
+}
+
+# Every CLI subcommand is named in a doc.
+#
+# The CLI dispatches on argv[1] before option parsing, so the verb list
+# is exactly this grep and cannot drift from a second copy.
+check_cli_verb_coverage () {
+    [ -f clients/cli/main.c ] || return 0
+    [ -d docs ] || return 0
+
+    for local_verb in $(grep -oE 'g_strcmp0\(argv\[1\], "[a-z-]+"\)' \
+                            clients/cli/main.c \
+                        | sed 's/.*"\(.*\)".*/\1/' | sort -u)
+    do
+        # Either spelled out in prose, or as a row in the CLI reference
+        # table, which drops the program name -- requiring "clawtilla foo"
+        # alone reported `event` missing while it sat in that table.
+        #
+        # No \\b here: grep on this machine is ugrep, which refuses a word
+        # boundary inside an alternation ("empty (sub)expression") and
+        # then exits non-zero, which this reads as "not documented".  A
+        # check whose regex fails reports every item as missing, which is
+        # indistinguishable from a tree with no docs at all.
+        if ! grep -rqE "(clawtilla|~)${local_verb}([ ~]|$)" \
+                docs/ README.org 2>/dev/null
+        then
+            echo "docs-check: CLI verb 'clawtilla ${local_verb}' is documented nowhere"
+            FAIL=1
+        fi
+    done
+}
+
+# Every frame kind the daemon answers is in the protocol reference.
+#
+# docs/ipc-protocol.org is the whole contract for anybody writing a
+# client -- an in-process cmacs embed, a second UI, a script.  A kind the
+# daemon handles and the reference omits is a capability that exists and
+# cannot be discovered, which is one of the ways two clients drift apart
+# without `make parity` being able to see it.
+check_ipc_kind_coverage () {
+    [ -f docs/ipc-protocol.org ] || return 0
+
+    for local_kind in $(grep -rhoE 'g_strcmp0\(kind, "[a-z_.]+"\)' \
+                            src/core/clawt-daemon.c src/ipc/clawt-ipc-server.c \
+                            2>/dev/null \
+                        | sed 's/.*"\(.*\)".*/\1/' | sort -u)
+    do
+        if ! grep -qF "${local_kind}" docs/ipc-protocol.org
+        then
+            echo "docs-check: frame kind '${local_kind}' is handled but absent from docs/ipc-protocol.org"
+            FAIL=1
+        fi
+    done
+}
+
+# Every event the daemon publishes is in the protocol reference.
+#
+# An event is the only way a client learns something happened without
+# asking, so an undocumented one is a thing clients poll for instead.
+#
+# Four construction sites, because there are four: the bus directly, the
+# router's own publish(), the kinds spelled in clawt-event.c, and
+# clawt_event_new() followed by a publish.  The last was missing at
+# first, which hid `computer.exec`, `message` and `task.changed` -- all
+# three documented, so this reported OK while being blind to them.  A
+# check that cannot see a thing is not checking it, and the day one of
+# those three had gone undocumented it would have said OK anyway.  The
+# `.h`/`.c` exclusion drops an #include the pattern would match.
+check_event_kind_coverage () {
+    [ -f docs/ipc-protocol.org ] || return 0
+
+    for local_event in $( { grep -rhoE 'clawt_event_bus_emit\([^,]+, *"[a-z_.]+"' src/ 2>/dev/null
+                            grep -rhoE 'publish\(self, *"[a-z_.]+"' src/ 2>/dev/null
+                            grep -rhoE 'clawt_event_new\("[a-z_.]+"' src/ 2>/dev/null
+                          } | sed 's/.*"\(.*\)"/\1/'
+                          grep -rhoE '"[a-z_]+\.[a-z_]+"' src/core/clawt-event.c 2>/dev/null \
+                          | tr -d '"' \
+                        | sort -u | grep -vE '\.[ch]$')
+    do
+        if ! grep -qF "${local_event}" docs/ipc-protocol.org
+        then
+            echo "docs-check: event '${local_event}' is published but absent from docs/ipc-protocol.org"
+            FAIL=1
+        fi
+    done
+}
+
 main () {
     check_public_headers
     check_doc_config_keys
     check_doc_tool_names
     check_double_encoded_utf8
+    check_tool_coverage
+    check_cli_verb_coverage
+    check_ipc_kind_coverage
+    check_event_kind_coverage
 
     if [ "${FAIL}" -ne 0 ]
     then

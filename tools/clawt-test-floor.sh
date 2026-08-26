@@ -17,10 +17,16 @@
 
 set -eu
 
-# One per tests/test-*.c.  Left at 1 since the suite was three files, which
-# made the check decorative -- a run where eleven of fourteen binaries
-# failed to link was still "green, and at least one ran".
-TEST_FLOOR=37
+# One per tests/test-*.c, and it has to track them: a floor of 1 -- which
+# this had while the suite was three files -- made the check decorative,
+# because a run where eleven of fourteen binaries failed to link was
+# still "green, and at least one ran".
+#
+# Recount with `ls tests/test-*.c | wc -l` and raise this whenever the
+# suite grows.  It sits at the real count rather than below it: every
+# binary short of that is one that did not run, and a floor with slack
+# in it is a floor that tolerates exactly the failure it exists for.
+TEST_FLOOR=42
 
 main () {
     if [ $# -ne 1 ]

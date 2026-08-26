@@ -1018,10 +1018,19 @@ on_notification_sent(GObject *source, GAsyncResult *result,
 
 /*
  * Whether this instance wants to hear about this, right now.
+ *
+ * There is deliberately no way to ask this and be told yes regardless.
+ * It used to take an `ignore_filters` flag that no caller ever set --
+ * clawt_notifier_test_async() goes straight to clawt_notify_send_async()
+ * instead, because a test send is not a notification: it has to reach
+ * somebody at half past eleven at night and about an event class nobody
+ * subscribed to, or a button that did nothing would be
+ * indistinguishable from a broken notifier.  A parameter whose only
+ * value is FALSE reads as a supported way round the filters, and the
+ * next person to want one would have found it and used it.
  */
 static gboolean
-wants(ClawtIntegrationBinding *binding, ClawtNotifyEvents events,
-      gboolean ignore_filters)
+wants(ClawtIntegrationBinding *binding, ClawtNotifyEvents events)
 {
     g_auto(GStrv) names = NULL;
     g_autoptr(GError) error = NULL;
@@ -1029,9 +1038,6 @@ wants(ClawtIntegrationBinding *binding, ClawtNotifyEvents events,
     const gchar *quiet;
     gint start = 0;
     gint end = 0;
-
-    if (ignore_filters)
-        return TRUE;
 
     names = clawt_integration_binding_get_string_list(binding, "events");
     wanted = clawt_notify_events_from_strv((const gchar *const *)names,
@@ -1209,7 +1215,7 @@ clawt_notifier_notify(ClawtNotifier *self, ClawtNotification *notification)
     for (i = 0; i < bindings->len; i++) {
         ClawtIntegrationBinding *binding = g_ptr_array_index(bindings, i);
 
-        if (!wants(binding, notification->events, FALSE))
+        if (!wants(binding, notification->events))
             continue;
 
         deliver(self, binding, notification);

@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-23 Sun]
-#+version: 0.2.0
+#+updated: [2026-08-26 Wed]
+#+version: 0.3.0
 
 * Integrations
 
@@ -61,6 +61,15 @@ Everything downstream -- the rendered libreclaw config, the agent's
 -- reads the *resolved* set and never looks at which of the two it came
 from.  There is one code path, so there is one behaviour.
 
+That path is ~clawt_integration_resolve_for_agent()~, which returns a
+list of ~ClawtIntegrationBinding~ -- one per integration this agent
+actually has.  A binding holds no values of its own; every getter reads
+through to whichever of the two forms holds them, so nothing downstream
+has a branch on where a setting came from.  Two code paths would be two
+behaviours, and the one nobody tests is the shared one.
+
+Inline blocks resolve first, then named instances in file order.
+
 ** Scope: one bot, some bots, all bots
 
 | =scope=    | Who gets it                                          |
@@ -77,6 +86,26 @@ config file.
 
 The =agents:= list is kept whatever the scope, so switching to =all= and
 back does not lose the selection.
+
+Omitting =scope:= means =selected=, not =all=.  So an instance with no
+scope and no =agents:= reaches nobody until somebody says who.
+
+*** An unrecognised scope reaches nobody, not everybody
+
+A =scope:= this build cannot parse is a warning naming the instance and
+the word, and the instance reaches *nothing*.  The two failure modes are
+not symmetric: a typo that hands a credential to the whole fleet is a
+great deal worse than one that hands it to nothing and says so, and only
+one of the two is noticed.
+
+#+begin_example
+integration home: 'evryone' is not a scope; reaching nobody
+#+end_example
+
+Shared folders apply the same rule, and differ only on the *absent*
+case -- a mount with no scope goes to every agent, because that is what
+a fleet-wide folder is for.  A scope that is written and cannot be read
+reaches nobody either way.
 
 #+begin_src bash
 clawtilla integration scope home researcher,scribe   # a group
@@ -121,10 +150,35 @@ list per agent is an ordinary thing to want.
 | =mcp=      | nothing; share it freely   |
 | =notify=   | nothing; share it freely   |
 | =connector= | nothing; sharing one is the point |
+| =local=    | nothing -- but only one agent in the whole fleet may have it |
+| =cmacs=    | nothing                    |
 
 Two agents that end up sharing one of these are reported by
 =clawtilla integration list= and in the Integrations page, because it is
-not visible from either agent alone.
+not visible from either agent alone.  Only a *shared instance* is
+checked: two agents that each wrote their own inline Matrix block on one
+account are two people who did that on purpose, and the fleet check has
+nothing to tell them.  An empty value is skipped rather than counted as
+a collision, so two agents with no =user_id= yet are not reported as
+sharing one.
+
+*** One channel block per agent, so one integration of that type
+
+A channel type is =one_per_agent=: an agent may have at most one
+=matrix=, one =email=, one =webhook=, one =local= and one =cmacs=.  That
+is not a policy, it is the shape of what is rendered -- libreclaw takes
+one ~channels.<type>~ block per agent, so a second Matrix instance for
+the same agent has nowhere to go.
+
+When two would apply, the *inline* block wins, because somebody wrote it
+inside that agent, and the shared instance is dropped with a warning
+naming it.  Dropping it silently is the failure worth avoiding: it would
+leave an account that looks configured in the file and receives nothing,
+for ever.
+
+=mcp=, =connector= and =notify= carry no such limit.  An agent may have
+as many as it likes -- they are entries in a list rather than a block
+with one name.
 
 ** Matrix
 
@@ -532,6 +586,31 @@ Deliberately a connectivity check rather than a login: a check that
 needed credentials could not run before they are resolved, and the
 failure people actually hit is a typo in a hostname or a firewall.
 
+What each type checks:
+
+| Type       | What is checked                                        |
+|------------+--------------------------------------------------------|
+| =matrix=   | a TCP connection to the homeserver                     |
+| =email=    | both directions -- IMAP, then SMTP                     |
+| =webhook=  | *binds* the port and closes it; the failure that matters for a listener is the port already being taken |
+| =mcp=      | a =command= is on the daemon's ~PATH~, or a =url= accepts a connection.  The server is never started |
+| =connector= | from disk alone: a =provider=, a token file that loads, and either unexpired or renewable |
+| =local=, =cmacs= | nothing outside the process, so nothing to check  |
+| =notify=   | *nothing* -- see below                                 |
+
+A =notify= instance reports healthy whatever it can reach.  There is no
+check for it, and the reason is that a connectivity probe would answer a
+different question from the one worth asking: a notifier is correct when
+it *delivers*, and the only way to find that out is to send one.
+~clawtilla integration test~ is the check for a notifier, and the GTK
+editor swaps its *Check* button for *Send a test* for exactly this
+reason.  Worth knowing before reading a green =health= line as an answer
+about a phone.
+
+Checks run one at a time rather than together.  A fleet-wide check
+firing thirty simultaneous connects at one homeserver looks like
+something it should not.
+
 It runs *asynchronously* in the daemon.  A handler runs on the daemon's
 main context while the client blocks, so one that waited on the network
 would stall every other client for the length of the timeout -- ten
@@ -547,7 +626,11 @@ Checked when the config loads and again before an agent starts:
 - an =mcp= entry with neither a command nor a URL, or with both
 - two agents sharing an identity key on one instance
 - two agents with =local=
-- an instance naming an agent that is not there
+- an instance naming an agent that is not there -- only under
+  =scope: selected=, since that is the only scope that names anybody
+- an instance that could not be read at all -- no name, or a type
+  clawtilla cannot place -- which is reported as
+  =integration 'x' is disabled: <why>= rather than dropped in silence
 - an unknown =type=, which disables *that instance* and nothing else
 
 The last one is the same treatment a shadow agent gets, and for the same
@@ -608,6 +691,9 @@ a plugin: ~get_id~ returns the =type:= value you answer to, ~validate~
 checks the settings, ~render_config~ returns the YAML for the agent's
 =channels:= block.  See [[file:plugins.org][plugins.org]].
 
-The built-in seven are a declarative table rather than seven classes,
+The built-in eight are a declarative table rather than eight classes,
 because each is the same shape: validate some keys, resolve some secrets,
-emit a channel block, an MCP server entry or a notification.
+emit a channel block, an MCP server entry or a notification.  One row per
+type in =src/integration/clawt-integration.c=, carrying its id, its kind,
+its required and credential keys, its identity keys, the ~channels:~ name
+it renders as, and whether an agent may have more than one.

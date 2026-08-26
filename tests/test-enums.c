@@ -151,6 +151,59 @@ test_flags_to_string(void)
 }
 
 /**
+ * test_no_capability_is_permanently_false:
+ *
+ * `images` and `attachments` were registered capabilities that
+ * recompute_caps() never once set, so every control bound to either was
+ * insensitive for the whole life of the fleet and no agent could ever be
+ * told it had them.  Neither was derivable from anything this build
+ * knows: nothing records which models take image input, and every agent
+ * can already send its operator a file.
+ *
+ * Asserted through the flags type rather than by looking for the C
+ * symbol, because the type is what a caps string on the wire is built
+ * from -- a nickname still registered is still a capability a client can
+ * be told about.
+ */
+static void
+test_no_capability_is_permanently_false(void)
+{
+    guint value = 0;
+
+    g_assert_false(clawt_flags_from_nick(CLAWT_TYPE_AGENT_CAPS, "images",
+                                         &value));
+    g_assert_false(clawt_flags_from_nick(CLAWT_TYPE_AGENT_CAPS, "attachments",
+                                         &value));
+
+    /* And the ones that are derived are still there. */
+    g_assert_true(clawt_flags_from_nick(CLAWT_TYPE_AGENT_CAPS, "mounts",
+                                        &value));
+    g_assert_true(clawt_flags_from_nick(CLAWT_TYPE_AGENT_CAPS, "streaming",
+                                        &value));
+}
+
+/**
+ * test_nick_list_names_every_value:
+ *
+ * The refusals that say what somebody was allowed to write are built
+ * from this, because the version that spelled the list out by hand had
+ * read "none, host, container and vm" ever since distrobox was added.
+ */
+static void
+test_nick_list_names_every_value(void)
+{
+    g_autofree gchar *types = clawt_enum_nick_list(CLAWT_TYPE_COMPUTER_TYPE);
+    g_autoptr(GEnumClass) klass = g_type_class_ref(CLAWT_TYPE_COMPUTER_TYPE);
+    guint i;
+
+    for (i = 0; i < klass->n_values; i++)
+        g_assert_nonnull(strstr(types, klass->values[i].value_nick));
+
+    /* Prose, not a machine list: it ends up inside a sentence. */
+    g_assert_nonnull(strstr(types, " and "));
+}
+
+/**
  * test_agent_state_shadow_is_registered:
  *
  * SHADOW carries the forward-compatibility behaviour, so it being absent
@@ -211,6 +264,10 @@ main(int argc, char *argv[])
     g_test_add_func("/enums/case-insensitive", test_enum_nick_is_case_insensitive);
     g_test_add_func("/enums/accepts-c-identifier", test_enum_accepts_c_identifier);
     g_test_add_func("/enums/flags-to-string", test_flags_to_string);
+    g_test_add_func("/enums/no-permanently-false-capability",
+                    test_no_capability_is_permanently_false);
+    g_test_add_func("/enums/nick-list-names-every-value",
+                    test_nick_list_names_every_value);
     g_test_add_func("/enums/shadow-registered", test_agent_state_shadow_is_registered);
     g_test_add_func("/error/codes-have-names", test_error_codes_have_names);
     g_test_add_func("/error/quark-stable", test_error_quark_is_stable);

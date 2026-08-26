@@ -42,10 +42,13 @@ static const ClawtSchemaEntry schema[] = {
   "$XDG_RUNTIME_DIR/clawtilla/daemon.sock", NULL,
   "Unix socket the clients connect to.\n"
   "\n"
-  "Created with mode 0600, and the daemon checks the peer's uid via\n"
-  "SO_PEERCRED. A unix socket is used rather than a loopback HTTP port\n"
-  "because a port has no such notion of who is calling, and any web page\n"
-  "the user visits can reach a loopback port through DNS rebinding.", "0.1.0" },
+  "Created with mode 0600 inside a 0700 directory, which is the whole of\n"
+  "the access control: the daemon does not check the peer's uid, so\n"
+  "anything that can open the file is trusted completely.\n"
+  "\n"
+  "A unix socket is used rather than a loopback HTTP port because the\n"
+  "filesystem can express that at all, and because any web page the user\n"
+  "visits can reach a loopback port through DNS rebinding.", "0.1.0" },
 
 { "daemon.git", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "true", NULL,
@@ -171,14 +174,16 @@ static const ClawtSchemaEntry schema[] = {
   "into podomation as a module, so a pod can bind to what the fleet does\n"
   "and act on it in the same file:\n"
   "\n"
-  "  pod restart_the_researcher {\n"
-  "    source = Clawtilla.New(\"researcher\")\n"
-  "    sink   = Clawtilla.New(\"researcher\")\n"
-  "    on \"agent.state\" where state == \"error\" {\n"
-  "      restart_agent(agent: \"researcher\")\n"
-  "      notify(title: \"researcher fell over; restarted it\")\n"
-  "    }\n"
-  "  }\n"
+  "  pod researcher = clawtilla->new(\"researcher\");\n"
+  "\n"
+  "  researcher->on_agent_state where event->state == \"error\" =>\n"
+  "      clawtilla->restart_agent(agent: \"researcher\");\n"
+  "\n"
+  "  researcher->on_agent_state where event->state == \"error\" =>\n"
+  "      clawtilla->notify(title: \"researcher fell over; restarted it\");\n"
+  "\n"
+  "An event name cannot carry a dot -- podomation's lexer stops at it --\n"
+  "so it is on_agent_state rather than agent.state.\n"
   "\n"
   "The constructor's arguments are the scope, and it applies both ways:\n"
   "a pod named for one agent neither hears about the others nor can act\n"
@@ -365,7 +370,14 @@ static const ClawtSchemaEntry schema[] = {
 
 { "defaults.exchange_max_bytes", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "1073741824", NULL,
-  "Size cap for the exchange directory. 0 disables the limit.", "0.1.0" },
+  "Size cap for the exchange directory. 0 disables the limit.\n"
+  "\n"
+  "Applied by deleting the oldest files until the total is under the\n"
+  "cap: whenever the exchange is opened for use -- when an agent starts,\n"
+  "and before a file is put into it -- and again on the daemon's sweep,\n"
+  "which is what catches an agent writing through the mount from inside\n"
+  "its computer, where nothing on the host sees the write happen.",
+  "0.1.0" },
 
 { "defaults.libreclaw_binary", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_COMMENTED,
   NULL, NULL,
@@ -547,8 +559,23 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "0 retries immediately.", "0.1.0" },
 
-/* ── rooms ───────────────────────────────────────────────────────── */
-/* ── memory ── */
+/* Last of `orchestration`, and it has to be: clawt-genconfig walks this
+ * table in order and opens a YAML section when it meets one, so a key
+ * sitting after the `memories` rows is emitted *inside* them.  This one
+ * did, for as long as it existed -- `data/example-config.yaml` shipped
+ * `chief_of_staff:` under `memories:`, so a daemon loading the file
+ * clawtilla itself generates warned `unknown configuration key
+ * 'memories.chief_of_staff'`.  The rule was already in CLAUDE.md; what it
+ * cost was that the one example documenting the key could not set it. */
+{ "orchestration.chief_of_staff", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_COMMENTED,
+  NULL, NULL,
+  "Id of the agent that receives work addressed to the fleet.\n"
+  "\n"
+  "At most one agent may hold this. Setting it here is equivalent to\n"
+  "chief_of_staff: true on that agent, and the daemon refuses to start if\n"
+  "two agents claim it.", "0.1.0" },
+
+/* ── memories ────────────────────────────────────────────────────── */
 { "memories", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "What an agent remembers between conversations.\n"
   "\n"
@@ -585,15 +612,12 @@ static const ClawtSchemaEntry schema[] = {
   "Empty by default, which is the whole point: an agent's memories are\n"
   "its own unless somebody says otherwise. Reading only -- there is no\n"
   "setting that lets one agent write into another's memory, because a\n"
-  "memory you did not form is not a memory.", "0.1.0" },
-
-{ "orchestration.chief_of_staff", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_COMMENTED,
-  NULL, NULL,
-  "Id of the agent that receives work addressed to the fleet.\n"
+  "memory you did not form is not a memory.\n"
   "\n"
-  "At most one agent may hold this. Setting it here is equivalent to\n"
-  "chief_of_staff: true on that agent, and the daemon refuses to start if\n"
-  "two agents claim it.", "0.1.0" },
+  "A comma-separated string, not a YAML list: `readers: chief, deputy`.\n"
+  "Written as `readers: [chief]` it reads back as unset and grants\n"
+  "nothing, so the loader warns about that spelling rather than leaving\n"
+  "a permission somebody granted silently denied.", "0.1.0" },
 
 { "rooms", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Standing rooms, created at startup if they do not exist.\n"
@@ -619,7 +643,17 @@ static const ClawtSchemaEntry schema[] = {
   "on every message, which is expensive and rarely wanted.", "0.1.0" },
 
 { "rooms.max_hops", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
-  "Overrides orchestration.max_hops for this room.", "0.1.0" },
+  "Overrides orchestration.max_hops for this room.\n"
+  "\n"
+  "It may loosen the fleet limit as well as tighten it, which is the\n"
+  "whole reason it exists: in a conversation three agents each reply one\n"
+  "hop deeper, so an ordinary standup reaches the fleet ceiling on its\n"
+  "own, and the only other remedy is raising orchestration.max_hops for\n"
+  "every delegation chain in the fleet to fix one room.\n"
+  "\n"
+  "It reaches the hop count and nothing else. The rate limit, the task\n"
+  "budget and the cycle detector are untouched, so a loop that costs\n"
+  "money still has three limits on it.", "0.1.0" },
 
 /* ── teams ───────────────────────────────────────────────────────── */
 { "teams", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
@@ -1027,8 +1061,14 @@ static const ClawtSchemaEntry schema[] = {
   "Standing work: a prompt, an agent, and when to run it.\n"
   "\n"
   "A routine is the thing you would otherwise remember to ask for every\n"
-  "morning. It runs as a delegated task, so it has its own session and\n"
-  "its own result, and one morning's run never contaminates the next.\n"
+  "morning. It runs as a delegated task, so it has its own result.\n"
+  "\n"
+  "It does not get a session of its own. libreclaw keys a session on\n"
+  "channel, room and sender and deliberately ignores the thread, so a\n"
+  "routine lands in the operator's session and queues behind whatever\n"
+  "the operator is doing -- and inherits that conversation's context.\n"
+  "Point a routine at an agent that is not also somewhere you chat, or\n"
+  "give it `isolate` so it runs in a room of its own.\n"
   "\n"
   "Routines only fire while the daemon is running. A machine that was\n"
   "asleep at nine o'clock has missed nine o'clock, and the routine says\n"
@@ -1130,14 +1170,19 @@ static const ClawtSchemaEntry schema[] = {
   "a stack of good mornings at once. Only ever one run, however many\n"
   "were missed.", "0.2.0" },
 
-{ "routines.jitter_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+{ "routines.jitter_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_INERT,
   "0", NULL,
   "Delay each run by up to this many seconds, chosen at random.\n"
   "\n"
   "Zero here, unlike a hosted scheduler, because there is no shared\n"
   "server to spread load across: this is your machine, and a routine set\n"
   "for 09:00 should run at 09:00. Worth setting only when several\n"
-  "routines share one rate-limited service.", "0.2.0" },
+  "routines share one rate-limited service.\n"
+  "\n"
+  "Not implemented in this build. The runner never reads it, so a routine\n"
+  "fires at its scheduled second whatever this says -- which is the\n"
+  "default behaviour, and wrong for the one case the option exists for.",
+  "0.2.0" },
 
 /* ── agents ──────────────────────────────────────────────────────── */
 { "agents", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
@@ -1258,17 +1303,27 @@ static const ClawtSchemaEntry schema[] = {
   "under a budget. memory/<topic>.md files are read on demand by the agent\n"
   "instead, so a large memory does not cost every turn.", "0.1.0" },
 
-{ "agents.memory.enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+{ "agents.memory.enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_INERT,
   "true", NULL,
-  "Whether MEMORY.md is loaded into the prompt.", "0.1.0" },
+  "Whether MEMORY.md is loaded into the prompt.\n"
+  "\n"
+  "Not implemented in this build. No memory block is rendered into the\n"
+  "agent's config.yaml at all, so MEMORY.md is loaded on libreclaw's own\n"
+  "defaults and this cannot turn it off.", "0.1.0" },
 
-{ "agents.memory.max_lines", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+{ "agents.memory.max_lines", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_INERT,
   "200", NULL,
-  "Line budget for MEMORY.md. Beyond it the file is truncated with a note.", "0.1.0" },
+  "Line budget for MEMORY.md. Beyond it the file is truncated with a note.\n"
+  "\n"
+  "Not implemented in this build, for the same reason as memory.enabled:\n"
+  "the budget never reaches libreclaw, which applies its own.", "0.1.0" },
 
-{ "agents.memory.max_bytes", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+{ "agents.memory.max_bytes", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_INERT,
   "24000", NULL,
-  "Byte budget for MEMORY.md, applied alongside max_lines.", "0.1.0" },
+  "Byte budget for MEMORY.md, applied alongside max_lines.\n"
+  "\n"
+  "Not implemented in this build, for the same reason as memory.enabled:\n"
+  "the budget never reaches libreclaw, which applies its own.", "0.1.0" },
 
 { "agents.model", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Which model this agent thinks with.", "0.1.0" },
@@ -1282,13 +1337,21 @@ static const ClawtSchemaEntry schema[] = {
 { "agents.model.effort", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Reasoning effort: low, medium, high, xhigh or max, when the model has one.", "0.1.0" },
 
-{ "agents.model.routing_profile", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
-  NULL, NULL,
-  "libreclaw smart-routing profile: off, eco, auto, premium or free.", "0.1.0" },
+{ "agents.model.routing_profile", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_INERT, NULL, NULL,
+  "libreclaw smart-routing profile: off, eco, auto, premium or free.\n"
+  "\n"
+  "Not implemented in this build. Nothing renders it into the agent's\n"
+  "config.yaml, so libreclaw is never told about it and routes on its\n"
+  "own default.", "0.1.0" },
 
-{ "agents.model.fallbacks", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
-  NULL, NULL,
-  "Models to fall back to, in order, when the primary is unavailable.", "0.1.0" },
+{ "agents.model.fallbacks", CLAWT_SCHEMA_STRING_LIST,
+  CLAWT_SCHEMA_FLAG_INERT, NULL, NULL,
+  "Models to fall back to, in order, when the primary is unavailable.\n"
+  "\n"
+  "Not implemented in this build. Nothing renders it into the agent's\n"
+  "config.yaml, so an unavailable primary model fails the turn rather\n"
+  "than falling back to anything.", "0.1.0" },
 
 { "agents.runtime", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "How this agent's libreclaw instance is hosted.", "0.1.0" },
@@ -1494,9 +1557,14 @@ static const ClawtSchemaEntry schema[] = {
   "refused at the exec layer, including through a shell one-liner, and the\n"
   "agent is told so rather than left guessing why its command failed.", "0.1.0" },
 
-{ "agents.computer.host.shell", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE,
+{ "agents.computer.host.shell", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_INERT,
   "/bin/sh", NULL,
-  "Shell used for interactive sessions and shell-form commands.", "0.1.0" },
+  "Shell used for interactive sessions and shell-form commands.\n"
+  "\n"
+  "Not implemented in this build. Nothing reads it, and there is no\n"
+  "shell-form command for it to apply to: clawtilla_computer_exec takes\n"
+  "an argv, every element of which is quoted before it is run, so a host\n"
+  "computer never invokes a shell at all.", "0.1.0" },
 
 { "agents.computer.host.nice", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "0", NULL,
@@ -1539,9 +1607,14 @@ static const ClawtSchemaEntry schema[] = {
   "Set it when the image has an entrypoint worth running. A JSON array is\n"
   "used as-is; anything else is split on spaces.", "0.1.0" },
 
-{ "agents.computer.container.network", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
-  NULL, NULL,
-  "Network to attach to. Leave unset for podman's default.", "0.1.0" },
+{ "agents.computer.container.network", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_INERT, NULL, NULL,
+  "Network to attach to. Leave unset for podman's default.\n"
+  "\n"
+  "Not implemented in this build. The value reaches the container object\n"
+  "through clawt_container_computer_set_network() and stops there: the\n"
+  "podman create request is built without it, so the container is always\n"
+  "on podman's default network however this is set.", "0.1.0" },
 
 { "agents.computer.container.keep", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "false", NULL,

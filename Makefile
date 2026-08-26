@@ -237,13 +237,13 @@ TEST_BINARIES = $(patsubst $(TESTDIR)/%.c,$(OUTDIR)/tests/%,$(TEST_SOURCES))
 # libreclaw's own build already documents why its module step has to run
 # alone; we inherit that by calling into it rather than reimplementing it.
 # ============================================================
-.PHONY: all
+.PHONY: all  ## Build the library, both daemons' worth of binaries, both clients, plugins
 all:
 	@$(MAKE) --no-print-directory check-submodules
 	@$(MAKE) --no-print-directory deps
 	@$(MAKE) --no-print-directory all-impl
 
-.PHONY: all-impl
+.PHONY: all-impl  ## @internal
 all-impl: $(OUTDIR)/clawt-version.h shared static daemon cli mcp-server \
           gtk web $(PROJECT_NAME)-1.0.pc plugins pod-modules gir
 
@@ -252,7 +252,7 @@ all-impl: $(OUTDIR)/clawt-version.h shared static daemon cli mcp-server \
 # Warns when deps/libreclaw is checked out behind the commit this tree
 # records.  Being ahead is fine and stays silent: that is what a dep under
 # active development looks like, and we are actively developing libreclaw.
-.PHONY: check-submodules
+.PHONY: check-submodules  ## Warn when deps/libreclaw is behind the recorded commit
 check-submodules:
 	@if [ ! -f $(LIBRECLAW_DIR)/Makefile ]; then \
 		echo "error: deps/libreclaw is not checked out."; \
@@ -283,7 +283,7 @@ check-submodules:
 # scanner, which runs a binary it has just linked: "ASan runtime does not
 # come first in initial library list".  One documented command left the
 # tree unable to build until somebody worked out to clean the dep.
-.PHONY: deps
+.PHONY: deps  ## Build deps/libreclaw and its five bundled dependencies
 deps:
 	@echo "Building libreclaw and its dependencies..."
 	$(MAKE) -C $(LIBRECLAW_DIR) all DEBUG=0 ASAN=0 UBSAN=0
@@ -301,7 +301,7 @@ $(LIBRECLAW_STATIC):
 #
 # A symlink rather than a copy: there are over a hundred modules, and a copy
 # goes stale the moment a dep is rebuilt.
-.PHONY: pod-modules
+.PHONY: pod-modules  ## Link libreclaw's podomation modules into the build tree
 pod-modules: | $(OUTDIR)
 	@if [ -d "$(CLAWT_POD_MODULE_DIR)" ]; then \
 		ln -sfn "$(abspath $(CLAWT_POD_MODULE_DIR))" \
@@ -345,7 +345,8 @@ $(LIB_OBJECTS): $(OUTDIR)/clawt-version.h $(LIBRECLAW_STATIC)
 # ============================================================
 # Library
 # ============================================================
-.PHONY: shared static
+.PHONY: shared  ## Build the shared library only
+.PHONY: static  ## Build the static library only
 shared: $(LIB_SHARED)
 static: $(LIB_STATIC)
 
@@ -375,8 +376,16 @@ GTK_SOURCES    = $(wildcard $(GTK_SRCDIR)/*.c)
 WEB_SOURCES    = $(wildcard $(WEB_SRCDIR)/*.c)
 
 # Where `make web-smoke` looks, and which agent it pokes.
-WEB_SMOKE_URL   ?= http://127.0.0.1:8790
-WEB_SMOKE_AGENT ?= 
+#
+# Both are deliberately empty here.  tools/clawt-web-smoke.sh holds the
+# defaults and this reads them, because the two were written down
+# separately and disagreed -- 8790 here against 8801 there -- so running
+# the script by hand and running it through make asked two different
+# servers.  Passed through the environment rather than as positional
+# arguments so that setting only WEB_SMOKE_AGENT does not slide the
+# agent id into the URL's place.
+WEB_SMOKE_URL   ?=
+WEB_SMOKE_AGENT ?=
 
 #
 # test-web-render.c #includes the web client's renderers, because they
@@ -396,12 +405,15 @@ $(OUTDIR)/tests/test-web-render: $(WEB_SRCDIR)/web-ui.c \
                                  $(WEB_SRCDIR)/web-pages.h \
                                  $(WEB_SRCDIR)/clawt-web.h
 
-.PHONY: daemon cli gtk web
+.PHONY: daemon  ## Build clawtillad only
+.PHONY: cli  ## Build the clawtilla CLI only
+.PHONY: gtk  ## Build clawtilla-gtk only (skipped, loudly, without libadwaita)
+.PHONY: web  ## Build the clawtilla-web htmx client only
 daemon: $(DAEMON_BIN_TARGET)
 cli:    $(CLI_BIN_TARGET)
 web:    $(WEB_BIN_TARGET)
 
-.PHONY: mcp-server
+.PHONY: mcp-server  ## Build clawtilla-mcp-server only (an agent's CLI starts this)
 mcp-server: $(MCP_BIN_TARGET)
 
 # CLAWT_BINDIR is baked in so the .mcp.json clawtilla writes for an agent
@@ -447,7 +459,7 @@ endif
 # ============================================================
 # Plugins
 # ============================================================
-.PHONY: plugins
+.PHONY: plugins  ## Build the bundled plugins
 plugins: $(LIB_STATIC)
 	@mkdir -p $(PLUGIN_OUTDIR)
 	@for dir in $(PLUGINS_SRCDIR)/*/; do \
@@ -474,7 +486,7 @@ TEST_PLUGIN_SOURCES = $(wildcard $(TEST_PLUGIN_SRCDIR)/*.c)
 TEST_PLUGIN_TARGETS = $(patsubst $(TEST_PLUGIN_SRCDIR)/%.c,\
 	$(TEST_PLUGIN_OUTDIR)/libclawt-plugin-%.so,$(TEST_PLUGIN_SOURCES))
 
-.PHONY: test-plugins
+.PHONY: test-plugins  ## Build the plugin fixtures the suite loads through g_module_open
 test-plugins: $(TEST_PLUGIN_TARGETS)
 
 $(TEST_PLUGIN_OUTDIR)/libclawt-plugin-%.so: $(TEST_PLUGIN_SRCDIR)/%.c \
@@ -493,7 +505,7 @@ $(GENCONFIG_BIN): $(TOOLSDIR)/clawt-genconfig.c $(LIB_STATIC) | $(OUTDIR)
 	@echo "Building $(notdir $@)..."
 	$(CC) $(CFLAGS) -I$(SRCDIR) $< -o $@ $(LIB_STATIC) $(LDFLAGS)
 
-.PHONY: config-files
+.PHONY: config-files  ## Regenerate data/{example,default}-config.yaml and the docs tables
 config-files: $(GENCONFIG_BIN)
 	@echo "Regenerating config files and docs tables from the schema..."
 	@$(GENCONFIG_BIN) --example > $(DATADIR_SRC)/example-config.yaml
@@ -503,7 +515,9 @@ config-files: $(GENCONFIG_BIN)
 	@echo "  $(DATADIR_SRC)/default-config.yaml"
 	@echo "  $(DOCSDIR)/configuration-options.org"
 
-.PHONY: docs-check parity web-smoke
+.PHONY: docs-check  ## Fail on undocumented public API or stale doc references
+.PHONY: parity  ## Fail when the GTK and web clients have drifted apart
+.PHONY: web-smoke  ## Ask a running clawtilla-web for every page it serves
 
 #
 # Ask a *running* clawtilla-web for every page it serves.
@@ -515,7 +529,8 @@ config-files: $(GENCONFIG_BIN)
 # chat page and answers 200.
 #
 web-smoke:
-	@bash $(TOOLSDIR)/clawt-web-smoke.sh $(WEB_SMOKE_URL) $(WEB_SMOKE_AGENT)
+	@WEB_SMOKE_URL='$(WEB_SMOKE_URL)' WEB_SMOKE_AGENT='$(WEB_SMOKE_AGENT)' \
+		bash $(TOOLSDIR)/clawt-web-smoke.sh
 
 #
 # The two graphical clients answer for the same daemon, so they should
@@ -533,18 +548,42 @@ docs-check: $(GENCONFIG_BIN)
 # ============================================================
 # pkg-config
 # ============================================================
-$(PROJECT_NAME)-1.0.pc: $(PROJECT_NAME)-1.0.pc.in
+# config.mk is a prerequisite, not just the template -- the same rule the
+# generated version header already follows, and for the same reason:
+# PREFIX, LIBDIR, INCLUDEDIR and VERSION all live there, so editing one
+# has to reach the file that reports them.
+#
+# That is not the whole of it, because PREFIX is `?=` and usually arrives
+# on the *command line*, which changes no file at all.  A .pc generated
+# once at the default prefix therefore stays newer than both
+# prerequisites for ever, and `make install PREFIX=/somewhere` installs a
+# file naming /usr/local -- so `pkg-config --cflags` points a consumer at
+# a directory nothing was written to, and the compile fails on a missing
+# header with nothing to say the prefix was the reason.  Reproduced
+# exactly that way against a staged install, which is why `install`
+# regenerates it below rather than trusting the timestamp.
+$(PROJECT_NAME)-1.0.pc: $(PROJECT_NAME)-1.0.pc.in config.mk
 	@echo "Generating pkg-config file..."
 	@sed -e 's|@PREFIX@|$(PREFIX)|g' \
 	     -e 's|@LIBDIR@|$(LIBDIR)|g' \
 	     -e 's|@INCLUDEDIR@|$(INCLUDEDIR)|g' \
 	     -e 's|@VERSION@|$(VERSION)|g' \
+	     -e 's|@PLUGIN_DIR@|$(PLUGIN_SYSTEM_DIR)|g' \
+	     -e 's|@POD_MODULE_DIR@|$(POD_MODULE_SYSTEM_DIR)|g' \
+	     -e 's|@PLUGIN_LDFLAGS@|$(PLUGIN_LDFLAGS)|g' \
 	     $< > $@
+
+# Force a regeneration.  The prefix a .pc names is only settled by the
+# command line that installs it, and no prerequisite can see that.
+.PHONY: pkgconfig  ## Regenerate clawtilla-1.0.pc at the current PREFIX
+pkgconfig:
+	@rm -f $(PROJECT_NAME)-1.0.pc
+	@$(MAKE) --no-print-directory $(PROJECT_NAME)-1.0.pc
 
 # ============================================================
 # GObject Introspection
 # ============================================================
-.PHONY: gir
+.PHONY: gir  ## Build Clawt-1.0.gir and .typelib (auto-skipped without g-ir-scanner)
 ifeq ($(GIR),1)
 gir: $(TYPELIB_FILE)
 
@@ -608,10 +647,10 @@ endif
 # check for warnings compiled nothing and passed.  Found while chasing a
 # test that would not pick up an edit.
 #
-.PHONY: tests
+.PHONY: tests  ## Build the test suite without running it -- the zero-warning check
 tests: $(TEST_BINARIES) test-plugins plugins
 
-.PHONY: test
+.PHONY: test  ## Build and run the hermetic test suite
 test: $(TEST_BINARIES) test-plugins plugins
 	@echo "Running tests..."
 	@fail=0; ran=0; \
@@ -630,7 +669,7 @@ test: $(TEST_BINARIES) test-plugins plugins
 	sh $(TOOLSDIR)/clawt-test-floor.sh $$ran || exit 1; \
 	echo "All tests passed."
 
-.PHONY: test-verbose
+.PHONY: test-verbose  ## Same as test, with each binary's own output
 test-verbose: $(TEST_BINARIES) test-plugins plugins
 	@for t in $(TEST_BINARIES); do \
 		[ -x "$$t" ] || continue; \
@@ -640,7 +679,7 @@ test-verbose: $(TEST_BINARIES) test-plugins plugins
 
 # Tests that need real podman / libvirt / gowl.  Kept out of `make test`
 # so the default suite stays hermetic and runs anywhere.
-.PHONY: test-integration
+.PHONY: test-integration  ## Run the tests needing podman/libvirt/gowl (CLAWT_TEST_INTEGRATION=1)
 test-integration: $(TEST_BINARIES)
 	@echo "Running integration tests (CLAWT_TEST_INTEGRATION=1)..."
 	@fail=0; \
@@ -654,9 +693,14 @@ test-integration: $(TEST_BINARIES)
 # ============================================================
 # Install / uninstall
 # ============================================================
-.PHONY: install
+.PHONY: install  ## Install library, headers, binaries, plugins, pod modules and data
 install: all
 	@echo "Installing to $(DESTDIR)$(PREFIX)..."
+	@# Before anything else: PREFIX usually arrives on the command line,
+	@# so the .pc sitting in the tree may name whatever prefix the last
+	@# build used.  Installing that one hands every consumer an
+	@# includedir nothing was written to.
+	@$(MAKE) --no-print-directory pkgconfig
 	install -d $(DESTDIR)$(LIBDIR)
 	install -d $(DESTDIR)$(BINDIR)
 	install -d $(DESTDIR)$(INCLUDEDIR)/$(PROJECT_NAME)-1.0
@@ -700,7 +744,7 @@ install: all
 	fi
 	@echo "Install complete."
 
-.PHONY: uninstall
+.PHONY: uninstall  ## Remove what install put down
 uninstall:
 	rm -f $(DESTDIR)$(LIBDIR)/$(LIB_NAME).so*
 	rm -f $(DESTDIR)$(LIBDIR)/$(LIB_NAME).a
@@ -716,7 +760,7 @@ uninstall:
 	rm -f $(DESTDIR)$(DATADIR)/gir-1.0/$(GIR_NAMESPACE)-$(GIR_VERSION).gir
 	rm -f $(DESTDIR)$(LIBDIR)/girepository-1.0/$(GIR_NAMESPACE)-$(GIR_VERSION).typelib
 
-.PHONY: version
+.PHONY: version  ## Print the version and the git SHA this tree is at
 version:
 	@echo "$(PROJECT_NAME) $(VERSION) ($(GIT_SHA))"
 

@@ -26,10 +26,13 @@ daemon:
 
   # Unix socket the clients connect to.
   #
-  # Created with mode 0600, and the daemon checks the peer's uid via
-  # SO_PEERCRED. A unix socket is used rather than a loopback HTTP port
-  # because a port has no such notion of who is calling, and any web page
-  # the user visits can reach a loopback port through DNS rebinding.
+  # Created with mode 0600 inside a 0700 directory, which is the whole of
+  # the access control: the daemon does not check the peer's uid, so
+  # anything that can open the file is trusted completely.
+  #
+  # A unix socket is used rather than a loopback HTTP port because the
+  # filesystem can express that at all, and because any web page the user
+  # visits can reach a loopback port through DNS rebinding.
   socket: "$XDG_RUNTIME_DIR/clawtilla/daemon.sock"
 
   # Make the state directory a git repository on first start.
@@ -142,14 +145,16 @@ daemon:
   # # into podomation as a module, so a pod can bind to what the fleet does
   # # and act on it in the same file:
   # #
-  # #   pod restart_the_researcher {
-  # #     source = Clawtilla.New("researcher")
-  # #     sink   = Clawtilla.New("researcher")
-  # #     on "agent.state" where state == "error" {
-  # #       restart_agent(agent: "researcher")
-  # #       notify(title: "researcher fell over; restarted it")
-  # #     }
-  # #   }
+  # #   pod researcher = clawtilla->new("researcher");
+  # #
+  # #   researcher->on_agent_state where event->state == "error" =>
+  # #       clawtilla->restart_agent(agent: "researcher");
+  # #
+  # #   researcher->on_agent_state where event->state == "error" =>
+  # #       clawtilla->notify(title: "researcher fell over; restarted it");
+  # #
+  # # An event name cannot carry a dot -- podomation's lexer stops at it --
+  # # so it is on_agent_state rather than agent.state.
   # #
   # # The constructor's arguments are the scope, and it applies both ways:
   # # a pod named for one agent neither hears about the others nor can act
@@ -244,6 +249,12 @@ defaults:
   image_dir: "$XDG_DATA_HOME/clawtilla/images"
 
   # Size cap for the exchange directory. 0 disables the limit.
+  #
+  # Applied by deleting the oldest files until the total is under the
+  # cap: whenever the exchange is opened for use -- when an agent starts,
+  # and before a file is put into it -- and again on the daemon's sweep,
+  # which is what catches an agent writing through the mount from inside
+  # its computer, where nothing on the host sees the write happen.
   exchange_max_bytes: 1073741824
 
   # # Which libreclaw to run for process-runtime agents.
@@ -398,6 +409,13 @@ orchestration:
     # 0 retries immediately.
     backoff_seconds: 30
 
+  # # Id of the agent that receives work addressed to the fleet.
+  # #
+  # # At most one agent may hold this. Setting it here is equivalent to
+  # # chief_of_staff: true on that agent, and the daemon refuses to start if
+  # # two agents claim it.
+  # chief_of_staff: null
+
 # What an agent remembers between conversations.
 #
 # Not agents.memory, which is the MEMORY.md size budget and a different
@@ -431,14 +449,12 @@ memories:
   # # its own unless somebody says otherwise. Reading only -- there is no
   # # setting that lets one agent write into another's memory, because a
   # # memory you did not form is not a memory.
-  # readers: null
-
-  # # Id of the agent that receives work addressed to the fleet.
   # #
-  # # At most one agent may hold this. Setting it here is equivalent to
-  # # chief_of_staff: true on that agent, and the daemon refuses to start if
-  # # two agents claim it.
-  # chief_of_staff: null
+  # # A comma-separated string, not a YAML list: `readers: chief, deputy`.
+  # # Written as `readers: [chief]` it reads back as unset and grants
+  # # nothing, so the loader warns about that spelling rather than leaving
+  # # a permission somebody granted silently denied.
+  # readers: null
 
 # # Standing rooms, created at startup if they do not exist.
 # #
@@ -517,8 +533,14 @@ connectors:
 # # Standing work: a prompt, an agent, and when to run it.
 # #
 # # A routine is the thing you would otherwise remember to ask for every
-# # morning. It runs as a delegated task, so it has its own session and
-# # its own result, and one morning's run never contaminates the next.
+# # morning. It runs as a delegated task, so it has its own result.
+# #
+# # It does not get a session of its own. libreclaw keys a session on
+# # channel, room and sender and deliberately ignores the thread, so a
+# # routine lands in the operator's session and queues behind whatever
+# # the operator is doing -- and inherits that conversation's context.
+# # Point a routine at an agent that is not also somewhere you chat, or
+# # give it `isolate` so it runs in a room of its own.
 # #
 # # Routines only fire while the daemon is running. A machine that was
 # # asleep at nine o'clock has missed nine o'clock, and the routine says

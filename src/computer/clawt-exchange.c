@@ -45,6 +45,43 @@ clawt_exchange_get_root(ClawtExchange *self)
     return self->root;
 }
 
+/*
+ * Applies defaults.exchange_max_bytes, oldest file first.
+ *
+ * The cap had been declared, defaulted to a gigabyte, generated into the
+ * example config and documented since the schema was written, while
+ * clawt_exchange_sweep() -- the only thing that reads max_bytes -- was
+ * called by nothing outside a test.  So the exchange grew without limit
+ * and the setting that says otherwise had never removed a byte.
+ *
+ * Here rather than on a timer because this is the moment the exchange is
+ * asked for anything: the daemon prepares it when an agent starts and
+ * again before every file put, which is every way the daemon knows of
+ * that it can grow.  A file an agent writes through the mount inside its
+ * own computer is not seen until one of those happens -- which makes
+ * this a cap rather than a watchdog, and the schema says so.
+ */
+static void
+enforce_cap(ClawtExchange *self)
+{
+    guint removed;
+
+    if (self->max_bytes <= 0)
+        return;
+
+    removed = clawt_exchange_sweep(self, 0);
+
+    /*
+     * Said out loud.  Deleting somebody's files silently, on a path they
+     * did not ask to run, is how a cap gets mistaken for data loss.
+     */
+    if (removed > 0)
+        g_message("exchange: removed %u file%s to stay under the "
+                  "%" G_GINT64_FORMAT " byte cap "
+                  "(defaults.exchange_max_bytes)",
+                  removed, (removed == 1) ? "" : "s", self->max_bytes);
+}
+
 gboolean
 clawt_exchange_prepare(ClawtExchange *self, const gchar *agent_id,
                        GError **error)
@@ -61,12 +98,16 @@ clawt_exchange_prepare(ClawtExchange *self, const gchar *agent_id,
     if (!clawt_ensure_dir(shared, 0700, error))
         return FALSE;
 
-    if (agent_id == NULL)
-        return TRUE;
+    if (agent_id != NULL) {
+        own = g_build_filename(self->root, agent_id, NULL);
 
-    own = g_build_filename(self->root, agent_id, NULL);
+        if (!clawt_ensure_dir(own, 0700, error))
+            return FALSE;
+    }
 
-    return clawt_ensure_dir(own, 0700, error);
+    enforce_cap(self);
+
+    return TRUE;
 }
 
 GPtrArray *

@@ -15,6 +15,7 @@
 
 #include <gio/gunixsocketaddress.h>
 #include <glib/gstdio.h>
+#include <utime.h>
 
 #include "clawt-test-util.h"
 
@@ -53,6 +54,15 @@ fixture_write_config(Fixture *fixture, const gchar *extra_yaml)
         "  state_dir: \"%s/state\"\n"
         "  socket: \"%s/daemon.sock\"\n"
         /*
+         * And the pods, which are the fourth.  `automation_dir`
+         * defaults to ~/.clawtilla/pods, so on a machine that runs a
+         * real fleet every daemon fixture here loaded that person's own
+         * automation and let it *act* on the test's agents -- which is
+         * worse than the workspace case below, because a pod does
+         * things rather than leaving files behind.
+         */
+        "  automation_dir: \"%s/pods\"\n"
+        /*
          * And nowhere near the real fleet.  `workspace_root`
          * defaults to ~/.clawtilla/agents, so without this every
          * agent a test creates is scaffolded into the developer's
@@ -63,7 +73,7 @@ fixture_write_config(Fixture *fixture, const gchar *extra_yaml)
          */
         "defaults:\n  workspace_root: \"%s/agents\"\n"
         "%s",
-        fixture->dir, fixture->dir, fixture->dir,
+        fixture->dir, fixture->dir, fixture->dir, fixture->dir,
         extra_yaml != NULL ? extra_yaml : "");
 
     g_file_set_contents(fixture->config_path, yaml, -1, &error);
@@ -2069,6 +2079,355 @@ test_a_reply_counts_as_a_hop(void)
 }
 
 /*
+ * A room's own hop limit is what its messages are counted against.
+ *
+ * `rooms.max_hops` was parsed, stored on the #ClawtRoom, and read by
+ * nothing at all -- clawt_room_get_max_hops() had no caller, so every
+ * hop in every room was counted against orchestration.max_hops whatever
+ * a room declared.
+ *
+ * The room here *raises* the fleet limit, which is the direction the
+ * key exists for and a deliberate policy decision rather than an
+ * accident: three agents in a room each reply one hop deeper, so an
+ * ordinary standup reaches the fleet ceiling on its own, and the only
+ * other remedy is to raise orchestration.max_hops -- which loosens the
+ * limit for every delegation chain in the fleet in order to fix one
+ * room.
+ */
+static void
+test_a_rooms_hop_limit_overrides_the_fleets(void)
+{
+    Fixture fixture = { 0 };
+    ClawtMailboxRouter *router;
+    g_autoptr(GError) allowed = NULL;
+    g_autoptr(GError) refused = NULL;
+    g_autoptr(GError) direct = NULL;
+
+    fixture_setup(&fixture,
+                  "orchestration:\n"
+                  "  max_hops: 2\n"
+                  "  cycle_window: 0\n"
+                  "rooms:\n"
+                  "  - id: standup\n"
+                  "    members: [alpha, beta]\n"
+                  "    require_mention: false\n"
+                  "    max_hops: 6\n"
+                  "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    router = clawt_daemon_get_router(fixture.daemon);
+
+    /* Four hops in: past the fleet's 2, inside the room's 6. */
+    g_assert_cmpint(clawt_mailbox_router_send_to(
+                        router, "alpha", "standup", "still going", NULL, 4,
+                        &allowed), >=, 0);
+    g_assert_no_error(allowed);
+
+    /* And the room's own limit still stops it. */
+    g_assert_cmpint(clawt_mailbox_router_send_to(
+                        router, "alpha", "standup", "and going", NULL, 6,
+                        &refused), <, 0);
+    g_assert_error(refused, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT);
+
+    /*
+     * The same depth straight to an agent is refused, because a direct
+     * room declared no limit of its own.  Without this the test would
+     * pass just as well against a build that had simply raised the
+     * fleet limit.
+     */
+    g_assert_cmpint(clawt_mailbox_router_send_to(
+                        router, "alpha", "beta", "still going", NULL, 4,
+                        &direct), <, 0);
+    g_assert_error(direct, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * The periodic sweep applies the exchange's size cap.
+ *
+ * clawt_exchange_prepare() enforces it when an agent starts and before
+ * a file put -- which is every way the *daemon* can make the exchange
+ * grow, and not the way the exchange exists for.  A file written
+ * through the mount from inside an agent's own computer is invisible to
+ * all of those, so a fleet doing that went past
+ * defaults.exchange_max_bytes and stayed there:
+ * clawt_exchange_sweep() had no periodic caller at all.
+ *
+ * The files are written straight into the exchange directory after the
+ * daemon has started, which is exactly what a computer's mount does and
+ * exactly what nothing tells the daemon about.
+ */
+static void
+test_the_sweep_applies_the_exchange_cap(void)
+{
+    Fixture fixture = { 0 };
+    ClawtExchange *exchange;
+    g_autofree gchar *shared = NULL;
+    g_autofree gchar *older = NULL;
+    g_autofree gchar *newer = NULL;
+    g_autofree gchar *filler = g_strnfill(1000, 'x');
+    struct utimbuf times;
+
+    /*
+     * Indented, because the fixture has just written `defaults:` and its
+     * workspace_root: this continues that mapping rather than opening a
+     * second top-level `defaults:`, which YAML resolves by discarding
+     * the first -- taking workspace_root with it and scaffolding into
+     * the developer's real fleet.
+     */
+    fixture_setup(&fixture, "  exchange_max_bytes: 1500\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    exchange = clawt_daemon_get_exchange(fixture.daemon);
+    g_assert_nonnull(exchange);
+
+    shared = g_build_filename(clawt_exchange_get_root(exchange), "shared",
+                              NULL);
+    g_assert_cmpint(g_mkdir_with_parents(shared, 0700), ==, 0);
+
+    older = g_build_filename(shared, "older.bin", NULL);
+    newer = g_build_filename(shared, "newer.bin", NULL);
+
+    g_assert_true(g_file_set_contents(older, filler, 1000, NULL));
+    g_assert_true(g_file_set_contents(newer, filler, 1000, NULL));
+
+    /*
+     * Dated rather than waited for.  The sweep removes oldest first, and
+     * two files written in the same second would leave the sort deciding
+     * which one goes -- an assertion that passes or fails on the order
+     * readdir happened to return.
+     */
+    times.actime = time(NULL) - 3600;
+    times.modtime = times.actime;
+    g_assert_cmpint(g_utime(older, &times), ==, 0);
+
+    /* Over the cap, and nothing has noticed. */
+    g_assert_cmpint(clawt_exchange_get_size(exchange), ==, 2000);
+
+    clawt_daemon_sweep(fixture.daemon);
+
+    g_assert_false(g_file_test(older, G_FILE_TEST_EXISTS));
+    g_assert_true(g_file_test(newer, G_FILE_TEST_EXISTS));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * The daemon hands its event bus to the orchestration tools.
+ *
+ * The emitting is tested in test-mcp-tools.c, where the bus is set by
+ * the fixture -- which is exactly the shape that hides a missing
+ * caller: a mechanism correct in isolation and reaching nobody in the
+ * product. This is the wire, and nothing else here tests it.
+ *
+ * Read back off the daemon's own bus, and asserted on the *subject*
+ * being the agent, because that is what makes the trail filterable and
+ * what the client path already publishes.
+ */
+static void
+test_the_daemon_gives_the_tools_its_event_bus(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autoptr(JsonNode) response = NULL;
+    g_autoptr(GPtrArray) events = NULL;
+    ClawtAgent *agent;
+    gboolean found = FALSE;
+    guint i;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    agent = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                    "chief");
+    g_assert_nonnull(agent);
+
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_WORKSPACE, fixture.dir);
+    computer = clawt_host_computer_new("chief", sandbox);
+    clawt_computer_start(computer, NULL);
+    clawt_agent_set_computer(agent, computer);
+
+    g_assert_true(json_parser_load_from_data(
+        parser,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+        "\"params\":{\"name\":\"clawtilla_computer_exec\","
+        "\"arguments\":{\"command\":\"echo audited\","
+        "\"timeout\":10}}}", -1, NULL));
+
+    response = clawt_mcp_tools_call(clawt_daemon_get_mcp_tools(fixture.daemon),
+                                    "chief", json_parser_get_root(parser));
+    g_assert_nonnull(response);
+
+    events = clawt_event_bus_replay(clawt_daemon_get_event_bus(fixture.daemon),
+                                    0, NULL);
+
+    for (i = 0; events != NULL && i < events->len; i++) {
+        ClawtEvent *event = g_ptr_array_index(events, i);
+
+        if (g_strcmp0(clawt_event_get_kind(event), "computer.exec") != 0)
+            continue;
+
+        g_assert_cmpstr(clawt_event_get_subject(event), ==, "chief");
+        g_assert_cmpstr(clawt_event_get_detail(event, "command"), ==,
+                        "echo audited");
+        found = TRUE;
+    }
+
+    g_assert_true(found);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * An urgent message is leased before an ordinary one that was sent
+ * first.
+ *
+ * The whole point of the priority bands, and until now they had no
+ * writer at all outside a test: clawt_mailbox_item_set_priority() was
+ * called by nothing in the product, so every item the router had ever
+ * queued sat at the constructor's NORMAL.  The mailbox leased by band,
+ * `drop-oldest` shed the lowest band first, docs/mailboxes.org described
+ * URGENT overtaking, and clawtilla_message_agent told agents that urgent
+ * jumps the queue.  Four bands, one of them ever used.
+ *
+ * The assertion is on the *order*, not on the field.  Checking that the
+ * band round-trips onto the item would have passed the day a band
+ * started being stored and never delivered anything sooner, which is a
+ * test of a getter rather than of the feature; this one fails unless
+ * the second message genuinely overtakes the first.
+ */
+static void
+test_urgent_overtakes_an_earlier_ordinary_message(void)
+{
+    Fixture fixture = { 0 };
+    ClawtMailboxRouter *router;
+    ClawtAgentManager *agents;
+    ClawtMailbox *mailbox;
+    g_autoptr(ClawtMailboxItem) first = NULL;
+    g_autoptr(ClawtMailboxItem) second = NULL;
+    g_autoptr(GError) error = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    router = clawt_daemon_get_router(fixture.daemon);
+    agents = clawt_daemon_get_agents(fixture.daemon);
+
+    /*
+     * The ordinary one first, so nothing but the band can decide the
+     * order: the mailbox breaks a tie by created_at ascending, which
+     * without the band would hand this one back first every time.
+     *
+     * Nothing is connected in this test, so the router's immediate
+     * drain has no open link to hand anything to and both stay queued.
+     */
+    g_assert_cmpint(clawt_mailbox_router_send_to(
+                        router, "alpha", "beta", "whenever you get a moment",
+                        NULL, 0, &error), >, 0);
+    g_assert_no_error(error);
+
+    g_assert_cmpint(clawt_mailbox_router_send_to_full(
+                        router, "alpha", "beta", "the build is broken",
+                        NULL, 0, CLAWT_PRIORITY_URGENT, &error), >, 0);
+    g_assert_no_error(error);
+
+    mailbox = clawt_agent_get_mailbox(clawt_agent_manager_get(agents,
+                                                              "beta"));
+    g_assert_nonnull(mailbox);
+
+    first = clawt_mailbox_lease(mailbox, 60);
+    g_assert_nonnull(first);
+    g_assert_cmpstr(clawt_mailbox_item_get_body(first), ==,
+                    "the build is broken");
+    g_assert_cmpint(clawt_mailbox_item_get_priority(first), ==,
+                    CLAWT_PRIORITY_URGENT);
+
+    /* And the ordinary one is still there, behind it rather than lost. */
+    second = clawt_mailbox_lease(mailbox, 60);
+    g_assert_nonnull(second);
+    g_assert_cmpstr(clawt_mailbox_item_get_body(second), ==,
+                    "whenever you get a moment");
+    g_assert_cmpint(clawt_mailbox_item_get_priority(second), ==,
+                    CLAWT_PRIORITY_NORMAL);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And a pod's own `message_agent` carries the band it names.
+ *
+ * `priority` has been in the pod module's declared parameters for as
+ * long as the module has existed, and the daemon's action handler never
+ * read it -- so a pod that set one was accepted, answered `ok`, and
+ * queued at NORMAL like everything else.  Driven through a real `.pod`
+ * file rather than by calling the handler, because the handler is
+ * static and the thing being fixed is precisely the wiring between the
+ * declared parameter and the queue.
+ */
+static void
+test_a_pod_can_send_at_a_band(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentManager *agents;
+    ClawtMailbox *mailbox;
+    g_autofree gchar *pods = NULL;
+    g_autofree gchar *pod_file = NULL;
+    g_autoptr(ClawtMailboxItem) item = NULL;
+    g_autoptr(GError) error = NULL;
+    gint64 deadline;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: beta\n");
+
+    /*
+     * Written before the daemon starts: pods are read once, at start,
+     * and `on_daemon_started` is emitted after that -- so this is the
+     * one event a test can rely on without reaching into the bus.
+     */
+    pods = g_build_filename(fixture.dir, "pods", NULL);
+    g_assert_cmpint(g_mkdir_with_parents(pods, 0700), ==, 0);
+
+    pod_file = g_build_filename(pods, "wake.pod", NULL);
+    g_file_set_contents(
+        pod_file,
+        "pod fleet = clawtilla->new();\n"
+        "fleet->on_daemon_started => clawtilla->message_agent("
+        "agent: \"beta\", body: \"the build is broken\", "
+        "priority: \"urgent\");\n", -1, &error);
+    g_assert_no_error(error);
+
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    agents = clawt_daemon_get_agents(fixture.daemon);
+    mailbox = clawt_agent_get_mailbox(clawt_agent_manager_get(agents,
+                                                              "beta"));
+    g_assert_nonnull(mailbox);
+
+    /*
+     * Pumped against wall time rather than for a fixed number of
+     * iterations: the pod engine does its own work off this context, so
+     * a count of non-blocking iterations burns through while it is still
+     * running and proves nothing.
+     */
+    deadline = g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
+
+    while (item == NULL && g_get_monotonic_time() < deadline) {
+        g_main_context_iteration(fixture.context, FALSE);
+        item = clawt_mailbox_lease(mailbox, 60);
+    }
+
+    g_assert_nonnull(item);
+    g_assert_cmpstr(clawt_mailbox_item_get_body(item), ==,
+                    "the build is broken");
+    g_assert_cmpint(clawt_mailbox_item_get_priority(item), ==,
+                    CLAWT_PRIORITY_URGENT);
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * A finished turn leaves no depth behind for the next one.
  *
  * hop_depth answers "how far had the message I am handling already
@@ -4065,6 +4424,356 @@ test_the_loop_runs_while_a_computer_is_provisioning(void)
     g_unsetenv("CLAWT_POD_MODULE_DIR");
 }
 
+/* ── Task events ─────────────────────────────────────────────────── */
+
+typedef struct {
+    gchar *subject;
+    gchar *state;
+    gchar *agent;
+    guint  count;
+} TaskWatch;
+
+static void
+on_task_bus_event(ClawtEventBus *bus, ClawtEvent *event, gpointer user_data)
+{
+    TaskWatch *watch = user_data;
+
+    (void)bus;
+
+    if (!g_str_has_prefix(clawt_event_get_kind(event), "task."))
+        return;
+
+    g_free(watch->subject);
+    g_free(watch->state);
+    g_free(watch->agent);
+
+    watch->subject = g_strdup(clawt_event_get_subject(event));
+    watch->state = g_strdup(clawt_event_get_detail(event, "state"));
+    watch->agent = g_strdup(clawt_event_get_detail(event, "agent"));
+    watch->count++;
+}
+
+/*
+ * Every state a task passes through reaches the bus.
+ *
+ * ClawtTaskManager::task-changed has been emitted since the manager was
+ * written and the daemon has connected to it for nearly as long -- to
+ * decide on a notification, and to do nothing else. So no `task.` kind
+ * was ever published: a client following a task had to poll
+ * `task.list`, and podomation's `on_task_changed` binding, which is
+ * declared, documented and mapped to `task.changed`, named an event
+ * that could not fire.
+ *
+ * Asserted on the *whole* run rather than on the completion. A version
+ * that published only the interesting state would pass a test that
+ * watched the end and would still leave a client unable to tell a task
+ * that had started from one that was queued.
+ */
+static void
+test_a_task_change_reaches_the_bus(void)
+{
+    Fixture fixture = { 0 };
+    TaskWatch watch = { 0 };
+    ClawtTaskManager *tasks;
+    ClawtTask *task;
+    g_autofree gchar *task_id = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n  - id: scribe\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    g_signal_connect(clawt_daemon_get_event_bus(fixture.daemon), "event",
+                     G_CALLBACK(on_task_bus_event), &watch);
+
+    tasks = clawt_daemon_get_tasks(fixture.daemon);
+    task = clawt_task_manager_create(tasks, "chief", "scribe",
+                                     "summarise yesterday", NULL, NULL);
+    g_assert_nonnull(task);
+
+    task_id = g_strdup(clawt_task_get_id(task));
+
+    /* Created is a change too, and it is the one a client has nothing to
+     * poll for yet -- the task did not exist a moment ago. */
+    g_assert_cmpuint(watch.count, ==, 1);
+    g_assert_cmpstr(watch.subject, ==, task_id);
+    g_assert_cmpstr(watch.state, ==, "pending");
+
+    /*
+     * The subject is the task, which is what `event.list` filters on,
+     * and the assignee travels as a detail -- the pod module reads it to
+     * decide whether a scoped pod hears the event at all.
+     */
+    g_assert_cmpstr(watch.agent, ==, "scribe");
+
+    g_assert_true(clawt_task_manager_start(tasks, task_id));
+    g_assert_cmpuint(watch.count, ==, 2);
+    g_assert_cmpstr(watch.state, ==, "running");
+
+    g_assert_true(clawt_task_manager_complete(tasks, task_id, "done"));
+    g_assert_cmpuint(watch.count, ==, 3);
+    g_assert_cmpstr(watch.state, ==, "completed");
+    g_assert_cmpstr(watch.subject, ==, task_id);
+
+    g_free(watch.subject);
+    g_free(watch.state);
+    g_free(watch.agent);
+    fixture_teardown(&fixture);
+}
+
+/* ── agent.set ───────────────────────────────────────────────────── */
+
+/*
+ * A value the enum has never heard of is refused, naming what is
+ * allowed.
+ *
+ * It used to be accepted: written to clawtilla.yaml, echoed back as
+ * saved, and then read as the schema default by everything that asked
+ * -- so the agent went on with the computer it already had while the
+ * file said otherwise. The bill arrived at the *next* daemon load, where
+ * the validator turns an agent with an unknown computer type into a
+ * shadow, a long way from the command that caused it.
+ *
+ * The reply is checked for the allowed values as well as for the
+ * refusal. A refusal that only says no gets retried in a different
+ * shape, and the whole reason somebody typed a wrong nickname is that
+ * they did not know the right one.
+ */
+static void
+test_agent_set_refuses_a_value_the_enum_lacks(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) refused = NULL;
+    g_autoptr(JsonNode) accepted = NULL;
+    g_autoptr(JsonNode) shown = NULL;
+    const gchar *message;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    refused = request(&fixture, "agent.set",
+                      "{\"agent\":\"chief\",\"key\":\"computer.type\","
+                      "\"value\":\"teleporter\"}");
+
+    g_assert_true(clawt_ipc_frame_is_error(refused));
+
+    message = json_object_get_string_member(json_node_get_object(refused),
+                                            "error");
+    g_assert_nonnull(message);
+    g_assert_nonnull(strstr(message, "teleporter"));
+    g_assert_nonnull(strstr(message, "computer.type"));
+
+    /*
+     * Read off the enum's own GType, so this is the list the loader
+     * will accept rather than a sentence written beside it.
+     */
+    g_assert_nonnull(strstr(message, "container"));
+    g_assert_nonnull(strstr(message, "vm"));
+
+    /* And nothing was written: the setting the agent reports is still
+     * the one it had. */
+    shown = request(&fixture, "agent.show", "{\"agent\":\"chief\"}");
+    g_assert_cmpstr(
+        json_object_get_string_member(
+            json_object_get_object_member(payload_of(shown), "settings"),
+            "computer.type"),
+        ==, "none");
+
+    /* A value the enum does have still goes through, so the check is a
+     * check and not a wall. */
+    accepted = request(&fixture, "agent.set",
+                       "{\"agent\":\"chief\",\"key\":\"computer.type\","
+                       "\"value\":\"container\"}");
+    g_assert_false(clawt_ipc_frame_is_error(accepted));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Puts one agent into %CLAWT_AGENT_STATE_RUNNING and returns the
+ * connection holding it there.
+ *
+ * There is no shortcut. A started agent is *starting* -- the process
+ * being up is not the same as being reachable -- and only a link
+ * arriving makes it running, which is exactly the distinction
+ * `restart_required` turns on. So the fixture dials the daemon's own
+ * agent socket with the token the render wrote, which is what a real
+ * libreclaw does.
+ *
+ * Returns: (transfer full) (nullable): the connection, to be closed by
+ *   the caller; %NULL if the fake libreclaw is not there to be run
+ */
+static GSocketConnection *
+run_one_agent(Fixture *fixture, const gchar *agent_id)
+{
+    g_autofree gchar *socket_path = NULL;
+    g_autofree gchar *state_dir = NULL;
+    g_autofree gchar *token_path = NULL;
+    g_autofree gchar *token = NULL;
+    g_autofree gchar *hello = NULL;
+    g_autoptr(GSocketClient) client = g_socket_client_new();
+    g_autoptr(GSocketAddress) address = NULL;
+    g_autoptr(GError) error = NULL;
+    GSocketConnection *connection;
+    ClawtAgent *agent;
+    guint spun;
+
+    g_assert_true(clawt_daemon_start_agent(fixture->daemon, agent_id,
+                                           &error));
+    g_assert_no_error(error);
+
+    state_dir = clawt_config_agent_state_dir(
+        clawt_daemon_get_config(fixture->daemon), agent_id);
+    token_path = g_build_filename(state_dir, "token", NULL);
+
+    g_assert_true(g_file_get_contents(token_path, &token, NULL, NULL));
+    g_strstrip(token);
+
+    socket_path = g_build_filename(fixture->dir, "state", "agents.sock",
+                                   NULL);
+    address = g_unix_socket_address_new(socket_path);
+
+    connection = g_socket_client_connect(client,
+                                         G_SOCKET_CONNECTABLE(address),
+                                         NULL, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(connection);
+
+    hello = g_strdup_printf(
+        "{\"v\":1,\"kind\":\"control.hello\",\"payload\":"
+        "{\"agent_id\":\"%s\",\"token\":\"%s\"}}\n", agent_id, token);
+
+    g_assert_true(g_output_stream_write_all(
+        g_io_stream_get_output_stream(G_IO_STREAM(connection)),
+        hello, strlen(hello), NULL, NULL, &error));
+    g_assert_no_error(error);
+
+    agent = clawt_agent_manager_get(clawt_daemon_get_agents(fixture->daemon),
+                                    agent_id);
+    g_assert_nonnull(agent);
+
+    /*
+     * Pumped against a bounded number of turns rather than a sleep: the
+     * hello has to be read, authenticated and answered on the daemon's
+     * own context, all of which is this loop's work to do.
+     */
+    for (spun = 0; spun < 500; spun++) {
+        if (clawt_agent_get_state(agent) == CLAWT_AGENT_STATE_RUNNING)
+            break;
+
+        g_main_context_iteration(fixture->context, FALSE);
+        g_usleep(1000);
+    }
+
+    g_assert_cmpint(clawt_agent_get_state(agent), ==,
+                    CLAWT_AGENT_STATE_RUNNING);
+
+    return connection;
+}
+
+/*
+ * Granting a running agent the chief's role says a restart is needed.
+ *
+ * `chief_of_staff` and `team_role` are the two halves of one condition
+ * in clawt_mcp_tools_is_permitted(): between them they decide whether
+ * the delegation tool is offered at all, exactly as `tools.manage_fleet`
+ * does. Only the `tools.` and `persona.` prefixes were reported, so
+ * making an agent the chief while it ran changed its gate, its files and
+ * its TOOLS.org, kept a session that had already listed its tools, and
+ * said nothing about it -- and the answer to the bug report was an
+ * instruction to flip a switch that was flipped before it was read.
+ *
+ * `name` is checked in the same run, because a rule that reported
+ * everything would be the same as one that reported nothing: somebody
+ * told to restart after every edit stops reading the line.
+ */
+static void
+test_agent_set_reports_a_role_needs_a_new_session(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *fake = g_build_filename(CLAWT_TEST_FIXTURES,
+                                              "fake-libreclaw", NULL);
+    g_autofree gchar *extra = NULL;
+    g_autoptr(GSocketConnection) link = NULL;
+    g_autoptr(JsonNode) chief = NULL;
+    g_autoptr(JsonNode) role = NULL;
+    g_autoptr(JsonNode) name = NULL;
+
+    if (!g_file_test(fake, G_FILE_TEST_IS_EXECUTABLE)) {
+        g_test_skip("the fake libreclaw fixture is not executable");
+        return;
+    }
+
+    extra = g_strdup_printf(
+        "  libreclaw_binary: \"%s\"\n"
+        "agents:\n"
+        "  - id: chief\n"
+        "    enabled: true\n"
+        "    env:\n"
+        "      FAKE_LIBRECLAW_SLEEP: \"30\"\n"
+        "    computer:\n"
+        "      type: none\n",
+        fake);
+
+    fixture_setup(&fixture, extra);
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    link = run_one_agent(&fixture, "chief");
+
+    chief = request(&fixture, "agent.set",
+                    "{\"agent\":\"chief\",\"key\":\"chief_of_staff\","
+                    "\"value\":\"true\"}");
+    g_assert_false(clawt_ipc_frame_is_error(chief));
+    g_assert_true(json_object_get_boolean_member(payload_of(chief),
+                                                 "restart_required"));
+
+    role = request(&fixture, "agent.set",
+                   "{\"agent\":\"chief\",\"key\":\"team_role\","
+                   "\"value\":\"lead\"}");
+    g_assert_false(clawt_ipc_frame_is_error(role));
+    g_assert_true(json_object_get_boolean_member(payload_of(role),
+                                                 "restart_required"));
+
+    name = request(&fixture, "agent.set",
+                   "{\"agent\":\"chief\",\"key\":\"name\","
+                   "\"value\":\"Chief\"}");
+    g_assert_false(clawt_ipc_frame_is_error(name));
+    g_assert_false(json_object_get_boolean_member(payload_of(name),
+                                                  "restart_required"));
+
+    g_io_stream_close(G_IO_STREAM(link), NULL, NULL);
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Starting an agent with no id is an error, not a critical.
+ *
+ * The id reaches this from an IPC payload, an agent's config or a pod
+ * file, none of which are code -- and it was guarded by
+ * g_return_val_if_fail(), which prints a stack trace and returns FALSE
+ * with @error untouched. So the caller had a failure with nothing in it
+ * to report: the pod action path warned "it did not work" above a GLib
+ * critical about an assertion nobody had written, which sends whoever
+ * reads it looking for a bug in the daemon rather than for the missing
+ * word in their pod.
+ *
+ * The refusal has to name the *argument*. A generic failure is what was
+ * there before.
+ */
+static void
+test_starting_an_agent_with_no_id_is_an_error(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    g_assert_false(clawt_daemon_start_agent(fixture.daemon, NULL, &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT);
+    g_assert_nonnull(strstr(error->message, "id"));
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -4208,6 +4917,16 @@ main(int argc, char *argv[])
                     test_direct_rooms_come_back_after_a_restart);
     g_test_add_func("/daemon/a-reply-counts-as-a-hop",
                     test_a_reply_counts_as_a_hop);
+    g_test_add_func("/daemon/hops/a-rooms-limit-overrides-the-fleets",
+                    test_a_rooms_hop_limit_overrides_the_fleets);
+    g_test_add_func("/daemon/sweep/applies-the-exchange-cap",
+                    test_the_sweep_applies_the_exchange_cap);
+    g_test_add_func("/daemon/audit/tools-get-the-event-bus",
+                    test_the_daemon_gives_the_tools_its_event_bus);
+    g_test_add_func("/daemon/priority/urgent-overtakes-an-earlier-normal",
+                    test_urgent_overtakes_an_earlier_ordinary_message);
+    g_test_add_func("/daemon/priority/a-pod-can-send-at-a-band",
+                    test_a_pod_can_send_at_a_band);
     g_test_add_func("/daemon/hop-depth/limit-still-fires-across-turns",
                     test_the_limit_still_fires_across_turns);
     g_test_add_func("/daemon/hop-depth/cleared-when-a-turn-ends",
@@ -4234,6 +4953,14 @@ main(int argc, char *argv[])
                     test_the_loop_runs_while_a_computer_is_provisioning);
     g_test_add_func("/daemon/restart-policy-reaches-the-runtime",
                     test_a_changed_restart_policy_reaches_the_runtime);
+    g_test_add_func("/daemon/task-change-reaches-the-bus",
+                    test_a_task_change_reaches_the_bus);
+    g_test_add_func("/daemon/agent-set-refuses-an-unknown-enum-value",
+                    test_agent_set_refuses_a_value_the_enum_lacks);
+    g_test_add_func("/daemon/agent-set-reports-a-role-needs-a-session",
+                    test_agent_set_reports_a_role_needs_a_new_session);
+    g_test_add_func("/daemon/start-agent-with-no-id",
+                    test_starting_an_agent_with_no_id_is_an_error);
 
     status = g_test_run();
 

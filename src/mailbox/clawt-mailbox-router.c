@@ -118,7 +118,19 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
     if (self->guard != NULL) {
         g_autoptr(GError) refusal = NULL;
 
-        if (!clawt_loop_guard_check(self->guard, message, &refusal)) {
+        /*
+         * With the destination room's own hop limit, which is why the
+         * guard is consulted here rather than by the sender: this is the
+         * first point that knows which room the message landed in, and
+         * `rooms.max_hops` is a property of that room.
+         *
+         * It had been parsed onto the #ClawtRoom and read by nothing, so
+         * a room declaring a limit was counted against the fleet's.  0
+         * means the room said nothing and the fleet's applies.
+         */
+        if (!clawt_loop_guard_check_in_room(self->guard, message,
+                                            clawt_room_get_max_hops(room),
+                                            &refusal)) {
             /*
              * Announced, not only returned.  A refusal on the link path
              * had nowhere to go but the log: the two agents simply
@@ -203,6 +215,20 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
                                        clawt_message_get_task_id(message));
         clawt_mailbox_item_set_depth(item, clawt_message_get_depth(message));
 
+        /*
+         * The band the sender asked for, carried onto every item the
+         * message produces.
+         *
+         * Nothing outside a test had ever called
+         * clawt_mailbox_item_set_priority(), so every item the fleet had
+         * ever queued sat at the constructor's NORMAL -- while the
+         * mailbox leased by band, `drop-oldest` shed the lowest band
+         * first, and clawtilla_message_agent told agents that urgent
+         * jumps the queue.  Four bands, one of them ever used.
+         */
+        clawt_mailbox_item_set_priority(item,
+                                        clawt_message_get_priority(message));
+
         item_id = clawt_mailbox_post(mailbox, item, &local);
 
         if (item_id == NULL) {
@@ -243,6 +269,21 @@ clawt_mailbox_router_send_to(ClawtMailboxRouter  *self,
                              gint                 depth,
                              GError             **error)
 {
+    return clawt_mailbox_router_send_to_full(self, from, target, body,
+                                             task_id, depth,
+                                             CLAWT_PRIORITY_NORMAL, error);
+}
+
+gint
+clawt_mailbox_router_send_to_full(ClawtMailboxRouter  *self,
+                                  const gchar         *from,
+                                  const gchar         *target,
+                                  const gchar         *body,
+                                  const gchar         *task_id,
+                                  gint                 depth,
+                                  ClawtPriority        priority,
+                                  GError             **error)
+{
     g_autoptr(ClawtMessage) message = NULL;
 
     g_return_val_if_fail(CLAWT_IS_MAILBOX_ROUTER(self), -1);
@@ -253,6 +294,7 @@ clawt_mailbox_router_send_to(ClawtMailboxRouter  *self,
     message = clawt_message_new(target, from, body);
     clawt_message_set_task_id(message, task_id);
     clawt_message_set_depth(message, depth);
+    clawt_message_set_priority(message, priority);
 
     return clawt_mailbox_router_send(self, message, error);
 }

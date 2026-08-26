@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-23 Sun]
+#+updated: [2026-08-26 Wed]
 #+version: 0.1.0
 
 * Getting started
@@ -30,15 +30,25 @@ plus GCC and GNU make.
 | ~libdex-devel~ | futures |
 | ~libyaml-devel~ | yaml-glib |
 | ~libxml2-devel~ | ai-glib's HTML-parsing search providers |
+| ~libvirt-devel~ | podomation's ~vm_virtmanager~ module |
 | ~gobject-introspection-devel~ | the ~.gir~ / ~.typelib~ step |
 | ~gtk4-devel~ | the GTK client |
 | ~libadwaita-devel~ | the GTK client |
+
+Every one of those is needed to *build*, whether or not you will use what
+it is for: a package missing from ~PKG_DEPS~ makes ~pkg-config~ fail for
+the whole list at once, which blanks ~PKG_CFLAGS~ and surfaces as a
+misleading ~glib.h: No such file or directory~.  The one exception is
+~gobject-introspection-devel~, whose step is skipped with a message when
+it is absent; the GTK client is skipped the same way without libadwaita,
+because everything else here is headless and still useful.
 
 Runtime, only for the features that use them:
 
 | Package | Needed for |
 |---------+------------|
 | ~podman~ | ~computer.type: container~ |
+| ~distrobox~ | ~computer.type: distrobox~ |
 | ~bubblewrap~ | ~computer.host.confine: bwrap~ |
 | ~libvirt-daemon-kvm~, ~libvirt-client~ | ~computer.vm.backend: libvirt~ |
 | ~qemu-system-x86-core~ (or ~-aarch64-~) | either VM backend |
@@ -48,8 +58,9 @@ Runtime, only for the features that use them:
 | ~xorriso~ | the cloud-init seed that gives a VM a login |
 
 On Immutablue / Hyacinth Macaw these are layered into the image rather
-than installed on the host.  ~libadwaita-devel~ and ~libxml2-devel~ are
-the two most likely to be missing from an older image.
+than installed on the host.  ~libadwaita-devel~, ~libxml2-devel~ and
+~libvirt-devel~ are the three most likely to be missing from an older
+image.
 
 ** Build
 
@@ -59,8 +70,21 @@ cd clawtilla
 make
 #+end_src
 
-The first build compiles libreclaw and its five bundled dependencies, so
-it takes a while.  Later builds do not.
+If you cloned without ~--recurse-submodules~, ~deps/libreclaw~ is an
+empty directory and the build stops there.  This is also the command to
+run after any ~git pull~ that moved it:
+
+#+begin_src bash
+git submodule update --init --recursive
+#+end_src
+
+~--recursive~ is not optional.  libreclaw brings five submodules of its
+own -- ai-glib, yaml-glib, mcp-glib, podomation and htmx-glib -- and
+without them the failure is a missing header several directories down
+rather than anything naming a submodule.
+
+The first build compiles libreclaw and all five, so it takes a while.
+Later builds do not.
 
 #+begin_src bash
 make test
@@ -91,38 +115,47 @@ The daemon runs a ~libreclaw~ per process-runtime agent, and finds it
 without being told: beside ~clawtillad~ first, then the
 ~deps/libreclaw~ build this checkout just produced, then ~PATH~.
 
-So a fresh clone works.  If it ever cannot find one it says all three
-places it looked, and ~defaults.libreclaw_binary~ overrides the lot --
-worth setting only when the one to run is somewhere else, such as a
-second checkout.
+So a fresh clone works, with nothing set.  If it ever cannot find one it
+says all three places it looked, and ~defaults.libreclaw_binary~
+overrides the lot -- worth setting only when the one to run is somewhere
+else, such as a second checkout.
+
+Worth not setting it otherwise.  A key somebody set once and forgot is a
+config that answers for a machine rather than for the software: this
+failure was invisible for months on the machine whose config pinned an
+absolute build-tree path, and immediate for everybody cloning fresh.
 
 ** Your first agent
 
 #+begin_src bash
 ./build/release/clawtilla agent create --id researcher \
     --model sonnet --computer none
-./build/release/clawtilla agent list
 #+end_src
+
+#+begin_example
+Created researcher.
+Started it.
+#+end_example
 
 An agent with ~--computer none~ is chat-only: no container, no host
 access, nothing to provision.  It is the right thing to start with.
 
-To actually run it, clawtilla needs a ~libreclaw~ binary.  If you have
-not installed one, point at the build tree:
-
-#+begin_src yaml
-defaults:
-  libreclaw_binary: "/path/to/clawtilla/deps/libreclaw/build/release/libreclaw"
-#+end_src
-
-Then:
+*Creating starts it.*  An agent's computer is built when it first starts,
+so one created and left alone is a configuration file and no machine --
+which looks exactly like a machine that failed to build.  ~--no-start~
+declines, and then ~clawtilla agent start~ is the second step.
 
 #+begin_src bash
-./build/release/clawtilla agent start researcher
 ./build/release/clawtilla agent list
 #+end_src
 
+#+begin_example
+ID                   STATE      QUEUE  LINK     DESCRIPTION
+researcher           running    0      up
+#+end_example
+
 ~LINK: up~ means the agent dialled back into the daemon and is reachable.
+It takes a few seconds after ~running~; until then the column reads ~-~.
 
 ** Your first conversation
 
@@ -152,7 +185,7 @@ is the whole point of the mailbox; see [[file:mailboxes.org][mailboxes.org]].
 Add a second agent and make one of them the chief of staff:
 
 #+begin_src bash
-./build/release/clawtilla agent create --id chief-of-staff --model opus
+./build/release/clawtilla agent create --id chief-of-staff --model opus --no-start
 ./build/release/clawtilla agent set chief-of-staff chief_of_staff true
 ./build/release/clawtilla agent start chief-of-staff
 
@@ -160,6 +193,12 @@ Add a second agent and make one of them the chief of staff:
 ./build/release/clawtilla send chief-of-staff \
     "ask the researcher to summarise this week's commits"
 #+end_src
+
+~--no-start~ is what earns its place here.  An AI CLI lists its tools
+once, when its session starts, so a ~chief_of_staff~ granted to an agent
+that is already running reaches its files and not its session -- and the
+agent then reports, accurately, that it has no such tool.  Setting it
+before the first start avoids the question.
 
 The chief has the orchestration tools -- ~clawtilla_list_agents~,
 ~clawtilla_delegate~, ~clawtilla_task_status~ -- served to it over its
@@ -197,10 +236,16 @@ Teams are optional, and a fleet of three does not need them.
 
 #+begin_src bash
 ./build/release/clawtilla agent create --id builder \
-    --computer container
-./build/release/clawtilla agent start builder
+    --computer container --image registry.fedoraproject.org/fedora:44
 ./build/release/clawtilla computer exec builder -- uname -a
 #+end_src
+
+Pull the image first -- ~podman pull registry.fedoraproject.org/fedora:44~.
+Creating does not pull, deliberately, so a typo in an image name fails in
+a second rather than after a download.  ~clawtilla image~ lists the ones
+clawtilla suggests, and ~clawtilla image vm~ the disk images for a VM
+agent, which has to be given one: clawtilla ships none and downloads none,
+and a VM with no disk boots nothing.
 
 For host access -- the agent running commands on the machine clawtilla
 itself is on -- read [[file:computers.org][computers.org]] first.  It is

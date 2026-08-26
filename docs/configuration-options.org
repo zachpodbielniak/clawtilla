@@ -26,10 +26,13 @@ client and an in-process cmacs embed all be the same program.
 
 Unix socket the clients connect to.
 
-Created with mode 0600, and the daemon checks the peer's uid via
-SO_PEERCRED. A unix socket is used rather than a loopback HTTP port
-because a port has no such notion of who is calling, and any web page
-the user visits can reach a loopback port through DNS rebinding.
+Created with mode 0600 inside a 0700 directory, which is the whole of
+the access control: the daemon does not check the peer's uid, so
+anything that can open the file is trusted completely.
+
+A unix socket is used rather than a loopback HTTP port because the
+filesystem can express that at all, and because any web page the user
+visits can reach a loopback port through DNS rebinding.
 
 *** =daemon.git=
 
@@ -213,14 +216,16 @@ Every `*.pod` in here is loaded at start. clawtilla registers itself
 into podomation as a module, so a pod can bind to what the fleet does
 and act on it in the same file:
 
-  pod restart_the_researcher {
-    source = Clawtilla.New("researcher")
-    sink   = Clawtilla.New("researcher")
-    on "agent.state" where state == "error" {
-      restart_agent(agent: "researcher")
-      notify(title: "researcher fell over; restarted it")
-    }
-  }
+  pod researcher = clawtilla->new("researcher");
+
+  researcher->on_agent_state where event->state == "error" =>
+      clawtilla->restart_agent(agent: "researcher");
+
+  researcher->on_agent_state where event->state == "error" =>
+      clawtilla->notify(title: "researcher fell over; restarted it");
+
+An event name cannot carry a dot -- podomation's lexer stops at it --
+so it is on_agent_state rather than agent.state.
 
 The constructor's arguments are the scope, and it applies both ways:
 a pod named for one agent neither hears about the others nor can act
@@ -487,6 +492,12 @@ backed by the image here, never to the image itself. Manage them with
 - Since :: 0.1.0
 
 Size cap for the exchange directory. 0 disables the limit.
+
+Applied by deleting the oldest files until the total is under the
+cap: whenever the exchange is opened for use -- when an agent starts,
+and before a file is put into it -- and again on the daemon's sweep,
+which is what catches an agent writing through the mount from inside
+its computer, where nothing on the host sees the write happen.
 
 *** =defaults.libreclaw_binary=
 
@@ -763,6 +774,18 @@ not bring them all back at the same instant.
 
 0 retries immediately.
 
+*** =orchestration.chief_of_staff=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+Id of the agent that receives work addressed to the fleet.
+
+At most one agent may hold this. Setting it here is equivalent to
+chief_of_staff: true on that agent, and the daemon refuses to start if
+two agents claim it.
+
 ** =memories=
 
 What an agent remembers between conversations.
@@ -814,17 +837,10 @@ its own unless somebody says otherwise. Reading only -- there is no
 setting that lets one agent write into another's memory, because a
 memory you did not form is not a memory.
 
-*** =orchestration.chief_of_staff=
-
-- Type :: string
-- Default :: unset
-- Since :: 0.1.0
-
-Id of the agent that receives work addressed to the fleet.
-
-At most one agent may hold this. Setting it here is equivalent to
-chief_of_staff: true on that agent, and the daemon refuses to start if
-two agents claim it.
+A comma-separated string, not a YAML list: `readers: chief, deputy`.
+Written as `readers: [chief]` it reads back as unset and grants
+nothing, so the loader warns about that spelling rather than leaving
+a permission somebody granted silently denied.
 
 ** =rooms=
 
@@ -877,6 +893,16 @@ on every message, which is expensive and rarely wanted.
 - Since :: 0.1.0
 
 Overrides orchestration.max_hops for this room.
+
+It may loosen the fleet limit as well as tighten it, which is the
+whole reason it exists: in a conversation three agents each reply one
+hop deeper, so an ordinary standup reaches the fleet ceiling on its
+own, and the only other remedy is raising orchestration.max_hops for
+every delegation chain in the fleet to fix one room.
+
+It reaches the hop count and nothing else. The rate limit, the task
+budget and the cycle detector are untouched, so a loop that costs
+money still has three limits on it.
 
 ** =teams=
 
@@ -1491,8 +1517,14 @@ on the network reaches the port first.
 Standing work: a prompt, an agent, and when to run it.
 
 A routine is the thing you would otherwise remember to ask for every
-morning. It runs as a delegated task, so it has its own session and
-its own result, and one morning's run never contaminates the next.
+morning. It runs as a delegated task, so it has its own result.
+
+It does not get a session of its own. libreclaw keys a session on
+channel, room and sender and deliberately ignores the thread, so a
+routine lands in the operator's session and queues behind whatever
+the operator is doing -- and inherits that conversation's context.
+Point a routine at an agent that is not also somewhere you chat, or
+give it `isolate` so it runs in a room of its own.
 
 Routines only fire while the daemon is running. A machine that was
 asleep at nine o'clock has missed nine o'clock, and the routine says
@@ -1663,6 +1695,10 @@ Zero here, unlike a hosted scheduler, because there is no shared
 server to spread load across: this is your machine, and a routine set
 for 09:00 should run at 09:00. Worth setting only when several
 routines share one rate-limited service.
+
+Not implemented in this build. The runner never reads it, so a routine
+fires at its scheduled second whatever this says -- which is the
+default behaviour, and wrong for the one case the option exists for.
 
 ** =agents=
 
@@ -1855,6 +1891,10 @@ instead, so a large memory does not cost every turn.
 
 Whether MEMORY.md is loaded into the prompt.
 
+Not implemented in this build. No memory block is rendered into the
+agent's config.yaml at all, so MEMORY.md is loaded on libreclaw's own
+defaults and this cannot turn it off.
+
 *** =agents.memory.max_lines=
 
 - Type :: integer
@@ -1863,6 +1903,9 @@ Whether MEMORY.md is loaded into the prompt.
 
 Line budget for MEMORY.md. Beyond it the file is truncated with a note.
 
+Not implemented in this build, for the same reason as memory.enabled:
+the budget never reaches libreclaw, which applies its own.
+
 *** =agents.memory.max_bytes=
 
 - Type :: integer
@@ -1870,6 +1913,9 @@ Line budget for MEMORY.md. Beyond it the file is truncated with a note.
 - Since :: 0.1.0
 
 Byte budget for MEMORY.md, applied alongside max_lines.
+
+Not implemented in this build, for the same reason as memory.enabled:
+the budget never reaches libreclaw, which applies its own.
 
 ** =agents.model=
 
@@ -1907,6 +1953,10 @@ Reasoning effort: low, medium, high, xhigh or max, when the model has one.
 
 libreclaw smart-routing profile: off, eco, auto, premium or free.
 
+Not implemented in this build. Nothing renders it into the agent's
+config.yaml, so libreclaw is never told about it and routes on its
+own default.
+
 *** =agents.model.fallbacks=
 
 - Type :: list of strings
@@ -1914,6 +1964,10 @@ libreclaw smart-routing profile: off, eco, auto, premium or free.
 - Since :: 0.1.0
 
 Models to fall back to, in order, when the primary is unavailable.
+
+Not implemented in this build. Nothing renders it into the agent's
+config.yaml, so an unavailable primary model fails the turn rather
+than falling back to anything.
 
 ** =agents.runtime=
 
@@ -2231,6 +2285,11 @@ agent is told so rather than left guessing why its command failed.
 
 Shell used for interactive sessions and shell-form commands.
 
+Not implemented in this build. Nothing reads it, and there is no
+shell-form command for it to apply to: clawtilla_computer_exec takes
+an argv, every element of which is quoted before it is run, so a host
+computer never invokes a shell at all.
+
 *** =agents.computer.host.nice=
 
 - Type :: integer
@@ -2298,6 +2357,11 @@ used as-is; anything else is split on spaces.
 - Since :: 0.1.0
 
 Network to attach to. Leave unset for podman's default.
+
+Not implemented in this build. The value reaches the container object
+through clawt_container_computer_set_network() and stops there: the
+podman create request is built without it, so the container is always
+on podman's default network however this is set.
 
 *** =agents.computer.container.keep=
 

@@ -304,6 +304,43 @@ clawt_computer_factory_create(ClawtAgentConfig  *agent_config,
             return NULL;
         }
 
+        /*
+         * And the fleet's half of the same decision, for the same reason
+         * and in the same place.
+         *
+         * Running unconfined on the real machine takes two deliberate
+         * acts -- the agent's confirmation above and the fleet's
+         * daemon.allow_unconfined_host -- and until now only the first
+         * of the two was checked here.  Validation catches it at load,
+         * which covers a config file; this catches an agent constructed
+         * some other way, which is the case the first check exists for.
+         * The stronger of the two grants is exactly the one that should
+         * not rest on a single reader.
+         *
+         * Asked of the fleet config rather than through the agent's own
+         * getters: `daemon.*` is not overridable per agent, so it has no
+         * agent-relative spelling and an agent-relative lookup would
+         * answer FALSE from the schema whatever the file says -- which
+         * would refuse every properly-granted host as well.
+         */
+        if (clawt_agent_config_get_enum(agent_config,
+                                        "computer.host.confine") ==
+                CLAWT_CONFINE_NONE) {
+            ClawtConfig *fleet = clawt_agent_config_get_config(agent_config);
+
+            if (fleet == NULL ||
+                !clawt_config_get_boolean(fleet,
+                                          "daemon.allow_unconfined_host")) {
+                g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED,
+                            "agent '%s' asks for computer.host.confine: none "
+                            "without daemon.allow_unconfined_host: true -- "
+                            "running unconfined on your real machine takes "
+                            "two deliberate acts, not one. Set it, or pick a "
+                            "confinement mode", agent_id);
+                return NULL;
+            }
+        }
+
         if (!clawt_sandbox_is_available(sandbox, error))
             return NULL;
 

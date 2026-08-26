@@ -72,11 +72,21 @@ clawt_loop_guard_set_task_budget(ClawtLoopGuard *self, gdouble budget_usd)
 }
 
 static gboolean
-check_hops(ClawtLoopGuard *self, ClawtMessage *message, GError **error)
+check_hops(ClawtLoopGuard *self, ClawtMessage *message, guint limit,
+           GError **error)
 {
     gint depth = clawt_message_get_depth(message);
 
-    if (self->max_hops == 0 || depth < (gint)self->max_hops)
+    /*
+     * The room's own limit if it declared one, the fleet's otherwise.
+     * Zero means "not set" in both, and in the fleet's case also means
+     * no limit -- which is why a room of 0 has to fall through to the
+     * fleet value rather than being taken as unlimited.
+     */
+    if (limit == 0)
+        limit = self->max_hops;
+
+    if (limit == 0 || depth < (gint)limit)
         return TRUE;
 
     /*
@@ -103,10 +113,10 @@ check_hops(ClawtLoopGuard *self, ClawtMessage *message, GError **error)
                     "counts as a hop and a long exchange reaches the "
                     "ceiling on its own -- it does not mean anybody did "
                     "anything wrong. Say what you have concluded to the "
-                    "person who asked, or raise "
-                    "orchestration.max_hops if conversations of this "
-                    "length are wanted.",
-                    depth, self->max_hops);
+                    "person who asked, or raise this room's "
+                    "rooms.max_hops -- or orchestration.max_hops -- if "
+                    "conversations of this length are wanted.",
+                    depth, limit);
 
         return FALSE;
     }
@@ -115,7 +125,7 @@ check_hops(ClawtLoopGuard *self, ClawtMessage *message, GError **error)
                 "this message is %d hops from the original request, and the "
                 "limit is %u. Delegation has gone deeper than intended; "
                 "answer directly rather than passing it on again.",
-                depth, self->max_hops);
+                depth, limit);
 
     return FALSE;
 }
@@ -239,6 +249,15 @@ clawt_loop_guard_check(ClawtLoopGuard  *self,
                        ClawtMessage    *message,
                        GError         **error)
 {
+    return clawt_loop_guard_check_in_room(self, message, 0, error);
+}
+
+gboolean
+clawt_loop_guard_check_in_room(ClawtLoopGuard  *self,
+                               ClawtMessage    *message,
+                               guint            room_max_hops,
+                               GError         **error)
+{
     g_return_val_if_fail(CLAWT_IS_LOOP_GUARD(self), FALSE);
     g_return_val_if_fail(message != NULL, FALSE);
 
@@ -247,7 +266,7 @@ clawt_loop_guard_check(ClawtLoopGuard  *self,
      * ones that record.  A message refused on hops must not have consumed
      * part of its sender's rate allowance.
      */
-    if (!check_hops(self, message, error))
+    if (!check_hops(self, message, room_max_hops, error))
         return FALSE;
 
     if (!check_budget(self, message, error))

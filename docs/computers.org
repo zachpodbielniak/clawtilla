@@ -1,14 +1,14 @@
 #+title: Computers
-#+description: The four backends, host confinement, mount paths and the exchange
+#+description: The five backends, host confinement, mount paths and the exchange
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-23 Sun]
-#+version: 0.1.0
+#+updated: [2026-08-26 Wed]
+#+version: 0.1.1
 
 * Computers
 
-A computer is what an agent can run commands on.  Four types, and an
+A computer is what an agent can run commands on.  Five types, and an
 optional desktop add-on that works alongside any of them.
 
 | Type | What the agent gets | Isolation |
@@ -16,7 +16,41 @@ optional desktop add-on that works alongside any of them.
 | ~none~ | nothing; chat only | total |
 | ~host~ | the machine clawtilla runs on | confinement, not isolation |
 | ~container~ | a podman container | namespaces |
+| ~distrobox~ | a distrobox container, wired into the host | namespaces, deliberately porous |
 | ~vm~ | a libvirt or QEMU virtual machine | a kernel of its own |
+
+** Three things that are true of every backend
+
+Worth reading before the backend you actually want, because each of them
+produces a failure that looks like something else.
+
+*** ~computer_exec~ takes a command, not a shell line
+
+Every argument is quoted and passed through as it stands, so ~>~, ~|~,
+~&&~, ~;~, ~*~ and ~$VAR~ arrive at the command as literal text.  The
+failure is the bad kind: ~echo hi > /dev/console~ *exits 0*, prints
+~hi > /dev/console~ to stdout, and reports success having done nothing.
+Wrap it in ~bash -c~ when you want shell behaviour.  Worked through at
+[[*Running things in one][Running things in one]], with the case where it
+bites hardest.
+
+*** Output is truncated at 256 KiB
+
+Both stdout and stderr, each, with a visible marker saying how many bytes
+were produced.  The marker matters as much as the cut: an agent handed a
+silently shortened directory listing treats it as the whole thing and
+reaches a confident wrong conclusion, while one told it was cut short
+asks a narrower question instead.
+
+*** ~timeout~ is honoured by two backends of five
+
+~host~ enforces it properly.  A VM turns it into an SSH ~ConnectTimeout~,
+capped at 30 seconds -- so it bounds *reaching* the guest and not the
+command.  ~container~ and ~distrobox~ ignore it outright: podomation's
+exec runs to completion over the Podman API and offers no deadline to
+pass on.  The tool schema advertises a 120-second default regardless, so
+a command that must be bounded should carry its own ~timeout~ inside the
+computer.
 
 ** none
 
@@ -46,9 +80,13 @@ computer:
     deny_paths:  ["~/.ssh", "~/.gnupg", "~/.clawtilla/secrets"]
     allow_network: true
     allow_sudo: false
-    shell: "/bin/bash"
     nice: 5
 #+end_src
+
+~computer.host.shell~ is in the schema and is read by nothing.  A host
+command is run as an argv through ~GSubprocess~ with no shell involved at
+all, which is the point -- see the cross-backend rule above -- so there
+is no shell for the key to name.
 
 *** What each confinement mode actually prevents
 
@@ -59,9 +97,16 @@ This section is deliberately blunt, because the difference between
 
 Nothing.  A bare ~GSubprocess~.  The agent can do anything you can.
 
-Requires both ~confirm_host_control: true~ *and*
-~daemon.allow_unconfined_host: true~, so it cannot happen by accident or
-by a single config typo.
+Two independent switches, both required: ~confirm_host_control: true~ on
+the agent, and ~daemon.allow_unconfined_host: true~ on the fleet.  An
+agent missing either is a shadow with the reason, and the computer
+factory refuses to build one as well -- checked twice on purpose, since
+the cost of checking twice is nothing against the cost of missing it
+once.
+
+The fleet key was in the schema, rendered into the generated config, and
+read by nothing for a long time, so one line in one agent block was the
+whole gate.
 
 **** ~confine: workspace~ (default)
 
@@ -87,13 +132,30 @@ Same limitation as ~workspace~: it inspects arguments.
 **** ~confine: bwrap~
 
 A real kernel sandbox, via ~bubblewrap~ (already present on Silverblue --
-flatpak depends on it).  Each allowed path becomes a ~--ro-bind~ or
-~--bind~; ~allow_network: false~ becomes ~--unshare-net~; ~/tmp~ is
-private; ~--die-with-parent~ means the sandbox goes when the agent does.
+flatpak depends on it).  The namespace is built from nothing and added
+to, which is the only order that fails safe: starting from everything and
+removing means each new thing on the host is reachable until somebody
+remembers to exclude it.
+
+~/usr~ and ~/etc~ come in ~--ro-bind~.  ~root~ and every entry in
+~allow_paths~ come in ~--bind~, which is *read-write* -- there is no
+read-only path grant under bwrap, so a path listed there is a path the
+agent can write.  ~allow_network: false~ becomes ~--unshare-net~; ~/tmp~
+is private; ~--die-with-parent~ means the sandbox goes when the agent
+does.
 
 This is the only host mode where a program cannot reach outside by
 constructing a path at runtime, because the paths are genuinely not in
 its namespace.
+
+*Mounts declared on the agent are the exception worth knowing.*  A mount
+declared under ~computer.mounts~ works, because the factory copies its
+source into ~allow_paths~.  The workspace and the three exchange
+directories are added later, by a different route, and the argv builder
+does not read that one -- so under ~confine: bwrap~ those paths pass the
+argument check and are then simply absent from the namespace.  A host
+agent that needs the exchange wants ~allowlist~, or the exchange root
+named in ~allow_paths~ explicitly.
 
 *If ~bwrap~ is missing the agent starts in ~SHADOW~ and says so.*  It
 does not silently downgrade to unconfined -- a confinement that quietly
@@ -101,16 +163,24 @@ becomes no confinement is worse than none, because you stop checking.
 
 *** sudo
 
-~allow_sudo: false~ blocks ~sudo~, ~pkexec~, ~doas~, ~run0~ and
-~machinectl shell~ at the exec layer, and says so in the agent's
-~describe~ text so it does not spend turns trying.
+~allow_sudo: false~ blocks ~sudo~, ~pkexec~, ~doas~, ~run0~,
+~machinectl~, ~su~ and ~setpriv~ at the exec layer, and says so in the
+agent's ~describe~ text so it does not spend turns trying.
+
+Matched on the *basename*, so ~/usr/bin/sudo~ and a bare ~sudo~ are both
+caught, and checked inside shell one-liners too -- refusing ~sudo id~
+while allowing ~sh -c 'sudo id'~ would be security theatre.
 
 *** The audit trail
 
-Every host exec is written to the event log: agent, command, exit status.
-Commands run by a *person* through the client are logged too -- an audit
-trail that only covered agents would miss exactly the case somebody would
-want to look up.
+A host exec run by a *person* through a client is written to the event
+log: agent, command, exit status.
+
+*An agent's own ~clawtilla_computer_exec~ is not.*  That path does not go
+through the IPC handler and emits no event, so the audit trail today
+covers the case somebody could have looked up in their own shell history
+and not the case they would actually want it for.  Worth knowing before
+treating the event log as a record of what the fleet ran.
 
 *** In the interface
 
@@ -128,9 +198,13 @@ computer:
     image: "fedora:latest"
     name: "clawt-researcher"      # optional; generated if absent
     connection: "unix"            # unix | ssh://… | tcp://… | a named connection
-    network: "bridge"
     keep: false                   # keep the container after the agent stops
 #+end_src
+
+~computer.container.network~ is parsed and stored and never sent to
+podman -- the create call carries the target, image, name, mounts and
+command, and nothing else -- so a container gets podman's default network
+whatever is written there.
 
 Implemented through podomation's ~container~ module, which speaks the
 Podman REST API directly over a socket -- no libcurl, no libpod, no
@@ -214,28 +288,6 @@ hand first.  The first start on a new image is therefore slow, and
 ~clawtilla agent logs~ shows nothing while it happens -- the pull is the
 daemon's, not the agent's.
 
-*** How big the VM is
-
-#+begin_src yaml
-computer:
-  type: vm
-  vm:
-    cpus: 4
-    memory_mb: 8192
-#+end_src
-
-#+begin_src bash
-clawtilla agent set builder computer.vm.cpus 4
-clawtilla agent set builder computer.vm.memory_mb 8192
-#+end_src
-
-The Agent tab shows /Disk image/, /Cores/, /Memory (MB)/ and /SSH
-address/ for a VM agent, and only for one -- no other backend reads them,
-and a row that quietly does nothing is worse than no row.
-
-Applied when the domain is defined, so a change takes effect on the next
-start.
-
 *** Which podman
 
 Rootless, by default: the socket under =XDG_RUNTIME_DIR= when there is
@@ -308,6 +360,9 @@ to leave an agent that could never start again without running podman by
 hand.
 
 *** Where the modules are found
+:PROPERTIES:
+:CUSTOM_ID: pod-modules
+:END:
 
 The ~container~ and ~vm_virtmanager~ modules are built by libreclaw as
 loadable ~.so~ files, and looked for in this order:
@@ -335,11 +390,18 @@ computer:
   type: distrobox
   distrobox:
     image: registry.fedoraproject.org/fedora-toolbox:latest
+    name: "clawt-researcher"      # optional; generated if absent
     packages: "gcc make git"
+    flags: "--nvidia"             # extra flags, passed through to podman
     init: false
     keep: true
     # share_home: true    # see below before turning this on
 #+end_src
+
+=flags= is handed to the podomation module as a space-separated string
+and passed through to podman -- the escape hatch for anything clawtilla
+does not model.  Quote anything containing a space.  Like the rest of the
+block it is read once, when the box is created.
 
 A distrobox is a podman container, so everything the container backend
 says about isolation applies to the kernel boundary --- and then
@@ -388,11 +450,13 @@ maintaining your dotfiles, or one that should share your ssh agent.
 :CUSTOM_ID: distrobox-creation
 :END:
 
-=image=, =home=, =share_home=, =packages= and =init= are read when the
-box is made and not again, the way a VM's cloud-init reads its seed
-once.  Changing one and restarting the agent does nothing visible ---
-which reads as the setting not working rather than as the setting
-arriving too late.  Remove the box to apply them.
+=image=, =home=, =share_home=, =packages=, =flags= and =init= are read
+when the box is made and not again, the way a VM's cloud-init reads its
+seed once.  Changing one and restarting the agent does nothing visible
+--- which reads as the setting not working rather than as the setting
+arriving too late.  Remove the box to apply them, or
+=clawtilla computer rebuild <agent>=, which does the same thing without
+your having to remember the box's name.
 
 =keep= is different: it is read every time the agent stops.
 
@@ -451,6 +515,32 @@ That is the whole configuration for a working VM.  ~ssh_key~,
 ~ssh_host~ and ~ssh_port~ are all optional: clawtilla generates the key,
 forwards the port and fills the address in itself.
 
+*** How big the VM is
+
+#+begin_src yaml
+computer:
+  type: vm
+  vm:
+    cpus: 4
+    memory_mb: 8192
+#+end_src
+
+#+begin_src bash
+clawtilla agent set builder computer.vm.cpus 4
+clawtilla agent set builder computer.vm.memory_mb 8192
+#+end_src
+
+The Agent tab shows /Disk image/, /Cores/, /Memory (MB)/ and /SSH
+address/ for a VM agent, and only for one -- no other backend reads them,
+and a row that quietly does nothing is worse than no row.
+
+Applied when the domain is defined, so a change takes effect on the next
+start.  ~disk_gb~ and ~resolution~ are the same: the disk is grown on the
+next provision (shrinking is refused), and the resolution reaches the
+virtio GPU as its preferred mode.  None of the four needs the machine
+rebuilding -- see [[*What needs the machine rebuilt][What needs the
+machine rebuilt]] for the ones that do.
+
 *** Which image
 
 *clawtilla ships no disk image.*  ~image~ is a path to a qcow2 on this
@@ -502,12 +592,24 @@ tab, which lists what has been fetched:
 clawtilla agent set researcher computer.vm.image ~/.local/share/clawtilla/images/fedora-44
 #+end_src
 
-*** Rebuilding one
+*** What needs the machine rebuilt
 
 cloud-init acts on its seed at *first boot only*.  So the login, the
 desktop, the package list -- everything in that seed -- is fixed for the
 life of the machine, and changing it in the config and restarting the
 agent looks like it did nothing at all.
+
+| Setting | When it applies |
+|---------+-----------------|
+| ~ssh_user~, the SSH key | first boot -- rebuild |
+| ~desktop.enabled~, ~desktop.flavour~, ~desktop.packages~, ~desktop.mcp_repo~ | first boot -- rebuild |
+| the guest's fstab entries for its shares | first boot -- rebuild |
+| ~cpus~, ~memory_mb~ | the domain definition -- next start |
+| ~disk_gb~ | the next provision; shrinking is refused |
+| ~resolution~ | the domain definition -- next start |
+
+Worth stating in one place because people rebuild for things that never
+needed it, and restart for things that never take.
 
 #+begin_src bash
 clawtilla agent stop deb-tester
@@ -523,6 +625,12 @@ It destroys the guest and builds it again from the image: the domain, the
 overlay, the seed and the generated SSH key all go, and the contents of
 the machine with them.  It is also how to get one back that was deleted
 outside clawtilla -- though that particular case now recovers on its own.
+
+~computer.rebuild~ is not VM-only, despite everything around it here.  It
+tears down and re-provisions a ~container~ or a ~distrobox~ too, and is
+refused only for ~type: none~ -- and, for every backend, while the agent
+is running.  For a distrobox it is the only way to change the image, the
+packages or ~share_home~, which are fixed when the box is created.
 
 *** A guest somebody deleted
 
@@ -784,8 +892,13 @@ agent that breaks its VM can be put back rather than rebuilt.
 
 The domain is *persistent*: it is defined once and survives the agent
 stopping, which is what makes snapshots and ~virsh~ useful against it.
-It also means removing the agent leaves the domain defined -- there is no
-undefine in the module's action set -- so clean up by hand:
+
+Removing the agent with ~--with-computer~ undefines it.  ~vm_virtmanager~
+did not expose ~undefine~ for a long time, which is why an older
+clawtilla left domains behind for somebody to find in virt-manager; it
+does now, and teardown takes the guest's disk with the domain.  Without
+~--with-computer~ the domain stays defined under ~clawt-<agent>~ and is
+yours to remove:
 
 #+begin_src bash
 virsh -c qemu:///session undefine clawt-<agent>
@@ -908,9 +1021,24 @@ user.
 | Backend | What a mount becomes |
 |---------+----------------------|
 | container | mount arguments on the podman ~create~ call |
-| libvirt VM | a virtiofs ~<filesystem>~ device, hot-plugged with ~attach_device~ |
-| QEMU VM | ~-device vhost-user-fs-pci~ plus a ~virtiofsd~ per mount |
+| distrobox | ~--volume~ arguments on the ~distrobox create~ call, fixed for the box's life |
+| libvirt VM | a virtiofs ~<filesystem>~ device written into the domain XML at define time |
+| QEMU VM | *nothing* -- see below |
 | host | *no kernel mount* -- see below |
+
+Nothing is hot-plugged.  The libvirt device is part of the XML the domain
+is defined from, so a mount added to a running VM appears at its next
+provision rather than immediately.
+
+The QEMU backend emits no share device at all: it warns, names how many
+shares will be missing, and starts the guest without them.  That is
+deliberate rather than an oversight -- an earlier version emitted a
+~-chardev socket~ that *connected* as a client with no ~virtiofsd~ ever
+started to listen, so qemu exited before the guest existed.  Harmless
+while nothing had a mount by default; the moment the workspace became one
+it would have stopped every VM on that backend.  libvirt is the default
+backend and starts a ~virtiofsd~ per share itself, which is why this is a
+warning rather than a refusal.
 
 *** Mounts on a host computer
 
@@ -922,25 +1050,42 @@ it.  Nothing enforces that promise for us, so clawtilla does two things:
    the source before the command runs.  Otherwise an agent told its
    exchange is at ~/mnt/clawtilla/exchange~ would be refused for using
    the path it was given, which is a maddening thing to debug.
-2. *Treats the mount as a grant.*  A declared mount is reachable in every
-   confinement mode, including ~workspace~.  On a container the kernel
-   would make it reachable; the same config behaving differently
-   depending on the backend is the kind of inconsistency that costs an
-   afternoon.
+2. *Treats the mount as a grant.*  A mount declared under
+   ~computer.mounts~ is reachable in ~workspace~ and ~allowlist~, because
+   its source is added to the sandbox's allowed paths.  On a container
+   the kernel would make it reachable; the same config behaving
+   differently depending on the backend is the kind of inconsistency that
+   costs an afternoon.  ~bwrap~ is the exception noted above: the
+   workspace and exchange directories the daemon adds are not bound into
+   its namespace.
 
 Translation matches whole path components, so ~/mnt/sharedx~ is not
-rewritten by a mount at ~/mnt/shared~.
+rewritten by a mount at ~/mnt/shared~.  A ~mode: ro~ mount is honoured on
+the host as a write refusal, and the most specific mount wins where two
+nest.
 
 *** What validation catches
 
 - a relative or non-absolute ~target~
-- two mounts whose targets overlap
 - ~target: /~
+- ~..~ in the target
+- two mounts with the *same* target -- nesting is allowed on purpose,
+  since the exchange itself nests
 - a missing source, with and without ~create:~
-- ~..~ or a symlink escaping in either path
-- a refusal to mount ~daemon.state_dir~ or the secrets directory into any
-  computer -- an agent that could read the state directory could read
-  every other agent's mailbox and token
+- a ~tmpfs~ given a source, or a ~volume~ given none
+
+*What it does not catch, despite the code being there:* the refusal to
+mount ~daemon.state_dir~ or the secrets directory.  The forbidden-source
+list is populated at daemon start and the check that reads it sits inside
+the ~tmpfs~ branch of the validator, so a *bind* mount -- which is every
+mount anybody writes -- never reaches it.  An agent that could read the
+state directory could read every other agent's mailbox and token, so
+until that is fixed, check by hand that no mount source is inside
+~daemon.state_dir~ or ~secrets.dir~.
+
+There is also no ~..~ check on the mount *source* and no symlink-escape
+refusal: ~clawt_mount_resolved_source()~ resolves symlinks rather than
+refusing them.
 
 ** Shared with every agent
 
@@ -1184,10 +1329,19 @@ Described below.
 *** Both paths, always
 
 Every share has two names, and which one to use depends on which tool is
-holding it.  ~clawt_computer_describe()~ therefore lists them as
-~host path = the path inside~ and says so outright, because naming only
-the path inside is what sent two agents looking on the host at a guest
-path, finding nothing, and reporting a share that was working as absent.
+holding it.  An agent's own ~read~, ~write~ and ~bash~ run on the *host*;
+only ~clawtilla_computer_exec~ is inside.  So
+~clawt_computer_describe_mounts()~ lists them as
+~host path = the path inside~, with the mode, and then says outright
+which tool takes which -- because naming only the path inside is what
+sent two agents looking on the host at a guest path, finding nothing, and
+reporting a share that was working as absent.
+
+Container, distrobox and VM all go through that one function, so the
+sentence cannot drift between them.  The *host* backend writes its own
+line and writes it the other way round -- ~/mnt/shared (~/src on this
+machine)~, target first -- which is harmless where the two are the same
+machine, and is one description of one thing in two orders.
 
 ** The guest has to mount them
 
@@ -1269,8 +1423,12 @@ clawtilla cp ~/notes.org researcher:/mnt/clawtilla/exchange/researcher/
   agent's description states both
 - drag-and-drop into the GTK computer panel
 
-~exchange_max_bytes~ plus a retention sweep keep it bounded; the sweep
-removes oldest-first and never follows a symlink out of the directory.
+*Nothing bounds it today.*  ~clawt_exchange_sweep()~ removes oldest-first
+and never follows a symlink out of the directory, and it is called from
+nowhere -- not by the daemon's minute sweep, not on start, not by a CLI
+verb.  ~defaults.exchange_max_bytes~ is handed to the exchange at
+construction and is read only inside that function, so the cap has never
+once been applied.  The exchange grows until somebody empties it.
 
 ** Desktop control
 
@@ -1287,7 +1445,7 @@ computer:
     allow_input: true      # false = observe only
 #+end_src
 
-There are four backends and they divide into two quite different things.
+There are three backends and a selector, and the three divide into two quite different things.
 ~gowl~ and ~gnome~ drive *the screen a person is sitting at*: gowl through
 its own MCP socket, GNOME through ~gnome-desktop-mcp~ on the host.
 ~guest~ drives a desktop inside the agent's own VM, which is the only one
@@ -1748,10 +1906,18 @@ rather than forwarding it.  A tool that is advertised and then refused is
 worse than one that is absent -- the agent plans around it, calls it, and
 has to work out from an error that it never had it.
 
-~clawtilla-desktop~ is the second and last key clawtilla owns in that
-file; everything else in it is read back and written out untouched.  It
-is *removed* when the agent no longer has a guest desktop, because an
-entry left behind would start an ssh to a VM that is not there.
+~clawtilla-desktop~ is one of the keys clawtilla owns in that file.  The
+~clawtilla-~ prefix is reserved wholesale -- every connector and every
+MCP integration gets a ~clawtilla-<name>~ entry -- and the whole set is
+rewritten on each start, alongside the plain ~clawtilla~ key.  Everything
+*without* that prefix is the person's and is read back and written out
+untouched.
+
+Reserving the prefix rather than a fixed list of names is what lets an
+entry *disappear*: ~clawtilla-desktop~ is removed when the agent no
+longer has a guest desktop, because one left behind would start an ssh to
+a VM that is not there, and a revoked connector's entry goes the same
+way.
 
 *** Acting is a separate grant from seeing
 
@@ -1773,7 +1939,18 @@ For the host backends, gowl needs to be built with ~MCP=1~ and have
 
 ** Adding a backend
 
-Implement ~ClawtComputerProvider~ in a plugin: ~get_type_name~ returns the
-~computer.type~ value you answer to, ~create~ builds the computer.  See
-[[file:plugins.org][plugins.org]].  An unknown ~computer.type~ with no
-provider makes that one agent a shadow rather than failing the daemon.
+~ClawtComputerProvider~ is the interface a plugin would implement:
+~get_type_name~ returns the ~computer.type~ value you answer to, ~create~
+builds the computer.  See [[file:plugins.org][plugins.org]].
+
+*It is not wired in yet.*  The interface exists and
+~clawt_plugin_manager_find_computer_provider()~ exists, and nothing calls
+the second: ~clawt_computer_factory_create()~ has no provider path, and
+its ~default:~ case errors with "unknown computer type".  So a plugin can
+declare a backend and no agent can use it.
+
+What *is* true, and is the part that matters operationally, is what an
+unknown ~computer.type~ does: that one agent becomes a shadow explaining
+itself, and the rest of the fleet starts.  A backend a plugin has not
+managed to register is indistinguishable from a typo, which is the safe
+way round.

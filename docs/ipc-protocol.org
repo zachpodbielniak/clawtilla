@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-23 Sun]
+#+updated: [2026-08-26 Wed]
 #+version: 0.1.0
 
 * The client protocol
@@ -54,10 +54,17 @@ what is missing, not merely that something failed.
 | Kind | Payload | Reply |
 |------+---------+-------|
 | ~control.hello~ | ~token~ (TCP only) | ~version~, ~daemon~ |
-| ~control.status~ | | version, config path, agent and client counts, cursor |
+| ~control.status~ | | ~version~, ~config~, ~agents~, ~connected~, ~clients~, ~cursor~ |
 | ~control.subscribe~ | ~cursor~ | ~cursor~, ~resumed~, then a replay |
 | ~control.reload~ | | ~refused~ -- see below |
 | ~control.shutdown~ | | answered before the daemon quits |
+
+~control.status~ answers with two counts of agents and they mean
+different things: ~agents~ is how many the configuration declares,
+~connected~ is how many have a link dialled in right now.  An agent that
+is configured and not connected is the ordinary case -- it is stopped, or
+it is starting -- so a client showing only one of them would report
+either a fleet that is always broken or a fleet that is always fine.
 
 **** refused
 
@@ -70,6 +77,7 @@ agent was rendered.
 | ~control.reload~ | |
 | ~agent.set~ | ~agent~, ~restart_required~ |
 | ~agent.mount.add~ / ~agent.mount.remove~ | ~target~ |
+| ~defaults.mount.add~ / ~defaults.mount.remove~ | ~target~, ~restart_required~ |
 | ~team.set~ | |
 | ~team.remove~ | ~orphaned~ |
 | ~design.commit~ | ~id~, ~committed~, ~started~ |
@@ -117,6 +125,13 @@ character set an id is made of is refused, which is what stops a request
 of somebody's choosing reading a file the daemon was never asked to
 serve.
 
+~attachment.remove~ (~agent~, ~name~) deletes one from that agent's
+drop-box and answers with ~removed~, the host path it unlinked.  The name
+is rebuilt from its own basename and resolved through the exchange, the
+same way ~attachment.put~ does, so a client asking to delete
+~../../../etc/passwd~ gets a refusal about a file in its own drop-box
+that does not exist.
+
 *** decision.*
 
 ~decision.list~ takes ~open~ (default true) and answers with
@@ -154,7 +169,10 @@ several agents at once.
 *** agent.*
 
 ~agent.list~, ~agent.show~, ~agent.start~, ~agent.stop~, ~agent.restart~,
-~agent.logs~, ~agent.create~, ~agent.remove~, ~agent.set~,
+~agent.reset~, ~agent.logs~, ~agent.create~, ~agent.import~,
+~agent.remove~, ~agent.set~, ~agent.reorder~, ~agent.discover~,
+~agent.forget~, ~agent.files~, ~agent.file_read~, ~agent.file_write~,
+~agent.mount.list~, ~agent.mount.add~, ~agent.mount.remove~.
 
 ~team.list~, ~team.create~, ~team.set~ and ~team.remove~ manage teams.
 ~team.list~ answers with each team's members, its lead, and how many are
@@ -190,8 +208,6 @@ true) and answer with ~started~, plus ~start_error~ when it did not.  A
 computer is built at start, so an agent created and not started is a
 configuration file and no machine; a failure to start is reported and
 never undoes the creation.
-~agent.files~, ~agent.mount.list~, ~agent.mount.add~,
-~agent.mount.remove~.
 
 ~agent.mount.add~ (~agent~, ~source~, ~target~, ~mode~, ~type~,
 ~relabel~, ~size~) validates before writing, so a mount that could never
@@ -199,6 +215,14 @@ work is refused here rather than at the agent's next start -- by which
 time the config has been saved and the failure mentions neither the path
 nor the reason. ~agent.mount.remove~ takes ~target~, which is what has
 to be unique.
+
+~defaults.mount.list~, ~defaults.mount.add~ and ~defaults.mount.remove~
+are the same three frames for the fleet-wide list every agent inherits,
+with the same payload and no ~agent~.  They re-render *every* agent,
+because that is what changed, and they answer ~restart_required: true~
+without asking: a mount reaches a computer when it is next built, and a
+container or a domain that already exists had its devices decided when it
+was created.
 
 An agent object carries ~vm_cpus~ and ~vm_memory_mb~ for a VM agent, and
 ~image~ for a container one.
@@ -222,15 +246,100 @@ and nothing else.  Missing files are scaffolded before the reply, and
 ~.mcp.json~ is written too, so a client can offer to edit an agent that
 has never been started.
 
-The daemon answers with paths rather than contents on purpose: an editor
-belongs on the user's terminal, not in the daemon, and a client that
-built the path itself is a client that can be pointed at another agent's
-state directory.  For the same reason a name is matched against the
-standard set rather than joined to the workspace.
+~agent.files~ answers with paths and not contents, because a terminal
+client wants to hand the path to ~$EDITOR~ rather than round-trip the
+bytes.  A client with nowhere to spawn an editor reads and writes them
+instead: ~agent.file_read~ (~agent~, ~name~) → ~name~, ~path~,
+~content~, and ~agent.file_write~ (~agent~, ~name~, ~content~) →
+~path~, ~bytes~, which also publishes ~agent.changed~.
+
+A file that is not there yet reads as empty rather than as an error.  The
+standard set is scaffolded at first start, so asking for one before then
+is an ordinary thing to do, and an editor that refused to open a file it
+is about to create would be a strange editor.
+
+The ~name~ is a plain file name and the daemon checks that it is: no
+separator, no ~..~, not empty and not ~.~.  It is reached from an IPC
+request, so the name is whatever the client sent, and
+~../../agents/other/credentials~ is a perfectly good relative path that
+would hand one client another agent's secrets.  ~g_path_is_absolute()~
+alone does not stop it.
+
+~agent.reset~ (~agent~) clears the agent's AI session and answers with
+~sessions_cleared~, ~moved~ and ~restarted~.  It stops the agent if it
+was running, moves its ~sessions~ directory aside with a timestamp rather
+than deleting it -- a reset is what you reach for when something is
+wedged, which is exactly when you might want to look at what it was
+doing -- clears the session rows from libreclaw's own database, forgets
+the usage watermark, and starts the agent again if it had been running.
+Both places have to be cleared: libreclaw restores a session from the
+persist directory *or* from sqlite, so clearing one leaves the agent
+resuming from the other and looking like the reset did nothing.
+
+This is also the only thing that applies an identity change.  An AI CLI
+is not handed a system prompt when it *resumes* a session, so editing
+~SOUL.org~ or repointing ~persona.identity_files~ reaches a running
+agent's files and not its prompt.  Restarting is not enough.
+
+~agent.discover~ takes no payload and answers with ~found~: directories
+under the state root and the workspace root that look like an agent and
+are not in the configuration, each with ~id~, ~path~, ~kind~ (~state~ or
+~workspace~), ~holds~ (which of ~mailbox.db~, ~memory.db~,
+~config.yaml~, ~SOUL.org~, ~IDENTITY.org~ and ~AGENTS.md~ are in there)
+and ~modified~.  They accumulate: an agent removed from the config keeps
+its state, a design that was never committed leaves a workspace, and a
+config restored from a backup leaves everything it did not mention.
+None of that was visible anywhere.
+
+~agent.forget~ (~id~) is what answers a discovery.  It renames both
+directories to ~<path>.discarded~ and answers with ~moved~, and
+~agent.discover~ skips a ~.discarded~ suffix so the same question is not
+asked twice.  Moved rather than deleted: this is somebody's agent, and "I
+never created this" is a thing people say about directories they later
+want back.  It refuses an id the configuration still has, naming
+~agent.remove~ instead.
+
+~agent.import~ (~id~, ~from~, ~mode~, ~keep_git~) adopts an existing
+workspace and answers with ~id~, ~workspace~, ~files~, ~mode~ and
+sometimes ~detail~.  ~mode~ is ~copy~, ~link~ or ~git~ and an
+unrecognised one is *refused* rather than defaulted -- somebody who typed
+~--lnik~ would otherwise get a fork of their workspace instead of a link
+to it, and find out only when their edits stopped reaching the agent.  A
+git import names a URL rather than a directory, which is why ~detail~
+exists: whether it became a submodule depends on where the workspace root
+is, and a workspace somebody's ~git status~ tracks is different enough
+from one it does not to be worth saying.
+
+An import adopts what the source already said about itself.  Its
+~config.yaml~ carries a provider and a model, and dropping them would
+quietly move the agent onto the fleet defaults; its persona is in
+markdown where clawtilla's is in org, and the two sets do not collide --
+so the copy brought a complete persona across and the scaffolder then
+wrote a blank ~.org~ beside every file of it.  The agent loaded the
+blanks.  ~persona.identity_files~ is set from what is actually there, and
+only when nothing was configured on the frame.
 
 An agent object carries id, name, description, state, detail, caps,
 whether it is the chief, whether it is connected, its computer type,
 model, mailbox depth, and its credentials *by reference*.
+
+*** memory.*
+
+~memory.list~ and ~memory.search~ both take an ~agent~, a ~category~ and
+a ~limit~ (20 by default); ~memory.search~ takes a ~query~ as well.  They
+answer with ~total~ -- the whole store, not the page -- and ~memories~,
+each carrying ~id~, ~content~, ~summary~, ~category~, ~importance~,
+~tags~, ~pinned~, ~created_at~ and ~access_count~.  ~memory.list~ also
+takes ~pinned~ to show only those.
+
+An agent with ~memories.enabled~ off has no store, and that is answered
+as ~CLAWT_ERROR_NOT_SUPPORTED~ naming the key rather than as an empty
+list -- an empty result and a feature that is switched off look identical
+from a client, and only one of them is worth acting on.
+
+This is ~memories.*~, the searchable per-agent sqlite store, and not
+~agents.memory~, which is libreclaw's ~MEMORY.md~ size budget.  The two
+are unrelated and the plural is the whole distinction.
 
 *** tool.*
 
@@ -292,9 +401,79 @@ the other nine.
 
 *** computer.*
 
-~computer.exec~ (~agent~, ~command~, ~cwd~, ~timeout~) → ~exit~,
-~stdout~, ~stderr~.  ~computer.status~.  ~computer.copy~ (~src~, ~dst~,
-one side being ~<agent>:<path>~).  ~exchange.list~.
+~computer.exec~ (~agent~, ~command~, ~cwd~, ~timeout~ -- 120 seconds by
+default) → ~exit~, ~stdout~, ~stderr~.  ~computer.status~ (~agent~) →
+~state~ and ~description~.  ~computer.copy~ (~src~, ~dst~, one side being
+~<agent>:<path>~).  ~exchange.list~ (~agent~) → ~entries~.
+
+~computer.rebuild~ (~agent~) tears the agent's computer down and
+provisions it again, answering ~rebuilt~, ~agent~ and sometimes ~note~.
+It is *refused while the agent runs*, rather than done carefully:
+rebuilding is destroying the machine the agent is working on, and there
+is no version of that which is safe to do underneath it.  A teardown that
+fails is reported in ~note~ and is not fatal -- the common reason to
+reach for this is that the guest is already gone, deleted by hand in
+virt-manager, and refusing to rebuild because there was nothing to tear
+down would be absurd.
+
+This is the frame for every VM setting cloud-init reads once.  The login,
+the desktop, the flavour and the package list are fixed for the life of
+an overlay, so changing one and restarting the agent does nothing
+visible -- which reads as the setting not working rather than as the
+setting arriving too late.  cpus, memory, disk size and the screen
+resolution are *not* in that group: they reach the domain definition and
+apply at its next boot.
+
+~computer.desktop~ (~agent~) answers ~backend~, ~argv~ and ~tools~ -- the
+command that reaches a guest desktop's MCP server, and the tool names the
+agent's grant permits.  The command is built here rather than written
+into the agent's ~.mcp.json~ because the port that reaches the guest is
+chosen when the VM is provisioned, which is after the workspace files are
+written; a command line captured at render time names a port nothing is
+listening on.  The permitted tools travel with it so the relay needs no
+copy of the policy, and so revoking ~computer.desktop.allow_input~ takes
+effect at the next daemon reload rather than whenever the agent's MCP
+client is next restarted.
+
+Its refusals are deliberately four different sentences, because the four
+causes want four different actions: no desktop configured names
+~computer.desktop.enabled~; a desktop that is not in a VM says there is
+nothing to relay to; a VM agent that is stopped says to start it, since a
+stopped agent's VM has no address yet; and a running VM with no forwarded
+port says so rather than reporting a missing desktop.  The policy is a
+pure function of the config, so a stopped agent is answered from the
+config rather than told it has no desktop -- which is what it used to be
+told, naming a key that was already set.
+
+*** image.* and state.*
+
+~image.list~ is container images and is described below.  The ~vm_~
+frames are cloud images, which are several hundred megabytes each: a VM
+needs one, clawtilla ships none, and they are fetched deliberately ahead
+of any agent needing one.
+
+| Kind | Payload | Reply |
+|------+---------+-------|
+| ~image.vm_catalog~ | | ~sources~: ~id~, ~name~, ~group~, ~url~, ~note~ |
+| ~image.vm_list~ | | ~images~: ~name~, ~path~, ~bytes~, ~total~, ~downloading~, ~url~ |
+| ~image.vm_download~ | ~url~ | ~name~ |
+| ~image.vm_cancel~ | ~name~ | ~cancelled~ |
+| ~image.vm_remove~ | ~name~, ~force~ | ~removed~ |
+
+~image.vm_list~ reports ~bytes~ against ~total~ and ~downloading~ so one
+listing covers both what is on disk and what is arriving; progress
+between listings is the ~image.progress~ and ~image.finished~ events.
+
+~image.vm_remove~ refuses an image an agent's overlay is built on, naming
+the agents, unless ~force~ is set.  A qcow2 overlay records the base it
+was made from, so deleting the base breaks that VM at its next start --
+with an error from qemu about a missing backing file, a long way from the
+button that caused it.
+
+~state.git_init~ takes no payload and answers ~path~, ~created~ and
+~gitignore~.  It makes the daemon's state directory a git repository, so
+the fleet's configuration and transcripts can be versioned; it is
+idempotent, and ~created~ says whether this call is the one that made it.
 
 *** config.*, plugin.*, integration.*, model.*, design.*
 
@@ -478,12 +657,40 @@ Subscribers receive:
    "detail":{"from":"chief-of-staff"}}}
 #+end_src
 
-Event kinds: ~daemon.started~, ~daemon.stopped~, ~daemon.reloaded~,
-~agent.created~, ~agent.removed~, ~agent.changed~, ~agent.started~,
-~agent.stopped~, ~agent.connected~, ~agent.disconnected~,
-~agent.typing~, ~message~, ~message.refused~,
-~mailbox.queued~, ~mailbox.delivered~, ~room.created~, ~room.changed~,
-~task.*~, ~computer.exec~.
+Every kind published, by subject:
+
+| Subject | Kinds |
+|---------+-------|
+| the daemon | ~daemon.started~, ~daemon.stopped~, ~daemon.reloaded~, ~config.changed~ |
+| an agent | ~agent.created~, ~agent.removed~, ~agent.changed~, ~agent.started~, ~agent.stopped~, ~agent.state~, ~agent.connected~, ~agent.disconnected~, ~agent.typing~ |
+| a room | ~message~, ~message.refused~, ~room.created~, ~room.changed~ |
+| an agent's mailbox | ~mailbox.queued~, ~mailbox.delivered~ |
+| a team | ~team.changed~ |
+| an agent | ~decision.asked~ |
+| a routine | ~routine.ran~, ~routine.changed~ |
+| an integration | ~integration.changed~ |
+| a cloud image | ~image.progress~ (~done~, ~total~), ~image.finished~ (~path~ or ~error~) |
+| an agent | ~computer.exec~ |
+
+~agent.state~ is published for *every* state and carries the state's nick
+plus a ~detail~ saying why.  ~agent.started~ and ~agent.stopped~ are
+published by the frames that asked for them, so an agent that crashed
+raises ~agent.state~ and nothing else -- a client that watched only the
+pair would show a running agent that is not.
+
+~task.changed~ is published for every state a task passes through, and
+its *subject is the task id* -- which is what ~event.list~ filters on.
+Details: ~state~, the enum nickname, matching ~agent.state~; and ~agent~,
+the assignee.
+
+The ~agent~ detail is load-bearing rather than decoration.  A pod's
+scope is matched against it, so without it a pod built as
+~clawtilla->new("researcher")~ would hear about every task in the fleet.
+
+This event did not exist for a long time: the manager's signal was
+emitted and connected, but only to decide whether to send a
+notification, so a client following a task had to poll ~task.list~ and
+podomation's ~on_task_changed~ binding named an event nothing published.
 
 ~message~ is published once for every message the daemon routes,
 whoever sent it, and its *subject is the room*.  Details: ~id~, ~from~,
@@ -557,10 +764,16 @@ refuses to open a TCP listener without a token configured.
 
 ** Backpressure
 
-A client that stops reading has its outbound queue capped at 4 MiB and is
-then disconnected.  Otherwise a paused GUI or a suspended terminal grows
-the daemon's memory without bound while looking healthy.  Dropping a
-client is recoverable; running the daemon out of memory is not.
+A client that stops reading has its outbound queue capped and is then
+disconnected.  Otherwise a paused GUI or a suspended terminal grows the
+daemon's memory without bound while looking healthy.  Dropping a client
+is recoverable; running the daemon out of memory is not.
+
+The cap is deliberately *above* the largest legal frame -- twice
+~CLAWT_IPC_MAX_FRAME_BYTES~ plus a megabyte, so 17 MiB against a frame
+limit of 8.  A single reply may legitimately be 8 MiB, and a cap below
+that disconnects a client that is reading perfectly well and blames it
+for not reading.
 
 ** Robustness
 

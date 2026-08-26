@@ -2083,6 +2083,147 @@ test_the_computer_region_names_both_sides(void)
                                       "fleet"));
 }
 
+/*
+ * ── What TOOLS.org says a connector may do ───────────────────────────
+ *
+ * A person can untick things on a consent screen, so the `scopes:` in
+ * clawtilla.yaml is what was *asked for* and the token file is what was
+ * given.  TOOLS.org used to print the ask under the sentence "Access was
+ * granted for:", which is the wrong half of the pair -- and this is the
+ * file an agent believes over any tool list, so it would confidently
+ * spend turns on calls the service was always going to refuse and report
+ * the refusals as the service misbehaving.
+ */
+
+/*
+ * Puts a saved credential where a connector instance will find it, with
+ * @granted as the scope set the provider issued, and points the instance
+ * at it.  Returns the path so the caller can keep it alive.
+ *
+ * The token is built through clawt_oauth_token_parse() rather than by
+ * writing the JSON by hand, so this fixture cannot drift from the file
+ * format the daemon actually writes.
+ */
+static gchar *
+connect_with_granted_scopes(Fixture *fixture, const gchar *name,
+                            const gchar *granted)
+{
+    ClawtIntegrationConfig *instance =
+        clawt_config_get_integration(fixture->config, name);
+    g_autoptr(ClawtOauthToken) token = NULL;
+    g_autofree gchar *json = NULL;
+    g_autoptr(GError) error = NULL;
+    gchar *path;
+
+    g_assert_nonnull(instance);
+
+    path = g_build_filename(fixture->dir, "connector-token.json", NULL);
+
+    json = g_strdup_printf("{\"access_token\":\"secret-value\","
+                           "\"token_type\":\"Bearer\","
+                           "\"scope\":\"%s\","
+                           "\"expires_in\":3600}", granted);
+
+    token = clawt_oauth_token_parse(json, -1,
+                                    g_get_real_time() / G_USEC_PER_SEC,
+                                    &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(token);
+
+    g_assert_true(clawt_oauth_token_save(token, path, &error));
+    g_assert_no_error(error);
+
+    clawt_integration_config_set_string(instance, NULL, "token_file", path);
+
+    return path;
+}
+
+static const gchar CONNECTOR_YAML[] =
+    "integrations:\n"
+    "  - name: forge\n"
+    "    type: connector\n"
+    "    scope: all\n"
+    "    provider: github\n"
+    "    scopes: \"repo,gist,delete_repo\"\n"
+    "agents:\n"
+    "  - id: scribe\n";
+
+/*
+ * The granted set is printed, and the requested one is not.  Asserting
+ * on the absence of `delete_repo` is the whole point: a test that only
+ * looked for `repo` would pass on either version, because the requested
+ * string contains it.
+ */
+static void
+test_a_connector_reports_the_granted_scopes(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent;
+    g_autofree gchar *token_path = NULL;
+    g_autofree gchar *tools = NULL;
+
+    fixture_setup(&fixture, CONNECTOR_YAML);
+    agent = first_agent(&fixture);
+
+    token_path = connect_with_granted_scopes(&fixture, "forge", "repo");
+
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+    g_assert_no_error(error);
+    g_assert_true(clawt_workspace_update_tools_org(fixture.config, agent,
+                                                   &error));
+    g_assert_no_error(error);
+
+    tools = read_workspace_file(agent, "TOOLS.org");
+    g_assert_nonnull(tools);
+
+    g_assert_nonnull(strstr(tools, "Access was granted for: repo."));
+    g_assert_null(strstr(tools, "delete_repo"));
+    g_assert_null(strstr(tools, "gist"));
+
+    /*
+     * And never the credential itself.  The granted set arrives in the
+     * same struct as the access token, so the one thing this must not do
+     * is copy the wrong field into a file the agent reads.
+     */
+    g_assert_null(strstr(tools, "secret-value"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Nothing connected yet, so there is no granted set to report.  Saying
+ * "granted" here would be the same lie about a different absence, so the
+ * sentence says "requested" and that it may be narrower.
+ */
+static void
+test_an_unconnected_connector_says_the_scopes_were_requested(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent;
+    g_autofree gchar *tools = NULL;
+
+    fixture_setup(&fixture, CONNECTOR_YAML);
+    agent = first_agent(&fixture);
+
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+    g_assert_true(clawt_workspace_update_tools_org(fixture.config, agent,
+                                                   &error));
+    g_assert_no_error(error);
+
+    tools = read_workspace_file(agent, "TOOLS.org");
+    g_assert_nonnull(tools);
+
+    g_assert_nonnull(strstr(tools,
+                            "Access was requested for: repo,gist,"
+                            "delete_repo."));
+    g_assert_null(strstr(tools, "Access was granted"));
+    g_assert_nonnull(strstr(tools, "may be narrower"));
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -2155,6 +2296,10 @@ main(int argc, char *argv[])
                     test_the_computer_region_is_rewritten_not_appended);
     g_test_add_func("/workspace/computer-region-names-both-sides",
                     test_the_computer_region_names_both_sides);
+    g_test_add_func("/workspace/connector-reports-granted-scopes",
+                    test_a_connector_reports_the_granted_scopes);
+    g_test_add_func("/workspace/connector-says-requested-when-unconnected",
+                    test_an_unconnected_connector_says_the_scopes_were_requested);
     g_test_add_func("/import/link-points-at-the-original",
                     test_a_linked_workspace_points_at_the_original);
     g_test_add_func("/import/link-over-existing-is-refused",

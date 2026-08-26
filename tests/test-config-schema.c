@@ -645,6 +645,48 @@ test_the_fleet_value_comes_next(void)
     g_rmdir(dir);
 }
 
+/*
+ * An option flagged inert must say so where the person setting it will
+ * read it.
+ *
+ * The flag drives the loader's warning and the prose drives the
+ * generated config and the docs table, so the two are the same claim
+ * made in two places -- exactly the shape that drifts.  Binding them
+ * here means implementing an option and forgetting to rewrite its
+ * paragraph is a test failure rather than a documentation lie that
+ * outlives the limitation it describes.
+ */
+static void
+test_inert_options_admit_it(void)
+{
+    gsize n_entries = 0;
+    const ClawtSchemaEntry *schema = clawt_config_schema_get(&n_entries);
+    gsize i;
+    guint inert = 0;
+
+    for (i = 0; i < n_entries; i++) {
+        if ((schema[i].flags & CLAWT_SCHEMA_FLAG_INERT) == 0)
+            continue;
+
+        inert++;
+
+        /* A section is structure; there is nothing there to not read. */
+        g_assert_cmpint(schema[i].type, !=, CLAWT_SCHEMA_SECTION);
+
+        g_assert_nonnull(schema[i].doc);
+
+        if (strstr(schema[i].doc, "Not implemented in this build") == NULL)
+            g_error("%s is flagged inert and does not say so in its "
+                    "documentation", schema[i].key);
+    }
+
+    /*
+     * And the flag is reachable at all.  A check over an empty set is a
+     * check that has never once run.
+     */
+    g_assert_cmpuint(inert, >, 0);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -684,6 +726,8 @@ main(int argc, char *argv[])
 
     g_test_add_func("/schema/dangerous-flagged",
                     test_dangerous_options_are_flagged_in_output);
+    g_test_add_func("/schema/inert-options-admit-it",
+                    test_inert_options_admit_it);
 
     return g_test_run();
 }

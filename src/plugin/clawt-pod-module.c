@@ -53,9 +53,10 @@ static const EventName events[] = {
     { "on_agent_disconnected", "agent.disconnected",
       "An agent's link dropped" },
     { "on_agent_typing", "agent.typing",
-      "A turn began or ended; `typing` says which" },
+      "A turn began or ended; `typing` says which, `peer` who it is for, "
+      "`room` where" },
     { "on_message", "message",
-      "A message was routed; `from`, `to`, `body` and `task`" },
+      "A message was routed; `id`, `from`, `to`, `body` and `task`" },
     { "on_task_changed", "task.changed",
       "A delegated task changed state; `state` says which" },
     { "on_routine_ran", "routine.ran", "A scheduled routine started" },
@@ -189,13 +190,67 @@ static const Action actions[] = {
       memory_params, G_N_ELEMENTS(memory_params) }
 };
 
+/*
+ * The actions, in podomation's own shape.  Built once from `actions`,
+ * for the reason event_fields() gives above: a second list written out
+ * by hand drifts from the table beside it.
+ *
+ * It used to return `message_agent_params` -- one action's three
+ * parameters, under a function called `actions` and a doc comment
+ * promising every action.  Nothing outside the module has ever called
+ * it, which is the only reason a public getter could name the wrong
+ * table for as long as it has.
+ *
+ * `PodHandlerParamInfo` carries one flat row, so the parameters cannot
+ * be nested inside it: the signature is rendered into the description
+ * instead, which is what keeps "with what each takes" true of what comes
+ * back.  A caller wanting them as data asks
+ * pod_event_handler_get_handler_params(), which is the interface method
+ * that exists for exactly that.  `required` stays FALSE throughout --
+ * it is a property of a parameter, and an action is not one.
+ */
+static const PodHandlerParamInfo *
+action_fields(void)
+{
+    static PodHandlerParamInfo fields[G_N_ELEMENTS(actions)];
+    static gsize built = 0;
+
+    if (g_once_init_enter(&built)) {
+        gsize i;
+
+        for (i = 0; i < G_N_ELEMENTS(actions); i++) {
+            GString *described = g_string_new(actions[i].summary);
+            guint p;
+
+            g_string_append(described, actions[i].n_params > 0
+                                       ? " -- takes " : " -- takes nothing");
+
+            for (p = 0; p < actions[i].n_params; p++)
+                g_string_append_printf(described, "%s%s%s",
+                                       p > 0 ? ", " : "",
+                                       actions[i].params[p].name,
+                                       actions[i].params[p].required
+                                           ? "" : " (optional)");
+
+            fields[i].name = actions[i].name;
+            fields[i].type_name = "action";
+            fields[i].description = g_string_free(described, FALSE);
+            fields[i].required = FALSE;
+        }
+
+        g_once_init_leave(&built, 1);
+    }
+
+    return fields;
+}
+
 const PodHandlerParamInfo *
 clawt_pod_module_actions(guint *n_actions)
 {
     if (n_actions != NULL)
-        *n_actions = G_N_ELEMENTS(message_agent_params);
+        *n_actions = G_N_ELEMENTS(actions);
 
-    return message_agent_params;
+    return action_fields();
 }
 
 static const Action *
@@ -344,13 +399,32 @@ on_bus_event(ClawtEventBus *bus, ClawtEvent *event, gpointer user_data)
                               clawt_event_get_timestamp(event)));
 
     /*
-     * The details go across as they are.  A pod binding to `message`
-     * wants `from`, `to` and `body`, and enumerating them per kind here
-     * would be a third copy of what the event already carries.
+     * The details go across as they are, keyed the same way the daemon
+     * set them.  One flat list rather than a set per kind, because a
+     * detail means the same thing whichever event carries it and a table
+     * per kind would be a third copy of what the event already holds.
+     *
+     * It is still a *list*, which is the trap: a detail the daemon adds
+     * later reaches a pod only when it is added here, and nothing warns.
+     * Three had gone missing that way and been written down as a
+     * limitation rather than fixed -- `peer` and `room`, which
+     * agent.typing has carried since the daemon started saying who a turn
+     * is for, and `id`, which the router puts on every message.  So a pod
+     * could not tell an agent busy on your question from one busy on a
+     * peer's, and could not deduplicate the events a subscriber is
+     * replayed on connect, which is the one thing `id` exists for.
+     *
+     * Every key published on a forwarded kind, by where it comes from:
+     * `state` and `detail` from agent.state, `typing`, `peer` and `room`
+     * from agent.typing, `id`, `from`, `to`, `body` and `task` from
+     * message.  `error` and `path` belong to image.finished, which is
+     * not forwarded today -- they cost nothing and are ready if it ever
+     * is.
      */
     {
         static const gchar *const carried[] = {
-            "state", "detail", "from", "to", "body", "task", "typing",
+            "state", "detail", "typing", "peer", "room",
+            "id", "from", "to", "body", "task",
             "error", "path", NULL
         };
         gsize k;
@@ -806,38 +880,102 @@ clawt_pod_module_create_instance(PodModule   *module,
     return POD_MODULE(instance);
 }
 
+/*
+ * Built once from `events` and `actions`, for the reason event_fields()
+ * gives above: a list written out by hand drifts from the table beside
+ * it.  Section headers are podomation's own convention, and the CLI
+ * prints this string verbatim -- `podomation help-module clawtilla` is
+ * the one command somebody runs to find out what this module offers, and
+ * what it printed before named no event and no action at all.
+ *
+ * It also spelled the constructor `Clawtilla.New("researcher")`, which is
+ * PascalCase and dot notation and parses as neither: `expected '->', got
+ * '.'`.  That sat three lines above the paragraph explaining that a dot
+ * cannot be parsed.  The EXAMPLES block below is the text that comes back
+ * `Configuration is valid.` from podomation's own validator.
+ */
 static const gchar *
 clawt_pod_module_get_help(PodModule *module)
 {
+    static gchar *help = NULL;
+    static gsize built = 0;
+
     (void)module;
 
-    return
-        "clawtilla -- react to a fleet of agents, and act on it.\n"
-        "\n"
-        "Scope comes from the constructor, and applies in both\n"
-        "directions:\n"
-        "\n"
-        "  Clawtilla.New()                        every agent\n"
-        "  Clawtilla.New(\"researcher\")             one agent\n"
-        "  Clawtilla.New(\"researcher\", \"scribe\")   a group\n"
-        "\n"
-        "A pod scoped to one agent neither hears about the others nor\n"
-        "can act on them.\n"
-        "\n"
-        "Event names follow podomation's own convention: on_agent_state,\n"
-        "not agent.state. The DSL cannot parse a dot in an event name,\n"
-        "and every event podomation ships is named on_something.\n"
-        "\n"
-        "Events carry `agent` and `timestamp`, plus whatever that kind\n"
-        "has: `state` and `detail` for on_agent_state, `from`, `to`,\n"
-        "`body` and `task` for on_message, `typing` for on_agent_typing.\n"
-        "\n"
-        "Actions take named parameters and return `ok`, and `id` for the\n"
-        "ones that create something.\n"
-        "\n"
-        "Worth knowing: `computer_exec` takes a command and not a shell\n"
-        "line, so a redirect arrives as literal text and the command\n"
-        "reports success having done nothing. Wrap it in `bash -c`.";
+    if (g_once_init_enter(&built)) {
+        GString *text;
+        gsize i;
+
+        text = g_string_new(
+            "clawtilla -- react to a fleet of agents, and act on it.\n"
+            "\n"
+            "CONSTRUCTOR\n"
+            "  Scope comes from the constructor and applies both ways: a\n"
+            "  pod scoped to one agent neither hears about the others nor\n"
+            "  can act on them.\n"
+            "\n"
+            "  pod fleet = clawtilla->new();                       every agent\n"
+            "  pod one   = clawtilla->new(\"researcher\");           one agent\n"
+            "  pod some  = clawtilla->new(\"researcher\", \"scribe\"); a group\n"
+            "\n"
+            "EVENTS (source)\n"
+            "  Every event carries `agent`, `subject` and `timestamp`,\n"
+            "  plus whatever its own kind names below.\n"
+            "\n");
+
+        for (i = 0; i < G_N_ELEMENTS(events); i++)
+            g_string_append_printf(text, "  %-24s %s\n",
+                                   events[i].pod_name,
+                                   events[i].description);
+
+        g_string_append(text,
+            "\n"
+            "HANDLERS\n"
+            "  Named parameters.  Every action returns `ok`, and `id` for\n"
+            "  the ones that create something.\n"
+            "\n");
+
+        for (i = 0; i < G_N_ELEMENTS(actions); i++) {
+            guint p;
+
+            g_string_append_printf(text, "  %-16s %s\n",
+                                   actions[i].name, actions[i].summary);
+
+            for (p = 0; p < actions[i].n_params; p++)
+                g_string_append_printf(text, "    %s (%s%s): %s\n",
+                                       actions[i].params[p].name,
+                                       actions[i].params[p].type_name,
+                                       actions[i].params[p].required
+                                           ? "" : ", optional",
+                                       actions[i].params[p].description);
+        }
+
+        g_string_append(text,
+            "\n"
+            "EXAMPLES\n"
+            "  # Restart an agent that fell over, and say so.\n"
+            "  pod researcher = clawtilla->new(\"researcher\");\n"
+            "\n"
+            "  researcher->on_agent_state where event->state == \"error\" =>\n"
+            "      clawtilla->restart_agent(agent: \"researcher\");\n"
+            "\n"
+            "  researcher->on_agent_state where event->state == \"error\" =>\n"
+            "      clawtilla->notify(title: \"the researcher fell over\");\n"
+            "\n"
+            "NOTES\n"
+            "  An event name cannot carry a dot -- podomation's lexer\n"
+            "  stops at one -- so it is on_agent_state rather than\n"
+            "  agent.state, and every event here is named on_something.\n"
+            "\n"
+            "  `computer_exec` takes a command and not a shell line, so a\n"
+            "  redirect arrives as literal text and the command reports\n"
+            "  success having done nothing.  Wrap it in `bash -c`.\n");
+
+        help = g_string_free(text, FALSE);
+        g_once_init_leave(&built, 1);
+    }
+
+    return help;
 }
 
 static void

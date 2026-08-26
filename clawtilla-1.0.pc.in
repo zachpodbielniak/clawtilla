@@ -3,9 +3,68 @@ exec_prefix=${prefix}
 libdir=@LIBDIR@
 includedir=@INCLUDEDIR@
 
+# Where the daemon looks for what it loads at runtime.  Substituted from
+# PLUGIN_SYSTEM_DIR and POD_MODULE_SYSTEM_DIR in config.mk -- the same
+# variables that are baked into the daemon as CLAWT_PLUGIN_DIR and
+# CLAWT_POD_MODULE_DIR -- so an out-of-tree plugin's `install` target and
+# the daemon's search path cannot be two different opinions.
+plugindir=@PLUGIN_DIR@
+podmoduledir=@POD_MODULE_DIR@
+
+# What a plugin is built with, and it is NOT `--cflags` plus `--libs`.
+#
+# A plugin leaves clawt_plugin_get_services and the rest *undefined* in
+# its .so and resolves them from the daemon at dlopen time -- that is the
+# whole design, and `nm -D` on the shipped example shows it.  Linking
+# -lclawt-1.0 gives the plugin a second copy of the library with its own
+# GTypes, which is not a link error and not a load error: it is two
+# registries that disagree, discovered much later.  So `Libs:` below is
+# for a program that embeds the library, and a plugin uses these instead:
+#
+#   gcc $(pkg-config --cflags clawtilla-1.0) \
+#       $(pkg-config --variable=plugin_cflags clawtilla-1.0) \
+#       my-plugin.c -o libclawt-plugin-mine.so \
+#       $(pkg-config --variable=plugin_libs clawtilla-1.0)
+#
+# plugin_libs is PLUGIN_LDFLAGS from config.mk, which is what the bundled
+# plugins under plugins/ are built with, so an out-of-tree plugin is
+# linked exactly as an in-tree one and the two cannot drift.
+plugin_cflags=-fPIC
+plugin_libs=@PLUGIN_LDFLAGS@
+
 Name: clawtilla
 Description: Daemon and library for orchestrating a fleet of libreclaw agents
 Version: @VERSION@
-Requires: glib-2.0 gobject-2.0 gio-2.0 gio-unix-2.0 gmodule-2.0 libsoup-3.0 json-glib-1.0 sqlite3 libdex-1
+# Four modules were missing, and without any one of them
+# `pkg-config --cflags clawtilla-1.0` produces a line that cannot compile
+# a single translation unit after `make install` -- it failed on
+# <libreclaw.h>, which is line 27 of our own umbrella header.  Each was
+# established by installing into a staging prefix and compiling, then
+# dropping one module at a time to see what broke, rather than by reading
+# the include graph:
+#
+#   libreclaw-1.0    <clawtilla.h> includes <libreclaw.h>
+#   ai-glib-1.0      <libreclaw.h> includes <ai-glib.h>
+#   podomation-1.0   plugin/clawt-pod-module.h includes <podomation.h>
+#   mcp-glib-1.0     libreclaw's bridge/lc-bridge-client.h includes
+#                    <mcp-server.h>
+#
+# yaml-glib-1.0 and htmx-glib-1.0 are deliberately absent: the same
+# bisection shows nothing an installed header reaches needs them, and a
+# .pc that demands a module a consumer does not need refuses installs for
+# no reason.  clawtilla links both, which is config.mk's business.
+#
+# The middle two are libreclaw's to declare and it declares none of its
+# five bundled deps.  Named here for the same reason config.mk replicates
+# libreclaw's PKG_DEPS in full rather than trusting that .pc -- we fix it
+# upstream, and we do not depend on the fix being present in whatever
+# libreclaw checkout somebody has.
+#
+# Installing libreclaw installs none of the five either, so each has to
+# be installed on its own for this to resolve.  Naming them here is what
+# turns a gcc error about somebody else's header three layers down into
+# pkg-config refusing by module name, which is the difference between a
+# diagnosable setup and a mysterious one.
+Requires: glib-2.0 gobject-2.0 gio-2.0 gio-unix-2.0 gmodule-2.0 libsoup-3.0 json-glib-1.0 sqlite3 libdex-1 libreclaw-1.0 ai-glib-1.0 podomation-1.0 mcp-glib-1.0
 Libs: -L${libdir} -lclawt-1.0
 Cflags: -I${includedir}/clawtilla-1.0

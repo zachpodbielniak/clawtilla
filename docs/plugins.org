@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-21 Fri]
+#+updated: [2026-08-26 Wed]
 #+version: 0.1.0
 
 * Plugins
@@ -30,10 +30,20 @@ clawt_plugin_register(void)
 }
 #+end_src
 
-The ABI version is checked *before anything in the module is called*.  A
-plugin built against a different vtable layout does not fail cleanly: it
-calls through function pointers at the wrong offsets, and the crash lands
-somewhere unrelated.
+~CLAWT_PLUGIN_ABI_VERSION~ is 1.
+
+The ABI version is checked *before anything in the plugin contract is
+called* -- before ~clawt_plugin_register()~ is even looked up, and the
+module is closed again on a mismatch.  A plugin built against a different
+vtable layout does not fail cleanly: it calls through function pointers
+at the wrong offsets, and the crash lands somewhere unrelated.
+
+"Before anything in the contract" is the honest bound, and it is not the
+same as "before any of the plugin's code".  Opening a module is ~dlopen~,
+so an ELF constructor or a ~g_module_check_init~ runs first, whatever the
+ABI says.  There is no version check that could come earlier, which is
+another way of saying what the warning above already says: loading a
+plugin is trusting it.
 
 ~clawt_plugin_register()~ returns a GType derived from ~ClawtPlugin~.
 Returning a type rather than an instance lets the manager construct as
@@ -78,13 +88,35 @@ struct _ClawtPluginClass {
 
     GObject     *(*create_instance) (ClawtPlugin *self, const gchar *kind,
                                      GHashTable *params, GError **error);
+
+    /*< private >*/
+    gpointer _padding[8];
 };
 #+end_src
+
+The padding is not decoration.  It is the whole reason a method can be
+added without bumping ~CLAWT_PLUGIN_ABI_VERSION~, and a class struct
+copied without it is 64 bytes short of the one the daemon indexes into.
+
+~create_instance~ is declared and *nothing calls it*.  It was written for
+the provider interfaces below, and the path that would have supplied a
+~kind~ is itself unwired -- so implementing it today gets you nothing.
+Said plainly rather than left to be discovered, because a vtable slot
+reads as a feature.
 
 ** The four interfaces
 
 Detected with ~g_type_is_a()~, so a plugin advertises what it can do
 simply by implementing it.
+
+*Two of the four are wired and two are not.*  ~ClawtEventHandler~ and
+~ClawtToolProvider~ are consulted on every dispatch and every tool
+listing.  ~ClawtComputerProvider~ and ~ClawtIntegrationProvider~ are
+declared, implementable, tested in isolation -- and nothing in the daemon
+has ever asked for one.  They are documented here as what they are rather
+than left to look like extension points, which is the failure this
+codebase has recorded more than once: a factory nothing calls is not a
+feature, and the way to find out is to grep for the caller.
 
 *** ClawtEventHandler
 
@@ -116,13 +148,27 @@ gchar                *(*call)       (ClawtToolProvider *self,
                                      GError **error);
 #+end_src
 
-The JSON schema is *generated* from ~get_params~, so a tool cannot
-describe itself one way and accept another.
+The JSON schema is *generated* from ~get_params~ by
+~clawt_param_info_to_schema()~, so a tool cannot describe itself one way
+and accept another.  That is a guarantee about the declaration being
+single-sourced and not about runtime enforcement: arguments are handed to
+~call()~ as the ~JsonObject~ they arrived as, unvalidated.
 
-Plugin tools are listed alongside the built-in ones -- from the agent's
-side there is no difference -- and are subject to the same per-agent
-~allow~ and ~deny~ lists.  A plugin must not be able to hand an agent
-something its operator turned off.
+Plugin tools are listed alongside the built-in ones in MCP ~tools/list~
+and are subject to the same per-agent ~allow~ and ~deny~ lists.  A plugin
+must not be able to hand an agent something its operator turned off.
+
+Two differences an agent *does* see, both worth knowing before shipping a
+plugin tool.  Every one of them is described as "Provided by a plugin." --
+there is no vfunc for a per-tool description, so the model gets a name
+and no explanation.  And they do not appear in the agent's ~TOOLS.org~,
+which is written from the built-in table alone -- while that file tells
+the agent the list is regenerated every start and that anything missing
+has not been granted.  So an agent holding a working plugin tool can read
+its own file and conclude, wrongly and confidently, that it has no such
+thing.  That is the "an agent believes its own file over the tool list"
+failure recurring one layer along; describe a plugin tool in the agent's
+prompt yourself until it is fixed.
 
 *** ClawtComputerProvider
 
@@ -135,8 +181,14 @@ ClawtComputer *(*create)        (ClawtComputerProvider *self,
                                  ClawtAgentConfig *config, GError **error);
 #+end_src
 
-An unknown ~computer.type~ with no provider makes that one agent a
-shadow rather than failing the daemon.
+An unknown ~computer.type~ makes that one agent a shadow rather than
+failing the daemon -- but it does so *before any provider is looked
+for*.  ~clawt_config_get_agent()~ resolves the type through the enum and
+marks the agent a shadow when it does not parse; the factory then
+dispatches on the enum alone.  So a plugin whose ~get_type_name()~
+returns ~firecracker~ is never asked, and
+~clawt_plugin_manager_find_computer_provider()~ -- which is correct, and
+tested -- has no caller.
 
 *** ClawtIntegrationProvider
 
@@ -150,6 +202,11 @@ gchar       *(*render_config) (ClawtIntegrationProvider *self,
                                ClawtAgentConfig *config,
                                const gchar *state_dir, GError **error);
 #+end_src
+
+Nothing calls any of the three.  An integration reaches an agent through
+~clawt_integration_resolve_for_agent()~ and the renderers in
+~src/config/clawt-config-render.c~, and neither has heard of this
+interface.  Adding a type today means adding it there.
 
 ** The service locator
 
@@ -181,43 +238,125 @@ plugins:
 #+end_src
 
 Both forms disable: ~plugins.disabled~ by name, and
-~plugins.<id>.enabled: false~.  The lookup is *generic*, so a
-third-party plugin the core has never heard of can be turned off the same
-way a bundled one can.  (This is the gap in gst's design, where an
-if/else over known module names means third-party plugins cannot be
-disabled at all.)
+~plugins.<id>.enabled: false~.  The lookup is *generic* -- it walks the
+raw YAML rather than the schema -- so a third-party plugin the core has
+never heard of can be turned off the same way a bundled one can.  (This
+is the gap in gst's design, where an if/else over known module names
+means third-party plugins cannot be disabled at all.)
 
-Settings under ~plugins.<id>~ arrive in ~configure()~ as strings.
+~plugins.enabled: false~ short-circuits before any directory is even
+built, so nothing is opened at all.
+
+*Configuring is not generic, and this is the trap.*  ~settings_for()~
+reads a hardcoded list of four names -- ~endpoint~, ~token_file~, ~path~
+and ~mode~ -- and *only those four* reach ~configure()~, as strings.
+Anything else under ~plugins.<id>~ is silently dropped: it parses, it
+resolves through the config API, and the plugin never sees it.  The
+example above uses ~mode~, which is one of the four, which is exactly why
+this has gone unnoticed -- the one setting the doc and the test both
+exercise is a survivor.  A plugin needing its own vocabulary should read
+the config itself through the ~config~ service.
+
+The keys also draw a warning.  ~plugins~ is a schema section, so the
+unknown-key check recurses into it and reports ~unknown configuration key
+'plugins.example'~ on load.  Harmless -- a warning, and the values still
+resolve -- but it is not a sign of anything wrong with your plugin.
 
 ** A worked plugin
 
 ~plugins/example/example-plugin.c~ is complete and builds: it implements
 ~ClawtEventHandler~ to tally what the fleet does, and ~ClawtToolProvider~
-to offer that tally back to the agents as a tool they can call.  Copy it
+to offer that tally back to the agents as a tool they can call, and
+exports both required symbols.  It implements six of the seven vtable
+methods -- not ~create_instance~, for the reason given above.  Copy it
 and change the names.
 
-#+begin_src bash
-gcc -shared -fPIC $(pkg-config --cflags clawtilla-1.0) \
-    example-plugin.c -o libclawt-plugin-example.so \
-    $(pkg-config --libs clawtilla-1.0)
+The supported way to build one is a directory under ~plugins/~ and
+~make plugins~.  It compiles every ~.c~ in each subdirectory into
+~build/<type>/plugins/libclawt-plugin-<dirname>.so~, so the directory
+name is the id; it runs as part of ~make~, and ~make install~ copies the
+results into ~CLAWT_PLUGIN_DIR~.
 
-cp libclawt-plugin-example.so ~/.config/clawtilla/plugins/
+#+begin_src bash
+mkdir -p plugins/mine && cp plugins/example/example-plugin.c plugins/mine/
+make plugins
+ls build/release/plugins/
 clawtilla plugin list
 #+end_src
 
-** Failure modes, all tested
+*A plugin links no clawtilla library.*  ~clawt_plugin_get_services~ and
+the rest are left *undefined* in the ~.so~ and resolve from the daemon at
+~dlopen~ time, which is why the build rule is ~-shared~ plus the ordinary
+pkg-config libs and nothing else.  Adding ~-lclawt-1.0~ is not merely
+unnecessary; the whole design assumes the daemon's copy is the one in
+play.
 
-| What | What happens |
-|------+--------------|
-| ABI mismatch | refused, with both versions named, before any call |
-| ~clawt_plugin_register~ missing | refused |
-| it returns a non-~ClawtPlugin~ type | refused |
-| ~activate()~ fails | that plugin is disabled; nothing else is affected |
-| misnamed file | refused; the id could not be worked out |
-| two plugins with one id | the first found wins |
+Out of tree, ask the ~.pc~ for the plugin flags rather than assembling
+them:
 
-One bad plugin never keeps the daemon down.  A daemon that refused to
-start because a third-party plugin was stale would be a poor trade.
+#+begin_src bash
+gcc $(pkg-config --cflags clawtilla-1.0) \
+    $(pkg-config --variable=plugin_cflags clawtilla-1.0) \
+    my-plugin.c -o libclawt-plugin-mine.so \
+    $(pkg-config --variable=plugin_libs clawtilla-1.0)
+#+end_src
+
+~plugin_libs~ is substituted from ~PLUGIN_LDFLAGS~ in ~config.mk~, which
+is what the bundled plugins under ~plugins/~ are built with -- so an
+out-of-tree plugin links exactly as an in-tree one does, and the two
+cannot drift.  It already carries ~-shared~, which is why the line above
+does not.  And there is no ~--libs~ anywhere in it, per the paragraph
+above.
+
+~pkg-config --variable=plugindir clawtilla-1.0~ gives the directory the
+daemon searches, so an installer does not have to know it.
+
+This used to be harder, and the reason is worth keeping: the ~Requires:~
+named neither ~libreclaw-1.0~ nor the three bundled modules whose headers
+~<clawtilla.h>~ reaches transitively, so ~pkg-config --cflags~ alone
+could not compile a plugin even after ~make install~.  Worse, the
+generated ~.pc~ had only its ~.in~ as a prerequisite, so one produced
+once at ~/usr/local~ stayed newer than the file it was generated from for
+ever -- ~make install PREFIX=elsewhere~ shipped a ~.pc~ naming
+~/usr/local~.  That is the same staleness ~clawt-version.h~ is guarded
+against, one file over.
+
+** Failure modes
+
+| What | What happens | Test |
+|------+--------------+------|
+| ABI mismatch | refused, with both versions named, before any contract call | ~/plugin/abi-mismatch~ |
+| ~clawt_plugin_register~ missing | refused | none |
+| it returns a non-~ClawtPlugin~ type | refused | ~/plugin/wrong-type~ |
+| ~activate()~ fails | that plugin is disabled; nothing else is affected | ~/plugin/failing-activate~ |
+| misnamed file | refused; the id could not be worked out | ~/plugin/misnamed~ |
+| two plugins with one id | the first found wins | ~/plugin/loaded-twice~, partly |
+
+The third column is there because this table used to be headed "all
+tested" and one row was not.  Nothing exercises a module that exports the
+ABI symbol and no ~clawt_plugin_register~; the code path is right and
+there is no fixture for it.  And ~/plugin/loaded-twice~ loads the *same
+path* twice, so it proves the refusal and not the shadowing -- two files
+with one id in two directories at different priorities is the behaviour
+the search-path section promises and nothing checks.
+
+The shadowed copy also warns, reading like a failure: *"was not loaded: a
+plugin called 'x' is already loaded"*.  Deliberately overriding a system
+plugin with a user copy is meant to look like that -- there is no way to
+tell the two cases apart from inside the loader -- so it is worth
+recognising rather than investigating.
+
+One bad plugin never keeps the daemon down.  Load failures are warnings
+and the scan carries on; a failed ~activate()~ never enters the plugin
+list; and the daemon discards the loader's return value entirely, so
+nothing about plugin loading can fail daemon start.  A daemon that
+refused to come up because a third-party plugin was stale would be a poor
+trade.
+
+That isolation is against *error returns*, and only those.  A plugin that
+aborts, segfaults, or ~g_error()~s in a constructor, in ~class_init~, in
+~configure()~ or in ~activate()~ takes the daemon with it.  There is no
+sandbox here -- see the first paragraph of this file.
 
 ** Unloading
 

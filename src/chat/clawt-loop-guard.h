@@ -88,6 +88,48 @@ gboolean clawt_loop_guard_check(ClawtLoopGuard  *self,
                                 GError         **error);
 
 /**
+ * clawt_loop_guard_check_in_room:
+ * @self: a #ClawtLoopGuard
+ * @message: (transfer none): the message about to be sent
+ * @room_max_hops: this room's own hop limit, or 0 to use the fleet's
+ * @error: (out) (optional): return location for why it was refused
+ *
+ * clawt_loop_guard_check() with the destination room's hop limit.
+ *
+ * `rooms.max_hops` was parsed, stored on the #ClawtRoom and read by
+ * nobody: clawt_room_get_max_hops() had no caller at all, so every hop
+ * in every room counted against `orchestration.max_hops` whatever a room
+ * declared.  This is the parameter that was missing.
+ *
+ * **A room may raise the fleet limit as well as lower it**, and that is
+ * a decision rather than an oversight.  The case the key exists for is a
+ * *conversation*: three agents in a room each reply one hop deeper, so
+ * an ordinary standup reaches the fleet ceiling on its own without
+ * anybody doing anything wrong -- which check_hops() already says in its
+ * own refusal, where the only advice it can offer is to raise
+ * `orchestration.max_hops`.  Taking that advice loosens the limit for
+ * every delegation chain in the fleet, to fix one room.  Only-tighten
+ * would leave the key unable to do the one thing it was written for, and
+ * leave the wider change as the only remedy.
+ *
+ * It is not an escalation: `rooms:` is in the same clawtilla.yaml, set
+ * by the same hand as the fleet value, and the room limit reaches
+ * nothing else -- the rate limit, the task budget and the cycle detector
+ * are untouched, so a loop that costs money still has three limits on
+ * it.  Only the hop count, only in a room somebody declared.
+ *
+ * The other three checks take no room value because none of them is
+ * about a room: rate is per sender, budget is per task, and the cycle
+ * window is already keyed by room and needs no limit of its own.
+ *
+ * Returns: %TRUE if the message may proceed
+ */
+gboolean clawt_loop_guard_check_in_room(ClawtLoopGuard  *self,
+                                        ClawtMessage    *message,
+                                        guint            room_max_hops,
+                                        GError         **error);
+
+/**
  * clawt_loop_guard_record_spend:
  * @self: a #ClawtLoopGuard
  * @task_id: the task the spend belongs to

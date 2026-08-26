@@ -341,9 +341,18 @@ clawt_mount_validate(ClawtMount *self, GError **error)
         return FALSE;
     }
 
-    if (self->type == CLAWT_MOUNT_TMPFS) {
-        /* A tmpfs starts empty, so a source would have nothing to mean. */
-        if (self->source != NULL) {
+    /*
+     * Before the type dispatch, so it covers every kind of mount that has
+     * a source.  It used to sit *inside* the tmpfs branch, guarded by
+     * `self->source != NULL` -- which for a tmpfs is already an error two
+     * lines below it.  So the one check standing between an agent and
+     * `daemon.state_dir` ran only in a case that was refused anyway, and
+     * never once for the bind mount somebody would actually write.  The
+     * daemon populates the list at start and the header describes the
+     * refusal; only the braces were wrong, which is why it read as
+     * working.
+     */
+    if (self->source != NULL) {
         const gchar *which = NULL;
 
         if (source_is_forbidden(self->source, &which)) {
@@ -355,7 +364,9 @@ clawt_mount_validate(ClawtMount *self, GError **error)
         }
     }
 
-    if (self->source != NULL) {
+    if (self->type == CLAWT_MOUNT_TMPFS) {
+        /* A tmpfs starts empty, so a source would have nothing to mean. */
+        if (self->source != NULL) {
             g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_MOUNT,
                                 "a tmpfs mount takes no source");
             return FALSE;

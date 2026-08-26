@@ -60,8 +60,6 @@ typedef enum {
  * @CLAWT_AGENT_CAPS_DESKTOP: can drive a desktop session
  * @CLAWT_AGENT_CAPS_DESKTOP_INPUT: may inject keys and pointer events, not just observe
  * @CLAWT_AGENT_CAPS_MOUNTS: has host paths mounted into its computer
- * @CLAWT_AGENT_CAPS_IMAGES: its model accepts image input
- * @CLAWT_AGENT_CAPS_ATTACHMENTS: its channels carry attachments
  * @CLAWT_AGENT_CAPS_STREAMING: emits token deltas rather than whole replies
  * @CLAWT_AGENT_CAPS_EFFORT_LEVELS: its model exposes an effort control
  * @CLAWT_AGENT_CAPS_PEER_COMMS: may message other agents
@@ -74,6 +72,17 @@ typedef enum {
  * so the agent is never told it has a tool that is not really there -- an
  * agent that believes it has a computer it cannot reach burns whole turns
  * hunting for it.
+ *
+ * Which makes a flag nothing derives the worst kind of entry here: it is
+ * always false, so every control bound to it is permanently insensitive
+ * for the whole fleet.  `images` and `attachments` were exactly that --
+ * registered, documented nowhere but here, never once set -- and neither
+ * could be derived from anything this build knows.  Nothing records
+ * which models accept image input, and every agent can already send its
+ * operator a file, so "attachments" only ever restated
+ * %CLAWT_AGENT_CAPS_TOOLS_MCP.  Bits 6 and 7 are left unused rather than
+ * reassigned, so the flags below them keep the values a caps string has
+ * always meant.
  */
 typedef enum {
     CLAWT_AGENT_CAPS_NONE           = 0,
@@ -83,8 +92,7 @@ typedef enum {
     CLAWT_AGENT_CAPS_DESKTOP        = 1 << 3,
     CLAWT_AGENT_CAPS_DESKTOP_INPUT  = 1 << 4,
     CLAWT_AGENT_CAPS_MOUNTS         = 1 << 5,
-    CLAWT_AGENT_CAPS_IMAGES         = 1 << 6,
-    CLAWT_AGENT_CAPS_ATTACHMENTS    = 1 << 7,
+    /* 1 << 6 and 1 << 7 were `images` and `attachments`; see above. */
     CLAWT_AGENT_CAPS_STREAMING      = 1 << 8,
     CLAWT_AGENT_CAPS_EFFORT_LEVELS  = 1 << 9,
     CLAWT_AGENT_CAPS_PEER_COMMS     = 1 << 10,
@@ -862,6 +870,24 @@ const gchar *clawt_enum_to_nick(GType enum_type, gint value);
  * Returns: %TRUE if @nick names a member of @enum_type
  */
 gboolean clawt_enum_from_nick(GType enum_type, const gchar *nick, gint *out_value);
+
+/**
+ * clawt_enum_nick_list:
+ * @enum_type: a registered enum #GType
+ *
+ * Every nickname @enum_type has, as English prose: "none, host,
+ * container, vm and distrobox".
+ *
+ * For the refusals that tell somebody what they were allowed to write.
+ * Spelling that set out by hand is writing the enum a second time, and
+ * the second copy stops being true silently: the unknown-computer-type
+ * refusal had said "none, host, container and vm" since before
+ * distrobox existed, so the one message whose entire job is to list the
+ * types omitted one this build supports.
+ *
+ * Returns: (transfer full): a newly allocated string
+ */
+gchar *clawt_enum_nick_list(GType enum_type);
 
 /**
  * clawt_flags_from_nick:

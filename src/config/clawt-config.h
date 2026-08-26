@@ -418,6 +418,27 @@ GPtrArray *clawt_config_get_rooms(ClawtConfig *self);
 const gchar *clawt_agent_config_get_id(ClawtAgentConfig *self);
 
 /**
+ * clawt_agent_config_get_config:
+ * @self: a #ClawtAgentConfig
+ *
+ * The fleet configuration this agent was read out of.
+ *
+ * For the few decisions that are the fleet's rather than the agent's.
+ * clawt_agent_config_get_string() and its kin resolve an agent-relative
+ * key to a fleet one through the schema, which is the right route for
+ * anything an agent may override -- but a `daemon.*` key is deliberately
+ * not overridable, so there is no agent-relative spelling of it to
+ * resolve, and asking for one returns the schema default rather than
+ * what the file says.  A caller that needs the fleet's own answer has to
+ * ask the fleet.
+ *
+ * Unowned: a #ClawtConfig outlives the agents it holds.
+ *
+ * Returns: (transfer none) (nullable): the fleet configuration
+ */
+ClawtConfig *clawt_agent_config_get_config(ClawtAgentConfig *self);
+
+/**
  * clawt_agent_config_get_string:
  * @self: a #ClawtAgentConfig
  * @key: a path relative to the agent, such as "model.model"

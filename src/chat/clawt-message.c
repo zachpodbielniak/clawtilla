@@ -21,8 +21,9 @@ struct _ClawtMessage {
     gchar *task_id;
     gchar *parent_id;
 
-    gint64 timestamp;
-    gint   depth;
+    gint64        timestamp;
+    gint          depth;
+    ClawtPriority priority;
 };
 
 static ClawtMessage *
@@ -54,6 +55,13 @@ clawt_message_new(const gchar *room_id,
     self->body = g_strdup(body);
     self->timestamp = g_get_real_time() / G_USEC_PER_SEC;
 
+    /*
+     * Named rather than left to g_new0().  Zero is CLAWT_PRIORITY_LOW,
+     * which is the band drop-oldest sheds first -- the opposite of a
+     * neutral default, and not something to arrive at by accident.
+     */
+    self->priority = CLAWT_PRIORITY_NORMAL;
+
     return self;
 }
 
@@ -75,6 +83,7 @@ clawt_message_copy(ClawtMessage *self)
     copy->parent_id = g_strdup(self->parent_id);
     copy->timestamp = self->timestamp;
     copy->depth = self->depth;
+    copy->priority = self->priority;
 
     return copy;
 }
@@ -159,6 +168,59 @@ clawt_message_set_depth(ClawtMessage *self, gint depth)
 {
     g_return_if_fail(self != NULL);
     self->depth = depth;
+}
+
+ClawtPriority
+clawt_message_get_priority(ClawtMessage *self)
+{
+    g_return_val_if_fail(self != NULL, CLAWT_PRIORITY_NORMAL);
+    return self->priority;
+}
+
+void
+clawt_message_set_priority(ClawtMessage *self, ClawtPriority priority)
+{
+    g_return_if_fail(self != NULL);
+    self->priority = priority;
+}
+
+gboolean
+clawt_message_priority_from_nick(const gchar    *nick,
+                                 ClawtPriority  *out_priority,
+                                 gchar         **out_refusal)
+{
+    gint band = CLAWT_PRIORITY_NORMAL;
+
+    g_return_val_if_fail(out_priority != NULL, FALSE);
+
+    *out_priority = CLAWT_PRIORITY_NORMAL;
+
+    if (nick == NULL || *nick == '\0')
+        return TRUE;
+
+    /*
+     * clawt_enum_from_nick() rather than g_enum_get_value_by_nick(),
+     * because the latter's case-insensitivity arrived in a particular
+     * GLib and whether "Urgent" is accepted must not depend on which one
+     * this was built against.
+     */
+    if (!clawt_enum_from_nick(CLAWT_TYPE_PRIORITY, nick, &band)) {
+        if (out_refusal != NULL) {
+            g_autofree gchar *bands =
+                clawt_enum_nick_list(CLAWT_TYPE_PRIORITY);
+
+            *out_refusal = g_strdup_printf(
+                "'%s' is not a priority. It is one of %s -- leave it out "
+                "for normal. Nothing was sent, so send it again with a "
+                "band from that list.", nick, bands);
+        }
+
+        return FALSE;
+    }
+
+    *out_priority = (ClawtPriority)band;
+
+    return TRUE;
 }
 
 gchar *

@@ -62,8 +62,16 @@ clawt_agent_caps_get_type(void)
             { CLAWT_AGENT_CAPS_DESKTOP, "CLAWT_AGENT_CAPS_DESKTOP", "desktop" },
             { CLAWT_AGENT_CAPS_DESKTOP_INPUT, "CLAWT_AGENT_CAPS_DESKTOP_INPUT", "desktop-input" },
             { CLAWT_AGENT_CAPS_MOUNTS, "CLAWT_AGENT_CAPS_MOUNTS", "mounts" },
-            { CLAWT_AGENT_CAPS_IMAGES, "CLAWT_AGENT_CAPS_IMAGES", "images" },
-            { CLAWT_AGENT_CAPS_ATTACHMENTS, "CLAWT_AGENT_CAPS_ATTACHMENTS", "attachments" },
+            /*
+             * "images" and "attachments" used to sit here.  Both were
+             * registered, neither was ever set by recompute_caps(), and
+             * a flag that is always false makes every control bound to
+             * it permanently insensitive -- so they advertised a set of
+             * capabilities the agent could not have.  Bits 6 and 7 are
+             * left unused rather than reassigned: renumbering the flags
+             * below them would change what an older client reads out of
+             * a caps string.
+             */
             { CLAWT_AGENT_CAPS_STREAMING, "CLAWT_AGENT_CAPS_STREAMING", "streaming" },
             { CLAWT_AGENT_CAPS_EFFORT_LEVELS, "CLAWT_AGENT_CAPS_EFFORT_LEVELS", "effort-levels" },
             { CLAWT_AGENT_CAPS_PEER_COMMS, "CLAWT_AGENT_CAPS_PEER_COMMS", "peer-comms" },
@@ -750,6 +758,52 @@ clawt_enum_from_nick(GType enum_type, const gchar *nick, gint *out_value)
     }
 
     return FALSE;
+}
+
+gchar *
+clawt_enum_nick_list(GType enum_type)
+{
+    g_autoptr(GEnumClass) klass = NULL;
+    GString *out;
+    guint named = 0;
+    guint written = 0;
+    guint i;
+
+    g_return_val_if_fail(G_TYPE_IS_ENUM(enum_type), NULL);
+
+    klass = g_type_class_ref(enum_type);
+
+    /*
+     * Counted first rather than joined as we go, so "and" lands before
+     * the last nickname that is actually written.  Deciding it from the
+     * loop index instead would leave a trailing " and " on any enum
+     * whose last value has no nickname -- the kind of thing nobody
+     * notices until one grows an odd member.
+     */
+    for (i = 0; i < klass->n_values; i++) {
+        if (klass->values[i].value_nick != NULL)
+            named++;
+    }
+
+    out = g_string_new(NULL);
+
+    for (i = 0; i < klass->n_values; i++) {
+        if (klass->values[i].value_nick == NULL)
+            continue;
+
+        /*
+         * "a, b and c" rather than a comma-separated list, because this
+         * goes into a sentence somebody reads when their config has
+         * just been refused, not into a log line.
+         */
+        if (written > 0)
+            g_string_append(out, (written + 1 == named) ? " and " : ", ");
+
+        g_string_append(out, klass->values[i].value_nick);
+        written++;
+    }
+
+    return g_string_free(out, FALSE);
 }
 
 gboolean

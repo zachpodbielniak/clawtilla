@@ -61,6 +61,7 @@ the second is what clawtilla adds:
 | `libpq` | `libpq-devel` | libreclaw's postgres backend |
 | `libdex-1` | `libdex-devel` | async futures |
 | `yaml-0.1` | `libyaml-devel` | yaml-glib |
+| `libxml-2.0` | `libxml2-devel` | ai-glib's HTML-parsing search tools |
 | `gtk4` | `gtk4-devel` | GTK client |
 | `libadwaita-1` | `libadwaita-devel` | GTK client |
 | `libvirt` | `libvirt-devel` | podomation's vm_virtmanager module |
@@ -1397,7 +1398,7 @@ the same program.
 
 - `clawt_computer_teardown()` went through `CALL_OR_TRUE`, which returns
   TRUE when the vfunc is NULL — and `ClawtVmComputer` had no teardown at
-  all. So `agent rm --remove-computer` on a VM took the success branch,
+  all. So `agent rm --with-computer` on a VM took the success branch,
   recorded the computer as "removed", and removed nothing: the libvirt
   domain stayed defined and the disk stayed on disk. A missing feature
   that reports failure is a gap; one that reports success is a lie, and
@@ -1599,6 +1600,14 @@ the same program.
   the library was correct and provably so from a standalone probe, and
   the running daemon was minutes old. Run plain `make` before restarting
   the daemon to check a fix by hand.
+- The mirror image bites the *revert-proof*: plain `make` builds the
+  library but does **not** relink `build/release/tests/*`. So sabotaging
+  a fix, rebuilding, and watching the test still pass proves nothing —
+  the binary is the old one. Three people hit this in one session, and a
+  pass is exactly what a working sabotage looks like from outside. Build
+  the specific binary (`make build/release/tests/test-foo`), and read the
+  build output rather than its exit status: a `>/dev/null` that hides a
+  compile error produces the same false pass.
 
 ### g_enum_get_value_by_nick() asserts on a flags type
 

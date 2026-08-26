@@ -170,13 +170,14 @@ enum {
 
 static guint signals[N_SIGNALS];
 
-static gboolean deliver_for_tools(const gchar *from_agent,
-                                  const gchar *target,
-                                  const gchar *body,
-                                  const gchar *task_id,
-                                  gint         depth,
-                                  gpointer     user_data,
-                                  GError     **error);
+static gboolean deliver_for_tools(const gchar   *from_agent,
+                                  const gchar   *target,
+                                  const gchar   *body,
+                                  const gchar   *task_id,
+                                  gint           depth,
+                                  ClawtPriority  priority,
+                                  gpointer       user_data,
+                                  GError       **error);
 
 /* ── Construction ────────────────────────────────────────────────── */
 
@@ -659,6 +660,9 @@ pod_action(const gchar *action, GHashTable *params, GHashTable **out_result,
         const gchar *target = (agent != NULL)
             ? agent : g_hash_table_lookup(params, "room");
         const gchar *body = g_hash_table_lookup(params, "body");
+        const gchar *band = g_hash_table_lookup(params, "priority");
+        ClawtPriority priority = CLAWT_PRIORITY_NORMAL;
+        g_autofree gchar *refusal = NULL;
 
         if (target == NULL || body == NULL) {
             g_set_error_literal(error, CLAWT_ERROR,
@@ -667,8 +671,29 @@ pod_action(const gchar *action, GHashTable *params, GHashTable **out_result,
             return FALSE;
         }
 
-        return clawt_mailbox_router_send_to(self->router, "user", target,
-                                            body, NULL, 0, error) >= 0;
+        /*
+         * `priority` has been in message_agent's declared parameters for
+         * as long as the pod module has existed, and nothing here read
+         * it -- so a pod that set it was accepted, reported ok, and
+         * queued at NORMAL like everything else.  Judged by the same
+         * function the tool uses, so a pod and an agent cannot come to
+         * mean different things by "urgent".
+         *
+         * Refused rather than defaulted, and refused *before* anything is
+         * queued.  A pod runs unattended: a band nobody noticed was
+         * wrong would be wrong on every run of that rule, and the one
+         * message written to be expedited would sit at the band
+         * `drop-oldest` sheds first.
+         */
+        if (!clawt_message_priority_from_nick(band, &priority, &refusal)) {
+            g_set_error_literal(error, CLAWT_ERROR,
+                                CLAWT_ERROR_INVALID_ARGUMENT, refusal);
+            return FALSE;
+        }
+
+        return clawt_mailbox_router_send_to_full(self->router, "user", target,
+                                                 body, NULL, 0, priority,
+                                                 error) >= 0;
     }
 
     if (g_strcmp0(action, "delegate") == 0) {
@@ -700,13 +725,33 @@ pod_action(const gchar *action, GHashTable *params, GHashTable **out_result,
         return TRUE;
     }
 
-    if (g_strcmp0(action, "start_agent") == 0)
-        return clawt_daemon_start_agent(self, agent, error);
+    if (g_strcmp0(action, "start_agent") == 0 ||
+        g_strcmp0(action, "stop_agent") == 0 ||
+        g_strcmp0(action, "restart_agent") == 0) {
+        /*
+         * Checked here as well as in the callee, and named for the
+         * action.
+         *
+         * These three used to hand the parameter straight through:
+         * start_agent onto a g_return_val_if_fail() that printed a GLib
+         * critical and returned FALSE with no #GError, and stop_agent
+         * onto a lookup that simply answered FALSE. So a pod that forgot
+         * the argument got "it did not work", which is what every other
+         * failure here says too. Refusing at the action is what puts the
+         * action's own name in the sentence.
+         */
+        if (agent == NULL) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "%s needs an agent", action);
+            return FALSE;
+        }
 
-    if (g_strcmp0(action, "stop_agent") == 0)
-        return clawt_daemon_stop_agent(self, agent);
+        if (g_strcmp0(action, "start_agent") == 0)
+            return clawt_daemon_start_agent(self, agent, error);
 
-    if (g_strcmp0(action, "restart_agent") == 0) {
+        if (g_strcmp0(action, "stop_agent") == 0)
+            return clawt_daemon_stop_agent(self, agent);
+
         clawt_daemon_stop_agent(self, agent);
         return clawt_daemon_start_agent(self, agent, error);
     }
@@ -996,9 +1041,16 @@ on_agent_state_changed(ClawtAgentManager *manager,
 /*
  * A task changed state.
  *
- * Only a finished one is worth a notification, and only because
- * somebody asked: `done` is off by default, since a fleet that works is
- * a fleet finishing tasks all day.
+ * Published for every state, and notified about only for a finished one
+ * -- and that only because somebody asked, since `done` is off by
+ * default and a fleet that works is a fleet finishing tasks all day.
+ *
+ * Deciding the notification used to be the whole of this function, so
+ * `ClawtTaskManager::task-changed` reached the daemon and stopped there:
+ * nothing put a `task.` kind on the bus at all. Following a task meant
+ * polling `task.list`, and podomation's `on_task_changed` binding --
+ * declared, documented and mapped to `task.changed` -- named an event
+ * that could never once fire.
  */
 static void
 on_task_changed(ClawtTaskManager *manager,
@@ -1014,10 +1066,34 @@ on_task_changed(ClawtTaskManager *manager,
 
     (void)manager;
 
+    task = clawt_task_manager_get(self->tasks, task_id);
+
+    {
+        g_autoptr(ClawtEvent) event = clawt_event_new("task.changed",
+                                                      task_id);
+        const gchar *nick = clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE, state);
+
+        clawt_event_set_detail(event, "state",
+                               nick != NULL ? nick : "unknown");
+
+        /*
+         * The assignee goes with it, and it is load-bearing rather than
+         * decoration: the pod module resolves an event's agent from this
+         * detail for any kind that is not `agent.*` or `message`, and
+         * that is what a pod's scope is matched against. Without it
+         * `Clawtilla.New("researcher")` would hear every task in the
+         * fleet change state, which is precisely what naming an agent in
+         * the constructor asks not to happen.
+         */
+        if (task != NULL)
+            clawt_event_set_detail(event, "agent",
+                                   clawt_task_get_assignee(task));
+
+        clawt_event_bus_publish(self->bus, event);
+    }
+
     if (state != CLAWT_TASK_COMPLETED || self->notifier == NULL)
         return;
-
-    task = clawt_task_manager_get(self->tasks, task_id);
 
     if (task == NULL)
         return;
@@ -1757,12 +1833,13 @@ create_agent_for_tools(const gchar  *agent_id,
 static gboolean
 deliver_for_tools(const gchar *from_agent, const gchar *target,
                   const gchar *body, const gchar *task_id, gint depth,
-                  gpointer user_data, GError **error)
+                  ClawtPriority priority, gpointer user_data, GError **error)
 {
     ClawtDaemon *self = user_data;
 
-    if (clawt_mailbox_router_send_to(self->router, from_agent, target, body,
-                                     task_id, depth, error) < 0)
+    if (clawt_mailbox_router_send_to_full(self->router, from_agent, target,
+                                          body, task_id, depth, priority,
+                                          error) < 0)
         return FALSE;
 
     /*
@@ -2288,7 +2365,26 @@ clawt_daemon_start_agent(ClawtDaemon *self, const gchar *agent_id,
     g_autoptr(ClawtComputer) pending = NULL;
 
     g_return_val_if_fail(CLAWT_IS_DAEMON(self), FALSE);
-    g_return_val_if_fail(agent_id != NULL, FALSE);
+
+    /*
+     * An error rather than g_return_val_if_fail(), which is what this
+     * was.
+     *
+     * The id here does not come from code: it comes from an IPC payload,
+     * from an agent's config, or from a pod file somebody wrote. A
+     * critical is the right answer to a programmer's mistake and the
+     * wrong one to a missing argument -- it printed a stack trace into
+     * the daemon's log and returned FALSE with @error untouched, so
+     * every caller had a failure with nothing in it to report. The pod
+     * action path was where that showed: `clawtilla->start_agent()` with
+     * no agent warned "it did not work" above a GLib critical about an
+     * assertion nobody had written.
+     */
+    if (agent_id == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "starting an agent needs its id");
+        return FALSE;
+    }
 
     if (!start_agent_prepare(self, agent_id, &config_path, &pending, error))
         return FALSE;
@@ -2610,13 +2706,57 @@ warm_model_cache(ClawtDaemon *self)
     }
 }
 
-static gboolean
-on_sweep(gpointer user_data)
+void
+clawt_daemon_sweep(ClawtDaemon *self)
 {
-    ClawtDaemon *self = user_data;
+    g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+    if (self->router == NULL)
+        return;
 
     clawt_mailbox_router_sweep(self->router);
     clawt_event_log_sweep(self->log);
+
+    /*
+     * And the exchange, which until now had no periodic writer at all.
+     *
+     * clawt_exchange_prepare() applies the cap, which covers an agent
+     * starting and a file put through the daemon -- but not the case the
+     * exchange exists for: a file written through the mount from *inside*
+     * a computer, by an agent's own shell, which the daemon never sees.
+     * A long-running fleet doing that grew past defaults.exchange_max_bytes
+     * and stayed there until somebody happened to restart an agent.
+     *
+     * 0 for the age, so this is the size cap and nothing else. Deleting a
+     * file for being old is a policy nobody has asked for and there is no
+     * key to ask for it with; deleting one to stay under a limit somebody
+     * set is the limit doing its job.
+     *
+     * Skipped outright when the cap is off, because the sweep walks the
+     * whole exchange to find out it has nothing to do -- and "0 disables
+     * the limit" should mean the daemon stops looking, not that it looks
+     * and always answers no.
+     */
+    if (self->exchange != NULL &&
+        clawt_config_get_int(self->config, "defaults.exchange_max_bytes") > 0) {
+        guint removed = clawt_exchange_sweep(self->exchange, 0);
+
+        /*
+         * Said out loud, as clawt_exchange_prepare() already does on its
+         * own path. Files disappearing from a shared directory on a timer
+         * nobody triggered is how a cap gets reported as data loss.
+         */
+        if (removed > 0)
+            g_message("exchange: removed %u file%s on the periodic sweep to "
+                      "stay under defaults.exchange_max_bytes",
+                      removed, (removed == 1) ? "" : "s");
+    }
+}
+
+static gboolean
+on_sweep(gpointer user_data)
+{
+    clawt_daemon_sweep(user_data);
 
     return G_SOURCE_CONTINUE;
 }
@@ -3811,7 +3951,8 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
             clawt_config_get_path_value(self->config, "daemon.automation_dir");
         g_autoptr(GError) local = NULL;
 
-        self->automation = clawt_automation_new(self->bus, pod_action, self);
+        self->automation = clawt_automation_new(self->bus, self->main_context,
+                                                pod_action, self);
 
         /*
          * A failure here disables the automation and nothing else. Pods
@@ -3843,6 +3984,15 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
                                           self->guard);
     clawt_mcp_tools_set_deliver_func(self->mcp_tools, deliver_for_tools,
                                      self, NULL);
+
+    /*
+     * So an agent's own tool calls land on the same audit trail as a
+     * person's.  The client `computer.exec` handler has published one
+     * per command since the daemon was written; the tools had no route
+     * to a bus at all, so exactly the half somebody would want to look
+     * up -- what the agent ran on its own initiative -- was missing.
+     */
+    clawt_mcp_tools_set_event_bus(self->mcp_tools, self->bus);
     clawt_mcp_tools_set_room_manager(self->mcp_tools, self->rooms);
 
     /*
@@ -4334,6 +4484,90 @@ clawt_daemon_reload(ClawtDaemon *self, GError **error)
 
 
 /* ── The client surface ──────────────────────────────────────────── */
+
+/*
+ * The schema entry an agent-relative key names, or %NULL for one the
+ * schema has never heard of.
+ *
+ * Found by asking every entry what it is called inside an agent block,
+ * because that is the same question add_agent_settings() below walks the
+ * schema to answer -- and the two have to agree. `mailbox.overflow` in
+ * an agent is the schema's `orchestration.mailbox.overflow`, so a
+ * lookup that only tried `agents.<key>` would find nothing for exactly
+ * the nine options that are settable in two places.
+ */
+static const ClawtSchemaEntry *
+agent_setting_entry(const gchar *key)
+{
+    const ClawtSchemaEntry *schema;
+    gsize n_entries = 0;
+    gsize i;
+
+    if (key == NULL)
+        return NULL;
+
+    schema = clawt_config_schema_get(&n_entries);
+
+    for (i = 0; i < n_entries; i++) {
+        if (g_strcmp0(clawt_config_schema_agent_name(&schema[i]), key) == 0)
+            return &schema[i];
+    }
+
+    return NULL;
+}
+
+/*
+ * Whether changing @key reaches a running agent's files and not the
+ * session it is in the middle of.
+ *
+ * An AI CLI reads two things exactly once, when a session starts: the
+ * system prompt it is handed, and the tool list it asks its MCP servers
+ * for. A setting in that set, changed under a running agent, therefore
+ * lands everywhere except the conversation actually happening -- and the
+ * agent then reports, accurately, not having what was just granted.
+ *
+ * The two prefixes were the whole rule and they do not state the set.
+ * `chief_of_staff` and `team_role` are the two halves of one condition
+ * in clawt_mcp_tools_is_permitted(): between them they decide whether
+ * the delegation tool is offered at all, exactly as `tools.manage_fleet`
+ * does, and neither of them begins with `tools.`. So a chief granted its
+ * role while it ran got the gate, the files and the TOOLS.org region,
+ * kept a session that had already listed its tools, and nothing said so.
+ * Which is how a bug report gets answered with an instruction to flip a
+ * switch that was flipped before it was read.
+ *
+ * Named here rather than derived, because nothing in the schema records
+ * "read once per session" -- it is a property of the CLI on the other
+ * side, not of the option.
+ *
+ * One answer for every key on it, though the remedy differs and the
+ * clients say so: a tool list is read at session start, so a restart is
+ * enough, while a resumed session is never handed a system prompt at
+ * all and only `agent reset` applies a `persona.` change.
+ */
+static gboolean
+setting_needs_a_new_session(const gchar *key)
+{
+    static const gchar *const session_scoped[] = {
+        /* Both gate NEEDS_ASSIGNMENT, which decides the tool list. */
+        "chief_of_staff",
+        "team_role"
+    };
+    gsize i;
+
+    if (key == NULL)
+        return FALSE;
+
+    if (g_str_has_prefix(key, "tools.") || g_str_has_prefix(key, "persona."))
+        return TRUE;
+
+    for (i = 0; i < G_N_ELEMENTS(session_scoped); i++) {
+        if (g_strcmp0(key, session_scoped[i]) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
 
 /*
  * Every per-agent option, with the value this agent has for it.
@@ -7979,6 +8213,49 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
                                        "no such agent");
 
         /*
+         * An enum is checked against the schema before it is written.
+         *
+         * Nothing did, so `computer.type teleporter` was accepted here,
+         * echoed back as saved, and written to clawtilla.yaml. Every
+         * reader of it then fell back to the schema default, so the
+         * agent went on with the computer it already had while the file
+         * said otherwise -- and at the next daemon load the validator
+         * caught what this did not and turned the agent into a shadow,
+         * a long way from the command that caused it.
+         *
+         * The allowed values come off the enum's own #GType through
+         * clawt_enum_nick_list(), for the same reason the type comes off
+         * the schema: a set of values spelled out beside the refusal is
+         * the enum written a second time, and the second copy stops
+         * being true in silence.
+         */
+        {
+            const ClawtSchemaEntry *entry = agent_setting_entry(key);
+            gint parsed = 0;
+
+            /*
+             * An empty value is refused with the rest, deliberately.
+             * There is no "unset" here, so clearing an enum writes
+             * `key: ""` -- and the loader reads that as an unknown
+             * nickname and shadows the agent, which is the very failure
+             * this check exists to prevent.
+             */
+            if (entry != NULL && entry->type == CLAWT_SCHEMA_ENUM &&
+                value != NULL &&
+                !clawt_enum_from_nick(entry->enum_type(), value, &parsed)) {
+                g_autofree gchar *allowed =
+                    clawt_enum_nick_list(entry->enum_type());
+                g_autofree gchar *message = g_strdup_printf(
+                    "'%s' is not a value for %s: it takes one of %s",
+                    value, key, allowed);
+
+                return clawt_ipc_error_new(request,
+                                           CLAWT_ERROR_INVALID_ARGUMENT,
+                                           message);
+            }
+        }
+
+        /*
          * Dispatch on what the schema says the key *is*, rather than
          * writing every value as a scalar.
          *
@@ -8022,23 +8299,14 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         json_builder_add_string_value(builder, agent_id);
 
         /*
-         * An AI CLI reads some things once, when its session starts. So a
-         * setting changed under a running agent reaches its files and not
-         * its session, and saying nothing here is how somebody concludes
-         * the setting does not work.
-         *
-         * Tools are the known case: a CLI lists them at session start.
-         * Persona is the same shape and was not reported -- an AI CLI is
-         * not handed a system prompt when it *resumes* a session, so
-         * editing an identity file, or repointing
-         * persona.identity_files, leaves a running agent with the
-         * identity it was created with. Clearing the session is what
-         * applies it, which is `clawtilla agent reset`.
+         * Which keys those are is setting_needs_a_new_session()'s to
+         * say; only a *running* agent is told, because a stopped one
+         * will start a fresh session anyway and telling it to restart
+         * would be advice about nothing.
          */
         json_builder_set_member_name(builder, "restart_required");
         json_builder_add_boolean_value(
-            builder, (g_str_has_prefix(key, "tools.") ||
-                      g_str_has_prefix(key, "persona.")) &&
+            builder, setting_needs_a_new_session(key) &&
                      clawt_agent_get_state(
                          clawt_agent_manager_get(self->agents, agent_id)) ==
                      CLAWT_AGENT_STATE_RUNNING);

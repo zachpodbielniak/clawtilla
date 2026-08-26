@@ -1667,6 +1667,9 @@ describe_integration(GString *out, ClawtIntegrationBinding *binding)
             clawt_integration_binding_get_string(binding, "account");
         const gchar *scopes =
             clawt_integration_binding_get_string(binding, "scopes");
+        const gchar *token_file =
+            clawt_integration_binding_get_string(binding, "token_file");
+        g_autoptr(ClawtOauthToken) token = NULL;
         g_auto(GStrv) tools =
             clawt_integration_binding_get_string_list(binding, "tools");
 
@@ -1702,12 +1705,41 @@ describe_integration(GString *out, ClawtIntegrationBinding *binding)
             "token in your config, your environment or anywhere else to\n"
             "look -- and no need for one.\n\n");
 
-        if (scopes != NULL && *scopes != '\0')
+        /*
+         * The granted set, when there is one, and never the requested
+         * one under a sentence claiming it was granted.  A person can
+         * untick things on a consent screen, so `scopes:` is the ask and
+         * the token file is the answer -- and an agent believes this
+         * file over any tool list, so overstating here is an agent
+         * confidently spending turns on calls the service was always
+         * going to refuse, and reporting the refusals as the service
+         * misbehaving.
+         *
+         * Read the same way `connector.list` and the health check read
+         * it, from the token file, so there is no second opinion about
+         * what an agent has.  Only ->scopes is touched: the credential
+         * in the same struct must never reach a file an agent reads,
+         * and the autoptr free wipes it either way.
+         */
+        if (token_file != NULL && *token_file != '\0')
+            token = clawt_oauth_token_load(token_file, NULL);
+
+        if (token != NULL && token->scopes != NULL && *token->scopes != '\0')
             g_string_append_printf(out,
-                "Access was granted for: %s. Anything outside that will\n"
+                "Access was granted for: %s. That is what the provider\n"
+                "issued, not what was asked for. Anything outside it will\n"
                 "be refused by the service rather than by clawtilla, so\n"
                 "it is worth reading before assuming a failure was\n"
-                "yours.\n\n", scopes);
+                "yours.\n\n", token->scopes);
+        else if (scopes != NULL && *scopes != '\0')
+            g_string_append_printf(out,
+                "Access was requested for: %s. What the provider actually\n"
+                "granted is not recorded here and may be narrower -- a\n"
+                "consent screen can be narrowed -- so treat this as the\n"
+                "most you might have rather than what you have. Anything\n"
+                "refused is refused by the service rather than by\n"
+                "clawtilla, so it is worth reading before assuming a\n"
+                "failure was yours.\n\n", scopes);
 
         if (tools != NULL && tools[0] != NULL) {
             guint i;

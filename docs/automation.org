@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-23 Sat]
-#+updated: [2026-08-23 Sat]
-#+version: 0.2.0
+#+updated: [2026-08-26 Wed]
+#+version: 0.3.0
 
 * Automation
 
@@ -30,6 +30,13 @@ somebody else's library to add a hook point.
 There is also nothing a shared object could do here: the module needs a
 live event bus and a callback into a running daemon.
 
+*The consequence is that the podomation CLI cannot see it.*  There is no
+~libpod-module-clawtilla.so~ to find, so ~podomation validate~ on a pod
+naming ~clawtilla~ answers /Pod 'x' references unknown source module
+'clawtilla'/, and ~podomation list-modules~ does not list it.  The
+daemon is what parses these files; the syntax below is podomation's and
+the names are clawtilla's.
+
 ** One module, both halves
 
 ~clawtilla~ fires when something happens in the fleet, and ~clawtilla~ is
@@ -44,11 +51,11 @@ that knew they were the same system.
 Scope comes from the constructor, which is podomation's own way of saying
 it:
 
-#+begin_src
+#+begin_example
 clawtilla->new()                        every agent
 clawtilla->new("researcher")            one agent
 clawtilla->new("researcher", "scribe")  a group
-#+end_src
+#+end_example
 
 *It applies in both directions.*  A pod scoped to one agent neither hears
 about the others nor can act on them, so a per-agent automation cannot
@@ -66,37 +73,97 @@ it had one -- reaches *every* pod.  There is nothing to filter it
 against, and dropping it would silently lose the fleet-level hooks from a
 scoped pod.
 
+The same rule makes an *action* that names no agent unscoped, for the
+same reason and with the opposite feel: ~post_room~, ~run_routine~ and a
+~notify~ without ~agent:~ are checked against nothing, so a pod scoped to
+one agent can still post in any room and run any routine.  The scope is a
+fence around the agents, not around the daemon.
+
 ** Events
 
 Names use podomation's own convention: ~on_something~, and underscores
 rather than dots.  Both are forced: the DSL cannot parse a dot in an
 event name, and every event podomation ships is named that way.
 
-| Event | About |
-|---+---|
-| ~on_agent_created~ | An agent was added to the fleet |
-| ~on_agent_removed~ | An agent was removed |
-| ~on_agent_changed~ | An agent's configuration changed |
-| ~on_agent_started~ | An agent was started |
-| ~on_agent_stopped~ | An agent was stopped |
-| ~on_agent_state~ | It changed state; ~state~ says which, ~detail~ says why |
-| ~on_agent_connected~ | An agent dialled in to the daemon |
-| ~on_agent_disconnected~ | An agent's link dropped |
-| ~on_agent_typing~ | A turn began or ended; ~typing~ says which |
-| ~on_message~ | A message was routed; ~from~, ~to~, ~body~, ~task~ |
-| ~on_task_changed~ | A delegated task changed state |
-| ~on_routine_ran~ | A scheduled routine started |
-| ~on_routine_changed~ | A routine was added, edited or removed |
-| ~on_integration_changed~ | An integration was added, edited or removed |
-| ~on_daemon_started~ | The daemon came up |
-| ~on_daemon_reloaded~ | The configuration was reloaded |
-| ~on_daemon_stopped~ | The daemon is going away |
+| Event | Fires when | Carries |
+|---+---+---|
+| ~on_agent_created~ | An agent was added to the fleet | --- |
+| ~on_agent_removed~ | An agent was removed | --- |
+| ~on_agent_changed~ | An agent's configuration changed | --- |
+| ~on_agent_started~ | An agent was started | --- |
+| ~on_agent_stopped~ | An agent was stopped | --- |
+| ~on_agent_state~ | It changed state | ~state~, ~detail~ |
+| ~on_agent_connected~ | An agent dialled in to the daemon | --- |
+| ~on_agent_disconnected~ | An agent's link dropped | --- |
+| ~on_agent_typing~ | A turn began or ended | ~typing~, ~peer~, ~room~ |
+| ~on_message~ | A message was routed | ~id~, ~from~, ~to~, ~body~, ~task~ |
+| ~on_task_changed~ | A delegated task changed state | ~state~, ~agent~ |
+| ~on_routine_ran~ | A scheduled routine started | --- |
+| ~on_routine_changed~ | A routine was added, edited or removed | --- |
+| ~on_integration_changed~ | An integration was added, edited or removed | --- |
+| ~on_daemon_started~ | The daemon came up | --- |
+| ~on_daemon_reloaded~ | The configuration was reloaded | --- |
+| ~on_daemon_stopped~ | The daemon is going away | --- |
 
-Every event carries ~agent~ and ~timestamp~, plus whatever that kind has.
+Every event also carries ~timestamp~, which is microseconds since the
+epoch, and ~subject~ -- *what the event is about*, which is not always an
+agent.  For the ~on_agent_*~ kinds it is the agent id; for ~on_message~
+it is the *room*; for ~on_routine_ran~ and ~on_routine_changed~ the
+routine id; for ~on_integration_changed~ the instance name.  The three
+~on_daemon_*~ kinds have no subject at all, and carry only a timestamp.
 
-Only these are forwarded.  A pod that could bind to anything the daemon
-ever published would break the day an internal event was renamed, and
-nothing would have told anybody it was load-bearing.
+~agent~ is present when the event is about one: the subject for the
+~on_agent_*~ kinds, the *sender* for ~on_message~, and absent for the
+rest.  It is also what the scope is matched against, which is why a pod
+scoped to ~researcher~ sees that agent's outgoing messages rather than
+every room it happens to be in.
+
+Read a field with podomation's ordinary interpolation, and guard on one
+the same way:
+
+#+begin_src
+pod fleet = clawtilla->new();
+
+fleet->on_agent_state where event->state == "error" =>
+    clawtilla->notify(title: "{event->agent} fell over",
+                      body: "{event->detail}");
+#+end_src
+
+~state~ is an agent-state nickname -- ~stopped~, ~starting~, ~running~,
+~degraded~, ~error~ and the rest -- and ~typing~ is the string ~"true"~
+or ~"false"~.
+
+The forwarder carries a *fixed* set of detail keys across, so a detail
+added to a daemon event later does not reach a pod until it is added to
+that list.  ~on_agent_typing~ was the live example for a long time: the
+daemon recorded who the turn was for and which room it was in, and
+neither reached the pod.  Both do now, along with ~on_message~'s ~id~ --
+but the shape of the trap is unchanged, and the list is the thing to
+check when a field the daemon plainly publishes is not there.
+
+Only the kinds in the table are forwarded.  A pod that could bind to
+anything the daemon ever published would break the day an internal event
+was renamed, and nothing would have told anybody it was load-bearing.
+The published-but-not-forwarded kinds are ~config.changed~,
+~room.created~, ~room.changed~, ~team.changed~, ~message.refused~,
+~mailbox.queued~, ~mailbox.delivered~, ~decision.asked~,
+~computer.exec~, ~image.progress~ and ~image.finished~ -- so a mailbox
+filling up, or the loop guard refusing a message, is not something a pod
+can currently bind to.
+
+*** on_task_changed fires for every state, not only the last
+
+~pending~, ~running~, ~completed~ and ~failed~ all raise it, so a pod
+that only wants the end needs a guard: ~where event->state ==
+"completed"~.  Its ~agent~ detail is the assignee, and it is what a
+scoped pod matches against -- so ~clawtilla->new("researcher")~ hears
+about the researcher's tasks and nobody else's.
+
+It genuinely did not fire for a long time, which is worth knowing if you
+read an older note: the task manager emitted a GObject signal that
+reached the notifier and stopped there, so a pod binding to it loaded
+without complaint, counted towards the "pod files loaded" line, and
+never ran.
 
 ** Actions
 
@@ -104,50 +171,228 @@ nothing would have told anybody it was load-bearing.
 |---+---|
 | ~message_agent~ | ~agent~, ~body~, ~priority~ |
 | ~post_room~ | ~room~, ~body~ |
-| ~delegate~ | ~agent~, ~prompt~ -- returns a task ~id~ |
+| ~delegate~ | ~agent~, ~prompt~ |
 | ~start_agent~ | ~agent~ |
 | ~stop_agent~ | ~agent~ |
 | ~restart_agent~ | ~agent~ |
+| ~computer_exec~ | ~agent~, ~command~, ~timeout~ -- *refused*, see below |
 | ~notify~ | ~title~, ~body~, ~agent~ |
-| ~run_routine~ | ~routine~ -- returns a task ~id~ |
+| ~run_routine~ | ~routine~ |
 | ~memory_add~ | ~agent~, ~content~, ~category~ |
 
-Each returns ~ok~, and ~id~ for the ones that create something.
+~message_agent~ takes ~priority~ -- ~low~, ~normal~, ~high~ or ~urgent~
+-- and an unrecognised one is refused before anything is queued rather
+than quietly becoming ~low~, which is the band ~drop-oldest~ sheds
+first.  Absent means ~normal~.
+
+Only ~priority~, ~body~ on ~notify~, ~agent~ on ~notify~, ~category~ and
+~timeout~ are optional; everything else is required.  ~message_agent~,
+~post_room~, ~delegate~, ~notify~ and ~memory_add~ refuse a missing one
+with a warning naming what they needed.  ~start_agent~, ~stop_agent~ and
+~restart_agent~ refuse a missing ~agent~ naming the action, like the
+rest.  They did not for a long time: they warned ~Clawtilla:
+start_agent: it did not work~, and ~start_agent~ left a GLib critical
+above it -- an assertion failure rather than an error, so the caller got
+a refusal with nothing in it to report.
+
+Every action returns ~ok~.  ~delegate~, ~run_routine~ and ~memory_add~
+also return ~id~ -- the task id, the task id and the memory id
+respectively -- which is the whole reason to capture a result:
+
+#+begin_src
+pod fleet = clawtilla->new();
+
+res queued := fleet->on_daemon_started =>
+    clawtilla->delegate(agent: "scribe", prompt: "Summarise yesterday.");
+
+fleet->on_daemon_started =>
+    clawtilla->notify(title: "morning summary queued as {queued->id}");
+#+end_src
+
+A third field, ~detail~, is declared in the return metadata and is not
+set by anything today.
+
+~message_agent~ accepts ~priority~ and does nothing with it: the message
+is queued at the ordinary priority whatever is passed.  It is declared
+rather than removed because the mailbox has the notion and the action
+will grow into it; treat a value there as documentation of intent rather
+than as a setting.
 
 *** computer_exec is declared and refused
 
 It is in the list so a pod naming it gets a *reason* rather than "no such
 action", which would read as a typo.  Calling it fails with an
-explanation.
+explanation naming the two things to do instead: podomation's own command
+modules, or delegating the work to the agent.
 
 Every other action is a fleet operation the daemon already owns.  That
 one is arbitrary code on the machine, fired by an event, with nobody
 watching -- and podomation can already run a command through its own
 modules, where it is at least visible as one in the pod.
 
+Its parameters are described in full anyway, because the description is
+what an author reads before finding out it is refused, and a parameter
+list that stops halfway reads as the refusal being an oversight.
+
 ** Worked examples
+
+Each of these is a complete file.  They were checked with ~podomation
+validate~ against a build of the module, which is the only way to know a
+pod parses -- and worth remembering that ~validate~ checks *syntax* and
+module names and nothing else, so an event or action spelled wrongly
+passes it and fails at dispatch.
 
 *** Restart an agent that fell over, and say so
 
 #+begin_src
-pod watch = clawtilla->new();
-watch->on_agent_state => clawtilla->restart_agent(agent: "researcher");
+# ~/.clawtilla/pods/restart.pod
+pod fleet = clawtilla->new();
+
+fleet->on_agent_state where event->state == "error" =>
+    clawtilla->restart_agent(agent: "{event->agent}");
+
+fleet->on_agent_state where event->state == "error" =>
+    clawtilla->notify(title: "{event->agent} fell over",
+                      body: "{event->detail}",
+                      agent: "{event->agent}");
 #+end_src
 
-*** Tell me when anything finishes a task
+The guard is the point.  Without it the pod restarts an agent every time
+it changes state, including the ~starting~ and ~running~ transitions of
+the restart it just asked for.
+
+*** Push it to a phone instead
 
 #+begin_src
-pod tasks = clawtilla->new();
-tasks->on_task_changed => clawtilla->notify(title: "a task changed state");
+# ~/.clawtilla/pods/push.pod
+pod fleet = clawtilla->new();
+pod push  = gotify->new("https://gotify.example.com", "AxxxxxxxxxxA");
+
+fleet->on_agent_state where event->state == "error" =>
+    push->send_message(message: "{event->agent}: {event->detail}",
+                       title: "an agent fell over",
+                       priority: "8");
 #+end_src
+
+~clawtilla->notify~ goes to whatever ~integrations~ the fleet has, which
+is the right answer when the fleet already has a notifier.  Reaching for
+another module's handler is the right answer when it does not, or when
+this one alert should go somewhere else.
+
+*** Say it in a Matrix room
+
+#+begin_src
+# ~/.clawtilla/pods/announce.pod
+pod fleet = clawtilla->new();
+pod room  = matrix->new("!fleet:example.com");
+
+fleet->on_agent_created =>
+    room->send_notice(message_text: "{event->agent} joined the fleet");
+#+end_src
+
+~send_notice~ rather than ~send_message~: an ~m.notice~ does not raise a
+notification in most clients, which is what you want for a running
+commentary that nobody has to answer.
+
+*** Remember why it fell over
+
+#+begin_src
+# ~/.clawtilla/pods/remember.pod
+pod fleet = clawtilla->new();
+
+fleet->on_agent_state where event->state == "error" =>
+    clawtilla->memory_add(agent: "{event->agent}",
+                          content: "Fell over: {event->detail}",
+                          category: "learning");
+#+end_src
+
+This one fails, loudly and per event, for an agent with
+~memories.enabled~ off -- the refusal names the agent and the setting.
+
+*** Run a routine on a schedule podomation owns
+
+#+begin_src
+# ~/.clawtilla/pods/nightly.pod
+pod nightly = cron->new("0 3 * * *");
+
+nightly->on_schedule => clawtilla->run_routine(routine: "nightly-review");
+#+end_src
+
+*** Ask an agent something every ten minutes
+
+#+begin_src
+# ~/.clawtilla/pods/poll.pod
+pod every_ten_minutes = timer->new(600000);
+
+every_ten_minutes->on_tick =>
+    clawtilla->message_agent(agent: "scribe", body: "Anything to report?");
+#+end_src
+
+~timer~ takes milliseconds, and the first tick is one whole interval
+after the daemon starts rather than at start -- so this pod says nothing
+for ten minutes after a restart.  Bind ~on_daemon_started~ as well if the
+first one matters.
 
 *** Hand work to a second agent when the first says something
 
 #+begin_src
-pod handoff = clawtilla->new("researcher");
-handoff->on_message => clawtilla->delegate(agent: "scribe",
-                                           prompt: "Write this up.");
+# ~/.clawtilla/pods/handoff.pod
+pod researcher = clawtilla->new("researcher");
+
+researcher->on_message => clawtilla->delegate(agent: "researcher",
+                                              prompt: "Write that up.");
 #+end_src
+
+Note the scope.  This pod is named for ~researcher~, so ~delegate~ to
+anybody else is refused -- which is the fence working, not a bug.  A
+handoff to a *different* agent needs both of them in the constructor:
+~clawtilla->new("researcher", "scribe")~.
+
+And note what it is bound to: ~on_message~ fires for every message that
+agent sends, its replies to the operator included, so this is a pod that
+answers itself unless the fleet's loop guard stops it.  Guard on
+~event->to~ or on the body before turning something like this on.
+
+*** Tell a room the configuration was reloaded
+
+#+begin_src
+# ~/.clawtilla/pods/reload.pod
+pod fleet = clawtilla->new();
+
+fleet->on_daemon_reloaded =>
+    clawtilla->post_room(room: "standup",
+                         body: "The daemon reloaded its configuration.");
+#+end_src
+
+** Two schedulers, and they do not take the same expression
+
+clawtilla has routines (~routines.*~ in ~clawtilla.yaml~) and podomation
+has its ~cron~ module, and a pod can reach both.  They are different
+implementations and they parse differently:
+
+| | ~routines.*.cron~ | ~cron->new(...)~ |
+|---+---+---|
+| ~*~ and a plain number | yes | yes |
+| a range, ~1-5~ | yes | *no* |
+| a list, ~1,15~ | yes | *no* |
+| a step, ~*/6~ | yes | *no* |
+
+podomation's ~cron~ says so in its own help -- /Does not support ranges,
+lists, or step values/ -- and the sharp end is that it does not *refuse*
+one.  Each field goes through ~strtol~, which stops at the first
+character it cannot read: ~*/6~ becomes *0*, ~1-5~ becomes *1*, ~1,15~
+becomes *1*.  So ~0 */6 * * *~ is accepted, validates, appears in
+~simulate~, and runs once a day at midnight.  A schedule that is wrong is
+much harder to notice than one that never fires.
+
+Anything with a range, a list or a step in it belongs in a routine, run
+from a pod with ~run_routine~ if a pod is what you want to write.
+
+A step is also the one thing that cannot be written in a *C block
+comment*, which is where a schedule tends to get recorded when somebody
+explains it beside the code.  The ~*/~ ends the comment, and the
+compiler's complaint points at the line after it rather than at the
+expression.
 
 ** What a broken pod costs
 
@@ -160,24 +405,67 @@ automation: /home/you/.clawtilla/pods/watch.pod could not be read:
 automation: 2 pod files loaded from /home/you/.clawtilla/pods
 #+end_example
 
+Those two lines are the *only* report there is.  Nothing on the IPC
+surface lists the pods that loaded or the files that did not, so a pod
+that stopped working is found in the daemon's log or not at all --
+~journalctl --user -u clawtilla~ if it runs under systemd.
+
 And a failure to start the engine at all disables the automation and
 nothing else.  Pods are a convenience on top of a fleet; a fleet that
 would not start because one of them had a syntax error would be the
 convenience taking down the thing it decorates.
 
-** Two things the DSL will teach you the hard way
+** Six things the DSL will teach you the hard way
 
-Both of these cost a pod that would not load, and neither is written down
-anywhere else:
+Every one of these cost a pod that would not load, or one that loaded and
+did nothing:
 
-- *No dots in event names.*  ~researcher->agent.state~ does not parse.
-  clawtilla's own event kinds keep their dots -- they are the wire format
-  a dozen other things read -- and the pod-visible names are translated.
+- *No dots in event names.*  ~researcher->agent.state~ does not parse:
+  /line 2, column 18: expected '=>', got '.'/.  clawtilla's own event
+  kinds keep their dots -- they are the wire format a dozen other things
+  read -- and the pod-visible names are translated.
+- *Quote anything with a hyphen in it.*  A bare identifier stops at the
+  hyphen, so ~clawtilla->new(deb-tester)~ is /line 1, column 27: expected
+  ')', got '-'/ while ~clawtilla->new("deb-tester")~ is fine.  Agent ids
+  routinely have hyphens in them, which makes this the first thing most
+  people hit.
+- *~#~ is the only comment.*  A ~/* */~ is a lexer error, and the message
+  is a long list of what the parser expected instead, which does not
+  mention comments.
 - *Handler arguments arrive as a tuple.*  ~notify(title: "x")~ and
   ~notify("x")~ both reach the module as ~('x', '', '')~, positional and
-  padded.  clawtilla maps them back onto names using the parameter
-  metadata it declares, and drops the padding, because an empty string is
-  not the same as a value.
+  padded, in the order the module declared its parameters -- not as the
+  ~a{sv}~ the type signature suggests.  clawtilla maps them back onto
+  names using that metadata and drops the padding, because an empty
+  string is not the same as a value.  Reading the tuple as a dictionary
+  is what made every action fail with "a notification needs a title"
+  while the pod, the binding and the dispatch were all correct.
+- *A module has to override ~activate~.*  ~PodModule::activate~ refuses
+  by default, which is right for a module that has to open something and
+  wrong for one whose daemon is already running.  Without the override
+  every pod loads and then fails to activate, with one line in the log
+  and no events ever delivered.
+- *~validate~ does not check names.*  It checks syntax, that the modules
+  exist, and ~->config()~ property names.  An event or handler that does
+  not exist passes it and passes ~simulate~ too -- ~w->on_nonsense =>
+  clawtilla->no_such_action(...)~ is reported as a binding like any
+  other.  The tables above are the reference for the names; a warning at
+  dispatch is the only other one.
+
+** The other direction: clawtilla consuming podomation
+
+Everything above is a pod reaching *into* the fleet.  The container,
+distrobox and VM computer backends go the other way, driving podomation's
+~container~, ~distrobox~ and ~vm_virtmanager~ modules through
+~ClawtPodBridge~ -- loaded as ordinary ~.so~ plugins, from a search path
+~daemon.pod_module_dir~ overrides.
+
+That is a separate mechanism with its own failure modes and it is
+documented with the backends that use it, in
+[[file:computers.org][computers.org]].  Two things are worth knowing from
+here: the modules a pod can name are not the modules a *computer* uses,
+and neither engine is the other -- the bridge instantiates a module
+directly and calls it, with no pod, no binding and no DSL involved.
 
 ** Configuration
 

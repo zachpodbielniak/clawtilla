@@ -93,30 +93,21 @@ static GOptionEntry entries[] = {
  * The usage block is hand-written rather than left to GOptionContext.  The
  * generated summary lists flags but says nothing about the verbs, and the
  * verbs are the whole interface.
+ *
+ * Everything except the command listing, which is rendered from the verb
+ * table by build_usage_text() -- see the comment above it for why.
  */
-static const gchar *usage_text =
+static const gchar *usage_head =
     "clawtilla - orchestrate a fleet of libreclaw agents\n"
     "\n"
     "Usage:\n"
     "  clawtilla [OPTION...]\n"
     "  clawtilla <command> [ARGS...]\n"
     "\n"
-    "Commands:\n"
-    "  daemon                        Run the daemon in the foreground\n"
-    "  agent <verb>                  Manage agents (list, show, create, start, ...)\n"
-    "  send <target> <message>       Send a message to an agent or room\n"
-    "  chat <agent>                  Interactive chat with one agent\n"
-    "  mailbox <verb>                Inspect and manage an agent's mailbox\n"
-    "  room <verb>                   Manage rooms\n"
-    "  team <verb>                   Manage teams and who is on them\n"
-    "  task <verb>                   Inspect delegated tasks\n"
-    "  computer <verb>               Run commands on an agent's computer\n"
-    "  cp <src> <dst>                Copy files to or from an agent's computer\n"
-    "  config <verb>                 Show, validate or render configuration\n"
-    "  integration <verb>            Connect agents to Matrix, mail, MCP servers\n"
-    "  routine <verb>                Standing work on a schedule\n"
-    "  plugin list                   List loaded plugins\n"
-    "  image                         Container images clawtilla suggests\n"
+    "Commands:\n";
+
+/* Everything after the generated command listing. */
+static const gchar *usage_tail =
     "\n"
     "Examples:\n"
     "  # Write a starter config and start the daemon\n"
@@ -164,6 +155,11 @@ static const gchar *usage_text =
     "  # Look at what is queued for an agent that is currently stopped\n"
     "  clawtilla mailbox list researcher\n"
     "\n"
+    "  # What the fleet did overnight, and what it cost\n"
+    "  clawtilla event list                # the daemon's own history\n"
+    "  clawtilla event list researcher     # or one agent, room or task\n"
+    "  clawtilla cost --days 7\n"
+    "\n"
     "  # Reach a daemon on another machine\n"
     "  clawtilla daemon token                 # on that machine\n"
     "  clawtilla remote add workstation 100.72.0.41 --token TOKEN\n"
@@ -174,43 +170,6 @@ static const gchar *usage_text =
     "\n"
     "clawtillad listens on this machine\'s tailnet address by default, so a\n"
     "machine on your tailnet usually needs nothing but the token.\n";
-
-/*
- * Every verb, in one place.
- *
- * Used to work out where the global options stop and the subcommand
- * begins, so it has to list exactly what main() dispatches on -- a verb
- * missing here would have its arguments handed to the global parser.
- */
-static const gchar *const verbs[] = {
-    "daemon", "remote", "status", "agent", "send", "chat", "mailbox", "room",
-    "team", "task", "decision", "event", "cost", "folders",
-    "memory",
-    "computer", "cp", "config", "plugin", "integration", "connector",
-    "routine",
-    "model", "image",
-    NULL
-};
-
-/*
- * Returns: the index of the first verb in @argv, or 0 if there is none
- */
-static gint
-find_verb(gint argc, gchar **argv)
-{
-    gint i;
-
-    for (i = 1; i < argc; i++) {
-        gsize j;
-
-        for (j = 0; verbs[j] != NULL; j++) {
-            if (g_strcmp0(argv[i], verbs[j]) == 0)
-                return i;
-        }
-    }
-
-    return 0;
-}
 
 static void
 print_version(void)
@@ -285,6 +244,34 @@ print_license(void)
         "You should have received a copy of the GNU Affero General Public\n"
         "License along with this program.  If not, see\n"
         "<https://www.gnu.org/licenses/>.\n");
+}
+
+
+/* ── usage blocks ────────────────────────────────────────────────── */
+
+/*
+ * @text: the usage block to print
+ * @asked_for: TRUE when the person typed --help, -h or help
+ *
+ * Asking for help is not an error, so it is answered on stdout with a
+ * zero status; the same text printed *because* a command was wrong
+ * belongs on stderr, after the complaint, with a non-zero one.
+ *
+ * Every print_*_usage() below goes through here rather than choosing a
+ * stream itself, because each one choosing produced three different
+ * wrong answers: `folders --help` was an error and printed to stderr,
+ * `integration --help` and `routine --help` printed help to stderr while
+ * exiting 0, and `connector`'s refusal put its usage on stdout where a
+ * script capturing the error would never see it.  A rule five callers
+ * apply is a rule four of them can get wrong.
+ */
+static void
+print_usage_text(const gchar *text, gboolean asked_for)
+{
+    if (asked_for)
+        g_print("%s", text);
+    else
+        g_printerr("%s", text);
 }
 
 
@@ -584,6 +571,79 @@ run_editor(GPtrArray *paths)
     return EXIT_SUCCESS;
 }
 
+/*
+ * Every agent subverb, once.
+ *
+ * The branches below share cmd_agent's client and reply, so they cannot
+ * become handler pointers without pulling the function apart -- but the
+ * *names* still only need writing down once.  This table is read by the
+ * usage text and by the guard in cmd_agent(), which is what keeps it
+ * honest: a subverb left off it is refused rather than merely left
+ * undocumented, so it cannot be added and forgotten.
+ *
+ * It was six.  `reset` was among them, and that one is the only way to
+ * apply an identity change at all -- an AI CLI is never handed a system
+ * prompt when it *resumes* a session, so restarting keeps the old one.
+ */
+static const struct {
+    const gchar *name;
+    const gchar *args;
+    const gchar *summary;
+} agent_verbs[] = {
+    { "list", "", "every agent, its state and queue depth" },
+    { "show", "<agent>", "one agent in full" },
+    { "new", "", "design one by answering questions" },
+    { "create", "--id <id> [...]", "add one from flags, and start it" },
+    { "rm", "<agent> [--purge]", "remove it; --purge deletes its files" },
+    { "start", "<agent>", "start it" },
+    { "stop", "<agent>", "stop it" },
+    { "restart", "<agent>", "stop it and start it again" },
+    { "reset", "<agent>", "clear its session, applying a new identity" },
+    { "logs", "<agent>", "what it has written to its log" },
+    { "set", "<agent> <key> <value>", "change one setting" },
+    { "files", "<agent>", "the org files that become its prompt" },
+    { "edit", "<agent> [FILE...]", "open those files in $EDITOR" },
+    { "mount", "<verb> <agent> [...]", "folders shared with just this agent" },
+    { "git-init", "[agent]", "version an agent's state directory" },
+    { "discover", "", "agents on disk the config does not know" },
+    { "import", "<id> [--from DIR]", "adopt one, keeping its state" },
+    { "forget", "<id>", "move it aside; nothing is deleted" },
+};
+
+static gboolean
+agent_verb_is_known(const gchar *verb)
+{
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(agent_verbs); i++) {
+        if (g_strcmp0(verb, agent_verbs[i].name) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+/* @asked_for: see print_usage_text(). */
+static void
+print_agent_usage(gboolean asked_for)
+{
+    g_autoptr(GString) text = g_string_new("Usage: clawtilla agent <verb> "
+                                           "[ARGS...]\n\n");
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(agent_verbs); i++) {
+        g_autofree gchar *left = NULL;
+
+        left = g_strdup_printf("%s%s%s", agent_verbs[i].name,
+                               agent_verbs[i].args[0] != '\0' ? " " : "",
+                               agent_verbs[i].args);
+        g_string_append_printf(text, "  %-28s%s\n", left,
+                               agent_verbs[i].summary);
+    }
+
+    print_usage_text(text->str, asked_for);
+}
+
 static gint
 cmd_agent(int argc, char *argv[])
 {
@@ -593,10 +653,24 @@ cmd_agent(int argc, char *argv[])
     const gchar *target = (argc > 3) ? argv[3] : NULL;
 
     if (verb == NULL) {
-        g_printerr("Usage: clawtilla agent "
-                   "<list|show|create|rm|start|stop|restart|logs|set|"
-                   "files|edit|mount> "
-                   "[ARGS...]\n");
+        print_agent_usage(FALSE);
+        return EXIT_FAILURE;
+    }
+
+    if (g_strcmp0(verb, "help") == 0 || g_strcmp0(verb, "--help") == 0 ||
+        g_strcmp0(verb, "-h") == 0) {
+        print_agent_usage(TRUE);
+        return EXIT_SUCCESS;
+    }
+
+    /*
+     * Refused here rather than at the bottom, so that a typo is answered
+     * without a daemon -- and so that agent_verbs[] is load-bearing: a
+     * branch below whose name is missing from it never runs.
+     */
+    if (!agent_verb_is_known(verb)) {
+        g_printerr("clawtilla: unknown agent verb '%s'\n", verb);
+        print_agent_usage(FALSE);
         return EXIT_FAILURE;
     }
 
@@ -1711,7 +1785,12 @@ cmd_agent(int argc, char *argv[])
         return EXIT_SUCCESS;
     }
 
-    g_printerr("clawtilla: unknown agent verb '%s'\n", verb);
+    /*
+     * Only reachable for a verb agent_verbs[] lists and no branch above
+     * handles -- the other half of the same drift, which the guard
+     * cannot see.  Say that, rather than blaming what was typed.
+     */
+    g_printerr("clawtilla: 'agent %s' is listed but not implemented\n", verb);
     return EXIT_FAILURE;
 }
 
@@ -2091,6 +2170,34 @@ describe_scope(JsonObject *mount)
     return out->len > 0 ? g_strdup(out->str) : g_strdup("nobody (no list)");
 }
 
+/* @asked_for: see print_usage_text(). */
+static void
+print_folders_usage(gboolean asked_for)
+{
+    static const gchar *text =
+        "Usage: clawtilla folders [list|add|rm] [ARGS...]\n"
+        "\n"
+        "  list                        what every agent gets\n"
+        "  add <path> [inside] [--ro] [--team T] [--agent A]\n"
+        "  rm <inside>                 stop sharing one\n"
+        "\n"
+        "Without --team or --agent a folder goes to every agent that has a\n"
+        "computer, including ones you make later. Either flag may repeat.\n"
+        "\n"
+        "Container, distrobox and VM agents get these. A host agent does "
+        "not:\n"
+        "there a mount is the confinement allowlist rather than a shared "
+        "folder.\n"
+        "\n"
+        "Examples:\n"
+        "  clawtilla folders add ~/source\n"
+        "  clawtilla folders add ~/Documents/notes /work/notes --ro\n"
+        "  clawtilla folders add ~/src/product /work/product --team "
+        "backend\n";
+
+    print_usage_text(text, asked_for);
+}
+
 static gint
 cmd_folders(int argc, char *argv[])
 {
@@ -2098,29 +2205,22 @@ cmd_folders(int argc, char *argv[])
     g_autoptr(JsonNode) reply = NULL;
     const gchar *verb = (argc > 2) ? argv[2] : "list";
 
-    if (g_strcmp0(verb, "-h") == 0 || g_strcmp0(verb, "--help") == 0) {
-        g_printerr("Usage: clawtilla folders [list|add|rm] [ARGS...]\n");
-        g_printerr("\n");
-        g_printerr("  list                        what every agent gets\n");
-        g_printerr("  add <path> [inside] [--ro] [--team T] [--agent A]\n");
-        g_printerr("  rm <inside>                 stop sharing one\n");
-        g_printerr("\n");
-        g_printerr("Without --team or --agent a folder goes to every "
-                   "agent that has a\n");
-        g_printerr("computer, including ones you make later. Either flag "
-                   "may repeat.\n");
-        g_printerr("\n");
-        g_printerr("Container, distrobox and VM agents get these. A host "
-                   "agent does not:\n");
-        g_printerr("there a mount is the confinement allowlist rather than "
-                   "a shared folder.\n");
-        g_printerr("\n");
-        g_printerr("Examples:\n");
-        g_printerr("  clawtilla folders add ~/source\n");
-        g_printerr("  clawtilla folders add ~/Documents/notes /work/notes "
-                   "--ro\n");
-        g_printerr("  clawtilla folders add ~/src/product /work/product "
-                   "--team backend\n");
+    if (g_strcmp0(verb, "-h") == 0 || g_strcmp0(verb, "--help") == 0 ||
+        g_strcmp0(verb, "help") == 0) {
+        print_folders_usage(TRUE);
+        return EXIT_SUCCESS;
+    }
+
+    /*
+     * Every other verb in this file refuses a subverb it does not know;
+     * this one fell through to `list`, so `folders lst` listed the
+     * folders and looked like it had worked.  Checked before connecting,
+     * because answering a typo needs no daemon.
+     */
+    if (g_strcmp0(verb, "list") != 0 && g_strcmp0(verb, "add") != 0 &&
+        g_strcmp0(verb, "rm") != 0) {
+        g_printerr("clawtilla: unknown folders verb '%s'\n", verb);
+        print_folders_usage(FALSE);
         return EXIT_FAILURE;
     }
 
@@ -3930,10 +4030,11 @@ build_integration_payload(const gchar *name, const gchar *type_id,
     return json_builder_get_root(builder);
 }
 
+/* @asked_for: see print_usage_text(). */
 static void
-print_connector_usage(void)
+print_connector_usage(gboolean asked_for)
 {
-    g_print(
+    static const gchar *text =
 "Usage: clawtilla connector <command> [options]\n"
 "\n"
 "A connector is an account clawtilla holds the credential for. Agents get\n"
@@ -3979,7 +4080,9 @@ print_connector_usage(void)
 "      --instance https://gitlab.example.com --client-id abc123\n"
 "\n"
 "  clawtilla connector list\n"
-"  clawtilla connector revoke gh\n");
+"  clawtilla connector revoke gh\n";
+
+    print_usage_text(text, asked_for);
 }
 
 /*
@@ -4171,8 +4274,9 @@ cmd_connector(int argc, char *argv[])
     const gchar *name = (argc > 3) ? argv[3] : NULL;
     guint i;
 
-    if (g_strcmp0(verb, "help") == 0 || g_strcmp0(verb, "--help") == 0) {
-        print_connector_usage();
+    if (g_strcmp0(verb, "help") == 0 || g_strcmp0(verb, "--help") == 0 ||
+        g_strcmp0(verb, "-h") == 0) {
+        print_connector_usage(TRUE);
         return EXIT_SUCCESS;
     }
 
@@ -4274,6 +4378,21 @@ cmd_connector(int argc, char *argv[])
         }
 
         return EXIT_SUCCESS;
+    }
+
+    /*
+     * Which command it is comes before whether it has a name, or a verb
+     * nobody implements is answered with "connector bogus needs a name"
+     * -- an instruction to add an argument to a command that does not
+     * exist.  A refusal that names the wrong problem sends somebody a
+     * long way off.
+     */
+    if (g_strcmp0(verb, "add") != 0 && g_strcmp0(verb, "connect") != 0 &&
+        g_strcmp0(verb, "key") != 0 && g_strcmp0(verb, "refresh") != 0 &&
+        g_strcmp0(verb, "revoke") != 0 && g_strcmp0(verb, "rm") != 0) {
+        g_printerr("clawtilla: unknown connector command '%s'\n", verb);
+        print_connector_usage(FALSE);
+        return EXIT_FAILURE;
     }
 
     if (name == NULL) {
@@ -4459,16 +4578,22 @@ cmd_connector(int argc, char *argv[])
         return EXIT_SUCCESS;
     }
 
-    g_printerr("clawtilla: unknown connector command '%s'\n", verb);
-    print_connector_usage();
+    /*
+     * Only reachable for one of the six name-taking commands above
+     * losing its branch; an unknown one was refused before the name was
+     * demanded.  Same shape as cmd_agent()'s tail, and the same reason.
+     */
+    g_printerr("clawtilla: 'connector %s' is listed but not implemented\n",
+               verb);
 
     return EXIT_FAILURE;
 }
 
+/* @asked_for: see print_usage_text(). */
 static void
-print_integration_usage(void)
+print_integration_usage(gboolean asked_for)
 {
-    g_printerr(
+    static const gchar *text =
         "Usage: clawtilla integration <verb> [...]\n"
         "\n"
         "  types                          what kinds there are\n"
@@ -4500,7 +4625,9 @@ print_integration_usage(void)
         "      backend=ntfy url=https://ntfy.sh/my-topic events=question,error\n"
         "  clawtilla integration add desk notify scope=all backend=command \\\n"
         "      command=receipt-print\n"
-        "  clawtilla integration test phone\n");
+        "  clawtilla integration test phone\n";
+
+    print_usage_text(text, asked_for);
 }
 
 static void
@@ -4575,8 +4702,9 @@ cmd_integration(int argc, char *argv[])
         }
     }
 
-    if (g_strcmp0(verb, "help") == 0 || g_strcmp0(verb, "--help") == 0) {
-        print_integration_usage();
+    if (g_strcmp0(verb, "help") == 0 || g_strcmp0(verb, "--help") == 0 ||
+        g_strcmp0(verb, "-h") == 0) {
+        print_integration_usage(TRUE);
         return EXIT_SUCCESS;
     }
 
@@ -4946,14 +5074,15 @@ cmd_integration(int argc, char *argv[])
     }
 
     g_printerr("clawtilla: unknown integration verb '%s'\n", verb);
-    print_integration_usage();
+    print_integration_usage(FALSE);
     return EXIT_FAILURE;
 }
 
+/* @asked_for: see print_usage_text(). */
 static void
-print_routine_usage(void)
+print_routine_usage(gboolean asked_for)
 {
-    g_printerr(
+    static const gchar *text =
         "Usage: clawtilla routine <verb> [...]\n"
         "\n"
         "  list                           what is scheduled, and when next\n"
@@ -4971,7 +5100,9 @@ print_routine_usage(void)
         "      schedule=weekdays at=09:00\n"
         "  clawtilla routine add sweep researcher schedule=custom \\\n"
         "      cron=\"0 */6 * * *\" instructions=\"Check the queue.\"\n"
-        "  clawtilla routine run standup\n");
+        "  clawtilla routine run standup\n";
+
+    print_usage_text(text, asked_for);
 }
 
 static gint
@@ -4983,8 +5114,9 @@ cmd_routine(int argc, char *argv[])
     const gchar *id = (argc > 3) ? argv[3] : NULL;
     guint i;
 
-    if (g_strcmp0(verb, "help") == 0 || g_strcmp0(verb, "--help") == 0) {
-        print_routine_usage();
+    if (g_strcmp0(verb, "help") == 0 || g_strcmp0(verb, "--help") == 0 ||
+        g_strcmp0(verb, "-h") == 0) {
+        print_routine_usage(TRUE);
         return EXIT_SUCCESS;
     }
 
@@ -5150,7 +5282,7 @@ cmd_routine(int argc, char *argv[])
     }
 
     g_printerr("clawtilla: unknown routine verb '%s'\n", verb);
-    print_routine_usage();
+    print_routine_usage(FALSE);
     return EXIT_FAILURE;
 }
 
@@ -5201,11 +5333,15 @@ cmd_plugin(int argc, char *argv[])
 /* ── daemon control ──────────────────────────────────────────────── */
 
 static gint
-cmd_status(void)
+cmd_status(int argc, char *argv[])
 {
     g_autoptr(ClawtClient) client = NULL;
     g_autoptr(JsonNode) reply = NULL;
     JsonObject *status;
+
+    /* Takes no arguments; it is in the verb table, so it has the shape. */
+    (void)argc;
+    (void)argv;
 
     client = connect_to_daemon();
     if (client == NULL)
@@ -5464,15 +5600,147 @@ cmd_cp(int argc, char *argv[])
     return (reply != NULL) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
+/* ── the verb table ──────────────────────────────────────────────── */
+
+/*
+ * Every verb, once.
+ *
+ * Three things need to know what the verbs are: main() dispatches on
+ * them, find_verb() uses them to work out where the global options stop,
+ * and --help lists them.  Those were three hand-written lists, and the
+ * help was the one nobody edited -- nine verbs were dispatched and
+ * documented and could not be discovered from the CLI itself, `event`
+ * among them, which is the whole difference between diagnosing a message
+ * loop with a command and doing it with sqlite3 on the host.
+ *
+ * A verb added here is dispatched, parsed around and listed by
+ * construction.  There is nowhere left to add one and forget.
+ */
+typedef struct {
+    const gchar *name;
+    const gchar *args;      /* what follows the verb in the listing */
+    const gchar *summary;
+    gint       (*run)(int argc, char *argv[]);
+} ClawtVerb;
+
+/*
+ * The order is the order --help prints, since nothing else cares: the
+ * dispatcher matches on the name and find_verb() scans the whole table.
+ */
+static const ClawtVerb verbs[] = {
+    { "daemon",  "[token]",  "Run the daemon, or print its token",
+      cmd_daemon },
+    { "remote",  "<verb>",   "Saved connections to other machines",
+      cmd_remote },
+    { "status",  "",         "What this daemon is running right now",
+      cmd_status },
+    { "agent",   "<verb>",   "Manage agents (list, show, create, ...)",
+      cmd_agent },
+    { "send",    "<target> <message>", "Send a message to an agent or room",
+      cmd_send },
+    { "chat",    "<agent>",  "Interactive chat with one agent",
+      cmd_chat },
+    { "mailbox", "<verb>",   "Inspect and manage an agent's mailbox",
+      cmd_mailbox },
+    { "room",    "<verb>",   "Manage rooms",
+      cmd_room },
+    { "team",    "<verb>",   "Manage teams and who is on them",
+      cmd_team },
+    { "task",    "<verb>",   "Inspect delegated tasks",
+      cmd_task },
+    { "decision", "<verb>",  "Answer what an agent has asked you",
+      cmd_decision },
+    { "event",   "<verb>",   "The daemon's event history",
+      cmd_event },
+    { "cost",    "[--days N]", "What the fleet has spent, per agent",
+      cmd_cost },
+    { "memory",  "<verb>",   "What an agent has written down",
+      cmd_memory },
+    { "computer", "<verb>",  "Run commands on an agent's computer",
+      cmd_computer },
+    { "cp",      "<src> <dst>", "Copy files to or from a computer",
+      cmd_cp },
+    { "folders", "<verb>",   "Share host folders with the whole fleet",
+      cmd_folders },
+    { "config",  "<verb>",   "Show, validate or render configuration",
+      cmd_config },
+    { "model",   "<verb>",   "Providers and models, and which run agents",
+      cmd_model },
+    { "image",   "[vm]",     "Container and VM disk images",
+      cmd_image },
+    { "integration", "<verb>", "Connect agents to Matrix, mail, MCP",
+      cmd_integration },
+    { "connector", "<verb>", "Accounts agents get tools from",
+      cmd_connector },
+    { "routine", "<verb>",   "Standing work on a schedule",
+      cmd_routine },
+    { "plugin",  "list",     "List loaded plugins",
+      cmd_plugin },
+    { NULL, NULL, NULL, NULL }
+};
+
+/*
+ * Returns: the index of the first verb in @argv, or 0 if there is none
+ */
+static gint
+find_verb(gint argc, gchar **argv)
+{
+    gint i;
+
+    for (i = 1; i < argc; i++) {
+        gsize j;
+
+        for (j = 0; verbs[j].name != NULL; j++) {
+            if (g_strcmp0(argv[i], verbs[j].name) == 0)
+                return i;
+        }
+    }
+
+    return 0;
+}
+
+/*
+ * The whole usage block, with the command listing rendered from the
+ * table rather than typed out beside it.
+ *
+ * Returns: (transfer full): the text to print
+ */
+static gchar *
+build_usage_text(void)
+{
+    GString *text = g_string_new(usage_head);
+    gsize i;
+
+    for (i = 0; verbs[i].name != NULL; i++) {
+        g_autofree gchar *left = NULL;
+
+        left = g_strdup_printf("%s%s%s", verbs[i].name,
+                               verbs[i].args[0] != '\0' ? " " : "",
+                               verbs[i].args);
+
+        /*
+         * 30 columns for the name and its arguments, which is what the
+         * hand-written block used and what every summary here fits in
+         * without the line passing 79 characters.
+         */
+        g_string_append_printf(text, "  %-30s%s\n", left, verbs[i].summary);
+    }
+
+    g_string_append(text, usage_tail);
+
+    return g_string_free(text, FALSE);
+}
+
 int
 main(int argc, char *argv[])
 {
     g_autoptr(GOptionContext) context = NULL;
     g_autoptr(GError) error = NULL;
+    g_autofree gchar *usage = build_usage_text();
 
     context = g_option_context_new("- orchestrate a fleet of libreclaw agents");
     g_option_context_add_main_entries(context, entries, NULL);
-    g_option_context_set_description(context, usage_text);
+    g_option_context_set_description(context, usage);
 
     /*
      * Global options are parsed only from what comes BEFORE the verb.
@@ -5556,81 +5824,18 @@ main(int argc, char *argv[])
      * and a script should be able to notice.
      */
     if (argc < 2) {
-        g_printerr("%s", usage_text);
+        g_printerr("%s", usage);
         return EXIT_FAILURE;
     }
 
-    if (g_strcmp0(argv[1], "daemon") == 0)
-        return cmd_daemon(argc, argv);
+    {
+        gsize i;
 
-    if (g_strcmp0(argv[1], "remote") == 0)
-        return cmd_remote(argc, argv);
-
-    if (g_strcmp0(argv[1], "status") == 0)
-        return cmd_status();
-
-    if (g_strcmp0(argv[1], "agent") == 0)
-        return cmd_agent(argc, argv);
-
-    if (g_strcmp0(argv[1], "send") == 0)
-        return cmd_send(argc, argv);
-
-    if (g_strcmp0(argv[1], "chat") == 0)
-        return cmd_chat(argc, argv);
-
-    if (g_strcmp0(argv[1], "mailbox") == 0)
-        return cmd_mailbox(argc, argv);
-
-    if (g_strcmp0(argv[1], "room") == 0)
-        return cmd_room(argc, argv);
-
-    if (g_strcmp0(argv[1], "folders") == 0)
-        return cmd_folders(argc, argv);
-
-    if (g_strcmp0(argv[1], "team") == 0)
-        return cmd_team(argc, argv);
-
-    if (g_strcmp0(argv[1], "memory") == 0)
-        return cmd_memory(argc, argv);
-
-    if (g_strcmp0(argv[1], "task") == 0)
-        return cmd_task(argc, argv);
-
-    if (g_strcmp0(argv[1], "decision") == 0)
-        return cmd_decision(argc, argv);
-
-    if (g_strcmp0(argv[1], "event") == 0)
-        return cmd_event(argc, argv);
-
-    if (g_strcmp0(argv[1], "cost") == 0)
-        return cmd_cost(argc, argv);
-
-    if (g_strcmp0(argv[1], "computer") == 0)
-        return cmd_computer(argc, argv);
-
-    if (g_strcmp0(argv[1], "cp") == 0)
-        return cmd_cp(argc, argv);
-
-    if (g_strcmp0(argv[1], "config") == 0)
-        return cmd_config(argc, argv);
-
-    if (g_strcmp0(argv[1], "plugin") == 0)
-        return cmd_plugin(argc, argv);
-
-    if (g_strcmp0(argv[1], "connector") == 0)
-        return cmd_connector(argc, argv);
-
-    if (g_strcmp0(argv[1], "integration") == 0)
-        return cmd_integration(argc, argv);
-
-    if (g_strcmp0(argv[1], "routine") == 0)
-        return cmd_routine(argc, argv);
-
-    if (g_strcmp0(argv[1], "image") == 0)
-        return cmd_image(argc, argv);
-
-    if (g_strcmp0(argv[1], "model") == 0)
-        return cmd_model(argc, argv);
+        for (i = 0; verbs[i].name != NULL; i++) {
+            if (g_strcmp0(argv[1], verbs[i].name) == 0)
+                return verbs[i].run(argc, argv);
+        }
+    }
 
     g_printerr("clawtilla: unknown command '%s'\n", argv[1]);
     g_printerr("Run 'clawtilla --help' for usage.\n");

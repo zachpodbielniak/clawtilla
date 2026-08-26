@@ -294,20 +294,31 @@ agent_validate(ClawtAgentConfig *self)
     if (computer_type != NULL &&
         !clawt_enum_from_nick(CLAWT_TYPE_COMPUTER_TYPE, computer_type,
                               &value)) {
+        /*
+         * The list comes from the enum rather than from a sentence here.
+         * It used to be written out, and had read "none, host, container
+         * and vm" ever since distrobox was added -- so the one message
+         * whose whole job is to say what may be written left out a type
+         * this build supports, and did it with complete confidence.
+         */
+        g_autofree gchar *known =
+            clawt_enum_nick_list(CLAWT_TYPE_COMPUTER_TYPE);
+
         agent_mark_shadow(self,
-                          "unknown computer type '%s'; this build knows "
-                          "none, host, container and vm",
-                          computer_type);
+                          "unknown computer type '%s'; this build knows %s",
+                          computer_type, known);
         return;
     }
 
     confine = clawt_agent_config_get_string(self, "computer.host.confine");
     if (confine != NULL &&
         !clawt_enum_from_nick(CLAWT_TYPE_CONFINE_MODE, confine, &value)) {
+        g_autofree gchar *known =
+            clawt_enum_nick_list(CLAWT_TYPE_CONFINE_MODE);
+
         agent_mark_shadow(self,
                           "unknown confinement mode '%s'; this build knows "
-                          "none, workspace, allowlist and bwrap",
-                          confine);
+                          "%s", confine, known);
         return;
     }
 
@@ -324,6 +335,30 @@ agent_validate(ClawtAgentConfig *self)
                           "a host computer needs "
                           "computer.host.confirm_host_control: true -- it "
                           "gives the agent your real machine");
+        return;
+    }
+
+    /*
+     * And the fleet's half of the same decision.  The schema has said
+     * since daemon.allow_unconfined_host was written that `confine: none`
+     * "requires this AND confirm_host_control on the agent itself", and
+     * only the agent's half was ever checked -- so the key existed, was
+     * documented, defaulted to false, and gated nothing.  One line in one
+     * agent block handed over the whole machine, which is precisely the
+     * single typo the two-act rule exists to stop.
+     */
+    if (g_strcmp0(computer_type, "host") == 0 &&
+        clawt_agent_config_get_enum(self, "computer.host.confine") ==
+            CLAWT_CONFINE_NONE &&
+        (self->config == NULL ||
+         !clawt_config_get_boolean(self->config,
+                                   "daemon.allow_unconfined_host"))) {
+        agent_mark_shadow(self,
+                          "computer.host.confine: none needs "
+                          "daemon.allow_unconfined_host: true as well -- "
+                          "running unconfined on your real machine takes "
+                          "two deliberate acts, not one. Set it, or pick a "
+                          "confinement mode");
         return;
     }
 
@@ -471,6 +506,13 @@ clawt_agent_config_get_string(ClawtAgentConfig *self, const gchar *key)
     }
 
     return agent_schema_default(key);
+}
+
+ClawtConfig *
+clawt_agent_config_get_config(ClawtAgentConfig *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+    return self->config;
 }
 
 gchar *
@@ -1964,6 +2006,196 @@ reload_agents(ClawtConfig *self)
 }
 
 /*
+ * Is @key a member of one of the schema's lists of mappings?
+ *
+ * Those are reached element by element rather than by walking down from
+ * the root, so a pass over the top of the file has to leave them alone.
+ * The question is asked of the schema rather than by testing for known
+ * prefixes, because the version that named "agents." and "rooms."
+ * outright grew a bug the day a third list was added.
+ */
+static gboolean
+key_inside_list_of(const gchar *key)
+{
+    const gchar *dot = strchr(key, '.');
+    g_autofree gchar *head = NULL;
+    const ClawtSchemaEntry *entry;
+
+    if (dot == NULL)
+        return FALSE;
+
+    head = g_strndup(key, (gsize)(dot - key));
+    entry = clawt_config_schema_lookup(head);
+
+    return entry != NULL && entry->type == CLAWT_SCHEMA_LIST_OF;
+}
+
+/*
+ * Two ways an option somebody set can do nothing, both of which used to
+ * do it in silence.
+ *
+ * %CLAWT_SCHEMA_FLAG_INERT is the option this build accepts and does not
+ * implement.  Nine of them were found at once -- accepted, saved,
+ * reported back as set, and read by no code anywhere -- and the reason
+ * they survived is that there is no symptom: the config parses, the
+ * daemon starts, and the setting simply never happens.  Deleting the
+ * keys would be worse, because then setting one produces "unknown
+ * configuration key" and no clue where the option went, so instead the
+ * loader says so out loud, naming the key.
+ *
+ * The second is a scalar option written as a YAML list.  That is not a
+ * type error anywhere downstream: yaml_node_get_string() answers NULL
+ * for a sequence and every getter then falls through to the default, so
+ * `readers: [chief-of-staff]` is a permission somebody granted, saved,
+ * and silently denied.  A denial nobody can see is the worst of the
+ * outcomes available, which is why this is a warning rather than a
+ * comment in the documentation.
+ *
+ * @section is the schema prefix @block's keys hang under -- "agents",
+ * "rooms", "routines" -- or %NULL for the top of the file.  @where names
+ * the element in the message, since "jitter_seconds does nothing" is no
+ * use to somebody with six routines.
+ */
+static void
+warn_block_keys(ClawtConfig *self,
+                YamlNode    *block,
+                const gchar *section,
+                const gchar *where)
+{
+    const ClawtSchemaEntry *schema;
+    gsize n_entries;
+    gsize i;
+    g_autofree gchar *prefix = (section != NULL)
+                               ? g_strdup_printf("%s.", section)
+                               : NULL;
+
+    if (block == NULL)
+        return;
+
+    schema = clawt_config_schema_get(&n_entries);
+
+    for (i = 0; i < n_entries; i++) {
+        const ClawtSchemaEntry *entry = &schema[i];
+        const gchar *path = NULL;
+        YamlNode *node;
+        gboolean inert = (entry->flags & CLAWT_SCHEMA_FLAG_INERT) != 0;
+        gboolean scalar = (entry->type == CLAWT_SCHEMA_STRING) ||
+                          (entry->type == CLAWT_SCHEMA_PATH) ||
+                          (entry->type == CLAWT_SCHEMA_SECRET);
+
+        if (!inert && !scalar)
+            continue;
+
+        if (prefix == NULL) {
+            if (key_inside_list_of(entry->key))
+                continue;
+
+            path = entry->key;
+        } else if (g_strcmp0(section, "agents") == 0) {
+            /*
+             * Asked of the schema, because an agent block spells some
+             * fleet options differently -- `mailbox.max_depth` for
+             * `orchestration.mailbox.max_depth` -- and a second answer
+             * to what an option is called inside an agent is how nine
+             * settings came to be unreachable once already.
+             */
+            path = clawt_config_schema_agent_name(entry);
+        } else if (g_str_has_prefix(entry->key, prefix)) {
+            path = entry->key + strlen(prefix);
+        }
+
+        if (path == NULL)
+            continue;
+
+        node = node_at_path(block, path, FALSE);
+        if (node == NULL)
+            continue;
+
+        if (inert) {
+            g_ptr_array_add(self->warnings,
+                (where != NULL)
+                ? g_strdup_printf("%s sets '%s', which nothing in this "
+                                  "build reads; the value is accepted and "
+                                  "has no effect", where, entry->key)
+                : g_strdup_printf("'%s' is set, and nothing in this build "
+                                  "reads it; the value is accepted and has "
+                                  "no effect", entry->key));
+            continue;
+        }
+
+        if (scalar &&
+            yaml_node_get_node_type(node) == YAML_NODE_SEQUENCE) {
+            g_ptr_array_add(self->warnings,
+                (where != NULL)
+                ? g_strdup_printf("%s writes '%s' as a list; it is a "
+                                  "comma-separated string, so as written "
+                                  "it reads back as unset", where,
+                                  entry->key)
+                : g_strdup_printf("'%s' is written as a list; it is a "
+                                  "comma-separated string, so as written "
+                                  "it reads back as unset", entry->key));
+        }
+    }
+}
+
+/*
+ * The same two checks inside every list of mappings the schema declares.
+ *
+ * A list is not a section, so warn_unknown_keys() never descends into
+ * one and neither would the pass above -- which would leave a room's
+ * max_hops and a routine's jitter_seconds, two of the nine, as the only
+ * cases the whole mechanism could not see.  Driven from the schema so a
+ * list added later is covered without anybody remembering to come back
+ * here.
+ */
+static void
+warn_block_keys_in_lists(ClawtConfig *self)
+{
+    const ClawtSchemaEntry *schema;
+    gsize n_entries;
+    gsize i;
+
+    schema = clawt_config_schema_get(&n_entries);
+
+    for (i = 0; i < n_entries; i++) {
+        YamlNode *list;
+        YamlSequence *sequence;
+        guint j;
+        guint length;
+
+        if (schema[i].type != CLAWT_SCHEMA_LIST_OF)
+            continue;
+
+        list = node_at_path(self->root, schema[i].key, FALSE);
+
+        if (list == NULL ||
+            yaml_node_get_node_type(list) != YAML_NODE_SEQUENCE)
+            continue;
+
+        sequence = yaml_node_get_sequence(list);
+        length = yaml_sequence_get_length(sequence);
+
+        for (j = 0; j < length; j++) {
+            YamlNode *element = yaml_sequence_get_element(sequence, j);
+            const gchar *id;
+            g_autofree gchar *where = NULL;
+
+            if (element == NULL ||
+                yaml_node_get_node_type(element) != YAML_NODE_MAPPING)
+                continue;
+
+            id = member_string(yaml_node_get_mapping(element), "id");
+
+            where = (id != NULL)
+                    ? g_strdup_printf("%s '%s'", schema[i].key, id)
+                    : g_strdup_printf("%s[%u]", schema[i].key, j);
+
+            warn_block_keys(self, element, schema[i].key, where);
+        }
+    }
+}
+
+/*
  * Walks the loaded tree and warns about keys the schema does not know.
  *
  * A warning rather than an error: a typo should be visible without being
@@ -2043,6 +2275,8 @@ config_from_parser(YamlParser *parser, const gchar *path, GError **error)
     }
 
     warn_unknown_keys(self, self->root, NULL);
+    warn_block_keys(self, self->root, NULL, NULL);
+    warn_block_keys_in_lists(self);
     reload_agents(self);
     reload_integrations(self);
     reload_routines(self);
