@@ -15849,12 +15849,18 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
      * collapsible surface holding two unrelated things means opening
      * either hides the other.
      *
-     * 320px is the conventional libadwaita sidebar width and is
-     * load-bearing: 281 (agent list) + 600 (transcript clamp) + 320
-     * comes to 1201, so all three fit side by side on an ordinary window
-     * and the transcript does not move when the panel opens.  That is
-     * the whole point of pushing rather than overlaying, and it is where
-     * the breakpoint below comes from.
+     * The panel is a fraction of what is left, not a width.
+     * AdwOverlaySplitView has no sidebar-width property: it takes
+     * sidebar-width-fraction, clamped by min-sidebar-width and
+     * max-sidebar-width, which default to 180 and 280.  So with the
+     * 0.26 set below the panel measures 260px beside a 1000px content
+     * area and 180px once the fraction would fall under that floor --
+     * measured, both.  Anything in here that names a fixed panel width
+     * is describing a widget that does not exist.
+     *
+     * What the breakpoint below is derived from is therefore the
+     * transcript's side of that split, and the derivation is in the
+     * comment on it.
      */
     self->alerts_split = ADW_OVERLAY_SPLIT_VIEW(adw_overlay_split_view_new());
     adw_overlay_split_view_set_sidebar_position(self->alerts_split,
@@ -15950,16 +15956,31 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
                                           breakpoint);
 
     /*
-     * And below 1200px the alerts panel overlays rather than pushes.
+     * And below 1150px the alerts panel overlays rather than pushes.
      *
-     * The number is derived rather than chosen: 281 for the agent list,
-     * 600 for the transcript's clamp and 320 for the panel come to 1201,
-     * so above it all three fit and the transcript does not move when
-     * the panel opens.  Below it something has to give, and the reader's
-     * place in the conversation is the wrong thing to take.
+     * Derived from what is left for the transcript once the agent list
+     * and the panel have taken their share.  With W the window, the
+     * content beside the list is W - 280, the panel takes 0.26 of it and
+     * the transcript keeps the other 0.74.  Fitting the 600px clamp is
+     * not the criterion -- it is met at W = 1090 and looks wrong there,
+     * because the column would sit 3.5px from the panel's edge.  The
+     * criterion is the gap from the panel to the row's ink, which the
+     * 12px row margin adds to: (T - 600) / 2 + 12 >= 24 gives T >= 624
+     * and so W >= 1124.  1150 clears that by 26px.
+     *
+     * Below it something has to give, and the reader's place in the
+     * conversation is the wrong thing to take.
+     *
+     * Opening the panel does shift the column left -- 122px at 1280,
+     * measured.  That is accepted rather than overlooked: the clamp
+     * fixes the measure, so pushing translates the column without
+     * reflowing it and neither the line breaks nor the scroll position
+     * move.  Left-aligning the column would buy stability for a
+     * deliberate, occasional toggle at the cost of balance on every
+     * window all the time.
      */
     breakpoint = adw_breakpoint_new(
-        adw_breakpoint_condition_parse("max-width: 1200px"));
+        adw_breakpoint_condition_parse("max-width: 1150px"));
     adw_breakpoint_add_setters(breakpoint, G_OBJECT(self->alerts_split),
                                "collapsed", TRUE, NULL);
     adw_application_window_add_breakpoint(ADW_APPLICATION_WINDOW(self),
