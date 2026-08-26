@@ -1851,16 +1851,25 @@ set_activity(ClawtWindow *self, const gchar *text)
  * a value that cannot differ between two labels.
  */
 static GtkCssProvider *appearance_provider = NULL;
+static GtkCssProvider *structure_provider = NULL;
+static GtkCssProvider *user_provider = NULL;
 static gchar          *appearance_code_font = NULL;
 
 /*
  * Structure this client draws that libadwaita has no widget for.
  *
- * Concatenated ahead of the generated appearance sheet rather than given
- * a provider of its own: a second provider at the same priority would
- * make which sheet wins depend on the order they were added, and the
- * appearance rules already had to be reduced to one provider once for
- * exactly that reason.
+ * Its own provider at PRIORITY_APPLICATION, below the generated
+ * appearance sheet at PRIORITY_APPLICATION + 1.  The order the two are
+ * added no longer decides anything, which is what the concatenation was
+ * avoiding -- an explicit priority says it instead, and it says it
+ * without re-parsing this constant every time somebody changes a font.
+ *
+ * Splitting is safe for the named colours below even though the palette
+ * that defines them now lives in a different provider: a @define-color
+ * is visible across the whole cascade, not only within the sheet that
+ * wrote it.  Measured, because the failure mode is silent -- an
+ * unresolved reference falls back to libadwaita's own value with no
+ * parse error and no warning.
  *
  * Every colour is a libadwaita named colour, never a hex value.  That is
  * what makes a palette a palette swap rather than a second pass over
@@ -1961,10 +1970,20 @@ apply_appearance(ClawtAppearance *appearance)
     appearance_code_font =
         g_strdup(clawt_appearance_get_monospace_font(appearance));
 
-    {
-        g_autofree gchar *generated = clawt_appearance_to_css(appearance);
+    css = clawt_appearance_to_css(appearance);
 
-        css = g_strconcat(CLAWT_STRUCTURE_CSS, generated, NULL);
+    /*
+     * The structure sheet is a constant, so it is loaded once and left
+     * alone.  It used to be re-parsed on every settings change purely
+     * because it was glued to the front of the generated one.
+     */
+    if (structure_provider == NULL) {
+        structure_provider = gtk_css_provider_new();
+        gtk_style_context_add_provider_for_display(
+            display, GTK_STYLE_PROVIDER(structure_provider),
+            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+        gtk_css_provider_load_from_string(structure_provider,
+                                          CLAWT_STRUCTURE_CSS);
     }
 
     /*
@@ -1977,10 +1996,34 @@ apply_appearance(ClawtAppearance *appearance)
         appearance_provider = gtk_css_provider_new();
         gtk_style_context_add_provider_for_display(
             display, GTK_STYLE_PROVIDER(appearance_provider),
-            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
     }
 
     gtk_css_provider_load_from_string(appearance_provider, css);
+
+    /*
+     * And whatever the person running this wrote, above everything the
+     * client has an opinion about.
+     *
+     * PRIORITY_USER is what makes it worth having: a bare `.clawt-thing`
+     * there beats an `#id.clawt-thing` in either sheet above, so a rule
+     * can be overridden without having to out-specify code somebody else
+     * wrote.  Absent file, nothing loaded and nothing said -- not having
+     * one is the normal case, not a misconfiguration.
+     */
+    if (user_provider == NULL) {
+        g_autofree gchar *path =
+            g_build_filename(g_get_user_config_dir(), "clawtilla",
+                             "style.css", NULL);
+
+        if (g_file_test(path, G_FILE_TEST_IS_REGULAR)) {
+            user_provider = gtk_css_provider_new();
+            gtk_style_context_add_provider_for_display(
+                display, GTK_STYLE_PROVIDER(user_provider),
+                GTK_STYLE_PROVIDER_PRIORITY_USER);
+            gtk_css_provider_load_from_path(user_provider, path);
+        }
+    }
 }
 
 static void
