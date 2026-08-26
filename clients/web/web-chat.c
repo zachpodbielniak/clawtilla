@@ -235,7 +235,23 @@ message_element(JsonObject *message, const gchar *agent_id,
     g_autoptr(HtmxElement) row = HTMX_ELEMENT(htmx_article_new());
     g_autoptr(HtmxDiv) who = htmx_div_new();
     g_autoptr(HtmxDiv) text = htmx_div_new();
-    g_autofree gchar *when = clawt_web_relative_time(ts);
+    g_autoptr(GDateTime) at = (ts > 0) ? g_date_time_new_from_unix_local(ts)
+                                       : NULL;
+    /*
+     * The clock, not the relative time the activity lists use.
+     *
+     * The transcript used to render "2m ago" here while the GTK
+     * transcript rendered the clock, so one conversation carried two
+     * conventions depending on which client it was opened in.  And a
+     * relative time rendered on the server is wrong the moment it is
+     * sent: nothing re-renders a message that has not changed, so a page
+     * left open goes on saying "2m ago" for an hour.
+     *
+     * clawt_chat_time_label() rather than a format string here, so there
+     * is one answer to what a transcript stamp looks like -- the reason
+     * is written out beside it.
+     */
+    g_autofree gchar *when = clawt_chat_time_label(at);
 
     (void)agent_id;
 
@@ -263,7 +279,7 @@ message_element(JsonObject *message, const gchar *agent_id,
         htmx_node_add_child(HTMX_NODE(who), HTMX_NODE(name));
     }
 
-    if (run_start && *when != '\0') {
+    if (run_start && when != NULL && *when != '\0') {
         g_autoptr(HtmxSpan) stamp = htmx_span_new();
         g_autofree gchar *dotted = from_user
             ? g_strdup(when)
@@ -284,28 +300,11 @@ message_element(JsonObject *message, const gchar *agent_id,
      * nameable.  The time says "new message" outright, and the space it
      * uses was already reserved for the avatar.
      */
-    if (!run_start && !from_user && ts > 0) {
+    if (!run_start && !from_user && when != NULL && *when != '\0') {
         g_autoptr(HtmxSpan) stamp = htmx_span_new();
-        g_autoptr(GDateTime) at = g_date_time_new_from_unix_local(ts);
-        g_autofree gchar *clock = (at != NULL)
-            ? g_date_time_format(at, "%H:%M")
-            : NULL;
 
-        /*
-         * The clock time here, not the relative one the rest of the
-         * transcript uses, because this slot is the avatar's column and
-         * is 28px wide.  Measured in a real browser: "46s ago" wraps to
-         * two lines in it, so a run of continuations drew a column of
-         * broken two-line stamps -- and the longer the conversation, the
-         * longer the strings get.
-         *
-         * `HH:MM` is four digits and a colon whatever the age of the
-         * message, which is the property the slot needs and the reason
-         * the GTK transcript has always used it here.
-         */
         htmx_element_add_class(HTMX_ELEMENT(stamp), "msg-time");
-        htmx_node_set_text_content(HTMX_NODE(stamp),
-                                   clock != NULL ? clock : when);
+        htmx_node_set_text_content(HTMX_NODE(stamp), when);
         htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(stamp));
     }
 

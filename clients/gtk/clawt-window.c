@@ -3643,7 +3643,16 @@ append_message_to(ClawtWindow *self, const TranscriptView *view,
         ? g_date_time_new_from_unix_local(ts)
         : g_date_time_new_now_local();
     g_autofree gchar *day = g_date_time_format(when, "%Y-%m-%d");
-    g_autofree gchar *stamp = g_date_time_format(when, "%H:%M");
+    /*
+     * The stamp comes from the *message's* time, so a message that
+     * arrived without one carries no time rather than the moment it
+     * happened to be drawn.  @when falls back to now because the run
+     * grouping needs a day either way, and inheriting that fallback here
+     * would put a plausible wrong time on a record.  A NULL renders as
+     * an empty label, which is what the continuation row already tests
+     * for.
+     */
+    g_autofree gchar *stamp = (ts > 0) ? clawt_chat_time_label(when) : NULL;
     gboolean new_day;
     gboolean run_start = clawt_chat_run_is_start(*view->run_sender,
                                                  *view->run_day, sender, day,

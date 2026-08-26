@@ -142,6 +142,7 @@ declare -A AFFORDANCES=(
     ["unread count"]="clawt-unread-badge|unread-badge"
     ["unread tab total"]="adw_view_stack_page_set_badge_number|unread_total"
     ["message runs"]="clawt_chat_run_is_start|clawt_chat_run_is_start"
+    ["transcript stamps"]="clawt_chat_time_label|clawt_chat_time_label"
     ["day dividers"]="day_divider|day-divider"
     ["sender avatars"]="adw_avatar_new|msg-avatar"
     ["own-turn bubbles"]="clawt-bubble|msg-self"

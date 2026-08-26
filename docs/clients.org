@@ -618,13 +618,36 @@ into the row margin instead of moving anything.  The web client reaches
 the same place from CSS with ~position: absolute~, for the same stated
 reason.
 
-That gutter time is ~HH:MM~ in *both* clients, even though the web
-transcript's run headers show a relative time.  A relative string grows
-with the age of the conversation, and measured in a real browser "46s
-ago" wraps to two lines in the 28px slot --- so a run of continuations
-drew a column of broken two-line stamps.  Four digits and a colon are
-the same width whatever the message's age, which is the property the
-slot needs.
+***** One stamp, one format, both clients
+
+~clawt_chat_time_label()~ is the whole answer to what a transcript
+stamps a message with, and both clients call it in both places they
+draw one --- the run header and the continuation gutter.  They had four
+answers between them: GTK rendered the clock and the web rendered a
+relative time, so the same conversation carried two conventions
+depending on which client it was opened in.
+
+The clock won, for two reasons beyond consistency.  A relative time
+rendered on the *server* is wrong the moment it is sent and gets
+wronger: nothing re-renders a message that has not changed, so a page
+left open goes on saying "2m ago" for an hour.  And a transcript is a
+record --- an absolute time is what lets a line here be matched against
+the event log, a task, or a journal entry.  Recency belongs to the
+lists that are about recent activity, and the mailbox, task and alert
+views keep their own relative formatting.
+
+The date is not in it, because a day divider already carries it.
+24-hour rather than the locale's format, because the string has to fit
+the slot the avatar reserves --- 32px in GTK, 28px in the web --- and a
+12-hour locale renders "4:23 PM", which does not.  Measured in a real
+browser, the relative form it replaced ("46s ago") wrapped to two lines
+in that slot, so a run of continuations drew a column of broken
+two-line stamps.
+
+A message with no timestamp gets *no* stamp in either client, rather
+than the moment it was drawn.  Both fall back to the current time for
+run grouping, which needs a day whatever happens; inheriting that
+fallback into the stamp would put a plausible wrong time on a record.
 
 ***** One knob, and the ordering survives it
 

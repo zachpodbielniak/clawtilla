@@ -2236,6 +2236,31 @@ the same program.
   its "before" was not one. **A before/after harness has to be checked
   for what it holds constant**, not only for what it varies.
 
+### A timestamp rendered on the server is wrong before it arrives
+
+- The web transcript stamped messages "2m ago" while the GTK transcript
+  stamped the clock, so one conversation carried two conventions
+  depending on which client it was opened in. The clock won on more than
+  consistency: nothing re-renders a message that has not changed, so a
+  page left open goes on saying "2m ago" for an hour -- **a relative
+  time is only true at the instant it is generated, and a server
+  generates it once.** Recency belongs to the views that are *about*
+  recent activity, and the mailbox, task and alert lists keep theirs.
+- `clawt_chat_time_label()` in libclawt, called by both clients in both
+  places each draws a stamp -- four spellings before. Declared in
+  `make parity` as an affordance, and the row was proved to fire by
+  reverting the web caller to its own `g_date_time_format`.
+- 24-hour is load-bearing rather than a preference: the stamp is drawn
+  in the slot the avatar reserves, and a 12-hour locale renders
+  "4:23 PM", which does not fit it. The test asserts the absence of
+  `AM`/`PM` as well as equal lengths, because a length check alone
+  passes on `"1:01 AM"` vs `"12:00 AM"`... and would fail for the right
+  reason only by luck.
+- **A message with no timestamp gets no stamp**, in both clients. Both
+  fall back to the current time for run *grouping*, which needs a day
+  whatever happens -- inheriting that fallback into the stamp would put
+  a plausible wrong time on a record.
+
 ### A relative timestamp does not fit a slot sized for a clock
 
 - The web transcript's gutter time was "46s ago", which **wraps to two

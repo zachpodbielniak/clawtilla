@@ -15,6 +15,7 @@
 #include "clawtilla.h"
 
 #include <glib.h>
+#include <string.h>
 
 static void
 test_the_first_message_starts_a_run(void)
@@ -118,6 +119,62 @@ test_new_year_is_a_new_day(void)
                                           "2027-01-01", NULL));
 }
 
+/*
+ * A transcript stamp is HH:MM, zero-padded, and the same width whatever
+ * the time is.
+ *
+ * The width is the load-bearing half.  The stamp is drawn in the slot
+ * the avatar reserves -- 32px in GTK, 28px in the web -- so anything
+ * that varies in length there either wraps or pushes the body column.
+ * The web transcript rendered a *relative* time in it and "46s ago"
+ * wrapped to two lines, which is the failure this pins.
+ *
+ * Both extremes of the character set, because neither turns up in a
+ * sample of plausible-looking times.
+ */
+static void
+test_a_transcript_stamp_is_a_fixed_width_clock(void)
+{
+    g_autoptr(GDateTime) midnight =
+        g_date_time_new_local(2026, 8, 26, 0, 0, 0.0);
+    g_autoptr(GDateTime) late =
+        g_date_time_new_local(2026, 8, 26, 23, 14, 59.0);
+    g_autoptr(GDateTime) single =
+        g_date_time_new_local(2026, 8, 26, 1, 1, 0.0);
+    g_autofree gchar *a = clawt_chat_time_label(midnight);
+    g_autofree gchar *b = clawt_chat_time_label(late);
+    g_autofree gchar *c = clawt_chat_time_label(single);
+
+    g_assert_cmpstr(a, ==, "00:00");
+    g_assert_cmpstr(b, ==, "23:14");
+    g_assert_cmpstr(c, ==, "01:01");
+
+    g_assert_cmpuint(strlen(a), ==, strlen(b));
+    g_assert_cmpuint(strlen(b), ==, strlen(c));
+
+    /*
+     * 24-hour, not the locale's.  A 12-hour locale renders "1:01 AM",
+     * which is both a different length and too wide for the slot -- and
+     * a test that only checked the length would pass on it.
+     */
+    g_assert_null(strstr(a, "AM"));
+    g_assert_null(strstr(a, "PM"));
+    g_assert_null(strstr(c, " "));
+}
+
+/*
+ * And no timestamp is no label, rather than a plausible wrong one.
+ *
+ * A message with no `ts` would otherwise be stamped with the epoch or
+ * with whatever the clock said when it was rendered, which is a lie
+ * about a record.  Both clients test the result before drawing it.
+ */
+static void
+test_no_time_is_no_stamp(void)
+{
+    g_assert_null(clawt_chat_time_label(NULL));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -130,6 +187,9 @@ main(int argc, char *argv[])
     g_test_add_func("/chat-run/new-day", test_a_new_day_starts_a_run);
     g_test_add_func("/chat-run/day-labels", test_day_labels);
     g_test_add_func("/chat-run/new-year", test_new_year_is_a_new_day);
+    g_test_add_func("/chat-run/stamp-is-a-fixed-width-clock",
+                    test_a_transcript_stamp_is_a_fixed_width_clock);
+    g_test_add_func("/chat-run/no-time-no-stamp", test_no_time_is_no_stamp);
 
     return g_test_run();
 }

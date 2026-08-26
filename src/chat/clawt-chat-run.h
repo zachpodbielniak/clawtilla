@@ -61,6 +61,41 @@ gboolean clawt_chat_run_is_start(const gchar *previous_sender,
  */
 gchar *clawt_chat_day_label(GDateTime *when, GDateTime *now);
 
+/**
+ * clawt_chat_time_label:
+ * @when: (nullable): the message's time
+ *
+ * What a transcript stamps a message with: `HH:MM`.
+ *
+ * One function because both clients draw this in two places each -- the
+ * run header and the continuation gutter -- and they had four answers
+ * between them.  The web transcript rendered a *relative* time ("2m
+ * ago") while GTK rendered the clock, so the same conversation carried
+ * two conventions depending on which client you opened it in.
+ *
+ * The clock rather than the relative form, for two reasons.  A relative
+ * time rendered on the server is wrong the moment it is sent and gets
+ * wronger: nothing re-renders a message that has not changed, so a page
+ * left open shows "2m ago" for an hour.  And a transcript is a record --
+ * an absolute time is what lets a line here be matched against the event
+ * log, a task, or a journal entry.  Recency belongs to the lists that
+ * are about recent activity, which keep their own relative formatting.
+ *
+ * The date is not in it: a day divider carries that, and repeating it on
+ * every message would spend the gutter's whole width saying what the row
+ * above already said.
+ *
+ * 24-hour, deliberately, rather than the locale's format.  This string
+ * has to fit the slot the avatar reserves -- 32px in GTK, 28px in the
+ * web -- and a 12-hour locale renders "4:23 PM", which does not.  A
+ * stamp that wraps to two lines in a gutter is worse than one in an
+ * unfamiliar format.
+ *
+ * Returns: (transfer full) (nullable): the label, or %NULL for a %NULL
+ *   @when
+ */
+gchar *clawt_chat_time_label(GDateTime *when);
+
 G_END_DECLS
 
 #endif /* CLAWT_CHAT_RUN_H */

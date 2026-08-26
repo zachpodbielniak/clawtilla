@@ -61,3 +61,12 @@ clawt_chat_day_label(GDateTime *when, GDateTime *now)
 
     return text;
 }
+
+gchar *
+clawt_chat_time_label(GDateTime *when)
+{
+    if (when == NULL)
+        return NULL;
+
+    return g_date_time_format(when, "%H:%M");
+}
