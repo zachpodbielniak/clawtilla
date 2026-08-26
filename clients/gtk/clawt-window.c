@@ -3556,14 +3556,33 @@ scroll_to_bottom(gpointer user_data)
 }
 
 /*
- * Pins the view to the bottom when the transcript actually grows.
+ * Notices that the transcript has grown, and asks for a scroll.
  *
- * The queued idle is not enough on its own: it reads `upper` before
- * GTK's frame clock has laid the new message out, so it scrolls to where
- * the bottom *was* and leaves the newest message just below the fold --
- * which is why a reply, or even typing, needed a scroll by hand. The
- * adjustment says when it genuinely knows how tall the content is; that
- * is the moment to follow it.
+ * It asks rather than scrolls, and that distinction is the whole point.
+ * These two notifies are emitted by GtkViewport from inside its own
+ * size-allocate, at the moment it reconfigures the adjustment for a
+ * layout it has already positioned its child for. Writing `value` here
+ * moves the number and does not move the picture: the viewport has
+ * finished placing the child for this pass, and the allocation the
+ * write asks for is folded into the pass that is already running rather
+ * than starting another one. Nothing queues a further one, so the
+ * displayed offset stays where it was while the adjustment reports the
+ * new bottom.
+ *
+ * That mismatch is stable, not transient -- measured at 68px, exactly
+ * one message, and still there ten seconds later. It is also invisible
+ * to every correction in this file, because all of them test the
+ * adjustment and the adjustment is already right. `scroll_to_bottom()`
+ * in particular finds value == bottom and returns without doing
+ * anything, so the one write that would have happened outside a layout
+ * pass is the one this handler suppresses.
+ *
+ * Queueing instead puts the write in an idle, after the pass has
+ * finished. It is then a real value change, the viewport allocates
+ * again, and the newest message is on screen. `queue_scroll()` already
+ * holds a reference for the life of the idle and `scroll_to_bottom()`
+ * already re-reads `upper` and re-checks `following`, so deferring
+ * costs nothing but the hop.
  *
  * page-size as well as upper, because typing grows the composer and
  * shrinks the transcript above it, which moves the bottom without adding
@@ -3585,12 +3604,12 @@ on_transcript_grew(GObject *object, GParamSpec *pspec, gpointer user_data)
              gtk_adjustment_get_page_size(adjustment);
 
     /*
-     * Only when it is not already there. Setting the same value is a
-     * no-op to GTK but this runs on every layout pass, and doing nothing
-     * is cheaper than asking it to.
+     * Only when it is not already there. This runs on every layout
+     * pass, and a queued idle that would find nothing to do is worth
+     * not queueing.
      */
     if (gtk_adjustment_get_value(adjustment) < bottom)
-        gtk_adjustment_set_value(adjustment, bottom);
+        queue_scroll(self);
 }
 
 /*
