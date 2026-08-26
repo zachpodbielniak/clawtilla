@@ -3731,8 +3731,6 @@ append_message_to(ClawtWindow *self, const TranscriptView *view,
         GtkWidget *line = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
         GtkWidget *gutter = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
 
-        gtk_widget_add_css_class(line, "clawt-run-header");
-
         if (run_start) {
             GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
             GtkWidget *who = gtk_label_new(sender);
@@ -3745,6 +3743,8 @@ append_message_to(ClawtWindow *self, const TranscriptView *view,
              * name to caption size makes every turn look like metadata
              * about a message rather than a person saying something.
              */
+            gtk_widget_add_css_class(header, "clawt-run-header");
+
             gtk_widget_add_css_class(who, "heading");
             gtk_widget_set_margin_start(who, 12);
 
