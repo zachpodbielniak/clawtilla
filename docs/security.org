@@ -51,6 +51,33 @@ A container shares the kernel.  A container escape is a real category of
 bug and clawtilla does nothing about it.  For work you actively distrust,
 use a VM.
 
+*** A distrobox is not a container
+
+It is one, in the kernel sense --- and then distrobox deliberately opens
+most of that back up.  The agent runs as *your* uid, sees your sockets
+and displays, and reaches the host itself with =distrobox-host-exec=.
+Anything you can do from your own shell, it can do.
+
+Treat a distrobox agent as closer to a host agent than to a container
+one.  It exists for work you want done *in your environment* --- a build
+against your real toolchain, an agent maintaining your dotfiles --- and
+for anything you would not hand your session to, use =container=, which
+shares none of it.
+
+The home directory is the sharp end.  Left to itself distrobox mounts
+your real =$HOME=, so a box at its own default can read your ssh keys
+and every credential in a dotfile.  clawtilla's default is the opposite:
+an agent gets a home of its own, and yours is reached only by
+=share_home: true=.  There is no =confirm_host_control= equivalent
+gating it, which is a deliberate limit --- the isolation is the default,
+so the dangerous state has to be typed, but it is one line to type.
+
+The agent is *told* which it got.  The two are indistinguishable from
+inside the box, so its own description says either "belongs to you
+alone" or "is the operator's real home directory", in those words.  That
+is not a security control; it is what stops an agent scattering scratch
+files through your home believing it owns the place.
+
 *** A model can be talked into things
 
 Nothing here validates an agent's *intentions*.  If an agent has a host

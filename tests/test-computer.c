@@ -1901,6 +1901,215 @@ test_teardown_is_never_a_silent_success(void)
     g_assert_true(clawt_computer_teardown(host, NULL));
 }
 
+/*
+ * The config reaches the distrobox, including the setting that decides
+ * what it can read.
+ *
+ * This is the gap this project keeps recording: two halves that each
+ * work and no wire between them. clawt_distrobox_computer_resolve_home()
+ * is tested above and the schema keys are generated -- neither notices
+ * if the factory forgets to call the setter, and the symptom would be an
+ * agent silently given the operator's entire home directory.
+ *
+ * The bridge is NULL, so this asserts what was *configured* rather than
+ * what podman did; that is the half a machine without distrobox can
+ * still check, and it is the half that decides the confinement.
+ */
+static void
+test_the_factory_wires_a_distrobox_from_config(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(ClawtPodBridge) bridge = clawt_pod_bridge_new(NULL);
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent;
+    g_autofree gchar *home = NULL;
+
+    agent = agent_from_yaml(&config,
+        "agents:\n"
+        "  - id: chief\n"
+        "    computer:\n"
+        "      type: distrobox\n"
+        "      distrobox:\n"
+        "        home: /var/lib/boxes/chief\n");
+
+    /*
+     * A real bridge, which needs no podman and loads no module until
+     * something is provisioned. Passing NULL here would make the factory
+     * refuse before it built anything -- so the test would assert a
+     * refusal message and nothing about the wiring it exists for.
+     */
+    computer = clawt_computer_factory_create(agent, bridge, &error);
+
+    g_assert_no_error(error);
+    g_assert_nonnull(computer);
+    g_assert_cmpint(clawt_computer_get_computer_type(computer), ==,
+                    CLAWT_COMPUTER_DISTROBOX);
+
+    home = clawt_distrobox_computer_resolve_home(
+        CLAWT_DISTROBOX_COMPUTER(computer));
+    g_assert_cmpstr(home, ==, "/var/lib/boxes/chief");
+}
+
+/*
+ * Without a bridge it refuses, and names the module it wanted.
+ *
+ * "not supported" on its own sends somebody to check whether their
+ * clawtilla was built with distrobox in it, which is not a thing.
+ */
+static void
+test_a_distrobox_without_a_bridge_names_the_module(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent;
+
+    agent = agent_from_yaml(&config,
+        "agents:\n  - id: chief\n    computer:\n      type: distrobox\n");
+
+    computer = clawt_computer_factory_create(agent, NULL, &error);
+
+    g_assert_null(computer);
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED);
+    g_assert_nonnull(strstr(error->message, "distrobox"));
+}
+
+/*
+ * share_home reaches the computer, and is the only thing that makes it
+ * take the operator's home.
+ *
+ * Asserted through the factory rather than only on the setter, because
+ * a factory that read the wrong key -- or did not read it at all --
+ * would leave the safe default in place and look correct, while the
+ * person who asked to share their home would silently not be sharing
+ * it. Wrong in the harmless direction, which is how it would survive.
+ */
+static void
+test_share_home_reaches_the_computer_from_config(void)
+{
+    static const struct {
+        const gchar *yaml;
+        gboolean     shares;
+    } cases[] = {
+        { "agents:\n  - id: chief\n    computer:\n      type: distrobox\n",
+          FALSE },
+        { "agents:\n  - id: chief\n    computer:\n      type: distrobox\n"
+          "      distrobox:\n        share_home: true\n", TRUE },
+        { "agents:\n  - id: chief\n    computer:\n      type: distrobox\n"
+          "      distrobox:\n        share_home: false\n"
+          "        home: /var/lib/boxes/chief\n", FALSE }
+    };
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autoptr(ClawtConfig) config = NULL;
+        g_autoptr(ClawtComputer) computer = NULL;
+        g_autoptr(ClawtPodBridge) bridge = clawt_pod_bridge_new(NULL);
+        g_autoptr(GError) error = NULL;
+        ClawtAgentConfig *agent;
+        g_autofree gchar *home = NULL;
+
+        agent = agent_from_yaml(&config, cases[i].yaml);
+        computer = clawt_computer_factory_create(agent, bridge, &error);
+
+        g_assert_no_error(error);
+        g_assert_nonnull(computer);
+
+        home = clawt_distrobox_computer_resolve_home(
+            CLAWT_DISTROBOX_COMPUTER(computer));
+
+        if (cases[i].shares)
+            g_assert_null(home);
+        else
+            g_assert_nonnull(home);
+    }
+}
+
+/*
+ * The type list both clients walk, and the two predicates they branch
+ * on.
+ *
+ * There were five hand-written copies of this list between the clients,
+ * so a type added to the fleet reached whichever of them somebody
+ * remembered. What replaced them is only worth having if every type is
+ * in it and every nick round-trips -- a type in the enum and missing
+ * from the order table would be one no client could ever offer.
+ */
+static void
+test_every_computer_type_is_offered_and_round_trips(void)
+{
+    static const ClawtComputerType every[] = {
+        CLAWT_COMPUTER_NONE, CLAWT_COMPUTER_HOST, CLAWT_COMPUTER_CONTAINER,
+        CLAWT_COMPUTER_DISTROBOX, CLAWT_COMPUTER_VM
+    };
+    guint i;
+    guint j;
+
+    g_assert_cmpuint(clawt_computer_type_count(), ==,
+                     G_N_ELEMENTS(every));
+
+    for (i = 0; i < G_N_ELEMENTS(every); i++) {
+        gboolean found = FALSE;
+
+        for (j = 0; j < clawt_computer_type_count(); j++) {
+            const gchar *nick = clawt_computer_type_nth_nick(j);
+            gint back = -1;
+
+            g_assert_nonnull(nick);
+            g_assert_nonnull(clawt_computer_type_nth_label(j));
+
+            /* The nick a client stores has to come back as the type. */
+            g_assert_true(clawt_enum_from_nick(CLAWT_TYPE_COMPUTER_TYPE,
+                                               nick, &back));
+            g_assert_cmpint(back, ==, clawt_computer_type_nth(j));
+
+            if (clawt_computer_type_nth(j) == every[i])
+                found = TRUE;
+        }
+
+        g_assert_true(found);
+    }
+
+    /* Least capable first, so the list reads as an escalation. */
+    g_assert_cmpint(clawt_computer_type_nth(0), ==, CLAWT_COMPUTER_NONE);
+    g_assert_cmpint(clawt_computer_type_nth(
+                        clawt_computer_type_count() - 1), ==,
+                    CLAWT_COMPUTER_HOST);
+}
+
+/*
+ * The predicates that replaced five copies of `== "container"`.
+ *
+ * A distrobox takes an image and mounts exactly as a container does,
+ * and that is the whole reason these exist -- adding the type without
+ * them would have given it a form with no image chooser and no shared
+ * folders, silently.
+ */
+static void
+test_the_type_predicates_cover_every_type(void)
+{
+    g_assert_true(clawt_computer_type_takes_image(CLAWT_COMPUTER_CONTAINER));
+    g_assert_true(clawt_computer_type_takes_image(CLAWT_COMPUTER_DISTROBOX));
+
+    /* A VM takes a *disk* image, which is a different setting. */
+    g_assert_false(clawt_computer_type_takes_image(CLAWT_COMPUTER_VM));
+    g_assert_false(clawt_computer_type_takes_image(CLAWT_COMPUTER_NONE));
+    g_assert_false(clawt_computer_type_takes_image(CLAWT_COMPUTER_HOST));
+
+    g_assert_true(clawt_computer_type_takes_mounts(CLAWT_COMPUTER_CONTAINER));
+    g_assert_true(clawt_computer_type_takes_mounts(CLAWT_COMPUTER_DISTROBOX));
+    g_assert_true(clawt_computer_type_takes_mounts(CLAWT_COMPUTER_VM));
+
+    /*
+     * Not host: there the mount list is the confinement allowlist rather
+     * than a set of kernel mounts, so a "Shared folders" editor would be
+     * editing something else under a name that does not fit.
+     */
+    g_assert_false(clawt_computer_type_takes_mounts(CLAWT_COMPUTER_NONE));
+    g_assert_false(clawt_computer_type_takes_mounts(CLAWT_COMPUTER_HOST));
+}
+
 /* ── distrobox ────────────────────────────────────────────────────── */
 
 /*
@@ -2877,6 +3086,16 @@ main(int argc, char *argv[])
                     test_a_guest_desktop_gets_a_screen);
     g_test_add_func("/computer/vm/qemu-names-its-gpu",
                     test_the_qemu_backend_names_its_gpu);
+    g_test_add_func("/computer/factory-wires-a-distrobox",
+                    test_the_factory_wires_a_distrobox_from_config);
+    g_test_add_func("/computer/distrobox-without-a-bridge-names-it",
+                    test_a_distrobox_without_a_bridge_names_the_module);
+    g_test_add_func("/computer/share-home-reaches-the-computer",
+                    test_share_home_reaches_the_computer_from_config);
+    g_test_add_func("/computer/every-type-is-offered",
+                    test_every_computer_type_is_offered_and_round_trips);
+    g_test_add_func("/computer/type-predicates-cover-every-type",
+                    test_the_type_predicates_cover_every_type);
     g_test_add_func("/computer/distrobox/does-not-share-a-home",
                     test_a_distrobox_does_not_share_a_home_by_accident);
     g_test_add_func("/computer/distrobox/says-whose-home-it-has",

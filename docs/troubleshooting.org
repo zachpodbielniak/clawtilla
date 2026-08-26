@@ -64,8 +64,10 @@ defaults:
 
 *** "there is no libpod-module-container.so in any of: …"
 
-A container or vm agent needs podomation's loadable modules, which
-libreclaw builds.  The message lists every directory that was searched.
+A container, distrobox or vm agent needs podomation's loadable modules,
+which libreclaw builds.  The message lists every directory that was
+searched.  The module named in the message is the one that backend
+wants: =container=, =distrobox= or =vm_virtmanager=.
 
 #+begin_src bash
 make -C deps/libreclaw pod-modules

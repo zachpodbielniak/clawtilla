@@ -1558,10 +1558,35 @@ enough to decide with: one with a mailbox and a memory database is an
 agent somebody ran, and one with nothing but a ~config.yaml~ is a design
 abandoned halfway.
 
-*From somewhere else* copies a standalone libreclaw workspace in.  Its
-provider and model come with it, so an import does not quietly move the
-agent onto the fleet defaults.  /Keep git history/ is off by default: the
-new workspace is usually not the same repository.
+*From somewhere else* brings in a workspace that is not already where
+clawtilla keeps them.  Its provider and model come with it, so an import
+does not quietly move the agent onto the fleet defaults.
+
+/How/ chooses between three, and the choice is about what happens to the
+original:
+
+- *Copy it in* --- the default, and a *fork*.  The original stops being
+  the thing the agent reads, so editing either afterwards is editing one
+  of two diverging directories.  /Keep git history/ applies only here,
+  and is off by default: the new workspace is usually not the same
+  repository.
+- *Link to it* --- clawtilla writes into that directory itself.  One
+  copy, which is what you want for a workspace you already maintain
+  somewhere.  Removing the agent with its files removes *the link* and
+  leaves the directory alone, and says so.
+- *Clone a git repository* --- the /Git URL/ row takes the URL.  Where
+  the workspace root is inside a git repository the workspace is added
+  as a submodule of it; where it is not, it is an ordinary clone.
+
+The row that does not apply is insensitive rather than hidden --- a row
+that vanishes takes your place on the page with it, and the dialog is
+short.
+
+Whatever happened is reported in the toast, in the daemon's own words
+rather than the client's.  Whether a git import became a submodule
+depends on the machine, so the side that found out is the side that
+says; "Imported." would be true of both outcomes and useful for
+neither.
 
 *** Another machine's fleet
 

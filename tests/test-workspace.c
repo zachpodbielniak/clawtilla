@@ -1724,6 +1724,225 @@ test_the_submodule_decision_follows_the_repository(void)
     }
 }
 
+/*
+ * Makes a git repository with a persona in it, for the import tests.
+ *
+ * Local paths only, so this is hermetic -- no network, and `git clone`
+ * of a directory needs none.
+ */
+static gboolean
+make_source_repo(const gchar *path)
+{
+    /*
+     * Wide enough for the longest row *plus* its NULL. The commit line
+     * is exactly eight arguments, so an [8] here would leave it
+     * unterminated -- g_spawn_sync would then walk off the end of the
+     * row into the next one.
+     */
+    static const gchar *const steps[][10] = {
+        { "git", "init", "-q", NULL },
+        { "git", "add", "-A", NULL },
+        { "git", "-c", "user.email=t@example", "-c", "user.name=t",
+          "commit", "-qm", "persona", NULL }
+    };
+    g_autofree gchar *soul = NULL;
+    guint i;
+
+    if (g_mkdir_with_parents(path, 0700) != 0)
+        return FALSE;
+
+    soul = g_build_filename(path, "SOUL.org", NULL);
+
+    if (!g_file_set_contents(soul, "* Scribe\n", -1, NULL))
+        return FALSE;
+
+    for (i = 0; i < G_N_ELEMENTS(steps); i++) {
+        gint status = 0;
+
+        if (!g_spawn_sync(path, (gchar **)steps[i], NULL,
+                          G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL |
+                          G_SPAWN_STDERR_TO_DEV_NULL,
+                          NULL, NULL, NULL, NULL, &status, NULL))
+            return FALSE;
+
+        if (!g_spawn_check_wait_status(status, NULL))
+            return FALSE;
+    }
+
+    return TRUE;
+}
+
+static gboolean
+have_git(void)
+{
+    /* transfer full, so it has to be held to be freed. */
+    g_autofree gchar *git = g_find_program_in_path("git");
+
+    return git != NULL;
+}
+
+/*
+ * A git import outside any repository is an ordinary clone, and says so.
+ *
+ * The sentence matters as much as the clone: this is the outcome a
+ * caller could not predict, and reporting a submodule here -- or saying
+ * nothing -- would leave somebody believing their state repo tracks a
+ * workspace it has never heard of.
+ */
+static void
+test_a_git_import_outside_a_repository_clones(void)
+{
+    g_auto(ImportScratch) scratch = import_scratch();
+    g_autofree gchar *source = NULL;
+    g_autofree gchar *workspace = NULL;
+    g_autofree gchar *detail = NULL;
+    g_autofree gchar *soul = NULL;
+    g_autoptr(GError) error = NULL;
+
+    if (!have_git()) {
+        g_test_skip("git is not installed");
+        return;
+    }
+
+    source = g_build_filename(scratch, "source", NULL);
+    workspace = g_build_filename(scratch, "agents", "scribe", NULL);
+
+    g_assert_true(make_source_repo(source));
+
+    g_assert_true(clawt_workspace_adopt(CLAWT_IMPORT_GIT, source, workspace,
+                                        FALSE, NULL, &detail, &error));
+    g_assert_no_error(error);
+
+    /* The persona came across, and it is a repository. */
+    soul = g_build_filename(workspace, "SOUL.org", NULL);
+    g_assert_true(g_file_test(soul, G_FILE_TEST_EXISTS));
+
+    {
+        g_autofree gchar *dot_git = g_build_filename(workspace, ".git", NULL);
+
+        g_assert_true(g_file_test(dot_git, G_FILE_TEST_EXISTS));
+    }
+
+    g_assert_nonnull(detail);
+    g_assert_nonnull(strstr(detail, "not a submodule"));
+}
+
+/*
+ * Inside a repository it becomes a submodule, and the parent tracks it.
+ *
+ * git refuses file:// submodules by default (CVE-2022-39253), which is
+ * a policy about local paths rather than anything clawtilla decides --
+ * so the test relaxes it for its own child processes through
+ * GIT_CONFIG_COUNT, which touches no configuration file anywhere. An
+ * ordinary https: or ssh: URL is unaffected and needs no such thing.
+ */
+static void
+test_a_git_import_inside_a_repository_becomes_a_submodule(void)
+{
+    g_auto(ImportScratch) scratch = import_scratch();
+    g_autofree gchar *source = NULL;
+    g_autofree gchar *state = NULL;
+    g_autofree gchar *workspace = NULL;
+    g_autofree gchar *detail = NULL;
+    g_autofree gchar *modules = NULL;
+    g_autofree gchar *contents = NULL;
+    g_autoptr(GError) error = NULL;
+
+    if (!have_git()) {
+        g_test_skip("git is not installed");
+        return;
+    }
+
+    source = g_build_filename(scratch, "source", NULL);
+    state = g_build_filename(scratch, "state", NULL);
+    workspace = g_build_filename(state, "agents", "scribe", NULL);
+
+    g_assert_true(make_source_repo(source));
+    g_assert_true(make_source_repo(state));
+
+    g_setenv("GIT_CONFIG_COUNT", "1", TRUE);
+    g_setenv("GIT_CONFIG_KEY_0", "protocol.file.allow", TRUE);
+    g_setenv("GIT_CONFIG_VALUE_0", "always", TRUE);
+
+    g_assert_true(clawt_workspace_adopt(CLAWT_IMPORT_GIT, source, workspace,
+                                        FALSE, NULL, &detail, &error));
+
+    g_unsetenv("GIT_CONFIG_COUNT");
+    g_unsetenv("GIT_CONFIG_KEY_0");
+    g_unsetenv("GIT_CONFIG_VALUE_0");
+
+    g_assert_no_error(error);
+
+    /*
+     * The parent repository's own record of it. Without this the
+     * workspace would be there and untracked, which is the outcome the
+     * mode exists to avoid and is indistinguishable from a plain clone
+     * by looking at the workspace alone.
+     */
+    modules = g_build_filename(state, ".gitmodules", NULL);
+    g_assert_true(g_file_get_contents(modules, &contents, NULL, NULL));
+    g_assert_nonnull(strstr(contents, "agents/scribe"));
+
+    g_assert_nonnull(detail);
+    g_assert_nonnull(strstr(detail, "submodule"));
+
+    /* The path in the sentence is relative to the repository, not absolute. */
+    g_assert_nonnull(strstr(detail, "agents/scribe"));
+}
+
+/*
+ * A workspace already there is refused by the git mode too.
+ *
+ * The two directory modes are covered above; this one has its own
+ * branch, and a clone into an occupied directory would fail somewhere
+ * deep in git rather than saying what is wrong.
+ */
+static void
+test_cloning_over_an_existing_workspace_is_refused(void)
+{
+    g_auto(ImportScratch) scratch = import_scratch();
+    g_autofree gchar *workspace = NULL;
+    g_autoptr(GError) error = NULL;
+
+    workspace = g_build_filename(scratch, "occupied", NULL);
+    g_assert_cmpint(g_mkdir_with_parents(workspace, 0700), ==, 0);
+
+    g_assert_false(clawt_workspace_adopt(CLAWT_IMPORT_GIT,
+                                         "https://example.invalid/x.git",
+                                         workspace, FALSE, NULL, NULL,
+                                         &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_ALREADY_EXISTS);
+}
+
+/*
+ * git's own refusal reaches the caller.
+ *
+ * A URL that cannot be cloned is the ordinary failure here -- a typo, a
+ * repository that is not there, a host that refuses -- and "import
+ * failed" would send somebody to look at clawtilla. What they need is
+ * what git said.
+ */
+static void
+test_a_failed_clone_reports_what_git_said(void)
+{
+    g_auto(ImportScratch) scratch = import_scratch();
+    g_autofree gchar *workspace = NULL;
+    g_autoptr(GError) error = NULL;
+
+    if (!have_git()) {
+        g_test_skip("git is not installed");
+        return;
+    }
+
+    workspace = g_build_filename(scratch, "doomed", NULL);
+
+    g_assert_false(clawt_workspace_adopt(
+        CLAWT_IMPORT_GIT, "/nonexistent/not-a-repo.git", workspace, FALSE,
+        NULL, NULL, &error));
+    g_assert_nonnull(error);
+    g_assert_nonnull(strstr(error->message, "git refused"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1804,6 +2023,14 @@ main(int argc, char *argv[])
                     test_a_missing_source_is_refused_by_both_directory_modes);
     g_test_add_func("/import/modes-round-trip",
                     test_every_import_mode_round_trips);
+    g_test_add_func("/import/git-outside-a-repository-clones",
+                    test_a_git_import_outside_a_repository_clones);
+    g_test_add_func("/import/git-inside-a-repository-submodules",
+                    test_a_git_import_inside_a_repository_becomes_a_submodule);
+    g_test_add_func("/import/clone-over-existing-is-refused",
+                    test_cloning_over_an_existing_workspace_is_refused);
+    g_test_add_func("/import/failed-clone-reports-git",
+                    test_a_failed_clone_reports_what_git_said);
     g_test_add_func("/import/submodule-decision-follows-the-repository",
                     test_the_submodule_decision_follows_the_repository);
 

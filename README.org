@@ -51,7 +51,7 @@ not built.
 | Persona | inline system prompt, or =SOUL.md= / =IDENTITY.md= / … identity files |
 | Model | any provider libreclaw supports, with effort, routing profile and fallbacks |
 | Runtime | a supervised =libreclaw= process (default), or embedded in the daemon |
-| Computer | =none=, =host=, =container= (podman), or =vm= (libvirt or plain QEMU) |
+| Computer | =none=, =host=, =container= (podman), =distrobox= (a container wired into your session), or =vm= (libvirt or plain QEMU) |
 | Desktop | optional gowl or GNOME control, alongside any computer type |
 | Mounts | host paths shared into the container or VM, plus a shared exchange directory |
 | Mailbox | durable queue with priority, TTL, leases, retry and a dead-letter view |
@@ -128,7 +128,7 @@ All under [[file:docs/][docs/]], in org-mode:
 | [[file:docs/configuration-options.org][configuration-options.org]] | the option reference, generated from the schema |
 | [[file:docs/agents.org][agents.org]] | personas, models, runtimes, lifecycle |
 | [[file:docs/mailboxes.org][mailboxes.org]] | queue semantics and how to unstick one |
-| [[file:docs/computers.org][computers.org]] | host, container, VM, desktop, mounts |
+| [[file:docs/computers.org][computers.org]] | host, container, distrobox, VM, desktop, mounts |
 | [[file:docs/orchestration.org][orchestration.org]] | rooms, tasks, chief-of-staff, loop safety |
 | [[file:docs/spending.org][spending.org]] | what the fleet costs, and the budget that reads it |
 | [[file:docs/integrations.org][integrations.org]] | Matrix, mail, MCP servers, notifications; scoping them |
