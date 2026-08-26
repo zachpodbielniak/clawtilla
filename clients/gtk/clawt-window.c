@@ -520,6 +520,7 @@ state_dot(const gchar *state)
 {
     GtkWidget *dot = gtk_image_new();
     const gchar *icon = "media-record-symbolic";
+    gtk_widget_add_css_class(dot, "clawt-run-state");
     const gchar *css = NULL;
 
     if (g_strcmp0(state, "running") == 0)
@@ -698,6 +699,8 @@ agent_row(JsonObject *agent, guint unread)
     GtkWidget *row = adw_action_row_new();
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     const gchar *state = clawt_json_string(agent, "state", "stopped");
+    gtk_widget_add_css_class(row, "clawt-agent-row");
+    gtk_widget_add_css_class(box, "clawt-agent-caps");
     const gchar *caps = clawt_json_string(agent, "caps", "");
     gint64 depth = json_object_has_member(agent, "mailbox_depth")
                    ? json_object_get_int_member(agent, "mailbox_depth") : 0;
@@ -1066,6 +1069,7 @@ team_header_row(ClawtWindow *self,
 {
     GtkWidget *row = gtk_list_box_row_new();
     GtkWidget *button = gtk_button_new();
+    gtk_widget_add_css_class(row, "clawt-team-header");
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     GtkWidget *twisty;
     GtkWidget *label = gtk_label_new(name);
@@ -2976,6 +2980,7 @@ day_divider(GDateTime *when)
 {
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
     GtkWidget *left = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_widget_add_css_class(row, "clawt-day-divider");
     GtkWidget *right = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
     GtkWidget *label;
     g_autofree gchar *text = clawt_chat_day_label(when, NULL);
@@ -3077,6 +3082,7 @@ static GtkWidget *
 run_avatar(const gchar *name, const gchar *image_path, const gchar *color)
 {
     GtkWidget *avatar = adw_avatar_new(32, name, TRUE);
+    gtk_widget_add_css_class(avatar, "clawt-avatar");
     const gchar *ink;
 
     if (image_path != NULL && *image_path != '\0') {
@@ -3190,6 +3196,7 @@ append_message_to(ClawtWindow *self, const TranscriptView *view,
     };
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     GtkWidget *text = gtk_label_new(NULL);
+    gtk_widget_add_css_class(row, "clawt-chat-run");
     g_autoptr(GDateTime) when = (ts > 0)
         ? g_date_time_new_from_unix_local(ts)
         : g_date_time_new_now_local();
@@ -3234,6 +3241,7 @@ append_message_to(ClawtWindow *self, const TranscriptView *view,
      * to make harder to read.
      */
     gtk_widget_add_css_class(text, "body");
+    gtk_widget_add_css_class(text, "clawt-chat-body");
 
     if (from_user) {
         /*
@@ -3280,6 +3288,8 @@ append_message_to(ClawtWindow *self, const TranscriptView *view,
             GtkWidget *line = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
             GtkWidget *at = gtk_label_new(stamp);
 
+            gtk_widget_add_css_class(line, "clawt-run-header");
+
             gtk_widget_add_css_class(at, "caption");
             gtk_widget_add_css_class(at, "dim-label");
             gtk_widget_set_halign(line, GTK_ALIGN_END);
@@ -3298,6 +3308,8 @@ append_message_to(ClawtWindow *self, const TranscriptView *view,
          */
         GtkWidget *line = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
         GtkWidget *gutter = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+
+        gtk_widget_add_css_class(line, "clawt-run-header");
 
         if (run_start) {
             GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
@@ -7911,6 +7923,8 @@ build_alerts_panel(ClawtWindow *self)
     GtkWidget *filter = adw_toggle_group_new();
     GtkWidget *body = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 
+    gtk_widget_set_name(view, "clawt-alerts-panel");
+
     adw_header_bar_set_show_start_title_buttons(ADW_HEADER_BAR(header),
                                                 FALSE);
     adw_header_bar_set_show_end_title_buttons(ADW_HEADER_BAR(header), FALSE);
@@ -10518,6 +10532,7 @@ build_chat_page(ClawtWindow *self)
     GtkWidget *send;
 
     self->transcript = GTK_BOX(gtk_box_new(GTK_ORIENTATION_VERTICAL, 0));
+    gtk_widget_set_name(GTK_WIDGET(self->transcript), "clawt-transcript");
 
     /*
      * The last turn should not sit against the composer.  18px because
@@ -10633,6 +10648,7 @@ build_chat_page(ClawtWindow *self)
     gtk_widget_set_visible(self->attachments, FALSE);
 
     self->entry = GTK_TEXT_VIEW(gtk_text_view_new());
+    gtk_widget_set_name(GTK_WIDGET(self->entry), "clawt-entry");
     gtk_text_view_set_wrap_mode(self->entry, GTK_WRAP_WORD_CHAR);
     gtk_text_view_set_top_margin(self->entry, 8);
     gtk_text_view_set_bottom_margin(self->entry, 8);
@@ -10704,12 +10720,14 @@ build_chat_page(ClawtWindow *self)
     }
 
     attach = gtk_button_new_from_icon_name("mail-attachment-symbolic");
+    gtk_widget_set_name(attach, "clawt-attach");
     gtk_widget_set_tooltip_text(attach,
                                 "Send files with this message. You can also "
                                 "paste an image.");
     g_signal_connect(attach, "clicked", G_CALLBACK(on_attach_clicked), self);
 
     send = gtk_button_new_from_icon_name("document-send-symbolic");
+    gtk_widget_set_name(send, "clawt-send");
     g_signal_connect(send, "clicked", G_CALLBACK(on_send), self);
 
     {
@@ -10777,6 +10795,7 @@ build_chat_page(ClawtWindow *self)
         gtk_button_set_child(GTK_BUTTON(pill), content);
         gtk_widget_add_css_class(pill, "osd");
         gtk_widget_add_css_class(pill, "pill");
+        gtk_widget_add_css_class(pill, "clawt-jump-pill");
         gtk_widget_set_tooltip_text(pill, "Jump to latest");
         gtk_accessible_update_property(GTK_ACCESSIBLE(pill),
                                        GTK_ACCESSIBLE_PROPERTY_LABEL,
@@ -10820,6 +10839,7 @@ build_chat_page(ClawtWindow *self)
      */
     {
         GtkWidget *composer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+        gtk_widget_set_name(composer, "clawt-composer");
         GtkWidget *clamp = adw_clamp_new();
 
         gtk_box_append(GTK_BOX(composer), self->activity_bar);
@@ -15654,6 +15674,7 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
 
     /* ── Sidebar ── */
     self->sidebar = GTK_LIST_BOX(gtk_list_box_new());
+    gtk_widget_set_name(GTK_WIDGET(self->sidebar), "clawt-sidebar");
     gtk_list_box_set_selection_mode(self->sidebar, GTK_SELECTION_SINGLE);
     gtk_widget_add_css_class(GTK_WIDGET(self->sidebar), "navigation-sidebar");
     g_signal_connect(self->sidebar, "row-selected",
@@ -15785,6 +15806,7 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
                                         "system-users-symbolic");
 
     header = adw_header_bar_new();
+    gtk_widget_set_name(header, "clawt-headerbar");
     title = adw_window_title_new("clawtilla", NULL);
     adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), title);
     g_object_set_data(G_OBJECT(self), "title", title);
@@ -15869,6 +15891,7 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
 
     switcher = adw_view_switcher_new();
     adw_view_switcher_set_stack(ADW_VIEW_SWITCHER(switcher), self->pages);
+    gtk_widget_set_name(switcher, "clawt-page-switcher");
     adw_view_switcher_set_policy(ADW_VIEW_SWITCHER(switcher),
                                  ADW_VIEW_SWITCHER_POLICY_WIDE);
     adw_header_bar_pack_end(ADW_HEADER_BAR(header), switcher);
@@ -15883,6 +15906,7 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
      */
     {
         GtkWidget *bell = gtk_toggle_button_new();
+        gtk_widget_set_name(bell, "clawt-alerts-bell");
         GtkWidget *overlay = gtk_overlay_new();
 
         gtk_button_set_icon_name(
