@@ -217,16 +217,37 @@ storing empty strings, so "unset" stays the *absence* of a setting.
 
 *** Reading
 
-Column width and the gap between runs, both in pixels, both empty to
-follow the shipped values.  They reach the page as ~--chat-measure~ and
-~--chat-run-gap~, which the transcript, the composer and the run
-spacing all read -- so the shipped design and a reader's override are
-one mechanism rather than two.
+Column width -- a unit and an amount -- and the gap between runs.  Left
+alone, the conversation takes nine tenths of the window.
 
-The bounds come from ~CLAWT_APPEARANCE_MIN_MEASURE~ and friends rather
-than from numbers written in this client. A cookie is edited as easily
-as a config file, and two clients disagreeing about what is allowed is
-exactly the drift ~make parity~ exists for.
+| Unit                | Amount   | What it does                        |
+|---------------------+----------+-------------------------------------|
+| Share of the window | 20--100  | grows with the window               |
+| Characters a line   | 20--240  | grows with the font                 |
+| Pixels              | 320--1600 | neither; exact                     |
+| Follow the shipped column | --  | nine tenths of the window           |
+
+The two fields are stored as *one* self-describing cookie (~90%~,
+~80ch~, ~640px~), through the library's own formatter.  Two cookies
+would let them arrive apart, and a browser that kept the amount and
+dropped the unit would read 640 as a percentage and clamp it to the
+whole window -- a setting nobody chose, and no error anywhere.
+
+They reach the page as ~--chat-measure~ and ~--chat-run-gap~, which the
+transcript, the composer and the run spacing all read -- so the shipped
+design and a reader's override are one mechanism rather than two.  The
+unit survives into the declaration: a percentage stays a percentage so
+the column keeps following the window, and a character count stays ~ch~
+so it keeps following the font.
+
+The units, their labels and their bounds all come from
+~clawt_measure_unit_count()~ and friends rather than from a list written
+in this client, for the reason the colour schemes already record: two
+hand-written lists is how a value came to be offered by one client and
+not the other, with ~make parity~ reporting OK throughout.  A cookie is
+edited as easily as a config file, and a spelling this build cannot
+place -- ~80em~, say -- falls back to the shipped column rather than
+failing.
 
 *** A font family is sanitised, not escaped
 

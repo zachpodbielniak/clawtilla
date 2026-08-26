@@ -112,7 +112,16 @@ declare -A GTK_MAY_LACK=(
 #
 # shellcheck disable=SC2034
 declare -A VOCABULARIES=(
-    ["colour scheme"]="src/config/clawt-appearance.c|s/.*{ *CLAWT_[A-Z_]*, *\"\([a-z-]*\)\".*/\1/p"
+    ["colour scheme"]="src/config/clawt-appearance.c|s/.*{ *CLAWT_THEME_[A-Z_]*, *\"\([a-z-]*\)\".*/\1/p"
+    #
+    # CLAWT_MEASURE_DEFAULT is deliberately not in this list. Its nick is
+    # "default", which is also a button style in the web client and a
+    # dozen other things besides -- so it is evidence of nothing, and a
+    # check that reports a hardcoding which is not there is one people
+    # learn to ignore. The units that can actually go missing from a
+    # client are the three with values.
+    #
+    ["measure unit"]="src/config/clawt-appearance.c|s/.*{ *CLAWT_MEASURE_\(PERCENT\|COLUMNS\|PIXELS\), *\"\([a-z]*\)\".*/\2/p"
 )
 
 #
@@ -146,6 +155,7 @@ declare -A AFFORDANCES=(
     ["alert arrives read"]="clawt_alert_arrives_read|clawt_alert_arrives_read"
     ["composer on the message column"]="CHAT_BODY_INSET|chat-gutter"
     ["reading measurements"]="build_reading_group|clawt_run_gap"
+    ["measure units"]="clawt_measure_unit_count|clawt_measure_unit_count"
     ["palettes from disk"]="clawt_appearance_scheme_count|clawt_appearance_scheme_count"
     ["message boundary in a run"]="CHAT_MESSAGE_SPACING|msg-time"
     ["decision inbox"]="build_decision_page|decision-row"

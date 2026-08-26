@@ -43,11 +43,21 @@ gint clawt_chat_body_inset(gint row_margin, gint gutter);
 /**
  * CLAWT_CHAT_CLAMP_WIDTH:
  *
- * The transcript's clamp, which is libadwaita's own default and is left
- * at it -- a default is a number the platform may revise, a hardcoded
- * one is a number somebody has to maintain.  Named here because the
- * alerts threshold is derived from it and a derivation needs its inputs
- * spelled rather than recalled.
+ * The *reference* column: libadwaita's own AdwClamp default, and what
+ * the transcript was fixed at before the measure grew a unit.
+ *
+ * It is no longer what the transcript uses -- the shipped measure is a
+ * share of the window now (%CLAWT_APPEARANCE_DEFAULT_PERCENT), so the
+ * column has no single width to name.  Two things still need one.  The
+ * alerts threshold is derived from a column, and deriving it from a
+ * column that changes with the window would make the breakpoint chase
+ * itself; and clawt_measure_resolve_px() has to answer *something* for
+ * a clamp built before its widget was ever allocated, where a
+ * percentage has nothing to be a percentage of.
+ *
+ * Left at libadwaita's number on purpose: a default is a number the
+ * platform may revise, a hardcoded one is a number somebody has to
+ * maintain.
  */
 #define CLAWT_CHAT_CLAMP_WIDTH 600
 

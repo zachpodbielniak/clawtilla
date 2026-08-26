@@ -30,9 +30,16 @@ struct _ClawtAppearance {
     gdouble    monospace_size;
 
     /*
-     * Zero means defer to the shipped value, like every other field
-     * here.  Naming the current default instead would freeze it.
+     * CLAWT_MEASURE_DEFAULT means defer to the shipped column, like
+     * every other field here.  Naming the current default instead would
+     * freeze it.
+     *
+     * The unit is stored beside the amount rather than being implied,
+     * because the two together are the setting: 90 is nine tenths of
+     * the window, ninety characters or ninety pixels, and there is no
+     * order of the three in which the wrong reading is harmless.
      */
+    ClawtMeasureUnit measure_unit;
     gint       measure;
     gint       run_spacing;
 
@@ -73,6 +80,7 @@ clawt_appearance_copy(ClawtAppearance *self)
     copy->font_size = self->font_size;
     copy->monospace_font = g_strdup(self->monospace_font);
     copy->monospace_size = self->monospace_size;
+    copy->measure_unit = self->measure_unit;
     copy->measure = self->measure;
     copy->run_spacing = self->run_spacing;
     copy->palette = g_strdup(self->palette);
@@ -211,14 +219,317 @@ clawt_appearance_set_monospace_size(ClawtAppearance *self, gdouble points)
     self->monospace_size = clamp_points(points);
 }
 
+/* ── The measure's units ─────────────────────────────────────────── */
+
+/*
+ * One table, walked by both clients rather than copied into either.
+ *
+ * The colour schemes already record what the alternative costs: two
+ * hand-written lists is how a palette came to be selectable in the GTK
+ * combo and absent from the web select, with `make parity` reporting OK
+ * throughout because a choice like this sends no IPC frame and answers
+ * no slash command.
+ *
+ * `suffix` is what a stored measure ends in and is the whole reason the
+ * value is self-describing: `90%` cannot be misread as pixels by a
+ * build that has never heard of percentages, because it will not parse
+ * at all and falls back to the shipped column.  A *missing* suffix is
+ * pixels, handled in the parser rather than by giving pixels an empty
+ * suffix here -- an empty suffix in the table would match before any
+ * real one on a build whose loop happened to reach it first, so `90%`
+ * would parse as 90 pixels.
+ */
+typedef struct {
+    ClawtMeasureUnit unit;
+    const gchar     *nick;
+    const gchar     *label;
+    const gchar     *suffix;
+    gint             min;
+    gint             max;
+    gint             preset;
+    gint             step;
+} MeasureUnitInfo;
+
+static const MeasureUnitInfo measure_units[] = {
+    { CLAWT_MEASURE_DEFAULT, "default", "Follow the shipped column", "",
+      0, 0, 0, 1 },
+    { CLAWT_MEASURE_PERCENT, "percent", "Share of the window", "%",
+      CLAWT_APPEARANCE_MIN_PERCENT, CLAWT_APPEARANCE_MAX_PERCENT,
+      CLAWT_APPEARANCE_DEFAULT_PERCENT, 5 },
+    { CLAWT_MEASURE_COLUMNS, "columns", "Characters a line", "ch",
+      CLAWT_APPEARANCE_MIN_COLUMNS, CLAWT_APPEARANCE_MAX_COLUMNS,
+      80, 5 },
+    { CLAWT_MEASURE_PIXELS, "pixels", "Pixels", "px",
+      CLAWT_APPEARANCE_MIN_MEASURE, CLAWT_APPEARANCE_MAX_MEASURE,
+      CLAWT_CHAT_CLAMP_WIDTH, 20 }
+};
+
+static const MeasureUnitInfo *
+measure_unit_info(ClawtMeasureUnit unit)
+{
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS(measure_units); i++) {
+        if (measure_units[i].unit == unit)
+            return &measure_units[i];
+    }
+
+    return &measure_units[0];
+}
+
+guint
+clawt_measure_unit_count(void)
+{
+    return G_N_ELEMENTS(measure_units);
+}
+
+ClawtMeasureUnit
+clawt_measure_unit_nth(guint n)
+{
+    if (n >= G_N_ELEMENTS(measure_units))
+        return CLAWT_MEASURE_DEFAULT;
+
+    return measure_units[n].unit;
+}
+
+const gchar *
+clawt_measure_unit_nick(ClawtMeasureUnit unit)
+{
+    return measure_unit_info(unit)->nick;
+}
+
+const gchar *
+clawt_measure_unit_label(ClawtMeasureUnit unit)
+{
+    return measure_unit_info(unit)->label;
+}
+
+ClawtMeasureUnit
+clawt_measure_unit_from_nick(const gchar *nick)
+{
+    guint i;
+
+    if (nick == NULL)
+        return CLAWT_MEASURE_DEFAULT;
+
+    for (i = 0; i < G_N_ELEMENTS(measure_units); i++) {
+        if (g_ascii_strcasecmp(nick, measure_units[i].nick) == 0)
+            return measure_units[i].unit;
+    }
+
+    return CLAWT_MEASURE_DEFAULT;
+}
+
+gint
+clawt_measure_unit_min(ClawtMeasureUnit unit)
+{
+    return measure_unit_info(unit)->min;
+}
+
+gint
+clawt_measure_unit_max(ClawtMeasureUnit unit)
+{
+    return measure_unit_info(unit)->max;
+}
+
+gint
+clawt_measure_unit_preset(ClawtMeasureUnit unit)
+{
+    return measure_unit_info(unit)->preset;
+}
+
+gint
+clawt_measure_unit_step(ClawtMeasureUnit unit)
+{
+    return measure_unit_info(unit)->step;
+}
+
+gboolean
+clawt_measure_parse(const gchar *text, ClawtMeasureUnit *unit, gint *amount)
+{
+    g_autofree gchar *trimmed = NULL;
+    const gchar *suffix;
+    gchar *end = NULL;
+    gint64 value;
+    guint i;
+
+    g_return_val_if_fail(unit != NULL, FALSE);
+    g_return_val_if_fail(amount != NULL, FALSE);
+
+    *unit = CLAWT_MEASURE_DEFAULT;
+    *amount = 0;
+
+    if (text == NULL)
+        return FALSE;
+
+    trimmed = g_strstrip(g_strdup(text));
+
+    if (trimmed[0] == '\0')
+        return FALSE;
+
+    value = g_ascii_strtoll(trimmed, &end, 10);
+
+    /*
+     * `end` is where the digits stopped, so it is the suffix -- and it
+     * is compared against the table rather than switched on, so a unit
+     * added to the table is parseable without an edit here.  A suffix
+     * nothing matches is the shipped column, not an error: this is a
+     * preference file somebody types into, and refusing to start over a
+     * typo in it would be far worse than ignoring the line.
+     */
+    if (end == trimmed || value <= 0)
+        return FALSE;
+
+    suffix = g_strchug(end);
+
+    /*
+     * A bare number is pixels, which is what a bare number has always
+     * meant in the appearance file.  Anything else would read an
+     * existing `measure: 640` as 640 of whatever the new default unit
+     * was -- so a column somebody set once would silently become the
+     * whole window, with nothing anywhere to say so.
+     */
+    if (suffix[0] == '\0') {
+        *unit = CLAWT_MEASURE_PIXELS;
+        *amount = (gint)CLAMP(value, (gint64)CLAWT_APPEARANCE_MIN_MEASURE,
+                              (gint64)CLAWT_APPEARANCE_MAX_MEASURE);
+        return TRUE;
+    }
+
+    for (i = 0; i < G_N_ELEMENTS(measure_units); i++) {
+        if (measure_units[i].unit == CLAWT_MEASURE_DEFAULT)
+            continue;
+
+        if (g_ascii_strcasecmp(suffix, measure_units[i].suffix) != 0)
+            continue;
+
+        *unit = measure_units[i].unit;
+        *amount = (gint)CLAMP(value, (gint64)measure_units[i].min,
+                              (gint64)measure_units[i].max);
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+gchar *
+clawt_measure_to_string(ClawtMeasureUnit unit, gint amount)
+{
+    const MeasureUnitInfo *info = measure_unit_info(unit);
+
+    if (unit == CLAWT_MEASURE_DEFAULT || amount <= 0)
+        return g_strdup("");
+
+    return g_strdup_printf("%d%s", CLAMP(amount, info->min, info->max),
+                           info->suffix);
+}
+
+gchar *
+clawt_measure_to_css(ClawtMeasureUnit unit, gint amount, const gchar *inset)
+{
+    const MeasureUnitInfo *info = measure_unit_info(unit);
+    gint bounded;
+
+    if (unit == CLAWT_MEASURE_DEFAULT || amount <= 0)
+        return NULL;
+
+    bounded = CLAMP(amount, info->min, info->max);
+
+    /*
+     * A character count is about the words, and a body starts a gutter
+     * in from the column's edge -- so 80 columns without the correction
+     * is 80 less the gutter's worth of characters, which is a different
+     * number at every font size.  calc() is what keeps `ch` doing the
+     * work it is worth having: the browser resolves it against the
+     * element's own font, so changing the font size later keeps the
+     * count the reader asked for.
+     */
+    if (unit == CLAWT_MEASURE_COLUMNS && inset != NULL)
+        return g_strdup_printf("calc(%dch + %s)", bounded, inset);
+
+    return g_strdup_printf("%d%s", bounded, info->suffix);
+}
+
+gint
+clawt_measure_resolve_px(ClawtMeasureUnit unit,
+                         gint             amount,
+                         gint             available,
+                         gdouble          char_width,
+                         gint             inset)
+{
+    const MeasureUnitInfo *info = measure_unit_info(unit);
+    gint share = CLAWT_APPEARANCE_DEFAULT_PERCENT;
+    gint px;
+
+    if (amount > 0)
+        amount = CLAMP(amount, info->min, info->max);
+    else
+        unit = CLAWT_MEASURE_DEFAULT;
+
+    switch (unit) {
+    case CLAWT_MEASURE_PIXELS:
+        px = amount;
+        break;
+
+    case CLAWT_MEASURE_COLUMNS:
+        px = (gint)(amount * MAX(char_width, 1.0) + 0.5) + MAX(inset, 0);
+        break;
+
+    case CLAWT_MEASURE_PERCENT:
+        share = amount;
+        /* fall through */
+
+    case CLAWT_MEASURE_DEFAULT:
+    default:
+        /*
+         * A percentage of an unknown width is the reference column
+         * rather than nothing.  A clamp is built before its widget has
+         * ever been allocated, and answering 0 there would collapse the
+         * transcript for the frame between construction and the first
+         * size-allocate -- visible, and indistinguishable from the
+         * setting being broken.
+         */
+        px = available > 0 ? (available * share) / 100
+                           : CLAWT_CHAT_CLAMP_WIDTH;
+        break;
+    }
+
+    /*
+     * Floored, never capped.  A reader who asked for nine tenths of a
+     * very wide display asked for exactly that, and clamping it back to
+     * a typographic maximum would be a control that reports a setting
+     * it did not apply -- which is the failure this file records about
+     * a combo box that cannot say "something else", arrived at from the
+     * other side.
+     */
+    if (available > 0 && px > available)
+        px = available;
+
+    if (px < CLAWT_APPEARANCE_MIN_MEASURE) {
+        px = (available > 0)
+             ? MIN(CLAWT_APPEARANCE_MIN_MEASURE, available)
+             : CLAWT_APPEARANCE_MIN_MEASURE;
+    }
+
+    return MAX(px, 1);
+}
+
 /*
  * Out-of-range is clamped rather than refused, for the same reason a
  * font size is: this file is edited by hand, and a value that made the
  * transcript unusable would leave no obvious way to fix it from inside
  * the app.
  */
+ClawtMeasureUnit
+clawt_appearance_get_measure_unit(ClawtAppearance *self)
+{
+    g_return_val_if_fail(self != NULL, CLAWT_MEASURE_DEFAULT);
+
+    return self->measure_unit;
+}
+
 gint
-clawt_appearance_get_measure(ClawtAppearance *self)
+clawt_appearance_get_measure_amount(ClawtAppearance *self)
 {
     g_return_val_if_fail(self != NULL, 0);
 
@@ -226,17 +537,23 @@ clawt_appearance_get_measure(ClawtAppearance *self)
 }
 
 void
-clawt_appearance_set_measure(ClawtAppearance *self, gint pixels)
+clawt_appearance_set_measure(ClawtAppearance *self,
+                             ClawtMeasureUnit unit,
+                             gint             amount)
 {
+    const MeasureUnitInfo *info;
+
     g_return_if_fail(self != NULL);
 
-    if (pixels <= 0) {
+    if (amount <= 0 || unit == CLAWT_MEASURE_DEFAULT) {
+        self->measure_unit = CLAWT_MEASURE_DEFAULT;
         self->measure = 0;
         return;
     }
 
-    self->measure = CLAMP(pixels, CLAWT_APPEARANCE_MIN_MEASURE,
-                          CLAWT_APPEARANCE_MAX_MEASURE);
+    info = measure_unit_info(unit);
+    self->measure_unit = info->unit;
+    self->measure = CLAMP(amount, info->min, info->max);
 }
 
 gint
@@ -916,18 +1233,32 @@ clawt_appearance_to_css(ClawtAppearance *self)
      *
      * Still nothing at all when nothing is set.
      */
-    if (self->measure > 0 || self->run_spacing > 0) {
-        g_string_append(out, ":root {\n");
+    {
+        /*
+         * The unit travels with the number all the way to the
+         * stylesheet, so a percentage stays a percentage and a
+         * character count stays `ch`.  Resolving either to pixels here
+         * would be resolving it against a window this code cannot see,
+         * and would freeze the answer at whatever that window happened
+         * to be when the sheet was written.
+         */
+        g_autofree gchar *measure =
+            clawt_measure_to_css(self->measure_unit, self->measure,
+                                 "var(--chat-gutter)");
 
-        if (self->measure > 0)
-            g_string_append_printf(out, "  --chat-measure: %dpx;\n",
-                                   self->measure);
+        if (measure != NULL || self->run_spacing > 0) {
+            g_string_append(out, ":root {\n");
 
-        if (self->run_spacing > 0)
-            g_string_append_printf(out, "  --chat-run-gap: %dpx;\n",
-                                   self->run_spacing);
+            if (measure != NULL)
+                g_string_append_printf(out, "  --chat-measure: %s;\n",
+                                       measure);
 
-        g_string_append(out, "}\n");
+            if (self->run_spacing > 0)
+                g_string_append_printf(out, "  --chat-run-gap: %dpx;\n",
+                                       self->run_spacing);
+
+            g_string_append(out, "}\n");
+        }
     }
 
     /*
@@ -1029,9 +1360,20 @@ clawt_appearance_parse(const gchar *text, GError **error)
 
     value = member_string(mapping, "measure");
 
-    if (value != NULL)
-        clawt_appearance_set_measure(self,
-                                     (gint)g_ascii_strtoll(value, NULL, 10));
+    if (value != NULL) {
+        ClawtMeasureUnit unit;
+        gint amount;
+
+        /*
+         * Through the one reader, so a spelling the web client's cookie
+         * accepts is a spelling this file accepts.  A value it cannot
+         * place is the shipped column rather than a parse error --
+         * refusing to start over a typo in a preference file would cost
+         * somebody their whole client for the sake of a column width.
+         */
+        clawt_measure_parse(value, &unit, &amount);
+        clawt_appearance_set_measure(self, unit, amount);
+    }
 
     value = member_string(mapping, "run_spacing");
 
@@ -1112,12 +1454,23 @@ clawt_appearance_to_data(ClawtAppearance *self)
 
     g_string_append(out,
         "\n"
-        "# How wide the conversation column is, in pixels, and how far\n"
-        "# apart one person's run of messages sits from the next. 0 means\n"
-        "# use the shipped value -- which is not the same as writing that\n"
-        "# value here, because writing it would freeze it.\n");
+        "# How wide the conversation column is, and how far apart one\n"
+        "# person's run of messages sits from the next. Empty means use\n"
+        "# the shipped value -- which is not the same as writing that\n"
+        "# value here, because writing it would freeze it.\n"
+        "#\n"
+        "# The measure carries its own unit: '90%' is nine tenths of the\n"
+        "# width the window has to give, '80ch' is eighty characters a\n"
+        "# line whatever the font, and '640px' is exactly that. A bare\n"
+        "# number is pixels, which is what it has always meant here.\n");
 
-    g_string_append_printf(out, "measure: %d\n", self->measure);
+    {
+        g_autofree gchar *measure =
+            clawt_measure_to_string(self->measure_unit, self->measure);
+
+        append_quoted(out, "measure", measure);
+    }
+
     g_string_append_printf(out, "run_spacing: %d\n", self->run_spacing);
 
     return g_string_free(out, FALSE);

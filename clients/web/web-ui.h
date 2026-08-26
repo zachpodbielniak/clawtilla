@@ -356,11 +356,18 @@ typedef struct {
     gint   mono_size;
 
     /*
-     * The conversation column and the gap between runs, in pixels, or 0
-     * to follow the shipped value.  Bounded by the library's own
-     * CLAWT_APPEARANCE_* limits rather than numbers of this client's
-     * own, so the two clients cannot disagree about what is allowed.
+     * The conversation column and the gap between runs, or the default
+     * unit and 0 to follow the shipped values.  Bounded by the
+     * library's own limits rather than numbers of this client's own, so
+     * the two clients cannot disagree about what is allowed.
+     *
+     * The unit is stored beside the amount for the reason the
+     * appearance file stores them together: 90 alone is nine tenths of
+     * the window, ninety characters or ninety pixels, and the cookie
+     * carries one self-describing spelling rather than two keys that
+     * can arrive apart.
      */
+    ClawtMeasureUnit measure_unit;
     gint   measure;
     gint   run_gap;
 } ClawtWebLook;

@@ -650,11 +650,11 @@ test_a_colour_that_is_not_one_is_refused(void)
 /*
  * Unset emits no rule, exactly as an unset font does.
  *
- * The whole reason 0 means defer rather than "600" is that a value
- * naming the current default freezes it -- so a later change to the
- * shipped column would not reach anyone who had ever opened the
- * dialog. The two states look identical on screen and diverge for ever
- * afterwards.
+ * The whole reason CLAWT_MEASURE_DEFAULT means defer rather than "90%"
+ * is that a value naming the current default freezes it -- so a later
+ * change to the shipped column would not reach anyone who had ever
+ * opened the dialog. The two states look identical on screen and
+ * diverge for ever afterwards.
  */
 static void
 test_unset_measurements_emit_nothing(void)
@@ -662,7 +662,9 @@ test_unset_measurements_emit_nothing(void)
     g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
     g_autofree gchar *css = clawt_appearance_to_css(appearance);
 
-    g_assert_cmpint(clawt_appearance_get_measure(appearance), ==, 0);
+    g_assert_cmpint(clawt_appearance_get_measure_unit(appearance), ==,
+                    CLAWT_MEASURE_DEFAULT);
+    g_assert_cmpint(clawt_appearance_get_measure_amount(appearance), ==, 0);
     g_assert_cmpint(clawt_appearance_get_run_spacing(appearance), ==, 0);
     g_assert_null(strstr(css, "--chat-measure"));
     g_assert_null(strstr(css, "--chat-run-gap"));
@@ -674,7 +676,7 @@ test_measurements_reach_the_stylesheet(void)
     g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
     g_autofree gchar *css = NULL;
 
-    clawt_appearance_set_measure(appearance, 720);
+    clawt_appearance_set_measure(appearance, CLAWT_MEASURE_PIXELS, 720);
     clawt_appearance_set_run_spacing(appearance, 18);
 
     css = clawt_appearance_to_css(appearance);
@@ -684,29 +686,77 @@ test_measurements_reach_the_stylesheet(void)
 }
 
 /*
+ * The unit survives all the way into the declaration.
+ *
+ * Resolving a percentage or a character count to pixels while writing
+ * the sheet would freeze it at whatever the window happened to be, and
+ * the setting would then look correct and stop tracking -- the same
+ * shape as naming the current font instead of deferring to it.  A
+ * character count carries the gutter with it, because a count is about
+ * the words and the words start past the avatar.
+ */
+static void
+test_the_unit_reaches_the_stylesheet(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+
+    clawt_appearance_set_measure(appearance, CLAWT_MEASURE_PERCENT, 90);
+
+    {
+        g_autofree gchar *css = clawt_appearance_to_css(appearance);
+
+        g_assert_nonnull(strstr(css, "--chat-measure: 90%;"));
+    }
+
+    clawt_appearance_set_measure(appearance, CLAWT_MEASURE_COLUMNS, 80);
+
+    {
+        g_autofree gchar *css = clawt_appearance_to_css(appearance);
+
+        g_assert_nonnull(strstr(
+            css, "--chat-measure: calc(80ch + var(--chat-gutter));"));
+    }
+}
+
+/*
  * Clamped rather than refused, because this file is edited by hand and
  * a value that made the transcript unusable would leave no obvious way
  * to fix it from inside the app.
  *
- * Both ends, and the zero that means defer -- a floor applied to 0
- * would turn "follow the shipped column" into "320px", which is the
- * bug this shape is most likely to grow.
+ * Per unit, which is the whole point: 90 is a legitimate percentage and
+ * far below the pixel floor, so one shared range would have turned the
+ * shipped column into 320px the moment somebody typed it.  And the zero
+ * that means defer -- a floor applied to 0 would turn "follow the
+ * shipped column" into a number, which is the bug this shape is most
+ * likely to grow.
  */
 static void
 test_measurements_are_clamped(void)
 {
     g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
 
-    clawt_appearance_set_measure(appearance, 10);
-    g_assert_cmpint(clawt_appearance_get_measure(appearance), ==,
+    clawt_appearance_set_measure(appearance, CLAWT_MEASURE_PIXELS, 10);
+    g_assert_cmpint(clawt_appearance_get_measure_amount(appearance), ==,
                     CLAWT_APPEARANCE_MIN_MEASURE);
 
-    clawt_appearance_set_measure(appearance, 99999);
-    g_assert_cmpint(clawt_appearance_get_measure(appearance), ==,
+    clawt_appearance_set_measure(appearance, CLAWT_MEASURE_PIXELS, 99999);
+    g_assert_cmpint(clawt_appearance_get_measure_amount(appearance), ==,
                     CLAWT_APPEARANCE_MAX_MEASURE);
 
-    clawt_appearance_set_measure(appearance, 0);
-    g_assert_cmpint(clawt_appearance_get_measure(appearance), ==, 0);
+    clawt_appearance_set_measure(appearance, CLAWT_MEASURE_PERCENT, 90);
+    g_assert_cmpint(clawt_appearance_get_measure_amount(appearance), ==, 90);
+    g_assert_cmpint(clawt_appearance_get_measure_unit(appearance), ==,
+                    CLAWT_MEASURE_PERCENT);
+
+    clawt_appearance_set_measure(appearance, CLAWT_MEASURE_PERCENT, 400);
+    g_assert_cmpint(clawt_appearance_get_measure_amount(appearance), ==,
+                    CLAWT_APPEARANCE_MAX_PERCENT);
+
+    /* Any unit with a non-positive amount is the shipped column. */
+    clawt_appearance_set_measure(appearance, CLAWT_MEASURE_COLUMNS, 0);
+    g_assert_cmpint(clawt_appearance_get_measure_unit(appearance), ==,
+                    CLAWT_MEASURE_DEFAULT);
+    g_assert_cmpint(clawt_appearance_get_measure_amount(appearance), ==, 0);
 
     clawt_appearance_set_run_spacing(appearance, 99999);
     g_assert_cmpint(clawt_appearance_get_run_spacing(appearance), ==,
@@ -720,12 +770,11 @@ static void
 test_measurements_round_trip(void)
 {
     g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
-    g_autofree gchar *data = NULL;
     g_autoptr(ClawtAppearance) back = NULL;
     g_autoptr(GError) error = NULL;
     g_autofree gchar *path = NULL;
 
-    clawt_appearance_set_measure(appearance, 800);
+    clawt_appearance_set_measure(appearance, CLAWT_MEASURE_COLUMNS, 80);
     clawt_appearance_set_run_spacing(appearance, 12);
 
     path = g_build_filename(g_get_user_config_dir(), "round-trip.yaml", NULL);
@@ -736,10 +785,205 @@ test_measurements_round_trip(void)
     g_assert_no_error(error);
     g_assert_nonnull(back);
 
-    g_assert_cmpint(clawt_appearance_get_measure(back), ==, 800);
+    /*
+     * The unit as well as the number.  A field that saves and does not
+     * load is found months later, and this one would look like the
+     * column silently reverting to pixels.
+     */
+    g_assert_cmpint(clawt_appearance_get_measure_unit(back), ==,
+                    CLAWT_MEASURE_COLUMNS);
+    g_assert_cmpint(clawt_appearance_get_measure_amount(back), ==, 80);
     g_assert_cmpint(clawt_appearance_get_run_spacing(back), ==, 12);
+}
 
-    (void)data;
+/*
+ * A bare number is pixels, because that is what a bare number has
+ * always meant in this file.
+ *
+ * The alternative -- a separate `unit:` key defaulting to anything --
+ * would have read an existing file's `measure: 640` as 640 of whatever
+ * the new default was, so a column somebody set once would silently
+ * become the whole window or the minimum.  A self-describing value
+ * cannot do that.
+ */
+static void
+test_a_bare_number_is_still_pixels(void)
+{
+    g_autoptr(ClawtAppearance) appearance = NULL;
+    g_autoptr(GError) error = NULL;
+
+    appearance = clawt_appearance_parse("theme: 'dark'\nmeasure: 640\n",
+                                        &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(appearance);
+    g_assert_cmpint(clawt_appearance_get_measure_unit(appearance), ==,
+                    CLAWT_MEASURE_PIXELS);
+    g_assert_cmpint(clawt_appearance_get_measure_amount(appearance), ==, 640);
+}
+
+/* ── The units themselves ──────────────────────────────────────────── */
+
+/*
+ * One reader for the file and the cookie, so a spelling one accepts is
+ * a spelling the other accepts.
+ *
+ * Every case here is one somebody can type, including the ones nobody
+ * would drive by hand: an amount out of range, a suffix this build has
+ * never heard of, and the empty string a cleared field sends.
+ */
+static void
+test_a_measure_parses_with_its_unit(void)
+{
+    static const struct {
+        const gchar     *text;
+        gboolean         known;
+        ClawtMeasureUnit unit;
+        gint             amount;
+    } cases[] = {
+        { "90%",    TRUE,  CLAWT_MEASURE_PERCENT, 90 },
+        { " 75 % ", TRUE,  CLAWT_MEASURE_PERCENT, 75 },
+        { "80ch",   TRUE,  CLAWT_MEASURE_COLUMNS, 80 },
+        { "80CH",   TRUE,  CLAWT_MEASURE_COLUMNS, 80 },
+        { "640px",  TRUE,  CLAWT_MEASURE_PIXELS,  640 },
+        { "640",    TRUE,  CLAWT_MEASURE_PIXELS,  640 },
+        { "400%",   TRUE,  CLAWT_MEASURE_PERCENT,
+          CLAWT_APPEARANCE_MAX_PERCENT },
+        { "1%",     TRUE,  CLAWT_MEASURE_PERCENT,
+          CLAWT_APPEARANCE_MIN_PERCENT },
+        { "",       FALSE, CLAWT_MEASURE_DEFAULT, 0 },
+        { "0",      FALSE, CLAWT_MEASURE_DEFAULT, 0 },
+        { "-5px",   FALSE, CLAWT_MEASURE_DEFAULT, 0 },
+        { "wide",   FALSE, CLAWT_MEASURE_DEFAULT, 0 },
+        { "80em",   FALSE, CLAWT_MEASURE_DEFAULT, 0 },
+        { NULL,     FALSE, CLAWT_MEASURE_DEFAULT, 0 }
+    };
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS(cases); i++) {
+        ClawtMeasureUnit unit = CLAWT_MEASURE_PIXELS;
+        gint amount = -1;
+
+        g_assert_cmpint(clawt_measure_parse(cases[i].text, &unit, &amount),
+                        ==, cases[i].known);
+        g_assert_cmpint(unit, ==, cases[i].unit);
+        g_assert_cmpint(amount, ==, cases[i].amount);
+    }
+}
+
+static void
+test_a_measure_round_trips_through_its_spelling(void)
+{
+    guint u;
+
+    for (u = 0; u < clawt_measure_unit_count(); u++) {
+        ClawtMeasureUnit unit = clawt_measure_unit_nth(u);
+        gint preset = clawt_measure_unit_preset(unit);
+        g_autofree gchar *text = clawt_measure_to_string(unit, preset);
+        ClawtMeasureUnit back = CLAWT_MEASURE_PIXELS;
+        gint amount = -1;
+
+        clawt_measure_parse(text, &back, &amount);
+
+        g_assert_cmpint(back, ==, unit);
+        g_assert_cmpint(amount, ==, preset);
+
+        /* And the nick, which is what a form and a combo carry. */
+        g_assert_cmpint(
+            clawt_measure_unit_from_nick(clawt_measure_unit_nick(unit)),
+            ==, unit);
+    }
+}
+
+/*
+ * The shipped column is nine tenths of what there is, and it is one
+ * number rather than a pixel constant in one client and a rem in the
+ * other -- which is what those two were, and they were not even the
+ * same column.
+ */
+static void
+test_the_shipped_column_is_a_share_of_the_window(void)
+{
+    g_assert_cmpint(
+        clawt_measure_resolve_px(CLAWT_MEASURE_DEFAULT, 0, 2000, 7.0, 56),
+        ==, 1800);
+    g_assert_cmpint(
+        clawt_measure_resolve_px(CLAWT_MEASURE_PERCENT, 50, 2000, 7.0, 56),
+        ==, 1000);
+
+    /*
+     * Not capped.  A reader who asked for nine tenths of a very wide
+     * display asked for exactly that, and clamping it back to a
+     * typographic maximum would be a control reporting a setting it did
+     * not apply.
+     */
+    g_assert_cmpint(
+        clawt_measure_resolve_px(CLAWT_MEASURE_DEFAULT, 0, 3840, 7.0, 56),
+        >, CLAWT_APPEARANCE_MAX_MEASURE);
+}
+
+/*
+ * A percentage of nothing is the reference column rather than zero.
+ *
+ * A clamp is built before its widget has ever been allocated, so this
+ * is the answer on the first frame of every window; zero there would
+ * collapse the transcript visibly, and indistinguishably from the
+ * setting being broken.
+ */
+static void
+test_an_unlaid_out_window_gets_the_reference_column(void)
+{
+    g_assert_cmpint(
+        clawt_measure_resolve_px(CLAWT_MEASURE_DEFAULT, 0, 0, 0.0, 56),
+        ==, CLAWT_CHAT_CLAMP_WIDTH);
+    g_assert_cmpint(
+        clawt_measure_resolve_px(CLAWT_MEASURE_PERCENT, 90, 0, 0.0, 56),
+        ==, CLAWT_CHAT_CLAMP_WIDTH);
+}
+
+/*
+ * A character count is about the words, so the inset comes with it.
+ *
+ * 80 columns that included the avatar gutter would be 80 less the
+ * gutter's worth of characters -- a different number at every font
+ * size, and wrong in a way nobody would think to measure.
+ */
+static void
+test_a_character_count_carries_the_inset(void)
+{
+    g_assert_cmpint(
+        clawt_measure_resolve_px(CLAWT_MEASURE_COLUMNS, 80, 4000, 7.0, 56),
+        ==, 80 * 7 + 56);
+
+    /*
+     * And it follows the font: the same count at a larger character is
+     * a wider column, which is the whole reason a count is worth
+     * offering beside a pixel width.
+     */
+    g_assert_cmpint(
+        clawt_measure_resolve_px(CLAWT_MEASURE_COLUMNS, 80, 4000, 14.0, 56),
+        >,
+        clawt_measure_resolve_px(CLAWT_MEASURE_COLUMNS, 80, 4000, 7.0, 56));
+}
+
+/*
+ * Never wider than there is, and never below the floor.
+ *
+ * The floor yields to the window rather than overriding it: 320px of
+ * column in a 200px window is a horizontal scrollbar, which is worse
+ * than a narrow column.
+ */
+static void
+test_a_resolved_measure_fits_the_window(void)
+{
+    g_assert_cmpint(
+        clawt_measure_resolve_px(CLAWT_MEASURE_PIXELS, 1600, 700, 7.0, 56),
+        ==, 700);
+    g_assert_cmpint(
+        clawt_measure_resolve_px(CLAWT_MEASURE_PERCENT, 20, 800, 7.0, 56),
+        ==, CLAWT_APPEARANCE_MIN_MEASURE);
+    g_assert_cmpint(
+        clawt_measure_resolve_px(CLAWT_MEASURE_PERCENT, 50, 200, 7.0, 56),
+        ==, 200);
 }
 
 /* ── Palettes from disk ────────────────────────────────────────────── */
@@ -951,6 +1195,22 @@ main(int argc, char *argv[])
                     test_saving_and_loading_a_file);
     g_test_add_func("/appearance/unset-measurements-emit-nothing",
                     test_unset_measurements_emit_nothing);
+    g_test_add_func("/appearance/the-unit-reaches-the-stylesheet",
+                    test_the_unit_reaches_the_stylesheet);
+    g_test_add_func("/appearance/a-bare-number-is-still-pixels",
+                    test_a_bare_number_is_still_pixels);
+    g_test_add_func("/measure/parses-with-its-unit",
+                    test_a_measure_parses_with_its_unit);
+    g_test_add_func("/measure/round-trips-through-its-spelling",
+                    test_a_measure_round_trips_through_its_spelling);
+    g_test_add_func("/measure/the-shipped-column-is-a-share",
+                    test_the_shipped_column_is_a_share_of_the_window);
+    g_test_add_func("/measure/unlaid-out-gets-the-reference-column",
+                    test_an_unlaid_out_window_gets_the_reference_column);
+    g_test_add_func("/measure/a-character-count-carries-the-inset",
+                    test_a_character_count_carries_the_inset);
+    g_test_add_func("/measure/a-resolved-measure-fits-the-window",
+                    test_a_resolved_measure_fits_the_window);
     g_test_add_func("/appearance/measurements-reach-the-stylesheet",
                     test_measurements_reach_the_stylesheet);
     g_test_add_func("/appearance/measurements-are-clamped",

@@ -606,8 +606,8 @@ run gap set to 60.
 **** Reading: the column and the gap between runs
 
 #+begin_src yaml
-measure: 760       # column width in pixels; 0 follows the shipped one
-run_spacing: 18    # gap between one person's run and the next; 0 likewise
+measure: '90%'     # nine tenths of the width the window has to give
+run_spacing: 18    # gap between one person's run and the next; 0 defers
 #+end_src
 
 The measure was a constant in C for the whole life of the client, so the
@@ -617,28 +617,96 @@ chosen is right for one reader on one display --- which is the argument
 ~clawt-appearance.h~ already made about fonts, extended without
 modification.
 
-Zero means defer, exactly as an unset font does, and for the same
-reason: a value naming the current default would freeze it, so a later
-change to the shipped column would not reach anyone who had ever opened
-the dialog.
+***** The measure carries its own unit
 
-Out-of-range is clamped rather than refused. This file invites
-hand-editing, and a 40 or a 4000 in it would make the conversation
-unreadable and leave no obvious way back from inside the app.
+Pixels alone is the one unit that is wrong on every screen but the one
+it was typed on: a column that fits a laptop leaves two thirds of a 4K
+panel empty, and a reader who wants the conversation to use their
+display has no way to say so once rather than once per machine.
+
+| Spelling | Means                                        |
+|----------+----------------------------------------------|
+| ~'90%'~  | nine tenths of the width there is, and grows with the window |
+| ~'80ch'~ | eighty characters a line, and grows with the font           |
+| ~'640px'~ | exactly 640 pixels                          |
+| ~''~     | follow the shipped column, which is ~90%~     |
+
+The unit travels *with* the number rather than sitting in a key of its
+own. A separate ~unit:~ would have read an existing file's
+~measure: 640~ as 640 of whatever the new default was --- so a column
+somebody set once would silently become the whole window, with nothing
+anywhere to say so. A bare number is still pixels, which is what a bare
+number has always meant here.
+
+An empty measure means defer, exactly as an unset font does, and for the
+same reason: a value naming the current default would freeze it, so a
+later change to the shipped column would not reach anyone who had ever
+opened the dialog.
+
+Out-of-range is clamped rather than refused, *per unit* --- 90 is a
+legitimate percentage and far below the pixel floor, so one shared range
+would have turned the shipped column into 320px the moment somebody
+typed it. This file invites hand-editing, and a 40 or a 4000 in it
+would make the conversation unreadable and leave no obvious way back
+from inside the app.
+
+A share is never capped from above. A reader who asked for nine tenths
+of a very wide display asked for exactly that, and clamping it back to a
+typographic maximum would be a control that reports a setting it did not
+apply. It is floored, and it never exceeds the window.
+
+***** A column is the digit zero, in both clients
+
+CSS defines ~ch~ as the advance of the ~0~ glyph, and the web client
+renders a character count with it. The GTK client therefore measures the
+same glyph through Pango rather than reaching for
+~pango_font_metrics_get_approximate_char_width()~, which is an
+*average*: measured against real GTK4 in Adwaita Sans the two are
+7.156px and 9.253px, so "80 characters a line" would have come out 29%
+narrower in one client than the other, with nothing anywhere to say so.
+
+A character count also carries the avatar gutter with it, because a
+count is about the *words* and the words start past the avatar. In CSS
+that is ~calc(80ch + var(--chat-gutter))~; in GTK it is the same
+addition in pixels.
 
 ***** One measure, two mechanisms
 
 The web client reads ~--chat-measure~ and ~--chat-run-gap~ as CSS
-tokens. The GTK client cannot: ~AdwClamp~ takes a *property*, not a
-stylesheet, so it reads the value and sets both clamps --- the
-transcript's and the composer's, from one resolver, because a column
-widened while the box you type into stayed put would restore exactly the
-misalignment the gutter inset exists to fix.
+tokens, and the unit survives all the way into the declaration ---
+resolving a percentage to pixels while writing the sheet would freeze it
+at whatever the window happened to be.
+
+The GTK client cannot use a token: ~AdwClamp~ takes a *property*, not a
+stylesheet, so it resolves the measure with ~clawt_measure_resolve_px()~
+and sets all three clamps --- the transcript's, the composer's and
+Flow's, from one resolver, because a column widened while the box you
+type into stayed put would restore exactly the misalignment the gutter
+inset exists to fix. (Flow's clamp had a comment claiming it took "the
+same measure the chat has" and in fact sat at libadwaita's default, so a
+reader who widened the conversation found Flow still at 600.)
 
 That is also why changing it pushes to the live widgets rather than only
 rewriting the sheet. A setting that reached the file and the CSS but not
 the widget would be a control that appears to do nothing, which is worse
 than one that is missing.
+
+***** A share has to be recomputed, and GTK will not tell you
+
+A percentage is only a number once there is something to take it of, so
+the column must be recomputed on every re-allocation --- and ~GtkWidget~
+offers no signal for that. ~notify::width~ is the obvious hook and is a
+trap: measured against real GTK4 across four hand-driven allocations it
+fired *zero* times, while the scrolled window's own horizontal
+adjustment fired four for four and reported the allocated width exactly.
+So the client follows ~notify::page-size~ on the hadjustment, which is
+the same "follow the adjustment" answer the vertical case already
+needed.
+
+Flow resolves against its own viewport rather than the chat's. They are
+pages of one stack and so almost always the same width, but an unshown
+page is allocated nothing at all --- so sharing a number would mean
+whichever page somebody opened first decided the column for the other.
 
 The gap applies to messages drawn after the change; reopening the
 conversation redraws the rest.
@@ -994,14 +1062,33 @@ a stylesheet.
 
 **** The measure
 
-Both clients cap the column.  In the GTK client that is ~AdwClamp~ at its
-own defaults; in the web client it is 40rem, which was *measured* rather
-than chosen --- at 52rem a line ran to 117 characters against a
-comfortable range of 45 to 90, and 40rem renders 89 at the same font,
-taken from the browser's own text metrics.
+Both clients cap the column, at nine tenths of the width the window has
+to give unless the reader says otherwise --- see [[*Reading: the column and the gap between runs][Reading]] for the units.
+
+It used to be a fixed column: ~AdwClamp~ at its own defaults in the GTK
+client, 40rem in the web one, which is a good column and a bad default.
+Those numbers were *measured* rather than chosen --- at 52rem a line ran
+to 117 characters against a comfortable range of 45 to 90, and 40rem
+renders 89 at the same font, taken from the browser's own text metrics
+--- and they are still what a reader picking ~ch~ is choosing between.
+What made them the wrong default is that they leave most of a wide
+display empty, and saying otherwise meant converting a monitor's width
+to rem.
 
 The composer follows the same column.  A full-width entry under a narrow
 column of text reads as a rendering fault rather than as a layout.
+
+A percentage resolves against each element's own containing block, so
+the web sheet reserves the scrollbar gutter on *both* the transcript and
+the composer --- the composer is made a scroll container purely so it
+has a gutter to reserve. Without that a classic scrollbar took 15px off
+the transcript's column while the composer kept all of it: measured in a
+real browser at 1280px, 431.09px against 444.59, a 13.5px step between
+the words and the box you type them into, appearing the moment a
+conversation grew past one screen. Reserving on both sides makes them
+equal, and reserving it *always* stops the column stepping sideways the
+first time a conversation runs past the fold. Measured at 0.00px
+difference in width and in left edge, scrolling and not.
 
 On a narrow screen the avatar gutter collapses and the face is hidden:
 measured at 375px, the indent would otherwise take the measure to 42

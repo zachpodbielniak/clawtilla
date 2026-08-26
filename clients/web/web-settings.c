@@ -958,6 +958,10 @@ appearance_content(HtmxRequest *request)
             "person's messages sit from the next. Left empty, both "
             "follow the shipped values.");
         HtmxElement *body = clawt_web_card_body(card);
+        g_autoptr(GPtrArray) unit_nicks =
+            g_ptr_array_new_with_free_func(g_free);
+        g_autoptr(GPtrArray) unit_labels =
+            g_ptr_array_new_with_free_func(g_free);
         g_autofree gchar *measure = (look->measure > 0)
                                     ? g_strdup_printf("%d", look->measure)
                                     : NULL;
@@ -965,14 +969,41 @@ appearance_content(HtmxRequest *request)
                                     ? g_strdup_printf("%d", look->run_gap)
                                     : NULL;
         g_autofree gchar *measure_hint = g_strdup_printf(
-            "empty follows the shipped column; %d to %d",
+            "%d to %d percent, %d to %d characters, or %d to %d pixels",
+            CLAWT_APPEARANCE_MIN_PERCENT, CLAWT_APPEARANCE_MAX_PERCENT,
+            CLAWT_APPEARANCE_MIN_COLUMNS, CLAWT_APPEARANCE_MAX_COLUMNS,
             CLAWT_APPEARANCE_MIN_MEASURE, CLAWT_APPEARANCE_MAX_MEASURE);
         g_autofree gchar *gap_hint = g_strdup_printf(
             "empty follows the shipped gap; up to %d",
             CLAWT_APPEARANCE_MAX_RUN_SPACING);
+        guint u;
 
+        /*
+         * Walked from the library rather than named here, for the
+         * reason the colour schemes above already record: two
+         * hand-written lists is how a value came to be offered by one
+         * client and not the other, with `make parity` reporting OK
+         * because a choice like this sends no IPC frame.
+         */
+        for (u = 0; u < clawt_measure_unit_count(); u++) {
+            ClawtMeasureUnit at = clawt_measure_unit_nth(u);
+
+            g_ptr_array_add(unit_nicks,
+                            g_strdup(clawt_measure_unit_nick(at)));
+            g_ptr_array_add(unit_labels,
+                            g_strdup(clawt_measure_unit_label(at)));
+        }
+
+        g_ptr_array_add(unit_nicks, NULL);
+        g_ptr_array_add(unit_labels, NULL);
+
+        clawt_web_add(body, clawt_web_select_field(
+            "Column width", "measure_unit",
+            (const gchar *const *)unit_nicks->pdata,
+            (const gchar *const *)unit_labels->pdata,
+            clawt_measure_unit_nick(look->measure_unit)));
         clawt_web_add(body, clawt_web_field(
-            "Column width (px)", "measure", measure, measure_hint));
+            "How much", "measure", measure, measure_hint));
         clawt_web_add(body, clawt_web_field(
             "Gap between runs (px)", "run_gap", run_gap, gap_hint));
 
@@ -984,9 +1015,10 @@ appearance_content(HtmxRequest *request)
          * hint at all.
          */
         clawt_web_add(body, clawt_web_text(
-            "The shipped column is measured rather than chosen -- about "
-            "89 characters a line, against a comfortable 45 to 90. "
-            "Whatever suits your screen wins over that.",
+            "The conversation takes nine tenths of the window unless you "
+            "say otherwise. A share follows the window, a character "
+            "count follows your font, and a pixel width follows neither "
+            "and is exact.",
             "small muted"));
 
         htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(card));
@@ -1787,8 +1819,24 @@ on_appearance(HtmxRequest *request, GHashTable *params, gpointer user_data)
                     clawt_web_form_value(request, "mono"));
     set_look_cookie(response, "clawt_mono_size",
                     clawt_web_form_value(request, "mono_size"));
-    set_look_cookie(response, "clawt_measure",
-                    clawt_web_form_value(request, "measure"));
+    /*
+     * The unit and the amount arrive as two fields and are stored as
+     * one self-describing value, through the library's own formatter.
+     * Two cookies would let them arrive apart -- a browser that kept
+     * the amount and dropped the unit would read 640 as a percentage
+     * and clamp it to the whole window, which is a setting nobody chose
+     * and no error anywhere.
+     */
+    {
+        ClawtMeasureUnit unit = clawt_measure_unit_from_nick(
+            clawt_web_form_value(request, "measure_unit"));
+        const gchar *amount = clawt_web_form_value(request, "measure");
+        g_autofree gchar *stored = clawt_measure_to_string(
+            unit, amount != NULL ? (gint)g_ascii_strtoll(amount, NULL, 10)
+                                 : 0);
+
+        set_look_cookie(response, "clawt_measure", stored);
+    }
     set_look_cookie(response, "clawt_run_gap",
                     clawt_web_form_value(request, "run_gap"));
 

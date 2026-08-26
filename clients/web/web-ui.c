@@ -612,8 +612,15 @@ clawt_web_look_from_request(HtmxRequest *request)
         g_autofree gchar *measure = cookie_value(cookies, "clawt_measure");
         g_autofree gchar *run_gap = cookie_value(cookies, "clawt_run_gap");
 
-        look->measure = (measure != NULL)
-                        ? (gint)g_ascii_strtoll(measure, NULL, 10) : 0;
+        /*
+         * Through the library's own reader, so a spelling the GTK
+         * client's appearance file accepts is a spelling this cookie
+         * accepts.  A cookie is edited as easily as a config file, and
+         * two readers of one format is how one of them comes to take a
+         * value the other silently drops.
+         */
+        clawt_measure_parse(measure, &look->measure_unit, &look->measure);
+
         look->run_gap = (run_gap != NULL)
                         ? (gint)g_ascii_strtoll(run_gap, NULL, 10) : 0;
     }
@@ -694,14 +701,24 @@ clawt_web_look_css(const ClawtWebLook *look)
         g_string_append_printf(css, "--mono-size:%dpx;", look->mono_size);
 
     /*
-     * The column and the run gap, checked against the library's bounds
-     * rather than this client's own idea of them -- a cookie is edited
-     * as easily as a config file, and two clients disagreeing about
-     * what is allowed is the drift `make parity` exists for.
+     * The column and the run gap, rendered by the library rather than
+     * by this client's own idea of the units -- a cookie is edited as
+     * easily as a config file, and two clients disagreeing about what
+     * is allowed is the drift `make parity` exists for.
+     *
+     * The unit survives all the way into the declaration: a percentage
+     * stays a percentage so the column keeps following the window, and
+     * a character count stays `ch` so it keeps following the font.
+     * Resolving either to pixels here would freeze it at whatever the
+     * browser happened to be when the page was served.
      */
-    if (look->measure >= CLAWT_APPEARANCE_MIN_MEASURE &&
-        look->measure <= CLAWT_APPEARANCE_MAX_MEASURE)
-        g_string_append_printf(css, "--chat-measure:%dpx;", look->measure);
+    {
+        g_autofree gchar *measure = clawt_measure_to_css(
+            look->measure_unit, look->measure, "var(--chat-gutter)");
+
+        if (measure != NULL)
+            g_string_append_printf(css, "--chat-measure:%s;", measure);
+    }
 
     if (look->run_gap > 0 &&
         look->run_gap <= CLAWT_APPEARANCE_MAX_RUN_SPACING)

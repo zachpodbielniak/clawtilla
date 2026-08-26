@@ -159,6 +159,27 @@ struct _ClawtWindow {
      */
     GtkWidget         *transcript_clamp;
     GtkWidget         *composer_clamp;
+    GtkWidget         *flow_clamp;
+
+    /*
+     * The two scrolled windows the measure is a share of.
+     *
+     * A share is only a number once there is something to take it of,
+     * so the column has to be recomputed whenever the page is
+     * re-allocated -- and GtkWidget offers no way to hear about that.
+     * `notify::width` is the obvious hook and is a trap: measured
+     * against real GTK4 across four hand-driven allocations it fired
+     * **zero** times, while the scrolled window's own horizontal
+     * adjustment fired four for four and reported the allocated width
+     * exactly.  Following the adjustment is the same answer the
+     * vertical case here already needed, for the same reason.
+     *
+     * The composer takes the *transcript's* viewport width rather than
+     * its own container's, because the two must be one column: sharing
+     * a number is what keeps the box you type into standing on the
+     * words above it.
+     */
+    GtkWidget         *chat_scroll;
 
     AdwToastOverlay   *toasts;
     AdwToastOverlay   *page_toasts;
@@ -3140,13 +3161,185 @@ append_attachment_previews(ClawtWindow *self, GtkWidget *row,
  * the same field and renders it as a custom property; the number is
  * shared and the mechanism is not, like the palette.
  */
+/*
+ * The rendered width of one character, for a measure counted in them.
+ *
+ * Taken from the transcript's own Pango context rather than from a
+ * constant, so a reader who asks for 80 characters and then changes
+ * their font size still gets 80 -- which is the whole reason a
+ * character count is worth offering beside a pixel width.
+ *
+ * It measures the digit zero, because that is what CSS defines `ch` as
+ * and `ch` is what the web client renders a character count with.  The
+ * obvious alternative, pango_font_metrics_get_approximate_char_width(),
+ * is an *average* over the font, and measured here against real GTK4 in
+ * Adwaita Sans the two differ by 29%: 7.156px against 9.253px, so "80
+ * characters a line" would have been 572px in this client and 742px in
+ * the browser.  One setting, two clients, two different columns, and
+ * nothing anywhere to say so -- which is the drift `make parity`
+ * exists for, at a layer no check of it can see.
+ *
+ * The unrounded logical extent, not pango_layout_get_pixel_size():
+ * that rounds 9.253 to 10, which is 8% per character and about sixty
+ * pixels across a column.
+ *
+ * Zero when there is no context yet; clawt_measure_resolve_px() floors
+ * it, so a clamp built before realisation holds something sensible.
+ */
+static gdouble
+chat_char_width(ClawtWindow *self)
+{
+    PangoContext *context;
+    g_autoptr(PangoLayout) layout = NULL;
+    PangoRectangle logical;
+
+    if (self == NULL || self->transcript == NULL)
+        return 0.0;
+
+    context = gtk_widget_get_pango_context(GTK_WIDGET(self->transcript));
+
+    if (context == NULL)
+        return 0.0;
+
+    layout = pango_layout_new(context);
+    pango_layout_set_text(layout, "0", -1);
+    pango_layout_get_extents(layout, NULL, &logical);
+
+    return logical.width / (gdouble)PANGO_SCALE;
+}
+
+/*
+ * How wide a scrolled window's viewport is, from its own adjustment.
+ *
+ * Zero for a page the stack has never shown, which
+ * clawt_measure_resolve_px() answers with the reference column -- and
+ * the adjustment notifies the moment that page is allocated, so the
+ * real number arrives before anybody looks at it.
+ */
+static gint
+viewport_width(GtkWidget *scroll)
+{
+    GtkAdjustment *adjustment;
+
+    if (scroll == NULL)
+        return 0;
+
+    adjustment = gtk_scrolled_window_get_hadjustment(
+        GTK_SCROLLED_WINDOW(scroll));
+
+    return adjustment != NULL
+           ? (gint)gtk_adjustment_get_page_size(adjustment) : 0;
+}
+
+static gint
+chat_measure_for(ClawtWindow *self, gint available)
+{
+    ClawtMeasureUnit unit = CLAWT_MEASURE_DEFAULT;
+    gint amount = 0;
+
+    if (self != NULL && self->appearance != NULL) {
+        unit = clawt_appearance_get_measure_unit(self->appearance);
+        amount = clawt_appearance_get_measure_amount(self->appearance);
+    }
+
+    /*
+     * The inset is the transcript's, not the composer's, even though
+     * both clamps take this number: a character count is about the
+     * words, and the words start past the avatar gutter.  The composer
+     * is already inset by the same amount for the same reason, so one
+     * answer keeps the two columns on one line.
+     */
+    return clawt_measure_resolve_px(
+        unit, amount, available, chat_char_width(self),
+        clawt_chat_body_inset(CHAT_ROW_MARGIN, CHAT_GUTTER)
+            + CHAT_ROW_MARGIN);
+}
+
 static gint
 chat_measure(ClawtWindow *self)
 {
-    gint set = (self != NULL && self->appearance != NULL)
-               ? clawt_appearance_get_measure(self->appearance) : 0;
+    return chat_measure_for(self,
+                            viewport_width(self != NULL ? self->chat_scroll
+                                                        : NULL));
+}
 
-    return set > 0 ? set : CLAWT_CHAT_CLAMP_WIDTH;
+static void
+apply_measure(GtkWidget *clamp, gint measure)
+{
+    /*
+     * Setting the same value again is skipped: a clamp's maximum-size
+     * is a layout input, and writing it from inside an allocation that
+     * did not need it is work every frame for no change on screen.
+     */
+    if (clamp == NULL)
+        return;
+
+    if (adw_clamp_get_maximum_size(ADW_CLAMP(clamp)) == measure)
+        return;
+
+    adw_clamp_set_maximum_size(ADW_CLAMP(clamp), measure);
+}
+
+/*
+ * Pushes the resolved measure onto every clamp that carries it.
+ *
+ * Called from the settings page and from each scrolled window's own
+ * adjustment, because a share of the window has to be recomputed when
+ * the window changes and AdwClamp takes a property rather than a
+ * stylesheet -- so nothing recomputes it on its own.
+ *
+ * Flow resolves against its own viewport rather than the chat's.  They
+ * are pages of one stack and so are almost always the same width, but
+ * an unshown page is allocated nothing at all -- so sharing a number
+ * would mean whichever page somebody opened first decided the column
+ * for the other.
+ */
+static void
+push_chat_measure(ClawtWindow *self)
+{
+    gint measure;
+
+    if (self == NULL)
+        return;
+
+    measure = chat_measure(self);
+    apply_measure(self->transcript_clamp, measure);
+    apply_measure(self->composer_clamp, measure);
+
+    if (self->flow_clamp != NULL)
+        apply_measure(self->flow_clamp,
+                      chat_measure_for(
+                          self,
+                          viewport_width(GTK_WIDGET(self->flow_scroll))));
+}
+
+static void
+on_viewport_width(GObject *adjustment, GParamSpec *spec, gpointer user_data)
+{
+    (void)adjustment;
+    (void)spec;
+
+    push_chat_measure(user_data);
+}
+
+/*
+ * Follows a scrolled window's width for as long as it exists.
+ *
+ * The adjustment is fetched once and connected to; GtkScrolledWindow
+ * only replaces it if somebody calls set_hadjustment, which nothing
+ * here does.
+ */
+static void
+follow_viewport_width(ClawtWindow *self, GtkWidget *scroll)
+{
+    GtkAdjustment *adjustment = gtk_scrolled_window_get_hadjustment(
+        GTK_SCROLLED_WINDOW(scroll));
+
+    if (adjustment == NULL)
+        return;
+
+    g_signal_connect_object(adjustment, "notify::page-size",
+                            G_CALLBACK(on_viewport_width), self, 0);
 }
 
 static gint
@@ -11141,6 +11334,16 @@ build_chat_page(ClawtWindow *self)
     GtkWidget *attach;
     GtkWidget *send;
 
+    /*
+     * The width the measure is a share of, and the notify that makes a
+     * share mean anything.  Without it the column would be nine tenths
+     * of whatever the window was when the page was built and would stay
+     * there for ever -- a setting that works once and then silently
+     * stops tracking, which reads as it having never worked.
+     */
+    self->chat_scroll = scroll;
+    follow_viewport_width(self, scroll);
+
     self->transcript = GTK_BOX(gtk_box_new(GTK_ORIENTATION_VERTICAL, 0));
 
     /*
@@ -12229,17 +12432,7 @@ appearance_changed(ClawtWindow *self)
      * you type into stayed put would restore exactly the misalignment
      * the composer inset exists to fix.
      */
-    {
-        gint measure = chat_measure(self);
-
-        if (self->transcript_clamp != NULL)
-            adw_clamp_set_maximum_size(ADW_CLAMP(self->transcript_clamp),
-                                       measure);
-
-        if (self->composer_clamp != NULL)
-            adw_clamp_set_maximum_size(ADW_CLAMP(self->composer_clamp),
-                                       measure);
-    }
+    push_chat_measure(self);
 
     if (!clawt_appearance_save(self->appearance, NULL, &error))
         clawt_window_toast(self, error->message);
@@ -12284,12 +12477,88 @@ on_reading_size_changed(GtkSpinButton *spin, gpointer user_data)
         GPOINTER_TO_INT(g_object_get_data(G_OBJECT(spin), "run-gap"));
     gint value = (gint)gtk_spin_button_get_value(spin);
 
-    if (is_gap)
+    if (is_gap) {
         clawt_appearance_set_run_spacing(self->appearance, value);
-    else
-        clawt_appearance_set_measure(self->appearance, value);
+    } else {
+        GtkWidget *combo = g_object_get_data(G_OBJECT(spin), "unit-combo");
+
+        /*
+         * The amount is meaningless without the unit beside it, so it is
+         * read off the combo rather than remembered here -- 90 is nine
+         * tenths of the window, ninety characters or ninety pixels, and
+         * a second copy of which one it is now is a second thing to get
+         * out of step.
+         */
+        clawt_appearance_set_measure(
+            self->appearance,
+            clawt_measure_unit_nth(
+                adw_combo_row_get_selected(ADW_COMBO_ROW(combo))),
+            value);
+    }
 
     appearance_changed(self);
+}
+
+/*
+ * Picking what the column's number means.
+ *
+ * The amount is re-seeded from the unit's own preset rather than
+ * carried across, because the old number is in the old unit: 640 pixels
+ * arriving as 240 characters is a column nobody asked for, and one that
+ * has to be undone before the control is usable again.
+ */
+static void
+on_measure_unit_selected(GObject *row, GParamSpec *spec, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    GtkWidget *spin = g_object_get_data(row, "amount-spin");
+    ClawtMeasureUnit unit = clawt_measure_unit_nth(
+        adw_combo_row_get_selected(ADW_COMBO_ROW(row)));
+
+    (void)spec;
+
+    if (unit == CLAWT_MEASURE_DEFAULT) {
+        /*
+         * Insensitive rather than hidden: a row that vanishes takes the
+         * reader's place on the page with it, and coming back to find
+         * the column control gone reads as the dialog having broken.
+         */
+        gtk_widget_set_sensitive(spin, FALSE);
+        clawt_appearance_set_measure(self->appearance,
+                                     CLAWT_MEASURE_DEFAULT, 0);
+        appearance_changed(self);
+        return;
+    }
+
+    gtk_widget_set_sensitive(spin, TRUE);
+
+    /*
+     * Blocked across the re-ranging, live for the value.
+     *
+     * gtk_spin_button_set_range() clamps whatever is showing into the
+     * new range and emits ::value-changed doing it -- measured against
+     * real GTK4, switching from 80 characters to pixels wrote `320`
+     * (the pixel floor) and then `600` (the preset).  The first is an
+     * intermediate nobody chose, and it reached the file and the column
+     * on screen before the second overwrote it, so the transcript
+     * visibly snapped to the minimum on its way.
+     */
+    g_signal_handlers_block_by_func(spin, on_reading_size_changed, self);
+    gtk_spin_button_set_increments(GTK_SPIN_BUTTON(spin),
+                                   clawt_measure_unit_step(unit),
+                                   clawt_measure_unit_step(unit) * 5);
+    gtk_spin_button_set_range(GTK_SPIN_BUTTON(spin),
+                              clawt_measure_unit_min(unit),
+                              clawt_measure_unit_max(unit));
+    g_signal_handlers_unblock_by_func(spin, on_reading_size_changed, self);
+
+    /*
+     * Which fires ::value-changed and writes the pair through
+     * on_reading_size_changed(), so there is one writer of the measure
+     * rather than this function having its own.
+     */
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(spin),
+                              clawt_measure_unit_preset(unit));
 }
 
 static void
@@ -12538,30 +12807,82 @@ static GtkWidget *
 build_reading_group(ClawtWindow *self)
 {
     GtkWidget *group = adw_preferences_group_new();
+    GtkWidget *unit_row = adw_combo_row_new();
     GtkWidget *measure_row = adw_action_row_new();
     GtkWidget *gap_row = adw_action_row_new();
-    GtkWidget *measure_spin = gtk_spin_button_new_with_range(
-        0, CLAWT_APPEARANCE_MAX_MEASURE, 10);
+    GtkWidget *measure_spin = gtk_spin_button_new_with_range(1, 2, 1);
     GtkWidget *gap_spin = gtk_spin_button_new_with_range(
         0, CLAWT_APPEARANCE_MAX_RUN_SPACING, 2);
+    g_autoptr(GtkStringList) unit_names = gtk_string_list_new(NULL);
+    ClawtMeasureUnit unit =
+        clawt_appearance_get_measure_unit(self->appearance);
+    gint amount = clawt_appearance_get_measure_amount(self->appearance);
+    guint selected = 0;
+    guint u;
 
     adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group), "Reading");
     adw_preferences_group_set_description(
         ADW_PREFERENCES_GROUP(group),
-        "The shipped column is measured rather than chosen -- about 89 "
-        "characters a line, against a comfortable 45 to 90. Whatever "
-        "suits your screen wins over that.");
+        "The conversation takes nine tenths of the window unless you say "
+        "otherwise. A share follows the window; a character count follows "
+        "your font; a pixel width follows neither and is exact.");
+
+    /*
+     * Built by walking the library's units rather than naming them
+     * here.  A list of an option's values written into a client is how
+     * a colour scheme came to be selectable in this client and not the
+     * other, and `make parity` reported OK throughout because a choice
+     * like this sends no IPC frame and answers no slash command.
+     */
+    for (u = 0; u < clawt_measure_unit_count(); u++) {
+        ClawtMeasureUnit at = clawt_measure_unit_nth(u);
+
+        gtk_string_list_append(unit_names,
+                               clawt_measure_unit_label(at));
+
+        if (at == unit)
+            selected = u;
+    }
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(unit_row),
+                                  "Column width");
+    adw_combo_row_set_model(ADW_COMBO_ROW(unit_row),
+                            G_LIST_MODEL(unit_names));
+    adw_combo_row_set_selected(ADW_COMBO_ROW(unit_row), selected);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), unit_row);
 
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(measure_row),
-                                  "Column width");
-    adw_action_row_set_subtitle(ADW_ACTION_ROW(measure_row),
-                                "0 follows the shipped column");
+                                  "How much");
+    adw_action_row_set_subtitle(
+        ADW_ACTION_ROW(measure_row),
+        "percent of the window, characters a line, or pixels");
     gtk_widget_set_valign(measure_spin, GTK_ALIGN_CENTER);
-    gtk_spin_button_set_value(
-        GTK_SPIN_BUTTON(measure_spin),
-        clawt_appearance_get_measure(self->appearance));
+
+    /*
+     * The range belongs to the unit, so it is set before the value and
+     * again on every unit change.  A spin button built at the pixel
+     * range and then handed a percentage would clamp 90 up to 320 and
+     * report it back as the setting -- the shape this file already
+     * records for a combo box that cannot say "something else".
+     */
+    if (unit == CLAWT_MEASURE_DEFAULT) {
+        gtk_widget_set_sensitive(measure_spin, FALSE);
+    } else {
+        gtk_spin_button_set_increments(GTK_SPIN_BUTTON(measure_spin),
+                                       clawt_measure_unit_step(unit),
+                                       clawt_measure_unit_step(unit) * 5);
+        gtk_spin_button_set_range(GTK_SPIN_BUTTON(measure_spin),
+                                  clawt_measure_unit_min(unit),
+                                  clawt_measure_unit_max(unit));
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(measure_spin), amount);
+    }
+
+    g_object_set_data(G_OBJECT(measure_spin), "unit-combo", unit_row);
+    g_object_set_data(G_OBJECT(unit_row), "amount-spin", measure_spin);
     g_signal_connect(measure_spin, "value-changed",
                      G_CALLBACK(on_reading_size_changed), self);
+    g_signal_connect(unit_row, "notify::selected",
+                     G_CALLBACK(on_measure_unit_selected), self);
     adw_action_row_add_suffix(ADW_ACTION_ROW(measure_row), measure_spin);
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), measure_row);
 
@@ -15687,9 +16008,19 @@ build_flow_page(ClawtWindow *self)
     {
         GtkWidget *clamp = adw_clamp_new();
 
+        /*
+         * "The same measure the chat has" was true of the comment above
+         * and not of the code: this clamp was left at libadwaita's
+         * default, so a reader who widened the conversation found Flow
+         * still at 600.  It takes the resolved measure now, from the
+         * one resolver.
+         */
+        self->flow_clamp = clamp;
+        adw_clamp_set_maximum_size(ADW_CLAMP(clamp), chat_measure(self));
         adw_clamp_set_child(ADW_CLAMP(clamp),
                             GTK_WIDGET(self->flow_transcript));
         gtk_scrolled_window_set_child(self->flow_scroll, clamp);
+        follow_viewport_width(self, GTK_WIDGET(self->flow_scroll));
     }
 
     gtk_widget_set_margin_bottom(GTK_WIDGET(self->flow_transcript), 18);

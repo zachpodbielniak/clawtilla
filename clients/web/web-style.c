@@ -59,9 +59,20 @@ clawt_web_stylesheet(void)
        * not -- which is why the value lives here rather than being
        * written into the appearance sheet as a default.
        *
-       * 40rem is measured, not chosen: 640px less the 36px gutter, at
-       * 6.778px a character, is 89 characters against a comfortable 45
-       * to 90.
+       * Nine tenths of what the chat body has to give, which is
+       * CLAWT_APPEARANCE_DEFAULT_PERCENT and the same column the GTK
+       * client ships.  It was 40rem -- measured rather than chosen, at
+       * 89 characters a line -- and that is a good column and a bad
+       * default: it leaves most of a wide display empty, and the reader
+       * who wants the conversation to use the screen had to convert
+       * their monitor's width to rem to say so.
+       *
+       * A percentage resolves against each element's own containing
+       * block, so this only holds the transcript and the composer on
+       * one column because `.transcript` and `.composer` carry
+       * identical horizontal padding -- including in the narrow
+       * override below, which sets both in one declaration for exactly
+       * this reason.
        */
       /*
        * The run gap, and the message gap derived from it.
@@ -77,7 +88,7 @@ clawt_web_stylesheet(void)
        * second setting, so a reader who widens the run gap keeps the
        * ordering instead of re-inverting it with one knob.
        */
-      "--chat-measure:40rem;"
+      "--chat-measure:90%;"
       "--chat-run-gap:36px;--chat-msg-gap:calc(var(--chat-run-gap) - 7px);"
       /* Overridable per browser from the appearance page; the rest of the
        * sheet reads these rather than naming a size directly. */
@@ -311,15 +322,43 @@ clawt_web_stylesheet(void)
 
     /* ── Chat ── */
     ".chat{display:flex;flex-direction:column;height:100%;min-height:0}"
-    ".transcript{flex:1;overflow-y:auto;padding:28px 32px;min-height:0}"
     /*
-     * The measure, measured.
+     * `scrollbar-gutter` on both, and the composer made a scroll
+     * container purely so it has a gutter to reserve.
      *
-     * 52rem rendered 117 characters a line at this font -- comfortable
-     * continuous prose is 45 to 90, past which the eye crosses the full
-     * width and then hunts back for the start of the next.  40rem is 89
-     * at the same font, taken from the browser's own text metrics rather
-     * than estimated: 640px less the 36px gutter, at 6.778px a character.
+     * The measure is a share of the window now, and a percentage
+     * resolves against each element's own containing block -- so a
+     * classic scrollbar appearing in the transcript took 15px off the
+     * column while the composer, which never scrolls, kept all of it.
+     * Measured in a real browser at 1280px: the transcript's column
+     * came out 431.09px against the composer's 444.59, a 13.5px step
+     * between the words and the box you type them into, and it
+     * appeared the moment a conversation grew past one screen.  With a
+     * fixed column both were capped at the same number and the
+     * scrollbar showed only as a few pixels of centring; a share turns
+     * it into a width.
+     *
+     * Reserving on both sides is what makes them equal, and reserving
+     * it *always* is what stops the column stepping sideways the first
+     * time a conversation runs past the fold.  Measured at 0.00px
+     * difference in width and in left edge, scrolling and not.
+     *
+     * A browser with overlay scrollbars reserves nothing for either and
+     * the pair were already equal; this costs it nothing.
+     */
+    ".transcript{flex:1;overflow-y:auto;scrollbar-gutter:stable;"
+      "padding:28px 32px;min-height:0}"
+    /*
+     * The measure, whatever unit the reader chose it in.
+     *
+     * The token is a share of the window by default, so the column
+     * grows with the display rather than leaving a wide one two thirds
+     * empty.  The numbers behind the old fixed column are still worth
+     * recording, because they are what a reader picking `ch` is
+     * choosing between: 52rem rendered 117 characters a line at this
+     * font and 40rem rendered 89, taken from the browser's own text
+     * metrics rather than estimated, against a comfortable 45 to 90 for
+     * continuous prose.
      */
     ".transcript-inner{max-width:var(--chat-measure);margin:0 auto}"
     /*
@@ -460,7 +499,7 @@ clawt_web_stylesheet(void)
     ".chat-body{position:relative;display:flex;flex-direction:column;"
       "flex:1;min-height:0}"
     ".composer{border-top:1px solid var(--line);background:var(--surface);"
-      "padding:16px 32px}"
+      "overflow:hidden;scrollbar-gutter:stable;padding:16px 32px}"
     /*
      * The composer follows the transcript's column.  A full-width entry
      * under a narrow column of text reads as a rendering fault rather
