@@ -56,6 +56,8 @@
 #include "chat/clawt-message.h"
 #include "chat/clawt-chat-run.h"
 #include "chat/clawt-chat-layout.h"
+#include "decision/clawt-decision.h"
+#include "decision/clawt-decision-store.h"
 #include "chat/clawt-attachment.h"
 #include "chat/clawt-markdown.h"
 #include "chat/clawt-export.h"

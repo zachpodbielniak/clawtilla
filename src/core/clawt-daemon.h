@@ -185,6 +185,18 @@ ClawtConfig *clawt_daemon_get_config(ClawtDaemon *self);
 ClawtAgentManager *clawt_daemon_get_agents(ClawtDaemon *self);
 
 /**
+ * clawt_daemon_get_decisions:
+ * @self: a #ClawtDaemon
+ *
+ * The choices agents have asked a person to make.
+ *
+ * Returns: (transfer none) (nullable): the store, or %NULL if it could
+ *   not be opened -- which is a warning at start rather than a refusal,
+ *   since losing the inbox is bad and losing the fleet over it is worse
+ */
+ClawtDecisionStore *clawt_daemon_get_decisions(ClawtDaemon *self);
+
+/**
  * clawt_daemon_get_rooms:
  * @self: a #ClawtDaemon
  *

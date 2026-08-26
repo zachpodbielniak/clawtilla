@@ -109,6 +109,7 @@ typedef enum {
     CLAWT_REFRESH_SELECTED,
     CLAWT_REFRESH_MAILBOX,
     CLAWT_REFRESH_TASKS,
+    CLAWT_REFRESH_DECISIONS,
     CLAWT_REFRESH_FLOW,
     CLAWT_REFRESH_IMAGES,
     CLAWT_REFRESH_INTEGRATIONS,
@@ -277,6 +278,16 @@ struct _ClawtWindow {
 
     /* Tasks */
     GtkListBox        *task_list;
+
+    /*
+     * Choices agents are waiting on somebody for.
+     *
+     * Its own page rather than a section of the alerts panel: an alert
+     * is something that happened and a decision is something that needs
+     * you, and one surface meaning both is one badge nobody can act on.
+     */
+    GtkListBox        *decision_list;
+    AdwViewStackPage  *decision_page;
 
     GtkWidget         *activity_bar;
     GtkSpinner        *activity_spinner;
@@ -7191,6 +7202,7 @@ refresh_computer(ClawtWindow *self, JsonObject *agent)
  * have been there.
  */
 static void         refresh_tasks(ClawtWindow *self);
+static void         refresh_decisions(ClawtWindow *self);
 
 static void
 on_task_cancel(GtkButton *button, gpointer user_data)
@@ -7258,6 +7270,218 @@ refresh_tasks_once(ClawtWindow *self)
     }
 }
 
+/*
+ * The operator answers, and the daemon routes it back to whoever asked.
+ */
+static void
+on_decision_answer(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *id = g_object_get_data(G_OBJECT(button), "decision-id");
+    GtkWidget *entry = g_object_get_data(G_OBJECT(button), "entry");
+    const gchar *chosen = g_object_get_data(G_OBJECT(button), "option");
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *answer = chosen;
+
+    /*
+     * A typed answer wins over a clicked option, because somebody who
+     * typed something meant it -- and "neither, do X" is the most
+     * valuable answer there is.
+     */
+    if (entry != NULL) {
+        const gchar *typed = gtk_editable_get_text(GTK_EDITABLE(entry));
+
+        if (typed != NULL && *typed != '\0')
+            answer = typed;
+    }
+
+    if (id == NULL || answer == NULL || *answer == '\0')
+        return;
+
+    reply = clawt_window_request(self, "decision.answer",
+                                 clawt_build_payload("decision", id,
+                                                     "answer", answer,
+                                                     NULL));
+
+    if (reply != NULL)
+        refresh_decisions(self);
+}
+
+static void
+on_decision_dismiss(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *id = g_object_get_data(G_OBJECT(button), "decision-id");
+    g_autoptr(JsonNode) reply = NULL;
+
+    if (id == NULL)
+        return;
+
+    reply = clawt_window_request(self, "decision.dismiss",
+                                 clawt_build_payload("decision", id, NULL));
+
+    if (reply != NULL)
+        refresh_decisions(self);
+}
+
+static void
+refresh_decisions_once(ClawtWindow *self)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    JsonArray *items;
+    guint i;
+    guint open = 0;
+
+    clear_list(self->decision_list);
+
+    reply = clawt_window_request(self, "decision.list", NULL);
+
+    if (reply == NULL)
+        return;
+
+    open = (guint)json_object_get_int_member(clawt_payload_of(reply),
+                                             "open");
+    items = json_object_get_array_member(clawt_payload_of(reply),
+                                         "decisions");
+
+    for (i = 0; i < json_array_get_length(items); i++) {
+        JsonObject *decision = json_array_get_object_element(items, i);
+        GtkWidget *row = adw_expander_row_new();
+        const gchar *id = clawt_json_string(decision, "id", "");
+        const gchar *fallback = clawt_json_string(decision, "default", NULL);
+        const gchar *reason =
+            clawt_json_string(decision, "default_reason", NULL);
+        JsonArray *options = json_object_get_array_member(decision,
+                                                          "options");
+        GtkWidget *entry = gtk_entry_new();
+        GtkWidget *actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        GtkWidget *answer = gtk_button_new_with_label("Answer");
+        GtkWidget *drop = gtk_button_new_with_label("Does not need me");
+        guint o;
+
+        /*
+         * AdwExpanderRow, not AdwActionRow: the question is what a
+         * reader scans and the options are what they act on, so the
+         * second should not cost the first its line.  ExpanderRow does
+         * not derive from AdwActionRow, so set_subtitle would be a
+         * runtime assertion -- the title carries the default instead.
+         */
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                      clawt_json_string(decision,
+                                                        "question", ""));
+
+        if (fallback != NULL) {
+            g_autofree gchar *going = (reason != NULL && *reason != '\0')
+                ? g_strdup_printf("Going ahead with: %s \xe2\x80\x94 %s",
+                                  fallback, reason)
+                : g_strdup_printf("Going ahead with: %s", fallback);
+
+            adw_expander_row_set_subtitle(ADW_EXPANDER_ROW(row), going);
+        }
+
+        if (clawt_json_boolean(decision, "urgent", FALSE))
+            adw_action_row_add_suffix(
+                ADW_ACTION_ROW(row),
+                badge("closing soon", "warning",
+                      "the default stops being cheap to undo within a day"));
+
+        if (clawt_json_boolean(decision, "settled_by_default", FALSE))
+            adw_action_row_add_suffix(
+                ADW_ACTION_ROW(row),
+                badge("already decided", "error",
+                      "the deadline passed; answering changes nothing"));
+
+        gtk_entry_set_placeholder_text(
+            GTK_ENTRY(entry),
+            "\"neither, do X\" is a perfectly good answer");
+
+        for (o = 0; options != NULL && o < json_array_get_length(options);
+             o++) {
+            const gchar *option = json_array_get_string_element(options, o);
+            GtkWidget *pick;
+
+            if (option == NULL || *option == '\0')
+                continue;
+
+            pick = gtk_button_new_with_label(option);
+            g_object_set_data_full(G_OBJECT(pick), "decision-id",
+                                   g_strdup(id), g_free);
+            g_object_set_data_full(G_OBJECT(pick), "option",
+                                   g_strdup(option), g_free);
+            g_signal_connect(pick, "clicked",
+                             G_CALLBACK(on_decision_answer), self);
+            gtk_box_append(GTK_BOX(actions), pick);
+        }
+
+        g_object_set_data_full(G_OBJECT(answer), "decision-id",
+                               g_strdup(id), g_free);
+        g_object_set_data(G_OBJECT(answer), "entry", entry);
+        g_signal_connect(answer, "clicked", G_CALLBACK(on_decision_answer),
+                         self);
+
+        g_object_set_data_full(G_OBJECT(drop), "decision-id",
+                               g_strdup(id), g_free);
+        g_signal_connect(drop, "clicked", G_CALLBACK(on_decision_dismiss),
+                         self);
+
+        gtk_widget_add_css_class(answer, "suggested-action");
+        gtk_box_append(GTK_BOX(actions), answer);
+        gtk_box_append(GTK_BOX(actions), drop);
+        gtk_widget_set_margin_top(actions, 6);
+        gtk_widget_set_margin_bottom(actions, 6);
+        gtk_widget_set_margin_start(actions, 12);
+        gtk_widget_set_margin_end(actions, 12);
+
+        gtk_widget_set_margin_start(entry, 12);
+        gtk_widget_set_margin_end(entry, 12);
+
+        adw_expander_row_add_row(ADW_EXPANDER_ROW(row), entry);
+        adw_expander_row_add_row(ADW_EXPANDER_ROW(row), actions);
+
+        gtk_list_box_append(self->decision_list, row);
+    }
+
+    /*
+     * The badge is what makes this a surface rather than a page nobody
+     * opens: an agent waiting on a person has to be visible without
+     * anybody thinking to look.
+     */
+    if (self->decision_page != NULL) {
+        adw_view_stack_page_set_badge_number(self->decision_page, open);
+        adw_view_stack_page_set_needs_attention(self->decision_page,
+                                                open > 0);
+    }
+}
+
+static void
+refresh_decisions(ClawtWindow *self)
+{
+    if (!refresh_enter(self, CLAWT_REFRESH_DECISIONS))
+        return;
+
+    do {
+        refresh_decisions_once(self);
+    } while (refresh_repeat(self, CLAWT_REFRESH_DECISIONS));
+}
+
+static GtkWidget *
+build_decision_page(ClawtWindow *self)
+{
+    GtkWidget *scroll = gtk_scrolled_window_new();
+
+    self->decision_list = GTK_LIST_BOX(gtk_list_box_new());
+    gtk_list_box_set_selection_mode(self->decision_list, GTK_SELECTION_NONE);
+    gtk_widget_add_css_class(GTK_WIDGET(self->decision_list), "boxed-list");
+    gtk_widget_set_margin_top(GTK_WIDGET(self->decision_list), 12);
+    gtk_widget_set_margin_start(GTK_WIDGET(self->decision_list), 12);
+    gtk_widget_set_margin_end(GTK_WIDGET(self->decision_list), 12);
+
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll),
+                                  GTK_WIDGET(self->decision_list));
+
+    return scroll;
+}
+
 static void
 refresh_tasks(ClawtWindow *self)
 {
@@ -7293,6 +7517,7 @@ refresh_selected_once(ClawtWindow *self)
     refresh_computer(self, agent);
     refresh_mailbox(self);
     refresh_tasks(self);
+    refresh_decisions(self);
     refresh_routines(self);
     refresh_flow(self);
 }
@@ -8600,6 +8825,15 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
 
     if (g_str_has_prefix(kind, "task."))
         refresh_tasks(self);
+
+    /*
+     * An agent filing one has to reach a window that is already open,
+     * or the badge only appears to somebody who happened to switch
+     * pages -- which is the whole difference between a surface and a
+     * page nobody looks at.
+     */
+    if (g_str_has_prefix(kind, "decision."))
+        refresh_decisions(self);
 
     /*
      * `routine.ran` is published when one starts, so the list shows the
@@ -10382,6 +10616,7 @@ switch_connection(ClawtWindow *self, ClawtConnection *connection)
 
     refresh_agents(self);
     refresh_tasks(self);
+    refresh_decisions(self);
     refresh_routines(self);
 
     {
@@ -16336,6 +16571,11 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
     adw_view_stack_add_titled_with_icon(self->pages, build_task_page(self),
                                         "tasks", "Tasks",
                                         "view-list-symbolic");
+    self->decision_page =
+        adw_view_stack_add_titled_with_icon(self->pages,
+                                            build_decision_page(self),
+                                            "decisions", "Decisions",
+                                            "dialog-question-symbolic");
     adw_view_stack_add_titled_with_icon(self->pages, build_flow_page(self),
                                         "flow", "Flow",
                                         "system-users-symbolic");

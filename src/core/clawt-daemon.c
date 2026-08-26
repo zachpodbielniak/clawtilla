@@ -56,6 +56,18 @@ struct _ClawtDaemon {
     ClawtUsage         *usage;
     ClawtEventBus      *bus;
     ClawtEventLog      *log;
+
+    /*
+     * Choices agents need a person to make.
+     *
+     * Beside the alerts rather than inside them: an alert is something
+     * that happened and a decision is something that needs you, so one
+     * badge meaning both would be a badge nobody could act on.  Durable
+     * for the same reason the mailbox is -- an agent that asked and got
+     * no answer carried on with its default, and an operator who never
+     * saw the question has no way to know that happened.
+     */
+    ClawtDecisionStore *decisions;
     ClawtExchange      *exchange;
     ClawtLinkServer    *link_server;
     ClawtIpcServer     *ipc_server;
@@ -217,6 +229,14 @@ clawt_daemon_get_event_bus(ClawtDaemon *self)
 {
     g_return_val_if_fail(CLAWT_IS_DAEMON(self), NULL);
     return self->bus;
+}
+
+ClawtDecisionStore *
+clawt_daemon_get_decisions(ClawtDaemon *self)
+{
+    g_return_val_if_fail(CLAWT_IS_DAEMON(self), NULL);
+
+    return self->decisions;
 }
 
 ClawtEventLog *
@@ -1461,6 +1481,52 @@ static ClawtAgentConfig *daemon_create_agent(ClawtDaemon  *self,
  * two creation paths existed one of them skipped the check that refuses
  * a VM with no disk.
  */
+/*
+ * An agent files a decision for its operator.
+ *
+ * The reply tells it what it is expected to do next, in as many words:
+ * carry on with your default.  An agent that filed a question and then
+ * waited would have turned a non-blocking inbox back into the blocking
+ * one it replaces, and the tool description alone is not enough --
+ * whatever a tool *returns* is what shapes the next turn.
+ */
+static gchar *
+file_decision_for_tools(const gchar    *agent_id,
+                        ClawtDecision  *decision,
+                        gpointer        user_data,
+                        GError        **error)
+{
+    ClawtDaemon *self = user_data;
+    g_autofree gchar *id = NULL;
+
+    if (self->decisions == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                    "this daemon keeps no decision inbox");
+        return NULL;
+    }
+
+    id = clawt_decision_store_post(self->decisions, decision, error);
+
+    if (id == NULL)
+        return NULL;
+
+    /*
+     * Published, so a client that is open right now grows a badge
+     * without polling -- the same stream every other surface folds over.
+     */
+    if (self->bus != NULL)
+        clawt_event_bus_emit(self->bus, "decision.asked", agent_id);
+
+    return g_strdup_printf(
+        "Filed as %s. Do not wait for it: carry on with what you said "
+        "you would do (%s). If it is answered you will get a message, "
+        "and you can change course then.",
+        id,
+        clawt_decision_get_default(decision) != NULL
+            ? clawt_decision_get_default(decision)
+            : "your default");
+}
+
 static gchar *
 create_agent_for_tools(const gchar  *agent_id,
                        const gchar  *purpose,
@@ -2022,6 +2088,7 @@ release_components(ClawtDaemon *self)
     g_clear_object(&self->agents);
     g_clear_object(&self->vm_images);
     g_clear_object(&self->exchange);
+    g_clear_object(&self->decisions);
     g_clear_object(&self->log);
     g_clear_object(&self->bus);
     g_clear_object(&self->config);
@@ -3049,6 +3116,23 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     clawt_event_log_attach(self->log, self->bus);
 
     {
+        g_autofree gchar *decision_path =
+            g_build_filename(self->state_dir, "decisions.db", NULL);
+        g_autoptr(GError) decision_error = NULL;
+
+        self->decisions = clawt_decision_store_new(decision_path,
+                                                   &decision_error);
+
+        /*
+         * A store that cannot open is a warning, not a refusal to
+         * start.  Losing the decision inbox is bad; losing the fleet
+         * because of it is worse, and every other surface still works.
+         */
+        if (self->decisions == NULL)
+            g_warning("decisions: %s", decision_error->message);
+    }
+
+    {
         /*
          * Download progress reaches clients as ordinary events, so a
          * progress bar is a fold over the same stream everything else
@@ -3183,6 +3267,9 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      */
     clawt_mcp_tools_set_create_agent_func(self->mcp_tools,
                                           create_agent_for_tools, self, NULL);
+    clawt_mcp_tools_set_ask_decision_func(self->mcp_tools,
+                                          file_decision_for_tools, self,
+                                          NULL);
     clawt_mcp_tools_set_image_store(self->mcp_tools, self->vm_images);
 
     {
@@ -3753,6 +3840,141 @@ add_agent_settings(JsonBuilder *builder, ClawtAgent *agent)
         }
         }
     }
+
+    json_builder_end_object(builder);
+}
+
+/*
+ * An answered decision goes back to whoever asked.
+ *
+ * Without this the inbox is a suggestion box: the operator answers into
+ * the void and the agent never learns.  Sent as an ordinary message so
+ * it arrives through the machinery everything else uses and costs the
+ * agent a turn, which is the point -- an answer that did not interrupt
+ * anything would not change what the agent does next.
+ *
+ * From `user`, because it *is* from the person, and carrying the task
+ * id so an answer arriving after the agent has moved on can still be
+ * attached to what it was about.  Depth 0: this starts a new exchange
+ * rather than continuing the one that raised the question, and stamping
+ * it deeper would spend the hop budget on the operator's own reply.
+ */
+static void
+deliver_decision_answer(ClawtDaemon *self, ClawtDecision *decision)
+{
+    g_autofree gchar *body = NULL;
+    g_autoptr(GError) error = NULL;
+    const gchar *agent;
+
+    if (self->router == NULL || decision == NULL)
+        return;
+
+    agent = clawt_decision_get_agent(decision);
+
+    if (agent == NULL || *agent == '\0')
+        return;
+
+    /*
+     * The question is repeated back.  The agent asked it some time ago
+     * and may have handled a hundred messages since; an answer of
+     * "after the release" with nothing around it is unattributable.
+     */
+    body = g_strdup_printf(
+        "[clawtilla] Your decision was answered.\n\n"
+        "You asked: %s\n"
+        "The answer is: %s\n\n"
+        "This replaces the default you said you would take (%s). If you "
+        "have already acted on that default, say so rather than silently "
+        "redoing the work.",
+        clawt_decision_get_question(decision),
+        clawt_decision_get_answer(decision),
+        clawt_decision_get_default(decision) != NULL
+            ? clawt_decision_get_default(decision)
+            : "none stated");
+
+    if (clawt_mailbox_router_send_to(self->router, "user", agent, body,
+                                     clawt_decision_get_task(decision),
+                                     0, &error) < 0)
+        g_warning("decisions: could not tell %s its answer: %s", agent,
+                  error != NULL ? error->message : "unknown");
+}
+
+/*
+ * One decision on the wire.
+ *
+ * `urgent` and `settled_by_default` are computed here rather than left
+ * to each client, because both are the same rule about the same clock
+ * and two clients each deriving them would differ exactly once -- on
+ * the item whose deadline had just passed, which is the one that
+ * matters.  The raw deadline goes too, so a client can still say when.
+ */
+static void
+add_decision_object(JsonBuilder   *builder,
+                    ClawtDecision *decision,
+                    gint64         now)
+{
+    const gchar * const *options = clawt_decision_get_options(decision);
+
+    json_builder_begin_object(builder);
+
+    json_builder_set_member_name(builder, "id");
+    json_builder_add_string_value(builder, clawt_decision_get_id(decision));
+
+    json_builder_set_member_name(builder, "agent");
+    json_builder_add_string_value(builder,
+                                  clawt_decision_get_agent(decision));
+
+    json_builder_set_member_name(builder, "question");
+    json_builder_add_string_value(builder,
+                                  clawt_decision_get_question(decision));
+
+    json_builder_set_member_name(builder, "options");
+    json_builder_begin_array(builder);
+
+    {
+        guint i;
+
+        for (i = 0; options != NULL && options[i] != NULL; i++)
+            json_builder_add_string_value(builder, options[i]);
+    }
+
+    json_builder_end_array(builder);
+
+    json_builder_set_member_name(builder, "default");
+    json_builder_add_string_value(builder,
+                                  clawt_decision_get_default(decision));
+
+    json_builder_set_member_name(builder, "default_reason");
+    json_builder_add_string_value(
+        builder, clawt_decision_get_default_reason(decision));
+
+    json_builder_set_member_name(builder, "task");
+    json_builder_add_string_value(builder,
+                                  clawt_decision_get_task(decision));
+
+    json_builder_set_member_name(builder, "answer");
+    json_builder_add_string_value(builder,
+                                  clawt_decision_get_answer(decision));
+
+    json_builder_set_member_name(builder, "reversible_until");
+    json_builder_add_int_value(
+        builder, clawt_decision_get_reversible_until(decision));
+
+    json_builder_set_member_name(builder, "created_at");
+    json_builder_add_int_value(builder,
+                               clawt_decision_get_created_at(decision));
+
+    json_builder_set_member_name(builder, "state");
+    json_builder_add_int_value(builder,
+                               (gint)clawt_decision_get_state(decision));
+
+    json_builder_set_member_name(builder, "urgent");
+    json_builder_add_boolean_value(builder,
+                                   clawt_decision_is_urgent(decision, now));
+
+    json_builder_set_member_name(builder, "settled_by_default");
+    json_builder_add_boolean_value(
+        builder, clawt_decision_default_has_taken_effect(decision, now));
 
     json_builder_end_object(builder);
 }
@@ -5067,6 +5289,102 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "decision.list") == 0) {
+        gboolean open_only = clawt_ipc_payload_boolean(payload, "open", TRUE);
+        g_autoptr(GPtrArray) decisions = NULL;
+        gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+        guint i;
+
+        if (self->decisions == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "this daemon keeps no decisions");
+
+        decisions = clawt_decision_store_list(self->decisions, open_only);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "decisions");
+        json_builder_begin_array(builder);
+
+        for (i = 0; decisions != NULL && i < decisions->len; i++)
+            add_decision_object(builder, g_ptr_array_index(decisions, i),
+                                now);
+
+        json_builder_end_array(builder);
+        json_builder_set_member_name(builder, "open");
+        json_builder_add_int_value(
+            builder, clawt_decision_store_count_open(self->decisions));
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request,
+                                      json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "decision.answer") == 0) {
+        const gchar *id = clawt_ipc_payload_string(payload, "decision");
+        const gchar *answer = clawt_ipc_payload_string(payload, "answer");
+        g_autoptr(ClawtDecision) settled = NULL;
+        g_autoptr(GError) answer_error = NULL;
+
+        if (self->decisions == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "this daemon keeps no decisions");
+
+        if (id == NULL || answer == NULL || *answer == '\0')
+            return clawt_ipc_error_new(
+                request, CLAWT_ERROR_INVALID_ARGUMENT,
+                "answering needs a decision and an answer");
+
+        settled = clawt_decision_store_answer(self->decisions, id, answer,
+                                              &answer_error);
+
+        if (settled == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                       answer_error->message);
+
+        /*
+         * And it goes back to whoever asked.
+         *
+         * Without this the inbox is a suggestion box: the operator
+         * answers into the void and the agent never learns.  Routed as
+         * an ordinary message so it costs the agent a turn and reaches
+         * it through the machinery everything else uses -- and carrying
+         * the task id, so an answer that arrives after the agent has
+         * moved on can still be attached to what it was about.
+         */
+        deliver_decision_answer(self, settled);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "decision");
+        add_decision_object(builder, settled,
+                            g_get_real_time() / G_USEC_PER_SEC);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request,
+                                      json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "decision.dismiss") == 0) {
+        const gchar *id = clawt_ipc_payload_string(payload, "decision");
+        g_autoptr(GError) dismiss_error = NULL;
+
+        if (self->decisions == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "this daemon keeps no decisions");
+
+        if (!clawt_decision_store_dismiss(self->decisions, id,
+                                          &dismiss_error))
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       dismiss_error->message);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "dismissed");
+        json_builder_add_string_value(builder, id);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request,
+                                      json_builder_get_root(builder));
     }
 
     if (g_strcmp0(kind, "event.list") == 0) {

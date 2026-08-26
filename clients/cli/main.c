@@ -184,7 +184,7 @@ static const gchar *usage_text =
  */
 static const gchar *const verbs[] = {
     "daemon", "remote", "status", "agent", "send", "chat", "mailbox", "room",
-    "team", "task", "cost",
+    "team", "task", "decision", "cost",
     "memory",
     "computer", "cp", "config", "plugin", "integration", "connector",
     "routine",
@@ -2464,6 +2464,124 @@ cmd_cost(int argc, char *argv[])
 
 
 /* ── tasks ───────────────────────────────────────────────────────── */
+
+/*
+ * The decision inbox from a terminal.
+ *
+ * Present here because the two graphical clients are not the only way
+ * somebody runs a fleet, and a decision an operator cannot see over ssh
+ * is one that silently takes its default.
+ */
+static int
+cmd_decision(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verb = (argc > 2) ? argv[2] : "list";
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    if (g_strcmp0(verb, "list") == 0) {
+        JsonArray *items;
+        guint i;
+        gboolean all = (argc > 3 && g_strcmp0(argv[3], "--all") == 0);
+
+        /*
+         * `--all` widens the list to the settled ones.  Sent as the
+         * string the payload builder takes rather than a boolean,
+         * because clawt_ipc_payload_boolean() reads "false" as false --
+         * and a second builder for one flag is a second thing to keep
+         * in step.
+         */
+        reply = call(client, "decision.list",
+                     all ? build_payload("open", "false", NULL) : NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        items = json_object_get_array_member(json_node_get_object(reply),
+                                             "decisions");
+
+        if (json_array_get_length(items) == 0) {
+            /*
+             * The bar is stated on the empty list too.  The failure mode
+             * is agents being polite rather than selective, and an
+             * operator who never sees one should know that is the
+             * intended state rather than a broken feature.
+             */
+            g_print("Nothing is waiting on you.\n\n"
+                    "Agents file a decision only when the branches "
+                    "produce materially\ndifferent work, or the choice is "
+                    "not cheaply reversible.\n");
+            return EXIT_SUCCESS;
+        }
+
+        for (i = 0; i < json_array_get_length(items); i++) {
+            JsonObject *decision = json_array_get_object_element(items, i);
+            const gchar *reason = member_or(decision, "default_reason", "");
+
+            g_print("%s  [%s]%s\n", member_or(decision, "id", "?"),
+                    member_or(decision, "agent", "?"),
+                    json_object_get_boolean_member(decision, "urgent")
+                        ? "  closing soon" : "");
+            g_print("  %s\n", member_or(decision, "question", ""));
+            g_print("  going ahead with: %s%s%s\n",
+                    member_or(decision, "default", "(none stated)"),
+                    (*reason != '\0') ? " -- " : "", reason);
+
+            if (json_object_get_boolean_member(decision,
+                                               "settled_by_default"))
+                g_print("  the deadline passed; answering changes "
+                        "nothing\n");
+
+            g_print("\n");
+        }
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "answer") == 0) {
+        if (argc < 5) {
+            g_printerr("Usage: clawtilla decision answer <id> <answer>\n"
+                       "\n"
+                       "The answer is free text -- \"neither, do X\" is a "
+                       "perfectly good answer.\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "decision.answer",
+                     build_payload("decision", argv[3],
+                                   "answer", argv[4], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Answered. %s has been told.\n",
+                member_or(json_object_get_object_member(
+                              json_node_get_object(reply), "decision"),
+                          "agent", "the agent"));
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "dismiss") == 0) {
+        if (argc < 4) {
+            g_printerr("Usage: clawtilla decision dismiss <id>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "decision.dismiss",
+                     build_payload("decision", argv[3], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Dismissed. The agent carries on with its default.\n");
+        return EXIT_SUCCESS;
+    }
+
+    g_printerr("Usage: clawtilla decision [list [--all] | answer <id> "
+               "<answer> | dismiss <id>]\n");
+    return EXIT_FAILURE;
+}
 
 static gint
 cmd_task(int argc, char *argv[])
@@ -5130,6 +5248,9 @@ main(int argc, char *argv[])
 
     if (g_strcmp0(argv[1], "task") == 0)
         return cmd_task(argc, argv);
+
+    if (g_strcmp0(argv[1], "decision") == 0)
+        return cmd_decision(argc, argv);
 
     if (g_strcmp0(argv[1], "cost") == 0)
         return cmd_cost(argc, argv);

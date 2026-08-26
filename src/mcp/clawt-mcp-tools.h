@@ -109,6 +109,45 @@ typedef gchar *(*ClawtMcpCreateAgentFunc)(const gchar  *agent_id,
                                           GError      **error);
 
 /**
+ * ClawtMcpAskDecisionFunc:
+ * @agent_id: who is asking
+ * @decision: (transfer none): the question, its options and its default
+ * @user_data: as supplied
+ * @error: return location for a #GError
+ *
+ * Files a decision on behalf of an agent.
+ *
+ * A hook for the same reason creating an agent is one: the tools belong
+ * to the library and the daemon owns the inbox.  It is also what makes
+ * the tool safe to offer to every agent -- filing a question is not a
+ * fleet operation, so there is nothing here to gate, and an agent that
+ * files trivia wastes an operator's attention rather than their
+ * machine.
+ *
+ * Returns: (transfer full) (nullable): what to tell the agent
+ */
+typedef gchar *(*ClawtMcpAskDecisionFunc)(const gchar    *agent_id,
+                                          ClawtDecision  *decision,
+                                          gpointer        user_data,
+                                          GError        **error);
+
+/**
+ * clawt_mcp_tools_set_ask_decision_func:
+ * @self: a #ClawtMcpTools
+ * @func: (nullable) (scope notified): the hook
+ * @user_data: passed to @func
+ * @destroy: frees @user_data
+ *
+ * Unset, the tool is not offered.  A library embedded without a daemon
+ * has no inbox to file into, and a tool that is listed and then fails
+ * teaches an agent to keep trying.
+ */
+void clawt_mcp_tools_set_ask_decision_func(ClawtMcpTools           *self,
+                                           ClawtMcpAskDecisionFunc  func,
+                                           gpointer                 user_data,
+                                           GDestroyNotify           destroy);
+
+/**
  * clawt_mcp_tools_describe_for_agent:
  * @self: a #ClawtMcpTools
  * @agent_id: whose tools to describe

@@ -24,6 +24,7 @@
  */
 typedef enum {
     NEEDS_NOTHING = 0,
+    NEEDS_DECISION_INBOX,
     NEEDS_PEER_COMMS,
     NEEDS_COMPUTER,
     NEEDS_MEMORY,
@@ -53,6 +54,38 @@ static const ClawtParamInfo message_agent_params[] = {
     { "priority", "string",
       "low, normal, high or urgent. Urgent jumps the queue, so reserve it "
       "for things that genuinely cannot wait.", FALSE }
+};
+
+/*
+ * The threshold is in the parameter descriptions, not only in the docs.
+ *
+ * A decision list that collects every small choice stops being read,
+ * and then it is worse than nothing because it looks like the operator
+ * has seen things they have not.  The failure mode is agents being
+ * polite rather than selective, so the bar is stated where an agent
+ * reads it at the moment it is deciding whether to file one.
+ */
+static const ClawtParamInfo ask_decision_params[] = {
+    { "question", "string",
+      "The choice, in one sentence. File this only if the branches "
+      "produce materially different work, or the choice is not cheaply "
+      "reversible. Everything else you simply decide.", TRUE },
+    { "options", "string",
+      "The choices, one per line. Two or three; if there are more, the "
+      "question is not ready to be asked.", FALSE },
+    { "default", "string",
+      "What you will do if nobody answers. Required, and it is what "
+      "makes this honest rather than a way of stalling: you carry on "
+      "with this, and their answer redirects you.", TRUE },
+    { "default_reason", "string",
+      "Why that default. One sentence.", FALSE },
+    { "reversible_hours", "number",
+      "How many hours until your default stops being cheap to undo. "
+      "Leave it out if it genuinely does not expire -- do not invent "
+      "urgency, it reorders somebody else's list.", FALSE },
+    { "task_id", "string",
+      "The task this belongs to, if any, so the answer can find its way "
+      "back to the right work.", FALSE }
 };
 
 static const ClawtParamInfo post_room_params[] = {
@@ -256,6 +289,14 @@ static const ToolDefinition tools[] = {
          "staff rather than to that team directly.",
          NEEDS_ASSIGNMENT, delegate_params),
 
+    TOOL("clawtilla_ask_decision",
+         "Ask your operator to make a choice, without waiting for them. "
+         "You state what you will do anyway, and carry on doing it; "
+         "their answer arrives later as a message and redirects you. "
+         "Use this instead of stalling, and instead of deciding "
+         "unilaterally on something they would want to have seen.",
+         NEEDS_DECISION_INBOX, ask_decision_params),
+
     TOOL("clawtilla_fleet_cost",
          "What the fleet has spent so far, per agent and in total, and "
          "what one delegated task is allowed to spend. Worth checking "
@@ -390,6 +431,10 @@ struct _ClawtMcpTools {
     gpointer                create_agent_data;
     GDestroyNotify          create_agent_destroy;
 
+    ClawtMcpAskDecisionFunc ask_decision;
+    gpointer                ask_decision_data;
+    GDestroyNotify          ask_decision_destroy;
+
     ClawtVmImageStore *images;   /* unowned */
 
     gchar *attachment_dir;
@@ -411,6 +456,22 @@ clawt_mcp_tools_set_create_agent_func(ClawtMcpTools           *self,
     self->create_agent = func;
     self->create_agent_data = user_data;
     self->create_agent_destroy = destroy;
+}
+
+void
+clawt_mcp_tools_set_ask_decision_func(ClawtMcpTools           *self,
+                                      ClawtMcpAskDecisionFunc  func,
+                                      gpointer                 user_data,
+                                      GDestroyNotify           destroy)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    if (self->ask_decision_destroy != NULL && self->ask_decision_data != NULL)
+        self->ask_decision_destroy(self->ask_decision_data);
+
+    self->ask_decision = func;
+    self->ask_decision_data = user_data;
+    self->ask_decision_destroy = destroy;
 }
 
 void
@@ -640,6 +701,24 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
 
         if (!clawt_agent_config_get_boolean(clawt_agent_get_config(agent),
                                             "tools.manage_fleet"))
+            return FALSE;
+        break;
+
+    case NEEDS_DECISION_INBOX:
+        /*
+         * Only the hook, and no permission beyond it.
+         *
+         * Filing a question is not a fleet operation -- it spends an
+         * operator's attention rather than their machine -- so there is
+         * nothing here worth gating, and gating it would push agents
+         * back to the two bad options this replaces: stall on the
+         * operator, or decide unilaterally and hope.
+         *
+         * The hook is still required, because a library embedded
+         * without a daemon has no inbox to file into and a tool that is
+         * listed and then fails teaches an agent to keep trying.
+         */
+        if (self->ask_decision == NULL)
             return FALSE;
         break;
 
@@ -1348,6 +1427,79 @@ tool_agent_options(ClawtMcpTools *self)
     }
 
     return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+/*
+ * An agent files a choice for its operator, and keeps working.
+ *
+ * The default is required rather than optional, and refusing without
+ * one is the whole design: an item with no stated default is a stalled
+ * piece of work with a nicer name, and a list of those trains an
+ * operator to stop reading it.
+ */
+static gchar *
+tool_ask_decision(ClawtMcpTools *self,
+                  const gchar   *agent_id,
+                  JsonObject    *arguments,
+                  gboolean      *is_error)
+{
+    const gchar *question = argument_string(arguments, "question");
+    const gchar *options = argument_string(arguments, "options");
+    const gchar *fallback = argument_string(arguments, "default");
+    const gchar *reason = argument_string(arguments, "default_reason");
+    const gchar *task = argument_string(arguments, "task_id");
+    gint64 hours = argument_int(arguments, "reversible_hours", 0);
+    g_autoptr(ClawtDecision) decision = NULL;
+    g_autoptr(GError) error = NULL;
+    gchar *answer;
+
+    if (question == NULL || *question == '\0') {
+        *is_error = TRUE;
+        return g_strdup("A decision needs a question.");
+    }
+
+    if (fallback == NULL || *fallback == '\0') {
+        *is_error = TRUE;
+        return g_strdup(
+            "A decision needs a default -- what you will do if nobody "
+            "answers. Without one this is a way of stalling rather than "
+            "a question, and an inbox of stalled work stops being read. "
+            "Decide what you would do, say so here, and carry on doing "
+            "it.");
+    }
+
+    decision = clawt_decision_new(NULL, agent_id, question);
+    clawt_decision_set_default(decision, fallback, reason);
+    clawt_decision_set_task(decision, task);
+
+    if (options != NULL && *options != '\0') {
+        g_auto(GStrv) split = g_strsplit(options, "\n", -1);
+
+        clawt_decision_set_options(decision,
+                                   (const gchar * const *)split);
+    }
+
+    /*
+     * Hours from now, resolved here rather than asking the agent for a
+     * timestamp.  A model asked for an absolute time writes a plausible
+     * one in the wrong year often enough to matter, and "how long until
+     * this is hard to undo" is the thing it actually knows.
+     */
+    if (hours > 0)
+        clawt_decision_set_reversible_until(
+            decision,
+            (g_get_real_time() / G_USEC_PER_SEC) + (hours * 3600));
+
+    answer = self->ask_decision(agent_id, decision, self->ask_decision_data,
+                                &error);
+
+    if (answer == NULL) {
+        *is_error = TRUE;
+        return g_strdup(error != NULL ? error->message
+                                      : "the decision could not be filed");
+    }
+
+    return answer;
 }
 
 static gchar *
@@ -2565,6 +2717,8 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
     else if (g_strcmp0(tool_name, "clawtilla_message_agent") == 0 ||
              g_strcmp0(tool_name, "clawtilla_ask_agent") == 0)
         text = tool_message_agent(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_ask_decision") == 0)
+        text = tool_ask_decision(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_fleet_cost") == 0)
         text = tool_fleet_cost(self, agent_id);
     else if (g_strcmp0(tool_name, "clawtilla_list_teams") == 0)

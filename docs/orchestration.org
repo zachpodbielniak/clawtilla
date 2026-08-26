@@ -447,6 +447,91 @@ missing feature an agent invents a workaround for.  Put the file in the
 exchange and name its path.
 
 
+** The decision inbox
+
+An agent that reaches a point where a human choice would change what it
+does next has, without this, two options and both are bad: block on the
+operator, which stalls autonomous work, or decide unilaterally, which
+commits somebody to something they never saw.
+
+~clawtilla_ask_decision~ is the third. The agent files the choice and
+*keeps going*.
+
+*** The rule that makes it work
+
+**Every item carries the default the agent will act on if nobody
+answers, and the point at which that default stops being cheap to
+reverse.**
+
+Without those it is a queue of stalled work with a nicer name. With
+them an agent can say "going right unless you say otherwise, reversible
+until this ships" and keep moving honestly --- the operator's answer
+*redirects* rather than unblocks.
+
+The default is therefore required, and filing without one is refused in
+those words. The reversibility window is not required, because an agent
+that does not know must not invent urgency: a fabricated deadline
+reorders somebody else's list.
+
+Hours rather than a timestamp, because "how long until this is hard to
+undo" is the thing a model actually knows, and one asked for an
+absolute time writes a plausible one in the wrong year often enough to
+matter.
+
+*** The threshold
+
+A decision list that collects every small choice stops being read, and
+then it is worse than nothing, because it looks as though the operator
+has seen things they have not.
+
+The bar: it goes in the inbox only if the branches produce *materially
+different work*, or the choice is *not cheaply reversible*. Everything
+else the agent simply decides.
+
+That is stated in the tool's own parameter descriptions rather than
+only here, because the failure mode is agents being polite rather than
+selective --- and an agent reads the description at the moment it is
+deciding whether to file.
+
+*** It closes the loop
+
+An answer is routed back to the agent that asked, as an ordinary
+message carrying the task id, so it costs a turn and changes what the
+agent does next. Without that this would be a suggestion box: the
+operator answers into the void and the agent never learns.
+
+The message repeats the question and names the default it replaces. An
+agent may have handled a hundred messages since it asked, and an answer
+of "after the release" with nothing around it is unattributable.
+
+*** Answered, defaulted, dismissed
+
+Three different outcomes and they stay different. All of them mean the
+work went a particular way; only one means somebody chose. Collapsing
+them would make the inbox unable to answer the question it exists for
+--- what did I actually decide, and what merely happened.
+
+Answering twice is refused rather than allowed to overwrite: the first
+answer has already reached the agent and may already have changed what
+it did, so a second would be a change of mind nothing downstream ever
+hears about.
+
+*** Where it appears
+
+Its own surface in both clients --- a *Decisions* page with a badge in
+the GTK client, ~/decisions~ in the web one --- and ~clawtilla decision~
+from a terminal, because a decision an operator cannot see over ssh is
+one that silently takes its default.
+
+Beside the alerts rather than inside them. An alert is something that
+happened; a decision is something that needs you, and one badge meaning
+both is a badge nobody can act on.
+
+The store is sqlite under the state directory, durable for the same
+reason the mailbox is: an agent that asked and got no answer carried on
+with its default, and an operator who never saw the question has no way
+to know that happened.
+
 ** Your mailbox is empty while you are running
 
 This trips up agents, so it is worth stating plainly: a message is

@@ -106,6 +106,8 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/chat/clawt-message.h \
 	$(SRCDIR)/chat/clawt-chat-run.h \
 	$(SRCDIR)/chat/clawt-chat-layout.h \
+	$(SRCDIR)/decision/clawt-decision.h \
+	$(SRCDIR)/decision/clawt-decision-store.h \
 	$(SRCDIR)/chat/clawt-attachment.h \
 	$(SRCDIR)/chat/clawt-markdown.h \
 	$(SRCDIR)/chat/clawt-export.h \
@@ -193,6 +195,8 @@ LIB_SOURCES = \
 	$(SRCDIR)/chat/clawt-message.c \
 	$(SRCDIR)/chat/clawt-chat-run.c \
 	$(SRCDIR)/chat/clawt-chat-layout.c \
+	$(SRCDIR)/decision/clawt-decision.c \
+	$(SRCDIR)/decision/clawt-decision-store.c \
 	$(SRCDIR)/chat/clawt-attachment.c \
 	$(SRCDIR)/chat/clawt-markdown.c \
 	$(SRCDIR)/chat/clawt-export.c \

@@ -3492,6 +3492,141 @@ test_a_changed_restart_policy_reaches_the_runtime(void)
 }
 
 
+
+/*
+ * A decision goes in, comes back on the list, and its answer reaches
+ * the agent that asked.
+ *
+ * The last part is what makes this an inbox rather than a suggestion
+ * box: without it the operator answers into the void and the agent
+ * never learns.
+ */
+static void
+test_a_decision_round_trips_through_the_daemon(void)
+{
+    Fixture fixture;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *id = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n  - id: chief\n    enabled: true\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    /* Nothing yet. */
+    {
+        g_autoptr(JsonNode) reply = request(&fixture, "decision.list",
+                                            "{\"open\": true}");
+
+        g_assert_nonnull(reply);
+
+        if (clawt_ipc_frame_is_error(reply)) {
+            g_autofree gchar *line = clawt_ipc_frame_to_line(reply);
+
+            g_error("decision.list refused: %s", line);
+        }
+
+        g_assert_nonnull(clawt_ipc_frame_get_payload(reply));
+        g_assert_cmpint(
+            json_object_get_int_member(clawt_ipc_frame_get_payload(reply),
+                                       "open"), ==, 0);
+    }
+
+    /* An agent files one, through the same hook the MCP tool uses. */
+    {
+        g_autoptr(ClawtDecision) decision =
+            clawt_decision_new(NULL, "chief", "Take the outage now?");
+        ClawtDecisionStore *store =
+            clawt_daemon_get_decisions(fixture.daemon);
+
+        g_assert_nonnull(store);
+        clawt_decision_set_default(decision, "after the release",
+                                   "nothing is broken");
+        id = clawt_decision_store_post(store, decision, &error);
+        g_assert_no_error(error);
+    }
+
+    /* It is on the list, with its default and its derived flags. */
+    {
+        g_autoptr(JsonNode) reply = request(&fixture, "decision.list", NULL);
+        JsonObject *payload = clawt_ipc_frame_get_payload(reply);
+        JsonArray *items = json_object_get_array_member(payload,
+                                                        "decisions");
+        JsonObject *first;
+
+        g_assert_cmpint(json_object_get_int_member(payload, "open"), ==, 1);
+        g_assert_cmpuint(json_array_get_length(items), ==, 1);
+
+        first = json_array_get_object_element(items, 0);
+        g_assert_cmpstr(json_object_get_string_member(first, "agent"), ==,
+                        "chief");
+        g_assert_cmpstr(json_object_get_string_member(first, "default"), ==,
+                        "after the release");
+
+        /*
+         * Derived by the daemon rather than by each client: both are the
+         * same rule about the same clock, and two clients deriving them
+         * would differ exactly once -- on the item whose deadline had
+         * just passed, which is the one that matters.
+         */
+        g_assert_false(json_object_get_boolean_member(first, "urgent"));
+        g_assert_false(json_object_get_boolean_member(first,
+                                                      "settled_by_default"));
+    }
+
+    /* Answering settles it and reaches the agent. */
+    {
+        g_autofree gchar *body =
+            g_strdup_printf("{\"decision\": \"%s\","
+                            " \"answer\": \"neither, do X\"}", id);
+        g_autoptr(JsonNode) reply = request(&fixture, "decision.answer",
+                                            body);
+
+        g_assert_nonnull(reply);
+        g_assert_false(clawt_ipc_frame_is_error(reply));
+    }
+
+    {
+        ClawtAgent *agent = clawt_agent_manager_get(
+            clawt_daemon_get_agents(fixture.daemon), "chief");
+        ClawtMailbox *mailbox = clawt_agent_get_mailbox(agent);
+        g_autoptr(ClawtMailboxItem) item = NULL;
+
+        g_assert_nonnull(mailbox);
+
+        /*
+         * The agent is stopped, so the answer is sitting in its mailbox
+         * rather than having been handed over -- which is the case worth
+         * asserting, because it is the one that proves the answer is
+         * durable rather than dependent on the agent being up when the
+         * operator got round to it.
+         */
+        item = clawt_mailbox_lease(mailbox, 0);
+        g_assert_nonnull(item);
+        g_assert_nonnull(strstr(clawt_mailbox_item_get_body(item),
+                                "neither, do X"));
+        g_assert_nonnull(strstr(clawt_mailbox_item_get_body(item),
+                                "Take the outage now?"));
+    }
+
+    /* And it is no longer open, nor answerable twice. */
+    {
+        g_autofree gchar *body =
+            g_strdup_printf("{\"decision\": \"%s\","
+                            " \"answer\": \"left\"}", id);
+        g_autoptr(JsonNode) again = request(&fixture, "decision.answer",
+                                            body);
+        g_autoptr(JsonNode) reply = request(&fixture, "decision.list", NULL);
+
+        g_assert_true(clawt_ipc_frame_is_error(again));
+        g_assert_cmpint(
+            json_object_get_int_member(clawt_ipc_frame_get_payload(reply),
+                                       "open"), ==, 0);
+    }
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -3651,6 +3786,8 @@ main(int argc, char *argv[])
                     test_exec_argv_survives_the_wire);
     g_test_add_func("/daemon/exec-argv-fallback",
                     test_exec_without_an_argv_falls_back);
+    g_test_add_func("/daemon/decision-round-trip",
+                    test_a_decision_round_trips_through_the_daemon);
     g_test_add_func("/daemon/restart-policy-reaches-the-runtime",
                     test_a_changed_restart_policy_reaches_the_runtime);
 

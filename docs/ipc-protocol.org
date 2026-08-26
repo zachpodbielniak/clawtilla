@@ -117,6 +117,26 @@ character set an id is made of is refused, which is what stops a request
 of somebody's choosing reading a file the daemon was never asked to
 serve.
 
+*** decision.*
+
+~decision.list~ takes ~open~ (default true) and answers with
+~decisions~ and an ~open~ count. ~decision.answer~ takes ~decision~ and
+a free-text ~answer~; ~decision.dismiss~ takes ~decision~.
+
+Two fields on each item are *derived by the daemon* rather than left to
+each client: ~urgent~ (the deadline is inside a day) and
+~settled_by_default~ (it has passed while the item was still open).
+Both are the same rule about the same clock, and two clients deriving
+them would differ exactly once --- on the item whose deadline had just
+gone, which is the one that matters. The raw ~reversible_until~ goes
+too, so a client can still say *when*.
+
+~decision.answer~ has a side effect the other two do not: it routes the
+answer back to the agent that asked, as an ordinary message carrying
+the task id. That is what makes the inbox a loop rather than a
+suggestion box, and it is why answering twice is refused --- the first
+answer has already reached the agent.
+
 *** event.*
 
 ~event.list~ takes an optional ~subject~ (an agent, room or task) and a

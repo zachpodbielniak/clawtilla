@@ -117,6 +117,18 @@ void clawt_web_register_work(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_events(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_alerts(HtmxRouter *router, ClawtWebApp *app);
+
+/**
+ * clawt_web_register_decisions:
+ * @router: the router
+ * @app: the client
+ *
+ * Choices agents need a person to make.  Beside the alerts rather than
+ * inside them: an alert is something that happened and a decision is
+ * something that needs you, so one badge meaning both would be a badge
+ * nobody can act on.
+ */
+void clawt_web_register_decisions(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_creation(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_extras(HtmxRouter *router, ClawtWebApp *app);
 
