@@ -1156,16 +1156,17 @@ static HtmxResponse *
 on_new_agent_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
     ClawtWebApp *app = user_data;
-    static const gchar *const computers[] = {
-        "none", "host", "container", "vm", NULL
-    };
-    static const gchar *const computer_labels[] = {
-        "None — chat only",
-        "Host — the real machine clawtilla runs on",
-        "Container — podman",
-        "VM — libvirt or qemu",
-        NULL
-    };
+    /*
+     * Walked from the library rather than named here. This was one of
+     * five hand-written copies of the type list -- four in the GTK
+     * client and this one -- so a type added to the fleet reached
+     * whichever of them somebody remembered. The labels come with it,
+     * because two clients describing the same choice differently is the
+     * same drift one layer down.
+     */
+    g_autoptr(GPtrArray) computers = g_ptr_array_new();
+    g_autoptr(GPtrArray) computer_labels = g_ptr_array_new();
+    guint computer_i;
     g_autoptr(HtmxDiv) view = htmx_div_new();
     g_autoptr(HtmxDiv) pad = htmx_div_new();
     g_autoptr(HtmxDiv) card = clawt_web_card("New agent", NULL);
@@ -1175,6 +1176,17 @@ on_new_agent_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     (void)params;
     (void)request;
+
+    for (computer_i = 0; computer_i < clawt_computer_type_count();
+         computer_i++) {
+        g_ptr_array_add(computers,
+                        (gpointer)clawt_computer_type_nth_nick(computer_i));
+        g_ptr_array_add(computer_labels,
+                        (gpointer)clawt_computer_type_nth_label(computer_i));
+    }
+
+    g_ptr_array_add(computers, NULL);
+    g_ptr_array_add(computer_labels, NULL);
 
     htmx_element_add_class(HTMX_ELEMENT(view), "view");
     htmx_element_add_class(HTMX_ELEMENT(pad), "view-pad");
@@ -1194,7 +1206,8 @@ on_new_agent_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
     add_provider_choices(app, HTMX_ELEMENT(form), NULL);
 
     clawt_web_add(form, clawt_web_select_field(
-        "Computer", "computer", computers, computer_labels, "none"));
+        "Computer", "computer", (const gchar *const *)computers->pdata,
+        (const gchar *const *)computer_labels->pdata, "none"));
 
     add_image_choices(app, HTMX_ELEMENT(form));
 
@@ -1291,9 +1304,15 @@ on_create_agent(HtmxRequest *request, GHashTable *params, gpointer user_data)
                           clawt_web_form_value(request, "model"));
     clawt_web_payload_set(payload, "computer", computer);
 
-    if (g_strcmp0(computer, "container") == 0)
-        clawt_web_payload_set(payload, "image",
-                              clawt_web_form_value(request, "image"));
+    {
+        gint type = CLAWT_COMPUTER_NONE;
+
+        clawt_enum_from_nick(CLAWT_TYPE_COMPUTER_TYPE, computer, &type);
+
+        if (clawt_computer_type_takes_image((ClawtComputerType)type))
+            clawt_web_payload_set(payload, "image",
+                                  clawt_web_form_value(request, "image"));
+    }
 
     if (g_strcmp0(computer, "vm") == 0)
         clawt_web_payload_set(payload, "vm_image",
@@ -1573,11 +1592,32 @@ on_import_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
         g_autoptr(HtmxDiv) row = htmx_div_new();
         g_autoptr(HtmxButton) go = clawt_web_button("Import", "primary");
 
+        g_autoptr(GPtrArray) modes = g_ptr_array_new();
+        g_autoptr(GPtrArray) mode_labels = g_ptr_array_new();
+        guint mode_i;
+
+        for (mode_i = 0; mode_i < clawt_import_mode_count(); mode_i++) {
+            g_ptr_array_add(modes,
+                            (gpointer)clawt_import_mode_nth_nick(mode_i));
+            g_ptr_array_add(mode_labels,
+                            (gpointer)clawt_import_mode_nth_label(mode_i));
+        }
+
+        g_ptr_array_add(modes, NULL);
+        g_ptr_array_add(mode_labels, NULL);
+
         clawt_web_add(form, clawt_web_field(
-            "Path", "from", NULL, "~/agents/some-bot"));
+            "Path or git URL", "from", NULL, "~/agents/some-bot"));
         clawt_web_add(form, clawt_web_field("Id", "id", NULL, "some-bot"));
+        clawt_web_add(form, clawt_web_select_field(
+            "How", "mode", (const gchar *const *)modes->pdata,
+            (const gchar *const *)mode_labels->pdata, "copy"));
         clawt_web_add(form, clawt_web_switch_field(
             "Keep its git history", "keep_git", NULL, TRUE));
+        clawt_web_add(form, clawt_web_text(
+            "Copying forks: edits afterwards go to one of two diverging "
+            "directories. Linking keeps one, which is what you want for a "
+            "workspace you already maintain somewhere.", "small muted"));
 
         htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
         htmx_element_set_attribute(HTMX_ELEMENT(go), "type", "submit");
@@ -1607,6 +1647,8 @@ on_import(HtmxRequest *request, GHashTable *params, gpointer user_data)
     clawt_web_payload_set(payload, "from",
                           clawt_web_form_value(request, "from"));
     clawt_web_payload_set(payload, "id", id);
+    clawt_web_payload_set(payload, "mode",
+                          clawt_web_form_value(request, "mode"));
     clawt_web_payload_set_bool(payload, "keep_git",
                                clawt_web_form_flag(request, "keep_git"));
 

@@ -5349,6 +5349,61 @@ apply_setting(ClawtWindow *self, const gchar *key, const gchar *value)
     return TRUE;
 }
 
+/*
+ * The computer types, walked from the library rather than named here.
+ *
+ * There were four copies of this list in this file and a fifth in the
+ * web client, so adding a type meant editing five places and the one
+ * missed was a type the fleet had and a client could not offer. Same
+ * shape as the colour schemes, and invisible to `make parity` for the
+ * same reason: a computer type sends no frame of its own.
+ *
+ * Built once and kept, because a GtkStringList made from it outlives
+ * the call and the nicks are static storage in the library.
+ */
+static const gchar *const *
+computer_type_nicks(void)
+{
+    static const gchar **nicks = NULL;
+
+    if (nicks == NULL) {
+        guint n = clawt_computer_type_count();
+        guint i;
+
+        nicks = g_new0(const gchar *, n + 1);
+
+        for (i = 0; i < n; i++)
+            nicks[i] = clawt_computer_type_nth_nick(i);
+    }
+
+    return (const gchar *const *)nicks;
+}
+
+/*
+ * A combo's selection as a type nick.
+ *
+ * Clamped against the library's own count. The bound used to be a
+ * literal 3, which is the kind of number that is silently one short the
+ * day a type is added -- and the symptom would be the last entry in the
+ * list choosing the one before it.
+ */
+static const gchar *
+computer_type_nick_at(guint selected)
+{
+    return clawt_computer_type_nth_nick(
+        MIN(selected, clawt_computer_type_count() - 1));
+}
+
+static ClawtComputerType
+computer_type_from_nick(const gchar *nick)
+{
+    gint value = CLAWT_COMPUTER_NONE;
+
+    clawt_enum_from_nick(CLAWT_TYPE_COMPUTER_TYPE, nick, &value);
+
+    return (ClawtComputerType)value;
+}
+
 static void
 on_save_agent(GtkButton *button, gpointer user_data)
 {
@@ -5358,8 +5413,6 @@ on_save_agent(GtkButton *button, gpointer user_data)
     self->settings_need_restart = FALSE;
 
     g_autofree gchar *model = NULL;
-    static const gchar *const computers[] = { "none", "host", "container",
-                                              "vm" };
     static const gchar *const efforts[] = { "low", "medium", "high",
                                             "xhigh", "max" };
     static const gchar *const restarts[] = { "never", "on-failure",
@@ -5392,9 +5445,8 @@ on_save_agent(GtkButton *button, gpointer user_data)
                                         ADW_COMBO_ROW(self->effort_row)), 4)]);
 
     ok &= apply_setting(self, "computer.type",
-                        computers[MIN(adw_combo_row_get_selected(
-                                          ADW_COMBO_ROW(self->computer_row)),
-                                      3)]);
+                        computer_type_nick_at(adw_combo_row_get_selected(
+                            ADW_COMBO_ROW(self->computer_row))));
 
     if (self->vm_cpus_row != NULL) {
         g_autofree gchar *image = disk_chooser_value(&self->inspector_disk);
@@ -6123,8 +6175,8 @@ build_mounts(ClawtWindow *self, const gchar *computer_type)
     self->mount_target_row = NULL;
     self->mount_mode_row = NULL;
 
-    if (g_strcmp0(computer_type, "container") != 0 &&
-        g_strcmp0(computer_type, "vm") != 0)
+    if (!clawt_computer_type_takes_mounts(
+            computer_type_from_nick(computer_type)))
         return;
 
     group = adw_preferences_group_new();
@@ -6738,8 +6790,6 @@ on_rebuild_computer(GtkButton *button, gpointer user_data)
 static void
 build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
 {
-    static const gchar *const computers[] = { "none", "host", "container",
-                                              "vm", NULL };
     static const gchar *const efforts[] = { "low", "medium", "high",
                                             "xhigh", "max", NULL };
     static const gchar *const restarts[] = { "never", "on-failure",
@@ -6811,7 +6861,7 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
                                                    "medium"));
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), self->effort_row);
 
-    self->computer_row = combo_row("Computer", computers,
+    self->computer_row = combo_row("Computer", computer_type_nicks(),
                                    clawt_json_string(agent, "computer",
                                                      "none"));
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
@@ -6828,7 +6878,8 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
     self->inspector_computer =
         g_strdup(clawt_json_string(agent, "computer", "none"));
 
-    if (g_strcmp0(self->inspector_computer, "container") == 0)
+    if (clawt_computer_type_takes_image(
+            computer_type_from_nick(self->inspector_computer)))
         image_chooser_build(&self->inspector_image, self, group,
                             clawt_json_string(agent, "image", NULL));
     else
@@ -9113,16 +9164,14 @@ dialog_team(NewAgentDialog *dialog)
 static const gchar *
 dialog_computer(NewAgentDialog *dialog, gchar **out_image, gchar **out_disk)
 {
-    static const gchar *const computers[] = { "none", "host", "container",
-                                              "vm" };
     guint selected =
         adw_combo_row_get_selected(ADW_COMBO_ROW(dialog->computer_row));
-    const gchar *type = computers[MIN(selected, 3)];
+    const gchar *type = computer_type_nick_at(selected);
 
     *out_image = NULL;
     *out_disk = NULL;
 
-    if (g_strcmp0(type, "container") == 0)
+    if (clawt_computer_type_takes_image(computer_type_from_nick(type)))
         *out_image = image_chooser_value(&dialog->image);
     else if (g_strcmp0(type, "vm") == 0)
         *out_disk = disk_chooser_value(&dialog->disk);
@@ -10059,8 +10108,15 @@ on_computer_type_changed(GObject *object, GParamSpec *pspec,
     (void)object;
     (void)pspec;
 
+    /*
+     * Asked, not counted.  This was `selected == 2` with a comment
+     * naming the order it assumed -- so reordering the list, or adding
+     * a type before that index, silently pointed it at a different
+     * backend and the image row appeared for the wrong one.
+     */
     selected = adw_combo_row_get_selected(ADW_COMBO_ROW(dialog->computer_row));
-    is_container = (selected == 2);   /* none, host, container, vm */
+    is_container = clawt_computer_type_takes_image(
+        computer_type_from_nick(computer_type_nick_at(selected)));
 
     gtk_widget_set_visible(dialog->image.row, is_container);
 
@@ -10093,8 +10149,6 @@ on_new_agent(GtkButton *button, gpointer user_data)
     GtkWidget *ai = adw_preferences_group_new();
     GtkWidget *create;
     GtkWidget *design;
-    static const gchar *const computers[] = { "none", "host", "container",
-                                              "vm", NULL };
 
     (void)button;
 
@@ -10167,7 +10221,8 @@ on_new_agent(GtkButton *button, gpointer user_data)
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->computer_row),
                                   "Computer");
     adw_combo_row_set_model(ADW_COMBO_ROW(dialog->computer_row),
-                            G_LIST_MODEL(gtk_string_list_new(computers)));
+                            G_LIST_MODEL(gtk_string_list_new(
+                                computer_type_nicks())));
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(manual),
                               dialog->computer_row);
 
@@ -10318,6 +10373,8 @@ typedef struct {
     GtkWidget   *found_group;
     GtkWidget   *id_entry;
     GtkWidget   *from_row;
+    GtkWidget   *mode_row;
+    GtkWidget   *url_row;
     GtkWidget   *keep_git_row;
     gchar       *from_path;
 } ImportAgentDialog;
@@ -10356,7 +10413,20 @@ on_adopt_found(GtkButton *button, gpointer user_data)
     if (reply == NULL)
         return;
 
-    clawt_window_toast(self, "Imported. Check it over before starting it.");
+    /*
+     * The daemon's own sentence. Whether a git import became a
+     * submodule depends on the machine, so the side that found out is
+     * the side that says -- a toast reading "Imported." would be true
+     * of both and useful for neither.
+     */
+    {
+        JsonObject *object = json_node_get_object(reply);
+        const gchar *detail = clawt_json_string(object, "detail", NULL);
+
+        clawt_window_toast(self, detail != NULL ? detail
+                                 : "Imported. Check it over before "
+                                   "starting it.");
+    }
     refresh_agents(self);
     adw_dialog_close(dialog->dialog);
 }
@@ -10476,6 +10546,39 @@ on_import_choose_folder(GtkButton *button, gpointer user_data)
     g_object_unref(chooser);
 }
 
+/*
+ * A git import names a URL; the other two name a directory.
+ *
+ * Asked of the library rather than compared against "git" here, so this
+ * client cannot end up offering a folder chooser for a mode that needs
+ * a URL -- which is the shape the computer types were in until the type
+ * predicates replaced five copies of the same comparison.
+ */
+static void
+on_import_mode_changed(GObject *row, GParamSpec *spec, gpointer user_data)
+{
+    ImportAgentDialog *dialog = user_data;
+    ClawtImportMode mode;
+    gboolean wants_url;
+
+    (void)spec;
+
+    mode = clawt_import_mode_nth(
+        adw_combo_row_get_selected(ADW_COMBO_ROW(row)));
+    wants_url = clawt_import_mode_takes_url(mode);
+
+    gtk_widget_set_sensitive(dialog->url_row, wants_url);
+    gtk_widget_set_sensitive(dialog->from_row, !wants_url);
+
+    /*
+     * Only a copy reads the source's .git, so the switch is meaningless
+     * for the other two -- a link keeps whatever is there and a clone
+     * *is* a repository.
+     */
+    gtk_widget_set_sensitive(dialog->keep_git_row,
+                             mode == CLAWT_IMPORT_COPY);
+}
+
 static void
 on_import_from_directory(GtkButton *button, gpointer user_data)
 {
@@ -10483,6 +10586,8 @@ on_import_from_directory(GtkButton *button, gpointer user_data)
     ClawtWindow *self = dialog->window;
     const gchar *agent_id;
     g_autoptr(JsonNode) reply = NULL;
+    const gchar *source;
+    ClawtImportMode mode;
     gboolean keep_git;
 
     (void)button;
@@ -10494,9 +10599,24 @@ on_import_from_directory(GtkButton *button, gpointer user_data)
         return;
     }
 
-    if (dialog->from_path == NULL) {
-        clawt_window_toast(self, "Choose the directory to import from.");
-        return;
+    mode = clawt_import_mode_nth(
+        adw_combo_row_get_selected(ADW_COMBO_ROW(dialog->mode_row)));
+
+    if (clawt_import_mode_takes_url(mode)) {
+        source = gtk_editable_get_text(GTK_EDITABLE(dialog->url_row));
+
+        if (source == NULL || *source == '\0') {
+            clawt_window_toast(self, "A git import needs a repository URL.");
+            return;
+        }
+    } else {
+        source = dialog->from_path;
+
+        if (source == NULL) {
+            clawt_window_toast(self,
+                               "Choose the directory to import from.");
+            return;
+        }
     }
 
     keep_git = adw_switch_row_get_active(
@@ -10504,7 +10624,8 @@ on_import_from_directory(GtkButton *button, gpointer user_data)
 
     reply = clawt_window_request(
         self, "agent.import",
-        clawt_build_payload("id", agent_id, "from", dialog->from_path,
+        clawt_build_payload("id", agent_id, "from", source,
+                            "mode", clawt_import_mode_nth_nick(mode),
                             "keep_git", keep_git ? "true" : "false", NULL));
 
     /* Left open on failure, so the path and id are still there to fix. */
@@ -10574,6 +10695,41 @@ on_import_agent(GtkButton *button, gpointer user_data)
     adw_action_row_add_suffix(ADW_ACTION_ROW(dialog->from_row), choose);
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(from_group),
                               dialog->from_row);
+
+    /*
+     * How, and the URL the git mode needs.
+     *
+     * Both rows always exist and the one that does not apply is
+     * insensitive rather than hidden -- a row that vanishes takes the
+     * reader's place on the page with it, and the dialog is short
+     * enough that there is nothing to gain by hiding it.
+     */
+    {
+        g_autoptr(GtkStringList) labels = gtk_string_list_new(NULL);
+        guint i;
+
+        for (i = 0; i < clawt_import_mode_count(); i++)
+            gtk_string_list_append(labels, clawt_import_mode_nth_label(i));
+
+        dialog->mode_row = adw_combo_row_new();
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->mode_row),
+                                      "How");
+        adw_combo_row_set_model(ADW_COMBO_ROW(dialog->mode_row),
+                                G_LIST_MODEL(labels));
+        adw_combo_row_set_selected(ADW_COMBO_ROW(dialog->mode_row), 0);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(from_group),
+                                  dialog->mode_row);
+    }
+
+    dialog->url_row = adw_entry_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->url_row),
+                                  "Git URL");
+    gtk_widget_set_sensitive(dialog->url_row, FALSE);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(from_group),
+                              dialog->url_row);
+
+    g_signal_connect(dialog->mode_row, "notify::selected",
+                     G_CALLBACK(on_import_mode_changed), dialog);
 
     dialog->keep_git_row = adw_switch_row_new();
     adw_preferences_row_set_title(

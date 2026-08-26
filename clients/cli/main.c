@@ -1176,8 +1176,21 @@ cmd_agent(int argc, char *argv[])
                  * undone -- and a purge that refused a path has to be
                  * reported rather than left looking like it worked.
                  */
-                if (files != NULL && g_strcmp0(files, "removed") == 0)
-                    g_print("Its files are gone too.\n");
+                if (files != NULL && g_strcmp0(files, "removed") == 0) {
+                    /*
+                     * A linked workspace was never ours to delete, and
+                     * this line used to claim otherwise -- "Its files
+                     * are gone too" about a directory that is still
+                     * exactly where somebody left it, for the mode
+                     * chosen precisely so it would be.
+                     */
+                    if (json_object_has_member(json_node_get_object(reply),
+                                               "linked_workspace"))
+                        g_print("Its workspace was a link, so only the "
+                                "link is gone.\n");
+                    else
+                        g_print("Its files are gone too.\n");
+                }
                 else if (files != NULL)
                     g_printerr("clawtilla: its files were kept: %s\n",
                                files);
@@ -1437,23 +1450,37 @@ cmd_agent(int argc, char *argv[])
 
     if (g_strcmp0(verb, "import") == 0) {
         const gchar *from = NULL;
+        const gchar *mode = "copy";
         gboolean keep_git = FALSE;
         gint arg;
 
         if (target == NULL) {
             g_printerr("Usage: clawtilla agent import <id> "
-                       "[--from DIR] [--keep-git]\n");
+                       "[--from DIR | --link DIR | --git URL] "
+                       "[--keep-git]\n");
             g_printerr("  --from   copy a standalone libreclaw agent in\n");
+            g_printerr("  --link   use a directory where it is, without "
+                       "copying it\n");
+            g_printerr("  --git    clone a repository, as a submodule "
+                       "where that is possible\n");
             g_printerr("  `clawtilla agent discover` lists what is already "
                        "on disk\n");
             return EXIT_FAILURE;
         }
 
         for (arg = 4; arg < argc; arg++) {
-            if (g_strcmp0(argv[arg], "--from") == 0 && arg + 1 < argc)
+            if (g_strcmp0(argv[arg], "--from") == 0 && arg + 1 < argc) {
                 from = argv[++arg];
-            else if (g_strcmp0(argv[arg], "--keep-git") == 0)
+            } else if (g_strcmp0(argv[arg], "--link") == 0 &&
+                       arg + 1 < argc) {
+                from = argv[++arg];
+                mode = "link";
+            } else if (g_strcmp0(argv[arg], "--git") == 0 && arg + 1 < argc) {
+                from = argv[++arg];
+                mode = "git";
+            } else if (g_strcmp0(argv[arg], "--keep-git") == 0) {
                 keep_git = TRUE;
+            }
         }
 
         /*
@@ -1465,17 +1492,24 @@ cmd_agent(int argc, char *argv[])
         if (from != NULL) {
             reply = call(client, "agent.import",
                          build_payload("id", target, "from", from,
+                                       "mode", mode,
                                        "keep_git", keep_git ? "true" : "false",
                                        NULL));
 
             if (reply == NULL)
                 return EXIT_FAILURE;
 
-            g_print("Imported %s from %s: %" G_GINT64_FORMAT " files into "
-                    "%s\n", target, from,
-                    json_object_get_int_member(json_node_get_object(reply),
-                                               "files"),
+            g_print("Imported %s into %s\n", target,
                     member_or(json_node_get_object(reply), "workspace", "?"));
+
+            /*
+             * The daemon's own sentence, not one built here. Whether a
+             * git import became a submodule depends on the machine, so
+             * the side that found out is the side that says.
+             */
+            g_print("  %s\n",
+                    member_or(json_node_get_object(reply), "detail",
+                              "done"));
             g_print("Check it over with `clawtilla agent show %s` before "
                     "starting it.\n", target);
 
