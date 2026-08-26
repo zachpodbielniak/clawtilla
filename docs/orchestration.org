@@ -591,6 +591,30 @@ the only thing on screen that distinguishes a loop from a conversation:
 two agents politely agreeing to do nothing look the same on the tenth
 exchange as on the first.
 
+**** A room reaches it on its own, and the refusal says so
+
+Every reply in a room counts as a hop, because it is one --- so three
+agents in a standup do not need to be looping to reach the ceiling.
+They just need to have been talking.
+
+That is correct as a limit and was wrong as a *message*. It used to say
+"Delegation has gone deeper than intended; answer directly rather than
+passing it on again", which is exactly right for a chain of handoffs
+and useless in a room: every one of those agents *was* answering
+directly, and an agent told to do the thing it is already doing has
+nothing to act on. This tree already has the rule --- a refusal that
+only says no gets retried in a different shape.
+
+A room refusal now says it is a room, that a long exchange reaches the
+ceiling by itself, that nobody did anything wrong, and names
+~orchestration.max_hops~ for somebody who wants longer conversations. A
+delegation chain still gets the advice that fits a delegation chain, and
+there is a test asserting both --- a fix that gave one wrong answer
+instead of another would be no better.
+
+Found by running a real three-agent fleet with ~max_hops: 4~ and reading
+the event log: 111 refusals in a session, every one of them a room.
+
 *** When a limit fires
 
 The sender gets the error, and the daemon publishes ~message.refused~

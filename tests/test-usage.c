@@ -404,6 +404,49 @@ test_totals_add_accumulates_every_field(void)
     g_assert_cmpint(a.cost_micros, ==, 3000);
 }
 
+/*
+ * The hop refusal has to fit what the agent was doing.
+ *
+ * "Answer directly rather than passing it on again" is right for a
+ * delegation chain and useless for a conversation: three agents in a
+ * room each reply one hop deeper, so an ordinary exchange reaches the
+ * ceiling on its own -- and every one of them was already answering
+ * directly.  An agent told to do the thing it is doing has nothing to
+ * act on, which is how a refusal gets retried in a different shape.
+ *
+ * Found by running a real fleet: 111 refusals in one session, all of
+ * them a standup room rather than a delegation.
+ */
+static void
+test_a_room_refusal_says_it_is_a_room(void)
+{
+    g_autoptr(ClawtLoopGuard) guard = clawt_loop_guard_new();
+    /* clawt_message_new() takes the room first, then the sender. */
+    g_autoptr(ClawtMessage) in_room = clawt_message_new("standup", "chief",
+                                                        "hello");
+    g_autoptr(ClawtMessage) delegated =
+        clawt_message_new("dm:chief:worker", "chief", "do this");
+    g_autoptr(GError) room_error = NULL;
+    g_autoptr(GError) chain_error = NULL;
+
+    clawt_loop_guard_set_limits(guard, 2, 0, 0);
+
+    clawt_message_set_depth(in_room, 4);
+    g_assert_false(clawt_loop_guard_check(guard, in_room, &room_error));
+    g_assert_nonnull(room_error);
+    g_assert_nonnull(strstr(room_error->message, "This is a room"));
+    g_assert_null(strstr(room_error->message, "Delegation has gone"));
+
+    /*
+     * And a real delegation chain still gets the advice that fits it --
+     * without this the fix would just be a different wrong answer.
+     */
+    clawt_message_set_depth(delegated, 4);
+    g_assert_false(clawt_loop_guard_check(guard, delegated, &chain_error));
+    g_assert_nonnull(chain_error);
+    g_assert_nonnull(strstr(chain_error->message, "Delegation has gone"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -428,6 +471,9 @@ main(int argc, char *argv[])
     g_test_add_func("/usage/sub-cent-costs-keep-digits",
                     test_sub_cent_costs_keep_their_digits);
     g_test_add_func("/usage/totals-add", test_totals_add_accumulates_every_field);
+    g_test_add_func("/usage/room-refusal-says-it-is-a-room",
+                    test_a_room_refusal_says_it_is_a_room);
+
 
     return g_test_run();
 }

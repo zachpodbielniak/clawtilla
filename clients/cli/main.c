@@ -184,7 +184,7 @@ static const gchar *usage_text =
  */
 static const gchar *const verbs[] = {
     "daemon", "remote", "status", "agent", "send", "chat", "mailbox", "room",
-    "team", "task", "decision", "cost",
+    "team", "task", "decision", "event", "cost",
     "memory",
     "computer", "cp", "config", "plugin", "integration", "connector",
     "routine",
@@ -2464,6 +2464,80 @@ cmd_cost(int argc, char *argv[])
 
 
 /* ── tasks ───────────────────────────────────────────────────────── */
+
+/*
+ * The event log from a terminal.
+ *
+ * ClawtEventLog has recorded every published event since the daemon was
+ * written, and `event.list` exists so that diagnosing a message loop is
+ * a control rather than sqlite3 and grep on the host.  Both graphical
+ * clients read it; from a terminal it was unreachable -- which is the
+ * one place somebody is standing when they have ssh'd in to find out
+ * what a fleet did overnight.
+ */
+static gint
+cmd_event(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verb = (argc > 2) ? argv[2] : "list";
+    const gchar *subject = (argc > 3) ? argv[3] : NULL;
+    JsonArray *events;
+    guint i;
+
+    if (g_strcmp0(verb, "list") != 0) {
+        g_printerr("Usage: clawtilla event list [subject]\n"
+                   "\n"
+                   "A subject is an agent, a room or a task. Without one "
+                   "the whole fleet is\nshown, which is the case that "
+                   "sends people to the shell.\n");
+        return EXIT_FAILURE;
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    reply = call(client, "event.list",
+                 (subject != NULL)
+                     ? build_payload("subject", subject, NULL) : NULL);
+    if (reply == NULL)
+        return EXIT_FAILURE;
+
+    events = json_object_get_array_member(json_node_get_object(reply),
+                                          "events");
+
+    if (json_array_get_length(events) == 0) {
+        g_print("Nothing recorded.\n");
+        return EXIT_SUCCESS;
+    }
+
+    g_print("%-20s %-22s %s\n", "WHEN", "KIND", "SUBJECT");
+
+    for (i = 0; i < json_array_get_length(events); i++) {
+        JsonObject *event = json_array_get_object_element(events, i);
+        gint64 ts = json_object_has_member(event, "ts")
+                    ? json_object_get_int_member(event, "ts") : 0;
+        g_autoptr(GDateTime) when = NULL;
+        g_autofree gchar *stamp = NULL;
+
+        /*
+         * Microseconds, as the event carries them.  Printing the raw
+         * number would make the one column somebody scans useless.
+         */
+        when = (ts > 0)
+               ? g_date_time_new_from_unix_local(ts / G_USEC_PER_SEC)
+               : NULL;
+        stamp = (when != NULL) ? g_date_time_format(when, "%Y-%m-%d %H:%M:%S")
+                               : g_strdup("-");
+
+        g_print("%-20s %-22s %s\n", stamp,
+                member_or(event, "kind", "?"),
+                member_or(event, "subject", ""));
+    }
+
+    return EXIT_SUCCESS;
+}
 
 /*
  * The decision inbox from a terminal.
@@ -5251,6 +5325,9 @@ main(int argc, char *argv[])
 
     if (g_strcmp0(argv[1], "decision") == 0)
         return cmd_decision(argc, argv);
+
+    if (g_strcmp0(argv[1], "event") == 0)
+        return cmd_event(argc, argv);
 
     if (g_strcmp0(argv[1], "cost") == 0)
         return cmd_cost(argc, argv);

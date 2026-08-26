@@ -81,8 +81,36 @@ check_hops(ClawtLoopGuard *self, ClawtMessage *message, GError **error)
 
     /*
      * The message names the limit it hit, so the agent can say something
-     * useful rather than reporting an unexplained failure.
+     * useful rather than reporting an unexplained failure -- and the
+     * advice has to match what the agent was actually doing.
+     *
+     * "Answer directly rather than passing it on again" is right for a
+     * delegation chain and useless for a *conversation*: three agents
+     * in a room each reply one hop deeper, so an ordinary standup
+     * reaches the ceiling on its own, and every one of them was already
+     * answering directly.  An agent told to do the thing it is doing
+     * has nothing to act on, which is how a refusal gets retried in a
+     * different shape.
+     *
+     * A room id is the discriminator, because that is the one thing
+     * that distinguishes broadcasting from handing work along.
      */
+    if (clawt_message_get_room_id(message) != NULL &&
+        !g_str_has_prefix(clawt_message_get_room_id(message), "dm:")) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT,
+                    "this message is %d hops from the original request, "
+                    "and the limit is %u. This is a room, so every reply "
+                    "counts as a hop and a long exchange reaches the "
+                    "ceiling on its own -- it does not mean anybody did "
+                    "anything wrong. Say what you have concluded to the "
+                    "person who asked, or raise "
+                    "orchestration.max_hops if conversations of this "
+                    "length are wanted.",
+                    depth, self->max_hops);
+
+        return FALSE;
+    }
+
     g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT,
                 "this message is %d hops from the original request, and the "
                 "limit is %u. Delegation has gone deeper than intended; "

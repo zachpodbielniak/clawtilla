@@ -549,6 +549,31 @@ tool.  It was right about the file and wrong about the fleet.
 Anything outside the markers is the agent's own, including whatever the
 scaffolder wrote there originally.
 
+*** The scaffolded half has to agree with it
+
+That is the part which was still wrong for a long time after the managed
+region was added, and it took starting a real fleet to see: the region
+correctly omitted the computer tools for an agent with ~computer: none~,
+while the *scaffolded prose above it* listed
+~clawtilla_computer_exec~ and ~clawtilla_computer_state~ in a table,
+under a note saying they would refuse.
+
+The live tool list was right throughout. The file was not, and the file
+is the one in the prompt --- ~tools/list~ is a call the model has to
+decide to make.
+
+A tool an agent is shown and cannot use is one it will try, be refused,
+and try again in a different shape, which is exactly why
+~clawt_mcp_tools_is_permitted()~ declines to *offer* rather than
+offering something that fails. The whole "Your computer" section is now
+omitted for an agent that has none, and replaced by two sentences saying
+so and pointing at what it does have.
+
+An agent *with* a computer is unaffected and still gets the full
+section: the shell-quoting rule, the host-versus-guest paths, and the
+shares.
+
+
 ** Changing a setting under a running agent
 
 ~agent set~ rewrites the agent's files immediately, so ~TOOLS.org~ and

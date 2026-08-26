@@ -542,65 +542,7 @@ static const gchar TOOLS_ORG[] =
 "that contradict each other is the user's problem to settle, and they\n"
 "cannot settle it if they do not know.\n"
 "\n"
-"* Your computer\n"
-"\n"
-"{{computer_blurb}}\n"
-"\n"
-"| Tool                        | What it does                                       |\n"
-"|-----------------------------+----------------------------------------------------|\n"
-"| ~clawtilla_computer_exec~   | Run a command; returns stdout, stderr and the code |\n"
-"| ~clawtilla_computer_state~  | Whether it is up                                   |\n"
-"\n"
-"Check the exit code. It is the real one.\n"
-"\n"
-"** exec takes a command, not a shell line\n"
-"\n"
-"Every argument is quoted and passed through as it stands, so shell\n"
-"syntax is *not* interpreted: ~>~, ~|~, ~&&~, ~;~, ~*~ and ~$VAR~ arrive\n"
-"at the command as literal text rather than doing anything. A redirect\n"
-"written straight into ~clawtilla_computer_exec~ silently becomes an\n"
-"argument, so the command appears to run, reports success, and has no\n"
-"effect anywhere you look for it.\n"
-"\n"
-"Wrap it in a shell when you want shell behaviour:\n"
-"\n"
-"#+begin_src bash\n"
-"bash -c \'echo hello > /tmp/note && wc -l < /tmp/note\'\n"
-"#+end_src\n"
-"\n"
-"** Your tools run on the host; your shell does not\n"
-"\n"
-"~read~, ~write~, ~edit~ and ~bash~ run where clawtilla runs. Only\n"
-"~clawtilla_computer_exec~ goes inside your computer. So a file has two\n"
-"paths and which one to use depends on which tool you are holding:\n"
-"\n"
-"- opening it with ~read~ or ~write~ -- use the *host* path\n"
-"- naming it as an argument to a command you run inside -- use the\n"
-"  *inside* path\n"
-"\n"
-"Your computer's description above lists every share as\n"
-"~host path = the path inside~. Looking for the inside path on the host\n"
-"finds nothing, which reads exactly like a share that was never set up.\n"
-"\n"
-"* What is shared with your computer\n"
-"\n"
-"Two directories, always, unless somebody turned them off.\n"
-"\n"
-"** Your workspace -- ~/mnt/clawtilla/workspace~\n"
-"\n"
-"This directory. Your persona, your notes, your ~MEMORY.md~ and anything\n"
-"you leave lying about are the same files on both sides, so something\n"
-"written inside your computer is something you can then ~read~.\n"
-"\n"
-"That is the route for anything produced *in* your computer that you\n"
-"then need to look at -- a screenshot, a log, a file you generated.\n"
-"Write it under ~/mnt/clawtilla/workspace~ and read it back at the host\n"
-"path.\n"
-"\n"
-"If you have a desktop, its screenshots are already written there, into\n"
-"~/mnt/clawtilla/workspace/screenshots~. The tool returns the inside\n"
-"path; read the host one.\n"
-"\n"
+"{{computer_section}}"
 "* Handing files to other agents\n"
 "\n"
 "The exchange directory is mounted into every computer at\n"
@@ -837,6 +779,104 @@ computer_blurb(ClawtAgentConfig *agent)
         "~clawtilla_computer_state~ what it can do.", type);
 }
 
+/*
+ * The whole computer section, or nothing at all.
+ *
+ * It used to be unconditional, with a blurb above it saying the tools
+ * below would refuse.  That is the shape this tree already has a rule
+ * against: a tool an agent is shown and cannot use is one it will try,
+ * be refused, and try again in a different shape -- which is why
+ * `is_permitted()` declines to *offer* a tool rather than offering one
+ * that fails.  The managed region below already obeyed that; the
+ * scaffolded prose above it did not, so an agent with no computer read
+ * a table of computer tools in its own prompt and a note that they
+ * would not work.
+ *
+ * Found by starting a real fleet and reading what an agent was actually
+ * told, which is the only way this class of thing shows up -- the live
+ * tool list was correct throughout.
+ */
+static gchar *
+computer_section(ClawtAgentConfig *agent)
+{
+    const gchar *type = clawt_agent_config_get_string(agent,
+                                                      "computer.type");
+    g_autofree gchar *blurb = NULL;
+
+    if (type == NULL || g_strcmp0(type, "none") == 0)
+        return g_strdup(
+            "* Your computer\n"
+            "\n"
+            "*You have no computer.* There is nothing to run commands on,\n"
+            "and the computer tools are not offered to you -- so do not\n"
+            "go looking for them. You work through conversation and, when\n"
+            "something needs a machine, through the other agents that\n"
+            "have one.\n"
+            "\n"
+            "Your own ~read~, ~write~, ~edit~ and ~bash~ still run where\n"
+            "clawtilla runs. That is the host, not a computer of yours.\n");
+
+    blurb = computer_blurb(agent);
+
+    return g_strdup_printf("* Your computer\n\n%s\n\n%s", blurb,
+"\n"
+"| Tool                        | What it does                                       |\n"
+"|-----------------------------+----------------------------------------------------|\n"
+"| ~clawtilla_computer_exec~   | Run a command; returns stdout, stderr and the code |\n"
+"| ~clawtilla_computer_state~  | Whether it is up                                   |\n"
+"\n"
+"Check the exit code. It is the real one.\n"
+"\n"
+"** exec takes a command, not a shell line\n"
+"\n"
+"Every argument is quoted and passed through as it stands, so shell\n"
+"syntax is *not* interpreted: ~>~, ~|~, ~&&~, ~;~, ~*~ and ~$VAR~ arrive\n"
+"at the command as literal text rather than doing anything. A redirect\n"
+"written straight into ~clawtilla_computer_exec~ silently becomes an\n"
+"argument, so the command appears to run, reports success, and has no\n"
+"effect anywhere you look for it.\n"
+"\n"
+"Wrap it in a shell when you want shell behaviour:\n"
+"\n"
+"#+begin_src bash\n"
+"bash -c \'echo hello > /tmp/note && wc -l < /tmp/note\'\n"
+"#+end_src\n"
+"\n"
+"** Your tools run on the host; your shell does not\n"
+"\n"
+"~read~, ~write~, ~edit~ and ~bash~ run where clawtilla runs. Only\n"
+"~clawtilla_computer_exec~ goes inside your computer. So a file has two\n"
+"paths and which one to use depends on which tool you are holding:\n"
+"\n"
+"- opening it with ~read~ or ~write~ -- use the *host* path\n"
+"- naming it as an argument to a command you run inside -- use the\n"
+"  *inside* path\n"
+"\n"
+"Your computer's description above lists every share as\n"
+"~host path = the path inside~. Looking for the inside path on the host\n"
+"finds nothing, which reads exactly like a share that was never set up.\n"
+"\n"
+"* What is shared with your computer\n"
+"\n"
+"Two directories, always, unless somebody turned them off.\n"
+"\n"
+"** Your workspace -- ~/mnt/clawtilla/workspace~\n"
+"\n"
+"This directory. Your persona, your notes, your ~MEMORY.md~ and anything\n"
+"you leave lying about are the same files on both sides, so something\n"
+"written inside your computer is something you can then ~read~.\n"
+"\n"
+"That is the route for anything produced *in* your computer that you\n"
+"then need to look at -- a screenshot, a log, a file you generated.\n"
+"Write it under ~/mnt/clawtilla/workspace~ and read it back at the host\n"
+"path.\n"
+"\n"
+"If you have a desktop, its screenshots are already written there, into\n"
+"~/mnt/clawtilla/workspace/screenshots~. The tool returns the inside\n"
+"path; read the host one.\n"
+"\n");
+}
+
 static gchar *
 build_includes(void)
 {
@@ -895,8 +935,8 @@ build_values(ClawtAgentConfig *agent)
                         g_strdup(model != NULL ? model : "(default)"));
     g_hash_table_insert(values, g_strdup("computer"),
                         g_strdup(type != NULL ? type : "none"));
-    g_hash_table_insert(values, g_strdup("computer_blurb"),
-                        computer_blurb(agent));
+    g_hash_table_insert(values, g_strdup("computer_section"),
+                        computer_section(agent));
     g_hash_table_insert(values, g_strdup("includes"), build_includes());
 
     /*
