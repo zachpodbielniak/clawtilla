@@ -15650,7 +15650,22 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
         g_strdup(clawt_connection_get_socket_path(self->active_connection));
 
     gtk_window_set_title(GTK_WINDOW(self), "clawtilla");
-    gtk_window_set_default_size(GTK_WINDOW(self), 1100, 720);
+
+    /*
+     * Wide enough that the alerts panel pushes rather than overlays on
+     * first launch.
+     *
+     * 1100 was below the breakpoint above it, so the side-by-side layout
+     * existed and nobody arrived at it -- a window had to be resized
+     * before the design the panel was drawn for appeared at all.  1280
+     * clears the 1150 threshold with room, and 1280x720 still fits a
+     * 1366x768 laptop with its panels, which 1280x800 does not.
+     *
+     * The overlay is not lost by this: it is what the breakpoint still
+     * gives anyone who makes the window narrower, which is now a choice
+     * rather than the only state.
+     */
+    gtk_window_set_default_size(GTK_WINDOW(self), 1280, 720);
 
     /* ── Sidebar ── */
     self->sidebar = GTK_LIST_BOX(gtk_list_box_new());
