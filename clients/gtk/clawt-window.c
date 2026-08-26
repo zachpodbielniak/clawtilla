@@ -16063,6 +16063,22 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
     adw_application_window_add_breakpoint(ADW_APPLICATION_WINDOW(self),
                                           breakpoint);
 
+    /*
+     * Both remembered choices start from what the widgets have actually
+     * been left showing, rather than from a constant repeated here.
+     *
+     * Taken deliberately at the end of construction rather than left to
+     * the notifies above, which only give the right answer while the
+     * connects sit above the bind and the toggle's set_active() below
+     * it.  Reorder those three and sidebar_open stays FALSE while the
+     * list is visibly shown -- after which the first crossing of 800px
+     * makes the agent list disappear, with nothing in the diff that
+     * looks wrong.
+     */
+    self->sidebar_open = adw_overlay_split_view_get_show_sidebar(self->split);
+    self->alerts_open = adw_overlay_split_view_get_show_sidebar(
+        self->alerts_split);
+
     self->toasts = ADW_TOAST_OVERLAY(adw_toast_overlay_new());
     adw_toast_overlay_set_child(self->toasts, GTK_WIDGET(self->split));
 
