@@ -3068,6 +3068,19 @@ day_divider(GDateTime *when)
  *
  * @color reached clawt_color_ink() before this, which is what makes it
  * safe to splice: nothing but `#rgb` and `#rrggbb` gets this far.
+ *
+ * Above the appearance sheet, at PRIORITY_APPLICATION + 2, because a
+ * tint is about one particular agent and a palette is an opinion about
+ * surfaces in general.  A single `avatar { background-color: ... }` in a
+ * theme would otherwise flatten every agent to one swatch -- and it
+ * would win despite being the less specific selector, because a
+ * provider's priority decides before specificity is consulted.
+ * Measured: a bare `avatar` rule one layer up beats `avatar.clawt-tint-*`
+ * one layer down.
+ *
+ * Still below PRIORITY_USER, so somebody who does want uniform avatars
+ * can say so.  The stack ascends from the most general to the closest to
+ * the data, with the person on top.
  */
 static GHashTable     *avatar_tints = NULL;
 static GtkCssProvider *avatar_tint_provider = NULL;
@@ -3107,7 +3120,7 @@ tint_class(const gchar *color, const gchar *ink)
             gtk_style_context_add_provider_for_display(
                 gdk_display_get_default(),
                 GTK_STYLE_PROVIDER(avatar_tint_provider),
-                GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+                GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 2);
         }
 
         gtk_css_provider_load_from_string(avatar_tint_provider, sheet->str);
