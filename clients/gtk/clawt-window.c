@@ -140,6 +140,22 @@ struct _ClawtWindow {
 
     AdwToastOverlay   *toasts;
     AdwOverlaySplitView *split;
+
+    /*
+     * Whether each split's sidebar is meant to be showing.
+     *
+     * AdwOverlaySplitView writes show-sidebar itself when it stops being
+     * collapsed, so the widget can only be asked what the toolkit last
+     * did -- never what the operator chose.  These remember the choice
+     * and the notify::collapsed handlers put it back.
+     *
+     * `sidebar_transient` covers the one write the client makes for
+     * reasons of its own, which is not a choice and must not be recorded
+     * as one.
+     */
+    gboolean           sidebar_open;
+    gboolean           alerts_open;
+    gboolean           sidebar_transient;
     GtkListBox        *sidebar;
     AdwViewStack      *pages;
 
@@ -7087,9 +7103,19 @@ select_agent(ClawtWindow *self, const gchar *agent_id)
     load_history(self);
     refresh_selected(self);
 
-    /* On a narrow window the sidebar is a drawer, so close it. */
-    if (adw_overlay_split_view_get_collapsed(self->split))
+    /*
+     * On a narrow window the sidebar is a drawer, so close it.
+     *
+     * That is the client dismissing a drawer that is in the way, not the
+     * operator saying they want no agent list, so it deliberately does
+     * not touch sidebar_open: widen the window again and the list comes
+     * back.  Recording it would make an affordance into a preference.
+     */
+    if (adw_overlay_split_view_get_collapsed(self->split)) {
+        self->sidebar_transient = TRUE;
         adw_overlay_split_view_set_show_sidebar(self->split, FALSE);
+        self->sidebar_transient = FALSE;
+    }
 }
 
 /* ── The sidebar's context menu ───────────────────────────────────── */
@@ -7895,6 +7921,64 @@ refresh_alerts(ClawtWindow *self)
 }
 
 /*
+ * A split view that stops being collapsed opens its sidebar, whether or
+ * not anybody asked it to.
+ *
+ * adw_breakpoint_add_setters() restores the previous value when its
+ * breakpoint stops matching, so every upward crossing of the widths set
+ * below drives collapsed TRUE -> FALSE, and that transition sets
+ * show-sidebar TRUE inside libadwaita.  Measured on 1.8.7: a split with
+ * show-sidebar FALSE that is collapsed and then uncollapsed comes back
+ * showing, while one that was never collapsed does not.  So an operator
+ * who closed the panel finds it open again after a resize they made for
+ * an unrelated reason.
+ *
+ * These put the remembered choice back.  They are on notify::collapsed
+ * rather than notify::show-sidebar because libadwaita emits the collapsed
+ * notify first and the show notify after -- so the correction is already
+ * made by the time anything downstream reads the property, and nothing
+ * has to tell the toolkit's write apart from a person's.  Move this to
+ * the other signal and it will still compile, still look right, and
+ * quietly do nothing.
+ */
+static void
+on_alerts_collapsed(GObject *object, GParamSpec *pspec, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    (void)pspec;
+
+    adw_overlay_split_view_set_show_sidebar(ADW_OVERLAY_SPLIT_VIEW(object),
+                                            self->alerts_open);
+}
+
+static void
+on_sidebar_collapsed(GObject *object, GParamSpec *pspec, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    (void)pspec;
+
+    adw_overlay_split_view_set_show_sidebar(ADW_OVERLAY_SPLIT_VIEW(object),
+                                            self->sidebar_open);
+}
+
+/* The agent list's half of the same memory. */
+static void
+on_sidebar_shown(GObject *object, GParamSpec *pspec, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    (void)pspec;
+
+    if (self->sidebar_transient)
+        return;
+
+    self->sidebar_open = adw_overlay_split_view_get_show_sidebar(
+        ADW_OVERLAY_SPLIT_VIEW(object));
+}
+
+/*
  * Opening the panel marks everything read.
  *
  * The badge is "how much have you not seen", and you have now seen it.
@@ -7909,8 +7993,16 @@ on_alerts_shown(GObject *object, GParamSpec *pspec, gpointer user_data)
 
     (void)pspec;
 
-    if (!adw_overlay_split_view_get_show_sidebar(
-            ADW_OVERLAY_SPLIT_VIEW(object)))
+    /*
+     * Whatever the panel has settled at is what the operator wants, and
+     * this runs after the notify::collapsed handler below has already
+     * put their choice back -- so what is recorded here is the choice,
+     * not libadwaita's overwrite of it.
+     */
+    self->alerts_open = adw_overlay_split_view_get_show_sidebar(
+        ADW_OVERLAY_SPLIT_VIEW(object));
+
+    if (!self->alerts_open)
         return;
 
     for (i = 0; self->alerts != NULL && i < self->alerts->len; i++)
@@ -15962,6 +16054,12 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
 
     g_signal_connect(self->alerts_split, "notify::show-sidebar",
                      G_CALLBACK(on_alerts_shown), self);
+    g_signal_connect(self->alerts_split, "notify::collapsed",
+                     G_CALLBACK(on_alerts_collapsed), self);
+    g_signal_connect(self->split, "notify::show-sidebar",
+                     G_CALLBACK(on_sidebar_shown), self);
+    g_signal_connect(self->split, "notify::collapsed",
+                     G_CALLBACK(on_sidebar_collapsed), self);
 
     g_object_bind_property(sidebar_button, "active", self->split,
                            "show-sidebar",
@@ -16006,6 +16104,22 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
                                "collapsed", TRUE, NULL);
     adw_application_window_add_breakpoint(ADW_APPLICATION_WINDOW(self),
                                           breakpoint);
+
+    /*
+     * Both remembered choices start from what the widgets have actually
+     * been left showing, rather than from a constant repeated here.
+     *
+     * Taken deliberately at the end of construction rather than left to
+     * the notifies above, which only give the right answer while the
+     * connects sit above the bind and the toggle's set_active() below
+     * it.  Reorder those three and sidebar_open stays FALSE while the
+     * list is visibly shown -- after which the first crossing of 800px
+     * makes the agent list disappear, with nothing in the diff that
+     * looks wrong.
+     */
+    self->sidebar_open = adw_overlay_split_view_get_show_sidebar(self->split);
+    self->alerts_open = adw_overlay_split_view_get_show_sidebar(
+        self->alerts_split);
 
     self->toasts = ADW_TOAST_OVERLAY(adw_toast_overlay_new());
     adw_toast_overlay_set_child(self->toasts, GTK_WIDGET(self->split));
