@@ -158,4 +158,41 @@ gboolean clawt_unread_should_count(const gchar *room_id,
                                    gint64       event_ts,
                                    gint64       connected_at);
 
+/**
+ * CLAWT_TRANSCRIPT_FOLLOW_TOLERANCE:
+ *
+ * How near the bottom still counts as being at it, in pixels.
+ *
+ * Not zero, because a scrolled window rarely lands on an exact value and
+ * a reader who is one pixel off the end has not chosen to be.  Not large,
+ * because every pixel of it is a pixel of message a new arrival can push
+ * off the bottom without the client noticing it stopped following.
+ */
+#define CLAWT_TRANSCRIPT_FOLLOW_TOLERANCE 32.0
+
+/**
+ * clawt_transcript_is_at_bottom:
+ * @value: the adjustment's value
+ * @upper: its upper bound
+ * @page_size: the visible height
+ *
+ * Whether the reader is at the live edge of a transcript.
+ *
+ * The whole follow behaviour turns on this one predicate: a client
+ * refuses to move the view when it is false, which is right, and both
+ * unread affordances are driven by the edge where it changes.  It is a
+ * pure function so the tolerance can be exercised on both sides and at
+ * the boundary without a window -- which is the one thing a test of the
+ * follow machinery could not otherwise reach.
+ *
+ * A transcript shorter than its viewport is at the bottom by definition:
+ * @upper less @page_size is zero or negative there, and a reader cannot
+ * be anywhere else.
+ *
+ * Returns: %TRUE if the view is at, or within the tolerance of, the end
+ */
+gboolean clawt_transcript_is_at_bottom(gdouble value,
+                                       gdouble upper,
+                                       gdouble page_size);
+
 G_END_DECLS

@@ -206,3 +206,22 @@ clawt_unread_should_count(const gchar *room_id, const gchar *viewing_room,
 
     return TRUE;
 }
+
+gboolean
+clawt_transcript_is_at_bottom(gdouble value, gdouble upper, gdouble page_size)
+{
+    gdouble bottom = upper - page_size;
+
+    /*
+     * Shorter than the viewport: there is nowhere else to be.
+     *
+     * The comparison below already answers this correctly -- a negative
+     * bottom is less than the tolerance -- so this is not a fix.  It says
+     * the intent out loud, because a case that is right by accident is
+     * one a later edit breaks without noticing.
+     */
+    if (bottom <= 0.0)
+        return TRUE;
+
+    return (bottom - value) < CLAWT_TRANSCRIPT_FOLLOW_TOLERANCE;
+}

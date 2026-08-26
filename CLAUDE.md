@@ -731,20 +731,32 @@ the same program.
   and `on_transcript_grew()`, which is the only thing that actually
   works, never runs.
 - `gdk_frame_clock_get_frame_counter()` in the trace is what named it:
-  **2, 3, 3 and stopped**. GTK4 lays out from the frame clock, and a
-  Wayland compositor stops sending frame callbacks to a surface it is not
-  presenting. `mapped` stays TRUE for an occluded window, so every widget
-  looks healthy while no layout pass ever runs.
+  **2, 3, 3 and stopped**. GTK4 lays out from the frame clock, so with no
+  frames there is no allocation, and `mapped` stays TRUE throughout --
+  every widget looks healthy while no layout pass ever runs. Reproduced
+  on the X11 backend too, where the counter never left 0.
 - The earlier test could not have shown it: it drove
   `gtk_adjustment_set_value()` directly, so the clock was never a
   variable. **A synthetic driver removes the thing you are testing when
   the thing you are testing is the platform.**
-- Not fixed, deliberately. It self-heals when the window is presented
-  again, and a focused window -- the case reported -- gets frames
-  continuously. Changing follow behaviour on the strength of a
-  throttled-clock trace would alter something that works, for a case that
-  may not be the complaint. Recorded on the issue with the counter in the
-  trace, so the next person can rule it out in one line.
+- **I claimed it self-heals on presentation before testing that**, and
+  the test did not support the claim: `gtk_window_present()` produced no
+  layout, and a heartbeat showed the counter and `upper` frozen for
+  twelve seconds afterwards. What that actually proves is only that the
+  window was never presented -- which is also why the ticking-clock case,
+  the one the operator is in, could not be reached from here at all.
+  Saying "it self-heals" without a trace was the mistake; the honest
+  statement is that no defect was found in the machinery and the case
+  that matters is not reproducible in this environment.
+- The idle scroll was left alone for the same reason. Both the reporter's
+  five traces and mine show it never does work `on_transcript_grew()` had
+  not already done -- but removing it is a behaviour change in a path
+  neither of us can exercise, and changing what you cannot test is how
+  the untested case becomes the broken one.
+- What *is* now tested is the predicate it all turns on:
+  `clawt_transcript_is_at_bottom()`, on both sides of the 32px tolerance
+  and at its boundary. It was arithmetic inside a signal handler and
+  could not be tested at all.
 
 ### A rule both clients apply belongs in the library, and then it is testable
 

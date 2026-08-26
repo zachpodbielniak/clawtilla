@@ -139,6 +139,7 @@ declare -A AFFORDANCES=(
     ["alerts surface"]="build_alerts_panel|alert-row"
     ["alert severity tiers"]="clawt_alert_tier_for_event|clawt_alert_tier_for_event"
     ["unread rule"]="clawt_unread_should_count|clawt_unread_should_count"
+    ["follow the live edge"]="clawt_transcript_is_at_bottom|transcript-end"
     ["alert filter"]="alerts_show_all|show_all"
     ["agent attachments"]="fetch_attachment|attachment_element"
     ["flow groups by sender"]="flow_run_sender|flow_run_sender"

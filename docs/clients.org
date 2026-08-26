@@ -757,6 +757,33 @@ measured at 375px, the indent would otherwise take the measure to 42
 characters, and the avatar is the first thing that should go rather than
 the text.
 
+**** Following the live edge
+
+The transcript scrolls itself only while the reader is *at* the end.
+Yanking somebody down mid-read because a message arrived is the single
+most annoying thing a chat window can do, so both the queued scroll and
+the growth handler refuse to move the view when they are not.
+
+"At the end" is ~clawt_transcript_is_at_bottom()~, with a 32px tolerance
+--- not zero, because a scrolled window rarely lands on an exact value
+and a reader one pixel off has not chosen to be; not large, because every
+pixel of it is a pixel of message a new arrival can push off the bottom
+without the client noticing it stopped following.  It is a pure function
+so the tolerance is exercised on both sides *and at its boundary*, which
+is the one part of the follow machinery a test can reach without a
+window.
+
+The mechanism that actually does the work is ~notify::upper~ on the
+scrolled window's adjustment, not the queued idle beside it: GTK4 lays
+out from the frame clock, so an idle reads the height the transcript had
+*before* the message was allocated.  The idle stays as a belt to the
+growth handler's braces, and a consequence worth knowing follows from
+it --- **a window the compositor is not presenting does not lay out, so
+it does not scroll.**  Measured on both backends: the frame counter stops
+and ~upper~ stops with it while messages are appended perfectly well to
+the widget tree.  It resolves on the next frame; there is nothing for the
+client to do about it, because there is nobody looking.
+
 **** Day dividers
 
 "Today", "Yesterday", or "Wednesday 25 August", between two rules,

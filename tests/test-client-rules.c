@@ -91,6 +91,78 @@ test_nothing_without_a_room_or_a_sender(void)
                                              LIVE, CONNECTED_AT));
 }
 
+/* ── Following the live edge ─────────────────────────────────────── */
+
+/*
+ * The predicate the whole follow behaviour turns on.
+ *
+ * A client refuses to move the view when it is false, and both unread
+ * affordances -- the pill and the rule in the transcript -- are driven by
+ * the edge where it changes.  It was thirty-two pixels of arithmetic
+ * inside a signal handler and could not be tested at all; it is a pure
+ * function now, and these are the cases nobody drives by hand.
+ */
+static void
+test_at_the_bottom_follows(void)
+{
+    /* Exactly there. */
+    g_assert_true(clawt_transcript_is_at_bottom(1000.0, 1600.0, 600.0));
+
+    /* Within the tolerance, which exists because a scrolled window
+     * rarely lands on an exact value. */
+    g_assert_true(clawt_transcript_is_at_bottom(969.0, 1600.0, 600.0));
+
+    /* Past the end, which GTK clamps but which must not read as away. */
+    g_assert_true(clawt_transcript_is_at_bottom(1200.0, 1600.0, 600.0));
+}
+
+static void
+test_away_from_the_bottom_does_not(void)
+{
+    g_assert_false(clawt_transcript_is_at_bottom(0.0, 1600.0, 600.0));
+    g_assert_false(clawt_transcript_is_at_bottom(900.0, 1600.0, 600.0));
+}
+
+/*
+ * The boundary itself, asserted on both sides.
+ *
+ * A tolerance nobody tests at its edge is a tolerance that quietly
+ * becomes off-by-one, and every pixel of it is a pixel of message a new
+ * arrival can push off the bottom without the client noticing it stopped
+ * following.
+ */
+static void
+test_the_tolerance_boundary(void)
+{
+    gdouble bottom = 1000.0;
+
+    /* One pixel inside. */
+    g_assert_true(clawt_transcript_is_at_bottom(
+        bottom - (CLAWT_TRANSCRIPT_FOLLOW_TOLERANCE - 1.0), 1600.0, 600.0));
+
+    /* Exactly the tolerance is *not* inside: the test is strictly less. */
+    g_assert_false(clawt_transcript_is_at_bottom(
+        bottom - CLAWT_TRANSCRIPT_FOLLOW_TOLERANCE, 1600.0, 600.0));
+}
+
+/*
+ * A transcript shorter than its viewport is at the bottom by definition:
+ * there is nowhere else to be.
+ *
+ * The arithmetic happened to give the right answer here already -- a
+ * negative bottom is still less than the tolerance -- so the explicit
+ * guard is not a fix.  It is here because "shorter than the viewport"
+ * being correct by accident is the kind of thing a later edit breaks
+ * without noticing, and these three cases are what would notice.
+ */
+static void
+test_a_short_transcript_is_always_at_the_bottom(void)
+{
+    g_assert_true(clawt_transcript_is_at_bottom(0.0, 200.0, 600.0));
+    g_assert_true(clawt_transcript_is_at_bottom(0.0, 0.0, 0.0));
+    g_assert_true(clawt_transcript_is_at_bottom(0.0, 600.0, 600.0));
+}
+
 /* ── Alert tiers ─────────────────────────────────────────────────── */
 
 static ClawtAlertTier
@@ -185,6 +257,15 @@ main(int argc, char *argv[])
                     test_an_undated_message_counts);
     g_test_add_func("/client-rules/unread/incomplete",
                     test_nothing_without_a_room_or_a_sender);
+
+    g_test_add_func("/client-rules/follow/at-the-bottom",
+                    test_at_the_bottom_follows);
+    g_test_add_func("/client-rules/follow/away",
+                    test_away_from_the_bottom_does_not);
+    g_test_add_func("/client-rules/follow/boundary",
+                    test_the_tolerance_boundary);
+    g_test_add_func("/client-rules/follow/short-transcript",
+                    test_a_short_transcript_is_always_at_the_bottom);
 
     g_test_add_func("/client-rules/tier/loud", test_the_two_loud_kinds);
     g_test_add_func("/client-rules/tier/download-ok",

@@ -3627,12 +3627,17 @@ static void
 on_scrolled(GtkAdjustment *adjustment, gpointer user_data)
 {
     ClawtWindow *self = user_data;
-    gdouble value = gtk_adjustment_get_value(adjustment);
-    gdouble bottom = gtk_adjustment_get_upper(adjustment) -
-                     gtk_adjustment_get_page_size(adjustment);
 
-    /* A small tolerance, or a pixel of rounding stops the follow. */
-    set_following(self, (bottom - value) < 32.0);
+    /*
+     * The predicate is clawt_transcript_is_at_bottom(), in libclawt, so
+     * the tolerance can be exercised on both sides and at its boundary
+     * without a window -- which is the one part of the follow machinery
+     * a test could not otherwise reach.
+     */
+    set_following(self, clawt_transcript_is_at_bottom(
+                            gtk_adjustment_get_value(adjustment),
+                            gtk_adjustment_get_upper(adjustment),
+                            gtk_adjustment_get_page_size(adjustment)));
 }
 
 /*
