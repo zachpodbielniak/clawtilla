@@ -506,6 +506,90 @@ the only things addressable were libadwaita's element names.  Nothing
 is styled by having a name; a selector nobody has written a rule for
 draws nothing.
 
+**** Reading: the column and the gap between runs
+
+#+begin_src yaml
+measure: 760       # column width in pixels; 0 follows the shipped one
+run_spacing: 18    # gap between one person's run and the next; 0 likewise
+#+end_src
+
+The measure was a constant in C for the whole life of the client, so the
+one thing about reading most likely to be wrong for a given person and
+screen was the one thing they could not change. Whatever number is
+chosen is right for one reader on one display --- which is the argument
+~clawt-appearance.h~ already made about fonts, extended without
+modification.
+
+Zero means defer, exactly as an unset font does, and for the same
+reason: a value naming the current default would freeze it, so a later
+change to the shipped column would not reach anyone who had ever opened
+the dialog.
+
+Out-of-range is clamped rather than refused. This file invites
+hand-editing, and a 40 or a 4000 in it would make the conversation
+unreadable and leave no obvious way back from inside the app.
+
+***** One measure, two mechanisms
+
+The web client reads ~--chat-measure~ and ~--chat-run-gap~ as CSS
+tokens. The GTK client cannot: ~AdwClamp~ takes a *property*, not a
+stylesheet, so it reads the value and sets both clamps --- the
+transcript's and the composer's, from one resolver, because a column
+widened while the box you type into stayed put would restore exactly the
+misalignment the gutter inset exists to fix.
+
+That is also why changing it pushes to the live widgets rather than only
+rewriting the sheet. A setting that reached the file and the CSS but not
+the widget would be a control that appears to do nothing, which is worse
+than one that is missing.
+
+The gap applies to messages drawn after the change; reopening the
+conversation redraws the rest.
+
+**** Palettes are files
+
+A colour scheme used to be a fourth value of an enum, so adding one was
+a code change and a rebuild, and adjusting one you mostly liked was not
+possible at all. Every other part of the appearance had become
+configuration; colour was the exception, and it is the part people most
+want to touch.
+
+Drop a stylesheet in ~$XDG_CONFIG_HOME/clawtilla/palettes/~ and it
+appears in both clients' scheme lists. The file's name is its identity,
+so ~gruvbox-dark.css~ is what lands in your ~appearance.yaml~.
+
+#+begin_src css
+/* clawtilla-palette: label="Gruvbox Dark" dark=1 */
+
+/* libadwaita and the GTK client read this form. */
+@define-color accent_color #fabd2f;
+@define-color window_bg_color #282828;
+
+/* The web client reads this one. */
+:root { --canvas:#282828; --ink:#ebdbb2; --surface:#32302f; }
+#+end_src
+
+The header is optional: without a label the filename is used, and
+without ~dark~ a palette is assumed dark, because almost every
+hand-written one is and light chrome under dark colours is worse than
+the reverse.
+
+Both vocabularies are in one file on purpose. The colours are shareable
+and the mechanism is not --- GTK redefines libadwaita's named colours
+and the web sheet has its own tokens --- so translating between them
+would mean deciding for the author which half of their palette was real.
+Write the half you need; the other is inert.
+
+The ~@define-color~ half is bridged automatically into libadwaita's
+~--token~ custom properties, because libadwaita's own ~.accent~,
+~.error~, ~.success~ and ~.warning~ rules read only that namespace. A
+palette emitting one form styles the client's own rules and leaves every
+libadwaita-drawn status colour at stock GNOME.
+
+A scheme this build has not got follows the system rather than failing
+--- a palette file you delete leaves the client following your desktop,
+not refusing to start.
+
 The settings live in ~$XDG_CONFIG_HOME/clawtilla/appearance.yaml~:
 
 #+begin_src yaml

@@ -645,9 +645,270 @@ test_a_colour_that_is_not_one_is_refused(void)
 }
 
 
+/* ── The reading measurements ──────────────────────────────────────── */
+
+/*
+ * Unset emits no rule, exactly as an unset font does.
+ *
+ * The whole reason 0 means defer rather than "600" is that a value
+ * naming the current default freezes it -- so a later change to the
+ * shipped column would not reach anyone who had ever opened the
+ * dialog. The two states look identical on screen and diverge for ever
+ * afterwards.
+ */
+static void
+test_unset_measurements_emit_nothing(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+    g_autofree gchar *css = clawt_appearance_to_css(appearance);
+
+    g_assert_cmpint(clawt_appearance_get_measure(appearance), ==, 0);
+    g_assert_cmpint(clawt_appearance_get_run_spacing(appearance), ==, 0);
+    g_assert_null(strstr(css, "--chat-measure"));
+    g_assert_null(strstr(css, "--chat-run-gap"));
+}
+
+static void
+test_measurements_reach_the_stylesheet(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+    g_autofree gchar *css = NULL;
+
+    clawt_appearance_set_measure(appearance, 720);
+    clawt_appearance_set_run_spacing(appearance, 18);
+
+    css = clawt_appearance_to_css(appearance);
+
+    g_assert_nonnull(strstr(css, "--chat-measure: 720px;"));
+    g_assert_nonnull(strstr(css, "--chat-run-gap: 18px;"));
+}
+
+/*
+ * Clamped rather than refused, because this file is edited by hand and
+ * a value that made the transcript unusable would leave no obvious way
+ * to fix it from inside the app.
+ *
+ * Both ends, and the zero that means defer -- a floor applied to 0
+ * would turn "follow the shipped column" into "320px", which is the
+ * bug this shape is most likely to grow.
+ */
+static void
+test_measurements_are_clamped(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+
+    clawt_appearance_set_measure(appearance, 10);
+    g_assert_cmpint(clawt_appearance_get_measure(appearance), ==,
+                    CLAWT_APPEARANCE_MIN_MEASURE);
+
+    clawt_appearance_set_measure(appearance, 99999);
+    g_assert_cmpint(clawt_appearance_get_measure(appearance), ==,
+                    CLAWT_APPEARANCE_MAX_MEASURE);
+
+    clawt_appearance_set_measure(appearance, 0);
+    g_assert_cmpint(clawt_appearance_get_measure(appearance), ==, 0);
+
+    clawt_appearance_set_run_spacing(appearance, 99999);
+    g_assert_cmpint(clawt_appearance_get_run_spacing(appearance), ==,
+                    CLAWT_APPEARANCE_MAX_RUN_SPACING);
+
+    clawt_appearance_set_run_spacing(appearance, 0);
+    g_assert_cmpint(clawt_appearance_get_run_spacing(appearance), ==, 0);
+}
+
+static void
+test_measurements_round_trip(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+    g_autofree gchar *data = NULL;
+    g_autoptr(ClawtAppearance) back = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *path = NULL;
+
+    clawt_appearance_set_measure(appearance, 800);
+    clawt_appearance_set_run_spacing(appearance, 12);
+
+    path = g_build_filename(g_get_user_config_dir(), "round-trip.yaml", NULL);
+    g_assert_true(clawt_appearance_save(appearance, path, &error));
+    g_assert_no_error(error);
+
+    back = clawt_appearance_load(path, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(back);
+
+    g_assert_cmpint(clawt_appearance_get_measure(back), ==, 800);
+    g_assert_cmpint(clawt_appearance_get_run_spacing(back), ==, 12);
+
+    (void)data;
+}
+
+/* ── Palettes from disk ────────────────────────────────────────────── */
+
+static void
+write_palette(const gchar *nick, const gchar *contents)
+{
+    g_autofree gchar *dir = clawt_appearance_palette_dir();
+    g_autofree gchar *name = g_strdup_printf("%s.css", nick);
+    g_autofree gchar *path = NULL;
+
+    g_mkdir_with_parents(dir, 0700);
+    path = g_build_filename(dir, name, NULL);
+    g_assert_true(g_file_set_contents(path, contents, -1, NULL));
+    clawt_appearance_reload_palettes();
+}
+
+/*
+ * A palette added without touching C is the whole point of item four:
+ * before this, a colour scheme was a fourth value of an enum, so adding
+ * one was a code change and a rebuild and adjusting one you mostly
+ * liked was not possible at all.
+ */
+static void
+test_a_palette_on_disk_becomes_a_scheme(void)
+{
+    guint before;
+    guint after;
+    guint i;
+    gboolean found = FALSE;
+
+    clawt_appearance_reload_palettes();
+    before = clawt_appearance_scheme_count();
+
+    write_palette("gruvbox-dark",
+                  "/* clawtilla-palette: label=\"Gruvbox Dark\" dark=1 */\n"
+                  "@define-color accent_color #fabd2f;\n");
+
+    after = clawt_appearance_scheme_count();
+    g_assert_cmpint(after, ==, before + 1);
+
+    for (i = 0; i < after; i++) {
+        if (g_strcmp0(clawt_appearance_scheme_nth_nick(i),
+                      "gruvbox-dark") == 0) {
+            found = TRUE;
+            g_assert_cmpstr(clawt_appearance_scheme_nth_label(i), ==,
+                            "Gruvbox Dark");
+        }
+    }
+
+    g_assert_true(found);
+}
+
+/*
+ * And it is selectable, round-trips through the file, and reaches the
+ * stylesheet -- three separate things, and a palette that did only the
+ * first would look chosen and draw nothing.
+ */
+static void
+test_a_palette_is_selectable_and_reaches_the_sheet(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+    g_autofree gchar *css = NULL;
+
+    write_palette("inkwell",
+                  "/* clawtilla-palette: label=\"Inkwell\" dark=1 */\n"
+                  "@define-color accent_color #123456;\n");
+
+    clawt_appearance_set_scheme(appearance, "inkwell");
+    g_assert_cmpstr(clawt_appearance_get_scheme(appearance), ==, "inkwell");
+
+    /* A dark palette gets a dark base, which is what the clients are told. */
+    g_assert_cmpint(clawt_appearance_get_theme(appearance), ==,
+                    CLAWT_THEME_DARK);
+
+    g_assert_nonnull(clawt_appearance_get_palette_css(appearance));
+
+    css = clawt_appearance_to_css(appearance);
+    g_assert_nonnull(strstr(css, "@define-color accent_color #123456;"));
+
+    /*
+     * And in libadwaita's dialect too, derived from the same lines --
+     * a palette emitting only @define-color styles this client's own
+     * rules and leaves every libadwaita-drawn accent at stock GNOME.
+     */
+    g_assert_nonnull(strstr(css, "--accent-color: #123456;"));
+}
+
+/*
+ * A palette with no header still works: the basename is the label and
+ * dark is assumed, because almost every hand-written palette is and
+ * light base styling under dark colours is far worse than the reverse.
+ */
+static void
+test_a_palette_without_a_header(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+    guint i;
+
+    write_palette("plain", "@define-color accent_color #abcdef;\n");
+
+    clawt_appearance_set_scheme(appearance, "plain");
+    g_assert_cmpstr(clawt_appearance_get_scheme(appearance), ==, "plain");
+    g_assert_cmpint(clawt_appearance_get_theme(appearance), ==,
+                    CLAWT_THEME_DARK);
+
+    for (i = 0; i < clawt_appearance_scheme_count(); i++) {
+        if (g_strcmp0(clawt_appearance_scheme_nth_nick(i), "plain") == 0)
+            g_assert_cmpstr(clawt_appearance_scheme_nth_label(i), ==,
+                            "plain");
+    }
+}
+
+/*
+ * A scheme this build has not got follows the system rather than
+ * failing. Three ordinary ways to get here -- a deleted palette file, a
+ * newer build's scheme read by an older one, and a typo -- and refusing
+ * would take the fonts down with the colour.
+ */
+static void
+test_a_missing_palette_follows_the_system(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+
+    clawt_appearance_set_scheme(appearance, "never-existed");
+
+    g_assert_cmpstr(clawt_appearance_get_scheme(appearance), ==, "system");
+    g_assert_null(clawt_appearance_get_palette_css(appearance));
+}
+
+/*
+ * A built-in scheme is not a file palette, so it emits no separate
+ * sheet -- the web client would otherwise define the same colours
+ * twice.
+ */
+static void
+test_a_builtin_has_no_palette_sheet(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+
+    clawt_appearance_set_scheme(appearance, "catppuccin-mocha");
+    g_assert_cmpstr(clawt_appearance_get_scheme(appearance), ==,
+                    "catppuccin-mocha");
+    g_assert_null(clawt_appearance_get_palette_css(appearance));
+}
+
 int
 main(int argc, char *argv[])
 {
+    /*
+     * Before g_test_init(), and before anything can ask for a config
+     * directory.
+     *
+     * g_get_user_config_dir() caches on first use, so setting this late
+     * has no effect at all -- the same trap XDG_DATA_HOME already has
+     * recorded against it in the computer tests.  Without it, palette
+     * discovery reads the developer's own
+     * ~/.config/clawtilla/palettes, and the scheme count becomes
+     * whatever happens to be in there: a suite that passes on one
+     * machine and fails on another, for a reason nothing names.
+     */
+    {
+        g_autofree gchar *tmp = g_dir_make_tmp("clawt-appearance-XXXXXX",
+                                               NULL);
+
+        if (tmp != NULL)
+            g_setenv("XDG_CONFIG_HOME", tmp, TRUE);
+    }
+
     g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/appearance/every-theme-can-be-offered",
@@ -688,6 +949,26 @@ main(int argc, char *argv[])
                     test_a_missing_file_is_not_an_error);
     g_test_add_func("/appearance/save-and-load",
                     test_saving_and_loading_a_file);
+    g_test_add_func("/appearance/unset-measurements-emit-nothing",
+                    test_unset_measurements_emit_nothing);
+    g_test_add_func("/appearance/measurements-reach-the-stylesheet",
+                    test_measurements_reach_the_stylesheet);
+    g_test_add_func("/appearance/measurements-are-clamped",
+                    test_measurements_are_clamped);
+    g_test_add_func("/appearance/measurements-round-trip",
+                    test_measurements_round_trip);
+
+    g_test_add_func("/appearance/palette-on-disk-is-a-scheme",
+                    test_a_palette_on_disk_becomes_a_scheme);
+    g_test_add_func("/appearance/palette-is-selectable",
+                    test_a_palette_is_selectable_and_reaches_the_sheet);
+    g_test_add_func("/appearance/palette-without-a-header",
+                    test_a_palette_without_a_header);
+    g_test_add_func("/appearance/missing-palette-follows-the-system",
+                    test_a_missing_palette_follows_the_system);
+    g_test_add_func("/appearance/builtin-has-no-palette-sheet",
+                    test_a_builtin_has_no_palette_sheet);
+
     g_test_add_func("/appearance/markdown-code-font",
                     test_markdown_uses_the_chosen_code_font);
     g_test_add_func("/appearance/markdown-font-escaping",

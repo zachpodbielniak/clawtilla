@@ -198,9 +198,10 @@ files and not its session.
 
 ** Appearance
 
-Theme, interface font and size, code font and size -- the same four
-things the GTK client's appearance page has, kept in this browser's
-cookies rather than in the fleet's own configuration file.  A theme is about the screen you
+Theme, interface font and size, code font and size, and the reading
+measurements -- the same things the GTK client's appearance page has,
+kept in this browser's cookies rather than in the fleet's own
+configuration file.  A theme is about the screen you
 are sitting at, not about the fleet, so it comes with you when this
 server is pointed at a different daemon.
 
@@ -211,8 +212,21 @@ browser currently uses.  The two look identical on screen and diverge for
 ever afterwards: one keeps following the system, the other has quietly
 frozen.  The GTK client's appearance page was fixed for exactly this.
 
-"Follow the browser for everything" clears all five cookies rather than
+"Follow the browser for everything" clears every cookie rather than
 storing empty strings, so "unset" stays the *absence* of a setting.
+
+*** Reading
+
+Column width and the gap between runs, both in pixels, both empty to
+follow the shipped values.  They reach the page as ~--chat-measure~ and
+~--chat-run-gap~, which the transcript, the composer and the run
+spacing all read -- so the shipped design and a reader's override are
+one mechanism rather than two.
+
+The bounds come from ~CLAWT_APPEARANCE_MIN_MEASURE~ and friends rather
+than from numbers written in this client. A cookie is edited as easily
+as a config file, and two clients disagreeing about what is allowed is
+exactly the drift ~make parity~ exists for.
 
 *** A font family is sanitised, not escaped
 
@@ -278,9 +292,22 @@ what makes it feel live rather than what makes it work.
 *** The colour schemes are the library's list, not this client's
 
 Both clients build the scheme control by walking
-~clawt_appearance_theme_count()~ / ~_nth()~ / ~_label()~, so a palette
-added to =clawt-appearance.c= appears in each without either being
-edited.
+~clawt_appearance_scheme_count()~ / ~_nth_nick()~ / ~_nth_label()~, so a
+scheme appears in each without either being edited -- including a
+palette dropped into ~$XDG_CONFIG_HOME/clawtilla/palettes/~, which
+needs no code change at all.
+
+That list is keyed by *nick* rather than by ~ClawtTheme~ because a
+palette read from a file has no enum value. The nick was already what
+the appearance file and this client's cookie stored, so nothing about
+how a choice is remembered had to change.
+
+A file palette's own stylesheet is emitted into the page, and the root
+element is given the palette's *base* mode rather than its nick: the
+stylesheet has a rule for ~dark~ and none for ~inkwell~, so setting the
+nick would leave every colour the palette does not define falling back
+to the light defaults -- light chrome under dark colours, which is
+worse than either.
 
 That is not tidiness.  Each client used to name the schemes itself, and
 when Catppuccin Mocha was added only the GTK combo grew a fourth entry --

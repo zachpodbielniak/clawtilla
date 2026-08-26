@@ -28,6 +28,21 @@ struct _ClawtAppearance {
     gdouble    font_size;
     gchar     *monospace_font;
     gdouble    monospace_size;
+
+    /*
+     * Zero means defer to the shipped value, like every other field
+     * here.  Naming the current default instead would freeze it.
+     */
+    gint       measure;
+    gint       run_spacing;
+
+    /*
+     * Set only when the chosen scheme came from a file, because a
+     * palette on disk has no ClawtTheme value.  The built-in schemes go
+     * on `theme` as they always did, so nothing about how a choice is
+     * stored or read changed.
+     */
+    gchar     *palette;
 };
 
 G_DEFINE_BOXED_TYPE(ClawtAppearance, clawt_appearance, clawt_appearance_copy,
@@ -58,6 +73,9 @@ clawt_appearance_copy(ClawtAppearance *self)
     copy->font_size = self->font_size;
     copy->monospace_font = g_strdup(self->monospace_font);
     copy->monospace_size = self->monospace_size;
+    copy->measure = self->measure;
+    copy->run_spacing = self->run_spacing;
+    copy->palette = g_strdup(self->palette);
 
     return copy;
 }
@@ -70,6 +88,7 @@ clawt_appearance_free(ClawtAppearance *self)
 
     g_free(self->font);
     g_free(self->monospace_font);
+    g_free(self->palette);
     g_free(self);
 }
 
@@ -192,6 +211,55 @@ clawt_appearance_set_monospace_size(ClawtAppearance *self, gdouble points)
     self->monospace_size = clamp_points(points);
 }
 
+/*
+ * Out-of-range is clamped rather than refused, for the same reason a
+ * font size is: this file is edited by hand, and a value that made the
+ * transcript unusable would leave no obvious way to fix it from inside
+ * the app.
+ */
+gint
+clawt_appearance_get_measure(ClawtAppearance *self)
+{
+    g_return_val_if_fail(self != NULL, 0);
+
+    return self->measure;
+}
+
+void
+clawt_appearance_set_measure(ClawtAppearance *self, gint pixels)
+{
+    g_return_if_fail(self != NULL);
+
+    if (pixels <= 0) {
+        self->measure = 0;
+        return;
+    }
+
+    self->measure = CLAMP(pixels, CLAWT_APPEARANCE_MIN_MEASURE,
+                          CLAWT_APPEARANCE_MAX_MEASURE);
+}
+
+gint
+clawt_appearance_get_run_spacing(ClawtAppearance *self)
+{
+    g_return_val_if_fail(self != NULL, 0);
+
+    return self->run_spacing;
+}
+
+void
+clawt_appearance_set_run_spacing(ClawtAppearance *self, gint pixels)
+{
+    g_return_if_fail(self != NULL);
+
+    if (pixels <= 0) {
+        self->run_spacing = 0;
+        return;
+    }
+
+    self->run_spacing = MIN(pixels, CLAWT_APPEARANCE_MAX_RUN_SPACING);
+}
+
 /* ── Themes ──────────────────────────────────────────────────────── */
 
 /*
@@ -293,6 +361,171 @@ static const ThemeInfo theme_table[] = {
       TRUE,  catppuccin_mocha_css }
 };
 
+/*
+ * A palette found on disk.
+ *
+ * The nick is the file's basename without its extension, so the name a
+ * person gives the file is the name they see and the name that lands in
+ * their appearance file.  Nothing generates these, so nothing has to
+ * agree with a table.
+ */
+typedef struct {
+    gchar    *nick;
+    gchar    *label;
+    gchar    *css;
+    gboolean  dark;
+} Palette;
+
+static GPtrArray *palettes;   /* Palette*, discovered once */
+
+static void
+palette_free(gpointer data)
+{
+    Palette *palette = data;
+
+    g_free(palette->nick);
+    g_free(palette->label);
+    g_free(palette->css);
+    g_free(palette);
+}
+
+/*
+ * A palette may declare itself on its first line:
+ *
+ *   /-* clawtilla-palette: label="Gruvbox Dark" dark=1 *-/
+ *
+ * Both parts are optional.  Without a label the basename is used, and
+ * without `dark` a palette is assumed dark -- which is the safer guess:
+ * almost every hand-written palette is, and libadwaita drawing light
+ * base styling under dark colours is far uglier than the reverse.
+ */
+static void
+palette_read_header(const gchar *css, gchar **label_out, gboolean *dark_out)
+{
+    const gchar *at;
+
+    *label_out = NULL;
+    *dark_out = TRUE;
+
+    if (css == NULL)
+        return;
+
+    at = strstr(css, "clawtilla-palette:");
+
+    /* Only the header, not a mention further down the file. */
+    if (at == NULL || (at - css) > 64)
+        return;
+
+    {
+        const gchar *label = strstr(at, "label=\"");
+
+        if (label != NULL) {
+            const gchar *start = label + strlen("label=\"");
+            const gchar *end = strchr(start, '"');
+
+            if (end != NULL && end > start)
+                *label_out = g_strndup(start, (gsize)(end - start));
+        }
+    }
+
+    {
+        const gchar *dark = strstr(at, "dark=");
+
+        if (dark != NULL)
+            *dark_out = (dark[strlen("dark=")] != '0');
+    }
+}
+
+gchar *
+clawt_appearance_palette_dir(void)
+{
+    return g_build_filename(g_get_user_config_dir(), "clawtilla", "palettes",
+                            NULL);
+}
+
+guint
+clawt_appearance_reload_palettes(void)
+{
+    g_autofree gchar *dir_path = clawt_appearance_palette_dir();
+    g_autoptr(GDir) dir = NULL;
+    const gchar *name;
+
+    if (palettes != NULL)
+        g_ptr_array_set_size(palettes, 0);
+    else
+        palettes = g_ptr_array_new_with_free_func(palette_free);
+
+    dir = g_dir_open(dir_path, 0, NULL);
+
+    /* No directory is no palettes, not an error. */
+    if (dir == NULL)
+        return 0;
+
+    while ((name = g_dir_read_name(dir)) != NULL) {
+        g_autofree gchar *path = NULL;
+        g_autofree gchar *css = NULL;
+        g_autofree gchar *label = NULL;
+        Palette *palette;
+        gboolean dark = TRUE;
+
+        if (!g_str_has_suffix(name, ".css"))
+            continue;
+
+        path = g_build_filename(dir_path, name, NULL);
+
+        if (!g_file_get_contents(path, &css, NULL, NULL))
+            continue;
+
+        palette = g_new0(Palette, 1);
+        palette->nick = g_strndup(name, strlen(name) - strlen(".css"));
+
+        palette_read_header(css, &label, &dark);
+
+        palette->label = (label != NULL) ? g_steal_pointer(&label)
+                                         : g_strdup(palette->nick);
+        palette->css = g_steal_pointer(&css);
+        palette->dark = dark;
+
+        g_ptr_array_add(palettes, palette);
+    }
+
+    return palettes->len;
+}
+
+/*
+ * Discovery happens on first use, not from a call somebody has to
+ * remember.
+ *
+ * This file already records what an uncalled factory costs: a feature
+ * that is correct, tested and reached by nobody.  Every entry point
+ * that can see a palette goes through here, so a client that never
+ * heard of reload_palettes() still finds them.
+ */
+static void
+ensure_palettes(void)
+{
+    if (palettes == NULL)
+        clawt_appearance_reload_palettes();
+}
+
+static const Palette *
+palette_by_nick(const gchar *nick)
+{
+    guint i;
+
+    if (nick == NULL || palettes == NULL)
+        return NULL;
+
+    for (i = 0; i < palettes->len; i++) {
+        const Palette *palette = g_ptr_array_index(palettes, i);
+
+        if (g_strcmp0(palette->nick, nick) == 0)
+            return palette;
+    }
+
+    return NULL;
+}
+
 static const ThemeInfo *
 theme_info(ClawtTheme theme)
 {
@@ -334,6 +567,119 @@ clawt_appearance_theme_label(ClawtTheme theme)
     const ThemeInfo *info = theme_info(theme);
 
     return (info != NULL) ? info->label : "Follow the system";
+}
+
+const gchar *
+clawt_appearance_get_palette_css(ClawtAppearance *self)
+{
+    const Palette *palette;
+
+    g_return_val_if_fail(self != NULL, NULL);
+
+    if (self->palette == NULL)
+        return NULL;
+
+    palette = palette_by_nick(self->palette);
+
+    return (palette != NULL) ? palette->css : NULL;
+}
+
+guint
+clawt_appearance_scheme_count(void)
+{
+    ensure_palettes();
+
+    return (guint)G_N_ELEMENTS(theme_table) +
+           (palettes != NULL ? palettes->len : 0);
+}
+
+const gchar *
+clawt_appearance_scheme_nth_nick(guint n)
+{
+    ensure_palettes();
+
+    if (n < G_N_ELEMENTS(theme_table))
+        return theme_table[n].nick;
+
+    n -= (guint)G_N_ELEMENTS(theme_table);
+
+    if (palettes == NULL || n >= palettes->len)
+        return "system";
+
+    return ((const Palette *)g_ptr_array_index(palettes, n))->nick;
+}
+
+const gchar *
+clawt_appearance_scheme_nth_label(guint n)
+{
+    ensure_palettes();
+
+    if (n < G_N_ELEMENTS(theme_table))
+        return theme_table[n].label;
+
+    n -= (guint)G_N_ELEMENTS(theme_table);
+
+    if (palettes == NULL || n >= palettes->len)
+        return "Follow the system";
+
+    return ((const Palette *)g_ptr_array_index(palettes, n))->label;
+}
+
+const gchar *
+clawt_appearance_get_scheme(ClawtAppearance *self)
+{
+    g_return_val_if_fail(self != NULL, "system");
+
+    if (self->palette != NULL)
+        return self->palette;
+
+    return clawt_appearance_theme_nick(self->theme);
+}
+
+void
+clawt_appearance_set_scheme(ClawtAppearance *self, const gchar *nick)
+{
+    const Palette *palette;
+    gsize i;
+
+    g_return_if_fail(self != NULL);
+
+    ensure_palettes();
+    g_clear_pointer(&self->palette, g_free);
+
+    for (i = 0; i < G_N_ELEMENTS(theme_table); i++) {
+        if (g_strcmp0(theme_table[i].nick, nick) == 0) {
+            self->theme = theme_table[i].theme;
+            return;
+        }
+    }
+
+    palette = palette_by_nick(nick);
+
+    if (palette != NULL) {
+        self->palette = g_strdup(palette->nick);
+
+        /*
+         * The base mode still has to be one of the built-ins, because
+         * that is what libadwaita and the browser are told.  A palette
+         * that says nothing is treated as dark: almost every
+         * hand-written one is, and light base styling under dark
+         * colours is far worse than the reverse.
+         */
+        self->theme = palette->dark ? CLAWT_THEME_DARK : CLAWT_THEME_LIGHT;
+        return;
+    }
+
+    /*
+     * An unknown nick follows the system rather than failing.
+     *
+     * Three ways to reach it and all of them ordinary: a palette file
+     * somebody deleted, a newer build's scheme read by an older one,
+     * and a hand-edited typo.  Refusing would take the fonts down with
+     * the colour, which is the same forward-compatibility rule shadow
+     * agents exist for.
+     */
+    self->theme = CLAWT_THEME_SYSTEM;
 }
 
 ClawtTheme
@@ -504,11 +850,30 @@ clawt_appearance_to_css(ClawtAppearance *self)
      * producing an empty stylesheet.  A sheet that named the current
      * default would freeze it.
      */
-    if (clawt_appearance_theme_has_palette(self->theme)) {
-        const gchar *palette = theme_info(self->theme)->css;
+    {
+        const gchar *palette = NULL;
 
-        g_string_append(out, palette);
-        append_custom_properties(out, palette);
+        /*
+         * A palette from disk wins over the built-in mode it is based
+         * on.  Both go through append_custom_properties() for the same
+         * reason: libadwaita's own rules read `--token` and not
+         * `@define-color`, so a sheet emitting one form styles this
+         * client's rules and leaves every libadwaita-drawn accent at
+         * stock GNOME.
+         */
+        if (self->palette != NULL) {
+            const Palette *found = palette_by_nick(self->palette);
+
+            if (found != NULL)
+                palette = found->css;
+        } else if (clawt_appearance_theme_has_palette(self->theme)) {
+            palette = theme_info(self->theme)->css;
+        }
+
+        if (palette != NULL) {
+            g_string_append(out, palette);
+            append_custom_properties(out, palette);
+        }
     }
 
     /*
@@ -530,6 +895,37 @@ clawt_appearance_to_css(ClawtAppearance *self)
         if (self->font_size > 0.0)
             g_string_append_printf(out, "  font-size: %gpt;\n",
                                    self->font_size);
+
+        g_string_append(out, "}\n");
+    }
+
+    /*
+     * The chat column, as custom properties rather than rules.
+     *
+     * This is step three of the configuration layer: the shipped clamp
+     * and run gap used to be constants in C, so the shipped design and
+     * a person's override were two different mechanisms and only one of
+     * them existed.  They are tokens now, declared by whichever client
+     * is rendering, and overridden here when somebody has set a value.
+     *
+     * Emitted as `:root` properties because the two clients apply them
+     * in different vocabularies -- the web sheet reads them directly,
+     * and the GTK client reads the *value* off the appearance and sets
+     * its clamp, because AdwClamp takes a property and not a stylesheet.
+     * The colours already work this way for the same reason.
+     *
+     * Still nothing at all when nothing is set.
+     */
+    if (self->measure > 0 || self->run_spacing > 0) {
+        g_string_append(out, ":root {\n");
+
+        if (self->measure > 0)
+            g_string_append_printf(out, "  --chat-measure: %dpx;\n",
+                                   self->measure);
+
+        if (self->run_spacing > 0)
+            g_string_append_printf(out, "  --chat-run-gap: %dpx;\n",
+                                   self->run_spacing);
 
         g_string_append(out, "}\n");
     }
@@ -566,27 +962,6 @@ clawt_appearance_default_path(void)
 {
     return g_build_filename(g_get_user_config_dir(), "clawtilla",
                             "appearance.yaml", NULL);
-}
-
-static const gchar *
-theme_to_nick(ClawtTheme theme)
-{
-    return clawt_appearance_theme_nick(theme);
-}
-
-/*
- * An unrecognised theme is "system", not an error.
- *
- * A newer build may write one this one has never heard of, and refusing
- * to load the file would take the fonts down with it -- the same
- * forward-compatibility rule shadow agents exist for.  It is also what
- * makes a palette safe to add: an older build reading `catppuccin-mocha`
- * gets the desktop's own scheme rather than a parse error.
- */
-static ClawtTheme
-theme_from_nick(const gchar *nick)
-{
-    return clawt_appearance_theme_from_nick(nick);
 }
 
 static const gchar *
@@ -635,7 +1010,7 @@ clawt_appearance_parse(const gchar *text, GError **error)
 
     mapping = yaml_node_get_mapping(root);
 
-    self->theme = theme_from_nick(member_string(mapping, "theme"));
+    clawt_appearance_set_scheme(self, member_string(mapping, "theme"));
 
     clawt_appearance_set_font(self, member_string(mapping, "font"));
     clawt_appearance_set_monospace_font(
@@ -651,6 +1026,18 @@ clawt_appearance_parse(const gchar *text, GError **error)
     if (value != NULL)
         clawt_appearance_set_monospace_size(self,
                                             g_ascii_strtod(value, NULL));
+
+    value = member_string(mapping, "measure");
+
+    if (value != NULL)
+        clawt_appearance_set_measure(self,
+                                     (gint)g_ascii_strtoll(value, NULL, 10));
+
+    value = member_string(mapping, "run_spacing");
+
+    if (value != NULL)
+        clawt_appearance_set_run_spacing(
+            self, (gint)g_ascii_strtoll(value, NULL, 10));
 
     return self;
 }
@@ -701,7 +1088,12 @@ clawt_appearance_to_data(ClawtAppearance *self)
         "# following it.\n"
         "\n");
 
-    append_quoted(out, "theme", theme_to_nick(self->theme));
+    /*
+     * The scheme's nick rather than the enum's, so a palette read from
+     * a file round-trips.  Built-in schemes are unaffected -- their
+     * nick is what was always written here.
+     */
+    append_quoted(out, "theme", clawt_appearance_get_scheme(self));
 
     if (self->font != NULL)
         append_quoted(out, "font", self->font);
@@ -717,6 +1109,16 @@ clawt_appearance_to_data(ClawtAppearance *self)
 
     g_string_append_printf(out, "monospace_size: %g\n",
                            self->monospace_size);
+
+    g_string_append(out,
+        "\n"
+        "# How wide the conversation column is, in pixels, and how far\n"
+        "# apart one person's run of messages sits from the next. 0 means\n"
+        "# use the shipped value -- which is not the same as writing that\n"
+        "# value here, because writing it would freeze it.\n");
+
+    g_string_append_printf(out, "measure: %d\n", self->measure);
+    g_string_append_printf(out, "run_spacing: %d\n", self->run_spacing);
 
     return g_string_free(out, FALSE);
 }

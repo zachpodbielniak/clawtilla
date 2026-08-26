@@ -147,6 +147,18 @@ struct _ClawtWindow {
      * bottom of the page is the right place and there is nothing to
      * cover.  clawt_window_toast() picks between them.
      */
+    /*
+     * The two clamps that carry the chat measure.
+     *
+     * Held because AdwClamp takes a *property*, not a stylesheet: a
+     * measure changed in the settings would otherwise reach the file
+     * and the CSS and not the widget, so the control would appear to do
+     * nothing until the page was rebuilt.  That is the same "saved but
+     * nothing rewrote what it produces" gap agent.set had.
+     */
+    GtkWidget         *transcript_clamp;
+    GtkWidget         *composer_clamp;
+
     AdwToastOverlay   *toasts;
     AdwToastOverlay   *page_toasts;
     AdwOverlaySplitView *split;
@@ -3072,6 +3084,45 @@ append_attachment_previews(ClawtWindow *self, GtkWidget *row,
  */
 #define CHAT_ROW_MARGIN  12
 #define CHAT_GUTTER      44
+
+/*
+ * The gap between runs.  Measured against the 27px a markdown paragraph
+ * break costs, so a change of speaker reads as a bigger break than a
+ * change of paragraph -- which is the whole reason runs are grouped.
+ */
+#define CHAT_RUN_SPACING 30
+
+/*
+ * The two chat measurements a person may set, resolved against what the
+ * client ships.
+ *
+ * Zero on the appearance means defer, exactly as an unset font does --
+ * so the shipped value lives here and in clawt-chat-layout.h rather
+ * than being written into anybody's appearance file, where it would
+ * freeze the moment they opened the dialog.
+ *
+ * AdwClamp takes a property rather than a stylesheet, which is why this
+ * reads the value instead of letting CSS do it. The web client reads
+ * the same field and renders it as a custom property; the number is
+ * shared and the mechanism is not, like the palette.
+ */
+static gint
+chat_measure(ClawtWindow *self)
+{
+    gint set = (self != NULL && self->appearance != NULL)
+               ? clawt_appearance_get_measure(self->appearance) : 0;
+
+    return set > 0 ? set : CLAWT_CHAT_CLAMP_WIDTH;
+}
+
+static gint
+chat_run_spacing(ClawtWindow *self)
+{
+    gint set = (self != NULL && self->appearance != NULL)
+               ? clawt_appearance_get_run_spacing(self->appearance) : 0;
+
+    return set > 0 ? set : CHAT_RUN_SPACING;
+}
 #define CHAT_BODY_INSET  clawt_chat_body_inset(CHAT_ROW_MARGIN, CHAT_GUTTER)
 
 /*
@@ -3508,7 +3559,8 @@ append_message_to(ClawtWindow *self, const TranscriptView *view,
      * that would put the date adrift between two blocks instead of
      * belonging to the one beneath it.
      */
-    gtk_widget_set_margin_top(row, !run_start ? 6 : (new_day ? 6 : 30));
+    gtk_widget_set_margin_top(
+        row, !run_start ? 6 : (new_day ? 6 : chat_run_spacing(self)));
 
     gtk_box_append(view->into, row);
 }
@@ -10811,6 +10863,8 @@ build_chat_page(ClawtWindow *self)
     {
         GtkWidget *clamp = adw_clamp_new();
 
+        adw_clamp_set_maximum_size(ADW_CLAMP(clamp), chat_measure(self));
+        self->transcript_clamp = clamp;
         adw_clamp_set_child(ADW_CLAMP(clamp), GTK_WIDGET(self->transcript));
         gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), clamp);
     }
@@ -11078,6 +11132,15 @@ build_chat_page(ClawtWindow *self)
         GtkWidget *composer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
         gtk_widget_set_name(composer, "clawt-composer");
         GtkWidget *clamp = adw_clamp_new();
+
+        /*
+         * The same measure as the transcript, from the same resolver.
+         * A column somebody widened while the box they type into stayed
+         * put would reproduce the misalignment this whole arrangement
+         * exists to fix, and only for the people who changed it.
+         */
+        adw_clamp_set_maximum_size(ADW_CLAMP(clamp), chat_measure(self));
+        self->composer_clamp = clamp;
 
         /*
          * And it stands on the same line as the words above it.
@@ -11826,6 +11889,29 @@ appearance_changed(ClawtWindow *self)
 
     apply_appearance(self->appearance);
 
+    /*
+     * The measure reaches a property rather than the stylesheet, so it
+     * has to be pushed.  Without this the setting would be written to
+     * the file, reflected in the CSS, and invisible on screen until the
+     * chat page was rebuilt -- a control that appears to do nothing,
+     * which is worse than one that is missing.
+     *
+     * Both clamps, from one resolver: a column widened while the box
+     * you type into stayed put would restore exactly the misalignment
+     * the composer inset exists to fix.
+     */
+    {
+        gint measure = chat_measure(self);
+
+        if (self->transcript_clamp != NULL)
+            adw_clamp_set_maximum_size(ADW_CLAMP(self->transcript_clamp),
+                                       measure);
+
+        if (self->composer_clamp != NULL)
+            adw_clamp_set_maximum_size(ADW_CLAMP(self->composer_clamp),
+                                       measure);
+    }
+
     if (!clawt_appearance_save(self->appearance, NULL, &error))
         clawt_window_toast(self, error->message);
 }
@@ -11845,10 +11931,35 @@ on_theme_selected(GObject *row, GParamSpec *spec, gpointer user_data)
      * client and not the other -- and nothing said so, because a colour
      * scheme sends no IPC frame and is no slash command.
      */
-    clawt_appearance_set_theme(
+    clawt_appearance_set_scheme(
         self->appearance,
-        clawt_appearance_theme_nth(
-            MIN(selected, clawt_appearance_theme_count() - 1)));
+        clawt_appearance_scheme_nth_nick(
+            MIN(selected, clawt_appearance_scheme_count() - 1)));
+    appearance_changed(self);
+}
+
+/*
+ * The column and the run gap.
+ *
+ * Both are 0-means-defer, like every other field on the appearance, so
+ * the spin buttons run from 0 rather than from their real minimum --
+ * and the library clamps anything between 0 and the floor up to it, so
+ * a person dragging down from 400 lands on the minimum rather than
+ * silently on "follow the shipped value".
+ */
+static void
+on_reading_size_changed(GtkSpinButton *spin, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    gboolean is_gap =
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(spin), "run-gap"));
+    gint value = (gint)gtk_spin_button_get_value(spin);
+
+    if (is_gap)
+        clawt_appearance_set_run_spacing(self->appearance, value);
+    else
+        clawt_appearance_set_measure(self->appearance, value);
+
     appearance_changed(self);
 }
 
@@ -12086,6 +12197,62 @@ build_font_group(ClawtWindow *self, const gchar *title,
     return group;
 }
 
+/*
+ * How wide the conversation runs, and how far apart the turns sit.
+ *
+ * The measure was a constant in C for the whole life of the client, so
+ * the single thing about reading most likely to be wrong for a given
+ * person and screen was the one thing they could not change.  Whatever
+ * number is chosen is right for one reader on one display.
+ */
+static GtkWidget *
+build_reading_group(ClawtWindow *self)
+{
+    GtkWidget *group = adw_preferences_group_new();
+    GtkWidget *measure_row = adw_action_row_new();
+    GtkWidget *gap_row = adw_action_row_new();
+    GtkWidget *measure_spin = gtk_spin_button_new_with_range(
+        0, CLAWT_APPEARANCE_MAX_MEASURE, 10);
+    GtkWidget *gap_spin = gtk_spin_button_new_with_range(
+        0, CLAWT_APPEARANCE_MAX_RUN_SPACING, 2);
+
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group), "Reading");
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(group),
+        "The shipped column is measured rather than chosen -- about 89 "
+        "characters a line, against a comfortable 45 to 90. Whatever "
+        "suits your screen wins over that.");
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(measure_row),
+                                  "Column width");
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(measure_row),
+                                "0 follows the shipped column");
+    gtk_widget_set_valign(measure_spin, GTK_ALIGN_CENTER);
+    gtk_spin_button_set_value(
+        GTK_SPIN_BUTTON(measure_spin),
+        clawt_appearance_get_measure(self->appearance));
+    g_signal_connect(measure_spin, "value-changed",
+                     G_CALLBACK(on_reading_size_changed), self);
+    adw_action_row_add_suffix(ADW_ACTION_ROW(measure_row), measure_spin);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), measure_row);
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(gap_row),
+                                  "Gap between runs");
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(gap_row),
+                                "0 follows the shipped gap");
+    gtk_widget_set_valign(gap_spin, GTK_ALIGN_CENTER);
+    gtk_spin_button_set_value(
+        GTK_SPIN_BUTTON(gap_spin),
+        clawt_appearance_get_run_spacing(self->appearance));
+    g_object_set_data(G_OBJECT(gap_spin), "run-gap", GINT_TO_POINTER(TRUE));
+    g_signal_connect(gap_spin, "value-changed",
+                     G_CALLBACK(on_reading_size_changed), self);
+    adw_action_row_add_suffix(ADW_ACTION_ROW(gap_row), gap_spin);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), gap_row);
+
+    return group;
+}
+
 static GtkWidget *
 build_appearance_page(ClawtWindow *self)
 {
@@ -12116,13 +12283,12 @@ build_appearance_page(ClawtWindow *self)
      * here without this file being touched -- and cannot appear here and
      * not in the web client, which builds its own select the same way.
      */
-    for (t = 0; t < clawt_appearance_theme_count(); t++) {
-        ClawtTheme theme = clawt_appearance_theme_nth(t);
-
+    for (t = 0; t < clawt_appearance_scheme_count(); t++) {
         gtk_string_list_append(theme_names,
-                               clawt_appearance_theme_label(theme));
+                               clawt_appearance_scheme_nth_label(t));
 
-        if (theme == clawt_appearance_get_theme(self->appearance))
+        if (g_strcmp0(clawt_appearance_scheme_nth_nick(t),
+                      clawt_appearance_get_scheme(self->appearance)) == 0)
             selected = t;
     }
 
@@ -12156,6 +12322,9 @@ build_appearance_page(ClawtWindow *self)
             "Code blocks and inline code in a conversation, and the "
             "output of the exec console.",
             TRUE)));
+
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(build_reading_group(self)));
 
     return page;
 }

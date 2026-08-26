@@ -877,13 +877,11 @@ appearance_content(HtmxRequest *request)
          * other -- and `make parity` saw nothing, because a colour
          * scheme sends no IPC frame and is no slash command.
          */
-        for (t = 0; t < clawt_appearance_theme_count(); t++) {
-            ClawtTheme theme = clawt_appearance_theme_nth(t);
-
+        for (t = 0; t < clawt_appearance_scheme_count(); t++) {
             g_ptr_array_add(themes,
-                            g_strdup(clawt_appearance_theme_nick(theme)));
+                            g_strdup(clawt_appearance_scheme_nth_nick(t)));
             g_ptr_array_add(theme_labels,
-                            g_strdup(clawt_appearance_theme_label(theme)));
+                            g_strdup(clawt_appearance_scheme_nth_label(t)));
         }
 
         g_ptr_array_add(themes, NULL);
@@ -948,6 +946,47 @@ appearance_content(HtmxRequest *request)
         clawt_web_add(body, clawt_web_text(
             "The code font applies to the exec console, inline code in "
             "messages, and every value shown in monospace.",
+            "small muted"));
+
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(card));
+    }
+
+    {
+        g_autoptr(HtmxDiv) card = clawt_web_card(
+            "Reading",
+            "How wide the conversation runs and how far apart one "
+            "person's messages sit from the next. Left empty, both "
+            "follow the shipped values.");
+        HtmxElement *body = clawt_web_card_body(card);
+        g_autofree gchar *measure = (look->measure > 0)
+                                    ? g_strdup_printf("%d", look->measure)
+                                    : NULL;
+        g_autofree gchar *run_gap = (look->run_gap > 0)
+                                    ? g_strdup_printf("%d", look->run_gap)
+                                    : NULL;
+        g_autofree gchar *measure_hint = g_strdup_printf(
+            "empty follows the shipped column; %d to %d",
+            CLAWT_APPEARANCE_MIN_MEASURE, CLAWT_APPEARANCE_MAX_MEASURE);
+        g_autofree gchar *gap_hint = g_strdup_printf(
+            "empty follows the shipped gap; up to %d",
+            CLAWT_APPEARANCE_MAX_RUN_SPACING);
+
+        clawt_web_add(body, clawt_web_field(
+            "Column width (px)", "measure", measure, measure_hint));
+        clawt_web_add(body, clawt_web_field(
+            "Gap between runs (px)", "run_gap", run_gap, gap_hint));
+
+        /*
+         * The bounds come from the library, not from numbers written
+         * here.  Two clients each with their own idea of what is
+         * allowed is exactly the drift the parity check exists for, and
+         * a hint that disagreed with the clamp would be worse than no
+         * hint at all.
+         */
+        clawt_web_add(body, clawt_web_text(
+            "The shipped column is measured rather than chosen -- about "
+            "89 characters a line, against a comfortable 45 to 90. "
+            "Whatever suits your screen wins over that.",
             "small muted"));
 
         htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(card));
@@ -1727,9 +1766,19 @@ on_appearance(HtmxRequest *request, GHashTable *params, gpointer user_data)
      * becomes "system", which is the same answer clawt-appearance gives
      * a config file naming a palette this build has not got.
      */
-    set_look_cookie(response, "clawt_theme",
-                    clawt_appearance_theme_nick(
-                        clawt_appearance_theme_from_nick(theme)));
+    /*
+     * Round-tripped through the library so only a scheme it knows is
+     * written -- including a palette read from a file, which has no
+     * ClawtTheme value and would have been flattened to "system" by the
+     * enum-based round trip this replaced.
+     */
+    {
+        g_autoptr(ClawtAppearance) probe = clawt_appearance_new();
+
+        clawt_appearance_set_scheme(probe, theme);
+        set_look_cookie(response, "clawt_theme",
+                        clawt_appearance_get_scheme(probe));
+    }
     set_look_cookie(response, "clawt_font",
                     clawt_web_form_value(request, "font"));
     set_look_cookie(response, "clawt_font_size",
@@ -1738,6 +1787,10 @@ on_appearance(HtmxRequest *request, GHashTable *params, gpointer user_data)
                     clawt_web_form_value(request, "mono"));
     set_look_cookie(response, "clawt_mono_size",
                     clawt_web_form_value(request, "mono_size"));
+    set_look_cookie(response, "clawt_measure",
+                    clawt_web_form_value(request, "measure"));
+    set_look_cookie(response, "clawt_run_gap",
+                    clawt_web_form_value(request, "run_gap"));
 
     /*
      * Reloaded rather than swapped: the palette and the fonts are
@@ -1757,7 +1810,8 @@ on_appearance_reset(HtmxRequest *request, GHashTable *params,
     HtmxResponse *response;
     static const gchar *const names[] = {
         "clawt_theme", "clawt_font", "clawt_font_size",
-        "clawt_mono", "clawt_mono_size"
+        "clawt_mono", "clawt_mono_size",
+        "clawt_measure", "clawt_run_gap"
     };
     guint i;
 

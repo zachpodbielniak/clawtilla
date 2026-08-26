@@ -145,6 +145,8 @@ declare -A AFFORDANCES=(
     ["flow groups by sender"]="flow_run_sender|flow_run_sender"
     ["alert arrives read"]="clawt_alert_arrives_read|clawt_alert_arrives_read"
     ["composer on the message column"]="CHAT_BODY_INSET|chat-gutter"
+    ["reading measurements"]="build_reading_group|clawt_run_gap"
+    ["palettes from disk"]="clawt_appearance_scheme_count|clawt_appearance_scheme_count"
 )
 
 usage () {

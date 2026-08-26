@@ -205,6 +205,168 @@ void    clawt_appearance_set_monospace_size(ClawtAppearance *self,
                                             gdouble          points);
 
 /**
+ * clawt_appearance_palette_dir:
+ *
+ * Where palettes live: `$XDG_CONFIG_HOME/clawtilla/palettes`.
+ *
+ * A palette used to be a fourth value of an enum, which meant adding
+ * one was a code change and a rebuild, and adjusting one you mostly
+ * liked was not possible at all.  Every other part of the appearance
+ * had become configuration; colour was still the exception, and it is
+ * the part people most want to touch.
+ *
+ * Returns: (transfer full): the directory, which need not exist
+ */
+gchar *clawt_appearance_palette_dir(void);
+
+/**
+ * clawt_appearance_reload_palettes:
+ *
+ * Rescans the palette directory.
+ *
+ * Discovery is cached, because both clients walk the scheme list every
+ * time they build a settings page and a readdir per keystroke would be
+ * absurd.  Called once at startup; call it again after writing a
+ * palette if you want it to appear without a restart.
+ *
+ * Returns: how many palettes were found
+ */
+guint clawt_appearance_reload_palettes(void);
+
+/**
+ * clawt_appearance_scheme_count:
+ *
+ * How many colour schemes there are: the built-in modes, plus every
+ * palette found on disk.
+ *
+ * This is the list both clients build their control from.  It is keyed
+ * by *nick* rather than by #ClawtTheme because a palette read from a
+ * file has no enum value -- and the nick is what was already stored in
+ * the appearance file and in the web client's cookie, so nothing about
+ * how a choice is remembered had to change.
+ *
+ * Returns: the number of schemes
+ */
+guint clawt_appearance_scheme_count(void);
+
+/**
+ * clawt_appearance_scheme_nth_nick:
+ * @n: an index below clawt_appearance_scheme_count()
+ *
+ * Returns: (transfer none): the nick, stable for the process
+ */
+const gchar *clawt_appearance_scheme_nth_nick(guint n);
+
+/**
+ * clawt_appearance_scheme_nth_label:
+ * @n: an index below clawt_appearance_scheme_count()
+ *
+ * Returns: (transfer none): what to show a person
+ */
+const gchar *clawt_appearance_scheme_nth_label(guint n);
+
+/**
+ * clawt_appearance_get_scheme:
+ * @self: a #ClawtAppearance
+ *
+ * The chosen scheme's nick, whether it is built in or from a file.
+ *
+ * Returns: (transfer none): the nick, never %NULL
+ */
+const gchar *clawt_appearance_get_scheme(ClawtAppearance *self);
+
+/**
+ * clawt_appearance_set_scheme:
+ * @self: a #ClawtAppearance
+ * @nick: (nullable): a nick from the scheme list
+ *
+ * A nick this build does not know becomes "system" rather than an
+ * error -- the same answer a config naming a palette that has since
+ * been deleted gets.  Somebody who removes a palette file should find
+ * the client following their desktop again, not refusing to start.
+ */
+void clawt_appearance_set_scheme(ClawtAppearance *self, const gchar *nick);
+
+/**
+ * clawt_appearance_get_palette_css:
+ * @self: a #ClawtAppearance
+ *
+ * The stylesheet of a palette read from a file, or %NULL when the
+ * chosen scheme is one of the built-in ones.
+ *
+ * Separate from clawt_appearance_to_css() because the two clients need
+ * it at different moments: the GTK client folds it into the one sheet
+ * it loads, and the web client emits it as its own block before the
+ * reader's overrides so those still win on a specificity tie.
+ *
+ * Returns: (transfer none) (nullable): the sheet
+ */
+const gchar *clawt_appearance_get_palette_css(ClawtAppearance *self);
+
+/**
+ * CLAWT_APPEARANCE_MIN_MEASURE:
+ * CLAWT_APPEARANCE_MAX_MEASURE:
+ *
+ * The bounds a transcript column is clamped to, in pixels.
+ *
+ * This file invites hand-editing, and a 40 or a 4000 in it would make
+ * the conversation unreadable and leave no obvious way back -- the same
+ * reason font sizes are clamped rather than refused.  The lower bound is
+ * about twenty characters at an ordinary size; the upper is past the
+ * point where a wider column stops being a column.
+ */
+#define CLAWT_APPEARANCE_MIN_MEASURE 320
+#define CLAWT_APPEARANCE_MAX_MEASURE 1600
+
+/**
+ * CLAWT_APPEARANCE_MAX_RUN_SPACING:
+ *
+ * The largest gap between runs, in pixels.  No lower bound beyond zero,
+ * which means "unset" -- a person who wants runs touching may have them.
+ */
+#define CLAWT_APPEARANCE_MAX_RUN_SPACING 96
+
+/**
+ * clawt_appearance_get_measure:
+ * @self: a #ClawtAppearance
+ *
+ * How wide the transcript column is, in pixels, or 0 to follow the
+ * shipped value.
+ *
+ * The measure was a constant in C, so the one thing about the reading
+ * experience most likely to be wrong for a given person and screen was
+ * the one thing they could not change.  Whatever number is chosen is
+ * right for one reader on one display: a measure the reader can adjust
+ * is strictly better than a measure that is correct for whoever picked
+ * it.
+ *
+ * Zero means defer, exactly as an unset font does, and for the same
+ * reason -- a value naming the current default would freeze it, so a
+ * later change to the shipped measure would not reach anyone who had
+ * ever opened this dialog.
+ *
+ * Returns: the width in pixels, or 0
+ */
+gint clawt_appearance_get_measure(ClawtAppearance *self);
+void clawt_appearance_set_measure(ClawtAppearance *self, gint pixels);
+
+/**
+ * clawt_appearance_get_run_spacing:
+ * @self: a #ClawtAppearance
+ *
+ * The gap between one run of messages and the next, in pixels, or 0 to
+ * follow the shipped value.
+ *
+ * Separate from the measure because they answer different complaints.
+ * A column too wide is tiring to read; runs too close together stop
+ * reading as separate turns, which is the whole point of grouping them.
+ *
+ * Returns: the gap in pixels, or 0
+ */
+gint clawt_appearance_get_run_spacing(ClawtAppearance *self);
+void clawt_appearance_set_run_spacing(ClawtAppearance *self, gint pixels);
+
+/**
  * clawt_appearance_to_css:
  * @self: a #ClawtAppearance
  *

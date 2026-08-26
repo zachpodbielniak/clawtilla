@@ -477,6 +477,40 @@ test_the_narrow_composer_override_can_win(void)
     g_assert_nonnull(strstr(css, ".msg-avatar{display:none}"));
 }
 
+/*
+ * The column and the run gap are tokens, not literals.
+ *
+ * That is step three of #19's configuration layer: the shipped design
+ * and a reader's override used to be two mechanisms with only one of
+ * them existing.  Asserted through the token rather than on a number,
+ * because the point is that the sheet and the override cannot disagree.
+ */
+static void
+test_the_reading_measurements_are_tokens(void)
+{
+    const gchar *css = clawt_web_stylesheet();
+
+    g_assert_nonnull(strstr(css, "--chat-measure:"));
+    g_assert_nonnull(strstr(css, "--chat-run-gap:"));
+
+    g_assert_nonnull(strstr(css, ".transcript-inner{max-width:"
+                                 "var(--chat-measure)"));
+    g_assert_nonnull(strstr(css, ".msg.run-start{margin-top:"
+                                 "var(--chat-run-gap)}"));
+
+    /*
+     * The composer follows the same measure.  A column widened while
+     * the box you type into stayed put would restore exactly the
+     * misalignment the gutter inset exists to fix.
+     */
+    {
+        const gchar *composer = strstr(css, ".composer-inner{");
+
+        g_assert_nonnull(composer);
+        g_assert_nonnull(strstr(composer, "max-width:var(--chat-measure)"));
+    }
+}
+
 /* ── Appearance ──────────────────────────────────────────────────── */
 
 /*
@@ -490,7 +524,7 @@ test_the_narrow_composer_override_can_win(void)
 static void
 test_an_unset_look_emits_nothing(void)
 {
-    ClawtWebLook look = { NULL, NULL, 0, NULL, 0 };
+    ClawtWebLook look = { 0 };
     g_autofree gchar *css = clawt_web_look_css(&look);
 
     g_assert_cmpstr(css, ==, "");
@@ -507,8 +541,12 @@ test_a_null_look_emits_nothing(void)
 static void
 test_a_set_look_emits_its_tokens(void)
 {
-    ClawtWebLook look = { NULL, (gchar *)"Cantarell", 16,
-                          (gchar *)"JetBrains Mono", 13 };
+    ClawtWebLook look = { 0 };
+
+    look.font = (gchar *)"Cantarell";
+    look.font_size = 16;
+    look.mono = (gchar *)"JetBrains Mono";
+    look.mono_size = 13;
     g_autofree gchar *css = clawt_web_look_css(&look);
 
     g_assert_nonnull(strstr(css, "--sans:\"Cantarell\""));
@@ -525,7 +563,9 @@ test_a_set_look_emits_its_tokens(void)
 static void
 test_only_what_is_set_is_emitted(void)
 {
-    ClawtWebLook look = { NULL, NULL, 18, NULL, 0 };
+    ClawtWebLook look = { 0 };
+
+    look.font_size = 18;
     g_autofree gchar *css = clawt_web_look_css(&look);
 
     g_assert_nonnull(strstr(css, "--font-size:18px"));
@@ -547,8 +587,9 @@ test_only_what_is_set_is_emitted(void)
 static void
 test_a_hostile_family_cannot_escape_the_declaration(void)
 {
-    ClawtWebLook look = { NULL, (gchar *)"X\"}body{display:none}/*", 0,
-                          NULL, 0 };
+    ClawtWebLook look = { 0 };
+
+    look.font = (gchar *)"X\"}body{display:none}/*";
     g_autofree gchar *css = clawt_web_look_css(&look);
 
     g_assert_null(strstr(css, "display:none"));
@@ -585,7 +626,10 @@ test_a_hostile_family_cannot_escape_the_declaration(void)
 static void
 test_a_family_of_only_punctuation_is_unset(void)
 {
-    ClawtWebLook look = { NULL, (gchar *)"{}<>;", 15, NULL, 0 };
+    ClawtWebLook look = { 0 };
+
+    look.font = (gchar *)"{}<>;";
+    look.font_size = 15;
     g_autofree gchar *css = clawt_web_look_css(&look);
 
     g_assert_null(strstr(css, "--sans:"));
@@ -599,10 +643,16 @@ test_a_family_of_only_punctuation_is_unset(void)
 static void
 test_an_absurd_size_is_ignored(void)
 {
-    ClawtWebLook small = { NULL, NULL, 2, NULL, 0 };
-    ClawtWebLook huge = { NULL, NULL, 4000, NULL, 0 };
-    g_autofree gchar *small_css = clawt_web_look_css(&small);
-    g_autofree gchar *huge_css = clawt_web_look_css(&huge);
+    ClawtWebLook small = { 0 };
+    ClawtWebLook huge = { 0 };
+    g_autofree gchar *small_css = NULL;
+    g_autofree gchar *huge_css = NULL;
+
+    small.font_size = 2;
+    huge.font_size = 4000;
+
+    small_css = clawt_web_look_css(&small);
+    huge_css = clawt_web_look_css(&huge);
 
     g_assert_cmpstr(small_css, ==, "");
     g_assert_cmpstr(huge_css, ==, "");
@@ -715,6 +765,8 @@ main(int argc, char *argv[])
                     test_the_composer_stands_on_the_message_column);
     g_test_add_func("/web/narrow-composer-override-can-win",
                     test_the_narrow_composer_override_can_win);
+    g_test_add_func("/web/reading-measurements-are-tokens",
+                    test_the_reading_measurements_are_tokens);
 
     g_test_add_func("/web/an-unset-look-emits-nothing",
                     test_an_unset_look_emits_nothing);

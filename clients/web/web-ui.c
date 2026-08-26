@@ -608,6 +608,16 @@ clawt_web_look_from_request(HtmxRequest *request)
                           ? (gint)g_ascii_strtoll(mono_size, NULL, 10) : 0;
     }
 
+    {
+        g_autofree gchar *measure = cookie_value(cookies, "clawt_measure");
+        g_autofree gchar *run_gap = cookie_value(cookies, "clawt_run_gap");
+
+        look->measure = (measure != NULL)
+                        ? (gint)g_ascii_strtoll(measure, NULL, 10) : 0;
+        look->run_gap = (run_gap != NULL)
+                        ? (gint)g_ascii_strtoll(run_gap, NULL, 10) : 0;
+    }
+
     return look;
 }
 
@@ -683,10 +693,59 @@ clawt_web_look_css(const ClawtWebLook *look)
     if (look->mono_size >= 8 && look->mono_size <= 32)
         g_string_append_printf(css, "--mono-size:%dpx;", look->mono_size);
 
+    /*
+     * The column and the run gap, checked against the library's bounds
+     * rather than this client's own idea of them -- a cookie is edited
+     * as easily as a config file, and two clients disagreeing about
+     * what is allowed is the drift `make parity` exists for.
+     */
+    if (look->measure >= CLAWT_APPEARANCE_MIN_MEASURE &&
+        look->measure <= CLAWT_APPEARANCE_MAX_MEASURE)
+        g_string_append_printf(css, "--chat-measure:%dpx;", look->measure);
+
+    if (look->run_gap > 0 &&
+        look->run_gap <= CLAWT_APPEARANCE_MAX_RUN_SPACING)
+        g_string_append_printf(css, "--chat-run-gap:%dpx;", look->run_gap);
+
     if (css->len == 0)
         return g_strdup("");
 
     return g_strdup_printf(":root{%s}", css->str);
+}
+
+/*
+ * The CSS of a palette this reader has chosen, when it came from a file.
+ *
+ * Built through ClawtAppearance rather than by reading the directory
+ * here, so the discovery, the header parsing and the "an unknown nick
+ * follows the system" rule are the library's single answer -- two
+ * readers of a palette directory would differ exactly once, on the file
+ * nobody looked at.
+ *
+ * Returns: (transfer full): the sheet, or "" for a built-in scheme
+ */
+static gchar *
+clawt_web_palette_css(const ClawtWebLook *look)
+{
+    g_autoptr(ClawtAppearance) appearance = NULL;
+
+    if (look == NULL || look->theme == NULL)
+        return g_strdup("");
+
+    appearance = clawt_appearance_new();
+    clawt_appearance_set_scheme(appearance, look->theme);
+
+    /*
+     * A built-in scheme is already in the stylesheet, so anything this
+     * emits for one would be a second definition of the same colours.
+     */
+    if (g_strcmp0(clawt_appearance_get_scheme(appearance), look->theme) != 0)
+        return g_strdup("");
+
+    if (clawt_appearance_get_palette_css(appearance) == NULL)
+        return g_strdup("");
+
+    return g_strdup(clawt_appearance_get_palette_css(appearance));
 }
 
 /* ── The document ────────────────────────────────────────────────── */
@@ -727,6 +786,29 @@ open_document(HtmxBuilder *builder, const gchar *title,
     htmx_builder_end(builder);
 
     /*
+     * A palette from disk, before the person's own overrides.
+     *
+     * A palette is a stylesheet, which is the whole point of it no
+     * longer being an enum: the same file reaches both clients and each
+     * applies it in its own vocabulary.  Emitted verbatim rather than
+     * translated, because the two clients name their colours
+     * differently and inventing a mapping would decide for the author
+     * which half of their palette was real.
+     *
+     * Nothing at all for a built-in scheme -- those are already in the
+     * stylesheet above, keyed by data-theme.
+     */
+    {
+        g_autofree gchar *palette = clawt_web_palette_css(look);
+
+        if (palette != NULL && *palette != '\0') {
+            htmx_builder_begin(builder, "style");
+            htmx_builder_raw_html(builder, palette);
+            htmx_builder_end(builder);
+        }
+    }
+
+    /*
      * The person's own overrides after the stylesheet, so they win on
      * specificity ties without !important.
      */
@@ -762,13 +844,52 @@ open_document(HtmxBuilder *builder, const gchar *title,
      * The theme is applied before the body paints, from a cookie the
      * appearance page writes.  Done after paint it is a visible flash of
      * the wrong palette on every navigation.
+     *
+     * A palette from a file gets its *base* mode here rather than its
+     * own nick.  The stylesheet has a rule for `dark` and none for
+     * `inkwell`, so setting the nick would leave every colour the
+     * palette does not define falling back to the light defaults --
+     * light chrome under dark colours, which is worse than either.  The
+     * palette's own sheet is emitted above and still wins on the
+     * colours it does define.
      */
-    htmx_builder_begin(builder, "script");
-    htmx_builder_raw_html(builder,
-        "(function(){var m=document.cookie.match(/(?:^|; )clawt_theme=([^;]*)/);"
-        "if(m&&m[1]!=='system'){document.documentElement."
-        "setAttribute('data-theme',decodeURIComponent(m[1]));}})();");
-    htmx_builder_end(builder);
+    {
+        const gchar *attr = NULL;
+
+        if (look != NULL && look->theme != NULL) {
+            g_autoptr(ClawtAppearance) probe = clawt_appearance_new();
+
+            clawt_appearance_set_scheme(probe, look->theme);
+
+            /*
+             * A built-in keeps its own nick, because the stylesheet has
+             * a block for it. Only a file palette is folded down.
+             */
+            if (g_strcmp0(clawt_appearance_get_scheme(probe),
+                          look->theme) == 0 &&
+                clawt_appearance_get_palette_css(probe) != NULL)
+                attr = clawt_appearance_theme_nick(
+                    clawt_appearance_get_theme(probe));
+        }
+
+        htmx_builder_begin(builder, "script");
+
+        if (attr != NULL) {
+            g_autofree gchar *script = g_strdup_printf(
+                "document.documentElement.setAttribute('data-theme','%s');",
+                attr);
+
+            htmx_builder_raw_html(builder, script);
+        } else {
+            htmx_builder_raw_html(builder,
+                "(function(){var m=document.cookie.match("
+                "/(?:^|; )clawt_theme=([^;]*)/);"
+                "if(m&&m[1]!=='system'){document.documentElement."
+                "setAttribute('data-theme',decodeURIComponent(m[1]));}})();");
+        }
+
+        htmx_builder_end(builder);
+    }
 
     /*
      * Saying that something arrived while you were reading.

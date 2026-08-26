@@ -354,6 +354,15 @@ typedef struct {
     gint   font_size;
     gchar *mono;
     gint   mono_size;
+
+    /*
+     * The conversation column and the gap between runs, in pixels, or 0
+     * to follow the shipped value.  Bounded by the library's own
+     * CLAWT_APPEARANCE_* limits rather than numbers of this client's
+     * own, so the two clients cannot disagree about what is allowed.
+     */
+    gint   measure;
+    gint   run_gap;
 } ClawtWebLook;
 
 /**

@@ -51,6 +51,19 @@ clawt_web_stylesheet(void)
        * the GTK client, whose own pair of numbers is different.
        */
       "--chat-gutter:36px;"
+      /*
+       * The column and the gap between runs, as tokens rather than
+       * literals, so the shipped design and a reader's override use one
+       * mechanism.  clawt_appearance_to_css() redefines these on :root
+       * when somebody has set them, and emits nothing when they have
+       * not -- which is why the value lives here rather than being
+       * written into the appearance sheet as a default.
+       *
+       * 40rem is measured, not chosen: 640px less the 36px gutter, at
+       * 6.778px a character, is 89 characters against a comfortable 45
+       * to 90.
+       */
+      "--chat-measure:40rem;--chat-run-gap:26px;"
       /* Overridable per browser from the appearance page; the rest of the
        * sheet reads these rather than naming a size directly. */
       "--font-size:14px;--mono-size:12.5px;"
@@ -293,7 +306,7 @@ clawt_web_stylesheet(void)
      * at the same font, taken from the browser's own text metrics rather
      * than estimated: 640px less the 36px gutter, at 6.778px a character.
      */
-    ".transcript-inner{max-width:40rem;margin:0 auto}"
+    ".transcript-inner{max-width:var(--chat-measure);margin:0 auto}"
     /*
      * A run is consecutive messages from one sender: one header, tight
      * spacing inside, a bigger gap between runs.  That grouping is what
@@ -303,7 +316,7 @@ clawt_web_stylesheet(void)
      * spacing is decided here.
      */
     ".msg{animation:rise 420ms cubic-bezier(.16,1,.3,1)}"
-    ".msg.run-start{margin-top:26px}"
+    ".msg.run-start{margin-top:var(--chat-run-gap)}"
     ".msg.run-cont{margin-top:6px}"
     ".transcript-inner>.msg:first-child{margin-top:0}"
     "@keyframes rise{from{opacity:0;transform:translateY(8px)}"
@@ -429,7 +442,7 @@ clawt_web_stylesheet(void)
      * indent out of the 40rem rather than adding to it and the trailing
      * edges stay together.
      */
-    ".composer-inner{max-width:40rem;margin:0 auto;display:flex;gap:10px;"
+    ".composer-inner{max-width:var(--chat-measure);margin:0 auto;display:flex;gap:10px;"
       "align-items:flex-end;padding-left:var(--chat-gutter)}"
     /*
      * Narrow enough and the avatar is hidden, so there is no gutter to
