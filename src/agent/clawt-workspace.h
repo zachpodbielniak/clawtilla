@@ -250,6 +250,35 @@ clawt_workspace_update_tool_list(ClawtAgentConfig *agent,
                                  GError          **error);
 
 /**
+ * clawt_workspace_update_computer:
+ * @agent: the agent's configuration
+ * @described: what its computer is, from
+ *   clawt_agent_describe_computer()
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Writes the agent's *live* computer into a marked region of
+ * `TOOLS.org`.
+ *
+ * The scaffolded "Your computer" section is written once and then
+ * belongs to whoever edits the file, so it describes the machine as it
+ * was the day the workspace was made. Shared folders are exactly what
+ * changes afterwards: a fleet default added in Settings reaches every
+ * agent's computer and reached no agent's file, so an agent had a
+ * directory it was never told about and could only find by calling a
+ * tool it had no reason to call.
+ *
+ * Same shape as the tool list beside it, and the same reason: an agent
+ * believes its own file, because the file is in the prompt and a tool
+ * call is something it has to decide to make.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+clawt_workspace_update_computer(ClawtAgentConfig *agent,
+                                const gchar      *described,
+                                GError          **error);
+
+/**
  * clawt_workspace_file_path:
  * @agent: the agent's configuration
  * @name: a file name from the standard set, or any other name

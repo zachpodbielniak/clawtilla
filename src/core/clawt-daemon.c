@@ -1974,6 +1974,47 @@ clawt_daemon_start_agent(ClawtDaemon *self, const gchar *agent_id,
          */
         clawt_agent_set_computer(agent, computer);
 
+        /*
+         * And write what that computer turned out to be into the
+         * agent's own TOOLS.org, before the child is spawned to read it.
+         *
+         * Here rather than in render_all_agents_into(), which also runs
+         * for a *stopped* agent -- there the computer is NULL, so that
+         * version filled the region on the first start and emptied it on
+         * the next restart. Worse than not writing it at all: an agent
+         * that had been told about a shared folder stopped being told.
+         *
+         * From the built computer rather than from the config, because
+         * the config does not know what the fleet shared: a default
+         * mount reaches every agent without any agent block mentioning
+         * it. Without this an agent had a directory it was never told
+         * about, findable only by calling a tool it had no reason to
+         * call -- which is the "an agent believes its own file" failure
+         * this tree has recorded twice.
+         */
+        if (clawt_computer_get_computer_type(computer) !=
+            CLAWT_COMPUTER_NONE) {
+            g_autofree gchar *described =
+                clawt_agent_describe_computer(agent);
+            g_autoptr(GError) computer_error = NULL;
+
+            if (described != NULL &&
+                !clawt_workspace_update_computer(config, described,
+                                                 &computer_error))
+                g_warning("agent %s: %s", agent_id, computer_error->message);
+        }
+
+        /*
+         * Nothing at all for an agent with no computer.
+         *
+         * A null computer is still a computer *object*, so this wrote a
+         * region saying "You have no computer" wrapped in prose about
+         * which side of an `=` is the host -- a distinction with no
+         * paths to apply it to, appended to the end of the file because
+         * that scaffold path carries no markers. The scaffolded section
+         * already says it, in words chosen for it, and says it better.
+         */
+
         if (!clawt_computer_start(computer, &local)) {
             /*
              * ERROR, not SHADOW.  A podman that is not running, an image

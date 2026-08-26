@@ -798,6 +798,26 @@ computer_blurb(ClawtAgentConfig *agent)
  * told, which is the only way this class of thing shows up -- the live
  * tool list was correct throughout.
  */
+/*
+ * And the third: what the agent's computer *is*, right now.
+ *
+ * The scaffolded "Your computer" section is written once and then
+ * belongs to whoever edits the file, so it describes the machine as it
+ * was the day the workspace was made. Shared folders are exactly the
+ * thing that changes afterwards -- a fleet default added in Settings
+ * reaches every agent's computer and reached no agent's *file*, so an
+ * agent had a directory it was never told about and could only find by
+ * calling a tool it had no reason to call.
+ *
+ * That is the same shape as the tool table this file already records:
+ * an agent believes its own file, because the file is in the prompt and
+ * a tool call is something it has to decide to make.
+ */
+static const gchar COMPUTER_BEGIN[] =
+    "# BEGIN clawtilla computer -- rewritten on every start";
+static const gchar COMPUTER_END[] =
+    "# END clawtilla computer";
+
 static gchar *
 computer_section(ClawtAgentConfig *agent)
 {
@@ -820,7 +840,15 @@ computer_section(ClawtAgentConfig *agent)
 
     blurb = computer_blurb(agent);
 
-    return g_strdup_printf("* Your computer\n\n%s\n\n%s", blurb,
+    /*
+     * The marked region goes in empty. The daemon fills it at every
+     * agent start, because it is the only thing that knows what the
+     * computer actually ended up with -- including the fleet's shared
+     * folders, which this function cannot see.
+     */
+    return g_strdup_printf(
+        "* Your computer\n\n%s\n\n%s\n%s\n%s", blurb,
+        COMPUTER_BEGIN, COMPUTER_END,
 "\n"
 "| Tool                        | What it does                                       |\n"
 "|-----------------------------+----------------------------------------------------|\n"
@@ -1608,6 +1636,7 @@ static const gchar TOOL_LIST_BEGIN[] =
 static const gchar TOOL_LIST_END[] =
     "# END clawtilla tools";
 
+
 /*
  * What an agent is told about one integration.
  *
@@ -1970,6 +1999,49 @@ clawt_workspace_update_tools_org(ClawtConfig      *config,
     section = render_integrations_section(config, agent);
 
     return replace_region(agent, TOOLS_BEGIN, TOOLS_END, section, error);
+}
+
+gboolean
+clawt_workspace_update_computer(ClawtAgentConfig *agent,
+                                const gchar      *described,
+                                GError          **error)
+{
+    g_autofree gchar *section = NULL;
+
+    g_return_val_if_fail(agent != NULL, FALSE);
+
+    if (described == NULL || *described == '\0')
+        return TRUE;
+
+    /*
+     * The markers are part of the section.
+     *
+     * replace_region() swaps everything from the begin marker to the end
+     * marker inclusive, so a section that omitted them removed them --
+     * and the *next* start then found no region and appended a second
+     * copy, growing the file on every start. Found by reading the file
+     * after one start rather than by reading this function.
+     */
+    section = g_strdup_printf(
+        "%s\n"
+        "\n"
+        "The machine you have right now, and the host directories shared\n"
+        "with it. Some of these are shared with every agent in the fleet\n"
+        "rather than configured for you, so they can appear without\n"
+        "anything about you changing.\n"
+        "\n"
+        "%s\n"
+        "\n"
+        "A path on the *left* of an = is on the host, which is where your\n"
+        "own ~read~, ~write~ and ~bash~ run. The path on the right is\n"
+        "where the same files are inside the computer, which is where\n"
+        "~clawtilla_computer_exec~ runs. Using the wrong one is the most\n"
+        "common way to conclude a shared folder is missing.\n"
+        "%s\n",
+        COMPUTER_BEGIN, described, COMPUTER_END);
+
+    return replace_region(agent, COMPUTER_BEGIN, COMPUTER_END, section,
+                          error);
 }
 
 /* ── Importing an existing workspace ─────────────────────────────── */

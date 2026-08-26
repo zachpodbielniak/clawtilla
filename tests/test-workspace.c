@@ -1943,6 +1943,146 @@ test_a_failed_clone_reports_what_git_said(void)
     g_assert_nonnull(strstr(error->message, "git refused"));
 }
 
+static guint
+count_occurrences(const gchar *haystack, const gchar *needle)
+{
+    const gchar *p = haystack;
+    guint n = 0;
+
+    while ((p = strstr(p, needle)) != NULL) {
+        n++;
+        p += strlen(needle);
+    }
+
+    return n;
+}
+
+/*
+ * The computer region is rewritten in place, not appended to.
+ *
+ * replace_region() swaps everything from the begin marker to the end
+ * marker inclusive, so a section that does not carry its own markers
+ * removes them -- and the next start then finds no region and appends a
+ * second copy, growing the file on every start. That is exactly what the
+ * first version of this did, and reading the function did not show it;
+ * reading the file after one start did.
+ */
+static void
+test_the_computer_region_is_rewritten_not_appended(void)
+{
+    g_auto(ImportScratch) scratch = import_scratch();
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent;
+    g_autofree gchar *yaml = NULL;
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *contents = NULL;
+    guint i;
+
+    yaml = g_strdup_printf(
+        "defaults:\n"
+        "  workspace_root: '%s'\n"
+        "agents:\n"
+        "  - id: scribe\n"
+        "    computer:\n"
+        "      type: container\n", scratch);
+
+    config = clawt_config_load_from_string(yaml, &error);
+    g_assert_no_error(error);
+    agent = clawt_config_get_agent(config, "scribe");
+
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+    g_assert_no_error(error);
+
+    path = clawt_workspace_file_path(agent, "TOOLS.org");
+
+    /*
+     * Three times, because the failure is cumulative: the first write
+     * looked perfect and the second was the one that doubled it.
+     */
+    for (i = 0; i < 3; i++) {
+        g_autofree gchar *described =
+            g_strdup_printf("You have a container. Shared: /srv = /work "
+                            "(read-write). Round %u.", i);
+
+        g_assert_true(clawt_workspace_update_computer(agent, described,
+                                                      &error));
+        g_assert_no_error(error);
+    }
+
+    g_assert_true(g_file_get_contents(path, &contents, NULL, NULL));
+
+    /* One region, and the markers still there to find it by. */
+    g_assert_cmpint(
+        count_occurrences(contents,
+                          "# BEGIN clawtilla computer -- rewritten on every "
+                          "start"), ==, 1);
+    g_assert_cmpint(count_occurrences(contents, "# END clawtilla computer"),
+                    ==, 1);
+    g_assert_cmpint(count_occurrences(contents, "You have a container."),
+                    ==, 1);
+
+    /* And it holds the *latest* description, not the first. */
+    g_assert_nonnull(strstr(contents, "Round 2."));
+    g_assert_null(strstr(contents, "Round 0."));
+}
+
+/*
+ * A description the agent can act on: both paths, and which is which.
+ *
+ * An agent's own read and write run on the host while its shell runs
+ * inside the computer, so a shared folder has two names -- and telling
+ * it only one is how it goes looking for a file at a path that does not
+ * exist on the machine it is on. That is not hypothetical; it is
+ * written down in this tree as a session somebody lost.
+ */
+static void
+test_the_computer_region_names_both_sides(void)
+{
+    g_auto(ImportScratch) scratch = import_scratch();
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent;
+    g_autofree gchar *yaml = NULL;
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *contents = NULL;
+
+    yaml = g_strdup_printf(
+        "defaults:\n"
+        "  workspace_root: '%s'\n"
+        "agents:\n"
+        "  - id: scribe\n"
+        "    computer:\n"
+        "      type: container\n", scratch);
+
+    config = clawt_config_load_from_string(yaml, &error);
+    g_assert_no_error(error);
+    agent = clawt_config_get_agent(config, "scribe");
+
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+    g_assert_true(clawt_workspace_update_computer(
+        agent, "Shared with the host, as host path = the path inside: "
+               "/home/me/source = /work/source (read-write).", &error));
+
+    path = clawt_workspace_file_path(agent, "TOOLS.org");
+    g_assert_true(g_file_get_contents(path, &contents, NULL, NULL));
+
+    g_assert_nonnull(strstr(contents, "/home/me/source = /work/source"));
+
+    /* And the sentence that says which side is which. */
+    g_assert_nonnull(strstr(contents, "is on the host"));
+    g_assert_nonnull(strstr(contents, "clawtilla_computer_exec"));
+
+    /*
+     * Said out loud, because a fleet default arrives without anything
+     * about the agent changing -- so an agent re-reading its file has
+     * no other way to know why a folder it did not have yesterday is
+     * there today.
+     */
+    g_assert_nonnull(strstr(contents, "shared with every agent in the "
+                                      "fleet"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -2011,6 +2151,10 @@ main(int argc, char *argv[])
                     test_scaffold_says_when_the_mission_did_not_land);
     g_test_add_func("/workspace/scaffold-and-renderer-agree",
                     test_scaffold_and_renderer_agree);
+    g_test_add_func("/workspace/computer-region-is-rewritten",
+                    test_the_computer_region_is_rewritten_not_appended);
+    g_test_add_func("/workspace/computer-region-names-both-sides",
+                    test_the_computer_region_names_both_sides);
     g_test_add_func("/import/link-points-at-the-original",
                     test_a_linked_workspace_points_at_the_original);
     g_test_add_func("/import/link-over-existing-is-refused",

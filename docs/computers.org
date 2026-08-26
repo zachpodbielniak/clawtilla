@@ -1029,6 +1029,23 @@ virtiofs devices are decided when the machine is created, so adding a
 folder does not reach one that is already running.  Every client says so
 when you add one rather than leaving it to be discovered.
 
+For a *VM that already exists* there is a second half, and it is worth
+knowing before you go looking.  The =<filesystem>= device is written
+into the domain XML on every provision, so the guest gets the share
+--- but the =fstab= entry that mounts it comes from the cloud-init
+seed, which is read at *first boot only*.  So a folder added to an
+existing VM agent arrives as a virtiofs device that nothing mounts.
+
+Either mount it in the guest once:
+
+#+begin_src bash
+clawtilla computer exec <agent> -- sudo mount -t virtiofs <tag> /work/source
+#+end_src
+
+or rebuild the machine with ~computer.rebuild~, which writes a fresh
+seed.  A container or distrobox agent has no such split --- restarting
+it is enough.
+
 *** An agent's own page shows them
 :PROPERTIES:
 :CUSTOM_ID: default-mounts-visible
@@ -1039,6 +1056,50 @@ gets*, with each entry saying whether it came from the fleet.  Reporting
 only what the agent declared would show an empty list for an agent that
 has two --- two answers to "what do I have", with the wrong one on the
 screen somebody is looking at.
+
+*** The agent is told, in its own files
+:PROPERTIES:
+:CUSTOM_ID: default-mounts-told
+:END:
+
+A shared folder is no use to an agent that does not know it is there.
+=TOOLS.org= carries a third managed region --- =# BEGIN clawtilla
+computer= --- rewritten at every agent start from the computer it
+actually ended up with:
+
+#+begin_example
+# BEGIN clawtilla computer -- rewritten on every start
+
+The machine you have right now, and the host directories shared
+with it. Some of these are shared with every agent in the fleet
+rather than configured for you, so they can appear without
+anything about you changing.
+
+You have a container of your own... Shared with the host, as host path =
+the path inside: /home/me/source = /work/source (read-write), ...
+# END clawtilla computer
+#+end_example
+
+Written to the *file* rather than left to the =clawtilla_computer_state=
+tool, because an agent believes its own files: the file is in the
+prompt, and a tool call is something it has to decide to make.  This
+tree has recorded that failure twice already --- a chief-of-staff
+reading its own stale tool table and concluding it could not create
+agents, and a guest desktop telling an agent it was driving the
+operator's real screen.
+
+Written at *start*, from the built computer, because that is the only
+point that knows what the fleet shared: a default reaches an agent
+without any agent block mentioning it.  An earlier version wrote it
+during the fleet re-render instead, which also runs for a stopped agent
+--- so it filled the region on the first start and emptied it on the
+next restart, which is worse than never writing it.
+
+An agent with no computer gets nothing here.  A null computer is still a
+computer object, so the first attempt gave chat-only agents a region
+saying "You have no computer" wrapped in prose about which side of an
+=~=~= is the host --- a distinction with no paths to apply it to.  The
+scaffolded section already says it, better.
 
 ** What every computer gets
 
