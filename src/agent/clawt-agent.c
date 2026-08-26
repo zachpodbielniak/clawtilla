@@ -332,6 +332,31 @@ clawt_agent_set_config(ClawtAgent *self, ClawtAgentConfig *config)
     g_clear_pointer(&self->config, clawt_agent_config_unref);
     self->config = clawt_agent_config_ref(config);
 
+    /*
+     * The shadow decision belongs to the configuration, so it is retaken
+     * whenever the configuration is replaced.
+     *
+     * clawt_agent_new() reads it once, and without this that first answer
+     * outlives the config that produced it: an operator who corrects the
+     * offending key gets a reload that reports success, an agent that
+     * still refuses to start, and `agent show` printing the corrected
+     * value beside the old refusal.  The only way out was restarting the
+     * daemon, which costs every other agent its turn.
+     *
+     * Only a stopped or shadowed agent is touched.  One that is running
+     * keeps running: a config change is documented as applying at the
+     * agent's next start, and killing a turn in progress because a key it
+     * has already read became invalid would be a worse bargain than
+     * carrying on with the old one.
+     */
+    if (self->state == CLAWT_AGENT_STATE_SHADOW &&
+        !clawt_agent_config_is_shadow(config))
+        set_state(self, CLAWT_AGENT_STATE_STOPPED, NULL);
+    else if (self->state == CLAWT_AGENT_STATE_STOPPED &&
+             clawt_agent_config_is_shadow(config))
+        set_state(self, CLAWT_AGENT_STATE_SHADOW,
+                  clawt_agent_config_get_shadow_reason(config));
+
     recompute_caps(self);
 }
 

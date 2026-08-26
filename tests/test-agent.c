@@ -139,6 +139,103 @@ test_shadow_agent_refuses_to_start(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * A shadow whose configuration is corrected stops being a shadow on the
+ * next reload.
+ *
+ * The state is decided once, in clawt_agent_new(), from the config the
+ * agent was built with.  A reload replaces that config through
+ * clawt_agent_set_config() -- so without this the refusal outlives the
+ * thing it described, and `agent show` reports the corrected value and
+ * the old refusal in the same breath.  There is no way back from it
+ * short of restarting the daemon, which costs the whole fleet.
+ */
+static void
+test_shadow_clears_when_the_config_is_fixed(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtAgentManager) manager = NULL;
+    g_autoptr(ClawtConfig) fixed = NULL;
+    ClawtAgent *agent;
+
+    fixture_setup(&fixture);
+    fixture.config = load_config(&fixture,
+        "agents:\n"
+        "  - id: coach\n"
+        "    computer:\n"
+        "      type: host\n");
+
+    manager = clawt_agent_manager_new(fixture.config);
+    clawt_agent_manager_load(manager, NULL);
+
+    agent = clawt_agent_manager_get(manager, "coach");
+    g_assert_cmpint(clawt_agent_get_state(agent), ==, CLAWT_AGENT_STATE_SHADOW);
+    g_assert_nonnull(strstr(clawt_agent_get_status_detail(agent),
+                            "confirm_host_control"));
+
+    /* The operator fixes it: no host computer, so no confirmation needed. */
+    fixed = load_config(&fixture,
+        "agents:\n"
+        "  - id: coach\n"
+        "    computer:\n"
+        "      type: none\n");
+
+    clawt_agent_manager_set_config(manager, fixed);
+    clawt_agent_manager_load(manager, NULL);
+
+    agent = clawt_agent_manager_get(manager, "coach");
+    g_assert_cmpint(clawt_agent_get_state(agent), ==,
+                    CLAWT_AGENT_STATE_STOPPED);
+    g_assert_null(clawt_agent_get_status_detail(agent));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * ...and the same reload in the other direction still disables it.
+ *
+ * Recomputing only the clearing half would leave an agent whose config
+ * has just become unusable reporting itself ready to start.
+ */
+static void
+test_shadow_appears_when_the_config_breaks(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtAgentManager) manager = NULL;
+    g_autoptr(ClawtConfig) broken = NULL;
+    ClawtAgent *agent;
+
+    fixture_setup(&fixture);
+    fixture.config = load_config(&fixture,
+        "agents:\n"
+        "  - id: coach\n"
+        "    computer:\n"
+        "      type: none\n");
+
+    manager = clawt_agent_manager_new(fixture.config);
+    clawt_agent_manager_load(manager, NULL);
+
+    agent = clawt_agent_manager_get(manager, "coach");
+    g_assert_cmpint(clawt_agent_get_state(agent), ==,
+                    CLAWT_AGENT_STATE_STOPPED);
+
+    broken = load_config(&fixture,
+        "agents:\n"
+        "  - id: coach\n"
+        "    computer:\n"
+        "      type: quantum-mainframe\n");
+
+    clawt_agent_manager_set_config(manager, broken);
+    clawt_agent_manager_load(manager, NULL);
+
+    agent = clawt_agent_manager_get(manager, "coach");
+    g_assert_cmpint(clawt_agent_get_state(agent), ==, CLAWT_AGENT_STATE_SHADOW);
+    g_assert_nonnull(strstr(clawt_agent_get_status_detail(agent),
+                            "quantum-mainframe"));
+
+    fixture_teardown(&fixture);
+}
+
 static void
 test_disabled_agent_refuses_to_start(void)
 {
@@ -903,6 +1000,10 @@ main(int argc, char *argv[])
     g_test_add_func("/agent/chief-named-centrally",
                     test_chief_of_staff_can_be_named_centrally);
     g_test_add_func("/agent/shadow-not-chief", test_shadow_is_not_chief_of_staff);
+    g_test_add_func("/agent/shadow-clears-on-reload",
+                    test_shadow_clears_when_the_config_is_fixed);
+    g_test_add_func("/agent/shadow-appears-on-reload",
+                    test_shadow_appears_when_the_config_breaks);
     g_test_add_func("/agent/link-loss-degrades",
                     test_losing_the_link_degrades_the_agent);
 
