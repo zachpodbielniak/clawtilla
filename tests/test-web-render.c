@@ -511,6 +511,41 @@ test_the_reading_measurements_are_tokens(void)
     }
 }
 
+/*
+ * A new message is separated by more than a paragraph and less than a
+ * new run.
+ *
+ * Measured at the default font: a line is 18px and a markdown paragraph
+ * break is one blank line, so a within-run gap of 6 put a new *message*
+ * at a third of what separates two paragraphs of one message -- three
+ * turns reading as one message with tight paragraphs.  18 / 24 / 30 are
+ * even 6px steps; the window was 19 to 29, because at 30 a message
+ * reads as a new run and the grouping carries no information.
+ *
+ * Asserted as an ordering rather than on the number alone, so raising
+ * the run gap without raising this one fails here rather than silently
+ * re-inverting it.
+ */
+static void
+test_a_new_message_sits_between_a_paragraph_and_a_run(void)
+{
+    const gchar *css = clawt_web_stylesheet();
+
+    g_assert_nonnull(strstr(css, "--chat-run-gap:36px"));
+    g_assert_nonnull(strstr(css,
+        "--chat-msg-gap:calc(var(--chat-run-gap) - 7px)"));
+    g_assert_nonnull(strstr(css,
+        ".msg.run-cont{margin-top:var(--chat-msg-gap)"));
+
+    /*
+     * The second signal, because six pixels is perceptible and not
+     * nameable: a continuation row names its own time, in the column
+     * the avatar already reserves.
+     */
+    g_assert_nonnull(strstr(css, ".msg-time{position:absolute"));
+    g_assert_nonnull(strstr(css, "width:var(--chat-gutter)"));
+}
+
 /* ── Appearance ──────────────────────────────────────────────────── */
 
 /*
@@ -767,6 +802,8 @@ main(int argc, char *argv[])
                     test_the_narrow_composer_override_can_win);
     g_test_add_func("/web/reading-measurements-are-tokens",
                     test_the_reading_measurements_are_tokens);
+    g_test_add_func("/web/message-sits-between-paragraph-and-run",
+                    test_a_new_message_sits_between_a_paragraph_and_a_run);
 
     g_test_add_func("/web/an-unset-look-emits-nothing",
                     test_an_unset_look_emits_nothing);

@@ -147,6 +147,7 @@ declare -A AFFORDANCES=(
     ["composer on the message column"]="CHAT_BODY_INSET|chat-gutter"
     ["reading measurements"]="build_reading_group|clawt_run_gap"
     ["palettes from disk"]="clawt_appearance_scheme_count|clawt_appearance_scheme_count"
+    ["message boundary in a run"]="CHAT_MESSAGE_SPACING|msg-time"
 )
 
 usage () {

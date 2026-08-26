@@ -275,6 +275,24 @@ message_element(JsonObject *message, const gchar *agent_id,
     }
 
     /*
+     * A continuation row carries its own time in the gutter, where the
+     * face sits on the first row of a run and nothing sits on the rest.
+     *
+     * The same rule the GTK client applies, for the same reason: a new
+     * message inside a run is separated by six pixels more than a
+     * paragraph inside one message, which is perceptible and not
+     * nameable.  The time says "new message" outright, and the space it
+     * uses was already reserved for the avatar.
+     */
+    if (!run_start && !from_user && *when != '\0') {
+        g_autoptr(HtmxSpan) stamp = htmx_span_new();
+
+        htmx_element_add_class(HTMX_ELEMENT(stamp), "msg-time");
+        htmx_node_set_text_content(HTMX_NODE(stamp), when);
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(stamp));
+    }
+
+    /*
      * The task and the hop depth, which are what turn a transcript into
      * something you can follow.  A delegated reply is otherwise just
      * another line from an agent with no sign of what asked for it, and a

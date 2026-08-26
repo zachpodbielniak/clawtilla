@@ -506,6 +506,85 @@ the only things addressable were libadwaita's element names.  Nothing
 is styled by having a name; a selector nobody has written a rule for
 draws nothing.
 
+**** What the column actually gives you
+
+600 is the clamp; a row spends 12 on its margin and 44 on the avatar
+gutter, so 532px reach the words --- about 82 characters at the default
+font.
+
+For a long time the body only *used* 445 of that, about 67 characters,
+and the difference showed as a narrow ribbon with a wide empty band
+either side on a big window. ~hexpand~ gives a label the column;
+~halign~ decides what it does with it, and a wrapping ~GtkLabel~ at
+~GTK_ALIGN_START~ is allocated its *natural* width and aligns that
+inside the space it was given. ~GTK_ALIGN_FILL~ takes the column.
+
+Measured against real GTK4 rather than reasoned about:
+
+| halign | allocation | layout | characters |
+|--------+------------+--------+------------|
+| START  | 445px      | 445px  | ~67        |
+| FILL   | 532px      | 521px  | ~78        |
+
+Short messages look identical either way --- ~xalign~ is 0, so the text
+still starts at the left; only the allocation changed.
+
+The operator's own turns are unaffected. Those are bubbles, and a bubble
+needs a width of its own to be right-aligned at all, which is what the
+59-character cap on that branch is for.
+
+**** Three breaks, and they have to be in order
+
+A reader sees three kinds of break, and until recently they were in the
+wrong order:
+
+| break | GTK | web |
+|-------+-----+-----|
+| a paragraph inside one message | 18px | 22px |
+| a new message inside a run | 24px | 29px |
+| a new run | 30px | 36px |
+
+Those are measured, not chosen: a paragraph break is markdown's own
+blank line, so it is exactly one line height, and the other two are a
+third of a line apart from it and from each other.
+
+The within-run gap used to be *6px* in both clients --- a quarter of a
+paragraph. So three consecutive turns from one agent read as a single
+message with unusually tight paragraphs, and the grouping said the
+opposite of what it meant. The web had the same fault one step up: its
+run gap was 26 against a 22px paragraph, four pixels of difference that
+nobody could see.
+
+Raising the within-run gap to the run gap would have dissolved the run
+--- if two messages from one sender are spaced like two runs, the
+grouping carries no information and the header is decoration. The
+window was 19–29 in GTK and 23–35 in the web, and the value is the
+midpoint of each.
+
+***** Space alone cannot carry it
+
+A third of a line is perceptible and not *nameable*: you can see that
+something changed, not what. So a continuation row also carries its own
+time, in the gutter the avatar reserves and otherwise leaves empty on
+those rows. That is what says "new message" rather than "new
+paragraph", and it costs no width that was not already spent --- a
+caption time measures 31–34px in a 44px slot.
+
+The operator's own turns already carry a boundary: ~clawt-bubble-cont~
+drops a corner, so those get the spacing and no timestamp.
+
+***** One knob, and the ordering survives it
+
+The message gap is *derived* from the run gap rather than being a
+second setting --- ~calc(var(--chat-run-gap) - 7px)~ in the web and
+~chat_message_spacing()~ in GTK, floored so it can never reach the
+paragraph gap. Setting the run gap to 20 with a fixed message gap of 24
+would put a new message further apart than a new run, which is the same
+inversion arrived at from the other side.
+
+Verified in a browser: 22 / 29 / 36 shipped, and 22 / 53 / 60 with the
+run gap set to 60.
+
 **** Reading: the column and the gap between runs
 
 #+begin_src yaml

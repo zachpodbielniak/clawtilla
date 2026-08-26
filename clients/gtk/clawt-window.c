@@ -3086,11 +3086,34 @@ append_attachment_previews(ClawtWindow *self, GtkWidget *row,
 #define CHAT_GUTTER      44
 
 /*
- * The gap between runs.  Measured against the 27px a markdown paragraph
- * break costs, so a change of speaker reads as a bigger break than a
- * change of paragraph -- which is the whole reason runs are grouped.
+ * The three breaks a reader sees, in one unit and in the right order.
+ *
+ * Measured against real GTK4 at the default font: a line is 18px, and a
+ * markdown paragraph break is one blank line, so 18px of clear space.
+ * A new message inside a run used to get 6, which put it at a third of
+ * a paragraph -- so three consecutive turns read as one message with
+ * unusually tight paragraphs, and the grouping said the opposite of
+ * what it meant.
+ *
+ *   paragraph inside a message   18   (markdown's, not ours)
+ *   a new message inside a run   24
+ *   a new run                    30
+ *
+ * Even 6px steps, and 6 is a third of a line and the number the file
+ * already used.  The window was 19 to 29: below 19 a message reads as a
+ * paragraph, at 30 it reads as a new run and the grouping carries no
+ * information at all.
+ *
+ * Space alone is not enough to carry it -- 6px between two of these
+ * steps is perceptible but not *nameable* -- so a continuation row also
+ * puts its time in the gutter, which is otherwise empty on those rows.
+ * That is the signal that says "new message" rather than "new
+ * paragraph", and it costs nothing: the gutter is 44px and a caption
+ * time measures 31 to 34.
  */
-#define CHAT_RUN_SPACING 30
+#define CHAT_PARAGRAPH_SPACING 18
+#define CHAT_MESSAGE_SPACING   24
+#define CHAT_RUN_SPACING       30
 
 /*
  * The two chat measurements a person may set, resolved against what the
@@ -3122,6 +3145,28 @@ chat_run_spacing(ClawtWindow *self)
                ? clawt_appearance_get_run_spacing(self->appearance) : 0;
 
     return set > 0 ? set : CHAT_RUN_SPACING;
+}
+
+/*
+ * A new message inside a run: a third of a line below the run gap, and
+ * never at or below a paragraph.
+ *
+ * Derived rather than a second setting, so a reader who changes the run
+ * gap keeps the ordering.  Setting it to 20 with a fixed message gap of
+ * 24 would put a new message *further* apart than a new run, which is
+ * the same inversion this fixes, arrived at from the other side.
+ */
+static gint
+chat_message_spacing(ClawtWindow *self)
+{
+    gint run = chat_run_spacing(self);
+    gint step = CHAT_RUN_SPACING - CHAT_MESSAGE_SPACING;
+    gint gap = run - step;
+
+    if (gap <= CHAT_PARAGRAPH_SPACING)
+        gap = CHAT_PARAGRAPH_SPACING + 1;
+
+    return MIN(gap, run);
 }
 #define CHAT_BODY_INSET  clawt_chat_body_inset(CHAT_ROW_MARGIN, CHAT_GUTTER)
 
@@ -3515,9 +3560,52 @@ append_message_to(ClawtWindow *self, const TranscriptView *view,
          * collapse, and a margin set from C is not.
          */
         gtk_widget_set_size_request(gutter, CHAT_GUTTER, -1);
+
+        /*
+         * A continuation row puts its time here, where the avatar sits
+         * on the first row of a run and nothing sits on the rest.
+         *
+         * This is the half of the message boundary that space cannot
+         * carry.  Six pixels more than a paragraph is perceptible and
+         * not nameable; a time is unambiguous, it is information rather
+         * than decoration, and it costs no width that was not already
+         * reserved -- 31 to 34px of caption in a 44px slot, measured.
+         *
+         * Dimmed and caption-sized so a column of them reads as a
+         * margin rather than as a second column of content.
+         */
+        if (!run_start && stamp != NULL) {
+            GtkWidget *at = gtk_label_new(stamp);
+
+            gtk_widget_add_css_class(at, "caption");
+            gtk_widget_add_css_class(at, "dim-label");
+            gtk_widget_add_css_class(at, "clawt-message-time");
+            gtk_widget_set_valign(at, GTK_ALIGN_START);
+            gtk_widget_set_halign(at, GTK_ALIGN_START);
+            gtk_box_append(GTK_BOX(gutter), at);
+        }
+
         gtk_box_append(GTK_BOX(line), gutter);
         gtk_box_append(GTK_BOX(line), text);
         gtk_widget_set_hexpand(text, TRUE);
+
+        /*
+         * FILL, not START, and this is the whole of #18.
+         *
+         * hexpand gives the label the column; halign decides what it
+         * does with it.  A wrapping GtkLabel at START is allocated its
+         * *natural* width and aligns that inside the space, so the body
+         * asked for about 66 characters and stopped while the clamp
+         * stood ready to give it 82 -- a narrow ribbon with a wide
+         * empty band either side, which is exactly what was reported.
+         *
+         * The issue blamed the 59-character cap a few lines up.  That
+         * cap is inside the operator's branch and never touches an
+         * agent's body; it bounds a bubble, which needs a width of its
+         * own to be right-aligned at all.  Two plausible causes, and
+         * the measurable one is this.
+         */
+        gtk_widget_set_halign(text, GTK_ALIGN_FILL);
         gtk_box_append(GTK_BOX(row), line);
     }
 
@@ -3559,8 +3647,14 @@ append_message_to(ClawtWindow *self, const TranscriptView *view,
      * that would put the date adrift between two blocks instead of
      * belonging to the one beneath it.
      */
+    /*
+     * A day divider carries 24 of its own above it, so a run header
+     * adding the run gap on top would set the date adrift between two
+     * blocks instead of belonging to the one beneath it.
+     */
     gtk_widget_set_margin_top(
-        row, !run_start ? 6 : (new_day ? 6 : chat_run_spacing(self)));
+        row, !run_start ? chat_message_spacing(self)
+                        : (new_day ? 6 : chat_run_spacing(self)));
 
     gtk_box_append(view->into, row);
 }

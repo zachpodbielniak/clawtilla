@@ -63,7 +63,22 @@ clawt_web_stylesheet(void)
        * 6.778px a character, is 89 characters against a comfortable 45
        * to 90.
        */
-      "--chat-measure:40rem;--chat-run-gap:26px;"
+      /*
+       * The run gap, and the message gap derived from it.
+       *
+       * Measured in the browser at the default font: a line is 22px and
+       * a markdown paragraph break is one blank line, so 22px of clear
+       * space.  The shipped run gap was 26 -- four pixels more than a
+       * paragraph, which is not a break a reader can see -- and a new
+       * message got 6, a quarter of a paragraph.  Both are now a third
+       * of a line apart: 22 / 29 / 36.
+       *
+       * The message gap is calc()'d off the run gap rather than being a
+       * second setting, so a reader who widens the run gap keeps the
+       * ordering instead of re-inverting it with one knob.
+       */
+      "--chat-measure:40rem;"
+      "--chat-run-gap:36px;--chat-msg-gap:calc(var(--chat-run-gap) - 7px);"
       /* Overridable per browser from the appearance page; the rest of the
        * sheet reads these rather than naming a size directly. */
       "--font-size:14px;--mono-size:12.5px;"
@@ -317,7 +332,26 @@ clawt_web_stylesheet(void)
      */
     ".msg{animation:rise 420ms cubic-bezier(.16,1,.3,1)}"
     ".msg.run-start{margin-top:var(--chat-run-gap)}"
-    ".msg.run-cont{margin-top:6px}"
+    /*
+     * 24, not 6.
+     *
+     * Measured at the default font: a line is 18px and a markdown
+     * paragraph break is one blank line, so a new *message* used to be
+     * separated by a third of what separates two paragraphs of one
+     * message -- three turns reading as one message with tight
+     * paragraphs.  18 / 24 / 30 are even 6px steps, and the window was
+     * 19 to 29: at 30 a message reads as a new run and the grouping
+     * carries nothing.
+     */
+    ".msg.run-cont{margin-top:var(--chat-msg-gap);position:relative}"
+    /*
+     * And the time in the gutter, which is the half space cannot carry.
+     * Absolutely placed into the avatar's column so it costs no width
+     * that was not already reserved.
+     */
+    ".msg-time{position:absolute;left:0;top:0;width:var(--chat-gutter);"
+      "font-size:11px;color:var(--muted);line-height:1.5}"
+    "@media (max-width:26rem){.msg-time{display:none}}"
     ".transcript-inner>.msg:first-child{margin-top:0}"
     "@keyframes rise{from{opacity:0;transform:translateY(8px)}"
       "to{opacity:1;transform:none}}"
