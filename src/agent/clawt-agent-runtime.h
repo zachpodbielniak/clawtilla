@@ -126,6 +126,43 @@ ClawtRestartPolicy clawt_agent_runtime_get_restart_policy(
     ClawtAgentRuntime *self);
 
 /**
+ * clawt_agent_runtime_get_paused_until:
+ * @self: a #ClawtAgentRuntime
+ *
+ * When this agent's account regains its session allowance, as Unix
+ * seconds, or 0 if it is not waiting on one.
+ *
+ * A session usage limit is not a fault and not a rate limit: the CLI
+ * never reaches the API, answers from itself and exits, so every
+ * attempt before the stated reset costs nothing and achieves nothing.
+ * Thirty-three of them in under four minutes is what this exists to
+ * stop.
+ *
+ * Reported rather than acted on here, because what to do about a pause
+ * differs by caller -- the router holds delivery, a client draws it,
+ * and the restart policy declines to spend an attempt on it.
+ *
+ * Returns: the reset time, or 0
+ */
+gint64 clawt_agent_runtime_get_paused_until(ClawtAgentRuntime *self);
+
+/**
+ * clawt_agent_runtime_is_paused:
+ * @self: a #ClawtAgentRuntime
+ * @now: the current time, as Unix seconds
+ *
+ * Whether the pause is still in force at @now.
+ *
+ * @now is a parameter rather than read from the clock so the boundary
+ * can be exercised from both sides -- a pause that never expires and a
+ * pause that expires immediately are both silent failures, and the
+ * second one restores exactly the storm this prevents.
+ *
+ * Returns: %TRUE while the agent is waiting on its account
+ */
+gboolean clawt_agent_runtime_is_paused(ClawtAgentRuntime *self, gint64 now);
+
+/**
  * clawt_agent_runtime_get_last_error:
  * @self: a #ClawtAgentRuntime
  *

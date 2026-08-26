@@ -21,6 +21,9 @@
 
 #include "clawt-test-util.h"
 
+/* The notice both the agent and the supervisor read. */
+#include "core/ai-session-limit.h"
+
 typedef struct {
     gchar       *dir;
     ClawtConfig *config;
@@ -982,6 +985,124 @@ test_restarting_does_not_leave_the_old_one(void)
     fixture_teardown(&fixture);
 }
 
+/* ── The account's session limit ───────────────────────────────────── */
+
+/*
+ * An agent learns it is paused from its own output.
+ *
+ * The CLI answers a usage limit without reaching the API and exits, so
+ * from outside it is indistinguishable from any other failure -- which
+ * is why it was retried every few seconds against a wall that would not
+ * move for hours.  The agent now emits a notice ai-glib owns both
+ * halves of, and this is the supervisor reading it.
+ */
+static void
+test_a_notice_pauses_the_runtime(void)
+{
+    Fixture fixture;
+    ClawtAgentConfig *config;
+    g_autoptr(ClawtAgentRuntime) runtime = NULL;
+    gint64 reset = g_get_real_time() / G_USEC_PER_SEC + 3600;
+    g_autofree gchar *notice = ai_session_limit_notice_new(reset);
+
+    fixture_setup(&fixture);
+    fixture.config = load_config(&fixture, "agents:\n  - id: worker\n");
+    config = clawt_config_get_agent(fixture.config, "worker");
+    runtime = CLAWT_AGENT_RUNTIME(
+        clawt_process_runtime_new(config, "/dev/null"));
+
+    g_assert_cmpint(clawt_agent_runtime_get_paused_until(runtime), ==, 0);
+    g_assert_false(clawt_agent_runtime_is_paused(runtime, 0));
+
+    clawt_agent_runtime_record_log_line(runtime, notice);
+
+    g_assert_cmpint(clawt_agent_runtime_get_paused_until(runtime), ==, reset);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * The boundary, from both sides.  A pause that never expires strands an
+ * agent for ever; one that expires immediately restores the storm this
+ * exists to stop, and neither says anything when it is wrong.
+ */
+static void
+test_the_pause_boundary(void)
+{
+    Fixture fixture;
+    ClawtAgentConfig *config;
+    g_autoptr(ClawtAgentRuntime) runtime = NULL;
+    g_autofree gchar *notice = ai_session_limit_notice_new(1000);
+
+    fixture_setup(&fixture);
+    fixture.config = load_config(&fixture, "agents:\n  - id: worker\n");
+    config = clawt_config_get_agent(fixture.config, "worker");
+    runtime = CLAWT_AGENT_RUNTIME(
+        clawt_process_runtime_new(config, "/dev/null"));
+    clawt_agent_runtime_record_log_line(runtime, notice);
+
+    g_assert_true(clawt_agent_runtime_is_paused(runtime, 999));
+    /* At the reset it is over: strictly less, asserted from both sides. */
+    g_assert_false(clawt_agent_runtime_is_paused(runtime, 1000));
+    g_assert_false(clawt_agent_runtime_is_paused(runtime, 1001));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A limit whose message named no reset must not hold an agent down for
+ * ever.  One wasted turn tells us whether the wall is still there, and
+ * the notice that comes back carries a time.
+ */
+static void
+test_a_pause_with_no_reset_does_not_strand(void)
+{
+    Fixture fixture;
+    ClawtAgentConfig *config;
+    g_autoptr(ClawtAgentRuntime) runtime = NULL;
+    g_autofree gchar *notice = ai_session_limit_notice_new(0);
+
+    fixture_setup(&fixture);
+    fixture.config = load_config(&fixture, "agents:\n  - id: worker\n");
+    config = clawt_config_get_agent(fixture.config, "worker");
+    runtime = CLAWT_AGENT_RUNTIME(
+        clawt_process_runtime_new(config, "/dev/null"));
+    clawt_agent_runtime_record_log_line(runtime, notice);
+
+    g_assert_false(clawt_agent_runtime_is_paused(runtime, 1));
+    g_assert_false(clawt_agent_runtime_is_paused(runtime, G_MAXINT64));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And an ordinary log line changes nothing.  The notice is matched
+ * against every line an agent writes, so a false positive would park a
+ * working fleet.
+ */
+static void
+test_ordinary_output_does_not_pause(void)
+{
+    Fixture fixture;
+    ClawtAgentConfig *config;
+    g_autoptr(ClawtAgentRuntime) runtime = NULL;
+
+    fixture_setup(&fixture);
+    fixture.config = load_config(&fixture, "agents:\n  - id: worker\n");
+    config = clawt_config_get_agent(fixture.config, "worker");
+    runtime = CLAWT_AGENT_RUNTIME(
+        clawt_process_runtime_new(config, "/dev/null"));
+
+    clawt_agent_runtime_record_log_line(runtime, "starting up");
+    clawt_agent_runtime_record_log_line(runtime,
+                                        "Session 'x': AI call failed: nope");
+    clawt_agent_runtime_record_log_line(runtime, "session limit reached");
+
+    g_assert_cmpint(clawt_agent_runtime_get_paused_until(runtime), ==, 0);
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1022,6 +1143,15 @@ main(int argc, char *argv[])
                     test_the_description_mentions_the_desktop);
     g_test_add_func("/agent/guest-desktop-says-where-to-look",
                     test_a_guest_desktop_says_where_to_look_when_it_fails);
+    g_test_add_func("/agent/session-limit-pauses-the-runtime",
+                    test_a_notice_pauses_the_runtime);
+    g_test_add_func("/agent/session-limit-boundary",
+                    test_the_pause_boundary);
+    g_test_add_func("/agent/session-limit-without-a-reset",
+                    test_a_pause_with_no_reset_does_not_strand);
+    g_test_add_func("/agent/ordinary-output-does-not-pause",
+                    test_ordinary_output_does_not_pause);
+
     g_test_add_func("/agent/observe-only-desktop-says-so",
                     test_an_observe_only_desktop_says_so);
 

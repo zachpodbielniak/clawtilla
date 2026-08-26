@@ -280,6 +280,30 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
     if (link == NULL || mailbox == NULL || !clawt_link_is_open(link))
         return 0;
 
+    /*
+     * An agent whose account is out of session allowance is not fed.
+     *
+     * Delivery acknowledges an item the moment it reaches the socket,
+     * so draining into an agent that cannot answer *consumes* the queue:
+     * every message is handed over, refused by the CLI without reaching
+     * a model, and gone.  The limit is per account, so the whole fleet
+     * is behind the same wall at the same moment and the entire backlog
+     * can be spent in a couple of minutes -- which is exactly what
+     * happened, and why two agents ended the afternoon holding nothing.
+     *
+     * Left queued instead.  The mailbox is durable precisely so work can
+     * outlive an agent that cannot take it yet, and the next drain after
+     * the reset delivers it in order.
+     */
+    {
+        ClawtAgentRuntime *runtime = clawt_agent_get_runtime(agent);
+
+        if (runtime != NULL &&
+            clawt_agent_runtime_is_paused(
+                runtime, g_get_real_time() / G_USEC_PER_SEC))
+            return 0;
+    }
+
     for (;;) {
         g_autoptr(ClawtMailboxItem) item = NULL;
         g_autoptr(GError) error = NULL;

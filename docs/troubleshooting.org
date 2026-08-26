@@ -266,6 +266,58 @@ the old text until it restarts.
 clawtilla agent restart <agent>
 #+end_src
 
+** The whole fleet went quiet at once
+
+The account's session usage allowance is spent. It is per *account*, so
+every agent on it crosses the same wall within the same few minutes ---
+which is why this looks like the daemon having failed rather than a
+limit being reached.
+
+#+begin_src bash
+clawtilla agent logs chief --lines 40
+#+end_src
+
+Look for:
+
+#+begin_example
+Session '...': paused -- the account's session usage limit is reached;
+it resets at 18:50 on Wednesday 26 August
+#+end_example
+
+Nothing is broken and there is nothing to restart. The daemon holds each
+paused agent's queued work rather than delivering it, and resumes after
+the reset.
+
+*** Why the work is held rather than delivered
+
+Delivery acknowledges an item the moment it reaches the socket, so
+handing messages to an agent that cannot answer *consumes* the queue:
+each one is delivered, refused by the CLI without reaching a model, and
+gone. With the whole fleet behind one wall the entire backlog can be
+spent in a couple of minutes. That is how two agents ended an afternoon
+holding nothing, and it is what ~clawt_agent_runtime_is_paused()~ now
+prevents --- the mailbox is durable precisely so work can outlive an
+agent that cannot take it yet.
+
+*** It does not count against the restart budget
+
+An exit while the account is out of allowance is not the agent failing,
+so it does not increment the consecutive-failure count. Counting it
+spent the restart budget on a wall that would not move, and then left
+the agent stopped for a reason that had nothing to do with it.
+
+The backoff also waits for the stated reset rather than doubling from a
+second, though it stays capped --- a reset hours away must not become a
+timer nothing revisits, and coming back early costs one turn and tells
+you whether the wall is still there.
+
+*** If no reset was given
+
+A limit whose message named no reset still pauses, but the agent is
+allowed to try again rather than being held indefinitely. Holding it
+down on an unknown reset is worse than one wasted turn, and the notice
+that comes back carries a time.
+
 ** A mailbox is stuck
 
 [[file:mailboxes.org][mailboxes.org]] has the full sequence.  Briefly:

@@ -10,6 +10,9 @@
 #include "clawtilla.h"
 #include "agent/clawt-agent-runtime.h"
 
+/* For the session-limit notice both halves of which ai-glib owns. */
+#include "core/ai-session-limit.h"
+
 /*
  * How much output to keep.
  *
@@ -56,6 +59,18 @@ typedef struct {
     gchar             *last_error;
 
     GQueue            *log_lines;   /* gchar*, oldest first */
+
+    /*
+     * When the account's session allowance returns, as Unix seconds, or
+     * 0 when the agent is not waiting on one.
+     *
+     * A usage limit belongs to the account rather than to this agent, so
+     * every agent on it crosses the wall within the same few minutes and
+     * each one's queued work is spent against a refusal that costs
+     * nothing and achieves nothing.  Knowing the time it clears is what
+     * turns that into a wait.
+     */
+    gint64             paused_until;
 } ClawtAgentRuntimePrivate;
 
 G_DEFINE_ABSTRACT_TYPE_WITH_PRIVATE(ClawtAgentRuntime, clawt_agent_runtime,
@@ -194,6 +209,39 @@ clawt_agent_runtime_set_restart_policy(ClawtAgentRuntime  *self,
     priv->max_restarts = max_restarts;
 }
 
+gint64
+clawt_agent_runtime_get_paused_until(
+    ClawtAgentRuntime *self
+){
+    g_return_val_if_fail(CLAWT_IS_AGENT_RUNTIME(self), 0);
+
+    return PRIV(self)->paused_until;
+}
+
+gboolean
+clawt_agent_runtime_is_paused(
+    ClawtAgentRuntime *self,
+    gint64             now
+){
+    gint64 until;
+
+    g_return_val_if_fail(CLAWT_IS_AGENT_RUNTIME(self), FALSE);
+
+    until = PRIV(self)->paused_until;
+
+    /*
+     * A pause with no known reset is not a pause that lasts for ever.
+     * The limit was real, but nothing said when it clears, and holding
+     * an agent down indefinitely on that is worse than letting it try:
+     * one wasted turn tells us the wall is still there, and the notice
+     * that comes back sets a time.
+     */
+    if (until <= 0)
+        return FALSE;
+
+    return now < until;
+}
+
 ClawtRestartPolicy
 clawt_agent_runtime_get_restart_policy(
     ClawtAgentRuntime *self
@@ -228,6 +276,22 @@ clawt_agent_runtime_record_log_line(ClawtAgentRuntime *self,
      * the clients and pasted into bug reports, and a key that reached the
      * buffer would be handed out every time somebody asked for the log.
      */
+    /*
+     * A session-limit notice is the agent telling its supervisor that it
+     * is behind a wall until a stated time.  Read here because this is
+     * the one place every line the child writes passes through, and
+     * matched with ai-glib's own parser rather than a pattern of our
+     * own -- the emitter and the reader are two halves of one format,
+     * and halves written apart drift until the watcher silently stops
+     * matching.
+     */
+    {
+        gint64 reset = 0;
+
+        if (ai_session_limit_notice_parse(line, &reset))
+            priv->paused_until = reset;
+    }
+
     g_queue_push_tail(priv->log_lines, clawt_redact_secrets(line));
 
     while (g_queue_get_length(priv->log_lines) > LOG_RING_LINES)
@@ -353,6 +417,23 @@ clawt_agent_runtime_record_exit(ClawtAgentRuntime *self,
          * run, finish and be restarted would exhaust its allowance and stop.
          */
         priv->consecutive_failures = 0;
+    } else if (clawt_agent_runtime_is_paused(
+                   self, g_get_real_time() / G_USEC_PER_SEC)) {
+        /*
+         * An exit while the account is out of session allowance is not
+         * this agent failing.  Counting it spends the restart budget on
+         * a wall that will not move until a time we already know, and
+         * then leaves the agent stopped for a reason that has nothing
+         * to do with it -- which is how two agents were lost while
+         * holding assigned work.
+         *
+         * The streak is left alone rather than reset: an agent that was
+         * genuinely failing before the limit arrived should not have
+         * its record wiped by it.
+         */
+        g_message("agent %s: not counting this exit -- the account's "
+                  "session allowance is spent",
+                  priv->agent_id);
     } else {
         priv->consecutive_failures++;
     }
@@ -374,6 +455,30 @@ clawt_agent_runtime_record_exit(ClawtAgentRuntime *self,
     delay = priv->backoff_seconds > 0 ? priv->backoff_seconds : 1;
     delay <<= MIN(priv->consecutive_failures, 6);
     delay = MIN(delay, RESTART_BACKOFF_CAP_SECONDS);
+
+    /*
+     * Waiting on the account means waiting until it says so.  Doubling
+     * from a second towards the cap reaches the wall dozens of times
+     * before the reset, each attempt free of cost and free of progress,
+     * and each one another line in a log somebody has to read past.
+     *
+     * Still capped: a reset hours away must not become a timer nothing
+     * revisits, and coming back early costs one turn and tells us
+     * whether the wall is still there.
+     */
+    {
+        gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+
+        if (clawt_agent_runtime_is_paused(self, now)) {
+            gint64 wait = priv->paused_until - now;
+
+            if (wait > (gint64)RESTART_BACKOFF_CAP_SECONDS)
+                wait = RESTART_BACKOFF_CAP_SECONDS;
+
+            if (wait > (gint64)delay)
+                delay = (guint)wait;
+        }
+    }
 
     g_info("agent %s: restarting in %u second(s)", priv->agent_id, delay);
 
