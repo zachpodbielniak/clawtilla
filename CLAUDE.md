@@ -72,6 +72,7 @@ the second is what clawtilla adds:
 | `xorrisofs` | `xorriso` | the cloud-init seed that gives a VM a login (runtime) |
 | `bwrap` | `bubblewrap` | `confine: bwrap` host sandbox (runtime) |
 | `podman` | `podman` | container computers (runtime) |
+| `distrobox` | `distrobox` | distrobox computers (runtime) |
 | — | `gobject-introspection-devel` | `.gir`/`.typelib` (auto-skipped if absent) |
 
 Adding a dependency means adding it to `PKG_DEPS` in `config.mk` *and*

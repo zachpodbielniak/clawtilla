@@ -145,18 +145,35 @@ typedef enum {
  * @CLAWT_COMPUTER_NONE: chat only, no command execution
  * @CLAWT_COMPUTER_HOST: the real machine the daemon runs on
  * @CLAWT_COMPUTER_CONTAINER: a podman container
+ * @CLAWT_COMPUTER_DISTROBOX: a distrobox container, wired into the host
  * @CLAWT_COMPUTER_VM: a virtual machine
  *
  * The kind of computer an agent has.
  *
  * Desktop control is not a type: it is an add-on configured under
  * `computer.desktop` and available alongside any of these.
+ *
+ * %CLAWT_COMPUTER_DISTROBOX sits between the container and the host
+ * rather than beside the container: a distrobox *is* a podman
+ * container, but one deliberately wired into the machine around it --
+ * the same uid, the host's sockets, its binaries reachable through
+ * distrobox-host-exec. That is what makes it a comfortable place to
+ * build things and a poor place to put something that should be
+ * contained, and it is why it is its own type rather than a flag on
+ * the container one. A reader scanning `computer.type` should see the
+ * difference.
+ *
+ * Appended rather than inserted: the value is written into
+ * clawtilla.yaml as a nick, but a config read by an older build that
+ * has never heard of it becomes a shadow agent with a reason, and
+ * renumbering the others would change what an existing integer means.
  */
 typedef enum {
     CLAWT_COMPUTER_NONE = 0,
     CLAWT_COMPUTER_HOST,
     CLAWT_COMPUTER_CONTAINER,
-    CLAWT_COMPUTER_VM
+    CLAWT_COMPUTER_VM,
+    CLAWT_COMPUTER_DISTROBOX
 } ClawtComputerType;
 
 /**
@@ -701,6 +718,89 @@ GType clawt_credential_placement_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_CONNECTOR_AUTH    (clawt_connector_auth_get_type())
 #define CLAWT_TYPE_CREDENTIAL_PLACEMENT \
     (clawt_credential_placement_get_type())
+
+/**
+ * clawt_computer_type_count:
+ *
+ * How many kinds of computer an agent may be given.
+ *
+ * Both clients build their control by walking this rather than naming
+ * the types. Five hand-written copies of that list is what existed
+ * before -- four in the GTK client and one in the web one -- and it is
+ * the same shape as the colour schemes, where a palette added to the
+ * library was selectable in one client and absent from the other with
+ * nothing to say so. A computer type sends no IPC frame of its own and
+ * answers no slash command, so `make parity` could not see it either.
+ *
+ * Returns: the number of types
+ */
+guint clawt_computer_type_count(void);
+
+/**
+ * clawt_computer_type_nth:
+ * @n: an index below clawt_computer_type_count()
+ *
+ * Returns: the type at @n, in the order a client should offer them --
+ *   least capable first, so the list reads as an escalation
+ */
+ClawtComputerType clawt_computer_type_nth(guint n);
+
+/**
+ * clawt_computer_type_nth_nick:
+ * @n: an index below clawt_computer_type_count()
+ *
+ * Returns: (transfer none): the stable spelling, as written to
+ *   clawtilla.yaml
+ */
+const gchar *clawt_computer_type_nth_nick(guint n);
+
+/**
+ * clawt_computer_type_nth_label:
+ * @n: an index below clawt_computer_type_count()
+ *
+ * What to show a person choosing one.
+ *
+ * Says what the type *gives away* rather than only what it is, because
+ * that is the question somebody is actually answering when they pick
+ * one from a list.
+ *
+ * Returns: (transfer none): the label, never %NULL
+ */
+const gchar *clawt_computer_type_nth_label(guint n);
+
+/**
+ * clawt_computer_type_takes_image:
+ * @type: a #ClawtComputerType
+ *
+ * Whether a container image means anything for @type.
+ *
+ * Asked rather than branched on, because both clients decide the same
+ * thing in five places between them -- whether to offer an image
+ * chooser, whether to send an `image` field -- and a type added without
+ * touching all five gets a form that quietly drops what somebody typed
+ * into it.
+ *
+ * A VM is %FALSE: it takes a disk image, which is a different setting
+ * with a different list behind it.
+ *
+ * Returns: %TRUE for the container-backed types
+ */
+gboolean clawt_computer_type_takes_image(ClawtComputerType type);
+
+/**
+ * clawt_computer_type_takes_mounts:
+ * @type: a #ClawtComputerType
+ *
+ * Whether @type can be given shared folders.
+ *
+ * %FALSE for `none`, which has nothing to mount into, and for `host`,
+ * where the mount list is the confinement allowlist rather than a set
+ * of kernel mounts -- so a "Shared folders" editor there would be
+ * editing something else under a name that does not fit.
+ *
+ * Returns: %TRUE if mounts apply
+ */
+gboolean clawt_computer_type_takes_mounts(ClawtComputerType type);
 
 /**
  * clawt_enum_to_nick:

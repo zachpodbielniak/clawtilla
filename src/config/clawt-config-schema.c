@@ -203,7 +203,8 @@ static const ClawtSchemaEntry schema[] = {
 
 { "defaults.computer", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   "none", clawt_computer_type_get_type,
-  "Default computer type for new agents: none, host, container or vm.\n"
+  "Default computer type for new agents: none, host, container,\n"
+  "distrobox or vm.\n"
   "\n"
   "none is the default on purpose. An agent that can run commands is a\n"
   "bigger grant than an agent that can only talk, and it should be asked\n"
@@ -1418,6 +1419,85 @@ static const ClawtSchemaEntry schema[] = {
   "false", NULL,
   "Keep the container when the agent stops, instead of removing it.\n"
   "Useful when the agent installs things it should not have to reinstall.", "0.1.0" },
+
+/* ── agents.computer.distrobox ───────────────────────────────────── */
+{ "agents.computer.distrobox", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Settings for computer.type: distrobox.\n"
+  "\n"
+  "A distrobox is a podman container deliberately wired into the machine\n"
+  "around it: the agent runs as the same user as you, sees your sockets\n"
+  "and displays, and can reach the host itself with distrobox-host-exec.\n"
+  "That makes it a good place to build things and a poor place to put\n"
+  "something that should be contained -- use computer.type: container for\n"
+  "that, which shares none of it.", "0.1.0" },
+
+{ "agents.computer.distrobox.image", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Image the box is created from. Unset uses distrobox's own default,\n"
+  "which is a Fedora toolbox image.\n"
+  "\n"
+  "Name the registry, for the reason the container image does: a bare\n"
+  "'fedora:44' is resolved through podman's unqualified-search list,\n"
+  "which is per-machine.", "0.1.0" },
+
+{ "agents.computer.distrobox.name", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Box name. Defaults to clawt-<agent-id>.\n"
+  "\n"
+  "Prefixed on purpose. These machines already have boxes called 'dev'\n"
+  "and 'util', and an agent adopting one of those would be a fleet\n"
+  "operation reaching into somebody's development environment.", "0.1.0" },
+
+{ "agents.computer.distrobox.home", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "HOME inside the box.\n"
+  "\n"
+  "Unset gives the agent a directory of its own under\n"
+  "$XDG_DATA_HOME/clawtilla/boxes/<agent-id>/home, which is NOT what\n"
+  "distrobox does on its own -- see share_home.", "0.1.0" },
+
+{ "agents.computer.distrobox.share_home", CLAWT_SCHEMA_BOOLEAN,
+  CLAWT_SCHEMA_FLAG_NONE, "false", NULL,
+  "Give the box your real home directory.\n"
+  "\n"
+  "This is distrobox's own default, and clawtilla's is the opposite,\n"
+  "because the two look identical from inside the box and are completely\n"
+  "different in what they touch: an agent sharing your home can read your\n"
+  "ssh keys, your shell configuration and any credential you keep there.\n"
+  "\n"
+  "Turn it on when the point is to work in your environment -- an agent\n"
+  "maintaining your dotfiles, say. Leave it off otherwise. It is fixed\n"
+  "when the box is created, so changing it means removing the box.",
+  "0.1.0" },
+
+{ "agents.computer.distrobox.packages", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_COMMENTED, "gcc make git", NULL,
+  "Packages installed when the box is first created, space separated.\n"
+  "\n"
+  "Read once, at creation, the way a VM's cloud-init reads its seed --\n"
+  "so adding a name here and restarting the agent does nothing visible.\n"
+  "The agent can install more itself; this is for what it needs before\n"
+  "it can.", "0.1.0" },
+
+{ "agents.computer.distrobox.flags", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Extra flags passed through to podman, space separated.\n"
+  "Quote anything containing a space.", "0.1.0" },
+
+{ "agents.computer.distrobox.init", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "false", NULL,
+  "Run an init system (systemd) inside the box.\n"
+  "Needed by anything expecting systemctl or a user unit.", "0.1.0" },
+
+{ "agents.computer.distrobox.keep", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "true", NULL,
+  "Keep the box when the agent stops.\n"
+  "\n"
+  "On by default, unlike the plain container: making one pulls an image\n"
+  "and then runs a package install inside it, and a distrobox is the kind\n"
+  "of computer somebody chose so that what the agent installs survives.",
+  "0.1.0" },
 
 /* ── agents.computer.vm ──────────────────────────────────────────── */
 { "agents.computer.vm", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,

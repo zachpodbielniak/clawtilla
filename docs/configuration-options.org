@@ -254,11 +254,12 @@ Default model for new agents.
 *** =defaults.computer=
 
 - Type :: enum
-- Values :: none, host, container, vm
+- Values :: none, host, container, vm, distrobox
 - Default :: =none=
 - Since :: 0.1.0
 
-Default computer type for new agents: none, host, container or vm.
+Default computer type for new agents: none, host, container,
+distrobox or vm.
 
 none is the default on purpose. An agent that can run commands is a
 bigger grant than an agent that can only talk, and it should be asked
@@ -1811,7 +1812,7 @@ What the agent can run commands on.
 *** =agents.computer.type=
 
 - Type :: enum
-- Values :: none, host, container, vm
+- Values :: none, host, container, vm, distrobox
 - Default :: unset
 - Since :: 0.1.0
 
@@ -2126,6 +2127,114 @@ Network to attach to. Leave unset for podman's default.
 
 Keep the container when the agent stops, instead of removing it.
 Useful when the agent installs things it should not have to reinstall.
+
+** =agents.computer.distrobox=
+
+Settings for computer.type: distrobox.
+
+A distrobox is a podman container deliberately wired into the machine
+around it: the agent runs as the same user as you, sees your sockets
+and displays, and can reach the host itself with distrobox-host-exec.
+That makes it a good place to build things and a poor place to put
+something that should be contained -- use computer.type: container for
+that, which shares none of it.
+
+*** =agents.computer.distrobox.image=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+Image the box is created from. Unset uses distrobox's own default,
+which is a Fedora toolbox image.
+
+Name the registry, for the reason the container image does: a bare
+'fedora:44' is resolved through podman's unqualified-search list,
+which is per-machine.
+
+*** =agents.computer.distrobox.name=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+Box name. Defaults to clawt-<agent-id>.
+
+Prefixed on purpose. These machines already have boxes called 'dev'
+and 'util', and an agent adopting one of those would be a fleet
+operation reaching into somebody's development environment.
+
+*** =agents.computer.distrobox.home=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+HOME inside the box.
+
+Unset gives the agent a directory of its own under
+$XDG_DATA_HOME/clawtilla/boxes/<agent-id>/home, which is NOT what
+distrobox does on its own -- see share_home.
+
+*** =agents.computer.distrobox.share_home=
+
+- Type :: boolean
+- Default :: =false=
+- Since :: 0.1.0
+
+Give the box your real home directory.
+
+This is distrobox's own default, and clawtilla's is the opposite,
+because the two look identical from inside the box and are completely
+different in what they touch: an agent sharing your home can read your
+ssh keys, your shell configuration and any credential you keep there.
+
+Turn it on when the point is to work in your environment -- an agent
+maintaining your dotfiles, say. Leave it off otherwise. It is fixed
+when the box is created, so changing it means removing the box.
+
+*** =agents.computer.distrobox.packages=
+
+- Type :: string
+- Default :: =gcc make git=
+- Since :: 0.1.0
+
+Packages installed when the box is first created, space separated.
+
+Read once, at creation, the way a VM's cloud-init reads its seed --
+so adding a name here and restarting the agent does nothing visible.
+The agent can install more itself; this is for what it needs before
+it can.
+
+*** =agents.computer.distrobox.flags=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.1.0
+
+Extra flags passed through to podman, space separated.
+Quote anything containing a space.
+
+*** =agents.computer.distrobox.init=
+
+- Type :: boolean
+- Default :: =false=
+- Since :: 0.1.0
+
+Run an init system (systemd) inside the box.
+Needed by anything expecting systemctl or a user unit.
+
+*** =agents.computer.distrobox.keep=
+
+- Type :: boolean
+- Default :: =true=
+- Since :: 0.1.0
+
+Keep the box when the agent stops.
+
+On by default, unlike the plain container: making one pulls an image
+and then runs a package install inside it, and a distrobox is the kind
+of computer somebody chose so that what the agent installs survives.
 
 ** =agents.computer.vm=
 

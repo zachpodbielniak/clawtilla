@@ -131,6 +131,75 @@ clawt_restart_policy_get_type(void)
     return g_define_type_id__volatile;
 }
 
+/*
+ * The order a client offers them in, with what each one gives away.
+ *
+ * Least capable first, so the list reads as an escalation rather than
+ * as an arbitrary set -- somebody scrolling it should be able to stop
+ * at the first entry that is enough.
+ *
+ * distrobox sits between the container and the VM by that reading and
+ * *above* the container by blast radius, which is why its label says so
+ * rather than calling it a container and leaving somebody to find out.
+ */
+static const struct {
+    ClawtComputerType type;
+    const gchar      *label;
+} clawt_computer_type_order[] = {
+    { CLAWT_COMPUTER_NONE, "None \xe2\x80\x94 chat only" },
+    { CLAWT_COMPUTER_CONTAINER, "Container \xe2\x80\x94 isolated from the host" },
+    { CLAWT_COMPUTER_DISTROBOX,
+      "Distrobox \xe2\x80\x94 a container wired into your session" },
+    { CLAWT_COMPUTER_VM, "Virtual machine \xe2\x80\x94 its own kernel" },
+    { CLAWT_COMPUTER_HOST, "Host \xe2\x80\x94 this machine itself" }
+};
+
+guint
+clawt_computer_type_count(void)
+{
+    return G_N_ELEMENTS(clawt_computer_type_order);
+}
+
+ClawtComputerType
+clawt_computer_type_nth(guint n)
+{
+    if (n >= G_N_ELEMENTS(clawt_computer_type_order))
+        return CLAWT_COMPUTER_NONE;
+
+    return clawt_computer_type_order[n].type;
+}
+
+const gchar *
+clawt_computer_type_nth_nick(guint n)
+{
+    return clawt_enum_to_nick(CLAWT_TYPE_COMPUTER_TYPE,
+                              clawt_computer_type_nth(n));
+}
+
+const gchar *
+clawt_computer_type_nth_label(guint n)
+{
+    if (n >= G_N_ELEMENTS(clawt_computer_type_order))
+        return clawt_computer_type_order[0].label;
+
+    return clawt_computer_type_order[n].label;
+}
+
+gboolean
+clawt_computer_type_takes_image(ClawtComputerType type)
+{
+    return type == CLAWT_COMPUTER_CONTAINER ||
+           type == CLAWT_COMPUTER_DISTROBOX;
+}
+
+gboolean
+clawt_computer_type_takes_mounts(ClawtComputerType type)
+{
+    return type == CLAWT_COMPUTER_CONTAINER ||
+           type == CLAWT_COMPUTER_DISTROBOX ||
+           type == CLAWT_COMPUTER_VM;
+}
+
 /* Register ClawtComputerType as a GLib enum type */
 GType
 clawt_computer_type_get_type(void)
@@ -143,6 +212,7 @@ clawt_computer_type_get_type(void)
             { CLAWT_COMPUTER_HOST, "CLAWT_COMPUTER_HOST", "host" },
             { CLAWT_COMPUTER_CONTAINER, "CLAWT_COMPUTER_CONTAINER", "container" },
             { CLAWT_COMPUTER_VM, "CLAWT_COMPUTER_VM", "vm" },
+            { CLAWT_COMPUTER_DISTROBOX, "CLAWT_COMPUTER_DISTROBOX", "distrobox" },
             { 0, NULL, NULL }
         };
         GType g_define_type_id = g_enum_register_static("ClawtComputerType", values);

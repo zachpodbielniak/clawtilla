@@ -12,6 +12,7 @@
 #include "computer/clawt-null-computer.h"
 #include "computer/clawt-host-computer.h"
 #include "computer/clawt-container-computer.h"
+#include "computer/clawt-distrobox-computer.h"
 #include "computer/clawt-vm-computer.h"
 
 static void
@@ -307,6 +308,67 @@ clawt_computer_factory_create(ClawtAgentConfig  *agent_config,
             CLAWT_CONTAINER_COMPUTER(computer),
             clawt_agent_config_get_boolean(agent_config,
                                            "computer.container.keep"));
+        break;
+    }
+
+    case CLAWT_COMPUTER_DISTROBOX: {
+        const gchar *home;
+
+        if (bridge == NULL) {
+            g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                                "distrobox computers need podomation's "
+                                "distrobox module");
+            return NULL;
+        }
+
+        computer = clawt_distrobox_computer_new(
+            agent_id, bridge,
+            clawt_agent_config_get_string(agent_config,
+                                          "computer.distrobox.image"));
+
+        clawt_distrobox_computer_set_name(
+            CLAWT_DISTROBOX_COMPUTER(computer),
+            clawt_agent_config_get_string(agent_config,
+                                          "computer.distrobox.name"));
+
+        /*
+         * The home, which is the whole confinement question for a
+         * distrobox: left to distrobox's own default the box gets the
+         * operator's real home directory, ssh keys and all.
+         *
+         * So an unset value is not passed through as "distrobox
+         * decides" -- it resolves to a directory of the agent's own
+         * under the state dir, and sharing the operator's is
+         * `share_home: true`, said out loud.  Same shape as the host
+         * computer defaulting to `confine: workspace` rather than to
+         * `none`.
+         */
+        home = clawt_agent_config_get_string(agent_config,
+                                             "computer.distrobox.home");
+
+        clawt_distrobox_computer_set_home(
+            CLAWT_DISTROBOX_COMPUTER(computer), home);
+        clawt_distrobox_computer_set_share_home(
+            CLAWT_DISTROBOX_COMPUTER(computer),
+            clawt_agent_config_get_boolean(agent_config,
+                                           "computer.distrobox.share_home"));
+
+        clawt_distrobox_computer_set_packages(
+            CLAWT_DISTROBOX_COMPUTER(computer),
+            clawt_agent_config_get_string(agent_config,
+                                          "computer.distrobox.packages"));
+        clawt_distrobox_computer_set_flags(
+            CLAWT_DISTROBOX_COMPUTER(computer),
+            clawt_agent_config_get_string(agent_config,
+                                          "computer.distrobox.flags"));
+        clawt_distrobox_computer_set_init(
+            CLAWT_DISTROBOX_COMPUTER(computer),
+            clawt_agent_config_get_boolean(agent_config,
+                                           "computer.distrobox.init"));
+        clawt_distrobox_computer_set_keep(
+            CLAWT_DISTROBOX_COMPUTER(computer),
+            clawt_agent_config_get_boolean(agent_config,
+                                           "computer.distrobox.keep"));
         break;
     }
 

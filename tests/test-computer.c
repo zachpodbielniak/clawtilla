@@ -1874,6 +1874,8 @@ test_teardown_is_never_a_silent_success(void)
         clawt_sandbox_new(CLAWT_CONFINE_WORKSPACE, "/tmp");
     g_autoptr(ClawtComputer) host =
         clawt_host_computer_new("scribe", sandbox);
+    g_autoptr(ClawtComputer) box =
+        clawt_distrobox_computer_new("scribe", NULL, NULL);
     ClawtComputerClass *klass;
 
     /*
@@ -1891,9 +1893,128 @@ test_teardown_is_never_a_silent_success(void)
     klass = CLAWT_COMPUTER_GET_CLASS(host);
     g_assert_nonnull(klass->teardown);
 
+    klass = CLAWT_COMPUTER_GET_CLASS(box);
+    g_assert_nonnull(klass->teardown);
+
     /* The two with genuinely nothing to destroy succeed. */
     g_assert_true(clawt_computer_teardown(null_computer, NULL));
     g_assert_true(clawt_computer_teardown(host, NULL));
+}
+
+/* ── distrobox ────────────────────────────────────────────────────── */
+
+/*
+ * The one decision that matters, asserted without distrobox installed.
+ *
+ * distrobox gives a box the invoking user's real home directory when
+ * told nothing, and clawtilla's default is the opposite -- so this is
+ * where an agent either has a home of its own or has the operator's ssh
+ * keys. The two look identical from inside the box, which is exactly
+ * why it should not be checked by running it and looking.
+ */
+static void
+test_a_distrobox_does_not_share_a_home_by_accident(void)
+{
+    g_autoptr(ClawtComputer) box =
+        clawt_distrobox_computer_new("scribe", NULL, NULL);
+    ClawtDistroboxComputer *self = CLAWT_DISTROBOX_COMPUTER(box);
+
+    /* Untouched: a directory of its own, never the operator's. */
+    {
+        g_autofree gchar *home = clawt_distrobox_computer_resolve_home(self);
+
+        g_assert_nonnull(home);
+        g_assert_true(g_str_has_suffix(home, "/scribe/home"));
+    }
+
+    /* Named explicitly. */
+    clawt_distrobox_computer_set_home(self, "/var/lib/boxes/scribe");
+
+    {
+        g_autofree gchar *home = clawt_distrobox_computer_resolve_home(self);
+
+        g_assert_cmpstr(home, ==, "/var/lib/boxes/scribe");
+    }
+
+    /*
+     * And the operator's own, which is reached only by asking. NULL is
+     * "pass no --home", which is what makes distrobox use theirs.
+     */
+    clawt_distrobox_computer_set_share_home(self, TRUE);
+    g_assert_null(clawt_distrobox_computer_resolve_home(self));
+
+    /* share_home wins over an explicit home, rather than the two fighting. */
+    clawt_distrobox_computer_set_home(self, "/var/lib/boxes/scribe");
+    g_assert_null(clawt_distrobox_computer_resolve_home(self));
+}
+
+/*
+ * An agent is told which of the two it got, in words.
+ *
+ * The describe text is the only place an agent learns this, and getting
+ * it backwards is backwards in the dangerous direction -- the same
+ * failure the guest desktop had, where an agent was told it was driving
+ * the operator's real screen when it was not.
+ */
+static void
+test_a_distrobox_says_whose_home_it_has(void)
+{
+    g_autoptr(ClawtComputer) box =
+        clawt_distrobox_computer_new("scribe", NULL, NULL);
+    ClawtDistroboxComputer *self = CLAWT_DISTROBOX_COMPUTER(box);
+
+    {
+        g_autofree gchar *said = clawt_computer_describe(box);
+
+        g_assert_nonnull(strstr(said, "belongs to you"));
+        g_assert_null(strstr(said, "operator's real home"));
+    }
+
+    clawt_distrobox_computer_set_share_home(self, TRUE);
+
+    {
+        g_autofree gchar *said = clawt_computer_describe(box);
+
+        g_assert_nonnull(strstr(said, "operator's real home"));
+        g_assert_null(strstr(said, "belongs to you"));
+    }
+}
+
+/*
+ * Mounts become --volume arguments with their mode and SELinux label
+ * intact.
+ *
+ * A read-only mount silently arriving read-write is not noticed until
+ * an agent overwrites something, and the relabel flag matters on
+ * Silverblue, where an unlabelled bind is unreadable inside the box.
+ */
+static void
+test_distrobox_volumes_keep_their_mode_and_label(void)
+{
+    g_autoptr(GPtrArray) mounts =
+        g_ptr_array_new_with_free_func((GDestroyNotify)clawt_mount_free);
+    g_autofree gchar *args = NULL;
+    g_autofree gchar *none = NULL;
+    ClawtMount *ro;
+    ClawtMount *rw;
+
+    ro = clawt_mount_new("/etc/passwd", "/mnt/passwd");
+    clawt_mount_set_mode(ro, CLAWT_MOUNT_MODE_RO);
+    g_ptr_array_add(mounts, ro);
+
+    rw = clawt_mount_new("/tmp", "/mnt/scratch");
+    clawt_mount_set_mode(rw, CLAWT_MOUNT_MODE_RW);
+    clawt_mount_set_relabel(rw, CLAWT_RELABEL_SHARED);
+    g_ptr_array_add(mounts, rw);
+
+    args = clawt_distrobox_computer_build_volume_args(mounts);
+
+    g_assert_nonnull(strstr(args, "/etc/passwd:/mnt/passwd:ro"));
+    g_assert_nonnull(strstr(args, "/tmp:/mnt/scratch:z"));
+
+    /* No mounts is no arguments, not a stray flag with nothing after it. */
+    none = clawt_distrobox_computer_build_volume_args(NULL);
+    g_assert_cmpstr(none, ==, "");
 }
 
 /*
@@ -2756,6 +2877,12 @@ main(int argc, char *argv[])
                     test_a_guest_desktop_gets_a_screen);
     g_test_add_func("/computer/vm/qemu-names-its-gpu",
                     test_the_qemu_backend_names_its_gpu);
+    g_test_add_func("/computer/distrobox/does-not-share-a-home",
+                    test_a_distrobox_does_not_share_a_home_by_accident);
+    g_test_add_func("/computer/distrobox/says-whose-home-it-has",
+                    test_a_distrobox_says_whose_home_it_has);
+    g_test_add_func("/computer/distrobox/volumes-keep-mode-and-label",
+                    test_distrobox_volumes_keep_their_mode_and_label);
     g_test_add_func("/computer/teardown/never-a-silent-success",
                     test_teardown_is_never_a_silent_success);
     g_test_add_func("/computer/vm/vanished-guest-is-rebuilt",

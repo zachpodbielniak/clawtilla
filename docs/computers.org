@@ -328,6 +328,108 @@ used to name one, which read as an instruction to create that directory
 when the real answer was almost always that the modules were sitting in
 the build tree.
 
+** distrobox
+
+#+begin_src yaml
+computer:
+  type: distrobox
+  distrobox:
+    image: registry.fedoraproject.org/fedora-toolbox:latest
+    packages: "gcc make git"
+    init: false
+    keep: true
+    # share_home: true    # see below before turning this on
+#+end_src
+
+A distrobox is a podman container, so everything the container backend
+says about isolation applies to the kernel boundary --- and then
+distrobox deliberately opens most of it back up.  Inside one the agent
+runs as *you*: the same uid, your sockets and displays, your X and
+Wayland, and =distrobox-host-exec <command>= to run something out on
+the host itself.
+
+That is what makes a distrobox a comfortable place to build things ---
+a compiler that can see your real toolchain, a script that can talk to
+your session --- and a poor place to put anything that should be
+contained.  For that, use =type: container=, which shares none of it.
+
+*** The home directory is the whole question
+:PROPERTIES:
+:CUSTOM_ID: distrobox-home
+:END:
+
+Left to itself, *distrobox mounts your real home directory* into the
+box.  That is the tool working exactly as designed, and it is also an
+agent that can read your ssh keys, your shell configuration and any
+credential you keep in a dotfile.
+
+clawtilla's default is the opposite.  An agent gets a home of its own
+under =$XDG_DATA_HOME/clawtilla/boxes/<agent-id>/home=, and yours is
+reached only by asking:
+
+#+begin_src yaml
+computer:
+  distrobox:
+    share_home: true
+#+end_src
+
+Same shape as the host computer defaulting to ~confine: workspace~
+rather than to ~none~: the dangerous option exists, and it is spelled
+out rather than arrived at by leaving a field empty.  The two are
+indistinguishable from inside the box, which is why the agent is *told*
+which one it got --- its own description says either "belongs to you
+alone" or "is the operator's real home directory", in those words.
+
+Turn it on when working in your environment is the point: an agent
+maintaining your dotfiles, or one that should share your ssh agent.
+
+*** What is fixed at creation
+:PROPERTIES:
+:CUSTOM_ID: distrobox-creation
+:END:
+
+=image=, =home=, =share_home=, =packages= and =init= are read when the
+box is made and not again, the way a VM's cloud-init reads its seed
+once.  Changing one and restarting the agent does nothing visible ---
+which reads as the setting not working rather than as the setting
+arriving too late.  Remove the box to apply them.
+
+=keep= is different: it is read every time the agent stops.
+
+*** keep defaults to true here
+:PROPERTIES:
+:CUSTOM_ID: distrobox-keep
+:END:
+
+Unlike the plain container.  Making a distrobox pulls an image and then
+runs a package install inside it, and a distrobox is the kind of
+computer somebody chose precisely so that what the agent installs
+survives --- so discarding it at every stop would mean paying that cost
+on every start.
+
+*** Mounts
+:PROPERTIES:
+:CUSTOM_ID: distrobox-mounts
+:END:
+
+Bind mounts, rendered as distrobox =--volume= arguments with their mode
+and SELinux relabel intact.  A =tmpfs= mount is skipped, because
+distrobox has no way to ask for one.
+
+*** Requirements
+:PROPERTIES:
+:CUSTOM_ID: distrobox-requirements
+:END:
+
+The =distrobox= package, and podman, which it drives.  A missing
+=distrobox= binary is reported as such and names the package --- it is
+deliberately not the same message as a missing box, because reading it
+that way sends you to inspect podman rather than to install anything.
+
+Goes through podomation's =distrobox= module, the same way the
+container backend goes through =container=; see [[#pod-modules][the
+module search path]] above, which is shared.
+
 ** vm
 
 #+begin_src yaml
