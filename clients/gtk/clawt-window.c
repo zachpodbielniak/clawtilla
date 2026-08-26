@@ -10532,7 +10532,6 @@ build_chat_page(ClawtWindow *self)
     GtkWidget *send;
 
     self->transcript = GTK_BOX(gtk_box_new(GTK_ORIENTATION_VERTICAL, 0));
-    gtk_widget_set_name(GTK_WIDGET(self->transcript), "clawt-transcript");
 
     /*
      * The last turn should not sit against the composer.  18px because
@@ -10602,6 +10601,7 @@ build_chat_page(ClawtWindow *self)
     }
     gtk_widget_set_vexpand(scroll, TRUE);
     self->transcript_scroll = GTK_SCROLLED_WINDOW(scroll);
+    gtk_widget_set_name(scroll, "clawt-transcript");
 
     /*
      * Following is maintained from three places: the reader scrolling
