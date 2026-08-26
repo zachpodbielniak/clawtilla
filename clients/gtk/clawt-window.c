@@ -3072,7 +3072,7 @@ append_attachment_previews(ClawtWindow *self, GtkWidget *row,
  */
 #define CHAT_ROW_MARGIN  12
 #define CHAT_GUTTER      44
-#define CHAT_BODY_INSET  (CHAT_ROW_MARGIN + CHAT_GUTTER)
+#define CHAT_BODY_INSET  clawt_chat_body_inset(CHAT_ROW_MARGIN, CHAT_GUTTER)
 
 /*
  * "Today", "Yesterday", or "Wednesday 25 August".
@@ -7616,8 +7616,10 @@ clawt_window_alert(ClawtWindow *self, ClawtAlertTier tier, const gchar *source,
      * list is worth rebuilding a few lines below, applied one step
      * earlier.
      */
-    alert->read = (self->alerts_split != NULL &&
-                   adw_overlay_split_view_get_show_sidebar(self->alerts_split));
+    alert->read = clawt_alert_arrives_read(
+        self->alerts_split != NULL &&
+            adw_overlay_split_view_get_show_sidebar(self->alerts_split),
+        alert->tier);
 
     /* Newest first: the list is read from the top and never scrolled to
      * the bottom, which is the opposite of a transcript. */
@@ -16168,8 +16170,8 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
     adw_overlay_split_view_set_content(self->alerts_split,
                                        GTK_WIDGET(self->page_toasts));
     adw_overlay_split_view_set_show_sidebar(self->alerts_split, FALSE);
-    adw_overlay_split_view_set_sidebar_width_fraction(self->alerts_split,
-                                                      0.26);
+    adw_overlay_split_view_set_sidebar_width_fraction(
+        self->alerts_split, CLAWT_ALERTS_PANEL_FRACTION);
 
     switcher = adw_view_switcher_new();
     adw_view_switcher_set_stack(ADW_VIEW_SWITCHER(switcher), self->pages);
@@ -16285,8 +16287,14 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
      * deliberate, occasional toggle at the cost of balance on every
      * window all the time.
      */
-    breakpoint = adw_breakpoint_new(
-        adw_breakpoint_condition_parse("max-width: 1150px"));
+    {
+        g_autofree gchar *condition =
+            g_strdup_printf("max-width: %dpx", CLAWT_ALERTS_PUSH_BREAKPOINT);
+
+        breakpoint =
+            adw_breakpoint_new(adw_breakpoint_condition_parse(condition));
+    }
+
     adw_breakpoint_add_setters(breakpoint, G_OBJECT(self->alerts_split),
                                "collapsed", TRUE, NULL);
     adw_application_window_add_breakpoint(ADW_APPLICATION_WINDOW(self),

@@ -17,6 +17,7 @@
 #include "clawtilla.h"
 
 #include <glib.h>
+#include <math.h>
 
 /* Anything after this instant is live rather than replayed. */
 #define CONNECTED_AT G_GINT64_CONSTANT(1000000)
@@ -238,6 +239,151 @@ test_an_unknown_kind_is_routine(void)
                     CLAWT_ALERT_ROUTINE);
 }
 
+/* ── An alert arriving in front of the reader ──────────────────────── */
+
+/*
+ * The positive control, and it comes first deliberately: without it
+ * these are one-sided assertions that would pass in a build whose badge
+ * never counts anything at all.
+ */
+static void
+test_an_alert_arriving_unseen_is_unread(void)
+{
+    g_assert_false(clawt_alert_arrives_read(FALSE, CLAWT_ALERT_ERROR));
+    g_assert_false(clawt_alert_arrives_read(FALSE, CLAWT_ALERT_NOTICE));
+}
+
+static void
+test_an_alert_arriving_in_front_of_you_is_read(void)
+{
+    g_assert_true(clawt_alert_arrives_read(TRUE, CLAWT_ALERT_ERROR));
+    g_assert_true(clawt_alert_arrives_read(TRUE, CLAWT_ALERT_NOTICE));
+}
+
+/*
+ * The routine stream is never counted, so it arrives read whatever is
+ * on screen -- a flag no badge reads is one a later widening of the
+ * filter would silently start believing.
+ */
+static void
+test_a_routine_alert_is_read_either_way(void)
+{
+    g_assert_true(clawt_alert_arrives_read(FALSE, CLAWT_ALERT_ROUTINE));
+    g_assert_true(clawt_alert_arrives_read(TRUE, CLAWT_ALERT_ROUTINE));
+}
+
+/* ── The chat column, which the composer has to agree with ─────────── */
+
+/*
+ * Both clients had the same fault: the transcript spends a gutter on
+ * the avatar and the composer spent nothing, so the entry's frame stood
+ * inside the column deliberately kept empty.  The numbers differ per
+ * client, the derivation does not.
+ */
+static void
+test_a_body_starts_past_the_gutter(void)
+{
+    /* The GTK client's pair. */
+    g_assert_cmpint(clawt_chat_body_inset(12, 44), ==, 56);
+
+    /* The web sheet's: an avatar and its gap, with no row inset. */
+    g_assert_cmpint(clawt_chat_body_inset(0, 36), ==, 36);
+}
+
+/*
+ * A client with no avatar column puts its composer against the clamp,
+ * which is correct rather than a special case -- there is no gutter for
+ * it to stand in.
+ */
+static void
+test_no_gutter_means_no_inset(void)
+{
+    g_assert_cmpint(clawt_chat_body_inset(0, 0), ==, 0);
+}
+
+/* ── Where the alerts panel may push rather than overlay ───────────── */
+
+/*
+ * The derivation reproduces the number the client was built around.
+ *
+ * Asserted on the floor rather than on the breakpoint, because the
+ * floor is the thing with a reason: (T - 600) / 2 + 12 >= 24 gives
+ * T >= 624, and 280 + 624 / 0.74 is 1123.24 -- so 1124 is the first
+ * width at which the column has its clear space.
+ */
+static void
+test_the_push_threshold_is_derived(void)
+{
+    g_assert_cmpint(clawt_alerts_push_min_width(CLAWT_ALERTS_SIDEBAR_WIDTH,
+                                                CLAWT_ALERTS_PANEL_FRACTION,
+                                                CLAWT_CHAT_CLAMP_WIDTH,
+                                                12),
+                    ==, 1124);
+}
+
+/*
+ * And the value the client ships clears it.
+ *
+ * This is the assertion that earns the extraction: the floor is built
+ * from four numbers other lines of code own, and widening the panel or
+ * the agent list moves it silently.  Nothing warns, because nothing is
+ * broken -- the panel still opens and the transcript still renders,
+ * with the column against the panel's edge.
+ */
+static void
+test_the_shipped_breakpoint_clears_the_threshold(void)
+{
+    gint floor_width = clawt_alerts_push_min_width(
+        CLAWT_ALERTS_SIDEBAR_WIDTH, CLAWT_ALERTS_PANEL_FRACTION,
+        CLAWT_CHAT_CLAMP_WIDTH, 12);
+
+    g_assert_cmpint(CLAWT_ALERTS_PUSH_BREAKPOINT, >=, floor_width);
+}
+
+/*
+ * A wider panel needs a wider window, and a wider agent list moves the
+ * whole thing along by its own width.  Two directions, because a
+ * derivation that only ever gets its shipped inputs is a constant with
+ * extra steps.
+ */
+static void
+test_a_wider_panel_needs_a_wider_window(void)
+{
+    gint narrow = clawt_alerts_push_min_width(280, 0.26, 600, 12);
+    gint wide = clawt_alerts_push_min_width(280, 0.40, 600, 12);
+
+    g_assert_cmpint(wide, >, narrow);
+    g_assert_cmpint(clawt_alerts_push_min_width(400, 0.26, 600, 12), ==,
+                    narrow + 120);
+}
+
+/*
+ * A row margin at or above the wanted gap means the column needs
+ * nothing beyond its clamp -- the margin is already the clear space.
+ * It must never ask for *less* than the clamp, which an unclamped
+ * subtraction would do the moment somebody raised the margin.
+ */
+static void
+test_a_generous_row_margin_never_shrinks_the_column(void)
+{
+    g_assert_cmpint(clawt_alerts_push_min_width(280, 0.26, 600, 24), ==,
+                    clawt_alerts_push_min_width(280, 0.26, 600, 999));
+    g_assert_cmpint(clawt_alerts_push_min_width(280, 0.26, 600, 999), ==,
+                    280 + (gint)ceil(600.0 / 0.74));
+}
+
+/*
+ * A fraction that leaves the transcript nothing describes no layout, so
+ * it refuses rather than returning a number that looks usable.
+ */
+static void
+test_an_impossible_fraction_is_refused(void)
+{
+    g_assert_cmpint(clawt_alerts_push_min_width(280, 0.0, 600, 12), ==, 0);
+    g_assert_cmpint(clawt_alerts_push_min_width(280, 1.0, 600, 12), ==, 0);
+    g_assert_cmpint(clawt_alerts_push_min_width(280, 1.5, 600, 12), ==, 0);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -276,6 +422,29 @@ main(int argc, char *argv[])
                     test_the_noisy_kinds_are_skipped);
     g_test_add_func("/client-rules/tier/unknown",
                     test_an_unknown_kind_is_routine);
+
+    g_test_add_func("/client-rules/alert-arrival/unseen",
+                    test_an_alert_arriving_unseen_is_unread);
+    g_test_add_func("/client-rules/alert-arrival/in-front-of-you",
+                    test_an_alert_arriving_in_front_of_you_is_read);
+    g_test_add_func("/client-rules/alert-arrival/routine",
+                    test_a_routine_alert_is_read_either_way);
+
+    g_test_add_func("/client-rules/column/body-starts-past-the-gutter",
+                    test_a_body_starts_past_the_gutter);
+    g_test_add_func("/client-rules/column/no-gutter",
+                    test_no_gutter_means_no_inset);
+
+    g_test_add_func("/client-rules/alerts-push/derived",
+                    test_the_push_threshold_is_derived);
+    g_test_add_func("/client-rules/alerts-push/shipped-clears-it",
+                    test_the_shipped_breakpoint_clears_the_threshold);
+    g_test_add_func("/client-rules/alerts-push/wider-panel",
+                    test_a_wider_panel_needs_a_wider_window);
+    g_test_add_func("/client-rules/alerts-push/generous-margin",
+                    test_a_generous_row_margin_never_shrinks_the_column);
+    g_test_add_func("/client-rules/alerts-push/impossible-fraction",
+                    test_an_impossible_fraction_is_refused);
 
     return g_test_run();
 }
