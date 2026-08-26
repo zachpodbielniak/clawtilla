@@ -291,6 +291,42 @@ test_a_palette_reaches_the_stylesheet(void)
 }
 
 /*
+ * And it reaches libadwaita's own rules, which read a different
+ * namespace entirely.
+ *
+ * `@define-color` and the `--token` custom properties are not aliases:
+ * measured on libadwaita 1.8.7, a `.accent` label under
+ * `@define-color accent_color rgb(9,9,9)` stays stock blue and only
+ * moves when `:root { --accent-color: ... }` says so.  A palette that
+ * emits one form styles this client's own rules and leaves every
+ * libadwaita-drawn accent, error, success and warning at the stock
+ * GNOME colour -- blue and red icons on a Catppuccin surface.
+ *
+ * So both forms, for every token.  Asserted on the four that are
+ * visible in the alerts panel and on one that is not, because the rule
+ * is every token rather than the ones somebody happened to notice.
+ */
+static void
+test_a_palette_speaks_both_dialects(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+    g_autofree gchar *css = NULL;
+
+    clawt_appearance_set_theme(appearance, CLAWT_THEME_CATPPUCCIN_MOCHA);
+    css = clawt_appearance_to_css(appearance);
+
+    g_assert_nonnull(strstr(css, "--accent-color: #b4befe;"));
+    g_assert_nonnull(strstr(css, "--error-color: #f38ba8;"));
+    g_assert_nonnull(strstr(css, "--success-color: #a6e3a1;"));
+    g_assert_nonnull(strstr(css, "--warning-color: #f9e2af;"));
+    g_assert_nonnull(strstr(css, "--window-bg-color: #1e1e2e;"));
+
+    /* The older form stays: this client's own rules read it. */
+    g_assert_nonnull(strstr(css, "@define-color accent_color #b4befe;"));
+}
+
+
+/*
  * And the three schemes that are not palettes emit no colour at all.
  *
  * Paired with the test above deliberately: an assertion that something
@@ -633,6 +669,8 @@ main(int argc, char *argv[])
                     test_the_defaults_round_trip);
     g_test_add_func("/appearance/palette-reaches-the-stylesheet",
                     test_a_palette_reaches_the_stylesheet);
+    g_test_add_func("/appearance/palette-speaks-both-dialects",
+                    test_a_palette_speaks_both_dialects);
     g_test_add_func("/appearance/no-palette-no-colour",
                     test_a_scheme_that_is_not_a_palette_emits_no_colour);
     g_test_add_func("/appearance/palette-names-its-scheme",

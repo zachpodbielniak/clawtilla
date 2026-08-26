@@ -413,6 +413,78 @@ append_family(GString *out, const gchar *family)
     g_string_append_c(out, '"');
 }
 
+/*
+ * The same palette again, in the dialect libadwaita's own rules read.
+ *
+ * `@define-color` and the `--token` custom properties are two
+ * namespaces, not two spellings of one.  Measured on 1.8.7: a `.accent`
+ * label under `@define-color accent_color rgb(9,9,9)` stays stock blue
+ * and only moves when `:root { --accent-color: ... }` says so, while a
+ * rule of our own reading `@accent_color` sees the new value and one
+ * reading `var(--accent-color)` does not.  Which tokens bridge between
+ * them is undocumented and has changed between releases.
+ *
+ * So both forms are emitted for every token, and the second is derived
+ * from the first rather than written out again -- a palette is one list
+ * of colours, and two hand-maintained copies of thirty-seven hex values
+ * would drift the first time somebody added a colour.
+ *
+ * The transform is exactly libadwaita's own naming: `accent_color`
+ * becomes `--accent-color`.  Anything that is not a `@define-color`
+ * line is skipped rather than guessed at.
+ */
+static void
+append_custom_properties(GString *out, const gchar *palette)
+{
+    g_auto(GStrv) lines = NULL;
+    guint i;
+
+    g_return_if_fail(out != NULL);
+
+    if (palette == NULL)
+        return;
+
+    lines = g_strsplit(palette, "\n", -1);
+
+    g_string_append(out, ":root {\n");
+
+    for (i = 0; lines[i] != NULL; i++) {
+        const gchar *rest = lines[i];
+        const gchar *space;
+        g_autofree gchar *name = NULL;
+        g_autofree gchar *value = NULL;
+        gchar *semicolon;
+        gchar *dash;
+
+        if (!g_str_has_prefix(rest, "@define-color "))
+            continue;
+
+        rest += strlen("@define-color ");
+        space = strchr(rest, ' ');
+
+        if (space == NULL)
+            continue;
+
+        name = g_strndup(rest, (gsize)(space - rest));
+        value = g_strdup(space + 1);
+        semicolon = strchr(value, ';');
+
+        if (semicolon == NULL)
+            continue;
+
+        *semicolon = '\0';
+
+        for (dash = name; *dash != '\0'; dash++) {
+            if (*dash == '_')
+                *dash = '-';
+        }
+
+        g_string_append_printf(out, "  --%s: %s;\n", name, value);
+    }
+
+    g_string_append(out, "}\n");
+}
+
 gchar *
 clawt_appearance_to_css(ClawtAppearance *self)
 {
@@ -432,8 +504,12 @@ clawt_appearance_to_css(ClawtAppearance *self)
      * producing an empty stylesheet.  A sheet that named the current
      * default would freeze it.
      */
-    if (clawt_appearance_theme_has_palette(self->theme))
-        g_string_append(out, theme_info(self->theme)->css);
+    if (clawt_appearance_theme_has_palette(self->theme)) {
+        const gchar *palette = theme_info(self->theme)->css;
+
+        g_string_append(out, palette);
+        append_custom_properties(out, palette);
+    }
 
     /*
      * Nothing at all when nothing is set, rather than a sheet full of
