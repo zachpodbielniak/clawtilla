@@ -1180,7 +1180,7 @@ notifiers_for(ClawtNotifier *self, const gchar *agent_id)
 
                 if (instance == NULL ||
                     clawt_integration_config_get_scope(instance) !=
-                        CLAWT_INTEGRATION_SCOPE_ALL)
+                        CLAWT_SCOPE_ALL)
                     continue;
 
                 g_ptr_array_add(out,

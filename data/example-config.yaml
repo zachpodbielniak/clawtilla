@@ -263,6 +263,38 @@ defaults:
       # Values: none, shared, private
       relabel: "shared"
 
+      # Who gets this folder: all, selected or none.
+      #
+      # `all` includes agents created later, which is the point of a default.
+      # `selected` uses the `agents:` and `teams:` lists below. `none` keeps
+      # the entry without giving it to anybody, which is how you park one
+      # without losing what it said.
+      #
+      # Naming agents or teams without saying `scope` means `selected` --
+      # writing a list and having it ignored would be a rule that reads
+      # correctly and does the opposite.
+      #
+      # A scope that is written and cannot be read reaches nobody, the same
+      # way an unrecognised integration scope does: handing somebody's home
+      # directory to the whole fleet by typo is far worse than handing it to
+      # nothing and saying so.
+      # Values: none, selected, all
+      scope: "all"
+
+      # Agent ids that get this folder, when `scope: selected`.
+      #
+      # An id that names no agent is ignored rather than refused: an agent
+      # removed for the afternoon should not stop the fleet starting.
+      agents: []
+
+      # Team ids that get this folder, when `scope: selected`.
+      #
+      # Naming a team is how a folder covers a group without being rewritten
+      # every time somebody joins it, which is the whole reason teams exist.
+      # An agent on no team matches no team entry -- including one spelled
+      # with an empty string.
+      teams: []
+
       # Create the source directory if it is missing.
       create: false
 
@@ -585,6 +617,17 @@ integrations:
     # instance and its credentials without handing it to anybody.
     # Values: none, selected, all
     scope: "selected"
+
+    # Team ids, when `scope: selected`.
+    #
+    # Beside `agents:` rather than instead of it, and either can match.
+    # Naming a team is how an instance covers a group without being
+    # rewritten every time somebody joins it.
+    #
+    # Worth thinking about for a *channel*: two agents sharing one Matrix
+    # account answer as the same person, so a team is rarely what you want
+    # there. For a tools integration it is the ordinary case.
+    teams: []
 
     # Agent ids, when `scope: selected`.
     #

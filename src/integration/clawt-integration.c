@@ -806,7 +806,7 @@ clawt_integration_validate_fleet(ClawtConfig *config, GPtrArray **warnings)
         }
 
         if (clawt_integration_config_get_scope(instance) !=
-            CLAWT_INTEGRATION_SCOPE_SELECTED)
+            CLAWT_SCOPE_SELECTED)
             continue;
 
         named = clawt_integration_config_get_agents(instance);

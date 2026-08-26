@@ -304,6 +304,41 @@ static const ClawtSchemaEntry schema[] = {
   "denied, which reads as a permissions bug rather than a labelling one.",
   "0.1.0" },
 
+{ "defaults.mounts.scope", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "all", clawt_scope_get_type,
+  "Who gets this folder: all, selected or none.\n"
+  "\n"
+  "`all` includes agents created later, which is the point of a default.\n"
+  "`selected` uses the `agents:` and `teams:` lists below. `none` keeps\n"
+  "the entry without giving it to anybody, which is how you park one\n"
+  "without losing what it said.\n"
+  "\n"
+  "Naming agents or teams without saying `scope` means `selected` --\n"
+  "writing a list and having it ignored would be a rule that reads\n"
+  "correctly and does the opposite.\n"
+  "\n"
+  "A scope that is written and cannot be read reaches nobody, the same\n"
+  "way an unrecognised integration scope does: handing somebody's home\n"
+  "directory to the whole fleet by typo is far worse than handing it to\n"
+  "nothing and saying so.", "0.1.0" },
+
+{ "defaults.mounts.agents", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Agent ids that get this folder, when `scope: selected`.\n"
+  "\n"
+  "An id that names no agent is ignored rather than refused: an agent\n"
+  "removed for the afternoon should not stop the fleet starting.",
+  "0.1.0" },
+
+{ "defaults.mounts.teams", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Team ids that get this folder, when `scope: selected`.\n"
+  "\n"
+  "Naming a team is how a folder covers a group without being rewritten\n"
+  "every time somebody joins it, which is the whole reason teams exist.\n"
+  "An agent on no team matches no team entry -- including one spelled\n"
+  "with an empty string.", "0.1.0" },
+
 { "defaults.mounts.create", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "false", NULL,
   "Create the source directory if it is missing.", "0.1.0" },
@@ -659,13 +694,25 @@ static const ClawtSchemaEntry schema[] = {
   "Independent of `scope`: this is the switch, scope is the audience.", "0.2.0" },
 
 { "integrations.scope", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
-  "selected", clawt_integration_scope_get_type,
+  "selected", clawt_scope_get_type,
   "Who gets it: all, selected or none.\n"
   "\n"
   "`all` includes agents created later, which is the point of it -- a tool\n"
   "server the fleet shares should not need revisiting every time the fleet\n"
   "grows. `selected` uses the `agents:` list below. `none` keeps the\n"
   "instance and its credentials without handing it to anybody.", "0.2.0" },
+
+{ "integrations.teams", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Team ids, when `scope: selected`.\n"
+  "\n"
+  "Beside `agents:` rather than instead of it, and either can match.\n"
+  "Naming a team is how an instance covers a group without being\n"
+  "rewritten every time somebody joins it.\n"
+  "\n"
+  "Worth thinking about for a *channel*: two agents sharing one Matrix\n"
+  "account answer as the same person, so a team is rarely what you want\n"
+  "there. For a tools integration it is the ordinary case.", "0.2.0" },
 
 { "integrations.agents", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,

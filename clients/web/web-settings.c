@@ -845,6 +845,51 @@ connectors_content(ClawtWebApp *app)
     return HTMX_ELEMENT(g_steal_pointer(&box));
 }
 
+/*
+ * Who a shared folder reaches, in a phrase.
+ *
+ * Said on every card rather than only the scoped ones: a list where most
+ * rows say nothing and one says "team backend" invites reading the
+ * silent ones as unknown rather than as everybody.
+ */
+static gchar *
+folders_describe_scope(JsonObject *mount)
+{
+    const gchar *scope = clawt_web_member(mount, "scope", "all");
+    g_autoptr(GString) out = NULL;
+    static const gchar *const keys[] = { "agents", "teams", NULL };
+    gsize k;
+
+    if (g_strcmp0(scope, "all") == 0)
+        return g_strdup("every agent");
+
+    if (g_strcmp0(scope, "none") == 0)
+        return g_strdup("nobody");
+
+    out = g_string_new(NULL);
+
+    for (k = 0; keys[k] != NULL; k++) {
+        JsonArray *items = clawt_web_member_array(mount, keys[k]);
+        guint i;
+
+        for (i = 0; items != NULL && i < json_array_get_length(items); i++) {
+            if (out->len > 0)
+                g_string_append(out, ", ");
+
+            g_string_append_printf(out, "%s %s",
+                                   g_strcmp0(keys[k], "teams") == 0
+                                       ? "team" : "agent",
+                                   json_array_get_string_element(items, i));
+        }
+    }
+
+    /*
+     * A `selected` scope naming nothing reaches nobody, and saying so
+     * matters: it is the state a half-finished edit leaves behind.
+     */
+    return out->len > 0 ? g_strdup(out->str) : g_strdup("nobody (no list)");
+}
+
 /* ── Shared folders ──────────────────────────────────────────────── */
 
 static HtmxElement *
@@ -883,6 +928,18 @@ folders_content(ClawtWebApp *app)
         clawt_web_add(body, clawt_web_row("Path inside", target));
         clawt_web_add(body, clawt_web_row(
             "Mode", g_strcmp0(mode, "ro") == 0 ? "read-only" : "writable"));
+
+        /*
+         * Said on every card rather than only the scoped ones. A list
+         * where most rows say nothing and one says "team backend"
+         * invites reading the silent ones as unknown rather than as
+         * everybody.
+         */
+        {
+            g_autofree gchar *who = folders_describe_scope(mount);
+
+            clawt_web_add(body, clawt_web_row("Who gets it", who));
+        }
 
         /*
          * The target travels as a form field, not in the path.
@@ -933,6 +990,12 @@ folders_content(ClawtWebApp *app)
             "empty means the same path, which is usually what you want"));
         clawt_web_add(form, clawt_web_select_field("Mode", "mode", modes,
                                                    mode_labels, "rw"));
+        clawt_web_add(form, clawt_web_field(
+            "Teams", "teams", NULL,
+            "empty means every agent; otherwise team ids, comma separated"));
+        clawt_web_add(form, clawt_web_field(
+            "Agents", "agents", NULL,
+            "individual agent ids, comma separated"));
 
         {
             g_autoptr(HtmxDiv) row = htmx_div_new();
@@ -946,6 +1009,11 @@ folders_content(ClawtWebApp *app)
 
         htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
 
+        clawt_web_add(body, clawt_web_text(
+            "Naming a team covers everyone on it, including whoever joins "
+            "later -- which is the whole reason teams exist. Name neither "
+            "and it goes to every agent that has a computer.",
+            "small muted"));
         clawt_web_add(body, clawt_web_text(
             "An agent that declares its own folder at the same path wins "
             "there, and one can decline all of them with "
@@ -2019,6 +2087,33 @@ on_folder_add(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                                               : source);
     clawt_web_payload_set(payload, "mode",
                           clawt_web_form_value(request, "mode"));
+
+    /*
+     * The lists go up as lists and the *daemon* decides the scope from
+     * them. One place decides what naming a team means, and it is the
+     * one all three clients talk to.
+     */
+    {
+        static const gchar *const keys[] = { "teams", "agents", NULL };
+        gsize k;
+
+        for (k = 0; keys[k] != NULL; k++) {
+            const gchar *raw = clawt_web_form_value(request, keys[k]);
+            g_auto(GStrv) items = NULL;
+            gsize n;
+
+            if (raw == NULL || *raw == '\0')
+                continue;
+
+            items = g_strsplit(raw, ",", -1);
+
+            for (n = 0; items[n] != NULL; n++)
+                g_strstrip(items[n]);
+
+            clawt_web_payload_set_list(payload, keys[k],
+                                       (const gchar *const *)items);
+        }
+    }
 
     reply = clawt_web_app_call(app, "defaults.mount.add",
                                clawt_web_payload_take(g_steal_pointer(&payload)));

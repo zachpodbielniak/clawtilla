@@ -2352,6 +2352,237 @@ test_merging_folders_handles_nothing(void)
     g_assert_cmpuint(empty->len, ==, 0);
 }
 
+/*
+ * Who a shared folder reaches, over every combination.
+ *
+ * This is the rule integrations and shared folders now share. They were
+ * going to be two implementations, and two would have differed exactly
+ * once -- on an agent named directly *and* on a listed team, which is
+ * the row nobody writes a test for.
+ */
+static void
+test_scope_covers_agents_and_teams(void)
+{
+    static const gchar *const agents[] = { "scribe", NULL };
+    static const gchar *const teams[] = { "backend", NULL };
+    static const struct {
+        ClawtScope           scope;
+        const gchar *const  *agents;
+        const gchar *const  *teams;
+        const gchar         *agent;
+        const gchar         *team;
+        gboolean             covered;
+    } cases[] = {
+        /* all reaches everybody, named or not, teamed or not. */
+        { CLAWT_SCOPE_ALL, NULL, NULL, "anyone", NULL, TRUE },
+        { CLAWT_SCOPE_ALL, agents, teams, "anyone", "frontend", TRUE },
+
+        /* none reaches nobody, however they are named. */
+        { CLAWT_SCOPE_NONE, agents, teams, "scribe", "backend", FALSE },
+
+        /* selected: by id, by team, by either, by neither. */
+        { CLAWT_SCOPE_SELECTED, agents, NULL, "scribe", NULL, TRUE },
+        { CLAWT_SCOPE_SELECTED, agents, NULL, "other", NULL, FALSE },
+        { CLAWT_SCOPE_SELECTED, NULL, teams, "other", "backend", TRUE },
+        { CLAWT_SCOPE_SELECTED, NULL, teams, "other", "frontend", FALSE },
+
+        /*
+         * Named directly *and* on a listed team. The row two
+         * implementations would have disagreed about.
+         */
+        { CLAWT_SCOPE_SELECTED, agents, teams, "scribe", "backend", TRUE },
+
+        /* Named directly while on an unlisted team still counts. */
+        { CLAWT_SCOPE_SELECTED, agents, teams, "scribe", "frontend", TRUE },
+
+        /*
+         * A teamless agent matches no team entry. Both spellings of
+         * absent -- no key at all, and the empty string an agent taken
+         * off a team gets -- have to miss, which is a distinction this
+         * tree has already paid for once in both clients' sidebars.
+         */
+        { CLAWT_SCOPE_SELECTED, NULL, teams, "other", NULL, FALSE },
+        { CLAWT_SCOPE_SELECTED, NULL, teams, "other", "", FALSE },
+
+        /* selected with no lists is nobody, not everybody. */
+        { CLAWT_SCOPE_SELECTED, NULL, NULL, "scribe", "backend", FALSE }
+    };
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_assert_cmpint(clawt_scope_covers(cases[i].scope, cases[i].agents,
+                                           cases[i].teams, cases[i].agent,
+                                           cases[i].team),
+                        ==, cases[i].covered);
+    }
+
+    /* No agent at all is never covered, even by `all`. */
+    g_assert_false(clawt_scope_covers(CLAWT_SCOPE_ALL, NULL, NULL, NULL,
+                                      NULL));
+}
+
+/*
+ * A folder scoped to a team reaches that team and nobody else, through
+ * the factory.
+ *
+ * The rule is tested above; this is the wire. A scope that parsed
+ * correctly and was never consulted when the computer was built would
+ * be a setting reported as saved and applied to everybody.
+ */
+static void
+test_a_team_scoped_folder_reaches_only_that_team(void)
+{
+    static const struct {
+        const gchar *agent;
+        const gchar *team_line;
+        gboolean     gets_it;
+    } cases[] = {
+        { "one",   "    team: backend\n",  TRUE },
+        { "two",   "    team: frontend\n", FALSE },
+        { "three", "",                     FALSE }
+    };
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autoptr(ClawtConfig) config = NULL;
+        g_autoptr(ClawtComputer) computer = NULL;
+        g_autoptr(ClawtPodBridge) bridge = clawt_pod_bridge_new(NULL);
+        g_autoptr(GPtrArray) defaults = NULL;
+        g_autoptr(GError) error = NULL;
+        g_autofree gchar *yaml = NULL;
+        ClawtAgentConfig *agent;
+
+        yaml = g_strdup_printf(
+            "defaults:\n"
+            "  mounts:\n"
+            "    - source: /tmp\n"
+            "      target: /work/backend\n"
+            "      required: false\n"
+            "      teams: [backend]\n"
+            "agents:\n"
+            "  - id: %s\n"
+            "%s"
+            "    computer:\n"
+            "      type: container\n",
+            cases[i].agent, cases[i].team_line);
+
+        config = clawt_config_load_from_string(yaml, &error);
+        g_assert_no_error(error);
+        agent = clawt_config_get_agent(config, cases[i].agent);
+        defaults = clawt_config_get_default_mounts(config);
+
+        /*
+         * Naming a team without saying `scope` means selected. Writing
+         * a list and having it ignored because the scope defaulted to
+         * ALL would be a rule that reads correctly and does the
+         * opposite -- so that is asserted here rather than assumed.
+         */
+        g_assert_cmpint(clawt_mount_get_scope(g_ptr_array_index(defaults, 0)),
+                        ==, CLAWT_SCOPE_SELECTED);
+
+        computer = clawt_computer_factory_create(agent, defaults, bridge,
+                                                 &error);
+        g_assert_no_error(error);
+        g_assert_cmpint(has_target(clawt_computer_get_mounts(computer),
+                                   "/work/backend"),
+                        ==, cases[i].gets_it);
+    }
+}
+
+/*
+ * A scope that was written and cannot be read reaches nobody.
+ *
+ * The same asymmetry integrations record: a typo that hands somebody's
+ * home directory to the whole fleet is far worse than one that hands it
+ * to nothing and says so. Absent is still everybody -- a list under
+ * `defaults` should mean what the word says.
+ */
+static void
+test_an_unreadable_scope_reaches_nobody(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(GPtrArray) defaults = NULL;
+    g_autoptr(GError) error = NULL;
+
+    g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING,
+                          "*is not a scope; reaching nobody*");
+
+    config = clawt_config_load_from_string(
+        "defaults:\n"
+        "  mounts:\n"
+        "    - source: /tmp\n"
+        "      target: /work/typo\n"
+        "      scope: everyone\n"
+        "    - source: /tmp\n"
+        "      target: /work/silent\n", &error);
+    g_assert_no_error(error);
+
+    defaults = clawt_config_get_default_mounts(config);
+    g_assert_cmpuint(defaults->len, ==, 2);
+
+    g_test_assert_expected_messages();
+
+    /* The typo reaches nobody... */
+    g_assert_false(clawt_mount_covers(g_ptr_array_index(defaults, 0),
+                                      "scribe", "backend"));
+
+    /* ...and saying nothing still reaches everybody. */
+    g_assert_true(clawt_mount_covers(g_ptr_array_index(defaults, 1),
+                                     "scribe", NULL));
+}
+
+/*
+ * A scope survives being written and read back.
+ *
+ * Only when it is not `all`, because writing `scope: all` into every
+ * entry would be noise in a file people read -- so the round trip has
+ * to prove the *absence* is read as ALL rather than as something else.
+ */
+static void
+test_a_scope_round_trips_through_the_file(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *data = NULL;
+    g_autoptr(ClawtConfig) back = NULL;
+    g_autoptr(GPtrArray) mounts = NULL;
+    ClawtMount *scoped;
+
+    config = clawt_config_load_from_string("defaults: {}\n", &error);
+    g_assert_no_error(error);
+
+    scoped = clawt_mount_new("/srv/product", "/work/product");
+    clawt_mount_set_scope(scoped, CLAWT_SCOPE_SELECTED);
+    {
+        static const gchar *const teams[] = { "backend", "platform", NULL };
+
+        clawt_mount_set_teams(scoped, teams);
+    }
+    g_assert_true(clawt_config_add_default_mount(config, scoped));
+    clawt_mount_free(scoped);
+
+    g_assert_true(clawt_config_add_default_mount(
+        config, (scoped = clawt_mount_new("/srv/all", "/work/all"))));
+    clawt_mount_free(scoped);
+
+    data = clawt_config_to_string(config);
+    back = clawt_config_load_from_string(data, &error);
+    g_assert_no_error(error);
+
+    mounts = clawt_config_get_default_mounts(back);
+    g_assert_cmpuint(mounts->len, ==, 2);
+
+    g_assert_cmpint(clawt_mount_get_scope(g_ptr_array_index(mounts, 0)),
+                    ==, CLAWT_SCOPE_SELECTED);
+    g_assert_cmpstr(clawt_mount_get_teams(g_ptr_array_index(mounts, 0))[1],
+                    ==, "platform");
+
+    /* No scope written, and read back as everybody. */
+    g_assert_null(strstr(data, "scope: all"));
+    g_assert_cmpint(clawt_mount_get_scope(g_ptr_array_index(mounts, 1)),
+                    ==, CLAWT_SCOPE_ALL);
+}
+
 /* ── distrobox ────────────────────────────────────────────────────── */
 
 /*
@@ -3328,6 +3559,14 @@ main(int argc, char *argv[])
                     test_a_guest_desktop_gets_a_screen);
     g_test_add_func("/computer/vm/qemu-names-its-gpu",
                     test_the_qemu_backend_names_its_gpu);
+    g_test_add_func("/scope/covers-agents-and-teams",
+                    test_scope_covers_agents_and_teams);
+    g_test_add_func("/computer/folders/team-scope-reaches-that-team",
+                    test_a_team_scoped_folder_reaches_only_that_team);
+    g_test_add_func("/computer/folders/unreadable-scope-reaches-nobody",
+                    test_an_unreadable_scope_reaches_nobody);
+    g_test_add_func("/computer/folders/scope-round-trips",
+                    test_a_scope_round_trips_through_the_file);
     g_test_add_func("/computer/folders/default-reaches-a-container",
                     test_a_default_mount_reaches_a_container);
     g_test_add_func("/computer/folders/default-does-not-widen-a-host",

@@ -841,6 +841,49 @@ add_mount_to_node(YamlNode    *root,
         yaml_mapping_set_member(mapping, "size", value);
     }
 
+    /*
+     * Only when it is not ALL. Writing `scope: all` into every entry
+     * would be noise in a file people read, and ALL is what an entry
+     * without it already means.
+     */
+    if (clawt_mount_get_scope(mount) != CLAWT_SCOPE_ALL) {
+        g_autoptr(YamlNode) value = yaml_node_new_string(
+            clawt_enum_to_nick(CLAWT_TYPE_SCOPE,
+                               clawt_mount_get_scope(mount)));
+
+        yaml_mapping_set_member(mapping, "scope", value);
+    }
+
+    {
+        static const struct {
+            const gchar         *key;
+            const gchar * const *(*get)(ClawtMount *);
+        } lists[] = {
+            { "agents", clawt_mount_get_agents },
+            { "teams", clawt_mount_get_teams }
+        };
+        gsize l;
+
+        for (l = 0; l < G_N_ELEMENTS(lists); l++) {
+            const gchar *const *items = lists[l].get(mount);
+            g_autoptr(YamlNode) seq = NULL;
+            gsize k;
+
+            if (items == NULL || items[0] == NULL)
+                continue;
+
+            seq = yaml_node_new_sequence(NULL);
+
+            for (k = 0; items[k] != NULL; k++) {
+                g_autoptr(YamlNode) item = yaml_node_new_string(items[k]);
+
+                yaml_sequence_add_element(yaml_node_get_sequence(seq), item);
+            }
+
+            yaml_mapping_set_member(mapping, lists[l].key, seq);
+        }
+    }
+
     element = yaml_node_new_mapping(mapping);
     yaml_sequence_add_element(yaml_node_get_sequence(list), element);
 
@@ -1173,6 +1216,48 @@ mounts_from_node(YamlNode *root, const gchar *path)
             clawt_mount_set_relabel(mount, (ClawtRelabel)value);
 
         clawt_mount_set_size(mount, member_string(mapping, "size"));
+
+        /*
+         * Who it is for. Absent is ALL, because a list under `defaults`
+         * should mean what the word says -- but a scope that was
+         * *written* and cannot be read reaches nobody and says so, which
+         * is the same asymmetry integrations already record: a typo that
+         * hands somebody's home directory to the whole fleet is far
+         * worse than one that hands it to nothing.
+         */
+        nick = member_string(mapping, "scope");
+
+        if (nick != NULL) {
+            if (clawt_enum_from_nick(CLAWT_TYPE_SCOPE, nick, &value)) {
+                clawt_mount_set_scope(mount, (ClawtScope)value);
+            } else {
+                g_warning("shared folder %s: '%s' is not a scope; "
+                          "reaching nobody", target, nick);
+                clawt_mount_set_scope(mount, CLAWT_SCOPE_NONE);
+            }
+        }
+
+        {
+            g_auto(GStrv) agents =
+                node_to_strv(yaml_mapping_get_member(mapping, "agents"));
+            g_auto(GStrv) teams =
+                node_to_strv(yaml_mapping_get_member(mapping, "teams"));
+
+            clawt_mount_set_agents(mount,
+                                   (const gchar *const *)agents);
+            clawt_mount_set_teams(mount, (const gchar *const *)teams);
+
+            /*
+             * Naming agents or teams without saying `scope` means
+             * `selected`. Writing a list and having it ignored because
+             * the scope defaulted to ALL would be a rule that reads
+             * correctly and does the opposite.
+             */
+            if (nick == NULL &&
+                ((agents != NULL && agents[0] != NULL) ||
+                 (teams != NULL && teams[0] != NULL)))
+                clawt_mount_set_scope(mount, CLAWT_SCOPE_SELECTED);
+        }
 
         clawt_mount_set_create(
             mount, string_to_boolean(member_string(mapping, "create"), FALSE));
@@ -2729,20 +2814,20 @@ clawt_integration_config_get_enabled(ClawtIntegrationConfig *self)
     return clawt_integration_config_get_boolean(self, NULL, "enabled");
 }
 
-ClawtIntegrationScope
+ClawtScope
 clawt_integration_config_get_scope(ClawtIntegrationConfig *self)
 {
     const gchar *nick;
     gint value = 0;
 
-    g_return_val_if_fail(self != NULL, CLAWT_INTEGRATION_SCOPE_NONE);
+    g_return_val_if_fail(self != NULL, CLAWT_SCOPE_NONE);
 
     nick = clawt_integration_config_get_string(self, NULL, "scope");
 
     if (nick == NULL)
-        return CLAWT_INTEGRATION_SCOPE_SELECTED;
+        return CLAWT_SCOPE_SELECTED;
 
-    if (!clawt_enum_from_nick(CLAWT_TYPE_INTEGRATION_SCOPE, nick, &value)) {
+    if (!clawt_enum_from_nick(CLAWT_TYPE_SCOPE, nick, &value)) {
         /*
          * An unrecognised scope reaches nobody rather than everybody.  The
          * two failure modes are not symmetric: a typo that hands a
@@ -2751,10 +2836,10 @@ clawt_integration_config_get_scope(ClawtIntegrationConfig *self)
          */
         g_warning("integration %s: '%s' is not a scope; reaching nobody",
                   self->name, nick);
-        return CLAWT_INTEGRATION_SCOPE_NONE;
+        return CLAWT_SCOPE_NONE;
     }
 
-    return (ClawtIntegrationScope)value;
+    return (ClawtScope)value;
 }
 
 GStrv
@@ -2766,40 +2851,38 @@ clawt_integration_config_get_agents(ClawtIntegrationConfig *self)
 }
 
 gboolean
-clawt_integration_config_covers(ClawtIntegrationConfig *self,
-                                const gchar            *agent_id)
+clawt_integration_config_covers_on_team(ClawtIntegrationConfig *self,
+                                        const gchar            *agent_id,
+                                        const gchar            *team)
 {
     g_auto(GStrv) agents = NULL;
-    guint i;
+    g_auto(GStrv) teams = NULL;
 
     g_return_val_if_fail(self != NULL, FALSE);
-
-    if (agent_id == NULL)
-        return FALSE;
 
     if (!clawt_integration_config_get_enabled(self))
         return FALSE;
 
-    switch (clawt_integration_config_get_scope(self)) {
-    case CLAWT_INTEGRATION_SCOPE_ALL:
-        return TRUE;
-
-    case CLAWT_INTEGRATION_SCOPE_NONE:
-        return FALSE;
-
-    case CLAWT_INTEGRATION_SCOPE_SELECTED:
-    default:
-        break;
-    }
-
     agents = clawt_integration_config_get_agents(self);
+    teams = node_to_strv(node_at_path(self->node, "teams", FALSE));
 
-    for (i = 0; agents != NULL && agents[i] != NULL; i++) {
-        if (g_strcmp0(agents[i], agent_id) == 0)
-            return TRUE;
-    }
+    /*
+     * Through the shared rule rather than a copy of it. This was a copy,
+     * and the fleet's shared folders were about to be a second -- two
+     * implementations of "who gets this" that would have differed
+     * exactly once.
+     */
+    return clawt_scope_covers(clawt_integration_config_get_scope(self),
+                              (const gchar *const *)agents,
+                              (const gchar *const *)teams,
+                              agent_id, team);
+}
 
-    return FALSE;
+gboolean
+clawt_integration_config_covers(ClawtIntegrationConfig *self,
+                                const gchar            *agent_id)
+{
+    return clawt_integration_config_covers_on_team(self, agent_id, NULL);
 }
 
 /*
@@ -2998,14 +3081,14 @@ clawt_integration_config_set_secret(ClawtIntegrationConfig *self,
 
 gboolean
 clawt_integration_config_set_scope(ClawtIntegrationConfig *self,
-                                   ClawtIntegrationScope   scope,
+                                   ClawtScope   scope,
                                    const gchar *const     *agents)
 {
     const gchar *nick;
 
     g_return_val_if_fail(self != NULL, FALSE);
 
-    nick = clawt_enum_to_nick(CLAWT_TYPE_INTEGRATION_SCOPE, (gint)scope);
+    nick = clawt_enum_to_nick(CLAWT_TYPE_SCOPE, (gint)scope);
 
     if (nick == NULL)
         return FALSE;

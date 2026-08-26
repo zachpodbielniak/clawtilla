@@ -94,7 +94,7 @@ test_scope_all_reaches_everyone(void)
     instance = clawt_config_get_integration(fixture.config, "github");
     g_assert_nonnull(instance);
     g_assert_cmpint(clawt_integration_config_get_scope(instance), ==,
-                    CLAWT_INTEGRATION_SCOPE_ALL);
+                    CLAWT_SCOPE_ALL);
 
     g_assert_true(clawt_integration_config_covers(instance, "researcher"));
     g_assert_true(clawt_integration_config_covers(instance, "scribe"));
@@ -499,7 +499,7 @@ test_add_set_and_remove_round_trip(void)
     clawt_integration_config_set_string(instance, NULL, "homeserver",
                                         "https://matrix.example.org");
     clawt_integration_config_set_scope(instance,
-                                       CLAWT_INTEGRATION_SCOPE_SELECTED,
+                                       CLAWT_SCOPE_SELECTED,
                                        agents);
     clawt_integration_config_set_secret(instance, "researcher",
                                         "access_token",

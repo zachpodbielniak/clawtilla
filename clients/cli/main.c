@@ -2028,6 +2028,69 @@ cmd_memory(int argc, char *argv[])
  * because `clawtilla folders add ~/source` is the whole point: sharing
  * a directory with every agent should not take a YAML editor.
  */
+/*
+ * A repeated flag's values as a JSON array member.
+ */
+static void
+add_argv_array(JsonBuilder *builder, const gchar *name, GPtrArray *items)
+{
+    guint i;
+
+    json_builder_set_member_name(builder, name);
+    json_builder_begin_array(builder);
+
+    for (i = 0; i < items->len; i++)
+        json_builder_add_string_value(builder, g_ptr_array_index(items, i));
+
+    json_builder_end_array(builder);
+}
+
+/*
+ * Who a shared folder reaches, in a phrase.
+ *
+ * Said on every row rather than only on the scoped ones: a listing where
+ * most rows say nothing and one says "teams: backend" invites reading
+ * the silent ones as unknown rather than as everybody.
+ */
+static gchar *
+describe_scope(JsonObject *mount)
+{
+    const gchar *scope = member_or(mount, "scope", "all");
+    g_autoptr(GString) out = NULL;
+    static const gchar *const keys[] = { "agents", "teams", NULL };
+    gsize k;
+
+    if (g_strcmp0(scope, "all") == 0)
+        return g_strdup("every agent");
+
+    if (g_strcmp0(scope, "none") == 0)
+        return g_strdup("nobody");
+
+    out = g_string_new(NULL);
+
+    for (k = 0; keys[k] != NULL; k++) {
+        JsonArray *items = json_object_has_member(mount, keys[k])
+            ? json_object_get_array_member(mount, keys[k]) : NULL;
+        guint i;
+
+        for (i = 0; items != NULL && i < json_array_get_length(items); i++) {
+            if (out->len > 0)
+                g_string_append(out, ", ");
+
+            g_string_append_printf(out, "%s %s",
+                                   g_strcmp0(keys[k], "teams") == 0
+                                       ? "team" : "agent",
+                                   json_array_get_string_element(items, i));
+        }
+    }
+
+    /*
+     * A `selected` scope naming nothing reaches nobody, and saying so
+     * matters: it is the state a half-finished edit leaves behind.
+     */
+    return out->len > 0 ? g_strdup(out->str) : g_strdup("nobody (no list)");
+}
+
 static gint
 cmd_folders(int argc, char *argv[])
 {
@@ -2039,8 +2102,13 @@ cmd_folders(int argc, char *argv[])
         g_printerr("Usage: clawtilla folders [list|add|rm] [ARGS...]\n");
         g_printerr("\n");
         g_printerr("  list                        what every agent gets\n");
-        g_printerr("  add <path> [inside] [--ro]  share a directory\n");
+        g_printerr("  add <path> [inside] [--ro] [--team T] [--agent A]\n");
         g_printerr("  rm <inside>                 stop sharing one\n");
+        g_printerr("\n");
+        g_printerr("Without --team or --agent a folder goes to every "
+                   "agent that has a\n");
+        g_printerr("computer, including ones you make later. Either flag "
+                   "may repeat.\n");
         g_printerr("\n");
         g_printerr("Container, distrobox and VM agents get these. A host "
                    "agent does not:\n");
@@ -2051,6 +2119,8 @@ cmd_folders(int argc, char *argv[])
         g_printerr("  clawtilla folders add ~/source\n");
         g_printerr("  clawtilla folders add ~/Documents/notes /work/notes "
                    "--ro\n");
+        g_printerr("  clawtilla folders add ~/src/product /work/product "
+                   "--team backend\n");
         return EXIT_FAILURE;
     }
 
@@ -2062,6 +2132,8 @@ cmd_folders(int argc, char *argv[])
         const gchar *source = (argc > 3) ? argv[3] : NULL;
         const gchar *target = NULL;
         const gchar *mode = "rw";
+        g_autoptr(GPtrArray) teams = g_ptr_array_new();
+        g_autoptr(GPtrArray) agents = g_ptr_array_new();
         gint arg;
 
         if (source == NULL) {
@@ -2075,6 +2147,10 @@ cmd_folders(int argc, char *argv[])
                 mode = "ro";
             else if (g_strcmp0(argv[arg], "--rw") == 0)
                 mode = "rw";
+            else if (g_strcmp0(argv[arg], "--team") == 0 && arg + 1 < argc)
+                g_ptr_array_add(teams, argv[++arg]);
+            else if (g_strcmp0(argv[arg], "--agent") == 0 && arg + 1 < argc)
+                g_ptr_array_add(agents, argv[++arg]);
             else if (target == NULL)
                 target = argv[arg];
         }
@@ -2085,15 +2161,45 @@ cmd_folders(int argc, char *argv[])
          * places, so a note about a file is a note either of you can
          * follow.
          */
-        reply = call(client, "defaults.mount.add",
-                     build_payload("source", source,
-                                   "target", target != NULL ? target : source,
-                                   "mode", mode, NULL));
+        {
+            g_autoptr(JsonBuilder) builder = json_builder_new();
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "source");
+            json_builder_add_string_value(builder, source);
+            json_builder_set_member_name(builder, "target");
+            json_builder_add_string_value(builder,
+                                          target != NULL ? target : source);
+            json_builder_set_member_name(builder, "mode");
+            json_builder_add_string_value(builder, mode);
+
+            /*
+             * The lists go on the frame and the *daemon* decides the
+             * scope from them, rather than this client sending
+             * "selected" itself. One place decides what naming a team
+             * means, and it is the one both graphical clients also talk
+             * to.
+             */
+            if (teams->len > 0)
+                add_argv_array(builder, "teams", teams);
+
+            if (agents->len > 0)
+                add_argv_array(builder, "agents", agents);
+
+            json_builder_end_object(builder);
+            reply = call(client, "defaults.mount.add",
+                         json_builder_get_root(builder));
+        }
 
         if (reply == NULL)
             return EXIT_FAILURE;
 
-        g_print("Shared with every agent that has a computer.\n");
+        if (teams->len > 0 || agents->len > 0)
+            g_print("Shared with the agents you named, and with any agent "
+                    "that joins a\nteam you named.\n");
+        else
+            g_print("Shared with every agent that has a computer.\n");
+
         g_print("It reaches one when that agent is next started.\n");
         return EXIT_SUCCESS;
     }
@@ -2136,12 +2242,14 @@ cmd_folders(int argc, char *argv[])
 
         for (i = 0; i < json_array_get_length(mounts); i++) {
             JsonObject *mount = json_array_get_object_element(mounts, i);
+            g_autofree gchar *who = describe_scope(mount);
 
-            g_print("%-30s -> %-24s %s\n",
+            g_print("%-28s -> %-22s %-10s %s\n",
                     member_or(mount, "source", "?"),
                     member_or(mount, "target", "?"),
                     g_strcmp0(member_or(mount, "mode", "rw"), "ro") == 0
-                        ? "read-only" : "writable");
+                        ? "read-only" : "writable",
+                    who);
         }
     }
 

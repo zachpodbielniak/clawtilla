@@ -1341,6 +1341,31 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
  *
  * Returns: (transfer full) (nullable): the mount, or %NULL with @error
  */
+/*
+ * A string list on the current object, omitted when empty.
+ *
+ * An empty array and an absent key mean the same thing to every client
+ * here, and writing `[]` into every mount that has no scope list is
+ * noise in a reply somebody reads with `jq`.
+ */
+static void
+add_string_array(JsonBuilder *builder, const gchar *name,
+                 const gchar * const *items)
+{
+    gsize i;
+
+    if (items == NULL || items[0] == NULL)
+        return;
+
+    json_builder_set_member_name(builder, name);
+    json_builder_begin_array(builder);
+
+    for (i = 0; items[i] != NULL; i++)
+        json_builder_add_string_value(builder, items[i]);
+
+    json_builder_end_array(builder);
+}
+
 static ClawtMount *
 mount_from_payload(JsonObject   *payload,
                    const gchar  *target,
@@ -1399,6 +1424,38 @@ mount_from_payload(JsonObject   *payload,
 
     if (size != NULL)
         clawt_mount_set_size(mount, size);
+
+    /*
+     * Who it is for. Only meaningful for a fleet default -- an agent's
+     * own mount is already agent-scoped -- but parsed here because both
+     * frames share this function, and a field silently dropped on one of
+     * them is how the two would come to disagree.
+     */
+    {
+        const gchar *scope = clawt_ipc_payload_string(payload, "scope");
+        g_auto(GStrv) agents =
+            clawt_ipc_payload_strv(payload, "agents");
+        g_auto(GStrv) teams = clawt_ipc_payload_strv(payload, "teams");
+
+        if (scope != NULL) {
+            if (!clawt_enum_from_nick(CLAWT_TYPE_SCOPE, scope, &parsed)) {
+                g_set_error_literal(error, CLAWT_ERROR,
+                                    CLAWT_ERROR_INVALID_ARGUMENT,
+                                    "scope is all, selected or none");
+                return NULL;
+            }
+
+            clawt_mount_set_scope(mount, (ClawtScope)parsed);
+        }
+
+        clawt_mount_set_agents(mount, (const gchar *const *)agents);
+        clawt_mount_set_teams(mount, (const gchar *const *)teams);
+
+        if (scope == NULL &&
+            ((agents != NULL && agents[0] != NULL) ||
+             (teams != NULL && teams[0] != NULL)))
+            clawt_mount_set_scope(mount, CLAWT_SCOPE_SELECTED);
+    }
 
     clawt_mount_set_create(
         mount, clawt_ipc_payload_boolean(payload, "create", FALSE));
@@ -4729,7 +4786,7 @@ add_integration_object(JsonBuilder            *builder,
     json_builder_set_member_name(builder, "scope");
     json_builder_add_string_value(
         builder,
-        clawt_enum_to_nick(CLAWT_TYPE_INTEGRATION_SCOPE,
+        clawt_enum_to_nick(CLAWT_TYPE_SCOPE,
                            (gint)clawt_integration_config_get_scope(instance)));
 
     agents = clawt_integration_config_get_agents(instance);
@@ -4897,7 +4954,7 @@ apply_integration_fields(ClawtIntegrationConfig  *instance,
         g_auto(GStrv) agents = NULL;
         gint scope = 0;
 
-        if (!clawt_enum_from_nick(CLAWT_TYPE_INTEGRATION_SCOPE, nick,
+        if (!clawt_enum_from_nick(CLAWT_TYPE_SCOPE, nick,
                                   &scope)) {
             g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
                         "'%s' is not a scope: use all, selected or none",
@@ -4909,7 +4966,7 @@ apply_integration_fields(ClawtIntegrationConfig  *instance,
             agents = clawt_ipc_payload_strv(payload, "agents");
 
         clawt_integration_config_set_scope(
-            instance, (ClawtIntegrationScope)scope,
+            instance, (ClawtScope)scope,
             (const gchar *const *)agents);
     } else if (json_object_has_member(payload, "agents")) {
         g_auto(GStrv) agents = clawt_ipc_payload_strv(payload, "agents");
@@ -5872,6 +5929,13 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             json_builder_set_member_name(builder, "required");
             json_builder_add_boolean_value(builder,
                                            clawt_mount_get_required(mount));
+            json_builder_set_member_name(builder, "scope");
+            json_builder_add_string_value(
+                builder, clawt_enum_to_nick(CLAWT_TYPE_SCOPE,
+                                            clawt_mount_get_scope(mount)));
+            add_string_array(builder, "agents",
+                             clawt_mount_get_agents(mount));
+            add_string_array(builder, "teams", clawt_mount_get_teams(mount));
             json_builder_end_object(builder);
         }
 
@@ -5917,9 +5981,26 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
                                                "computer.default_mounts")) {
                 g_autoptr(GPtrArray) defaults =
                     clawt_config_get_default_mounts(self->config);
+                g_autoptr(GPtrArray) mine = g_ptr_array_new_with_free_func(
+                    (GDestroyNotify)clawt_mount_free);
+                const gchar *team =
+                    clawt_agent_config_get_string(agent_config, "team");
+                guint d;
 
-                inherited = defaults->len;
-                mounts = clawt_mount_merge_defaults(defaults, own);
+                /*
+                 * Narrowed by scope first, exactly as the factory does.
+                 * Reporting a folder this agent does not get would be
+                 * the same "two answers to what do I have" this list
+                 * was widened to fix, arrived at from the other side.
+                 */
+                for (d = 0; d < defaults->len; d++) {
+                    ClawtMount *candidate = g_ptr_array_index(defaults, d);
+
+                    if (clawt_mount_covers(candidate, agent_id, team))
+                        g_ptr_array_add(mine, clawt_mount_copy(candidate));
+                }
+
+                mounts = clawt_mount_merge_defaults(mine, own);
 
                 /*
                  * merge_defaults drops a default the agent overrode, so
@@ -9214,7 +9295,7 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
                                   instance, NULL, "account"));
             add_string_member(builder, "scope",
                               clawt_enum_to_nick(
-                                  CLAWT_TYPE_INTEGRATION_SCOPE,
+                                  CLAWT_TYPE_SCOPE,
                                   (gint)clawt_integration_config_get_scope(
                                       instance)));
 

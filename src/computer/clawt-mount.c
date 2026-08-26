@@ -25,6 +25,15 @@ struct _ClawtMount {
 
     gboolean        create;
     gboolean        required;
+
+    /*
+     * Who the mount is for, read only from `defaults.mounts`. A mount an
+     * agent declared for itself is already agent-scoped, so these stay
+     * at ALL/NULL there and clawt_mount_covers() answers TRUE.
+     */
+    ClawtScope      scope;
+    GStrv           agents;
+    GStrv           teams;
 };
 
 static ClawtMount *
@@ -61,6 +70,22 @@ clawt_mount_new(const gchar *source, const gchar *target)
     self->create = FALSE;
     self->required = TRUE;
 
+    /*
+     * ALL, so a mount that says nothing about scope is a default in the
+     * ordinary sense of the word.
+     *
+     * SELECTED would be the fail-closed choice and is wrong here. The
+     * safe direction for a *credential* is nobody -- which is why an
+     * unrecognised integration scope reaches nobody -- but a list
+     * somebody wrote under `defaults` should mean what the word says,
+     * and a shared folder that silently reached no agent would look
+     * exactly like the feature not working.
+     *
+     * The fail-closed rule still applies to a scope that was written and
+     * could not be read: see mounts_from_node().
+     */
+    self->scope = CLAWT_SCOPE_ALL;
+
     return self;
 }
 
@@ -78,6 +103,9 @@ clawt_mount_copy(ClawtMount *self)
     copy->relabel = self->relabel;
     copy->create = self->create;
     copy->required = self->required;
+    copy->scope = self->scope;
+    copy->agents = g_strdupv(self->agents);
+    copy->teams = g_strdupv(self->teams);
 
     return copy;
 }
@@ -94,6 +122,8 @@ clawt_mount_free(ClawtMount *self)
     g_free(self->source);
     g_free(self->target);
     g_free(self->size);
+    g_strfreev(self->agents);
+    g_strfreev(self->teams);
     g_free(self);
 }
 
@@ -469,4 +499,65 @@ clawt_mount_merge_defaults(GPtrArray *defaults, GPtrArray *own)
         g_ptr_array_add(out, clawt_mount_copy(g_ptr_array_index(own, i)));
 
     return out;
+}
+
+ClawtScope
+clawt_mount_get_scope(ClawtMount *self)
+{
+    g_return_val_if_fail(self != NULL, CLAWT_SCOPE_ALL);
+
+    return self->scope;
+}
+
+void
+clawt_mount_set_scope(ClawtMount *self, ClawtScope scope)
+{
+    g_return_if_fail(self != NULL);
+
+    self->scope = scope;
+}
+
+const gchar * const *
+clawt_mount_get_agents(ClawtMount *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return (const gchar *const *)self->agents;
+}
+
+void
+clawt_mount_set_agents(ClawtMount *self, const gchar * const *agents)
+{
+    g_return_if_fail(self != NULL);
+
+    g_strfreev(self->agents);
+    self->agents = g_strdupv((GStrv)agents);
+}
+
+const gchar * const *
+clawt_mount_get_teams(ClawtMount *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return (const gchar *const *)self->teams;
+}
+
+void
+clawt_mount_set_teams(ClawtMount *self, const gchar * const *teams)
+{
+    g_return_if_fail(self != NULL);
+
+    g_strfreev(self->teams);
+    self->teams = g_strdupv((GStrv)teams);
+}
+
+gboolean
+clawt_mount_covers(ClawtMount *self, const gchar *agent_id, const gchar *team)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    return clawt_scope_covers(self->scope,
+                              (const gchar *const *)self->agents,
+                              (const gchar *const *)self->teams,
+                              agent_id, team);
 }

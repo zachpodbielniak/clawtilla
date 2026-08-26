@@ -970,6 +970,56 @@ what you want: an agent told about =~/source= then finds it at a name
 that reads the same on either side, so a note about a file is a note
 either of you can follow.
 
+*** Scoping one to a team, or to named agents
+:PROPERTIES:
+:CUSTOM_ID: default-mounts-scope
+:END:
+
+A folder goes to every agent unless it says otherwise.  Naming a team
+covers everyone on it --- including whoever joins later, which is the
+whole reason teams exist:
+
+#+begin_src yaml
+defaults:
+  mounts:
+    - source: "~/source"          # everybody
+      target: "/work/source"
+    - source: "~/src/product"     # the backend team, whoever is on it
+      target: "/work/product"
+      teams: [backend]
+    - source: "~/notes/private"   # one named agent
+      target: "/work/private"
+      agents: [chief]
+#+end_src
+
+#+begin_src bash
+clawtilla folders add ~/src/product /work/product --team backend
+clawtilla folders add ~/notes/private /work/private --agent chief
+#+end_src
+
+The graphical clients take one field and sort it out for you: a name is
+a team or an agent, and the fleet already knows which, so being asked to
+say is being asked to know something the daemon does.
+
+Same vocabulary as an integration's =scope=, and the *same rule* ---
+=clawt_scope_covers()= answers "who gets this" once for both.  They were
+going to be two implementations, and two would have differed exactly
+once: on an agent named directly *and* on a listed team, which is the
+row nobody writes a test for.  =scope: all= is the default, =scope:
+selected= is implied by naming a team or an agent, and =scope: none=
+parks an entry without giving it to anybody.
+
+Integrations gained =teams:= alongside their =agents:= from the same
+change.  Worth thinking about for a *channel*: two agents sharing one
+Matrix account answer as the same person, so a team is rarely what you
+want there.
+
+A scope that is *written and cannot be read* reaches nobody, and says
+so in a warning.  Absent is still everybody --- a list under =defaults=
+should mean what the word says --- but a typo that handed your home
+directory to the whole fleet is far worse than one that handed it to
+nothing.
+
 *** Which agents get them
 :PROPERTIES:
 :CUSTOM_ID: default-mounts-who

@@ -15482,6 +15482,119 @@ on_team_activated(GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
 
 /* ── Shared folders, fleet-wide ───────────────────────────────────── */
 
+/*
+ * Who a shared folder reaches, in a phrase.
+ *
+ * On every row rather than only the scoped ones: a list where most rows
+ * say nothing and one says "team backend" invites reading the silent
+ * ones as unknown rather than as everybody.
+ */
+static gchar *
+folder_scope_text(JsonObject *mount)
+{
+    const gchar *scope = clawt_json_string(mount, "scope", "all");
+    g_autoptr(GString) out = NULL;
+    static const gchar *const keys[] = { "agents", "teams", NULL };
+    gsize k;
+
+    if (g_strcmp0(scope, "all") == 0)
+        return g_strdup("every agent");
+
+    if (g_strcmp0(scope, "none") == 0)
+        return g_strdup("nobody");
+
+    out = g_string_new(NULL);
+
+    for (k = 0; keys[k] != NULL; k++) {
+        JsonArray *items = json_object_has_member(mount, keys[k])
+            ? json_object_get_array_member(mount, keys[k]) : NULL;
+        guint i;
+
+        for (i = 0; items != NULL && i < json_array_get_length(items); i++) {
+            if (out->len > 0)
+                g_string_append(out, ", ");
+
+            g_string_append_printf(out, "%s %s",
+                                   g_strcmp0(keys[k], "teams") == 0
+                                       ? "team" : "agent",
+                                   json_array_get_string_element(items, i));
+        }
+    }
+
+    /* A `selected` scope naming nothing reaches nobody, and says so. */
+    return out->len > 0 ? g_strdup(out->str) : g_strdup("nobody (no list)");
+}
+
+static void
+add_string_list(JsonBuilder *builder, const gchar *name, GPtrArray *items)
+{
+    guint i;
+
+    json_builder_set_member_name(builder, name);
+    json_builder_begin_array(builder);
+
+    for (i = 0; i < items->len; i++)
+        json_builder_add_string_value(builder, g_ptr_array_index(items, i));
+
+    json_builder_end_array(builder);
+}
+
+/*
+ * Splits "backend, scribe" into the teams and the agents it names.
+ *
+ * Asked of the fleet rather than of the person: a name is a team or an
+ * agent, and making somebody say which is asking them to know something
+ * the daemon already knows. A name that is neither is sent as an agent
+ * id, which the daemon ignores with a warning rather than refusing --
+ * an agent added tomorrow should not need this typed again.
+ */
+static void
+add_scope_lists(ClawtWindow *self, JsonBuilder *builder, const gchar *raw)
+{
+    g_auto(GStrv) items = NULL;
+    g_autoptr(JsonNode) team_reply = NULL;
+    g_autoptr(GPtrArray) teams = g_ptr_array_new();
+    g_autoptr(GPtrArray) agents = g_ptr_array_new();
+    JsonArray *known;
+    gsize i;
+
+    if (raw == NULL || *raw == '\0')
+        return;
+
+    items = g_strsplit(raw, ",", -1);
+    team_reply = clawt_window_request(self, "team.list", NULL);
+    known = (team_reply != NULL)
+        ? json_object_get_array_member(clawt_payload_of(team_reply), "teams")
+        : NULL;
+
+    for (i = 0; items[i] != NULL; i++) {
+        gboolean is_team = FALSE;
+        guint t;
+
+        g_strstrip(items[i]);
+
+        if (items[i][0] == '\0')
+            continue;
+
+        for (t = 0; known != NULL && t < json_array_get_length(known); t++) {
+            JsonObject *team = json_array_get_object_element(known, t);
+
+            if (g_strcmp0(clawt_json_string(team, "id", ""), items[i]) == 0) {
+                is_team = TRUE;
+                break;
+            }
+        }
+
+        g_ptr_array_add(is_team ? teams : agents, items[i]);
+    }
+
+    if (teams->len > 0)
+        add_string_list(builder, "teams", teams);
+
+    if (agents->len > 0)
+        add_string_list(builder, "agents", agents);
+}
+
 static void
 on_shared_folder_add_response(AdwAlertDialog *dialog, const gchar *response,
                               gpointer user_data)
@@ -15514,13 +15627,33 @@ on_shared_folder_add_response(AdwAlertDialog *dialog, const gchar *response,
     if (target_text == NULL || *target_text == '\0')
         target_text = source_text;
 
-    reply = clawt_window_request(
-        self, "defaults.mount.add",
-        clawt_build_payload("source", source_text, "target", target_text,
-                            "mode",
-                            gtk_switch_get_active(GTK_SWITCH(writable))
-                                ? "rw" : "ro",
-                            NULL));
+    /*
+     * Teams and agents are told apart by asking the daemon which teams
+     * exist, rather than by two entry boxes: a name is one or the
+     * other, and making somebody classify it is asking them to know
+     * something the fleet already knows.
+     */
+    {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        const gchar *who_text =
+            gtk_editable_get_text(GTK_EDITABLE(
+                g_object_get_data(G_OBJECT(dialog), "clawt-who")));
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "source");
+        json_builder_add_string_value(builder, source_text);
+        json_builder_set_member_name(builder, "target");
+        json_builder_add_string_value(builder, target_text);
+        json_builder_set_member_name(builder, "mode");
+        json_builder_add_string_value(
+            builder, gtk_switch_get_active(GTK_SWITCH(writable)) ? "rw"
+                                                                 : "ro");
+        add_scope_lists(self, builder, who_text);
+        json_builder_end_object(builder);
+
+        reply = clawt_window_request(self, "defaults.mount.add",
+                                     json_builder_get_root(builder));
+    }
 
     if (reply == NULL)
         return;
@@ -15539,6 +15672,7 @@ on_shared_folder_add_clicked(GtkButton *button, gpointer user_data)
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     GtkWidget *source = gtk_entry_new();
     GtkWidget *target = gtk_entry_new();
+    GtkWidget *who = gtk_entry_new();
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     GtkWidget *label = gtk_label_new("Writable");
     GtkWidget *writable = gtk_switch_new();
@@ -15550,12 +15684,18 @@ on_shared_folder_add_clicked(GtkButton *button, gpointer user_data)
         "Container, distrobox and VM agents get it. A host agent does "
         "not \xe2\x80\x94 there a mount is the confinement allowlist "
         "rather than a shared folder, and widening that is not something "
-        "a default should do quietly."));
+        "a default should do quietly.\n"
+        "\n"
+        "Naming a team covers everyone on it, including whoever joins "
+        "later."));
 
     gtk_entry_set_placeholder_text(GTK_ENTRY(source), "~/source");
     gtk_entry_set_placeholder_text(GTK_ENTRY(target),
                                    "path inside \xe2\x80\x94 empty means "
                                    "the same one");
+    gtk_entry_set_placeholder_text(
+        GTK_ENTRY(who),
+        "teams or agents, comma separated \xe2\x80\x94 empty means all");
 
     gtk_switch_set_active(GTK_SWITCH(writable), TRUE);
     gtk_widget_set_valign(writable, GTK_ALIGN_CENTER);
@@ -15566,6 +15706,7 @@ on_shared_folder_add_clicked(GtkButton *button, gpointer user_data)
 
     gtk_box_append(GTK_BOX(box), source);
     gtk_box_append(GTK_BOX(box), target);
+    gtk_box_append(GTK_BOX(box), who);
     gtk_box_append(GTK_BOX(box), row);
     adw_alert_dialog_set_extra_child(dialog, box);
 
@@ -15579,6 +15720,7 @@ on_shared_folder_add_clicked(GtkButton *button, gpointer user_data)
     g_object_set_data(G_OBJECT(dialog), "clawt-source", source);
     g_object_set_data(G_OBJECT(dialog), "clawt-target", target);
     g_object_set_data(G_OBJECT(dialog), "clawt-rw", writable);
+    g_object_set_data(G_OBJECT(dialog), "clawt-who", who);
     g_signal_connect(dialog, "response",
                      G_CALLBACK(on_shared_folder_add_response), self);
 
@@ -15656,9 +15798,15 @@ refresh_settings_folders(ClawtWindow *self)
              * looking for a file at a path that does not exist on the
              * machine they are on.
              */
-            subtitle = g_strdup_printf("%s inside, %s", target,
-                                       g_strcmp0(mode, "ro") == 0
-                                           ? "read-only" : "writable");
+            {
+                g_autofree gchar *who = folder_scope_text(mount);
+
+                subtitle = g_strdup_printf("%s inside, %s \xc2\xb7 %s",
+                                           target,
+                                           g_strcmp0(mode, "ro") == 0
+                                               ? "read-only" : "writable",
+                                           who);
+            }
             adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
 
             remove_button =

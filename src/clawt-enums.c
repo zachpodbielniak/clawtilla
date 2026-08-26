@@ -481,20 +481,20 @@ clawt_log_level_get_type(void)
     return g_define_type_id__volatile;
 }
 
-/* Register ClawtIntegrationScope as a GLib enum type */
+/* Register ClawtScope as a GLib enum type */
 GType
-clawt_integration_scope_get_type(void)
+clawt_scope_get_type(void)
 {
     static volatile gsize g_define_type_id__volatile = 0;
 
     if (g_once_init_enter(&g_define_type_id__volatile)) {
         static const GEnumValue values[] = {
-            { CLAWT_INTEGRATION_SCOPE_NONE, "CLAWT_INTEGRATION_SCOPE_NONE", "none" },
-            { CLAWT_INTEGRATION_SCOPE_SELECTED, "CLAWT_INTEGRATION_SCOPE_SELECTED", "selected" },
-            { CLAWT_INTEGRATION_SCOPE_ALL, "CLAWT_INTEGRATION_SCOPE_ALL", "all" },
+            { CLAWT_SCOPE_NONE, "CLAWT_SCOPE_NONE", "none" },
+            { CLAWT_SCOPE_SELECTED, "CLAWT_SCOPE_SELECTED", "selected" },
+            { CLAWT_SCOPE_ALL, "CLAWT_SCOPE_ALL", "all" },
             { 0, NULL, NULL }
         };
-        GType g_define_type_id = g_enum_register_static("ClawtIntegrationScope", values);
+        GType g_define_type_id = g_enum_register_static("ClawtScope", values);
         g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
     }
     return g_define_type_id__volatile;
@@ -815,4 +815,51 @@ clawt_flags_to_string(GType flags_type, guint value)
         g_string_append(out, "none");
 
     return g_string_free(out, FALSE);
+}
+
+gboolean
+clawt_scope_covers(ClawtScope           scope,
+                   const gchar * const *agents,
+                   const gchar * const *teams,
+                   const gchar         *agent_id,
+                   const gchar         *team)
+{
+    guint i;
+
+    if (agent_id == NULL)
+        return FALSE;
+
+    switch (scope) {
+    case CLAWT_SCOPE_ALL:
+        return TRUE;
+
+    case CLAWT_SCOPE_NONE:
+        return FALSE;
+
+    case CLAWT_SCOPE_SELECTED:
+    default:
+        break;
+    }
+
+    for (i = 0; agents != NULL && agents[i] != NULL; i++) {
+        if (g_strcmp0(agents[i], agent_id) == 0)
+            return TRUE;
+    }
+
+    /*
+     * A teamless agent matches no team rather than matching an entry
+     * spelled "". An agent taken off a team has `team: ""` while one
+     * that never had a team has no key at all, and both must miss --
+     * the two spellings of absent are already recorded in this tree as
+     * having cost a wrong sidebar in both clients.
+     */
+    if (team == NULL || *team == '\0')
+        return FALSE;
+
+    for (i = 0; teams != NULL && teams[i] != NULL; i++) {
+        if (g_strcmp0(teams[i], team) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
 }

@@ -139,9 +139,87 @@ gchar *clawt_mount_tag(const gchar *target);
 gchar *clawt_mount_resolved_source(ClawtMount *self);
 
 /**
+ * clawt_mount_get_scope:
+ * @self: a #ClawtMount
+ *
+ * Who this mount is for, when it is one of the fleet's shared folders.
+ *
+ * %CLAWT_SCOPE_ALL unless the entry said otherwise, because a folder
+ * put in `defaults.mounts` is by definition a default -- and a mount an
+ * agent declared for itself is already agent-scoped, so this is
+ * meaningless there and left at ALL.
+ *
+ * Returns: the scope
+ */
+ClawtScope clawt_mount_get_scope(ClawtMount *self);
+
+/**
+ * clawt_mount_set_scope:
+ * @self: a #ClawtMount
+ * @scope: a #ClawtScope
+ */
+void clawt_mount_set_scope(ClawtMount *self, ClawtScope scope);
+
+/**
+ * clawt_mount_get_agents:
+ * @self: a #ClawtMount
+ *
+ * The agent ids named by a `selected` scope.
+ *
+ * Returns: (transfer none) (nullable) (array zero-terminated=1): the ids
+ */
+const gchar * const *clawt_mount_get_agents(ClawtMount *self);
+
+/**
+ * clawt_mount_set_agents:
+ * @self: a #ClawtMount
+ * @agents: (nullable) (array zero-terminated=1): agent ids
+ */
+void clawt_mount_set_agents(ClawtMount *self, const gchar * const *agents);
+
+/**
+ * clawt_mount_get_teams:
+ * @self: a #ClawtMount
+ *
+ * The team ids named by a `selected` scope.
+ *
+ * Naming a team is how a shared folder covers a group without being
+ * rewritten every time somebody joins it, which is the whole reason
+ * teams exist.
+ *
+ * Returns: (transfer none) (nullable) (array zero-terminated=1): the ids
+ */
+const gchar * const *clawt_mount_get_teams(ClawtMount *self);
+
+/**
+ * clawt_mount_set_teams:
+ * @self: a #ClawtMount
+ * @teams: (nullable) (array zero-terminated=1): team ids
+ */
+void clawt_mount_set_teams(ClawtMount *self, const gchar * const *teams);
+
+/**
+ * clawt_mount_covers:
+ * @self: a #ClawtMount
+ * @agent_id: the agent being asked about
+ * @team: (nullable): the team that agent is on
+ *
+ * Whether this shared folder applies to that agent.
+ *
+ * Goes through clawt_scope_covers(), the same rule integrations use --
+ * so "who gets this" has one answer in the tree rather than two that
+ * differ on the case nobody tested.
+ *
+ * Returns: %TRUE if it applies
+ */
+gboolean clawt_mount_covers(ClawtMount  *self,
+                            const gchar *agent_id,
+                            const gchar *team);
+
+/**
  * clawt_mount_merge_defaults:
  * @defaults: (element-type ClawtMount) (nullable): the fleet's shared
- *   folders
+ *   folders, already filtered to the ones covering this agent
  * @own: (element-type ClawtMount) (nullable): what this agent declared
  *
  * The mounts an agent actually gets, with its own winning.

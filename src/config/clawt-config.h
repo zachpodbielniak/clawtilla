@@ -780,7 +780,7 @@ gboolean clawt_integration_config_get_enabled(ClawtIntegrationConfig *self);
  *
  * Returns: which agents it reaches
  */
-ClawtIntegrationScope
+ClawtScope
 clawt_integration_config_get_scope(ClawtIntegrationConfig *self);
 
 /**
@@ -808,6 +808,27 @@ GStrv clawt_integration_config_get_agents(ClawtIntegrationConfig *self);
  */
 gboolean clawt_integration_config_covers(ClawtIntegrationConfig *self,
                                          const gchar            *agent_id);
+
+/**
+ * clawt_integration_config_covers_on_team:
+ * @self: a #ClawtIntegrationConfig
+ * @agent_id: the agent
+ * @team: (nullable): the team that agent is on
+ *
+ * The same question, told which team the agent is on so a
+ * `teams:` entry can answer it.
+ *
+ * Separate from clawt_integration_config_covers() because most callers
+ * have an agent id and no team to hand, and one that passed NULL
+ * silently would make every `teams:` entry match nothing -- a scope
+ * that is configured, reported as configured, and reaches nobody.
+ *
+ * Returns: %TRUE if the integration applies to that agent
+ */
+gboolean clawt_integration_config_covers_on_team(
+    ClawtIntegrationConfig *self,
+    const gchar            *agent_id,
+    const gchar            *team);
 
 /**
  * clawt_integration_config_is_shadow:
@@ -962,12 +983,12 @@ gboolean clawt_integration_config_set_secret(ClawtIntegrationConfig *self,
  * clawt_integration_config_set_scope:
  * @self: a #ClawtIntegrationConfig
  * @scope: who should get it
- * @agents: (nullable) (array zero-terminated=1): ids, for %CLAWT_INTEGRATION_SCOPE_SELECTED
+ * @agents: (nullable) (array zero-terminated=1): ids, for %CLAWT_SCOPE_SELECTED
  *
  * Returns: %TRUE if the file changed
  */
 gboolean clawt_integration_config_set_scope(ClawtIntegrationConfig *self,
-                                            ClawtIntegrationScope   scope,
+                                            ClawtScope   scope,
                                             const gchar *const     *agents);
 
 /**

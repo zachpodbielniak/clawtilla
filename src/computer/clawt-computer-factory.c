@@ -42,10 +42,32 @@ apply_mounts(ClawtComputer    *computer,
     if (default_mounts != NULL &&
         clawt_computer_type_takes_mounts(type) &&
         clawt_agent_config_get_boolean(agent_config,
-                                       "computer.default_mounts"))
-        mounts = clawt_mount_merge_defaults(default_mounts, own);
-    else
+                                       "computer.default_mounts")) {
+        g_autoptr(GPtrArray) mine = g_ptr_array_new_with_free_func(
+            (GDestroyNotify)clawt_mount_free);
+        const gchar *agent_id = clawt_agent_config_get_id(agent_config);
+        const gchar *team = clawt_agent_config_get_string(agent_config,
+                                                          "team");
+        guint d;
+
+        /*
+         * Narrowed to the ones that cover this agent before anything is
+         * merged, so a folder scoped to a team reaches that team and
+         * nobody else. Through clawt_mount_covers(), which is the same
+         * rule integrations use -- "who gets this" has one answer in the
+         * tree rather than two that differ on the case nobody tested.
+         */
+        for (d = 0; d < default_mounts->len; d++) {
+            ClawtMount *candidate = g_ptr_array_index(default_mounts, d);
+
+            if (clawt_mount_covers(candidate, agent_id, team))
+                g_ptr_array_add(mine, clawt_mount_copy(candidate));
+        }
+
+        mounts = clawt_mount_merge_defaults(mine, own);
+    } else {
         mounts = g_ptr_array_ref(own);
+    }
 
     for (i = 0; mounts != NULL && i < mounts->len; i++) {
         ClawtMount *mount = g_ptr_array_index(mounts, i);

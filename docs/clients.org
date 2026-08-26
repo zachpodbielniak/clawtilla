@@ -1599,6 +1599,12 @@ That is usually what you want: an agent told about =~/source= finds it
 at a name that reads the same on either side, so a note about a file is
 a note either of you can follow.
 
+Leave /Teams or agents/ empty and the folder goes to every agent.  Put a
+name in it and only that team or agent gets it --- a team covers whoever
+is on it, including people who join later.  One field, not two: a name
+is a team or an agent, and the fleet already knows which, so being asked
+to classify it is being asked to know something the daemon does.
+
 Container, distrobox and VM agents get them.  A host agent does not, and
 the dialog says why: there a mount is the confinement allowlist rather
 than a shared folder, and widening that is not something a default

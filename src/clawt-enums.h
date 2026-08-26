@@ -426,24 +426,58 @@ typedef enum {
 } ClawtSecretBackend;
 
 /**
- * ClawtIntegrationScope:
- * @CLAWT_INTEGRATION_SCOPE_NONE: nobody; kept in the file but handed to no agent
- * @CLAWT_INTEGRATION_SCOPE_SELECTED: only the agents named in `agents:`
- * @CLAWT_INTEGRATION_SCOPE_ALL: every agent in the fleet, including ones added later
+ * ClawtScope:
+ * @CLAWT_SCOPE_NONE: nobody; kept in the file but handed to no agent
+ * @CLAWT_SCOPE_SELECTED: only the agents named in `agents:`
+ * @CLAWT_SCOPE_ALL: every agent in the fleet, including ones added later
  *
  * Which agents an integration instance reaches.
  *
- * %CLAWT_INTEGRATION_SCOPE_NONE exists so an instance can be parked
+ * %CLAWT_SCOPE_NONE exists so an instance can be parked
  * without being deleted.  Turning a Matrix account off for an afternoon
  * should not mean retyping its homeserver, its user id and its rooms, and
  * a credential that has to be re-entered to be re-enabled tends to end up
  * somewhere worse than the config file.
  */
 typedef enum {
-    CLAWT_INTEGRATION_SCOPE_NONE = 0,
-    CLAWT_INTEGRATION_SCOPE_SELECTED,
-    CLAWT_INTEGRATION_SCOPE_ALL
-} ClawtIntegrationScope;
+    CLAWT_SCOPE_NONE = 0,
+    CLAWT_SCOPE_SELECTED,
+    CLAWT_SCOPE_ALL
+} ClawtScope;
+
+/**
+ * clawt_scope_covers:
+ * @scope: a #ClawtScope
+ * @agents: (nullable) (array zero-terminated=1): agent ids, for
+ *   %CLAWT_SCOPE_SELECTED
+ * @teams: (nullable) (array zero-terminated=1): team ids, for
+ *   %CLAWT_SCOPE_SELECTED
+ * @agent_id: the agent being asked about
+ * @team: (nullable): the team that agent is on
+ *
+ * Whether something scoped this way applies to one agent.
+ *
+ * The one implementation of "who gets this", shared by integrations and
+ * by the fleet's shared folders. They were going to be two, and two
+ * would have differed exactly once -- on the case nobody wrote a test
+ * for, which here is an agent named directly *and* on a listed team.
+ *
+ * A team is an id, matched against @team. Naming a team is how a rule
+ * covers a group without being rewritten every time somebody joins it,
+ * which is the whole reason teams exist.
+ *
+ * %CLAWT_SCOPE_SELECTED with neither list is nobody, not everybody.
+ * That is the asymmetry this project already recorded for integrations:
+ * a typo that hands a credential -- or a home directory -- to the whole
+ * fleet is far worse than one that hands it to nothing and says so.
+ *
+ * Returns: %TRUE if it applies
+ */
+gboolean clawt_scope_covers(ClawtScope           scope,
+                            const gchar * const *agents,
+                            const gchar * const *teams,
+                            const gchar         *agent_id,
+                            const gchar         *team);
 
 /**
  * ClawtIntegrationKind:
@@ -679,7 +713,7 @@ GType clawt_overflow_policy_get_type(void) G_GNUC_CONST;
 GType clawt_task_state_get_type(void) G_GNUC_CONST;
 GType clawt_secret_backend_get_type(void) G_GNUC_CONST;
 GType clawt_log_level_get_type(void) G_GNUC_CONST;
-GType clawt_integration_scope_get_type(void) G_GNUC_CONST;
+GType clawt_scope_get_type(void) G_GNUC_CONST;
 GType clawt_integration_kind_get_type(void) G_GNUC_CONST;
 GType clawt_notify_backend_get_type(void) G_GNUC_CONST;
 GType clawt_notify_events_get_type(void) G_GNUC_CONST;
@@ -708,7 +742,7 @@ GType clawt_credential_placement_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_TASK_STATE       (clawt_task_state_get_type())
 #define CLAWT_TYPE_SECRET_BACKEND   (clawt_secret_backend_get_type())
 #define CLAWT_TYPE_LOG_LEVEL        (clawt_log_level_get_type())
-#define CLAWT_TYPE_INTEGRATION_SCOPE (clawt_integration_scope_get_type())
+#define CLAWT_TYPE_SCOPE (clawt_scope_get_type())
 #define CLAWT_TYPE_INTEGRATION_KIND  (clawt_integration_kind_get_type())
 #define CLAWT_TYPE_NOTIFY_BACKEND    (clawt_notify_backend_get_type())
 #define CLAWT_TYPE_NOTIFY_EVENTS     (clawt_notify_events_get_type())
