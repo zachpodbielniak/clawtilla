@@ -389,7 +389,21 @@ clawt_web_stylesheet(void)
      * that was not already reserved.
      */
     ".msg-time{position:absolute;left:0;top:0;width:var(--chat-gutter);"
-      "font-size:11px;color:var(--muted);line-height:1.5}"
+      "font-size:11px;color:var(--muted);line-height:1.5;"
+      /*
+       * Right-aligned on the avatar's edge, with tabular figures, so a
+       * column of them is one straight rail rather than ragged on both
+       * sides. 36px gutter less the 28px avatar is the 8px gap beside
+       * it, so the digits end where the avatar ends.
+       *
+       * The same convention as the GTK transcript, which arrives at it
+       * from the other direction -- an overlay child there, absolute
+       * positioning here, both so the time costs no width that was not
+       * already reserved. Two clients drawing one kind of content
+       * differently is the drift `make parity` cannot see.
+       */
+      "text-align:right;padding-right:8px;"
+      "font-variant-numeric:tabular-nums}"
     "@media (max-width:26rem){.msg-time{display:none}}"
     ".transcript-inner>.msg:first-child{margin-top:0}"
     "@keyframes rise{from{opacity:0;transform:translateY(8px)}"

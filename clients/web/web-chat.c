@@ -284,11 +284,28 @@ message_element(JsonObject *message, const gchar *agent_id,
      * nameable.  The time says "new message" outright, and the space it
      * uses was already reserved for the avatar.
      */
-    if (!run_start && !from_user && *when != '\0') {
+    if (!run_start && !from_user && ts > 0) {
         g_autoptr(HtmxSpan) stamp = htmx_span_new();
+        g_autoptr(GDateTime) at = g_date_time_new_from_unix_local(ts);
+        g_autofree gchar *clock = (at != NULL)
+            ? g_date_time_format(at, "%H:%M")
+            : NULL;
 
+        /*
+         * The clock time here, not the relative one the rest of the
+         * transcript uses, because this slot is the avatar's column and
+         * is 28px wide.  Measured in a real browser: "46s ago" wraps to
+         * two lines in it, so a run of continuations drew a column of
+         * broken two-line stamps -- and the longer the conversation, the
+         * longer the strings get.
+         *
+         * `HH:MM` is four digits and a colon whatever the age of the
+         * message, which is the property the slot needs and the reason
+         * the GTK transcript has always used it here.
+         */
         htmx_element_add_class(HTMX_ELEMENT(stamp), "msg-time");
-        htmx_node_set_text_content(HTMX_NODE(stamp), when);
+        htmx_node_set_text_content(HTMX_NODE(stamp),
+                                   clock != NULL ? clock : when);
         htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(stamp));
     }
 

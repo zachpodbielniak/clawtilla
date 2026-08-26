@@ -2207,6 +2207,47 @@ the same program.
   stat'd it with exec, confirmed the size, and had no way to open it.
   Give both, host first, and say which is which.
 
+### A size request is a floor, so a child in a box sets the box's width
+
+- The continuation times in the chat gutter needed right-aligning into a
+  rail. Packed into the gutter box with `set_size_request(CHAT_AVATAR)`
+  and `xalign 1.0` the rail comes out perfectly straight -- and **every
+  body in the run moves three pixels**, because a `GtkBox` measures from
+  its children and the request is a floor rather than a cap: an `HH:MM`
+  caption is 35px against the 32 the arithmetic assumed. The run header
+  stays at 44 and its own messages start at 47, which is precisely the
+  invariant the gutter exists for.
+- An **overlay** child is the fix: it does not contribute to the
+  measurement, so the time costs no width, and one too wide for the slot
+  overhangs into the row margin instead of moving anything. The web
+  client had already arrived at the same place from CSS with
+  `position: absolute` and the comment "so it costs no width that was
+  not already reserved" -- the answer was written down in the other
+  client.
+- Measured, three variants, ink right edges of `00:00 23:14 11:11 18:48`
+  and where the body column lands: packed left `34 31 22 31` / body 44;
+  packed right `34 34 34 34` / body **47**; overlaid `31 31 31 31` /
+  body 44. **A label's allocation is not the rail** -- with `xalign` the
+  ink sits somewhere inside it, so the measurement has to be
+  `gtk_label_get_layout_offsets()` plus the layout's ink extents, in the
+  root's coordinates. My first probe reported label bounds and made all
+  four look identical *before* the fix.
+- And the first probe loaded the `tnum` stylesheet in both builds, so
+  its "before" was not one. **A before/after harness has to be checked
+  for what it holds constant**, not only for what it varies.
+
+### A relative timestamp does not fit a slot sized for a clock
+
+- The web transcript's gutter time was "46s ago", which **wraps to two
+  lines in the 28px the avatar reserves** -- so a run of continuations
+  drew a column of broken two-line stamps, and the longer the
+  conversation the longer the strings got. `HH:MM` is four digits and a
+  colon whatever the age of the message, which is the property that slot
+  needs and the reason the GTK transcript had always used it there.
+- Found only by measuring the rendered element in a real browser. The
+  markup, the CSS and the width are all individually correct; the
+  mismatch is between a string that grows and a box that does not.
+
 ### GtkPicture:can-shrink defaults to TRUE
 
 - Which makes its *minimum* width zero, so anything in the ancestry

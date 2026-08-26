@@ -2016,29 +2016,29 @@ static const gchar CLAWT_STRUCTURE_CSS[] =
     "  border-top-right-radius: 4px;\n"
     "}\n"
     /*
-     * Links and inline code inside a bubble.  Without this they render
-     * in the accent colour on the accent colour, which is invisible
-     * rather than merely low contrast.
-     */
-    /*
      * The message times are a column, so every one of them has to be the
      * same width.
      *
-     * Proportional digits make that impossible: measured on this
-     * stylesheet's caption size, an HH:MM string ranges from 24px for
-     * 11:11 to 33px for 00:00 -- a nine pixel swing inside a rail that
-     * is meant to read as one straight edge.  Tabular figures render
-     * every one of them at 31px.
+     * Proportional digits make that impossible: measured against real
+     * GTK 4.22 at this stylesheet's caption size, an `HH:MM` string
+     * ranges from 22px of ink for 11:11 to 34px for 00:00 -- a twelve
+     * pixel swing inside a rail meant to read as one straight edge.
+     * Tabular figures give every one of them the same advance, and the
+     * four ink right edges collapse from 34/31/22/31 to a single number.
      *
-     * Purely visual, so it is a rule here rather than a call in C.  The
-     * width and the margin beside it are not: they have to stay equal to
-     * the avatar's diameter, and a value that must move in lockstep with
+     * Purely visual, so it is a rule here rather than a call in C.
+     * Where the label *sits* is not: that has to stay tied to the
+     * avatar's diameter, and a value that must move in lockstep with
      * another belongs where that other one lives.
      */
     ".clawt-message-time {\n"
     "  font-feature-settings: \"tnum\" 1;\n"
     "}\n"
-
+    /*
+     * Links and inline code inside a bubble.  Without this they render
+     * in the accent colour on the accent colour, which is invisible
+     * rather than merely low contrast.
+     */
     ".clawt-bubble .body {\n"
     "  color: @accent_fg_color;\n"
     "}\n";
@@ -3758,13 +3758,13 @@ append_message_to(ClawtWindow *self, const TranscriptView *view,
             GtkWidget *avatar = run_avatar(sender, view->avatar,
                                            view->color);
 
+            gtk_widget_add_css_class(header, "clawt-run-header");
+
             /*
              * `heading` rather than `caption-heading`: shrinking the
              * name to caption size makes every turn look like metadata
              * about a message rather than a person saying something.
              */
-            gtk_widget_add_css_class(header, "clawt-run-header");
-
             gtk_widget_add_css_class(who, "heading");
             gtk_widget_set_margin_start(who, 12);
 
@@ -3814,25 +3814,56 @@ append_message_to(ClawtWindow *self, const TranscriptView *view,
              * under one avatar read as a column rather than as ragged
              * text in a margin.
              *
-             * xalign inside a CHAT_AVATAR-wide label rather than
-             * halign END on the label itself: the gutter is a GtkBox and
-             * a non-expanding child is allocated exactly its natural
-             * width, so halign has no room to act in and does nothing.
-             * Giving the child hexpand would give it room -- and expand
-             * the gutter with it, measured at 515px against the 44 it is
-             * meant to be, taking the body column with it.  A width the
-             * label owns is the only one of the three that leaves the
-             * gutter alone.
+             * Overlaid rather than packed, and that is the load-bearing
+             * part.  A GtkBox is measured from its children, so a time
+             * placed *in* the gutter sets the gutter's width -- and
+             * `gtk_widget_set_size_request()` is a floor, not a cap, so
+             * a time wider than CHAT_AVATAR widens the gutter and takes
+             * the body column with it.  Measured against real GTK 4.22
+             * at the default interface font, an `HH:MM` caption is 35px
+             * against the 32 the arithmetic assumes, and the bodies of a
+             * run then start at 47 while their own run header starts at
+             * 44.  Which is the exact invariant the gutter exists for --
+             * "every body in the run indented to the same 44px" is three
+             * comments above this one.
              *
-             * CHAT_AVATAR + CHAT_ROW_MARGIN is CHAT_GUTTER exactly, so
-             * the right edge of the time lands on the right edge of the
-             * avatar by arithmetic rather than by a 12 that happens to
-             * match.
+             * An overlay child does not contribute to the measurement
+             * (`measure-overlay` is FALSE by default), so the time costs
+             * no width at all: it is aligned inside a slot the gutter
+             * already reserves, and a time too wide for it overhangs
+             * into the row margin instead of moving anything.  The web
+             * client reached the same place from CSS and says so in the
+             * same words -- `position: absolute` "so it costs no width
+             * that was not already reserved".
+             *
+             * CHAT_GUTTER - CHAT_AVATAR is the gap beside the avatar, so
+             * the time ends where the avatar ends by arithmetic rather
+             * than by a 12 that happens to match.
+             *
+             * Measured, three variants, ink right edges of 00:00 / 23:14
+             * / 11:11 / 18:48 and where the body column lands:
+             *
+             *   packed, left-aligned    34 31 22 31   body 44
+             *   packed, right-aligned   34 34 34 34   body 47  <- moves
+             *   overlaid                31 31 31 31   body 44
              */
-            gtk_widget_set_size_request(at, CHAT_AVATAR, -1);
-            gtk_label_set_xalign(GTK_LABEL(at), 1.0f);
-            gtk_widget_set_margin_end(at, CHAT_GUTTER - CHAT_AVATAR);
-            gtk_box_append(GTK_BOX(gutter), at);
+            {
+                GtkWidget *slot = gtk_overlay_new();
+
+                /*
+                 * The gutter box itself becomes what the overlay
+                 * measures -- it already carries the CHAT_GUTTER size
+                 * request, and building a second empty widget for the
+                 * job would leave the first one floating and unparented.
+                 */
+                gtk_overlay_set_child(GTK_OVERLAY(slot), gutter);
+
+                gtk_widget_set_halign(at, GTK_ALIGN_END);
+                gtk_widget_set_margin_end(at, CHAT_GUTTER - CHAT_AVATAR);
+                gtk_overlay_add_overlay(GTK_OVERLAY(slot), at);
+
+                gutter = slot;
+            }
         }
 
         gtk_box_append(GTK_BOX(line), gutter);

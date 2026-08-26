@@ -585,11 +585,46 @@ A third of a line is perceptible and not *nameable*: you can see that
 something changed, not what. So a continuation row also carries its own
 time, in the gutter the avatar reserves and otherwise leaves empty on
 those rows. That is what says "new message" rather than "new
-paragraph", and it costs no width that was not already spent --- a
-caption time measures 31–34px in a 44px slot.
+paragraph".
 
 The operator's own turns already carry a boundary: ~clawt-bubble-cont~
 drops a corner, so those get the spacing and no timestamp.
+
+***** The times are a rail, and it costs no width
+
+A column of them has to read as one straight edge, which takes two
+things: tabular figures, so every ~HH:MM~ has the same advance, and
+right alignment on the avatar's edge.  Measured against real GTK 4.22 at
+the default interface font, the ink right edges of ~00:00~, ~23:14~,
+~11:11~ and ~18:48~:
+
+| placement                           | rail        | body column |
+|-------------------------------------+-------------+-------------|
+| packed in the gutter, left-aligned  | 34 31 22 31 |          44 |
+| packed in the gutter, right-aligned | 34 34 34 34 |      *47*   |
+| overlaid on the gutter              | 31 31 31 31 |          44 |
+
+The middle row is the trap.  A ~GtkBox~ is measured from its children
+and ~gtk_widget_set_size_request()~ is a floor rather than a cap, so a
+time packed into the gutter *sets* the gutter's width --- and an ~HH:MM~
+caption is 35px against the 32 the arithmetic assumes.  The rail comes
+out straight and every body in the run moves three pixels away from its
+own run header, which is the one invariant the gutter exists for.
+
+So the time is an *overlay* child.  Those do not contribute to the
+measurement, so it costs no width at all, it is aligned inside a slot
+the gutter already reserves, and a time too wide for that slot overhangs
+into the row margin instead of moving anything.  The web client reaches
+the same place from CSS with ~position: absolute~, for the same stated
+reason.
+
+That gutter time is ~HH:MM~ in *both* clients, even though the web
+transcript's run headers show a relative time.  A relative string grows
+with the age of the conversation, and measured in a real browser "46s
+ago" wraps to two lines in the 28px slot --- so a run of continuations
+drew a column of broken two-line stamps.  Four digits and a colon are
+the same width whatever the message's age, which is the property the
+slot needs.
 
 ***** One knob, and the ordering survives it
 
