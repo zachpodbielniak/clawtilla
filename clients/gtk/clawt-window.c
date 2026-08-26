@@ -520,7 +520,7 @@ state_dot(const gchar *state)
 {
     GtkWidget *dot = gtk_image_new();
     const gchar *icon = "media-record-symbolic";
-    gtk_widget_add_css_class(dot, "clawt-run-state");
+    gtk_widget_add_css_class(dot, "clawt-agent-state");
     const gchar *css = NULL;
 
     if (g_strcmp0(state, "running") == 0)
