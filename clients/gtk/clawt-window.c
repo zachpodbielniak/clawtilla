@@ -7488,7 +7488,20 @@ clawt_window_alert(ClawtWindow *self, ClawtAlertTier tier, const gchar *source,
     alert->source = g_strdup(source != NULL ? source : "");
     alert->agent = g_strdup(agent != NULL ? agent : "");
     alert->ts = g_get_real_time();
-    alert->read = FALSE;
+
+    /*
+     * An alert that lands while the panel is open has been seen as it
+     * arrived, so it arrives read.
+     *
+     * on_alerts_shown() only fires on a show *transition*, so without
+     * this the badge counts something the operator is looking straight
+     * at, and keeps counting it until they close the panel and open it
+     * again.  This is the same rule that already decides whether the
+     * list is worth rebuilding a few lines below, applied one step
+     * earlier.
+     */
+    alert->read = (self->alerts_split != NULL &&
+                   adw_overlay_split_view_get_show_sidebar(self->alerts_split));
 
     /* Newest first: the list is read from the top and never scrolled to
      * the bottom, which is the opposite of a transcript. */
