@@ -234,6 +234,28 @@ gchar *clawt_appearance_palette_dir(void);
 guint clawt_appearance_reload_palettes(void);
 
 /**
+ * clawt_appearance_palette_missing:
+ * @css: (nullable): a palette stylesheet
+ *
+ * Which of libadwaita's colours @css does not define.
+ *
+ * A palette re-colours libadwaita by redefining its named colours, so
+ * every name it leaves out keeps the stock GNOME value -- one widget in
+ * the wrong grey in a window that is otherwise right, with nothing
+ * anywhere to say why.  That is how the alerts panel came to be drawn in
+ * `--secondary-sidebar-bg-color` while every palette in the tree had
+ * never heard of it.
+ *
+ * Both dialects count: `@define-color window_bg_color ...` and
+ * `--window-bg-color: ...` are the same statement, and a palette written
+ * in either is complete.
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the colours not
+ *   named, empty when the palette is complete
+ */
+gchar **clawt_appearance_palette_missing(const gchar *css);
+
+/**
  * clawt_appearance_scheme_count:
  *
  * How many colour schemes there are: the built-in modes, plus every

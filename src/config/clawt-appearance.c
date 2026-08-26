@@ -595,6 +595,36 @@ clawt_appearance_set_run_spacing(ClawtAppearance *self, gint pixels)
  * foreground colours matter for the same reason in reverse: libadwaita's
  * accent_fg_color is white, which on Catppuccin blue is unreadable.
  *
+ * That paragraph was written before the list under it was complete, and
+ * fourteen of libadwaita 1.9's colours were missing -- which is what the
+ * alerts panel found.  It is a second AdwOverlaySplitView inside the
+ * first one's content, so libadwaita gives it `.sidebar-pane` *inside*
+ * `.content-pane` and paints it from `--secondary-sidebar-bg-color`,
+ * which this palette had never heard of.  Measured against real GTK
+ * 4.22 and libadwaita 1.9.3: `#28282c`, stock GNOME's neutral grey, in
+ * a window where the agent sidebar beside it was `#181825`.  The checked
+ * toggle above it was worse -- `--active-toggle-bg-color` is a literal
+ * `rgb(255 255 255 / 20%)` with no `@define-color` behind it at all.
+ *
+ * So required_colors[] below is now the list, and every palette is
+ * checked against it.  A comment claiming completeness is not a check,
+ * and this one was wrong for as long as it had been there.
+ *
+ * Four of the names are ours rather than libadwaita's: it reads
+ * `--active-toggle-bg-color`, `--active-toggle-fg-color`,
+ * `--overview-bg-color` and `--overview-fg-color` as custom properties
+ * only, with no `@define-color` counterpart.  They are written here in
+ * the palette's own dialect anyway, because append_custom_properties()
+ * derives the `--token` form from it -- one list of colours, which is
+ * the whole reason that function exists.  The `@define-color` those four
+ * also produce is inert, and that is cheaper than a second list.
+ *
+ * `--banner-color` is deliberately not among them.  libadwaita sets it
+ * on the `banner` element itself, so a `:root` value cannot reach it and
+ * overriding it would need a rule rather than a colour.  Nothing in
+ * either client draws an AdwBanner; when something does, that is a rule
+ * to add, not a name missing from here.
+ *
  * Palette (Mocha): base #1e1e2e, mantle #181825, crust #11111b,
  * surface0 #313244, text #cdd6f4, blue #89b4fa, lavender #b4befe,
  * green #a6e3a1, yellow #f9e2af, red #f38ba8.
@@ -640,7 +670,179 @@ static const gchar catppuccin_mocha_css[] =
     "@define-color warning_fg_color #11111b;\n"
     "@define-color warning_color #f9e2af;\n"
     "@define-color shade_color #11111b;\n"
-    "@define-color scrollbar_outline_color #11111b;\n";
+    "@define-color scrollbar_outline_color #11111b;\n"
+    "@define-color sidebar_border_color #11111b;\n"
+    /*
+     * A sidebar nested one level deeper, which for this client is the
+     * alerts panel.  Crust, because that is the step below the mantle
+     * the primary sidebar uses -- the same relationship libadwaita's own
+     * dark colours have (#28282c under #2e2e32), spelled in Catppuccin.
+     * Its backdrop is crust as well: there is nothing below crust to
+     * darken to, and inventing one would be a colour from no palette.
+     */
+    "@define-color secondary_sidebar_bg_color #11111b;\n"
+    "@define-color secondary_sidebar_fg_color #cdd6f4;\n"
+    "@define-color secondary_sidebar_backdrop_color #11111b;\n"
+    "@define-color secondary_sidebar_shade_color #11111b;\n"
+    "@define-color secondary_sidebar_border_color #11111b;\n"
+    "@define-color headerbar_darker_shade_color #11111b;\n"
+    "@define-color popover_shade_color #11111b;\n"
+    "@define-color thumbnail_bg_color #313244;\n"
+    "@define-color thumbnail_fg_color #cdd6f4;\n"
+    /*
+     * The four libadwaita reads only as custom properties.  Surface1 for
+     * the checked toggle: it has to read as raised above the trough,
+     * which is what libadwaita's 20% white does over its own greys.
+     */
+    "@define-color active_toggle_bg_color #45475a;\n"
+    "@define-color active_toggle_fg_color #cdd6f4;\n"
+    "@define-color overview_bg_color #1e1e2e;\n"
+    "@define-color overview_fg_color #cdd6f4;\n";
+
+/*
+ * Every colour a palette has to answer for.
+ *
+ * Read off libadwaita 1.9.3's own stylesheet rather than remembered:
+ * `gresource extract /usr/lib64/libadwaita-1.so.0
+ * /org/gnome/Adwaita/styles/gtk.css`, then every `var(--*)` in it.  That
+ * is the honest source, and it is why the list is longer than the set
+ * anybody would write down from the widgets they had looked at.
+ *
+ * Two of libadwaita's tokens are deliberately absent.  `--border-color`
+ * is derived from `currentColor`, so it follows a palette's foregrounds
+ * without being named.  `--banner-color` is set on the `banner` element
+ * itself and cannot be reached from `:root` at all -- see the palette
+ * comment above.
+ *
+ * The point of having it as a list is that it can be checked.  A palette
+ * that omits a name does not fail: it silently keeps stock GNOME's value
+ * for that one colour, which is a single widget in the wrong grey in an
+ * otherwise perfect window -- exactly the report that started this, and
+ * exactly the kind of thing nobody thinks to look for.  So the built-in
+ * palettes are checked by tests/test-appearance.c, and a palette read
+ * off disk is checked when it is read, because somebody writing their
+ * own is the person most likely to leave one out and least likely to
+ * know the list exists.
+ *
+ * A libadwaita release that grows a token is not caught by any of that.
+ * Nothing hermetic can catch it -- the list lives in a library this
+ * process may not even have loaded -- so it is stated here rather than
+ * pretended about: when a new libadwaita lands, re-run the gresource
+ * command above and diff it against this array.
+ */
+static const gchar *const required_colors[] = {
+    "accent_bg_color",
+    "accent_color",
+    "accent_fg_color",
+    "active_toggle_bg_color",
+    "active_toggle_fg_color",
+    "card_bg_color",
+    "card_fg_color",
+    "card_shade_color",
+    "destructive_bg_color",
+    "destructive_color",
+    "destructive_fg_color",
+    "dialog_bg_color",
+    "dialog_fg_color",
+    "error_bg_color",
+    "error_color",
+    "error_fg_color",
+    "headerbar_backdrop_color",
+    "headerbar_bg_color",
+    "headerbar_border_color",
+    "headerbar_darker_shade_color",
+    "headerbar_fg_color",
+    "headerbar_shade_color",
+    "overview_bg_color",
+    "overview_fg_color",
+    "popover_bg_color",
+    "popover_fg_color",
+    "popover_shade_color",
+    "scrollbar_outline_color",
+    "secondary_sidebar_backdrop_color",
+    "secondary_sidebar_bg_color",
+    "secondary_sidebar_border_color",
+    "secondary_sidebar_fg_color",
+    "secondary_sidebar_shade_color",
+    "shade_color",
+    "sidebar_backdrop_color",
+    "sidebar_bg_color",
+    "sidebar_border_color",
+    "sidebar_fg_color",
+    "sidebar_shade_color",
+    "success_bg_color",
+    "success_color",
+    "success_fg_color",
+    "thumbnail_bg_color",
+    "thumbnail_fg_color",
+    "view_bg_color",
+    "view_fg_color",
+    "warning_bg_color",
+    "warning_color",
+    "warning_fg_color",
+    "window_bg_color",
+    "window_fg_color"
+};
+
+/*
+ * Whether @css names @color, in either dialect.
+ *
+ * Both, because both are legitimate: this file writes `@define-color`
+ * and lets append_custom_properties() derive the rest, while somebody
+ * copying a palette off the web is as likely to have `--window-bg-color`
+ * in it.  Reporting the second kind as incomplete would be a warning
+ * about a file that works.
+ *
+ * The name must be followed by a space or a colon, so `shade_color` is
+ * not found inside `card_shade_color` -- which would have made half the
+ * list unfindable in the wrong direction, reporting complete palettes
+ * as complete for the wrong reason.
+ */
+static gboolean
+palette_defines(const gchar *css, const gchar *color)
+{
+    g_autofree gchar *at_form = NULL;
+    g_autofree gchar *dashed = NULL;
+    g_autofree gchar *var_form = NULL;
+    const gchar *found;
+    gchar *dash;
+
+    if (css == NULL || color == NULL)
+        return FALSE;
+
+    at_form = g_strconcat("@define-color ", color, " ", NULL);
+
+    if (strstr(css, at_form) != NULL)
+        return TRUE;
+
+    dashed = g_strdup(color);
+
+    for (dash = dashed; *dash != '\0'; dash++) {
+        if (*dash == '_')
+            *dash = '-';
+    }
+
+    var_form = g_strconcat("--", dashed, ":", NULL);
+    found = strstr(css, var_form);
+
+    return found != NULL;
+}
+
+gchar **
+clawt_appearance_palette_missing(const gchar *css)
+{
+    GPtrArray *missing = g_ptr_array_new();
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(required_colors); i++) {
+        if (!palette_defines(css, required_colors[i]))
+            g_ptr_array_add(missing, g_strdup(required_colors[i]));
+    }
+
+    g_ptr_array_add(missing, NULL);
+
+    return (gchar **)g_ptr_array_free(missing, FALSE);
+}
 
 /*
  * One row per colour scheme the client offers.
@@ -803,6 +1005,24 @@ clawt_appearance_reload_palettes(void)
         palette->css = g_steal_pointer(&css);
         palette->dark = dark;
 
+        /*
+         * Deliberately not checked against required_colors[] here.
+         *
+         * The first version of this warned about every colour a palette
+         * left out, which fired on the two-line example in
+         * docs/clients.org -- a palette that overrides the accent and
+         * the window background over libadwaita's dark scheme is a
+         * documented, supported and entirely reasonable thing to write.
+         * "Write the half you need; the other is inert" is the contract,
+         * so a partial palette is not a mistake and saying it is trains
+         * somebody to ignore the log.
+         *
+         * Completeness is a rule about the palettes *this repository
+         * ships*, where a missing colour is drift rather than intent,
+         * and tests/test-appearance.c is where that belongs.  The list
+         * is public for an author who does want a complete one; the
+         * whole set is in docs/clients.org.
+         */
         g_ptr_array_add(palettes, palette);
     }
 

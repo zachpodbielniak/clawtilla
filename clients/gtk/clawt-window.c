@@ -17548,6 +17548,31 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
     self->alerts_split = ADW_OVERLAY_SPLIT_VIEW(adw_overlay_split_view_new());
     adw_overlay_split_view_set_sidebar_position(self->alerts_split,
                                                 GTK_PACK_END);
+
+    /*
+     * A peer of the agent sidebar, not a sidebar *of* it.
+     *
+     * libadwaita styles panes by where they sit in the widget tree: a
+     * `.sidebar-pane` inside a `.content-pane` is a nested sidebar, so it
+     * is painted from `--secondary-sidebar-bg-color` -- deliberately a
+     * different shade, because a sidebar within a sidebar's content
+     * should not read as the same surface.  This one is inside the outer
+     * split view's content purely so that opening alerts does not hide
+     * the agent list, which is navigation.  That is a layout decision,
+     * not a statement of hierarchy, and libadwaita cannot tell the two
+     * apart.
+     *
+     * So the two panels on the two edges of the window were drawn in two
+     * different greys.  Measured against real GTK 4.22 and libadwaita
+     * 1.9.3 before this line existed: the agent sidebar `#181825` and
+     * this one `#28282c`, which is not in the Catppuccin palette at all
+     * -- and on stock GNOME dark, `#2e2e32` against `#28282c`, so the
+     * mismatch was there under every theme rather than only under a
+     * palette.  `.isolated` is libadwaita's own way of saying this split
+     * view is not a pane of the one around it; it now takes
+     * `--sidebar-bg-color` and the two edges match.
+     */
+    gtk_widget_add_css_class(GTK_WIDGET(self->alerts_split), "isolated");
     adw_overlay_split_view_set_sidebar(self->alerts_split,
                                        build_alerts_panel(self));
     self->page_toasts = ADW_TOAST_OVERLAY(adw_toast_overlay_new());

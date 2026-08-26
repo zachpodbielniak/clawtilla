@@ -2507,6 +2507,55 @@ the same program.
   text, because text inside the quoted family is harmless and asserting
   on it fails for the wrong reason.
 
+### A palette is a list, so the thing to check is what is not on it
+
+- The Catppuccin table named 37 of libadwaita 1.9's colours and the
+  comment above it said "the full set rather than the handful that are
+  obviously wrong without it". There are **51**. Every name a palette
+  omits keeps stock GNOME's value, so the symptom is one widget in the
+  wrong grey in a window that is otherwise perfect -- and nothing,
+  anywhere, says which colour or which widget.
+- Found through the alerts panel, which is a second `AdwOverlaySplitView`
+  inside the first one's content. libadwaita styles panes by *position in
+  the widget tree*: a `.sidebar-pane` inside a `.content-pane` is a
+  nested sidebar and is painted from `--secondary-sidebar-bg-color`,
+  which no palette here had ever heard of. Measured: `#28282c` in a
+  window whose agent sidebar was `#181825`.
+- **The nesting was a layout decision and libadwaita read it as
+  hierarchy.** The panel is inside the content so that opening alerts
+  does not hide the agent list; it is a peer of the agent sidebar, not a
+  sidebar of it. `.isolated` says exactly that, and it is the half of the
+  fix that works under *every* scheme -- on stock GNOME dark the same
+  panel was `#28282c` against `#2e2e32`, so the mismatch was never
+  specific to a palette.
+- `--active-toggle-bg-color` is the sharper half. libadwaita has no
+  `@define-color` behind it at all -- it exists only as a custom
+  property, literal `rgb(255 255 255 / 20%)` -- so no amount of
+  redefining named colours reaches it, and the checked toggle stayed
+  white in a Catppuccin window. It is written in the palette's own
+  dialect anyway, because the `@define-color` → `--token` bridge is what
+  keeps a palette one list; the inert `@define-color` it also produces is
+  cheaper than a second list to maintain.
+- The list is `required_colors[]` now and `make test` checks the built-in
+  palettes against it. Deliberately **not** checked for a palette on
+  disk: the two-line example in `docs/clients.org` is a supported,
+  documented partial palette, and warning about it would be crying wolf
+  at the case the feature exists for.
+- Nothing hermetic can notice libadwaita growing a token, so that is
+  written down rather than pretended about -- `gresource extract
+  /usr/lib64/libadwaita-1.so.0 /org/gnome/Adwaita/styles/gtk.css` and
+  grep its `var(--*)`. That is where all 51 came from; recalling them
+  produced 37.
+- Verified by rendering, not by reading: `gtk_widget_paintable_new()` on
+  the window's content, then `gsk_renderer_render_texture()` to a PNG, on
+  the real client with the panel open. **The paintable has to exist
+  before the frame that fills it** -- created afterwards it snapshots to
+  a NULL render node, which is indistinguishable from a broken renderer.
+  And the frame clock has to actually tick: `wait_for_frames()` polling
+  `gdk_frame_clock_get_frame_counter()` beats any number of
+  `g_main_context_iteration()` calls, which left it at 0 for ever. Same
+  trap as the transcript-scroll case already in this file.
+
 ### One CSS provider, reloaded
 
 - `gtk_style_context_add_provider_for_display()` adds; it does not

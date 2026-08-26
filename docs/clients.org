@@ -745,6 +745,68 @@ and the web sheet has its own tokens --- so translating between them
 would mean deciding for the author which half of their palette was real.
 Write the half you need; the other is inert.
 
+**** A partial palette is fine; an almost-complete one is the trap
+
+Every libadwaita colour a palette does not name keeps stock GNOME's
+value.  For a deliberately small palette --- an accent and a background
+over the dark scheme, like the example above --- that is the point.  For
+one meant to be complete it is a bug you cannot see coming: the window
+is right everywhere except the one widget drawn from the colour you
+missed, and nothing anywhere says which colour that was.  The alerts
+panel spent its whole life drawn from ~--secondary-sidebar-bg-color~
+for exactly this reason.
+
+~clawt_appearance_palette_missing()~ answers it.  The palettes shipped
+in this repository are checked against it by ~make test~; a palette on
+disk is not, because refusing or warning about the documented two-line
+example above would be crying wolf at the supported case.
+
+The colours libadwaita 1.9 reads, all fifty:
+
+#+begin_example
+accent_bg_color            accent_color             accent_fg_color
+active_toggle_bg_color     active_toggle_fg_color
+card_bg_color              card_fg_color            card_shade_color
+destructive_bg_color       destructive_color        destructive_fg_color
+dialog_bg_color            dialog_fg_color
+error_bg_color             error_color              error_fg_color
+headerbar_backdrop_color   headerbar_bg_color       headerbar_border_color
+headerbar_darker_shade_color                        headerbar_fg_color
+headerbar_shade_color
+overview_bg_color          overview_fg_color
+popover_bg_color           popover_fg_color         popover_shade_color
+scrollbar_outline_color    shade_color
+secondary_sidebar_backdrop_color                    secondary_sidebar_bg_color
+secondary_sidebar_border_color                      secondary_sidebar_fg_color
+secondary_sidebar_shade_color
+sidebar_backdrop_color     sidebar_bg_color         sidebar_border_color
+sidebar_fg_color           sidebar_shade_color
+success_bg_color           success_color            success_fg_color
+thumbnail_bg_color         thumbnail_fg_color
+view_bg_color              view_fg_color
+warning_bg_color           warning_color            warning_fg_color
+window_bg_color            window_fg_color
+#+end_example
+
+Four of those are ours rather than libadwaita's spelling.
+~active_toggle_*~ and ~overview_*~ exist in libadwaita only as
+~--custom-properties~, with no ~@define-color~ behind them; writing them
+in the palette's own dialect lets the automatic bridge produce the form
+that is actually read, and keeps a palette one list of colours.
+
+~--banner-color~ is not among them and cannot be.  libadwaita sets it on
+the ~banner~ element itself, so no ~:root~ value reaches it --- changing
+it needs a rule rather than a colour.
+
+Nothing hermetic can notice a *new* libadwaita release growing a token.
+When one lands, re-read the list from the library itself:
+
+#+begin_src bash
+gresource extract /usr/lib64/libadwaita-1.so.0 \
+    /org/gnome/Adwaita/styles/gtk.css |
+    grep -o 'var(--[a-z0-9-]*' | sort -u
+#+end_src
+
 The ~@define-color~ half is bridged automatically into libadwaita's
 ~--token~ custom properties, because libadwaita's own ~.accent~,
 ~.error~, ~.success~ and ~.warning~ rules read only that namespace. A
@@ -914,6 +976,18 @@ list plus 600 for the transcript's clamp plus 320 comes to 1201, so on an
 ordinary window all three fit and *the transcript does not move when the
 panel opens*.  Below 1200px it overlays instead --- the number is derived
 from those three widths, not chosen.
+
+It carries libadwaita's ~.isolated~ class, and that is the whole reason
+the two edges of the window are the same colour.  libadwaita styles panes
+by where they sit in the widget tree: a ~.sidebar-pane~ inside a
+~.content-pane~ is a *nested* sidebar and is painted from
+~--secondary-sidebar-bg-color~, a deliberately different shade.  Nesting
+here is a layout decision --- it is what keeps the agent list on screen
+--- and not a statement of hierarchy, but libadwaita cannot tell those
+apart.  Measured before the class was added: the agent sidebar ~#181825~
+and the alerts panel ~#28282c~ under Catppuccin, and ~#2e2e32~ against
+~#28282c~ on stock GNOME dark, so the mismatch was there under every
+scheme rather than only under a palette.
 
 *** Unread
 

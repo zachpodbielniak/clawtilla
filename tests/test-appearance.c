@@ -1130,6 +1130,162 @@ test_a_builtin_has_no_palette_sheet(void)
     g_assert_null(clawt_appearance_get_palette_css(appearance));
 }
 
+/*
+ * Every built-in palette names every colour libadwaita reads.
+ *
+ * The comment above the Catppuccin table claimed this for as long as the
+ * table had been there, and it was wrong by fourteen colours -- which is
+ * the whole reason clawt_appearance_palette_missing() exists.  A palette
+ * that omits one is not broken and does not warn: it silently keeps
+ * stock GNOME's value for that colour, so the symptom is one widget in
+ * the wrong grey in a window that is otherwise perfect.  The alerts
+ * panel was drawn from `--secondary-sidebar-bg-color` for the whole life
+ * of the feature, and nothing anywhere could have said so.
+ *
+ * The failure message names the colours, because "the palette is
+ * incomplete" sends somebody to read fifty lines of hex.
+ */
+static void
+test_every_builtin_palette_is_complete(void)
+{
+    guint i;
+
+    for (i = 0; i < clawt_appearance_theme_count(); i++) {
+        ClawtTheme theme = clawt_appearance_theme_nth(i);
+        g_autoptr(ClawtAppearance) appearance = NULL;
+        g_autofree gchar *css = NULL;
+        g_auto(GStrv) missing = NULL;
+
+        if (!clawt_appearance_theme_has_palette(theme))
+            continue;
+
+        appearance = clawt_appearance_new();
+        clawt_appearance_set_theme(appearance, theme);
+        css = clawt_appearance_to_css(appearance);
+        missing = clawt_appearance_palette_missing(css);
+
+        if (missing[0] != NULL) {
+            g_autofree gchar *joined = g_strjoinv(", ", missing);
+
+            g_error("palette '%s' does not define: %s",
+                    clawt_appearance_theme_nick(theme), joined);
+        }
+    }
+}
+
+/*
+ * And the check fails when a colour is absent.
+ *
+ * A completeness check that has never been shown to fire is a check that
+ * reports complete for every palette, including the empty one.  This
+ * asserts on the *name* rather than on a count, so a colour removed from
+ * required_colors[] cannot make it pass.
+ */
+static void
+test_an_incomplete_palette_is_reported(void)
+{
+    static const gchar partial[] =
+        "@define-color window_bg_color #1e1e2e;\n"
+        "@define-color window_fg_color #cdd6f4;\n";
+    g_auto(GStrv) missing = clawt_appearance_palette_missing(partial);
+    g_auto(GStrv) nothing = clawt_appearance_palette_missing("");
+    gboolean found_secondary = FALSE;
+    gboolean found_window = FALSE;
+    guint i;
+
+    for (i = 0; missing[i] != NULL; i++) {
+        if (g_strcmp0(missing[i], "secondary_sidebar_bg_color") == 0)
+            found_secondary = TRUE;
+
+        if (g_strcmp0(missing[i], "window_bg_color") == 0)
+            found_window = TRUE;
+    }
+
+    g_assert_true(found_secondary);
+    g_assert_false(found_window);
+
+    /* An empty palette is every colour, not zero of them. */
+    g_assert_cmpuint(g_strv_length(nothing), ==, g_strv_length(missing) + 2);
+}
+
+/*
+ * A palette written in custom properties is complete too.
+ *
+ * Both spellings are the same statement -- this file emits
+ * `@define-color` and derives the rest, while a palette copied off the
+ * web is as likely to be `--window-bg-color`.  Reporting the second kind
+ * as incomplete would be a warning about a file that works perfectly.
+ */
+static void
+test_a_palette_may_be_written_in_either_dialect(void)
+{
+    static const gchar dashed[] = ":root { --window-bg-color: #1e1e2e; }";
+    g_auto(GStrv) missing = clawt_appearance_palette_missing(dashed);
+    guint i;
+
+    for (i = 0; missing[i] != NULL; i++)
+        g_assert_cmpstr(missing[i], !=, "window_bg_color");
+}
+
+/*
+ * `shade_color` is not found inside `card_shade_color`.
+ *
+ * The obvious implementation is a substring search, and a substring
+ * search reports a palette defining only `card_shade_color` as also
+ * defining `shade_color`, `headerbar_shade_color` and every other name
+ * ending the same way.  That direction of wrongness is the dangerous
+ * one: the check passes and the palette is still incomplete.
+ */
+static void
+test_one_colour_is_not_found_inside_another(void)
+{
+    static const gchar suffixed[] =
+        "@define-color card_shade_color #11111b;\n";
+    g_auto(GStrv) missing = clawt_appearance_palette_missing(suffixed);
+    gboolean found_shade = FALSE;
+    gboolean found_card = FALSE;
+    guint i;
+
+    for (i = 0; missing[i] != NULL; i++) {
+        if (g_strcmp0(missing[i], "shade_color") == 0)
+            found_shade = TRUE;
+
+        if (g_strcmp0(missing[i], "card_shade_color") == 0)
+            found_card = TRUE;
+    }
+
+    g_assert_true(found_shade);
+    g_assert_false(found_card);
+}
+
+/*
+ * The two colours the alerts panel is drawn from, by name.
+ *
+ * Named rather than left to the completeness test because these are the
+ * two that were reported, and a regression in either is a visible one:
+ * a panel in stock GNOME's grey, and a checked toggle in literal white.
+ * `--active-toggle-bg-color` is the sharper of the two -- libadwaita has
+ * no `@define-color` behind it, so it is reachable only as a custom
+ * property, and a palette that emitted the `@define-color` form alone
+ * would leave the toggle white while looking complete.
+ */
+static void
+test_the_alerts_panel_colours_reach_the_stylesheet(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+    g_autofree gchar *css = NULL;
+
+    clawt_appearance_set_theme(appearance, CLAWT_THEME_CATPPUCCIN_MOCHA);
+    css = clawt_appearance_to_css(appearance);
+
+    g_assert_nonnull(strstr(css, "--secondary-sidebar-bg-color:"));
+    g_assert_nonnull(strstr(css, "--active-toggle-bg-color:"));
+    g_assert_nonnull(strstr(css, "--active-toggle-fg-color:"));
+
+    /* Not white, which is what libadwaita would have used. */
+    g_assert_null(strstr(css, "--active-toggle-bg-color: #ffffff"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1228,6 +1384,17 @@ main(int argc, char *argv[])
                     test_a_missing_palette_follows_the_system);
     g_test_add_func("/appearance/builtin-has-no-palette-sheet",
                     test_a_builtin_has_no_palette_sheet);
+
+    g_test_add_func("/appearance/every-builtin-palette-is-complete",
+                    test_every_builtin_palette_is_complete);
+    g_test_add_func("/appearance/incomplete-palette-is-reported",
+                    test_an_incomplete_palette_is_reported);
+    g_test_add_func("/appearance/palette-in-either-dialect",
+                    test_a_palette_may_be_written_in_either_dialect);
+    g_test_add_func("/appearance/one-colour-not-inside-another",
+                    test_one_colour_is_not_found_inside_another);
+    g_test_add_func("/appearance/alerts-panel-colours",
+                    test_the_alerts_panel_colours_reach_the_stylesheet);
 
     g_test_add_func("/appearance/markdown-code-font",
                     test_markdown_uses_the_chosen_code_font);
