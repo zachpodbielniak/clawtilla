@@ -39,6 +39,18 @@ clawt_web_stylesheet(void)
       "--serif:ui-serif,'Iowan Old Style','Palatino Linotype',Palatino,Georgia,serif;"
       "--mono:ui-monospace,'SF Mono','JetBrains Mono','DejaVu Sans Mono',monospace;"
       "--radius:8px;--radius-sm:5px;"
+      /*
+       * The avatar column a body is indented past -- 28px of face and
+       * its 8px gap.  A token rather than a literal because the
+       * composer has to agree with a number it does not draw: the
+       * transcript spends this on the avatar and the composer spent
+       * nothing, so the entry sat in the one column deliberately kept
+       * empty, which is the strongest vertical line on the page in the
+       * wrong place.  Four rules read it now and none of them can
+       * drift.  clawt_chat_body_inset() states the same derivation for
+       * the GTK client, whose own pair of numbers is different.
+       */
+      "--chat-gutter:36px;"
       /* Overridable per browser from the appearance page; the rest of the
        * sheet reads these rather than naming a size directly. */
       "--font-size:14px;--mono-size:12.5px;"
@@ -234,7 +246,7 @@ clawt_web_stylesheet(void)
      * origin is how a transcript becomes a script.
      */
     ".attachments{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;"
-      "margin-left:36px}"
+      "margin-left:var(--chat-gutter)}"
     ".msg-self .attachments{margin-left:0;justify-content:flex-end}"
     ".attachment-image{max-width:100%;max-height:20rem;border-radius:"
       "var(--radius-sm);border:1px solid var(--line);display:block}"
@@ -322,7 +334,7 @@ clawt_web_stylesheet(void)
      * gap -- so the left edge of the text is unbroken down the run.
      */
     ".msg-body{white-space:pre-wrap;word-wrap:break-word;"
-      "margin-left:36px}"
+      "margin-left:var(--chat-gutter)}"
     ".msg-body code{font-family:var(--mono);font-size:var(--mono-size);"
       "background:var(--surface-2);padding:1px 5px;border-radius:4px}"
     ".msg-body pre{font-family:var(--mono);font-size:var(--mono-size);"
@@ -407,9 +419,28 @@ clawt_web_stylesheet(void)
      * under a narrow column of text reads as a rendering fault rather
      * than as a layout: the thing you read and the thing you type into
      * should be the same column.
+     *
+     * The column, though -- not the clamp.  Both are 40rem and centred
+     * alike, and they still did not line up, because only the
+     * transcript spends anything on the avatar: a body starts a gutter
+     * in and the entry started at the clamp, so the strongest vertical
+     * line on the page stood inside the column kept empty for faces.
+     * box-sizing is border-box throughout, so the padding takes the
+     * indent out of the 40rem rather than adding to it and the trailing
+     * edges stay together.
      */
     ".composer-inner{max-width:40rem;margin:0 auto;display:flex;gap:10px;"
-      "align-items:flex-end}"
+      "align-items:flex-end;padding-left:var(--chat-gutter)}"
+    /*
+     * Narrow enough and the avatar is hidden, so there is no gutter to
+     * stand past and the composer goes back to the clamp with the
+     * bodies.  It has to sit *after* the rule above: the selectors are
+     * identical in specificity, so source order is the only thing
+     * deciding, and grouped with the other narrow overrides -- which
+     * appear earlier in this sheet -- it would lose every time and do
+     * nothing at all.
+     */
+    "@media (max-width:26rem){.composer-inner{padding-left:0}}"
     ".composer textarea{flex:1;min-height:2.6rem;max-height:14rem;"
       "font-family:var(--sans);font-size:14px}"
 
