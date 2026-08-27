@@ -136,6 +136,121 @@ test_cycle_window_forgets(void)
     }
 }
 
+/*
+ * "Recently" is a duration, and a repeat after it has passed is
+ * delivered.
+ *
+ * It was not.  The history queue held bare fingerprints and was trimmed
+ * by count alone, so orchestration.cycle_window -- ten messages -- was
+ * however long ten messages take.  In a quiet room that is hours.
+ *
+ * What that cost: an agent hit an unrelated spawn failure and emitted a
+ * byte-identical error string every turn.  The first reached the
+ * operator at 00:43.  The 06:45 routine and the 07:15 routine were both
+ * refused as cycles and produced no output at all, and the operator
+ * typed "Fai?" at 11:03 after ten hours of silence.  Identical repeated
+ * output is the signature of a stuck system, and the guard's answer to a
+ * stuck system was to hide its only symptom.
+ *
+ * check_rate() in the same file had always done this properly -- a
+ * timestamp per entry and a real cutoff.  The check that is time-bounded
+ * did not claim to be; the check that claimed to be was not.
+ *
+ * The window is one second here so the wait is one second.  Both halves
+ * are in this test on purpose: without the "still refused inside the
+ * window" half it would pass in a build where the cycle check had simply
+ * been deleted.
+ */
+static void
+test_the_cycle_window_expires(void)
+{
+    g_autoptr(ClawtLoopGuard) guard = clawt_loop_guard_new();
+    g_autoptr(GError) error = NULL;
+
+    clawt_loop_guard_set_limits(guard, 100, 0, 10);
+    clawt_loop_guard_set_cycle_seconds(guard, 1);
+
+    {
+        g_autoptr(ClawtMessage) first = message_at_depth("fai", "dm:fai:user",
+                                                         "Error: E2BIG", 1);
+
+        g_assert_true(clawt_loop_guard_check(guard, first, &error));
+    }
+
+    /* Inside the window it is still a loop. This is the control. */
+    {
+        g_autoptr(ClawtMessage) inside = message_at_depth("fai", "dm:fai:user",
+                                                          "Error: E2BIG", 1);
+
+        g_assert_false(clawt_loop_guard_check(guard, inside, &error));
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT);
+        g_clear_error(&error);
+    }
+
+    /*
+     * Past it, the same body is delivered.  A real wait rather than a
+     * seam that moves the clock: the thing being fixed is what the guard
+     * does as time passes, and a test that sets the timestamps by hand
+     * would be on the wrong side of the window it is about.
+     */
+    g_usleep(1200 * 1000);
+
+    {
+        g_autoptr(ClawtMessage) after = message_at_depth("fai", "dm:fai:user",
+                                                         "Error: E2BIG", 1);
+
+        g_assert_true(clawt_loop_guard_check(guard, after, &error));
+        g_assert_no_error(error);
+    }
+}
+
+/*
+ * And the refusal says the duration it actually enforces.
+ *
+ * The old text said "recently" against a check with no clock in it. A
+ * refusal an agent cannot act on is a refusal that gets retried.
+ */
+static void
+test_the_cycle_refusal_names_its_window(void)
+{
+    g_autoptr(ClawtLoopGuard) guard = clawt_loop_guard_new();
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtMessage) first = NULL;
+    g_autoptr(ClawtMessage) again = NULL;
+
+    clawt_loop_guard_set_limits(guard, 100, 0, 10);
+    clawt_loop_guard_set_cycle_seconds(guard, 45);
+
+    first = message_at_depth("a", "room", "same", 1);
+    again = message_at_depth("a", "room", "same", 1);
+
+    g_assert_true(clawt_loop_guard_check(guard, first, &error));
+    g_assert_false(clawt_loop_guard_check(guard, again, &error));
+    g_assert_nonnull(strstr(error->message, "45 seconds"));
+}
+
+/*
+ * A cycle window of zero seconds turns the check off, the way a
+ * cycle_window of zero messages already does.
+ */
+static void
+test_a_zero_cycle_window_disables_the_check(void)
+{
+    g_autoptr(ClawtLoopGuard) guard = clawt_loop_guard_new();
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtMessage) first = NULL;
+    g_autoptr(ClawtMessage) again = NULL;
+
+    clawt_loop_guard_set_limits(guard, 100, 0, 10);
+    clawt_loop_guard_set_cycle_seconds(guard, 0);
+
+    first = message_at_depth("a", "room", "same", 1);
+    again = message_at_depth("a", "room", "same", 1);
+
+    g_assert_true(clawt_loop_guard_check(guard, first, &error));
+    g_assert_true(clawt_loop_guard_check(guard, again, &error));
+}
+
 /* One agent flooding, however shallow each message. */
 static void
 test_rate_limit_stops_a_flood(void)
@@ -591,6 +706,11 @@ main(int argc, char *argv[])
     g_test_add_func("/loop/cycle", test_cycle_detection_catches_alternating_replies);
     g_test_add_func("/loop/cycle-per-sender", test_cycle_detection_is_per_sender);
     g_test_add_func("/loop/cycle-forgets", test_cycle_window_forgets);
+    g_test_add_func("/loop/cycle-window-expires", test_the_cycle_window_expires);
+    g_test_add_func("/loop/cycle-refusal-names-its-window",
+                    test_the_cycle_refusal_names_its_window);
+    g_test_add_func("/loop/cycle-seconds-zero-disables",
+                    test_a_zero_cycle_window_disables_the_check);
     g_test_add_func("/loop/rate", test_rate_limit_stops_a_flood);
     g_test_add_func("/loop/refusal-does-not-charge",
                     test_refused_message_does_not_consume_the_rate_allowance);

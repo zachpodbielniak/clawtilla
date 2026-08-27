@@ -3624,6 +3624,11 @@ configure_limits(ClawtDaemon *self)
         (guint)clawt_config_get_int(self->config,
                                     "orchestration.cycle_window"));
 
+    clawt_loop_guard_set_cycle_seconds(
+        self->guard,
+        (guint)clawt_config_get_int(self->config,
+                                    "orchestration.cycle_seconds"));
+
     clawt_loop_guard_set_task_budget(
         self->guard,
         clawt_config_get_double(self->config, "orchestration.task_budget_usd"));

@@ -517,7 +517,26 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "A message repeating one already in the window is refused. This catches\n"
   "the case the hop limit does not: two agents alternating the same two\n"
-  "replies, each one a fresh chain.", "0.1.0" },
+  "replies, each one a fresh chain.\n"
+  "\n"
+  "This bounds the memory. How far back the check looks in time is\n"
+  "orchestration.cycle_seconds.", "0.1.0" },
+
+{ "orchestration.cycle_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "300", NULL,
+  "How long a repeated message counts as a loop. 0 disables the check.\n"
+  "\n"
+  "Without this the cycle window was a count alone, so how far back it\n"
+  "looked was however long the room's last cycle_window messages had\n"
+  "taken -- ten messages in a quiet room is hours. An agent that hit a\n"
+  "spawn failure and reported the same error string every turn had its\n"
+  "first report delivered and every one after it refused, so a wedged\n"
+  "agent was indistinguishable from an idle one for ten hours.\n"
+  "\n"
+  "The default suits the runaway this check exists for -- two agents\n"
+  "alternating the same two replies with nothing pacing them, where a\n"
+  "turn is seconds. Raise it for a fleet whose turns are minutes; a\n"
+  "repeat is only caught if it lands inside the window.", "0.1.0" },
 
 { "orchestration.mailbox", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Defaults for every agent's mailbox.\n"

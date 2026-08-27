@@ -373,7 +373,25 @@ orchestration:
   # A message repeating one already in the window is refused. This catches
   # the case the hop limit does not: two agents alternating the same two
   # replies, each one a fresh chain.
+  #
+  # This bounds the memory. How far back the check looks in time is
+  # orchestration.cycle_seconds.
   cycle_window: 10
+
+  # How long a repeated message counts as a loop. 0 disables the check.
+  #
+  # Without this the cycle window was a count alone, so how far back it
+  # looked was however long the room's last cycle_window messages had
+  # taken -- ten messages in a quiet room is hours. An agent that hit a
+  # spawn failure and reported the same error string every turn had its
+  # first report delivered and every one after it refused, so a wedged
+  # agent was indistinguishable from an idle one for ten hours.
+  #
+  # The default suits the runaway this check exists for -- two agents
+  # alternating the same two replies with nothing pacing them, where a
+  # turn is seconds. Raise it for a fleet whose turns are minutes; a
+  # repeat is only caught if it lands inside the window.
+  cycle_seconds: 300
 
   # Defaults for every agent's mailbox.
   #

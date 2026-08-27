@@ -59,11 +59,34 @@ ClawtLoopGuard *clawt_loop_guard_new(void);
  * @max_hops: how far a message may travel agent-to-agent
  * @rate_per_minute: messages one agent may send per minute, or 0 for no limit
  * @cycle_window: how many recent messages per room to remember
+ *
+ * How long one of those is remembered for is
+ * clawt_loop_guard_set_cycle_seconds().
  */
 void clawt_loop_guard_set_limits(ClawtLoopGuard *self,
                                  guint           max_hops,
                                  guint           rate_per_minute,
                                  guint           cycle_window);
+
+/**
+ * clawt_loop_guard_set_cycle_seconds:
+ * @self: a #ClawtLoopGuard
+ * @seconds: how long a repeat counts as a loop, or 0 to disable the check
+ *
+ * How far back the cycle check looks, in wall-clock terms.
+ *
+ * @cycle_window bounds the memory -- how many fingerprints a room keeps
+ * -- and this bounds the meaning.  Without it the window was however
+ * long its last @cycle_window messages took, which in a quiet room is
+ * hours: an agent repeating one error string was silenced from its first
+ * report until ten more messages had passed through the room.
+ *
+ * Its own setter rather than a fifth argument to
+ * clawt_loop_guard_set_limits(), so callers that do not care keep
+ * compiling.
+ */
+void clawt_loop_guard_set_cycle_seconds(ClawtLoopGuard *self,
+                                        guint           seconds);
 
 /**
  * clawt_loop_guard_set_task_budget:
