@@ -745,13 +745,56 @@ not scroll sideways.  That is the whole reason this client needs
 neither the width threshold nor the record layout the GTK one does.
 
 Every colour is an existing token, so a colour scheme recolours a
-rendered message with everything else.  One number worth stating
-plainly: =.md-url= uses =--muted=, which is 5.66:1 in dark and 4.32:1 in
-light --- under AA's 4.5 for small text.  It is the same token every
-other secondary annotation in this client uses, including the
-timestamps beside it, so it is a property of that token rather than of
-this feature; giving the URL its own would make it louder than the
-message's own metadata.
+rendered message with everything else.
+
+*** Every text colour clears WCAG AA
+
+Measuring the rendered page for the table header turned up a second
+number: =.md-url= was 4.32:1 in light, under AA's 4.5 for text.  It
+uses =--muted=, and so does every timestamp, day divider and =.muted=
+span in the client --- so the fault was the token's rather than this
+feature's, and giving the URL a colour of its own would have made a
+link's target louder than the message's own metadata while leaving
+everything else where it was.
+
+So the token moved.  =--muted= went from =#787774= to =#6E6D6B=, eight
+percent darker along the same warm grey: 4.99 on the canvas, 5.17 on a
+surface and 4.78 on =--surface-2=, all with room, and still the
+lightest text token so nothing about the hierarchy under =--ink= and
+=--ink-2= changed.  Confirmed in a browser at 4.99:1 rather than only
+on paper.
+
+An audit of all four palettes --- light, the two dark blocks and
+Catppuccin --- against all three grounds, plus every semantic
+foreground on its own tint and bare, found that one value and nothing
+else.  The GTK palette in ~clawt-appearance.c~ was clean throughout,
+its worst pair 6.31:1.
+
+Both are checked now rather than remembered.
+~tests/test-web-render.c~ parses the palettes out of the stylesheet and
+~tests/test-appearance.c~ parses the =@define-color= pairs, and each
+fails naming the palette, the token, both colours and the ratio.  A
+palette added later cannot ship under the line quietly, which is what
+this one did.
+
+Two things that check cannot do, said plainly.  It reads the palettes
+clawtilla ships, so stock GNOME's colours --- which are libadwaita's
+and not in this tree --- are outside it.  And it compares tokens rather
+than rendered pixels, so a colour composited over another, such as the
+white tint on the operator's bubble, is not among them; that one was
+measured in the browser instead.
+
+The web check passed on its first run for the wrong reason, which is
+worth recording.  It bounded each palette block at the ="}= sequence
+that separates two adjacent C string literals in ~web-style.c~ --- and
+by the time ~clawt_web_stylesheet()~ returns, the quotes are gone and
+there is no such pair.  The scan ran to the end of the sheet, a later
+definition replaced an earlier one in the hash table, and all four
+palettes reported Catppuccin's colours: four dark schemes, nothing
+under the line, a green check.  **A test written against the shape of
+the code rather than the shape of its output.**  It compares the ground
+each block reports against the light one's now, so a scan that reads
+past its own block fails on that instead.
 
 ** Troubleshooting
 

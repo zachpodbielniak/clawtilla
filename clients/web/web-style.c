@@ -29,7 +29,20 @@ clawt_web_stylesheet(void)
     ":root{"
       "--canvas:#FBFBFA;--surface:#FFFFFF;--surface-2:#F7F6F3;"
       "--line:#EAEAEA;--line-strong:#DCDCDA;"
-      "--ink:#111111;--ink-2:#2F3437;--muted:#787774;"
+      /*
+       * --muted was #787774, which is 4.32:1 on the canvas and
+       * 4.14:1 on surface-2 -- under AA's 4.5 for small text, and
+       * this is the token every secondary annotation in the client
+       * uses: timestamps, day dividers, a link's target beside it,
+       * every `.muted` span.  It is the only value in any of the
+       * four palettes that was under, and darkening it by 8% clears
+       * every light background with room (4.99 / 5.17 / 4.78) while
+       * staying the lightest text token, so the hierarchy below --ink
+       * and --ink-2 is unchanged.  tests/test-web-render.c checks
+       * all four palettes now, so the next one added cannot ship
+       * under it quietly.
+       */
+      "--ink:#111111;--ink-2:#2F3437;--muted:#6E6D6B;"
       "--good-bg:#EDF3EC;--good-fg:#346538;"
       "--warn-bg:#FBF3DB;--warn-fg:#956400;"
       "--bad-bg:#FDEBEC;--bad-fg:#9F2F2D;"

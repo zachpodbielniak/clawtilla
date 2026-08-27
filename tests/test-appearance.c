@@ -17,6 +17,7 @@
 
 #include <glib/gstdio.h>
 
+#include <math.h>
 #include <string.h>
 
 #include "clawt-test-util.h"
@@ -1286,6 +1287,107 @@ test_the_alerts_panel_colours_reach_the_stylesheet(void)
     g_assert_null(strstr(css, "--active-toggle-bg-color: #ffffff"));
 }
 
+/*
+ * Every foreground this palette names clears WCAG AA on the ground it
+ * is named against.
+ *
+ * The web client's sheet grew this check first, and found one token
+ * under the line that nobody had ever measured.  The palette here is
+ * the same colours in the other vocabulary, so it is worth the same
+ * question -- and it is answerable without a window, because a
+ * `<name>_fg_color` and its `<name>_bg_color` are a pair by
+ * libadwaita's own convention.
+ *
+ * What this cannot check is stock GNOME: those colours are
+ * libadwaita's and are not in this tree.  A check finds the layer it
+ * looks at, and this one looks at the palettes clawtilla ships.
+ */
+static gdouble
+srgb_channel(gint byte)
+{
+    gdouble v = byte / 255.0;
+
+    return v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
+}
+
+static gdouble
+hex_luminance(const gchar *hex)
+{
+    gchar pair[3] = { 0, 0, 0 };
+    gdouble channels[3];
+    gsize i;
+
+    for (i = 0; i < 3; i++) {
+        pair[0] = hex[1 + i * 2];
+        pair[1] = hex[2 + i * 2];
+        channels[i] = srgb_channel((gint)g_ascii_strtoull(pair, NULL, 16));
+    }
+
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+}
+
+/* The hex a named colour is defined as, or NULL. */
+static gchar *
+defined_color(const gchar *css, const gchar *name)
+{
+    g_autofree gchar *needle = g_strdup_printf("@define-color %s #", name);
+    const gchar *at = strstr(css, needle);
+
+    if (at == NULL)
+        return NULL;
+
+    return g_strndup(at + strlen(needle) - 1, 7);
+}
+
+static void
+test_the_palette_clears_aa(void)
+{
+    static const gchar *pairs[] = {
+        "window", "view", "headerbar", "sidebar", "secondary_sidebar",
+        "card", "dialog", "popover", "thumbnail", "active_toggle",
+        "overview", "accent", "destructive", "error", "success", "warning",
+        NULL
+    };
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+    g_autofree gchar *css = NULL;
+    gsize i;
+    guint checked = 0;
+
+    clawt_appearance_set_theme(appearance, CLAWT_THEME_CATPPUCCIN_MOCHA);
+    css = clawt_appearance_to_css(appearance);
+
+    for (i = 0; pairs[i] != NULL; i++) {
+        g_autofree gchar *fg_name = g_strdup_printf("%s_fg_color", pairs[i]);
+        g_autofree gchar *bg_name = g_strdup_printf("%s_bg_color", pairs[i]);
+        g_autofree gchar *fg = defined_color(css, fg_name);
+        g_autofree gchar *bg = defined_color(css, bg_name);
+        gdouble a;
+        gdouble b;
+        gdouble ratio;
+
+        /*
+         * A name the palette does not define is a row to remove from
+         * this list, not a silent skip -- the list is the declaration
+         * of what is being checked.
+         */
+        g_assert_nonnull(fg);
+        g_assert_nonnull(bg);
+
+        a = hex_luminance(fg);
+        b = hex_luminance(bg);
+        ratio = (MAX(a, b) + 0.05) / (MIN(a, b) + 0.05);
+
+        if (ratio < 4.5)
+            g_error("%s (%s) on %s (%s) is %.2f:1, under AA's 4.5 for text",
+                    fg_name, fg, bg_name, bg, ratio);
+
+        checked++;
+    }
+
+    /* And the list was not silently empty. */
+    g_assert_cmpuint(checked, ==, G_N_ELEMENTS(pairs) - 1);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1328,6 +1430,8 @@ main(int argc, char *argv[])
                     test_settings_survive_the_round_trip);
     g_test_add_func("/appearance/defaults-round-trip",
                     test_the_defaults_round_trip);
+    g_test_add_func("/appearance/the-palette-clears-aa",
+                    test_the_palette_clears_aa);
     g_test_add_func("/appearance/palette-reaches-the-stylesheet",
                     test_a_palette_reaches_the_stylesheet);
     g_test_add_func("/appearance/palette-speaks-both-dialects",

@@ -22,6 +22,7 @@
 #include "clawtilla.h"
 
 #include <glib.h>
+#include <math.h>
 #include <string.h>
 
 #include "../clients/web/web-ui.c"
@@ -786,6 +787,216 @@ test_the_two_clients_stay_level(void)
                            output != NULL ? output : "");
 }
 
+/* ── Contrast ────────────────────────────────────────────────────── */
+
+/*
+ * WCAG's relative luminance, and the ratio built from it.
+ *
+ * Written out rather than eyeballed because a colour is not readable
+ * or unreadable by how it looks in the one scheme the person choosing
+ * it happened to be in.  Two of the four palettes here are dark; the
+ * value that was under the line was in the light one, and it had been
+ * measured by nobody.
+ */
+static gdouble
+channel_luminance(gint byte)
+{
+    gdouble v = byte / 255.0;
+
+    return v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
+}
+
+static gdouble
+relative_luminance(const gchar *hex)
+{
+    gint r, g, b;
+
+    g_assert_cmpuint(strlen(hex), ==, 7);
+    g_assert_cmpint(hex[0], ==, '#');
+
+    r = (gint)g_ascii_strtoull(&(gchar[3]){hex[1], hex[2], 0}[0], NULL, 16);
+    g = (gint)g_ascii_strtoull(&(gchar[3]){hex[3], hex[4], 0}[0], NULL, 16);
+    b = (gint)g_ascii_strtoull(&(gchar[3]){hex[5], hex[6], 0}[0], NULL, 16);
+
+    return 0.2126 * channel_luminance(r) +
+           0.7152 * channel_luminance(g) +
+           0.0722 * channel_luminance(b);
+}
+
+static gdouble
+contrast_ratio(const gchar *fg, const gchar *bg)
+{
+    gdouble a = relative_luminance(fg);
+    gdouble b = relative_luminance(bg);
+    gdouble hi = MAX(a, b);
+    gdouble lo = MIN(a, b);
+
+    return (hi + 0.05) / (lo + 0.05);
+}
+
+/*
+ * The `--name:#rrggbb` pairs inside one palette block.
+ *
+ * Bounded at the block's own closing brace, and that is the whole
+ * difficulty.  An unbounded scan reads on into the palettes below, and
+ * a later insert replaces an earlier one in a hash table -- so every
+ * scheme reports the *last* one's colours under its own name.  This
+ * test passed that way first time round: four palettes, all of them
+ * Catppuccin, nothing under the line anywhere.
+ *
+ * A palette block has no nested braces, so its first `}` is its own.
+ * The `"}` this looked for at first is a sequence in the *source*,
+ * where the sheet is a run of adjacent C string literals; by the time
+ * clawt_web_stylesheet() returns it the quotes are gone and there is
+ * no such pair to find.  A test written against the shape of the code
+ * rather than the shape of its output.
+ *
+ * Returns: (transfer full) (element-type utf8 utf8)
+ */
+static GHashTable *
+palette_after(const gchar *css, const gchar *selector)
+{
+    GHashTable *tokens = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                               g_free, g_free);
+    const gchar *p = strstr(css, selector);
+    const gchar *end;
+
+    g_assert_nonnull(p);
+
+    p += strlen(selector);
+    end = strchr(p, '}');
+    g_assert_nonnull(end);
+
+    while ((p = strstr(p, "--")) != NULL && p < end) {
+        const gchar *colon = strchr(p, ':');
+
+        if (colon == NULL || colon > end)
+            break;
+
+        if (colon[1] == '#' && strlen(colon) >= 8) {
+            g_hash_table_insert(tokens,
+                                g_strndup(p + 2, (gsize)(colon - p - 2)),
+                                g_strndup(colon + 1, 7));
+        }
+
+        p = colon + 1;
+    }
+
+    return tokens;
+}
+
+/*
+ * Every text colour this client can draw clears WCAG AA.
+ *
+ * 4.5:1 is AA for normal text, which every one of these is: the tokens
+ * below are body copy, secondary annotations and badge labels, none of
+ * them at the 24px that would let 3:1 apply.
+ *
+ * The check is worth more than the fix that prompted it.  --muted was
+ * 4.32:1 on the canvas in the light palette -- legible, plainly wrong
+ * only when measured, and used by every timestamp, day divider and
+ * link target in the client.  Nothing said so, and nothing would have
+ * said so about the next palette either.
+ */
+static void
+test_every_text_colour_clears_aa(void)
+{
+    static const gchar *palettes[] = {
+        ":root{",
+        "@media (prefers-color-scheme:dark){:root:not([data-theme=\"light\"]){",
+        ":root[data-theme=\"dark\"]{",
+        ":root[data-theme=\"catppuccin-mocha\"]{",
+        NULL
+    };
+    /*
+     * Text on ground.  Each foreground is checked against every ground
+     * it can land on rather than against one -- --muted was over the
+     * line on white and under it on surface-2, and a check that had
+     * picked the first would have passed.
+     */
+    static const gchar *grounds[] = { "canvas", "surface", "surface-2", NULL };
+    static const gchar *inks[] = { "ink", "ink-2", "muted", NULL };
+    static const gchar *pairs[][2] = {
+        { "good-fg", "good-bg" },
+        { "warn-fg", "warn-bg" },
+        { "bad-fg", "bad-bg" },
+        { "info-fg", "info-bg" },
+        { "neutral-fg", "neutral-bg" },
+        { NULL, NULL }
+    };
+    const gchar *css = clawt_web_stylesheet();
+    g_autofree gchar *light_canvas = NULL;
+    gsize p;
+
+    for (p = 0; palettes[p] != NULL; p++) {
+        g_autoptr(GHashTable) tokens = palette_after(css, palettes[p]);
+        gsize i;
+        gsize j;
+
+        /*
+         * A palette that parsed to nothing would pass every assertion
+         * below it.  The count is what makes a renamed selector a
+         * failure rather than a silently empty check.
+         */
+        g_assert_cmpuint(g_hash_table_size(tokens), >=, 16);
+
+        /*
+         * And the light palette must not have come back holding a dark
+         * one's colours.  That is not a hypothetical: an unbounded scan
+         * gives every block the last one's values, and the check then
+         * passes while measuring one palette four times.  Comparing the
+         * ground each block reports is the cheapest thing that can tell
+         * the difference.
+         */
+        if (p == 0)
+            light_canvas = g_strdup(g_hash_table_lookup(tokens, "canvas"));
+        else
+            g_assert_cmpstr(g_hash_table_lookup(tokens, "canvas"), !=,
+                            light_canvas);
+
+        for (i = 0; inks[i] != NULL; i++) {
+            const gchar *fg = g_hash_table_lookup(tokens, inks[i]);
+
+            g_assert_nonnull(fg);
+
+            for (j = 0; grounds[j] != NULL; j++) {
+                const gchar *bg = g_hash_table_lookup(tokens, grounds[j]);
+                gdouble ratio;
+
+                g_assert_nonnull(bg);
+                ratio = contrast_ratio(fg, bg);
+
+                if (ratio < 4.5)
+                    g_error("%s --%s (%s) on --%s (%s) is %.2f:1, "
+                            "under AA's 4.5 for text",
+                            palettes[p], inks[i], fg, grounds[j], bg, ratio);
+            }
+        }
+
+        for (i = 0; pairs[i][0] != NULL; i++) {
+            const gchar *fg = g_hash_table_lookup(tokens, pairs[i][0]);
+            const gchar *bg = g_hash_table_lookup(tokens, pairs[i][1]);
+            const gchar *canvas = g_hash_table_lookup(tokens, "canvas");
+            gdouble on_pill;
+            gdouble on_page;
+
+            g_assert_nonnull(fg);
+            g_assert_nonnull(bg);
+            g_assert_nonnull(canvas);
+
+            on_pill = contrast_ratio(fg, bg);
+            on_page = contrast_ratio(fg, canvas);
+
+            /* A semantic colour is drawn on its own tint and bare. */
+            if (on_pill < 4.5 || on_page < 4.5)
+                g_error("%s --%s (%s) is %.2f:1 on --%s and %.2f:1 on the "
+                        "canvas, under AA's 4.5 for text",
+                        palettes[p], pairs[i][0], fg, on_pill, pairs[i][1],
+                        on_page);
+        }
+    }
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -856,6 +1067,9 @@ main(int argc, char *argv[])
                     test_an_absurd_size_is_ignored);
     g_test_add_func("/web/a-request-without-cookies-defers-everything",
                     test_a_request_without_cookies_defers_everything);
+
+    g_test_add_func("/web/every-text-colour-clears-aa",
+                    test_every_text_colour_clears_aa);
 
     g_test_add_func("/web/the-two-clients-stay-level",
                     test_the_two_clients_stay_level);
