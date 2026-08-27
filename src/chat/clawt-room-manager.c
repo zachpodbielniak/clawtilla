@@ -61,6 +61,29 @@ transcript_path(ClawtRoomManager *self, const gchar *room_id)
     return g_build_filename(self->transcript_dir, filename, NULL);
 }
 
+/*
+ * The whole transcript, rewritten from memory.
+ *
+ * This is not the shape a transcript wants, and it is worth saying why
+ * it is still here.  ClawtRoom already has append_to_transcript(), which
+ * is append-only for the reason its own comment gives -- a transcript is
+ * replayed into every context rebuild, so rewriting it changes history
+ * an agent has already reasoned from -- and it *redacts secrets on the
+ * way in*, because a key that reached the file would be handed back to
+ * the model for ever.
+ *
+ * That path is inert for every room the manager owns: they are all
+ * constructed with a NULL transcript path, so the redacting append does
+ * nothing and this rewriter is what actually produces every transcript
+ * on disk.  Which is how none of them were redacted.
+ *
+ * Redacting here is the immediate half of the fix.  Moving to the append
+ * path is the right end state -- it is O(1) per message rather than O(n),
+ * and a stale in-memory copy cannot truncate a file it only ever appends
+ * to -- but it changes the on-disk format (the append path writes a
+ * `room` field) and so needs a reader that takes both, which is a
+ * migration rather than a repair.
+ */
 static void
 save_room(ClawtRoomManager *self, ClawtRoom *room)
 {
@@ -100,8 +123,17 @@ save_room(ClawtRoomManager *self, ClawtRoom *room)
         }
 
         json_builder_set_member_name(builder, "body");
-        json_builder_add_string_value(builder,
-                                      clawt_message_get_body(message));
+        {
+            /*
+             * Redacted on the way out, matching append_to_transcript().
+             * Redacting at display time would leave the key on disk, and
+             * the file is read back into an agent's context.
+             */
+            g_autofree gchar *redacted =
+                clawt_redact_secrets(clawt_message_get_body(message));
+
+            json_builder_add_string_value(builder, redacted);
+        }
         json_builder_set_member_name(builder, "ts");
         json_builder_add_int_value(builder,
                                    clawt_message_get_timestamp(message));
@@ -273,7 +305,17 @@ clawt_room_manager_create(ClawtRoomManager  *self,
         return NULL;
     }
 
-    room = clawt_room_new(room_id, name);
+    /*
+     * NULL, not `name`.  clawt_room_new()'s second argument is a
+     * *transcript path*, and passing the room's display name here made
+     * ClawtRoom try to write its own transcript to a file named after
+     * whatever somebody had called the room.  Nothing had one configured,
+     * so it never produced a stray file -- but the manager owns transcript
+     * writing for its rooms, and handing the room a second, differently
+     * shaped writer pointed at a made-up path is how it would have got
+     * two.
+     */
+    room = clawt_room_new(room_id, NULL);
 
     return insert_room(self, room);
 }
