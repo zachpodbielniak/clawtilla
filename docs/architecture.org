@@ -53,11 +53,10 @@ The other half of the same statement, and the one that is enforced by
 the kernel rather than by a convention.
 
 Everything under ~daemon.state_dir~ is written as though there is a
-single writer.  The clearest case is a transcript: ~ClawtRoomManager~
-holds a room's history in memory and rewrites the file *whole* on every
-message, which is what makes it survive an unclean shutdown and also
-what makes a second manager fatal -- two daemons each hold their own
-copy of the same room, and the last to flush deletes whatever the other
+single writer.  The transcript used to make that vivid: ~ClawtRoomManager~
+held a room's history in memory and rewrote the file *whole* on every
+message, so two daemons each held their own copy of the same room and the
+last to flush deleted whatever the other
 had.  The mailboxes, the decision store and the event log make the same
 assumption in quieter ways.
 
@@ -538,12 +537,18 @@ day, mode 0600.  Secrets are scrubbed *on write*, not at display time:
 transcripts get replayed into every context rebuild, so redacting only
 when showing them leaves the leak permanent.
 
-The log is append-only and flushed per line; a room's transcript is
-rewritten whole on every message.  That makes the log the durable record
-and the transcript a projection of it -- everything in a transcript was
-published as an event first, and the log is the only one of the two that
-cannot lose a line it has already written.  It is what a lost transcript
-is rebuilt from, which has been needed.
+Both are append-only and flushed per line.  A transcript was not always:
+it was rewritten whole from memory on every message, which is what let
+two daemons delete each other's history, and ~ClawtRoom~ already had an
+append-only writer that the manager's rooms never reached.  They use it
+now, so a stale in-memory copy cannot truncate a file it only ever adds
+to, and a message costs one line rather than a rewrite of the whole
+conversation.
+
+The log is still the more complete record -- everything in a transcript
+was published as an event first, and the log spans every room in one
+file per day, so it is what a lost transcript is rebuilt from.  That has
+been needed.
 
 ** Reading order in the source
 

@@ -171,6 +171,140 @@ test_a_named_room_writes_only_under_its_id(void)
     clawt_test_remove_tree(dir);
 }
 
+/* Counts non-empty lines in a transcript. */
+static guint
+transcript_lines(const gchar *dir, const gchar *room_id)
+{
+    g_autofree gchar *text = read_transcript(dir, room_id);
+    g_auto(GStrv) lines = NULL;
+    guint count = 0;
+    gsize i;
+
+    if (text == NULL)
+        return 0;
+
+    lines = g_strsplit(text, "\n", -1);
+
+    for (i = 0; lines[i] != NULL; i++)
+        if (lines[i][0] != '\0')
+            count++;
+
+    return count;
+}
+
+/*
+ * Reloading a transcript does not write it back.
+ *
+ * This is the failure an append-only file is uniquely exposed to, and it
+ * is silent: load_room() used to finish with clawt_room_append(), which
+ * was harmless only because the rooms it built had no transcript path and
+ * the manager rewrote the whole file anyway.  Give those rooms a path --
+ * which is the whole migration -- and every daemon start would append the
+ * file to itself.  Three restarts and a conversation is eight copies of
+ * itself, which is how an append-only file loses one: by burying it.
+ *
+ * A second manager on the same directory is exactly a restart.
+ */
+static void
+test_loading_a_transcript_does_not_rewrite_it(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-transcript-XXXXXX", NULL);
+    g_autofree gchar *room_id = clawt_room_manager_direct_id("chief", "user");
+    g_autofree gchar *reloaded = NULL;
+
+    {
+        g_autoptr(ClawtRoomManager) rooms = clawt_room_manager_new(dir);
+        ClawtRoom *room = clawt_room_manager_get_direct(rooms, "chief",
+                                                        "user");
+        g_autoptr(ClawtMessage) one =
+            clawt_message_new(room_id, "user", "first");
+        g_autoptr(ClawtMessage) two =
+            clawt_message_new(room_id, "chief", "second");
+
+        clawt_room_append(room, one, NULL);
+        clawt_room_append(room, two, NULL);
+    }
+
+    g_assert_cmpuint(transcript_lines(dir, room_id), ==, 2);
+
+    /* A restart: a fresh manager over the same directory. */
+    {
+        g_autoptr(ClawtRoomManager) rooms = clawt_room_manager_new(dir);
+        ClawtRoom *room = clawt_room_manager_get_direct(rooms, "chief",
+                                                        "user");
+        g_autoptr(ClawtMessage) three =
+            clawt_message_new(room_id, "user", "third");
+
+        /* Loaded into memory... */
+        g_assert_cmpuint(clawt_room_get_message_count(room), ==, 2);
+        /* ...and not back into the file. */
+        g_assert_cmpuint(transcript_lines(dir, room_id), ==, 2);
+
+        clawt_room_append(room, three, NULL);
+        g_assert_cmpuint(transcript_lines(dir, room_id), ==, 3);
+    }
+
+    /* And the earlier messages are still the ones that were written. */
+    reloaded = read_transcript(dir, room_id);
+    g_assert_nonnull(strstr(reloaded, "first"));
+    g_assert_nonnull(strstr(reloaded, "second"));
+    g_assert_nonnull(strstr(reloaded, "third"));
+
+    clawt_test_remove_tree(dir);
+}
+
+/*
+ * A line written by the old whole-file writer still loads.
+ *
+ * Every transcript on this machine was written by it, and it spelled the
+ * timestamp `ts` with no `room` field.  A migration that could not read
+ * them would lose every conversation there has ever been.
+ */
+static void
+test_an_old_format_line_still_loads(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-transcript-XXXXXX", NULL);
+    g_autofree gchar *room_id = clawt_room_manager_direct_id("chief", "user");
+    g_autofree gchar *name = NULL;
+    g_autofree gchar *path = NULL;
+    g_autoptr(ClawtRoomManager) rooms = NULL;
+    g_autoptr(GPtrArray) history = NULL;
+    ClawtRoom *room;
+    ClawtMessage *first;
+
+    name = g_strdup_printf("%s.ndjson", room_id);
+    g_strdelimit(name, "/\\", '_');
+    path = g_build_filename(dir, name, NULL);
+
+    g_assert_true(g_file_set_contents(path,
+        "{\"id\":\"01old\",\"sender\":\"user\",\"body\":\"written by the old writer\","
+        "\"ts\":1787538842,\"depth\":0}\n"
+        /* And one in the append writer's older spelling, for good measure. */
+        "{\"id\":\"01new\",\"room\":\"x\",\"sender\":\"chief\",\"body\":\"and this one\","
+        "\"timestamp\":1787538900,\"depth\":1}\n", -1, NULL));
+
+    rooms = clawt_room_manager_new(dir);
+    room = clawt_room_manager_get_direct(rooms, "chief", "user");
+
+    g_assert_cmpuint(clawt_room_get_message_count(room), ==, 2);
+
+    history = clawt_room_get_history(room, 0);
+    first = g_ptr_array_index(history, 0);
+
+    g_assert_cmpstr(clawt_message_get_body(first), ==,
+                    "written by the old writer");
+    /* The timestamp came from the file, not from now. */
+    g_assert_cmpint(clawt_message_get_timestamp(first), ==, 1787538842);
+
+    {
+        ClawtMessage *second = g_ptr_array_index(history, 1);
+
+        g_assert_cmpint(clawt_message_get_timestamp(second), ==, 1787538900);
+    }
+
+    clawt_test_remove_tree(dir);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -182,6 +316,10 @@ main(int argc, char *argv[])
                     test_an_ordinary_message_is_written_whole);
     g_test_add_func("/transcript/named-room-writes-only-under-its-id",
                     test_a_named_room_writes_only_under_its_id);
+    g_test_add_func("/transcript/loading-does-not-rewrite",
+                    test_loading_a_transcript_does_not_rewrite_it);
+    g_test_add_func("/transcript/old-format-still-loads",
+                    test_an_old_format_line_still_loads);
 
     return g_test_run();
 }

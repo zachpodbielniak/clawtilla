@@ -61,115 +61,6 @@ transcript_path(ClawtRoomManager *self, const gchar *room_id)
     return g_build_filename(self->transcript_dir, filename, NULL);
 }
 
-/*
- * The whole transcript, rewritten from memory.
- *
- * This is not the shape a transcript wants, and it is worth saying why
- * it is still here.  ClawtRoom already has append_to_transcript(), which
- * is append-only for the reason its own comment gives -- a transcript is
- * replayed into every context rebuild, so rewriting it changes history
- * an agent has already reasoned from -- and it *redacts secrets on the
- * way in*, because a key that reached the file would be handed back to
- * the model for ever.
- *
- * That path is inert for every room the manager owns: they are all
- * constructed with a NULL transcript path, so the redacting append does
- * nothing and this rewriter is what actually produces every transcript
- * on disk.  Which is how none of them were redacted.
- *
- * Redacting here is the immediate half of the fix.  Moving to the append
- * path is the right end state -- it is O(1) per message rather than O(n),
- * and a stale in-memory copy cannot truncate a file it only ever appends
- * to -- but it changes the on-disk format (the append path writes a
- * `room` field) and so needs a reader that takes both, which is a
- * migration rather than a repair.
- */
-static void
-save_room(ClawtRoomManager *self, ClawtRoom *room)
-{
-    g_autofree gchar *path = NULL;
-    g_autoptr(GPtrArray) history = NULL;
-    g_autoptr(GString) out = NULL;
-    g_autoptr(GError) error = NULL;
-    guint i;
-
-    path = transcript_path(self, clawt_room_get_id(room));
-    if (path == NULL)
-        return;
-
-    history = clawt_room_get_history(room, 0);
-    out = g_string_new(NULL);
-
-    for (i = 0; i < history->len; i++) {
-        ClawtMessage *message = g_ptr_array_index(history, i);
-        g_autoptr(JsonBuilder) builder = json_builder_new();
-        g_autoptr(JsonGenerator) generator = json_generator_new();
-        g_autoptr(JsonNode) root = NULL;
-        g_autofree gchar *line = NULL;
-
-        json_builder_begin_object(builder);
-
-        json_builder_set_member_name(builder, "id");
-        json_builder_add_string_value(builder,
-                                      clawt_message_get_id(message));
-        json_builder_set_member_name(builder, "sender");
-        json_builder_add_string_value(builder,
-                                      clawt_message_get_sender_id(message));
-
-        if (clawt_message_get_sender_name(message) != NULL) {
-            json_builder_set_member_name(builder, "sender_name");
-            json_builder_add_string_value(
-                builder, clawt_message_get_sender_name(message));
-        }
-
-        json_builder_set_member_name(builder, "body");
-        {
-            /*
-             * Redacted on the way out, matching append_to_transcript().
-             * Redacting at display time would leave the key on disk, and
-             * the file is read back into an agent's context.
-             */
-            g_autofree gchar *redacted =
-                clawt_redact_secrets(clawt_message_get_body(message));
-
-            json_builder_add_string_value(builder, redacted);
-        }
-        json_builder_set_member_name(builder, "ts");
-        json_builder_add_int_value(builder,
-                                   clawt_message_get_timestamp(message));
-        json_builder_set_member_name(builder, "depth");
-        json_builder_add_int_value(builder,
-                                   clawt_message_get_depth(message));
-
-        if (clawt_message_get_task_id(message) != NULL) {
-            json_builder_set_member_name(builder, "task_id");
-            json_builder_add_string_value(
-                builder, clawt_message_get_task_id(message));
-        }
-
-        if (clawt_message_get_parent_id(message) != NULL) {
-            json_builder_set_member_name(builder, "parent_id");
-            json_builder_add_string_value(
-                builder, clawt_message_get_parent_id(message));
-        }
-
-        json_builder_end_object(builder);
-
-        root = json_builder_get_root(builder);
-        json_generator_set_root(generator, root);
-        line = json_generator_to_data(generator, NULL);
-
-        g_string_append(out, line);
-        g_string_append_c(out, '\n');
-    }
-
-    if (!clawt_ensure_dir(self->transcript_dir, 0700, &error) ||
-        !clawt_write_file_atomic(path, out->str, (gssize)out->len, 0600,
-                                 FALSE, &error))
-        g_warning("could not save the transcript for %s: %s",
-                  clawt_room_get_id(room), error->message);
-}
-
 static void
 load_room(ClawtRoomManager *self, ClawtRoom *room)
 {
@@ -227,9 +118,17 @@ load_room(ClawtRoomManager *self, ClawtRoom *room)
                 message, json_object_get_string_member(object,
                                                        "sender_name"));
 
+        /*
+         * Either spelling.  This writer has always used `ts`; the
+         * append path used to write `timestamp`, and a file produced by
+         * it would otherwise load with every message stamped now.
+         */
         if (json_object_has_member(object, "ts"))
             clawt_message_set_timestamp(
                 message, json_object_get_int_member(object, "ts"));
+        else if (json_object_has_member(object, "timestamp"))
+            clawt_message_set_timestamp(
+                message, json_object_get_int_member(object, "timestamp"));
 
         if (json_object_has_member(object, "depth"))
             clawt_message_set_depth(
@@ -243,18 +142,13 @@ load_room(ClawtRoomManager *self, ClawtRoom *room)
             clawt_message_set_parent_id(
                 message, json_object_get_string_member(object, "parent_id"));
 
-        clawt_room_append(room, message, NULL);
+        /*
+         * Restored, not appended: the transcript is append-only now, so
+         * appending here would write every line back into the file it
+         * was just read from.
+         */
+        clawt_room_restore(room, message);
     }
-}
-
-static void
-on_message_added(ClawtRoom *room, ClawtMessage *message, gpointer user_data)
-{
-    ClawtRoomManager *self = user_data;
-
-    (void)message;
-
-    save_room(self, room);
 }
 
 static ClawtRoom *
@@ -265,16 +159,19 @@ insert_room(ClawtRoomManager *self, ClawtRoom *room)
     g_hash_table_replace(self->rooms, g_strdup(room_id), room);
     g_ptr_array_add(self->order, g_strdup(room_id));
 
-    load_room(self, room);
-
     /*
-     * Saved on every message rather than on shutdown.  A daemon that is
-     * killed rather than stopped is the ordinary case for a service, and a
-     * transcript that only survives a clean exit is not a transcript.
+     * The one place a room learns where its transcript lives, so every
+     * room gets a file named for its id and no construction site can
+     * pass something else.  Set before load_room(), which reads through
+     * the same transcript_path() and so cannot disagree with it.
      */
-    if (self->transcript_dir != NULL)
-        g_signal_connect(room, "message-added",
-                         G_CALLBACK(on_message_added), self);
+    {
+        g_autofree gchar *path = transcript_path(self, room_id);
+
+        clawt_room_set_transcript_path(room, path);
+    }
+
+    load_room(self, room);
 
     g_signal_emit(self, signals[SIGNAL_ROOM_ADDED], 0, room);
 
@@ -580,20 +477,23 @@ clawt_room_manager_load(ClawtRoomManager *self, ClawtConfig *config)
 guint
 clawt_room_manager_flush(ClawtRoomManager *self)
 {
-    g_autoptr(GPtrArray) rooms = NULL;
-    guint i;
-
     g_return_val_if_fail(CLAWT_IS_ROOM_MANAGER(self), 0);
 
-    if (self->transcript_dir == NULL)
-        return 0;
-
-    rooms = clawt_room_manager_list(self);
-
-    for (i = 0; i < rooms->len; i++)
-        save_room(self, g_ptr_array_index(rooms, i));
-
-    return rooms->len;
+    /*
+     * Nothing to do, and that is the point.
+     *
+     * Every message is on disk by the time clawt_room_append() returns,
+     * so there is no in-memory copy for a shutdown to write out.  This
+     * used to rewrite every transcript from memory, which is what made a
+     * stale copy destructive: two daemons on one state directory each
+     * flushed their own partial history over the other's, and four
+     * messages of a real conversation were deleted that way.
+     *
+     * Kept rather than removed because a caller asking "is everything
+     * persisted" deserves an answer, and the answer is yes.  It returns 0
+     * because zero rooms needed writing.
+     */
+    return 0;
 }
 
 static void

@@ -93,6 +93,10 @@ gboolean clawt_room_message_is_for(ClawtRoom    *self,
  *
  * Returns: %TRUE if it was recorded
  */
+void clawt_room_set_transcript_path(ClawtRoom *self, const gchar *path);
+
+void clawt_room_restore(ClawtRoom *self, ClawtMessage *message);
+
 gboolean clawt_room_append(ClawtRoom     *self,
                            ClawtMessage  *message,
                            GError       **error);

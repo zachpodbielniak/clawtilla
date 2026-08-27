@@ -54,16 +54,21 @@ directory at all -- it is in ~$XDG_DATA_HOME~, which is why a backup of
 a line is flushed as it is written, so a daemon that is killed loses at
 most the one it was in the middle of.
 
-~transcripts/<room>.ndjson~ is not.  It is rewritten *whole* from the
-room's in-memory history on every message -- which is what makes it
-survive an unclean shutdown, and also what makes it the file that can
-lose something.  Everything in it was published as an event first, so
-the log is the record and the transcript is a view of it.
+~transcripts/<room>.ndjson~ is append-only now as well.  A message is on
+disk by the time ~clawt_room_append()~ returns, one line at a time, so a
+daemon that is killed loses at most the line it was in the middle of --
+and a stale in-memory copy cannot truncate a file it only ever adds to.
 
-That is not an abstraction.  It is how four messages of a real
-conversation were recovered after two daemons overwrote each other's
-transcripts: they were gone from the projection and still in the record.
-[[file:troubleshooting.org][troubleshooting.org]] has the procedure.
+It was not always.  It used to be rewritten *whole* from the room's
+in-memory history on every message, which is what made it the file that
+could lose something: two daemons sharing a state directory each flushed
+their own partial history over the other's, and four messages of a real
+conversation were deleted that way.  They were recovered from the event
+log, which had them all along -- gone from one file and still in the
+other.  [[file:troubleshooting.org][troubleshooting.org]] has the procedure, and it is still worth
+knowing, because the log remains the more complete record: everything in
+a transcript was published as an event first, and the log spans every
+room in one place.
 
 Two consequences worth carrying into the rest of this page.  The log is
 worth backing up, because it is the only copy of anything the transcript
@@ -80,7 +85,7 @@ naming the directory and the pid holding it.
 
 The reason is that two daemons sharing one is *data loss* rather than a
 degraded mode.  Each keeps its own room manager, and a transcript is
-rewritten whole on every message, so the last one to flush wins and the
+appended to by both, so the file interleaves two conversations and the
 other's messages are deleted.  They also share the mailboxes, the
 decision store and the event log, none of which is written with a second
 writer in mind.

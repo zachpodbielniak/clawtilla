@@ -271,7 +271,14 @@ append_to_transcript(ClawtRoom     *self,
                                   clawt_message_get_sender_id(message));
     json_builder_set_member_name(builder, "body");
     json_builder_add_string_value(builder, redacted);
-    json_builder_set_member_name(builder, "timestamp");
+    /*
+     * `ts`, not `timestamp`.  This writer spelled it the second way and
+     * the room manager's spelled it the first, and nothing anywhere read
+     * `timestamp` -- so unifying on the spelling every transcript on disk
+     * already uses makes this an append to those files rather than a
+     * format they would need migrating out of.
+     */
+    json_builder_set_member_name(builder, "ts");
     json_builder_add_int_value(builder, clawt_message_get_timestamp(message));
     json_builder_set_member_name(builder, "depth");
     json_builder_add_int_value(builder, clawt_message_get_depth(message));
@@ -313,6 +320,54 @@ append_to_transcript(ClawtRoom     *self,
 
     return g_output_stream_write_all(G_OUTPUT_STREAM(stream), "\n", 1, NULL,
                                      NULL, error);
+}
+
+/**
+ * clawt_room_set_transcript_path:
+ * @self: a #ClawtRoom
+ * @path: (nullable): where to append this room's transcript, or %NULL
+ *   for a room that is not persisted
+ *
+ * Where clawt_room_append() writes.  #ClawtRoomManager sets this from the
+ * transcript directory it was given, in one place, so a room's file is
+ * named for its id and nothing else -- the manager used to hand
+ * clawt_room_new() the room's *display name* for this argument, which
+ * aimed a transcript at whatever somebody had called the room.
+ */
+void
+clawt_room_set_transcript_path(ClawtRoom *self, const gchar *path)
+{
+    g_return_if_fail(CLAWT_IS_ROOM(self));
+
+    g_free(self->transcript_path);
+    self->transcript_path = clawt_expand_path(path);
+}
+
+/**
+ * clawt_room_restore:
+ * @self: a #ClawtRoom
+ * @message: (transfer none): a message read back from the transcript
+ *
+ * Puts a message into the room's history without writing it anywhere and
+ * without emitting #ClawtRoom::message-added.
+ *
+ * This exists because the transcript is append-only.  Loading a room
+ * through clawt_room_append() would append every line it had just read
+ * straight back into the file, so a transcript would double in length on
+ * every daemon start -- which is the one way an append-only file can
+ * still lose a conversation, by burying it.
+ *
+ * No signal, either: a restore is not something happening in the room,
+ * it is the room being rebuilt, and a subscriber told about a hundred
+ * old messages at start has no way to tell them from a hundred new ones.
+ */
+void
+clawt_room_restore(ClawtRoom *self, ClawtMessage *message)
+{
+    g_return_if_fail(CLAWT_IS_ROOM(self));
+    g_return_if_fail(message != NULL);
+
+    g_ptr_array_add(self->messages, clawt_message_copy(message));
 }
 
 gboolean
