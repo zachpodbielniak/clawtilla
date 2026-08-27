@@ -91,9 +91,50 @@ clean:
 	rm -rf $(BUILDDIR)/$(BUILD_TYPE)
 	rm -f $(PROJECT_NAME)-1.0.pc
 
-.PHONY: clean-deps  ## Clean deps/libreclaw too (minutes to rebuild -- opt in)
+# Every vendored project, at any depth, in both build types.
+#
+# The list is *found* rather than written down.  The tree is fifteen
+# submodules three levels deep -- libreclaw brings five, podomation
+# brings six of its own, and ai-glib brings one -- and the hand-written
+# version reached the first level only, so `make clean-all` left nine
+# dep build trees standing and the next `make all` reused them.
+#
+# A project root is a directory holding a Makefile whose parent is named
+# `deps`.  That is what separates a vendored project from podomation's
+# per-module Makefiles under `modules/`, which are not standalone and
+# have no clean target of their own.
+#
+# Found by walking the filesystem rather than by asking git, so this
+# works in an exported tree with no .git in it.
+DEP_ROOTS = $(shell find deps -name Makefile -type f 2>/dev/null \
+	| while read -r mk; do \
+		dir=$$(dirname "$$mk"); \
+		[ "$$(basename "$$(dirname "$$dir")")" = deps ] && echo "$$dir"; \
+	done | sort)
+
+# Both build types, because a dep cleaned with only one leaves the other
+# standing.  libreclaw's own clean-all pins DEBUG=0 for podomation and
+# htmx-glib, which is why a debug build of podomation -- 166 object
+# files, measured -- survived every `make clean-all` there has been.
+#
+# A missing Makefile is an uninitialised submodule and is skipped in
+# silence; a clean that *runs* and fails is reported and fails the
+# target, because "clean-all succeeded" has to mean the next build
+# starts from nothing.
+.PHONY: clean-deps  ## Clean every vendored dep, recursively, both build types
 clean-deps:
-	$(MAKE) -C $(LIBRECLAW_DIR) clean-all 2>/dev/null || true
+	@failed=""; \
+	for dir in $(DEP_ROOTS); do \
+		echo "Cleaning $$dir..."; \
+		for build_type in "DEBUG=0" "DEBUG=1"; do \
+			$(MAKE) --no-print-directory -C "$$dir" clean $$build_type \
+				>/dev/null 2>&1 || failed="$$failed $$dir($$build_type)"; \
+		done; \
+	done; \
+	if [ -n "$$failed" ]; then \
+		echo "clean-deps: these did not clean:$$failed" >&2; \
+		exit 1; \
+	fi
 
 # Clean everything including deps
 .PHONY: clean-all  ## Remove every build artifact, deps included

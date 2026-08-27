@@ -13,7 +13,11 @@ make DEBUG=1
 make clean
 make DEBUG=1 clean
 
-# Clean everything including deps/libreclaw
+# Clean every vendored dep, recursively, in both build types
+make clean-deps
+
+# The above plus clawtilla's own output: the next `make all` rebuilds
+# everything from nothing (about two minutes)
 make clean-all
 
 # Run the hermetic test suite
@@ -2987,6 +2991,32 @@ the same program.
   the value in the result. Verified against a real relay by having the
   tool server report its own `/proc/self/cmdline` and `environ`.
 
+
+### `make clean-all` cleaned six of fifteen deps and reported success
+
+- The vendored tree is **fifteen submodules three levels deep** --
+  libreclaw brings five, podomation brings six of its own, ai-glib
+  brings one -- and each level's clean named only its *direct* children.
+  So `clean-all` reached six, and the nine below them were reused by the
+  next `make all`.
+- It also pinned `DEBUG=0` for podomation and htmx-glib, so a debug
+  build survived every clean there had ever been: **166 object files,
+  counted**, sitting in `podomation/build/debug` after `make clean-all`
+  said it was done.
+- And every recursion was `$(MAKE) -C ... clean 2>/dev/null || true`, so
+  a dep whose clean failed, or whose submodule was never checked out,
+  was indistinguishable from one that cleaned perfectly. Same family as
+  `make tests` printing "Nothing to be done" and exiting 0.
+- The list is **found** now, not written: a project root is a directory
+  with a `Makefile` whose parent is named `deps`. That predicate returns
+  exactly the fifteen `git submodule status --recursive` does, and
+  excludes podomation's per-module Makefiles under `modules/`, which are
+  not standalone. Found by walking rather than by asking git, so it
+  works in an exported tree.
+- A missing Makefile is an uninitialised submodule and is skipped in
+  silence; a clean that *runs* and fails names the dep and the build
+  type and fails the target. Verified both ways -- 976 artifacts to 0,
+  and a deliberately broken dep clean reported by name.
 
 ### A guard that tests for presence is not testing for workability
 

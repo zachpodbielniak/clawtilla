@@ -155,8 +155,18 @@ make                  # release, to build/release/
 make DEBUG=1          # debug, to build/debug/
 make test             # hermetic suite: no network, no podman, no libvirt
 make test-integration # the rest
+make clean            # this build type only, leaving the deps built
+make clean-all        # the deps too, so the next build starts from nothing
 make help             # every target
 #+end_src
+
+~make clean~ stays inside clawtilla, because the dependency tree below
+it takes minutes to rebuild and almost never needs to be.  ~make
+clean-all~ is the one that reaches all fifteen vendored projects --
+libreclaw brings five, podomation brings six of its own, ai-glib brings
+one -- in *both* build types, and it finds them by walking the tree
+rather than from a list, because the list it replaced named the first
+level only and left nine dep build trees standing.
 
 Zero warnings is a rule, not an aspiration.  See [[file:CLAUDE.md][CLAUDE.md]] for the full
 build environment and the rules that are not optional.
