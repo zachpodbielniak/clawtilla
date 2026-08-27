@@ -32,10 +32,17 @@ G_BEGIN_DECLS
  * because the parser never sees its text.
  *
  * Handles what a chat actually uses: bold, italic, inline code, fenced
- * code, headings, bullet and numbered lists, block quotes and rules.
- * Links are rendered with their target beside them rather than as
- * anchors -- a clickable link in model output is one keystroke between
- * a prompt injection and a browser.
+ * code, headings, bullet and numbered lists, block quotes, rules and
+ * GFM tables. Links are rendered with their target beside them rather
+ * than as anchors -- a clickable link in model output is one keystroke
+ * between a prompt injection and a browser.
+ *
+ * Tables are the one construct cmark does not parse, so a table block
+ * is found in the source and drawn here, cell by cell. One that fits
+ * the column is a padded grid in the code font; one too wide becomes a
+ * `Header: value` line per cell, since a grid that wraps loses every
+ * column after the wrap. An indented table and one inside a block
+ * quote are left as they were. clawt-markdown.c says why for each.
  *
  * Always returns valid markup, including for input that is not markdown
  * at all.

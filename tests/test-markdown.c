@@ -187,6 +187,11 @@ test_the_markup_is_always_balanced(void)
         "[link",
         "***",
         "\n\n\n",
+        "| a | b |\n|---|---|\n| **x** | `y` |\n",
+        "| a |\n|---|\n| *unclosed\n",
+        "| h |\n|---|\n",
+        "|",
+        "|---|\n",
         NULL
     };
     gsize i;
@@ -216,6 +221,194 @@ test_the_markup_is_always_balanced(void)
     }
 }
 
+/* ── Tables ──────────────────────────────────────────────────────── */
+
+/*
+ * A table draws as a grid, in the code font.
+ *
+ * Asserted whole rather than by fragments.  Alignment is the entire
+ * reason a table is a table, so a test that only looked for the cells
+ * would pass on output where every column had drifted -- which is what
+ * the raw pipes already did.
+ *
+ * The code font is not decoration either: a proportional font gives
+ * every glyph its own advance, so the padding would line nothing up.
+ */
+static void
+test_a_table_draws_a_grid(void)
+{
+    g_autofree gchar *rendered = clawt_markdown_to_pango(
+        "| Team  | Lead |\n"
+        "|-------|------|\n"
+        "| forge | oxpecker |\n");
+
+    g_assert_cmpstr(rendered, ==,
+        "<tt><b>Team</b>   <b>Lead</b></tt>\n"
+        "<tt><span alpha=\"60%\">"
+        "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+        "  "
+        "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+        "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+        "</span></tt>\n"
+        "<tt>forge  oxpecker</tt>");
+}
+
+/* The delimiter row's colons decide which way a column leans. */
+static void
+test_a_column_leans_where_its_delimiter_says(void)
+{
+    g_autofree gchar *rendered = clawt_markdown_to_pango(
+        "| l | c | r |\n"
+        "|:---|:---:|---:|\n"
+        "| xxxx | xxxx | xxxx |\n");
+
+    /* Four-wide columns, so a one-character heading has three to place. */
+    g_assert_nonnull(strstr(rendered, "<b>l</b>   "));       /* all trailing */
+    g_assert_nonnull(strstr(rendered, "  <b>c</b>  "));      /* split */
+    g_assert_nonnull(strstr(rendered, "   <b>r</b></tt>"));  /* all leading */
+}
+
+/*
+ * A column is padded to what its cells *draw*, not to what they weigh.
+ *
+ * A cell's markup has nothing to do with the space it takes on screen,
+ * and neither has its length in bytes or in characters: `**a**` is one
+ * column and eleven bytes of markup, and a CJK glyph is one character
+ * and two columns.  Each of those three answers is a different grid,
+ * and two of them are crooked.
+ */
+static void
+test_a_column_is_padded_to_what_it_draws(void)
+{
+    g_autofree gchar *rendered = clawt_markdown_to_pango(
+        "| n | who |\n"
+        "|---|-----|\n"
+        "| 1 | \xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e |\n"
+        "| 22 | **a** |\n");
+
+    /* The second column is six wide: three CJK glyphs at two each. */
+    g_assert_nonnull(strstr(rendered,
+        "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+        "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80</span>"));
+
+    /* And the first is two, from "22" rather than from "1". */
+    g_assert_nonnull(strstr(rendered, "<tt>1   \xe6\x97\xa5"));
+    g_assert_nonnull(strstr(rendered, "<tt>22  <b>a</b></tt>"));
+}
+
+/*
+ * A table wider than the column becomes records instead.
+ *
+ * This is the case a chat actually produces -- an agent summarising a
+ * fleet writes a sentence per cell -- and a grid that wraps is worse
+ * than no grid at all: the wrap lands in the middle of a row and every
+ * column after it is somewhere else.  One `Header: value` line per cell
+ * carries the same information at any width.
+ */
+static void
+test_a_wide_table_becomes_records(void)
+{
+    g_autofree gchar *rendered = clawt_markdown_to_pango(
+        "| Team | Agents |\n"
+        "|---|---|\n"
+        "| forge | oxpecker reviews every merge request and refuses "
+        "a warning |\n"
+        "| qa | oryx holds the reference result on Fedora |\n");
+
+    /* No grid: the code font is what a grid is drawn in. */
+    g_assert_null(strstr(rendered, "<tt>"));
+
+    g_assert_nonnull(strstr(rendered, "<b>Team</b>: forge"));
+    g_assert_nonnull(strstr(rendered, "<b>Agents</b>: oxpecker reviews"));
+    g_assert_nonnull(strstr(rendered, "<b>Team</b>: qa"));
+
+    /* One rule between the two records, and none before the first. */
+    g_assert_true(g_str_has_prefix(rendered, "<b>Team</b>"));
+}
+
+/*
+ * What is not a table stays what it was.
+ *
+ * The delimiter row must have as many cells as the header, which is
+ * GFM's rule and the thing keeping a paragraph that happens to contain
+ * a pipe from being drawn as a grid nobody wrote.  A setext heading is
+ * the sharp case: its underline is a row of dashes.
+ */
+static void
+test_what_is_not_a_table_is_left_alone(void)
+{
+    g_autofree gchar *mismatched =
+        clawt_markdown_to_pango("| a | b |\n|---|\n| 1 | 2 |\n");
+    g_autofree gchar *heading = clawt_markdown_to_pango("Title\n-----\n");
+    g_autofree gchar *prose =
+        clawt_markdown_to_pango("either a | b, but not both\n");
+
+    g_assert_null(strstr(mismatched, "<tt>"));
+    g_assert_nonnull(strstr(mismatched, "| a | b |"));
+
+    g_assert_nonnull(strstr(heading, "<b><big>Title</big></b>"));
+
+    g_assert_null(strstr(prose, "<tt>"));
+    g_assert_nonnull(strstr(prose, "either a | b"));
+}
+
+/*
+ * A table inside a fence is source, and stays source.
+ *
+ * Somebody showing you the markdown for a table is the one reader
+ * certain to notice it being drawn instead.
+ */
+static void
+test_a_table_in_a_fence_is_still_source(void)
+{
+    g_autofree gchar *rendered = clawt_markdown_to_pango(
+        "```markdown\n"
+        "| a | b |\n"
+        "|---|---|\n"
+        "| 1 | 2 |\n"
+        "```\n");
+
+    g_assert_nonnull(strstr(rendered, "|---|---|"));
+    g_assert_null(strstr(rendered, "<b>a</b>"));
+}
+
+/*
+ * An escaped pipe is a pipe, and it is unescaped before the cell is
+ * parsed.
+ *
+ * GFM does it in that order because a backslash escape does not work
+ * inside a code span, so `a \| b` in a cell has to reach cmark as
+ * `a | b` -- leaving the backslash for the inline parser would show it.
+ */
+static void
+test_an_escaped_pipe_stays_in_its_cell(void)
+{
+    g_autofree gchar *rendered = clawt_markdown_to_pango(
+        "| cmd |\n"
+        "|---|\n"
+        "| `a \\| b` |\n");
+
+    g_assert_nonnull(strstr(rendered, "a | b"));
+    g_assert_null(strstr(rendered, "\\|"));
+}
+
+/* A table sits between the blocks around it without swallowing them. */
+static void
+test_a_table_keeps_its_neighbours(void)
+{
+    g_autofree gchar *rendered = clawt_markdown_to_pango(
+        "Here is the fleet:\n"
+        "\n"
+        "| a | b |\n"
+        "|---|---|\n"
+        "| 1 | 2 |\n"
+        "\n"
+        "- and a list after it\n");
+
+    g_assert_true(g_str_has_prefix(rendered, "Here is the fleet:\n\n<tt>"));
+    g_assert_nonnull(strstr(rendered, "\xe2\x80\xa2 and a list after it"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -232,6 +425,22 @@ main(int argc, char *argv[])
     g_test_add_func("/markdown/plain-and-empty", test_plain_and_empty_input);
     g_test_add_func("/markdown/always-balanced",
                     test_the_markup_is_always_balanced);
+
+    g_test_add_func("/markdown/table-draws-a-grid", test_a_table_draws_a_grid);
+    g_test_add_func("/markdown/table-alignment",
+                    test_a_column_leans_where_its_delimiter_says);
+    g_test_add_func("/markdown/table-padded-to-what-it-draws",
+                    test_a_column_is_padded_to_what_it_draws);
+    g_test_add_func("/markdown/table-too-wide-becomes-records",
+                    test_a_wide_table_becomes_records);
+    g_test_add_func("/markdown/table-needs-a-matching-delimiter",
+                    test_what_is_not_a_table_is_left_alone);
+    g_test_add_func("/markdown/table-in-a-fence-is-source",
+                    test_a_table_in_a_fence_is_still_source);
+    g_test_add_func("/markdown/table-escaped-pipe",
+                    test_an_escaped_pipe_stays_in_its_cell);
+    g_test_add_func("/markdown/table-keeps-its-neighbours",
+                    test_a_table_keeps_its_neighbours);
 
     return g_test_run();
 }

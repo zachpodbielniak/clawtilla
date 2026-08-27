@@ -1364,8 +1364,9 @@ name, from the same ~clawt_chat_run_is_start()~.
 *** Markdown
 
 Agent replies are rendered: bold, italic, inline code, fenced code,
-headings, bullet and numbered lists, block quotes and rules. Enough for
-what a chat actually contains, and nothing beyond it.
+headings, bullet and numbered lists, block quotes, rules and GFM
+tables. Enough for what a chat actually contains, and nothing beyond
+it.
 
 The important word is *rendered*, not *interpreted*.
 ~clawt_markdown_to_pango()~ walks the document cmark parsed and emits
@@ -1384,6 +1385,70 @@ Links show their target beside the text and are not clickable. A
 clickable link in model output is one keystroke between a prompt
 injection and a browser; a person who can see where it goes is a person
 who can decide.
+
+*** Tables
+
+A table is the one construct cmark does not parse.  Tables are GitHub's
+extension rather than CommonMark, and they reach C only through
+cmark-gfm --- which Fedora does not package, and which exports the same
+=cmark_*= symbols as the cmark libreclaw already links, so having both
+in one process is a collision the dynamic linker resolves silently and
+in whichever direction it likes.
+
+So the source is split before it is parsed.  A table block is found in
+the markdown, drawn by ~clawt-markdown.c~, and everything either side of
+it goes to cmark exactly as it always did.  Each cell is then a cmark
+parse of its own, which is what keeps the rule above: a cell's text
+still reaches the output through the one function that escapes
+literals.
+
+A table that fits the column is drawn as a grid:
+
+#+begin_example
+Team   Lead
+─────  ────────
+forge  oxpecker
+qa     oryx
+#+end_example
+
+In the code font, and that is not decoration --- a proportional font
+gives every glyph its own advance, so the padding would line nothing
+up.  Padding is measured in the columns a cell *draws* rather than in
+its length: markup weighs nothing on screen, a combining mark adds
+nothing, and a CJK glyph or an emoji takes two.  Each of those is a
+different grid and two of them are crooked.
+
+A table too wide for the column becomes one =Header: value= line per
+cell instead, records separated by a rule:
+
+#+begin_example
+Team: forge
+Agents: oxpecker reviews every merge request and refuses a warning
+────────
+Team: qa
+Agents: oryx holds the reference result on Fedora
+#+end_example
+
+That is the case a chat actually produces --- an agent summarising a
+fleet writes a sentence per cell --- and a grid that wraps is worse than
+no grid, because the wrap lands in the middle of a row and every column
+after it is somewhere else.  The threshold is 58 columns, measured
+rather than chosen: the shipped column is AdwClamp's 600px, a body
+starts one row margin plus one gutter in and stops a margin short of
+the far edge, and a monospace glyph at the default font advances 9px.
+A person who widened the measure gets records where a grid would have
+fitted, which is the safe direction.
+
+Two tables are deliberately left as they were.  One indented, because a
+table written under a list item is indented too and treating it as top
+level would cut the list in half around it; and one inside a block
+quote, which nothing here takes apart.  Both render as they did before
+tables were drawn at all, so neither is a regression.
+
+The web client renders message bodies as *text*, deliberately, so a
+table there reads as the markdown that was written.  That predates
+tables and is a decision rather than a gap; ~docs/web-client.org~ says
+why.
 
 
 *** The composer stands on the message column

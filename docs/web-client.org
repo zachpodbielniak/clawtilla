@@ -660,6 +660,29 @@ on the code that produces it.  "We call the escaping function" is a claim
 about the source; "no ~<~ reached the page" is a claim about what a
 browser would receive.
 
+*** A message body is text, not markdown
+
+The GTK client renders markdown into Pango markup, walking the document
+cmark parsed and escaping every literal on the way out.  This client
+does not render markdown at all: a body is set as *text*, so a reply is
+shown as the markdown that was written --- bold as its asterisks,
+tables as their pipes.
+
+That is the same rule arrived at from the other end.  The GTK version
+of "model output never reaches a markup parser" is that only the
+structure cmark found becomes markup; the web version is that nothing
+becomes markup, because the page a body is served into is one that can
+start, stop and reconfigure every agent on the machine.  A reply
+containing =<script>= is a thing an agent can be talked into writing.
+
+Doing it properly here means an HTML renderer with the same escaping
+discipline, built out of htmx-glib's typed classes rather than by
+appending to a string, plus the stylesheet to carry it.  That is a
+feature rather than a fix, and it is written down here as the known
+asymmetry it is --- ~make parity~ declares "markdown rendering" as an
+affordance and its web marker is the body element, not a renderer, so
+the check cannot see this and is not being asked to.
+
 ** Troubleshooting
 
 *** The page loads but nothing updates by itself
