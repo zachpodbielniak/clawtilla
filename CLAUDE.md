@@ -2988,6 +2988,30 @@ the same program.
   tool server report its own `/proc/self/cmdline` and `environ`.
 
 
+### A guard that tests for presence is not testing for workability
+
+- `test-export` skipped unless `g_find_program_in_path("pandoc")` found
+  something, which answers *"there is a file called pandoc on PATH"* --
+  a different question from *"running it will convert something"*. On
+  this machine `pandoc` is a **distrobox shim**: a two-line shell script
+  that starts a container. So `make test` needed podman, reached a
+  registry, and on a host without that image already built **prompted
+  `[Y/n]` and waited for a person for ever**.
+- A test that can hang is worse than one that fails. A failure names
+  itself; a hang is indistinguishable from a slow machine or an infinite
+  loop somewhere else, and it stops every test after it, so a
+  green-looking partial run cannot be told from a complete one.
+- The three tests that actually spawn pandoc are behind
+  `CLAWT_TEST_INTEGRATION` now. The fourth stayed hermetic on purpose: it
+  runs only when pandoc is *absent*, where `clawt_export_convert()`
+  refuses before spawning anything.
+- **The hermetic claim is checkable, and was not being checked.**
+  `unshare -rn <test-binary>` runs it with no network at all, which is
+  the actual rule this file states. The whole suite passes that way --
+  874 ok, nothing hung -- and `test-export` was the one thing that did
+  not, having been green on every ordinary run for as long as the
+  developer's toolbox container happened to exist.
+
 ### A test fixture that pins the socket can still write to the real fleet
 
 - `test-daemon.c` set `state_dir` and `socket` into a temporary directory

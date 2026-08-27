@@ -77,6 +77,39 @@ test_a_missing_pandoc_is_reported(void)
 }
 
 /*
+ * Running pandoc needs infrastructure, and its presence does not say so.
+ *
+ * clawt_export_available() asks g_find_program_in_path(), which answers
+ * "there is a file called pandoc on PATH" -- a different question from
+ * "running it will convert something".  On a machine where pandoc is a
+ * distrobox or toolbox shim it is a two-line shell script that starts a
+ * container: the suite then needed podman, reached a registry, and on a
+ * host without that image already built *prompted* `[Y/n]` and waited
+ * for a person for ever.  A test that can hang is worse than one that
+ * fails, because it stops every test after it and looks identical to a
+ * slow machine.
+ *
+ * So the three tests that actually spawn pandoc are integration tests.
+ * The fourth is not: it runs only when pandoc is absent, where
+ * clawt_export_convert() refuses before spawning anything.
+ */
+static gboolean
+pandoc_may_run(ClawtExportFormat format)
+{
+    if (g_getenv("CLAWT_TEST_INTEGRATION") == NULL) {
+        g_test_skip("needs CLAWT_TEST_INTEGRATION: this runs pandoc");
+        return FALSE;
+    }
+
+    if (!clawt_export_available(format)) {
+        g_test_skip("pandoc is not installed here");
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+/*
  * One paragraph, one line.
  *
  * pandoc rewraps at 72 columns by default, which turns a paragraph into
@@ -94,10 +127,8 @@ test_a_paragraph_stays_one_line(void)
     gsize longest = 0;
     gsize i;
 
-    if (!clawt_export_available(CLAWT_EXPORT_ORG)) {
-        g_test_skip("pandoc is not installed here");
+    if (!pandoc_may_run(CLAWT_EXPORT_ORG))
         return;
-    }
 
     /* Comfortably past pandoc's default 72-column wrap. */
     paragraph = g_strdup(
@@ -125,10 +156,8 @@ test_org_looks_like_org(void)
     g_autofree gchar *out = NULL;
     g_autoptr(GError) error = NULL;
 
-    if (!clawt_export_available(CLAWT_EXPORT_ORG)) {
-        g_test_skip("pandoc is not installed here");
+    if (!pandoc_may_run(CLAWT_EXPORT_ORG))
         return;
-    }
 
     out = clawt_export_transcript("dm:user:scribe", messages,
                                   CLAWT_EXPORT_ORG, &error);
@@ -152,10 +181,8 @@ test_plain_has_no_markup_left(void)
     g_autoptr(GPtrArray) messages = two_turns();
     g_autofree gchar *out = NULL;
 
-    if (!clawt_export_available(CLAWT_EXPORT_PLAIN)) {
-        g_test_skip("pandoc is not installed here");
+    if (!pandoc_may_run(CLAWT_EXPORT_PLAIN))
         return;
-    }
 
     out = clawt_export_transcript("dm:user:scribe", messages,
                                   CLAWT_EXPORT_PLAIN, NULL);
