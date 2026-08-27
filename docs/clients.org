@@ -78,6 +78,7 @@ licence, send nothing, and exit 0.
 | ~computer status <agent>~ | |
 | ~cp <src> <dst>~ | either side may be ~<agent>:<path>~ |
 | ~config show/validate/render/edit~ | |
+| ~config reload~ | re-read the config file the daemon was started with |
 | ~folders list/add/rm~ | folders every agent with a computer gets |
 | ~memory list/search <agent>~ | what an agent has remembered; read-only |
 | ~model~ | every provider and model, and which can run an agent |

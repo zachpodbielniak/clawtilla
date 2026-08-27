@@ -408,6 +408,22 @@ clawt_agent_config_get_id(ClawtAgentConfig *self)
 }
 
 gboolean
+clawt_agent_config_revalidate(ClawtAgentConfig *self)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    /*
+     * Cleared first, because agent_mark_shadow() keeps the *first* reason
+     * and ignores later ones -- so revalidating without this would leave
+     * the old refusal in place however the config had changed.
+     */
+    g_clear_pointer(&self->shadow_reason, g_free);
+    agent_validate(self);
+
+    return self->shadow_reason == NULL;
+}
+
+gboolean
 clawt_agent_config_is_shadow(ClawtAgentConfig *self)
 {
     g_return_val_if_fail(self != NULL, TRUE);

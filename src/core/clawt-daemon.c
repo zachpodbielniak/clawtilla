@@ -8418,6 +8418,52 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         json_builder_add_string_value(builder, agent_id);
 
         /*
+         * The shadow decision is retaken here, not left to the next load.
+         *
+         * It is made once, when the config is parsed -- so setting the
+         * very key an agent was disabled for wrote the value, answered
+         * with the key and its new value, and left the agent shadowed
+         * with the old reason.  `agent list` still said `shadow`, which
+         * reads as the setting not having worked.  The only remedy was
+         * restarting the daemon, and on a remote one there was no way to
+         * ask for that at all.
+         *
+         * Reported either way: still refusing is the interesting answer,
+         * and a client that only hears "saved" cannot tell the two apart.
+         */
+        {
+            ClawtAgentConfig *agent_config =
+                clawt_config_get_agent(self->config, agent_id);
+            gboolean usable = TRUE;
+
+            if (agent_config != NULL) {
+                ClawtAgent *agent =
+                    clawt_agent_manager_get(self->agents, agent_id);
+
+                usable = clawt_agent_config_revalidate(agent_config);
+
+                /*
+                 * And the agent, which keeps its own state.  Revalidating
+                 * only the config left `agent list` reporting the old
+                 * answer -- the shadow decision reaches a client through
+                 * ClawtAgent, not through ClawtAgentConfig.
+                 */
+                if (agent != NULL)
+                    clawt_agent_revalidate(agent);
+            }
+
+            json_builder_set_member_name(builder, "shadow");
+            json_builder_add_boolean_value(builder, !usable);
+
+            if (!usable && agent_config != NULL) {
+                json_builder_set_member_name(builder, "shadow_reason");
+                json_builder_add_string_value(
+                    builder,
+                    clawt_agent_config_get_shadow_reason(agent_config));
+            }
+        }
+
+        /*
          * Which keys those are is setting_needs_a_new_session()'s to
          * say; only a *running* agent is told, because a stopped one
          * will start a fresh session anyway and telling it to restart

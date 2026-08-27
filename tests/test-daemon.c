@@ -4604,6 +4604,122 @@ test_a_task_change_reaches_the_bus(void)
 /* ── agent.set ───────────────────────────────────────────────────── */
 
 /*
+ * Correcting the key an agent was shadowed for un-shadows it, with no
+ * restart.
+ *
+ * The shadow decision was taken once, when the config was parsed.  So
+ * `agent set computer.host.confirm_host_control true` wrote the value,
+ * answered with the key and its new value, and left the agent disabled
+ * with the old reason -- `agent list` still saying `shadow`, which reads
+ * as the setting having been ignored.  The only remedy was restarting
+ * the daemon, and against a remote one there was no way to ask for even
+ * that.
+ *
+ * Both halves are needed, and the test would pass with either one
+ * missing if it checked only the reply: ClawtAgentConfig carries the
+ * reason and ClawtAgent carries the state a client is shown, and
+ * clawt_agent_set_config() returns early when handed the object it
+ * already holds -- which is exactly what `agent set` edits.  So the
+ * agent.show assertion is the load-bearing one.
+ */
+static void
+test_correcting_a_shadow_key_clears_the_shadow(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) before = NULL;
+    g_autoptr(JsonNode) set = NULL;
+    g_autoptr(JsonNode) after = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: bold\n"
+                  "    computer:\n"
+                  "      type: host\n");
+    /*
+     * Starting logs the refusal, which is the point of the fixture -- and
+     * GTest makes a warning fatal, so it is swallowed rather than left to
+     * kill the test that provoked it deliberately.
+     */
+    {
+        GLogLevelFlags was_fatal = g_log_set_always_fatal(G_LOG_FATAL_MASK);
+        guint handler = g_log_set_handler("Clawtilla",
+                                          G_LOG_LEVEL_WARNING |
+                                          G_LOG_FLAG_FATAL |
+                                          G_LOG_FLAG_RECURSION,
+                                          swallow_warnings, NULL);
+
+        g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+        g_log_remove_handler("Clawtilla", handler);
+        g_log_set_always_fatal(was_fatal);
+    }
+
+    before = request(&fixture, "agent.show", "{\"agent\":\"bold\"}");
+    g_assert_cmpstr(
+        json_object_get_string_member(
+            json_object_get_object_member(payload_of(before), "agent"),
+            "state"), ==, "shadow");
+
+    set = request(&fixture, "agent.set",
+                  "{\"agent\":\"bold\","
+                  "\"key\":\"computer.host.confirm_host_control\","
+                  "\"value\":\"true\"}");
+    g_assert_false(clawt_ipc_frame_is_error(set));
+
+    /* The reply says so, so a client need not ask again to find out. */
+    g_assert_false(json_object_get_boolean_member(payload_of(set),
+                                                  "shadow"));
+
+    after = request(&fixture, "agent.show", "{\"agent\":\"bold\"}");
+    g_assert_cmpstr(
+        json_object_get_string_member(
+            json_object_get_object_member(payload_of(after), "agent"),
+            "state"), ==, "stopped");
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And back: a setting that makes an agent unusable shadows it again.
+ *
+ * Without this the test above passes against a build that simply stopped
+ * shadowing host agents at all.
+ */
+static void
+test_breaking_a_key_shadows_the_agent_again(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) set = NULL;
+    g_autoptr(JsonNode) after = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: bold\n"
+                  "    computer:\n"
+                  "      type: host\n"
+                  "      host:\n"
+                  "        confirm_host_control: true\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    set = request(&fixture, "agent.set",
+                  "{\"agent\":\"bold\","
+                  "\"key\":\"computer.host.confirm_host_control\","
+                  "\"value\":\"false\"}");
+    g_assert_false(clawt_ipc_frame_is_error(set));
+    g_assert_true(json_object_get_boolean_member(payload_of(set), "shadow"));
+    g_assert_nonnull(json_object_get_string_member(payload_of(set),
+                                                   "shadow_reason"));
+
+    after = request(&fixture, "agent.show", "{\"agent\":\"bold\"}");
+    g_assert_cmpstr(
+        json_object_get_string_member(
+            json_object_get_object_member(payload_of(after), "agent"),
+            "state"), ==, "shadow");
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * A value the enum has never heard of is refused, naming what is
  * allowed.
  *
@@ -4873,6 +4989,10 @@ main(int argc, char *argv[])
     g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/daemon/starts", test_starts_with_an_empty_config);
+    g_test_add_func("/daemon/correcting-a-shadow-key-clears-it",
+                    test_correcting_a_shadow_key_clears_the_shadow);
+    g_test_add_func("/daemon/breaking-a-key-shadows-again",
+                    test_breaking_a_key_shadows_the_agent_again);
     g_test_add_func("/daemon/refuses-a-second-on-the-same-state-dir",
                     test_refuses_a_second_daemon_on_the_same_state_dir);
     g_test_add_func("/daemon/stopping-releases-the-state-lock",

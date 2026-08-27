@@ -3327,8 +3327,43 @@ cmd_config(int argc, char *argv[])
     const gchar *verb = (argc > 2) ? argv[2] : NULL;
 
     if (verb == NULL) {
-        g_printerr("Usage: clawtilla config <show|validate|render|edit>\n");
+        g_printerr("Usage: clawtilla config "
+                   "<show|validate|render|edit|reload>\n");
         return EXIT_FAILURE;
+    }
+
+    /*
+     * Reload without an editor.
+     *
+     * `edit` has always ended by sending control.reload, and it was the
+     * only verb that did -- so reloading meant opening $EDITOR, which
+     * edits the file on *this* machine.  Against a daemon on another one
+     * that is not a remedy: the config to change is over there, and the
+     * only way to apply an edit was to restart the daemon by hand.
+     *
+     * The case that made it matter: `agent set` on the key an agent was
+     * shadowed for wrote the value and left the agent disabled until the
+     * config was loaded again.  That is fixed at the source now, and this
+     * is still the verb for every other reason a config changes -- an
+     * edit made over ssh, or by anything that is not clawtilla.
+     */
+    if (g_strcmp0(verb, "reload") == 0) {
+        client = connect_to_daemon();
+
+        if (client == NULL)
+            return EXIT_FAILURE;
+
+        reply = call(client, "control.reload", NULL);
+
+        if (reply == NULL) {
+            g_printerr("clawtilla: the daemon kept its old configuration\n");
+            return EXIT_FAILURE;
+        }
+
+        report_refusals(reply);
+        g_print("Reloaded.\n");
+
+        return EXIT_SUCCESS;
     }
 
     /*

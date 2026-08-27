@@ -79,6 +79,8 @@ ClawtAgentConfig *clawt_agent_get_config(ClawtAgent *self);
  */
 void clawt_agent_set_config(ClawtAgent *self, ClawtAgentConfig *config);
 
+void clawt_agent_revalidate(ClawtAgent *self);
+
 /**
  * clawt_agent_get_mailbox:
  * @self: a #ClawtAgent

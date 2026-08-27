@@ -349,13 +349,44 @@ clawt_agent_set_config(ClawtAgent *self, ClawtAgentConfig *config)
      * has already read became invalid would be a worse bargain than
      * carrying on with the old one.
      */
+    clawt_agent_revalidate(self);
+}
+
+/**
+ * clawt_agent_revalidate:
+ * @self: a #ClawtAgent
+ *
+ * Retakes the shadow decision from the configuration the agent already
+ * holds, and recomputes its capabilities.
+ *
+ * clawt_agent_set_config() does this when the configuration object is
+ * *replaced*, and returns early when handed the one it already has --
+ * which is what `agent set` does, since it edits the very object the
+ * agent is holding.  So correcting the key an agent was shadowed for
+ * changed the config, changed nothing about the agent, and left
+ * `agent list` still saying `shadow`, which reads as the setting having
+ * been ignored.
+ *
+ * Only a stopped or shadowed agent is touched.  One that is running keeps
+ * running: a config change applies at the agent's next start, and killing
+ * a turn in progress because a key it has already read became invalid
+ * would be the worse bargain.
+ */
+void
+clawt_agent_revalidate(ClawtAgent *self)
+{
+    g_return_if_fail(CLAWT_IS_AGENT(self));
+
+    if (self->config == NULL)
+        return;
+
     if (self->state == CLAWT_AGENT_STATE_SHADOW &&
-        !clawt_agent_config_is_shadow(config))
+        !clawt_agent_config_is_shadow(self->config))
         set_state(self, CLAWT_AGENT_STATE_STOPPED, NULL);
     else if (self->state == CLAWT_AGENT_STATE_STOPPED &&
-             clawt_agent_config_is_shadow(config))
+             clawt_agent_config_is_shadow(self->config))
         set_state(self, CLAWT_AGENT_STATE_SHADOW,
-                  clawt_agent_config_get_shadow_reason(config));
+                  clawt_agent_config_get_shadow_reason(self->config));
 
     recompute_caps(self);
 }

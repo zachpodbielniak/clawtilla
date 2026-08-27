@@ -724,6 +724,22 @@ gchar *clawt_agent_config_get_raw_yaml(ClawtAgentConfig *self,
  *
  * Returns: %TRUE if the agent is a shadow
  */
+/**
+ * clawt_agent_config_revalidate:
+ * @self: a #ClawtAgentConfig
+ *
+ * Retakes the shadow decision after a setting has changed.
+ *
+ * The decision is otherwise made once, when the config is loaded -- so
+ * `agent set` on the very key an agent was shadowed for wrote the value,
+ * reported success, and left the agent disabled with the old reason until
+ * somebody restarted the daemon.  On a remote daemon that was not a
+ * remedy anyone could reach.
+ *
+ * Returns: %TRUE if the agent is usable, %FALSE if it is still a shadow
+ */
+gboolean clawt_agent_config_revalidate(ClawtAgentConfig *self);
+
 gboolean clawt_agent_config_is_shadow(ClawtAgentConfig *self);
 
 /**
