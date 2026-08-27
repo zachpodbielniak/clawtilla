@@ -11,6 +11,9 @@
 
 #include <glib/gstdio.h>
 #include <errno.h>
+#include <sys/file.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include "core/clawt-daemon.h"
 
 #include <string.h>
@@ -141,6 +144,12 @@ struct _ClawtDaemon {
 
     gchar   *libreclaw_binary;
     gchar   *state_dir;
+
+    /*
+     * An exclusive flock on <state_dir>/daemon.lock, held for the life of
+     * the daemon.  See acquire_state_lock().
+     */
+    gint     state_lock_fd;
     gchar   *link_socket;
 
     /*
@@ -438,6 +447,7 @@ static const gchar GIT_BLOCK[] =
     "sessions.reset-*/\n"
     "\n"
     "*.sock\n"
+    "daemon.lock\n"
     "events/\n"
     "exchange/\n"
     "\n"
@@ -547,6 +557,89 @@ on_image_finished(ClawtVmImageStore *store,
         g_warning("image %s: %s", name, error_message);
     else
         g_message("image %s is ready", name);
+}
+
+/*
+ * One daemon per state directory, enforced by the kernel.
+ *
+ * Two daemons sharing a state directory is not a degraded mode, it is
+ * data loss: each keeps its own room manager and save_room() rewrites
+ * the *whole* transcript from memory on every message, so the last one
+ * to write wins and the other's messages are gone.  It has happened on
+ * a real fleet -- four messages of a conversation with the chief of
+ * staff, routed correctly, delivered, and then deleted by the other
+ * daemon's next flush.
+ *
+ * The socket was already guarded, by a connect probe, and a probe is the
+ * wrong instrument: it answers "did anything reply just now", which a
+ * busy daemon fails.  One that has been wrong once unlinks a live socket
+ * and leaves the running daemon's clients talking to a path that no
+ * longer exists -- exactly what clear_stale_socket()'s own comment says
+ * must not happen, and exactly what did happen.
+ *
+ * A lock cannot be wrong that way: the kernel holds it, it is released
+ * when the last descriptor closes, and that includes a daemon killed
+ * with SIGKILL, so there is no stale lock to reason about.  The state
+ * directory is the thing that must not be shared, so it is what carries
+ * the lock -- not the socket, which is only one of the things two
+ * daemons would fight over.
+ *
+ * The pid is written in so the refusal can name who holds it. It is a
+ * courtesy for the person reading the error, never a check: the lock is
+ * what excludes, and the file's contents are not consulted.
+ */
+static gboolean
+acquire_state_lock(const gchar *state_dir, gint *out_fd, GError **error)
+{
+    g_autofree gchar *path = g_build_filename(state_dir, "daemon.lock", NULL);
+    g_autofree gchar *held_by = NULL;
+    g_autofree gchar *pid_text = NULL;
+    gint fd;
+
+    fd = g_open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+
+    if (fd < 0) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                    "could not open the state lock %s: %s",
+                    path, g_strerror(errno));
+        return FALSE;
+    }
+
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        gint saved = errno;
+
+        if (g_file_get_contents(path, &held_by, NULL, NULL) &&
+            held_by != NULL && held_by[0] != '\0')
+            g_strstrip(held_by);
+
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_ALREADY_EXISTS,
+                    "another clawtilla daemon is using the state directory "
+                    "%s%s%s%s. Two daemons sharing one state directory "
+                    "overwrite each other's transcripts, so this one will "
+                    "not start; use a different daemon.state_dir, or stop "
+                    "the other one (%s)",
+                    state_dir,
+                    (held_by != NULL && held_by[0] != '\0') ? " (held by pid " : "",
+                    (held_by != NULL && held_by[0] != '\0') ? held_by : "",
+                    (held_by != NULL && held_by[0] != '\0') ? ")" : "",
+                    g_strerror(saved));
+        close(fd);
+        return FALSE;
+    }
+
+    /*
+     * Truncated and rewritten only after the lock is ours, so a refused
+     * daemon never overwrites the pid of the one that holds it.
+     */
+    if (ftruncate(fd, 0) == 0) {
+        pid_text = g_strdup_printf("%d\n", (gint)getpid());
+        if (write(fd, pid_text, strlen(pid_text)) < 0)
+            g_debug("state lock: could not record the pid: %s",
+                    g_strerror(errno));
+    }
+
+    *out_fd = fd;
+    return TRUE;
 }
 
 static gboolean
@@ -3810,6 +3903,17 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     }
 
     /*
+     * Before anything else reads or writes in here.  Everything below
+     * this point -- the git repository, the transcripts, the event log,
+     * the mailboxes -- assumes it is the only writer.
+     */
+    if (!acquire_state_lock(self->state_dir, &self->state_lock_fd, error)) {
+        if (self->main_context != NULL)
+            g_main_context_pop_thread_default(self->main_context);
+        return FALSE;
+    }
+
+    /*
      * The state directory as a repository, from the first start.
      *
      * Asked for rather than left to a command somebody has to remember:
@@ -4368,6 +4472,21 @@ clawt_daemon_stop(ClawtDaemon *self)
 
     if (self->bus != NULL)
         clawt_event_bus_emit(self->bus, "daemon.stopped", NULL);
+
+    /*
+     * Last, after the rooms have been flushed and the servers are down:
+     * until here this daemon is still the one writing in the state
+     * directory, and releasing the lock early would let another take it
+     * while the flush was still running.
+     *
+     * Released explicitly rather than left to process exit, because an
+     * embedded host may stop and start the daemon in one process and the
+     * second start has to be able to take the lock back.
+     */
+    if (self->state_lock_fd >= 0) {
+        close(self->state_lock_fd);
+        self->state_lock_fd = -1;
+    }
 
     g_signal_emit(self, signals[SIGNAL_STOPPED], 0);
 }
@@ -11282,6 +11401,9 @@ clawt_daemon_class_init(ClawtDaemonClass *klass)
 static void
 clawt_daemon_init(ClawtDaemon *self)
 {
+    /* 0 is a valid descriptor, so "no lock" has to be -1. */
+    self->state_lock_fd = -1;
+
     self->drafts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                           g_object_unref);
     self->model_cache = g_hash_table_new_full(g_str_hash, g_str_equal,

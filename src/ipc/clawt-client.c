@@ -406,11 +406,28 @@ try_reconnect(gpointer user_data)
             gboolean resumed = TRUE;
 
             /*
-             * Resumed from the last cursor actually seen, and the answer
-             * is passed on: a client that assumes it caught up when it did
-             * not will show stale state indefinitely.
+             * Resumed from the last cursor actually seen.
+             *
+             * The answer is *not* passed on, and this comment used to say
+             * it was.  The daemon replays from a bounded buffer, so a
+             * cursor that fell off it comes back `resumed: false`, which
+             * means the client has a hole -- and nothing here tells the
+             * application, which then shows stale state indefinitely.
+             * That is precisely the shape a reconnect after a long outage
+             * takes, which is when it matters most.
+             *
+             * Closing it needs somewhere to report to: a signal on this
+             * object, and both graphical clients answering it by
+             * re-reading history.  A signal with no subscriber would be
+             * the same gap wearing a different hat, so it is written down
+             * rather than half-built -- see docs/ipc-protocol.org.
              */
             clawt_client_subscribe(self, self->cursor, &resumed, NULL);
+
+            if (!resumed)
+                g_warning("client: the daemon could not resume from cursor "
+                          "%" G_GUINT64_FORMAT "; this client has missed "
+                          "events and its view may be stale", self->cursor);
         }
 
         return G_SOURCE_REMOVE;
@@ -605,6 +622,32 @@ clawt_client_connect(ClawtClient *self, GError **error)
             g_prefix_error(error, "could not reach the daemon at %s:%u: ",
                            self->host, self->port);
             return FALSE;
+        }
+
+        /*
+         * A network connection is armed with keepalive; a unix one has
+         * nothing to arm.
+         *
+         * Without it a route that goes away -- a laptop that suspends, a
+         * tailnet that reconnects somewhere else -- leaves this end
+         * holding a read that will never complete.  Nothing fails, so
+         * handle_disconnect() never runs, so the reconnect this client
+         * already knows how to do never happens: the window stays
+         * connected, shows no new message for the rest of the day, and
+         * the next thing typed into it waits out the request timeout and
+         * is lost.  Measured against a black-holed proxy: 150 seconds
+         * with `connected=yes` throughout and not one of the events sent
+         * in that time.
+         */
+        {
+            GSocket *socket = g_socket_connection_get_socket(connection);
+            g_autoptr(GError) local = NULL;
+
+            if (socket != NULL &&
+                !clawt_ipc_socket_keepalive(socket, &local))
+                g_warning("ipc: %s; a connection to %s:%u that goes away "
+                          "may not be noticed", local->message, self->host,
+                          self->port);
         }
 
         self->stream = G_IO_STREAM(g_object_ref(connection));

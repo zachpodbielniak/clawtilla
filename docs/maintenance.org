@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-26 Wed]
+#+updated: [2026-08-27 Thu]
 #+version: 0.1.0
 
 * Maintenance
@@ -16,6 +16,7 @@
   agents.sock                     agents dial in here
   routines.yaml                   run state for the schedules; never in config.yaml
   decisions.db                    the decision inbox
+  daemon.lock                     one daemon per state directory; see below
   .git/ .gitignore                daemon.git; the ignore block is clawtilla's
   agents/<id>/                    also the workspace, unless agents.workspace moves it
     SOUL.org IDENTITY.org …       the persona; yours to edit
@@ -47,6 +48,64 @@ never existed on any machine.  And a VM's disk is not under the state
 directory at all -- it is in ~$XDG_DATA_HOME~, which is why a backup of
 ~~/.clawtilla~ contains no guests.
 
+*** The event log is the record; the transcript is a projection
+
+~events/YYYY-MM-DD.ndjson~ is append-only.  Nothing rewrites a line, and
+a line is flushed as it is written, so a daemon that is killed loses at
+most the one it was in the middle of.
+
+~transcripts/<room>.ndjson~ is not.  It is rewritten *whole* from the
+room's in-memory history on every message -- which is what makes it
+survive an unclean shutdown, and also what makes it the file that can
+lose something.  Everything in it was published as an event first, so
+the log is the record and the transcript is a view of it.
+
+That is not an abstraction.  It is how four messages of a real
+conversation were recovered after two daemons overwrote each other's
+transcripts: they were gone from the projection and still in the record.
+[[file:troubleshooting.org][troubleshooting.org]] has the procedure.
+
+Two consequences worth carrying into the rest of this page.  The log is
+worth backing up, because it is the only copy of anything the transcript
+loses.  And it is *git-ignored* -- clawtilla's block in ~.gitignore~
+lists ~events/~ -- so ~daemon.git~ is not a backup of it, whatever else
+that repository is holding.
+
+** One daemon per state directory
+
+Not a convention: the daemon takes an exclusive ~flock~ on
+~<state_dir>/daemon.lock~ before it reads or writes anything in there,
+and a second daemon against the same directory is refused with a message
+naming the directory and the pid holding it.
+
+The reason is that two daemons sharing one is *data loss* rather than a
+degraded mode.  Each keeps its own room manager, and a transcript is
+rewritten whole on every message, so the last one to flush wins and the
+other's messages are deleted.  They also share the mailboxes, the
+decision store and the event log, none of which is written with a second
+writer in mind.
+
+So a second fleet on one machine needs three keys moved, not one:
+
+#+begin_src yaml
+daemon:
+  state_dir: ~/.clawtilla-staging
+  socket: /run/user/1000/clawtilla-staging/daemon.sock
+defaults:
+  workspace_root: ~/.clawtilla-staging/agents
+#+end_src
+
+~defaults.workspace_root~ is the one people forget, because its default
+is ~~/.clawtilla/agents~ and it does not move when ~daemon.state_dir~
+does.
+
+The lock needs no maintenance and has no stale state.  The kernel
+releases it when the last descriptor closes, which covers a daemon
+killed with ~SIGKILL~ and a machine that lost power, so ~daemon.lock~
+being on disk says nothing about whether anything holds it.  It is
+git-ignored, it is not worth backing up, and deleting it by hand
+achieves nothing.
+
 ** Backing up
 
 Worth keeping:
@@ -56,15 +115,18 @@ Worth keeping:
   and are as irreplaceable as the config
 - ~agents/*/mailbox.db~ -- undelivered messages
 - ~agents/*/memory.db~ -- what each agent has remembered
-- ~transcripts/~ -- the record of what was said
+- ~transcripts/~ -- what was said, as each room currently holds it
+- ~events/~ -- the append-only record the transcripts are a view of, and
+  the only copy of anything a transcript loses
 - ~routines.yaml~ -- when each routine last ran, which is not in
   ~config.yaml~ on purpose
 - whatever your secret references point at
 - ~secrets/~ -- connector credentials, if you would rather not authorize
   every connected account again
 
-Not worth keeping: anything marked GENERATED, ~sessions/~, ~events/~
-beyond your retention window.
+Not worth keeping: anything marked GENERATED, ~sessions/~, ~daemon.lock~
+and anything under ~events/~ older than ~daemon.event_log_days~, which
+the daemon sweeps for you anyway.
 
 The list is nearly "the state directory minus four things", so that is
 how it is easiest to write.  ~--exclude~ is matched by tar itself, unlike
@@ -78,7 +140,7 @@ tar czf clawtilla-backup-$(date -u +%F).tar.gz -C ~ \
     --exclude='.clawtilla/agents/*/credentials' \
     --exclude='.clawtilla/agents/*/token' \
     --exclude='.clawtilla/tcp-token' \
-    --exclude='.clawtilla/events' \
+    --exclude='.clawtilla/daemon.lock' \
     --exclude='.clawtilla/secrets' \
     .clawtilla
 systemctl --user start clawtilla
@@ -89,6 +151,13 @@ Stopping first matters for the mailboxes: SQLite in WAL mode has a
 gives you a database missing its most recent commits.  ~tar~ says
 ~socket ignored~ about ~agents.sock~, which is correct and not a warning
 about anything.
+
+~events/~ is *in* this, deliberately, and it used to be excluded.  It is
+the only thing that has ever recovered a transcript, and it is bounded
+by ~daemon.event_log_days~ -- 30 by default -- rather than growing for
+ever.  It holds message bodies, though: secrets scrubbed and mode 0600,
+but otherwise a plaintext record of everything the fleet said.  Treat
+that half of the archive exactly as you treat ~transcripts/~.
 
 A backup that includes ~secrets/~ is a backup that includes live
 credentials for every service the fleet is connected to, and a refresh

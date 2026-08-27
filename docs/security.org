@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-26 Wed]
+#+updated: [2026-08-27 Thu]
 #+version: 0.1.0
 
 * Security
@@ -103,7 +103,12 @@ of the access control there.
 *** The event log holds message bodies
 
 It is 0600 and secrets are scrubbed, but it is a plaintext record of
-everything said.  It is subject to your backups like anything else.
+everything said.  It is subject to your backups like anything else --
+and deliberately so: it is append-only, it is the only thing a lost
+transcript can be rebuilt from, and
+[[file:maintenance.org][maintenance.org]] now says to keep it.  That
+makes the exposure a decision rather than an oversight, which is the
+only part of it worth changing.
 
 ** Sockets
 
@@ -135,6 +140,36 @@ nothing is listening on it.  Unlinking a live socket would leave the
 running daemon's agents connected to a path that no longer exists while
 this one silently took over new connections -- two daemons quietly
 fighting over one fleet.
+
+*** That check is a probe, and the state directory carries a lock
+
+Read the paragraph above as the weaker of two statements.  The check is
+a connect probe, so it reports whether anything answered just then --
+and a live daemon can fail to answer, because a connect is refused when
+the accept queue is full or when the daemon is not accepting at all.
+
+It is worth stating here because being wrong in the permissive direction
+is an *action*, and it costs both halves of what this page is about.
+The integrity half: two daemons on one state directory each hold their
+own copy of every room and rewrite a transcript whole on every message,
+so the last to flush deletes the other's messages.  The availability
+half: the probe unlinks a socket a daemon is still listening on, leaving
+it running and unreachable -- a denial of service arrived at by accident
+rather than by anybody.  Both have happened, in that order, in one
+evening.
+
+The daemon therefore takes an exclusive ~flock~ on
+~<state_dir>/daemon.lock~ before it reads or writes anything in there,
+and a second daemon on that directory is refused whatever socket it was
+given.  The lock is held by the kernel and released when the last
+descriptor closes, including on ~SIGKILL~, so there is no stale lock and
+nothing to clear by hand.
+
+It is not an access control and must not be read as one.  ~daemon.lock~
+is 0600 in a 0700 directory like everything else there, and anything
+that can open the state directory can already do whatever it likes to
+the fleet -- the lock stops *clawtilla* from being its own second
+writer, which is a correctness problem rather than a threat.
 
 ** Agent authentication
 

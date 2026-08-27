@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-26 Wed]
+#+updated: [2026-08-27 Thu]
 #+version: 0.1.0
 
 * The client protocol
@@ -762,6 +762,50 @@ proves you are the owner.
 Over TCP: ~control.hello~ with a token, before anything else.  The daemon
 refuses to open a TCP listener without a token configured.
 
+** Noticing that the other end has gone
+
+A unix peer cannot leave quietly.  Its exit closes the socket and the
+reader is told on the next turn of the loop, which is why the local
+socket needs nothing here.
+
+A TCP peer can, and does.  A laptop suspends, a tailnet comes back on a
+different path, a firewall forgets the flow --- and if neither end
+happens to be sending at that moment, *neither end is told anything*.
+The connection is not closed and not reset; it simply stops carrying
+packets.  Both sides go on believing in it.
+
+That failure is worse than a disconnection in every way that matters.
+The daemon writes events into a socket nobody is on the other end of.
+The client's read never completes, so nothing fails, so
+~clawt_client_set_auto_reconnect()~ never fires --- the window stays
+"connected", shows no new message for the rest of the day, and the next
+thing typed into it waits out the 120-second request timeout and is
+lost.  A client that had *disconnected* would have reconnected,
+resumed from its cursor and been handed everything it missed.
+
+So every TCP connection --- both the one the client dials and the one
+the daemon accepts --- is armed with keepalive when it is opened:
+
+| ~CLAWT_IPC_KEEPALIVE_IDLE_SECONDS~ | 30 | silence before the kernel starts probing |
+| ~CLAWT_IPC_KEEPALIVE_INTERVAL_SECONDS~ | 10 | between probes once one goes unanswered |
+| ~CLAWT_IPC_KEEPALIVE_COUNT~ | 3 | unanswered probes that end it |
+
+~SO_KEEPALIVE~ on its own is not the fix, which is why the three timers
+are set as well.  The kernel's default idle is *two hours*: a connection
+armed and left at the default is reported broken long after the person
+watching has given up on the fleet, and long after the message they
+typed was lost.  Sixty seconds is short enough that the reconnect
+happens before a request times out, and long enough that an ordinary
+pause between messages is not mistaken for a failure.  It also keeps a
+NAT or a tailnet from forgetting the flow in the first place, since an
+idle conversation now sends a packet every thirty seconds.
+
+Recovery is the machinery that already existed: the read fails, the
+client disconnects, reconnects, and re-subscribes from the cursor it had
+reached, so the events it missed are replayed.  Nothing about that is
+new --- it was simply unreachable, because the disconnection it starts
+from never happened.
+
 ** Backpressure
 
 A client that stops reading has its outbound queue capped and is then
@@ -815,6 +859,14 @@ reader's own callback.
 
 ~clawt_client_request_async()~ takes no thread; the same reader completes
 its ~GTask~.
+
+Auto-reconnect re-subscribes for you, from the cursor the client had
+actually reached -- and the ~resumed~ answer to *that* subscription is
+not reported anywhere, in this version.  An embedder should therefore
+treat a reconnect as a reason to re-fetch whatever it is showing rather
+than as a promise of a complete replay.  ~ClawtClient::disconnected~ is
+the signal that says one happened; none of the three shipped clients
+connects to it, so there is no example of that in the tree to copy.
 
 An embedding host can skip the socket entirely and call
 ~clawt_daemon_handle_request()~ with the same frames.

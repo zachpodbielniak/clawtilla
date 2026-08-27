@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-26 Wed]
+#+updated: [2026-08-27 Thu]
 #+version: 0.1.0
 
 * Architecture
@@ -46,6 +46,56 @@ The temptation is always to let a client do something small itself: edit
 the config file, start one agent, read one mailbox.  Every one of those
 would be a second implementation of a rule the daemon already enforces,
 and the two would drift.
+
+** One daemon per state directory
+
+The other half of the same statement, and the one that is enforced by
+the kernel rather than by a convention.
+
+Everything under ~daemon.state_dir~ is written as though there is a
+single writer.  The clearest case is a transcript: ~ClawtRoomManager~
+holds a room's history in memory and rewrites the file *whole* on every
+message, which is what makes it survive an unclean shutdown and also
+what makes a second manager fatal -- two daemons each hold their own
+copy of the same room, and the last to flush deletes whatever the other
+had.  The mailboxes, the decision store and the event log make the same
+assumption in quieter ways.
+
+So ~clawt_daemon_start()~ takes an exclusive ~flock~ on
+~<state_dir>/daemon.lock~ before anything else reads or writes in there,
+and ~clawt_daemon_stop()~ releases it -- released explicitly rather than
+left to process exit, because an embedded host stops and starts the
+daemon inside one process and the second start has to be able to take it
+back.
+
+*** Why a lock rather than a probe
+
+The socket was guarded before this, by connecting to it and unlinking it
+if nothing answered.  The two guards are not the same kind of thing, and
+the difference is the whole reason this section exists.
+
+A probe answers a question about *right now*: did anything reply on that
+path in the last moment.  A busy daemon can fail that question -- a
+connect is refused when the accept queue is full, and a daemon blocked
+on its own main thread is not accepting at all.  A lock answers a
+question about *ownership*, which is the question actually being asked,
+and it is answered by the kernel rather than inferred.
+
+A guard that can be wrong in the permissive direction is worse than no
+guard, because being wrong is an action.  The probe's own comment says
+that unlinking a live socket must not happen; a probe that answers "no
+one is there" about a daemon that is there does exactly that, and leaves
+a running daemon listening on a name nothing can dial.
+
+A lock has no equivalent mistake and no stale state to reason about.  It
+is released when the last descriptor on it closes, which includes a
+daemon killed with ~SIGKILL~, so there is never a lock to clear by hand.
+The pid written into the file is a courtesy for the refusal message; the
+file's contents are never consulted as a check.
+
+It is the *state directory* that carries it, not the socket.  The socket
+is one of several things two daemons would fight over, and it is the one
+they can most easily be configured not to share.
 
 ** Objects
 
@@ -487,6 +537,13 @@ notice.
 day, mode 0600.  Secrets are scrubbed *on write*, not at display time:
 transcripts get replayed into every context rebuild, so redacting only
 when showing them leaves the leak permanent.
+
+The log is append-only and flushed per line; a room's transcript is
+rewritten whole on every message.  That makes the log the durable record
+and the transcript a projection of it -- everything in a transcript was
+published as an event first, and the log is the only one of the two that
+cannot lose a line it has already written.  It is what a lost transcript
+is rebuilt from, which has been needed.
 
 ** Reading order in the source
 

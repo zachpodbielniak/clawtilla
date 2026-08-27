@@ -204,6 +204,88 @@ test_refuses_a_second_daemon(void)
 }
 
 /*
+ * A second daemon on a *different socket* but the same state directory is
+ * refused too.
+ *
+ * This is the case that cost a real conversation.  The socket was guarded
+ * by a connect probe, which only ever answers "is anything listening
+ * there" -- so two daemons with different socket paths and one state
+ * directory both started happily.  They then kept a room manager each,
+ * and save_room() rewrites the whole transcript from memory on every
+ * message, so the last to flush won and four delivered messages were
+ * deleted.
+ *
+ * The test above shares the whole config and so is caught by the socket
+ * guard as well; it cannot tell whether the state lock works.  This one
+ * changes the socket and nothing else, so only the lock can refuse it.
+ */
+static void
+test_refuses_a_second_daemon_on_the_same_state_dir(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtDaemon) second = NULL;
+    g_autofree gchar *second_yaml = NULL;
+    g_autofree gchar *second_path = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GError) write_error = NULL;
+
+    fixture_setup(&fixture, NULL);
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    /*
+     * Same state_dir, different socket -- and different ports, so that
+     * nothing but the state directory can be the thing in common.
+     */
+    second_path = g_build_filename(fixture.dir, "second.yaml", NULL);
+    second_yaml = g_strdup_printf(
+        "daemon:\n"
+        "  tailscale: false\n"
+        "  state_dir: \"%s/state\"\n"
+        "  socket: \"%s/second.sock\"\n"
+        "  automation_dir: \"%s/pods2\"\n"
+        "defaults:\n  workspace_root: \"%s/agents2\"\n",
+        fixture.dir, fixture.dir, fixture.dir, fixture.dir);
+
+    g_assert_true(g_file_set_contents(second_path, second_yaml, -1,
+                                      &write_error));
+    g_assert_no_error(write_error);
+
+    second = clawt_daemon_new(second_path, fixture.context);
+
+    g_assert_false(clawt_daemon_start(second, &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_ALREADY_EXISTS);
+
+    /* The refusal names the directory, which is what somebody must change. */
+    g_assert_nonnull(strstr(error->message, "state directory"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Stopping releases the lock, so the same process can start again.
+ *
+ * An embedded host -- cmacs -- stops and starts the daemon in one
+ * process, and a lock held past stop would make the second start refuse
+ * against nobody but itself.
+ */
+static void
+test_stopping_releases_the_state_lock(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+
+    fixture_setup(&fixture, NULL);
+
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+    clawt_daemon_stop(fixture.daemon);
+
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * An agent clawtilla cannot understand becomes a shadow; the fleet still
  * starts.  This is what lets a config written by a newer build load in an
  * older one.
@@ -4791,6 +4873,10 @@ main(int argc, char *argv[])
     g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/daemon/starts", test_starts_with_an_empty_config);
+    g_test_add_func("/daemon/refuses-a-second-on-the-same-state-dir",
+                    test_refuses_a_second_daemon_on_the_same_state_dir);
+    g_test_add_func("/daemon/stopping-releases-the-state-lock",
+                    test_stopping_releases_the_state_lock);
     g_test_add_func("/daemon/reply-after-turn-counts-hops",
                     test_a_reply_after_the_turn_ends_still_counts_hops);
     g_test_add_func("/daemon/progress-note-is-not-an-answer",

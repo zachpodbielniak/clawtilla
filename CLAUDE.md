@@ -3489,6 +3489,45 @@ the same program.
   hidden by a diagnostics filter.
 
 
+### A probe answers a question about now; a lock answers one about ownership
+
+- Three daemons ran against `~/.clawtilla` in one evening. Each keeps
+  its own `ClawtRoomManager`, and `save_room()` rewrites the **whole**
+  transcript from memory on every message -- so the last to flush wins
+  and the others' messages are gone. Four delivered messages of a real
+  conversation with the chief of staff were deleted that way, after
+  being routed correctly and answered.
+- Recoverable **only** because `events/*.ndjson` is append-only and had
+  them. The transcript is a projection and the event log is the record,
+  and the two are worth telling apart *before* the day one of them loses
+  something.
+- The socket was already guarded -- by a **connect probe**, which
+  answers "did anything reply just now". A busy daemon fails that
+  question: a connect is refused when the accept queue is full, and one
+  blocked on its main thread is not accepting at all. So the probe
+  unlinked a **live** socket and left the daemon running and
+  unreachable, which is exactly what `clear_stale_socket()`'s own
+  comment says must not happen.
+- **A guard that can be wrong in the permissive direction is worse than
+  no guard, because being wrong is an action.** With no guard somebody
+  sees "address in use" and looks into it. With that one, the check
+  removed the service and the evidence in a single step, and the
+  symptom -- a daemon nothing could reach -- pointed at the socket
+  rather than at the second daemon.
+- `flock` on `<state_dir>/daemon.lock`, taken before anything in there
+  is read or written and released in `clawt_daemon_stop()`. The kernel
+  holds it and drops it when the last descriptor closes, SIGKILL
+  included, so there is no stale lock to reason about and nothing to
+  clear by hand. Released explicitly rather than at process exit,
+  because an embedded host stops and starts the daemon in one process.
+- The **state directory** carries it, not the socket. The socket is
+  only one of the things two daemons fight over, and the easiest to be
+  configured not to share. The test that proves the lock changes the
+  socket path and nothing else -- the existing one shared the whole
+  config, so the socket probe refused it and it could not have told you
+  whether the lock worked at all.
+
+
 ## Things to NEVER Do
 
 - Never hand-edit `data/example-config.yaml` or `data/default-config.yaml`
@@ -3563,3 +3602,9 @@ the same program.
 - Never emit a CSS rule for an appearance field somebody left empty.
   Empty means follow the browser, and naming the current value freezes it
   while looking identical
+- Never guard a shared resource with a probe when the question being
+  asked is ownership. A probe answers "did anything reply just now",
+  which a busy daemon fails -- and a guard wrong in the permissive
+  direction *acts*: this one unlinked a live socket and left a running
+  daemon unreachable. `<state_dir>` is one daemon's at a time, and a
+  `flock` is what says so

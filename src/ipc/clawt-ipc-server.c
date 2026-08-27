@@ -694,6 +694,25 @@ on_incoming(GSocketService *service, GSocketConnection *connection,
 
     client->authenticated = is_unix;
 
+    /*
+     * And armed with keepalive, for the same reason the client end is.
+     *
+     * A subscriber whose route disappears is held here for ever
+     * otherwise: the daemon goes on writing events into a socket nobody
+     * is on the other end of, and the client stays in the list holding a
+     * subscription that reaches nothing.  The kernel's own default idle
+     * is two hours, which is long enough that a laptop lid closed at
+     * lunchtime is still a live client at three.
+     */
+    if (!is_unix) {
+        GSocket *socket = g_socket_connection_get_socket(connection);
+        g_autoptr(GError) local = NULL;
+
+        if (socket != NULL && !clawt_ipc_socket_keepalive(socket, &local))
+            g_warning("ipc: %s; a client that goes away may not be "
+                      "noticed", local->message);
+    }
+
     g_ptr_array_add(self->clients, client);
     read_next(client);
 

@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-26 Wed]
+#+updated: [2026-08-27 Thu]
 #+version: 0.1.0
 
 * Troubleshooting
@@ -27,6 +27,44 @@ Exactly what it says: something is on that socket.  Find it with
 on purpose -- unlinking a live one would leave two daemons quietly
 fighting over one fleet.
 
+That check is a connect probe, and a probe answers exactly one question:
+did anything reply just now.  It is the second guard rather than the
+first.  The thing two daemons must never share is the *state directory*,
+and that is what carries a lock.
+
+*** "another clawtilla daemon is using the state directory …"
+
+#+begin_example
+another clawtilla daemon is using the state directory
+/home/you/.clawtilla (held by pid 40118). Two daemons sharing one state
+directory overwrite each other's transcripts, so this one will not
+start; use a different daemon.state_dir, or stop the other one
+(Resource temporarily unavailable)
+#+end_example
+
+The daemon takes an exclusive ~flock~ on ~<state_dir>/daemon.lock~
+before anything reads or writes in there, and holds it until it stops.
+A second daemon against the same directory is refused whatever socket it
+was given, which is the case the socket probe above cannot see.
+
+Either stop the daemon holding it, or give this one a directory of its
+own.  That means ~daemon.state_dir~, ~daemon.socket~ and
+~defaults.workspace_root~ together -- two fleets sharing any one of the
+three is the same problem a layer down.  The workspace root is the one
+people forget: its default is the absolute path ~~/.clawtilla/agents~,
+so moving ~daemon.state_dir~ does not move it, and the second fleet
+scaffolds its agents over the first one's.
+
+The pid comes from the lock file's contents and is a courtesy for
+whoever reads the message.  The lock is what excludes; a lock file that
+says nothing still refuses, and still means the same thing.
+
+There is no such thing as a stale ~daemon.lock~.  The kernel drops the
+lock when the last descriptor on it closes, which covers a daemon killed
+with ~SIGKILL~ and a machine that lost power -- so the file existing
+means nothing on its own, and deleting it by hand accomplishes nothing
+except throwing away the pid that would have named the holder.
+
 *** "the socket path is N bytes; the kernel accepts at most 107"
 
 Unix socket paths are limited.  Put ~daemon.socket~ and
@@ -36,6 +74,180 @@ socket.
 This is checked up front because an over-long path does not fail at bind
 time: the socket is simply not created where you asked, and the first
 sign is an unrelated ENOENT further down.
+
+** The daemon is running and nothing can reach it
+
+~pgrep~ finds it, the journal shows it working, and every client says
+the daemon is not running.  The socket it listens on has been unlinked
+from the filesystem underneath it.
+
+A listening unix socket survives its path being removed: connections
+already made carry on, and the daemon goes on doing everything else --
+agents stay linked, routines fire, transcripts are written, and nothing
+in its own log says anything is wrong.  What is gone is the name a new
+client dials.
+
+~ss~ and ~ls~ disagreeing is the whole diagnosis:
+
+#+begin_src bash
+ss -xlp | grep clawtillad
+ls -l "${XDG_RUNTIME_DIR}/clawtilla/daemon.sock"
+#+end_src
+
+#+begin_example
+u_str LISTEN 0 10 /run/user/1000/clawtilla/daemon.sock 27320173 * 0
+        users:(("clawtillad",pid=40118,fd=12))
+ls: cannot access '/run/user/1000/clawtilla/daemon.sock':
+        No such file or directory
+#+end_example
+
+(One line each; wrapped here to fit.)
+
+~ss~ reports the name the socket was bound under, which the kernel
+remembers whether or not the file is still there; ~ls~ reports what is
+on disk now.  A daemon that had failed to start would appear in neither,
+which is what makes the pair conclusive.
+
+Restarting the daemon fixes it, and is safe: the bind recreates the
+path.
+
+What unlinked it was another ~clawtillad~ starting up.
+~clear_stale_socket()~ connects to the path first and only removes it
+when nothing answers -- and a live daemon can fail to answer, because a
+connect is refused when the accept queue is full or when the daemon is
+not accepting at that instant.  A daemon blocked on its main thread is
+exactly that -- see [[*The daemon answers nothing and will not stop]].
+
+The common route to it -- two daemons on one state directory -- is
+closed by the state lock, which is taken before the socket is touched.
+Two daemons with *different* state directories and the same
+~daemon.socket~ still can, so check both:
+
+#+begin_src bash
+pgrep -a clawtillad
+#+end_src
+
+More than one line is the answer, and the next section is the damage.
+
+** Messages are missing from the transcript
+
+Messages that were sent, delivered and answered are not in the chat when
+you scroll back.  Not out of order and not garbled: gone, with the
+conversation around them intact.
+
+That is what two daemons on one state directory do.  Each keeps its own
+~ClawtRoomManager~, and a transcript is rewritten *whole* from memory on
+every message -- so the last daemon to flush wins, and the messages the
+other one had are overwritten by a file that never contained them.
+
+The event log is what saves you.  It is append-only, one file per UTC
+day, and every daemon writing in that directory appends to the same
+file, so it has everything that happened whichever daemon handled it.
+The transcript is a projection of the same events; the log is the
+record.
+
+First, confirm the overlap.  Two ~daemon.started~ with no
+~daemon.stopped~ between them is two daemons at once:
+
+#+begin_src bash
+jq -r 'select(.kind | startswith("daemon."))
+       | (.ts/1000000|floor|strflocaltime("%F %T")) + "  " + .kind' \
+   ~/.clawtilla/events/*.ndjson
+#+end_src
+
+A daemon refused by the state lock leaves nothing here -- it is refused
+before the log is opened -- so these are all daemons that ran.
+
+Then find what the log has and the transcript does not.  A direct room
+is ~dm:<a>:<b>~ with the two ids sorted, and the transcript file is that
+id with ~.ndjson~ on the end:
+
+#+begin_src bash
+ROOM=dm:chief:you
+jq -r --arg room "$ROOM" \
+   'select(.kind == "message" and .subject == $room) | .detail.id' \
+   ~/.clawtilla/events/*.ndjson | sort -u > /tmp/logged
+jq -r .id ~/.clawtilla/transcripts/"$ROOM".ndjson | sort -u > /tmp/kept
+comm -23 /tmp/logged /tmp/kept
+#+end_src
+
+*** Putting them back
+
+Manual, and it is worth saying plainly: there is no ~clawtilla~ verb for
+this.  The daemon has no idea it lost anything -- from its side the
+transcript it wrote is the transcript it meant to write.
+
+Stop the daemon first.  A running one rewrites the file on the next
+message and will happily overwrite whatever you just repaired.
+
+#+begin_src bash
+systemctl --user stop clawtilla
+ROOM=dm:chief:you
+T=~/.clawtilla/transcripts/"$ROOM".ndjson
+cp "$T" "$T.before-recovery"
+
+jq -n -c --arg room "$ROOM" --slurpfile kept "$T" '
+  [ inputs
+    | select(.kind == "message" and .subject == $room)
+    | {id: .detail.id, sender: .detail.from, body: .detail.body,
+       ts: (.ts / 1000000 | floor), depth: 0}
+      + (if .detail.task then {task_id: .detail.task} else {} end)
+  ] as $log
+  | ($kept | map(.id)) as $have
+  | ($kept + [ $log[] | select(.id as $i | $have | index($i) | not) ])
+  | sort_by(.ts)[]
+' ~/.clawtilla/events/*.ndjson > "$T.rebuilt"
+
+mv "$T.rebuilt" "$T"
+systemctl --user start clawtilla
+#+end_src
+
+What that does, and why each part is there:
+
+- lines already in the transcript are kept *as they are*, and only ids
+  the transcript does not have are added.  A transcript line can carry
+  ~sender_name~, ~depth~ and ~parent_id~ that the event never had, so
+  rebuilding every line from the log would be a lossy repair of the
+  messages that were never lost
+- ~ts~ is divided by a million.  An event's timestamp is in
+  microseconds and a transcript's is in seconds, and a message left in
+  the wrong unit is not merely late: ~g_date_time_new_from_unix_local()~
+  cannot represent a number that size at all and answers NULL, so the
+  message sorts after everything ever said and is drawn with no time on
+  it and no day divider above it
+- ~depth~ is 0 because the event does not carry one.  It is the
+  agent-to-agent hop count, used by the loop guard on live traffic; a
+  recovered line is history and nothing reads it back
+- the result is sorted by ~ts~, because the room is loaded in file order
+  and appending to the end would put the recovered messages after the
+  ones that came later
+
+~jq~ rather than ~yq~, which is the one place in these docs where that
+is the right way round: yq has no ~floor~, and its division renders
+1756240000 as ~1.75624e+09~, which is not a timestamp any more.
+
+If the transcript file is not there at all, ~touch~ it first --
+~--slurpfile~ wants a file to read, and an empty one means every message
+in the log is missing, which is the correct answer for a room whose
+transcript was deleted rather than overwritten.
+
+Then read it back before trusting it:
+
+#+begin_src bash
+clawtilla room history "$ROOM"
+#+end_src
+
+The daemon reloads transcripts at start and rebuilds a direct room's
+membership from the *id*, not from the file, so a repaired file needs no
+other change.  A line it cannot parse is skipped rather than fatal,
+which means a mistake in the JSON shows up as a message still missing
+rather than as an error -- count them.
+
+Two things this cannot recover.  Anything older than
+~daemon.event_log_days~ has been swept from the log, and a room whose
+messages predate the log is not in it at all.  And the log holds message
+bodies, so ~events/~ deserves the same care as ~transcripts/~ --
+[[file:security.org][security.org]] says so in more detail.
 
 ** An agent will not start
 
@@ -1093,6 +1305,50 @@ If it shows a "daemon is not running" page, that is the daemon.  If it
 shows an empty agent list, the fleet really is empty --
 ~clawtilla agent list~ from the CLI will agree, because both are asking
 the same daemon.
+
+** A client on another machine stopped showing new messages
+
+The window still says it is connected to the remote daemon, the agent
+list is drawn, nothing has reported an error --- and no message sent
+from anywhere else appears, including the ones you type, which are drawn
+from the daemon's own event rather than locally.  Sending eventually
+reports:
+
+#+begin_example
+the daemon did not answer msg.send within 120 seconds
+#+end_example
+
+and that message never reaches the fleet: it is not in
+~clawtilla room history~ on the daemon's own machine, because it never
+arrived.
+
+The connection died without either end being told.  A route that
+disappears --- a laptop that suspended, a tailnet that came back on a
+different path, a firewall that forgot an idle flow --- does not close
+or reset anything; it just stops carrying packets.  Neither end notices
+while neither end is sending.
+
+Every TCP connection is armed with keepalive for this, and a dead one is
+now reported in about a minute: the client disconnects, reconnects, and
+re-subscribes from the cursor it had reached, so the events it missed
+are replayed into the transcript.  You will see a short gap and then the
+conversation catching up.
+
+If it does *not* catch up, check the version at both ends --- the arming
+happens when the connection is opened, so a client built before this
+change goes on believing in a connection its daemon has already given up
+on:
+
+#+begin_src bash
+clawtilla --host <daemon> --port 8792 --token "$(…)" status
+ss -tnp -o state established '( sport = :8792 or dport = :8792 )'
+#+end_src
+
+~ss -o~ prints the keepalive timer beside each socket.  A connection
+with no timer on it is one nobody will ever notice the death of.
+
+A unix client is not affected and never was: a local peer that goes away
+closes its socket, and the reader is told on the next turn of the loop.
 
 ** A fix built and tested, and the running daemon still misbehaves
 

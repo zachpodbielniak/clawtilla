@@ -13,6 +13,7 @@
 #error "Only <clawtilla.h> can be included directly."
 #endif
 
+#include <gio/gio.h>
 #include <glib-object.h>
 #include <json-glib/json-glib.h>
 
@@ -41,6 +42,54 @@ G_BEGIN_DECLS
  * a newline makes the daemon buy memory until it is killed.
  */
 #define CLAWT_IPC_MAX_FRAME_BYTES (8 * 1024 * 1024)
+
+/**
+ * CLAWT_IPC_KEEPALIVE_IDLE_SECONDS:
+ *
+ * How long a network connection may be silent before the kernel starts
+ * probing the peer.
+ *
+ * A conversation is idle most of the time -- somebody reading a reply is
+ * sending nothing -- so this is what keeps a NAT or a tailnet from
+ * forgetting the connection exists in the first place.
+ */
+#define CLAWT_IPC_KEEPALIVE_IDLE_SECONDS 30
+
+/**
+ * CLAWT_IPC_KEEPALIVE_INTERVAL_SECONDS:
+ *
+ * How long between probes once the peer has stopped answering them.
+ */
+#define CLAWT_IPC_KEEPALIVE_INTERVAL_SECONDS 10
+
+/**
+ * CLAWT_IPC_KEEPALIVE_COUNT:
+ *
+ * How many unanswered probes end the connection.
+ *
+ * With the two above, a peer that has gone is reported within about a
+ * minute -- close to the link server's 120-second deadline for an agent,
+ * and far short of the kernel's own two-hour default, which is long
+ * enough that a person gives up on the fleet before the socket does.
+ */
+#define CLAWT_IPC_KEEPALIVE_COUNT 3
+
+/**
+ * clawt_ipc_socket_keepalive:
+ * @socket: the socket a client connection is carried on
+ * @error: (nullable): where a failure to configure the socket is put
+ *
+ * Arms TCP keepalive, so that a connection whose route has gone away is
+ * reported as broken rather than believed in for ever.
+ *
+ * A unix socket cannot die quietly -- the peer's exit closes it and the
+ * reader is told at once -- so this is a no-op for one, and a request for
+ * a socket family we do not recognise is a no-op too rather than an
+ * error.
+ *
+ * Returns: %TRUE if the socket needed nothing or was configured
+ */
+gboolean clawt_ipc_socket_keepalive(GSocket *socket, GError **error);
 
 /**
  * clawt_ipc_request_new:

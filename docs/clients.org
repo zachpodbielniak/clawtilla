@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-26 Wed]
+#+updated: [2026-08-27 Thu]
 #+version: 0.2.0
 
 * Clients
@@ -189,6 +189,14 @@ the *client's* config rather than in ~clawtilla.yaml~ on purpose: the
 point of a profile is to reach a daemon that is somewhere else, and a
 laptop connecting to a workstation may have no fleet, no state directory
 and no ~clawtilla.yaml~ of its own.
+
+A verb makes one request and exits, so the CLI has nothing to reconnect
+for and does not try.  What the keepalive on a network connection
+changes here is how a dead route *reports*: the connection is given up
+after about a minute and the verb fails with "the daemon closed the
+connection", instead of sitting out the request's 120-second deadline
+and reporting a timeout.  The same outcome a minute earlier, and a truer
+sentence -- a timeout reads as a slow daemon, and this one is not there.
 
 *** Choosing where the daemon listens
 
@@ -1839,6 +1847,40 @@ them would show one daemon's transcript under another daemon's agent.
 so a laptop with no fleet of its own can start straight on a workstation
 rather than being shown "the daemon is not running" for a daemon it was
 never asking about.
+
+*** When the route to another machine goes away
+
+A laptop suspends, a tailnet comes back on a different path, a firewall
+forgets an idle flow.  None of those close a connection or reset it;
+they stop carrying packets, and both ends go on believing in it.  What
+that is and why it matters is in
+[[file:ipc-protocol.org][ipc-protocol.org]]; what to expect is here.
+
+Every network connection is armed with keepalive at both ends, so one
+that has died is given up after about a minute.  Then the machinery that
+already existed runs: the client reconnects, retrying after a second and
+doubling to a minute, and re-subscribes from the cursor it had reached,
+so the daemon replays what was missed.
+
+On screen that is a pause and then the conversation catching up.
+Nothing announces it -- no toast, no banner, no change to the connection
+button -- so a gap of a minute or two in a quiet conversation is
+indistinguishable from a quiet conversation.  Both graphical clients
+behave this way; the CLI does not reconnect at all.
+
+The replay is bounded.  The daemon keeps the last 1024 events, so an
+outage busier than that is not fully replayed, and nothing on screen
+says so.  Picking the agent again is what settles it: selecting an agent
+re-reads its conversation from the daemon rather than from what the
+window has accumulated, so anything the replay could not reach comes
+back with it.
+
+Worth knowing what this replaced.  Before the keepalive, a connection
+that died was never noticed at all: the window read "connected" for the
+rest of the day, every event in that window was lost, and the next
+message typed into it waited out 120 seconds and never arrived.  The
+reconnect and the cursor resume both worked throughout and were simply
+never reached, because the disconnection they start from never happened.
 
 *** Adaptive
 

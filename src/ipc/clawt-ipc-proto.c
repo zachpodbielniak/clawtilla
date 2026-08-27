@@ -10,7 +10,75 @@
 #include "clawtilla.h"
 #include "ipc/clawt-ipc-proto.h"
 
+#include <errno.h>
 #include <string.h>
+
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
+
+/*
+ * One setsockopt, named, so a failure says which knob refused.
+ */
+static gboolean
+set_tcp_option(gint fd, gint option, const gchar *name, gint value,
+               GError **error)
+{
+    if (setsockopt(fd, IPPROTO_TCP, option, &value, sizeof(value)) == 0)
+        return TRUE;
+
+    g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                "could not set %s on this connection: %s", name,
+                g_strerror(errno));
+
+    return FALSE;
+}
+
+gboolean
+clawt_ipc_socket_keepalive(GSocket *socket, GError **error)
+{
+    GSocketFamily family;
+    gint fd;
+
+    g_return_val_if_fail(G_IS_SOCKET(socket), FALSE);
+
+    family = g_socket_get_family(socket);
+
+    if (family != G_SOCKET_FAMILY_IPV4 && family != G_SOCKET_FAMILY_IPV6)
+        return TRUE;
+
+    /*
+     * SO_KEEPALIVE alone is not the fix, because the kernel's default
+     * idle is two hours: a client whose route went away goes on believing
+     * it is connected for the whole afternoon, receives nothing, and
+     * never reconnects -- which is indistinguishable from a fleet that
+     * has stopped talking.  The three timers below are what make the
+     * failure visible while somebody is still sitting there.
+     */
+    g_socket_set_keepalive(socket, TRUE);
+
+    fd = g_socket_get_fd(socket);
+
+#ifdef TCP_KEEPIDLE
+    if (!set_tcp_option(fd, TCP_KEEPIDLE, "the keepalive idle time",
+                        CLAWT_IPC_KEEPALIVE_IDLE_SECONDS, error))
+        return FALSE;
+#endif
+
+#ifdef TCP_KEEPINTVL
+    if (!set_tcp_option(fd, TCP_KEEPINTVL, "the keepalive interval",
+                        CLAWT_IPC_KEEPALIVE_INTERVAL_SECONDS, error))
+        return FALSE;
+#endif
+
+#ifdef TCP_KEEPCNT
+    if (!set_tcp_option(fd, TCP_KEEPCNT, "the keepalive probe count",
+                        CLAWT_IPC_KEEPALIVE_COUNT, error))
+        return FALSE;
+#endif
+
+    return TRUE;
+}
 
 static JsonNode *
 frame_new(const gchar *kind, const gchar *id)
