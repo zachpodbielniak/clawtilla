@@ -433,13 +433,95 @@ clawt_web_stylesheet(void)
      * Every body in a run indented to the same 36px -- avatar plus its
      * gap -- so the left edge of the text is unbroken down the run.
      */
-    ".msg-body{white-space:pre-wrap;word-wrap:break-word;"
+    /*
+     * No white-space:pre-wrap.  A body was plain text with real
+     * newlines in it until clawt_markdown_to_html() started rendering
+     * it, and pre-wrap over block markup shows every newline between
+     * two tags as a blank line -- so the markup's own formatting would
+     * become visible gaps down the transcript.  The line breaks
+     * somebody typed survive as <br>, which is what the renderer emits
+     * for them.
+     */
+    ".msg-body{word-wrap:break-word;overflow-wrap:anywhere;"
       "margin-left:var(--chat-gutter)}"
     ".msg-body code{font-family:var(--mono);font-size:var(--mono-size);"
       "background:var(--surface-2);padding:1px 5px;border-radius:4px}"
     ".msg-body pre{font-family:var(--mono);font-size:var(--mono-size);"
       "background:var(--surface-2);border:1px solid var(--line);"
       "border-radius:var(--radius-sm);padding:12px 14px;overflow-x:auto}"
+    /* A code span inside a block is already in the block's box. */
+    ".msg-body pre code{background:none;padding:0;font-size:inherit}"
+    /*
+     * The blocks a rendered message can contain.
+     *
+     * First and last child lose their outer margin so a one-paragraph
+     * message -- which is most of them -- occupies exactly the height
+     * of its text and the run spacing stays the measured 30px rather
+     * than 30 plus whatever a <p> adds.
+     */
+    ".msg-body p{margin:0 0 12px}"
+    ".msg-body>:first-child{margin-top:0}"
+    ".msg-body>:last-child{margin-bottom:0}"
+    /*
+     * Headings inside a message are the agent's outline, not the
+     * page's, so they are sized against the body rather than against
+     * the chrome -- an agent that opens with `# Title` should not out-
+     * shout the topbar.
+     */
+    ".msg-body h1,.msg-body h2,.msg-body h3,"
+      ".msg-body h4,.msg-body h5,.msg-body h6{"
+      "font-weight:700;line-height:1.3;margin:18px 0 8px}"
+    ".msg-body h1{font-size:1.25em}"
+    ".msg-body h2{font-size:1.15em}"
+    ".msg-body h3{font-size:1.05em}"
+    ".msg-body h4,.msg-body h5,.msg-body h6{font-size:1em}"
+    ".msg-body ul,.msg-body ol{margin:0 0 12px;padding-left:1.4em}"
+    ".msg-body li{margin:2px 0}"
+    ".msg-body li>ul,.msg-body li>ol{margin-bottom:0}"
+    ".msg-body blockquote{margin:0 0 12px;padding-left:12px;"
+      "border-left:3px solid var(--line-strong);color:var(--ink-2)}"
+    ".msg-body hr{border:0;border-top:1px solid var(--line);margin:18px 0}"
+    /*
+     * A link an agent wrote is not clickable, in either client.  It is
+     * one keystroke between a prompt injection and somewhere else, and
+     * a person who can see where it goes is a person who can decide --
+     * so the text is marked and the target is printed beside it.
+     */
+    ".msg-body .md-link{text-decoration:underline;"
+      "text-underline-offset:2px}"
+    ".msg-body .md-url{color:var(--muted);font-size:0.9em;"
+      "word-break:break-all}"
+    /*
+     * A table scrolls inside its own box rather than widening the
+     * message.  The GTK client has to choose between a grid and a
+     * record layout because a label cannot scroll; here the column
+     * beside it simply does not move.
+     */
+    ".msg-body .md-table{overflow-x:auto;margin:0 0 12px;"
+      "border:1px solid var(--line);border-radius:var(--radius-sm)}"
+    ".msg-body table{border-collapse:collapse;width:100%;"
+      "font-size:0.95em}"
+    /*
+     * Every one of these resets something the fleet table's `th` sets.
+     *
+     * That rule styles a *column heading in the chrome* -- uppercase,
+     * letter-spaced, 11px, muted -- and a bare `th` selector reaches
+     * into a message as well, so an agent writing `| Team |` got TEAM
+     * in the tone the page uses for labels rather than for text.
+     * Measured on the rendered page at 4.14:1 against its own
+     * background, which is the giveaway: nothing in a message should be
+     * quieter than the message.  A table an agent wrote is content, and
+     * inherits the body it sits in -- which also carries it into the
+     * operator's bubble, where the colour is not the page's at all.
+     */
+    ".msg-body th,.msg-body td{padding:6px 10px;text-align:left;"
+      "border-bottom:1px solid var(--line);vertical-align:top;"
+      "color:inherit;font-size:inherit;letter-spacing:normal;"
+      "text-transform:none;white-space:normal}"
+    ".msg-body thead th{background:var(--surface-2);font-weight:700}"
+    ".msg-body tbody tr:last-child td{border-bottom:0}"
+    ".msg-body .md-c{text-align:center}"
+    ".msg-body .md-r{text-align:right}"
     /*
      * The operator's turns are bubbles, and only the operator's.  An
      * agent's turn runs to dozens of lines with headings and code
@@ -458,6 +540,31 @@ clawt_web_stylesheet(void)
     ".msg-self .msg-body code,.msg-self .msg-body pre{"
       "background:rgba(255,255,255,0.18);color:inherit;border-color:"
       "transparent}"
+    /*
+     * The bubble is painted in the accent, so every token inside it has
+     * to come from the bubble rather than from the page -- a muted grey
+     * that reads on the canvas is invisible on the accent, and that is
+     * the operator's own message.
+     */
+    ".msg-self .msg-body blockquote{border-left-color:"
+      "rgba(255,255,255,0.45);color:inherit}"
+    ".msg-self .msg-body hr{border-top-color:rgba(255,255,255,0.35)}"
+    ".msg-self .msg-body .md-url{color:inherit;opacity:0.75}"
+    ".msg-self .msg-body .md-table,"
+      ".msg-self .msg-body th,.msg-self .msg-body td{"
+      "border-color:rgba(255,255,255,0.35)}"
+    /*
+     * No tint on the header row inside a bubble.
+     *
+     * The tint is what separates a header from its body on the page,
+     * and over the accent it lightens the ground under the one row
+     * drawn in bold: measured at 3.94:1 against 5.67 for every other
+     * line in the same bubble, so the heading was the least readable
+     * thing in it.  A firmer rule under the row separates it for
+     * nothing, and the bold was already doing most of the work.
+     */
+    ".msg-self .msg-body thead th{background:none;"
+      "border-bottom:2px solid rgba(255,255,255,0.55)}"
     /*
      * A date change is a bigger break than a speaker change, so it gets
      * more room than the gap it sits among.

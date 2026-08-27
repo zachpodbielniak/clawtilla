@@ -209,6 +209,32 @@ main () {
     echo "Actions:"
     expect_post "/a/${AGENT}/send" 'class="composer' 'a message sent' \
         --data-urlencode 'body=smoke test'
+    #
+    # The rendered body, end to end.
+    #
+    # tests/test-markdown.c covers the renderer; this covers that the
+    # page a browser receives is the renderer's output rather than the
+    # markdown that went in.  A body set as text instead looks entirely
+    # normal from every direction except this one -- the message is
+    # there, the page is 200, and the asterisks are on the screen.
+    #
+    expect_post "/a/${AGENT}/send" '<strong>bold</strong>' \
+        'a rendered message body' \
+        --data-urlencode 'body=**bold** from the smoke run'
+    expect_post "/a/${AGENT}/send" '<div class="md-table">' \
+        'a rendered table' \
+        --data-urlencode 'body=| a | b |
+|---|---|
+| 1 | 2 |'
+    #
+    # And that the escaping survives the round trip.  This is the one
+    # place in the client where markup is set rather than escaped, so
+    # what a browser does with an agent's angle bracket is worth asking
+    # a real server rather than a unit test alone.
+    #
+    expect_post "/a/${AGENT}/send" '&lt;script&gt;' \
+        'a script tag arriving as text' \
+        --data-urlencode 'body=<script>alert(1)</script>'
     expect_post "/a/${AGENT}/send" 'list these commands' '/help' \
         --data-urlencode 'body=/help'
     expect_post "/a/${AGENT}/send" 'Cleared on screen' '/clear' \

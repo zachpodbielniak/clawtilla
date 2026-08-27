@@ -439,9 +439,44 @@ test_the_composer_stands_on_the_message_column(void)
     g_assert_nonnull(strstr(css, "--chat-gutter:"));
 
     /* The body, its attachments and the composer all read it. */
-    g_assert_nonnull(strstr(css, ".msg-body{white-space:pre-wrap;"
-                                 "word-wrap:break-word;"
+    g_assert_nonnull(strstr(css, ".msg-body{word-wrap:break-word;"
+                                 "overflow-wrap:anywhere;"
                                  "margin-left:var(--chat-gutter)}"));
+
+    /*
+     * And not pre-wrap.  A body was plain text with real newlines in it
+     * until clawt_markdown_to_html() started rendering it; pre-wrap over
+     * block markup shows the newline between every pair of tags as a
+     * blank line, so the markup's own formatting becomes visible gaps
+     * down the transcript.  Asserted as an absence because that is the
+     * failure -- the rule would still be there, and still look right.
+     */
+    g_assert_null(strstr(css, ".msg-body{white-space:pre-wrap"));
+
+    /*
+     * Every block the renderer can emit is styled.  A construct with no
+     * rule does not fail to render, it renders in the browser's default
+     * -- a serif blockquote with no rule beside it, a table with no
+     * borders -- which reads as the page being broken rather than as a
+     * missing line of CSS.
+     */
+    {
+        static const gchar *blocks[] = {
+            ".msg-body p{", ".msg-body h1{", ".msg-body ul,.msg-body ol{",
+            ".msg-body li{", ".msg-body blockquote{", ".msg-body hr{",
+            ".msg-body pre{", ".msg-body code{", ".msg-body table{",
+            ".msg-body th,.msg-body td{", ".msg-body .md-table{",
+            ".msg-body .md-link{", ".msg-body .md-url{",
+            ".msg-body .md-c{", ".msg-body .md-r{",
+            NULL
+        };
+        gsize i;
+
+        for (i = 0; blocks[i] != NULL; i++)
+            if (strstr(css, blocks[i]) == NULL)
+                g_error("a rendered message can contain %s and the "
+                        "stylesheet does not mention it", blocks[i]);
+    }
     g_assert_nonnull(strstr(css, ".attachments{display:flex;flex-wrap:wrap;"
                                  "gap:8px;margin-top:8px;"
                                  "margin-left:var(--chat-gutter)}"));

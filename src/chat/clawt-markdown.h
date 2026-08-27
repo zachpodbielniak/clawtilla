@@ -74,4 +74,34 @@ gchar *clawt_markdown_to_pango(const gchar *markdown);
 gchar *clawt_markdown_to_pango_full(const gchar *markdown,
                                     const gchar *code_font);
 
+/**
+ * clawt_markdown_to_html:
+ * @markdown: (nullable): what the agent said
+ *
+ * Turns markdown into HTML for the web client.
+ *
+ * The same walk over the same document as clawt_markdown_to_pango(),
+ * emitting the other vocabulary -- one grammar, two outputs, so a
+ * construct cannot render in one client and vanish in the other.
+ *
+ * The escaping rule is the same and matters more: this text is served
+ * to a browser, so an agent that writes `<script>` gets those
+ * characters on the page. Markup is emitted only for the structure
+ * cmark found, and every literal is escaped on the way out.
+ *
+ * Nothing here emits an `<a href>`, an `<img src>` or a style
+ * attribute. A link shows its target beside the text and is not
+ * clickable, exactly as in the GTK client -- which also means no URL
+ * a model wrote is ever parsed as one, so `javascript:` is text rather
+ * than a scheme to be filtered.
+ *
+ * Block-level output, so the caller's element must not be styled
+ * `white-space: pre-wrap`. The classes it can emit are `md-table`,
+ * `md-link`, `md-url`, `md-c` and `md-r`; everything else is a plain
+ * HTML element.
+ *
+ * Returns: (transfer full): HTML
+ */
+gchar *clawt_markdown_to_html(const gchar *markdown);
+
 G_END_DECLS

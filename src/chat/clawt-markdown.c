@@ -5,6 +5,18 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
  * This file is part of clawtilla.
+ *
+ * Two vocabularies, one grammar.  The GTK client wants Pango markup and
+ * the web client wants HTML, and the temptation is a renderer each --
+ * which is how the chat transcript and the Flow tab came to draw the
+ * same message two different ways, and how tables came to exist in one
+ * client and not the other.
+ *
+ * So there is one walk over the document, and a RenderOps per output.
+ * The walk decides *what* is happening; the ops decide how it is
+ * written.  Adding a construct means adding a vfunc, and a backend that
+ * has not implemented it does not compile -- which is the only kind of
+ * "both clients got it" that does not rely on somebody remembering.
  */
 
 #include "clawtilla.h"
@@ -35,6 +47,10 @@
  * fitted.  That is the safe direction: a record layout reads correctly
  * at any width, and a grid one character too wide wraps and stops being
  * a grid at all.
+ *
+ * Pango only.  A browser can scroll a table sideways inside its own box,
+ * so the HTML vocabulary draws a real <table> at any width and has no
+ * threshold to be wrong about.
  */
 #define TABLE_MAX_WIDTH (58)
 
@@ -52,8 +68,48 @@ typedef struct {
     gint     next;      /* the number the next item gets */
 } ListLevel;
 
+typedef struct _Render Render;
+
+/*
+ * One output vocabulary.
+ *
+ * Every callback is required.  A NULL here would be a construct that
+ * renders in one client and silently vanishes in the other, which is
+ * exactly the failure this indirection exists to make impossible --
+ * so there is no "optional" entry and no NULL check at any call site.
+ */
 typedef struct {
+    /* Inline. */
+    void (*text)    (Render *self, const gchar *literal);
+    void (*emph)    (Render *self, gboolean enter);
+    void (*strong)  (Render *self, gboolean enter);
+    void (*code)    (Render *self, const gchar *literal);
+    void (*link)    (Render *self, gboolean enter, const gchar *url);
+    void (*newline) (Render *self);
+
+    /* Block. */
+    void (*paragraph)  (Render *self, gboolean enter, gboolean in_item);
+    void (*heading)    (Render *self, gboolean enter, gint level);
+    void (*quote)      (Render *self, gboolean enter);
+    void (*list)       (Render *self, gboolean enter, gboolean ordered,
+                        gint start);
+    void (*item)       (Render *self, gboolean enter, gboolean first);
+    void (*code_block) (Render *self, const gchar *literal);
+    void (*html_block) (Render *self, const gchar *literal);
+    void (*rule)       (Render *self);
+    void (*table)      (Render *self, GPtrArray *rows, GArray *aligns);
+} RenderOps;
+
+struct _Render {
+    const RenderOps *ops;
     GString  *out;
+
+    /*
+     * Pango's block state.  It has no block elements, so a block is a
+     * newline plus whatever indentation and markers the context owes --
+     * which has to be tracked.  The HTML vocabulary carries none of
+     * this: <ul>, <blockquote> and <p> say it themselves.
+     */
     GArray   *lists;    /* ListLevel, innermost last */
     gint      quote;    /* how deep in block quotes */
 
@@ -65,6 +121,10 @@ typedef struct {
      * so a person who chose a code font in the client would see it in the
      * exec console and not in a chat message.  Naming the family in a
      * <span> is the only way the choice reaches this text.
+     *
+     * The web client has no such problem: a browser reads the family off
+     * the stylesheet like everything else, so the HTML vocabulary emits
+     * <code> and leaves the font to CSS.
      */
     const gchar *code_open;
     const gchar *code_close;
@@ -82,9 +142,9 @@ typedef struct {
      * Whether this render is one table cell.
      *
      * A cell is inline content: GFM parses it that way, and a block
-     * construct inside one would put a newline into a row and take the
-     * grid apart.  cmark has no inline-only parse, so the block cases
-     * suppress their own structure here and let their text through.
+     * construct inside one would put a newline into a row and take a
+     * Pango grid apart.  cmark has no inline-only parse, so the walk
+     * skips the block callbacks here and lets the text through.
      */
     gboolean  inlines_only;
 
@@ -93,13 +153,18 @@ typedef struct {
      *
      * A cell's markup length has nothing to do with the space it takes
      * on screen, so padding computed from it would put a grid out by
-     * however many tags the cell happened to contain.  Counted here
-     * because put_text() is the only door visible characters go
-     * through -- which is why the markers and the rules below hand
-     * their literals to it rather than writing them as markup.
+     * however many tags the cell happened to contain.  Counted by the
+     * Pango vocabulary alone, and only its table reads it -- which is
+     * why every visible character it emits goes through pango_text().
      */
     gsize     visible;
-} Render;
+};
+
+static void   render_markdown(Render *render, const gchar *markdown);
+static gchar *render_cell(const gchar *source, const Render *parent,
+                          gsize *out_width);
+
+/* ── Shared plumbing ─────────────────────────────────────────────── */
 
 /*
  * How many monospace columns a string occupies.
@@ -130,9 +195,22 @@ display_width(const gchar *text)
     return width;
 }
 
-/* Every literal goes through here. There is no other path to the output. */
+/* Markup this file wrote, verbatim. */
 static void
-put_text(Render *render, const gchar *text)
+emit(Render *render, const gchar *markup)
+{
+    g_string_append(render->out, markup);
+}
+
+/*
+ * Text somebody else wrote.
+ *
+ * The one door a literal goes through, in either vocabulary.
+ * g_markup_escape_text() covers both: & < > " ' are the five that
+ * matter to Pango's parser and to a browser alike.
+ */
+static void
+emit_escaped(Render *render, const gchar *text)
 {
     g_autofree gchar *escaped = NULL;
 
@@ -141,13 +219,6 @@ put_text(Render *render, const gchar *text)
 
     escaped = g_markup_escape_text(text, -1);
     g_string_append(render->out, escaped);
-    render->visible += display_width(text);
-}
-
-static void
-put_markup(Render *render, const gchar *markup)
-{
-    g_string_append(render->out, markup);
 }
 
 /*
@@ -155,21 +226,14 @@ put_markup(Render *render, const gchar *markup)
  *
  * A table cell is rendered on its own so its width can be measured, and
  * what comes back is markup rather than a literal -- every piece of text
- * inside it went through put_text() in that cell's own render, so the
- * escaping rule holds and escaping it again would show the tags.
+ * inside it went through the vocabulary's text callback in that cell's
+ * own render, so the escaping rule holds and escaping it again would
+ * show the tags.
  */
 static void
-put_rendered(Render *render, const gchar *markup)
+emit_rendered(Render *render, const gchar *markup)
 {
     g_string_append(render->out, markup);
-}
-
-static void
-put_spaces(Render *render, gsize count)
-{
-    g_autofree gchar *pad = g_strnfill(count, ' ');
-
-    put_text(render, pad);
 }
 
 /* Returns: (transfer full): @unit repeated @count times */
@@ -184,12 +248,32 @@ repeat_utf8(const gchar *unit, gsize count)
     return g_string_free(out, FALSE);
 }
 
+/* ── The Pango vocabulary ────────────────────────────────────────── */
+
+static void
+pango_text(Render *render, const gchar *text)
+{
+    if (text == NULL)
+        return;
+
+    emit_escaped(render, text);
+    render->visible += display_width(text);
+}
+
+static void
+pango_spaces(Render *render, gsize count)
+{
+    g_autofree gchar *pad = g_strnfill(count, ' ');
+
+    pango_text(render, pad);
+}
+
 /*
  * Starts a block on its own line, indented for any list it is inside
  * and marked for any quote.
  */
 static void
-begin_block_full(Render *render, gboolean spaced)
+pango_begin_block_full(Render *render, gboolean spaced)
 {
     gint i;
 
@@ -208,9 +292,9 @@ begin_block_full(Render *render, gboolean spaced)
     render->blank = FALSE;
 
     for (i = 0; i < render->quote; i++) {
-        put_markup(render, DIM_OPEN);
-        put_text(render, "\xe2\x96\x8f ");
-        put_markup(render, DIM_CLOSE);
+        emit(render, DIM_OPEN);
+        pango_text(render, "\xe2\x96\x8f ");
+        emit(render, DIM_CLOSE);
     }
 
     /*
@@ -219,20 +303,153 @@ begin_block_full(Render *render, gboolean spaced)
      * text rather than under its parent's bullet.
      */
     for (i = 1; i < (gint)render->lists->len; i++)
-        put_text(render, "    ");
+        pango_text(render, "    ");
 }
 
 static void
-begin_block(Render *render)
+pango_begin_block(Render *render)
 {
-    begin_block_full(render, TRUE);
+    pango_begin_block_full(render, TRUE);
 }
 
 static void
-end_block(Render *render)
+pango_end_block(Render *render)
 {
     g_string_append_c(render->out, '\n');
     render->blank = TRUE;
+}
+
+static void
+pango_emph(Render *render, gboolean enter)
+{
+    emit(render, enter ? "<i>" : "</i>");
+}
+
+static void
+pango_strong(Render *render, gboolean enter)
+{
+    emit(render, enter ? "<b>" : "</b>");
+}
+
+static void
+pango_code(Render *render, const gchar *literal)
+{
+    emit(render, render->code_open);
+    pango_text(render, literal);
+    emit(render, render->code_close);
+}
+
+static void
+pango_link(Render *render, gboolean enter, const gchar *url)
+{
+    if (enter) {
+        emit(render, "<u>");
+        return;
+    }
+
+    emit(render, "</u>");
+
+    /*
+     * The target beside the text, not behind it.  A clickable link in
+     * model output is one keystroke between a prompt injection and a
+     * browser, and a person who can see where it goes is a person who
+     * can decide.
+     */
+    if (url != NULL && url[0] != '\0') {
+        emit(render, DIM_OPEN);
+        pango_text(render, " (");
+        pango_text(render, url);
+        pango_text(render, ")");
+        emit(render, DIM_CLOSE);
+    }
+}
+
+static void
+pango_newline(Render *render)
+{
+    g_string_append_c(render->out, '\n');
+}
+
+static void
+pango_paragraph(Render *render, gboolean enter, gboolean in_item)
+{
+    if (!enter) {
+        pango_end_block(render);
+        return;
+    }
+
+    /*
+     * A paragraph directly inside a list item continues the line the
+     * marker is on; anywhere else it starts its own.
+     */
+    if (in_item)
+        render->blank = FALSE;
+    else
+        pango_begin_block(render);
+}
+
+static void
+pango_heading(Render *render, gboolean enter, gint level)
+{
+    (void)level;
+
+    if (enter) {
+        pango_begin_block(render);
+        emit(render, "<b><big>");
+    } else {
+        emit(render, "</big></b>");
+        pango_end_block(render);
+    }
+}
+
+static void
+pango_quote(Render *render, gboolean enter)
+{
+    render->quote += enter ? 1 : -1;
+}
+
+static void
+pango_list(Render *render, gboolean enter, gboolean ordered, gint start)
+{
+    if (enter) {
+        ListLevel level;
+
+        level.ordered = ordered;
+        level.next = start < 1 ? 1 : start;
+
+        g_array_append_val(render->lists, level);
+        return;
+    }
+
+    if (render->lists->len > 0)
+        g_array_remove_index(render->lists, render->lists->len - 1);
+}
+
+static void
+pango_item(Render *render, gboolean enter, gboolean first)
+{
+    ListLevel *level;
+
+    if (!enter)
+        return;
+
+    pango_begin_block_full(render, first);
+
+    if (render->lists->len == 0) {
+        pango_text(render, "\xe2\x80\xa2 ");
+        return;
+    }
+
+    level = &g_array_index(render->lists, ListLevel, render->lists->len - 1);
+
+    if (level->ordered) {
+        g_autofree gchar *marker = g_strdup_printf("%d. ", level->next);
+
+        pango_text(render, marker);
+        level->next++;
+    } else {
+        pango_text(render, "\xe2\x80\xa2 ");
+    }
 }
 
 /*
@@ -242,7 +459,7 @@ end_block(Render *render)
  * or list marker still lands at the start of each line.
  */
 static void
-put_code_block(Render *render, const gchar *literal)
+pango_code_block(Render *render, const gchar *literal)
 {
     g_auto(GStrv) lines = NULL;
     gsize i;
@@ -257,193 +474,684 @@ put_code_block(Render *render, const gchar *literal)
         if (lines[i + 1] == NULL && lines[i][0] == '\0')
             break;
 
-        begin_block_full(render, i == 0);
-        put_markup(render, render->code_open);
-        put_markup(render, DIM_OPEN);
-        put_text(render, "  ");
-        put_markup(render, DIM_CLOSE);
-        put_text(render, lines[i]);
-        put_markup(render, render->code_close);
+        pango_begin_block_full(render, i == 0);
+        emit(render, render->code_open);
+        emit(render, DIM_OPEN);
+        pango_text(render, "  ");
+        emit(render, DIM_CLOSE);
+        pango_text(render, lines[i]);
+        emit(render, render->code_close);
     }
 
-    end_block(render);
+    pango_end_block(render);
 }
 
 static void
-put_list_marker(Render *render)
+pango_html_block(Render *render, const gchar *literal)
 {
-    ListLevel *level;
+    pango_begin_block(render);
+    pango_text(render, literal);
+    pango_end_block(render);
+}
 
-    if (render->lists->len == 0) {
-        put_text(render, "\xe2\x80\xa2 ");
+static void
+pango_rule(Render *render)
+{
+    pango_begin_block(render);
+    emit(render, DIM_OPEN);
+    pango_text(render, TABLE_RULE_UNIT TABLE_RULE_UNIT TABLE_RULE_UNIT
+                       TABLE_RULE_UNIT TABLE_RULE_UNIT TABLE_RULE_UNIT
+                       TABLE_RULE_UNIT TABLE_RULE_UNIT);
+    emit(render, DIM_CLOSE);
+    pango_end_block(render);
+}
+
+/* The dim rule under a table's header, one run per column. */
+static void
+pango_column_rule(Render *render, GArray *columns)
+{
+    guint c;
+
+    pango_begin_block_full(render, FALSE);
+    emit(render, render->code_open);
+    emit(render, DIM_OPEN);
+
+    for (c = 0; c < columns->len; c++) {
+        g_autofree gchar *bar =
+            repeat_utf8(TABLE_RULE_UNIT, g_array_index(columns, gsize, c));
+
+        if (c > 0)
+            pango_spaces(render, 2);
+
+        pango_text(render, bar);
+    }
+
+    emit(render, DIM_CLOSE);
+    emit(render, render->code_close);
+}
+
+/*
+ * The grid: every cell padded to its column, in the code font.
+ *
+ * The code font is not decoration.  A proportional font gives every
+ * glyph its own advance, so spaces line nothing up and the padding is
+ * wasted -- a grid only exists because every cell is the same width.
+ */
+static void
+pango_table_grid(Render *render, GPtrArray *rows, GArray *aligns,
+                 GPtrArray *markup, GArray *widths, GArray *columns)
+{
+    guint cols = aligns->len;
+    guint r;
+    guint c;
+
+    for (r = 0; r < rows->len; r++) {
+        pango_begin_block_full(render, r == 0);
+        emit(render, render->code_open);
+
+        for (c = 0; c < cols; c++) {
+            gsize width = g_array_index(widths, gsize, r * cols + c);
+            gsize pad = g_array_index(columns, gsize, c) - width;
+            gsize lead = 0;
+            CellAlign align = g_array_index(aligns, CellAlign, c);
+
+            if (align == CELL_ALIGN_RIGHT)
+                lead = pad;
+            else if (align == CELL_ALIGN_CENTER)
+                lead = pad / 2;
+
+            if (c > 0)
+                pango_spaces(render, 2);
+
+            pango_spaces(render, lead);
+
+            if (r == 0)
+                emit(render, "<b>");
+
+            emit_rendered(render, g_ptr_array_index(markup, r * cols + c));
+
+            if (r == 0)
+                emit(render, "</b>");
+
+            /* Nothing follows the last column, so nothing pads it. */
+            if (c + 1 < cols)
+                pango_spaces(render, pad - lead);
+        }
+
+        /*
+         * A row whose last cells are empty has been padded towards
+         * columns that drew nothing, so the line ends in a run of
+         * spaces it does not need.  Invisible, but it is width, and a
+         * line that measures wider than it looks is what decides
+         * whether the label wraps.
+         */
+        while (render->out->len > 0 &&
+               render->out->str[render->out->len - 1] == ' ')
+            g_string_truncate(render->out, render->out->len - 1);
+
+        emit(render, render->code_close);
+
+        if (r == 0)
+            pango_column_rule(render, columns);
+    }
+
+    pango_end_block(render);
+}
+
+/*
+ * The fallback: one `Header: value` line per cell, records separated by
+ * a rule.
+ *
+ * A table too wide for the column is the case a chat actually produces
+ * -- an agent summarising a fleet writes a sentence per cell -- and a
+ * grid that wraps is worse than no grid, because the wrap lands in the
+ * middle of a row and every column after it is somewhere else.  This
+ * carries the same information at any width, and each value wraps as
+ * prose, which is what it is.
+ */
+static void
+pango_table_records(Render *render, GPtrArray *rows, guint cols,
+                    GPtrArray *markup)
+{
+    gboolean separator = FALSE;
+    gsize drawn = 0;
+    guint r;
+    guint c;
+
+    for (r = 1; r < rows->len; r++) {
+        for (c = 0; c < cols; c++) {
+            const gchar *value = g_ptr_array_index(markup, r * cols + c);
+            const gchar *label = g_ptr_array_index(markup, c);
+
+            if (value[0] == '\0')
+                continue;
+
+            /*
+             * Held back until there is something to separate: a rule
+             * drawn for a row whose cells are all empty is a divider
+             * with nothing under it.
+             */
+            if (separator) {
+                g_autofree gchar *bar = repeat_utf8(TABLE_RULE_UNIT, 8);
+
+                pango_begin_block_full(render, FALSE);
+                emit(render, DIM_OPEN);
+                pango_text(render, bar);
+                emit(render, DIM_CLOSE);
+                separator = FALSE;
+                drawn++;
+            }
+
+            pango_begin_block_full(render, drawn == 0);
+            drawn++;
+
+            if (label[0] != '\0') {
+                emit(render, "<b>");
+                emit_rendered(render, label);
+                emit(render, "</b>");
+                pango_text(render, ": ");
+            }
+
+            emit_rendered(render, value);
+        }
+
+        if (drawn > 0)
+            separator = TRUE;
+    }
+
+    if (drawn > 0)
+        pango_end_block(render);
+}
+
+static void
+pango_table(Render *render, GPtrArray *rows, GArray *aligns)
+{
+    g_autoptr(GPtrArray) markup = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(GArray) widths = g_array_new(FALSE, FALSE, sizeof(gsize));
+    g_autoptr(GArray) columns = g_array_new(FALSE, TRUE, sizeof(gsize));
+    guint cols = aligns->len;
+    gsize total = 0;
+    guint r;
+    guint c;
+
+    g_array_set_size(columns, cols);
+
+    for (r = 0; r < rows->len; r++) {
+        GPtrArray *row = g_ptr_array_index(rows, r);
+
+        for (c = 0; c < cols; c++) {
+            /*
+             * A row with fewer cells than the header is padded and one
+             * with more is truncated, which is what GFM does -- and a
+             * ragged table is what a model writes when it forgets a
+             * pipe, so refusing it would lose the whole table over one
+             * line.
+             */
+            const gchar *source =
+                c < row->len ? g_ptr_array_index(row, c) : "";
+            gsize width = 0;
+
+            g_ptr_array_add(markup, render_cell(source, render, &width));
+            g_array_append_val(widths, width);
+
+            if (width > g_array_index(columns, gsize, c))
+                g_array_index(columns, gsize, c) = width;
+        }
+    }
+
+    for (c = 0; c < cols; c++)
+        total += g_array_index(columns, gsize, c);
+
+    total += 2 * (cols - 1);
+
+    /*
+     * A table with no body rows takes the grid whatever it measures.
+     * The records layout draws one line per body cell, so for a header
+     * alone it draws nothing at all -- and a table that disappears is
+     * worse than one that wraps.
+     */
+    if (total <= TABLE_MAX_WIDTH || rows->len == 1)
+        pango_table_grid(render, rows, aligns, markup, widths, columns);
+    else
+        pango_table_records(render, rows, cols, markup);
+}
+
+static const RenderOps pango_ops = {
+    pango_text,
+    pango_emph,
+    pango_strong,
+    pango_code,
+    pango_link,
+    pango_newline,
+    pango_paragraph,
+    pango_heading,
+    pango_quote,
+    pango_list,
+    pango_item,
+    pango_code_block,
+    pango_html_block,
+    pango_rule,
+    pango_table
+};
+
+/* ── The HTML vocabulary ─────────────────────────────────────────── */
+
+/*
+ * Everything below emits markup this file wrote and text somebody else
+ * wrote, and never mixes the two: a literal reaches the page only
+ * through html_text(), which escapes.  There is no path by which an
+ * agent's angle bracket becomes a tag, which is what lets the web
+ * client set this as HTML content at all.
+ *
+ * Nothing here emits an <a href>, an <img src> or a style attribute --
+ * for links, the same reason the Pango vocabulary does not, and more
+ * sharply in a browser: a clickable link in model output is one
+ * keystroke between a prompt injection and somewhere else.  The target
+ * is shown beside the text instead.  That also means no URL from a
+ * model is ever parsed as one, so `javascript:` and `data:` are text
+ * like everything else rather than a scheme to be filtered.
+ */
+
+static void
+html_text(Render *render, const gchar *literal)
+{
+    emit_escaped(render, literal);
+}
+
+/* Escaped, with the line breaks somebody typed kept as line breaks. */
+static void
+html_text_lines(Render *render, const gchar *literal)
+{
+    g_auto(GStrv) lines = NULL;
+    gsize i;
+
+    if (literal == NULL)
+        return;
+
+    lines = g_strsplit(literal, "\n", -1);
+
+    for (i = 0; lines[i] != NULL; i++) {
+        if (lines[i + 1] == NULL && lines[i][0] == '\0')
+            break;
+
+        if (i > 0)
+            emit(render, "<br>");
+
+        emit_escaped(render, lines[i]);
+    }
+}
+
+static void
+html_emph(Render *render, gboolean enter)
+{
+    emit(render, enter ? "<em>" : "</em>");
+}
+
+static void
+html_strong(Render *render, gboolean enter)
+{
+    emit(render, enter ? "<strong>" : "</strong>");
+}
+
+static void
+html_code(Render *render, const gchar *literal)
+{
+    emit(render, "<code>");
+    emit_escaped(render, literal);
+    emit(render, "</code>");
+}
+
+static void
+html_link(Render *render, gboolean enter, const gchar *url)
+{
+    if (enter) {
+        emit(render, "<span class=\"md-link\">");
         return;
     }
 
-    level = &g_array_index(render->lists, ListLevel, render->lists->len - 1);
+    emit(render, "</span>");
 
-    if (level->ordered) {
-        g_autofree gchar *marker = g_strdup_printf("%d. ", level->next);
-
-        put_text(render, marker);
-        level->next++;
-    } else {
-        put_text(render, "\xe2\x80\xa2 ");
+    if (url != NULL && url[0] != '\0') {
+        emit(render, "<span class=\"md-url\"> (");
+        emit_escaped(render, url);
+        emit(render, ")</span>");
     }
+}
+
+static void
+html_newline(Render *render)
+{
+    /*
+     * A break, not a collapsed space.  CommonMark folds a soft break to
+     * whitespace; the GTK client keeps the line break the writer typed,
+     * and two clients disagreeing about where a message's lines are is
+     * the kind of difference nobody reports and everybody notices.
+     */
+    emit(render, "<br>\n");
+}
+
+static void
+html_paragraph(Render *render, gboolean enter, gboolean in_item)
+{
+    /*
+     * No <p> directly inside a list item, which keeps a list tight --
+     * and keeps it looking like the GTK one, where a paragraph in an
+     * item continues the line the marker is on.
+     */
+    if (in_item)
+        return;
+
+    emit(render, enter ? "<p>" : "</p>\n");
+}
+
+static void
+html_heading(Render *render, gboolean enter, gint level)
+{
+    gchar tag[8];
+
+    if (level < 1)
+        level = 1;
+    else if (level > 6)
+        level = 6;
+
+    /*
+     * Two calls rather than a ternary format.  -Wformat=2 refuses a
+     * non-literal format string, and it is right to: this one is ours
+     * today and is one edit from being somebody else's.
+     */
+    if (enter)
+        g_snprintf(tag, sizeof(tag), "<h%d>", level);
+    else
+        g_snprintf(tag, sizeof(tag), "</h%d>", level);
+
+    emit(render, tag);
+
+    if (!enter)
+        emit(render, "\n");
+}
+
+static void
+html_quote(Render *render, gboolean enter)
+{
+    emit(render, enter ? "<blockquote>\n" : "</blockquote>\n");
+}
+
+static void
+html_list(Render *render, gboolean enter, gboolean ordered, gint start)
+{
+    if (!enter) {
+        emit(render, ordered ? "</ol>\n" : "</ul>\n");
+        return;
+    }
+
+    if (!ordered) {
+        emit(render, "<ul>\n");
+        return;
+    }
+
+    if (start > 1) {
+        g_autofree gchar *open = g_strdup_printf("<ol start=\"%d\">\n", start);
+
+        emit(render, open);
+    } else {
+        emit(render, "<ol>\n");
+    }
+}
+
+static void
+html_item(Render *render, gboolean enter, gboolean first)
+{
+    (void)first;
+
+    emit(render, enter ? "<li>" : "</li>\n");
+}
+
+static void
+html_code_block(Render *render, const gchar *literal)
+{
+    emit(render, "<pre><code>");
+    emit_escaped(render, literal);
+    emit(render, "</code></pre>\n");
+}
+
+static void
+html_html_block(Render *render, const gchar *literal)
+{
+    emit(render, "<p>");
+    html_text_lines(render, literal);
+    emit(render, "</p>\n");
+}
+
+static void
+html_rule(Render *render)
+{
+    emit(render, "<hr>\n");
+}
+
+static const gchar *
+html_align_attr(CellAlign align)
+{
+    if (align == CELL_ALIGN_CENTER)
+        return " class=\"md-c\"";
+
+    if (align == CELL_ALIGN_RIGHT)
+        return " class=\"md-r\"";
+
+    return "";
+}
+
+/*
+ * A real table, at any width.
+ *
+ * The Pango vocabulary has to choose between a grid and a record layout
+ * because a GtkLabel is one paragraph of text and a grid that wraps is
+ * ruined.  A browser has neither problem: the wrapper scrolls sideways
+ * inside the message, so the table stays a table however wide it is and
+ * the column beside it does not move.
+ */
+static void
+html_table(Render *render, GPtrArray *rows, GArray *aligns)
+{
+    guint cols = aligns->len;
+    guint r;
+    guint c;
+
+    emit(render, "<div class=\"md-table\"><table>\n");
+
+    for (r = 0; r < rows->len; r++) {
+        GPtrArray *row = g_ptr_array_index(rows, r);
+
+        if (r == 0)
+            emit(render, "<thead>\n");
+        else if (r == 1)
+            emit(render, "<tbody>\n");
+
+        emit(render, "<tr>");
+
+        for (c = 0; c < cols; c++) {
+            /* Padded when short and truncated when long, as GFM does. */
+            const gchar *source =
+                c < row->len ? g_ptr_array_index(row, c) : "";
+            g_autofree gchar *cell = NULL;
+            gsize width = 0;
+
+            cell = render_cell(source, render, &width);
+
+            emit(render, r == 0 ? "<th" : "<td");
+            emit(render, html_align_attr(g_array_index(aligns, CellAlign, c)));
+            emit(render, ">");
+            emit_rendered(render, cell);
+            emit(render, r == 0 ? "</th>" : "</td>");
+        }
+
+        emit(render, "</tr>\n");
+
+        if (r == 0)
+            emit(render, "</thead>\n");
+    }
+
+    if (rows->len > 1)
+        emit(render, "</tbody>\n");
+
+    emit(render, "</table></div>\n");
+}
+
+static const RenderOps html_ops = {
+    html_text,
+    html_emph,
+    html_strong,
+    html_code,
+    html_link,
+    html_newline,
+    html_paragraph,
+    html_heading,
+    html_quote,
+    html_list,
+    html_item,
+    html_code_block,
+    html_html_block,
+    html_rule,
+    html_table
+};
+
+/* ── The walk ────────────────────────────────────────────────────── */
+
+/*
+ * A block's literal with its line breaks folded to spaces.
+ *
+ * Only reached inside a table cell, and only because cmark decides what
+ * is a block from the text rather than from the context: a cell whose
+ * content starts with `<` is an HTML *block*, and one indented four
+ * spaces is a code block, however inline they look sitting between two
+ * pipes.  Both literals end in a newline, and a newline in a cell puts
+ * one row on two lines -- which in a Pango grid moves every column
+ * after it and in a table cell is simply wrong.
+ *
+ * Returns: (transfer full): the literal, on one line
+ */
+static gchar *
+flatten_literal(cmark_node *node)
+{
+    const gchar *literal = cmark_node_get_literal(node);
+    gchar *flat = g_strdup(literal != NULL ? literal : "");
+
+    g_strdelimit(flat, "\n", ' ');
+
+    return g_strchomp(flat);
 }
 
 static void
 enter_node(Render *render, cmark_node *node)
 {
+    const RenderOps *ops = render->ops;
+
     switch (cmark_node_get_type(node)) {
     case CMARK_NODE_PARAGRAPH:
-        if (render->inlines_only)
-            break;
-
-        /*
-         * A paragraph directly inside a list item continues the line the
-         * marker is on; anywhere else it starts its own.
-         */
-        if (cmark_node_parent(node) == NULL ||
-            cmark_node_get_type(cmark_node_parent(node)) != CMARK_NODE_ITEM)
-            begin_block(render);
-        else
-            render->blank = FALSE;
+        if (!render->inlines_only)
+            ops->paragraph(render, TRUE,
+                           cmark_node_parent(node) != NULL &&
+                           cmark_node_get_type(cmark_node_parent(node))
+                               == CMARK_NODE_ITEM);
         break;
 
     case CMARK_NODE_HEADING:
-        if (render->inlines_only)
-            break;
-
-        begin_block(render);
-        put_markup(render, "<b><big>");
+        if (!render->inlines_only)
+            ops->heading(render, TRUE, cmark_node_get_heading_level(node));
         break;
 
     case CMARK_NODE_BLOCK_QUOTE:
-        if (render->inlines_only)
-            break;
-
-        render->quote++;
+        if (!render->inlines_only)
+            ops->quote(render, TRUE);
         break;
 
-    case CMARK_NODE_LIST: {
-        ListLevel level;
-
-        if (render->inlines_only)
-            break;
-
-        level.ordered = cmark_node_get_list_type(node) == CMARK_ORDERED_LIST;
-        level.next = cmark_node_get_list_start(node);
-
-        if (level.next < 1)
-            level.next = 1;
-
-        g_array_append_val(render->lists, level);
+    case CMARK_NODE_LIST:
+        if (!render->inlines_only)
+            ops->list(render, TRUE,
+                      cmark_node_get_list_type(node) == CMARK_ORDERED_LIST,
+                      cmark_node_get_list_start(node));
         break;
-    }
 
     case CMARK_NODE_ITEM:
-        if (render->inlines_only)
-            break;
-
-        begin_block_full(render, cmark_node_previous(node) == NULL);
-        put_list_marker(render);
+        if (!render->inlines_only)
+            ops->item(render, TRUE, cmark_node_previous(node) == NULL);
         break;
 
     case CMARK_NODE_CODE_BLOCK:
+        /*
+         * A fenced block cannot occur inside a table cell, but a cell
+         * indented by four spaces parses as one -- and a block there
+         * would put a newline in a row.  Inline code says the same
+         * thing without leaving the line.
+         */
         if (render->inlines_only) {
-            g_autofree gchar *literal =
-                g_strdup(cmark_node_get_literal(node) != NULL
-                         ? cmark_node_get_literal(node) : "");
+            g_autofree gchar *literal = flatten_literal(node);
 
-            g_strdelimit(literal, "\n", ' ');
-            g_strchomp(literal);
-
-            put_markup(render, render->code_open);
-            put_text(render, literal);
-            put_markup(render, render->code_close);
+            ops->code(render, literal);
             break;
         }
 
-        put_code_block(render, cmark_node_get_literal(node));
+        ops->code_block(render, cmark_node_get_literal(node));
         break;
 
-    case CMARK_NODE_THEMATIC_BREAK: {
-        if (render->inlines_only)
-            break;
-
-        begin_block(render);
-        put_markup(render, DIM_OPEN);
-        put_text(render, TABLE_RULE_UNIT TABLE_RULE_UNIT TABLE_RULE_UNIT
-                         TABLE_RULE_UNIT TABLE_RULE_UNIT TABLE_RULE_UNIT
-                         TABLE_RULE_UNIT TABLE_RULE_UNIT);
-        put_markup(render, DIM_CLOSE);
-        end_block(render);
+    case CMARK_NODE_THEMATIC_BREAK:
+        if (!render->inlines_only)
+            ops->rule(render);
         break;
-    }
 
     case CMARK_NODE_TEXT:
-        put_text(render, cmark_node_get_literal(node));
+        ops->text(render, cmark_node_get_literal(node));
         break;
 
     case CMARK_NODE_EMPH:
-        put_markup(render, "<i>");
+        ops->emph(render, TRUE);
         break;
 
     case CMARK_NODE_STRONG:
-        put_markup(render, "<b>");
+        ops->strong(render, TRUE);
         break;
 
     case CMARK_NODE_CODE:
-        put_markup(render, render->code_open);
-        put_text(render, cmark_node_get_literal(node));
-        put_markup(render, render->code_close);
+        ops->code(render, cmark_node_get_literal(node));
         break;
 
     /*
      * HTML in the source is text, always.  cmark hands it over
      * unparsed, and the whole point of this file is that nothing an
-     * agent writes reaches a markup parser.
+     * agent writes reaches a markup parser -- which for the web client
+     * is the difference between showing somebody a <script> tag and
+     * running it.
      */
     case CMARK_NODE_HTML_BLOCK:
         if (render->inlines_only) {
-            put_text(render, cmark_node_get_literal(node));
-            break;
-        }
+            g_autofree gchar *literal = flatten_literal(node);
 
-        begin_block(render);
-        put_text(render, cmark_node_get_literal(node));
-        end_block(render);
+            ops->text(render, literal);
+        } else {
+            ops->html_block(render, cmark_node_get_literal(node));
+        }
         break;
 
     case CMARK_NODE_HTML_INLINE:
-        put_text(render, cmark_node_get_literal(node));
+        ops->text(render, cmark_node_get_literal(node));
         break;
 
     case CMARK_NODE_SOFTBREAK:
+    case CMARK_NODE_LINEBREAK:
         /*
-         * Kept as a newline rather than folded to a space.  CommonMark
-         * says a space, but a person or a model writing a chat message
-         * means the line break they typed.
-         *
-         * Inside a cell it has to be a space: a newline there would put
-         * a row on two lines and every column after it out of place.
+         * The line break the writer typed, rather than the space
+         * CommonMark folds it to -- a person or a model writing a chat
+         * message means the break.  Inside a cell it has to be a space:
+         * a newline there would put a row on two lines.
          */
         if (render->inlines_only)
-            put_text(render, " ");
+            ops->text(render, " ");
         else
-            g_string_append_c(render->out, '\n');
-        break;
-
-    case CMARK_NODE_LINEBREAK:
-        if (render->inlines_only)
-            put_text(render, " ");
-        else
-            g_string_append_c(render->out, '\n');
+            ops->newline(render);
         break;
 
     case CMARK_NODE_LINK:
     case CMARK_NODE_IMAGE:
-        put_markup(render, "<u>");
+        ops->link(render, TRUE, NULL);
         break;
 
     default:
@@ -454,67 +1162,51 @@ enter_node(Render *render, cmark_node *node)
 static void
 exit_node(Render *render, cmark_node *node)
 {
+    const RenderOps *ops = render->ops;
+
     switch (cmark_node_get_type(node)) {
     case CMARK_NODE_PARAGRAPH:
-        if (render->inlines_only)
-            break;
-
-        end_block(render);
+        if (!render->inlines_only)
+            ops->paragraph(render, FALSE,
+                           cmark_node_parent(node) != NULL &&
+                           cmark_node_get_type(cmark_node_parent(node))
+                               == CMARK_NODE_ITEM);
         break;
 
     case CMARK_NODE_HEADING:
-        if (render->inlines_only)
-            break;
-
-        put_markup(render, "</big></b>");
-        end_block(render);
+        if (!render->inlines_only)
+            ops->heading(render, FALSE, cmark_node_get_heading_level(node));
         break;
 
     case CMARK_NODE_BLOCK_QUOTE:
-        if (render->inlines_only)
-            break;
-
-        render->quote--;
+        if (!render->inlines_only)
+            ops->quote(render, FALSE);
         break;
 
     case CMARK_NODE_LIST:
-        if (render->inlines_only)
-            break;
+        if (!render->inlines_only)
+            ops->list(render, FALSE,
+                      cmark_node_get_list_type(node) == CMARK_ORDERED_LIST,
+                      cmark_node_get_list_start(node));
+        break;
 
-        if (render->lists->len > 0)
-            g_array_remove_index(render->lists, render->lists->len - 1);
+    case CMARK_NODE_ITEM:
+        if (!render->inlines_only)
+            ops->item(render, FALSE, cmark_node_previous(node) == NULL);
         break;
 
     case CMARK_NODE_EMPH:
-        put_markup(render, "</i>");
+        ops->emph(render, FALSE);
         break;
 
     case CMARK_NODE_STRONG:
-        put_markup(render, "</b>");
+        ops->strong(render, FALSE);
         break;
 
     case CMARK_NODE_LINK:
-    case CMARK_NODE_IMAGE: {
-        const gchar *url = cmark_node_get_url(node);
-
-        put_markup(render, "</u>");
-
-        /*
-         * The target beside the text, not behind it.  A clickable link
-         * in model output is one keystroke between a prompt injection
-         * and a browser, and a person who can see where it goes is a
-         * person who can decide.
-         */
-        if (url != NULL && url[0] != '\0') {
-            put_markup(render, DIM_OPEN);
-            put_text(render, " (");
-            put_text(render, url);
-            put_text(render, ")");
-            put_markup(render, DIM_CLOSE);
-        }
-
+    case CMARK_NODE_IMAGE:
+        ops->link(render, FALSE, cmark_node_get_url(node));
         break;
-    }
 
     default:
         break;
@@ -542,7 +1234,7 @@ render_markdown(Render *render, const gchar *markdown)
                                     CMARK_OPT_DEFAULT);
 
     if (document == NULL) {
-        put_text(render, markdown);
+        render->ops->text(render, markdown);
         return;
     }
 
@@ -561,6 +1253,38 @@ render_markdown(Render *render, const gchar *markdown)
     cmark_node_free(document);
 }
 
+/*
+ * Renders one cell, reporting how wide it draws.
+ *
+ * The width is the Pango table's; the HTML one ignores it, because a
+ * browser measures its own columns.
+ *
+ * Returns: (transfer full): the cell's markup, in the parent's own
+ *   vocabulary
+ */
+static gchar *
+render_cell(const gchar *source, const Render *parent, gsize *out_width)
+{
+    Render cell;
+
+    cell.ops = parent->ops;
+    cell.out = g_string_new(NULL);
+    cell.lists = g_array_new(FALSE, FALSE, sizeof(ListLevel));
+    cell.quote = 0;
+    cell.code_open = parent->code_open;
+    cell.code_close = parent->code_close;
+    cell.blank = FALSE;
+    cell.inlines_only = TRUE;
+    cell.visible = 0;
+
+    render_markdown(&cell, source);
+
+    g_array_unref(cell.lists);
+    *out_width = cell.visible;
+
+    return g_string_free(cell.out, FALSE);
+}
+
 /* ── Tables ──────────────────────────────────────────────────────── */
 
 /*
@@ -572,10 +1296,11 @@ render_markdown(Render *render, const gchar *markdown)
  * resolves silently and in whichever direction it likes.
  *
  * So the source is split before it is parsed: a table block is found
- * and drawn here, and everything either side of it goes to cmark as it
- * always did.  Each cell is then a cmark parse of its own, which is
- * what keeps the rule this file exists for -- a cell's text reaches the
- * output through put_text() like every other literal.
+ * here and handed to the vocabulary's table callback, and everything
+ * either side of it goes to cmark as it always did.  Each cell is then
+ * a cmark parse of its own, which is what keeps the rule this file
+ * exists for -- a cell's text reaches the output through the text
+ * callback like every other literal.
  */
 
 /*
@@ -765,243 +1490,6 @@ table_starts_at(gchar **lines, gsize i, GPtrArray **out_header,
     return TRUE;
 }
 
-/*
- * Renders one cell, reporting how wide it draws.
- *
- * Returns: (transfer full): the cell's markup
- */
-static gchar *
-render_cell(const gchar *source, const Render *parent, gsize *out_width)
-{
-    Render cell;
-
-    cell.out = g_string_new(NULL);
-    cell.lists = g_array_new(FALSE, FALSE, sizeof(ListLevel));
-    cell.quote = 0;
-    cell.code_open = parent->code_open;
-    cell.code_close = parent->code_close;
-    cell.blank = FALSE;
-    cell.inlines_only = TRUE;
-    cell.visible = 0;
-
-    render_markdown(&cell, source);
-
-    g_array_unref(cell.lists);
-    *out_width = cell.visible;
-
-    return g_string_free(cell.out, FALSE);
-}
-
-/* The dim rule under a table's header, one run per column. */
-static void
-put_column_rule(Render *render, GArray *columns)
-{
-    guint c;
-
-    begin_block_full(render, FALSE);
-    put_markup(render, render->code_open);
-    put_markup(render, DIM_OPEN);
-
-    for (c = 0; c < columns->len; c++) {
-        g_autofree gchar *bar =
-            repeat_utf8(TABLE_RULE_UNIT, g_array_index(columns, gsize, c));
-
-        if (c > 0)
-            put_spaces(render, 2);
-
-        put_text(render, bar);
-    }
-
-    put_markup(render, DIM_CLOSE);
-    put_markup(render, render->code_close);
-}
-
-/*
- * The grid: every cell padded to its column, in the code font.
- *
- * The code font is not decoration.  A proportional font gives every
- * glyph its own advance, so spaces line nothing up and the padding is
- * wasted -- a grid only exists because every cell is the same width.
- */
-static void
-put_table_grid(Render *render, GPtrArray *rows, GArray *aligns,
-               GPtrArray *markup, GArray *widths, GArray *columns)
-{
-    guint cols = aligns->len;
-    guint r;
-    guint c;
-
-    for (r = 0; r < rows->len; r++) {
-        begin_block_full(render, r == 0);
-        put_markup(render, render->code_open);
-
-        for (c = 0; c < cols; c++) {
-            gsize width = g_array_index(widths, gsize, r * cols + c);
-            gsize pad = g_array_index(columns, gsize, c) - width;
-            gsize lead = 0;
-            CellAlign align = g_array_index(aligns, CellAlign, c);
-
-            if (align == CELL_ALIGN_RIGHT)
-                lead = pad;
-            else if (align == CELL_ALIGN_CENTER)
-                lead = pad / 2;
-
-            if (c > 0)
-                put_spaces(render, 2);
-
-            put_spaces(render, lead);
-
-            if (r == 0)
-                put_markup(render, "<b>");
-
-            put_rendered(render, g_ptr_array_index(markup, r * cols + c));
-
-            if (r == 0)
-                put_markup(render, "</b>");
-
-            /* Nothing follows the last column, so nothing pads it. */
-            if (c + 1 < cols)
-                put_spaces(render, pad - lead);
-        }
-
-        /*
-         * A row whose last cells are empty has been padded towards
-         * columns that drew nothing, so the line ends in a run of
-         * spaces it does not need.  Invisible, but it is width, and a
-         * line that measures wider than it looks is what decides
-         * whether the label wraps.
-         */
-        while (render->out->len > 0 &&
-               render->out->str[render->out->len - 1] == ' ')
-            g_string_truncate(render->out, render->out->len - 1);
-
-        put_markup(render, render->code_close);
-
-        if (r == 0)
-            put_column_rule(render, columns);
-    }
-
-    end_block(render);
-}
-
-/*
- * The fallback: one `Header: value` line per cell, records separated by
- * a rule.
- *
- * A table too wide for the column is the case a chat actually produces
- * -- an agent summarising a fleet writes a sentence per cell -- and a
- * grid that wraps is worse than no grid, because the wrap lands in the
- * middle of a row and every column after it is somewhere else.  This
- * carries the same information at any width, and each value wraps as
- * prose, which is what it is.
- */
-static void
-put_table_records(Render *render, GPtrArray *rows, guint cols,
-                  GPtrArray *markup)
-{
-    gboolean separator = FALSE;
-    gsize drawn = 0;
-    guint r;
-    guint c;
-
-    for (r = 1; r < rows->len; r++) {
-        for (c = 0; c < cols; c++) {
-            const gchar *value = g_ptr_array_index(markup, r * cols + c);
-            const gchar *label = g_ptr_array_index(markup, c);
-
-            if (value[0] == '\0')
-                continue;
-
-            /*
-             * Held back until there is something to separate: a rule
-             * drawn for a row whose cells are all empty is a divider
-             * with nothing under it.
-             */
-            if (separator) {
-                g_autofree gchar *bar = repeat_utf8(TABLE_RULE_UNIT, 8);
-
-                begin_block_full(render, FALSE);
-                put_markup(render, DIM_OPEN);
-                put_text(render, bar);
-                put_markup(render, DIM_CLOSE);
-                separator = FALSE;
-                drawn++;
-            }
-
-            begin_block_full(render, drawn == 0);
-            drawn++;
-
-            if (label[0] != '\0') {
-                put_markup(render, "<b>");
-                put_rendered(render, label);
-                put_markup(render, "</b>");
-                put_text(render, ": ");
-            }
-
-            put_rendered(render, value);
-        }
-
-        if (drawn > 0)
-            separator = TRUE;
-    }
-
-    if (drawn > 0)
-        end_block(render);
-}
-
-static void
-render_table(Render *render, GPtrArray *rows, GArray *aligns)
-{
-    g_autoptr(GPtrArray) markup = g_ptr_array_new_with_free_func(g_free);
-    g_autoptr(GArray) widths = g_array_new(FALSE, FALSE, sizeof(gsize));
-    g_autoptr(GArray) columns = g_array_new(FALSE, TRUE, sizeof(gsize));
-    guint cols = aligns->len;
-    gsize total = 0;
-    guint r;
-    guint c;
-
-    g_array_set_size(columns, cols);
-
-    for (r = 0; r < rows->len; r++) {
-        GPtrArray *row = g_ptr_array_index(rows, r);
-
-        for (c = 0; c < cols; c++) {
-            /*
-             * A row with fewer cells than the header is padded and one
-             * with more is truncated, which is what GFM does -- and a
-             * ragged table is what a model writes when it forgets a
-             * pipe, so refusing it would lose the whole table over one
-             * line.
-             */
-            const gchar *source =
-                c < row->len ? g_ptr_array_index(row, c) : "";
-            gsize width = 0;
-
-            g_ptr_array_add(markup, render_cell(source, render, &width));
-            g_array_append_val(widths, width);
-
-            if (width > g_array_index(columns, gsize, c))
-                g_array_index(columns, gsize, c) = width;
-        }
-    }
-
-    for (c = 0; c < cols; c++)
-        total += g_array_index(columns, gsize, c);
-
-    total += 2 * (cols - 1);
-
-    /*
-     * A table with no body rows takes the grid whatever it measures.
-     * The records layout draws one line per body cell, so for a header
-     * alone it draws nothing at all -- and a table that disappears is
-     * worse than one that wraps.
-     */
-    if (total <= TABLE_MAX_WIDTH || rows->len == 1)
-        put_table_grid(render, rows, aligns, markup, widths, columns);
-    else
-        put_table_records(render, rows, cols, markup);
-}
-
 /* ── The document ────────────────────────────────────────────────── */
 
 /*
@@ -1118,7 +1606,7 @@ render_document(Render *render, const gchar *markdown)
                 g_ptr_array_add(rows, row);
             }
 
-            render_table(render, rows, aligns);
+            render->ops->table(render, rows, aligns);
             g_array_unref(aligns);
 
             i = r - 1;
@@ -1131,6 +1619,22 @@ render_document(Render *render, const gchar *markdown)
     flush_prose(render, prose);
 }
 
+/* ── The two entry points ────────────────────────────────────────── */
+
+static void
+render_init(Render *render, const RenderOps *ops)
+{
+    render->ops = ops;
+    render->out = g_string_new(NULL);
+    render->lists = g_array_new(FALSE, FALSE, sizeof(ListLevel));
+    render->quote = 0;
+    render->code_open = "<tt>";
+    render->code_close = "</tt>";
+    render->blank = FALSE;
+    render->inlines_only = FALSE;
+    render->visible = 0;
+}
+
 gchar *
 clawt_markdown_to_pango_full(const gchar *markdown, const gchar *code_font)
 {
@@ -1140,12 +1644,7 @@ clawt_markdown_to_pango_full(const gchar *markdown, const gchar *code_font)
     if (markdown == NULL || markdown[0] == '\0')
         return g_strdup("");
 
-    render.out = g_string_new(NULL);
-    render.lists = g_array_new(FALSE, FALSE, sizeof(ListLevel));
-    render.quote = 0;
-    render.blank = FALSE;
-    render.inlines_only = FALSE;
-    render.visible = 0;
+    render_init(&render, &pango_ops);
 
     /*
      * The family is escaped as attribute text before it goes anywhere
@@ -1160,9 +1659,6 @@ clawt_markdown_to_pango_full(const gchar *markdown, const gchar *code_font)
         code_open = g_strdup_printf("<span font_family=\"%s\">", escaped);
         render.code_open = code_open;
         render.code_close = "</span>";
-    } else {
-        render.code_open = "<tt>";
-        render.code_close = "</tt>";
     }
 
     render_document(&render, markdown);
@@ -1181,4 +1677,23 @@ gchar *
 clawt_markdown_to_pango(const gchar *markdown)
 {
     return clawt_markdown_to_pango_full(markdown, NULL);
+}
+
+gchar *
+clawt_markdown_to_html(const gchar *markdown)
+{
+    Render render;
+
+    if (markdown == NULL || markdown[0] == '\0')
+        return g_strdup("");
+
+    render_init(&render, &html_ops);
+    render_document(&render, markdown);
+    g_array_unref(render.lists);
+
+    while (render.out->len > 0 &&
+           render.out->str[render.out->len - 1] == '\n')
+        g_string_truncate(render.out, render.out->len - 1);
+
+    return g_string_free(render.out, FALSE);
 }

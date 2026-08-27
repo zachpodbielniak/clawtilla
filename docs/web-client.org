@@ -660,28 +660,98 @@ on the code that produces it.  "We call the escaping function" is a claim
 about the source; "no ~<~ reached the page" is a claim about what a
 browser would receive.
 
-*** A message body is text, not markdown
+*** The one place markup is set rather than escaped
 
-The GTK client renders markdown into Pango markup, walking the document
-cmark parsed and escaping every literal on the way out.  This client
-does not render markdown at all: a body is set as *text*, so a reply is
-shown as the markdown that was written --- bold as its asterisks,
-tables as their pipes.
+Every element on every other page is built from htmx-glib's typed
+classes, which escape.  A message body is the exception, and it is one
+because rendering markdown *is* producing markup: there is no
+typed-element route to bold text that an agent asked for.  ~set_body()~
+in ~web-chat.c~ is the single call --- ~htmx_node_set_html_content()~ ---
+and it is the line to look at first if anything ever goes wrong here.
 
-That is the same rule arrived at from the other end.  The GTK version
-of "model output never reaches a markup parser" is that only the
-structure cmark found becomes markup; the web version is that nothing
-becomes markup, because the page a body is served into is one that can
-start, stop and reconfigure every agent on the machine.  A reply
-containing =<script>= is a thing an agent can be talked into writing.
+What makes it safe is that the markup is not the agent's.
+~clawt_markdown_to_html()~ emits tags only for the structure cmark
+identified and puts every literal through ~g_markup_escape_text()~ on
+the way out, so the parser never sees a character an agent wrote.  A
+reply containing =<script>= --- a thing an agent can be talked into
+writing --- arrives as those characters on the page.
 
-Doing it properly here means an HTML renderer with the same escaping
-discipline, built out of htmx-glib's typed classes rather than by
-appending to a string, plus the stylesheet to carry it.  That is a
-feature rather than a fix, and it is written down here as the known
-asymmetry it is --- ~make parity~ declares "markdown rendering" as an
-affordance and its web marker is the body element, not a renderer, so
-the check cannot see this and is not being asked to.
+It emits no =<a href>=, no =<img src>= and no =style= attribute.  The
+link rule is the GTK client's and matters more in a browser: a
+clickable link in model output is one keystroke between a prompt
+injection and somewhere else, so the target is printed beside the text
+instead.  A useful consequence is that no URL a model wrote is ever
+parsed as one, so =javascript:= and =data:= are text like everything
+else rather than a scheme to be filtered --- there is no filter to get
+wrong.
+
+~tests/test-markdown.c~ asserts it as an *allowlist* rather than by
+hunting for =<script=: since a literal =<= from an agent is escaped
+before it is emitted, every =<= that survives opens a tag the renderer
+chose, so checking each one against the twenty-five it can emit checks
+the whole property.  Attributes get the same treatment --- =class= with
+one of five values and =start= with a number are the only two it can
+produce, so an =href=, a =src=, a =style= or an =on*= reaching the page
+fails whatever it is called.
+
+That distinction cost a test its first draft.  Asserting that =src==
+never appears anywhere fails on output that is exactly right, because
+=&lt;img src=x&gt;= is the correct escaped rendering of what an agent
+typed.  The property is not "this text is absent from the page", it is
+"this text is not inside a tag" --- which is the difference between a
+denylist and naming the safe set.
+
+*** The stylesheet carries the blocks
+
+~.msg-body~ lost its =white-space: pre-wrap= when the body stopped being
+plain text.  A body was text with real newlines in it until the renderer
+arrived; pre-wrap over block markup shows the newline between every pair
+of tags as a blank line, so the markup's own formatting would become
+visible gaps down the transcript.  The line breaks somebody typed
+survive as =<br>=, which is what the renderer emits for them.  The
+absence is asserted in ~tests/test-web-render.c~, because the rule would
+otherwise still be there and still look right.
+
+Every block the renderer can emit is styled, and that is checked rather
+than remembered: a construct with no rule does not fail to render, it
+renders in the browser's default --- a serif blockquote with no rule
+beside it, a table with no borders --- which reads as the page being
+broken rather than as a missing line of CSS.
+
+Two things were found only by measuring the rendered page in a browser,
+and neither is visible in the markup:
+
+- *A message's table header was the fleet table's chrome.*  The bare
+  =th= selector styles a column heading in the page furniture ---
+  uppercase, letter-spaced, 11px, muted --- and it reaches into a
+  message as well, so an agent writing =| Team |= got TEAM in the tone
+  the page uses for labels.  Measured at 4.14:1 against its own
+  background, which is the giveaway: nothing in a message should be
+  quieter than the message.  It inherits the body now, which also
+  carries it into the operator's bubble where the colour is not the
+  page's at all.  17.47:1 after.
+
+- *The header tint made the bubble's boldest row its least readable.*
+  A tint separates a header from its body on the page; over the accent
+  it lightens the ground under the one row drawn in bold, and that row
+  measured 3.94:1 against 5.67 for every other line in the same bubble.
+  A firmer rule under the row separates it for nothing.  5.67:1 after,
+  in both schemes.
+
+A table scrolls inside its own box, which was measured too rather than
+assumed: a table whose header cells cannot shrink laid out at 692px
+inside a 390px message, scrolled within the wrapper, and the page did
+not scroll sideways.  That is the whole reason this client needs
+neither the width threshold nor the record layout the GTK one does.
+
+Every colour is an existing token, so a colour scheme recolours a
+rendered message with everything else.  One number worth stating
+plainly: =.md-url= uses =--muted=, which is 5.66:1 in dark and 4.32:1 in
+light --- under AA's 4.5 for small text.  It is the same token every
+other secondary annotation in this client uses, including the
+timestamps beside it, so it is a property of that token rather than of
+this feature; giving the URL its own would make it louder than the
+message's own metadata.
 
 ** Troubleshooting
 

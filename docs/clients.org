@@ -1368,6 +1368,27 @@ headings, bullet and numbered lists, block quotes, rules and GFM
 tables. Enough for what a chat actually contains, and nothing beyond
 it.
 
+Both clients render, from one grammar.  ~clawt_markdown_to_pango()~
+and ~clawt_markdown_to_html()~ are the same walk over the same document
+with a ~RenderOps~ per output: the walk decides *what* is happening and
+the ops decide how it is written.
+
+That indirection is the whole reason it exists.  A renderer each is how
+the chat transcript and the Flow tab came to draw one message two ways,
+and how tables came to exist in one client and not the other --- and
+the failure is invisible, because a construct that renders in one place
+and vanishes in the other looks perfectly normal from either.  Adding a
+construct now means adding a callback, and a vocabulary that has not
+implemented it does not build: a short positional initialiser is a
+~-Wmissing-field-initializers~ warning, and this project treats a
+warning as a build failure.  Verified by removing one and watching the
+compiler refuse it, rather than assumed.
+
+~tests/test-markdown.c~ carries the runtime half --- for a corpus of
+constructs, every distinctive word in the source has to reach *both*
+outputs, so a callback wired to nothing fails the same way a missing
+one does.
+
 The important word is *rendered*, not *interpreted*.
 ~clawt_markdown_to_pango()~ walks the document cmark parsed and emits
 Pango markup only for the structure cmark identified, escaping every
@@ -1445,10 +1466,11 @@ level would cut the list in half around it; and one inside a block
 quote, which nothing here takes apart.  Both render as they did before
 tables were drawn at all, so neither is a regression.
 
-The web client renders message bodies as *text*, deliberately, so a
-table there reads as the markdown that was written.  That predates
-tables and is a decision rather than a gap; ~docs/web-client.org~ says
-why.
+Both clients draw it, from one walk over one document ---
+~clawt_markdown_to_html()~ is the same traversal emitting the other
+vocabulary.  The web client has neither threshold nor record layout: a
+browser scrolls a table sideways inside the message, so it stays a
+table at any width.
 
 
 *** The composer stands on the message column

@@ -409,6 +409,373 @@ test_a_table_keeps_its_neighbours(void)
     g_assert_nonnull(strstr(rendered, "\xe2\x80\xa2 and a list after it"));
 }
 
+/* ── The HTML vocabulary ─────────────────────────────────────────── */
+
+/*
+ * Every tag in the output is one this file's renderer wrote.
+ *
+ * An allowlist rather than a hunt for `<script`: when the safe set is
+ * small and known, naming the safe set is the assertion, and a denylist
+ * is a claim to have thought of everything.  Since a literal `<` from an
+ * agent is escaped before it is emitted, every `<` that survives opens a
+ * tag clawt_markdown_to_html() chose -- so checking each one against the
+ * list checks the whole property.
+ *
+ * Attributes get the same treatment: `class` with one of five values and
+ * `start` with a number are the only two the renderer can emit, so an
+ * `href`, a `src`, a `style` or an `on*` reaching the page fails here
+ * whatever it is called.
+ */
+static void
+assert_only_our_tags(const gchar *html)
+{
+    static const gchar *tags[] = {
+        "p", "em", "strong", "code", "pre", "br", "span", "div",
+        "h1", "h2", "h3", "h4", "h5", "h6",
+        "blockquote", "ul", "ol", "li", "hr",
+        "table", "thead", "tbody", "tr", "th", "td",
+        NULL
+    };
+    static const gchar *classes[] = {
+        "md-table", "md-link", "md-url", "md-c", "md-r", NULL
+    };
+    const gchar *p = html;
+
+    while ((p = strchr(p, '<')) != NULL) {
+        const gchar *end = strchr(p, '>');
+        g_autofree gchar *tag = NULL;
+        g_autofree gchar *rest = NULL;
+        const gchar *name;
+        gsize len;
+        gsize i;
+        gboolean known = FALSE;
+
+        g_assert_nonnull(end);
+
+        tag = g_strndup(p + 1, (gsize)(end - p - 1));
+        name = tag[0] == '/' ? tag + 1 : tag;
+
+        /* The name runs to the first space or to the end of the tag. */
+        len = strcspn(name, " ");
+        rest = g_strdup(name + len);
+        {
+            g_autofree gchar *bare = g_strndup(name, len);
+
+            for (i = 0; tags[i] != NULL; i++)
+                if (g_strcmp0(bare, tags[i]) == 0)
+                    known = TRUE;
+
+            if (!known)
+                g_error("markdown emitted an unexpected tag: <%s>", tag);
+        }
+
+        if (rest[0] != '\0') {
+            g_autofree gchar *attr = g_strdup(g_strstrip(rest));
+            gboolean ok = FALSE;
+
+            for (i = 0; classes[i] != NULL; i++) {
+                g_autofree gchar *want =
+                    g_strdup_printf("class=\"%s\"", classes[i]);
+
+                if (g_strcmp0(attr, want) == 0)
+                    ok = TRUE;
+            }
+
+            if (g_str_has_prefix(attr, "start=\"") &&
+                g_str_has_suffix(attr, "\""))
+                ok = TRUE;
+
+            if (!ok)
+                g_error("markdown emitted an unexpected attribute: %s", attr);
+        }
+
+        p = end + 1;
+    }
+}
+
+/* The constructs a chat actually uses, in the other vocabulary. */
+static void
+test_html_renders_what_a_chat_uses(void)
+{
+    struct {
+        const gchar *markdown;
+        const gchar *expected;
+    } cases[] = {
+        { "**bold**",      "<p><strong>bold</strong></p>" },
+        { "*italic*",      "<p><em>italic</em></p>" },
+        { "`inline code`", "<p><code>inline code</code></p>" },
+        { "plain",         "<p>plain</p>" },
+        { "# Title",       "<h1>Title</h1>" },
+        { "### Third",     "<h3>Third</h3>" },
+        { "- one\n- two\n", "<ul>\n<li>one</li>\n<li>two</li>\n</ul>" },
+        { "1. first\n",    "<ol>\n<li>first</li>\n</ol>" },
+        { "5. five\n",     "<ol start=\"5\">\n<li>five</li>\n</ol>" },
+        { "> quoted\n",    "<blockquote>\n<p>quoted</p>\n</blockquote>" },
+        { "```\nmake test\n```\n", "<pre><code>make test\n</code></pre>" },
+        { "---\n",         "<hr>" }
+    };
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree gchar *rendered = clawt_markdown_to_html(cases[i].markdown);
+
+        g_assert_cmpstr(rendered, ==, cases[i].expected);
+        assert_only_our_tags(rendered);
+    }
+}
+
+/*
+ * The line break somebody typed is a break in both clients.
+ *
+ * CommonMark folds a soft break to whitespace.  The GTK client keeps it,
+ * so the web client has to as well -- two clients disagreeing about
+ * where a message's lines are is the kind of difference nobody reports
+ * and everybody notices.
+ */
+static void
+test_html_keeps_the_line_break_that_was_typed(void)
+{
+    g_autofree gchar *rendered =
+        clawt_markdown_to_html("first line\nsecond line");
+
+    g_assert_cmpstr(rendered, ==, "<p>first line<br>\nsecond line</p>");
+}
+
+/*
+ * The point of the whole file, in the vocabulary where it is a security
+ * property rather than a rendering one.
+ *
+ * This text is served to a browser.  An agent that writes `<script>`
+ * gets those characters on the page, and an agent that writes a
+ * `javascript:` link gets that string beside the text -- because no URL
+ * a model wrote is ever parsed as one.
+ */
+static void
+test_nothing_an_agent_writes_becomes_html(void)
+{
+    static const gchar *hostile[] = {
+        "<script>alert(1)</script>",
+        "<img src=x onerror=alert(1)>",
+        "<a href=\"file:///etc/passwd\">click</a>",
+        "<div style=\"position:fixed;inset:0\">cover</div>",
+        "</p><script>alert(1)</script><p>",
+        "[click](javascript:alert(1))",
+        "![x](data:text/html;base64,PHNjcmlwdD4=)",
+        "5 &lt; 6 &amp;&amp; 7 &gt; 6",
+        "a & b",
+        "| a |\n|---|\n| <img src=x onerror=alert(1)> |\n",
+        "```\n<script>alert(1)</script>\n```\n",
+        "> <script>alert(1)</script>\n",
+        NULL
+    };
+    gsize i;
+
+    for (i = 0; hostile[i] != NULL; i++) {
+        g_autofree gchar *rendered = clawt_markdown_to_html(hostile[i]);
+
+        assert_only_our_tags(rendered);
+
+        /*
+         * Nothing that could execute, load or cover anything.
+         *
+         * These three are safe to test as substrings because each needs
+         * a literal `<`, and the only `<` that survives is one the
+         * renderer wrote.  `href=`, `src=` and `style=` are *not*:
+         * `&lt;img src=x&gt;` is the correct, escaped rendering of what
+         * an agent typed and contains "src=" as visible text, so
+         * asserting its absence fails on output that is exactly right.
+         * That half of the property is assert_only_our_tags()'s, where
+         * it is checked inside a tag rather than anywhere in the page --
+         * which is the difference between a denylist and naming the safe
+         * set.
+         */
+        g_assert_null(strstr(rendered, "<script"));
+        g_assert_null(strstr(rendered, "<img"));
+        g_assert_null(strstr(rendered, "<a "));
+    }
+
+    /* And the literal text is still there to read. */
+    {
+        g_autofree gchar *rendered =
+            clawt_markdown_to_html("<script>alert(1)</script>");
+
+        g_assert_nonnull(strstr(rendered, "&lt;script&gt;"));
+        g_assert_nonnull(strstr(rendered, "alert(1)"));
+    }
+
+    {
+        g_autofree gchar *rendered = clawt_markdown_to_html("a & b");
+
+        g_assert_nonnull(strstr(rendered, "&amp;"));
+    }
+}
+
+/* A link shows its target and is not clickable, in this client too. */
+static void
+test_html_links_show_their_target_and_do_not_open(void)
+{
+    g_autofree gchar *rendered =
+        clawt_markdown_to_html("[the docs](https://example.invalid/x)");
+
+    g_assert_nonnull(strstr(rendered, "the docs"));
+    g_assert_nonnull(strstr(rendered, "https://example.invalid/x"));
+    g_assert_null(strstr(rendered, "<a "));
+    g_assert_null(strstr(rendered, "href"));
+}
+
+/*
+ * A table is a real table here, at any width.
+ *
+ * The Pango vocabulary has to choose between a grid and a record layout
+ * because a GtkLabel cannot scroll.  A browser can, so there is no
+ * threshold to be wrong about -- and the wide table that becomes records
+ * in the GTK client is still a table in this one.
+ */
+static void
+test_html_draws_a_real_table(void)
+{
+    g_autofree gchar *narrow = clawt_markdown_to_html(
+        "| Team | N |\n|:---|---:|\n| forge | 2 |\n");
+    g_autofree gchar *wide = clawt_markdown_to_html(
+        "| Team | Agents |\n|---|---|\n"
+        "| forge | oxpecker reviews every merge request and refuses "
+        "a warning |\n");
+
+    assert_only_our_tags(narrow);
+    assert_only_our_tags(wide);
+
+    /* Scrolls inside its own box rather than widening the message. */
+    g_assert_nonnull(strstr(narrow, "<div class=\"md-table\"><table>"));
+
+    g_assert_nonnull(strstr(narrow, "<thead>"));
+    g_assert_nonnull(strstr(narrow, "<th>Team</th>"));
+    g_assert_nonnull(strstr(narrow, "<th class=\"md-r\">N</th>"));
+    g_assert_nonnull(strstr(narrow, "<tbody>"));
+    g_assert_nonnull(strstr(narrow, "<td>forge</td>"));
+    g_assert_nonnull(strstr(narrow, "<td class=\"md-r\">2</td>"));
+
+    /* Width decides nothing here. */
+    g_assert_nonnull(strstr(wide, "<table>"));
+    g_assert_nonnull(strstr(wide, "<td>oxpecker reviews"));
+}
+
+/*
+ * A cell stays on one line, in both vocabularies.
+ *
+ * cmark decides what is a block from the text rather than from the
+ * context, so a cell whose content starts with `<` is an HTML *block*
+ * and one indented four spaces is a code block -- and both literals end
+ * in a newline.  A newline in a cell puts one row on two lines, which
+ * moves every column after it in a grid and is simply wrong in a <td>.
+ */
+static void
+test_a_cell_stays_on_one_line(void)
+{
+    static const gchar *awkward[] = {
+        "| a | b |\n|---|---|\n| <img src=x> | ok |\n",
+        "| a | b |\n|---|---|\n| <div>x</div> | ok |\n",
+        NULL
+    };
+    gsize i;
+
+    for (i = 0; awkward[i] != NULL; i++) {
+        g_autofree gchar *html = clawt_markdown_to_html(awkward[i]);
+        g_autofree gchar *pango = clawt_markdown_to_pango(awkward[i]);
+        const gchar *cell = strstr(html, "<tbody>");
+        const gchar *row;
+
+        g_assert_nonnull(cell);
+        row = strstr(cell, "<tr>");
+        g_assert_nonnull(row);
+
+        /* The row's own line ends at </tr>, with nothing before it. */
+        g_assert_null(memchr(row, '\n',
+                             (gsize)(strstr(row, "</tr>") - row)));
+
+        /* And the Pango grid is three lines: header, rule, one row. */
+        {
+            g_auto(GStrv) lines = g_strsplit(pango, "\n", -1);
+
+            g_assert_cmpuint(g_strv_length(lines), ==, 3);
+        }
+    }
+}
+
+/*
+ * Neither vocabulary drops what the other keeps.
+ *
+ * One walk and a RenderOps per output is what stops a construct
+ * rendering in one client and vanishing in the other, and the compiler
+ * enforces the structural half: a backend missing a callback is a
+ * -Wmissing-field-initializers warning, which this project treats as a
+ * build failure.  This is the other half -- that the callbacks are
+ * wired to something rather than merely present.
+ */
+static void
+test_both_vocabularies_keep_the_content(void)
+{
+    static const gchar *corpus[] = {
+        "# Heading here",
+        "Some **bold** and *italic* and `code` prose",
+        "- alpha\n- beta\n",
+        "7. seventh\n8. eighth\n",
+        "> quoted material\n",
+        "```\nmake test\n```\n",
+        "[anchor](https://example.invalid/target)",
+        "| Team | Lead |\n|---|---|\n| forge | oxpecker |\n",
+        "before\n\n---\n\nafter\n",
+        NULL
+    };
+    static const gchar *words[] = {
+        "Heading", "bold", "italic", "code", "alpha", "beta",
+        "seventh", "eighth", "quoted", "make", "anchor",
+        "example.invalid", "forge", "oxpecker", "before", "after",
+        NULL
+    };
+    gsize i;
+
+    for (i = 0; corpus[i] != NULL; i++) {
+        g_autofree gchar *pango = clawt_markdown_to_pango(corpus[i]);
+        g_autofree gchar *html = clawt_markdown_to_html(corpus[i]);
+        gsize w;
+
+        for (w = 0; words[w] != NULL; w++) {
+            gboolean in_source = strstr(corpus[i], words[w]) != NULL;
+
+            if (!in_source)
+                continue;
+
+            if (strstr(pango, words[w]) == NULL)
+                g_error("\"%s\" reached the web client and not the GTK one",
+                        words[w]);
+
+            if (strstr(html, words[w]) == NULL)
+                g_error("\"%s\" reached the GTK client and not the web one",
+                        words[w]);
+        }
+    }
+
+    /* The numbers a list counts with, which are not words in the source. */
+    {
+        g_autofree gchar *pango = clawt_markdown_to_pango("7. seventh\n");
+        g_autofree gchar *html = clawt_markdown_to_html("7. seventh\n");
+
+        g_assert_nonnull(strstr(pango, "7. seventh"));
+        g_assert_nonnull(strstr(html, "start=\"7\""));
+    }
+}
+
+/* Input that is not markdown at all still has to come out readable. */
+static void
+test_html_plain_and_empty_input(void)
+{
+    g_autofree gchar *empty = clawt_markdown_to_html("");
+    g_autofree gchar *null_input = clawt_markdown_to_html(NULL);
+
+    g_assert_cmpstr(empty, ==, "");
+    g_assert_cmpstr(null_input, ==, "");
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -441,6 +808,23 @@ main(int argc, char *argv[])
                     test_an_escaped_pipe_stays_in_its_cell);
     g_test_add_func("/markdown/table-keeps-its-neighbours",
                     test_a_table_keeps_its_neighbours);
+
+    g_test_add_func("/markdown/html-what-a-chat-uses",
+                    test_html_renders_what_a_chat_uses);
+    g_test_add_func("/markdown/html-keeps-typed-line-breaks",
+                    test_html_keeps_the_line_break_that_was_typed);
+    g_test_add_func("/markdown/html-nothing-becomes-markup",
+                    test_nothing_an_agent_writes_becomes_html);
+    g_test_add_func("/markdown/html-links-are-not-clickable",
+                    test_html_links_show_their_target_and_do_not_open);
+    g_test_add_func("/markdown/html-draws-a-real-table",
+                    test_html_draws_a_real_table);
+    g_test_add_func("/markdown/cell-stays-on-one-line",
+                    test_a_cell_stays_on_one_line);
+    g_test_add_func("/markdown/both-vocabularies-keep-the-content",
+                    test_both_vocabularies_keep_the_content);
+    g_test_add_func("/markdown/html-plain-and-empty",
+                    test_html_plain_and_empty_input);
 
     return g_test_run();
 }

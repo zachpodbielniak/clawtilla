@@ -7,12 +7,17 @@
  * This file is part of clawtilla.
  *
  * Markdown is rendered through clawt_markdown_to_pango()'s sibling for
- * HTML -- which is to say it is not rendered at all here, and every
- * message body is set as *text*.  The rule the GTK client keeps is that
- * model output never reaches a markup parser; the web version of that
- * rule is that it never reaches the page as HTML.  A reply containing
- * "<script>" is a thing an agent can be talked into writing, and this
- * client serves it to a browser.
+ * HTML, clawt_markdown_to_html() -- the same walk over the same
+ * document, emitting the other vocabulary, so a construct cannot render
+ * in one client and vanish in the other.
+ *
+ * That is the one place in this client where markup is set rather than
+ * text, and it is safe for the same reason the GTK client's is: the
+ * renderer emits markup only for the structure cmark found and escapes
+ * every literal on the way out, so a reply containing "<script>" -- a
+ * thing an agent can be talked into writing, and this client serves it
+ * to a browser -- arrives as those characters on the page.  See
+ * set_body() below.
  */
 
 #include "web-pages.h"
@@ -222,6 +227,35 @@ run_avatar(const gchar *name, const gchar *color)
     return HTMX_ELEMENT(g_steal_pointer(&face));
 }
 
+/*
+ * The rendered body -- the only markup this client sets rather than
+ * escapes.
+ *
+ * Everywhere else builds elements from htmx-glib's typed classes, which
+ * escape, because agent names, descriptions and message bodies were
+ * written by a person or a model.  A message body is the exception, and
+ * it is one because rendering markdown *is* producing markup: there is
+ * no typed-element route to bold text that an agent asked for.
+ *
+ * What makes it safe is that the markup is not the agent's.
+ * clawt_markdown_to_html() emits tags only for the structure cmark
+ * identified and puts every literal through g_markup_escape_text() on
+ * the way out, so the parser never sees a character an agent wrote.  It
+ * emits no <a href>, no <img src> and no style attribute, so there is no
+ * URL or CSS from a model to filter either.  tests/test-markdown.c
+ * throws the obvious attempts at it and asserts on what comes back.
+ *
+ * If that function ever grows a path that passes text through unescaped,
+ * this line is where it reaches a browser.
+ */
+static void
+set_body(HtmxNode *node, const gchar *markdown)
+{
+    g_autofree gchar *html = clawt_markdown_to_html(markdown);
+
+    htmx_node_set_html_content(node, html);
+}
+
 static HtmxElement *
 message_element(JsonObject *message, const gchar *agent_id,
                 gboolean run_start, const gchar *color)
@@ -348,8 +382,7 @@ message_element(JsonObject *message, const gchar *agent_id,
         g_autofree gchar *prose = NULL;
         g_autoptr(GPtrArray) files = attachment_ids(body, &prose);
 
-        htmx_node_set_text_content(HTMX_NODE(text),
-                                   prose != NULL ? prose : body);
+        set_body(HTMX_NODE(text), prose != NULL ? prose : body);
         htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(text));
 
         if (files != NULL) {
