@@ -997,6 +997,103 @@ test_every_text_colour_clears_aa(void)
     }
 }
 
+/*
+ * The app box is measured against the viewport that is actually there.
+ *
+ * 100vh on a phone is the height with the URL bar retracted, so the
+ * bottom row of this grid -- the composer -- starts below the fold and
+ * reaching it means fighting the browser chrome. Both declarations are
+ * required: a browser that does not know dvh keeps the first.
+ */
+static void
+test_the_app_is_measured_in_dynamic_viewport_height(void)
+{
+    const gchar *css = clawt_web_stylesheet();
+    const gchar *app = strstr(css, ".app{");
+    const gchar *end;
+
+    g_assert_nonnull(app);
+    end = strchr(app, '}');
+    g_assert_nonnull(end);
+
+    g_assert_nonnull(g_strstr_len(app, (gsize)(end - app), "height:100dvh"));
+
+    /* And the fallback is still there, in front of it. */
+    g_assert_nonnull(g_strstr_len(app, (gsize)(end - app), "height:100vh"));
+    g_assert_true(g_strstr_len(app, (gsize)(end - app), "height:100vh") <
+                  g_strstr_len(app, (gsize)(end - app), "height:100dvh"));
+}
+
+/*
+ * No auto-fit track has a floor it cannot go below.
+ *
+ * In minmax() a bare length is a hard floor, so auto-fit refuses to take
+ * the track under it and the track overflows its container rather than
+ * shrinking. Written as a sweep over every minmax() in the sheet rather
+ * than as two named assertions, because the next one somebody adds is
+ * the one that will be wrong.
+ */
+static void
+test_no_auto_fit_track_has_a_hard_floor(void)
+{
+    const gchar *css = clawt_web_stylesheet();
+    const gchar *at = css;
+    guint seen = 0;
+
+    while ((at = strstr(at, "minmax(")) != NULL) {
+        at += strlen("minmax(");
+        seen++;
+        g_assert_true(g_str_has_prefix(at, "min("));
+    }
+
+    /*
+     * And the sweep found something to check. An empty loop would pass
+     * in a sheet with no grids at all, which is the shape of a test that
+     * survives the feature being deleted.
+     */
+    g_assert_cmpuint(seen, >=, 2);
+}
+
+/*
+ * At phone width the sidebar is a drawer that starts closed.
+ *
+ * It used to be a 14rem band above every page: on a ~660px viewport that
+ * is a third of the screen permanently spent on navigation, with the
+ * content beginning below it on every view.
+ *
+ * The toggle is asserted to be a sibling selector rather than anything
+ * inside .sidebar, because the sidebar is swapped outerHTML on every
+ * fleet event -- state kept inside it would be discarded several times a
+ * minute on a live fleet.
+ */
+static void
+test_the_narrow_sidebar_is_a_drawer(void)
+{
+    const gchar *css = clawt_web_stylesheet();
+    const gchar *narrow = strstr(css, "@media (max-width:56rem){");
+    const gchar *end;
+    gsize length;
+
+    g_assert_nonnull(narrow);
+
+    /*
+     * Bounded by the next media query rather than by a closing brace:
+     * the block contains braces of its own, so the first `}` is a rule's
+     * and not the block's.
+     */
+    end = strstr(narrow + 1, "@media");
+    g_assert_nonnull(end);
+    length = (gsize)(end - narrow);
+
+    g_assert_nonnull(g_strstr_len(narrow, length, ".sidebar{display:none"));
+    g_assert_nonnull(g_strstr_len(narrow, length,
+                                  ".nav-toggle:checked~.sidebar"));
+
+    /* And the band it replaces is gone. */
+    g_assert_null(g_strstr_len(narrow, length, "max-height:14rem"));
+}
+
+
 int
 main(int argc, char *argv[])
 {
@@ -1038,6 +1135,12 @@ main(int argc, char *argv[])
     g_test_add_func("/web/an-unknown-view-falls-back-to-chat",
                     test_an_unknown_view_falls_back_to_chat);
 
+    g_test_add_func("/web/the-app-is-measured-in-dvh",
+                    test_the_app_is_measured_in_dynamic_viewport_height);
+    g_test_add_func("/web/no-auto-fit-track-has-a-hard-floor",
+                    test_no_auto_fit_track_has_a_hard_floor);
+    g_test_add_func("/web/the-narrow-sidebar-is-a-drawer",
+                    test_the_narrow_sidebar_is_a_drawer);
     g_test_add_func("/web/the-palette-is-defined-outside-a-media-query",
                     test_the_palette_is_defined_outside_a_media_query);
     g_test_add_func("/web/dark-is-reachable-by-preference-and-by-choice",

@@ -162,7 +162,17 @@ clawt_web_stylesheet(void)
       "-webkit-font-smoothing:antialiased}"
 
     /* ── Frame ── */
-    ".app{display:grid;grid-template-columns:17rem 1fr;height:100vh}"
+    /*
+     * 100vh is the viewport with the URL bar retracted, so on a phone
+     * the app box is taller than what is visible and the composer --
+     * the bottom row of this grid -- starts below the fold.  100dvh
+     * is the height that is actually there.
+     *
+     * Declared twice rather than once: a browser that does not know
+     * dvh drops the second and keeps the first, and there is no
+     * @supports needed for that.
+     */
+    ".app{display:grid;grid-template-columns:17rem 1fr;height:100vh;height:100dvh}"
     ".sidebar{border-right:1px solid var(--line);background:var(--surface);"
       "display:flex;flex-direction:column;min-height:0}"
     ".sidebar-head{padding:20px 20px 14px;border-bottom:1px solid var(--line);"
@@ -234,7 +244,14 @@ clawt_web_stylesheet(void)
       "letter-spacing:-0.02em;line-height:1.25}"
     ".card-sub{color:var(--muted);font-size:13px;margin:0 0 16px}"
     ".card-body>*:last-child{margin-bottom:0}"
-    ".grid{display:grid;gap:20px;grid-template-columns:repeat(auto-fit,minmax(20rem,1fr))}"
+    /*
+     * min(20rem,100%) rather than 20rem: in minmax() a bare length is
+     * a hard floor, so auto-fit refuses to take a track below it and
+     * the track overflows its container instead of shrinking.  The
+     * desktop behaviour is unchanged -- 20rem wins whenever there is
+     * room for it.
+     */
+    ".grid{display:grid;gap:20px;grid-template-columns:repeat(auto-fit,minmax(min(20rem,100%),1fr))}"
     "h2.section{font-family:var(--serif);font-size:22px;margin:0 0 4px;"
       "letter-spacing:-0.025em;line-height:1.15}"
     ".lede{color:var(--muted);margin:0 0 24px;max-width:44rem}"
@@ -288,7 +305,7 @@ clawt_web_stylesheet(void)
       "margin-bottom:16px}"
     ".field-check input{margin-top:4px;flex:none;width:auto}"
     ".field-check .check-sub{color:var(--muted);font-size:12.5px;margin:2px 0 0}"
-    ".field-inline{display:grid;grid-template-columns:repeat(auto-fit,minmax(12rem,1fr));"
+    ".field-inline{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(12rem,100%),1fr));"
       "gap:0 16px}"
 
     /*
@@ -716,10 +733,40 @@ clawt_web_stylesheet(void)
     ".htmx-request .htmx-hide{opacity:.5}"
 
     /* ── Narrow ── */
+    /*
+     * The checkbox is never seen; it is the drawer's memory.
+     *
+     * It has to live outside the sidebar because the sidebar is swapped
+     * outerHTML on every `sse:fleet` event -- a <details> or any state
+     * held inside it would close itself whenever an agent changed state,
+     * which on a live fleet is constantly.  A hidden input before it in
+     * the same grid, driven by a <label for>, survives every swap.
+     *
+     * display:none rather than a visually-hidden position:absolute: a
+     * label still toggles a display:none checkbox, and this way it takes
+     * no grid track.
+     */
+    ".nav-toggle{display:none}"
+    ".nav-button{display:none}"
+
+    /* ── Narrow ── */
     "@media (max-width:56rem){"
-      ".app{grid-template-columns:1fr;grid-template-rows:auto 1fr}"
-      ".sidebar{border-right:0;border-bottom:1px solid var(--line);"
-        "max-height:14rem}"
+      ".app{grid-template-columns:1fr;grid-template-rows:auto auto 1fr}"
+      /*
+       * Closed by default, rather than a 14rem band above every page.
+       * On a ~660px phone viewport that band was a third of the screen
+       * permanently spent on navigation, and the content began below it
+       * on every view.
+       */
+      ".sidebar{display:none;border-right:0;"
+        "border-bottom:1px solid var(--line)}"
+      ".nav-toggle:checked~.sidebar{display:flex;max-height:60vh;"
+        "max-height:60dvh}"
+      ".nav-button{display:inline-flex;align-items:center;"
+        "justify-content:center;width:2.25rem;height:2.25rem;margin-right:2px;"
+        "border:1px solid var(--line-strong);border-radius:var(--radius-sm);"
+        "background:var(--surface);color:var(--ink);cursor:pointer;"
+        "font-size:15px;line-height:1;flex:none}"
       ".view-pad,.view-wide{padding:20px 18px 40px}"
       ".transcript,.composer{padding-left:18px;padding-right:18px}"
     "}"
