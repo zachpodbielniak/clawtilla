@@ -1027,11 +1027,23 @@ test_the_app_is_measured_in_dynamic_viewport_height(void)
 /*
  * No auto-fit track has a floor it cannot go below.
  *
- * In minmax() a bare length is a hard floor, so auto-fit refuses to take
- * the track under it and the track overflows its container rather than
- * shrinking. Written as a sweep over every minmax() in the sheet rather
- * than as two named assertions, because the next one somebody adds is
- * the one that will be wrong.
+ * In minmax() a bare length is a hard floor, so the track refuses to go
+ * under it and overflows its container rather than shrinking. Written as
+ * a sweep over every minmax() in the sheet rather than as two named
+ * assertions, because the next one somebody adds is the one that will be
+ * wrong.
+ *
+ * Two spellings satisfy it and the test accepts both, because the rule
+ * is that the floor can shrink rather than that it is written a
+ * particular way. `min(20rem,100%)` keeps a preferred width and gives it
+ * up when there is no room, which is what an auto-fit column wants;
+ * plain `0` is the stronger form and is what a row containing a
+ * scrolling box wants, since 1fr's own minimum is min-content and a long
+ * transcript would otherwise push the track past the viewport.
+ *
+ * Asserting `min(` alone would have failed the second the moment it was
+ * used -- and it did. A test that names the fix rather than the property
+ * refuses the next correct answer.
  */
 static void
 test_no_auto_fit_track_has_a_hard_floor(void)
@@ -1043,7 +1055,11 @@ test_no_auto_fit_track_has_a_hard_floor(void)
     while ((at = strstr(at, "minmax(")) != NULL) {
         at += strlen("minmax(");
         seen++;
-        g_assert_true(g_str_has_prefix(at, "min("));
+
+        if (g_str_has_prefix(at, "min(") || g_str_has_prefix(at, "0,"))
+            continue;
+
+        g_error("minmax() with a floor that cannot shrink: %.40s", at);
     }
 
     /*
@@ -1094,6 +1110,56 @@ test_the_narrow_sidebar_is_a_drawer(void)
 }
 
 
+/*
+ * The page really emits the drawer's checkbox.
+ *
+ * The whole drawer is a <label for="nav-open"> in the topbar and a
+ * checkbox with that id in front of the sidebar; the stylesheet does the
+ * rest with `.nav-toggle:checked~.sidebar`. Every part of that was
+ * asserted against the *stylesheet* and none of it against the page, and
+ * the page was where it was broken: the checkbox was built with a
+ * g_autoptr *and* handed to clawt_web_add(), which takes the reference,
+ * so it was freed while still in the tree and rendered as nothing.
+ *
+ * From outside that is indistinguishable from a working drawer until
+ * somebody presses the button -- the hamburger was drawn, the CSS was
+ * correct, and the toggle pointed at an element that was not there.
+ *
+ * So this asserts on the emitted HTML. A stylesheet test cannot see a
+ * missing element, which is the whole reason this one exists.
+ */
+static void
+test_the_page_emits_the_drawer_toggle(void)
+{
+    g_autoptr(HtmxDiv) body = htmx_div_new();
+    g_autofree gchar *html = NULL;
+    const gchar *toggle;
+    const gchar *sidebar;
+
+    html = clawt_web_page(NULL, "alpha", CLAWT_WEB_VIEW_CHAT,
+                          HTMX_ELEMENT(g_object_ref(body)), NULL);
+
+    g_assert_nonnull(html);
+
+    /* The control the label names, by the id the label names. */
+    toggle = strstr(html, "id=\"nav-open\"");
+    g_assert_nonnull(toggle);
+    g_assert_nonnull(strstr(html, "type=\"checkbox\""));
+    g_assert_nonnull(strstr(html, "nav-toggle"));
+
+    /*
+     * And in front of the sidebar, not inside it. `~` is a following
+     * sibling combinator, so a checkbox emitted after the sidebar -- or
+     * within it -- would render identically and toggle nothing. The
+     * sidebar is stubbed to a bare div here, so this compares against
+     * the class the real one carries via the frame's own child order.
+     */
+    sidebar = strstr(html, "class=\"app\"");
+    g_assert_nonnull(sidebar);
+    g_assert_true(toggle > sidebar);
+}
+
+
 int
 main(int argc, char *argv[])
 {
@@ -1139,6 +1205,8 @@ main(int argc, char *argv[])
                     test_the_app_is_measured_in_dynamic_viewport_height);
     g_test_add_func("/web/no-auto-fit-track-has-a-hard-floor",
                     test_no_auto_fit_track_has_a_hard_floor);
+    g_test_add_func("/web/the-page-emits-the-drawer-toggle",
+                    test_the_page_emits_the_drawer_toggle);
     g_test_add_func("/web/the-narrow-sidebar-is-a-drawer",
                     test_the_narrow_sidebar_is_a_drawer);
     g_test_add_func("/web/the-palette-is-defined-outside-a-media-query",

@@ -1049,7 +1049,16 @@ clawt_web_page(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view,
      * topbar drives it with no script.
      */
     {
-        g_autoptr(HtmxInput) nav = htmx_input_new(HTMX_INPUT_CHECKBOX);
+        /*
+         * No g_autoptr here: clawt_web_add() takes the reference.  With
+         * one the object was unreffed twice and freed while still in the
+         * tree, so the checkbox rendered as nothing at all -- and the
+         * hamburger, three lines away in web-fleet.c, went on being
+         * drawn and toggling something that was not there.  A drawer
+         * that cannot be opened, from a helper whose ownership differs
+         * from the htmx_node_add_child() used beside it.
+         */
+        HtmxInput *nav = htmx_input_new(HTMX_INPUT_CHECKBOX);
 
         htmx_element_set_id(HTMX_ELEMENT(nav), "nav-open");
         htmx_element_add_class(HTMX_ELEMENT(nav), "nav-toggle");

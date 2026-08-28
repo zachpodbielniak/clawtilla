@@ -732,7 +732,7 @@ clawt_web_stylesheet(void)
     ".stack>*+*{margin-top:12px}"
     ".htmx-request .htmx-hide{opacity:.5}"
 
-    /* ── Narrow ── */
+    /* ── The drawer's memory ── */
     /*
      * The checkbox is never seen; it is the drawer's memory.
      *
@@ -751,15 +751,30 @@ clawt_web_stylesheet(void)
 
     /* ── Narrow ── */
     "@media (max-width:56rem){"
-      ".app{grid-template-columns:1fr;grid-template-rows:auto auto 1fr}"
+      /*
+       * Two rows, and both children are placed explicitly.
+       *
+       * Left to implicit placement the content lands in whichever track
+       * comes first, and with the sidebar display:none there is only one
+       * item -- so it took the `auto` track and sized to its own
+       * content.  Measured on a 375x812 phone: an 812px app box with the
+       * composer ending at y=492 and 320px of blank screen below it.
+       * A row count cannot describe a layout whose item count changes.
+       *
+       * minmax(0,1fr) rather than 1fr, because 1fr's minimum is
+       * min-content: a long transcript would push the track past the
+       * viewport instead of scrolling inside it.
+       */
+      ".app{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}"
       /*
        * Closed by default, rather than a 14rem band above every page.
        * On a ~660px phone viewport that band was a third of the screen
        * permanently spent on navigation, and the content began below it
        * on every view.
        */
-      ".sidebar{display:none;border-right:0;"
+      ".sidebar{display:none;border-right:0;grid-row:1;grid-column:1;"
         "border-bottom:1px solid var(--line)}"
+      ".content{grid-row:2;grid-column:1;min-height:0}"
       ".nav-toggle:checked~.sidebar{display:flex;max-height:60vh;"
         "max-height:60dvh}"
       ".nav-button{display:inline-flex;align-items:center;"

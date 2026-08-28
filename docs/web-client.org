@@ -111,6 +111,49 @@ The same seven the GTK client's view switcher has, in the same order.
 And seven settings pages: VM images, teams, spending, integrations,
 connectors, appearance and connections.
 
+*** On a phone
+
+The same views, laid out for a screen 375 pixels wide rather than for a
+narrow desktop.  Three things differ below 56rem, and each of them is a
+response to something a phone has and a desktop does not.
+
+**** The sidebar is a drawer, and it starts closed
+
+Reached with the ☰ button in the topbar.  It was a 14rem band pinned
+above every page --- on a 660px viewport that is a third of the screen
+permanently spent on navigation, with the content starting below it on
+every view.  Measured on a 375x812 phone: the first line of content began
+at y=317 before, and begins at y=93 with the drawer closed.
+
+It is a hidden checkbox and a ~<label for>~, not a ~<details>~ and not a
+script.  The reason is specific: the sidebar carries
+~hx-swap="outerHTML"~ on ~sse:fleet~, so anything remembered *inside* it
+is thrown away every time an agent changes state --- which on a live
+fleet is several times a minute.  The checkbox sits in front of the
+sidebar, where the swap does not reach it.
+
+**** Height is measured in ~dvh~
+
+~100vh~ on a phone is the viewport with the URL bar retracted, so a box
+measured that way is taller than what is visible and its bottom row ---
+the composer --- starts below the fold.  Both units are declared, so a
+browser that does not know ~dvh~ keeps the first.
+
+**** Grid tracks can shrink
+
+Every ~minmax()~ floor in the sheet either is ~0~ or goes through
+~min()~.  A bare length there is a *hard* floor: the track refuses to go
+under it and overflows its container instead of shrinking, which on a
+320px screen is a page that scrolls sideways.
+
+The two spellings mean different things and both are wanted.
+~min(20rem,100%)~ keeps a preferred width and gives it up when there is
+no room, which is what an auto-fit column wants.  Plain ~0~ is the
+stronger form and is what a row holding a scrolling box wants, since
+~1fr~'s own minimum is min-content --- a long transcript would otherwise
+push the row past the bottom of the screen rather than scrolling inside
+it.
+
 *** The routes, and the one that has to be last
 
 Around eighty, in families.  A ~GET~ renders; a ~POST~ does something and
