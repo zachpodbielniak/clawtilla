@@ -3806,6 +3806,54 @@ the same program.
   build log. TAP prints `ok <n> <path>`; a lone `ok` is some other
   command's output. **Read the test name, not the word.**
 
+### A flag with one clearer, on a path that guarantees the clearer never runs
+
+- `busy` was set by delivery and cleared by the agent's link reporting
+  typing = FALSE. Every route out of RUNNING **closes that link** -- which
+  is precisely what guarantees the message that would clear the flag can
+  never arrive. So an agent stopped or killed mid-turn stayed "working"
+  for the life of the daemon: a live spinner beside a state dot reading
+  stopped, one row asserting two contradictory things, and the subtitle
+  is the one people read. Two agents on a real fleet sat like that for
+  nine hours.
+- The clear belongs to the **transition**, not to either stop path. A
+  killed agent reaches neither `clawt_daemon_stop_agent()` nor
+  `clawt_agent_stop()` -- its runtime reports an unclean exit outside
+  STOPPING, so `on_runtime_exited()` takes it to ERROR. `set_state()` is
+  the one line every route passes through, and it is the transition that
+  makes the turn impossible rather than any particular way of reaching
+  it. Both suggested placements were tried and both fail the killed case.
+- The predicate names **every** state and has no `default:`, so
+  `-Wswitch` fails the build when one is added rather than sweeping it
+  into "still working" -- the answer that would reintroduce this bug
+  silently for whichever state comes next. Verified by deleting a case
+  and watching the warning.
+
+### `g_setenv()` in a test still does not reach an agent's child
+
+- Already recorded here, and a merge request walked into it anyway:
+  `FAKE_LIBRECLAW_SLEEP` set with `g_setenv()` reached nothing, so the
+  fake exited at once and the test's `kill()` was **racing the fake's own
+  exit** for which state the agent would land in -- a clean exit goes to
+  STOPPED and the assertion was on ERROR. It won every time on this
+  machine and would not have on a loaded one.
+- Proved by reading `/proc/<child>/environ` rather than by reasoning: it
+  held PATH, HOME, USER, LOGNAME, SHELL, LANG and the XDG entries and
+  nothing else. Per-agent `env:` is the route, and with it the variable
+  is there.
+- **A test that passes five times in a row is not a test that cannot
+  race.** The thing to check is whether the mechanism it depends on
+  actually works, not how often the result comes out right.
+
+### A comment claiming a user-visible benefit that no client delivers
+
+- "The peer is kept so a stopped agent can still say who its last turn
+  was for" was true of the data and false of every surface: both sidebars
+  draw the activity only while `busy` is true and fall back to the
+  description otherwise. Keeping the peer is still right -- it costs
+  nothing and leaves the choice open -- but the comment now says that
+  rather than describing a feature nobody would find.
+
 ## Things to NEVER Do
 
 - Never hand-edit `data/example-config.yaml` or `data/default-config.yaml`
@@ -3895,6 +3943,12 @@ the same program.
   C; reading one means the other caller silently gets nothing
 - Never sleep uninterruptibly on a thread something has to join. Poll the
   cancellable's fd, or a stop waits out the whole backoff
+- Never write a `switch` over a state enum with a `default:` when the
+  default is the permissive answer. Name every value so `-Wswitch` makes
+  adding one a build failure rather than a silent inheritance
+- Never set an agent child's environment with `g_setenv()` in a test. The
+  runtime builds it from an allowlist; use the agent's own `env:` block
+  and check `/proc/<child>/environ` if in doubt
 - Never let an affordance marker in `make parity` be one the stylesheet
   also contains. A CSS rule is not a capability, and eight declared rows
   were passing on the sheet alone

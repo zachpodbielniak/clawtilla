@@ -1189,6 +1189,35 @@ the sender is inside libreclaw and no longer visible to the daemon. Both
 are recorded on the agent as well as published, so a client that
 connects mid-turn is not told the agent is idle.
 
+**** A turn does not outlive the process that was taking it
+
+The flag has one setter -- delivery -- and one ordinary clearer: the
+link reporting typing = FALSE at the end of the turn.  Every route out
+of ~running~ closes that link, which is precisely what guarantees the
+message that would have cleared the flag can never arrive.  So an agent
+stopped or killed mid-turn stayed "working" for the life of the daemon,
+drawn with a live spinner beside a state dot reading ~stopped~: one row
+asserting two contradictory things, and the subtitle is the one people
+read.  Two agents on a real fleet sat like that for nine hours.
+
+The activity is therefore cleared by the *state transition* rather than
+by any particular way of reaching it.  ~stopping~, ~stopped~, ~error~
+and ~shadow~ all end the turn; ~starting~, ~running~ and ~degraded~ do
+not -- a degraded agent has an unhealthy link and a live process, and
+its turn may still land.
+
+It matters beyond the spinner.  The daemon consults the same flag when
+deciding whether an incoming message is the answer to a turn, so an
+agent permanently marked busy misinforms that too.
+
+*The peer is kept, in the data.*  ~clawt_agent_set_activity()~ preserves
+it when passed ~NULL~, so ~agent.list~ still reports ~peer~ for an agent
+whose turn has ended -- the only trace of that turn left once the
+process is gone.  No client draws it today: both sidebars show the
+activity only while ~busy~ is true, and fall back to the description or
+the queue depth otherwise.  Clearing it here would foreclose showing it;
+keeping it costs nothing and leaves the choice open.
+
 ** Importing an agent you already run
 
 A libreclaw instance you run standalone is an agent clawtilla can adopt:

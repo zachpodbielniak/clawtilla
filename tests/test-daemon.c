@@ -6258,11 +6258,20 @@ test_stopping_an_agent_ends_its_turn(void)
     g_autoptr(GError) error = NULL;
     ClawtAgent *agent;
 
+    /*
+     * The child stays up, so the agent is genuinely mid-turn when it is
+     * stopped rather than already gone.  Through `env:` because the
+     * runtime's environment is an allowlist and does not inherit this
+     * process's -- see the sibling test, where g_setenv() silently
+     * reached nothing.
+     */
     extra = g_strdup_printf(
         "  libreclaw_binary: \"%s\"\n"
         "agents:\n"
         "  - id: worker\n"
         "    enabled: true\n"
+        "    env:\n"
+        "      FAKE_LIBRECLAW_SLEEP: \"60\"\n"
         "    runtime:\n"
         "      restart: never\n"
         "    computer:\n"
@@ -6335,22 +6344,33 @@ test_an_agent_that_dies_mid_turn_is_not_left_working(void)
     GPid pid;
     gint64 deadline;
 
+    /*
+     * Alive until something kills it, so the process is really running
+     * when the turn starts rather than having exited on its own.
+     *
+     * Through the agent's own `env:` block, not g_setenv(): the process
+     * runtime builds the child's environment from an allowlist and does
+     * not inherit the daemon's, so a variable set in this process reaches
+     * the fake not at all.  Verified by reading /proc/<child>/environ --
+     * with g_setenv() it holds PATH, HOME, USER, LOGNAME, SHELL, LANG and
+     * the XDG entries and nothing else, so the fake exited immediately and
+     * the SIGKILL below was racing its own exit for which state the agent
+     * would land in.  It won every time here and would not have on a
+     * loaded machine: a clean exit goes to STOPPED, and the assertion is
+     * on ERROR.
+     */
     extra = g_strdup_printf(
         "  libreclaw_binary: \"%s\"\n"
         "agents:\n"
         "  - id: worker\n"
         "    enabled: true\n"
+        "    env:\n"
+        "      FAKE_LIBRECLAW_SLEEP: \"60\"\n"
         "    runtime:\n"
         "      restart: never\n"
         "    computer:\n"
         "      type: none\n",
         binary);
-
-    /*
-     * Alive until something kills it, so the process is really running
-     * when the turn starts rather than having exited on its own.
-     */
-    g_setenv("FAKE_LIBRECLAW_SLEEP", "60", TRUE);
 
     fixture_setup(&fixture, extra);
     g_assert_true(clawt_daemon_start(fixture.daemon, &error));
@@ -6413,8 +6433,6 @@ test_an_agent_that_dies_mid_turn_is_not_left_working(void)
                     CLAWT_AGENT_STATE_ERROR);
 
     g_assert_false(busy_in_agent_list(&fixture, "worker"));
-
-    g_unsetenv("FAKE_LIBRECLAW_SLEEP");
 
     fixture_teardown(&fixture);
 }

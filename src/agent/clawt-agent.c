@@ -44,9 +44,9 @@ G_DEFINE_FINAL_TYPE(ClawtAgent, clawt_agent, G_TYPE_OBJECT)
 /*
  * Whether an agent in this state can still be part-way through a turn.
  *
- * Everything below has either had its process taken away or is about to,
- * so nothing will finish the turn and nothing will report that it did.
- * RUNNING and DEGRADED are absent deliberately: a degraded agent has an
+ * Everything answering %FALSE has either had its process taken away or is
+ * about to, so nothing will finish the turn and nothing will report that
+ * it did.  DEGRADED answers %TRUE deliberately: a degraded agent has an
  * unhealthy link and a live process, and its turn may still land.
  */
 static gboolean
@@ -58,9 +58,21 @@ state_can_be_working(ClawtAgentState state)
     case CLAWT_AGENT_STATE_ERROR:
     case CLAWT_AGENT_STATE_SHADOW:
         return FALSE;
-    default:
+
+    case CLAWT_AGENT_STATE_STARTING:
+    case CLAWT_AGENT_STATE_RUNNING:
+    case CLAWT_AGENT_STATE_DEGRADED:
         return TRUE;
     }
+
+    /*
+     * Every state named and no `default:`, so -Wswitch fails the build
+     * when one is added rather than sweeping it into "still working" --
+     * which is the answer that reintroduces this bug, silently, for
+     * whichever state comes next.  Unreachable, and gcc cannot know
+     * that.
+     */
+    return TRUE;
 }
 
 static void
@@ -71,6 +83,9 @@ set_state(ClawtAgent *self, ClawtAgentState state, const gchar *detail)
         return;
 
     self->state = state;
+
+    g_free(self->status_detail);
+    self->status_detail = g_strdup(detail);
 
     /*
      * A turn cannot outlive the process that was taking it.
@@ -91,19 +106,20 @@ set_state(ClawtAgent *self, ClawtAgentState state, const gchar *detail)
      * passes through, and it is the transition itself rather than any
      * particular way of reaching it that makes the turn impossible.
      *
-     * Before the signal, so a handler that re-reads the agent sees the
-     * state and the activity agreeing rather than one of each.
+     * Last before the signal, so a handler that re-reads the agent sees
+     * the state, the detail and the activity all agreeing rather than
+     * some of each.
      *
-     * The peer is kept -- set_activity() preserves it when passed NULL
-     * -- so a stopped agent can still say who its last turn was for.
-     * "Answered researcher" is worth more than "idle", and it is the
-     * only trace of that turn left once the process is gone.
+     * The peer is kept, because set_activity() preserves it when passed
+     * NULL, so agent.list still reports who the last turn was for.  No
+     * client draws it once busy is false -- both sidebars show activity
+     * only while it is true -- so this is a choice left open rather than
+     * a feature: it is the only trace of that turn left once the process
+     * is gone, and clearing it would foreclose showing it later at no
+     * saving now.
      */
     if (!state_can_be_working(state))
         clawt_agent_set_activity(self, FALSE, NULL);
-
-    g_free(self->status_detail);
-    self->status_detail = g_strdup(detail);
 
     g_signal_emit(self, signals[SIGNAL_STATE_CHANGED], 0, state, detail);
 }
