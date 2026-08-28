@@ -355,6 +355,25 @@ JsonNode *clawt_mcp_tools_call_finish(ClawtMcpTools *self,
                                       GAsyncResult  *result);
 
 /**
+ * clawt_mcp_tools_set_main_context:
+ * @self: a #ClawtMcpTools
+ * @context: (nullable): the context an asynchronous answer must arrive on
+ *
+ * Names the context clawt_mcp_tools_call_async() completes on.
+ *
+ * Without it a task takes whatever is thread-default when the call comes
+ * in, which is the process default unless a caller pushed one --
+ * dispatching a source pushes nothing. An answer would then be queued on
+ * a loop the daemon does not run, and the request would never be
+ * answered at all.
+ *
+ * %NULL means the ambient context, which is right for a caller that has
+ * only one.
+ */
+void clawt_mcp_tools_set_main_context(ClawtMcpTools *self,
+                                      GMainContext  *context);
+
+/**
  * clawt_mcp_tools_is_permitted:
  * @self: a #ClawtMcpTools
  * @agent_id: an agent

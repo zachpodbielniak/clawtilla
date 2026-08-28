@@ -4091,6 +4091,15 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
 
     self->mcp_tools = clawt_mcp_tools_new(self->agents, self->tasks,
                                           self->guard);
+
+    /*
+     * The daemon is the only thing that knows which context its answers
+     * must arrive on, so it says so rather than leaving the tools to take
+     * whatever is thread-default when a call comes in.  NULL here would
+     * be correct for an embedding host that runs the process default.
+     */
+    clawt_mcp_tools_set_main_context(self->mcp_tools, self->main_context);
+
     clawt_mcp_tools_set_deliver_func(self->mcp_tools, deliver_for_tools,
                                      self, NULL);
 

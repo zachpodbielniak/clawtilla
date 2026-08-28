@@ -696,6 +696,25 @@ agents provision, and podomation bounds a silent API socket at
 A daemon showing the symptoms above is either older than that or is
 blocked somewhere else -- and the backtrace says which.
 
+An agent's own ~clawtilla_computer_exec~ is answered the same way, and
+for a sharper reason.  A provision takes as long as podman takes; an exec
+takes as long as the *command* takes, and the agent chooses the command.
+One agent running a build would otherwise make the daemon deaf to every
+other agent, every client, the event stream and its own SIGTERM -- for
+as long as the build ran.  A stack ending in ~exec_call_run~ on the main
+thread is a build older than that; on a worker thread it is working as
+intended, and the fleet should be answering normally while it sits
+there.
+
+The operator-facing ~computer.exec~ IPC verb -- what ~clawtilla computer
+exec~ sends -- is *not* answered that way and still runs on the main
+context, so a long command issued from a client holds the daemon for its
+duration.  It is bounded rather than open-ended: the verb defaults to 120
+seconds, and on ~host~, ~container~ and ~distrobox~ that bound is now
+enforced, so the worst case is two minutes rather than for ever.  The CLI
+sends no timeout of its own, so there is no flag to lower it with; for
+anything long, ask the agent to run it instead.
+
 The socket itself is worth checking either way:
 
 #+begin_src bash

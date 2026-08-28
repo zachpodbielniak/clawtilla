@@ -3647,6 +3647,91 @@ test_container_exec_gives_up_at_its_timeout(void)
 
 
 
+/*
+ * A distrobox exec gives up when its timeout says so.
+ *
+ * The same defect the container backend had and the same fix, so the
+ * same evidence is owed: `timeout` was accepted, defaulted to 120 by
+ * the tool schema, and discarded, with a comment saying so as though
+ * saying it were enough. An agent planned around a deadline that would
+ * never arrive.
+ *
+ * End to end rather than through the shared helper, because the thing
+ * that was broken was the *backend forwarding its argument* -- a test
+ * of clawt_pod_bridge_call_bounded() alone would pass just as well
+ * against a backend that still dropped it on the floor.
+ *
+ * The module runs whatever `distrobox` it finds on PATH, so a fake one
+ * that sleeps is a hanging distrobox exactly. No real distrobox, no
+ * podman, and nothing to install.
+ *
+ * Trapped, because the failing shape is a hang: reproduced in process it
+ * would take the whole suite with it rather than reporting anything.
+ */
+static void
+test_distrobox_exec_gives_up_at_its_timeout(void)
+{
+    if (g_test_subprocess()) {
+        g_autoptr(ClawtPodBridge) bridge = NULL;
+        g_autoptr(ClawtComputer) computer = NULL;
+        g_autoptr(ClawtExecResult) result = NULL;
+        g_autoptr(GError) error = NULL;
+        g_autofree gchar *dir = NULL;
+        g_autofree gchar *fake = NULL;
+        g_autofree gchar *path = NULL;
+        const gchar *argv[] = { "true", NULL };
+        gint64 started;
+
+        dir = g_dir_make_tmp("clawt-slow-distrobox-XXXXXX", NULL);
+        g_assert_nonnull(dir);
+
+        fake = g_build_filename(dir, "distrobox", NULL);
+        g_assert_true(g_file_set_contents(
+            fake, "#!/bin/sh\nexec sleep 30\n", -1, NULL));
+        g_assert_cmpint(g_chmod(fake, 0755), ==, 0);
+
+        path = g_strdup_printf("%s:%s", dir, g_getenv("PATH"));
+        g_setenv("PATH", path, TRUE);
+
+        bridge = clawt_pod_bridge_new(CLAWT_TEST_POD_MODULE_DIR);
+
+        /*
+         * Skipped rather than failed when the module is not built.  A
+         * test that needs a real module and cannot find one proves
+         * nothing either way, and saying it passed would be worse.
+         */
+        if (!clawt_pod_bridge_load_module(bridge, "distrobox", NULL)) {
+            clawt_test_remove_tree(dir);
+            return;
+        }
+
+        computer = clawt_distrobox_computer_new("stuck", bridge, NULL);
+
+        started = g_get_monotonic_time();
+        result = clawt_computer_exec(computer, argv, NULL, 1, NULL, &error);
+
+        g_assert_null(result);
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_TIMEOUT);
+
+        /*
+         * And it waited for its deadline rather than refusing instantly
+         * for some unrelated reason -- a distrobox that was never found,
+         * a box that does not exist -- which would satisfy both
+         * assertions above while proving nothing at all.
+         */
+        g_assert_cmpint(g_get_monotonic_time() - started, >=,
+                        G_USEC_PER_SEC / 2);
+
+        clawt_test_remove_tree(dir);
+        return;
+    }
+
+    g_test_trap_subprocess(NULL, 30 * G_USEC_PER_SEC,
+                           G_TEST_SUBPROCESS_INHERIT_STDERR);
+    g_test_trap_assert_passed();
+}
+
+
 int
 main(int argc, char *argv[])
 {
@@ -3673,6 +3758,8 @@ main(int argc, char *argv[])
     g_test_add_func("/computer/host/timeout", test_host_times_out_a_hanging_command);
     g_test_add_func("/computer/container/exec-gives-up-at-its-timeout",
                     test_container_exec_gives_up_at_its_timeout);
+    g_test_add_func("/computer/distrobox/exec-gives-up-at-its-timeout",
+                    test_distrobox_exec_gives_up_at_its_timeout);
     g_test_add_func("/computer/host/file-transfer",
                     test_host_file_transfer_respects_the_boundary);
     g_test_add_func("/computer/host/description",

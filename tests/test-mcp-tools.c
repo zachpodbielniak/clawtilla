@@ -830,6 +830,110 @@ test_mailbox_list_reports_waiting_messages(void)
 }
 
 /* ── Computer ────────────────────────────────────────────────────── */
+/*
+ * The async form completes on the context the daemon named, not on
+ * whichever one happened to be thread-default.
+ *
+ * clawt_mcp_tools_call_async() creates two GTasks, and g_task_new()
+ * captures g_main_context_ref_thread_default() -- which is the *process*
+ * default unless somebody pushed one.  Dispatching a source pushes
+ * nothing; that is measured, not assumed, and it is the trap already
+ * recorded in this tree for the timers, the idle and the autostart task.
+ *
+ * It works today through a mechanism nothing states: g_task_return_now()
+ * pushes the task's own context around the callback it invokes, so the
+ * IPC server's async read callback happens to have the daemon's context
+ * pushed when it reaches the handler.  Every call into this function
+ * inherits that by luck of its caller rather than by anything this
+ * object does, and an embedding host driving the same object from an
+ * idle of its own -- the case libclawt exists for -- would get the
+ * process default and never see the answer at all.
+ *
+ * So the context is named.  This test calls from a caller with *no*
+ * thread-default at all, which is what any ordinary caller looks like,
+ * and iterates only the context the tools were given.
+ */
+typedef struct {
+    gboolean  arrived;
+    JsonNode *response;
+} AsyncProbe;
+
+static void
+on_async_exec_done(GObject *source, GAsyncResult *result, gpointer data)
+{
+    AsyncProbe *probe = data;
+
+    probe->response = clawt_mcp_tools_call_finish(CLAWT_MCP_TOOLS(source),
+                                                  result);
+    probe->arrived = TRUE;
+}
+
+static void
+test_an_async_exec_answers_on_the_named_context(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GMainContext) context = g_main_context_new();
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(JsonParser) parser = json_parser_new();
+    AsyncProbe probe = { FALSE, NULL };
+    ClawtAgent *agent;
+    gint64 deadline;
+    gboolean is_error = TRUE;
+    const gchar *text;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+    clawt_mcp_tools_set_main_context(fixture.tools, context);
+
+    agent = clawt_agent_manager_get(fixture.agents, "chief");
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_WORKSPACE, fixture.dir);
+    computer = clawt_host_computer_new("chief", sandbox);
+    clawt_computer_start(computer, NULL);
+    clawt_agent_set_computer(agent, computer);
+
+    g_assert_true(json_parser_load_from_data(
+        parser,
+        "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\","
+        "\"params\":{\"name\":\"clawtilla_computer_exec\","
+        "\"arguments\":{\"command\":\"echo named\",\"timeout\":10}}}",
+        -1, NULL));
+
+    /*
+     * The positive control, in the same run: this request must be one
+     * the daemon would actually defer.  Without it the test would pass
+     * against a build where nothing defers at all, since the
+     * synchronous path answers from the callback too.
+     */
+    g_assert_true(clawt_mcp_tools_call_defers(fixture.tools, "chief",
+                                              json_parser_get_root(parser)));
+
+    /*
+     * No thread-default pushed here on purpose.  This is what a caller
+     * that is not already inside a GTask callback looks like.
+     */
+    g_assert_null(g_main_context_get_thread_default());
+
+    clawt_mcp_tools_call_async(fixture.tools, "chief",
+                               json_parser_get_root(parser),
+                               on_async_exec_done, &probe);
+
+    deadline = g_get_monotonic_time() + 10 * G_USEC_PER_SEC;
+
+    while (!probe.arrived && g_get_monotonic_time() < deadline)
+        g_main_context_iteration(context, FALSE);
+
+    g_assert_true(probe.arrived);
+    g_assert_nonnull(probe.response);
+
+    text = response_text(probe.response, &is_error);
+    g_assert_false(is_error);
+    g_assert_nonnull(strstr(text, "named"));
+
+    json_node_unref(probe.response);
+    fixture_teardown(&fixture);
+}
+
+
 
 static void
 test_computer_exec_through_the_tool(void)
@@ -1609,6 +1713,8 @@ main(int argc, char *argv[])
                     test_room_history_takes_an_agent_id);
 
     g_test_add_func("/mcp/computer-exec", test_computer_exec_through_the_tool);
+    g_test_add_func("/mcp/async-exec-answers-on-the-named-context",
+                    test_an_async_exec_answers_on_the_named_context);
     g_test_add_func("/mcp/audit/an-agents-exec-is-recorded",
                     test_an_agents_exec_is_audited);
     g_test_add_func("/mcp/audit/a-refused-exec-is-recorded",

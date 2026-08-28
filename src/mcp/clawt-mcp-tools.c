@@ -438,6 +438,13 @@ struct _ClawtMcpTools {
     ClawtVmImageStore *images;   /* unowned */
     ClawtEventBus     *bus;      /* unowned */
 
+    /*
+     * The context an asynchronous answer must arrive on.  Named rather
+     * than taken from whatever is thread-default when a call comes in --
+     * see clawt_mcp_tools_call_async().
+     */
+    GMainContext *main_context;
+
     gchar *attachment_dir;
 };
 
@@ -531,6 +538,17 @@ clawt_mcp_tools_set_event_bus(ClawtMcpTools *self, ClawtEventBus *bus)
     g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
 
     self->bus = bus;
+}
+
+void
+clawt_mcp_tools_set_main_context(ClawtMcpTools *self, GMainContext *context)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    g_clear_pointer(&self->main_context, g_main_context_unref);
+
+    if (context != NULL)
+        self->main_context = g_main_context_ref(context);
 }
 
 void
@@ -2924,12 +2942,10 @@ on_exec_call_finished(GObject *source, GAsyncResult *result,
     g_object_unref(outer);
 }
 
-/**
- * clawt_mcp_tools_call_async:
- *
+/*
  * Handles one tool call without holding the calling context while the
  * command runs.  Only valid for a request clawt_mcp_tools_call_defers()
- * accepted.
+ * accepted.  The gtk-doc block is in the header.
  */
 void
 clawt_mcp_tools_call_async(ClawtMcpTools       *self,
@@ -2950,6 +2966,30 @@ clawt_mcp_tools_call_async(ClawtMcpTools       *self,
 
     g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
     g_return_if_fail(request != NULL && JSON_NODE_HOLDS_OBJECT(request));
+
+    /*
+     * g_task_new() captures g_main_context_ref_thread_default(), which
+     * is the *process* default unless somebody pushed one -- and
+     * dispatching a source pushes nothing.  Measured, not assumed: an
+     * idle callback on a fresh context sees a NULL thread-default, and
+     * so does one under g_main_loop_run().
+     *
+     * This works today only through a mechanism nothing states.
+     * g_task_return_now() pushes the task's own context around the
+     * callback it invokes, so the IPC server's async read happens to
+     * leave the daemon's context pushed by the time a request reaches
+     * here.  Every caller would be inheriting that by luck of how it was
+     * reached, and an embedding host driving this object from an idle of
+     * its own -- the case libclawt exists for -- would take the process
+     * default and never see the answer at all.
+     *
+     * So the context is named by whoever owns it, and pushed here around
+     * both tasks.  Same trap as the timers, the idle and the autostart
+     * task already recorded in this tree; this is the fourth API it has
+     * appeared behind.
+     */
+    if (self->main_context != NULL)
+        g_main_context_push_thread_default(self->main_context);
 
     outer = g_task_new(self, NULL, callback, user_data);
 
@@ -2976,6 +3016,10 @@ clawt_mcp_tools_call_async(ClawtMcpTools       *self,
                               make_response(request_id, refusal, TRUE),
                               (GDestroyNotify)json_node_unref);
         g_object_unref(outer);
+
+        if (self->main_context != NULL)
+            g_main_context_pop_thread_default(self->main_context);
+
         return;
     }
 
@@ -2984,24 +3028,17 @@ clawt_mcp_tools_call_async(ClawtMcpTools       *self,
     async->request_id = (request_id != NULL) ? json_node_ref(request_id)
                                              : NULL;
 
-    /*
-     * The inner task carries the wait; the outer one carries the answer.
-     * Both are created on the context this was dispatched from -- the
-     * daemon's own -- rather than on the process default, because
-     * dispatching a source does not make its context thread-default and
-     * a task that completes on a loop nobody runs never completes at all.
-     */
+    /* The inner task carries the wait; the outer one carries the answer. */
     inner = g_task_new(self, NULL, on_exec_call_finished, outer);
     g_task_set_task_data(inner, async, exec_async_free);
     g_task_run_in_thread(inner, exec_call_worker);
     g_object_unref(inner);
+
+    if (self->main_context != NULL)
+        g_main_context_pop_thread_default(self->main_context);
 }
 
-/**
- * clawt_mcp_tools_call_finish:
- *
- * Returns: (transfer full): the JSON-RPC response
- */
+/* Returns the JSON-RPC response.  The gtk-doc block is in the header. */
 JsonNode *
 clawt_mcp_tools_call_finish(ClawtMcpTools *self, GAsyncResult *result)
 {
@@ -3207,6 +3244,7 @@ clawt_mcp_tools_dispose(GObject *object)
     g_clear_object(&self->guard);
 
     g_clear_pointer(&self->attachment_dir, g_free);
+    g_clear_pointer(&self->main_context, g_main_context_unref);
 
     G_OBJECT_CLASS(clawt_mcp_tools_parent_class)->dispose(object);
 }

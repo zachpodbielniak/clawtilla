@@ -42,15 +42,32 @@ silently shortened directory listing treats it as the whole thing and
 reaches a confident wrong conclusion, while one told it was cut short
 asks a narrower question instead.
 
-*** ~timeout~ is honoured by two backends of five
+*** ~timeout~ means the same thing on four backends of five
 
-~host~ enforces it properly.  A VM turns it into an SSH ~ConnectTimeout~,
-capped at 30 seconds -- so it bounds *reaching* the guest and not the
-command.  ~container~ and ~distrobox~ ignore it outright: podomation's
-exec runs to completion over the Podman API and offers no deadline to
-pass on.  The tool schema advertises a 120-second default regardless, so
-a command that must be bounded should carry its own ~timeout~ inside the
-computer.
+~host~, ~container~ and ~distrobox~ all enforce it, and all mean the same
+thing by it: the command is given that many seconds and then abandoned,
+with ~CLAWT_ERROR_TIMEOUT~ and a message saying it may still be running.
+A ~timeout~ of 0 means no deadline.
+
+The odd one out is ~vm~, which turns it into an SSH ~ConnectTimeout~
+capped at 30 seconds -- so there it bounds *reaching* the guest rather
+than the command that runs in it.  A long command in a VM still needs its
+own bound inside the guest.
+
+A pod handler runs to completion and has no deadline to pass down, so for
+~container~ and ~distrobox~ the bound is held on clawtilla's side by
+~clawt_pod_bridge_call_bounded()~.  The command is not cancelled -- it
+cannot be, once podman has it -- it is stopped being waited for, which is
+why the message says so rather than reporting the command as killed.
+
+This is not what these two backends used to do.  Both took ~timeout~ and
+discarded it, each with a comment explaining that podomation offered no
+deadline to pass on.  That was true and it was an argument for holding
+the bound rather than for not having one: the tool schema advertises a
+120-second default, so an agent planned around a deadline that never
+arrived and a command that hung hung for the life of the daemon.  It
+showed only against a quiet podman, because any answer at all -- even an
+error -- ends the wait.
 
 ** none
 
@@ -493,6 +510,16 @@ that way sends you to inspect podman rather than to install anything.
 Goes through podomation's =distrobox= module, the same way the
 container backend goes through =container=; see [[#pod-modules][the
 module search path]] above, which is shared.
+
+The module must be at least the version carried by this checkout.
+Earlier ones read a handler's arguments only as the positional tuple the
+podomation DSL sends, and clawtilla calls from C, where they are an
+=a{sv}= keyed by the same names.  Every argument was therefore dropped
+and every action refused for a missing required parameter --- so
+=computer.type: distrobox= could not create, start, exec or remove
+anything.  The refusal names the argument rather than the marshalling,
+which reads as a caller that forgot one; there is nothing to configure
+around it, only a module new enough to accept both shapes.
 
 ** vm
 

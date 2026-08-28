@@ -456,14 +456,6 @@ distrobox_exec(ClawtComputer        *computer,
     const gchar *output;
     const gchar *code;
 
-    /*
-     * Not enforced, and said rather than pretended.  The module runs
-     * distrobox to completion and offers no deadline to pass on, and an
-     * agent that believes a timeout applies will wait for one that
-     * never arrives.
-     */
-    (void)timeout_seconds;
-
     if (cancellable != NULL && g_cancellable_is_cancelled(cancellable)) {
         g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_CANCELLED,
                             "the command was cancelled before it started");
@@ -503,8 +495,17 @@ distrobox_exec(ClawtComputer        *computer,
     g_hash_table_insert(params, g_strdup("name"), g_strdup(self->name));
     g_hash_table_insert(params, g_strdup("command"), g_strdup(command));
 
-    result = clawt_pod_bridge_call(self->bridge, "distrobox", "exec", params,
-                                   error);
+    /*
+     * The deadline is held on this side.  The module runs distrobox to
+     * completion and offers none to pass down, which used to be written
+     * here as a reason not to have one -- leaving `timeout` accepted,
+     * defaulted to 120 by the tool schema, and dropped.  The same wait
+     * the container backend uses, from the same function, because two
+     * of these would differ exactly once.
+     */
+    result = clawt_pod_bridge_call_bounded(self->bridge, "distrobox", NULL,
+                                           "exec", params, timeout_seconds,
+                                           error);
 
     if (result == NULL)
         return NULL;

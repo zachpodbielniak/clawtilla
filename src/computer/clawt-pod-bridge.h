@@ -155,6 +155,41 @@ GHashTable *clawt_pod_bridge_call_for(ClawtPodBridge  *self,
                                       GError         **error);
 
 /**
+ * clawt_pod_bridge_call_bounded:
+ * @self: a #ClawtPodBridge
+ * @module_name: which module
+ * @connection_uri: (nullable): which instance
+ * @action: the handler to invoke, e.g. "exec"
+ * @params: (transfer none) (element-type utf8 utf8): named arguments
+ * @timeout_seconds: how long to wait, or 0 for no deadline
+ * @error: (out) (optional): return location for a #GError
+ *
+ * As clawt_pod_bridge_call_for(), giving up after @timeout_seconds.
+ *
+ * A pod handler runs to completion and offers no deadline to pass down,
+ * so the bound is held on this side: the call goes to a thread and the
+ * wait runs on a private context, so the timeout source is attached to
+ * the loop that is actually running. That detail is the whole
+ * implementation -- g_timeout_add_seconds() would attach to the process
+ * default, which this loop is not, and the deadline would never fire.
+ *
+ * The command cannot be unasked once the module has it, so the thread
+ * finishes either way and its result is discarded if nobody is still
+ * waiting. Giving up is %CLAWT_ERROR_TIMEOUT, and the message says the
+ * work may still be running, because it is.
+ *
+ * Returns: (transfer full) (nullable) (element-type utf8 utf8): the result,
+ *   or %NULL on failure or timeout
+ */
+GHashTable *clawt_pod_bridge_call_bounded(ClawtPodBridge  *self,
+                                          const gchar     *module_name,
+                                          const gchar     *connection_uri,
+                                          const gchar     *action,
+                                          GHashTable      *params,
+                                          guint            timeout_seconds,
+                                          GError         **error);
+
+/**
  * clawt_pod_bridge_get_module_dir:
  * @self: a #ClawtPodBridge
  *

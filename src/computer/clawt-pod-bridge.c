@@ -383,6 +383,201 @@ variant_to_result(GVariant *variant)
     return out;
 }
 
+/*
+ * A module call with a deadline clawtilla owns.
+ *
+ * A pod handler runs to completion and offers none to pass down, so the
+ * bound has to be held on this side.  That was previously written down
+ * in two backends as a reason not to have one at all, which left
+ * `timeout` accepted and ignored on both: an agent planned around a
+ * deadline that would never arrive, and a command that hung hung for the
+ * life of the daemon.  A parameter that is documented, defaulted and
+ * then dropped is worse than one that is absent.
+ *
+ * It lives here rather than in either backend because both need it and
+ * a wait built around a mutex is exactly the thing that must not be
+ * written twice -- the second copy differs once, in the case nobody
+ * looked at.
+ *
+ * Shape copied from the host backend, which has been bounding its wait
+ * this way all along: the work goes to a thread and the wait runs on a
+ * private context, so the timeout source is attached to the loop that is
+ * actually running.  g_timeout_add_seconds() would attach to the default
+ * context, which this loop is not, and the deadline would never fire --
+ * the trap the host backend's own comment records.
+ */
+typedef struct {
+    gint          refs;
+    GMutex        lock;
+    GMainLoop    *loop;      /* cleared once nobody is waiting */
+    ClawtPodBridge *bridge;
+    gchar        *connection;
+    gchar        *module;
+    gchar        *action;
+    GHashTable   *params;
+    GHashTable   *result;
+    GError       *error;
+} ExecWait;
+
+static ExecWait *
+exec_wait_ref(ExecWait *wait)
+{
+    g_atomic_int_inc(&wait->refs);
+    return wait;
+}
+
+static void
+exec_wait_unref(ExecWait *wait)
+{
+    if (!g_atomic_int_dec_and_test(&wait->refs))
+        return;
+
+    g_clear_pointer(&wait->result, g_hash_table_unref);
+    g_clear_pointer(&wait->params, g_hash_table_unref);
+    g_clear_error(&wait->error);
+    g_clear_object(&wait->bridge);
+    g_free(wait->action);
+    g_free(wait->module);
+    g_free(wait->connection);
+    g_mutex_clear(&wait->lock);
+    g_free(wait);
+}
+
+/*
+ * The blocking call, on a thread of its own.
+ *
+ * It finishes whether or not anybody is still waiting -- podman has been
+ * asked to run the command and there is no way to unask it -- so the
+ * result is stored under the lock and the loop is quit only if it is
+ * still there.  Quitting a loop the waiter has already left is what would
+ * turn a timeout into a crash.
+ */
+static gpointer
+exec_wait_thread(gpointer data)
+{
+    ExecWait *wait = data;
+    GHashTable *result;
+    g_autoptr(GError) error = NULL;
+
+    result = clawt_pod_bridge_call_for(wait->bridge, wait->module,
+                                       wait->connection, wait->action,
+                                       wait->params, &error);
+
+    g_mutex_lock(&wait->lock);
+
+    wait->result = result;
+    wait->error = g_steal_pointer(&error);
+
+    if (wait->loop != NULL)
+        g_main_loop_quit(wait->loop);
+
+    g_mutex_unlock(&wait->lock);
+
+    exec_wait_unref(wait);
+
+    return NULL;
+}
+
+static gboolean
+on_bounded_call_timeout(gpointer data)
+{
+    ExecWait *wait = data;
+
+    g_mutex_lock(&wait->lock);
+
+    if (wait->loop != NULL)
+        g_main_loop_quit(wait->loop);
+
+    g_mutex_unlock(&wait->lock);
+
+    return G_SOURCE_REMOVE;
+}
+
+GHashTable *
+clawt_pod_bridge_call_bounded(ClawtPodBridge  *self,
+                              const gchar     *module_name,
+                              const gchar     *connection_uri,
+                              const gchar     *action,
+                              GHashTable      *params,
+                              guint            timeout_seconds,
+                              GError         **error)
+{
+    g_autoptr(GMainContext) context = NULL;
+    g_autoptr(GMainLoop) loop = NULL;
+    GSource *timeout_source = NULL;
+    GThread *thread;
+    ExecWait *wait;
+    GHashTable *result = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_POD_BRIDGE(self), NULL);
+    g_return_val_if_fail(params != NULL, NULL);
+
+    /*
+     * Zero means the caller wants no deadline, which is the same
+     * agreement every other backend keeps.  Straight through, so a
+     * deliberate unbounded command costs no thread.
+     */
+    if (timeout_seconds == 0)
+        return clawt_pod_bridge_call_for(self, module_name, connection_uri,
+                                         action, params, error);
+
+    wait = g_new0(ExecWait, 1);
+    wait->refs = 1;
+    g_mutex_init(&wait->lock);
+    wait->bridge = g_object_ref(self);
+    wait->module = g_strdup(module_name);
+    wait->connection = g_strdup(connection_uri);
+    wait->action = g_strdup(action);
+    wait->params = g_hash_table_ref(params);
+
+    context = g_main_context_new();
+    g_main_context_push_thread_default(context);
+    loop = g_main_loop_new(context, FALSE);
+    wait->loop = loop;
+
+    timeout_source = g_timeout_source_new_seconds(timeout_seconds);
+    g_source_set_callback(timeout_source, on_bounded_call_timeout, wait,
+                          NULL);
+    g_source_attach(timeout_source, context);
+
+    thread = g_thread_new("pod-bounded-call", exec_wait_thread,
+                          exec_wait_ref(wait));
+    g_thread_unref(thread);
+
+    g_main_loop_run(loop);
+
+    g_source_destroy(timeout_source);
+    g_source_unref(timeout_source);
+    g_main_context_pop_thread_default(context);
+
+    g_mutex_lock(&wait->lock);
+
+    /*
+     * Cleared before the lock is dropped, so a call that comes back after
+     * the deadline finds nothing to quit and simply stores its result for
+     * nobody.
+     */
+    wait->loop = NULL;
+
+    if (wait->result != NULL) {
+        result = g_steal_pointer(&wait->result);
+    } else if (wait->error != NULL) {
+        g_propagate_error(error, g_steal_pointer(&wait->error));
+    } else {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_TIMEOUT,
+                    "the command did not finish within %u seconds; it may "
+                    "still be running in the computer",
+                    timeout_seconds);
+    }
+
+    g_mutex_unlock(&wait->lock);
+
+    exec_wait_unref(wait);
+
+    return result;
+}
+
+
 GHashTable *
 clawt_pod_bridge_call(ClawtPodBridge  *self,
                       const gchar     *module_name,
