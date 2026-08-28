@@ -940,6 +940,38 @@ and if it persists, the cached probe is stale:
 rm -rf ~/.cache/libvirt/qemu/cache/capabilities
 #+end_src
 
+*** Which emulator a domain runs
+:PROPERTIES:
+:CUSTOM_ID: vm-emulator
+:END:
+
+clawtilla writes an =<emulator>= into the domain, chosen by looking in
+=/usr/bin= first and falling back to =PATH=.
+
+Naming it is not tidiness.  A domain that names none gets one from
+libvirt, and libvirt finds it by searching the *session daemon's* own
+=PATH= --- so a host with another package manager ahead of =/usr/bin=
+gets a domain pointing into a home directory.  SELinux then refuses it:
+=svirt_t= cannot entrypoint a binary labelled =user_home_t=, so the
+domain defines, the start fails, and the only record is an AVC denial in
+the audit log naming a path nobody chose.  See
+[[file:troubleshooting.org][troubleshooting.org]] for the denial itself.
+
+The qemu backend resolves the same way, for the same reason one layer
+along: a bare name in its argv goes through whatever =PATH= the shell
+that started =clawtillad= happened to have.
+
+Set ~computer.vm.emulator~ for a host whose QEMU is somewhere else ---
+Enterprise Linux's =/usr/libexec/qemu-kvm= is a different *name*, not
+just a different directory, so no amount of searching reaches it.  A host with no QEMU anywhere gets *no* =<emulator>=
+element rather than a path that is not there --- libvirt then does what
+it did before, where a domain naming a missing file would not define at
+all.
+
+A domain defined by an earlier build keeps the emulator libvirt chose
+for it.  Editing it by hand does not last, since the domain is
+redefined on every provision; rebuild the agent's computer instead.
+
 *** Stopping one
 
 ~shutdown~ first, so the guest flushes its filesystems -- a VM pulled out
@@ -1246,6 +1278,29 @@ so in a warning.  Absent is still everybody --- a list under =defaults=
 should mean what the word says --- but a typo that handed your home
 directory to the whole fleet is far worse than one that handed it to
 nothing.
+
+=agents:= and =teams:= are matched separately, and an id in the wrong
+one matches *nothing*.  That is deliberate --- an agent removed for the
+afternoon must not stop the fleet starting --- and it is also how a
+team id written under =agents:= comes to share a folder with nobody
+while every agent that was meant to get it starts perfectly.  The whole
+symptom is an agent missing a directory, which is why the fleet says it
+out loud instead:
+
+#+begin_example
+shared folder /work/source lists 'forge' under agents:, but 'forge' is
+a team. Only agent ids match there, so it reaches nobody -- move it to
+teams:.
+#+end_example
+
+Written to the daemon's log at start, and shown by =clawtilla folders=
+and by both graphical clients above the list.  An entry naming nobody
+who exists says so; one scoped to a team with no members is reported as
+reaching none of them; =scope: none= never warns, because an entry
+parked on purpose is a decision rather than a mistake.
+
+Reported rather than refused, like the team rules: a fleet is edited by
+hand and half-built states are ordinary.
 
 *** Which agents get them
 :PROPERTIES:

@@ -572,3 +572,156 @@ clawt_mount_covers(ClawtMount *self, const gchar *agent_id, const gchar *team)
                               (const gchar *const *)self->teams,
                               agent_id, team);
 }
+
+/* The team an agent is on, or NULL. An empty string is not a team. */
+static const gchar *
+agent_team(ClawtAgentConfig *agent)
+{
+    const gchar *team = clawt_agent_config_get_string(agent, "team");
+
+    return (team != NULL && *team != '\0') ? team : NULL;
+}
+
+static gboolean
+fleet_has_agent(GPtrArray *agents, const gchar *id)
+{
+    guint i;
+
+    for (i = 0; agents != NULL && i < agents->len; i++) {
+        ClawtAgentConfig *agent = g_ptr_array_index(agents, i);
+
+        if (g_strcmp0(clawt_agent_config_get_id(agent), id) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+/*
+ * A team is one somebody declared *or* one an agent claims to be on.
+ * Both, because clawt_mount_covers() matches on the string an agent
+ * carries rather than on the declaration -- so warning about an
+ * undeclared team that agents are nonetheless on would be a warning
+ * contradicting what the daemon goes on to do. The team validator is
+ * what says the declaration is missing; that is its job, not this one's.
+ */
+static gboolean
+fleet_has_team(GPtrArray *teams, GPtrArray *agents, const gchar *id)
+{
+    guint i;
+
+    for (i = 0; teams != NULL && i < teams->len; i++) {
+        ClawtTeamSpec *spec = g_ptr_array_index(teams, i);
+
+        if (g_strcmp0(spec->id, id) == 0)
+            return TRUE;
+    }
+
+    for (i = 0; agents != NULL && i < agents->len; i++) {
+        if (g_strcmp0(agent_team(g_ptr_array_index(agents, i)), id) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+gboolean
+clawt_mount_validate_fleet(ClawtConfig *config, GStrv *warnings)
+{
+    g_autoptr(GPtrArray) found = NULL;
+    g_autoptr(GPtrArray) mounts = NULL;
+    g_autoptr(GPtrArray) teams = NULL;
+    GPtrArray *agents;
+    guint i;
+
+    if (warnings != NULL)
+        *warnings = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(config), TRUE);
+
+    found = g_ptr_array_new_with_free_func(g_free);
+    mounts = clawt_config_get_default_mounts(config);
+    teams = clawt_config_get_teams(config);
+    agents = clawt_config_get_agents(config);
+
+    for (i = 0; mounts != NULL && i < mounts->len; i++) {
+        ClawtMount *mount = g_ptr_array_index(mounts, i);
+        const gchar *target = clawt_mount_get_target(mount);
+        const gchar * const *named;
+        guint said = found->len;
+        guint j;
+        gboolean reaches = FALSE;
+
+        /*
+         * `all` covers the fleet by construction and `none` is a parked
+         * entry somebody chose to keep. Only `selected` can be wrong
+         * about who it names.
+         */
+        if (clawt_mount_get_scope(mount) != CLAWT_SCOPE_SELECTED)
+            continue;
+
+        named = clawt_mount_get_agents(mount);
+
+        for (j = 0; named != NULL && named[j] != NULL; j++) {
+            if (fleet_has_agent(agents, named[j]))
+                continue;
+
+            if (fleet_has_team(teams, agents, named[j]))
+                g_ptr_array_add(found, g_strdup_printf(
+                    "shared folder %s lists '%s' under agents:, but '%s' is "
+                    "a team. Only agent ids match there, so it reaches "
+                    "nobody -- move it to teams:.",
+                    target, named[j], named[j]));
+            else
+                g_ptr_array_add(found, g_strdup_printf(
+                    "shared folder %s lists '%s' under agents:, which is "
+                    "neither an agent nor a team.", target, named[j]));
+        }
+
+        named = clawt_mount_get_teams(mount);
+
+        for (j = 0; named != NULL && named[j] != NULL; j++) {
+            if (fleet_has_team(teams, agents, named[j]))
+                continue;
+
+            if (fleet_has_agent(agents, named[j]))
+                g_ptr_array_add(found, g_strdup_printf(
+                    "shared folder %s lists '%s' under teams:, but '%s' is "
+                    "an agent. Only team ids match there, so it reaches "
+                    "nobody -- move it to agents:.",
+                    target, named[j], named[j]));
+            else
+                g_ptr_array_add(found, g_strdup_printf(
+                    "shared folder %s lists '%s' under teams:, which is "
+                    "neither a team nor an agent.", target, named[j]));
+        }
+
+        for (j = 0; agents != NULL && j < agents->len && !reaches; j++) {
+            ClawtAgentConfig *agent = g_ptr_array_index(agents, j);
+
+            reaches = clawt_mount_covers(mount,
+                                         clawt_agent_config_get_id(agent),
+                                         agent_team(agent));
+        }
+
+        /*
+         * Only when nothing above already said why. An entry naming one
+         * bad id has been explained; repeating the consequence would
+         * make the useful line the second one.
+         */
+        if (!reaches && found->len == said)
+            g_ptr_array_add(found, g_strdup_printf(
+                "shared folder %s is scoped to selected agents and reaches "
+                "none of them.", target));
+    }
+
+    if (found->len == 0)
+        return TRUE;
+
+    if (warnings != NULL) {
+        g_ptr_array_add(found, NULL);
+        *warnings = (GStrv)g_ptr_array_free(g_steal_pointer(&found), FALSE);
+    }
+
+    return FALSE;
+}

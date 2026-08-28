@@ -22,6 +22,13 @@
  */
 #define SHUTDOWN_GRACE_SECONDS (30)
 
+/*
+ * The emulator, matching the arch='x86_64' the domain asks for.  Both
+ * backends name the same binary because they describe the same machine;
+ * an aarch64 host wants a different one and does not have it yet.
+ */
+#define VM_EMULATOR_BINARY "qemu-system-x86_64"
+
 struct _ClawtVmComputer {
     ClawtComputer parent_instance;
 
@@ -38,6 +45,14 @@ struct _ClawtVmComputer {
     gchar *ssh_host;
     gchar *seed_iso;
     gchar *uuid;
+
+    /*
+     * The QEMU binary the guest runs under, resolved once at
+     * construction.  NULL means nothing found and each backend keeps
+     * what it did before: no <emulator> element, and the bare name in
+     * the qemu argv.
+     */
+    gchar *emulator;
 
     /*
      * The graphical session to build inside the guest, or NULL for a
@@ -91,9 +106,56 @@ clawt_vm_computer_new(const gchar    *agent_id,
     self->domain = g_strdup_printf("clawt-%s",
                                    agent_id != NULL ? agent_id : "agent");
 
+    /*
+     * Resolved here rather than at provision time so the ordinary path
+     * and the tested path are the same one.  A test that wants no
+     * emulator clears it; the factory overrides it from the config.
+     */
+    self->emulator = clawt_vm_emulator_path(VM_EMULATOR_BINARY, NULL);
+
     clawt_computer_bind_agent(CLAWT_COMPUTER(self), agent_id);
 
     return CLAWT_COMPUTER(self);
+}
+
+/*
+ * Where a distribution puts its emulator.  One entry, because
+ * /usr/bin is where Fedora, Enterprise Linux, Debian, Ubuntu and Arch
+ * all put a binary by this name -- and a root nothing has ever been
+ * found in is a claim rather than a fallback.  Enterprise Linux's
+ * /usr/libexec/qemu-kvm is a different *name*, so listing that
+ * directory would not reach it either; a host whose QEMU is somewhere
+ * else names it with computer.vm.emulator.
+ */
+static const gchar *const default_emulator_roots[] = {
+    "/usr/bin",
+    NULL
+};
+
+gchar *
+clawt_vm_emulator_path(const gchar *binary, const gchar * const *roots)
+{
+    guint i;
+
+    g_return_val_if_fail(binary != NULL, NULL);
+
+    if (roots == NULL)
+        roots = default_emulator_roots;
+
+    for (i = 0; roots[i] != NULL; i++) {
+        g_autofree gchar *candidate =
+            g_build_filename(roots[i], binary, NULL);
+
+        if (g_file_test(candidate, G_FILE_TEST_IS_EXECUTABLE))
+            return g_steal_pointer(&candidate);
+    }
+
+    /*
+     * PATH last.  A host that keeps QEMU somewhere else -- a Nix store,
+     * a home-built one -- still works; it simply does not win over the
+     * distribution's copy on a host that has both.
+     */
+    return g_find_program_in_path(binary);
 }
 
 #define SETTER(name, field)                                            \
@@ -113,6 +175,29 @@ SETTER(uri, uri)
 SETTER(image, image)
 
 #undef SETTER
+
+/*
+ * Hand-written rather than another SETTER, because that macro treats
+ * NULL as "leave it alone" and here NULL is a real answer: it is how a
+ * host with no QEMU at all, and a test asserting that case, say there is
+ * no emulator to name.
+ */
+void
+clawt_vm_computer_set_emulator(ClawtVmComputer *self, const gchar *emulator)
+{
+    g_return_if_fail(CLAWT_IS_VM_COMPUTER(self));
+
+    g_free(self->emulator);
+    self->emulator = g_strdup(emulator);
+}
+
+const gchar *
+clawt_vm_computer_get_emulator(ClawtVmComputer *self)
+{
+    g_return_val_if_fail(CLAWT_IS_VM_COMPUTER(self), NULL);
+
+    return self->emulator;
+}
 
 void
 clawt_vm_computer_set_resources(ClawtVmComputer *self,
@@ -430,6 +515,21 @@ clawt_vm_computer_build_domain_xml(ClawtVmComputer *self)
         "  <features><acpi/><apic/></features>\n"
         "  <devices>\n");
 
+    /*
+     * Named, never left to libvirt.  Left out, libvirt picks one by
+     * searching the session daemon's own PATH -- so a host with another
+     * package manager ahead of /usr/bin gets a domain pointing into a
+     * home directory, which SELinux refuses to let svirt_t start.  The
+     * domain defines and the guest never runs.
+     */
+    if (self->emulator != NULL) {
+        g_autofree gchar *escaped_emulator =
+            g_markup_escape_text(self->emulator, -1);
+
+        g_string_append_printf(out, "    <emulator>%s</emulator>\n",
+                               escaped_emulator);
+    }
+
     if (self->overlay != NULL || self->image != NULL) {
         g_autofree gchar *disk = g_markup_escape_text(
             self->overlay != NULL ? self->overlay : self->image, -1);
@@ -607,7 +707,14 @@ clawt_vm_computer_build_qemu_argv(ClawtVmComputer *self,
     argv = g_ptr_array_new_with_free_func(g_free);
     mounts = clawt_computer_get_mounts(CLAWT_COMPUTER(self));
 
-    g_ptr_array_add(argv, g_strdup("qemu-system-x86_64"));
+    /*
+     * The resolved path, for the same reason the domain names one: a
+     * bare name goes through the daemon's PATH, which is whatever the
+     * shell that started clawtillad happened to have.
+     */
+    g_ptr_array_add(argv, g_strdup(self->emulator != NULL
+                                       ? self->emulator
+                                       : VM_EMULATOR_BINARY));
     g_ptr_array_add(argv, g_strdup("-machine"));
     g_ptr_array_add(argv, g_strdup("q35,accel=kvm:tcg"));
 
@@ -2279,6 +2386,7 @@ clawt_vm_computer_finalize(GObject *object)
     g_clear_pointer(&self->ssh_host, g_free);
     g_clear_pointer(&self->seed_iso, g_free);
     g_clear_pointer(&self->uuid, g_free);
+    g_clear_pointer(&self->emulator, g_free);
     g_clear_pointer(&self->qmp_socket, g_free);
 
     G_OBJECT_CLASS(clawt_vm_computer_parent_class)->finalize(object);

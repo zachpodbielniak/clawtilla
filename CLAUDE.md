@@ -555,6 +555,89 @@ the same program.
   asserting the domain had no passt *network backend*. Assert on the
   element, not the word.
 
+### Naming no emulator is not neutral either, and libvirt resolves it by PATH
+
+- The same shape as the CPU one directly above, and worse, because the
+  default depends on a *different process's environment*. A domain that
+  names no `<emulator>` gets one from libvirt, which finds it by
+  searching the **session daemon's** `PATH` -- so a host with another
+  package manager ahead of `/usr/bin` gets
+  `<emulator>/var/home/linuxbrew/.linuxbrew/bin/qemu-system-x86_64</emulator>`
+  and SELinux refuses it: `svirt_t` cannot entrypoint a binary labelled
+  `user_home_t`. The domain defines, the start fails, and the only record
+  is an AVC denial naming a path nobody chose.
+- Proved on this machine rather than reasoned about, and the proof is two
+  commands: `virsh -c qemu:///session domcapabilities` reports
+  `/usr/sbin/qemu-system-x86_64`, which is exactly what `which -a` lists
+  first, and an existing `clawt-*` domain has that same string baked into
+  it. **libvirt resolving by PATH is checkable in one line**, and the
+  report that arrived attributed the path to clawtilla writing it -- the
+  fix is the same either way, but the layer matters for knowing what else
+  is affected.
+- Which it was: `build_qemu_argv()` had `argv[0] = "qemu-system-x86_64"`,
+  resolved through the *daemon's* PATH. Two backends, one cause, and the
+  qemu one is unambiguously ours.
+- `/usr/bin`, then PATH -- and **NULL when nothing is found**, which
+  leaves each backend exactly as it was. Naming a path
+  that does not exist would turn a working default into a domain libvirt
+  refuses to define; that is the failure mode a "safe" fallback would
+  have introduced.
+- One system root, not a list. `/usr/libexec` was in the first draft on
+  the strength of "some builds land there", which is a claim rather than
+  a fallback -- and Enterprise Linux's `/usr/libexec/qemu-kvm` is a
+  different *name*, so that directory would not have reached it anyway.
+  A root nothing has ever been found in is a stat that reads as coverage.
+- `clawt_vm_emulator_path()` takes its search roots as a parameter so the
+  preference is tested against a directory the test made rather than
+  against whatever this machine has installed -- and the test forks,
+  because proving a preference over PATH means setting PATH, and by then
+  the suite has spawned subprocesses.
+- One existing test asserted `argv[0] == "qemu-system-x86_64"`, i.e. it
+  pinned the bug. Found by the full run after the sabotage pass, not by
+  reading. **A test can encode the defect as the intention**, and the
+  only thing that catches it is running everything.
+
+### Two lists, and an id in the wrong one matches nothing
+
+- `defaults.mounts` takes `agents:` for agent ids and `teams:` for team
+  ids. A team id written under `agents:` matches nothing -- deliberately,
+  and the schema said so: "an id that names no agent is ignored rather
+  than refused", because an agent removed for the afternoon must not stop
+  the fleet starting.
+- That silence is right for the case it was written for and wrong for the
+  case that happens. The folder reaches nobody, **every agent that was
+  meant to get it starts perfectly**, and the whole symptom is a code
+  reviewer with no source tree -- discovered by the agent, which has no
+  way to know a folder was ever intended. Nothing anywhere connects the
+  two.
+- Reported, not refused, like the team rules. Each warning names the
+  entry by its target, says which list the id belongs in, and stops
+  there: the fix is one word and the diagnosis was the entire cost.
+- The summary sentence is **suppressed when a per-id warning already
+  fired**. An entry naming one bad id has been explained; adding "and it
+  reaches nobody" underneath would put the useful line second.
+- `fleet_has_team()` counts a team as existing if it is declared *or* if
+  an agent claims to be on it, because `clawt_mount_covers()` matches on
+  the string the agent carries. A warning that contradicted the rule
+  would send somebody to fix the file that was already right -- the team
+  validator is what reports a missing declaration, and saying it twice in
+  two vocabularies is worse than saying it once.
+
+### `make docs-check` cannot see an agent-relative config key
+
+- It scans `=key=` org markup and looks the name up in the schema.
+  Agent-relative keys are written `~computer.vm.image~` throughout the
+  docs -- tilde, not equals -- so **every `computer.*` name in the tree
+  is unchecked**, which is most of them. A `=computer.vm.emulator=`
+  written by habit is what exposed it: it failed, correctly, for a key
+  that does exist, because the schema spells it `agents.computer.vm.emulator`.
+- Widening the scan to `~...~` was tried and reverted. The tilde is also
+  how the docs write IPC frame kinds (`task.list`), filenames
+  (`seed.iso`) and tool names, so it produced **18 false positives in one
+  run** -- and a check that cries wolf is one people learn to ignore.
+  Telling a config key from a frame kind needs more than a regex, so the
+  gap is written down here rather than half-closed.
+
 ### A combo box cannot say "something else"
 
 - The screen-size row offers the common resolutions, and a value that is
@@ -3951,6 +4034,11 @@ the same program.
 - Never pass `environ` wholesale to a spawned agent -- use the allowlist
 - Never write a secret's value into an IPC response, a log line or a transcript
 - Never let a plugin load failure take down the daemon
+- Never let a libvirt domain name no emulator. libvirt fills one in by
+  searching the session daemon's PATH, so the binary a guest runs is
+  decided by somebody else's environment -- and SELinux refuses one
+  under a home directory. Name a system path, or name none at all; never
+  name a path that is not there
 - Never silently downgrade confinement; a missing `bwrap` is a SHADOW agent
   with a reason, not an unconfined one
 - Never push to main without approval
@@ -3970,6 +4058,10 @@ the same program.
 - Never return a secret obtained on a client's behalf to that client. A
   Matrix token goes to a 0600 file and the reply names the file
 - Never write a hand-maintained list of an option's keys. Walk the schema
+- Never let a selector that matches nothing stay silent when the entry it
+  is on then reaches nobody. `defaults.mounts` ignores an unknown id on
+  purpose, and that is right; what is not right is a folder shared with
+  nobody while every agent it was meant for starts perfectly
 - Never write a config value without dispatching on what the schema says
   it is. A list written as a scalar is accepted, saved, and read back as
   the default, and `computer.host.deny_paths` is one of them

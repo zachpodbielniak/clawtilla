@@ -1739,6 +1739,21 @@ static const ClawtSchemaEntry schema[] = {
   "qemu:///session", NULL,
   "libvirt connection URI. qemu:///system for system-wide VMs.", "0.1.0" },
 
+{ "agents.computer.vm.emulator", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "The QEMU binary to run the guest with.\n"
+  "\n"
+  "Left unset, clawtilla looks in /usr/bin and then on PATH, and writes\n"
+  "what it finds into the domain.\n"
+  "\n"
+  "Naming it matters because libvirt otherwise picks one itself, by\n"
+  "searching the session daemon's PATH -- so a host with another package\n"
+  "manager ahead of /usr/bin gets a domain pointing into a home\n"
+  "directory. SELinux refuses that: svirt_t cannot start a binary\n"
+  "labelled user_home_t, and the guest never boots. Set this only for a\n"
+  "host whose QEMU is somewhere clawtilla does not look.",
+  "0.1.0" },
+
 { "agents.computer.vm.image", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
   "Base disk image. A qcow2 overlay is created on top, so the base is\n"

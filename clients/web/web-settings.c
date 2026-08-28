@@ -902,6 +902,12 @@ folders_content(ClawtWebApp *app)
                                                "mounts");
     guint i;
 
+    /*
+     * A folder scoped to an agent or a team that is not there. Above the
+     * list, because it is the reason somebody came looking.
+     */
+    clawt_web_warnings(HTMX_ELEMENT(box), reply);
+
     if (mounts == NULL || json_array_get_length(mounts) == 0)
         clawt_web_add(box, clawt_web_empty(
             "Nothing shared yet",

@@ -248,6 +248,23 @@ A scope nobody recognises reaches *nobody*, not everybody -- a typo that
 hands a home directory to the whole fleet is far worse than one that
 hands it to nothing and says so in a warning.
 
+The two lists are matched separately, and an id in the wrong one matches
+nothing --- ~agents:~ takes agent ids, ~teams:~ takes team ids.  A
+missing id is ignored rather than refused, because an agent removed for
+the afternoon should not stop the fleet starting; what the daemon does
+instead is say so, at start and in every client's shared-folders list:
+
+#+begin_example
+shared folder /work/source lists 'forge' under agents:, but 'forge' is
+a team. Only agent ids match there, so it reaches nobody -- move it to
+teams:.
+#+end_example
+
+An entry that names nobody who exists gets the same treatment, and one
+scoped to a team that has no members is reported as reaching none of
+them.  ~scope: none~ never warns: an entry parked on purpose is a
+decision, not a mistake.
+
 An agent's own ~computer.mounts~ is merged with these rather than
 replacing them, and an agent's mount at the same target wins outright:
 both at one path is refused by validation, so the agent would stop

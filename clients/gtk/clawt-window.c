@@ -16318,6 +16318,39 @@ on_shared_folder_remove(GtkButton *button, gpointer user_data)
     refresh_settings_folders(self);
 }
 
+/*
+ * The daemon's fleet-level warnings, drawn as rows under whatever list
+ * they are about.
+ *
+ * One builder rather than one per settings page: teams, integrations and
+ * shared folders all report the same kind of thing -- a mistake only the
+ * whole fleet can see -- and three copies of this loop would be three
+ * chances for one page to stop drawing them without anybody noticing.
+ */
+static void
+append_warning_rows(GtkListBox *list, JsonNode *reply)
+{
+    JsonArray *warnings = (reply != NULL)
+        ? json_object_get_array_member(clawt_payload_of(reply), "warnings")
+        : NULL;
+    guint i;
+
+    for (i = 0; warnings != NULL && i < json_array_get_length(warnings); i++) {
+        GtkWidget *row = adw_action_row_new();
+
+        adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row), FALSE);
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                      "Worth fixing");
+        adw_action_row_set_subtitle(
+            ADW_ACTION_ROW(row),
+            json_array_get_string_element(warnings, i));
+        adw_action_row_add_prefix(
+            ADW_ACTION_ROW(row),
+            gtk_image_new_from_icon_name("dialog-warning-symbolic"));
+        gtk_list_box_append(list, row);
+    }
+}
+
 static void
 refresh_settings_folders(ClawtWindow *self)
 {
@@ -16398,6 +16431,14 @@ refresh_settings_folders(ClawtWindow *self)
 
             gtk_list_box_append(GTK_LIST_BOX(self->settings_folders), row);
         }
+
+        /*
+         * A folder scoped to an agent or a team that is not there.  The
+         * agents it was meant for start perfectly and simply do not have
+         * the directory, so this list is the only place somebody would
+         * ever find out.
+         */
+        append_warning_rows(GTK_LIST_BOX(self->settings_folders), reply);
     } while (refresh_repeat(self, CLAWT_REFRESH_SHARED_FOLDERS));
 }
 
@@ -16516,7 +16557,6 @@ refresh_settings_teams(ClawtWindow *self)
     do {
         g_autoptr(JsonNode) reply = NULL;
         JsonArray *teams;
-        JsonArray *warnings;
         guint i;
 
         clear_list(GTK_LIST_BOX(self->settings_teams));
@@ -16587,24 +16627,7 @@ refresh_settings_teams(ClawtWindow *self)
          * Shown here rather than only in the daemon's log: it is the
          * failure where work quietly goes nowhere.
          */
-        warnings = json_object_get_array_member(clawt_payload_of(reply),
-                                                "warnings");
-
-        for (i = 0; i < json_array_get_length(warnings); i++) {
-            GtkWidget *row = adw_action_row_new();
-
-            adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row),
-                                               FALSE);
-            adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
-                                          "Worth fixing");
-            adw_action_row_set_subtitle(
-                ADW_ACTION_ROW(row),
-                json_array_get_string_element(warnings, i));
-            adw_action_row_add_prefix(
-                ADW_ACTION_ROW(row),
-                gtk_image_new_from_icon_name("dialog-warning-symbolic"));
-            gtk_list_box_append(GTK_LIST_BOX(self->settings_teams), row);
-        }
+        append_warning_rows(GTK_LIST_BOX(self->settings_teams), reply);
     } while (refresh_repeat(self, CLAWT_REFRESH_TEAMS));
 }
 

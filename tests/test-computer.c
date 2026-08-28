@@ -396,6 +396,360 @@ test_vm_domain_xml_includes_shared_memory_for_mounts(void)
     g_assert_nonnull(strstr(xml, "4096"));
 }
 
+/*
+ * `defaults.mounts` takes two lists, and an id in the wrong one matches
+ * nothing.
+ *
+ * That silence was deliberate -- an agent removed for the afternoon must
+ * not stop the fleet starting -- and it is exactly wrong for the mistake
+ * that actually happens. A team id written under `agents:` shares the
+ * folder with nobody, every agent that was meant to get it starts
+ * perfectly, and the only symptom is a code reviewer with no code.
+ */
+static ClawtConfig *
+mount_fleet(const gchar *yaml)
+{
+    g_autoptr(GError) error = NULL;
+    ClawtConfig *config = clawt_config_load_from_string(yaml, &error);
+
+    g_assert_no_error(error);
+    g_assert_nonnull(config);
+
+    return config;
+}
+
+static void
+test_a_team_named_under_agents_is_named(void)
+{
+    g_autoptr(ClawtConfig) config = mount_fleet(
+        "teams:\n  - id: forge\n"
+        "defaults:\n"
+        "  mounts:\n"
+        "    - source: \"/data/source\"\n"
+        "      target: \"/work/source\"\n"
+        "      agents: [forge]\n"
+        "agents:\n"
+        "  - id: oxpecker\n    team: forge\n");
+    g_auto(GStrv) warnings = NULL;
+
+    g_assert_false(clawt_mount_validate_fleet(config, &warnings));
+    g_assert_nonnull(warnings);
+
+    /*
+     * One warning, not two. The entry reaches nobody *because* of the
+     * id, and saying both would put the useful sentence second.
+     */
+    g_assert_cmpuint(g_strv_length(warnings), ==, 1);
+
+    /* It has to name the fix, which is one word. */
+    g_assert_nonnull(strstr(warnings[0], "/work/source"));
+    g_assert_nonnull(strstr(warnings[0], "'forge' is a team"));
+    g_assert_nonnull(strstr(warnings[0], "move it to teams:"));
+}
+
+/* And the mistake the other way round, which reads the same from here. */
+static void
+test_an_agent_named_under_teams_is_named(void)
+{
+    g_autoptr(ClawtConfig) config = mount_fleet(
+        "defaults:\n"
+        "  mounts:\n"
+        "    - source: \"/data/source\"\n"
+        "      target: \"/work/source\"\n"
+        "      teams: [oxpecker]\n"
+        "agents:\n"
+        "  - id: oxpecker\n");
+    g_auto(GStrv) warnings = NULL;
+
+    g_assert_false(clawt_mount_validate_fleet(config, &warnings));
+    g_assert_cmpuint(g_strv_length(warnings), ==, 1);
+    g_assert_nonnull(strstr(warnings[0], "'oxpecker' is an agent"));
+    g_assert_nonnull(strstr(warnings[0], "move it to agents:"));
+}
+
+/* An id that is nothing at all still gets said, without a suggestion. */
+static void
+test_an_id_that_is_nothing_is_still_said(void)
+{
+    g_autoptr(ClawtConfig) config = mount_fleet(
+        "defaults:\n"
+        "  mounts:\n"
+        "    - source: \"/data/source\"\n"
+        "      target: \"/work/source\"\n"
+        "      agents: [typo]\n"
+        "agents:\n"
+        "  - id: oxpecker\n");
+    g_auto(GStrv) warnings = NULL;
+
+    g_assert_false(clawt_mount_validate_fleet(config, &warnings));
+    g_assert_cmpuint(g_strv_length(warnings), ==, 1);
+    g_assert_nonnull(strstr(warnings[0], "neither an agent nor a team"));
+    g_assert_null(strstr(warnings[0], "move it"));
+}
+
+/*
+ * The corrected config says nothing, which is the half that matters: a
+ * check that cannot be satisfied is one people learn to ignore.
+ */
+static void
+test_a_folder_that_reaches_somebody_says_nothing(void)
+{
+    g_autoptr(ClawtConfig) config = mount_fleet(
+        "teams:\n  - id: forge\n"
+        "defaults:\n"
+        "  mounts:\n"
+        "    - source: \"/data/source\"\n"
+        "      target: \"/work/source\"\n"
+        "      teams: [forge]\n"
+        "agents:\n"
+        "  - id: oxpecker\n    team: forge\n");
+    g_auto(GStrv) warnings = NULL;
+
+    g_assert_true(clawt_mount_validate_fleet(config, &warnings));
+    g_assert_null(warnings);
+}
+
+/*
+ * `all` covers the fleet by construction and `none` is an entry somebody
+ * parked on purpose. Warning about either would be crying wolf at the
+ * two cases the scope exists for.
+ */
+static void
+test_all_and_none_are_not_mistakes(void)
+{
+    g_autoptr(ClawtConfig) config = mount_fleet(
+        "defaults:\n"
+        "  mounts:\n"
+        "    - source: \"/data/source\"\n"
+        "      target: \"/work/source\"\n"
+        "    - source: \"/data/parked\"\n"
+        "      target: \"/work/parked\"\n"
+        "      scope: none\n"
+        "      agents: [gone]\n"
+        "agents:\n"
+        "  - id: oxpecker\n");
+    g_auto(GStrv) warnings = NULL;
+
+    g_assert_true(clawt_mount_validate_fleet(config, &warnings));
+    g_assert_null(warnings);
+}
+
+/*
+ * A team that is declared, spelled right, and has nobody on it. Nothing
+ * above can see it -- every id resolves -- so this is the case the
+ * reaches-nobody sentence exists for.
+ */
+static void
+test_an_empty_team_reaches_nobody(void)
+{
+    g_autoptr(ClawtConfig) config = mount_fleet(
+        "teams:\n  - id: forge\n  - id: qa\n"
+        "defaults:\n"
+        "  mounts:\n"
+        "    - source: \"/data/source\"\n"
+        "      target: \"/work/source\"\n"
+        "      teams: [qa]\n"
+        "agents:\n"
+        "  - id: oxpecker\n    team: forge\n");
+    g_auto(GStrv) warnings = NULL;
+
+    g_assert_false(clawt_mount_validate_fleet(config, &warnings));
+    g_assert_cmpuint(g_strv_length(warnings), ==, 1);
+    g_assert_nonnull(strstr(warnings[0], "reaches none of them"));
+}
+
+/*
+ * A team nobody declared but agents are nonetheless on. The rule matches
+ * on the string an agent carries, so warning here would contradict what
+ * the daemon then does -- the team validator is what says the
+ * declaration is missing, and saying it twice in two vocabularies is how
+ * somebody ends up "fixing" the wrong file.
+ */
+static void
+test_an_undeclared_team_with_members_is_not_ours_to_report(void)
+{
+    g_autoptr(ClawtConfig) config = mount_fleet(
+        "defaults:\n"
+        "  mounts:\n"
+        "    - source: \"/data/source\"\n"
+        "      target: \"/work/source\"\n"
+        "      teams: [forge]\n"
+        "agents:\n"
+        "  - id: oxpecker\n    team: forge\n");
+    g_auto(GStrv) warnings = NULL;
+
+    g_assert_true(clawt_mount_validate_fleet(config, &warnings));
+    g_assert_null(warnings);
+}
+
+/* A fleet with no shared folders at all has nothing to say about them. */
+static void
+test_no_shared_folders_is_not_a_warning(void)
+{
+    g_autoptr(ClawtConfig) config = mount_fleet("agents:\n  - id: oxpecker\n");
+    g_auto(GStrv) warnings = NULL;
+
+    g_assert_true(clawt_mount_validate_fleet(config, &warnings));
+    g_assert_null(warnings);
+}
+
+/*
+ * The emulator, and why naming one is not a nicety.
+ *
+ * A domain that names none gets one from libvirt, which finds it by
+ * searching the *session daemon's* PATH -- so a host with another
+ * package manager ahead of /usr/bin gets a domain pointing at a binary
+ * under a home directory. SELinux refuses that: svirt_t cannot
+ * entrypoint user_home_t, so the domain defines, starts and dies with an
+ * AVC denial and nothing anywhere naming a path.
+ *
+ * The roots are a parameter so this is exercised against a directory the
+ * test made rather than against whatever this machine has installed.
+ */
+static void
+test_the_emulator_prefers_a_system_path(void)
+{
+    /*
+     * Trapped, because proving a *preference* over PATH means setting
+     * PATH -- and by the time this runs the suite has spawned
+     * subprocesses, so the process has threads and changing its
+     * environment is no longer safe. The same reason the distrobox
+     * timeout test below forks.
+     */
+    if (g_test_subprocess()) {
+        g_autofree gchar *dir = g_dir_make_tmp("clawt-emulator-XXXXXX", NULL);
+        g_autofree gchar *system_dir = NULL;
+        g_autofree gchar *brew_dir = NULL;
+        g_autofree gchar *system_qemu = NULL;
+        g_autofree gchar *brew_qemu = NULL;
+        g_autofree gchar *found = NULL;
+        const gchar *roots[2];
+
+        g_assert_nonnull(dir);
+
+        system_dir = g_build_filename(dir, "usr-bin", NULL);
+        brew_dir = g_build_filename(dir, "brew-bin", NULL);
+        g_assert_cmpint(g_mkdir_with_parents(system_dir, 0700), ==, 0);
+        g_assert_cmpint(g_mkdir_with_parents(brew_dir, 0700), ==, 0);
+
+        system_qemu = g_build_filename(system_dir, "qemu-system-x86_64", NULL);
+        brew_qemu = g_build_filename(brew_dir, "qemu-system-x86_64", NULL);
+
+        g_assert_true(g_file_set_contents(system_qemu, "#!/bin/sh\n", -1,
+                                          NULL));
+        g_assert_true(g_file_set_contents(brew_qemu, "#!/bin/sh\n", -1, NULL));
+        g_assert_cmpint(g_chmod(system_qemu, 0755), ==, 0);
+        g_assert_cmpint(g_chmod(brew_qemu, 0755), ==, 0);
+
+        /*
+         * PATH holds only the wrong one, which is the reported host
+         * exactly: a perfectly good qemu that SELinux will not let
+         * libvirt start, because it lives under a home directory.
+         */
+        g_setenv("PATH", brew_dir, TRUE);
+
+        roots[0] = system_dir;
+        roots[1] = NULL;
+
+        found = clawt_vm_emulator_path("qemu-system-x86_64", roots);
+        g_assert_cmpstr(found, ==, system_qemu);
+
+        /*
+         * With nothing in the system roots, PATH is still better than
+         * nothing: a host keeping qemu somewhere else must go on
+         * working, it simply must not win on a host that has both.
+         */
+        g_clear_pointer(&found, g_free);
+        roots[0] = "/nonexistent-clawt-root";
+        found = clawt_vm_emulator_path("qemu-system-x86_64", roots);
+        g_assert_cmpstr(found, ==, brew_qemu);
+
+        /*
+         * And nowhere at all is NULL rather than a guess. Naming a path
+         * that is not there would turn a working default into a domain
+         * libvirt refuses to define.
+         */
+        g_clear_pointer(&found, g_free);
+        g_setenv("PATH", "/nonexistent-clawt-path", TRUE);
+        found = clawt_vm_emulator_path("qemu-system-x86_64", roots);
+        g_assert_null(found);
+
+        clawt_test_remove_tree(dir);
+        return;
+    }
+
+    g_test_trap_subprocess(NULL, 30 * G_USEC_PER_SEC,
+                           G_TEST_SUBPROCESS_INHERIT_STDERR);
+    g_test_trap_assert_passed();
+}
+
+/* The domain says which binary it runs, rather than leaving it open. */
+static void
+test_the_domain_names_its_emulator(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_LIBVIRT, NULL);
+    g_autofree gchar *xml = NULL;
+
+    clawt_vm_computer_set_emulator(CLAWT_VM_COMPUTER(computer),
+                                   "/usr/bin/qemu-system-x86_64");
+
+    xml = clawt_vm_computer_build_domain_xml(CLAWT_VM_COMPUTER(computer));
+
+    g_assert_nonnull(strstr(
+        xml, "<emulator>/usr/bin/qemu-system-x86_64</emulator>"));
+
+    /* Inside the devices, where libvirt expects it. */
+    g_assert_cmpint((gint)(strstr(xml, "<emulator>") - xml), >,
+                    (gint)(strstr(xml, "<devices>") - xml));
+}
+
+/*
+ * And a host with no qemu anywhere names none, rather than naming a path
+ * that is not there. libvirt then does what it did before; a domain
+ * pointing at a missing file would not define at all.
+ */
+static void
+test_a_domain_with_no_emulator_names_none(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_LIBVIRT, NULL);
+    g_autofree gchar *xml = NULL;
+
+    clawt_vm_computer_set_emulator(CLAWT_VM_COMPUTER(computer), NULL);
+    g_assert_null(clawt_vm_computer_get_emulator(CLAWT_VM_COMPUTER(computer)));
+
+    xml = clawt_vm_computer_build_domain_xml(CLAWT_VM_COMPUTER(computer));
+
+    g_assert_null(strstr(xml, "<emulator>"));
+}
+
+/*
+ * The qemu backend has the same problem one layer along: a bare name is
+ * resolved through the daemon's PATH, which is whatever the shell that
+ * started clawtillad happened to have.
+ */
+static void
+test_the_qemu_argv_names_the_emulator(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_QEMU, NULL);
+    g_auto(GStrv) argv = NULL;
+
+    clawt_vm_computer_set_emulator(CLAWT_VM_COMPUTER(computer),
+                                   "/usr/bin/qemu-system-x86_64");
+
+    argv = clawt_vm_computer_build_qemu_argv(CLAWT_VM_COMPUTER(computer),
+                                             NULL);
+    g_assert_cmpstr(argv[0], ==, "/usr/bin/qemu-system-x86_64");
+
+    g_clear_pointer(&argv, g_strfreev);
+    clawt_vm_computer_set_emulator(CLAWT_VM_COMPUTER(computer), NULL);
+    argv = clawt_vm_computer_build_qemu_argv(CLAWT_VM_COMPUTER(computer),
+                                             NULL);
+    g_assert_cmpstr(argv[0], ==, "qemu-system-x86_64");
+}
+
 /* A read-only mount must actually say so, or it silently is not. */
 static void
 test_vm_domain_xml_marks_read_only_mounts(void)
@@ -736,7 +1090,21 @@ test_vm_qemu_argv(void)
 
     g_test_assert_expected_messages();
 
-    g_assert_cmpstr(argv[0], ==, "qemu-system-x86_64");
+    /*
+     * argv[0] is the emulator the computer resolved rather than a bare
+     * name, because a bare name goes through the daemon's own PATH --
+     * which is whatever the shell that started clawtillad happened to
+     * have, and on the host that reported this it was a home directory
+     * SELinux will not let qemu run from. A machine with no qemu at all
+     * resolves nothing, and then the name is all there is.
+     */
+    {
+        const gchar *emulator =
+            clawt_vm_computer_get_emulator(CLAWT_VM_COMPUTER(computer));
+
+        g_assert_cmpstr(argv[0], ==,
+                        emulator != NULL ? emulator : "qemu-system-x86_64");
+    }
 
     for (i = 0; argv[i] != NULL; i++) {
         if (strstr(argv[i], "/tmp/clawt-qmp.sock") != NULL)
@@ -4257,6 +4625,30 @@ main(int argc, char *argv[])
     g_test_add_func("/computer/container/no-mounts",
                     test_container_mount_json_handles_no_mounts);
 
+    g_test_add_func("/computer/mounts/a-team-under-agents-is-named",
+                    test_a_team_named_under_agents_is_named);
+    g_test_add_func("/computer/mounts/an-agent-under-teams-is-named",
+                    test_an_agent_named_under_teams_is_named);
+    g_test_add_func("/computer/mounts/an-unknown-id-is-said",
+                    test_an_id_that_is_nothing_is_still_said);
+    g_test_add_func("/computer/mounts/reaching-somebody-says-nothing",
+                    test_a_folder_that_reaches_somebody_says_nothing);
+    g_test_add_func("/computer/mounts/all-and-none-are-not-mistakes",
+                    test_all_and_none_are_not_mistakes);
+    g_test_add_func("/computer/mounts/an-empty-team-reaches-nobody",
+                    test_an_empty_team_reaches_nobody);
+    g_test_add_func("/computer/mounts/an-undeclared-team-with-members",
+                    test_an_undeclared_team_with_members_is_not_ours_to_report);
+    g_test_add_func("/computer/mounts/no-folders-is-not-a-warning",
+                    test_no_shared_folders_is_not_a_warning);
+    g_test_add_func("/computer/vm/emulator-prefers-a-system-path",
+                    test_the_emulator_prefers_a_system_path);
+    g_test_add_func("/computer/vm/domain-names-its-emulator",
+                    test_the_domain_names_its_emulator);
+    g_test_add_func("/computer/vm/domain-with-no-emulator-names-none",
+                    test_a_domain_with_no_emulator_names_none);
+    g_test_add_func("/computer/vm/qemu-argv-names-the-emulator",
+                    test_the_qemu_argv_names_the_emulator);
     g_test_add_func("/computer/vm/shared-memory",
                     test_vm_domain_xml_includes_shared_memory_for_mounts);
     g_test_add_func("/computer/vm/read-only",

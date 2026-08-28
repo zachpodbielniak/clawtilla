@@ -880,6 +880,64 @@ not inside a mount at ~/mnt/shared~.
 virtiofs.  Provisioning checks for ~virtiofsd~ and says so if it is
 missing.
 
+*** It is a shared folder, and the agent simply does not have it
+
+~defaults.mounts~ takes *two* lists --- ~agents:~ for agent ids and
+~teams:~ for team ids --- and an id in the wrong one matches nothing.
+That is deliberate: an agent removed for the afternoon must not stop the
+fleet starting.  It also means a team id written under ~agents:~ shares
+the folder with nobody, every agent that was meant to get it starts
+perfectly, and the only symptom is an agent missing a directory.
+
+The daemon says so at start and every client's shared-folders list
+repeats it:
+
+#+begin_example
+shared folder /work/source lists 'forge' under agents:, but 'forge' is
+a team. Only agent ids match there, so it reaches nobody -- move it to
+teams:.
+#+end_example
+
+#+begin_src bash
+clawtilla folders
+#+end_src
+
+prints the same warnings on stderr.  To confirm what an agent actually
+got, ask the agent rather than the fleet:
+
+#+begin_src bash
+clawtilla agent mount list oxpecker
+#+end_src
+
+and for a container, ~podman inspect clawt-<agent>~ is the last word.
+
+*** In a VM: the guest never boots, and the audit log names the emulator
+
+#+begin_example
+avc: denied { entrypoint } comm="rpc-virtqemud"
+  path=".../Cellar/qemu/11.0.1/bin/qemu-system-x86_64"
+  scontext=...:svirt_t  tcontext=...:user_home_t
+#+end_example
+
+A domain that names no ~<emulator>~ gets one from libvirt, which finds
+it by searching the *session daemon's* ~PATH~ --- so a host with another
+package manager ahead of ~/usr/bin~ ends up with a domain pointing into
+a home directory.  SELinux refuses that: libvirt's ~svirt_t~ cannot
+entrypoint a binary labelled ~user_home_t~.  The domain defines, the
+start fails, and nothing in the message names a path.
+
+clawtilla writes the emulator into the domain now, preferring
+~/usr/bin~ over ~PATH~, so this should not happen.  A domain defined by an older build keeps what
+libvirt chose; check it with
+
+#+begin_src bash
+virsh -c qemu:///session dumpxml clawt-<agent> | grep emulator
+#+end_src
+
+and rebuild the agent's computer, or set ~computer.vm.emulator~
+explicitly.  Do not relabel the other binary with ~chcon~ --- an upgrade
+of whatever installed it relabels it back.
+
 ** A command was refused
 
 #+begin_example

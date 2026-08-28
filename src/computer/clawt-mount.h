@@ -217,6 +217,38 @@ gboolean clawt_mount_covers(ClawtMount  *self,
                             const gchar *team);
 
 /**
+ * clawt_mount_validate_fleet:
+ * @config: the fleet's configuration
+ * @warnings: (out) (optional) (array zero-terminated=1): what is wrong,
+ *   or %NULL when nothing is
+ *
+ * What only the whole fleet can see about `defaults.mounts`: an entry
+ * scoped to agents or teams that do not exist, and an entry that
+ * therefore reaches nobody.
+ *
+ * `agents:` and `teams:` are two lists, and an id in the wrong one
+ * matches nothing -- deliberately, since an agent removed for the
+ * afternoon must not stop the fleet starting. That silence is fine for
+ * the case it was written for and wrong for the case that actually
+ * happens: a team id written under `agents:` shares the folder with
+ * nobody, the agents that were meant to get it start perfectly, and the
+ * only symptom is a code reviewer with no code.
+ *
+ * Reported rather than enforced, like the team rules -- a fleet is
+ * edited by hand and half-built states are ordinary. Every warning
+ * names the entry by its target and says which list to move the id to,
+ * because the fix is one word and the diagnosis is the whole cost.
+ *
+ * Whether an id matches goes through the same reasoning
+ * clawt_mount_covers() applies, so a warning cannot contradict what the
+ * daemon then does: a team is one that is declared *or* one an agent
+ * names, since that is what the rule matches on.
+ *
+ * Returns: %TRUE when there is nothing to say
+ */
+gboolean clawt_mount_validate_fleet(ClawtConfig *config, GStrv *warnings);
+
+/**
  * clawt_mount_merge_defaults:
  * @defaults: (element-type ClawtMount) (nullable): the fleet's shared
  *   folders, already filtered to the ones covering this agent

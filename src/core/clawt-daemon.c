@@ -3965,6 +3965,21 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
                       g_ptr_array_index(warnings, i));
     }
 
+    /*
+     * And what only the whole fleet can see about the shared folders: an
+     * entry scoped to an agent or a team that is not there. Said at
+     * start because the symptom otherwise is an agent missing a
+     * directory it was meant to have, noticed by the agent, days later.
+     */
+    {
+        g_auto(GStrv) mount_warnings = NULL;
+
+        clawt_mount_validate_fleet(self->config, &mount_warnings);
+
+        for (i = 0; mount_warnings != NULL && mount_warnings[i] != NULL; i++)
+            g_warning("config: %s", mount_warnings[i]);
+    }
+
     self->state_dir = clawt_config_get_path_value(self->config,
                                                   "daemon.state_dir");
 
@@ -6968,6 +6983,31 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         }
 
         json_builder_end_array(builder);
+
+        /*
+         * What only the whole fleet can show: a folder scoped to an
+         * agent or a team that is not there, and so shared with nobody.
+         * Reported here beside the list rather than refused, the same
+         * way team.list reports what it can see -- and reported at all
+         * because the alternative is silence, which is what made a team
+         * id written under agents: cost somebody an agent with no
+         * source tree and nothing to say why.
+         */
+        {
+            g_auto(GStrv) warnings = NULL;
+            guint w;
+
+            clawt_mount_validate_fleet(self->config, &warnings);
+
+            json_builder_set_member_name(builder, "warnings");
+            json_builder_begin_array(builder);
+
+            for (w = 0; warnings != NULL && warnings[w] != NULL; w++)
+                json_builder_add_string_value(builder, warnings[w]);
+
+            json_builder_end_array(builder);
+        }
+
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));

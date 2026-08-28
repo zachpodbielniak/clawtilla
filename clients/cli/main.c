@@ -2391,6 +2391,21 @@ cmd_folders(int argc, char *argv[])
                         ? "read-only" : "writable",
                     who);
         }
+
+        /*
+         * A folder scoped to somebody who is not there. On stderr, so a
+         * script reading the list is unaffected and a person running it
+         * still sees why an agent has no directory.
+         */
+        {
+            JsonArray *warnings = json_object_get_array_member(
+                json_node_get_object(reply), "warnings");
+
+            for (i = 0; warnings != NULL &&
+                        i < json_array_get_length(warnings); i++)
+                g_printerr("warning: %s\n",
+                           json_array_get_string_element(warnings, i));
+        }
     }
 
     return EXIT_SUCCESS;

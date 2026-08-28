@@ -1539,6 +1539,19 @@ agents:
         # libvirt connection URI. qemu:///system for system-wide VMs.
         uri: "qemu:///session"
 
+        # The QEMU binary to run the guest with.
+        #
+        # Left unset, clawtilla looks in /usr/bin and then on PATH, and writes
+        # what it finds into the domain.
+        #
+        # Naming it matters because libvirt otherwise picks one itself, by
+        # searching the session daemon's PATH -- so a host with another package
+        # manager ahead of /usr/bin gets a domain pointing into a home
+        # directory. SELinux refuses that: svirt_t cannot start a binary
+        # labelled user_home_t, and the guest never boots. Set this only for a
+        # host whose QEMU is somewhere clawtilla does not look.
+        emulator: null
+
         # Base disk image. A qcow2 overlay is created on top, so the base is
         # never written to and several agents can share one.
         #

@@ -471,6 +471,21 @@ clawt_computer_factory_create(ClawtAgentConfig  *agent_config,
             clawt_agent_config_get_string(agent_config, "computer.vm.uri"));
 
         {
+            /*
+             * Only when the config names one.  Unset leaves the path the
+             * constructor resolved, which is the answer for every host
+             * that keeps QEMU where its distribution puts it.
+             */
+            g_autofree gchar *emulator =
+                clawt_agent_config_get_path_value(agent_config,
+                                                  "computer.vm.emulator");
+
+            if (emulator != NULL)
+                clawt_vm_computer_set_emulator(CLAWT_VM_COMPUTER(computer),
+                                               emulator);
+        }
+
+        {
             g_autofree gchar *image =
                 clawt_agent_config_get_path_value(agent_config,
                                                   "computer.vm.image");

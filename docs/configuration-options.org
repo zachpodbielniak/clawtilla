@@ -2536,6 +2536,24 @@ libvirt domain name. Defaults to clawt-<agent-id>.
 
 libvirt connection URI. qemu:///system for system-wide VMs.
 
+*** =agents.computer.vm.emulator=
+
+- Type :: path
+- Default :: unset
+- Since :: 0.1.0
+
+The QEMU binary to run the guest with.
+
+Left unset, clawtilla looks in /usr/bin and then on PATH, and writes
+what it finds into the domain.
+
+Naming it matters because libvirt otherwise picks one itself, by
+searching the session daemon's PATH -- so a host with another package
+manager ahead of /usr/bin gets a domain pointing into a home
+directory. SELinux refuses that: svirt_t cannot start a binary
+labelled user_home_t, and the guest never boots. Set this only for a
+host whose QEMU is somewhere clawtilla does not look.
+
 *** =agents.computer.vm.image=
 
 - Type :: path

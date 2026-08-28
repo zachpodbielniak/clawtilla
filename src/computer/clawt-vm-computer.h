@@ -86,6 +86,60 @@ ClawtGuestDesktop *clawt_vm_computer_get_desktop(ClawtVmComputer *self);
 GStrv clawt_vm_computer_build_desktop_argv(ClawtVmComputer *self);
 void clawt_vm_computer_set_uri(ClawtVmComputer *self, const gchar *uri);
 void clawt_vm_computer_set_image(ClawtVmComputer *self, const gchar *image);
+
+/**
+ * clawt_vm_emulator_path:
+ * @binary: the emulator's file name, such as `qemu-system-x86_64`
+ * @roots: (nullable) (array zero-terminated=1): directories to look in
+ *   before falling back to `PATH`, or %NULL for the system one
+ *
+ * Finds the QEMU binary a VM should be run with, preferring a system
+ * location over whatever `PATH` happens to resolve.
+ *
+ * Which binary runs is not a detail. libvirt fills in an `<emulator>` of
+ * its own when a domain names none, and it finds it by searching the
+ * *session daemon's* `PATH` -- so a host with a package manager ahead of
+ * /usr/bin gets a domain pointing at, say,
+ * `/var/home/linuxbrew/.linuxbrew/bin/qemu-system-x86_64`. SELinux then
+ * refuses it: libvirt's `svirt_t` cannot entrypoint a binary labelled
+ * `user_home_t`, so the domain defines, starts, and dies with an AVC
+ * denial in the audit log and nothing anywhere naming a path. The same
+ * applies to the qemu backend, which spawns the emulator itself.
+ *
+ * Nothing found anywhere returns %NULL, which leaves each backend as it
+ * was: no `<emulator>` element for libvirt to override, and the bare
+ * name for the qemu argv. A path that does not exist would be worse than
+ * no path at all -- it turns a working default into a domain that will
+ * not define.
+ *
+ * Returns: (transfer full) (nullable): an absolute path, or %NULL
+ */
+gchar *clawt_vm_emulator_path(const gchar         *binary,
+                              const gchar * const *roots);
+
+/**
+ * clawt_vm_computer_set_emulator:
+ * @self: a #ClawtVmComputer
+ * @emulator: (nullable): an absolute path to the QEMU binary, or %NULL
+ *   to name none
+ *
+ * Pins the emulator this VM runs under.
+ *
+ * Resolved once in clawt_vm_computer_new() so the ordinary path and the
+ * tested path are the same one; `computer.vm.emulator` overrides it for
+ * a host whose QEMU is somewhere else.
+ */
+void clawt_vm_computer_set_emulator(ClawtVmComputer *self,
+                                    const gchar     *emulator);
+
+/**
+ * clawt_vm_computer_get_emulator:
+ * @self: a #ClawtVmComputer
+ *
+ * Returns: (transfer none) (nullable): the emulator, or %NULL when the
+ *   backend is left to find its own
+ */
+const gchar *clawt_vm_computer_get_emulator(ClawtVmComputer *self);
 /**
  * clawt_vm_computer_parse_resolution:
  * @text: (nullable): a resolution as `WIDTHxHEIGHT`
