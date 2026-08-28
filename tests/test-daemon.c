@@ -4786,6 +4786,365 @@ test_the_loop_runs_while_an_exec_is_outstanding(void)
     fixture_teardown(&fixture);
 }
 
+
+/* ── The operator's own computer.exec ────────────────────────────── */
+
+/*
+ * Places a real host computer on an agent without starting it.
+ *
+ * A configured computer is only built at agent start, and starting one
+ * launches a real child; what these tests are about is the daemon's
+ * dispatch around an exec, so the exec is driven all the way through the
+ * real socket and the real handler and only the computer is placed by
+ * hand.
+ */
+static void
+attach_a_host_computer(Fixture *fixture, const gchar *agent_id,
+                       const gchar *root)
+{
+    ClawtAgent *agent = clawt_agent_manager_get(
+        clawt_daemon_get_agents(fixture->daemon), agent_id);
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+
+    g_assert_nonnull(agent);
+
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_WORKSPACE, root);
+    computer = clawt_host_computer_new(agent_id, sandbox);
+    clawt_agent_set_computer(agent, computer);
+}
+
+/* Opens a client connection to the fixture's daemon socket. */
+static GSocketConnection *
+dial_the_daemon(Fixture *fixture)
+{
+    g_autoptr(GSocketClient) raw = g_socket_client_new();
+    g_autofree gchar *socket_path =
+        g_build_filename(fixture->dir, "daemon.sock", NULL);
+    g_autoptr(GSocketAddress) address =
+        g_unix_socket_address_new(socket_path);
+    g_autoptr(GError) error = NULL;
+    GSocketConnection *connection;
+
+    connection = g_socket_client_connect(raw, G_SOCKET_CONNECTABLE(address),
+                                         NULL, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(connection);
+
+    return connection;
+}
+
+/* Sends one frame down a connection opened with dial_the_daemon(). */
+static void
+send_a_frame(GSocketConnection *connection, const gchar *kind,
+             const gchar *id, const gchar *payload_json)
+{
+    g_autoptr(JsonNode) frame = clawt_ipc_request_new(kind, id);
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *line = NULL;
+    g_autofree gchar *wire = NULL;
+    GOutputStream *out;
+
+    g_assert_true(json_parser_load_from_data(parser, payload_json, -1, NULL));
+    clawt_ipc_frame_set_payload(frame,
+                                json_node_copy(json_parser_get_root(parser)));
+
+    line = clawt_ipc_frame_to_line(frame);
+    wire = g_strconcat(line, "\n", NULL);
+
+    out = g_io_stream_get_output_stream(G_IO_STREAM(connection));
+    g_assert_true(g_output_stream_write_all(out, wire, strlen(wire), NULL,
+                                            NULL, &error));
+    g_assert_no_error(error);
+}
+
+/*
+ * Reads one line back, iterating the daemon's loop while it waits.
+ *
+ * The answer is produced *by* this daemon, so a blocking read would wait
+ * for a frame that only arrives once the loop it is keeping this thread
+ * out of has run.
+ */
+static gchar *
+read_a_frame(Fixture *fixture, GSocketConnection *connection, guint seconds)
+{
+    GSocket *socket = g_socket_connection_get_socket(connection);
+    GString *reply = g_string_new(NULL);
+    gint64 wait_until = g_get_monotonic_time() +
+                        (gint64)seconds * G_USEC_PER_SEC;
+    gchar buffer[4096];
+
+    g_socket_set_blocking(socket, FALSE);
+
+    while (strchr(reply->str, '\n') == NULL &&
+           g_get_monotonic_time() < wait_until) {
+        gssize got;
+
+        g_main_context_iteration(fixture->context, FALSE);
+
+        got = g_socket_receive(socket, buffer, sizeof buffer, NULL, NULL);
+
+        if (got > 0)
+            g_string_append_len(reply, buffer, got);
+        else
+            g_usleep(10 * 1000);
+    }
+
+    g_assert_nonnull(strchr(reply->str, '\n'));
+
+    return g_string_free(reply, FALSE);
+}
+
+/*
+ * The loop keeps running while the *operator's* exec is outstanding.
+ *
+ * The tool path was moved off the main context first, and this is the
+ * same defect reached from a different caller: an IPC handler runs on the
+ * daemon's main context and answered synchronously, so a command from the
+ * CLI blocked every other agent's messages, task delivery and timers for
+ * as long as it took -- up to the advertised 120 second default.
+ *
+ * It is arguably the worse of the two, because a person at a terminal is
+ * the caller most likely to run something long on purpose, and a whole
+ * fleet appearing to hang while a command they can see running is still
+ * going reads as the fleet being broken.
+ *
+ * Phrased as a property of an *unrelated* timer, deliberately.  A test
+ * asserting anything about the exec itself cannot tell the two versions
+ * apart -- the answer arrives either way.
+ */
+static void
+test_the_loop_runs_while_an_operator_exec_is_outstanding(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GSocketConnection) connection = NULL;
+    g_autofree gchar *reply = NULL;
+    GSource *ticker;
+    guint ticks = 0;
+    gint64 deadline;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: worker\n"
+                  "    computer:\n"
+                  "      type: host\n"
+                  "      host:\n"
+                  "        confirm_host_control: true\n");
+
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    attach_a_host_computer(&fixture, "worker", fixture.dir);
+
+    connection = dial_the_daemon(&fixture);
+
+    /*
+     * Two seconds of sleep and a timeout well above it, so the command is
+     * certainly still running for the whole measurement window and the
+     * host backend's own deadline never fires.
+     */
+    send_a_frame(connection, "computer.exec", "op-1",
+                 "{\"agent\": \"worker\", \"command\": \"/bin/sleep 2\","
+                 " \"timeout\": 60}");
+
+    ticker = g_timeout_source_new(50);
+    g_source_set_callback(ticker, note_a_tick, &ticks, NULL);
+    g_source_attach(ticker, fixture.context);
+
+    deadline = g_get_monotonic_time() + (3 * G_USEC_PER_SEC) / 2;
+
+    while (g_get_monotonic_time() < deadline)
+        g_main_context_iteration(fixture.context, TRUE);
+
+    g_assert_cmpuint(ticks, >=, 10);
+
+    /*
+     * And the command really ran.  An agent with no computer is refused
+     * at once, and this test would then pass in a build where nothing had
+     * been fixed.
+     */
+    reply = read_a_frame(&fixture, connection, 30);
+
+    g_assert_null(strstr(reply, "no computer"));
+    g_assert_nonnull(strstr(reply, "\"ok\":true"));
+    g_assert_nonnull(strstr(reply, "\"exit\":0"));
+
+    g_source_destroy(ticker);
+    g_source_unref(ticker);
+
+    g_io_stream_close(G_IO_STREAM(connection), NULL, NULL);
+
+    fixture_teardown(&fixture);
+}
+
+typedef struct {
+    guint  count;
+    gchar *command;
+    gint64 exit_status;
+    gint64 at;              /* when the record was written */
+} ExecTrail;
+
+static void
+on_exec_bus_event(ClawtEventBus *bus, ClawtEvent *event, gpointer user_data)
+{
+    ExecTrail *trail = user_data;
+
+    (void)bus;
+
+    if (g_strcmp0(clawt_event_get_kind(event), "computer.exec") != 0)
+        return;
+
+    g_free(trail->command);
+    trail->command = g_strdup(clawt_event_get_detail(event, "command"));
+    trail->exit_status = clawt_event_get_detail_int(event, "exit");
+    trail->at = g_get_monotonic_time();
+    trail->count++;
+}
+
+/*
+ * The audit line survives the move off the main context.
+ *
+ * Running something on the machine is the most consequential thing this
+ * socket can do, so every command is recorded whoever asked for it.  The
+ * record used to be written on the line after the blocking call; moving
+ * the wait to a worker moves the moment the command ended with it, and a
+ * trail written when the request *arrived* would report an exit status
+ * nothing had produced yet.
+ *
+ * Once, and after the command has actually finished -- both, because a
+ * record written twice and a record written early are different bugs with
+ * the same fix.
+ */
+static void
+test_an_operator_exec_is_recorded_once_when_it_ends(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GSocketConnection) connection = NULL;
+    g_autofree gchar *reply = NULL;
+    ExecTrail trail = { 0 };
+    gint64 sent_at;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: worker\n"
+                  "    computer:\n"
+                  "      type: host\n"
+                  "      host:\n"
+                  "        confirm_host_control: true\n");
+
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    attach_a_host_computer(&fixture, "worker", fixture.dir);
+
+    g_signal_connect(clawt_daemon_get_event_bus(fixture.daemon), "event",
+                     G_CALLBACK(on_exec_bus_event), &trail);
+
+    connection = dial_the_daemon(&fixture);
+
+    sent_at = g_get_monotonic_time();
+    send_a_frame(connection, "computer.exec", "op-2",
+                 "{\"agent\": \"worker\", \"command\": \"/bin/sleep 1\","
+                 " \"timeout\": 60}");
+
+    reply = read_a_frame(&fixture, connection, 30);
+    g_assert_nonnull(strstr(reply, "\"exit\":0"));
+
+    /*
+     * The reply and the record are produced by the same callback, so
+     * there is nothing left to wait for -- but the loop is turned once
+     * more so a second record, if one were written, would have arrived
+     * before the count is read.
+     */
+    g_main_context_iteration(fixture.context, FALSE);
+
+    g_assert_cmpuint(trail.count, ==, 1);
+    g_assert_cmpstr(trail.command, ==, "/bin/sleep 1");
+    g_assert_cmpint(trail.exit_status, ==, 0);
+    g_assert_cmpint(trail.at - sent_at, >=, G_USEC_PER_SEC);
+
+    g_free(trail.command);
+
+    g_io_stream_close(G_IO_STREAM(connection), NULL, NULL);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A command that could not be run at all is still recorded.
+ *
+ * A trail holding only the successes answers the wrong question: the
+ * command somebody looks up afterwards is precisely the one that did not
+ * work.  An exit of -1 reads as "we do not know what it did", where an
+ * absent entry reads as "it did not happen".
+ */
+static void
+test_an_operator_exec_that_is_refused_is_still_recorded(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GSocketConnection) connection = NULL;
+    g_autofree gchar *reply = NULL;
+    g_autofree gchar *outside = NULL;
+    g_autofree gchar *command = NULL;
+    ExecTrail trail = { 0 };
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: worker\n"
+                  "    computer:\n"
+                  "      type: host\n"
+                  "      host:\n"
+                  "        confirm_host_control: true\n");
+
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    attach_a_host_computer(&fixture, "worker", fixture.dir);
+
+    g_signal_connect(clawt_daemon_get_event_bus(fixture.daemon), "event",
+                     G_CALLBACK(on_exec_bus_event), &trail);
+
+    connection = dial_the_daemon(&fixture);
+
+    /*
+     * Refused by the sandbox before anything is spawned, which is the
+     * shape of failure that produces no exec result at all -- as opposed
+     * to a command that ran and failed, which has one.
+     */
+    outside = g_build_filename(fixture.dir, "..", "elsewhere", NULL);
+    command = g_strdup_printf("{\"agent\": \"worker\", \"argv\":"
+                              " [\"/bin/cat\", \"%s\"], \"timeout\": 60}",
+                              outside);
+
+    send_a_frame(connection, "computer.exec", "op-3", command);
+
+    reply = read_a_frame(&fixture, connection, 30);
+    g_assert_nonnull(strstr(reply, "\"ok\":false"));
+
+    g_main_context_iteration(fixture.context, FALSE);
+
+    g_assert_cmpuint(trail.count, ==, 1);
+    g_assert_cmpint(trail.exit_status, ==, -1);
+
+    /*
+     * An argv caller has no command string, so the trail records what the
+     * command line would have been.  A record saying a command ran and
+     * not which one answers the wrong question.
+     */
+    g_assert_nonnull(trail.command);
+    g_assert_true(g_str_has_prefix(trail.command, "/bin/cat "));
+
+    g_free(trail.command);
+
+    g_io_stream_close(G_IO_STREAM(connection), NULL, NULL);
+
+    fixture_teardown(&fixture);
+}
+
 /* ── Task events ─────────────────────────────────────────────────── */
 
 typedef struct {
@@ -5768,6 +6127,12 @@ main(int argc, char *argv[])
                     test_the_loop_runs_while_a_computer_is_provisioning);
     g_test_add_func("/daemon/loop-runs-while-an-exec-is-outstanding",
                     test_the_loop_runs_while_an_exec_is_outstanding);
+    g_test_add_func("/daemon/loop-runs-while-an-operator-exec-is-outstanding",
+                    test_the_loop_runs_while_an_operator_exec_is_outstanding);
+    g_test_add_func("/daemon/operator-exec-is-recorded-once-when-it-ends",
+                    test_an_operator_exec_is_recorded_once_when_it_ends);
+    g_test_add_func("/daemon/refused-operator-exec-is-still-recorded",
+                    test_an_operator_exec_that_is_refused_is_still_recorded);
     g_test_add_func("/daemon/restart-policy-reaches-the-runtime",
                     test_a_changed_restart_policy_reaches_the_runtime);
     g_test_add_func("/daemon/second-start-reaches-the-computer",

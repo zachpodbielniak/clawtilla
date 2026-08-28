@@ -69,6 +69,26 @@ arrived and a command that hung hung for the life of the daemon.  It
 showed only against a quiet podman, because any answer at all -- even an
 error -- ends the wait.
 
+*** Nobody waits on the daemon's main thread for it
+
+A command takes as long as the command takes, and whoever asked for it
+chose the command.  Both callers -- the agent's ~clawtilla_computer_exec~
+tool and the operator's ~computer.exec~ verb -- run the wait on a worker
+through ~clawt_computer_exec_async()~ and answer when it ends, so the
+fleet keeps routing messages, delivering tasks and firing timers
+throughout.
+
+One function, not one per caller.  Two implementations of "get off the
+main thread" would differ exactly once, on the case nobody looked at,
+and that is precisely what happened here the first time: the agent's path
+was moved and the operator's was left, which was the worse of the two.
+
+The context the answer arrives on is *named* by the daemon rather than
+taken from whatever happened to be thread-default, because
+~g_task_new()~ captures the thread-default of the calling thread and
+dispatching a source pushes nothing -- so a caller reached from an idle
+of its own would have its answer delivered on a loop nobody runs.
+
 ** none
 
 The default, and the right starting point.  An agent that answers

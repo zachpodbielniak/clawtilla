@@ -577,6 +577,20 @@ the client blocks.  Waiting there for a ten-second connect timeout is ten
 seconds in which no agent's message is routed and no other client is
 answered.
 
+~computer.exec~ defers for the same reason, with the number rather larger.
+It runs whatever command it was given, on the machine, and its advertised
+default deadline is 120 seconds -- so answering it inline was two minutes
+in which the whole fleet could be silent.  The person at the terminal is
+the caller most likely to run something long on purpose, which is what
+makes this the sharper of the two exec paths: they can see their own
+command still running, so a fleet that has gone quiet reads as the fleet
+being broken.
+
+Its ~computer.exec~ event on the stream is published when the command
+*ends*, carrying the exit status -- ~-1~ when the command could not be
+run at all, which reads as "we do not know what it did" where an absent
+entry would read as "it did not happen".
+
 ~design.agent~ takes the questionnaire -- ~purpose~ (required),
 ~boundaries~, ~needs~, ~personality~, ~projects~, ~notes~ -- plus
 ~provider~ and ~model~ naming which model does the designing.  A single

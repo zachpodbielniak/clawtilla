@@ -3990,6 +3990,203 @@ test_starting_a_computer_reconciles_it_first(void)
 }
 
 
+
+/* ── Running a command without holding the caller ────────────────── */
+
+typedef struct {
+    gboolean          arrived;
+    ClawtExecResult  *result;
+    GError           *error;
+    GMainContext     *seen;     /* the thread-default inside the callback */
+} ExecProbe;
+
+static void
+on_exec_probe_done(GObject *source, GAsyncResult *result, gpointer data)
+{
+    ExecProbe *probe = data;
+
+    probe->seen = g_main_context_get_thread_default();
+    probe->result = clawt_computer_exec_finish(CLAWT_COMPUTER(source), result,
+                                               &probe->error);
+    probe->arrived = TRUE;
+}
+
+/*
+ * The async form answers on the context it was given, from a caller that
+ * has no thread-default of its own.
+ *
+ * g_task_new() captures g_main_context_ref_thread_default(), and
+ * dispatching a source pushes nothing -- so a caller reached from an idle
+ * would have its answer delivered on a loop nobody runs, and would wait
+ * for ever.  That trap has appeared behind four APIs in this tree; this
+ * is the one the daemon's `computer exec` and the agent's tool call now
+ * both go through, so it is named here rather than depended on.
+ *
+ * The assertion is on the context the *callback* saw, not merely on the
+ * answer arriving: a build that took the process default would still
+ * answer here, because this test's own loop would be the process default
+ * if nothing else were running.  Iterating only the named context is what
+ * separates them.
+ */
+static void
+test_exec_async_answers_on_the_named_context(void)
+{
+    g_autoptr(GMainContext) context = g_main_context_new();
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-exec-XXXXXX", NULL);
+    g_autoptr(ClawtSandbox) sandbox =
+        clawt_sandbox_new(CLAWT_CONFINE_WORKSPACE, dir);
+    g_autoptr(ClawtComputer) computer = clawt_host_computer_new("w", sandbox);
+    const gchar *argv[] = { "/bin/echo", "named", NULL };
+    ExecProbe probe = { 0 };
+    gint64 deadline;
+
+    g_assert_true(clawt_computer_start(computer, NULL));
+
+    /* What a caller outside a GTask callback looks like. */
+    g_assert_null(g_main_context_get_thread_default());
+
+    clawt_computer_exec_async(computer, argv, NULL, 10, context, NULL,
+                              on_exec_probe_done, &probe);
+
+    deadline = g_get_monotonic_time() + 10 * G_USEC_PER_SEC;
+
+    while (!probe.arrived && g_get_monotonic_time() < deadline)
+        g_main_context_iteration(context, FALSE);
+
+    g_assert_true(probe.arrived);
+    g_assert_null(probe.error);
+    g_assert_nonnull(probe.result);
+    g_assert_cmpint(clawt_exec_result_get_exit_status(probe.result), ==, 0);
+    g_assert_nonnull(strstr(clawt_exec_result_get_stdout(probe.result),
+                            "named"));
+    g_assert_true(probe.seen == context);
+
+    clawt_exec_result_free(probe.result);
+    clawt_test_remove_tree(dir);
+}
+
+/*
+ * The call returns before the command does.
+ *
+ * This is the whole point of the function and the one thing a test of the
+ * answer cannot see: the synchronous form answers correctly too, it just
+ * holds the caller while it does.  Measured against a command that sleeps
+ * for a second, so a return that waited would be unmistakable.
+ */
+static void
+test_exec_async_returns_before_the_command_ends(void)
+{
+    g_autoptr(GMainContext) context = g_main_context_new();
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-exec-XXXXXX", NULL);
+    g_autoptr(ClawtSandbox) sandbox =
+        clawt_sandbox_new(CLAWT_CONFINE_WORKSPACE, dir);
+    g_autoptr(ClawtComputer) computer = clawt_host_computer_new("w", sandbox);
+    const gchar *argv[] = { "/bin/sleep", "1", NULL };
+    ExecProbe probe = { 0 };
+    gint64 started;
+    gint64 returned;
+    gint64 deadline;
+
+    g_assert_true(clawt_computer_start(computer, NULL));
+
+    started = g_get_monotonic_time();
+    clawt_computer_exec_async(computer, argv, NULL, 30, context, NULL,
+                              on_exec_probe_done, &probe);
+    returned = g_get_monotonic_time();
+
+    g_assert_false(probe.arrived);
+    g_assert_cmpint(returned - started, <, G_USEC_PER_SEC / 2);
+
+    deadline = g_get_monotonic_time() + 30 * G_USEC_PER_SEC;
+
+    while (!probe.arrived && g_get_monotonic_time() < deadline)
+        g_main_context_iteration(context, FALSE);
+
+    g_assert_true(probe.arrived);
+    g_assert_nonnull(probe.result);
+    g_assert_cmpint(g_get_monotonic_time() - started, >=, G_USEC_PER_SEC);
+
+    clawt_exec_result_free(probe.result);
+    clawt_test_remove_tree(dir);
+}
+
+/*
+ * A refusal still comes back through the callback.
+ *
+ * A caller that has already deferred its IPC frame has no other way to
+ * reply, so a synchronous return here would leave that frame unanswered
+ * for ever -- the client waits out its own two-minute timeout for a
+ * mistake the daemon spotted immediately.
+ */
+static void
+test_exec_async_refuses_through_the_callback(void)
+{
+    g_autoptr(GMainContext) context = g_main_context_new();
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-exec-XXXXXX", NULL);
+    g_autoptr(ClawtSandbox) sandbox =
+        clawt_sandbox_new(CLAWT_CONFINE_WORKSPACE, dir);
+    g_autoptr(ClawtComputer) computer = clawt_host_computer_new("w", sandbox);
+    const gchar *empty[] = { NULL };
+    ExecProbe probe = { 0 };
+    gint64 deadline;
+
+    g_assert_true(clawt_computer_start(computer, NULL));
+
+    clawt_computer_exec_async(computer, empty, NULL, 10, context, NULL,
+                              on_exec_probe_done, &probe);
+
+    deadline = g_get_monotonic_time() + 10 * G_USEC_PER_SEC;
+
+    while (!probe.arrived && g_get_monotonic_time() < deadline)
+        g_main_context_iteration(context, FALSE);
+
+    g_assert_true(probe.arrived);
+    g_assert_null(probe.result);
+    g_assert_error(probe.error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT);
+
+    g_clear_error(&probe.error);
+    clawt_test_remove_tree(dir);
+}
+
+/*
+ * A command that could not be run at all reports the reason, through the
+ * same callback.  Refused by the sandbox before anything is spawned,
+ * which is the shape of failure that has no exec result to carry it.
+ */
+static void
+test_exec_async_reports_a_confinement_refusal(void)
+{
+    g_autoptr(GMainContext) context = g_main_context_new();
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-exec-XXXXXX", NULL);
+    g_autofree gchar *outside = g_build_filename(dir, "..", "elsewhere", NULL);
+    g_autoptr(ClawtSandbox) sandbox =
+        clawt_sandbox_new(CLAWT_CONFINE_WORKSPACE, dir);
+    g_autoptr(ClawtComputer) computer = clawt_host_computer_new("w", sandbox);
+    const gchar *argv[] = { "/bin/cat", NULL, NULL };
+    ExecProbe probe = { 0 };
+    gint64 deadline;
+
+    argv[1] = outside;
+
+    g_assert_true(clawt_computer_start(computer, NULL));
+
+    clawt_computer_exec_async(computer, argv, NULL, 10, context, NULL,
+                              on_exec_probe_done, &probe);
+
+    deadline = g_get_monotonic_time() + 10 * G_USEC_PER_SEC;
+
+    while (!probe.arrived && g_get_monotonic_time() < deadline)
+        g_main_context_iteration(context, FALSE);
+
+    g_assert_true(probe.arrived);
+    g_assert_null(probe.result);
+    g_assert_error(probe.error, CLAWT_ERROR, CLAWT_ERROR_CONFINEMENT);
+
+    g_clear_error(&probe.error);
+    clawt_test_remove_tree(dir);
+}
+
+
 int
 main(int argc, char *argv[])
 {
@@ -4198,6 +4395,14 @@ main(int argc, char *argv[])
                     test_a_distrobox_says_whose_home_it_has);
     g_test_add_func("/computer/distrobox/volumes-keep-mode-and-label",
                     test_distrobox_volumes_keep_their_mode_and_label);
+    g_test_add_func("/computer/exec-async-answers-on-the-named-context",
+                    test_exec_async_answers_on_the_named_context);
+    g_test_add_func("/computer/exec-async-returns-before-the-command-ends",
+                    test_exec_async_returns_before_the_command_ends);
+    g_test_add_func("/computer/exec-async-refuses-through-the-callback",
+                    test_exec_async_refuses_through_the_callback);
+    g_test_add_func("/computer/exec-async-reports-a-confinement-refusal",
+                    test_exec_async_reports_a_confinement_refusal);
     g_test_add_func("/computer/teardown/never-a-silent-success",
                     test_teardown_is_never_a_silent_success);
     g_test_add_func("/computer/vm/vanished-guest-is-rebuilt",

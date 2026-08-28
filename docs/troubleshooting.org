@@ -724,24 +724,41 @@ agents provision, and podomation bounds a silent API socket at
 A daemon showing the symptoms above is either older than that or is
 blocked somewhere else -- and the backtrace says which.
 
-An agent's own ~clawtilla_computer_exec~ is answered the same way, and
-for a sharper reason.  A provision takes as long as podman takes; an exec
-takes as long as the *command* takes, and the agent chooses the command.
-One agent running a build would otherwise make the daemon deaf to every
-other agent, every client, the event stream and its own SIGTERM -- for
-as long as the build ran.  A stack ending in ~exec_call_run~ on the main
-thread is a build older than that; on a worker thread it is working as
-intended, and the fleet should be answering normally while it sits
-there.
+Running a command is answered the same way, and for a sharper reason.  A
+provision takes as long as podman takes; an exec takes as long as the
+*command* takes, and whoever asked for it chose the command.  One build
+would otherwise make the daemon deaf to every other agent, every client,
+the event stream and its own SIGTERM -- for as long as the build ran.
 
-The operator-facing ~computer.exec~ IPC verb -- what ~clawtilla computer
-exec~ sends -- is *not* answered that way and still runs on the main
-context, so a long command issued from a client holds the daemon for its
-duration.  It is bounded rather than open-ended: the verb defaults to 120
-seconds, and on ~host~, ~container~ and ~distrobox~ that bound is now
-enforced, so the worst case is two minutes rather than for ever.  The CLI
-sends no timeout of its own, so there is no flag to lower it with; for
-anything long, ask the agent to run it instead.
+Both callers go through ~clawt_computer_exec_async()~: the agent's
+~clawtilla_computer_exec~ tool, and the operator-facing ~computer.exec~
+IPC verb that ~clawtilla computer exec~ sends.  The second was the later
+of the two and is arguably the worse: a person at a terminal is the
+caller most likely to run something long on purpose, and a fleet that
+appears to hang while a command they can *see* running is still going
+reads as the fleet being broken rather than as their own command still
+working.
+
+A stack ending in ~clawt_computer_exec~ on the main thread is a build
+older than that; on a worker thread it is working as intended, and the
+fleet should be answering normally while it sits there.  The verb is
+bounded as well as deferred -- it defaults to 120 seconds, enforced on
+~host~, ~container~ and ~distrobox~ -- but the bound is a backstop now
+rather than the thing that makes it safe.
+
+One caller is left: the agent link's ~mcp.request~ path calls the
+synchronous form, because a link handler has no way to defer.  Nothing
+reaches tools that way today, so it is a future problem rather than a
+current one; it is written down here so it is written down somewhere.
+
+The audit line moved with the wait.  Every command run through this
+socket is recorded on the event bus as ~computer.exec~ with its exit
+status, and that record is written when the command *ends* -- so
+~clawtilla event list~ shows an exit somebody can act on, rather than one
+nothing had produced yet.  A command that could not be run at all is
+recorded too, with an exit of ~-1~: a trail holding only the successes
+reads as "it did not happen" rather than as "we do not know what it
+did".
 
 The socket itself is worth checking either way:
 

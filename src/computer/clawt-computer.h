@@ -179,6 +179,65 @@ ClawtExecResult *clawt_computer_exec(ClawtComputer        *self,
                                      GCancellable         *cancellable,
                                      GError              **error);
 
+/**
+ * clawt_computer_exec_async:
+ * @self: a #ClawtComputer
+ * @argv: (array zero-terminated=1): the command
+ * @working_dir: (nullable): where to run it
+ * @timeout_seconds: give up after this long, or 0 for no limit
+ * @context: (nullable): the main context to answer on
+ * @cancellable: (nullable): a #GCancellable
+ * @callback: called when the command has finished
+ * @user_data: for @callback
+ *
+ * The same command, run on a worker thread.
+ *
+ * clawt_computer_exec() holds whichever thread it is called on for the
+ * length of the command, which is right for a caller with somebody
+ * waiting on the answer and wrong for anything running a main loop.
+ * Both of the places that had to wait -- the agent's tool call and the
+ * operator's `computer exec` -- ran on the daemon's main context, so one
+ * command blocked every other agent's messages, task delivery and timer
+ * for as long as it took, up to the advertised 120 second default. The
+ * operator's is the worse of the two: a person at a terminal is the
+ * caller most likely to run something long on purpose, and a fleet that
+ * appears to hang while a command they can see running is still going
+ * reads as the fleet being broken.
+ *
+ * @context is named rather than taken from the thread-default, because
+ * g_task_new() captures whatever is thread-default on the calling
+ * thread and dispatching a source pushes nothing -- so a caller reached
+ * from an idle of its own would have its answer delivered on a loop
+ * nobody runs. That trap has now appeared behind four APIs in this tree.
+ * %NULL means the thread-default, which is correct only for a caller
+ * that knows it is on the loop it wants.
+ *
+ * The backend is held for the length of the call, so an agent stopped
+ * mid-command does not leave the worker holding a computer the manager
+ * has dropped.
+ */
+void clawt_computer_exec_async(ClawtComputer        *self,
+                               const gchar * const  *argv,
+                               const gchar          *working_dir,
+                               guint                 timeout_seconds,
+                               GMainContext         *context,
+                               GCancellable         *cancellable,
+                               GAsyncReadyCallback   callback,
+                               gpointer              user_data);
+
+/**
+ * clawt_computer_exec_finish:
+ * @self: a #ClawtComputer
+ * @result: the #GAsyncResult
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Returns: (transfer full) (nullable): what happened, or %NULL if it
+ *   could not be run at all
+ */
+ClawtExecResult *clawt_computer_exec_finish(ClawtComputer  *self,
+                                            GAsyncResult   *result,
+                                            GError        **error);
+
 gboolean clawt_computer_put_file(ClawtComputer  *self,
                                  const gchar    *local_path,
                                  const gchar    *remote_path,

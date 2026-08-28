@@ -162,6 +162,113 @@ clawt_computer_exec(ClawtComputer        *self,
                        error);
 }
 
+/*
+ * One command, on its way to a thread.
+ *
+ * Copied rather than borrowed: the caller's argv is on its stack in most
+ * of the callers here, and the worker outlives the return.
+ */
+typedef struct {
+    GStrv   argv;
+    gchar  *working_dir;
+    guint   timeout_seconds;
+} ExecRequest;
+
+static void
+exec_request_free(gpointer data)
+{
+    ExecRequest *request = data;
+
+    g_clear_pointer(&request->argv, g_strfreev);
+    g_clear_pointer(&request->working_dir, g_free);
+    g_free(request);
+}
+
+static void
+exec_worker(GTask *task, gpointer source, gpointer data,
+            GCancellable *cancellable)
+{
+    ExecRequest *request = data;
+    ClawtExecResult *result;
+    GError *error = NULL;
+
+    result = clawt_computer_exec(CLAWT_COMPUTER(source),
+                                 (const gchar * const *)request->argv,
+                                 request->working_dir,
+                                 request->timeout_seconds, cancellable,
+                                 &error);
+
+    if (result == NULL)
+        g_task_return_error(task, error);
+    else
+        g_task_return_pointer(task, result,
+                              (GDestroyNotify)clawt_exec_result_free);
+}
+
+void
+clawt_computer_exec_async(ClawtComputer        *self,
+                          const gchar * const  *argv,
+                          const gchar          *working_dir,
+                          guint                 timeout_seconds,
+                          GMainContext         *context,
+                          GCancellable         *cancellable,
+                          GAsyncReadyCallback   callback,
+                          gpointer              user_data)
+{
+    ExecRequest *request;
+    GTask *task;
+
+    g_return_if_fail(CLAWT_IS_COMPUTER(self));
+
+    /*
+     * Pushed around g_task_new() and nothing else: that call is the one
+     * that captures the context the callback will be dispatched on, and
+     * a source's own context is not thread-default inside its dispatch.
+     */
+    if (context != NULL)
+        g_main_context_push_thread_default(context);
+
+    task = g_task_new(self, cancellable, callback, user_data);
+
+    if (context != NULL)
+        g_main_context_pop_thread_default(context);
+
+    g_task_set_source_tag(task, clawt_computer_exec_async);
+
+    /*
+     * Refused here rather than on the thread.  An empty argv is a caller
+     * mistake, and answering it through the callback would spend a
+     * thread to say so -- but it must still answer, because a caller
+     * that has already deferred an IPC frame has no other way to reply.
+     */
+    if (argv == NULL || argv[0] == NULL) {
+        g_task_return_new_error(task, CLAWT_ERROR,
+                                CLAWT_ERROR_INVALID_ARGUMENT,
+                                "no command given");
+        g_object_unref(task);
+        return;
+    }
+
+    request = g_new0(ExecRequest, 1);
+    request->argv = g_strdupv((GStrv)argv);
+    request->working_dir = g_strdup(working_dir);
+    request->timeout_seconds = timeout_seconds;
+
+    g_task_set_task_data(task, request, exec_request_free);
+    g_task_run_in_thread(task, exec_worker);
+    g_object_unref(task);
+}
+
+ClawtExecResult *
+clawt_computer_exec_finish(ClawtComputer  *self,
+                           GAsyncResult   *result,
+                           GError        **error)
+{
+    g_return_val_if_fail(g_task_is_valid(result, self), NULL);
+
+    return g_task_propagate_pointer(G_TASK(result), error);
+}
+
 gboolean
 clawt_computer_put_file(ClawtComputer  *self,
                         const gchar    *local_path,

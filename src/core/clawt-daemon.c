@@ -6214,6 +6214,97 @@ on_tool_rpc_finished(GObject *source, GAsyncResult *result,
 }
 
 
+/*
+ * One operator-run command, waiting for its own answer.
+ *
+ * `computer.exec` used to run on the daemon's main context and answer
+ * from there, so a command from the CLI blocked every other agent's
+ * messages, task delivery and timers for as long as it took -- up to the
+ * advertised 120 second default.  The tool path had already been moved
+ * off the loop; this is the same defect reached from the caller most
+ * likely to run something long on purpose.
+ */
+typedef struct {
+    ClawtDaemon     *daemon;     /* reffed: the trail is written at the end */
+    ClawtIpcPending *pending;
+    ClawtComputer   *computer;   /* reffed: the agent may stop meanwhile */
+    gchar           *agent_id;
+    gchar           *command;
+} ExecJob;
+
+static void
+exec_job_free(ExecJob *job)
+{
+    if (job == NULL)
+        return;
+
+    g_clear_object(&job->computer);
+    g_clear_object(&job->daemon);
+    g_free(job->agent_id);
+    g_free(job->command);
+    g_free(job);
+}
+
+static void
+on_ipc_exec_finished(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    ExecJob *job = user_data;
+    g_autoptr(ClawtExecResult) exec = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+
+    exec = clawt_computer_exec_finish(CLAWT_COMPUTER(source), result, &error);
+
+    /*
+     * Every host command is recorded, whoever asked for it, and the
+     * record is written here rather than beside the request -- moving the
+     * wait off the loop moves the moment the command ended with it.
+     * Running something on the machine is the most consequential thing
+     * this socket can do, and an audit trail that only covers agents
+     * would miss exactly the case a person would want to look up.
+     *
+     * A command that could not be run at all is recorded too, with an
+     * exit of -1: a trail holding only the successes reads as "it did not
+     * happen" rather than as "we do not know what it did".
+     */
+    {
+        ClawtEvent *event = clawt_event_new("computer.exec", job->agent_id);
+
+        clawt_event_set_detail(event, "command", job->command);
+        clawt_event_set_detail_int(
+            event, "exit",
+            (exec != NULL) ? clawt_exec_result_get_exit_status(exec) : -1);
+        clawt_event_bus_publish(job->daemon->bus, event);
+        clawt_event_free(event);
+    }
+
+    if (exec == NULL) {
+        clawt_ipc_pending_respond(
+            job->pending,
+            clawt_ipc_error_new(clawt_ipc_pending_get_request(job->pending),
+                                error->code, error->message));
+        exec_job_free(job);
+        return;
+    }
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "exit");
+    json_builder_add_int_value(builder,
+                               clawt_exec_result_get_exit_status(exec));
+    json_builder_set_member_name(builder, "stdout");
+    json_builder_add_string_value(builder, clawt_exec_result_get_stdout(exec));
+    json_builder_set_member_name(builder, "stderr");
+    json_builder_add_string_value(builder, clawt_exec_result_get_stderr(exec));
+    json_builder_end_object(builder);
+
+    clawt_ipc_pending_respond(
+        job->pending,
+        clawt_ipc_response_new(clawt_ipc_pending_get_request(job->pending),
+                               json_builder_get_root(builder)));
+    exec_job_free(job);
+}
+
+
 JsonNode *
 clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
 {
@@ -9044,8 +9135,8 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
                             : NULL;
         ClawtComputer *computer = (agent != NULL)
                                   ? clawt_agent_get_computer(agent) : NULL;
-        g_autoptr(ClawtExecResult) result = NULL;
         g_auto(GStrv) argv = NULL;
+        ExecJob *job;
 
         /*
          * The computer is built when the agent starts, so a stopped
@@ -9096,44 +9187,50 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
                 request, CLAWT_ERROR_INVALID_ARGUMENT,
                 error != NULL ? error->message : "no command given");
 
-        result = clawt_computer_exec(
-            computer, (const gchar * const *)argv,
-            clawt_ipc_payload_string(payload, "cwd"),
-            (guint)clawt_ipc_payload_int(payload, "timeout", 120), NULL,
-            &error);
+        job = g_new0(ExecJob, 1);
+        job->daemon = g_object_ref(self);
+        job->pending = clawt_ipc_server_defer(self->ipc_server, request);
 
-        if (result == NULL)
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        /*
-         * Every host command is recorded, whoever asked for it.  Running
-         * something on the machine is the most consequential thing this
-         * socket can do, and an audit trail that only covers agents would
-         * miss exactly the case a person would want to look up.
-         */
-        {
-            ClawtEvent *event = clawt_event_new("computer.exec", agent_id);
-
-            clawt_event_set_detail(event, "command", command);
-            clawt_event_set_detail_int(
-                event, "exit", clawt_exec_result_get_exit_status(result));
-            clawt_event_bus_publish(self->bus, event);
-            clawt_event_free(event);
+        if (job->pending == NULL) {
+            exec_job_free(job);
+            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                       "this request cannot be answered "
+                                       "later");
         }
 
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "exit");
-        json_builder_add_int_value(
-            builder, clawt_exec_result_get_exit_status(result));
-        json_builder_set_member_name(builder, "stdout");
-        json_builder_add_string_value(
-            builder, clawt_exec_result_get_stdout(result));
-        json_builder_set_member_name(builder, "stderr");
-        json_builder_add_string_value(
-            builder, clawt_exec_result_get_stderr(result));
-        json_builder_end_object(builder);
+        /*
+         * A reference of its own, for the same reason the tool path takes
+         * one: the agent can be stopped while the command is still
+         * running, and the worker must not be left holding a computer the
+         * manager has dropped.
+         */
+        job->computer = g_object_ref(computer);
+        job->agent_id = g_strdup(agent_id);
 
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+        /*
+         * The command is copied because the audit line is written when it
+         * *ends*, and by then the request frame it was read from is gone.
+         * An argv caller has no command string, so the trail records what
+         * it would have been rather than nothing -- a record that says a
+         * command ran and not which one answers the wrong question.
+         */
+        job->command = (command != NULL)
+                       ? g_strdup(command)
+                       : g_strjoinv(" ", argv);
+
+        clawt_computer_exec_async(
+            computer, (const gchar * const *)argv,
+            clawt_ipc_payload_string(payload, "cwd"),
+            (guint)clawt_ipc_payload_int(payload, "timeout", 120),
+            self->main_context, NULL, on_ipc_exec_finished, job);
+
+        /*
+         * NULL, not a frame.  The answer goes out from
+         * on_ipc_exec_finished() when the command ends; waiting here
+         * would hold the daemon's main context for the whole timeout,
+         * which is the two minutes in which nothing else is routed.
+         */
+        return NULL;
     }
 
     if (g_strcmp0(kind, "computer.rebuild") == 0) {

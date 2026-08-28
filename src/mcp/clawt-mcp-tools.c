@@ -2898,6 +2898,7 @@ clawt_mcp_tools_call_defers(ClawtMcpTools *self,
 typedef struct {
     ExecCall *call;
     JsonNode *request_id;
+    GTask    *outer;      /* owned: the answer this call is waiting on */
 } ExecAsync;
 
 static void
@@ -2907,39 +2908,34 @@ exec_async_free(gpointer data)
 
     exec_call_free(async->call);
     g_clear_pointer(&async->request_id, json_node_unref);
+    g_clear_object(&async->outer);
     g_free(async);
-}
-
-static void
-exec_call_worker(GTask *task, gpointer source, gpointer data,
-                 GCancellable *cancellable)
-{
-    ExecAsync *async = data;
-
-    (void)source;
-    (void)cancellable;
-
-    exec_call_run(async->call);
-    g_task_return_boolean(task, TRUE);
 }
 
 static void
 on_exec_call_finished(GObject *source, GAsyncResult *result,
                       gpointer user_data)
 {
-    ExecAsync *async = g_task_get_task_data(G_TASK(result));
-    GTask *outer = user_data;
+    ExecAsync *async = user_data;
     gboolean is_error = FALSE;
     g_autofree gchar *text = NULL;
 
-    (void)source;
+    /*
+     * The wait itself belongs to the computer, not to this file.  Two
+     * implementations of "run this off the main thread" -- one here and
+     * one in the daemon's IPC verb -- would differ exactly once, on the
+     * case nobody looked at.
+     */
+    async->call->result = clawt_computer_exec_finish(CLAWT_COMPUTER(source),
+                                                     result,
+                                                     &async->call->error);
 
     text = exec_call_reply(async->call, &is_error);
 
-    g_task_return_pointer(outer, make_response(async->request_id, text,
-                                               is_error),
+    g_task_return_pointer(async->outer, make_response(async->request_id, text,
+                                                      is_error),
                           (GDestroyNotify)json_node_unref);
-    g_object_unref(outer);
+    exec_async_free(async);
 }
 
 /*
@@ -2960,7 +2956,6 @@ clawt_mcp_tools_call_async(ClawtMcpTools       *self,
     JsonNode *request_id = NULL;
     g_autofree gchar *refusal = NULL;
     GTask *outer;
-    GTask *inner;
     ExecAsync *async;
     ExecCall *call;
 
@@ -3027,15 +3022,22 @@ clawt_mcp_tools_call_async(ClawtMcpTools       *self,
     async->call = call;
     async->request_id = (request_id != NULL) ? json_node_ref(request_id)
                                              : NULL;
-
-    /* The inner task carries the wait; the outer one carries the answer. */
-    inner = g_task_new(self, NULL, on_exec_call_finished, outer);
-    g_task_set_task_data(inner, async, exec_async_free);
-    g_task_run_in_thread(inner, exec_call_worker);
-    g_object_unref(inner);
+    async->outer = outer;
 
     if (self->main_context != NULL)
         g_main_context_pop_thread_default(self->main_context);
+
+    /*
+     * The context is handed on rather than relied upon: this function's
+     * push covers the task it creates itself, and the computer's task is
+     * created inside a call that has already returned to whatever the
+     * thread-default was.
+     */
+    clawt_computer_exec_async(call->computer,
+                              (const gchar * const *)call->argv,
+                              call->working_dir, call->timeout,
+                              self->main_context, NULL,
+                              on_exec_call_finished, async);
 }
 
 /* Returns the JSON-RPC response.  The gtk-doc block is in the header. */
