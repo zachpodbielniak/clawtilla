@@ -793,6 +793,46 @@ cmd_agent(int argc, char *argv[])
                         json_object_get_string_member(credentials, l->data));
         }
 
+        /*
+         * What the persona costs.  The size is always printed and the
+         * breakdown only when there is something to say -- a per-file
+         * table on every agent is noise, and noise is what stops the one
+         * that matters from being read.
+         */
+        if (json_object_has_member(json_node_get_object(reply), "identity")) {
+            JsonObject *identity = json_object_get_object_member(
+                json_node_get_object(reply), "identity");
+            gint64 bytes = json_object_get_int_member(identity, "bytes");
+            gint64 limit = json_object_get_int_member(identity, "limit");
+
+            if (bytes > 0)
+                g_print("identity:    %" G_GINT64_FORMAT " bytes of the "
+                        "%" G_GINT64_FORMAT " a command-line argument "
+                        "holds\n", bytes, limit);
+
+            if (json_object_has_member(identity, "verdict")) {
+                JsonArray *files =
+                    json_object_get_array_member(identity, "files");
+                guint i;
+
+                g_printerr("\nwarning: %s.\n",
+                           json_object_get_string_member(identity,
+                                                         "verdict"));
+
+                for (i = 0; i < json_array_get_length(files); i++) {
+                    JsonObject *file = json_array_get_object_element(files, i);
+
+                    g_printerr("  %-20s %" G_GINT64_FORMAT "%s\n",
+                               json_object_get_string_member(file, "name"),
+                               json_object_get_int_member(file, "bytes"),
+                               json_object_get_boolean_member(file, "present")
+                                   ? "" : "  (not in the workspace)");
+                }
+
+                g_printerr("\n");
+            }
+        }
+
         if (json_object_has_member(json_node_get_object(reply),
                                    "computer_detail"))
             g_print("\n%s\n",

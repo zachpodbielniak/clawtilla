@@ -2189,6 +2189,49 @@ start_agent_prepare(ClawtDaemon    *self,
                                         error))
         return FALSE;
 
+    /*
+     * How large the persona has become, said out loud before anything
+     * tries to spawn with it.
+     *
+     * An agent whose identity files exceed a single execve argument
+     * cannot start a *fresh* session on a backend that passes the system
+     * prompt as one, and the kernel's own refusal -- "Argument list too
+     * long" -- names neither the files, the size, nor the limit.  It is
+     * silent right up to the cliff, and the scaffolding encourages the
+     * growth: the generated AGENTS.org tells the agent to keep
+     * PROJECTS.org current, and PROJECTS.org is an identity file.
+     *
+     * Said and not refused.  ai-glib spills the prompt to a temporary
+     * file for claude-code, so this is not fatal there and refusing would
+     * stop an agent that works; the diagnosis for the backends that still
+     * build an argument belongs where that argument is built.  What
+     * clawtilla can say -- and nothing below it can -- is *which* file
+     * accounts for it.
+     *
+     * Measured after the files are written, so the managed region in
+     * TOOLS.org is the one this start will actually use.
+     */
+    {
+        g_autoptr(ClawtIdentitySize) size =
+            clawt_workspace_measure_identity(config);
+        g_autofree gchar *verdict = clawt_workspace_identity_verdict(size);
+
+        if (verdict != NULL) {
+            ClawtEvent *event = clawt_event_new("agent.identity", agent_id);
+
+            g_warning("%s: %s", agent_id, verdict);
+
+            clawt_event_set_detail(event, "verdict", verdict);
+            clawt_event_set_detail_int(event, "bytes", (gint64)size->total);
+            clawt_event_set_detail_int(event, "limit", (gint64)size->limit);
+            clawt_event_set_detail(event, "over",
+                                   (size->total >= size->limit) ? "true"
+                                                                : "false");
+            clawt_event_bus_publish(self->bus, event);
+            clawt_event_free(event);
+        }
+    }
+
     /* The computer first: an agent that starts before its computer is
      * ready spends its first turns discovering it cannot reach it. */
     if (clawt_agent_get_computer(agent) == NULL) {
@@ -6657,6 +6700,55 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
 
             json_builder_set_member_name(builder, "computer_detail");
             json_builder_add_string_value(builder, described);
+        }
+
+        /*
+         * What the persona costs, and where the cost is.
+         *
+         * Always reported, so a client never has to decide whether to
+         * ask; `verdict` is what decides whether there is anything to
+         * *say*, and it is absent below the threshold.  A byte count on
+         * every agent is noise, and noise is what stops the one that
+         * matters from being read.
+         */
+        {
+            g_autoptr(ClawtIdentitySize) size =
+                clawt_workspace_measure_identity(clawt_agent_get_config(agent));
+            g_autofree gchar *verdict =
+                clawt_workspace_identity_verdict(size);
+            guint i;
+
+            json_builder_set_member_name(builder, "identity");
+            json_builder_begin_object(builder);
+
+            json_builder_set_member_name(builder, "bytes");
+            json_builder_add_int_value(builder, (gint64)size->total);
+            json_builder_set_member_name(builder, "limit");
+            json_builder_add_int_value(builder, (gint64)size->limit);
+
+            if (verdict != NULL) {
+                json_builder_set_member_name(builder, "verdict");
+                json_builder_add_string_value(builder, verdict);
+            }
+
+            json_builder_set_member_name(builder, "files");
+            json_builder_begin_array(builder);
+
+            for (i = 0; i < size->files->len; i++) {
+                ClawtIdentityFile *file = g_ptr_array_index(size->files, i);
+
+                json_builder_begin_object(builder);
+                json_builder_set_member_name(builder, "name");
+                json_builder_add_string_value(builder, file->name);
+                json_builder_set_member_name(builder, "bytes");
+                json_builder_add_int_value(builder, (gint64)file->bytes);
+                json_builder_set_member_name(builder, "present");
+                json_builder_add_boolean_value(builder, file->present);
+                json_builder_end_object(builder);
+            }
+
+            json_builder_end_array(builder);
+            json_builder_end_object(builder);
         }
 
         json_builder_end_object(builder);

@@ -346,7 +346,7 @@ skip_key(const gchar *key, const ClawtSchemaEntry *entry)
 
 static void
 add_summary_card(HtmxElement *parent, JsonObject *agent,
-                 const gchar *computer_detail)
+                 const gchar *computer_detail, JsonObject *identity)
 {
     g_autoptr(HtmxDiv) card = clawt_web_card("At a glance", NULL);
     HtmxElement *body = clawt_web_card_body(card);
@@ -369,6 +369,49 @@ add_summary_card(HtmxElement *parent, JsonObject *agent,
         "Computer", clawt_web_member(agent, "computer", "none")));
     clawt_web_add(body, clawt_web_row(
         "Team", clawt_web_member(agent, "team", "—")));
+
+    /*
+     * What the persona costs, and -- only when it is worth saying --
+     * which files account for it.
+     *
+     * An agent whose identity files outgrow a single command-line
+     * argument cannot start a fresh session on a backend that passes the
+     * system prompt as one, and the kernel's refusal names neither the
+     * files nor the limit.  It is silent right up to the cliff, so the
+     * number belongs somewhere a person looks *before* anything fails.
+     *
+     * The size is shown always and the sentence only past the threshold:
+     * a row that appears only in trouble teaches nobody what normal looks
+     * like, and a paragraph on every agent is noise.
+     */
+    if (identity != NULL) {
+        gint64 bytes = clawt_web_member_int(identity, "bytes", 0);
+        gint64 limit = clawt_web_member_int(identity, "limit", 0);
+        const gchar *verdict = clawt_web_member(identity, "verdict", NULL);
+
+        if (bytes > 0) {
+            g_autofree gchar *text = g_strdup_printf(
+                "%" G_GINT64_FORMAT " bytes of %" G_GINT64_FORMAT,
+                bytes, limit);
+
+            clawt_web_add(body, clawt_web_row("Identity", text));
+        }
+
+        if (verdict != NULL) {
+            g_autoptr(HtmxDiv) note = htmx_div_new();
+            g_autofree gchar *sentence = g_strdup_printf("%s.", verdict);
+
+            htmx_element_add_class(HTMX_ELEMENT(note), "clawt-identity-size");
+            clawt_web_add(HTMX_ELEMENT(note),
+                          clawt_web_badge((bytes >= limit) ? "too large"
+                                                           : "filling up",
+                                          (bytes >= limit) ? "bad" : "warn"));
+            clawt_web_add(HTMX_ELEMENT(note),
+                          clawt_web_text(sentence, "small"));
+
+            htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(note));
+        }
+    }
 
     if (computer_detail != NULL) {
         g_autoptr(HtmxElement) details = HTMX_ELEMENT(htmx_div_new());
@@ -481,7 +524,8 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
         "lede"));
 
     add_summary_card(HTMX_ELEMENT(pad), agent,
-                     clawt_web_member(root, "computer_detail", NULL));
+                     clawt_web_member(root, "computer_detail", NULL),
+                     clawt_web_member_object(root, "identity"));
 
     escaped = g_uri_escape_string(agent_id, NULL, FALSE);
     action = g_strdup_printf("/a/%s/set", escaped);

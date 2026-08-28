@@ -262,6 +262,16 @@ clawt_alert_tier_for_event(ClawtEvent *event)
         return (clawt_event_get_detail(event, "error") != NULL)
                    ? CLAWT_ALERT_ERROR : CLAWT_ALERT_ROUTINE;
 
+    /*
+     * A persona that has outgrown what a command line can carry.  It only
+     * arrives at all past 80% of the limit, so there is nothing routine
+     * about it -- and it arrives while somebody is starting an agent
+     * rather than while they are looking at one, which is what makes it a
+     * thing that happened elsewhere.
+     */
+    if (g_strcmp0(kind, "agent.identity") == 0)
+        return CLAWT_ALERT_NOTICE;
+
     if (g_strcmp0(kind, "agent.state") == 0) {
         const gchar *state = clawt_event_get_detail(event, "state");
 

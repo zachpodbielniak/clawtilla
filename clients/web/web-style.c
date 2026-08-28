@@ -729,6 +729,15 @@ clawt_web_stylesheet(void)
     "a{color:var(--ink)}"
     ".muted{color:var(--muted)}"
     ".small{font-size:12.5px}"
+
+    /*
+     * The persona-size note.  A badge on its own line above the sentence,
+     * because the sentence names the files to shorten and wrapping it
+     * around a floated badge would break exactly where somebody reads.
+     */
+    ".clawt-identity-size{margin-top:.5rem;display:flex;flex-direction:column;"
+      "align-items:flex-start;gap:.25rem}"
+    ".clawt-identity-size p{margin:0}"
     ".stack>*+*{margin-top:12px}"
     ".htmx-request .htmx-hide{opacity:.5}"
 

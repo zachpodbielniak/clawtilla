@@ -265,6 +265,46 @@ missing required field, a duplicate id, a second chief of staff.
 
 The rest of the fleet is running normally; fix the block and reload.
 
+*** "Failed to execute child process (Argument list too long)"
+
+The agent's identity files have outgrown what a single command-line
+argument may hold, and the error names none of that: not the files, not
+the size, not the limit.  =getconf ARG_MAX= reports 2097152 on an
+ordinary machine, so the message reads as impossible --- but =ARG_MAX= is
+the *total*.  The cap that bites is =MAX_ARG_STRLEN=, 32 pages, and
+headroom in the total does not buy it back, because the kernel refuses
+the whole call over one long word.
+
+Ask before it happens:
+
+#+begin_src bash
+clawtilla agent show researcher | grep identity
+#+end_src
+
+#+begin_example
+identity:    138104 bytes of the 131072 a command-line argument holds
+#+end_example
+
+Past 80% the same command prints the largest files and what to do; both
+graphical clients show it in the agent's summary; and an
+~agent.identity~ event reaches the alerts panel at every start.
+
+Two things make this hard to catch without asking.  A *resumed* session
+is never handed a system prompt, so the agent keeps working and only a
+*fresh* session fails --- the symptom appears long after the file that
+caused it was written.  And it is silent right up to the cliff: an agent
+at 130,000 bytes behaves perfectly and the next paragraph anybody adds
+kills it.  It is also self-inflicted by design: the scaffolded
+=AGENTS.org= tells the agent to keep =PROJECTS.org= current, and
+=PROJECTS.org= is an identity file.
+
+The fix is to move closed or historical sections into a sibling =.org=
+that ~persona.identity_files~ does not name.  Nothing is lost --- the
+agent can still read it on demand --- and the spawn cost disappears.
+[[file:agents.org][agents.org]] has the per-backend table; the short
+version is that the default backend spills the prompt to a file and has
+no practical ceiling, and =grok-build= has no such flag and does.
+
 *** "there is no libpod-module-container.so in any of: …"
 
 A container, distrobox or vm agent needs podomation's loadable modules,

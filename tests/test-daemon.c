@@ -5145,6 +5145,266 @@ test_an_operator_exec_that_is_refused_is_still_recorded(void)
     fixture_teardown(&fixture);
 }
 
+/* ── What the persona costs ──────────────────────────────────────── */
+
+typedef struct {
+    guint  count;
+    gchar *verdict;
+    gchar *over;
+    gint64 bytes;
+} IdentityWatch;
+
+static void
+on_identity_bus_event(ClawtEventBus *bus, ClawtEvent *event, gpointer data)
+{
+    IdentityWatch *watch = data;
+
+    (void)bus;
+
+    if (g_strcmp0(clawt_event_get_kind(event), "agent.identity") != 0)
+        return;
+
+    g_free(watch->verdict);
+    g_free(watch->over);
+    watch->verdict = g_strdup(clawt_event_get_detail(event, "verdict"));
+    watch->over = g_strdup(clawt_event_get_detail(event, "over"));
+    watch->bytes = clawt_event_get_detail_int(event, "bytes");
+    watch->count++;
+}
+
+/* Fills an agent's SOUL.org so the assembled prompt lands near @total. */
+static void
+grow_the_persona(Fixture *fixture, const gchar *agent_id, gsize total)
+{
+    ClawtAgentConfig *config = clawt_config_get_agent(
+        clawt_daemon_get_config(fixture->daemon), agent_id);
+    g_autofree gchar *workspace = NULL;
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *filler = NULL;
+
+    g_assert_nonnull(config);
+
+    workspace = clawt_agent_config_get_workspace(config);
+    g_assert_nonnull(workspace);
+    g_assert_cmpint(g_mkdir_with_parents(workspace, 0700), ==, 0);
+
+    path = g_build_filename(workspace, "SOUL.org", NULL);
+    filler = g_strnfill(total, 'x');
+    g_assert_true(g_file_set_contents(path, filler, (gssize)total, NULL));
+}
+
+/*
+ * Starting an agent whose persona has outgrown the limit says so, on the
+ * bus, before anything tries to spawn with it.
+ *
+ * The failure this warns about is silent right up to the cliff and then
+ * arrives as "Argument list too long", which names neither the files, the
+ * size, nor the limit -- and because a *resumed* session is never handed
+ * a system prompt, it arrives long after the paragraph that caused it.
+ *
+ * On the bus rather than only in the journal, so it reaches both clients'
+ * alert panels: a warning nobody reads is the same as no warning, and the
+ * whole point here is to be seen before something breaks.
+ */
+static void
+test_an_oversized_persona_is_announced_at_start(void)
+{
+    Fixture fixture;
+    g_autofree gchar *binary = g_build_filename(CLAWT_TEST_FIXTURES,
+                                                "fake-libreclaw", NULL);
+    g_autofree gchar *extra = NULL;
+    g_autoptr(GError) error = NULL;
+    IdentityWatch watch = { 0 };
+    GLogLevelFlags fatal;
+
+    extra = g_strdup_printf(
+        "  libreclaw_binary: \"%s\"\n"
+        "agents:\n"
+        "  - id: worker\n"
+        "    enabled: true\n"
+        "    persona:\n"
+        "      identity_files: [SOUL.org]\n"
+        "    computer:\n"
+        "      type: none\n",
+        binary);
+
+    fixture_setup(&fixture, extra);
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    grow_the_persona(&fixture, "worker", CLAWT_ARG_LIMIT + 1024);
+
+    g_signal_connect(clawt_daemon_get_event_bus(fixture.daemon), "event",
+                     G_CALLBACK(on_identity_bus_event), &watch);
+
+    /*
+     * The warning is deliberate, so GTest is told not to abort on it.
+     * g_test_expect_message() is the wrong tool: with an expectation
+     * pending every *other* message the daemon logs becomes fatal in
+     * turn, and starting an agent logs several innocuous ones.
+     */
+    fatal = g_log_set_always_fatal(0);
+    g_assert_true(clawt_daemon_start_agent(fixture.daemon, "worker", &error));
+    g_log_set_always_fatal(fatal);
+    g_assert_no_error(error);
+
+    g_assert_cmpuint(watch.count, ==, 1);
+    g_assert_cmpstr(watch.over, ==, "true");
+    g_assert_cmpint(watch.bytes, >, CLAWT_ARG_LIMIT);
+    g_assert_nonnull(watch.verdict);
+    g_assert_nonnull(strstr(watch.verdict, "SOUL.org"));
+
+    /*
+     * And it is a NOTICE, so both clients' alert panels draw it rather
+     * than filing it with the routine stream nothing counts.
+     */
+    {
+        g_autoptr(ClawtEvent) event = clawt_event_new("agent.identity",
+                                                      "worker");
+
+        g_assert_cmpint(clawt_alert_tier_for_event(event), ==,
+                        CLAWT_ALERT_NOTICE);
+    }
+
+    /* Started, not refused: the default backend spills the prompt to a
+     * file and has no ceiling, so refusing would stop an agent that
+     * works. */
+    g_assert_cmpint(clawt_agent_get_state(
+                        clawt_agent_manager_get(
+                            clawt_daemon_get_agents(fixture.daemon),
+                            "worker")),
+                    !=, CLAWT_AGENT_STATE_SHADOW);
+
+    clawt_daemon_stop_agent(fixture.daemon, "worker");
+
+    g_free(watch.verdict);
+    g_free(watch.over);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And an ordinary agent says nothing at all.
+ *
+ * A measurement reported on every start is one nobody reads on the agent
+ * it matters for -- so the threshold is the feature, and a test that only
+ * covered the loud case would pass against a build that shouted about
+ * every agent in the fleet.
+ */
+static void
+test_an_ordinary_persona_is_not_announced(void)
+{
+    Fixture fixture;
+    g_autofree gchar *binary = g_build_filename(CLAWT_TEST_FIXTURES,
+                                                "fake-libreclaw", NULL);
+    g_autofree gchar *extra = NULL;
+    g_autoptr(GError) error = NULL;
+    IdentityWatch watch = { 0 };
+
+    extra = g_strdup_printf(
+        "  libreclaw_binary: \"%s\"\n"
+        "agents:\n"
+        "  - id: worker\n"
+        "    enabled: true\n"
+        "    persona:\n"
+        "      identity_files: [SOUL.org]\n"
+        "    computer:\n"
+        "      type: none\n",
+        binary);
+
+    fixture_setup(&fixture, extra);
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    grow_the_persona(&fixture, "worker", 8192);
+
+    g_signal_connect(clawt_daemon_get_event_bus(fixture.daemon), "event",
+                     G_CALLBACK(on_identity_bus_event), &watch);
+
+    g_assert_true(clawt_daemon_start_agent(fixture.daemon, "worker", &error));
+    g_assert_no_error(error);
+
+    g_assert_cmpuint(watch.count, ==, 0);
+
+    clawt_daemon_stop_agent(fixture.daemon, "worker");
+    fixture_teardown(&fixture);
+}
+
+/*
+ * agent.show carries the numbers whatever the size, and the sentence only
+ * when there is one.
+ *
+ * Always reported so a client never has to decide whether to ask -- the
+ * GTK inspector and the web summary both draw the size on every agent,
+ * and both draw the warning only when `verdict` is present.  A client
+ * that had to guess would be a second copy of the threshold.
+ */
+static void
+test_agent_show_carries_the_identity_size(void)
+{
+    Fixture fixture;
+    g_autoptr(GError) error = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: worker\n"
+                  "    persona:\n"
+                  "      identity_files: [SOUL.org]\n");
+
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    grow_the_persona(&fixture, "worker", 4096);
+
+    {
+        g_autoptr(JsonNode) reply = request(&fixture, "agent.show",
+                                            "{\"agent\": \"worker\"}");
+        JsonObject *identity;
+
+        g_assert_nonnull(reply);
+        g_assert_false(clawt_ipc_frame_is_error(reply));
+
+        identity = json_object_get_object_member(payload_of(reply),
+                                                 "identity");
+        g_assert_nonnull(identity);
+        g_assert_cmpint(json_object_get_int_member(identity, "limit"), ==,
+                        CLAWT_ARG_LIMIT);
+        g_assert_cmpint(json_object_get_int_member(identity, "bytes"), >,
+                        4096);
+        g_assert_false(json_object_has_member(identity, "verdict"));
+
+        /* The breakdown, so a client can name the file to shorten. */
+        {
+            JsonArray *files = json_object_get_array_member(identity,
+                                                            "files");
+            JsonObject *first = json_array_get_object_element(files, 0);
+
+            g_assert_cmpuint(json_array_get_length(files), ==, 1);
+            g_assert_cmpstr(json_object_get_string_member(first, "name"), ==,
+                            "SOUL.org");
+            g_assert_true(json_object_get_boolean_member(first, "present"));
+        }
+    }
+
+    grow_the_persona(&fixture, "worker", CLAWT_ARG_LIMIT);
+
+    {
+        g_autoptr(JsonNode) reply = request(&fixture, "agent.show",
+                                            "{\"agent\": \"worker\"}");
+        JsonObject *identity =
+            json_object_get_object_member(payload_of(reply),
+                                          "identity");
+
+        g_assert_nonnull(identity);
+        g_assert_true(json_object_has_member(identity, "verdict"));
+        g_assert_nonnull(strstr(
+            json_object_get_string_member(identity, "verdict"),
+            "SOUL.org"));
+    }
+
+    fixture_teardown(&fixture);
+}
+
 /* ── Task events ─────────────────────────────────────────────────── */
 
 typedef struct {
@@ -6133,6 +6393,12 @@ main(int argc, char *argv[])
                     test_an_operator_exec_is_recorded_once_when_it_ends);
     g_test_add_func("/daemon/refused-operator-exec-is-still-recorded",
                     test_an_operator_exec_that_is_refused_is_still_recorded);
+    g_test_add_func("/daemon/oversized-persona-is-announced-at-start",
+                    test_an_oversized_persona_is_announced_at_start);
+    g_test_add_func("/daemon/ordinary-persona-is-not-announced",
+                    test_an_ordinary_persona_is_not_announced);
+    g_test_add_func("/daemon/agent-show-carries-the-identity-size",
+                    test_agent_show_carries_the_identity_size);
     g_test_add_func("/daemon/restart-policy-reaches-the-runtime",
                     test_a_changed_restart_policy_reaches_the_runtime);
     g_test_add_func("/daemon/second-start-reaches-the-computer",

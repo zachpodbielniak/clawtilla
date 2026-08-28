@@ -65,11 +65,13 @@ web_cmds=""
 only_gtk_cmds=""
 gtk_code=""
 web_code=""
+gtk_render=""
+web_render=""
 
 cleanup () {
     rm -f "${gtk}" "${web}" "${only_gtk}" "${only_web}" \
           "${gtk_cmds}" "${web_cmds}" "${only_gtk_cmds}" \
-          "${gtk_code}" "${web_code}"
+          "${gtk_code}" "${web_code}" "${gtk_render}" "${web_render}"
 }
 
 trap cleanup EXIT
@@ -165,6 +167,7 @@ declare -A AFFORDANCES=(
     ["message boundary in a run"]="CHAT_MESSAGE_SPACING|msg-time"
     ["decision inbox"]="build_decision_page|decision-row"
     ["connection reachability"]="clawt_connection_probe|clawt_connection_probe"
+    ["identity size"]="clawt-identity-size|clawt-identity-size"
 )
 
 usage () {
@@ -321,14 +324,7 @@ walks_enumeration () {
 # A `/*` inside a string literal would end the visible text early; there
 # are none, and the failure mode is a missed hit rather than a false one.
 #
-client_code () {
-    if [[ $# -ne 1 ]]
-    then
-        # shellcheck disable=SC2016
-        echo '`client_code()` requires 1 positional argument' >&2
-        exit 1
-    fi
-
+strip_comments () {
     awk '
     {
         line = $0
@@ -351,7 +347,58 @@ client_code () {
         }
 
         print out
-    }' "${1}"/*.c
+    }' "$@"
+}
+
+#
+# Every line of a client's own code, comments removed.
+#
+client_code () {
+    if [[ $# -ne 1 ]]
+    then
+        # shellcheck disable=SC2016
+        echo '`client_code()` requires 1 positional argument' >&2
+        exit 1
+    fi
+
+    strip_comments "${1}"/*.c
+}
+
+#
+# The same, minus the stylesheet.
+#
+# A CSS rule is not a capability.  A class the sheet styles and nothing
+# renders is dead CSS -- and it satisfied the affordance check on its own,
+# because the marker for a drawn thing is usually the class name and the
+# class name is in both files.  Eight of the declared markers were in
+# web-style.c as well as in a renderer, so deleting the renderer half of
+# any of them reported OK: the exact shape of gap this check exists to
+# catch, in the check.
+#
+# Layers 1 to 4 keep the whole corpus.  A stylesheet can genuinely reach a
+# frame kind (it cannot) and can genuinely hardcode a library vocabulary
+# value (it does, in each client's own dialect, on purpose) -- so the
+# narrowing is for layer 5 alone, which is the layer about things being
+# *drawn*.
+#
+client_render_code () {
+    if [[ $# -ne 1 ]]
+    then
+        # shellcheck disable=SC2016
+        echo '`client_render_code()` requires 1 positional argument' >&2
+        exit 1
+    fi
+
+    local files=()
+    local file
+
+    for file in "${1}"/*.c
+    do
+        [[ "${file}" == *-style.c ]] && continue
+        files+=("${file}")
+    done
+
+    strip_comments "${files[@]}"
 }
 
 #
@@ -436,9 +483,13 @@ main () {
     only_gtk_cmds="$(mktemp)"
     gtk_code="$(mktemp)"
     web_code="$(mktemp)"
+    gtk_render="$(mktemp)"
+    web_render="$(mktemp)"
 
     client_code "${GTK_DIR}" > "${gtk_code}"
     client_code "${WEB_DIR}" > "${web_code}"
+    client_render_code "${GTK_DIR}" > "${gtk_render}"
+    client_render_code "${WEB_DIR}" > "${web_render}"
 
     client_kinds "${GTK_DIR}" > "${gtk}"
     client_kinds "${WEB_DIR}" > "${web}"
@@ -580,13 +631,13 @@ $(wc -l < "${web_cmds}") in web"
     do
         markers="${AFFORDANCES[${affordance}]}"
 
-        grep -qF "${markers%%|*}" "${gtk_code}" || {
+        grep -qF "${markers%%|*}" "${gtk_render}" || {
             printf '  %-28s declared, missing from clawtilla-gtk\n' \
                 "${affordance}"
             failures=$((failures + 1))
         }
 
-        grep -qF "${markers#*|}" "${web_code}" || {
+        grep -qF "${markers#*|}" "${web_render}" || {
             printf '  %-28s declared, missing from clawtilla-web\n' \
                 "${affordance}"
             failures=$((failures + 1))

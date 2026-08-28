@@ -1480,6 +1480,172 @@ clawt_workspace_effective_identity_files(ClawtAgentConfig *agent)
     return clawt_workspace_identity_files();
 }
 
+/* ── What the persona costs ──────────────────────────────────────── */
+
+static void
+identity_file_free(gpointer data)
+{
+    ClawtIdentityFile *file = data;
+
+    g_free(file->name);
+    g_free(file);
+}
+
+void
+clawt_identity_size_free(ClawtIdentitySize *self)
+{
+    if (self == NULL)
+        return;
+
+    g_clear_pointer(&self->files, g_ptr_array_unref);
+    g_free(self);
+}
+
+/* Biggest first: the file to shorten is the answer somebody wants. */
+static gint
+by_bytes_descending(gconstpointer a, gconstpointer b)
+{
+    const ClawtIdentityFile *left = *(ClawtIdentityFile * const *)a;
+    const ClawtIdentityFile *right = *(ClawtIdentityFile * const *)b;
+
+    if (left->bytes == right->bytes)
+        return 0;
+
+    return (left->bytes > right->bytes) ? -1 : 1;
+}
+
+ClawtIdentitySize *
+clawt_workspace_measure_identity(ClawtAgentConfig *agent)
+{
+    ClawtIdentitySize *size;
+    g_autofree gchar *workspace = NULL;
+    g_auto(GStrv) names = NULL;
+    guint i;
+
+    g_return_val_if_fail(agent != NULL, NULL);
+
+    size = g_new0(ClawtIdentitySize, 1);
+    size->limit = CLAWT_ARG_LIMIT;
+    size->files = g_ptr_array_new_with_free_func(identity_file_free);
+
+    workspace = clawt_agent_config_get_workspace(agent);
+    names = clawt_workspace_effective_identity_files(agent);
+
+    if (workspace == NULL)
+        return size;
+
+    for (i = 0; names != NULL && names[i] != NULL; i++) {
+        g_autofree gchar *path = g_build_filename(workspace, names[i], NULL);
+        g_autofree gchar *contents = NULL;
+        ClawtIdentityFile *file = g_new0(ClawtIdentityFile, 1);
+
+        file->name = g_strdup(names[i]);
+
+        /*
+         * A file that cannot be read contributes nothing and is still
+         * listed.  libreclaw warns and carries on for exactly the same
+         * reason, and a breakdown that quietly omitted a name would
+         * invite somebody to go looking for a file that is not there.
+         */
+        if (g_file_get_contents(path, &contents, NULL, NULL)) {
+            /*
+             * libreclaw's own arithmetic:
+             * g_string_append_printf(prompt, "# %s\n\n%s\n\n", name, text).
+             * strlen() rather than the file's size, because printf stops
+             * at the first NUL -- so a file with one embedded costs less
+             * than it takes up on disk, and a count that used the size
+             * would be wrong in the direction that matters.
+             */
+            file->bytes = 2 + strlen(names[i]) + 2 + strlen(contents) + 2;
+            file->present = TRUE;
+            size->total += file->bytes;
+            size->present++;
+        }
+
+        g_ptr_array_add(size->files, file);
+    }
+
+    g_ptr_array_sort(size->files, by_bytes_descending);
+
+    return size;
+}
+
+gsize
+clawt_identity_notice_bytes(gsize limit)
+{
+    return limit / 100 * CLAWT_IDENTITY_NOTICE_PERCENT;
+}
+
+gchar *
+clawt_workspace_identity_verdict(ClawtIdentitySize *size)
+{
+    g_autoptr(GString) out = NULL;
+    guint i;
+    guint named = 0;
+
+    g_return_val_if_fail(size != NULL, NULL);
+
+    if (size->limit == 0 ||
+        size->total < clawt_identity_notice_bytes(size->limit))
+        return NULL;
+
+    out = g_string_new(NULL);
+
+    /*
+     * Over rather than approaching is a different sentence, because the
+     * two need different actions from whoever reads it.  Under the limit
+     * this is a warning with time to act; over it, a fresh session cannot
+     * start at all on a backend that passes the prompt as an argument --
+     * and a resumed one keeps working, which is why nothing has failed
+     * yet.
+     */
+    if (size->total >= size->limit)
+        g_string_append_printf(
+            out,
+            "the identity files total %" G_GSIZE_FORMAT " bytes, over the "
+            "%" G_GSIZE_FORMAT "-byte limit on a single command-line "
+            "argument. A backend that passes the system prompt as one "
+            "cannot start a fresh session; a resumed session keeps "
+            "working, so nothing may have failed yet",
+            size->total, size->limit);
+    else
+        g_string_append_printf(
+            out,
+            "the identity files total %" G_GSIZE_FORMAT " bytes of the "
+            "%" G_GSIZE_FORMAT " a single command-line argument may hold",
+            size->total, size->limit);
+
+    /*
+     * The three files that account for most of it.  The whole list would
+     * bury the answer; one would hide a second file just as large.
+     */
+    for (i = 0; i < size->files->len && named < 3; i++) {
+        ClawtIdentityFile *file = g_ptr_array_index(size->files, i);
+
+        if (!file->present || file->bytes == 0)
+            continue;
+
+        g_string_append(out, (named == 0) ? ". Largest: " : ", ");
+        g_string_append_printf(out, "%s %" G_GSIZE_FORMAT " bytes",
+                               file->name, file->bytes);
+        named++;
+    }
+
+    /*
+     * The remedy, because a measurement without one is a thing to worry
+     * about rather than a thing to do.  Nothing is lost by moving a
+     * closed section out: the file stays in the workspace and the agent
+     * can still read it on demand -- it simply stops being in every
+     * prompt.
+     */
+    g_string_append(out,
+                    ". Move closed or historical sections into a sibling "
+                    "file that persona.identity_files does not name; the "
+                    "agent can still read it on demand");
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
 static gboolean
 strv_contains(const GStrv haystack, const gchar *needle)
 {

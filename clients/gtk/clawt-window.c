@@ -6949,6 +6949,53 @@ build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
                               info_row("Can do", caps));
 
+    /*
+     * What the persona costs, and -- only when it is worth saying --
+     * which files account for it.
+     *
+     * An agent whose identity files outgrow a single command-line
+     * argument cannot start a fresh session on a backend that passes the
+     * system prompt as one, and the kernel's refusal names neither the
+     * files nor the limit.  It is silent right up to the cliff, so the
+     * number belongs somewhere a person looks *before* anything fails.
+     *
+     * The warning row is drawn only past the threshold.  A byte count is
+     * shown always, because a size somebody can watch is the whole point
+     * and a row that appears only in trouble teaches nobody what normal
+     * looks like.
+     */
+    if (json_object_has_member(payload, "identity")) {
+        JsonObject *identity =
+            json_object_get_object_member(payload, "identity");
+        gint64 bytes = clawt_json_int(identity, "bytes", 0);
+        gint64 limit = clawt_json_int(identity, "limit", 0);
+        const gchar *verdict = clawt_json_string(identity, "verdict", NULL);
+
+        if (bytes > 0) {
+            g_autofree gchar *text = g_strdup_printf(
+                "%" G_GINT64_FORMAT " bytes of %" G_GINT64_FORMAT,
+                bytes, limit);
+
+            adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                      info_row("Identity", text));
+        }
+
+        if (verdict != NULL) {
+            GtkWidget *row = info_row("Too large", verdict);
+
+            /*
+             * Wrapped rather than ellipsised: the sentence names the
+             * files to shorten, and a subtitle cut at the width of the
+             * pane would hide exactly the half somebody needs.
+             */
+            adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(row), 0);
+            gtk_widget_add_css_class(row, (bytes >= limit) ? "error"
+                                                           : "warning");
+            gtk_widget_add_css_class(row, "clawt-identity-size");
+            adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+        }
+    }
+
     gtk_box_append(self->inspector, group);
 
     /* ── Editable ── */

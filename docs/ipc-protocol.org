@@ -676,7 +676,7 @@ Every kind published, by subject:
 | Subject | Kinds |
 |---------+-------|
 | the daemon | ~daemon.started~, ~daemon.stopped~, ~daemon.reloaded~, ~config.changed~ |
-| an agent | ~agent.created~, ~agent.removed~, ~agent.changed~, ~agent.started~, ~agent.stopped~, ~agent.state~, ~agent.connected~, ~agent.disconnected~, ~agent.typing~ |
+| an agent | ~agent.created~, ~agent.removed~, ~agent.changed~, ~agent.started~, ~agent.stopped~, ~agent.state~, ~agent.connected~, ~agent.disconnected~, ~agent.typing~, ~agent.identity~ |
 | a room | ~message~, ~message.refused~, ~room.created~, ~room.changed~ |
 | an agent's mailbox | ~mailbox.queued~, ~mailbox.delivered~ |
 | a team | ~team.changed~ |
@@ -691,6 +691,19 @@ plus a ~detail~ saying why.  ~agent.started~ and ~agent.stopped~ are
 published by the frames that asked for them, so an agent that crashed
 raises ~agent.state~ and nothing else -- a client that watched only the
 pair would show a running agent that is not.
+
+~agent.identity~ is published when an agent is started whose identity
+files have reached 80% of what a single command-line argument may hold.
+Details: ~verdict~ (the sentence, naming the largest files and what to do
+about it), ~bytes~, ~limit~, and ~over~ (~"true"~ once the limit is
+passed).  It is a %CLAWT_ALERT_NOTICE, so it reaches both clients' alert
+panels rather than only a warning in the journal -- the failure it warns
+about is silent right up to the cliff and then presents as a broken CLI.
+
+Nothing is published below the threshold: an event on every start of
+every agent is one nobody reads on the agent it matters for.  The numbers
+are always available on ~agent.show~, under ~identity~, with a per-file
+breakdown.
 
 ~task.changed~ is published for every state a task passes through, and
 its *subject is the task id* -- which is what ~event.list~ filters on.

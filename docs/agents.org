@@ -144,6 +144,77 @@ summarises it" is useful; "the researcher agent" is not.  It is also what
 the scaffolded ~SOUL.org~ and ~IDENTITY.org~ are seeded from, so writing
 a real one pays twice.
 
+*** There is a ceiling, and it is 131072 bytes
+
+The identity files are concatenated into one system prompt, and a
+backend that passes that prompt as a command-line argument is bounded by
+=MAX_ARG_STRLEN= --- 32 pages, 131,072 bytes counting the terminating
+NUL, so 131,071 is the largest that works.  It is *not* =ARG_MAX=, which
+is 2MB here and which is what somebody checks first; room in the total
+buys nothing, because the kernel refuses the whole call over one long
+word.
+
+This is not exotic.  The scaffolding actively encourages the growth: the
+generated =AGENTS.org= tells the agent to keep =PROJECTS.org= current as
+it works, and =PROJECTS.org= is an identity file.  Any long-lived agent
+that follows its own instructions grows toward the ceiling.
+
+It is also silent right up to it.  An agent at 130,000 bytes behaves
+perfectly and the next paragraph anybody adds kills it --- and because a
+*resumed* session is never handed a system prompt, the agent goes on
+working until something starts a fresh one.  The symptom therefore
+appears long after the file that caused it was written, and presents as a
+broken CLI rather than as a persona that has outgrown a limit.
+
+So the size is shown before anything fails:
+
+#+begin_src bash
+clawtilla agent show scribe
+#+end_src
+
+#+begin_example
+identity:    41928 bytes of the 131072 a command-line argument holds
+#+end_example
+
+Past 80% of the limit that becomes a warning naming the largest files,
+both graphical clients draw it in the agent's summary, and an
+~agent.identity~ event goes on the bus at every start of that agent --
+so it reaches the alerts panel rather than only a log line nobody reads.
+
+**** What to do about it
+
+Move closed or historical sections into a sibling =.org= in the same
+directory that ~persona.identity_files~ does *not* name.  Nothing is
+lost: the file stays in the workspace and the agent can still read it on
+demand with its own tools --- it simply stops being in every prompt.
+
+Verify with the syscall that fails rather than by adding up file sizes:
+
+#+begin_src bash
+clawtilla agent show scribe | grep identity
+#+end_src
+
+**** Which backends this bites
+
+| Backend        | How the prompt travels        | Bounded |
+|----------------+-------------------------------+---------|
+| =claude-code=  | =--system-prompt-file=        | no      |
+| =opencode=     | stdin, in ~<system>~ tags     | no      |
+| =grok-build=   | =--system-prompt-override=    | *yes*   |
+| =claude-tmux=  | not sent at all               | n/a     |
+
+ai-glib spills the prompt to a 0600 temporary for the Claude Code
+client, so the default backend has no practical ceiling.  =grok-build=
+has no file-taking flag, so there the limit is real --- and
+=ai_cli_client_spawn()= refuses an over-long word up front, naming the
+flag, the size and the limit, rather than letting =execve= answer
+*"Argument list too long"* about none of them.
+
+clawtilla warns whatever the backend, because it is the only layer that
+knows *which file* accounts for the size, and because a measurement that
+depended on a provider setting would go quiet the moment somebody
+switched.
+
 ** Two things are called memory
 
 They are unrelated, and the plural is the only thing that tells them

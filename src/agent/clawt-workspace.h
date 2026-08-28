@@ -430,4 +430,144 @@ clawt_workspace_adopt(ClawtImportMode   mode,
 gchar *
 clawt_workspace_git_toplevel(const gchar *path);
 
+/**
+ * CLAWT_ARG_LIMIT:
+ *
+ * How long a single `execve` argument may be, in bytes.
+ *
+ * `MAX_ARG_STRLEN`: 32 pages, and *not* `ARG_MAX`, which is the total and
+ * is 2MB on this machine.  Headroom in the total buys nothing -- the
+ * kernel refuses the whole call over one long word -- which is what makes
+ * the failure read as impossible until you know the per-argument limit
+ * exists.
+ *
+ * The limit counts the terminating NUL, so the longest argument that
+ * works is one byte short of this.  Measured rather than reasoned about:
+ * 131071 bytes in one argument runs, 131072 is `E2BIG`.
+ */
+#define CLAWT_ARG_LIMIT (131072)
+
+/**
+ * ClawtIdentityFile:
+ * @name: the file, as `persona.identity_files` names it
+ * @bytes: what it contributes to the assembled prompt, header included
+ * @present: %FALSE when the workspace has no such file
+ *
+ * One line of the breakdown.
+ */
+typedef struct {
+    gchar    *name;
+    gsize     bytes;
+    gboolean  present;
+} ClawtIdentityFile;
+
+/**
+ * ClawtIdentitySize:
+ * @total: the assembled system prompt, in bytes
+ * @limit: %CLAWT_ARG_LIMIT, carried so a reader needs nothing else
+ * @present: how many of the named files the workspace actually has
+ * @files: (element-type ClawtIdentityFile): the breakdown, biggest first
+ *
+ * What an agent's persona costs, and where the cost is.
+ */
+typedef struct {
+    gsize      total;
+    gsize      limit;
+    guint      present;
+    GPtrArray *files;
+} ClawtIdentitySize;
+
+/**
+ * clawt_identity_size_free: (skip)
+ * @self: (nullable) (transfer full): a measurement
+ *
+ * Releases it.
+ */
+void clawt_identity_size_free(ClawtIdentitySize *self);
+
+/**
+ * clawt_workspace_measure_identity:
+ * @agent: the agent's configuration
+ *
+ * How large this agent's system prompt will be, and which files make it
+ * so.
+ *
+ * An agent whose identity files exceed %CLAWT_ARG_LIMIT could not be
+ * spawned at all on a backend that passes the prompt as an argument, and
+ * the failure was an opaque `Argument list too long` naming neither the
+ * files, the size, nor the limit.  It is also silent right up to the
+ * cliff: an agent at 130000 bytes behaves perfectly and the next
+ * paragraph anybody adds kills it -- and the scaffolding actively
+ * encourages the growth, since the generated `AGENTS.org` tells the agent
+ * to keep `PROJECTS.org` current and `PROJECTS.org` is an identity file.
+ *
+ * The arithmetic is libreclaw's, not an approximation of it:
+ * `lc_agent_context_load_identity()` appends `"# <name>\n\n<contents>\n\n"`
+ * per readable file, so that is what is counted, and a file it cannot
+ * read contributes nothing rather than being skipped from the list.  The
+ * contents are measured with `strlen()` for the same reason -- the
+ * assembly is a `printf`, which stops at the first NUL, so a file with an
+ * embedded NUL costs less than its size on disk.
+ *
+ * A resumed session is never handed a system prompt, so an agent that has
+ * outgrown the limit goes on working until something starts a *fresh*
+ * session.  That is why the symptom appears long after the file that
+ * caused it was written, and why the measurement is worth showing before
+ * anything fails.
+ *
+ * Returns: (transfer full): the measurement; never %NULL
+ */
+ClawtIdentitySize *clawt_workspace_measure_identity(ClawtAgentConfig *agent);
+
+/**
+ * clawt_workspace_identity_verdict:
+ * @size: a measurement
+ *
+ * What to say about it, or %NULL when there is nothing to say.
+ *
+ * One sentence naming the byte count, the limit, and the files that
+ * account for it, largest first -- the three things the kernel's own
+ * error names none of.  Written here rather than in each caller because
+ * the daemon warns with it, the CLI prints it and both graphical clients
+ * draw it, and four spellings of the same finding is four chances to
+ * describe it differently.
+ *
+ * %NULL below clawt_identity_notice_bytes(): a byte count on every agent
+ * is noise, and noise is what stops the one that matters from being
+ * read.
+ *
+ * Returns: (transfer full) (nullable): the sentence, or %NULL
+ */
+gchar *clawt_workspace_identity_verdict(ClawtIdentitySize *size);
+
+/**
+ * CLAWT_IDENTITY_NOTICE_PERCENT:
+ *
+ * How full is worth mentioning.
+ *
+ * 80%, so there is room to act while the agent still starts.  Below it
+ * nothing is said at all, because a measurement reported on every agent
+ * is one nobody reads on the agent it matters for.
+ *
+ * A percentage rather than a ratio, and applied with integer arithmetic,
+ * because this is a boundary and a boundary has to have exactly one
+ * value.  `(gsize)(limit * 0.8)` and `total < limit * 0.8` disagree by
+ * one byte -- the first truncates and the second does not -- so a test
+ * written against either spelling fails against the other for a reason
+ * that has nothing to do with the feature.
+ */
+#define CLAWT_IDENTITY_NOTICE_PERCENT (80)
+
+/**
+ * clawt_identity_notice_bytes:
+ * @limit: %CLAWT_ARG_LIMIT, or a measurement's own copy of it
+ *
+ * The one value the threshold has.
+ *
+ * Returns: the smallest total worth saying anything about
+ */
+gsize clawt_identity_notice_bytes(gsize limit);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtIdentitySize, clawt_identity_size_free)
+
 G_END_DECLS

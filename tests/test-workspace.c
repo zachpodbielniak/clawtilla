@@ -2224,6 +2224,337 @@ test_an_unconnected_connector_says_the_scopes_were_requested(void)
     fixture_teardown(&fixture);
 }
 
+
+/* ── What the persona costs ──────────────────────────────────────── */
+
+/* Writes @bytes of filler into a workspace file, plus a newline. */
+static void
+write_identity_file(const gchar *workspace, const gchar *name, gsize bytes)
+{
+    g_autofree gchar *path = g_build_filename(workspace, name, NULL);
+    g_autofree gchar *filler = g_strnfill(bytes, 'x');
+
+    g_assert_cmpint(g_mkdir_with_parents(workspace, 0700), ==, 0);
+    g_assert_true(g_file_set_contents(path, filler, (gssize)bytes, NULL));
+}
+
+static ClawtIdentityFile *
+find_identity_file(ClawtIdentitySize *size, const gchar *name)
+{
+    guint i;
+
+    for (i = 0; i < size->files->len; i++) {
+        ClawtIdentityFile *file = g_ptr_array_index(size->files, i);
+
+        if (g_strcmp0(file->name, name) == 0)
+            return file;
+    }
+
+    return NULL;
+}
+
+/*
+ * The arithmetic is libreclaw's, checked against libreclaw.
+ *
+ * A count of our own that merely *looks* like the assembly would be
+ * wrong by the header on every file and nobody would notice, because the
+ * only thing that ever compares them is the kernel -- once, at the
+ * cliff, with an error naming neither.  clawtilla links liblc, so the
+ * test builds the same prompt through the same function and asserts the
+ * byte counts are equal rather than close.
+ */
+static void
+test_the_measurement_matches_libreclaws_own_assembly(void)
+{
+    Fixture fixture;
+    g_autoptr(LcAgentContext) context = NULL;
+    g_autoptr(ClawtIdentitySize) size = NULL;
+    g_autofree gchar *workspace = NULL;
+    g_auto(GStrv) names = NULL;
+    ClawtAgentConfig *agent;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    persona:\n"
+                  "      identity_files: [SOUL.org, PROJECTS.org]\n");
+
+    agent = first_agent(&fixture);
+    workspace = clawt_agent_config_get_workspace(agent);
+
+    write_identity_file(workspace, "SOUL.org", 900);
+    write_identity_file(workspace, "PROJECTS.org", 4321);
+
+    size = clawt_workspace_measure_identity(agent);
+
+    names = clawt_workspace_effective_identity_files(agent);
+    context = lc_agent_context_new("chief", workspace);
+    g_assert_true(lc_agent_context_load_identity(
+        context, (const gchar * const *)names, NULL));
+
+    g_assert_cmpuint(size->total, ==,
+                     strlen(lc_agent_context_get_system_prompt(context)));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A file with an embedded NUL costs less than its size on disk.
+ *
+ * The assembly is a printf, which stops at the first NUL, so a count
+ * taken from the file's length would say the prompt is larger than it is
+ * -- wrong in the direction that makes a working agent look doomed.
+ * This is the case a count using g_file_get_contents()'s length would
+ * pass every other test and fail only here.
+ */
+static void
+test_an_embedded_nul_stops_the_count(void)
+{
+    Fixture fixture;
+    g_autoptr(LcAgentContext) context = NULL;
+    g_autoptr(ClawtIdentitySize) size = NULL;
+    g_autofree gchar *workspace = NULL;
+    g_autofree gchar *path = NULL;
+    g_auto(GStrv) names = NULL;
+    ClawtAgentConfig *agent;
+    ClawtIdentityFile *soul;
+    gchar payload[64];
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    persona:\n"
+                  "      identity_files: [SOUL.org]\n");
+
+    agent = first_agent(&fixture);
+    workspace = clawt_agent_config_get_workspace(agent);
+
+    g_assert_cmpint(g_mkdir_with_parents(workspace, 0700), ==, 0);
+    memset(payload, 'y', sizeof payload);
+    payload[10] = '\0';
+
+    path = g_build_filename(workspace, "SOUL.org", NULL);
+    g_assert_true(g_file_set_contents(path, payload, sizeof payload, NULL));
+
+    size = clawt_workspace_measure_identity(agent);
+    soul = find_identity_file(size, "SOUL.org");
+
+    g_assert_nonnull(soul);
+    g_assert_true(soul->present);
+
+    /* "# " + "SOUL.org" + "\n\n" + 10 bytes + "\n\n" */
+    g_assert_cmpuint(soul->bytes, ==, 2 + 8 + 2 + 10 + 2);
+
+    names = clawt_workspace_effective_identity_files(agent);
+    context = lc_agent_context_new("chief", workspace);
+    g_assert_true(lc_agent_context_load_identity(
+        context, (const gchar * const *)names, NULL));
+    g_assert_cmpuint(size->total, ==,
+                     strlen(lc_agent_context_get_system_prompt(context)));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A named file the workspace does not have is listed at zero rather than
+ * dropped.  libreclaw warns and carries on for the same reason, and a
+ * breakdown that quietly omitted the name would send somebody looking for
+ * a file that is not there.
+ */
+static void
+test_a_missing_identity_file_is_listed_at_zero(void)
+{
+    Fixture fixture;
+    g_autoptr(ClawtIdentitySize) size = NULL;
+    g_autofree gchar *workspace = NULL;
+    ClawtAgentConfig *agent;
+    ClawtIdentityFile *missing;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    persona:\n"
+                  "      identity_files: [SOUL.org, GONE.org]\n");
+
+    agent = first_agent(&fixture);
+    workspace = clawt_agent_config_get_workspace(agent);
+    write_identity_file(workspace, "SOUL.org", 100);
+
+    size = clawt_workspace_measure_identity(agent);
+
+    g_assert_cmpuint(size->files->len, ==, 2);
+    g_assert_cmpuint(size->present, ==, 1);
+
+    missing = find_identity_file(size, "GONE.org");
+    g_assert_nonnull(missing);
+    g_assert_false(missing->present);
+    g_assert_cmpuint(missing->bytes, ==, 0);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Nothing is said about an agent that is nowhere near the limit.
+ *
+ * A byte count reported on every agent is noise, and noise is exactly
+ * what stops the one that matters from being read.
+ */
+static void
+test_a_small_persona_gets_no_verdict(void)
+{
+    Fixture fixture;
+    g_autoptr(ClawtIdentitySize) size = NULL;
+    g_autofree gchar *workspace = NULL;
+    g_autofree gchar *verdict = NULL;
+    ClawtAgentConfig *agent;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    persona:\n"
+                  "      identity_files: [SOUL.org]\n");
+
+    agent = first_agent(&fixture);
+    workspace = clawt_agent_config_get_workspace(agent);
+    write_identity_file(workspace, "SOUL.org", 4096);
+
+    size = clawt_workspace_measure_identity(agent);
+    verdict = clawt_workspace_identity_verdict(size);
+
+    g_assert_null(verdict);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * The threshold is a boundary, so it is tested as one.  Just under says
+ * nothing; at it, the verdict appears.
+ */
+static void
+test_the_notice_threshold_is_a_boundary(void)
+{
+    Fixture fixture;
+    g_autofree gchar *workspace = NULL;
+    ClawtAgentConfig *agent;
+    gsize notice = clawt_identity_notice_bytes(CLAWT_ARG_LIMIT);
+    gsize header = 2 + strlen("SOUL.org") + 2 + 2;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    persona:\n"
+                  "      identity_files: [SOUL.org]\n");
+
+    agent = first_agent(&fixture);
+    workspace = clawt_agent_config_get_workspace(agent);
+
+    {
+        g_autoptr(ClawtIdentitySize) size = NULL;
+        g_autofree gchar *verdict = NULL;
+
+        write_identity_file(workspace, "SOUL.org", notice - header - 1);
+        size = clawt_workspace_measure_identity(agent);
+        g_assert_cmpuint(size->total, ==, notice - 1);
+
+        verdict = clawt_workspace_identity_verdict(size);
+        g_assert_null(verdict);
+    }
+
+    {
+        g_autoptr(ClawtIdentitySize) size = NULL;
+        g_autofree gchar *verdict = NULL;
+
+        write_identity_file(workspace, "SOUL.org", notice - header);
+        size = clawt_workspace_measure_identity(agent);
+        g_assert_cmpuint(size->total, ==, notice);
+
+        verdict = clawt_workspace_identity_verdict(size);
+        g_assert_nonnull(verdict);
+
+        /* Approaching, not over: the two need different actions. */
+        g_assert_null(strstr(verdict, "over the"));
+        g_assert_nonnull(strstr(verdict, "SOUL.org"));
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Past the limit the sentence changes, and it says why nothing has
+ * failed yet: a resumed session is never handed a system prompt, so the
+ * agent goes on working until something starts a fresh one.  Somebody
+ * told only "too large" would look for a break that is not there.
+ */
+static void
+test_over_the_limit_says_what_still_works(void)
+{
+    Fixture fixture;
+    g_autoptr(ClawtIdentitySize) size = NULL;
+    g_autofree gchar *workspace = NULL;
+    g_autofree gchar *verdict = NULL;
+    ClawtAgentConfig *agent;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    persona:\n"
+                  "      identity_files: [SOUL.org, PROJECTS.org]\n");
+
+    agent = first_agent(&fixture);
+    workspace = clawt_agent_config_get_workspace(agent);
+
+    write_identity_file(workspace, "SOUL.org", 4096);
+    write_identity_file(workspace, "PROJECTS.org", CLAWT_ARG_LIMIT);
+
+    size = clawt_workspace_measure_identity(agent);
+    g_assert_cmpuint(size->total, >=, CLAWT_ARG_LIMIT);
+
+    verdict = clawt_workspace_identity_verdict(size);
+    g_assert_nonnull(verdict);
+    g_assert_nonnull(strstr(verdict, "over the"));
+    g_assert_nonnull(strstr(verdict, "resumed session keeps working"));
+
+    /*
+     * Largest first, because the file to shorten is the answer somebody
+     * actually wants -- and PROJECTS.org is the one the scaffolding tells
+     * the agent to keep growing.
+     */
+    g_assert_nonnull(strstr(verdict, "PROJECTS.org"));
+    g_assert_cmpint(strstr(verdict, "PROJECTS.org") - verdict, <,
+                    strstr(verdict, "SOUL.org") - verdict);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * An agent with an inline persona has no identity files, so there is
+ * nothing to measure and nothing to say.  It must not be reported as an
+ * agent with an empty identity, which is a different and alarming thing.
+ */
+static void
+test_an_inline_persona_measures_nothing(void)
+{
+    Fixture fixture;
+    g_autoptr(ClawtIdentitySize) size = NULL;
+    g_autofree gchar *verdict = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    persona:\n"
+                  "      system_prompt: \"you are brief\"\n");
+
+    size = clawt_workspace_measure_identity(first_agent(&fixture));
+
+    g_assert_cmpuint(size->files->len, ==, 0);
+    g_assert_cmpuint(size->total, ==, 0);
+
+    verdict = clawt_workspace_identity_verdict(size);
+    g_assert_null(verdict);
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -2312,6 +2643,20 @@ main(int argc, char *argv[])
                     test_a_missing_source_is_refused_by_both_directory_modes);
     g_test_add_func("/import/modes-round-trip",
                     test_every_import_mode_round_trips);
+    g_test_add_func("/workspace/identity-size-matches-libreclaw",
+                    test_the_measurement_matches_libreclaws_own_assembly);
+    g_test_add_func("/workspace/identity-size-stops-at-an-embedded-nul",
+                    test_an_embedded_nul_stops_the_count);
+    g_test_add_func("/workspace/identity-size-lists-a-missing-file",
+                    test_a_missing_identity_file_is_listed_at_zero);
+    g_test_add_func("/workspace/identity-verdict-is-silent-when-small",
+                    test_a_small_persona_gets_no_verdict);
+    g_test_add_func("/workspace/identity-verdict-threshold-is-a-boundary",
+                    test_the_notice_threshold_is_a_boundary);
+    g_test_add_func("/workspace/identity-verdict-over-the-limit",
+                    test_over_the_limit_says_what_still_works);
+    g_test_add_func("/workspace/identity-size-of-an-inline-persona",
+                    test_an_inline_persona_measures_nothing);
     g_test_add_func("/import/git-outside-a-repository-clones",
                     test_a_git_import_outside_a_repository_clones);
     g_test_add_func("/import/git-inside-a-repository-submodules",
