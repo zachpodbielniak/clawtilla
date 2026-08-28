@@ -652,6 +652,23 @@ clawt_web_topbar(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view)
 
     htmx_element_add_class(bar, "topbar");
 
+    /*
+     * Shown only at phone width, where the sidebar is a drawer.  It is
+     * built on every page because the topbar is what every view has in
+     * common; the stylesheet decides whether it is visible, so there is
+     * no width to guess at on the server.
+     */
+    {
+        g_autoptr(HtmxLabel) nav = htmx_label_new_for("nav-open");
+
+        htmx_element_add_class(HTMX_ELEMENT(nav), "nav-button");
+        htmx_element_set_attribute(HTMX_ELEMENT(nav), "aria-label",
+                                   "Show the agent list");
+        /* U+2630 TRIGRAM FOR HEAVEN, as octal bytes: gnu89 has no \u. */
+        htmx_node_set_text_content(HTMX_NODE(nav), "\342\230\260");
+        htmx_node_add_child(HTMX_NODE(bar), HTMX_NODE(nav));
+    }
+
     if (agent_id == NULL) {
         htmx_element_add_class(HTMX_ELEMENT(title), "topbar-title");
         htmx_node_set_text_content(HTMX_NODE(title), "clawtilla");

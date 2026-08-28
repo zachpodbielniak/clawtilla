@@ -1038,6 +1038,24 @@ clawt_web_page(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view,
     open_document(builder, title, look);
 
     htmx_element_add_class(HTMX_ELEMENT(frame), "app");
+
+    /*
+     * The drawer's state, and it has to be here rather than inside the
+     * sidebar.  The sidebar carries hx-swap="outerHTML" on `sse:fleet`,
+     * so anything remembered inside it is thrown away every time an
+     * agent changes state -- a drawer built from <details> would shut
+     * itself several times a minute on a live fleet.  A checkbox in
+     * front of it is untouched by that swap, and a <label for> in the
+     * topbar drives it with no script.
+     */
+    {
+        g_autoptr(HtmxInput) nav = htmx_input_new(HTMX_INPUT_CHECKBOX);
+
+        htmx_element_set_id(HTMX_ELEMENT(nav), "nav-open");
+        htmx_element_add_class(HTMX_ELEMENT(nav), "nav-toggle");
+        clawt_web_add(frame, nav);
+    }
+
     clawt_web_add(frame, clawt_web_sidebar(app, agent_id, view));
 
     htmx_element_add_class(HTMX_ELEMENT(content), "content");
