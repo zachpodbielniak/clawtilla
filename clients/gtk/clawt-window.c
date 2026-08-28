@@ -1105,36 +1105,6 @@ team_description(JsonArray *teams, const gchar *team_id)
     return NULL;
 }
 
-/*
- * How many of a team are running, counted from the same reply the rows
- * are built from.
- *
- * Not from team.list, even though it answers this: the sidebar would
- * then show a tally from one moment and rows from another, and the two
- * disagreeing by one is exactly the kind of thing somebody notices and
- * cannot explain.
- */
-static void
-team_tally(JsonArray *agents, const gchar *team_id,
-           guint *running, guint *total)
-{
-    guint i;
-
-    *running = 0;
-    *total = 0;
-
-    for (i = 0; i < json_array_get_length(agents); i++) {
-        JsonObject *agent = json_array_get_object_element(agents, i);
-
-        if (g_strcmp0(clawt_json_string(agent, "team", NULL), team_id) != 0)
-            continue;
-
-        (*total)++;
-
-        if (g_strcmp0(clawt_json_string(agent, "state", ""), "running") == 0)
-            (*running)++;
-    }
-}
 
 /* Defined with the rest of the drag handling, below. */
 static gboolean on_team_header_drop(GtkDropTarget *target, const GValue *value,
@@ -1157,7 +1127,8 @@ team_header_row(ClawtWindow *self,
                 const gchar *name,
                 const gchar *description,
                 guint        running,
-                guint        total)
+                guint        total,
+                guint        busy)
 {
     GtkWidget *row = gtk_list_box_row_new();
     GtkWidget *button = gtk_button_new();
@@ -1183,9 +1154,40 @@ team_header_row(ClawtWindow *self,
      * either, and the question somebody scanning a sidebar is asking is
      * how much of this team is awake.
      */
-    tally = g_strdup_printf("%u/%u", running, total);
+    /*
+     * A spinner when anybody on the team is mid-turn, matching the
+     * agent rows underneath: a colour that means "busy" is a colour
+     * somebody has to learn and movement is not.
+     *
+     * It matters most here.  A folded team hides exactly the rows that
+     * would have shown it, so the one line standing in for them is the
+     * only place left to say the team is working.
+     */
+    if (busy > 0) {
+        GtkWidget *spinner = gtk_spinner_new();
+
+        gtk_spinner_set_spinning(GTK_SPINNER(spinner), TRUE);
+        gtk_widget_set_tooltip_text(spinner, "somebody here is taking a turn");
+        gtk_box_append(GTK_BOX(box), spinner);
+    }
+
+    /*
+     * Running out of total, rather than a single number. "3" could be
+     * either, and the question somebody scanning a sidebar is asking is
+     * how much of this team is awake.
+     *
+     * And how many of those are working, when any are.  One busy out of
+     * seven is a different fleet state from seven out of seven, and a
+     * bare spinner collapses the two; the number is left off entirely
+     * when it is zero rather than drawn as "0 working", which is a
+     * count nobody is looking for taking space on every idle heading.
+     */
+    tally = (busy > 0) ? g_strdup_printf("%u working \302\267 %u/%u",
+                                         busy, running, total)
+                       : g_strdup_printf("%u/%u", running, total);
     gtk_box_append(GTK_BOX(box),
-                   badge(tally, running > 0 ? "accent" : "dim",
+                   badge(tally, (busy > 0) ? "accent"
+                                           : (running > 0 ? "accent" : "dim"),
                          "agents running on this team"));
 
     gtk_button_set_child(GTK_BUTTON(button), box);
@@ -1676,11 +1678,12 @@ append_team_header(ClawtWindow *self, JsonArray *teams, JsonArray *agents,
     const gchar *id = (team_id != NULL) ? team_id : "";
     guint running = 0;
     guint total = 0;
+    guint busy = 0;
 
     if (g_hash_table_contains(*emitted, id))
         return;
 
-    team_tally(agents, team_id, &running, &total);
+    clawt_team_tally(agents, team_id, &total, &running, &busy);
 
     gtk_list_box_append(
         self->sidebar,
@@ -1688,7 +1691,7 @@ append_team_header(ClawtWindow *self, JsonArray *teams, JsonArray *agents,
                         (*id != '\0') ? team_display_name(teams, id)
                                       : "No team",
                         team_description(teams, team_id),
-                        running, total));
+                        running, total, busy));
 
     g_hash_table_add(*emitted, g_strdup(id));
 }

@@ -224,33 +224,6 @@ agent_row(JsonObject *agent, const gchar *selected, ClawtWebView view,
     return HTMX_ELEMENT(g_steal_pointer(&row));
 }
 
-/*
- * How many agents in @team_id, and how many of them are running.
- *
- * Counted from the same reply the rows are built from, so a folded team's
- * tally cannot disagree with what unfolding it shows.
- */
-static void
-team_tally(JsonArray *agents, const gchar *team_id,
-           guint *out_total, guint *out_running)
-{
-    guint i;
-
-    *out_total = 0;
-    *out_running = 0;
-
-    for (i = 0; i < json_array_get_length(agents); i++) {
-        JsonObject *agent = json_array_get_object_element(agents, i);
-
-        if (g_strcmp0(clawt_web_member(agent, "team", ""), team_id) != 0)
-            continue;
-
-        (*out_total)++;
-
-        if (g_strcmp0(clawt_web_member(agent, "state", ""), "running") == 0)
-            (*out_running)++;
-    }
-}
 
 static const gchar *
 team_display_name(JsonArray *teams, const gchar *team_id)
@@ -281,17 +254,42 @@ team_header(JsonArray *teams, JsonArray *agents, const gchar *team_id)
     g_autofree gchar *text = NULL;
     guint total = 0;
     guint running = 0;
+    guint busy = 0;
 
-    team_tally(agents, team_id, &total, &running);
+    clawt_team_tally(agents, team_id, &total, &running, &busy);
 
     htmx_element_add_class(HTMX_ELEMENT(head), "team-head");
 
     htmx_element_add_class(HTMX_ELEMENT(name), "team-name");
     htmx_node_set_text_content(HTMX_NODE(name),
-                               team_display_name(teams, team_id));
+                               (team_id != NULL && *team_id != '\0')
+                               ? team_display_name(teams, team_id)
+                               : "No team");
     htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(name));
 
-    text = g_strdup_printf("%u/%u", running, total);
+    /*
+     * A busy badge when anybody on the team is mid-turn, which is what
+     * the agent rows underneath already draw.  The GTK client spins
+     * here; this one badges, because that is what each of them says on
+     * a row -- the two clients read as one language by matching their
+     * own rows, not by borrowing each other's widgets.
+     *
+     * It matters most on a heading.  A folded team hides exactly the
+     * rows that would have shown it.
+     */
+    if (busy > 0)
+        clawt_web_add(head, clawt_web_badge("working", "info"));
+
+    /*
+     * How many of those are working, when any are.  One busy out of
+     * seven is a different fleet state from seven out of seven, and a
+     * bare badge collapses the two.  Left off entirely at zero rather
+     * than drawn as "0 working", which is a count nobody is looking for
+     * taking space on every idle heading.
+     */
+    text = (busy > 0) ? g_strdup_printf("%u working \302\267 %u/%u",
+                                        busy, running, total)
+                      : g_strdup_printf("%u/%u", running, total);
     htmx_element_add_class(HTMX_ELEMENT(tally), "team-tally");
     htmx_node_set_text_content(HTMX_NODE(tally), text);
     htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(tally));
@@ -530,10 +528,20 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtWebView view)
             emit_empty_headers_before(scroll, teams, agents,
                                       team != NULL ? team : "", shown);
 
-            if (team != NULL && *team != '\0') {
-                clawt_web_add(scroll, team_header(teams, agents, team));
-                g_hash_table_add(shown, g_strdup(team));
-            }
+            /*
+             * The teamless group gets a heading too, as it already does
+             * in the GTK sidebar.  It was the one group without one --
+             * and it is where the chief of staff lives, so "is anybody
+             * working" is at least as worth saying there as on a team.
+             *
+             * It is also the only change here that adds a row to a
+             * sidebar rather than decorating one that was already
+             * drawn.
+             */
+            clawt_web_add(scroll,
+                          team_header(teams, agents,
+                                      team != NULL ? team : ""));
+            g_hash_table_add(shown, g_strdup(team != NULL ? team : ""));
 
             current_team = team;
             first = FALSE;
