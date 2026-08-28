@@ -1925,44 +1925,119 @@ publish_exec(ClawtMcpTools *self, const gchar *agent_id,
     clawt_event_free(event);
 }
 
-static gchar *
-tool_computer_exec(ClawtMcpTools *self,
-                   const gchar   *agent_id,
-                   JsonObject    *arguments,
-                   gboolean      *is_error)
+/*
+ * One computer_exec, in three parts.
+ *
+ * The middle part is the only one that waits, and it is the one whose
+ * duration the agent chooses rather than clawtilla: a build, a test run,
+ * a command that reads from a terminal that is not there.  Splitting it
+ * out is what lets the daemon run it on a worker thread and keep
+ * dispatching -- see clawt_mcp_tools_call_async().
+ *
+ * The two ends stay on the main thread deliberately.  Looking an agent
+ * up walks the manager's table and publishing walks the bus's handler
+ * list, and both are touched by every other source on that context; the
+ * worker touches nothing but the computer it was handed.  That is the
+ * same division the agent-start path already draws.
+ */
+typedef struct {
+    ClawtMcpTools  *tools;
+    gchar          *agent_id;
+    gchar          *command;
+    gchar          *working_dir;
+    guint           timeout;
+    GStrv           argv;
+    ClawtComputer  *computer;
+    ClawtExecResult *result;
+    GError         *error;
+} ExecCall;
+
+static void
+exec_call_free(ExecCall *call)
+{
+    if (call == NULL)
+        return;
+
+    g_clear_object(&call->computer);
+    g_clear_pointer(&call->result, clawt_exec_result_free);
+    g_clear_error(&call->error);
+    g_strfreev(call->argv);
+    g_free(call->working_dir);
+    g_free(call->command);
+    g_free(call->agent_id);
+    g_free(call);
+}
+
+/*
+ * Everything that can be refused without waiting.
+ *
+ * Returns %NULL and sets @refusal when the call cannot proceed, so a bad
+ * command never reaches a thread.
+ */
+static ExecCall *
+exec_call_prepare(ClawtMcpTools *self, const gchar *agent_id,
+                  JsonObject *arguments, gchar **refusal)
 {
     const gchar *command = argument_string(arguments, "command");
     const gchar *working_dir = argument_string(arguments, "working_dir");
-    guint timeout = (guint)argument_int(arguments, "timeout", 120);
     ClawtAgent *agent;
     ClawtComputer *computer;
-    g_autoptr(ClawtExecResult) result = NULL;
     g_autoptr(GError) error = NULL;
     g_auto(GStrv) argv = NULL;
+    ExecCall *call;
 
     if (command == NULL) {
-        *is_error = TRUE;
-        return g_strdup("command is required.");
+        *refusal = g_strdup("command is required.");
+        return NULL;
     }
 
     agent = clawt_agent_manager_get(self->agents, agent_id);
     computer = (agent != NULL) ? clawt_agent_get_computer(agent) : NULL;
 
     if (computer == NULL) {
-        *is_error = TRUE;
-        return g_strdup("You have no computer to run commands on.");
+        *refusal = g_strdup("You have no computer to run commands on.");
+        return NULL;
     }
 
     if (!g_shell_parse_argv(command, NULL, &argv, &error)) {
-        *is_error = TRUE;
-        return g_strdup_printf("That command could not be parsed: %s",
-                               error->message);
+        *refusal = g_strdup_printf("That command could not be parsed: %s",
+                                   error->message);
+        return NULL;
     }
 
-    result = clawt_computer_exec(computer, (const gchar * const *)argv,
-                                 working_dir, timeout, NULL, &error);
+    call = g_new0(ExecCall, 1);
+    call->tools = self;
+    call->agent_id = g_strdup(agent_id);
+    call->command = g_strdup(command);
+    call->working_dir = g_strdup(working_dir);
+    call->timeout = (guint)argument_int(arguments, "timeout", 120);
+    call->argv = g_steal_pointer(&argv);
 
-    if (result == NULL) {
+    /*
+     * A reference of its own.  The agent can be stopped while the command
+     * is still running, and the worker must not be left holding a
+     * computer the manager has dropped.
+     */
+    call->computer = g_object_ref(computer);
+
+    return call;
+}
+
+/* The blocking half.  Safe to call from a worker thread. */
+static void
+exec_call_run(ExecCall *call)
+{
+    call->result = clawt_computer_exec(call->computer,
+                                       (const gchar * const *)call->argv,
+                                       call->working_dir, call->timeout,
+                                       NULL, &call->error);
+}
+
+/* Back on the main thread: the trail, then the answer. */
+static gchar *
+exec_call_reply(ExecCall *call, gboolean *is_error)
+{
+    if (call->result == NULL) {
         /*
          * Recorded before the refusal is returned.  A command that never
          * ran is exactly the one somebody looks up afterwards, and a
@@ -1971,17 +2046,17 @@ tool_computer_exec(ClawtMcpTools *self,
          * absent, which reads as "we do not know what it did", not as
          * "it did not happen".
          */
-        publish_exec(self, agent_id, command, -1);
+        publish_exec(call->tools, call->agent_id, call->command, -1);
 
         *is_error = TRUE;
-        return g_strdup(error->message);
+        return g_strdup(call->error->message);
     }
 
-    publish_exec(self, agent_id, command,
-                 clawt_exec_result_get_exit_status(result));
+    publish_exec(call->tools, call->agent_id, call->command,
+                 clawt_exec_result_get_exit_status(call->result));
 
-    if (clawt_exec_result_succeeded(result))
-        return g_strdup(clawt_exec_result_get_stdout(result));
+    if (clawt_exec_result_succeeded(call->result))
+        return g_strdup(clawt_exec_result_get_stdout(call->result));
 
     /*
      * Exit status and stderr together.  A failing command whose reply is
@@ -1989,9 +2064,39 @@ tool_computer_exec(ClawtMcpTools *self,
      */
     *is_error = TRUE;
     return g_strdup_printf("Exit status %d.\n%s%s",
-                           clawt_exec_result_get_exit_status(result),
-                           clawt_exec_result_get_stderr(result),
-                           clawt_exec_result_get_stdout(result));
+                           clawt_exec_result_get_exit_status(call->result),
+                           clawt_exec_result_get_stderr(call->result),
+                           clawt_exec_result_get_stdout(call->result));
+}
+
+/*
+ * The synchronous form, for callers that have no way to wait.
+ *
+ * It holds whichever thread it is called on for the length of the
+ * command, which is why the daemon's own tool.rpc path does not use it.
+ */
+static gchar *
+tool_computer_exec(ClawtMcpTools *self,
+                   const gchar   *agent_id,
+                   JsonObject    *arguments,
+                   gboolean      *is_error)
+{
+    ExecCall *call;
+    g_autofree gchar *refusal = NULL;
+    gchar *text;
+
+    call = exec_call_prepare(self, agent_id, arguments, &refusal);
+
+    if (call == NULL) {
+        *is_error = TRUE;
+        return g_steal_pointer(&refusal);
+    }
+
+    exec_call_run(call);
+    text = exec_call_reply(call, is_error);
+    exec_call_free(call);
+
+    return text;
 }
 
 static gchar *
@@ -2726,6 +2831,184 @@ tool_mailbox_reply(ClawtMcpTools *self, const gchar *agent_id,
 }
 
 /* ── Dispatch ────────────────────────────────────────────────────── */
+
+/*
+ * Is this the one call that must not be answered from the main context?
+ *
+ * Stated as a question about the request rather than as a list the
+ * daemon keeps, so the two cannot drift: a tool that starts blocking
+ * declares it here, beside the tool.
+ */
+gboolean
+clawt_mcp_tools_call_defers(ClawtMcpTools *self,
+                            const gchar   *agent_id,
+                            JsonNode      *request)
+{
+    JsonObject *root;
+    JsonObject *params;
+    const gchar *tool_name;
+
+    g_return_val_if_fail(CLAWT_IS_MCP_TOOLS(self), FALSE);
+
+    if (request == NULL || !JSON_NODE_HOLDS_OBJECT(request))
+        return FALSE;
+
+    root = json_node_get_object(request);
+
+    if (!json_object_has_member(root, "method") ||
+        g_strcmp0(json_object_get_string_member(root, "method"),
+                  "tools/call") != 0)
+        return FALSE;
+
+    if (!json_object_has_member(root, "params"))
+        return FALSE;
+
+    params = json_object_get_object_member(root, "params");
+    tool_name = argument_string(params, "name");
+
+    if (g_strcmp0(tool_name, "clawtilla_computer_exec") != 0)
+        return FALSE;
+
+    /*
+     * A refusal is not worth a thread.  Saying FALSE here sends it back
+     * through the synchronous path, which answers at once and in exactly
+     * the words the permitted check already uses.
+     */
+    return clawt_mcp_tools_is_permitted(self, agent_id, tool_name);
+}
+
+typedef struct {
+    ExecCall *call;
+    JsonNode *request_id;
+} ExecAsync;
+
+static void
+exec_async_free(gpointer data)
+{
+    ExecAsync *async = data;
+
+    exec_call_free(async->call);
+    g_clear_pointer(&async->request_id, json_node_unref);
+    g_free(async);
+}
+
+static void
+exec_call_worker(GTask *task, gpointer source, gpointer data,
+                 GCancellable *cancellable)
+{
+    ExecAsync *async = data;
+
+    (void)source;
+    (void)cancellable;
+
+    exec_call_run(async->call);
+    g_task_return_boolean(task, TRUE);
+}
+
+static void
+on_exec_call_finished(GObject *source, GAsyncResult *result,
+                      gpointer user_data)
+{
+    ExecAsync *async = g_task_get_task_data(G_TASK(result));
+    GTask *outer = user_data;
+    gboolean is_error = FALSE;
+    g_autofree gchar *text = NULL;
+
+    (void)source;
+
+    text = exec_call_reply(async->call, &is_error);
+
+    g_task_return_pointer(outer, make_response(async->request_id, text,
+                                               is_error),
+                          (GDestroyNotify)json_node_unref);
+    g_object_unref(outer);
+}
+
+/**
+ * clawt_mcp_tools_call_async:
+ *
+ * Handles one tool call without holding the calling context while the
+ * command runs.  Only valid for a request clawt_mcp_tools_call_defers()
+ * accepted.
+ */
+void
+clawt_mcp_tools_call_async(ClawtMcpTools       *self,
+                           const gchar         *agent_id,
+                           JsonNode            *request,
+                           GAsyncReadyCallback  callback,
+                           gpointer             user_data)
+{
+    JsonObject *root;
+    JsonObject *params;
+    JsonObject *arguments = NULL;
+    JsonNode *request_id = NULL;
+    g_autofree gchar *refusal = NULL;
+    GTask *outer;
+    GTask *inner;
+    ExecAsync *async;
+    ExecCall *call;
+
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+    g_return_if_fail(request != NULL && JSON_NODE_HOLDS_OBJECT(request));
+
+    outer = g_task_new(self, NULL, callback, user_data);
+
+    root = json_node_get_object(request);
+
+    if (json_object_has_member(root, "id"))
+        request_id = json_object_get_member(root, "id");
+
+    params = json_object_get_object_member(root, "params");
+
+    if (json_object_has_member(params, "arguments"))
+        arguments = json_object_get_object_member(params, "arguments");
+
+    call = exec_call_prepare(self, agent_id, arguments, &refusal);
+
+    /*
+     * Refused without waiting, and still answered through the callback:
+     * a caller that has already deferred its IPC frame has no other way
+     * to reply, and a synchronous return here would leave that frame
+     * unanswered for ever.
+     */
+    if (call == NULL) {
+        g_task_return_pointer(outer,
+                              make_response(request_id, refusal, TRUE),
+                              (GDestroyNotify)json_node_unref);
+        g_object_unref(outer);
+        return;
+    }
+
+    async = g_new0(ExecAsync, 1);
+    async->call = call;
+    async->request_id = (request_id != NULL) ? json_node_ref(request_id)
+                                             : NULL;
+
+    /*
+     * The inner task carries the wait; the outer one carries the answer.
+     * Both are created on the context this was dispatched from -- the
+     * daemon's own -- rather than on the process default, because
+     * dispatching a source does not make its context thread-default and
+     * a task that completes on a loop nobody runs never completes at all.
+     */
+    inner = g_task_new(self, NULL, on_exec_call_finished, outer);
+    g_task_set_task_data(inner, async, exec_async_free);
+    g_task_run_in_thread(inner, exec_call_worker);
+    g_object_unref(inner);
+}
+
+/**
+ * clawt_mcp_tools_call_finish:
+ *
+ * Returns: (transfer full): the JSON-RPC response
+ */
+JsonNode *
+clawt_mcp_tools_call_finish(ClawtMcpTools *self, GAsyncResult *result)
+{
+    g_return_val_if_fail(g_task_is_valid(result, self), NULL);
+
+    return g_task_propagate_pointer(G_TASK(result), NULL);
+}
 
 JsonNode *
 clawt_mcp_tools_call(ClawtMcpTools *self,

@@ -301,6 +301,60 @@ JsonNode *clawt_mcp_tools_call(ClawtMcpTools *self,
                                JsonNode      *request);
 
 /**
+ * clawt_mcp_tools_call_defers: (skip)
+ * @self: a #ClawtMcpTools
+ * @agent_id: the agent calling
+ * @request: (transfer none): an MCP JSON-RPC request
+ *
+ * Whether this call must be answered later rather than from the caller's
+ * context.
+ *
+ * True for exactly one tool today, and the property is the tool's rather
+ * than the caller's: computer_exec waits for a command whose duration the
+ * *agent* chooses, so answering it inline stalls every other client for
+ * as long as that command takes. Every other tool answers from memory or
+ * from a local file.
+ *
+ * A caller that gets %TRUE must use clawt_mcp_tools_call_async().
+ *
+ * Returns: %TRUE if the call blocks
+ */
+gboolean clawt_mcp_tools_call_defers(ClawtMcpTools *self,
+                                     const gchar   *agent_id,
+                                     JsonNode      *request);
+
+/**
+ * clawt_mcp_tools_call_async: (skip)
+ * @self: a #ClawtMcpTools
+ * @agent_id: the agent calling
+ * @request: (transfer none): an MCP JSON-RPC request
+ * @callback: called on the context this was dispatched from
+ * @user_data: data for @callback
+ *
+ * Handles one tool call, waiting on a worker thread.
+ *
+ * The lookup and the audit trail stay on the calling context; only the
+ * command itself runs on the thread. A refusal is still delivered
+ * through @callback, so a caller that has already deferred its reply
+ * always has something to answer with.
+ */
+void clawt_mcp_tools_call_async(ClawtMcpTools       *self,
+                                const gchar         *agent_id,
+                                JsonNode            *request,
+                                GAsyncReadyCallback  callback,
+                                gpointer             user_data);
+
+/**
+ * clawt_mcp_tools_call_finish: (skip)
+ * @self: a #ClawtMcpTools
+ * @result: the #GAsyncResult
+ *
+ * Returns: (transfer full): the JSON-RPC response
+ */
+JsonNode *clawt_mcp_tools_call_finish(ClawtMcpTools *self,
+                                      GAsyncResult  *result);
+
+/**
  * clawt_mcp_tools_is_permitted:
  * @self: a #ClawtMcpTools
  * @agent_id: an agent

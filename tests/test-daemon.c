@@ -4598,6 +4598,194 @@ test_the_loop_runs_while_a_computer_is_provisioning(void)
     g_unsetenv("CLAWT_POD_MODULE_DIR");
 }
 
+/*
+ * The loop keeps running while an agent's computer_exec is outstanding.
+ *
+ * Provisioning was moved to a worker thread and this test's sibling above
+ * proves it.  Exec was not, and it is the worse of the two: a provision
+ * takes as long as podman takes, while an exec takes as long as the
+ * *command* takes, chosen by the agent rather than by clawtilla.  One
+ * agent running a build therefore makes the daemon deaf to every other
+ * agent, every client, the event stream and its own SIGTERM.
+ *
+ * Driven over the real socket rather than through clawt_daemon_handle_request(),
+ * because the property under test is about the daemon's dispatch and
+ * calling the handler directly would block this thread instead of its
+ * loop -- and would pass in a build where the bug is present.
+ *
+ * A host computer, so it needs neither podman nor a module: the wait is
+ * the same wait, and `sleep` is the smallest command whose duration is
+ * known.  The assertion is not about the exec at all.  It is that an
+ * unrelated source attached to the same context is still dispatched
+ * while the exec is in flight.
+ */
+static void
+test_the_loop_runs_while_an_exec_is_outstanding(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GSocketClient) raw = NULL;
+    g_autoptr(GSocketAddress) address = NULL;
+    g_autoptr(GSocketConnection) connection = NULL;
+    g_autoptr(JsonNode) frame = NULL;
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autofree gchar *socket_path = NULL;
+    g_autofree gchar *state_dir = NULL;
+    g_autofree gchar *token_path = NULL;
+    g_autofree gchar *payload = NULL;
+    g_autofree gchar *line = NULL;
+    g_autofree gchar *wire = NULL;
+    GOutputStream *out;
+    GSource *ticker;
+    guint ticks = 0;
+    gint64 deadline;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: worker\n"
+                  "    computer:\n"
+                  "      type: host\n"
+                  "      host:\n"
+                  "        confirm_host_control: true\n");
+
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    /*
+     * The computer is attached here rather than by starting the agent.
+     * A configured computer is only built when the agent starts, and
+     * starting one launches a real child process -- which this test does
+     * not need and could not rely on.  What is under test is the
+     * daemon's dispatch while an exec is outstanding, so the exec itself
+     * is still driven all the way through the real socket and the real
+     * handler; only the computer is placed by hand.
+     */
+    {
+        ClawtAgent *agent = clawt_agent_manager_get(
+            clawt_daemon_get_agents(fixture.daemon), "worker");
+        g_autoptr(ClawtSandbox) sandbox = NULL;
+        g_autoptr(ClawtComputer) computer = NULL;
+
+        g_assert_nonnull(agent);
+
+        sandbox = clawt_sandbox_new(CLAWT_CONFINE_WORKSPACE, fixture.dir);
+        computer = clawt_host_computer_new("worker", sandbox);
+        clawt_agent_set_computer(agent, computer);
+    }
+
+    /*
+     * tool.rpc authenticates against the agent's own token file, so the
+     * test writes one rather than reaching past the check.  Going around
+     * the authentication would exercise a path no agent takes.
+     */
+    state_dir = clawt_config_agent_state_dir(
+        clawt_daemon_get_config(fixture.daemon), "worker");
+    g_assert_nonnull(state_dir);
+    g_assert_cmpint(g_mkdir_with_parents(state_dir, 0700), ==, 0);
+
+    token_path = g_build_filename(state_dir, "token", NULL);
+    g_assert_true(g_file_set_contents(token_path, "s3cret", -1, NULL));
+
+    socket_path = g_build_filename(fixture.dir, "daemon.sock", NULL);
+    raw = g_socket_client_new();
+    address = g_unix_socket_address_new(socket_path);
+    connection = g_socket_client_connect(raw, G_SOCKET_CONNECTABLE(address),
+                                         NULL, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(connection);
+
+    /*
+     * Two seconds of sleep, and a timeout well above it, so the command
+     * is certainly still running for the whole measurement window and
+     * the host backend's own deadline never fires.
+     */
+    payload = g_strdup_printf(
+        "{\"agent\": \"worker\", \"token\": \"s3cret\","
+        " \"request\": {\"jsonrpc\": \"2.0\", \"id\": 1,"
+        " \"method\": \"tools/call\","
+        " \"params\": {\"name\": \"clawtilla_computer_exec\","
+        " \"arguments\": {\"command\": \"/bin/sleep 2\","
+        " \"timeout\": 60}}}}");
+
+    frame = clawt_ipc_request_new("tool.rpc", "wedge-1");
+    g_assert_true(json_parser_load_from_data(parser, payload, -1, NULL));
+    clawt_ipc_frame_set_payload(frame,
+                                json_node_copy(json_parser_get_root(parser)));
+
+    line = clawt_ipc_frame_to_line(frame);
+    wire = g_strconcat(line, "\n", NULL);
+
+    out = g_io_stream_get_output_stream(G_IO_STREAM(connection));
+    g_assert_true(g_output_stream_write_all(out, wire, strlen(wire), NULL,
+                                            NULL, &error));
+    g_assert_no_error(error);
+
+    ticker = g_timeout_source_new(50);
+    g_source_set_callback(ticker, note_a_tick, &ticks, NULL);
+    g_source_attach(ticker, fixture.context);
+
+    /*
+     * Comfortably inside the sleep, so the exec is still outstanding when
+     * this finishes.  While the exec runs on the main context nothing in
+     * here is dispatched at all and the count stays at zero.
+     */
+    deadline = g_get_monotonic_time() + (3 * G_USEC_PER_SEC) / 2;
+
+    while (g_get_monotonic_time() < deadline)
+        g_main_context_iteration(fixture.context, TRUE);
+
+    g_assert_cmpuint(ticks, >=, 10);
+
+    /*
+     * And the exec really ran, so the ticks above were not counted while
+     * the request failed instantly for some unrelated reason -- an agent
+     * with no computer answers at once, and this test would then pass in
+     * a build where nothing was fixed.
+     */
+    {
+        GSocket *socket = g_socket_connection_get_socket(connection);
+        gchar buffer[4096];
+        GString *reply = g_string_new(NULL);
+        gint64 wait_until = g_get_monotonic_time() + 30 * G_USEC_PER_SEC;
+
+        /*
+         * Non-blocking, and the loop is iterated between reads.  The
+         * answer is produced *by* this daemon, so a blocking read here
+         * would wait for a frame that only arrives once the loop it is
+         * keeping this thread out of has run.
+         */
+        g_socket_set_blocking(socket, FALSE);
+
+        while (strchr(reply->str, '\n') == NULL &&
+               g_get_monotonic_time() < wait_until) {
+            gssize got;
+
+            g_main_context_iteration(fixture.context, FALSE);
+
+            got = g_socket_receive(socket, buffer, sizeof buffer, NULL,
+                                   NULL);
+
+            if (got > 0)
+                g_string_append_len(reply, buffer, got);
+            else
+                g_usleep(10 * 1000);
+        }
+
+        g_assert_nonnull(strchr(reply->str, '\n'));
+        g_assert_null(strstr(reply->str, "no computer"));
+        g_assert_nonnull(strstr(reply->str, "\"result\""));
+
+        g_string_free(reply, TRUE);
+    }
+
+    g_source_destroy(ticker);
+    g_source_unref(ticker);
+
+    g_io_stream_close(G_IO_STREAM(connection), NULL, NULL);
+
+    fixture_teardown(&fixture);
+}
+
 /* ── Task events ─────────────────────────────────────────────────── */
 
 typedef struct {
@@ -5251,6 +5439,8 @@ main(int argc, char *argv[])
                     test_start_returns_with_a_podman_socket_that_never_answers);
     g_test_add_func("/daemon/loop-runs-while-a-computer-provisions",
                     test_the_loop_runs_while_a_computer_is_provisioning);
+    g_test_add_func("/daemon/loop-runs-while-an-exec-is-outstanding",
+                    test_the_loop_runs_while_an_exec_is_outstanding);
     g_test_add_func("/daemon/restart-policy-reaches-the-runtime",
                     test_a_changed_restart_policy_reaches_the_runtime);
     g_test_add_func("/daemon/task-change-reaches-the-bus",
