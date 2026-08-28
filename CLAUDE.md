@@ -268,6 +268,37 @@ the same program.
   `write` and `edit`, and `ai_tool_executor_unregister()` cannot take them
   back because it does not remove built-ins.
 
+### An agent's system prompt has a hard ceiling, and it is not ARG_MAX
+
+- The kernel caps a **single** argv word at `MAX_ARG_STRLEN` -- 32 pages,
+  131,072 bytes. `ARG_MAX` is the total and is 2MB here, so headroom
+  there buys nothing: `execve` refuses the whole call over one long
+  word. A clawtilla agent's system prompt is `persona.identity_files`
+  concatenated plus the managed `TOOLS.org` region, so it grows with
+  what the product itself writes -- and past that figure the agent could
+  not start at all, saying only *"Failed to execute child process
+  (Argument list too long)"*.
+- Fixed in ai-glib (`--system-prompt-file`, a 0600 temporary), so there
+  is no practical ceiling now. Worth knowing anyway: the same limit
+  applies to anything else clawtilla puts in an argv, and the failure
+  names neither the argument nor the limit.
+- `--system-prompt-file` and `--append-system-prompt-file` are **not in
+  `claude --help`'s flag list** -- only inside a description paragraph.
+  They do exist; verified against 2.1.247 with a control, because an
+  invented flag answers `error: unknown option` and these do not.
+
+### ai-glib's test binaries used to test whatever was installed
+
+- Its `rules.mk` linked tests with `-Wl,-rpath,$(OUTDIR)`, and `$(OUTDIR)`
+  is *relative* (`build/debug`). Run a test from ai-glib's own directory
+  and it loads the library just built; run it from a parent tree and the
+  loader falls through to `/lib64/libai-glib-1.0.so.0`. Same soname, no
+  warning -- the tests simply report on the installed copy.
+- It cost most of a merge: the merged tests failed from clawtilla's root
+  and passed from ai-glib's, which reads exactly like a regression in the
+  change. `LD_TRACE_LOADED_OBJECTS=1` is what settles it. `$ORIGIN/..`
+  now, so all 58 binaries pass from anywhere.
+
 ### yaml-glib ownership
 
 - `yaml_node_new_mapping()` and `yaml_node_new_sequence()` take their
