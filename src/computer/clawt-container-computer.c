@@ -551,14 +551,47 @@ container_stop(ClawtComputer *computer, GError **error)
     g_hash_table_insert(params, g_strdup("target"),
                         g_strdup(container_target(self)));
 
-    result = clawt_pod_bridge_call_for(self->bridge, "container",
-                                       self->connection, "stop", params,
-                                   error);
+    {
+        g_autoptr(GError) local = NULL;
+
+        result = clawt_pod_bridge_call_for(self->bridge, "container",
+                                           self->connection, "stop", params,
+                                           &local);
+
+        if (result == NULL) {
+            /*
+             * A container that is not there is a container that is
+             * stopped.  Podman answers 404 for it, and reporting that
+             * as a failure to stop put an HTTP status and a URL in front
+             * of somebody who had pressed Stop on a machine that had
+             * already gone -- which is the ordinary case for an agent
+             * that has never been started.
+             *
+             * The remembered id goes with it, for the reason
+             * container_reconcile() clears it: container_target()
+             * prefers the id, so a recreated container would still be
+             * addressed at the dead one.
+             */
+            if (local != NULL && strstr(local->message, "HTTP 404") != NULL) {
+                g_clear_pointer(&self->container_id, g_free);
+                clawt_computer_set_state(computer,
+                                         CLAWT_COMPUTER_STATE_ABSENT, NULL);
+                return TRUE;
+            }
+
+            /*
+             * Not STOPPED.  Setting it before reading the result -- which
+             * is what this did -- reported the machine as stopped on the
+             * one path where it demonstrably is not.
+             */
+            clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ERROR,
+                                     local != NULL ? local->message : NULL);
+            g_propagate_error(error, g_steal_pointer(&local));
+            return FALSE;
+        }
+    }
 
     clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_STOPPED, NULL);
-
-    if (result == NULL)
-        return FALSE;
 
     if (!self->keep)
         return clawt_computer_teardown(computer, NULL);

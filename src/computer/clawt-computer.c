@@ -96,9 +96,55 @@ clawt_computer_reconcile(ClawtComputer *self, GError **error)
 gboolean
 clawt_computer_stop(ClawtComputer *self, GError **error)
 {
+    ClawtComputerClass *klass;
+
     g_return_val_if_fail(CLAWT_IS_COMPUTER(self), FALSE);
 
-    CALL_OR_TRUE(self, stop, error);
+    klass = CLAWT_COMPUTER_GET_CLASS(self);
+
+    /*
+     * Refused rather than answered TRUE, for the reason teardown is --
+     * and it became worth doing the moment a person could press Stop.
+     * A backend with no stop() would have reported the machine as
+     * stopped and left it running, which is the same lie one function
+     * down, in front of somebody watching for it to go.
+     *
+     * A backend with genuinely nothing to stop says so itself: the null
+     * computer has no machine and the host computer's machine is the one
+     * clawtilla is running on, and both are two lines.
+     */
+    if (klass->stop == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                    "a %s computer does not know how to stop itself, so "
+                    "whatever it started is still running.",
+                    clawt_enum_to_nick(CLAWT_TYPE_COMPUTER_TYPE,
+                                       clawt_computer_get_computer_type(self)));
+        return FALSE;
+    }
+
+    return klass->stop(self, error);
+}
+
+gboolean
+clawt_computer_restart(ClawtComputer *self, GError **error)
+{
+    g_return_val_if_fail(CLAWT_IS_COMPUTER(self), FALSE);
+
+    /*
+     * Stop, then start.  Composed here rather than in each caller,
+     * because a client sequencing two round trips of its own would be a
+     * second answer to what a restart is -- and the two would differ on
+     * the case nobody drives: what to do when the stop fails.
+     *
+     * Which is: give up. Every backend's stop() already answers TRUE for
+     * a machine that is not running, so a failure here is a real one,
+     * and starting on top of it would either fail again with a worse
+     * message or leave two of something.
+     */
+    if (!clawt_computer_stop(self, error))
+        return FALSE;
+
+    return clawt_computer_start(self, error);
 }
 
 gboolean
@@ -267,6 +313,89 @@ clawt_computer_exec_finish(ClawtComputer  *self,
     g_return_val_if_fail(g_task_is_valid(result, self), NULL);
 
     return g_task_propagate_pointer(G_TASK(result), error);
+}
+
+/*
+ * Starting, stopping and restarting a machine, off the main thread.
+ *
+ * Here rather than in the daemon for the reason exec_async is here: the
+ * rule that an IPC handler must not wait on the network has now been
+ * applied at four call sites in this tree, and every time it was applied
+ * at the site rather than to the function, the next caller inherited the
+ * bug. `clawt_computer_start()` alone can take a minute against a podman
+ * socket that has gone quiet, and the daemon's autostart path already
+ * had to move it to a thread -- a second copy of that, written for the
+ * menu, is how the two would come to differ.
+ */
+static void
+lifecycle_worker(GTask *task, gpointer source, gpointer data,
+                 GCancellable *cancellable)
+{
+    ClawtComputer *self = CLAWT_COMPUTER(source);
+    ClawtComputerLifecycle op = (ClawtComputerLifecycle)GPOINTER_TO_INT(data);
+    GError *local = NULL;
+    gboolean ok;
+
+    (void)cancellable;
+
+    switch (op) {
+    case CLAWT_COMPUTER_LIFECYCLE_START:
+        ok = clawt_computer_start(self, &local);
+        break;
+    case CLAWT_COMPUTER_LIFECYCLE_STOP:
+        ok = clawt_computer_stop(self, &local);
+        break;
+    case CLAWT_COMPUTER_LIFECYCLE_RESTART:
+    default:
+        ok = clawt_computer_restart(self, &local);
+        break;
+    }
+
+    if (ok)
+        g_task_return_boolean(task, TRUE);
+    else
+        g_task_return_error(task, local);
+}
+
+void
+clawt_computer_lifecycle_async(ClawtComputer          *self,
+                               ClawtComputerLifecycle  op,
+                               GMainContext           *context,
+                               GCancellable           *cancellable,
+                               GAsyncReadyCallback     callback,
+                               gpointer                user_data)
+{
+    GTask *task;
+
+    g_return_if_fail(CLAWT_IS_COMPUTER(self));
+
+    /*
+     * Pushed around g_task_new() and nothing else: that call captures
+     * the context the callback is dispatched on, and a source's own
+     * context is not thread-default inside its dispatch.
+     */
+    if (context != NULL)
+        g_main_context_push_thread_default(context);
+
+    task = g_task_new(self, cancellable, callback, user_data);
+
+    if (context != NULL)
+        g_main_context_pop_thread_default(context);
+
+    g_task_set_source_tag(task, clawt_computer_lifecycle_async);
+    g_task_set_task_data(task, GINT_TO_POINTER(op), NULL);
+    g_task_run_in_thread(task, lifecycle_worker);
+    g_object_unref(task);
+}
+
+gboolean
+clawt_computer_lifecycle_finish(ClawtComputer  *self,
+                                GAsyncResult   *result,
+                                GError        **error)
+{
+    g_return_val_if_fail(g_task_is_valid(result, self), FALSE);
+
+    return g_task_propagate_boolean(G_TASK(result), error);
 }
 
 gboolean

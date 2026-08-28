@@ -407,10 +407,18 @@ distrobox_stop(ClawtComputer *computer, GError **error)
     result = clawt_pod_bridge_call(self->bridge, "distrobox", "stop", params,
                                    error);
 
-    clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_STOPPED, NULL);
-
-    if (result == NULL)
+    /*
+     * The state is set from the answer, not before it.  Written the
+     * other way round -- which is how this was -- a stop that failed
+     * still reported the box as stopped, which is the quiet lie the
+     * refusal in clawt_computer_stop() exists to prevent one layer up.
+     */
+    if (result == NULL) {
+        clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ERROR, NULL);
         return FALSE;
+    }
+
+    clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_STOPPED, NULL);
 
     if (!self->keep)
         return clawt_computer_teardown(computer, NULL);

@@ -1645,6 +1645,7 @@ because this crosses the IPC socket base64-encoded.
 
 | Where | What you get |
 |-------+--------------|
+| an agent in the sidebar | start, stop, restart; its machine's own start, stop and restart; its team; delete |
 | a message | copy it as markdown, text or org |
 | an attachment | open, save a copy, copy path, delete permanently |
 | the conversation | copy, open in $EDITOR, or save -- each as markdown, text or org |
@@ -1658,6 +1659,26 @@ Deleting asks first, goes through the daemon rather than unlinking from
 the client -- a client that deletes by path is a client that can be
 asked to delete any path -- and says plainly that the message will still
 name the file afterwards.
+
+**** The Computer submenu
+
+An agent whose computer is a container, distrobox or VM gets a
+=Computer (container)= entry with /Start/, /Stop/ and /Restart/ under
+it.  These are the *machine*, not the agent: an agent and the container
+it runs commands in are different things, and the submenu is what keeps
+the two sets of verbs from being a guess every time.
+
+Absent, rather than greyed out, for an agent with no machine --- a
+chat-only or host agent has nothing to power on, and three permanently
+dead entries would be three things to read past on every right-click.
+
+/Stop/ asks first when stopping the machine destroys it, which is a
+container's default: see [[file:computers.org::#computer-power][computers.org]].  A VM is never
+destroyed by a stop and is not asked about.
+
+The web client has the same three as a /Power/ card on the agent's
+Computer page --- there is no right-click there, and a page is the
+surface a browser has.
 
 *** Taking a conversation with you
 

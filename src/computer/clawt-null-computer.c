@@ -71,6 +71,19 @@ null_teardown(ClawtComputer *computer, GError **error)
     return TRUE;
 }
 
+/*
+ * Nothing was ever started, so there is nothing to stop.
+ *
+ * Spelled out for the same reason teardown is: the default is a refusal,
+ * so a backend that has a machine and forgot to say how to stop it fails
+ * loudly instead of reporting a stop it never performed.
+ */
+static gboolean
+null_stop(ClawtComputer *computer, GError **error)
+{
+    return TRUE;
+}
+
 static ClawtComputerType
 null_get_computer_type(ClawtComputer *self)
 {
@@ -83,6 +96,7 @@ clawt_null_computer_class_init(ClawtNullComputerClass *klass)
 {
     ClawtComputerClass *computer_class = CLAWT_COMPUTER_CLASS(klass);
 
+    computer_class->stop = null_stop;
     computer_class->teardown = null_teardown;
     computer_class->exec = null_exec;
     computer_class->describe = null_describe;

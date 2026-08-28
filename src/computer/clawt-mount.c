@@ -625,6 +625,59 @@ fleet_has_team(GPtrArray *teams, GPtrArray *agents, const gchar *id)
     return FALSE;
 }
 
+void
+clawt_mount_sort_scope(ClawtConfig          *config,
+                       const gchar * const  *who,
+                       GStrv                *out_agents,
+                       GStrv                *out_teams)
+{
+    g_autoptr(GPtrArray) agents_out = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(GPtrArray) teams_out = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(GPtrArray) teams = NULL;
+    GPtrArray *agents;
+    guint i;
+
+    if (out_agents != NULL)
+        *out_agents = NULL;
+    if (out_teams != NULL)
+        *out_teams = NULL;
+
+    g_return_if_fail(CLAWT_IS_CONFIG(config));
+
+    if (who == NULL)
+        return;
+
+    teams = clawt_config_get_teams(config);
+    agents = clawt_config_get_agents(config);
+
+    for (i = 0; who[i] != NULL; i++) {
+        g_autofree gchar *name = g_strdup(who[i]);
+
+        g_strstrip(name);
+
+        if (*name == '\0')
+            continue;
+
+        if (!fleet_has_agent(agents, name) &&
+            fleet_has_team(teams, agents, name))
+            g_ptr_array_add(teams_out, g_steal_pointer(&name));
+        else
+            g_ptr_array_add(agents_out, g_steal_pointer(&name));
+    }
+
+    if (out_agents != NULL && agents_out->len > 0) {
+        g_ptr_array_add(agents_out, NULL);
+        *out_agents = (GStrv)g_ptr_array_free(g_steal_pointer(&agents_out),
+                                              FALSE);
+    }
+
+    if (out_teams != NULL && teams_out->len > 0) {
+        g_ptr_array_add(teams_out, NULL);
+        *out_teams = (GStrv)g_ptr_array_free(g_steal_pointer(&teams_out),
+                                             FALSE);
+    }
+}
+
 gboolean
 clawt_mount_validate_fleet(ClawtConfig *config, GStrv *warnings)
 {

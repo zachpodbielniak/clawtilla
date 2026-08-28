@@ -996,12 +996,16 @@ folders_content(ClawtWebApp *app)
             "empty means the same path, which is usually what you want"));
         clawt_web_add(form, clawt_web_select_field("Mode", "mode", modes,
                                                    mode_labels, "rw"));
+        /*
+         * One field, like the GTK dialog.  A name is a team or an agent
+         * and the fleet already knows which, so two boxes ask somebody
+         * to classify something the daemon can -- and getting it wrong
+         * shares the folder with nobody, silently, which is exactly what
+         * happened.
+         */
         clawt_web_add(form, clawt_web_field(
-            "Teams", "teams", NULL,
-            "empty means every agent; otherwise team ids, comma separated"));
-        clawt_web_add(form, clawt_web_field(
-            "Agents", "agents", NULL,
-            "individual agent ids, comma separated"));
+            "Teams or agents", "who", NULL,
+            "empty means every agent; otherwise names, comma separated"));
 
         {
             g_autoptr(HtmxDiv) row = htmx_div_new();
@@ -2197,28 +2201,23 @@ on_folder_add(HtmxRequest *request, GHashTable *params, gpointer user_data)
                           clawt_web_form_value(request, "mode"));
 
     /*
-     * The lists go up as lists and the *daemon* decides the scope from
-     * them. One place decides what naming a team means, and it is the
-     * one all three clients talk to.
+     * One list, and the *daemon* sorts it into teams and agents. One
+     * place decides what naming a team means, and it is the one all
+     * three clients talk to -- a client answering it from `team.list`
+     * misses a team that agents are on but nobody declared, and files
+     * the name where it matches nothing.
      */
     {
-        static const gchar *const keys[] = { "teams", "agents", NULL };
-        gsize k;
+        const gchar *raw = clawt_web_form_value(request, "who");
 
-        for (k = 0; keys[k] != NULL; k++) {
-            const gchar *raw = clawt_web_form_value(request, keys[k]);
-            g_auto(GStrv) items = NULL;
+        if (raw != NULL && *raw != '\0') {
+            g_auto(GStrv) items = g_strsplit(raw, ",", -1);
             gsize n;
-
-            if (raw == NULL || *raw == '\0')
-                continue;
-
-            items = g_strsplit(raw, ",", -1);
 
             for (n = 0; items[n] != NULL; n++)
                 g_strstrip(items[n]);
 
-            clawt_web_payload_set_list(payload, keys[k],
+            clawt_web_payload_set_list(payload, "who",
                                        (const gchar *const *)items);
         }
     }

@@ -3193,8 +3193,19 @@ cmd_computer(int argc, char *argv[])
 
     if (verb == NULL || agent_id == NULL) {
         g_printerr("Usage: clawtilla computer "
-                   "<exec|status|rebuild|desktop-mcp> "
+                   "<exec|status|start|stop|restart|rebuild|desktop-mcp> "
                    "<agent> [-- COMMAND...]\n");
+        g_printerr("\n");
+        g_printerr("  start <agent>          power the machine on\n");
+        g_printerr("  stop <agent> [--remove]\n");
+        g_printerr("                         power it off; --remove is "
+                   "needed when stopping\n");
+        g_printerr("                         destroys it, which is a "
+                   "container's default\n");
+        g_printerr("  restart <agent> [--remove]\n");
+        g_printerr("                         both, in that order\n");
+        g_printerr("\n");
+        g_printerr("  e.g. clawtilla computer restart oxpecker\n");
         return EXIT_FAILURE;
     }
 
@@ -3235,6 +3246,60 @@ cmd_computer(int argc, char *argv[])
         g_clear_object(&client);
 
         return clawt_desktop_relay_run(relay_argv, tools);
+    }
+
+    if (g_strcmp0(verb, "start") == 0 ||
+        g_strcmp0(verb, "stop") == 0 ||
+        g_strcmp0(verb, "restart") == 0) {
+        g_autofree gchar *frame = g_strdup_printf("computer.%s", verb);
+        g_autoptr(JsonBuilder) payload = json_builder_new();
+        JsonObject *root;
+        gboolean remove_it = FALSE;
+        gint i;
+
+        for (i = 4; i < argc; i++) {
+            if (g_strcmp0(argv[i], "--remove") == 0)
+                remove_it = TRUE;
+        }
+
+        /*
+         * Built by hand rather than through build_payload(), which takes
+         * strings: `remove` has to arrive as a boolean, and a string
+         * "true" would read as absent and produce the refusal it was
+         * passed to answer.
+         */
+        json_builder_begin_object(payload);
+        json_builder_set_member_name(payload, "agent");
+        json_builder_add_string_value(payload, agent_id);
+        json_builder_set_member_name(payload, "remove");
+        json_builder_add_boolean_value(payload, remove_it);
+        json_builder_end_object(payload);
+
+        reply = call(client, frame,
+                     json_node_ref(json_builder_get_root(payload)));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        root = json_node_get_object(reply);
+
+        g_print("%s: %s\n", agent_id, member_or(root, "state", "?"));
+
+        /*
+         * Said afterwards as well as fenced beforehand.  Somebody who
+         * passed --remove knew; somebody reading a script's output a
+         * week later did not.
+         *
+         * Phrased as what this machine does rather than as what just
+         * happened: a stop reaching a machine that was already gone
+         * removed nothing, and announcing a destruction that did not
+         * occur is its own kind of wrong.
+         */
+        if (json_object_has_member(root, "removes") &&
+            json_object_get_boolean_member(root, "removes"))
+            g_print("This machine does not survive a stop -- keep is false "
+                    "-- so starting it builds a fresh one.\n");
+
+        return EXIT_SUCCESS;
     }
 
     if (g_strcmp0(verb, "rebuild") == 0) {

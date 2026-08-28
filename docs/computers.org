@@ -940,6 +940,50 @@ and if it persists, the cached probe is stale:
 rm -rf ~/.cache/libvirt/qemu/cache/capabilities
 #+end_src
 
+*** Starting and stopping the machine itself
+:PROPERTIES:
+:CUSTOM_ID: computer-power
+:END:
+
+The machine is a separate thing from the agent, and outlives it: a
+libvirt domain survives the daemon, and a container with =keep: true=
+survives everything.  So it has its own three verbs.
+
+#+begin_src bash
+clawtilla computer start oxpecker
+clawtilla computer restart oxpecker
+clawtilla computer stop oxpecker
+#+end_src
+
+In the GTK client they are on the agent's right-click menu, under a
+=Computer (container)= submenu --- named, so the bare verbs underneath
+are unambiguous next to the agent's own Start and Stop.  The web client
+has them as a /Power/ card on the agent's Computer page.
+
+They are offered only for a type that *has* a machine: =none= has
+nothing, and a =host= agent's machine is the one clawtilla is running
+on.  Which types have one is answered once, in the library, so a backend
+added later reaches all three surfaces without any of them being edited.
+
+**** Stopping a container destroys it
+
+~computer.container.keep~ is false by default, so stopping a container
+removes it: the contents are gone rather than offline, and starting it
+again builds a fresh one.  That is not a word anybody reads that way, so
+both graphical clients warn before they send and the daemon refuses
+without an explicit flag:
+
+#+begin_src bash
+clawtilla computer stop oxpecker --remove
+#+end_src
+
+Set ~computer.container.keep: true~ to keep what the agent installed.  A
+distrobox already keeps its box by default, and a VM is never destroyed
+by a stop.
+
+A restart of a container is therefore a rebuild rather than a reboot,
+and carries the same warning.
+
 *** Which emulator a domain runs
 :PROPERTIES:
 :CUSTOM_ID: vm-emulator
@@ -1258,7 +1302,11 @@ clawtilla folders add ~/notes/private /work/private --agent chief
 
 The graphical clients take one field and sort it out for you: a name is
 a team or an agent, and the fleet already knows which, so being asked to
-say is being asked to know something the daemon does.
+say is being asked to know something the daemon does.  The *daemon*
+sorts it, from the ~who~ list the clients send --- a client can only ask
+~team.list~, which reports the teams somebody declared, and an agent can
+perfectly well be on a team nobody declared.  Sorting it in the client
+put every such name under =agents:=, where it matched nothing.
 
 Same vocabulary as an integration's =scope=, and the *same rule* ---
 =clawt_scope_covers()= answers "who gets this" once for both.  They were

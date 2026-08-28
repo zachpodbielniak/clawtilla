@@ -845,6 +845,28 @@ gboolean clawt_computer_type_takes_image(ClawtComputerType type);
 gboolean clawt_computer_type_takes_mounts(ClawtComputerType type);
 
 /**
+ * clawt_computer_type_has_machine:
+ * @type: a #ClawtComputerType
+ *
+ * Whether @type has a machine of its own that can be started and
+ * stopped independently of the agent.
+ *
+ * Asked rather than branched on, so a backend added later reaches every
+ * surface that offers those verbs -- the right-click menu, the web
+ * computer page, the daemon's own refusal -- without any of them being
+ * edited. A type that is offered a Stop it cannot honour is the shape
+ * of bug this tree keeps finding: a control that reports success and
+ * does nothing.
+ *
+ * %FALSE for `none`, which has no machine at all, and for `host`, whose
+ * machine is the one clawtilla is running on. Stopping that is not a
+ * thing to offer carefully; it is a thing not to offer.
+ *
+ * Returns: %TRUE if there is something to start, stop and restart
+ */
+gboolean clawt_computer_type_has_machine(ClawtComputerType type);
+
+/**
  * clawt_enum_to_nick:
  * @enum_type: a registered enum #GType
  * @value: the value to name

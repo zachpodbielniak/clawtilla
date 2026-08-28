@@ -224,8 +224,31 @@ without asking: a mount reaches a computer when it is next built, and a
 container or a domain that already exists had its devices decided when it
 was created.
 
+~defaults.mount.add~ takes ~agents~ and ~teams~ separately, and also
+takes ~who~: one list of names that the *daemon* sorts into the two.
+Both graphical clients send ~who~, because a name is a team or an agent
+and the fleet already knows which --- asking somebody to classify it is
+asking them to know something the daemon does.
+
+Sorted there rather than in a client because a client can only ask
+~team.list~, which reports the teams somebody *declared*, while an agent
+may perfectly well be on a team nobody declared.  The GTK dialog did
+exactly that and filed every such name under ~agents:~, where it matches
+nothing: the folder reached nobody, the agents meant to have it started
+perfectly, and the field promising "teams or agents" was the thing that
+had caused it.  ~clawt_mount_sort_scope()~ answers the same question
+~clawt_mount_covers()~ does, which is the only version that cannot
+disagree with what the mount then does.
+
+A name that is neither an agent nor a team goes into ~agents~, where
+~clawt_mount_validate_fleet()~ names it; guessing "team" would silently
+widen a folder to a group somebody may be about to create.
+
 An agent object carries ~vm_cpus~ and ~vm_memory_mb~ for a VM agent, and
-~image~ for a container one.
+~image~ for a container one.  It also carries ~computer~ (the type),
+~computer_machine~ (whether it has a machine to power on and off) and
+~computer_stop_removes~ (whether stopping that machine destroys it), so
+no client has to work any of the three out from the type.
 
 ~agent.remove~ takes ~remove_computer~: %TRUE tears the agent's
 container or VM down before removing it, forcing it if it is running.
@@ -405,6 +428,37 @@ the other nine.
 default) → ~exit~, ~stdout~, ~stderr~.  ~computer.status~ (~agent~) →
 ~state~ and ~description~.  ~computer.copy~ (~src~, ~dst~, one side being
 ~<agent>:<path>~).  ~exchange.list~ (~agent~) → ~entries~.
+
+~computer.start~, ~computer.stop~ and ~computer.restart~ (~agent~,
+~remove~) power the machine itself, separately from the agent → ~agent~,
+~action~, ~state~ and ~removes~.  All three *defer*: starting a container
+is a blocking request to podman and stopping a VM waits up to thirty
+seconds for the guest to flush, and either held on the daemon's main
+context is that long in which nothing else is routed.
+
+They are refused for a computer type with no machine of its own ---
+~none~ has nothing, and a ~host~ agent's machine is the one clawtilla is
+running on.  Which types have one is
+~clawt_computer_type_has_machine()~, so a backend added later reaches
+every surface without any of them being edited; the listing reports it
+per agent as ~computer_machine~.
+
+~computer.stop~ and ~computer.restart~ are also refused, without
+~remove~, when stopping would *destroy* the machine.  That is a
+container's default: ~computer.container.keep~ is false, so the backend
+removes the container when it stops one and the contents are gone rather
+than offline.  The listing says so in advance as
+~computer_stop_removes~, both graphical clients warn before they send,
+and the fence is what protects a client that does not.  ~removes~ in the
+reply is that same policy rather than an observed destruction --- a
+computer object built from the config knows nothing about a machine it
+did not start, so claiming one had been destroyed would sometimes be
+untrue.
+
+Each one publishes a ~computer.power~ event carrying ~action~ and
+~result~, recorded whichever way it went: a trail holding only the
+successes reads as "it did not happen" rather than as "we do not know
+what it did".
 
 ~computer.rebuild~ (~agent~) tears the agent's computer down and
 provisions it again, answering ~rebuilt~, ~agent~ and sometimes ~note~.

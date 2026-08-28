@@ -151,8 +151,101 @@ gboolean clawt_computer_start(ClawtComputer *self, GError **error);
  * Returns: %FALSE only when the backend could not be asked
  */
 gboolean clawt_computer_reconcile(ClawtComputer *self, GError **error);
+
+/**
+ * clawt_computer_stop:
+ * @self: a #ClawtComputer
+ * @error: return location for a #GError
+ *
+ * Stops the machine, leaving it there to be started again.
+ *
+ * A backend that has not implemented one is **refused**, not answered
+ * %TRUE -- the same rule as clawt_computer_teardown(), and for the same
+ * reason: a Stop that reports success and leaves the machine running is
+ * worse than one that is missing, because the person watching for it to
+ * go has been told it went.
+ *
+ * Returns: %TRUE if the machine is stopped
+ */
 gboolean clawt_computer_stop(ClawtComputer *self, GError **error);
 gboolean clawt_computer_teardown(ClawtComputer *self, GError **error);
+
+/**
+ * clawt_computer_restart:
+ * @self: a #ClawtComputer
+ * @error: return location for a #GError
+ *
+ * Stops the machine and starts it again.
+ *
+ * Composed here rather than in each caller: two clients sequencing a
+ * stop and a start of their own would be two answers to what a restart
+ * is, and they would differ on the case nobody drives -- what to do when
+ * the stop fails. Here that is: give up, because every backend's stop
+ * already answers %TRUE for a machine that is not running, so a failure
+ * is a real one.
+ *
+ * Returns: %TRUE if the machine is running again
+ */
+gboolean clawt_computer_restart(ClawtComputer *self, GError **error);
+
+/**
+ * ClawtComputerLifecycle:
+ * @CLAWT_COMPUTER_LIFECYCLE_START: bring the machine up
+ * @CLAWT_COMPUTER_LIFECYCLE_STOP: take it down, leaving it there
+ * @CLAWT_COMPUTER_LIFECYCLE_RESTART: both, in that order
+ *
+ * Which of the three clawt_computer_lifecycle_async() should run.
+ */
+typedef enum {
+    CLAWT_COMPUTER_LIFECYCLE_START = 0,
+    CLAWT_COMPUTER_LIFECYCLE_STOP,
+    CLAWT_COMPUTER_LIFECYCLE_RESTART
+} ClawtComputerLifecycle;
+
+/**
+ * clawt_computer_lifecycle_async:
+ * @self: a #ClawtComputer
+ * @op: which of the three to run
+ * @context: (nullable): the context to answer on, or %NULL for the
+ *   thread-default at the time of the call
+ * @cancellable: (nullable): a #GCancellable
+ * @callback: (scope async): called when it is done
+ * @user_data: data for @callback
+ *
+ * Runs a lifecycle verb on a worker thread.
+ *
+ * The wait lives here rather than in each caller, for the reason
+ * clawt_computer_exec_async() does. Starting a container is a blocking
+ * request to podman that can take a minute against a socket that has
+ * gone quiet, and an IPC handler that waits on it stalls every agent's
+ * messages, every task delivery and every timer with it -- a rule this
+ * tree has now had to apply at four separate call sites, each time
+ * because it had been applied to a call site rather than to the
+ * function.
+ *
+ * @context must be named. g_task_new() captures whatever is
+ * thread-default on the calling thread, and dispatching a source does
+ * not make that source's context thread-default -- so a task created
+ * inside a handler completes on a loop the daemon never runs.
+ */
+void clawt_computer_lifecycle_async(ClawtComputer          *self,
+                                    ClawtComputerLifecycle  op,
+                                    GMainContext           *context,
+                                    GCancellable           *cancellable,
+                                    GAsyncReadyCallback     callback,
+                                    gpointer                user_data);
+
+/**
+ * clawt_computer_lifecycle_finish:
+ * @self: a #ClawtComputer
+ * @result: the #GAsyncResult
+ * @error: return location for a #GError
+ *
+ * Returns: %TRUE if the verb succeeded
+ */
+gboolean clawt_computer_lifecycle_finish(ClawtComputer  *self,
+                                         GAsyncResult   *result,
+                                         GError        **error);
 
 /**
  * clawt_computer_exec:

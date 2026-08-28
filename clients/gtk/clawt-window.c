@@ -366,6 +366,13 @@ struct _ClawtWindow {
      * to grey out from the row rather than from the daemon.
      */
     GMenu             *agent_menu_teams;
+
+    /*
+     * Filled per right-click, like the Team submenu: an agent with no
+     * machine gets an empty section, which draws as nothing at all.
+     */
+    GMenu             *agent_menu_computer;
+    gboolean           menu_stop_removes;
     JsonNode          *teams_seen;
 
     gboolean           refreshing[CLAWT_N_REFRESH];
@@ -969,6 +976,34 @@ agent_row(JsonObject *agent, guint unread)
     g_object_set_data_full(G_OBJECT(row), "agent-team",
                            g_strdup(clawt_json_string(agent, "team", "")),
                            g_free);
+
+    /*
+     * What kind of machine it has, and whether stopping that machine
+     * destroys it.
+     *
+     * Both come from the daemon rather than being worked out here.
+     * Whether a computer type has a machine is a library question, and a
+     * client answering it from a list of its own would offer Stop on a
+     * backend added later -- or fail to offer it -- with nothing to say
+     * which. And `stop_removes` has to be known *before* the menu item
+     * is pressed, because for a container the contents do not come back.
+     */
+    {
+        gboolean machine =
+            json_object_has_member(agent, "computer_machine") &&
+            json_object_get_boolean_member(agent, "computer_machine");
+        gboolean removes =
+            json_object_has_member(agent, "computer_stop_removes") &&
+            json_object_get_boolean_member(agent, "computer_stop_removes");
+
+        g_object_set_data(G_OBJECT(row), "agent-machine",
+                          GINT_TO_POINTER(machine));
+        g_object_set_data(G_OBJECT(row), "agent-stop-removes",
+                          GINT_TO_POINTER(removes));
+        g_object_set_data_full(
+            G_OBJECT(row), "agent-computer",
+            g_strdup(clawt_json_string(agent, "computer", "none")), g_free);
+    }
 
     /*
      * And how it is drawn, which the transcript needs when a run header
@@ -8224,14 +8259,217 @@ on_menu_team(GSimpleAction *action, GVariant *parameter, gpointer user_data)
     refresh_agents(self);
 }
 
+/*
+ * Powers the right-clicked agent's machine on, off, or off and on.
+ *
+ * The agent and its machine are different things and the menu says so:
+ * these are under a Computer submenu, where the bare verbs are
+ * unambiguous, rather than beside the agent's own Start and Stop, where
+ * "Stop machine" and "Stop" would be a guess every time.
+ */
+static void
+on_menu_computer(GSimpleAction *action, GVariant *parameter,
+                 gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *name = g_action_get_name(G_ACTION(action));
+    const gchar *kind;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(JsonBuilder) payload = json_builder_new();
+
+    (void)parameter;
+
+    if (self->selected_agent == NULL)
+        return;
+
+    /*
+     * Spelled out rather than assembled from the action name.  A kind
+     * built with g_strconcat() is invisible to `make parity`, which
+     * reads the frame kinds each client mentions -- so the check would
+     * have reported OK with this feature present in one client and not
+     * the other, which is the exact blind spot it exists to close.
+     */
+    if (g_strcmp0(name, "computer-start") == 0)
+        kind = "computer.start";
+    else if (g_strcmp0(name, "computer-stop") == 0)
+        kind = "computer.stop";
+    else
+        kind = "computer.restart";
+
+    /*
+     * `remove` is a boolean and has to arrive as one: the daemon refuses
+     * a stop that would destroy the machine unless it is told to go
+     * ahead, and a string "true" reads as absent there.
+     *
+     * Sent from here rather than only when the daemon asks, because the
+     * confirmation has already happened -- ask_before_removing_stop()
+     * would not have called us otherwise.
+     */
+    json_builder_begin_object(payload);
+    json_builder_set_member_name(payload, "agent");
+    json_builder_add_string_value(payload, self->selected_agent);
+    json_builder_set_member_name(payload, "remove");
+    json_builder_add_boolean_value(payload, TRUE);
+    json_builder_end_object(payload);
+
+    reply = clawt_window_request(self, kind,
+                                 json_node_ref(json_builder_get_root(payload)));
+
+    if (reply != NULL) {
+        JsonObject *root = clawt_payload_of(reply);
+        const gchar *state = clawt_json_string(root, "state", "?");
+        g_autofree gchar *message = NULL;
+
+        message = (json_object_has_member(root, "removes") &&
+                   json_object_get_boolean_member(root, "removes"))
+                  ? g_strdup_printf(
+                        "%s: the machine is %s. It does not survive a stop, "
+                        "so starting it builds a fresh one.",
+                        self->selected_agent, state)
+                  : g_strdup_printf("%s: the machine is %s.",
+                                    self->selected_agent, state);
+
+        clawt_window_toast(self, message);
+    }
+
+    /*
+     * Refreshed whichever way it went, for the reason agent_action() is:
+     * a stop that failed may still have left the machine somewhere new,
+     * and a sidebar disagreeing with a toast is two answers on screen.
+     */
+    refresh_agents(self);
+    refresh_selected(self);
+}
+
+typedef struct {
+    ClawtWindow   *window;
+    GSimpleAction *action;
+} ComputerConfirm;
+
+static void
+on_removing_stop_confirmed(AdwAlertDialog *dialog, const gchar *response,
+                           gpointer user_data)
+{
+    ComputerConfirm *confirm = user_data;
+
+    (void)dialog;
+
+    if (g_strcmp0(response, "stop") == 0)
+        on_menu_computer(confirm->action, NULL, confirm->window);
+
+    g_clear_object(&confirm->action);
+    g_free(confirm);
+}
+
+/*
+ * A container does not survive a stop unless computer.container.keep is
+ * set, so Stop there is Stop-and-delete -- the contents are gone rather
+ * than offline.  That is not a word anybody reads that way, so it is
+ * asked before it is done.
+ *
+ * The daemon refuses it too, without the flag. Both, deliberately: the
+ * fence is what protects a client that does not know to ask, and the
+ * dialog is what stops the fence being an error message somebody has to
+ * decode.
+ */
+static void
+on_menu_computer_maybe_confirm(GSimpleAction *action, GVariant *parameter,
+                               gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *name = g_action_get_name(G_ACTION(action));
+    ComputerConfirm *confirm;
+    AdwAlertDialog *ask;
+    g_autofree gchar *body = NULL;
+
+    if (!self->menu_stop_removes ||
+        g_strcmp0(name, "computer-start") == 0) {
+        on_menu_computer(action, parameter, user_data);
+        return;
+    }
+
+    body = g_strdup_printf(
+        "%s does not keep its machine across a stop, so everything inside "
+        "it goes -- anything the agent installed, and anything it wrote "
+        "outside a shared folder.\n\n"
+        "Set computer.container.keep to keep it instead.",
+        self->selected_agent != NULL ? self->selected_agent : "This agent");
+
+    ask = ADW_ALERT_DIALOG(adw_alert_dialog_new(
+        g_strcmp0(name, "computer-stop") == 0
+        ? "Stop this machine, and lose it?"
+        : "Restart this machine, and lose it?", body));
+
+    adw_alert_dialog_add_responses(ask, "cancel", "Cancel", "stop",
+                                   g_strcmp0(name, "computer-stop") == 0
+                                   ? "Stop" : "Restart", NULL);
+    adw_alert_dialog_set_response_appearance(ask, "stop",
+                                             ADW_RESPONSE_DESTRUCTIVE);
+    adw_alert_dialog_set_default_response(ask, "cancel");
+    adw_alert_dialog_set_close_response(ask, "cancel");
+
+    confirm = g_new0(ComputerConfirm, 1);
+    confirm->window = self;
+    confirm->action = g_object_ref(action);
+
+    g_signal_connect(ask, "response", G_CALLBACK(on_removing_stop_confirmed),
+                     confirm);
+    adw_dialog_present(ADW_DIALOG(ask), GTK_WIDGET(self));
+}
+
+/*
+ * Fills the Computer section, or empties it.
+ *
+ * Emptied rather than greyed out for an agent with no machine: a `none`
+ * or `host` agent has nothing to power on, and three permanently dead
+ * entries would be three things to read past on every right-click. An
+ * empty section draws as nothing.
+ *
+ * Whether there is a machine comes from the daemon --
+ * clawt_computer_type_has_machine() -- so a backend added later appears
+ * here without this function being touched.
+ */
+static void
+fill_computer_menu(ClawtWindow *self, gboolean machine, const gchar *type)
+{
+    g_autoptr(GMenu) verbs = NULL;
+    g_autofree gchar *label = NULL;
+
+    if (self->agent_menu_computer == NULL)
+        return;
+
+    g_menu_remove_all(self->agent_menu_computer);
+
+    if (!machine)
+        return;
+
+    verbs = g_menu_new();
+    g_menu_append(verbs, "Start", "agent.computer-start");
+    g_menu_append(verbs, "Stop", "agent.computer-stop");
+    g_menu_append(verbs, "Restart", "agent.computer-restart");
+
+    /*
+     * Named, so the submenu says which kind of machine it is about
+     * without the entries having to.  "Container" and "VM" are what
+     * somebody is thinking of; "Computer" alone reads as a category.
+     */
+    label = g_strdup_printf("Computer (%s)",
+                            type != NULL ? type : "machine");
+
+    g_menu_append_submenu(self->agent_menu_computer, label,
+                          G_MENU_MODEL(verbs));
+}
+
 static void
 popup_agent_menu(ClawtWindow *self, gdouble x, gdouble y)
 {
     GtkListBoxRow *row = gtk_list_box_get_row_at_y(self->sidebar, (gint)y);
     g_autofree gchar *state = NULL;
     g_autofree gchar *team = NULL;
+    g_autofree gchar *computer_type = NULL;
     const gchar *agent_id;
     GdkRectangle rect;
+    gboolean machine;
 
     if (row == NULL || self->agent_menu == NULL)
         return;
@@ -8249,12 +8487,20 @@ popup_agent_menu(ClawtWindow *self, gdouble x, gdouble y)
      */
     state = g_strdup(g_object_get_data(G_OBJECT(row), "agent-state"));
     team = g_strdup(g_object_get_data(G_OBJECT(row), "agent-team"));
+    machine = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row),
+                                                "agent-machine"));
+    computer_type = g_strdup(g_object_get_data(G_OBJECT(row),
+                                               "agent-computer"));
+    self->menu_stop_removes =
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row),
+                                          "agent-stop-removes"));
 
     /* Act on what was right-clicked, not on what happened to be selected. */
     gtk_list_box_select_row(self->sidebar, row);
 
     set_agent_action_states(self, state);
     fill_team_menu(self, team);
+    fill_computer_menu(self, machine, computer_type);
 
     rect.x = (gint)x;
     rect.y = (gint)y;
@@ -8309,6 +8555,30 @@ build_agent_menu(ClawtWindow *self)
     }
 
     /*
+     * The machine's own verbs.  Separate actions rather than a parameter
+     * on the agent ones, because they act on a different thing: an agent
+     * and the container it runs commands in are not the same object, and
+     * a menu that blurred them would be a menu somebody misreads once
+     * and then distrusts.
+     */
+    {
+        static const gchar *const power[] = { "computer-start",
+                                              "computer-stop",
+                                              "computer-restart" };
+        guint p;
+
+        for (p = 0; p < G_N_ELEMENTS(power); p++) {
+            g_autoptr(GSimpleAction) action =
+                g_simple_action_new(power[p], NULL);
+
+            g_signal_connect(action, "activate",
+                             G_CALLBACK(on_menu_computer_maybe_confirm), self);
+            g_action_map_add_action(G_ACTION_MAP(self->agent_actions),
+                                    G_ACTION(action));
+        }
+    }
+
+    /*
      * Stateful, and taking the team id as its parameter, so GTK draws
      * the entries as radio items with the current team ticked.
      */
@@ -8336,6 +8606,15 @@ build_agent_menu(ClawtWindow *self)
     g_menu_append_submenu(grouping, "Team",
                           G_MENU_MODEL(self->agent_menu_teams));
     g_menu_append_section(menu, NULL, G_MENU_MODEL(grouping));
+
+    /*
+     * Its own section, filled per right-click.  An agent with no machine
+     * leaves it empty, and an empty section draws as nothing -- so the
+     * menu on a chat-only agent is exactly the menu it was before.
+     */
+    self->agent_menu_computer = g_menu_new();
+    g_menu_append_section(menu, NULL,
+                          G_MENU_MODEL(self->agent_menu_computer));
 
     /* Its own section, so Delete is never the neighbour of Restart. */
     g_menu_append(danger, "Delete\342\200\246", "agent.delete");
@@ -16100,74 +16379,50 @@ folder_scope_text(JsonObject *mount)
     return out->len > 0 ? g_strdup(out->str) : g_strdup("nobody (no list)");
 }
 
-static void
-add_string_list(JsonBuilder *builder, const gchar *name, GPtrArray *items)
-{
-    guint i;
-
-    json_builder_set_member_name(builder, name);
-    json_builder_begin_array(builder);
-
-    for (i = 0; i < items->len; i++)
-        json_builder_add_string_value(builder, g_ptr_array_index(items, i));
-
-    json_builder_end_array(builder);
-}
-
 /*
- * Splits "backend, scribe" into the teams and the agents it names.
+ * The names somebody typed, sent as one list.
  *
- * Asked of the fleet rather than of the person: a name is a team or an
- * agent, and making somebody say which is asking them to know something
- * the daemon already knows. A name that is neither is sent as an agent
- * id, which the daemon ignores with a warning rather than refusing --
- * an agent added tomorrow should not need this typed again.
+ * Sorted by the *daemon*, not here.  This used to ask `team.list` and
+ * file each name itself -- and `team.list` reports the teams somebody
+ * declared, while an agent can perfectly well be on a team nobody
+ * declared. Every such name went to `agents:`, where it matched
+ * nothing: the folder reached nobody, the agents meant to have it
+ * started perfectly, and the field promising "teams or agents" was the
+ * thing that had caused it.
+ *
+ * The daemon answers the same question clawt_mount_covers() does, which
+ * is the only version that cannot disagree with what the mount then
+ * does.
  */
 static void
-add_scope_lists(ClawtWindow *self, JsonBuilder *builder, const gchar *raw)
+add_who_list(JsonBuilder *builder, const gchar *raw)
 {
     g_auto(GStrv) items = NULL;
-    g_autoptr(JsonNode) team_reply = NULL;
-    g_autoptr(GPtrArray) teams = g_ptr_array_new();
-    g_autoptr(GPtrArray) agents = g_ptr_array_new();
-    JsonArray *known;
     gsize i;
+    gboolean any = FALSE;
 
     if (raw == NULL || *raw == '\0')
         return;
 
     items = g_strsplit(raw, ",", -1);
-    team_reply = clawt_window_request(self, "team.list", NULL);
-    known = (team_reply != NULL)
-        ? json_object_get_array_member(clawt_payload_of(team_reply), "teams")
-        : NULL;
 
     for (i = 0; items[i] != NULL; i++) {
-        gboolean is_team = FALSE;
-        guint t;
-
         g_strstrip(items[i]);
 
         if (items[i][0] == '\0')
             continue;
 
-        for (t = 0; known != NULL && t < json_array_get_length(known); t++) {
-            JsonObject *team = json_array_get_object_element(known, t);
-
-            if (g_strcmp0(clawt_json_string(team, "id", ""), items[i]) == 0) {
-                is_team = TRUE;
-                break;
-            }
+        if (!any) {
+            json_builder_set_member_name(builder, "who");
+            json_builder_begin_array(builder);
+            any = TRUE;
         }
 
-        g_ptr_array_add(is_team ? teams : agents, items[i]);
+        json_builder_add_string_value(builder, items[i]);
     }
 
-    if (teams->len > 0)
-        add_string_list(builder, "teams", teams);
-
-    if (agents->len > 0)
-        add_string_list(builder, "agents", agents);
+    if (any)
+        json_builder_end_array(builder);
 }
 
 static void
@@ -16223,7 +16478,7 @@ on_shared_folder_add_response(AdwAlertDialog *dialog, const gchar *response,
         json_builder_add_string_value(
             builder, gtk_switch_get_active(GTK_SWITCH(writable)) ? "rw"
                                                                  : "ro");
-        add_scope_lists(self, builder, who_text);
+        add_who_list(builder, who_text);
         json_builder_end_object(builder);
 
         reply = clawt_window_request(self, "defaults.mount.add",
@@ -18412,6 +18667,7 @@ clawt_window_dispose(GObject *object)
     g_clear_pointer(&self->agent_menu, gtk_widget_unparent);
     g_clear_object(&self->agent_actions);
     g_clear_object(&self->agent_menu_teams);
+    g_clear_object(&self->agent_menu_computer);
     g_clear_pointer(&self->teams_seen, json_node_unref);
 
     g_clear_pointer(&self->appearance, clawt_appearance_free);

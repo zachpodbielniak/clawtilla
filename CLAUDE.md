@@ -597,6 +597,35 @@ the same program.
   reading. **A test can encode the defect as the intention**, and the
   only thing that catches it is running everything.
 
+### The control that caused the mistake was the one telling you to fix it
+
+- The warning above was right and the dialog was wrong. `defaults.mounts`
+  offers **one** field in both graphical clients -- "teams or agents" --
+  and the GTK client sorted it itself by asking `team.list`. That reports
+  the teams somebody **declared**; an agent can perfectly well be on a
+  team nobody declared, which the sidebar already draws and the context
+  menu already offers an entry for. So every such name was filed under
+  `agents:`, matched nothing, and the folder reached nobody.
+- Which means the *first* fix shipped a warning that told somebody to
+  hand-edit YAML to work around a control that had put the wrong thing
+  there. **A warning about a mistake a control makes is a bug report
+  about the control.** It was found by the person reading the warning
+  next to the dialog that produced it, not by any check here.
+- `clawt_mount_sort_scope()` is in the library beside
+  `clawt_mount_covers()`, and the daemon does the sorting from a `who`
+  list both clients now send. The two answer the same question -- a team
+  is one that is declared *or* one an agent names -- so the sorter cannot
+  write something the validator then complains about, and there is a test
+  asserting exactly that.
+- The web client had the other half: **two** boxes, so somebody typing a
+  team id into "Agents" got the same silent nothing. `docs/computers.org`
+  had said "the graphical clients take one field and sort it out for
+  you" the whole time -- true of one client, and true of neither's
+  implementation.
+- An unknown name goes to `agents`, not `teams`. Guessing "team" would
+  silently widen a folder to a group somebody may be about to create;
+  as an agent id it matches nothing and the validator names it.
+
 ### Two lists, and an id in the wrong one matches nothing
 
 - `defaults.mounts` takes `agents:` for agent ids and `teams:` for team
@@ -622,6 +651,67 @@ the same program.
   would send somebody to fix the file that was already right -- the team
   validator is what reports a missing declaration, and saying it twice in
   two vocabularies is worse than saying it once.
+
+### An agent and the machine it runs commands in are different things
+
+- The sidebar's right-click menu had Start, Stop and Restart for the
+  *agent*; the machine underneath had no control anywhere. A libvirt
+  domain outlives the daemon and a container with `keep: true` outlives
+  everything, so "the machine is up and the agent is not" is the ordinary
+  state, not an edge case -- and the only way out of it was `virsh` by
+  hand.
+- The verbs go in a **Computer (container)** submenu rather than beside
+  the agent's own. Flat, "Stop" and "Stop machine" is a guess every time;
+  under a named submenu the bare verbs are unambiguous. Absent rather
+  than greyed out for an agent with no machine -- three permanently dead
+  entries are three things to read past on every right-click, and an
+  empty `GMenu` section draws as nothing.
+- Which types have a machine is `clawt_computer_type_has_machine()` and
+  the daemon reports it per agent as `computer_machine`. A client
+  answering it from a list of its own would offer Stop on a backend added
+  later, or fail to, with nothing to say which -- the same rule as the
+  colour schemes and the computer types already in the parity check.
+- **`clawt_computer_stop()` now refuses by default**, like teardown. It
+  went through `CALL_OR_TRUE`, so a backend without one would report the
+  machine as stopped and leave it running -- which is the same lie one
+  function down, in front of somebody watching for it to go. `null` and
+  `host` say so in two lines each.
+- `container_stop()` set the state to STOPPED *before* reading podman's
+  answer, and `distrobox_stop()` did too. And podman's 404 for a
+  container that is not there was reported as a failure to stop, so
+  pressing Stop on a machine that had already gone produced an HTTP
+  status and a URL. Not there is stopped.
+- The wait is `clawt_computer_lifecycle_async()`, in the library. "An
+  IPC handler must not wait on the network" has now been applied at
+  **five** call sites, and every time it was applied at the site rather
+  than to the function the next caller inherited the bug.
+- Stopping a container **destroys** it -- `computer.container.keep` is
+  false by default -- so the daemon refuses without an explicit `remove`
+  and both clients warn first. Both, deliberately: the fence protects a
+  client that does not know to warn, the dialog stops the fence being an
+  error message somebody has to decode.
+- The reply says `removes` (this machine does not survive a stop), not
+  `removed` (one was destroyed just now). A computer built from the
+  config knows nothing about a machine it did not start, and the first
+  draft announced that a container nobody had ever created was gone.
+- Both clients name the three frames as **literals** rather than
+  `g_strconcat("computer.", verb)`. `make parity` reads the kinds each
+  client mentions, and an assembled one is invisible to it -- so the
+  check reported OK with the feature in one client only. Verified by
+  breaking one and watching it fail.
+
+### A duplicate JSON member is silent, and the last one wins
+
+- `add_agent_object()` already emitted a `computer` string. Adding the
+  new facts as an object under that same name gave the reply two members
+  called `computer`, and json-glib keeps the **last** -- so the object
+  was silently discarded and the only symptom was one client reading a
+  string where an object was expected. Flat `computer_machine` and
+  `computer_stop_removes` beside it instead, which is also the file's
+  existing convention (`vm_cpus`, `desktop_enabled`).
+- Same family as "a member in the wrong object is still valid JSON",
+  already in this file. Count the members as well as the braces: the
+  builder will happily write a name twice.
 
 ### `make docs-check` cannot see an agent-relative config key
 
@@ -4058,6 +4148,20 @@ the same program.
 - Never return a secret obtained on a client's behalf to that client. A
   Matrix token goes to a 0600 file and the reply names the file
 - Never write a hand-maintained list of an option's keys. Walk the schema
+- Never let a client decide whether a name is a team. It can only ask
+  `team.list`, which reports the teams somebody *declared*, and an agent
+  can be on a team nobody declared -- so the name lands where it matches
+  nothing and the folder reaches nobody. The daemon sorts a `who` list
+  with `clawt_mount_sort_scope()`, beside the rule it has to agree with
+- Never offer a lifecycle verb for a computer type that cannot honour it.
+  Ask `clawt_computer_type_has_machine()`; a `host` agent's machine is
+  the one clawtilla is running on
+- Never build an IPC frame kind with `g_strconcat()` in a client.
+  `make parity` reads the kinds each client mentions and cannot see an
+  assembled one, so a feature can exist in one client only under a green
+  check
+- Never add a JSON member whose name is already in that object. json-glib
+  keeps the last and drops the first without a word
 - Never let a selector that matches nothing stay silent when the entry it
   is on then reaches nobody. `defaults.mounts` ignores an unknown id on
   purpose, and that is right; what is not right is a folder shared with

@@ -1551,7 +1551,8 @@ add_string_array(JsonBuilder *builder, const gchar *name,
 }
 
 static ClawtMount *
-mount_from_payload(JsonObject   *payload,
+mount_from_payload(ClawtConfig  *config,
+                   JsonObject   *payload,
                    const gchar  *target,
                    GError      **error)
 {
@@ -1620,6 +1621,38 @@ mount_from_payload(JsonObject   *payload,
         g_auto(GStrv) agents =
             clawt_ipc_payload_strv(payload, "agents");
         g_auto(GStrv) teams = clawt_ipc_payload_strv(payload, "teams");
+        g_auto(GStrv) who = clawt_ipc_payload_strv(payload, "who");
+
+        /*
+         * One list of names, sorted here.
+         *
+         * The graphical clients offer a single field -- a name is an
+         * agent or a team and the fleet already knows which, so asking
+         * somebody to classify it is asking them to know something the
+         * daemon does. The GTK client used to sort it itself by asking
+         * `team.list`, which reports the teams somebody *declared*; an
+         * agent can be on a team nobody declared, so every such name was
+         * filed under `agents:` where it matched nothing. The folder
+         * reached nobody and the warning about it named the control that
+         * had caused it.
+         */
+        if (who != NULL && who[0] != NULL) {
+            g_auto(GStrv) sorted_agents = NULL;
+            g_auto(GStrv) sorted_teams = NULL;
+
+            clawt_mount_sort_scope(config, (const gchar *const *)who,
+                                   &sorted_agents, &sorted_teams);
+
+            if (sorted_agents != NULL) {
+                g_strfreev(agents);
+                agents = g_steal_pointer(&sorted_agents);
+            }
+
+            if (sorted_teams != NULL) {
+                g_strfreev(teams);
+                teams = g_steal_pointer(&sorted_teams);
+            }
+        }
 
         if (scope != NULL) {
             if (!clawt_enum_from_nick(CLAWT_TYPE_SCOPE, scope, &parsed)) {
@@ -5042,6 +5075,38 @@ add_decision_object(JsonBuilder   *builder,
     json_builder_end_object(builder);
 }
 
+/*
+ * Whether stopping this agent's machine destroys it.
+ *
+ * `computer.container.keep` is false by default, and container_stop()
+ * removes the container when it is -- so a Stop is a Stop for a VM and a
+ * Stop-and-delete for a container. Answered in one place because the
+ * listing has to say it *before* somebody presses the button and the
+ * stop handler has to report it afterwards, and two readings of one
+ * setting is how those two would come to disagree.
+ */
+static gboolean
+computer_stop_removes(ClawtAgentConfig *config)
+{
+    ClawtComputerType type;
+
+    if (config == NULL)
+        return FALSE;
+
+    type = (ClawtComputerType)clawt_agent_config_get_enum(config,
+                                                          "computer.type");
+
+    if (type == CLAWT_COMPUTER_CONTAINER)
+        return !clawt_agent_config_get_boolean(config,
+                                               "computer.container.keep");
+
+    if (type == CLAWT_COMPUTER_DISTROBOX)
+        return !clawt_agent_config_get_boolean(config,
+                                               "computer.distrobox.keep");
+
+    return FALSE;
+}
+
 static void
 add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
 {
@@ -5157,6 +5222,33 @@ add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
         builder, clawt_enum_to_nick(
                      CLAWT_TYPE_COMPUTER_TYPE,
                      clawt_agent_config_get_enum(config, "computer.type")));
+
+    /*
+     * Whether that type has a machine of its own to power on and off,
+     * and whether stopping it destroys it.
+     *
+     * Reported rather than worked out from the type by each client.
+     * Which types have a machine is a library question --
+     * clawt_computer_type_has_machine() -- and a client answering it
+     * from a list of its own would offer Stop on a backend added later,
+     * or fail to, with nothing to say which. `computer_stop_removes` has
+     * to be known *before* the button is pressed: for a container the
+     * contents do not come back.
+     *
+     * Flat, beside `computer`, rather than nested under it. The first
+     * draft made `computer` an object and json-glib kept the *last* of
+     * the two members with that name -- so the object was silently
+     * discarded, and the only reason it showed up at all was a client
+     * reading a string where an object was expected.
+     */
+    json_builder_set_member_name(builder, "computer_machine");
+    json_builder_add_boolean_value(
+        builder, clawt_computer_type_has_machine(
+                     (ClawtComputerType)clawt_agent_config_get_enum(
+                         config, "computer.type")));
+
+    json_builder_set_member_name(builder, "computer_stop_removes");
+    json_builder_add_boolean_value(builder, computer_stop_removes(config));
 
     /*
      * Reported for a container agent so a client can show what it will
@@ -6363,6 +6455,114 @@ on_ipc_exec_finished(GObject *source, GAsyncResult *result, gpointer user_data)
 }
 
 
+typedef struct {
+    ClawtDaemon            *daemon;
+    ClawtIpcPending        *pending;
+    ClawtComputer          *computer;   /* reffed: the agent may stop */
+    gchar                  *agent_id;
+    ClawtComputerLifecycle  op;
+    gboolean                removes;
+} LifecycleJob;
+
+static void
+lifecycle_job_free(LifecycleJob *job)
+{
+    g_clear_object(&job->daemon);
+    g_clear_object(&job->computer);
+    g_free(job->agent_id);
+    g_free(job);
+}
+
+static const gchar *
+lifecycle_name(ClawtComputerLifecycle op)
+{
+    switch (op) {
+    case CLAWT_COMPUTER_LIFECYCLE_START:
+        return "start";
+    case CLAWT_COMPUTER_LIFECYCLE_STOP:
+        return "stop";
+    case CLAWT_COMPUTER_LIFECYCLE_RESTART:
+    default:
+        return "restart";
+    }
+}
+
+static void
+on_ipc_lifecycle_finished(GObject *source, GAsyncResult *result,
+                          gpointer user_data)
+{
+    LifecycleJob *job = user_data;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    gboolean ok;
+
+    ok = clawt_computer_lifecycle_finish(CLAWT_COMPUTER(source), result,
+                                         &error);
+
+    /*
+     * Recorded whichever way it went, and beside the exec trail rather
+     * than in a log line: powering an agent's machine off is the second
+     * most consequential thing this socket can do, and a trail holding
+     * only the successes reads as "it did not happen" rather than as
+     * "we do not know what it did".
+     */
+    {
+        ClawtEvent *event = clawt_event_new("computer.power", job->agent_id);
+
+        clawt_event_set_detail(event, "action", lifecycle_name(job->op));
+        clawt_event_set_detail(event, "result", ok ? "ok" : "failed");
+        clawt_event_bus_publish(job->daemon->bus, event);
+        clawt_event_free(event);
+    }
+
+    /*
+     * The state dot and the computer line both come from the agent, so
+     * every client redraws whether or not the verb worked -- a failed
+     * stop may still have left the machine somewhere new.
+     */
+    clawt_event_bus_emit(job->daemon->bus, "agent.changed", job->agent_id);
+
+    if (!ok) {
+        clawt_ipc_pending_respond(
+            job->pending,
+            clawt_ipc_error_new(clawt_ipc_pending_get_request(job->pending),
+                                error->code, error->message));
+        lifecycle_job_free(job);
+        return;
+    }
+
+    json_builder_begin_object(builder);
+    add_string_member(builder, "agent", job->agent_id);
+    add_string_member(builder, "action", lifecycle_name(job->op));
+    json_builder_set_member_name(builder, "state");
+    json_builder_add_string_value(
+        builder, clawt_enum_to_nick(CLAWT_TYPE_COMPUTER_STATE,
+                                    clawt_computer_get_state(job->computer)));
+
+    /*
+     * Whether this machine survives a stop, not whether one was
+     * destroyed just now.  The distinction matters: a fresh computer
+     * object knows nothing about a machine it did not start, so
+     * reporting an observed removal would mean claiming a destruction
+     * that may not have happened -- which the first run of this did,
+     * announcing that a container nobody had ever created was gone.
+     *
+     * As policy it is true either way, and it is the sentence somebody
+     * needs: what they had is not coming back.
+     */
+    json_builder_set_member_name(builder, "removes");
+    json_builder_add_boolean_value(
+        builder, job->removes && job->op != CLAWT_COMPUTER_LIFECYCLE_START);
+
+    json_builder_end_object(builder);
+
+    clawt_ipc_pending_respond(
+        job->pending,
+        clawt_ipc_response_new(clawt_ipc_pending_get_request(job->pending),
+                               json_builder_get_root(builder)));
+    lifecycle_job_free(job);
+}
+
 JsonNode *
 clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
 {
@@ -6833,7 +7033,7 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
                                            "that agent has no such mount");
         } else {
             g_autoptr(ClawtMount) mount =
-                mount_from_payload(payload, target, &error);
+                mount_from_payload(self->config, payload, target, &error);
 
             if (mount == NULL)
                 return clawt_ipc_error_new(request, error->code,
@@ -6890,7 +7090,7 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
                                            "folder at that path");
         } else {
             g_autoptr(ClawtMount) mount =
-                mount_from_payload(payload, target, &error);
+                mount_from_payload(self->config, payload, target, &error);
 
             if (mount == NULL)
                 return clawt_ipc_error_new(request, error->code,
@@ -9361,6 +9561,128 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
          * on_ipc_exec_finished() when the command ends; waiting here
          * would hold the daemon's main context for the whole timeout,
          * which is the two minutes in which nothing else is routed.
+         */
+        return NULL;
+    }
+
+    if (g_strcmp0(kind, "computer.start") == 0 ||
+        g_strcmp0(kind, "computer.stop") == 0 ||
+        g_strcmp0(kind, "computer.restart") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        ClawtAgent *agent = (agent_id != NULL)
+                            ? clawt_agent_manager_get(self->agents, agent_id)
+                            : NULL;
+        ClawtAgentConfig *agent_config = (agent_id != NULL)
+            ? clawt_config_get_agent(self->config, agent_id) : NULL;
+        g_autoptr(ClawtComputer) built = NULL;
+        ClawtComputer *computer;
+        ClawtComputerLifecycle op;
+        ClawtComputerType type;
+        LifecycleJob *job;
+
+        if (agent_config == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such agent");
+
+        op = (g_strcmp0(kind, "computer.start") == 0)
+             ? CLAWT_COMPUTER_LIFECYCLE_START
+             : (g_strcmp0(kind, "computer.stop") == 0)
+               ? CLAWT_COMPUTER_LIFECYCLE_STOP
+               : CLAWT_COMPUTER_LIFECYCLE_RESTART;
+
+        type = (ClawtComputerType)clawt_agent_config_get_enum(
+            agent_config, "computer.type");
+
+        /*
+         * Refused here rather than by the backend, and on the *type*
+         * rather than on whether the vfunc happens to exist.  A host
+         * agent's machine is the one clawtilla is running on: there is a
+         * host_stop(), it is a no-op, and answering "stopped" about the
+         * operator's own workstation is exactly the quiet lie this path
+         * exists to avoid. Both clients ask the same predicate before
+         * offering the verb, so a type added later reaches all three
+         * without any of them being edited.
+         */
+        if (!clawt_computer_type_has_machine(type))
+            return clawt_ipc_error_new(
+                request, CLAWT_ERROR_NOT_SUPPORTED,
+                (type == CLAWT_COMPUTER_HOST)
+                ? "a host agent has no machine of its own to start or "
+                  "stop: it runs on this one"
+                : "this agent has no computer");
+
+        /*
+         * A fence, because for a container this is not reversible.
+         * `computer.container.keep` is false by default and the backend
+         * removes the container when it stops one -- so the contents are
+         * gone, not merely offline, and "stop" is not a word anybody
+         * reads that way. Refused rather than done carefully, and the
+         * refusal names both the flag to pass and the setting that would
+         * make it unnecessary.
+         */
+        if (op != CLAWT_COMPUTER_LIFECYCLE_START &&
+            computer_stop_removes(agent_config) &&
+            !clawt_ipc_payload_boolean(payload, "remove", FALSE)) {
+            g_autofree gchar *detail = g_strdup_printf(
+                "stopping this %s removes it and everything in it, because "
+                "computer.%s.keep is false. Pass remove to go ahead, or set "
+                "that key to keep what the agent installed.",
+                clawt_enum_to_nick(CLAWT_TYPE_COMPUTER_TYPE, type),
+                clawt_enum_to_nick(CLAWT_TYPE_COMPUTER_TYPE, type));
+
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       detail);
+        }
+
+        /*
+         * The agent's own computer when it has one, so its state and the
+         * machine's stay the same object.  A stopped agent has none --
+         * the computer is built at start -- and a machine outliving its
+         * agent is the ordinary case here rather than an edge one: a
+         * libvirt domain survives the daemon, and a container with
+         * keep: true survives everything. So one is built from the
+         * config, the same way computer.rebuild does.
+         */
+        computer = (agent != NULL) ? clawt_agent_get_computer(agent) : NULL;
+
+        if (computer == NULL) {
+            g_autoptr(GPtrArray) defaults =
+                clawt_config_get_default_mounts(self->config);
+
+            built = clawt_computer_factory_create(agent_config, defaults,
+                                                  self->pod_bridge, &error);
+
+            if (built == NULL)
+                return clawt_ipc_error_new(request, error->code,
+                                           error->message);
+
+            computer = built;
+        }
+
+        job = g_new0(LifecycleJob, 1);
+        job->daemon = g_object_ref(self);
+        job->pending = clawt_ipc_server_defer(self->ipc_server, request);
+
+        if (job->pending == NULL) {
+            lifecycle_job_free(job);
+            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                       "this request cannot be answered "
+                                       "later");
+        }
+
+        job->computer = g_object_ref(computer);
+        job->agent_id = g_strdup(agent_id);
+        job->op = op;
+        job->removes = computer_stop_removes(agent_config);
+
+        clawt_computer_lifecycle_async(computer, op, self->main_context, NULL,
+                                       on_ipc_lifecycle_finished, job);
+
+        /*
+         * NULL, not a frame.  Starting a container is a blocking request
+         * to podman and stopping a VM waits up to thirty seconds for the
+         * guest to flush; either held here is thirty seconds in which
+         * nothing else is routed.
          */
         return NULL;
     }

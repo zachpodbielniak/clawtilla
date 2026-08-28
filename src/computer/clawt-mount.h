@@ -249,6 +249,41 @@ gboolean clawt_mount_covers(ClawtMount  *self,
 gboolean clawt_mount_validate_fleet(ClawtConfig *config, GStrv *warnings);
 
 /**
+ * clawt_mount_sort_scope:
+ * @config: the fleet's configuration
+ * @who: (nullable) (array zero-terminated=1): names, each of which is an
+ *   agent id or a team id
+ * @out_agents: (out) (optional) (array zero-terminated=1): the agent ids
+ * @out_teams: (out) (optional) (array zero-terminated=1): the team ids
+ *
+ * Sorts one list of names into the two lists `defaults.mounts` keeps.
+ *
+ * Here, and not in a client, because it is the same question
+ * clawt_mount_covers() answers and the two must agree. A client asking
+ * `team.list` gets the teams somebody *declared* -- and an agent can be
+ * on a team nobody declared, which the sidebar already draws and the
+ * context menu already offers. So the GTK folder dialog, whose one field
+ * says "teams or agents", filed every such name under `agents:`, where
+ * it matched nothing: the folder reached nobody, the agents that were
+ * meant to have it started perfectly, and the warning that eventually
+ * said so contradicted the control that had caused it.
+ *
+ * A team is one that is declared *or* one an agent names, because that
+ * is what clawt_mount_covers() matches on. A name that is neither an
+ * agent nor a team goes to @out_agents, where
+ * clawt_mount_validate_fleet() will say so -- guessing "team" for an
+ * unknown name would silently widen a folder to a group somebody may be
+ * about to create.
+ *
+ * A name that is both an agent id and a team id is taken as the agent,
+ * matching the order clawt_scope_covers() checks in.
+ */
+void clawt_mount_sort_scope(ClawtConfig          *config,
+                            const gchar * const  *who,
+                            GStrv                *out_agents,
+                            GStrv                *out_teams);
+
+/**
  * clawt_mount_merge_defaults:
  * @defaults: (element-type ClawtMount) (nullable): the fleet's shared
  *   folders, already filtered to the ones covering this agent

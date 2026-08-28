@@ -397,6 +397,179 @@ test_vm_domain_xml_includes_shared_memory_for_mounts(void)
 }
 
 /*
+ * Which computer types have a machine you can power on and off.
+ *
+ * A predicate rather than a branch in each client, so a backend added
+ * later reaches the right-click menu, the web page and the daemon's own
+ * refusal without any of the three being edited -- and so a type that
+ * cannot honour a Stop is never offered one, which is how a control
+ * comes to report success and do nothing.
+ */
+static void
+test_which_types_have_a_machine(void)
+{
+    /* Nothing at all, and nothing that is ours to power off. */
+    g_assert_false(clawt_computer_type_has_machine(CLAWT_COMPUTER_NONE));
+    g_assert_false(clawt_computer_type_has_machine(CLAWT_COMPUTER_HOST));
+
+    g_assert_true(clawt_computer_type_has_machine(CLAWT_COMPUTER_CONTAINER));
+    g_assert_true(clawt_computer_type_has_machine(CLAWT_COMPUTER_DISTROBOX));
+    g_assert_true(clawt_computer_type_has_machine(CLAWT_COMPUTER_VM));
+
+    /*
+     * Every declared type answers, rather than falling off the end of an
+     * if-chain into whatever FALSE happens to mean. Walked through the
+     * library's own list so a type added later is covered here the day
+     * it exists.
+     */
+    {
+        guint i;
+
+        for (i = 0; i < clawt_computer_type_count(); i++) {
+            ClawtComputerType type = clawt_computer_type_nth(i);
+
+            /* The point is that it does not crash or assert. */
+            (void)clawt_computer_type_has_machine(type);
+        }
+
+        g_assert_cmpuint(clawt_computer_type_count(), >=, 5);
+    }
+}
+
+/*
+ * A stop that reports success and leaves the machine running is the same
+ * lie teardown used to tell, and it became worth preventing the moment a
+ * person could press Stop from a menu.
+ */
+static void
+test_stop_is_never_a_silent_success(void)
+{
+    g_autoptr(ClawtComputer) vm =
+        clawt_vm_computer_new("scribe", CLAWT_VM_BACKEND_QEMU, NULL);
+    g_autoptr(ClawtComputer) null_computer =
+        clawt_null_computer_new("scribe");
+    g_autoptr(ClawtSandbox) sandbox =
+        clawt_sandbox_new(CLAWT_CONFINE_WORKSPACE, "/tmp");
+    g_autoptr(ClawtComputer) host =
+        clawt_host_computer_new("scribe", sandbox);
+    g_autoptr(ClawtComputer) box =
+        clawt_distrobox_computer_new("scribe", NULL, NULL);
+    ClawtComputerClass *klass;
+
+    /*
+     * Every backend states its own answer rather than inheriting one.
+     * A new one that forgets gets the base class's refusal, which is the
+     * whole point -- so what is asserted is that none of these relies
+     * on it.
+     */
+    klass = CLAWT_COMPUTER_GET_CLASS(vm);
+    g_assert_nonnull(klass->stop);
+
+    klass = CLAWT_COMPUTER_GET_CLASS(null_computer);
+    g_assert_nonnull(klass->stop);
+
+    klass = CLAWT_COMPUTER_GET_CLASS(host);
+    g_assert_nonnull(klass->stop);
+
+    klass = CLAWT_COMPUTER_GET_CLASS(box);
+    g_assert_nonnull(klass->stop);
+
+    /* The two with genuinely nothing to stop succeed. */
+    g_assert_true(clawt_computer_stop(null_computer, NULL));
+    g_assert_true(clawt_computer_stop(host, NULL));
+}
+
+/*
+ * A backend of the test's own, so a restart can be watched rather than
+ * inferred.
+ *
+ * Every real backend needs a socket to fail against, and one that fails
+ * by hitting an assertion inside the pod bridge proves nothing about the
+ * composition -- which is what the first draft of this did.
+ */
+#define TEST_TYPE_COMPUTER (test_computer_get_type())
+G_DECLARE_FINAL_TYPE(TestComputer, test_computer, TEST, COMPUTER,
+                     ClawtComputer)
+
+struct _TestComputer {
+    ClawtComputer parent_instance;
+
+    gboolean stop_fails;
+    guint    stops;
+    guint    starts;
+};
+
+G_DEFINE_FINAL_TYPE(TestComputer, test_computer, CLAWT_TYPE_COMPUTER)
+
+static gboolean
+test_computer_stop(ClawtComputer *computer, GError **error)
+{
+    TestComputer *self = (TestComputer *)computer;
+
+    self->stops++;
+
+    if (!self->stop_fails)
+        return TRUE;
+
+    g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                        "the machine would not go");
+    return FALSE;
+}
+
+static gboolean
+test_computer_start(ClawtComputer *computer, GError **error)
+{
+    TestComputer *self = (TestComputer *)computer;
+
+    self->starts++;
+    return TRUE;
+}
+
+static void
+test_computer_class_init(TestComputerClass *klass)
+{
+    ClawtComputerClass *computer_class = CLAWT_COMPUTER_CLASS(klass);
+
+    computer_class->stop = test_computer_stop;
+    computer_class->start = test_computer_start;
+}
+
+static void
+test_computer_init(TestComputer *self)
+{
+}
+
+/*
+ * A restart is a stop and then a start, and it gives up when the stop
+ * fails rather than starting on top of a machine it could not take down.
+ *
+ * Asserted on the *start count*, which is the only thing that tells the
+ * two versions apart: a restart that carried on would still return an
+ * error from somewhere, and a test phrased on the return value alone
+ * would pass against either.
+ */
+static void
+test_a_restart_stops_before_it_starts(void)
+{
+    g_autoptr(TestComputer) machine = g_object_new(TEST_TYPE_COMPUTER, NULL);
+    g_autoptr(GError) error = NULL;
+
+    g_assert_true(clawt_computer_restart(CLAWT_COMPUTER(machine), &error));
+    g_assert_no_error(error);
+    g_assert_cmpuint(machine->stops, ==, 1);
+    g_assert_cmpuint(machine->starts, ==, 1);
+
+    machine->stop_fails = TRUE;
+
+    g_assert_false(clawt_computer_restart(CLAWT_COMPUTER(machine), &error));
+    g_assert_nonnull(error);
+    g_assert_cmpuint(machine->stops, ==, 2);
+
+    /* Still one: the start was never reached. */
+    g_assert_cmpuint(machine->starts, ==, 1);
+}
+
+/*
  * `defaults.mounts` takes two lists, and an id in the wrong one matches
  * nothing.
  *
@@ -416,6 +589,81 @@ mount_fleet(const gchar *yaml)
     g_assert_nonnull(config);
 
     return config;
+}
+
+/*
+ * One field of names, sorted into the two lists the config keeps.
+ *
+ * The case that matters is a team nobody *declared* but agents are on.
+ * The GTK dialog used to sort its own field by asking `team.list`, which
+ * reports declared teams only -- so a name like that went to `agents:`,
+ * matched nothing, and the folder reached nobody while the agents that
+ * were meant to have it started perfectly.
+ */
+static void
+test_scope_sorting_knows_an_undeclared_team(void)
+{
+    g_autoptr(ClawtConfig) config = mount_fleet(
+        "teams:\n  - id: forge\n"
+        "agents:\n"
+        "  - id: oxpecker\n    team: forge\n"
+        "  - id: veldt\n    team: qa\n");
+    const gchar *who[] = { "forge", "qa", "oxpecker", "nobody-at-all", NULL };
+    g_auto(GStrv) agents = NULL;
+    g_auto(GStrv) teams = NULL;
+
+    clawt_mount_sort_scope(config, who, &agents, &teams);
+
+    g_assert_nonnull(teams);
+    g_assert_cmpuint(g_strv_length(teams), ==, 2);
+    g_assert_cmpstr(teams[0], ==, "forge");
+
+    /* Declared by nobody, and still a team: an agent is on it. */
+    g_assert_cmpstr(teams[1], ==, "qa");
+
+    g_assert_nonnull(agents);
+    g_assert_cmpuint(g_strv_length(agents), ==, 2);
+    g_assert_cmpstr(agents[0], ==, "oxpecker");
+
+    /*
+     * A name that is neither goes to agents rather than teams. Guessing
+     * "team" would silently widen the folder to a group somebody may be
+     * about to create; as an agent id it matches nothing and
+     * clawt_mount_validate_fleet() says so.
+     */
+    g_assert_cmpstr(agents[1], ==, "nobody-at-all");
+}
+
+/*
+ * And what it sorts, the validator then accepts -- which is the whole
+ * point of both living beside clawt_mount_covers(). A sorter and a
+ * checker that disagreed would produce a folder saved through the
+ * dialog and warned about on the next start.
+ */
+static void
+test_what_the_sorter_writes_the_checker_accepts(void)
+{
+    g_autoptr(ClawtConfig) config = mount_fleet(
+        "defaults:\n"
+        "  mounts:\n"
+        "    - source: \"/data/source\"\n"
+        "      target: \"/work/source\"\n"
+        "      teams: [qa]\n"
+        "agents:\n"
+        "  - id: veldt\n    team: qa\n");
+    const gchar *who[] = { "qa", NULL };
+    g_auto(GStrv) agents = NULL;
+    g_auto(GStrv) teams = NULL;
+    g_auto(GStrv) warnings = NULL;
+
+    clawt_mount_sort_scope(config, who, &agents, &teams);
+
+    g_assert_null(agents);
+    g_assert_nonnull(teams);
+    g_assert_cmpstr(teams[0], ==, "qa");
+
+    g_assert_true(clawt_mount_validate_fleet(config, &warnings));
+    g_assert_null(warnings);
 }
 
 static void
@@ -4625,6 +4873,16 @@ main(int argc, char *argv[])
     g_test_add_func("/computer/container/no-mounts",
                     test_container_mount_json_handles_no_mounts);
 
+    g_test_add_func("/computer/types/which-have-a-machine",
+                    test_which_types_have_a_machine);
+    g_test_add_func("/computer/stop/never-a-silent-success",
+                    test_stop_is_never_a_silent_success);
+    g_test_add_func("/computer/restart/stops-before-it-starts",
+                    test_a_restart_stops_before_it_starts);
+    g_test_add_func("/computer/mounts/scope-sort-knows-an-undeclared-team",
+                    test_scope_sorting_knows_an_undeclared_team);
+    g_test_add_func("/computer/mounts/sorter-and-checker-agree",
+                    test_what_the_sorter_writes_the_checker_accepts);
     g_test_add_func("/computer/mounts/a-team-under-agents-is-named",
                     test_a_team_named_under_agents_is_named);
     g_test_add_func("/computer/mounts/an-agent-under-teams-is-named",

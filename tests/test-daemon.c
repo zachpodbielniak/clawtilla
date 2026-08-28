@@ -6438,6 +6438,170 @@ test_an_agent_that_dies_mid_turn_is_not_left_working(void)
 }
 
 
+/*
+ * Powering an agent's machine on and off is offered only where there is
+ * one, and refused where there is not.
+ *
+ * The refusal is on the *type* rather than on whether the backend
+ * happens to have a stop(): host_stop() exists and is a no-op, so
+ * reaching it would answer "stopped" about the operator's own
+ * workstation -- which is the quiet lie the whole path exists to avoid.
+ */
+static void
+test_a_machineless_agent_cannot_be_powered(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) chat_only = NULL;
+    g_autoptr(JsonNode) on_host = NULL;
+    const gchar *message;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: nobody\n"
+                  "    computer:\n      type: none\n"
+                  "  - id: onhost\n"
+                  "    computer:\n"
+                  "      type: host\n"
+                  "      host:\n        confirm_host_control: true\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    chat_only = request(&fixture, "computer.stop",
+                        "{\"agent\": \"nobody\"}");
+    g_assert_true(clawt_ipc_frame_is_error(chat_only));
+
+    on_host = request(&fixture, "computer.start",
+                      "{\"agent\": \"onhost\"}");
+    g_assert_true(clawt_ipc_frame_is_error(on_host));
+
+    /*
+     * And it says why in the host's own terms.  "No computer" would be
+     * wrong there and would send somebody to the config to add one.
+     */
+    message = json_object_get_string_member(json_node_get_object(on_host),
+                                            "error");
+    g_assert_nonnull(strstr(message, "runs on this one"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Stopping a container destroys it unless keep is set, so the daemon
+ * refuses until it is told to go ahead.
+ *
+ * A fence rather than care: the contents are gone rather than offline,
+ * and "stop" is not a word anybody reads that way. Both clients warn
+ * first; this is what protects the one that does not.
+ */
+static void
+test_a_destroying_stop_is_fenced(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) refused = NULL;
+    const gchar *message;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: boxy\n"
+                  "    computer:\n"
+                  "      type: container\n"
+                  "      container:\n        image: \"alpine\"\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    refused = request(&fixture, "computer.stop", "{\"agent\": \"boxy\"}");
+
+    g_assert_true(clawt_ipc_frame_is_error(refused));
+
+    message = json_object_get_string_member(json_node_get_object(refused),
+                                            "error");
+
+    /* It names both the flag and the setting that makes it unnecessary. */
+    g_assert_nonnull(strstr(message, "remove"));
+    g_assert_nonnull(strstr(message, "computer.container.keep"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * The listing says what can be powered and what a stop costs, so a
+ * client never has to work either out from the type.
+ *
+ * `computer` stays a string. The first draft of this reported the two
+ * new facts as an object under that same name, and json-glib keeps the
+ * *last* member of a duplicated key -- so the object was silently
+ * dropped and the only symptom was a client reading a string where an
+ * object should have been.
+ */
+static void
+test_the_listing_says_what_can_be_powered(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) reply = NULL;
+    JsonArray *agents;
+    guint i;
+    guint seen = 0;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: nobody\n"
+                  "    computer:\n      type: none\n"
+                  "  - id: boxy\n"
+                  "    computer:\n"
+                  "      type: container\n"
+                  "      container:\n        image: \"alpine\"\n"
+                  "  - id: keepy\n"
+                  "    computer:\n"
+                  "      type: container\n"
+                  "      container:\n"
+                  "        image: \"alpine\"\n        keep: true\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    reply = request(&fixture, "agent.list", NULL);
+    g_assert_false(clawt_ipc_frame_is_error(reply));
+
+    agents = json_object_get_array_member(
+        json_object_get_object_member(json_node_get_object(reply), "payload"),
+        "agents");
+    g_assert_nonnull(agents);
+
+    for (i = 0; i < json_array_get_length(agents); i++) {
+        JsonObject *agent = json_array_get_object_element(agents, i);
+        const gchar *id = json_object_get_string_member(agent, "id");
+
+        /* Still a string, and still the type. */
+        g_assert_true(JSON_NODE_HOLDS_VALUE(
+            json_object_get_member(agent, "computer")));
+
+        if (g_strcmp0(id, "nobody") == 0) {
+            g_assert_cmpstr(json_object_get_string_member(agent, "computer"),
+                            ==, "none");
+            g_assert_false(json_object_get_boolean_member(
+                agent, "computer_machine"));
+            g_assert_false(json_object_get_boolean_member(
+                agent, "computer_stop_removes"));
+            seen++;
+        } else if (g_strcmp0(id, "boxy") == 0) {
+            g_assert_true(json_object_get_boolean_member(
+                agent, "computer_machine"));
+
+            /* keep is false by default, so a stop takes it with it. */
+            g_assert_true(json_object_get_boolean_member(
+                agent, "computer_stop_removes"));
+            seen++;
+        } else if (g_strcmp0(id, "keepy") == 0) {
+            g_assert_true(json_object_get_boolean_member(
+                agent, "computer_machine"));
+            g_assert_false(json_object_get_boolean_member(
+                agent, "computer_stop_removes"));
+            seen++;
+        }
+    }
+
+    g_assert_cmpuint(seen, ==, 3);
+
+    fixture_teardown(&fixture);
+}
+
+
 int
 main(int argc, char *argv[])
 {
@@ -6657,6 +6821,12 @@ main(int argc, char *argv[])
                     test_agent_set_refuses_a_value_the_enum_lacks);
     g_test_add_func("/daemon/agent-set-reports-a-role-needs-a-session",
                     test_agent_set_reports_a_role_needs_a_new_session);
+    g_test_add_func("/daemon/computer/no-machine-is-refused",
+                    test_a_machineless_agent_cannot_be_powered);
+    g_test_add_func("/daemon/computer/a-destroying-stop-is-fenced",
+                    test_a_destroying_stop_is_fenced);
+    g_test_add_func("/daemon/computer/listing-says-what-can-be-powered",
+                    test_the_listing_says_what_can_be_powered);
     g_test_add_func("/daemon/start-agent-with-no-id",
                     test_starting_an_agent_with_no_id_is_an_error);
 

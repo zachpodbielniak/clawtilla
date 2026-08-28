@@ -208,6 +208,21 @@ clawt_computer_type_takes_mounts(ClawtComputerType type)
            type == CLAWT_COMPUTER_VM;
 }
 
+gboolean
+clawt_computer_type_has_machine(ClawtComputerType type)
+{
+    /*
+     * The same three as takes_mounts today, and a separate question on
+     * purpose: a backend could perfectly well take shared folders
+     * without being something you power on -- an ssh host would be
+     * exactly that -- and one predicate answering both would be right
+     * until the day it silently was not.
+     */
+    return type == CLAWT_COMPUTER_CONTAINER ||
+           type == CLAWT_COMPUTER_DISTROBOX ||
+           type == CLAWT_COMPUTER_VM;
+}
+
 /* Register ClawtComputerType as a GLib enum type */
 GType
 clawt_computer_type_get_type(void)
