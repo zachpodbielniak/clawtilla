@@ -169,7 +169,9 @@ declare -A AFFORDANCES=(
     ["connection reachability"]="clawt_connection_probe|clawt_connection_probe"
     ["identity size"]="clawt-identity-size|clawt-identity-size"
     ["connection banner"]="connection_banner|clawt-connection-banner"
-    ["daemon version check"]="clawt_version_mismatch_text|clawt_version_mismatch_text"
+    ["daemon version check"]="note_daemon_version|note_daemon_version"
+    ["connection notice"]="clawt_connection_notice_text|clawt_connection_notice_text"
+    ["start on a remote daemon"]="opt_profile|opt_profile"
     ["resync after a gap"]="\"resync\"|\"resync\""
 )
 

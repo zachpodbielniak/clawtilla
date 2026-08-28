@@ -41,7 +41,15 @@ struct _ClawtClient {
     GDataInputStream *input;
     GOutputStream    *output;
 
-    gboolean subscribed;
+    /*
+     * That somebody has asked for the event stream -- not that the
+     * daemon has us on its list.  A subscribe issued while the socket
+     * was down used to leave this FALSE for ever, so a client that came
+     * up before its daemon reconnected and then received nothing: a
+     * window with a live connection, an empty fleet, and no event ever
+     * arriving to correct it.
+     */
+    gboolean subscribe_wanted;
     guint64  cursor;
     guint    request_serial;
 
@@ -79,6 +87,7 @@ static guint signals[N_SIGNALS];
 static void read_next(ClawtClient *self);
 static gboolean try_reconnect(gpointer user_data);
 static void schedule_reconnect(ClawtClient *self);
+static void ensure_context(ClawtClient *self);
 
 /*
  * One outstanding request.
@@ -160,6 +169,31 @@ clawt_client_is_reconnecting(ClawtClient *self)
     g_return_val_if_fail(CLAWT_IS_CLIENT(self), FALSE);
 
     return self->reconnect_source != NULL;
+}
+
+void
+clawt_client_start_reconnecting(ClawtClient *self)
+{
+    g_return_if_fail(CLAWT_IS_CLIENT(self));
+
+    /*
+     * Three refusals, and each is a different thing being asked for.
+     * Connected: there is nothing to get back.  Already scheduled:
+     * arming a second timer would leak the first and halve the interval
+     * somebody chose.  Auto-reconnect off: a caller with one thing to do
+     * said it wants the failure, and retrying behind it is how a CLI
+     * command that should have exited sits there for two minutes.
+     */
+    if (!self->auto_reconnect || self->stream != NULL ||
+        self->reconnect_source != NULL)
+        return;
+
+    /*
+     * From the base delay, not from whatever the last run of the loop
+     * had doubled it to.  This is the *first* attempt at this daemon.
+     */
+    self->reconnect_delay = RECONNECT_BASE_SECONDS;
+    schedule_reconnect(self);
 }
 
 gboolean
@@ -426,9 +460,53 @@ handle_disconnect(ClawtClient *self)
  * The source is kept rather than its id, because g_source_remove() only
  * knows about the default context.
  */
+/*
+ * Settles which main context this client lives on, once.
+ *
+ * The reader, the retry timer and the request loop all have to be on
+ * one context, and it is the caller's thread-default -- never the global
+ * default, which in an embedded host is a loop nobody turns.
+ *
+ * Called from the two places that attach a source: arming the reader,
+ * and scheduling a retry.  It used to happen only in the first, at the
+ * bottom of a *successful* connect -- which was invisible for as long as
+ * a failed first connect was the end of the story.  Now that such a
+ * client arms a retry, a client with no context put its timer on the
+ * global default, which in an embedded host is a loop nobody turns:
+ * reported as reconnecting for ever and reconnecting never.  The same
+ * trap already recorded against two timers, an idle, a GTask and an
+ * async read in this tree.
+ *
+ * Not in _init(), because a client may legitimately be built on one
+ * thread and connected on another, and it is the second one that owns
+ * the loop it will run on.
+ */
+static void
+ensure_context(ClawtClient *self)
+{
+    GMainContext *context;
+
+    if (self->context != NULL)
+        return;
+
+    context = g_main_context_get_thread_default();
+    self->context = g_main_context_ref(context != NULL
+                                       ? context
+                                       : g_main_context_default());
+}
+
 static void
 schedule_reconnect(ClawtClient *self)
 {
+    /*
+     * Here rather than at either caller, because this is the function
+     * that attaches the source and so the only one that can be wrong.
+     * handle_disconnect() reaches it after a connect that settled the
+     * context; clawt_client_start_reconnecting() reaches it after one
+     * that failed and did not.
+     */
+    ensure_context(self);
+
     self->reconnect_source = g_timeout_source_new_seconds(
         self->reconnect_delay);
     g_source_set_callback(self->reconnect_source, try_reconnect, self, NULL);
@@ -448,7 +526,7 @@ try_reconnect(gpointer user_data)
     if (clawt_client_connect(self, &error)) {
         self->reconnect_delay = RECONNECT_BASE_SECONDS;
 
-        if (self->subscribed) {
+        if (self->subscribe_wanted) {
             gboolean resumed = TRUE;
 
             /*
@@ -741,15 +819,9 @@ clawt_client_connect(ClawtClient *self, GError **error)
      * The reader starts before the handshake, and the handshake goes
      * through it like every other request.  One reader owns the stream
      * for the whole life of the connection; nothing else ever reads it.
+     *
      */
-    if (self->context == NULL) {
-        GMainContext *context = g_main_context_get_thread_default();
-
-        self->context = g_main_context_ref(context != NULL
-                                           ? context
-                                           : g_main_context_default());
-    }
-
+    ensure_context(self);
     read_next(self);
 
     if (!say_hello(self, error)) {
@@ -1006,13 +1078,20 @@ clawt_client_subscribe(ClawtClient  *self,
     json_builder_add_int_value(builder, (gint64)cursor);
     json_builder_end_object(builder);
 
+    /*
+     * Recorded before the request, not after it.  Asking for the event
+     * stream while the socket happens to be down is a request that
+     * fails; it is not somebody changing their mind, and a reconnect has
+     * to honour it.
+     */
+    self->subscribe_wanted = TRUE;
+
     reply = clawt_client_request(self, "control.subscribe",
                                  json_builder_get_root(builder), error);
 
     if (reply == NULL)
         return FALSE;
 
-    self->subscribed = TRUE;
     object = json_node_get_object(reply);
 
     if (out_resumed != NULL)

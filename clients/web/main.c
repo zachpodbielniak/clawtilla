@@ -20,6 +20,10 @@
 
 static gint      opt_port = 8790;
 static gchar    *opt_socket = NULL;
+static gchar    *opt_profile = NULL;
+static gchar    *opt_host = NULL;
+static gint      opt_daemon_port = 0;
+static gchar    *opt_token = NULL;
 static gchar   **opt_bind = NULL;
 static gboolean  opt_no_tailscale = FALSE;
 static gboolean  opt_version = FALSE;
@@ -41,6 +45,22 @@ static GOptionEntry entries[] = {
     {
         "socket", 's', 0, G_OPTION_ARG_FILENAME, &opt_socket,
         "Path to the clawtilla daemon socket", "PATH"
+    },
+    {
+        "profile", 0, 0, G_OPTION_ARG_STRING, &opt_profile,
+        "Serve a saved connection instead of the local daemon", "NAME"
+    },
+    {
+        "host", 'H', 0, G_OPTION_ARG_STRING, &opt_host,
+        "Serve the daemon at this address instead of the local one", "HOST"
+    },
+    {
+        "daemon-port", 0, 0, G_OPTION_ARG_INT, &opt_daemon_port,
+        "Port for --host (default 8792)", "PORT"
+    },
+    {
+        "token", 0, 0, G_OPTION_ARG_STRING, &opt_token,
+        "Bearer token for --host", "TOKEN"
     },
     {
         "version", 'V', 0, G_OPTION_ARG_NONE, &opt_version,
@@ -224,6 +244,7 @@ main(int argc, char *argv[])
     g_autoptr(GOptionContext) context = NULL;
     g_autoptr(GError) error = NULL;
     g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(ClawtConnection) connection = NULL;
     g_autoptr(ClawtWebApp) app = NULL;
     g_autoptr(HtmxServer) server = NULL;
     g_autoptr(GMainLoop) loop = NULL;
@@ -259,7 +280,12 @@ main(int argc, char *argv[])
         "  clawtilla-web --bind 192.168.1.10 --port 9000\n"
         "\n"
         "  # Against a daemon whose socket is not in the usual place\n"
-        "  clawtilla-web --socket /run/user/1000/clawtilla/daemon.sock\n");
+        "  clawtilla-web --socket /run/user/1000/clawtilla/daemon.sock\n"
+        "\n"
+        "  # Serving a fleet on another machine; no local daemon needed\n"
+        "  clawtilla-web --profile workstation\n"
+        "  clawtilla-web --host 100.72.0.41 --token \"$(ssh box clawtilla "
+        "daemon token)\"\n");
 
     if (!g_option_context_parse(context, &argc, &argv, &error)) {
         g_printerr("clawtilla-web: %s\n", error->message);
@@ -283,12 +309,68 @@ main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    client = clawt_client_new(opt_socket);
+    /*
+     * Which daemon this server serves, decided once at start.
+     *
+     * Unlike the desktop client there is no switcher: a browser session
+     * is not the thing holding the connection, the process is, and
+     * repointing it would move every open page at once.  So the choice
+     * is a command-line one -- and it has to exist, because a machine
+     * serving a fleet over a tailnet need have no fleet of its own.
+     * Without these flags clawtilla-web could only ever show the local
+     * daemon, and on a laptop that means nothing at all.
+     */
+    if (opt_host != NULL) {
+        connection = clawt_connection_new_remote(
+            opt_host, opt_host,
+            opt_daemon_port > 0 ? (guint16)opt_daemon_port
+                                : CLAWT_DEFAULT_TCP_PORT,
+            opt_token);
+    } else if (opt_profile != NULL) {
+        g_autoptr(GPtrArray) saved = clawt_connection_list_load(NULL, &error);
+        ClawtConnection *found;
+
+        if (saved == NULL) {
+            g_printerr("clawtilla-web: %s\n", error->message);
+            return EXIT_FAILURE;
+        }
+
+        found = clawt_connection_list_find(saved, opt_profile);
+
+        if (found == NULL) {
+            g_printerr("clawtilla-web: there is no saved connection called "
+                       "'%s'\n", opt_profile);
+            g_printerr("  `clawtilla remote list` shows the ones there "
+                       "are\n");
+            return EXIT_FAILURE;
+        }
+
+        /* Copied: `saved` owns it and goes out of scope here. */
+        connection = clawt_connection_copy(found);
+    } else {
+        connection = clawt_connection_new_local("Local", opt_socket);
+    }
+
+    client = clawt_connection_create_client(connection);
     clawt_client_set_auto_reconnect(client, TRUE);
 
+    /*
+     * A server refuses to start when it cannot reach its daemon, where
+     * the desktop client opens anyway.  The difference is who is
+     * listening: a person at a window can read a banner and pick another
+     * machine, and nobody is looking at this one yet.  Saying why on
+     * stderr, at the moment somebody ran the command, beats serving a
+     * page that says the same thing to a browser that may never arrive.
+     */
     if (!clawt_client_connect(client, &error)) {
         g_printerr("clawtilla-web: %s\n", error->message);
-        g_printerr("Is clawtillad running?\n");
+
+        if (clawt_connection_is_local(connection))
+            g_printerr("Is clawtillad running?\n");
+        else
+            g_printerr("  --profile and --host serve a daemon elsewhere; "
+                       "`clawtilla remote list` shows the saved ones\n");
+
         return EXIT_FAILURE;
     }
 
@@ -311,12 +393,10 @@ main(int argc, char *argv[])
     app = clawt_web_app_new(client);
 
     /*
-     * Named so the connections page can show which profile is in use. A
-     * daemon reached by --socket has no profile, and says so rather than
-     * claiming to be one.
+     * The connection, so the connections page can show which one is in
+     * use and the banner can word itself for a local or a remote daemon.
      */
-    clawt_web_app_set_connection_name(
-        app, opt_socket != NULL ? opt_socket : "the default socket");
+    clawt_web_app_set_connection(app, connection);
 
     server = htmx_server_new();
     router = htmx_server_get_router(server);

@@ -383,6 +383,36 @@ Which daemon this server talks to, from the profiles in
 =$XDG_CONFIG_HOME/clawtilla/connections.yaml= -- the same 0600 file
 =clawtilla-gtk= and =clawtilla remote add= use.
 
+*** Starting on one
+
+The daemon this process serves is chosen at start, and it does not have
+to be a local one:
+
+#+begin_src bash
+# a saved profile
+clawtilla-web --profile workstation
+
+# or an address, with the token that daemon expects
+clawtilla-web --host 100.72.0.41 --token "$(ssh box clawtilla daemon token)"
+#+end_src
+
+~--host~ beats ~--profile~, which beats the local socket, exactly as in
+the CLI and the GTK client.  ~--daemon-port~ is the port on the *daemon*
+and defaults to 8792; ~--port~ is the one this server listens on and is a
+different number for a different thing, which is why they are spelled
+apart.
+
+Without these, ~clawtilla-web~ could only ever serve the daemon on the
+machine it runs on -- and on a laptop that is nothing at all.  A machine
+serving a fleet over a tailnet need have no fleet of its own.
+
+Unlike the desktop client, this one *refuses to start* when it cannot
+reach its daemon, and says why on stderr.  The difference is who is
+listening: a person at a window can read a banner and pick another
+machine, and nobody is looking at this one yet.  Serving a page that says
+"not connected" to a browser that may never arrive is worse than
+answering the person who just ran the command.
+
 *** Whether a saved daemon is up
 
 Each row has a *Check* button, before *Connect*, because that is the

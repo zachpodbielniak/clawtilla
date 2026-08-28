@@ -1524,12 +1524,43 @@ usually has a chief that is delegating in circles rather than dividing.
 
 ** The GTK client shows nothing
 
-If it shows a "daemon is not running" page, that is the daemon.  If it
-shows an empty agent list, the fleet really is empty --
-~clawtilla agent list~ from the CLI will agree, because both are asking
-the same daemon.
+Read the top of the content area first; the two causes look identical in
+the sidebar and are told apart by whether there is a banner.
+
+*** With a banner saying "Not connected"
+
+There is no daemon on the other end, and there never was one this
+session.  The window opens regardless, deliberately: a local daemon that
+is not running must not stand between you and the machines in
+~connections.yaml~.
+
+Three things you can do, in the order most people want them:
+
+- press *Connections* in the banner and pick another machine;
+- start the local one -- ~clawtillad --foreground~, or
+  ~systemctl --user start clawtilla~.  The window is still trying in the
+  background, so it fills itself in within a second or two of the daemon
+  coming up.  You do not have to restart the client;
+- read the reason on stderr.  The window says *which* daemon; the
+  terminal you launched it from says *why*, which for a remote is usually
+  a port or a token.
+
+A banner saying the connection was *lost* is a different thing: the
+daemon was there and went away.  That is
+[[#route-goes-away][A client on another machine stopped showing new
+messages]] below if it happened without anything closing, or an ordinary
+daemon restart if it did not -- either way the client reconnects on its
+own.
+
+*** With no banner and an empty agent list
+
+The fleet really is empty.  ~clawtilla agent list~ from the CLI will
+agree, because both are asking the same daemon.
 
 ** A client on another machine stopped showing new messages
+:PROPERTIES:
+:CUSTOM_ID: route-goes-away
+:END:
 
 The window still says it is connected to the remote daemon, the agent
 list is drawn, nothing has reported an error --- and no message sent

@@ -87,7 +87,24 @@ struct _ClawtWebApp {
      */
     GPtrArray   *alerts;
     guint        next_alert_id;
-    gchar       *connection_name;
+
+    /*
+     * Which daemon this process serves.
+     *
+     * The whole connection rather than its name, because the notice in
+     * the banner has to say different things for a local daemon and one
+     * on another machine -- and a name alone cannot tell them apart.
+     */
+    ClawtConnection *connection;
+
+    /*
+     * Whether a daemon has ever been on the other end.  Always true
+     * today, since this binary refuses to start without one; kept
+     * because clawt_daemon_link_state() needs it and a client that
+     * learns to start disconnected would otherwise word it wrongly with
+     * nothing to notice.
+     */
+    gboolean     reached_once;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtWebApp, clawt_web_app, G_TYPE_OBJECT)
@@ -406,16 +423,26 @@ clawt_web_app_get_connection_name(ClawtWebApp *self)
 {
     g_return_val_if_fail(CLAWT_IS_WEB_APP(self), NULL);
 
-    return self->connection_name;
+    /*
+     * Derived rather than stored beside the connection.  Two answers to
+     * "which daemon is this" is how a settings page came to tick a row
+     * that was not the one being served.
+     */
+    return (self->connection != NULL)
+           ? clawt_connection_get_name(self->connection) : NULL;
 }
 
 void
-clawt_web_app_set_connection_name(ClawtWebApp *self, const gchar *name)
+clawt_web_app_set_connection(ClawtWebApp *self, ClawtConnection *connection)
 {
     g_return_if_fail(CLAWT_IS_WEB_APP(self));
 
-    g_free(self->connection_name);
-    self->connection_name = g_strdup(name);
+    g_clear_pointer(&self->connection, clawt_connection_free);
+    self->connection = (connection != NULL)
+                       ? clawt_connection_copy(connection) : NULL;
+
+    /* Asked, not assumed: connect happens before this app exists. */
+    self->reached_once = clawt_client_is_connected(self->client);
 }
 
 /*
@@ -448,19 +475,14 @@ clawt_web_app_connection_notice(ClawtWebApp *self)
     g_return_val_if_fail(CLAWT_IS_WEB_APP(self), NULL);
 
     /*
-     * Reconnecting wins over a version mismatch, exactly as in the GTK
-     * client: while the connection is down the version is whatever it
-     * was before it went, and telling somebody to update a daemon they
-     * cannot currently reach is advice about the wrong problem.
+     * The sentence and its precedence are in libclawt, so this client
+     * and the GTK one cannot come to disagree about whether a connection
+     * was lost or never made.  This used to be a second copy of the
+     * wording, and it had only two of the three states.
      */
-    if (self->client != NULL && clawt_client_is_reconnecting(self->client))
-        return g_strdup_printf(
-            "Lost the connection to %s. Trying again -- what is shown is "
-            "from before it went.",
-            (self->connection_name != NULL) ? self->connection_name
-                                            : "the daemon");
-
-    return clawt_version_mismatch_text(self->daemon_version);
+    return clawt_connection_notice_text(
+        clawt_daemon_link_state(self->client, self->reached_once),
+        self->connection, self->daemon_version);
 }
 
 gboolean
@@ -497,8 +519,7 @@ clawt_web_app_switch(ClawtWebApp *self, ClawtConnection *connection,
     g_signal_connect(self->client, "event", G_CALLBACK(on_daemon_event),
                      self);
 
-    clawt_web_app_set_connection_name(self,
-                                      clawt_connection_get_name(connection));
+    clawt_web_app_set_connection(self, connection);
 
     /*
      * The version belongs to the daemon, not to this process, so it is
@@ -788,7 +809,7 @@ clawt_web_app_finalize(GObject *object)
     g_clear_pointer(&self->dm_rooms, g_hash_table_unref);
     g_clear_pointer(&self->viewing, g_free);
     g_clear_pointer(&self->alerts, g_ptr_array_unref);
-    g_clear_pointer(&self->connection_name, g_free);
+    g_clear_pointer(&self->connection, clawt_connection_free);
     g_clear_pointer(&self->daemon_version, g_free);
 
     g_clear_pointer(&self->connection_status, g_hash_table_unref);

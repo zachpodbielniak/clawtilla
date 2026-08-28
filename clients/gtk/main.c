@@ -72,9 +72,10 @@ static const gchar *description_text =
     "  clawtilla-gtk --host 100.72.0.41 --token \"$(ssh box clawtilla "
     "daemon token)\"\n"
     "\n"
-    "The daemon must already be running: start it with `clawtillad\n"
-    "--foreground`, or enable the systemd --user service. Connections can\n"
-    "also be saved and switched from the menu left of the app title.\n";
+    "A local daemon is started with `clawtillad --foreground`, or by the\n"
+    "systemd --user service. It does not have to be running: the window\n"
+    "opens either way, keeps trying, and the connection menu left of the\n"
+    "app title switches to any daemon saved with `clawtilla remote add`.\n";
 
 static void
 on_activate(AdwApplication *app, gpointer user_data)
@@ -85,35 +86,6 @@ on_activate(AdwApplication *app, gpointer user_data)
     ClawtWindow *window;
 
     window = clawt_window_new(app, client, connection);
-    gtk_window_present(GTK_WINDOW(window));
-}
-
-/*
- * Shown instead of the main window when the daemon cannot be reached.
- *
- * An empty window with a toast would look like a fleet with no agents in
- * it, which is a different problem with a different fix.
- */
-static void
-show_not_running(AdwApplication *app, gpointer user_data)
-{
-    const gchar *reason = user_data;
-    GtkWidget *window = adw_application_window_new(GTK_APPLICATION(app));
-    GtkWidget *status = adw_status_page_new();
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-
-    adw_status_page_set_icon_name(ADW_STATUS_PAGE(status),
-                                  "network-offline-symbolic");
-    adw_status_page_set_title(ADW_STATUS_PAGE(status),
-                              "The daemon is not running");
-    adw_status_page_set_description(ADW_STATUS_PAGE(status), reason);
-
-    gtk_box_append(GTK_BOX(box), adw_header_bar_new());
-    gtk_box_append(GTK_BOX(box), status);
-    gtk_widget_set_vexpand(status, TRUE);
-
-    adw_application_window_set_content(ADW_APPLICATION_WINDOW(window), box);
-    gtk_window_set_default_size(GTK_WINDOW(window), 560, 400);
     gtk_window_present(GTK_WINDOW(window));
 }
 
@@ -209,22 +181,39 @@ main(int argc, char *argv[])
      */
     clawt_client_set_auto_reconnect(client, TRUE);
 
+    /*
+     * A daemon that is not there is not a reason to refuse to start.
+     *
+     * This used to put up a status page saying "the daemon is not
+     * running" and nothing else -- no connection menu, no way to reach
+     * any of the machines in connections.yaml, on the one screen where
+     * somebody most needs them.  A laptop with no fleet of its own could
+     * therefore not open a workstation's fleet at all unless it named it
+     * on the command line, which is exactly backwards: the local daemon
+     * is the connection least likely to matter to a client whose whole
+     * point is reaching daemons elsewhere.
+     *
+     * So the window opens either way.  It says what happened in its own
+     * banner, offers the connection menu, and keeps trying in the
+     * background -- which also means a person who starts clawtillad a
+     * moment later finds the window has filled itself in rather than
+     * having to close it and open it again.
+     *
+     * The failure is still reported on stderr.  Somebody who typed
+     * --host and got the wrong port wants to see the reason without
+     * hunting for it in a banner.
+     */
     if (!clawt_client_connect(client, &error)) {
-        /*
-         * Kept alive on the application rather than freed here: the
-         * activate handler runs after this scope ends, and a message
-         * freed before it is read would print whatever is now at that
-         * address.
-         */
-        g_object_set_data_full(G_OBJECT(app), "reason",
-                               g_strdup(error->message), g_free);
-
-        g_signal_connect(app, "activate", G_CALLBACK(show_not_running),
-                         g_object_get_data(G_OBJECT(app), "reason"));
-
-        return g_application_run(G_APPLICATION(app), 1, argv);
+        g_printerr("clawtilla-gtk: %s\n", error->message);
+        clawt_client_start_reconnecting(client);
     }
 
+    /*
+     * Asked for unconditionally.  The subscription is an intent the
+     * client remembers, so a window that came up before its daemon is
+     * subscribed the moment the daemon appears -- rather than
+     * reconnecting to a live socket and receiving nothing for ever.
+     */
     clawt_client_subscribe(client, 0, NULL, NULL);
 
     /*

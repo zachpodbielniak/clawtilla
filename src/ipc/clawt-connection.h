@@ -242,6 +242,79 @@ ClawtVersionVerdict clawt_version_compare_to_client(
 gchar *clawt_version_mismatch_text(const gchar *daemon_version);
 
 /**
+ * ClawtDaemonLink:
+ * @CLAWT_DAEMON_LINK_UP: the daemon is on the other end
+ * @CLAWT_DAEMON_LINK_NEVER: this client has never reached it
+ * @CLAWT_DAEMON_LINK_LOST: it was there and went away
+ *
+ * How a client stands with the daemon it is pointed at.
+ *
+ * Never and lost are deliberately separate, and telling them apart is
+ * the whole reason this type exists.  They look identical from a
+ * #ClawtClient -- not connected, a retry scheduled -- and they call for
+ * opposite sentences.  "Lost the connection, what is shown is from
+ * before it went" is nonsense about a window that has never had anything
+ * on it, and it hides the only advice that helps: start the daemon, or
+ * point at a different machine.
+ */
+typedef enum {
+    CLAWT_DAEMON_LINK_UP = 0,
+    CLAWT_DAEMON_LINK_NEVER,
+    CLAWT_DAEMON_LINK_LOST
+} ClawtDaemonLink;
+
+/**
+ * clawt_daemon_link_state:
+ * @client: (nullable): the client, or %NULL
+ * @reached_once: whether this client has ever completed a connection
+ *
+ * Which of the three a client is in.
+ *
+ * @reached_once cannot be asked of the client, and that is not an
+ * oversight: `connected` is emitted from inside clawt_client_connect(),
+ * which both graphical clients call before they have anything to hear
+ * it with.  Whoever owns the client is the only one who knows, so it is
+ * passed in.
+ *
+ * Returns: the state
+ */
+ClawtDaemonLink clawt_daemon_link_state(ClawtClient *client,
+                                        gboolean     reached_once);
+
+/**
+ * clawt_connection_notice_text:
+ * @link: what clawt_daemon_link_state() said
+ * @connection: (nullable): which daemon, for the name and the address
+ * @daemon_version: (nullable): what `control.status` reported
+ *
+ * The one sentence a client shows about its connection, or %NULL when
+ * there is nothing to say.
+ *
+ * Here rather than in each client because both draw it, in a banner
+ * each, and a sentence written twice is a sentence that will eventually
+ * be written differently -- which for this one means two clients
+ * disagreeing about whether a connection was lost or never made.  It is
+ * also the only way the precedence gets tested: a window, a browser and
+ * a daemon that is down are three things a hermetic test cannot have.
+ *
+ * The precedence is deliberate and is the whole content of the
+ * function.  A connection that is not up outranks a version mismatch,
+ * because while it is down the version is whatever it was before it
+ * went and telling somebody to update a daemon they cannot reach is
+ * advice about the wrong problem.
+ *
+ * A local connection is told to start clawtillad and a remote one is
+ * not, because the remedies are different and only one of them is on
+ * this machine.  Somebody told to start a daemon for a workstation they
+ * cannot reach will start one here and be no closer.
+ *
+ * Returns: (transfer full) (nullable): the sentence, or %NULL
+ */
+gchar *clawt_connection_notice_text(ClawtDaemonLink        link,
+                                    const ClawtConnection *connection,
+                                    const gchar           *daemon_version);
+
+/**
  * clawt_connection_new_local:
  * @name: what to call it in the client
  * @socket_path: (nullable): the daemon's socket, or %NULL for the default

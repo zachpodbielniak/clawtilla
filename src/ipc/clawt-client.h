@@ -106,6 +106,26 @@ void clawt_client_set_auto_reconnect(ClawtClient *self, gboolean enabled);
 gboolean clawt_client_is_reconnecting(ClawtClient *self);
 
 /**
+ * clawt_client_start_reconnecting:
+ * @self: a #ClawtClient
+ *
+ * Starts the retry loop for a client that has never connected.
+ *
+ * Auto-reconnect is armed by a connection *going away*, so a client
+ * whose very first clawt_client_connect() failed was inert for ever:
+ * starting the daemon a moment later changed nothing, and the only way
+ * back was to close the application and open it again.  A daemon that is
+ * not up yet is the ordinary case for a desktop client launched from a
+ * menu, so it is the case that has to work.
+ *
+ * Does nothing when the client is connected, when a retry is already
+ * scheduled, or when clawt_client_set_auto_reconnect() has not been
+ * turned on -- a caller with one thing to do wants the failure reported,
+ * not retried behind its back.
+ */
+void clawt_client_start_reconnecting(ClawtClient *self);
+
+/**
  * clawt_client_request:
  * @self: a #ClawtClient
  * @kind: the request kind

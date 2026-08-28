@@ -547,6 +547,17 @@ typedef struct {
     GThread      *thread;
     GSocketService *service;
     gint          connections;   /* accepted so far; atomic */
+
+    /*
+     * A daemon that does not hang up after the first subscribe.
+     *
+     * The resync test needs the connection dropped, because dropping it
+     * is what starts the retry.  The tests below need the opposite: the
+     * retry has already started and what is being checked is what the
+     * client does once it gets through.
+     */
+    gboolean      stay;
+    gint          subscribes;    /* atomic */
 } FakeDaemon;
 
 static void
@@ -597,6 +608,7 @@ on_fake_incoming(GSocketService *service, GSocketConnection *connection,
         json_builder_begin_object(builder);
 
         if (g_strcmp0(kind, "control.subscribe") == 0) {
+            g_atomic_int_inc(&fake->subscribes);
             json_builder_set_member_name(builder, "cursor");
             json_builder_add_int_value(builder, 7);
             json_builder_set_member_name(builder, "resumed");
@@ -621,7 +633,8 @@ on_fake_incoming(GSocketService *service, GSocketConnection *connection,
          * is always resumable, so without this the second subscribe would
          * ask for something any daemon could honour.
          */
-        if (g_strcmp0(kind, "control.subscribe") == 0 && which == 1) {
+        if (g_strcmp0(kind, "control.subscribe") == 0 && which == 1 &&
+            !fake->stay) {
             g_autoptr(ClawtEvent) event = clawt_event_new("daemon.started",
                                                           "fake");
             g_autoptr(JsonNode) frame = NULL;
@@ -654,13 +667,14 @@ run_fake_daemon(gpointer data)
 }
 
 static FakeDaemon *
-fake_daemon_start(const gchar *dir)
+fake_daemon_start_at(const gchar *path, gboolean stay)
 {
     FakeDaemon *fake = g_new0(FakeDaemon, 1);
     g_autoptr(GSocketAddress) address = NULL;
     g_autoptr(GError) error = NULL;
 
-    fake->path = g_build_filename(dir, "fake.sock", NULL);
+    fake->path = g_strdup(path);
+    fake->stay = stay;
     fake->context = g_main_context_new();
     fake->loop = g_main_loop_new(fake->context, FALSE);
 
@@ -691,6 +705,14 @@ fake_daemon_start(const gchar *dir)
     fake->thread = g_thread_new("fake-daemon", run_fake_daemon, fake);
 
     return fake;
+}
+
+static FakeDaemon *
+fake_daemon_start(const gchar *dir)
+{
+    g_autofree gchar *path = g_build_filename(dir, "fake.sock", NULL);
+
+    return fake_daemon_start_at(path, FALSE);
 }
 
 static void
@@ -1033,11 +1055,412 @@ test_auto_reconnect_can_be_turned_off_mid_flight(void)
     clawt_test_remove_tree(dir);
 }
 
+
+/* ── What a client says about its own connection ─────────────────── */
+
+/*
+ * The three states are told apart by whether the client ever got there,
+ * and by nothing else.
+ *
+ * A retry is scheduled in both the never and the lost case, so it cannot
+ * be the discriminator -- which is exactly the mistake the banner made
+ * for as long as it had two states instead of three.
+ */
+static void
+test_never_and_lost_differ_only_in_history(void)
+{
+    g_autoptr(ClawtClient) client = clawt_client_new("/nonexistent/x.sock");
+
+    g_assert_cmpint(clawt_daemon_link_state(client, FALSE), ==,
+                    CLAWT_DAEMON_LINK_NEVER);
+    g_assert_cmpint(clawt_daemon_link_state(client, TRUE), ==,
+                    CLAWT_DAEMON_LINK_LOST);
+
+    /* And no client at all is not a connection anybody has lost. */
+    g_assert_cmpint(clawt_daemon_link_state(NULL, FALSE), ==,
+                    CLAWT_DAEMON_LINK_NEVER);
+}
+
+/*
+ * A local daemon is told to be started; a remote one is not.
+ *
+ * The remedies are different and only one of them is on this machine, so
+ * telling somebody to run clawtillad for a workstation they cannot reach
+ * sends them to start a daemon that gets them no closer.
+ */
+static void
+test_the_advice_matches_where_the_daemon_is(void)
+{
+    g_autoptr(ClawtConnection) local =
+        clawt_connection_new_local("Local", NULL);
+    g_autoptr(ClawtConnection) remote =
+        clawt_connection_new_remote("workstation", "100.72.0.41", 8792,
+                                    "s3cret");
+    g_autofree gchar *here = NULL;
+    g_autofree gchar *there = NULL;
+
+    here = clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, local, NULL);
+    there = clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, remote,
+                                         NULL);
+
+    g_assert_nonnull(here);
+    g_assert_nonnull(there);
+
+    g_assert_nonnull(strstr(here, "clawtillad"));
+    g_assert_null(strstr(there, "clawtillad"));
+
+    /* Both offer the way out, which is the whole point of the sentence. */
+    g_assert_nonnull(strstr(here, "connection"));
+    g_assert_nonnull(strstr(there, "connection"));
+
+    /* The remote one says which machine, since a name alone may not. */
+    g_assert_nonnull(strstr(there, "100.72.0.41"));
+
+    /*
+     * And never the token.  This sentence is drawn in a banner, put in a
+     * served page and read out of a log; clawt_connection_describe() is
+     * the one that hides it and this has to be built on that one.
+     */
+    g_assert_null(strstr(there, "s3cret"));
+}
+
+/*
+ * "Lost" is a claim about history, and it is wrong for a window that has
+ * never had anything on it.
+ */
+static void
+test_a_connection_never_made_was_not_lost(void)
+{
+    g_autoptr(ClawtConnection) local =
+        clawt_connection_new_local("Local", NULL);
+    g_autofree gchar *never = NULL;
+    g_autofree gchar *lost = NULL;
+
+    never = clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, local, NULL);
+    lost = clawt_connection_notice_text(CLAWT_DAEMON_LINK_LOST, local, NULL);
+
+    g_assert_nonnull(never);
+    g_assert_nonnull(lost);
+    g_assert_cmpstr(never, !=, lost);
+
+    g_assert_null(strstr(never, "Lost"));
+    g_assert_nonnull(strstr(lost, "Lost"));
+
+    /*
+     * The lost sentence says what is on screen is stale.  The never one
+     * must not: there is nothing on screen to be stale.
+     */
+    g_assert_nonnull(strstr(lost, "before it went"));
+    g_assert_null(strstr(never, "before it went"));
+}
+
+/*
+ * A connection that is down outranks a version mismatch.
+ *
+ * While it is down the version is whatever it was before it went, and
+ * telling somebody to update a daemon they cannot reach is advice about
+ * the wrong problem.
+ */
+static void
+test_a_broken_connection_outranks_a_version(void)
+{
+    g_autoptr(ClawtConnection) local =
+        clawt_connection_new_local("Local", NULL);
+    g_autofree gchar *never = NULL;
+    g_autofree gchar *lost = NULL;
+    g_autofree gchar *up = NULL;
+
+    /*
+     * A version far enough from this build that
+     * clawt_version_mismatch_text() definitely has something to say --
+     * checked, so the test cannot pass by there being no mismatch.
+     */
+    up = clawt_connection_notice_text(CLAWT_DAEMON_LINK_UP, local, "99.0.0");
+    g_assert_nonnull(up);
+    g_assert_nonnull(strstr(up, "99.0.0"));
+
+    never = clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, local,
+                                         "99.0.0");
+    lost = clawt_connection_notice_text(CLAWT_DAEMON_LINK_LOST, local,
+                                        "99.0.0");
+
+    g_assert_null(strstr(never, "99.0.0"));
+    g_assert_null(strstr(lost, "99.0.0"));
+}
+
+/* A connection that is up and agrees about the version says nothing. */
+static void
+test_a_healthy_connection_says_nothing(void)
+{
+    g_autoptr(ClawtConnection) local =
+        clawt_connection_new_local("Local", NULL);
+    g_autofree gchar *quiet = NULL;
+
+    quiet = clawt_connection_notice_text(CLAWT_DAEMON_LINK_UP, local,
+                                         CLAWT_VERSION_STRING);
+    g_assert_null(quiet);
+
+    /* An unknown version is not a complaint either. */
+    quiet = clawt_connection_notice_text(CLAWT_DAEMON_LINK_UP, local, NULL);
+    g_assert_null(quiet);
+}
+
+/*
+ * A notice with no connection at all still reads as a sentence.
+ *
+ * The GTK window builds its banner before it has been given a profile in
+ * at least one order of construction, and a "%s" printed as "(null)"
+ * would be the first thing somebody saw.
+ */
+static void
+test_a_notice_without_a_connection_still_reads(void)
+{
+    g_autofree gchar *never =
+        clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, NULL, NULL);
+    g_autofree gchar *lost =
+        clawt_connection_notice_text(CLAWT_DAEMON_LINK_LOST, NULL, NULL);
+
+    g_assert_nonnull(never);
+    g_assert_nonnull(lost);
+    g_assert_null(strstr(never, "(null)"));
+    g_assert_null(strstr(lost, "(null)"));
+}
+
+
+/* ── A client that came up before its daemon ─────────────────────── */
+
+/*
+ * Iterates @context until @done or the deadline, whichever first.
+ *
+ * Against wall time rather than a fixed number of turns: the retry is a
+ * one-second timer, so a count of iterations burns through long before
+ * it could have fired and would report a failure about the clock.
+ */
+static gboolean
+pump_until(GMainContext *context, gboolean (*done)(gpointer), gpointer data,
+           guint seconds)
+{
+    gint64 deadline = g_get_monotonic_time() +
+                      ((gint64)seconds * G_USEC_PER_SEC);
+
+    while (!done(data) && g_get_monotonic_time() < deadline)
+        g_main_context_iteration(context, FALSE);
+
+    return done(data);
+}
+
+static gboolean
+client_is_up(gpointer data)
+{
+    return clawt_client_is_connected(data);
+}
+
+/*
+ * The bug this whole path exists for.
+ *
+ * A desktop client launched from a menu before its daemon is running had
+ * no way back: the retry loop is armed by a connection *going away*, so
+ * a first connect that failed left the client inert for ever and the
+ * only remedy was to close the application and open it again.
+ *
+ * And the second half, which is the one that looks like it works: the
+ * client reconnects, and receives nothing, because the subscription it
+ * was asked for while the socket was down was never recorded.  A live
+ * connection showing an empty fleet with no event ever arriving is worse
+ * than no connection at all, since nothing says why.
+ */
+static void
+test_a_client_that_never_connected_still_gets_there(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-never-XXXXXX", NULL);
+    g_autofree gchar *path = g_build_filename(dir, "later.sock", NULL);
+    g_autoptr(GMainContext) context = g_main_context_new();
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(GError) error = NULL;
+    FakeDaemon *fake;
+
+    g_main_context_push_thread_default(context);
+    client = clawt_client_new(path);
+    clawt_client_set_auto_reconnect(client, TRUE);
+
+    /* Nothing is listening there yet. */
+    g_assert_false(clawt_client_connect(client, &error));
+    g_assert_nonnull(error);
+    g_clear_error(&error);
+
+    /*
+     * Connect does not arm the retry by itself, and must not: the same
+     * function is how the connection menu tries a machine somebody just
+     * typed, where a failure has to be reported once rather than
+     * retried behind them for ever.
+     */
+    g_assert_false(clawt_client_is_reconnecting(client));
+
+    clawt_client_start_reconnecting(client);
+    g_assert_true(clawt_client_is_reconnecting(client));
+
+    /* Asked for while there was nothing to ask.  This fails, and counts. */
+    g_assert_false(clawt_client_subscribe(client, 0, NULL, &error));
+    g_clear_error(&error);
+
+    fake = fake_daemon_start_at(path, TRUE);
+
+    g_assert_true(pump_until(context, client_is_up, client, 20));
+
+    /*
+     * The subscription is the assertion that matters.  Merely being
+     * connected is what the broken version also managed.
+     */
+    g_assert_cmpint(g_atomic_int_get(&fake->subscribes), >=, 1);
+
+    clawt_client_disconnect(client);
+    fake_daemon_stop(fake);
+    g_main_context_pop_thread_default(context);
+    clawt_test_remove_tree(dir);
+}
+
+/*
+ * A caller with one thing to do gets its failure reported, not retried.
+ *
+ * The CLI runs a command and exits; a retry loop armed behind it would
+ * hold its context for the whole backoff over a daemon that is simply
+ * not running.
+ */
+static void
+test_start_reconnecting_needs_permission(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-noretry-XXXXXX", NULL);
+    g_autofree gchar *path = g_build_filename(dir, "absent.sock", NULL);
+    g_autoptr(GMainContext) context = g_main_context_new();
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(GError) error = NULL;
+
+    g_main_context_push_thread_default(context);
+    client = clawt_client_new(path);
+
+    /* Auto-reconnect is off by default, and that is the answer here. */
+    g_assert_false(clawt_client_connect(client, &error));
+    g_clear_error(&error);
+
+    clawt_client_start_reconnecting(client);
+    g_assert_false(clawt_client_is_reconnecting(client));
+
+    g_main_context_pop_thread_default(context);
+    clawt_test_remove_tree(dir);
+}
+
+/*
+ * Asked twice, armed once.
+ *
+ * Two timers on one client is not a cosmetic problem: the second one
+ * overwrites the first's pointer without releasing the source, so the
+ * first is leaked *and still attached*.  Both fire, and the extra ones
+ * find the socket already up -- so the duplicate does not show as a
+ * second connection, only as a second subscribe.  That is what is
+ * counted here; an assertion on connections passes either way and
+ * proves nothing, which is what the first draft of this test did.
+ */
+static void
+test_start_reconnecting_does_not_stack(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-twice-XXXXXX", NULL);
+    g_autofree gchar *path = g_build_filename(dir, "twice.sock", NULL);
+    g_autoptr(GMainContext) context = g_main_context_new();
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(GError) error = NULL;
+    FakeDaemon *fake;
+
+    g_main_context_push_thread_default(context);
+    client = clawt_client_new(path);
+    clawt_client_set_auto_reconnect(client, TRUE);
+
+    g_assert_false(clawt_client_connect(client, &error));
+    g_clear_error(&error);
+
+    clawt_client_start_reconnecting(client);
+    clawt_client_start_reconnecting(client);
+    clawt_client_start_reconnecting(client);
+
+    /* Wanted, so a duplicate timer has something to do twice. */
+    g_assert_false(clawt_client_subscribe(client, 0, NULL, &error));
+    g_clear_error(&error);
+
+    fake = fake_daemon_start_at(path, TRUE);
+    g_assert_true(pump_until(context, client_is_up, client, 20));
+
+    /*
+     * Given a moment for a second timer to fire if there were one.  The
+     * base delay is a second, so two more seconds of turning the loop is
+     * time for any duplicate to have shown itself.
+     */
+    {
+        gint64 until = g_get_monotonic_time() + (2 * G_USEC_PER_SEC);
+
+        while (g_get_monotonic_time() < until)
+            g_main_context_iteration(context, FALSE);
+    }
+
+    g_assert_cmpint(g_atomic_int_get(&fake->connections), ==, 1);
+    g_assert_cmpint(g_atomic_int_get(&fake->subscribes), ==, 1);
+
+    clawt_client_disconnect(client);
+    fake_daemon_stop(fake);
+    g_main_context_pop_thread_default(context);
+    clawt_test_remove_tree(dir);
+}
+
+/* There is nothing to get back when the daemon is already there. */
+static void
+test_a_connected_client_is_not_retried(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-up-XXXXXX", NULL);
+    g_autofree gchar *path = g_build_filename(dir, "up.sock", NULL);
+    g_autoptr(GMainContext) context = g_main_context_new();
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(GError) error = NULL;
+    FakeDaemon *fake = fake_daemon_start_at(path, TRUE);
+
+    g_main_context_push_thread_default(context);
+    client = clawt_client_new(path);
+    clawt_client_set_auto_reconnect(client, TRUE);
+
+    g_assert_true(clawt_client_connect(client, &error));
+    g_assert_no_error(error);
+
+    clawt_client_start_reconnecting(client);
+    g_assert_false(clawt_client_is_reconnecting(client));
+
+    clawt_client_disconnect(client);
+    fake_daemon_stop(fake);
+    g_main_context_pop_thread_default(context);
+    clawt_test_remove_tree(dir);
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
+    g_test_add_func("/connection/never-connected-still-gets-there",
+                    test_a_client_that_never_connected_still_gets_there);
+    g_test_add_func("/connection/start-reconnecting-needs-permission",
+                    test_start_reconnecting_needs_permission);
+    g_test_add_func("/connection/start-reconnecting-does-not-stack",
+                    test_start_reconnecting_does_not_stack);
+    g_test_add_func("/connection/a-connected-client-is-not-retried",
+                    test_a_connected_client_is_not_retried);
+    g_test_add_func("/connection/never-and-lost-differ-only-in-history",
+                    test_never_and_lost_differ_only_in_history);
+    g_test_add_func("/connection/advice-matches-where-the-daemon-is",
+                    test_the_advice_matches_where_the_daemon_is);
+    g_test_add_func("/connection/never-made-was-not-lost",
+                    test_a_connection_never_made_was_not_lost);
+    g_test_add_func("/connection/broken-outranks-a-version",
+                    test_a_broken_connection_outranks_a_version);
+    g_test_add_func("/connection/healthy-says-nothing",
+                    test_a_healthy_connection_says_nothing);
+    g_test_add_func("/connection/notice-without-a-connection",
+                    test_a_notice_without_a_connection_still_reads);
     g_test_add_func("/connection/versions-compare-as-numbers",
                     test_versions_compare_as_numbers);
     g_test_add_func("/connection/unreadable-version-is-not-a-verdict",

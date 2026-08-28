@@ -3790,6 +3790,87 @@ the same program.
 - **A subscriber exists to act on the state, so the state has to be true
   when the signal fires.** Arrange first, announce second.
 
+### The only way out of a broken connection was through a working one
+
+- `clawtilla-gtk` put up an `AdwStatusPage` saying "The daemon is not
+  running" when its first connect failed. The page had a header bar with
+  **nothing packed into it** -- and the connection menu, the one control
+  that reaches every other machine, lives in the *main window's* header,
+  which is built only on a successful connect. So a laptop with two
+  workstations in `connections.yaml` could not open either of them
+  unless it named one on the command line, on the exact screen where
+  somebody most needs them.
+- The local daemon is the connection **least** likely to matter to a
+  client whose whole point is reaching daemons elsewhere, and it was the
+  only one that could stand between you and the rest. The window opens
+  either way now, and the failure is a banner with a button rather than
+  a page instead of the application.
+- Three separate things had to be true for that to work, and each was
+  its own bug. The retry loop is armed by a connection *going away*, so
+  a first connect that failed left the client inert for ever --
+  `clawt_client_start_reconnecting()` is the caller saying it wants one,
+  kept out of `connect()` because the connection menu uses the same
+  function and there a failure must be reported once, not retried behind
+  somebody. `clawt_window_request()` toasted every failure, and a window
+  makes a dozen requests before it has drawn anything, so the way out
+  was buried under a dozen copies of one sentence -- `NOT_CONNECTED` is
+  now the banner's alone, the same origin split as the alerts panel.
+  And nothing re-read the window when a connection finally arrived:
+  events describe what *changes*, so a window that came up empty stays
+  empty for ever unless the arrival of the daemon is itself the trigger.
+- Verified by driving the real client against a real daemon, because
+  none of it is visible from a test: window up with no daemon, banner
+  and button correct; daemon started, agent list drawn a second later;
+  and the actual reported scenario -- no local daemon, switch to a live
+  TCP daemon from the menu, its fleet drawn.
+
+### A context captured only on success is no context at all on failure
+
+- `ClawtClient` took its `GMainContext` at the *bottom* of
+  `clawt_client_connect()`, after the socket was up. Harmless for as
+  long as a failed first connect was the end of the story. The moment
+  such a client started arming a retry, it armed it with a NULL context
+  -- so `schedule_reconnect()` fell through to `g_main_context_default()`,
+  which for an embedded host is a loop nobody turns. Reported as
+  reconnecting for ever and reconnecting never.
+- The sixth API in this file behind that trap, and the fix is the one
+  that generalises: `ensure_context()` is called from
+  `schedule_reconnect()` itself rather than from either caller, because
+  **the function that attaches the source is the only one that can be
+  wrong**. Naming it at the call sites is what has failed five times.
+- Not moved to `_init()`, though that was the first attempt. A client
+  may legitimately be built on one thread and connected on another, and
+  `/connection/client-reconnects-on-its-own-context` exists precisely to
+  pin that -- it constructs outside the pushed context and connects
+  inside it, and capturing at construction broke it. A test written to
+  catch this class of bug caught the fix for it.
+
+### A subscription is an intent, not a request
+
+- `clawt_client_subscribe()` set `subscribed` only after the reply
+  landed, and `try_reconnect()` re-subscribed only `if (self->subscribed)`.
+  So a client asked for the event stream while its socket was down
+  recorded nothing, reconnected perfectly, and **received nothing for
+  ever**: a live connection, an empty fleet, and no event arriving to
+  correct it. Worse than a connection that fails, which at least says so.
+- Renamed `subscribe_wanted` and recorded *before* the request. Asking
+  while the socket happens to be down is a request that fails; it is not
+  somebody changing their mind.
+
+### The duplicate did not show as a second connection
+
+- `/connection/start-reconnecting-does-not-stack` asserted the daemon
+  accepted exactly one connection, and passed with the guard against
+  arming a second timer deliberately removed. Arming twice overwrites
+  `reconnect_source` without releasing it, so the first source is leaked
+  *and still attached* -- but every extra firing finds the socket already
+  up, and `clawt_client_connect()` returns TRUE immediately. The
+  duplicate work is a second **subscribe**, not a second connect.
+- Found by sabotaging the guard rather than by reading, which is the
+  whole reason to do it: asserting on `subscribes` shows 3 against 1.
+  Two of four sabotages that session passed, and both times the test was
+  measuring something the bug does not touch.
+
 ### A test that hangs is worse than one that fails, and a bare "ok" is not a pass
 
 - A reconnect happens from a timeout callback, and the connect inside it
@@ -3961,6 +4042,21 @@ the same program.
 - Never write a test that can hang where it could fail. A reconnect that
   waits by iterating its own context takes the whole request timeout with
   it; give the wait a watchdog that breaks it
+- Never make a client's route to other daemons depend on one of them
+  answering. A window that only exists after a successful connect cannot
+  be how somebody fixes a failed one, and the local daemon is the one
+  least likely to matter
+- Never toast a condition the banner is already holding open. A window
+  makes a dozen requests before it draws anything, and a dozen copies of
+  "not connected" bury the control that leads out of it
+- Never let a client record that it is subscribed only when the
+  subscribe succeeded. A reconnect then delivers a live socket that
+  receives nothing, which looks like a working connection to an empty
+  fleet
+- Never capture a main context at the point work succeeds. Capture it
+  where a source is attached -- `schedule_reconnect()`, not its callers
+  -- because the function doing the attaching is the only one that can
+  be wrong about it
 - Never guard a shared resource with a probe when the question being
   asked is ownership. A probe answers "did anything reply just now",
   which a busy daemon fails -- and a guard wrong in the permissive

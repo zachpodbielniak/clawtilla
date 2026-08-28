@@ -156,6 +156,18 @@ struct _ClawtWindow {
     gchar             *daemon_version;      /* what control.status said */
 
     /*
+     * Whether this window has ever had a daemon on the other end.
+     *
+     * The two states read identically from the client -- disconnected,
+     * a retry scheduled -- and they need opposite sentences.  "Lost the
+     * connection" is wrong and confusing for a window that was opened
+     * against a daemon which was never running: nothing was lost, and
+     * the useful advice is to start it or to pick another machine,
+     * neither of which "trying again" suggests.
+     */
+    gboolean           connected_once;
+
+    /*
      * What the last probe found for each saved connection, by name.
      *
      * Kept rather than asked for on every redraw: a probe is a network
@@ -592,11 +604,24 @@ clawt_window_request(ClawtWindow *self, const gchar *kind, JsonNode *payload)
 
     if (reply == NULL) {
         /*
-         * Every failure is surfaced.  A request that quietly did nothing
-         * is the worst outcome here: the interface would look like it had
+         * Every failure is surfaced -- except the one the banner is
+         * already holding open.  A request that quietly did nothing is
+         * the worst outcome here: the interface would look like it had
          * worked and the fleet would disagree.
+         *
+         * "Not connected" is the exception because it is not an answer
+         * to anything somebody just did: it is a condition the window is
+         * *in*, said once and permanently by the banner.  A window
+         * opened against a daemon that is not running makes a dozen
+         * requests before it has drawn anything, so toasting each would
+         * stack a dozen copies of one sentence over the one control
+         * that leads out of it.  Same split as the alerts panel: arrived
+         * on its own goes to the persistent surface, answers what you
+         * just did stays a toast.
          */
-        clawt_window_toast(self, error->message);
+        if (!g_error_matches(error, CLAWT_ERROR, CLAWT_ERROR_NOT_CONNECTED))
+            clawt_window_toast(self, error->message);
+
         return NULL;
     }
 
@@ -10980,50 +11005,52 @@ static void on_manage_connections(GtkButton *button, gpointer user_data);
  * another machine will not find out until afterwards.
  */
 /*
- * What the banner should say, or nothing.
+ * Draws whatever clawt_connection_notice_text() says, or hides the
+ * banner.
  *
- * Two conditions, both persistent, and neither of them a toast.  A toast
- * answers a question somebody is holding right now and then goes; these
- * are states the window is *in* until something changes, and the whole
- * complaint was that they were invisible.
+ * The sentence itself is in libclawt, because the web client shows the
+ * same one and two spellings of "is this connection lost or was it never
+ * made" would differ exactly once -- on the case nobody looked at.  What
+ * is left here is the widget: which state gets a button, and clearing
+ * that button again.
  *
- * Reconnecting wins over a version mismatch: while the connection is
- * down the version is what it was before it went, and telling somebody
- * to update a daemon they cannot currently reach is advice about the
- * wrong problem.
+ * The button belongs to the never-connected state alone, and it is the
+ * whole fix.  Every other state leaves the window usable, so the
+ * connection menu in the header is route enough; this one has an empty
+ * fleet behind it and nothing on screen that looks like a way out, which
+ * is precisely how somebody with two saved workstations in
+ * connections.yaml concludes the client cannot reach them.
  */
 static void
 update_connection_banner(ClawtWindow *self)
 {
-    g_autofree gchar *mismatch = NULL;
+    ClawtDaemonLink link;
+    g_autofree gchar *text = NULL;
 
     if (self->connection_banner == NULL)
         return;
 
-    if (self->client != NULL && clawt_client_is_reconnecting(self->client)) {
-        const gchar *name = (self->active_connection != NULL)
-                            ? clawt_connection_get_name(self->active_connection)
-                            : "the daemon";
-        g_autofree gchar *text =
-            g_strdup_printf("Lost the connection to %s. Trying again -- "
-                            "what is shown is from before it went.", name);
+    link = clawt_daemon_link_state(self->client, self->connected_once);
+    text = clawt_connection_notice_text(link, self->active_connection,
+                                        self->daemon_version);
 
-        adw_banner_set_title(ADW_BANNER(self->connection_banner), text);
-        adw_banner_set_revealed(ADW_BANNER(self->connection_banner), TRUE);
+    /*
+     * Cleared unless this state wants it.  AdwBanner keeps a button
+     * label until it is taken away, so a banner that grew one while
+     * disconnected would still be offering it under a version-mismatch
+     * message about a daemon that is right there.
+     */
+    adw_banner_set_button_label(
+        ADW_BANNER(self->connection_banner),
+        (link == CLAWT_DAEMON_LINK_NEVER) ? "Connections" : NULL);
 
+    if (text == NULL) {
+        adw_banner_set_revealed(ADW_BANNER(self->connection_banner), FALSE);
         return;
     }
 
-    mismatch = clawt_version_mismatch_text(self->daemon_version);
-
-    if (mismatch != NULL) {
-        adw_banner_set_title(ADW_BANNER(self->connection_banner), mismatch);
-        adw_banner_set_revealed(ADW_BANNER(self->connection_banner), TRUE);
-
-        return;
-    }
-
-    adw_banner_set_revealed(ADW_BANNER(self->connection_banner), FALSE);
+    adw_banner_set_title(ADW_BANNER(self->connection_banner), text);
+    adw_banner_set_revealed(ADW_BANNER(self->connection_banner), TRUE);
 }
 
 /*
@@ -11058,14 +11085,82 @@ note_daemon_version(ClawtWindow *self)
     update_connection_banner(self);
 }
 
+/*
+ * The banner's way out: open the connection menu in the header.
+ *
+ * Opened rather than replicated.  A second list of saved connections
+ * built into a banner would be a second answer to which daemons exist,
+ * and every one of those in this codebase turned out to be a bug.
+ */
+static void
+on_banner_button(AdwBanner *banner, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    (void)banner;
+
+    if (self->connection_button != NULL)
+        gtk_menu_button_popup(GTK_MENU_BUTTON(self->connection_button));
+}
+
+/*
+ * Re-reads a window whose daemon has just appeared.
+ *
+ * From an idle rather than inline in ::connected, and both halves of
+ * that matter.  The signal is emitted from inside clawt_client_connect(),
+ * which on the retry path is called from the reconnect timeout *before*
+ * it re-subscribes -- so reading here would take a snapshot and then
+ * open the event stream, losing anything that happened in between.  And
+ * these are synchronous requests that iterate the context, which is a
+ * poor thing to do from inside a source dispatch that has more to do
+ * after it.
+ *
+ * A reference for the life of the idle, like queue_scroll(): a window
+ * closed in the same turn the daemon came back would otherwise be read
+ * after it was freed.
+ */
+static gboolean
+reload_after_connect(gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    note_daemon_version(self);
+    refresh_agents(self);
+    refresh_selected(self);
+    refresh_tasks(self);
+    refresh_decisions(self);
+    refresh_routines(self);
+    load_history(self);
+
+    return G_SOURCE_REMOVE;
+}
+
 static void
 on_client_connected(ClawtClient *client, gpointer user_data)
 {
     ClawtWindow *self = user_data;
+    gboolean first = !self->connected_once;
 
     (void)client;
 
+    self->connected_once = TRUE;
     update_connection_banner(self);
+
+    /*
+     * A window that came up before its daemon has nothing on it -- no
+     * agents, no version, no history -- and no event will ever fill
+     * that in, because events describe what changes rather than what is.
+     * So the arrival of a connection is itself the thing that has to
+     * trigger the first read.
+     *
+     * Only the first.  An ordinary reconnect is covered by the daemon's
+     * replay, and ::resync already re-reads the case where the replay
+     * could not reach back far enough; re-reading every reconnect would
+     * throw away the reader's place in the transcript over a blip.
+     */
+    if (first)
+        g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, reload_after_connect,
+                        g_object_ref(self), g_object_unref);
 }
 
 static void
@@ -11257,6 +11352,10 @@ switch_connection(ClawtWindow *self, ClawtConnection *connection)
     }
 
     self->client = g_steal_pointer(&client);
+
+    /* Connected above, before watch_the_connection() could hear it. */
+    self->connected_once = clawt_client_is_connected(self->client);
+
     g_signal_connect(self->client, "event", G_CALLBACK(on_daemon_event),
                      self);
     watch_the_connection(self);
@@ -17771,6 +17870,15 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
     self->client = g_object_ref(client);
 
     /*
+     * Asked, not assumed.  main() connects before this window exists, so
+     * ::connected has already been emitted for a client that came up
+     * normally and no handler of ours saw it -- a window that took the
+     * signal as its only evidence would draw "not connected" over a
+     * perfectly good fleet.
+     */
+    self->connected_once = clawt_client_is_connected(client);
+
+    /*
      * The profile is passed in beside the client rather than guessed at
      * from it, because the two have to agree and only the caller knows
      * both.  A window that worked out for itself what its client was
@@ -18122,6 +18230,8 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
      */
     self->connection_banner = adw_banner_new("");
     adw_banner_set_revealed(ADW_BANNER(self->connection_banner), FALSE);
+    g_signal_connect(self->connection_banner, "button-clicked",
+                     G_CALLBACK(on_banner_button), self);
     gtk_box_append(GTK_BOX(content), self->connection_banner);
 
     gtk_box_append(GTK_BOX(content), GTK_WIDGET(self->alerts_split));

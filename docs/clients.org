@@ -1989,10 +1989,17 @@ them would show one daemon's transcript under another daemon's agent.
 
 ~clawtilla-gtk~ also takes ~--profile~, ~--host~, ~--port~ and ~--token~,
 so a laptop with no fleet of its own can start straight on a workstation
-rather than being shown "the daemon is not running" for a daemon it was
-never asking about.
+rather than opening on a local daemon it was never asking about.
+
+Those flags are a convenience, not a requirement.  The window opens
+whether or not any daemon answers, so the connection menu is always
+reachable -- see [[#no-local-daemon][If there is no daemon on this
+machine]] below.
 
 *** When the route to another machine goes away
+:PROPERTIES:
+:CUSTOM_ID: route-goes-away
+:END:
 
 A laptop suspends, a tailnet comes back on a different path, a firewall
 forgets an idle flow.  None of those close a connection or reset it;
@@ -2125,16 +2132,53 @@ the drawer when an agent is picked on a narrow window is an affordance
 getting out of the way, not the operator saying they want no agent
 list, so widening the window brings it back.
 
-*** If the daemon is not running
+*** If there is no daemon on this machine
+:PROPERTIES:
+:CUSTOM_ID: no-local-daemon
+:END:
 
-A status page saying so, not an empty window.  An empty window looks like
-a fleet with no agents in it, which is a different problem with a
-different fix.
+The window opens anyway, with the connection menu in it.
+
+This is the one thing about the client worth knowing before you need it:
+a local daemon is the connection *least* likely to matter to a client
+whose whole point is reaching daemons elsewhere, and it must not be able
+to stand between you and the others.
+
+What you get is a banner across the top of the content saying which
+daemon could not be reached, with a *Connections* button that opens the
+menu.  Behind it the client keeps trying, so starting ~clawtillad~ a
+moment later fills the window in by itself -- the agent list, the
+transcript and the daemon's version all arrive without your having to
+close the application and open it again.
+
+The banner words itself for where the daemon is, because the remedies
+are different:
+
+- *Local* -- "Not connected to Local. Start clawtillad, or choose another
+  connection."  Both routes named, because either may be the one you
+  wanted.
+- *Remote* -- "Not connected to workstation (100.72.0.41:8792). Still
+  trying; choose another connection to switch."  No mention of starting
+  a daemon: starting one *here* gets you no closer to a machine over
+  there.
+
+It never says the connection was *lost*.  That is a claim about history
+and it is wrong for a window that has never had anything on it -- and it
+would hide the only advice that helps.  A connection that genuinely goes
+away mid-session gets its own sentence; see [[#route-goes-away][When the
+route to another machine goes away]].
+
+While disconnected the window does not toast.  A window makes a dozen
+requests before it has drawn anything, and a dozen copies of "not
+connected" would bury the one control that leads out.  The banner says it
+once and keeps saying it, which is what a persistent condition deserves;
+a toast is for answering something you just did.
 
 ** The web client
 
 #+begin_src bash
 clawtilla-web [--port 8790] [--bind ADDR] [--no-tailscale] [--socket PATH]
+              [--profile NAME | --host HOST [--daemon-port N] [--token T]]
 #+end_src
 
 Everything ~clawtilla-gtk~ does, served over HTTP.  The same seven views

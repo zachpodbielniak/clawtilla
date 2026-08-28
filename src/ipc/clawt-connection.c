@@ -701,3 +701,63 @@ clawt_version_mismatch_text(const gchar *daemon_version)
         return NULL;
     }
 }
+
+ClawtDaemonLink
+clawt_daemon_link_state(ClawtClient *client, gboolean reached_once)
+{
+    if (client != NULL && clawt_client_is_connected(client))
+        return CLAWT_DAEMON_LINK_UP;
+
+    /*
+     * Never outranks lost even when a retry is scheduled.  A client that
+     * has never reached its daemon is retrying too, so the retry cannot
+     * be what distinguishes them; only whether it ever got there can.
+     */
+    if (!reached_once)
+        return CLAWT_DAEMON_LINK_NEVER;
+
+    return CLAWT_DAEMON_LINK_LOST;
+}
+
+gchar *
+clawt_connection_notice_text(ClawtDaemonLink        link,
+                             const ClawtConnection *connection,
+                             const gchar           *daemon_version)
+{
+    const gchar *name = (connection != NULL)
+                        ? clawt_connection_get_name(
+                              (ClawtConnection *)connection)
+                        : "the daemon";
+
+    switch (link) {
+    case CLAWT_DAEMON_LINK_NEVER:
+        if (connection != NULL &&
+            !clawt_connection_is_local((ClawtConnection *)connection)) {
+            g_autofree gchar *where =
+                clawt_connection_describe((ClawtConnection *)connection);
+
+            return g_strdup_printf("Not connected to %s (%s). Still trying; "
+                                   "choose another connection to switch.",
+                                   name, where);
+        }
+
+        /*
+         * The local case is the one somebody hits by opening the
+         * application from a menu, so it names the command that fixes
+         * it -- and offers the other machines in the same breath,
+         * because a client whose whole point is reaching daemons
+         * elsewhere should not read as broken when the least important
+         * one is down.
+         */
+        return g_strdup_printf("Not connected to %s. Start clawtillad, or "
+                               "choose another connection.", name);
+
+    case CLAWT_DAEMON_LINK_LOST:
+        return g_strdup_printf("Lost the connection to %s. Trying again -- "
+                               "what is shown is from before it went.", name);
+
+    case CLAWT_DAEMON_LINK_UP:
+    default:
+        return clawt_version_mismatch_text(daemon_version);
+    }
+}

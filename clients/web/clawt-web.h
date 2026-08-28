@@ -322,12 +322,16 @@ gboolean clawt_web_app_switch(ClawtWebApp      *self,
 const gchar *clawt_web_app_get_connection_name(ClawtWebApp *self);
 
 /**
- * clawt_web_app_set_connection_name:
+ * clawt_web_app_set_connection:
  * @self: a #ClawtWebApp
- * @name: (nullable): what to call the current daemon
+ * @connection: (nullable): which daemon this process is serving
+ *
+ * The whole connection rather than a name, because the connection
+ * banner has to say different things for a local daemon and one on
+ * another machine, and a name cannot tell them apart.
  */
-void clawt_web_app_set_connection_name(ClawtWebApp *self,
-                                       const gchar *name);
+void clawt_web_app_set_connection(ClawtWebApp     *self,
+                                  ClawtConnection *connection);
 
 /**
  * clawt_web_app_add_stream:

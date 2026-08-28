@@ -294,6 +294,17 @@ takes ~--profile~ directly:
 clawtilla-gtk --profile workstation
 #+end_src
 
+None of this needs a daemon on the machine you are sitting at.  The
+window opens whether or not a local one answers, says so in a banner with
+a button that opens the connection menu, and keeps trying in the
+background -- so a laptop that has never run ~clawtillad~ is a perfectly
+good way to drive a workstation's fleet.  The web client will serve one
+too, with the same flags:
+
+#+begin_src bash
+clawtilla-web --profile workstation
+#+end_src
+
 Turn the whole thing off with ~daemon.tailscale: false~.  See
 [[file:security.org][security.org]] for why a tailnet is the one network
 this is defensible on.
