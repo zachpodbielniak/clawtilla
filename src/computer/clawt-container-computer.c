@@ -525,6 +525,184 @@ container_teardown(ClawtComputer *computer, GError **error)
     return result != NULL;
 }
 
+/*
+ * The exec call, with a deadline clawtilla owns.
+ *
+ * podomation's exec runs to completion over the Podman API and offers no
+ * deadline to pass on, so the bound cannot be handed down -- it has to be
+ * held here.  That was previously written down as a reason not to have
+ * one, which left `timeout` accepted and ignored: an agent planned around
+ * a deadline that would never arrive, and a command that hung hung for
+ * the life of the daemon.
+ *
+ * A parameter that is documented, defaulted and then dropped is worse
+ * than one that is absent.
+ *
+ * Shape copied from the host backend, which has been bounding its wait
+ * this way all along: the work goes to a thread and the wait runs on a
+ * private context, so the timeout source is attached to the loop that is
+ * actually running.  g_timeout_add_seconds() would attach to the default
+ * context, which this loop is not, and the deadline would never fire --
+ * the trap the host backend's own comment records.
+ */
+typedef struct {
+    gint          refs;
+    GMutex        lock;
+    GMainLoop    *loop;      /* cleared once nobody is waiting */
+    ClawtPodBridge *bridge;
+    gchar        *connection;
+    GHashTable   *params;
+    GHashTable   *result;
+    GError       *error;
+} ExecWait;
+
+static ExecWait *
+exec_wait_ref(ExecWait *wait)
+{
+    g_atomic_int_inc(&wait->refs);
+    return wait;
+}
+
+static void
+exec_wait_unref(ExecWait *wait)
+{
+    if (!g_atomic_int_dec_and_test(&wait->refs))
+        return;
+
+    g_clear_pointer(&wait->result, g_hash_table_unref);
+    g_clear_pointer(&wait->params, g_hash_table_unref);
+    g_clear_error(&wait->error);
+    g_clear_object(&wait->bridge);
+    g_free(wait->connection);
+    g_mutex_clear(&wait->lock);
+    g_free(wait);
+}
+
+/*
+ * The blocking call, on a thread of its own.
+ *
+ * It finishes whether or not anybody is still waiting -- podman has been
+ * asked to run the command and there is no way to unask it -- so the
+ * result is stored under the lock and the loop is quit only if it is
+ * still there.  Quitting a loop the waiter has already left is what would
+ * turn a timeout into a crash.
+ */
+static gpointer
+exec_wait_thread(gpointer data)
+{
+    ExecWait *wait = data;
+    GHashTable *result;
+    g_autoptr(GError) error = NULL;
+
+    result = clawt_pod_bridge_call_for(wait->bridge, "container",
+                                       wait->connection, "exec",
+                                       wait->params, &error);
+
+    g_mutex_lock(&wait->lock);
+
+    wait->result = result;
+    wait->error = g_steal_pointer(&error);
+
+    if (wait->loop != NULL)
+        g_main_loop_quit(wait->loop);
+
+    g_mutex_unlock(&wait->lock);
+
+    exec_wait_unref(wait);
+
+    return NULL;
+}
+
+static gboolean
+on_container_exec_timeout(gpointer data)
+{
+    ExecWait *wait = data;
+
+    g_mutex_lock(&wait->lock);
+
+    if (wait->loop != NULL)
+        g_main_loop_quit(wait->loop);
+
+    g_mutex_unlock(&wait->lock);
+
+    return G_SOURCE_REMOVE;
+}
+
+static GHashTable *
+container_exec_bounded(ClawtContainerComputer *self, GHashTable *params,
+                       guint timeout_seconds, GError **error)
+{
+    g_autoptr(GMainContext) context = NULL;
+    g_autoptr(GMainLoop) loop = NULL;
+    GSource *timeout_source = NULL;
+    GThread *thread;
+    ExecWait *wait;
+    GHashTable *result = NULL;
+
+    /*
+     * Zero means the caller wants no deadline, which is the same
+     * agreement every other backend keeps.  Straight through, so a
+     * deliberate unbounded command costs no thread.
+     */
+    if (timeout_seconds == 0)
+        return clawt_pod_bridge_call_for(self->bridge, "container",
+                                         self->connection, "exec", params,
+                                         error);
+
+    wait = g_new0(ExecWait, 1);
+    wait->refs = 1;
+    g_mutex_init(&wait->lock);
+    wait->bridge = g_object_ref(self->bridge);
+    wait->connection = g_strdup(self->connection);
+    wait->params = g_hash_table_ref(params);
+
+    context = g_main_context_new();
+    g_main_context_push_thread_default(context);
+    loop = g_main_loop_new(context, FALSE);
+    wait->loop = loop;
+
+    timeout_source = g_timeout_source_new_seconds(timeout_seconds);
+    g_source_set_callback(timeout_source, on_container_exec_timeout, wait,
+                          NULL);
+    g_source_attach(timeout_source, context);
+
+    thread = g_thread_new("container-exec", exec_wait_thread,
+                          exec_wait_ref(wait));
+    g_thread_unref(thread);
+
+    g_main_loop_run(loop);
+
+    g_source_destroy(timeout_source);
+    g_source_unref(timeout_source);
+    g_main_context_pop_thread_default(context);
+
+    g_mutex_lock(&wait->lock);
+
+    /*
+     * Cleared before the lock is dropped, so a call that comes back after
+     * the deadline finds nothing to quit and simply stores its result for
+     * nobody.
+     */
+    wait->loop = NULL;
+
+    if (wait->result != NULL) {
+        result = g_steal_pointer(&wait->result);
+    } else if (wait->error != NULL) {
+        g_propagate_error(error, g_steal_pointer(&wait->error));
+    } else {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_TIMEOUT,
+                    "the command did not finish within %u seconds; it may "
+                    "still be running in the container",
+                    timeout_seconds);
+    }
+
+    g_mutex_unlock(&wait->lock);
+
+    exec_wait_unref(wait);
+
+    return result;
+}
+
 static ClawtExecResult *
 container_exec(ClawtComputer        *computer,
                const gchar * const  *argv,
@@ -542,15 +720,6 @@ container_exec(ClawtComputer        *computer,
     const gchar *output;
     gint exit_status = 0;
     gboolean truncated = FALSE;
-
-    /*
-     * The timeout is not enforced here: podomation's exec runs to
-     * completion over the Podman API and offers no deadline to pass on.
-     * Saying so beats pretending -- an agent that believes a timeout
-     * applies will wait for one that never arrives.  A command that must
-     * be bounded should carry its own `timeout` in the container.
-     */
-    (void)timeout_seconds;
 
     if (cancellable != NULL && g_cancellable_is_cancelled(cancellable)) {
         g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_CANCELLED,
@@ -590,9 +759,8 @@ container_exec(ClawtComputer        *computer,
                         g_strdup(container_target(self)));
     g_hash_table_insert(params, g_strdup("command"), g_strdup(command));
 
-    result = clawt_pod_bridge_call_for(self->bridge, "container",
-                                       self->connection, "exec", params,
-                                   error);
+    result = container_exec_bounded(self, params, timeout_seconds, error);
+
     if (result == NULL)
         return NULL;
 

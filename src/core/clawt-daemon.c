@@ -6139,6 +6139,44 @@ on_matrix_rooms(GObject *source, GAsyncResult *result, gpointer user_data)
         clawt_ipc_response_new(clawt_ipc_pending_get_request(pending),
                                json_builder_get_root(builder)));
 }
+/*
+ * A deferred tool call has finished; answer the frame it came in on.
+ *
+ * The response is wrapped exactly as the synchronous path wraps it, so a
+ * client cannot tell which way its request was served -- which is the
+ * point: the protocol did not change, only where the waiting happens.
+ */
+static void
+on_tool_rpc_finished(GObject *source, GAsyncResult *result,
+                     gpointer user_data)
+{
+    ClawtIpcPending *pending = user_data;
+    g_autoptr(JsonNode) rpc_response = NULL;
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+
+    rpc_response = clawt_mcp_tools_call_finish(CLAWT_MCP_TOOLS(source),
+                                               result);
+
+    if (rpc_response == NULL) {
+        clawt_ipc_pending_respond(
+            pending,
+            clawt_ipc_error_new(clawt_ipc_pending_get_request(pending),
+                                CLAWT_ERROR_FAILED,
+                                "the tool produced no response"));
+        return;
+    }
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "response");
+    json_builder_add_value(builder, json_node_ref(rpc_response));
+    json_builder_end_object(builder);
+
+    clawt_ipc_pending_respond(
+        pending,
+        clawt_ipc_response_new(clawt_ipc_pending_get_request(pending),
+                               json_builder_get_root(builder)));
+}
+
 
 JsonNode *
 clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
@@ -9919,6 +9957,33 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         if (!authenticate_agent(agent_id, token, self))
             return clawt_ipc_error_new(request, CLAWT_ERROR_AUTH,
                                        "that is not this agent's token");
+
+        /*
+         * computer.exec waits for a command the agent chose, so it is
+         * answered from a worker thread rather than from here.  A
+         * handler that waited would hold the daemon's main context for
+         * the length of that command -- a build, a test run, something
+         * reading from a terminal that is not there -- and while it did,
+         * every other agent's link, every client, the event stream and
+         * the daemon's own SIGTERM would go unserved.  That is the
+         * documented rule about IPC handlers and the network, met on the
+         * one path where the wait is not a round trip but an arbitrary
+         * command.
+         */
+        if (clawt_mcp_tools_call_defers(self->mcp_tools, agent_id, rpc)) {
+            ClawtIpcPending *pending =
+                clawt_ipc_server_defer(self->ipc_server, request);
+
+            if (pending == NULL)
+                return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                           "this request cannot be "
+                                           "answered later");
+
+            clawt_mcp_tools_call_async(self->mcp_tools, agent_id, rpc,
+                                       on_tool_rpc_finished, pending);
+
+            return NULL;
+        }
 
         rpc_response = clawt_mcp_tools_call(self->mcp_tools, agent_id, rpc);
 
