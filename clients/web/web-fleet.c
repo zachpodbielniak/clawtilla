@@ -307,8 +307,16 @@ team_header(JsonArray *teams, JsonArray *agents, const gchar *team_id)
  * into.  @next of %NULL means "everything that is left", which is how
  * the teams nobody is on reach the bottom.
  *
- * The teamless group gets no heading here, because this sidebar has
- * never given it one -- teamless agents simply come first, unlabelled.
+ * The teamless group is never emitted *here*, because it is never
+ * empty in the sense this function means: it has no declared team
+ * behind it, so there is nothing to draw a heading for until an agent
+ * turns up in it.  The heading it does get is drawn by the loop below,
+ * beside the first agent that is in no team.
+ *
+ * That sentence used to read "this sidebar has never given it one --
+ * teamless agents simply come first, unlabelled", which described the
+ * behaviour rather than arguing for it, and stopped being true in the
+ * same change that added the heading.
  */
 static void
 emit_empty_headers_before(HtmxDiv *scroll, JsonArray *teams,
