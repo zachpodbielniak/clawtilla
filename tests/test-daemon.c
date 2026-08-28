@@ -15,6 +15,7 @@
 
 #include <gio/gunixsocketaddress.h>
 #include <glib/gstdio.h>
+#include <signal.h>
 #include <utime.h>
 
 #include "clawt-test-util.h"
@@ -6194,6 +6195,231 @@ test_a_wrong_token_is_refused_rather_than_silent(void)
 }
 
 
+/*
+ * What agent.list says about one agent's busy flag.
+ *
+ * Read back through the real request handler rather than off the
+ * ClawtAgent, because that reply is the defect's whole surface: the
+ * graphical clients draw a spinner from it, and `clawtilla agent list`
+ * does not print it, which is why a permanently-busy agent went
+ * unnoticed for hours.
+ */
+static gboolean
+busy_in_agent_list(Fixture *fixture, const gchar *agent_id)
+{
+    g_autoptr(JsonNode) reply = request(fixture, "agent.list", NULL);
+    JsonObject *payload;
+    JsonArray *agents;
+    guint i;
+
+    g_assert_nonnull(reply);
+    g_assert_false(clawt_ipc_frame_is_error(reply));
+
+    payload = clawt_ipc_frame_get_payload(reply);
+    g_assert_nonnull(payload);
+    agents = json_object_get_array_member(payload, "agents");
+    g_assert_nonnull(agents);
+
+    for (i = 0; i < json_array_get_length(agents); i++) {
+        JsonObject *agent = json_array_get_object_element(agents, i);
+
+        if (g_strcmp0(json_object_get_string_member(agent, "id"),
+                      agent_id) == 0)
+            return json_object_get_boolean_member(agent, "busy");
+    }
+
+    g_assert_not_reached();
+
+    return FALSE;
+}
+
+/*
+ * Stopping an agent mid-turn ends the turn as far as anybody can see.
+ *
+ * busy had one setter -- delivery -- and one clearer: the link reporting
+ * typing = FALSE. Stopping closes the link, which is precisely what
+ * guarantees that message can never arrive, so an agent stopped while
+ * answering stayed "working" for the life of the daemon. Observed on a
+ * fleet where two agents had been stopped for nine hours and were still
+ * drawn with a spinner.
+ *
+ * The stop is driven through clawt_daemon_stop_agent(), not by setting
+ * the state: the bug lives in what that function does and does not do,
+ * so a test that put the agent into STOPPED by hand would sit on the
+ * wrong side of the very transition it is checking.
+ */
+static void
+test_stopping_an_agent_ends_its_turn(void)
+{
+    Fixture fixture;
+    g_autofree gchar *binary = g_build_filename(CLAWT_TEST_FIXTURES,
+                                                "fake-libreclaw", NULL);
+    g_autofree gchar *extra = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgent *agent;
+
+    extra = g_strdup_printf(
+        "  libreclaw_binary: \"%s\"\n"
+        "agents:\n"
+        "  - id: worker\n"
+        "    enabled: true\n"
+        "    runtime:\n"
+        "      restart: never\n"
+        "    computer:\n"
+        "      type: none\n",
+        binary);
+
+    fixture_setup(&fixture, extra);
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    g_assert_true(clawt_daemon_start_agent(fixture.daemon, "worker", &error));
+    g_assert_no_error(error);
+
+    agent = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                    "worker");
+    g_assert_nonnull(agent);
+
+    /*
+     * The turn begins. This is what delivery does, and it is the setup
+     * rather than the thing under test -- what is under test is what
+     * happens to it when the agent is stopped.
+     */
+    clawt_agent_set_activity(agent, TRUE, "researcher");
+
+    /*
+     * The positive control, in the same run: the flag really does reach
+     * agent.list. Without it the assertion below would pass in a build
+     * whose reply never says busy at all.
+     */
+    g_assert_true(busy_in_agent_list(&fixture, "worker"));
+
+    g_assert_true(clawt_daemon_stop_agent(fixture.daemon, "worker"));
+
+    g_assert_false(busy_in_agent_list(&fixture, "worker"));
+
+    /*
+     * And who it was for survives. set_activity() keeps the peer
+     * deliberately, so a finished turn can still say "answered
+     * researcher" rather than "idle" -- clearing it here would trade one
+     * wrong answer for a less informative one.
+     */
+    g_assert_cmpstr(clawt_agent_get_activity_peer(agent), ==, "researcher");
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * An agent whose process dies mid-turn is not left working either.
+ *
+ * This is the case a graceful-stop test cannot reach, and it is the one
+ * that decides where the fix goes. A killed agent never enters
+ * clawt_daemon_stop_agent() and never enters clawt_agent_stop(): its
+ * runtime reports `exited` with clean = FALSE while the state is not
+ * STOPPING, so on_runtime_exited() takes it to ERROR. A clear placed on
+ * either stop path leaves this one busy for ever.
+ *
+ * Driven by killing the real child, so the state change comes from the
+ * runtime noticing rather than from the test asserting it.
+ */
+static void
+test_an_agent_that_dies_mid_turn_is_not_left_working(void)
+{
+    Fixture fixture;
+    g_autofree gchar *binary = g_build_filename(CLAWT_TEST_FIXTURES,
+                                                "fake-libreclaw", NULL);
+    g_autofree gchar *extra = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgent *agent;
+    ClawtAgentRuntime *runtime;
+    GPid pid;
+    gint64 deadline;
+
+    extra = g_strdup_printf(
+        "  libreclaw_binary: \"%s\"\n"
+        "agents:\n"
+        "  - id: worker\n"
+        "    enabled: true\n"
+        "    runtime:\n"
+        "      restart: never\n"
+        "    computer:\n"
+        "      type: none\n",
+        binary);
+
+    /*
+     * Alive until something kills it, so the process is really running
+     * when the turn starts rather than having exited on its own.
+     */
+    g_setenv("FAKE_LIBRECLAW_SLEEP", "60", TRUE);
+
+    fixture_setup(&fixture, extra);
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    /*
+     * Pushed around the start, because g_subprocess_wait_async() captures
+     * the thread-default context at the moment it is called and answers
+     * there. A real daemon runs its own context as the thread default,
+     * so this is what production looks like; without it the child's exit
+     * is reported to a context this test never iterates and the agent
+     * sits in STARTING for the whole timeout, which reads exactly like
+     * the fix not working.
+     */
+    g_main_context_push_thread_default(fixture.context);
+    g_assert_true(clawt_daemon_start_agent(fixture.daemon, "worker", &error));
+    g_main_context_pop_thread_default(fixture.context);
+    g_assert_no_error(error);
+
+    agent = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                    "worker");
+    g_assert_nonnull(agent);
+
+    runtime = clawt_agent_get_runtime(agent);
+    g_assert_nonnull(runtime);
+    pid = clawt_agent_runtime_get_pid(runtime);
+    g_assert_cmpint(pid, >, 0);
+
+    clawt_agent_set_activity(agent, TRUE, "researcher");
+    g_assert_true(busy_in_agent_list(&fixture, "worker"));
+
+    g_assert_cmpint(kill(pid, SIGKILL), ==, 0);
+
+    /*
+     * Waited for rather than assumed: the runtime learns about the exit
+     * from a child watch on this context, so nothing has happened until
+     * the loop has run.
+     *
+     * Waited for by naming the state it must reach, not by waiting to
+     * leave RUNNING. This agent never reaches RUNNING at all -- the fake
+     * never opens a link, so it sits in STARTING -- and a loop written
+     * as "while RUNNING" exits immediately without iterating once,
+     * which makes the assertion below pass or fail for reasons that have
+     * nothing to do with the fix.
+     */
+    deadline = g_get_monotonic_time() + 10 * G_USEC_PER_SEC;
+
+    while (clawt_agent_get_state(agent) != CLAWT_AGENT_STATE_ERROR &&
+           clawt_agent_get_state(agent) != CLAWT_AGENT_STATE_STOPPED &&
+           g_get_monotonic_time() < deadline)
+        g_main_context_iteration(fixture.context, TRUE);
+
+    /*
+     * ERROR, not STOPPED: nobody asked this agent to stop, so
+     * on_runtime_exited() sees a state that is not STOPPING and an exit
+     * that is not clean. That is exactly why a clear placed on either
+     * stop path would not cover this case.
+     */
+    g_assert_cmpint(clawt_agent_get_state(agent), ==,
+                    CLAWT_AGENT_STATE_ERROR);
+
+    g_assert_false(busy_in_agent_list(&fixture, "worker"));
+
+    g_unsetenv("FAKE_LIBRECLAW_SLEEP");
+
+    fixture_teardown(&fixture);
+}
+
+
 int
 main(int argc, char *argv[])
 {
@@ -6399,6 +6625,10 @@ main(int argc, char *argv[])
                     test_an_ordinary_persona_is_not_announced);
     g_test_add_func("/daemon/agent-show-carries-the-identity-size",
                     test_agent_show_carries_the_identity_size);
+    g_test_add_func("/daemon/stopping-an-agent-ends-its-turn",
+                    test_stopping_an_agent_ends_its_turn);
+    g_test_add_func("/daemon/a-dead-agent-is-not-working",
+                    test_an_agent_that_dies_mid_turn_is_not_left_working);
     g_test_add_func("/daemon/restart-policy-reaches-the-runtime",
                     test_a_changed_restart_policy_reaches_the_runtime);
     g_test_add_func("/daemon/second-start-reaches-the-computer",
