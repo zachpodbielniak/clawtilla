@@ -387,9 +387,13 @@ test_an_impossible_fraction_is_refused(void)
 /*
  * A fleet reply's agent array, built by hand.
  *
- * `team` is omitted rather than empty for a teamless agent, because that
- * is what the daemon sends and the difference is the one the two clients
- * disagreed about.
+ * A teamless agent gets `team: null`, because that is what the daemon
+ * actually sends -- checked against a running one rather than assumed.
+ * Three spellings can reach a client for "no team": the member absent,
+ * the member null, and the member "". The first two arrive from the
+ * daemon and the third from an agent taken off a team, so all three are
+ * covered below; a fixture that produced only one would leave the rule
+ * asserted for the case that does not happen.
  */
 static JsonArray *
 fleet(const gchar *spec)
@@ -406,6 +410,8 @@ fleet(const gchar *spec)
 
         if (parts[1] != NULL && *parts[1] != '\0')
             json_object_set_string_member(agent, "team", parts[1]);
+        else
+            json_object_set_null_member(agent, "team");
 
         json_object_set_string_member(agent, "state",
                                       (parts[2] != NULL &&
@@ -475,9 +481,15 @@ test_an_idle_team_reports_nobody_working(void)
  *
  * It is where the chief of staff lives, so "is anything happening" is at
  * least as relevant there.  NULL and "" name the same group: the GTK
- * client asked with NULL and the web client with "", against a member
- * the daemon omits entirely, so the two would have disagreed the first
- * time anything wrote an empty string into it.
+ * client asked with NULL and the web client with "", so the two would
+ * have disagreed the first time they met a spelling the other did not
+ * default to.
+ *
+ * And all three spellings of "no team" have to answer alike, which is
+ * the half a fixture can get wrong without anybody noticing: the daemon
+ * sends `team: null`, an older reply may omit the member, and an agent
+ * taken off a team has "".  The sidebar has already been wrong once
+ * because a sentinel and a real value were both spelled as absence.
  */
 static void
 test_the_teamless_group_is_counted_either_way(void)
@@ -496,6 +508,42 @@ test_the_teamless_group_is_counted_either_way(void)
     g_assert_cmpuint(total, ==, 2);
     g_assert_cmpuint(running, ==, 2);
     g_assert_cmpuint(busy, ==, 1);
+
+    /*
+     * The three spellings of "no team" in one array, counted as one
+     * group.  fleet() writes null; these two are added by hand because
+     * they are the shapes it cannot produce.
+     */
+    {
+        g_autoptr(JsonArray) mixed = json_array_new();
+        JsonObject *absent = json_object_new();
+        JsonObject *empty = json_object_new();
+        JsonObject *null_team = json_object_new();
+
+        json_object_set_string_member(absent, "id", "absent");
+        json_object_set_string_member(absent, "state", "running");
+        json_object_set_boolean_member(absent, "busy", TRUE);
+
+        json_object_set_string_member(empty, "id", "empty");
+        json_object_set_string_member(empty, "team", "");
+        json_object_set_string_member(empty, "state", "running");
+        json_object_set_boolean_member(empty, "busy", FALSE);
+
+        json_object_set_string_member(null_team, "id", "null");
+        json_object_set_null_member(null_team, "team");
+        json_object_set_string_member(null_team, "state", "stopped");
+        json_object_set_boolean_member(null_team, "busy", FALSE);
+
+        json_array_add_object_element(mixed, absent);
+        json_array_add_object_element(mixed, empty);
+        json_array_add_object_element(mixed, null_team);
+
+        clawt_team_tally(mixed, NULL, &total, &running, &busy);
+
+        g_assert_cmpuint(total, ==, 3);
+        g_assert_cmpuint(running, ==, 2);
+        g_assert_cmpuint(busy, ==, 1);
+    }
 }
 
 /*

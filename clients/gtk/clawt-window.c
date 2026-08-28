@@ -1167,6 +1167,13 @@ team_header_row(ClawtWindow *self,
         GtkWidget *spinner = gtk_spinner_new();
 
         gtk_spinner_set_spinning(GTK_SPINNER(spinner), TRUE);
+        /*
+         * Named so `make parity` can see it.  A bare gtk_spinner_new()
+         * is not a marker for this feature -- the agent rows have their
+         * own spinners, so the check reported OK with the team one
+         * removed.  Verified by removing it.
+         */
+        gtk_widget_add_css_class(spinner, "clawt-team-busy");
         gtk_widget_set_tooltip_text(spinner, "somebody here is taking a turn");
         gtk_box_append(GTK_BOX(box), spinner);
     }
@@ -1185,10 +1192,18 @@ team_header_row(ClawtWindow *self,
     tally = (busy > 0) ? g_strdup_printf("%u working \302\267 %u/%u",
                                          busy, running, total)
                        : g_strdup_printf("%u/%u", running, total);
+    /*
+     * One condition, not two.  busy is a subset of running -- the tally
+     * enforces it -- so a `busy ? accent : running ? accent : dim` reads
+     * as though the two cases differ and cannot.  The spinner above is
+     * what says the team is working; this badge says whether it is up.
+     */
     gtk_box_append(GTK_BOX(box),
-                   badge(tally, (busy > 0) ? "accent"
-                                           : (running > 0 ? "accent" : "dim"),
-                         "agents running on this team"));
+                   badge(tally, (running > 0) ? "accent" : "dim",
+                         (busy > 0)
+                             ? "agents running on this team, and how many"
+                               " are taking a turn"
+                             : "agents running on this team"));
 
     gtk_button_set_child(GTK_BUTTON(button), box);
     gtk_widget_add_css_class(button, "flat");

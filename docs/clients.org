@@ -333,8 +333,32 @@ that team are running out of how many there are -- running out of total
 rather than one number, because "3" could be either and the question
 somebody scanning a sidebar is asking is how much of this team is awake.
 
+A header also says whether the team is *working*, not only whether it is
+up. Agents are started once and stay running, so running-out-of-total
+barely moves; whether anybody is mid-turn is the part that changes minute
+to minute, and it was drawn on every agent row and thrown away at the one
+level where the rows may be folded out of sight.
+
+The GTK client spins and the web client badges, each matching what its
+own agent rows already do --- the two read as one language by matching
+their own rows rather than by borrowing each other's widgets. Beside it
+is how many, because one busy out of seven is a different fleet state
+from seven out of seven and a bare marker collapses the two. At zero it
+is left off entirely rather than drawn as "0 working": a count nobody is
+looking for, on every idle heading.
+
+The rule itself is ~clawt_team_tally()~ in the library, not a copy in
+each client. It had already been written twice, with the out-parameters
+in a different order in each and the two asking about a teamless agent
+with different spellings --- and neither ~make parity~ nor anything else
+could see the difference, since a tally sends no frame and answers no
+command. Absent, ~null~ and ~""~ all name the group with no team, and
+busy is a subset of running: a stopped agent is not mid-turn whatever a
+reply says.
+
 Click a header to fold the team away. The tally stays, which is what
-makes folding safe: a collapsed team still says what is behind it.
+makes folding safe: a collapsed team still says what is behind it ---
+including whether it is busy, which is exactly what folding hides.
 
 Which teams are folded is kept in the client, not in ~clawtilla.yaml~.
 It is a view preference like the fonts -- it belongs to the person at

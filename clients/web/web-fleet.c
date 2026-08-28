@@ -277,8 +277,18 @@ team_header(JsonArray *teams, JsonArray *agents, const gchar *team_id)
      * It matters most on a heading.  A folded team hides exactly the
      * rows that would have shown it.
      */
-    if (busy > 0)
-        clawt_web_add(head, clawt_web_badge("working", "info"));
+    if (busy > 0) {
+        HtmxSpan *mark = clawt_web_badge("working", "info");
+
+        /*
+         * Named so `make parity` can see it, the same as the GTK
+         * spinner's class.  "working" alone is not a marker for this
+         * badge -- the tally string beside it contains the same word,
+         * so the check would pass with the badge deleted.
+         */
+        htmx_element_add_class(HTMX_ELEMENT(mark), "clawt-team-busy");
+        clawt_web_add(head, mark);
+    }
 
     /*
      * How many of those are working, when any are.  One busy out of
