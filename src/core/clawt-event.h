@@ -190,4 +190,41 @@ ClawtAlertTier clawt_alert_tier_for_event(ClawtEvent *event);
 gboolean clawt_alert_arrives_read(gboolean       surface_showing,
                                   ClawtAlertTier tier);
 
+/**
+ * clawt_team_tally:
+ * @agents: (element-type JsonObject): the agent array from a fleet reply
+ * @team_id: (nullable): the team to count, or %NULL for the agents that
+ *   are in none
+ * @total: (out): how many agents are in it
+ * @running: (out): how many of those are running
+ * @busy: (out): how many of those are working right now
+ *
+ * What a team heading has to say about the team behind it.
+ *
+ * A folded team is one line standing in for everything under it, which
+ * is the whole reason the tally exists.  What it said was running out of
+ * total -- and agents are started once and stay running, so that number
+ * barely moves, while the thing somebody wants off a glance is whether
+ * the team is doing anything.  That was drawn on every agent row and
+ * thrown away at the one level where the rows are not on screen.
+ *
+ * Here rather than in each client because it was written twice already,
+ * with the out-parameters in a different order in each, and it is about
+ * to grow a third count.  The GTK copy asked with a %NULL team and the
+ * web copy with an empty string, against a member the daemon omits
+ * entirely, so the two would have disagreed the first time anything
+ * wrote "" into it.  %NULL and "" name the same group here.
+ *
+ * @busy is a subset of @running: a stopped agent is not mid-turn
+ * whatever the reply says, and a heading must not claim otherwise.
+ *
+ * Counted from the same reply the rows are built from, so a folded
+ * team's tally cannot disagree with what unfolding it shows.
+ */
+void clawt_team_tally(JsonArray   *agents,
+                      const gchar *team_id,
+                      guint       *total,
+                      guint       *running,
+                      guint       *busy);
+
 G_END_DECLS

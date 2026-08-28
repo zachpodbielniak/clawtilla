@@ -384,11 +384,153 @@ test_an_impossible_fraction_is_refused(void)
     g_assert_cmpint(clawt_alerts_push_min_width(280, 1.5, 600, 12), ==, 0);
 }
 
+/*
+ * A fleet reply's agent array, built by hand.
+ *
+ * `team` is omitted rather than empty for a teamless agent, because that
+ * is what the daemon sends and the difference is the one the two clients
+ * disagreed about.
+ */
+static JsonArray *
+fleet(const gchar *spec)
+{
+    JsonArray *agents = json_array_new();
+    g_auto(GStrv) rows = g_strsplit(spec, ";", -1);
+    gsize i;
+
+    for (i = 0; rows[i] != NULL && *rows[i] != '\0'; i++) {
+        g_auto(GStrv) parts = g_strsplit(rows[i], ",", 3);
+        JsonObject *agent = json_object_new();
+
+        json_object_set_string_member(agent, "id", parts[0]);
+
+        if (parts[1] != NULL && *parts[1] != '\0')
+            json_object_set_string_member(agent, "team", parts[1]);
+
+        json_object_set_string_member(agent, "state",
+                                      (parts[2] != NULL &&
+                                       strchr(parts[2], 'r') != NULL)
+                                      ? "running" : "stopped");
+        json_object_set_boolean_member(agent, "busy",
+                                       parts[2] != NULL &&
+                                       strchr(parts[2], 'b') != NULL);
+
+        json_array_add_object_element(agents, agent);
+    }
+
+    return agents;
+}
+
+/*
+ * A team heading counts what is working, not only what is up.
+ *
+ * Agents are started once and stay running, so running/total barely
+ * moves; whether anybody is *doing* something is the part that changes
+ * minute to minute, and it was the part the heading threw away -- at
+ * exactly the level where the rows that draw it are folded out of sight.
+ */
+static void
+test_the_tally_counts_what_is_working(void)
+{
+    g_autoptr(JsonArray) agents =
+        fleet("a,build,rb;b,build,r;c,build,;d,ship,rb;e,,rb");
+    guint total = 0, running = 0, busy = 0;
+
+    clawt_team_tally(agents, "build", &total, &running, &busy);
+
+    g_assert_cmpuint(total, ==, 3);
+    g_assert_cmpuint(running, ==, 2);
+    g_assert_cmpuint(busy, ==, 1);
+
+    /* A different team is counted separately, not cumulatively. */
+    clawt_team_tally(agents, "ship", &total, &running, &busy);
+
+    g_assert_cmpuint(total, ==, 1);
+    g_assert_cmpuint(running, ==, 1);
+    g_assert_cmpuint(busy, ==, 1);
+}
+
+/*
+ * A team where nobody is working reports zero.
+ *
+ * The positive control for the assertion above: "busy is 1" would pass
+ * in a build that answered 1 for everything, and a spinner that is
+ * always on is worse than no spinner.
+ */
+static void
+test_an_idle_team_reports_nobody_working(void)
+{
+    g_autoptr(JsonArray) agents = fleet("a,build,r;b,build,r;c,build,");
+    guint total = 0, running = 0, busy = 0;
+
+    clawt_team_tally(agents, "build", &total, &running, &busy);
+
+    g_assert_cmpuint(total, ==, 3);
+    g_assert_cmpuint(running, ==, 2);
+    g_assert_cmpuint(busy, ==, 0);
+}
+
+/*
+ * The teamless group is a group.
+ *
+ * It is where the chief of staff lives, so "is anything happening" is at
+ * least as relevant there.  NULL and "" name the same group: the GTK
+ * client asked with NULL and the web client with "", against a member
+ * the daemon omits entirely, so the two would have disagreed the first
+ * time anything wrote an empty string into it.
+ */
+static void
+test_the_teamless_group_is_counted_either_way(void)
+{
+    g_autoptr(JsonArray) agents = fleet("chief,,rb;a,build,r;b,,r");
+    guint total = 0, running = 0, busy = 0;
+
+    clawt_team_tally(agents, NULL, &total, &running, &busy);
+
+    g_assert_cmpuint(total, ==, 2);
+    g_assert_cmpuint(running, ==, 2);
+    g_assert_cmpuint(busy, ==, 1);
+
+    clawt_team_tally(agents, "", &total, &running, &busy);
+
+    g_assert_cmpuint(total, ==, 2);
+    g_assert_cmpuint(running, ==, 2);
+    g_assert_cmpuint(busy, ==, 1);
+}
+
+/*
+ * A busy agent that is not running is not counted as working.
+ *
+ * Nothing should produce that, and if something does the heading must
+ * not claim a stopped agent is mid-turn.
+ */
+static void
+test_only_a_running_agent_can_be_working(void)
+{
+    g_autoptr(JsonArray) agents = fleet("a,build,b;b,build,rb");
+    guint total = 0, running = 0, busy = 0;
+
+    clawt_team_tally(agents, "build", &total, &running, &busy);
+
+    g_assert_cmpuint(total, ==, 2);
+    g_assert_cmpuint(running, ==, 1);
+    g_assert_cmpuint(busy, ==, 1);
+}
+
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
+    g_test_add_func("/client-rules/team-tally/counts-working",
+                    test_the_tally_counts_what_is_working);
+    g_test_add_func("/client-rules/team-tally/idle-team",
+                    test_an_idle_team_reports_nobody_working);
+    g_test_add_func("/client-rules/team-tally/teamless",
+                    test_the_teamless_group_is_counted_either_way);
+    g_test_add_func("/client-rules/team-tally/busy-implies-running",
+                    test_only_a_running_agent_can_be_working);
     g_test_add_func("/client-rules/unread/elsewhere",
                     test_a_message_elsewhere_counts);
     g_test_add_func("/client-rules/unread/on-screen",

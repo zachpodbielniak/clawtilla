@@ -289,3 +289,64 @@ clawt_alert_arrives_read(
 
     return surface_showing;
 }
+
+void
+clawt_team_tally(JsonArray   *agents,
+                 const gchar *team_id,
+                 guint       *total,
+                 guint       *running,
+                 guint       *busy)
+{
+    const gchar *wanted = (team_id != NULL) ? team_id : "";
+    guint i;
+
+    g_return_if_fail(total != NULL && running != NULL && busy != NULL);
+
+    *total = 0;
+    *running = 0;
+    *busy = 0;
+
+    for (i = 0; agents != NULL && i < json_array_get_length(agents); i++) {
+        JsonObject *agent = json_array_get_object_element(agents, i);
+        const gchar *team;
+        gboolean is_running;
+
+        if (agent == NULL)
+            continue;
+
+        /*
+         * Absent and empty are the same answer.  The daemon omits the
+         * member for an agent in no team; the two clients defaulted it
+         * differently, and only one of them would have matched an agent
+         * whose team was written as "".
+         */
+        team = json_object_has_member(agent, "team")
+               ? json_object_get_string_member(agent, "team") : "";
+
+        if (team == NULL)
+            team = "";
+
+        if (g_strcmp0(team, wanted) != 0)
+            continue;
+
+        (*total)++;
+
+        is_running = json_object_has_member(agent, "state") &&
+                     g_strcmp0(json_object_get_string_member(agent, "state"),
+                               "running") == 0;
+
+        if (!is_running)
+            continue;
+
+        (*running)++;
+
+        /*
+         * Only a running agent can be working.  Nothing should report a
+         * stopped agent as busy, and if something does, a heading
+         * claiming it is mid-turn is worse than one that misses it.
+         */
+        if (json_object_has_member(agent, "busy") &&
+            json_object_get_boolean_member(agent, "busy"))
+            (*busy)++;
+    }
+}
