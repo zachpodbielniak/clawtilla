@@ -90,6 +90,22 @@ gboolean clawt_client_is_connected(ClawtClient *self);
 void clawt_client_set_auto_reconnect(ClawtClient *self, gboolean enabled);
 
 /**
+ * clawt_client_is_reconnecting:
+ * @self: a #ClawtClient
+ *
+ * Whether this client has lost its daemon and is trying to get it back.
+ *
+ * Distinct from clawt_client_is_connected() being %FALSE, which is also
+ * true of a client nobody has connected yet.  A client that is
+ * reconnecting is one somebody was using a moment ago, and that is the
+ * state worth drawing: auto-reconnect is right, but silence while it
+ * happens is indistinguishable from a fleet that has simply gone quiet.
+ *
+ * Returns: %TRUE while a retry is scheduled
+ */
+gboolean clawt_client_is_reconnecting(ClawtClient *self);
+
+/**
  * clawt_client_request:
  * @self: a #ClawtClient
  * @kind: the request kind

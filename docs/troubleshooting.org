@@ -810,6 +810,38 @@ curl --unix-socket "${XDG_RUNTIME_DIR}/podman/podman.sock" \
 An empty reply after five seconds is a wedged podman, not a clawtilla
 problem: ~systemctl --user restart podman.socket~.
 
+** The fleet has gone quiet
+
+Nothing arrives, the agent list does not change, and no error appears.
+
+Look at the top of the window first.  A banner under the header saying
+the connection is gone means exactly that: the client lost the daemon
+and is retrying, and everything on screen is from before it went.  The
+same banner in the web client sits under the topbar.  It appears within
+about a minute of a network route dying, because that is how long the
+keepalive takes to give up on a connection nobody is closing.
+
+If there is no banner, the connection is up and the fleet really is
+quiet.
+
+A banner that says the daemon is a different *version* is the other
+thing this line can carry, and it is worth acting on even when nothing
+looks broken: a client and daemon that disagree fail in whichever
+feature happens to use a frame the other does not have, with a message
+about that feature rather than about the mismatch.
+
+If the client is reconnecting for a long time, ask the machine directly:
+
+#+begin_src bash
+clawtilla remote list          # what is saved
+systemctl --user status clawtilla    # on the daemon's own machine
+#+end_src
+
+A *toast* saying some events were missed and the view has been reloaded
+is not a fault.  It means the outage outlasted the daemon's replay
+buffer of 1024 events, the client noticed rather than carrying the hole
+silently, and it re-read.  Nothing further is needed.
+
 ** A mailbox is stuck
 
 [[file:mailboxes.org][mailboxes.org]] has the full sequence.  Briefly:

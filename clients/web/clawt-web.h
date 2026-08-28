@@ -109,6 +109,29 @@ typedef struct {
  *
  * Returns: (transfer none) (element-type ClawtWebAlert): the entries
  */
+/**
+ * clawt_web_app_connection_notice:
+ * @self: a #ClawtWebApp
+ *
+ * What the page's banner should say about the daemon, or %NULL.
+ *
+ * Two persistent conditions and nothing else: this process has lost the
+ * daemon and is trying to get it back, or the daemon is a different
+ * version from this client.  Both were invisible -- auto-reconnect is
+ * right, and silence while it happens is indistinguishable from a fleet
+ * that has gone quiet; and `control.status` reported the version from
+ * the day the frame existed with no graphical client ever sending it, so
+ * a mismatch surfaced as an unrelated feature refusing to work.
+ *
+ * Reconnecting wins, because while the connection is down the version is
+ * whatever it was before it went and telling somebody to update a daemon
+ * they cannot reach is advice about the wrong problem.  The GTK banner
+ * applies the same precedence.
+ *
+ * Returns: (transfer full) (nullable): the sentence, or %NULL
+ */
+gchar *clawt_web_app_connection_notice(ClawtWebApp *self);
+
 GPtrArray *clawt_web_app_alerts(ClawtWebApp *self);
 
 /**

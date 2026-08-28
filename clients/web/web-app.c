@@ -22,6 +22,17 @@ struct _ClawtWebApp {
     gchar       *last_refusal;
 
     /*
+     * What the daemon said it was, asked once at connect.
+     *
+     * `control.status` has reported the version since the frame existed
+     * and had one caller in the tree -- the CLI.  Neither graphical
+     * client sent it, so a client talking to an older or newer daemon
+     * found out by a frame kind being refused, in whichever feature the
+     * person happened to open.
+     */
+    gchar       *daemon_version;
+
+    /*
      * What arrived while the reader was somewhere else.
      *
      * Keyed by agent id; `dm_rooms` maps the room an event names to the
@@ -407,6 +418,51 @@ clawt_web_app_set_connection_name(ClawtWebApp *self, const gchar *name)
     self->connection_name = g_strdup(name);
 }
 
+/*
+ * Asks the daemon what it is, once.
+ *
+ * Cheap enough to do inline at connect: the daemon answers `control.status`
+ * from what it already holds and never leaves the machine to do it.
+ */
+static void
+note_daemon_version(ClawtWebApp *self)
+{
+    g_autoptr(JsonNode) reply = NULL;
+
+    g_clear_pointer(&self->daemon_version, g_free);
+
+    if (self->client == NULL)
+        return;
+
+    reply = clawt_web_app_call(self, "control.status", NULL);
+
+    if (reply != NULL)
+        self->daemon_version =
+            g_strdup(clawt_web_member(clawt_web_root(reply), "version",
+                                      NULL));
+}
+
+gchar *
+clawt_web_app_connection_notice(ClawtWebApp *self)
+{
+    g_return_val_if_fail(CLAWT_IS_WEB_APP(self), NULL);
+
+    /*
+     * Reconnecting wins over a version mismatch, exactly as in the GTK
+     * client: while the connection is down the version is whatever it
+     * was before it went, and telling somebody to update a daemon they
+     * cannot currently reach is advice about the wrong problem.
+     */
+    if (self->client != NULL && clawt_client_is_reconnecting(self->client))
+        return g_strdup_printf(
+            "Lost the connection to %s. Trying again -- what is shown is "
+            "from before it went.",
+            (self->connection_name != NULL) ? self->connection_name
+                                            : "the daemon");
+
+    return clawt_version_mismatch_text(self->daemon_version);
+}
+
 gboolean
 clawt_web_app_switch(ClawtWebApp *self, ClawtConnection *connection,
                      GError **error)
@@ -443,6 +499,13 @@ clawt_web_app_switch(ClawtWebApp *self, ClawtConnection *connection,
 
     clawt_web_app_set_connection_name(self,
                                       clawt_connection_get_name(connection));
+
+    /*
+     * The version belongs to the daemon, not to this process, so it is
+     * asked again.  A banner kept from the machine somebody just
+     * switched away from is worse than no banner.
+     */
+    note_daemon_version(self);
 
     /*
      * Every open page is told, so it re-fetches. Agent ids, room ids and
@@ -628,6 +691,54 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
     }
 }
 
+/*
+ * Nudges every open page to re-render.
+ *
+ * The banner is drawn from the app's state on each render, so making it
+ * appear and disappear is the same one round trip a fleet event already
+ * costs -- no second rendering of the same fact from two places.
+ */
+static void
+tell_every_page(ClawtWebApp *self, const gchar *why)
+{
+    guint i;
+
+    for (i = 0; i < self->streams->len; i++) {
+        HtmxSseConnection *stream = g_ptr_array_index(self->streams, i);
+
+        if (htmx_sse_connection_is_connected(stream))
+            htmx_sse_connection_send_event(stream, "fleet", why, NULL);
+    }
+}
+
+static void
+on_connection_changed(ClawtClient *client, gpointer user_data)
+{
+    ClawtWebApp *self = user_data;
+
+    (void)client;
+
+    tell_every_page(self, "connection.changed");
+}
+
+/*
+ * The daemon could not replay from where this client had got to, so
+ * anything a browser is showing may be stale in ways no event will
+ * correct.  Every page re-fetches; the unread counts go, because they
+ * were counted from a stream with a hole in it and a count nobody can
+ * trust is worse than none.
+ */
+static void
+on_resync(ClawtClient *client, gpointer user_data)
+{
+    ClawtWebApp *self = user_data;
+
+    (void)client;
+
+    g_hash_table_remove_all(self->unread);
+    tell_every_page(self, "resync");
+}
+
 /* ── Construction ────────────────────────────────────────────────── */
 
 ClawtWebApp *
@@ -642,6 +753,21 @@ clawt_web_app_new(ClawtClient *client)
     self->connected_at = g_get_real_time();
 
     g_signal_connect(client, "event", G_CALLBACK(on_daemon_event), self);
+
+    /*
+     * A daemon that goes away mid-session is otherwise indistinguishable
+     * from a fleet that has gone quiet -- and here the reader is a
+     * browser, so there is not even a process exiting to notice.  Both
+     * signals simply push every open page to re-render, which is how the
+     * banner gets drawn and undrawn.
+     */
+    g_signal_connect(client, "disconnected",
+                     G_CALLBACK(on_connection_changed), self);
+    g_signal_connect(client, "connected",
+                     G_CALLBACK(on_connection_changed), self);
+    g_signal_connect(client, "resync", G_CALLBACK(on_resync), self);
+
+    note_daemon_version(self);
 
     return self;
 }
@@ -663,6 +789,7 @@ clawt_web_app_finalize(GObject *object)
     g_clear_pointer(&self->viewing, g_free);
     g_clear_pointer(&self->alerts, g_ptr_array_unref);
     g_clear_pointer(&self->connection_name, g_free);
+    g_clear_pointer(&self->daemon_version, g_free);
 
     g_clear_pointer(&self->connection_status, g_hash_table_unref);
 

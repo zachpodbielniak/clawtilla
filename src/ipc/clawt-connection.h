@@ -159,6 +159,89 @@ void clawt_connection_status_free(ClawtConnectionStatus *self);
 ClawtConnectionStatus *clawt_connection_probe(ClawtConnection *self);
 
 /**
+ * ClawtVersionVerdict:
+ * @CLAWT_VERSION_SAME: the daemon is this build
+ * @CLAWT_VERSION_DAEMON_NEWER: the daemon is ahead of this client
+ * @CLAWT_VERSION_DAEMON_OLDER: the daemon is behind this client
+ * @CLAWT_VERSION_UNKNOWN: it did not say, or said something unreadable
+ *
+ * How a daemon's version stands against the client talking to it.
+ *
+ * Which way round matters, because the two need different actions from
+ * whoever reads it: a newer daemon may answer a frame this client cannot
+ * send, and an older one may refuse a frame this client will send.  A
+ * single "mismatch" would leave somebody guessing which of their two
+ * machines to update.
+ */
+typedef enum {
+    CLAWT_VERSION_SAME = 0,
+    CLAWT_VERSION_DAEMON_NEWER,
+    CLAWT_VERSION_DAEMON_OLDER,
+    CLAWT_VERSION_UNKNOWN
+} ClawtVersionVerdict;
+
+/**
+ * clawt_version_compare:
+ * @daemon_version: (nullable): what the far end reported
+ * @client_version: (nullable): what this end is
+ *
+ * Where @daemon_version stands against @client_version.
+ *
+ * Both ends are parameters rather than one being %CLAWT_VERSION_STRING,
+ * because the trap this exists for cannot otherwise be tested: the
+ * comparison somebody reaches for is `strcmp`, under which "0.10.0"
+ * sorts *before* "0.9.0" -- and a test written against the build's own
+ * version can only exercise that once the build has reached 0.10 itself,
+ * which is exactly the release where finding out would be too late.
+ *
+ * Returns: the verdict
+ */
+ClawtVersionVerdict clawt_version_compare(const gchar *daemon_version,
+                                          const gchar *client_version);
+
+/**
+ * clawt_version_compare_to_client:
+ * @daemon_version: (nullable): what `control.status` reported
+ *
+ * Where @daemon_version stands against %CLAWT_VERSION_STRING.
+ *
+ * Compared as three numbers rather than as strings, because "0.10.0" and
+ * "0.9.0" order the wrong way round under strcmp -- which is the one
+ * comparison somebody reaches for and the one that is wrong exactly when
+ * it starts to matter.
+ *
+ * Anything that does not parse as at least a major and a minor is
+ * %CLAWT_VERSION_UNKNOWN rather than a guess.  A daemon we cannot place
+ * is not a daemon we have established anything about.
+ *
+ * Returns: the verdict
+ */
+ClawtVersionVerdict clawt_version_compare_to_client(
+    const gchar *daemon_version);
+
+/**
+ * clawt_version_mismatch_text:
+ * @daemon_version: (nullable): what `control.status` reported
+ *
+ * What to say about it, or %NULL when there is nothing to say.
+ *
+ * The version was reported by `control.status` from the day that frame
+ * existed and nobody compared it to anything, so a client talking to an
+ * older or newer daemon found out by a frame kind being refused -- in
+ * whichever feature the person happened to open, with a message about
+ * that feature.  Saying it plainly once, at connect, is the difference
+ * between "this daemon is older than your client" and an afternoon spent
+ * on the wrong bug.
+ *
+ * %NULL for a match *and* for an unknown version: a client that
+ * announced "this daemon's version is unreadable" on every connect to a
+ * daemon that simply predates the field would be crying wolf.
+ *
+ * Returns: (transfer full) (nullable): the sentence, or %NULL
+ */
+gchar *clawt_version_mismatch_text(const gchar *daemon_version);
+
+/**
  * clawt_connection_new_local:
  * @name: what to call it in the client
  * @socket_path: (nullable): the daemon's socket, or %NULL for the default

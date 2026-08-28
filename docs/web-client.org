@@ -399,6 +399,39 @@ and stall on every sleeping one for its full timeout --- which is the
 same reason the GTK client probes on a worker thread rather than on its
 main loop.
 
+*** When the connection to the daemon goes
+
+A banner appears under the topbar on every page, saying the connection
+is gone and that what is shown is from before it went; it disappears
+when the daemon comes back.  The GTK client draws the same sentence in
+the same place relative to its own header, from the same rule --
+~clawt_web_app_connection_notice()~ and ~update_connection_banner()~
+apply one precedence between them.
+
+Here it is the *server's* connection to the daemon, not the browser's,
+which is the honest reading of it: this process holds one client and
+every browser is looking through it.  A browser whose own connection to
+this server has gone sees the page stop updating instead, which is a
+different thing and not something the server can report.
+
+Making it appear and disappear costs the same round trip a fleet event
+already does: the daemon's ~connected~ and ~disconnected~ push a ~fleet~
+event to every open page, which re-renders.  Nothing renders the banner
+from two places.
+
+A reconnect that could not resume -- the daemon's replay buffer had
+dropped events past this client's cursor -- pushes the same nudge and
+*drops the unread counts*.  They were counted from a stream with a hole
+in it, and a count nobody can trust is worse than none.
+
+*** Which version the daemon is
+
+Asked once at connect with ~control.status~ and compared with this
+build's own.  A mismatch is drawn in the same banner, saying which way
+round it is: a newer daemon may offer things this client cannot ask for,
+an older one may refuse something it sends, and the two need different
+machines updated.  A version that cannot be read says nothing at all.
+
 *** One connection, many browsers
 
 This is the one place the web client differs in kind rather than in

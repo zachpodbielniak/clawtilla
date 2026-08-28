@@ -738,6 +738,17 @@ clawt_web_stylesheet(void)
     ".clawt-identity-size{margin-top:.5rem;display:flex;flex-direction:column;"
       "align-items:flex-start;gap:.25rem}"
     ".clawt-identity-size p{margin:0}"
+
+    /*
+     * The connection banner.  Full width of the content column and above
+     * the page rather than floating over it: it describes a state the
+     * whole page is in, and a reader scrolling away from it would be
+     * scrolling away from the reason nothing is updating.
+     */
+    ".clawt-connection-banner{background:var(--warn-bg);color:var(--warn-fg);"
+      "border-bottom:1px solid var(--line);padding:.6rem 1rem;"
+      "font-size:13px}"
+    ".clawt-connection-banner p{margin:0}"
     ".stack>*+*{margin-top:12px}"
     ".htmx-request .htmx-hide{opacity:.5}"
 

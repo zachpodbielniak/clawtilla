@@ -14,6 +14,7 @@
 
 #include <clawtilla.h>
 
+#include <gio/gunixsocketaddress.h>
 #include <glib/gstdio.h>
 
 #include <string.h>
@@ -412,11 +413,643 @@ test_every_verdict_has_its_own_word(void)
 }
 
 
+
+/* ── Which version the other end is ──────────────────────────────── */
+
+/*
+ * The comparison is on numbers, not on strings.
+ *
+ * "0.10.0" sorts *before* "0.9.0" under strcmp, which is the comparison
+ * somebody reaches for and the one that is wrong exactly when it starts
+ * to matter -- the first time a minor reaches double figures, which is
+ * also the first time anybody has been running long enough to have two
+ * different builds talking to each other.
+ */
+static void
+test_versions_compare_as_numbers(void)
+{
+    g_assert_cmpint(clawt_version_compare_to_client(CLAWT_VERSION_STRING),
+                    ==, CLAWT_VERSION_SAME);
+
+    g_assert_cmpint(clawt_version_compare_to_client("999.0.0"), ==,
+                    CLAWT_VERSION_DAEMON_NEWER);
+    g_assert_cmpint(clawt_version_compare_to_client("0.0.0"), ==,
+                    CLAWT_VERSION_DAEMON_OLDER);
+
+    /*
+     * The trap itself, stated against two versions rather than against
+     * whatever this build happens to be.  A test that could only reach
+     * it once the build had passed 0.10 would first fail in the release
+     * where finding out is too late.
+     */
+    g_assert_cmpint(clawt_version_compare("0.10.0", "0.9.0"), ==,
+                    CLAWT_VERSION_DAEMON_NEWER);
+    g_assert_cmpint(clawt_version_compare("0.9.0", "0.10.0"), ==,
+                    CLAWT_VERSION_DAEMON_OLDER);
+
+    /* Which is the opposite of what a string comparison says. */
+    g_assert_cmpint(strcmp("0.10.0", "0.9.0"), <, 0);
+
+    /* And every component counts, not only the first that differs. */
+    g_assert_cmpint(clawt_version_compare("1.2.3", "1.2.3"), ==,
+                    CLAWT_VERSION_SAME);
+    g_assert_cmpint(clawt_version_compare("1.2.4", "1.2.3"), ==,
+                    CLAWT_VERSION_DAEMON_NEWER);
+    g_assert_cmpint(clawt_version_compare("2.0.0", "1.99.99"), ==,
+                    CLAWT_VERSION_DAEMON_NEWER);
+    g_assert_cmpint(clawt_version_compare("1.99.99", "2.0.0"), ==,
+                    CLAWT_VERSION_DAEMON_OLDER);
+}
+
+/*
+ * Anything we cannot place is UNKNOWN, and UNKNOWN says nothing.
+ *
+ * A daemon that predates the field, or one built from a dirty tree, is
+ * not a daemon we have established anything about -- and a client that
+ * announced "this daemon's version is unreadable" on every connect would
+ * be crying wolf at the case the check exists to keep quiet.
+ */
+static void
+test_an_unreadable_version_is_not_a_verdict(void)
+{
+    const gchar *unreadable[] = { NULL, "", "nightly", "0", "0.1.0-dirty",
+                                  "0.x.0", "..", "0.1.0.0.0" };
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS(unreadable); i++) {
+        g_autofree gchar *text = NULL;
+
+        g_assert_cmpint(clawt_version_compare_to_client(unreadable[i]), ==,
+                        CLAWT_VERSION_UNKNOWN);
+
+        text = clawt_version_mismatch_text(unreadable[i]);
+        g_assert_null(text);
+    }
+
+    /*
+     * A missing micro is a version, not a failure: "0.2" is something
+     * somebody may genuinely report, and calling it unreadable would
+     * turn a real mismatch into a shrug.
+     */
+    g_assert_cmpint(clawt_version_compare_to_client("999.0"), ==,
+                    CLAWT_VERSION_DAEMON_NEWER);
+}
+
+/*
+ * The sentence names both versions and which way round it is.
+ *
+ * Which way round is the whole point: a newer daemon may offer something
+ * this client cannot ask for, an older one may refuse something it will
+ * send, and "version mismatch" leaves somebody guessing which of their
+ * two machines to update.
+ */
+static void
+test_the_mismatch_says_which_way_round(void)
+{
+    g_autofree gchar *newer = clawt_version_mismatch_text("999.0.0");
+    g_autofree gchar *older = clawt_version_mismatch_text("0.0.0");
+    g_autofree gchar *same =
+        clawt_version_mismatch_text(CLAWT_VERSION_STRING);
+
+    g_assert_nonnull(newer);
+    g_assert_nonnull(strstr(newer, "999.0.0"));
+    g_assert_nonnull(strstr(newer, CLAWT_VERSION_STRING));
+    g_assert_nonnull(strstr(newer, "update the client"));
+
+    g_assert_nonnull(older);
+    g_assert_nonnull(strstr(older, "0.0.0"));
+    g_assert_nonnull(strstr(older, CLAWT_VERSION_STRING));
+    g_assert_nonnull(strstr(older, "update the daemon"));
+
+    /* And nothing at all when they agree. */
+    g_assert_null(same);
+}
+
+/* ── A reconnect that could not resume ───────────────────────────── */
+
+/*
+ * A daemon that answers `resumed: false` on the second connection.
+ *
+ * Driven by a fake rather than by a real daemon on purpose.  The
+ * condition is a replay buffer that has dropped events past a client's
+ * cursor, and reaching that against a real bus means publishing more
+ * than a thousand events to provoke one boolean -- a slow test of the
+ * wrong thing.  What is under test is what the *client* does when told,
+ * and that is one flag in one reply.
+ *
+ * On its own thread with its own context, so the blocking reads here
+ * never interleave with the client's loop, which the test thread turns.
+ */
+typedef struct {
+    gchar        *path;
+    GMainContext *context;
+    GMainLoop    *loop;
+    GThread      *thread;
+    GSocketService *service;
+    gint          connections;   /* accepted so far; atomic */
+} FakeDaemon;
+
+static void
+send_line(GOutputStream *out, JsonNode *frame)
+{
+    g_autofree gchar *line = clawt_ipc_frame_to_line(frame);
+    g_autofree gchar *wire = g_strconcat(line, "\n", NULL);
+
+    g_output_stream_write_all(out, wire, strlen(wire), NULL, NULL, NULL);
+}
+
+static gboolean
+on_fake_incoming(GSocketService *service, GSocketConnection *connection,
+                 GObject *source, gpointer user_data)
+{
+    FakeDaemon *fake = user_data;
+    g_autoptr(GDataInputStream) in = g_data_input_stream_new(
+        g_io_stream_get_input_stream(G_IO_STREAM(connection)));
+    GOutputStream *out =
+        g_io_stream_get_output_stream(G_IO_STREAM(connection));
+    gint which;
+
+    (void)service;
+    (void)source;
+
+    which = g_atomic_int_add(&fake->connections, 1) + 1;
+    g_data_input_stream_set_newline_type(in, G_DATA_STREAM_NEWLINE_TYPE_ANY);
+
+    for (;;) {
+        g_autofree gchar *line = NULL;
+        g_autoptr(JsonNode) request = NULL;
+        g_autoptr(JsonBuilder) builder = NULL;
+        g_autoptr(JsonNode) reply = NULL;
+        const gchar *kind;
+
+        line = g_data_input_stream_read_line(in, NULL, NULL, NULL);
+
+        if (line == NULL)
+            break;
+
+        request = clawt_ipc_frame_from_line(line, NULL);
+
+        if (request == NULL)
+            break;
+
+        kind = clawt_ipc_frame_get_kind(request);
+        builder = json_builder_new();
+        json_builder_begin_object(builder);
+
+        if (g_strcmp0(kind, "control.subscribe") == 0) {
+            json_builder_set_member_name(builder, "cursor");
+            json_builder_add_int_value(builder, 7);
+            json_builder_set_member_name(builder, "resumed");
+
+            /*
+             * The first connection resumes cleanly.  That is the control:
+             * without it a client that emitted ::resync on every
+             * subscribe would pass.
+             */
+            json_builder_add_boolean_value(builder, which == 1);
+        } else {
+            json_builder_set_member_name(builder, "version");
+            json_builder_add_string_value(builder, CLAWT_VERSION_STRING);
+        }
+
+        json_builder_end_object(builder);
+        reply = clawt_ipc_response_new(request, json_builder_get_root(builder));
+        send_line(out, reply);
+
+        /*
+         * One event, so the client's cursor is past zero -- a cursor of 0
+         * is always resumable, so without this the second subscribe would
+         * ask for something any daemon could honour.
+         */
+        if (g_strcmp0(kind, "control.subscribe") == 0 && which == 1) {
+            g_autoptr(ClawtEvent) event = clawt_event_new("daemon.started",
+                                                          "fake");
+            g_autoptr(JsonNode) frame = NULL;
+
+            clawt_event_set_cursor(event, 7);
+            frame = clawt_ipc_event_new(event);
+            send_line(out, frame);
+
+            /* And then it goes away, which is what starts the retry. */
+            g_io_stream_close(G_IO_STREAM(connection), NULL, NULL);
+            break;
+        }
+    }
+
+    return TRUE;
+}
+
+static gpointer
+run_fake_daemon(gpointer data)
+{
+    FakeDaemon *fake = data;
+
+    g_main_context_push_thread_default(fake->context);
+    g_socket_service_start(fake->service);
+    g_main_loop_run(fake->loop);
+    g_socket_service_stop(fake->service);
+    g_main_context_pop_thread_default(fake->context);
+
+    return NULL;
+}
+
+static FakeDaemon *
+fake_daemon_start(const gchar *dir)
+{
+    FakeDaemon *fake = g_new0(FakeDaemon, 1);
+    g_autoptr(GSocketAddress) address = NULL;
+    g_autoptr(GError) error = NULL;
+
+    fake->path = g_build_filename(dir, "fake.sock", NULL);
+    fake->context = g_main_context_new();
+    fake->loop = g_main_loop_new(fake->context, FALSE);
+
+    fake->service = g_socket_service_new();
+
+    /*
+     * Stopped before the address is added, and started again on the
+     * fake's own thread.
+     *
+     * g_socket_service_new() returns an *active* service, and adding an
+     * address to an active one attaches its accept source to whatever is
+     * thread-default right now -- which here is the test thread's, not
+     * the loop this fake actually runs.  The service then listened on a
+     * context nobody was iterating and the test hung waiting for a
+     * connection that was never accepted.
+     */
+    g_socket_service_stop(fake->service);
+
+    address = g_unix_socket_address_new(fake->path);
+    g_assert_true(g_socket_listener_add_address(
+        G_SOCKET_LISTENER(fake->service), address, G_SOCKET_TYPE_STREAM,
+        G_SOCKET_PROTOCOL_DEFAULT, NULL, NULL, &error));
+    g_assert_no_error(error);
+
+    g_signal_connect(fake->service, "incoming",
+                     G_CALLBACK(on_fake_incoming), fake);
+
+    fake->thread = g_thread_new("fake-daemon", run_fake_daemon, fake);
+
+    return fake;
+}
+
+static void
+fake_daemon_stop(FakeDaemon *fake)
+{
+    g_main_loop_quit(fake->loop);
+    g_thread_join(fake->thread);
+
+    /*
+     * Joined before the listener goes.  A thread parked in accept() with
+     * a finalised listener is a G_IS_SOCKET assertion printed after the
+     * last test has already reported ok, which reads as a suite-level
+     * fault rather than as one test's teardown.
+     */
+    g_clear_object(&fake->service);
+    g_main_loop_unref(fake->loop);
+    g_main_context_unref(fake->context);
+    g_unlink(fake->path);
+    g_free(fake->path);
+    g_free(fake);
+}
+
+typedef struct {
+    guint    resync;
+    guint    connected;
+    guint    disconnected;
+    gboolean retry_arranged;   /* as seen from inside ::disconnected */
+} ResyncWatch;
+
+static void
+note_resync(ClawtClient *client, gpointer data)
+{
+    ResyncWatch *watch = data;
+
+    (void)client;
+    watch->resync++;
+}
+
+static void
+note_reconnected(ClawtClient *client, gpointer data)
+{
+    ResyncWatch *watch = data;
+
+    (void)client;
+    watch->connected++;
+}
+
+/*
+ * Records whether the retry was already arranged at the moment the
+ * signal fired.
+ *
+ * A subscriber's whole reason to exist is to draw the state, and
+ * handle_disconnect() used to emit *before* scheduling -- so both
+ * clients were told the connection had gone and then found
+ * clawt_client_is_reconnecting() answering FALSE, and drew nothing.
+ * Found by killing a daemon under the real GTK client and reading a
+ * probe; no test could see it, because a test that samples the state in
+ * a polling loop always samples it after the handler has returned.
+ */
+static void
+note_disconnected(ClawtClient *client, gpointer data)
+{
+    ResyncWatch *watch = data;
+
+    watch->disconnected++;
+    watch->retry_arranged = clawt_client_is_reconnecting(client);
+}
+
+/*
+ * A client that loses its daemon says so, and gets it back on its *own*
+ * main context.
+ *
+ * Two defects in one path.  Nothing in either graphical client had ever
+ * connected to ::disconnected, so a daemon that went away mid-session
+ * looked exactly like a fleet that had gone quiet: the agent list was
+ * the last one received, no event arrived, and nothing said why.  And
+ * the retry timer went in through g_timeout_add_seconds(), which
+ * attaches to the *global default* context -- not the one this client's
+ * reader is on, and dispatching a source pushes nothing, so a
+ * handle_disconnect() reached from that reader had no thread-default to
+ * inherit either.  An embedded host running its own loop therefore had a
+ * client that lost its daemon and never once tried to get it back.
+ *
+ * The default context is never iterated here.  A build whose timer or
+ * whose reader lands on it makes no progress at all -- which is exactly
+ * what an embedded host sees, and what no test running on the default
+ * context could ever have shown.
+ *
+ * The fake hangs up on its own after answering the first subscribe,
+ * which is what a daemon exiting looks like from this end.
+ */
+static void
+test_a_client_reconnects_on_its_own_context(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-recon-XXXXXX", NULL);
+    g_autoptr(GMainContext) context = g_main_context_new();
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(GError) error = NULL;
+    FakeDaemon *fake = fake_daemon_start(dir);
+    ResyncWatch watch = { 0 };
+    GLogLevelFlags fatal;
+    gint64 deadline;
+    gboolean saw_reconnecting = FALSE;
+
+    client = clawt_client_new(fake->path);
+
+    g_main_context_push_thread_default(context);
+    g_assert_true(clawt_client_connect(client, &error));
+    g_main_context_pop_thread_default(context);
+    g_assert_no_error(error);
+
+    clawt_client_set_auto_reconnect(client, TRUE);
+    g_signal_connect(client, "connected", G_CALLBACK(note_reconnected),
+                     &watch);
+    g_signal_connect(client, "disconnected", G_CALLBACK(note_disconnected),
+                     &watch);
+
+    g_assert_true(clawt_client_is_connected(client));
+
+    /*
+     * Not reconnecting, which is a different thing from not being
+     * connected: a client nobody has connected yet is also not
+     * connected, and that is not a state worth drawing.
+     */
+    g_assert_false(clawt_client_is_reconnecting(client));
+
+    g_assert_true(clawt_client_subscribe(client, 0, NULL, &error));
+    g_assert_no_error(error);
+
+    fatal = g_log_set_always_fatal(0);
+    deadline = g_get_monotonic_time() + 15 * G_USEC_PER_SEC;
+
+    while (watch.connected == 0 && g_get_monotonic_time() < deadline) {
+        g_main_context_iteration(context, FALSE);
+
+        /*
+         * Sampled inside the loop.  The state is transient by design --
+         * it ends the moment the retry succeeds -- so a check after the
+         * wait would find it already over and pass against a build that
+         * never entered it.
+         */
+        if (clawt_client_is_reconnecting(client))
+            saw_reconnecting = TRUE;
+
+        g_usleep(2 * 1000);
+    }
+
+    g_log_set_always_fatal(fatal);
+
+    g_assert_cmpuint(watch.disconnected, ==, 1);
+
+    /*
+     * And it was already true *inside* the handler, not merely at some
+     * point afterwards.  That ordering is the difference between a
+     * client that draws the state and one that is told about it and has
+     * nothing to say.
+     */
+    g_assert_true(watch.retry_arranged);
+    g_assert_true(saw_reconnecting);
+    g_assert_cmpuint(watch.connected, ==, 1);
+    g_assert_true(clawt_client_is_connected(client));
+    g_assert_false(clawt_client_is_reconnecting(client));
+
+    clawt_client_disconnect(client);
+    fake_daemon_stop(fake);
+    clawt_test_remove_tree(dir);
+}
+
+/* Breaks a nested wait that is never going to be answered. */
+static gboolean
+give_up_waiting(gpointer user_data)
+{
+    ClawtClient *client = user_data;
+
+    clawt_client_set_auto_reconnect(client, FALSE);
+    clawt_client_disconnect(client);
+
+    return G_SOURCE_REMOVE;
+}
+
+/*
+ * A reconnect that could not resume tells the application.
+ *
+ * The daemon replays from a bounded buffer, so an outage longer than
+ * that buffer comes back `resumed: false`, which means the client has a
+ * hole in its view.  It is precisely the shape a reconnect after a long
+ * outage takes, which is when it matters most -- and for a long time the
+ * only thing that happened was a warning in the journal: the window went
+ * on showing state from before the outage indefinitely, with nothing to
+ * say so.  Both graphical clients answer ::resync by re-reading.
+ */
+static void
+test_a_reconnect_that_cannot_resume_says_so(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-resync-XXXXXX", NULL);
+    g_autoptr(GMainContext) context = g_main_context_new();
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(GError) error = NULL;
+    FakeDaemon *fake = fake_daemon_start(dir);
+    ResyncWatch watch = { 0 };
+    GLogLevelFlags fatal;
+    GSource *watchdog;
+    gint64 deadline;
+
+    client = clawt_client_new(fake->path);
+
+    g_main_context_push_thread_default(context);
+    g_assert_true(clawt_client_connect(client, &error));
+    g_main_context_pop_thread_default(context);
+    g_assert_no_error(error);
+
+    clawt_client_set_auto_reconnect(client, TRUE);
+    g_signal_connect(client, "resync", G_CALLBACK(note_resync), &watch);
+    g_signal_connect(client, "connected", G_CALLBACK(note_reconnected),
+                     &watch);
+
+    {
+        gboolean resumed = FALSE;
+
+        g_assert_true(clawt_client_subscribe(client, 0, &resumed, &error));
+        g_assert_no_error(error);
+        g_assert_true(resumed);
+    }
+
+    /*
+     * The failure to resume is warned about on purpose, so GTest is told
+     * not to abort on it.  g_test_expect_message() is the wrong tool: it
+     * makes every *other* message fatal in turn.
+     */
+    fatal = g_log_set_always_fatal(0);
+
+    /*
+     * A watchdog, because this test can otherwise *hang* rather than
+     * fail -- and a hang is worse: it is indistinguishable from a slow
+     * machine or a loop somewhere else, and it stops every test after
+     * it.
+     *
+     * The reconnect happens from a timeout callback on this context, and
+     * the hello inside it waits by iterating the same context.  So if
+     * the reply never arrives -- which is precisely what a reader armed
+     * on the wrong context produces -- the nested wait runs for the full
+     * two-minute request timeout and the loop below never gets another
+     * turn to notice its own deadline.  Disconnecting from here breaks
+     * that inner wait, and the assertions then fail with the reason.
+     */
+    watchdog = g_timeout_source_new_seconds(5);
+    g_source_set_callback(watchdog, give_up_waiting, client, NULL);
+    g_source_attach(watchdog, context);
+
+    deadline = g_get_monotonic_time() + 15 * G_USEC_PER_SEC;
+
+    while (watch.resync == 0 && g_get_monotonic_time() < deadline) {
+        g_main_context_iteration(context, FALSE);
+        g_usleep(2 * 1000);
+    }
+
+    g_source_destroy(watchdog);
+    g_source_unref(watchdog);
+
+    g_log_set_always_fatal(fatal);
+
+    g_assert_cmpuint(watch.connected, ==, 1);
+    g_assert_cmpuint(watch.resync, ==, 1);
+
+    clawt_client_disconnect(client);
+    fake_daemon_stop(fake);
+    clawt_test_remove_tree(dir);
+}
+
+
+/*
+ * Turning auto-reconnect off stops the retries, including from inside an
+ * attempt.
+ *
+ * A connect blocks for as long as the far end takes -- up to the whole
+ * request timeout -- and the failure path rescheduled unconditionally,
+ * so a caller that said stop during that window was ignored and the loop
+ * ran for ever, each turn holding its context for another two minutes.
+ * `set_auto_reconnect(FALSE)` is how a caller says stop; it has to work
+ * from inside an attempt as well as before one.
+ */
+static void
+test_auto_reconnect_can_be_turned_off_mid_flight(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-retry-XXXXXX", NULL);
+    g_autoptr(GMainContext) context = g_main_context_new();
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(GError) error = NULL;
+    FakeDaemon *fake = fake_daemon_start(dir);
+    gint64 deadline;
+
+    client = clawt_client_new(fake->path);
+
+    g_main_context_push_thread_default(context);
+    g_assert_true(clawt_client_connect(client, &error));
+    g_main_context_pop_thread_default(context);
+    g_assert_no_error(error);
+
+    clawt_client_set_auto_reconnect(client, TRUE);
+
+    /* The fake closes this connection once it has answered subscribe. */
+    g_assert_true(clawt_client_subscribe(client, 0, NULL, &error));
+    g_assert_no_error(error);
+
+    /*
+     * And then it is gone entirely, so every retry fails at once rather
+     * than blocking -- which is what makes this test quick and is also
+     * the path the reschedule lives on.
+     */
+    fake_daemon_stop(fake);
+
+    deadline = g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
+
+    while (!clawt_client_is_reconnecting(client) &&
+           g_get_monotonic_time() < deadline) {
+        g_main_context_iteration(context, FALSE);
+        g_usleep(2 * 1000);
+    }
+
+    g_assert_true(clawt_client_is_reconnecting(client));
+
+    clawt_client_set_auto_reconnect(client, FALSE);
+
+    /*
+     * Long enough for the scheduled attempt to fire, fail, and decline
+     * to schedule another.  Without the check it reschedules for ever
+     * and this is still TRUE.
+     */
+    deadline = g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
+
+    while (clawt_client_is_reconnecting(client) &&
+           g_get_monotonic_time() < deadline) {
+        g_main_context_iteration(context, FALSE);
+        g_usleep(2 * 1000);
+    }
+
+    g_assert_false(clawt_client_is_reconnecting(client));
+
+    clawt_client_disconnect(client);
+    clawt_test_remove_tree(dir);
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
+    g_test_add_func("/connection/versions-compare-as-numbers",
+                    test_versions_compare_as_numbers);
+    g_test_add_func("/connection/unreadable-version-is-not-a-verdict",
+                    test_an_unreadable_version_is_not_a_verdict);
+    g_test_add_func("/connection/mismatch-says-which-way-round",
+                    test_the_mismatch_says_which_way_round);
+    g_test_add_func("/connection/client-reconnects-on-its-own-context",
+                    test_a_client_reconnects_on_its_own_context);
+    g_test_add_func("/connection/reconnect-that-cannot-resume-says-so",
+                    test_a_reconnect_that_cannot_resume_says_so);
+    g_test_add_func("/connection/auto-reconnect-can-be-turned-off",
+                    test_auto_reconnect_can_be_turned_off_mid_flight);
     g_test_add_func("/connection/refusal-is-not-silence",
                     test_a_refusal_is_not_the_same_as_silence);
     g_test_add_func("/connection/every-verdict-has-a-word",

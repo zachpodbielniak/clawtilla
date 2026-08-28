@@ -142,6 +142,20 @@ struct _ClawtWindow {
     GtkWidget         *connection_list;
 
     /*
+     * What the daemon is doing that this window is not.
+     *
+     * Auto-reconnect is right, and silence while it happens is
+     * indistinguishable from a fleet that has gone quiet: the agent list
+     * is the last one received, no event arrives, and nothing says why.
+     * The banner is the one place that says so -- and the same place
+     * says when the daemon is a different version from this client,
+     * which is otherwise found out by whichever feature happens to be
+     * refused first.
+     */
+    GtkWidget         *connection_banner;
+    gchar             *daemon_version;      /* what control.status said */
+
+    /*
      * What the last probe found for each saved connection, by name.
      *
      * Kept rather than asked for on every redraw: a probe is a network
@@ -10965,6 +10979,144 @@ static void on_manage_connections(GtkButton *button, gpointer user_data);
  * daemon is connected, and a person who has forgotten they are pointed at
  * another machine will not find out until afterwards.
  */
+/*
+ * What the banner should say, or nothing.
+ *
+ * Two conditions, both persistent, and neither of them a toast.  A toast
+ * answers a question somebody is holding right now and then goes; these
+ * are states the window is *in* until something changes, and the whole
+ * complaint was that they were invisible.
+ *
+ * Reconnecting wins over a version mismatch: while the connection is
+ * down the version is what it was before it went, and telling somebody
+ * to update a daemon they cannot currently reach is advice about the
+ * wrong problem.
+ */
+static void
+update_connection_banner(ClawtWindow *self)
+{
+    g_autofree gchar *mismatch = NULL;
+
+    if (self->connection_banner == NULL)
+        return;
+
+    if (self->client != NULL && clawt_client_is_reconnecting(self->client)) {
+        const gchar *name = (self->active_connection != NULL)
+                            ? clawt_connection_get_name(self->active_connection)
+                            : "the daemon";
+        g_autofree gchar *text =
+            g_strdup_printf("Lost the connection to %s. Trying again -- "
+                            "what is shown is from before it went.", name);
+
+        adw_banner_set_title(ADW_BANNER(self->connection_banner), text);
+        adw_banner_set_revealed(ADW_BANNER(self->connection_banner), TRUE);
+
+        return;
+    }
+
+    mismatch = clawt_version_mismatch_text(self->daemon_version);
+
+    if (mismatch != NULL) {
+        adw_banner_set_title(ADW_BANNER(self->connection_banner), mismatch);
+        adw_banner_set_revealed(ADW_BANNER(self->connection_banner), TRUE);
+
+        return;
+    }
+
+    adw_banner_set_revealed(ADW_BANNER(self->connection_banner), FALSE);
+}
+
+/*
+ * Asks the daemon what it is, once, at connect.
+ *
+ * `control.status` has reported the version since the frame existed and
+ * had exactly one caller in the tree -- the CLI.  Neither graphical
+ * client ever sent it, so a client talking to an older or newer daemon
+ * found out by a frame kind being refused, in whichever feature the
+ * person happened to open, with a message about that feature.
+ *
+ * Cheap enough to do inline: the daemon answers it from what it already
+ * holds and never leaves the machine to do so.
+ */
+static void
+note_daemon_version(ClawtWindow *self)
+{
+    g_autoptr(JsonNode) reply = NULL;
+
+    g_clear_pointer(&self->daemon_version, g_free);
+
+    if (self->client == NULL)
+        return;
+
+    reply = clawt_window_request(self, "control.status", NULL);
+
+    if (reply != NULL)
+        self->daemon_version =
+            g_strdup(clawt_json_string(clawt_payload_of(reply), "version",
+                                       NULL));
+
+    update_connection_banner(self);
+}
+
+static void
+on_client_connected(ClawtClient *client, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    (void)client;
+
+    update_connection_banner(self);
+}
+
+static void
+on_client_disconnected(ClawtClient *client, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    (void)client;
+
+    update_connection_banner(self);
+}
+
+/*
+ * The daemon could not replay from where this client had got to, so
+ * everything on screen may be stale in ways no event will correct.
+ *
+ * Re-read rather than wait.  A toast rather than the banner: by the time
+ * this returns the view is correct again, and a persistent notice about
+ * a hole that has just been filled is a notice about nothing.
+ */
+static void
+on_client_resync(ClawtClient *client, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    (void)client;
+
+    refresh_agents(self);
+    refresh_selected(self);
+    load_history(self);
+
+    clawt_window_toast(self,
+                       "Reconnected after a long gap. Some events were "
+                       "missed, so this has been reloaded.");
+}
+
+/* Connects the three things a window wants to know about its client. */
+static void
+watch_the_connection(ClawtWindow *self)
+{
+    if (self->client == NULL)
+        return;
+
+    g_signal_connect(self->client, "connected",
+                     G_CALLBACK(on_client_connected), self);
+    g_signal_connect(self->client, "disconnected",
+                     G_CALLBACK(on_client_disconnected), self);
+    g_signal_connect(self->client, "resync",
+                     G_CALLBACK(on_client_resync), self);
+}
+
 static void
 update_connection_label(ClawtWindow *self)
 {
@@ -11107,6 +11259,7 @@ switch_connection(ClawtWindow *self, ClawtConnection *connection)
     self->client = g_steal_pointer(&client);
     g_signal_connect(self->client, "event", G_CALLBACK(on_daemon_event),
                      self);
+    watch_the_connection(self);
 
     /*
      * From 0, not from the cursor the previous daemon had reached.  A
@@ -11124,6 +11277,13 @@ switch_connection(ClawtWindow *self, ClawtConnection *connection)
     forget_daemon_state(self);
     update_connection_label(self);
     rebuild_connection_menu(self);
+
+    /*
+     * The version belongs to the daemon, not to the window, so it is
+     * asked again here.  A banner kept from the machine somebody just
+     * switched away from is worse than no banner.
+     */
+    note_daemon_version(self);
 
     refresh_agents(self);
     refresh_tasks(self);
@@ -17952,6 +18112,18 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
 
     content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_box_append(GTK_BOX(content), header);
+
+    /*
+     * Under the header and over the content, which is where libadwaita
+     * puts a banner and where a person looks for one.  In the *content*
+     * rather than above the split, so it does not push the agent list
+     * down -- that list is navigation and losing a connection is not a
+     * reason to move it.
+     */
+    self->connection_banner = adw_banner_new("");
+    adw_banner_set_revealed(ADW_BANNER(self->connection_banner), FALSE);
+    gtk_box_append(GTK_BOX(content), self->connection_banner);
+
     gtk_box_append(GTK_BOX(content), GTK_WIDGET(self->alerts_split));
     gtk_widget_set_vexpand(GTK_WIDGET(self->alerts_split), TRUE);
     gtk_widget_set_vexpand(GTK_WIDGET(self->pages), TRUE);
@@ -18054,6 +18226,14 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
                                        GTK_WIDGET(self->split));
 
     g_signal_connect(client, "event", G_CALLBACK(on_daemon_event), self);
+    watch_the_connection(self);
+
+    /*
+     * Asked once, here, rather than left for a feature to discover.
+     * `control.status` reported the version from the day the frame
+     * existed and no graphical client had ever sent it.
+     */
+    note_daemon_version(self);
 
     /*
      * Applied before anything is shown, so the window is drawn once at
@@ -18104,6 +18284,7 @@ clawt_window_dispose(GObject *object)
     g_clear_pointer(&self->appearance, clawt_appearance_free);
     g_clear_pointer(&self->connections, g_ptr_array_unref);
     g_clear_pointer(&self->connection_status, g_hash_table_unref);
+    g_clear_pointer(&self->daemon_version, g_free);
     g_clear_pointer(&self->active_connection, clawt_connection_free);
     g_clear_pointer(&self->local_socket, g_free);
     g_clear_pointer(&self->team_ids, g_strfreev);

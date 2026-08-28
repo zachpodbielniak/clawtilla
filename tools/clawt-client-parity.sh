@@ -168,6 +168,9 @@ declare -A AFFORDANCES=(
     ["decision inbox"]="build_decision_page|decision-row"
     ["connection reachability"]="clawt_connection_probe|clawt_connection_probe"
     ["identity size"]="clawt-identity-size|clawt-identity-size"
+    ["connection banner"]="connection_banner|clawt-connection-banner"
+    ["daemon version check"]="clawt_version_mismatch_text|clawt_version_mismatch_text"
+    ["resync after a gap"]="\"resync\"|\"resync\""
 )
 
 usage () {

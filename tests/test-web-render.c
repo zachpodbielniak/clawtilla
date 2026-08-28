@@ -64,6 +64,25 @@ clawt_web_app_set_viewing(ClawtWebApp *app, const gchar *agent_id)
     (void)agent_id;
 }
 
+/*
+ * Whether the page should carry a banner about the connection.
+ *
+ * The real one reads the live client's reconnect state and the daemon's
+ * version, neither of which exists here -- so it is a variable the tests
+ * set.  NULL for everything except the one that is about the banner:
+ * every other assertion in this file is written against a page with no
+ * banner on it, which is also the ordinary case.
+ */
+static const gchar *the_connection_notice = NULL;
+
+gchar *
+clawt_web_app_connection_notice(ClawtWebApp *app)
+{
+    (void)app;
+
+    return g_strdup(the_connection_notice);
+}
+
 /* ── Escaping ────────────────────────────────────────────────────── */
 
 /*
@@ -1160,11 +1179,60 @@ test_the_page_emits_the_drawer_toggle(void)
 }
 
 
+
+/* ── The connection banner ───────────────────────────────────────── */
+
+/*
+ * A page whose daemon is missing or mismatched says so, above the page
+ * and inside the content column.
+ *
+ * Inside the content rather than above the whole frame, so it does not
+ * push the agent list down: that list is navigation, and losing a
+ * connection is not a reason to move it.  The GTK client puts its
+ * AdwBanner in the same place relative to its own header, which is what
+ * makes the two look like one product.
+ *
+ * And escaped, like everything else on this page.  The sentence is built
+ * from a version string the *daemon* reported and a connection name a
+ * person typed, so neither is ours.
+ */
+static void
+test_the_connection_banner_is_drawn_when_there_is_something_to_say(void)
+{
+    g_autofree gchar *quiet = NULL;
+    g_autofree gchar *noisy = NULL;
+
+    the_connection_notice = NULL;
+    quiet = clawt_web_page(NULL, "chief", CLAWT_WEB_VIEW_CHAT, NULL, NULL);
+
+    g_assert_nonnull(quiet);
+
+    /*
+     * The rendered attribute, not the class name.  The stylesheet is
+     * included in this page too, so the bare name is present whether or
+     * not anything drew it -- which is the same trap `make parity` had
+     * at its own layer, where a CSS rule satisfied the check for an
+     * element nothing rendered.
+     */
+    g_assert_null(strstr(quiet, "class=\"clawt-connection-banner\""));
+
+    the_connection_notice = "This daemon is <older> & this client is not.";
+    noisy = clawt_web_page(NULL, "chief", CLAWT_WEB_VIEW_CHAT, NULL, NULL);
+    the_connection_notice = NULL;
+
+    g_assert_nonnull(noisy);
+    g_assert_nonnull(strstr(noisy, "class=\"clawt-connection-banner\""));
+    g_assert_nonnull(strstr(noisy, "&lt;older&gt; &amp; this client"));
+    g_assert_null(strstr(noisy, "<older>"));
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
+    g_test_add_func("/web/connection-banner-when-there-is-something-to-say",
+                    test_the_connection_banner_is_drawn_when_there_is_something_to_say);
     g_test_add_func("/web/text-is-escaped", test_text_is_escaped);
     g_test_add_func("/web/row-values-are-escaped", test_row_values_are_escaped);
     g_test_add_func("/web/field-values-are-escaped",

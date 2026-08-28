@@ -577,3 +577,127 @@ clawt_connection_probe(ClawtConnection *self)
 
     return status;
 }
+
+
+/* ── How a daemon's version stands against ours ──────────────────── */
+
+/*
+ * Three numbers out of "0.1.0", or FALSE.
+ *
+ * A missing micro is 0 rather than a refusal: "0.2" is a version, and
+ * treating it as unreadable would report a mismatch as an unknown.
+ */
+static gboolean
+parse_version(const gchar *text, gint64 *out)
+{
+    g_auto(GStrv) parts = NULL;
+    guint count;
+    guint i;
+
+    if (text == NULL || *text == '\0')
+        return FALSE;
+
+    parts = g_strsplit(text, ".", -1);
+    count = g_strv_length(parts);
+
+    /*
+     * Two or three components, and split with no limit.  Splitting into
+     * at most four leaves everything past the third in parts[3], which
+     * the loop below never reads -- so "0.1.0.0.0" parsed as 0.1.0 and
+     * came back *equal* to this build.  A version we cannot place has to
+     * say so; quietly agreeing with it is the one answer that stops
+     * anybody looking.
+     */
+    if (count < 2 || count > 3)
+        return FALSE;
+
+    for (i = 0; i < 3; i++) {
+        gchar *end = NULL;
+
+        if (parts[i] == NULL) {
+            out[i] = 0;
+            continue;
+        }
+
+        out[i] = g_ascii_strtoll(parts[i], &end, 10);
+
+        /*
+         * The whole component has to be a number.  "0.1.0-dirty" parses
+         * its micro as 0 and stops at the dash, which would silently
+         * call a development build equal to the release it came after.
+         */
+        if (end == parts[i] || (end != NULL && *end != '\0'))
+            return FALSE;
+    }
+
+    return TRUE;
+}
+
+ClawtVersionVerdict
+clawt_version_compare(const gchar *daemon_version,
+                      const gchar *client_version)
+{
+    gint64 theirs[3] = { 0, 0, 0 };
+    gint64 ours[3] = { 0, 0, 0 };
+    guint i;
+
+    if (!parse_version(daemon_version, theirs))
+        return CLAWT_VERSION_UNKNOWN;
+
+    /*
+     * Ours is a compile-time constant, so a failure to parse it is a
+     * broken build rather than a daemon we cannot place -- but answering
+     * UNKNOWN is still the right thing, because asserting about the
+     * other end on the strength of a version string we cannot read
+     * ourselves would be worse.
+     */
+    if (!parse_version(client_version, ours))
+        return CLAWT_VERSION_UNKNOWN;
+
+    for (i = 0; i < 3; i++) {
+        if (theirs[i] == ours[i])
+            continue;
+
+        return (theirs[i] > ours[i]) ? CLAWT_VERSION_DAEMON_NEWER
+                                     : CLAWT_VERSION_DAEMON_OLDER;
+    }
+
+    return CLAWT_VERSION_SAME;
+}
+
+ClawtVersionVerdict
+clawt_version_compare_to_client(const gchar *daemon_version)
+{
+    return clawt_version_compare(daemon_version, CLAWT_VERSION_STRING);
+}
+
+gchar *
+clawt_version_mismatch_text(const gchar *daemon_version)
+{
+    switch (clawt_version_compare_to_client(daemon_version)) {
+    case CLAWT_VERSION_DAEMON_NEWER:
+        return g_strdup_printf(
+            "This daemon is clawtilla %s and this client is %s. The daemon "
+            "is newer, so it may offer things this client cannot ask for; "
+            "update the client.",
+            daemon_version, CLAWT_VERSION_STRING);
+
+    case CLAWT_VERSION_DAEMON_OLDER:
+        return g_strdup_printf(
+            "This daemon is clawtilla %s and this client is %s. The daemon "
+            "is older, so it may refuse something this client sends; update "
+            "the daemon.",
+            daemon_version, CLAWT_VERSION_STRING);
+
+    case CLAWT_VERSION_SAME:
+    case CLAWT_VERSION_UNKNOWN:
+    default:
+        /*
+         * Nothing for either.  A client that announced "this daemon's
+         * version is unreadable" on every connect to a daemon that
+         * simply predates the field would be crying wolf at the case
+         * this exists to make quiet.
+         */
+        return NULL;
+    }
+}

@@ -59,9 +59,9 @@ struct _ClawtClient {
     GSource      *drain_source;
     GMainContext *context;      /* the context the reader is attached to */
 
-    gboolean auto_reconnect;
-    guint    reconnect_source_id;
-    guint    reconnect_delay;
+    gboolean  auto_reconnect;
+    GSource  *reconnect_source;
+    guint     reconnect_delay;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtClient, clawt_client, G_TYPE_OBJECT)
@@ -69,6 +69,7 @@ G_DEFINE_FINAL_TYPE(ClawtClient, clawt_client, G_TYPE_OBJECT)
 enum {
     SIGNAL_CONNECTED,
     SIGNAL_DISCONNECTED,
+    SIGNAL_RESYNC,
     SIGNAL_EVENT,
     N_SIGNALS
 };
@@ -77,6 +78,7 @@ static guint signals[N_SIGNALS];
 
 static void read_next(ClawtClient *self);
 static gboolean try_reconnect(gpointer user_data);
+static void schedule_reconnect(ClawtClient *self);
 
 /*
  * One outstanding request.
@@ -150,6 +152,14 @@ clawt_client_set_auto_reconnect(ClawtClient *self, gboolean enabled)
     g_return_if_fail(CLAWT_IS_CLIENT(self));
 
     self->auto_reconnect = enabled;
+}
+
+gboolean
+clawt_client_is_reconnecting(ClawtClient *self)
+{
+    g_return_val_if_fail(CLAWT_IS_CLIENT(self), FALSE);
+
+    return self->reconnect_source != NULL;
 }
 
 gboolean
@@ -379,16 +389,52 @@ handle_disconnect(ClawtClient *self)
 
     fail_all_pending(self, "the daemon closed the connection");
 
+    /*
+     * Scheduled *before* the signal, not after.
+     *
+     * A subscriber's whole reason to exist is to draw the state, and
+     * clawt_client_is_reconnecting() answered FALSE inside the handler
+     * because the retry had not been arranged yet -- so both clients
+     * were told the connection had gone and then found nothing to say
+     * about it.  Found by killing a daemon under the real GTK client and
+     * reading the probe, not by any test: the unit test samples the
+     * state in a polling loop, which is always after this returns.
+     */
+    if (self->auto_reconnect && self->reconnect_source == NULL) {
+        if (self->reconnect_delay == 0)
+            self->reconnect_delay = RECONNECT_BASE_SECONDS;
+
+        schedule_reconnect(self);
+    }
+
     g_signal_emit(self, signals[SIGNAL_DISCONNECTED], 0);
+}
 
-    if (!self->auto_reconnect || self->reconnect_source_id != 0)
-        return;
-
-    if (self->reconnect_delay == 0)
-        self->reconnect_delay = RECONNECT_BASE_SECONDS;
-
-    self->reconnect_source_id =
-        g_timeout_add_seconds(self->reconnect_delay, try_reconnect, self);
+/*
+ * The retry timer, on the client's *own* context.
+ *
+ * g_timeout_add_seconds() attaches to the global default, which is not
+ * the context this client's reader is on unless somebody happened to
+ * make it so -- and dispatching a source pushes nothing, so a
+ * handle_disconnect() reached from the reader has no thread-default to
+ * inherit either.  An embedded host running its own loop therefore had a
+ * client that lost its daemon and never once tried to get it back: the
+ * window stays as it was, no event arrives, and nothing says why.  That
+ * is the same trap already recorded here for two timers, an idle, a
+ * GTask and an async exec.
+ *
+ * The source is kept rather than its id, because g_source_remove() only
+ * knows about the default context.
+ */
+static void
+schedule_reconnect(ClawtClient *self)
+{
+    self->reconnect_source = g_timeout_source_new_seconds(
+        self->reconnect_delay);
+    g_source_set_callback(self->reconnect_source, try_reconnect, self, NULL);
+    g_source_attach(self->reconnect_source,
+                    (self->context != NULL) ? self->context
+                                            : g_main_context_default());
 }
 
 static gboolean
@@ -397,7 +443,7 @@ try_reconnect(gpointer user_data)
     ClawtClient *self = user_data;
     g_autoptr(GError) error = NULL;
 
-    self->reconnect_source_id = 0;
+    g_clear_pointer(&self->reconnect_source, g_source_unref);
 
     if (clawt_client_connect(self, &error)) {
         self->reconnect_delay = RECONNECT_BASE_SECONDS;
@@ -406,38 +452,50 @@ try_reconnect(gpointer user_data)
             gboolean resumed = TRUE;
 
             /*
-             * Resumed from the last cursor actually seen.
+             * Resumed from the last cursor actually seen -- and the
+             * answer is passed on.
              *
-             * The answer is *not* passed on, and this comment used to say
-             * it was.  The daemon replays from a bounded buffer, so a
-             * cursor that fell off it comes back `resumed: false`, which
-             * means the client has a hole -- and nothing here tells the
-             * application, which then shows stale state indefinitely.
-             * That is precisely the shape a reconnect after a long outage
-             * takes, which is when it matters most.
+             * The daemon replays from a bounded buffer, so a cursor that
+             * fell off it comes back `resumed: false`, which means this
+             * client has a hole.  For a long time nothing here told the
+             * application, which then showed stale state indefinitely:
+             * precisely the shape a reconnect after a long outage takes,
+             * which is when it matters most.
              *
-             * Closing it needs somewhere to report to: a signal on this
-             * object, and both graphical clients answering it by
-             * re-reading history.  A signal with no subscriber would be
-             * the same gap wearing a different hat, so it is written down
-             * rather than half-built -- see docs/ipc-protocol.org.
+             * ::resync now says so, and both graphical clients answer it
+             * by re-reading rather than waiting for events that are not
+             * coming.
              */
             clawt_client_subscribe(self, self->cursor, &resumed, NULL);
 
-            if (!resumed)
+            if (!resumed) {
                 g_warning("client: the daemon could not resume from cursor "
                           "%" G_GUINT64_FORMAT "; this client has missed "
                           "events and its view may be stale", self->cursor);
+
+                g_signal_emit(self, signals[SIGNAL_RESYNC], 0);
+            }
         }
 
         return G_SOURCE_REMOVE;
     }
 
+    /*
+     * Asked again, because it can have changed while this attempt was in
+     * flight.  A connect blocks for as long as the far end takes -- up
+     * to the whole request timeout -- and clawt_client_set_auto_reconnect()
+     * turned off during that window used to be ignored: the retry loop
+     * carried on for ever, each turn holding the caller's context for
+     * another two minutes.  Turning it off is how a caller says stop,
+     * and it has to work from inside the attempt as well as before it.
+     */
+    if (!self->auto_reconnect)
+        return G_SOURCE_REMOVE;
+
     /* Doubling, capped: a daemon that is down stays down for a while. */
     self->reconnect_delay = MIN(self->reconnect_delay * 2,
                                 RECONNECT_MAX_SECONDS);
-    self->reconnect_source_id =
-        g_timeout_add_seconds(self->reconnect_delay, try_reconnect, self);
+    schedule_reconnect(self);
 
     return G_SOURCE_REMOVE;
 }
@@ -486,15 +544,34 @@ read_next(ClawtClient *self)
         return;
 
     /*
+     * Armed on the client's *own* context, always.
+     *
+     * g_data_input_stream_read_line_async() attaches to whatever is
+     * thread-default at the moment it is called, and dispatching a source
+     * pushes nothing -- so a reconnect, which happens from a timeout
+     * callback, armed the reader on the *global* default instead.  The
+     * socket then belonged to a loop nobody was running: the client
+     * reconnected, said hello, and never received another line.  That is
+     * the same failure the reconnect timer had, one function along, and
+     * it is invisible in a client whose context happens to be the
+     * default -- which is both graphical clients and neither embedded
+     * one.
+     *
      * A reference for the life of the read.  There is always exactly one
      * outstanding -- every completion re-arms -- so dropping the last
      * reference to a connected client left GIO holding a pointer to a
      * freed object, and the next line to arrive read it.  The server's
      * Client is reference counted for the same reason.
      */
+    if (self->context != NULL)
+        g_main_context_push_thread_default(self->context);
+
     g_data_input_stream_read_line_async(self->input, G_PRIORITY_DEFAULT,
                                         NULL, on_line_read,
                                         g_object_ref(self));
+
+    if (self->context != NULL)
+        g_main_context_pop_thread_default(self->context);
 }
 
 /* ── Connecting ──────────────────────────────────────────────────── */
@@ -690,9 +767,9 @@ clawt_client_disconnect(ClawtClient *self)
 {
     g_return_if_fail(CLAWT_IS_CLIENT(self));
 
-    if (self->reconnect_source_id != 0) {
-        g_source_remove(self->reconnect_source_id);
-        self->reconnect_source_id = 0;
+    if (self->reconnect_source != NULL) {
+        g_source_destroy(self->reconnect_source);
+        g_clear_pointer(&self->reconnect_source, g_source_unref);
     }
 
     if (self->stream == NULL)
@@ -967,6 +1044,16 @@ clawt_client_finalize(GObject *object)
         g_clear_pointer(&self->drain_source, g_source_unref);
     }
 
+    /*
+     * The retry timer holds a bare pointer to this object, so it must go
+     * before the object does -- and destroy, not merely unref: an
+     * attached source is owned by its context as well.
+     */
+    if (self->reconnect_source != NULL) {
+        g_source_destroy(self->reconnect_source);
+        g_clear_pointer(&self->reconnect_source, g_source_unref);
+    }
+
     g_queue_free_full(g_steal_pointer(&self->incoming),
                       (GDestroyNotify)clawt_event_free);
     g_clear_pointer(&self->pending, g_hash_table_unref);
@@ -992,6 +1079,28 @@ clawt_client_class_init(ClawtClientClass *klass)
 
     signals[SIGNAL_DISCONNECTED] =
         g_signal_new("disconnected", CLAWT_TYPE_CLIENT, G_SIGNAL_RUN_LAST, 0,
+                     NULL, NULL, NULL, G_TYPE_NONE, 0);
+
+    /**
+     * ClawtClient::resync:
+     * @self: the client
+     *
+     * The daemon could not replay from where this client had got to.
+     *
+     * A reconnect asks to resume from the last cursor actually seen, and
+     * the daemon replays from a bounded buffer -- so an outage longer
+     * than that buffer comes back `resumed: false`, which means this
+     * client has a hole in its view.  It is precisely the shape a
+     * reconnect after a long outage takes, which is when it matters
+     * most, and until now the only thing that happened was a warning in
+     * the journal: the window went on showing state from before the
+     * outage indefinitely, with nothing to say so.
+     *
+     * A client answering this re-reads whatever it holds rather than
+     * waiting for events that are not coming.
+     */
+    signals[SIGNAL_RESYNC] =
+        g_signal_new("resync", CLAWT_TYPE_CLIENT, G_SIGNAL_RUN_LAST, 0,
                      NULL, NULL, NULL, G_TYPE_NONE, 0);
 
     /**

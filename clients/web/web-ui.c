@@ -1070,6 +1070,28 @@ clawt_web_page(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view,
     htmx_element_add_class(HTMX_ELEMENT(content), "content");
     clawt_web_add(content, clawt_web_topbar(app, agent_id, view));
 
+    /*
+     * Under the topbar and over the page, which is where a person looks
+     * for a banner -- and inside the content column rather than above
+     * the whole frame, so it does not push the agent list down.  That
+     * list is navigation and losing a connection is not a reason to move
+     * it.  The GTK client puts its AdwBanner in exactly the same place
+     * relative to its own header.
+     */
+    {
+        g_autofree gchar *notice = clawt_web_app_connection_notice(app);
+
+        if (notice != NULL) {
+            g_autoptr(HtmxDiv) banner = htmx_div_new();
+
+            htmx_element_add_class(HTMX_ELEMENT(banner),
+                                   "clawt-connection-banner");
+            clawt_web_add(HTMX_ELEMENT(banner),
+                          clawt_web_text(notice, NULL));
+            htmx_node_add_child(HTMX_NODE(content), HTMX_NODE(banner));
+        }
+    }
+
     if (body != NULL)
         htmx_node_add_child(HTMX_NODE(content), HTMX_NODE(body));
 

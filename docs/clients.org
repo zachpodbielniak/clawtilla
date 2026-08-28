@@ -2006,18 +2006,63 @@ already existed runs: the client reconnects, retrying after a second and
 doubling to a minute, and re-subscribes from the cursor it had reached,
 so the daemon replays what was missed.
 
-On screen that is a pause and then the conversation catching up.
-Nothing announces it -- no toast, no banner, no change to the connection
-button -- so a gap of a minute or two in a quiet conversation is
-indistinguishable from a quiet conversation.  Both graphical clients
-behave this way; the CLI does not reconnect at all.
+On screen a banner appears under the header saying the connection is
+gone and that what is shown is from before it went, and it disappears
+when the daemon comes back.  Both graphical clients draw it in the same
+place -- inside the content column, so the agent list does not move:
+that list is navigation, and losing a connection is not a reason to
+shift it.  The CLI does not reconnect at all.
+
+It is a banner rather than a toast because it is a *state*, not a
+moment.  A toast answers a question somebody is holding right now and
+then goes; this is a condition the window is in until something changes,
+and the whole reason it exists is that the condition used to be
+invisible.  A pause of a minute or two in a quiet conversation was
+indistinguishable from a quiet conversation.
 
 The replay is bounded.  The daemon keeps the last 1024 events, so an
-outage busier than that is not fully replayed, and nothing on screen
-says so.  Picking the agent again is what settles it: selecting an agent
-re-reads its conversation from the daemon rather than from what the
-window has accumulated, so anything the replay could not reach comes
-back with it.
+outage busier than that is not fully replayed -- and now the client is
+*told*: the daemon answers ~resumed: false~, the client emits
+~ClawtClient::resync~, and both clients answer it by re-reading rather
+than waiting for events that are not coming.  The GTK client reloads the
+fleet, the inspector and the transcript and says so in a toast (a toast
+this time: by the time it appears the view is correct again, and a
+standing notice about a hole that has just been filled is a notice about
+nothing).  The web client pushes every open page to re-render and drops
+its unread counts, which were counted from a stream with a hole in it.
+
+*** Which version the daemon is
+
+Also at connect, once: the client sends ~control.status~ and compares
+the version it reports with its own.  A mismatch is drawn in the same
+banner, saying which way round it is and what to do:
+
+#+begin_example
+This daemon is clawtilla 0.2.0 and this client is 0.1.0. The daemon is
+newer, so it may offer things this client cannot ask for; update the
+client.
+#+end_example
+
+Which way round is the whole point.  A newer daemon may answer a frame
+this client cannot send; an older one may refuse a frame this client
+will send -- so "version mismatch" would leave somebody guessing which
+of their two machines to update.
+
+~control.status~ has reported the version since the frame existed and
+had exactly one caller in the tree: the CLI.  Neither graphical client
+ever sent it, so a client talking to a different build found out by a
+frame kind being refused, in whichever feature the person happened to
+open, with a message about that feature.
+
+A version the client cannot read -- a daemon that predates the field, or
+a string that is not three numbers -- says *nothing*.  Announcing "this
+daemon's version is unreadable" on every connect would be crying wolf at
+the case the check exists to keep quiet.
+
+Reconnecting wins over a mismatch when both apply: while the connection
+is down the version is whatever it was before it went, and telling
+somebody to update a daemon they cannot reach is advice about the wrong
+problem.
 
 Worth knowing what this replaced.  Before the keepalive, a connection
 that died was never noticed at all: the window read "connected" for the

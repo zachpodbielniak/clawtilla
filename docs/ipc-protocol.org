@@ -577,6 +577,22 @@ the client blocks.  Waiting there for a ten-second connect timeout is ten
 seconds in which no agent's message is routed and no other client is
 answered.
 
+~control.status~ is the read-only "what are you" frame, answered from
+what the daemon already holds.  Both graphical clients send it once at
+connect to compare the daemon's version with their own, and the GTK
+client sends it again per saved connection when probing reachability.
+For a long time its only caller in the tree was the CLI, which is how a
+client talking to a different build came to find out by a frame kind
+being refused in whichever feature the person happened to open.
+
+~control.subscribe~ answers ~resumed~, and a client must act on it.  The
+daemon replays from a bounded ring of 1024 events, so a cursor that fell
+off it comes back ~resumed: false~ -- meaning that client has a hole
+nothing will fill.  ~ClawtClient~ emits ~::resync~ for it and both
+graphical clients answer by re-reading; before that the only consequence
+was a warning in the journal, and the window went on showing state from
+before the outage indefinitely.
+
 ~computer.exec~ defers for the same reason, with the number rather larger.
 It runs whatever command it was given, on the machine, and its advertised
 default deadline is 120 seconds -- so answering it inline was two minutes

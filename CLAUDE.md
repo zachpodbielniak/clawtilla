@@ -3666,6 +3666,146 @@ the same program.
 - The fourth API this has appeared behind. Name the context; the object
   that owns it is the one that must say so.
 
+### A rule enforced at the caller somebody noticed is a rule about that caller
+
+- "An IPC handler must not wait on the network" has now been applied
+  three times to three call sites: the model cache, the daemon's
+  autostart loop, and the agent's `clawtilla_computer_exec`. The
+  *operator's* `computer.exec` verb sat on the daemon's main context
+  throughout, blocking every agent's messages, task delivery and timers
+  for up to the advertised 120-second default -- and it is the worse of
+  the two exec paths, because a person at a terminal is the caller most
+  likely to run something long on purpose and a fleet that hangs while a
+  command they can *see* running is still going reads as the fleet being
+  broken.
+- Fixed by moving the wait into the library rather than into the second
+  caller. `clawt_computer_exec_async()` is one implementation of "get off
+  the main thread"; two would differ exactly once, on the case nobody
+  looked at, which is precisely what had already happened.
+- The audit line has to move with the wait. It is written from the
+  completion callback so the recorded exit is one something produced --
+  and a command that could not be run at all is recorded with `-1`,
+  because a trail holding only the successes reads as "it did not
+  happen" rather than as "we do not know what it did".
+- The test that means anything asserts on an **unrelated timer**. A test
+  phrased in terms of the exec cannot tell the two versions apart: the
+  answer arrives either way. 10+ ticks of a 50ms source with the fix, 0
+  without.
+
+### An agent's persona grows until it cannot start, and nothing says so
+
+- The identity files are concatenated into one system prompt. Past
+  `MAX_ARG_STRLEN` -- 32 pages, 131072 bytes *including the NUL*, so
+  131071 is the largest word that works -- a backend passing it as an
+  argument cannot spawn at all, and the kernel's `Argument list too long`
+  names neither the files, the size, nor the limit. `getconf ARG_MAX`
+  says 2097152, so the error reads as impossible until you know the
+  per-argument cap exists.
+- Three things hide it. A **resumed** session is never handed a system
+  prompt, so the agent works until something starts a fresh one and the
+  symptom appears long after the paragraph that caused it. It is silent
+  right up to the cliff. And the growth is **self-inflicted by design**:
+  the scaffolded `AGENTS.org` tells the agent to keep `PROJECTS.org`
+  current, and `PROJECTS.org` is an identity file.
+- So it is measured and shown before anything fails --
+  `clawt_workspace_measure_identity()`, on `agent.show`, in both clients,
+  and as an `agent.identity` event classified NOTICE so it reaches the
+  alert panels. Warned rather than refused: ai-glib spills the prompt to
+  a file for claude-code, so refusing would stop an agent that works, and
+  the diagnosis for backends that still build an argument belongs where
+  the argument is built. What clawtilla can say and nothing below it can
+  is *which file* accounts for the size.
+- The arithmetic is checked **against libreclaw**, by building the same
+  prompt through `lc_agent_context_load_identity()` and comparing byte
+  counts. A count of our own that merely looked like the assembly would
+  be wrong by a header per file for ever, because the only other thing
+  that ever compares them is the kernel -- once, at the cliff.
+  `strlen()` rather than the file's size, too: the assembly is a
+  `printf`, so an embedded NUL costs less than the bytes on disk.
+
+### A threshold expressed as a float has two values
+
+- `(gsize)(limit * 0.8)` truncates and `total < limit * 0.8` does not, so
+  they disagree by one byte -- and a boundary test written against either
+  spelling fails against the other for a reason that has nothing to do
+  with the feature. That is not hypothetical; it is how the first draft
+  of the identity-threshold test failed. A percentage applied with
+  integer arithmetic, in one function, is the only version with a single
+  answer.
+
+### `make parity`'s affordance layer was satisfied by the stylesheet
+
+- The check globbed `clients/web/*.c`, which includes `web-style.c`. The
+  marker for a drawn thing is usually its class name, and the class name
+  is in both the renderer and the sheet -- so **eight** of the declared
+  rows would have reported OK with the renderer half deleted. A CSS rule
+  is not a capability; a class the sheet styles and nothing renders is
+  dead CSS.
+- Layer 5 reads a corpus with the stylesheet excluded now. Layers 1 to 4
+  keep the whole thing, because a stylesheet genuinely does hold library
+  vocabulary values, on purpose, in each client's own dialect.
+- The same trap one layer along: a *render* test asserting on the bare
+  class name passes against a page that drew nothing, because the sheet
+  is in the page too. Assert on `class="..."`, which only the element
+  emits.
+
+### A client that loses its daemon has four ways to stay lost
+
+- Found in one sitting, all in `ClawtClient`, and each invisible in a
+  client whose context happens to be the process default -- which is both
+  graphical clients and neither embedded one.
+- **The retry timer** went in through `g_timeout_add_seconds()`, which
+  attaches to the global default. Dispatching a source pushes nothing, so
+  a `handle_disconnect()` reached from the reader had no thread-default
+  to inherit either.
+- **The reader** was re-armed with `g_data_input_stream_read_line_async()`
+  from inside a timeout callback, which captures the *current*
+  thread-default -- so a reconnect armed the socket on a loop nobody
+  runs. The client reconnected, said hello, and never received another
+  line. Same trap as the timer, one function along.
+- **`resumed: false` reached nobody.** The daemon replays from a bounded
+  ring, so an outage longer than it leaves a hole -- and the only
+  consequence was a warning in the journal while the window showed
+  pre-outage state indefinitely. `ClawtClient::resync` now says so and
+  both clients re-read.
+- **`set_auto_reconnect(FALSE)` could not stop a retry already running.**
+  The failure path rescheduled unconditionally, and a connect blocks for
+  the whole request timeout -- so a caller that said stop was ignored and
+  the loop ran for ever, each turn holding its context for another two
+  minutes.
+- Nothing in either graphical client had ever connected to
+  `::disconnected`. The state is drawn in a **banner**, not a toast:
+  a toast answers a question somebody is holding right now and then goes,
+  and this is a condition the window is *in* until something changes.
+- And a fifth, which only driving the real client found. `::disconnected`
+  was emitted **before** the retry was scheduled, so
+  `clawt_client_is_reconnecting()` answered FALSE inside the very handler
+  written to draw it: both clients were told the connection had gone and
+  then had nothing to say about it. No test could see it -- one that
+  samples the state in a polling loop always samples it after the
+  handler has returned. Found by killing a daemon under the real GTK
+  client with a `g_message` in the banner and reading
+  `reconnecting=0`. The test now records the answer *from inside* the
+  handler.
+- **A subscriber exists to act on the state, so the state has to be true
+  when the signal fires.** Arrange first, announce second.
+
+### A test that hangs is worse than one that fails, and a bare "ok" is not a pass
+
+- A reconnect happens from a timeout callback, and the connect inside it
+  waits by iterating the same context -- so a reply that never arrives
+  runs out the full two-minute request timeout and the test's own
+  deadline never gets another turn. Two sabotage runs hung rather than
+  failing. A watchdog source that disconnects the client breaks the
+  nested wait, and the assertions then fail with the reason.
+- The first version of that test needed the daemon's context iterated
+  while the client's synchronous connect iterated its own, which cannot
+  happen on one thread. It was rewritten against a fake daemon on a
+  thread of its own -- the same shape the resync test needed.
+- I recorded it as passing on the strength of a bare `ok` in a filtered
+  build log. TAP prints `ok <n> <path>`; a lone `ok` is some other
+  command's output. **Read the test name, not the word.**
+
 ## Things to NEVER Do
 
 - Never hand-edit `data/example-config.yaml` or `data/default-config.yaml`
@@ -3755,6 +3895,18 @@ the same program.
   C; reading one means the other caller silently gets nothing
 - Never sleep uninterruptibly on a thread something has to join. Poll the
   cancellable's fd, or a stop waits out the whole backoff
+- Never let an affordance marker in `make parity` be one the stylesheet
+  also contains. A CSS rule is not a capability, and eight declared rows
+  were passing on the sheet alone
+- Never re-arm an async read, or schedule a timer, without naming the
+  context. `g_data_input_stream_read_line_async()` and
+  `g_timeout_add_seconds()` both take the ambient thread-default, and a
+  reconnect runs from a source dispatch where that is not the client's
+- Never let a limit be a float. A threshold has to have exactly one
+  value, and `(gsize)(x * 0.8)` and `x * 0.8` are two
+- Never write a test that can hang where it could fail. A reconnect that
+  waits by iterating its own context takes the whole request timeout with
+  it; give the wait a watchdog that breaks it
 - Never guard a shared resource with a probe when the question being
   asked is ownership. A probe answers "did anything reply just now",
   which a busy daemon fails -- and a guard wrong in the permissive
