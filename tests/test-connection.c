@@ -345,11 +345,82 @@ test_a_copy_is_independent(void)
     g_assert_cmpuint(clawt_connection_get_port(copy), ==, 8792);
 }
 
+/*
+ * "Refused" and "unreachable" are different answers.
+ *
+ * One is a credential problem and the other is a network problem, and
+ * telling somebody to check the wrong one costs a long time: a rotated
+ * token and a sleeping host produce the same silence from a client that
+ * does not distinguish them.
+ */
+static void
+test_a_refusal_is_not_the_same_as_silence(void)
+{
+    g_autoptr(GError) refused = g_error_new_literal(
+        CLAWT_ERROR, CLAWT_ERROR_AUTH, "that token was not accepted");
+    g_autoptr(GError) unreachable = g_error_new_literal(
+        G_IO_ERROR, G_IO_ERROR_CONNECTION_REFUSED, "Connection refused");
+    g_autoptr(GError) timed_out = g_error_new_literal(
+        CLAWT_ERROR, CLAWT_ERROR_TIMEOUT, "the daemon did not answer");
+
+    g_assert_cmpint(clawt_reachability_from_error(refused), ==,
+                    CLAWT_REACH_REFUSED);
+
+    /*
+     * G_IO_ERROR_CONNECTION_REFUSED is a *network* refusal -- nothing is
+     * listening -- and must not be read as a credential one just because
+     * both are spelled "refused" in English.
+     */
+    g_assert_cmpint(clawt_reachability_from_error(unreachable), ==,
+                    CLAWT_REACH_UNREACHABLE);
+    g_assert_cmpint(clawt_reachability_from_error(timed_out), ==,
+                    CLAWT_REACH_UNREACHABLE);
+
+    /*
+     * The positive control: no error at all is reachable. Without it the
+     * three assertions above would pass in a build that never answered
+     * REACHABLE, which is the one answer the menu exists to give.
+     */
+    g_assert_cmpint(clawt_reachability_from_error(NULL), ==,
+                    CLAWT_REACH_REACHABLE);
+}
+
+/*
+ * Each verdict has a word of its own, and no two share one.
+ *
+ * Written as a sweep rather than four assertions, because the failure
+ * this guards against is a new verdict added with a copied string.
+ */
+static void
+test_every_verdict_has_its_own_word(void)
+{
+    ClawtReachability all[] = {
+        CLAWT_REACH_UNKNOWN, CLAWT_REACH_REACHABLE,
+        CLAWT_REACH_REFUSED, CLAWT_REACH_UNREACHABLE
+    };
+    gsize i, j;
+
+    for (i = 0; i < G_N_ELEMENTS(all); i++) {
+        const gchar *word = clawt_reachability_word(all[i]);
+
+        g_assert_nonnull(word);
+        g_assert_cmpstr(word, !=, "");
+
+        for (j = 0; j < i; j++)
+            g_assert_cmpstr(word, !=, clawt_reachability_word(all[j]));
+    }
+}
+
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
+    g_test_add_func("/connection/refusal-is-not-silence",
+                    test_a_refusal_is_not_the_same_as_silence);
+    g_test_add_func("/connection/every-verdict-has-a-word",
+                    test_every_verdict_has_its_own_word);
     g_test_add_func("/connection/round-trip",
                     test_a_remote_survives_the_round_trip);
     g_test_add_func("/connection/quoting",

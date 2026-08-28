@@ -164,6 +164,7 @@ declare -A AFFORDANCES=(
     ["palettes from disk"]="clawt_appearance_scheme_count|clawt_appearance_scheme_count"
     ["message boundary in a run"]="CHAT_MESSAGE_SPACING|msg-time"
     ["decision inbox"]="build_decision_page|decision-row"
+    ["connection reachability"]="clawt_connection_probe|clawt_connection_probe"
 )
 
 usage () {

@@ -5333,6 +5333,248 @@ test_a_second_start_reaches_the_computer(void)
 }
 
 
+/*
+ * What one probe found, and a flag saying it has finished.
+ *
+ * The probe blocks until the far end answers, and the far end here is
+ * this test's own daemon whose loop is this thread -- so it runs on a
+ * thread while the loop keeps being iterated. A real client has the same
+ * problem for the same reason, which is why the probe's documentation
+ * says not to call it on the loop.
+ */
+typedef struct {
+    ClawtConnection       *connection;
+    ClawtConnectionStatus *status;
+    gint                   finished;
+} ProbeRun;
+
+static gpointer
+probe_worker(gpointer data)
+{
+    ProbeRun *run = data;
+
+    run->status = clawt_connection_probe(run->connection);
+    g_atomic_int_set(&run->finished, 1);
+
+    return NULL;
+}
+
+static ClawtConnectionStatus *
+probe_while_the_loop_runs(Fixture *fixture, ClawtConnection *connection)
+{
+    ProbeRun run = { connection, NULL, 0 };
+    GThread *thread = g_thread_new("probe", probe_worker, &run);
+    gint64 deadline = g_get_monotonic_time() + 20 * G_USEC_PER_SEC;
+
+    while (!g_atomic_int_get(&run.finished) &&
+           g_get_monotonic_time() < deadline)
+        g_main_context_iteration(fixture->context, FALSE);
+
+    g_thread_join(thread);
+
+    return run.status;
+}
+
+/*
+ * A saved connection can be asked whether it is up, without switching.
+ *
+ * Until now the only way to find out was to switch to it and fail --
+ * which is a destructive way to ask a read-only question, because
+ * switching tears down and rebuilds the whole window state, so "is that
+ * machine up?" could not be asked without committing to the answer.
+ *
+ * Both halves in one test. The unreachable case on its own would pass in
+ * a build whose probe never answered anything else, and "everything is
+ * unreachable" is exactly as useless to a reader as the silence it
+ * replaces.
+ */
+static void
+test_a_saved_connection_can_be_asked_if_it_is_up(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *socket_path = NULL;
+    g_autofree gchar *missing = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n  - id: scribe\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    socket_path = g_build_filename(fixture.dir, "daemon.sock", NULL);
+    missing = g_build_filename(fixture.dir, "nobody-is-here.sock", NULL);
+
+    {
+        g_autoptr(ClawtConnection) live =
+            clawt_connection_new_local("live", socket_path);
+        ClawtConnectionStatus *status =
+            probe_while_the_loop_runs(&fixture, live);
+
+        g_assert_nonnull(status);
+        g_assert_cmpint(status->reach, ==, CLAWT_REACH_REACHABLE);
+
+        /*
+         * And it brought back what a menu would draw, rather than only a
+         * verdict: the version nobody was comparing and the agent count.
+         */
+        g_assert_nonnull(status->version);
+        g_assert_cmpuint(status->agents, ==, 2);
+
+        clawt_connection_status_free(status);
+    }
+
+    {
+        g_autoptr(ClawtConnection) dead =
+            clawt_connection_new_local("dead", missing);
+        ClawtConnectionStatus *status =
+            probe_while_the_loop_runs(&fixture, dead);
+
+        g_assert_nonnull(status);
+        g_assert_cmpint(status->reach, ==, CLAWT_REACH_UNREACHABLE);
+        g_assert_nonnull(status->detail);
+
+        clawt_connection_status_free(status);
+    }
+
+    fixture_teardown(&fixture);
+}
+
+
+/*
+ * A refusal reaches the probe as a refusal, not as silence.
+ *
+ * The classification is a pure function and is tested as one in
+ * test-connection.c, but nothing showed that a real daemon's refusal
+ * *arrives* as CLAWT_ERROR_AUTH from inside clawt_client_connect() --
+ * and a classifier that is right about an input nothing produces is the
+ * shape of feature this tree keeps finding: correct, tested, and wired
+ * to nothing. REFUSED is the one verdict the whole type exists for, so
+ * it is the one that most needs the wire checked.
+ *
+ * Behind CLAWT_TEST_INTEGRATION because it cannot be done without a
+ * listener: the unix socket authenticates by SO_PEERCRED and has no
+ * token to get wrong, so producing a refusal at all means a TCP port --
+ * and `make test` opens no network socket.
+ *
+ * The reachable case is asserted in the same run, over the same TCP
+ * connection with the right token. Without it "everything is refused"
+ * would pass, which is exactly as useless as the silence this replaces.
+ */
+static void
+test_a_wrong_token_is_refused_rather_than_silent(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *token_path = NULL;
+    g_autofree gchar *token = NULL;
+    guint16 port;
+
+    if (g_getenv("CLAWT_TEST_INTEGRATION") == NULL) {
+        g_test_skip("needs CLAWT_TEST_INTEGRATION; opens a loopback socket");
+        return;
+    }
+
+    /*
+     * A port derived from this process, so two runs on one machine do
+     * not collide -- and the bind is then *confirmed* rather than
+     * assumed. clawt_ipc_server_is_listening_on() exists because an
+     * address that was asked for is not an address that was bound, and
+     * a probe against a port nothing listens on would report
+     * UNREACHABLE and look like the feature failing.
+     */
+    port = (guint16)(20000 + (getpid() % 20000));
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+
+    /*
+     * Written into the file rather than set on the config object: the
+     * daemon has no config until it starts -- clawt_daemon_new() only
+     * remembers the path -- so clawt_daemon_get_config() is NULL here.
+     * Inserted into the existing `daemon:` block rather than appended as
+     * a second one, because YAML keeps the last of two identical
+     * top-level keys and silently discards everything under the first,
+     * which would take the fixture's socket and state_dir with it.
+     */
+    {
+        g_autofree gchar *yaml = NULL;
+        g_autofree gchar *patched = NULL;
+
+        g_assert_true(g_file_get_contents(fixture.config_path, &yaml, NULL,
+                                          NULL));
+        g_assert_true(g_str_has_prefix(yaml, "daemon:\n"));
+
+        patched = g_strdup_printf(
+            "daemon:\n  tcp_enabled: true\n  tcp_port: %u\n%s",
+            port, yaml + strlen("daemon:\n"));
+
+        g_assert_true(g_file_set_contents(fixture.config_path, patched, -1,
+                                          NULL));
+    }
+
+    /*
+     * The daemon is right to warn here -- a TCP listener with no
+     * certificate puts the token on the wire in clear -- and GTest makes
+     * a warning fatal, so the warning is swallowed for the length of the
+     * start. The same idiom the other daemon-start tests in this file
+     * use, for the same reason.
+     */
+    {
+        GLogLevelFlags was_fatal = g_log_set_always_fatal(G_LOG_FATAL_MASK);
+        guint handler = g_log_set_handler("Clawtilla",
+                                          G_LOG_LEVEL_WARNING |
+                                          G_LOG_FLAG_FATAL |
+                                          G_LOG_FLAG_RECURSION,
+                                          swallow_warnings, NULL);
+
+        g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+
+        g_log_remove_handler("Clawtilla", handler);
+        g_log_set_always_fatal(was_fatal);
+    }
+
+    g_assert_no_error(error);
+
+    if (!clawt_ipc_server_is_listening_on(
+            clawt_daemon_get_ipc_server(fixture.daemon), "127.0.0.1",
+            port)) {
+        g_test_skip("the daemon bound no TCP port");
+        fixture_teardown(&fixture);
+        return;
+    }
+
+    /* The daemon generates one when token_file names nothing. */
+    token_path = g_build_filename(fixture.dir, "state", "tcp-token", NULL);
+    g_assert_true(g_file_get_contents(token_path, &token, NULL, NULL));
+    g_strstrip(token);
+
+    {
+        g_autoptr(ClawtConnection) wrong = clawt_connection_new_remote(
+            "wrong", "127.0.0.1", port, "definitely-not-the-token");
+        ClawtConnectionStatus *status =
+            probe_while_the_loop_runs(&fixture, wrong);
+
+        g_assert_nonnull(status);
+        g_assert_cmpint(status->reach, ==, CLAWT_REACH_REFUSED);
+        g_assert_nonnull(status->detail);
+
+        clawt_connection_status_free(status);
+    }
+
+    {
+        g_autoptr(ClawtConnection) right = clawt_connection_new_remote(
+            "right", "127.0.0.1", port, token);
+        ClawtConnectionStatus *status =
+            probe_while_the_loop_runs(&fixture, right);
+
+        g_assert_nonnull(status);
+        g_assert_cmpint(status->reach, ==, CLAWT_REACH_REACHABLE);
+
+        clawt_connection_status_free(status);
+    }
+
+    fixture_teardown(&fixture);
+}
+
+
 int
 main(int argc, char *argv[])
 {
@@ -5518,6 +5760,10 @@ main(int argc, char *argv[])
                     test_autostart_does_not_run_inside_start);
     g_test_add_func("/daemon/start-returns-with-a-mute-podman-socket",
                     test_start_returns_with_a_podman_socket_that_never_answers);
+    g_test_add_func("/daemon/a-wrong-token-is-refused",
+                    test_a_wrong_token_is_refused_rather_than_silent);
+    g_test_add_func("/daemon/a-saved-connection-can-be-asked",
+                    test_a_saved_connection_can_be_asked_if_it_is_up);
     g_test_add_func("/daemon/loop-runs-while-a-computer-provisions",
                     test_the_loop_runs_while_a_computer_is_provisioning);
     g_test_add_func("/daemon/loop-runs-while-an-exec-is-outstanding",

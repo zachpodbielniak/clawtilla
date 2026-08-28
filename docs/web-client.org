@@ -383,6 +383,22 @@ Which daemon this server talks to, from the profiles in
 =$XDG_CONFIG_HOME/clawtilla/connections.yaml= -- the same 0600 file
 =clawtilla-gtk= and =clawtilla remote add= use.
 
+*** Whether a saved daemon is up
+
+Each row has a *Check* button, before *Connect*, because that is the
+question somebody has before deciding whether to press Connect.  It
+probes that daemon and draws one of four verdicts --- ~reachable~ (with
+the version and agent count), ~refused~, ~unreachable~, or nothing at all
+until somebody asks.  The words and the rule behind them are the
+library's, shared with the GTK client, in
+[[file:clients.org::*Another machine's fleet][clients.org]].
+
+One at a time, and only when asked.  Probing the list while rendering the
+page would multiply that page's latency by the number of saved daemons
+and stall on every sleeping one for its full timeout --- which is the
+same reason the GTK client probes on a worker thread rather than on its
+main loop.
+
 *** One connection, many browsers
 
 This is the one place the web client differs in kind rather than in

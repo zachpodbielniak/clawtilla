@@ -230,6 +230,30 @@ guint clawt_web_app_unread_total(ClawtWebApp *self);
 void clawt_web_app_note_fleet(ClawtWebApp *self, JsonArray *agents);
 
 /**
+ * clawt_web_app_note_connection_status:
+ * @self: the app
+ * @name: the saved connection's name
+ * @status: (transfer full) (nullable): what a probe found, or %NULL to forget
+ *
+ * Remembers what one probe learned, so the connections page can draw it
+ * on the next render rather than probing again to redraw the same row.
+ */
+void clawt_web_app_note_connection_status(ClawtWebApp           *self,
+                                          const gchar           *name,
+                                          ClawtConnectionStatus *status);
+
+/**
+ * clawt_web_app_connection_status:
+ * @self: the app
+ * @name: (nullable): a saved connection's name
+ *
+ * Returns: (transfer none) (nullable): what the last probe found, or
+ *   %NULL if nobody has asked
+ */
+ClawtConnectionStatus *clawt_web_app_connection_status(ClawtWebApp *self,
+                                                       const gchar *name);
+
+/**
  * clawt_web_app_set_viewing:
  * @self: a #ClawtWebApp
  * @agent_id: (nullable): whose conversation is on screen, or %NULL

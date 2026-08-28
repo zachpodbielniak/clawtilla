@@ -1943,6 +1943,38 @@ reset its session -- acts on whichever daemon is connected, and someone
 who has forgotten they are pointed at another machine will not find out
 until afterwards.
 
+Every entry says whether that machine is *up*, and opening the menu is
+what asks: each saved connection is probed on a worker thread, and the
+verdict is drawn beside its name along with the daemon's version and how
+many agents it has.  On a worker thread rather than the main one because
+a host that is asleep fails only when its route times out --- answering
+that on the loop would freeze the window for the length of every
+unreachable host in the list.
+
+There are four verdicts and the distinction between two of them is the
+point:
+
+| ~reachable~ | it answered, with its version and agent count |
+| ~refused~ | it answered and would not have us: the token is wrong |
+| ~unreachable~ | nothing answered: it is off, asleep, or the route is gone |
+| ~not checked~ | nobody has asked yet |
+
+A rotated token and a sleeping host produce the same silence from a
+client that does not tell them apart, and sending somebody to check the
+network when the answer is a credential --- or the reverse --- costs far
+more than the probe does.  A *refused socket* is the network, not a
+credential, however much the two are spelled "refused" in English; only
+the daemon's own refusal of the bearer token is ~refused~.
+
+~not checked~ is not a failure.  Drawing an unasked connection as
+unreachable would be the client asserting something it has not
+established.
+
+Before this the only way to find out was to switch to that connection and
+fail, which is a destructive way to ask a read-only question: switching
+tears down and rebuilds the whole window, so "is that machine up?" could
+not be asked without committing to the answer.
+
 *Manage connections...* adds and removes them.  A connection needs a host
 and the token from ~clawtilla daemon token~ on that machine; the port
 defaults to 8792.  TLS is only worth turning on if that daemon has a
