@@ -52,9 +52,45 @@ clawt_computer_provision(ClawtComputer *self, GError **error)
 gboolean
 clawt_computer_start(ClawtComputer *self, GError **error)
 {
+    ClawtComputerClass *klass;
+    g_autoptr(GError) stale = NULL;
+
     g_return_val_if_fail(CLAWT_IS_COMPUTER(self), FALSE);
 
-    CALL_OR_TRUE(self, start, error);
+    /*
+     * Ask what is really there before replaying what we remember.
+     *
+     * Here rather than inside each backend's start(), which is where it
+     * began: the container backend called its own static reconcile and
+     * the public entry point had no caller at all, so a backend that
+     * grew a reconcile later would have had it registered, documented,
+     * and never invoked.  This tree has had that shape three times --
+     * the factory nothing called, the signal nothing connected, the
+     * limit nothing incremented -- and it is always found by grepping
+     * for the caller rather than by reading the implementation.
+     *
+     * A backend that cannot be asked is not a reason to refuse the
+     * start: whatever is wrong is about to produce a better message from
+     * start() itself than anything that could be said here.
+     */
+    if (!clawt_computer_reconcile(self, &stale))
+        g_debug("computer: state could not be reconciled: %s",
+                stale != NULL ? stale->message : "no reason given");
+
+    klass = CLAWT_COMPUTER_GET_CLASS(self);
+
+    if (klass->start == NULL)
+        return TRUE;
+
+    return klass->start(self, error);
+}
+
+gboolean
+clawt_computer_reconcile(ClawtComputer *self, GError **error)
+{
+    g_return_val_if_fail(CLAWT_IS_COMPUTER(self), FALSE);
+
+    CALL_OR_TRUE(self, reconcile, error);
 }
 
 gboolean

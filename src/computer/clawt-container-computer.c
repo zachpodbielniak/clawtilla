@@ -436,12 +436,82 @@ container_target(ClawtContainerComputer *self)
     return (self->container_id != NULL) ? self->container_id : self->name;
 }
 
+/*
+ * Does podman still have this container?
+ *
+ * The state was written and never read back, so `podman rm -f` behind the
+ * daemon's back left every surface reporting `running` until the daemon
+ * exited.  podomation has had an `inspect` handler all along; nothing
+ * called it.
+ *
+ * Only a 404 is treated as "it is gone".  Any other failure -- podman not
+ * running, the socket unreadable, a timeout -- means the question could
+ * not be asked, and answering it as "absent" would provision a second
+ * container for an agent that already has one.  That the two are
+ * distinguished only by the HTTP status in the message is podomation's
+ * interface, not a choice made here: every failure from the module
+ * arrives as G_IO_ERROR_FAILED.
+ */
+static gboolean
+container_reconcile(ClawtComputer *computer, GError **error)
+{
+    ClawtContainerComputer *self = CLAWT_CONTAINER_COMPUTER(computer);
+    g_autoptr(GHashTable) params = NULL;
+    g_autoptr(GHashTable) result = NULL;
+    g_autoptr(GError) local = NULL;
+
+    /*
+     * Nothing has been created, so there is nothing to disagree with.
+     * Asking anyway would turn every start of a fresh agent into a round
+     * trip that can only answer 404.
+     */
+    if (clawt_computer_get_state(computer) == CLAWT_COMPUTER_STATE_ABSENT)
+        return TRUE;
+
+    params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    g_hash_table_insert(params, g_strdup("target"),
+                        g_strdup(container_target(self)));
+
+    result = clawt_pod_bridge_call_for(self->bridge, "container",
+                                       self->connection, "inspect", params,
+                                       &local);
+
+    if (result != NULL)
+        return TRUE;
+
+    if (local == NULL || strstr(local->message, "HTTP 404") == NULL) {
+        g_propagate_error(error, g_steal_pointer(&local));
+        return FALSE;
+    }
+
+    /*
+     * The remembered id goes with it.  container_target() prefers the id
+     * over the name, so a recreated container would still be started and
+     * exec'd at the dead one -- which is the 404 an agent saw from its
+     * own commands long after the operator had recreated everything.
+     * container_teardown() already clears it for the same reason.
+     */
+    g_clear_pointer(&self->container_id, g_free);
+    clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ABSENT, NULL);
+
+    return TRUE;
+}
+
 static gboolean
 container_start(ClawtComputer *computer, GError **error)
 {
     ClawtContainerComputer *self = CLAWT_CONTAINER_COMPUTER(computer);
     g_autoptr(GHashTable) params = NULL;
     g_autoptr(GHashTable) result = NULL;
+
+    /*
+     * clawt_computer_start() has already reconciled by the time this
+     * runs, so the state below is podman's answer rather than what the
+     * last operation happened to write.  Without that a start found its
+     * own stale RUNNING, skipped provisioning, and asked podman to start
+     * a container that no longer existed -- so the one command an
+     * operator reaches for to recover was the one that could not.
+     */
 
     if (clawt_computer_get_state(computer) == CLAWT_COMPUTER_STATE_ABSENT &&
         !clawt_computer_provision(computer, error))
@@ -719,6 +789,7 @@ clawt_container_computer_class_init(ClawtContainerComputerClass *klass)
     computer_class->exec = container_exec;
     computer_class->describe = container_describe;
     computer_class->get_computer_type = container_get_computer_type;
+    computer_class->reconcile = container_reconcile;
 }
 
 static void

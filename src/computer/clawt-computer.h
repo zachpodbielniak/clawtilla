@@ -94,8 +94,11 @@ struct _ClawtComputerClass {
 
     ClawtComputerType (*get_computer_type)(ClawtComputer   *self);
 
+    gboolean          (*reconcile)  (ClawtComputer        *self,
+                                     GError              **error);
+
     /*< private >*/
-    gpointer _padding[8];
+    gpointer _padding[7];
 };
 
 /**
@@ -116,6 +119,38 @@ struct _ClawtComputerClass {
  */
 gboolean clawt_computer_provision(ClawtComputer *self, GError **error);
 gboolean clawt_computer_start(ClawtComputer *self, GError **error);
+
+/**
+ * clawt_computer_reconcile:
+ * @self: a #ClawtComputer
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Asks the backend what it actually has, and makes the remembered state
+ * agree with the answer.
+ *
+ * The state was only ever written, never read back: whatever the last
+ * operation set is what every surface reported until the daemon exited.
+ * Remove an agent's container behind the daemon's back and it stayed
+ * `running` for the life of the process, with the one honest surface
+ * being an exec that failed by naming a container id nobody could
+ * correlate with anything.
+ *
+ * A backend with nothing to ask answers %TRUE and changes nothing, so a
+ * caller never has to know which kind of computer it holds.
+ *
+ * Called by clawt_computer_start(), which is the one path that has to
+ * talk to the backend anyway, so the round trip costs nothing new there.
+ *
+ * Deliberately *not* called by `computer status`, which is a memory read
+ * today: making it a round trip would put a blocking network call back
+ * on the daemon's main context and, against a wedged backend, an
+ * unbounded one. The consequence is worth stating plainly -- a status
+ * read reports the remembered state until something starts the agent,
+ * and it is the start that corrects it.
+ *
+ * Returns: %FALSE only when the backend could not be asked
+ */
+gboolean clawt_computer_reconcile(ClawtComputer *self, GError **error);
 gboolean clawt_computer_stop(ClawtComputer *self, GError **error);
 gboolean clawt_computer_teardown(ClawtComputer *self, GError **error);
 

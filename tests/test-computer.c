@@ -3603,7 +3603,19 @@ test_container_exec_gives_up_at_its_timeout(void)
 
         bridge = clawt_pod_bridge_new(CLAWT_TEST_POD_MODULE_DIR);
 
-        if (!clawt_pod_bridge_load_module(bridge, "container", NULL)) {
+        /*
+         * Loaded for the socket this test stands up, never for the
+         * default connection.  `load_module(bridge, "container", NULL)`
+         * names no connection, so it starts the module's event source
+         * against whatever podman this machine has -- measured, it
+         * connected to /run/podman/podman.sock and spent ten seconds
+         * there.  That is `make test` reaching real infrastructure, on
+         * the line whose only job was to decide whether to skip.
+         */
+        uri = g_strdup_printf("unix://%s", sock);
+
+        if (!clawt_pod_bridge_load_module_for(bridge, "container", uri,
+                                              NULL)) {
             g_cancellable_cancel(mute.cancel);
             g_thread_join(server);
             g_clear_object(&mute.cancel);
@@ -3612,7 +3624,6 @@ test_container_exec_gives_up_at_its_timeout(void)
             return;
         }
 
-        uri = g_strdup_printf("unix://%s", sock);
         computer = clawt_container_computer_new("stuck", bridge,
                                                 "example:1");
         clawt_container_computer_set_connection(
@@ -3732,6 +3743,253 @@ test_distrobox_exec_gives_up_at_its_timeout(void)
 }
 
 
+/*
+ * A podman that answers every request with one canned reply.
+ *
+ * Enough to drive the inspect the reconcile does: what matters is the
+ * status line, since that is the only thing distinguishing "this
+ * container is gone" from "podman could not be asked".
+ */
+typedef struct {
+    GSocketListener *listener;
+    GCancellable    *cancel;
+    const gchar     *status;
+    const gchar     *body;
+} CannedPodman;
+
+static gpointer
+canned_podman(gpointer data)
+{
+    CannedPodman *canned = data;
+    GSocketConnection *conn;
+
+    while ((conn = g_socket_listener_accept(canned->listener, NULL,
+                                            canned->cancel, NULL)) != NULL) {
+        GInputStream *in = g_io_stream_get_input_stream(G_IO_STREAM(conn));
+        GOutputStream *out = g_io_stream_get_output_stream(G_IO_STREAM(conn));
+        g_autofree gchar *reply = NULL;
+        gchar buffer[2048];
+
+        /*
+         * One read is enough: podomation sends its whole request in one
+         * write and this only needs to know that it arrived.
+         */
+        g_input_stream_read(in, buffer, sizeof buffer, NULL, NULL);
+
+        reply = g_strdup_printf("HTTP/1.1 %s\r\n"
+                                "Content-Type: application/json\r\n"
+                                "Content-Length: %" G_GSIZE_FORMAT "\r\n"
+                                "Connection: close\r\n"
+                                "\r\n%s",
+                                canned->status, strlen(canned->body),
+                                canned->body);
+
+        g_output_stream_write_all(out, reply, strlen(reply), NULL, NULL,
+                                  NULL);
+        g_output_stream_flush(out, NULL, NULL);
+        g_io_stream_close(G_IO_STREAM(conn), NULL, NULL);
+        g_object_unref(conn);
+    }
+
+    return NULL;
+}
+
+/*
+ * Reconciling against a podman that has the container leaves the state
+ * alone; reconciling against one that does not puts it back to ABSENT.
+ *
+ * Both halves in one test on purpose.  The interesting assertion is the
+ * 404 one, and on its own it would pass in a build where reconcile set
+ * ABSENT unconditionally -- or one where the harness never reached
+ * podman at all.  The 200 case is what makes the 404 case mean
+ * something.
+ */
+static void
+test_reconcile_believes_podman_over_memory(void)
+{
+    struct {
+        const gchar        *status;
+        const gchar        *body;
+        ClawtComputerState  expected;
+    } cases[] = {
+        { "200 OK",
+          "{\"Id\":\"deadbeef\",\"Name\":\"clawt-probe\","
+          "\"Image\":\"example:1\",\"Created\":\"now\"}",
+          CLAWT_COMPUTER_STATE_RUNNING },
+        { "404 Not Found",
+          "{\"cause\":\"no such container\","
+          "\"message\":\"no container with name or ID found\"}",
+          CLAWT_COMPUTER_STATE_ABSENT },
+    };
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autoptr(GSocketListener) listener = g_socket_listener_new();
+        g_autoptr(GSocketAddress) addr = NULL;
+        g_autoptr(ClawtPodBridge) bridge = NULL;
+        g_autoptr(ClawtComputer) computer = NULL;
+        g_autoptr(GError) error = NULL;
+        g_autofree gchar *dir = NULL;
+        g_autofree gchar *sock = NULL;
+        g_autofree gchar *uri = NULL;
+        CannedPodman canned;
+        GThread *server;
+
+        dir = g_dir_make_tmp("clawt-canned-podman-XXXXXX", NULL);
+        g_assert_nonnull(dir);
+        sock = g_build_filename(dir, "podman.sock", NULL);
+        addr = g_unix_socket_address_new(sock);
+
+        g_assert_true(g_socket_listener_add_address(listener, addr,
+                                                    G_SOCKET_TYPE_STREAM,
+                                                    G_SOCKET_PROTOCOL_DEFAULT,
+                                                    NULL, NULL, NULL));
+
+        canned.listener = listener;
+        canned.cancel = g_cancellable_new();
+        canned.status = cases[i].status;
+        canned.body = cases[i].body;
+        server = g_thread_new("canned-podman", canned_podman, &canned);
+
+        bridge = clawt_pod_bridge_new(CLAWT_TEST_POD_MODULE_DIR);
+
+        /*
+         * Loaded for the socket this test stands up, never for the
+         * default connection.  `load_module(bridge, "container", NULL)`
+         * names no connection, so it starts the module's event source
+         * against whatever podman this machine has -- measured, it
+         * connected to /run/podman/podman.sock and spent ten seconds
+         * there.  That is `make test` reaching real infrastructure, on
+         * the line whose only job was to decide whether to skip.
+         */
+        uri = g_strdup_printf("unix://%s", sock);
+
+        if (!clawt_pod_bridge_load_module_for(bridge, "container", uri,
+                                              NULL)) {
+            g_test_skip("podomation's container module has not been built");
+            g_cancellable_cancel(canned.cancel);
+            g_thread_join(server);
+            g_clear_object(&canned.cancel);
+            g_socket_listener_close(listener);
+            clawt_test_remove_tree(dir);
+            return;
+        }
+
+        computer = clawt_container_computer_new("probe", bridge,
+                                                "example:1");
+        clawt_container_computer_set_connection(
+            CLAWT_CONTAINER_COMPUTER(computer), uri);
+
+        /*
+         * What the daemon believed before anybody asked.  This is the
+         * whole defect: it was written once and never checked again.
+         */
+        clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_RUNNING,
+                                 NULL);
+
+        g_assert_true(clawt_computer_reconcile(computer, &error));
+        g_assert_no_error(error);
+
+        g_assert_cmpint(clawt_computer_get_state(computer), ==,
+                        cases[i].expected);
+
+        g_cancellable_cancel(canned.cancel);
+        g_thread_join(server);
+        g_clear_object(&canned.cancel);
+        g_socket_listener_close(listener);
+        clawt_test_remove_tree(dir);
+    }
+}
+
+
+/*
+ * Starting a computer asks the backend what it has.
+ *
+ * The reconcile began life as a private call inside the container
+ * backend's own start(), with clawt_computer_reconcile() registered,
+ * documented and invoked by nothing -- so any backend growing one later
+ * would have had it silently skipped.  That shape has appeared in this
+ * tree three times (a factory nothing called, a signal nothing
+ * connected, a limit nothing incremented) and every time it was found by
+ * looking for the caller rather than by reading the implementation.
+ *
+ * A subclass of its own rather than a real backend, so the assertion is
+ * about the generic path and not about podman: any ClawtComputer, asked
+ * to start, must have been reconciled first.
+ */
+#define TEST_TYPE_COUNTING_COMPUTER (test_counting_computer_get_type())
+G_DECLARE_FINAL_TYPE(TestCountingComputer, test_counting_computer, TEST,
+                     COUNTING_COMPUTER, ClawtComputer)
+
+struct _TestCountingComputer {
+    ClawtComputer parent_instance;
+    guint reconciled;
+    guint started;
+    guint reconciled_when_started;
+};
+
+G_DEFINE_FINAL_TYPE(TestCountingComputer, test_counting_computer,
+                    CLAWT_TYPE_COMPUTER)
+
+static gboolean
+counting_reconcile(ClawtComputer *computer, GError **error)
+{
+    (void)error;
+    ((TestCountingComputer *)computer)->reconciled++;
+    return TRUE;
+}
+
+static gboolean
+counting_start(ClawtComputer *computer, GError **error)
+{
+    TestCountingComputer *self = (TestCountingComputer *)computer;
+
+    (void)error;
+    self->started++;
+
+    /*
+     * Recorded here rather than compared afterwards, so the test asserts
+     * the *order* and not merely that both happened.  Reconciling after
+     * the start would leave a start that still replayed a stale state.
+     */
+    self->reconciled_when_started = self->reconciled;
+    return TRUE;
+}
+
+static void
+test_counting_computer_class_init(TestCountingComputerClass *klass)
+{
+    ClawtComputerClass *computer_class = CLAWT_COMPUTER_CLASS(klass);
+
+    computer_class->reconcile = counting_reconcile;
+    computer_class->start = counting_start;
+}
+
+static void
+test_counting_computer_init(TestCountingComputer *self)
+{
+    (void)self;
+}
+
+static void
+test_starting_a_computer_reconciles_it_first(void)
+{
+    g_autoptr(ClawtComputer) computer =
+        g_object_new(TEST_TYPE_COUNTING_COMPUTER, NULL);
+    TestCountingComputer *counting = (TestCountingComputer *)computer;
+    g_autoptr(GError) error = NULL;
+
+    g_assert_true(clawt_computer_start(computer, &error));
+    g_assert_no_error(error);
+
+    g_assert_cmpuint(counting->started, ==, 1);
+    g_assert_cmpuint(counting->reconciled, ==, 1);
+
+    /* And before, not after. */
+    g_assert_cmpuint(counting->reconciled_when_started, ==, 1);
+}
+
+
 int
 main(int argc, char *argv[])
 {
@@ -3756,6 +4014,10 @@ main(int argc, char *argv[])
     g_test_add_func("/computer/host/cwd-outside",
                     test_host_refuses_a_working_directory_outside);
     g_test_add_func("/computer/host/timeout", test_host_times_out_a_hanging_command);
+    g_test_add_func("/computer/start-reconciles-first",
+                    test_starting_a_computer_reconciles_it_first);
+    g_test_add_func("/computer/container/reconcile-believes-podman",
+                    test_reconcile_believes_podman_over_memory);
     g_test_add_func("/computer/container/exec-gives-up-at-its-timeout",
                     test_container_exec_gives_up_at_its_timeout);
     g_test_add_func("/computer/distrobox/exec-gives-up-at-its-timeout",

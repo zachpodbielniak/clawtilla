@@ -376,6 +376,41 @@ failing: the name is ours, and a daemon killed at the wrong moment used
 to leave an agent that could never start again without running podman by
 hand.
 
+*** A container removed behind clawtilla's back
+
+Starting an agent asks the backend what it actually has before it acts on
+what it remembers, so =podman rm -f clawt-<agent>= is recoverable:
+=clawtilla agent start= notices the container is gone, provisions a new
+one, and the agent comes back.
+
+It did not use to be.  The state was written and never read back --
+whatever the last operation set is what every surface reported until the
+daemon exited -- so a destroyed container left the agent reading
+=running= for the life of the process.  The one honest surface was the
+agent's own commands, which failed naming a container id nothing could be
+correlated with, because the remembered id was preferred over the name
+and pointed at something that no longer existed.
+
+Two consequences worth knowing:
+
+- *=computer status= still reports the remembered state.*  Reconciling is
+  a round trip to podman, and doing it on a status read would put a
+  blocking call on the daemon's main context -- unbounded against a
+  wedged podman.  A status read is a memory read; it is the *start* that
+  corrects it.  So if a status looks wrong, start the agent and look
+  again.
+- *Only a 404 is read as "it is gone".*  Podman not running, an
+  unreadable socket, a timeout: all of those mean the question could not
+  be asked, and treating that as absent would provision a second
+  container for an agent that already has one.  A backend that cannot be
+  asked does not block the start either --- whatever is wrong produces a
+  better message a moment later.
+
+Starting an agent whose container really is running stays a no-op rather
+than an error, at every backend.  Refusing it because the daemon believes
+the computer is fine would refuse it in exactly the case where that
+belief is the thing that is wrong.
+
 *** Where the modules are found
 :PROPERTIES:
 :CUSTOM_ID: pod-modules

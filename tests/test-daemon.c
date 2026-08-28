@@ -5252,6 +5252,87 @@ test_starting_an_agent_with_no_id_is_an_error(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * A second `agent start` reaches the agent's computer.
+ *
+ * start_agent_prepare() assigned its out-parameter inside the branch that
+ * *builds* a computer, so from an agent's first start until the daemon
+ * exited, clawt_computer_start() was unreachable for it. Destroy the
+ * container behind the daemon's back and neither `agent start` nor
+ * `agent restart` could bring it back -- both reported success having
+ * asked nothing, because relaunching the child genuinely does succeed:
+ * the libreclaw process runs on the host and does not need the container
+ * to exist.
+ *
+ * Stated here without a container, because the defect is not the
+ * container's. The state is put back to ABSENT by hand to stand for
+ * whatever the backend lost -- what is under test is that the *daemon*
+ * asks the computer to start again, and the assertion is on the real
+ * start path having run.
+ */
+static void
+test_a_second_start_reaches_the_computer(void)
+{
+    Fixture fixture;
+    g_autofree gchar *binary = g_build_filename(CLAWT_TEST_FIXTURES,
+                                                "fake-libreclaw", NULL);
+    g_autofree gchar *extra = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgent *agent;
+    ClawtComputer *computer;
+
+    extra = g_strdup_printf(
+        "  libreclaw_binary: \"%s\"\n"
+        "agents:\n"
+        "  - id: worker\n"
+        "    enabled: true\n"
+        "    computer:\n"
+        "      type: host\n"
+        "      host:\n"
+        "        confirm_host_control: true\n",
+        binary);
+
+    fixture_setup(&fixture, extra);
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    g_assert_true(clawt_daemon_start_agent(fixture.daemon, "worker", &error));
+    g_assert_no_error(error);
+
+    agent = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                    "worker");
+    g_assert_nonnull(agent);
+
+    computer = clawt_agent_get_computer(agent);
+    g_assert_nonnull(computer);
+
+    /*
+     * The first start really did start it, so the second assertion below
+     * is measuring a recovery rather than a state that was never left.
+     */
+    g_assert_cmpint(clawt_computer_get_state(computer), ==,
+                    CLAWT_COMPUTER_STATE_RUNNING);
+
+    clawt_daemon_stop_agent(fixture.daemon, "worker");
+
+    /* Whatever the backend was holding is gone. */
+    clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ABSENT, NULL);
+
+    g_assert_true(clawt_daemon_start_agent(fixture.daemon, "worker", &error));
+    g_assert_no_error(error);
+
+    /*
+     * The same computer object, so this is the agent's own computer being
+     * started again rather than a second one quietly built beside it.
+     */
+    g_assert_true(clawt_agent_get_computer(agent) == computer);
+    g_assert_cmpint(clawt_computer_get_state(computer), ==,
+                    CLAWT_COMPUTER_STATE_RUNNING);
+
+    fixture_teardown(&fixture);
+}
+
+
 int
 main(int argc, char *argv[])
 {
@@ -5443,6 +5524,8 @@ main(int argc, char *argv[])
                     test_the_loop_runs_while_an_exec_is_outstanding);
     g_test_add_func("/daemon/restart-policy-reaches-the-runtime",
                     test_a_changed_restart_policy_reaches_the_runtime);
+    g_test_add_func("/daemon/second-start-reaches-the-computer",
+                    test_a_second_start_reaches_the_computer);
     g_test_add_func("/daemon/task-change-reaches-the-bus",
                     test_a_task_change_reaches_the_bus);
     g_test_add_func("/daemon/agent-set-refuses-an-unknown-enum-value",

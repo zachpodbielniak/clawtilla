@@ -317,6 +317,34 @@ a typo in an image name fails in a second rather than after a download.
 podman pull registry.fedoraproject.org/fedora:latest
 #+end_src
 
+*** Its container was removed, and the agent still says running
+
+#+begin_example
+$ podman rm -f clawt-researcher
+$ clawtilla computer status researcher
+state: running
+$ clawtilla computer exec researcher -- uname -a
+container start failed: HTTP 404: no container with name or ID found
+#+end_example
+
+Start the agent.  ~clawtilla agent start researcher~ asks podman what is
+really there, finds nothing, and provisions again.
+
+Two things about the output above are worth knowing rather than
+investigating.  ~computer status~ reports what the daemon remembers, not
+what podman has --- it is a memory read on purpose, since making it a
+round trip would put a blocking call on the daemon's main context --- so
+it goes on saying =running= until a start corrects it.  And the 404 names
+a container id rather than =clawt-researcher=, because the remembered id
+is preferred over the name; it is the id of the container that was
+removed, which is why it correlates with nothing.
+
+On builds before this behaviour existed, ~agent start~ and ~agent
+restart~ both reported success and changed nothing --- relaunching the
+libreclaw child genuinely does succeed, since it runs on the host and
+does not need the container.  Restarting the whole daemon was the only
+way back.
+
 *** The agent is in state error and will not start again
 
 Read the detail -- ~clawtilla agent show <agent>~ -- fix the cause, and

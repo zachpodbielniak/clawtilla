@@ -2278,6 +2278,33 @@ start_agent_prepare(ClawtDaemon    *self,
         *pending = g_object_ref(computer);
     }
 
+    /*
+     * An agent that already has a computer hands that one back.
+     *
+     * This assignment used to live only inside the branch above, which
+     * builds a computer for an agent that has none -- so from an agent's
+     * first start until the daemon exited, clawt_computer_start() was
+     * unreachable for it.  Destroy its container behind the daemon's back
+     * and neither `agent start` nor `agent restart` could bring it back:
+     * both reported success having asked nothing, because relaunching the
+     * child genuinely does succeed.  The libreclaw process runs on the
+     * host and does not need the container to exist, so the one thing
+     * that was broken was the one thing nobody checked.
+     *
+     * Starting a computer that is already up is a no-op at every backend
+     * -- podman's start on a running container, the host's sandbox check
+     * -- and that is the behaviour worth having: `agent start` is what an
+     * operator reaches for to recover, and refusing it because the daemon
+     * believes the computer is fine would refuse it in exactly the case
+     * where the daemon's belief is the thing that is wrong.
+     */
+    if (*pending == NULL) {
+        ClawtComputer *existing = clawt_agent_get_computer(agent);
+
+        if (existing != NULL)
+            *pending = g_object_ref(existing);
+    }
+
     *config_path_out = g_steal_pointer(&config_path);
 
     return TRUE;
