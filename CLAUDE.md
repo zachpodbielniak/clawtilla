@@ -3559,6 +3559,113 @@ the same program.
   whether the lock worked at all.
 
 
+### A helper that consumes its argument, beside one that does not
+
+- `clawt_web_add()` unrefs the child; `htmx_node_add_child()` does not.
+  Two adjacent blocks in one change used one each, and the one paired
+  with a `g_autoptr` was unreffed twice and **freed while still in the
+  tree** -- so the drawer's checkbox rendered as nothing while the
+  hamburger three lines away in another file went on being drawn and
+  toggling an element that did not exist. From outside that is
+  indistinguishable from a working drawer until somebody presses it.
+- Every assertion in the change was against the **stylesheet**, and the
+  CSS was correct throughout. **A stylesheet test cannot see a missing
+  element.** The test that catches it renders the page and looks at the
+  emitted HTML, and it fails with the underlying cause in the message:
+  `g_object_unref: assertion 'G_IS_OBJECT (object)' failed`.
+
+### A row count cannot describe a layout whose item count changes
+
+- The narrow grid was given `auto auto 1fr` for what is at most two
+  children -- and a `display:none` child is **not a grid item at all**,
+  so with the drawer shut there was one item, it took the first `auto`
+  track, and 320px of an 812px phone below the composer was blank.
+  Placing both children explicitly is the only version that is right for
+  both counts.
+- `minmax(0,1fr)` rather than `1fr` for a row holding a scrolling box:
+  `1fr`'s own minimum is min-content, so a long transcript pushes the
+  track past the viewport instead of scrolling inside it.
+- Found by rendering. The change had been measured in a headless browser
+  against the stylesheet extracted from `web-style.c` with hand-written
+  markup, which is a different program from the one the client serves.
+
+### A test that names the fix refuses the next correct answer
+
+- A sweep asserted every `minmax()` floor begins `min(`, which was the
+  spelling that change had applied. `minmax(0,1fr)` is a *stronger*
+  floor and failed it immediately. The rule is that the floor can shrink;
+  the test says that now, and says which spelling is for what.
+- Same family as the `render_autologin()` lesson: a test that encodes
+  "we do it this way" cannot tell you there is another way.
+
+### `g_test_expect_message()` makes every *other* message fatal too
+
+- Provoking one warning on purpose does not mean expecting one message.
+  With an expectation pending, the daemon's ordinary MESSAGE and INFO
+  lines during start each became fatal in turn -- three rounds of a test
+  failing on a different innocuous log line. `test-daemon.c` already had
+  the right idiom: swallow warnings with a handler and restore
+  `g_log_set_always_fatal()` around the call.
+
+### A skip-probe is code, and it can break the rule the suite is built on
+
+- Two tests decided whether to skip with
+  `clawt_pod_bridge_load_module(bridge, "container", NULL)`. That names
+  no connection, so it **starts the module's event source against
+  whatever podman the machine has** -- measured with strace,
+  `/run/podman/podman.sock`, twice per run. `make test` needs no podman,
+  and the line that broke the rule was the one whose only job was to
+  decide whether the test could run.
+- Load for the connection the test itself stands up. Which then made the
+  test ten seconds faster and exposed a dep bug underneath it.
+
+### An uninterruptible sleep in a thread that must be joinable
+
+- podomation's container module waited `reconnect_delay_ms` between event
+  stream reconnects with `g_usleep()`. `stop()` cancels and then joins,
+  so a cancel arriving during the backoff was not noticed until it ran
+  out: **five seconds to dispose the module, every time, per connection,
+  paid by whoever is shutting down.** `g_poll()` on the cancellable's own
+  fd ends on either.
+- `stop()`'s own comment recorded this hazard one function over -- "the
+  thread is parked in a read nothing else can interrupt" -- and the sleep
+  two functions away was the same hazard. The existing test could not see
+  it: its fake server **holds the connection open**, and says so in a
+  comment, because closing would wake the reader and hide what that test
+  was for. True, and it meant the path a close leads to had no test at
+  all. A helper documented as avoiding a case is a case nobody covers.
+
+### A module that reads its arguments one way receives nothing from the other caller
+
+- podomation hands a handler's arguments as a positional tuple from the
+  DSL and as an `a{sv}` from C. The distrobox module read only the tuple,
+  so **every argument from clawtilla was dropped** and each action
+  refused for a missing required parameter -- which means
+  `computer.type: distrobox` had never worked at all, in any version.
+- The refusal names the *argument*, not the marshalling, so it reads as a
+  caller that forgot one and sends whoever is looking to the wrong layer.
+  The container module had accepted both since it was written, and it is
+  the one everything was tested against -- two backends agreeing by
+  accident, and the feature demonstrated on the lucky one, for the third
+  time in this file.
+- Found only because a timeout test was the first thing in this tree ever
+  to drive that module end to end.
+
+### GTask pushes its own context around its callback, and that is not a plan
+
+- `clawt_mcp_tools_call_async()`'s comment said its tasks were created on
+  the daemon's context "because dispatching a source does not make its
+  context thread-default" -- correct about the trap and wrong about the
+  code, which pushed nothing. It worked only because
+  `g_task_return_now()` pushes the *task's* context around the callback
+  it invokes, so the IPC server's async read leaves the daemon's context
+  pushed by the time a request arrives. Every caller inherited that by
+  luck of how it was reached.
+- Measured rather than assumed: an idle callback on a fresh context sees
+  a NULL thread-default, and so does one under `g_main_loop_run()`.
+- The fourth API this has appeared behind. Name the context; the object
+  that owns it is the one that must say so.
+
 ## Things to NEVER Do
 
 - Never hand-edit `data/example-config.yaml` or `data/default-config.yaml`
@@ -3633,6 +3740,21 @@ the same program.
 - Never emit a CSS rule for an appearance field somebody left empty.
   Empty means follow the browser, and naming the current value freezes it
   while looking identical
+- Never pair `g_autoptr` with a helper that takes the reference. In the
+  web client `clawt_web_add()` consumes and `htmx_node_add_child()` does
+  not, and the object is freed while still in the tree -- it renders as
+  nothing, which looks like CSS
+- Never assert a layout with a track count when the number of items in
+  it can change. A `display:none` child is not a grid item; place both
+  children explicitly
+- Never decide whether a test can run by touching real infrastructure.
+  A skip-probe that names no connection starts a module against the
+  machine's own podman, and `make test` needs none
+- Never write a module handler that reads only one argument marshalling.
+  podomation sends a positional tuple from the DSL and an `a{sv}` from
+  C; reading one means the other caller silently gets nothing
+- Never sleep uninterruptibly on a thread something has to join. Poll the
+  cancellable's fd, or a stop waits out the whole backoff
 - Never guard a shared resource with a probe when the question being
   asked is ownership. A probe answers "did anything reply just now",
   which a busy daemon fails -- and a guard wrong in the permissive

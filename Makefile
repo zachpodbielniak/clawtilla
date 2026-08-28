@@ -19,7 +19,17 @@ ifneq ($(filter clean clean-all clean-deps distclean,$(MAKECMDGOALS)),)
 ifneq ($(filter-out clean clean-all clean-deps distclean,$(MAKECMDGOALS)),)
 
 .PHONY: $(MAKECMDGOALS) __serialize
-$(MAKECMDGOALS): __serialize ;
+#
+# `@:` rather than the usual `;` empty recipe.  With `;` make prints
+# "Nothing to be done for 'all'." after every mixed build -- for the
+# second and later goals sharing this rule, once __serialize is up to
+# date.  The build did happen and the exit status is 0, but that
+# sentence is the exact one that used to mean `make tests` had compiled
+# nothing, so the documented commands ended by saying what a broken
+# target says.  A no-op recipe is work as far as make is concerned.
+#
+$(MAKECMDGOALS): __serialize
+	@:
 __serialize:
 	$(MAKE) --no-print-directory $(filter clean clean-all clean-deps distclean,$(MAKECMDGOALS))
 	$(MAKE) --no-print-directory $(filter-out clean clean-all clean-deps distclean,$(MAKECMDGOALS))

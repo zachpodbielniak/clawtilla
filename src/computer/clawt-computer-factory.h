@@ -32,6 +32,8 @@ G_BEGIN_DECLS
  * clawt_computer_factory_create:
  * @agent_config: (transfer none): the agent's configuration
  * @bridge: (transfer none) (nullable): the podomation bridge
+ * @default_mounts: (element-type ClawtMount) (nullable) (transfer none):
+ *   the mounts every computer gets, before the agent's own
  * @error: (out) (optional): return location for a #GError
  *
  * Builds the computer an agent's configuration describes.

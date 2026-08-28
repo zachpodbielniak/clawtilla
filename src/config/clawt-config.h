@@ -347,7 +347,7 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtTeamSpec, clawt_team_spec_free)
 GPtrArray *clawt_config_get_teams(ClawtConfig *self);
 
 /**
- * clawt_config_get_team:
+ * clawt_config_get_team: (skip)
  * @self: a #ClawtConfig
  * @team_id: which team
  *

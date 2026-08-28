@@ -191,8 +191,8 @@ gboolean clawt_alert_arrives_read(gboolean       surface_showing,
                                   ClawtAlertTier tier);
 
 /**
- * clawt_team_tally:
- * @agents: (element-type JsonObject): the agent array from a fleet reply
+ * clawt_team_tally: (skip)
+ * @agents: the agent array from a fleet reply
  * @team_id: (nullable): the team to count, or %NULL for the agents that
  *   are in none
  * @total: (out): how many agents are in it

@@ -127,10 +127,16 @@ typedef struct {
     gchar             *detail;
 } ClawtConnectionStatus;
 
+/**
+ * clawt_connection_status_free: (skip)
+ * @self: (nullable) (transfer full): what a probe returned
+ *
+ * Releases it.
+ */
 void clawt_connection_status_free(ClawtConnectionStatus *self);
 
 /**
- * clawt_connection_probe:
+ * clawt_connection_probe: (skip)
  * @self: a saved connection
  *
  * Asks a saved connection whether it is up, without switching to it.
