@@ -982,6 +982,98 @@ test_message_to_a_stopped_agent_queues(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * The cycle window reaches the guard from the config, and expires.
+ *
+ * tests/test-orchestration.c covers ClawtLoopGuard on its own.  This is
+ * the wire: orchestration.cycle_seconds -> clawt_config_get_int() ->
+ * configure_limits() -> the guard the router actually consults, and the
+ * message.refused the operator sees.  A limit that works in isolation
+ * and is never handed its configured value is a shape this codebase has
+ * shipped more than once -- max_hops was stamped flat, task_budget_usd
+ * was never incremented -- and neither was visible from a unit test of
+ * the thing being limited.
+ *
+ * One second, so the wait is one second.  Both sides are asserted: a
+ * build with the cycle check deleted passes the "delivered after" half
+ * on its own.
+ */
+static void
+test_the_cycle_window_reaches_the_guard(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) first = NULL;
+    g_autoptr(JsonNode) repeat = NULL;
+    g_autoptr(JsonNode) after = NULL;
+    g_autoptr(JsonNode) events = NULL;
+    JsonArray *list;
+    gboolean saw_refusal = FALSE;
+    guint i;
+
+    fixture_setup(&fixture,
+                  "orchestration:\n  cycle_seconds: 1\n"
+                  "agents:\n  - id: fai\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    first = request(&fixture, "msg.send",
+                    "{\"target\":\"fai\",\"body\":\"Error: spawn failed\"}");
+    g_assert_false(clawt_ipc_frame_is_error(first));
+
+    /* Inside the window. This is the control. */
+    repeat = request(&fixture, "msg.send",
+                     "{\"target\":\"fai\",\"body\":\"Error: spawn failed\"}");
+    g_assert_true(clawt_ipc_frame_is_error(repeat));
+
+    /*
+     * And the refusal names the configured number rather than the
+     * built-in default, which is what says the config reached the guard
+     * rather than the guard having a window of its own.
+     */
+    {
+        g_autoptr(GError) refusal = clawt_ipc_frame_to_error(repeat);
+
+        g_assert_nonnull(refusal);
+        g_assert_nonnull(strstr(refusal->message,
+                                "within the last 1 seconds"));
+    }
+
+    /*
+     * Published against the *room*, because that is where the refusal
+     * happened.  Worth asserting: an operator's first instinct is to
+     * ask about the agent, and that listing does not contain it.
+     */
+    events = request(&fixture, "event.list", "{\"limit\":50}");
+    list = json_object_get_array_member(payload_of(events), "events");
+
+    for (i = 0; i < json_array_get_length(list); i++) {
+        JsonObject *event = json_array_get_object_element(list, i);
+
+        if (g_strcmp0(json_object_get_string_member(event, "kind"),
+                      "message.refused") != 0)
+            continue;
+
+        saw_refusal = TRUE;
+        g_assert_cmpstr(json_object_get_string_member(event, "subject"),
+                        ==, "dm:fai:user");
+    }
+
+    g_assert_true(saw_refusal);
+
+    /*
+     * Past the window the same body is delivered.  A real wait rather
+     * than a seam: what is being tested is what the guard does as time
+     * passes, and a test that set the timestamps by hand would be on the
+     * wrong side of the window it is about.
+     */
+    g_usleep(1200 * 1000);
+
+    after = request(&fixture, "msg.send",
+                    "{\"target\":\"fai\",\"body\":\"Error: spawn failed\"}");
+    g_assert_false(clawt_ipc_frame_is_error(after));
+
+    fixture_teardown(&fixture);
+}
+
 /* Messaging somebody who does not exist says so rather than vanishing. */
 static void
 test_message_to_nobody_is_refused(void)
@@ -5067,6 +5159,8 @@ main(int argc, char *argv[])
 
     g_test_add_func("/daemon/queue-for-stopped-agent",
                     test_message_to_a_stopped_agent_queues);
+    g_test_add_func("/daemon/cycle-window-reaches-the-guard",
+                    test_the_cycle_window_reaches_the_guard);
     g_test_add_func("/daemon/message-to-nobody",
                     test_message_to_nobody_is_refused);
     g_test_add_func("/daemon/room-fanout",

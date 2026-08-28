@@ -666,9 +666,14 @@ orchestration:
   rate_limit_per_minute: 30
   task_budget_usd: 5.0
   cycle_window: 10
+  cycle_seconds: 300
 #+end_src
 
 Every one of them takes ~0~ to mean *disabled*, not "zero allowed".
+
+The cycle check is the one with two keys: ~cycle_window~ bounds how much
+it remembers and ~cycle_seconds~ bounds how long it remembers it for.
+Either at ~0~ turns it off.
 
 They are checked in one place, ~clawt_loop_guard_check()~, in a fixed
 order: hops, budget, rate, cycle.  The order is load-bearing twice over.
@@ -792,12 +797,12 @@ assignment*, which is still the runaway case it was built for.  It does
 not bound a fan-out.  Bound that with ~max_hops~ and by watching
 ~clawtilla cost~.
 
-*** cycle_window
+*** cycle_window and cycle_seconds
 
 A SHA-256 fingerprint of (sender, room, body), with the last ten per room
-remembered.  Catches the case the other three miss: two agents politely
-agreeing with each other for ever, each message fresh enough to pass the
-hop count and slow enough to pass the rate limit.
+remembered for five minutes.  Catches the case the other three miss: two
+agents politely agreeing with each other for ever, each message fresh
+enough to pass the hop count and slow enough to pass the rate limit.
 
 It fires on a *byte-identical* repeat and nothing else.  Two agents
 varying their wording at all -- which a model does readily -- go straight
@@ -806,9 +811,52 @@ than a general loop detector.  A message with no room is skipped
 entirely.
 
 #+begin_example
-this exact message has already been sent to 'standup' recently. The
-conversation is going in circles; say something different or stop.
+this exact message has already been sent to 'standup' within the last
+300 seconds. The conversation is going in circles; say something
+different, or wait for the window to pass if the repetition is genuinely
+what you mean.
 #+end_example
+
+**** Two bounds, and only one of them used to exist
+
+~cycle_window~ is a count and ~cycle_seconds~ is a duration, and the
+check needs both: the count is what stops a busy room accumulating a
+fingerprint per message for the whole window, and the duration is what
+makes the refusal's "recently" mean anything.
+
+For a long time only the count existed.  The queue held bare
+fingerprints and was trimmed by length alone, so how far back the check
+looked was *however long the room's last ten messages had taken* --- in a
+quiet room, hours.  ~check_rate()~ a few lines above it had kept a
+timestamp per entry and slid a real sixty-second window since it was
+written, so the file contained its own counter-example: the check that
+is time-bounded never claimed to be, and the check that claimed to be
+was not.
+
+What it cost is the reason this section is long.  An agent hit an
+unrelated spawn failure and emitted a byte-identical error string every
+turn.  The first reached the operator; every one after it was refused as
+a cycle.  Two routines produced no output at all, and the agent looked
+*idle* rather than wedged for ten hours.  Identical repeated output is
+the signature of a stuck system, and the guard's answer to a stuck
+system was to hide its only symptom.
+
+The expiry sweep runs *before* the search rather than being skipped
+inside it, which also closes a leak: a queue nothing drops from grows
+without bound in a room that never reaches its count.
+
+**** Choosing cycle_seconds
+
+The default of 300 suits the runaway this check exists for --- two
+agents alternating the same two replies with nothing pacing them, where
+a turn is seconds.  A repeat is only caught if it lands *inside* the
+window, so a fleet whose turns are minutes wants a larger one; a fleet
+where an agent legitimately reports the same line each time it runs
+wants a smaller one, or ~0~.
+
+The refusal names the number, so an agent that is repeating itself on
+purpose is told how long to wait rather than only that it may not.  A
+refusal that cannot be waited out is a refusal that gets retried.
 
 *** What happens when one is hit
 

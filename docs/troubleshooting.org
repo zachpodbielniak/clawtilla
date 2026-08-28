@@ -520,6 +520,93 @@ the old text until it restarts.
 clawtilla agent restart <agent>
 #+end_src
 
+** One agent went quiet, and its routines produce nothing
+
+An agent that is *stuck* usually says so in the same words every time,
+and that is exactly what the cycle detector refuses.  So a wedged agent
+and an idle one look identical from the transcript: the first report
+arrives, and every repeat after it is dropped before it is enqueued.
+
+The signature is a ~message.refused~ event with no matching message
+after it.  Both clients show it as an error alert --- the alerts panel
+in the GTK client, the alert list in the web one --- and the reason
+names the room and the window.
+
+*** Look in the room, not at the agent
+
+The event's subject is the *room*, because that is where the refusal
+happened.  So the obvious command finds nothing:
+
+#+begin_src bash
+clawtilla event list fai
+#+end_src
+
+#+begin_example
+WHEN                 KIND                   SUBJECT
+2026-08-27 20:44:20  agent.created          fai
+2026-08-27 20:44:20  mailbox.queued         fai
+#+end_example
+
+The room is where it is:
+
+#+begin_src bash
+clawtilla event list dm:fai:user
+#+end_src
+
+#+begin_example
+WHEN                 KIND                   SUBJECT
+2026-08-27 20:44:20  message                dm:fai:user
+2026-08-27 20:44:20  message.refused        dm:fai:user
+#+end_example
+
+A bare ~clawtilla event list~ shows the whole fleet and needs no room id.
+
+*** The refusal itself
+
+Sending the same body twice reproduces it directly:
+
+#+begin_example
+clawtilla: this exact message has already been sent to 'fai' within the
+last 300 seconds. The conversation is going in circles; say something
+different, or wait for the window to pass if the repetition is genuinely
+what you mean.
+#+end_example
+
+Then read the *agent's* logs rather than the transcript.  Whatever it is
+repeating is the fault; the refusal is only what stopped you seeing it.
+
+#+begin_src bash
+clawtilla agent logs fai
+#+end_src
+
+*** If the repetition is legitimate
+
+An agent that reports the same line each time a routine runs is not
+looping.  Lower ~orchestration.cycle_seconds~ below the gap between its
+runs, or set it to ~0~ to turn the check off.  There is no ~config set~
+verb for fleet-level keys: edit the file and reload.
+
+#+begin_src bash
+clawtilla config edit          # locally: $EDITOR, then reload on save
+#+end_src
+
+#+begin_src bash
+clawtilla config reload        # remotely: after editing the file yourself
+#+end_src
+
+The reload reaches the running guard, so the next refusal names the new
+number rather than waiting for a restart.
+
+*** If the fleet is on an older build
+
+The window used to be a *count* of messages with no duration in it at
+all, so how far back the check looked was however long the room's last
+~cycle_window~ messages had taken.  In a quiet room that is hours: an
+agent whose spawn was failing had its first report delivered and every
+one for the next ten hours refused, while looking idle throughout.  If
+~cycle_seconds~ is not in ~clawtilla --generate-config~ output, this is
+that build.
+
 ** The whole fleet went quiet at once
 
 The account's session usage allowance is spent. It is per *account*, so

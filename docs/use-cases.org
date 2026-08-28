@@ -140,6 +140,7 @@ orchestration:
   rate_limit_per_minute: 30
   task_budget_usd: 5.0
   cycle_window: 20
+  cycle_seconds: 300
 
 agents:
   - id: chief
@@ -233,9 +234,11 @@ travelled, and every reply in a room counts as a hop --- so three agents
 in a standup reach the ceiling by talking rather than by looping.  The
 refusal says so and names the key.
 =orchestration.rate_limit_per_minute= catches a fast loop inside the hop
-limit; =orchestration.cycle_window= catches two agents politely agreeing
-with each other for ever; =orchestration.task_budget_usd= is money and
-has its own case below.  A refused send publishes ~message.refused~
+limit; =orchestration.cycle_window= and =orchestration.cycle_seconds=
+catch two agents politely agreeing with each other for ever --- the
+first is how many messages a room remembers, the second is for how long,
+and a repeat is only caught if it lands inside that window;
+=orchestration.task_budget_usd= is money and has its own case below.  A refused send publishes ~message.refused~
 naming both agents and the reason, so the conversation does not merely
 trail off.
 

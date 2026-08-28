@@ -14,16 +14,42 @@ typedef struct {
     GQueue *timestamps;   /* gint64*, monotonic microseconds, oldest first */
 } RateWindow;
 
+/*
+ * One remembered message, and when it was seen.
+ *
+ * The timestamp is what makes "recently" in the refusal true.  Without
+ * it the queue was trimmed by count alone, so how far back the check
+ * looked was however long the room's last cycle_window messages had
+ * taken -- ten messages in a quiet room is hours, and an agent
+ * repeating one error string was silenced for all of them.  check_rate()
+ * below has kept a timestamp per entry since it was written; this is the
+ * same idea, arrived at from the other end.
+ */
+typedef struct {
+    gchar  *fingerprint;
+    gint64  at;           /* monotonic microseconds */
+} CycleEntry;
+
+static void
+cycle_entry_free(gpointer data)
+{
+    CycleEntry *entry = data;
+
+    g_free(entry->fingerprint);
+    g_free(entry);
+}
+
 struct _ClawtLoopGuard {
     GObject parent_instance;
 
     guint   max_hops;
     guint   rate_per_minute;
     guint   cycle_window;
+    guint   cycle_seconds;
     gdouble task_budget_usd;
 
     GHashTable *rates;         /* agent_id -> RateWindow */
-    GHashTable *recent;        /* room_id -> GQueue of fingerprints */
+    GHashTable *recent;        /* room_id -> GQueue of CycleEntry, oldest first */
     GHashTable *task_spend;    /* task_id -> gdouble* */
 };
 
@@ -41,7 +67,7 @@ rate_window_free(gpointer data)
 static void
 fingerprint_queue_free(gpointer data)
 {
-    g_queue_free_full(data, g_free);
+    g_queue_free_full(data, cycle_entry_free);
 }
 
 ClawtLoopGuard *
@@ -61,6 +87,14 @@ clawt_loop_guard_set_limits(ClawtLoopGuard *self,
     self->max_hops = max_hops;
     self->rate_per_minute = rate_per_minute;
     self->cycle_window = cycle_window;
+}
+
+void
+clawt_loop_guard_set_cycle_seconds(ClawtLoopGuard *self, guint seconds)
+{
+    g_return_if_fail(CLAWT_IS_LOOP_GUARD(self));
+
+    self->cycle_seconds = seconds;
 }
 
 void
@@ -187,9 +221,14 @@ check_cycle(ClawtLoopGuard *self, ClawtMessage *message, GError **error)
     g_autofree gchar *fingerprint = NULL;
     GQueue *history;
     GList *l;
+    gint64 now;
+    gint64 cutoff;
 
-    if (self->cycle_window == 0 || room == NULL)
+    if (self->cycle_window == 0 || self->cycle_seconds == 0 || room == NULL)
         return TRUE;
+
+    now = g_get_monotonic_time();
+    cutoff = now - (gint64)G_USEC_PER_SEC * (gint64)self->cycle_seconds;
 
     fingerprint = clawt_message_body_fingerprint(message);
 
@@ -199,26 +238,65 @@ check_cycle(ClawtLoopGuard *self, ClawtMessage *message, GError **error)
         g_hash_table_insert(self->recent, g_strdup(room), history);
     }
 
+    /*
+     * Anything older than the window is not evidence of a loop, so it
+     * goes before the search rather than being skipped inside it: a
+     * queue nothing ever drops from is also a leak in a room that stays
+     * below its count bound.  Oldest first, so this stops at the first
+     * entry still inside.
+     */
+    while (!g_queue_is_empty(history)) {
+        CycleEntry *oldest = g_queue_peek_head(history);
+
+        if (oldest->at >= cutoff)
+            break;
+
+        cycle_entry_free(g_queue_pop_head(history));
+    }
+
     for (l = history->head; l != NULL; l = l->next) {
-        if (g_strcmp0(l->data, fingerprint) != 0)
+        CycleEntry *entry = l->data;
+
+        if (g_strcmp0(entry->fingerprint, fingerprint) != 0)
             continue;
 
         /*
          * This is the case the hop limit misses entirely: two agents
          * alternating the same two replies, each message a fresh chain with
          * a depth of one, for ever.
+         *
+         * The duration is named because the previous wording -- "already
+         * been sent recently" -- was not something the reader could act
+         * on, and because it was not true: there was no clock in this
+         * function at all, so "recently" meant "within the last
+         * cycle_window messages", which in a quiet room was hours. A
+         * refusal that cannot be waited out is a refusal that gets
+         * retried.
          */
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT,
                     "this exact message has already been sent to '%s' "
-                    "recently. The conversation is going in circles; say "
-                    "something different or stop.", room);
+                    "within the last %u seconds. The conversation is going "
+                    "in circles; say something different, or wait for the "
+                    "window to pass if the repetition is genuinely what you "
+                    "mean.", room, self->cycle_seconds);
         return FALSE;
     }
 
-    g_queue_push_tail(history, g_steal_pointer(&fingerprint));
+    {
+        CycleEntry *entry = g_new0(CycleEntry, 1);
 
+        entry->fingerprint = g_steal_pointer(&fingerprint);
+        entry->at = now;
+        g_queue_push_tail(history, entry);
+    }
+
+    /*
+     * And the count bound stays, now purely as a memory bound: a busy
+     * room must not accumulate a fingerprint per message for the whole
+     * duration of the window.
+     */
     while (g_queue_get_length(history) > self->cycle_window)
-        g_free(g_queue_pop_head(history));
+        cycle_entry_free(g_queue_pop_head(history));
 
     return TRUE;
 }
@@ -368,6 +446,7 @@ clawt_loop_guard_init(ClawtLoopGuard *self)
     self->max_hops = 8;
     self->rate_per_minute = 30;
     self->cycle_window = 10;
+    self->cycle_seconds = 300;
     self->task_budget_usd = 5.0;
 
     self->rates = g_hash_table_new_full(g_str_hash, g_str_equal,
