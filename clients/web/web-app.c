@@ -39,6 +39,18 @@ struct _ClawtWebApp {
      */
     GHashTable  *unread;
     GHashTable  *dm_rooms;
+
+    /*
+     * What the last probe found for each saved connection, by name.
+     *
+     * Not filled on a page render: probing every saved connection while
+     * a page is being built would multiply that page's latency by the
+     * number of daemons somebody has saved, and stall on each one that
+     * is asleep for as long as its route takes to give up. It is filled
+     * only when a reader asks, by the Check button on the connections
+     * page, and an entry nobody has asked about is simply absent.
+     */
+    GHashTable  *connection_status;
     gchar       *viewing;
 
     /*
@@ -652,6 +664,8 @@ clawt_web_app_finalize(GObject *object)
     g_clear_pointer(&self->alerts, g_ptr_array_unref);
     g_clear_pointer(&self->connection_name, g_free);
 
+    g_clear_pointer(&self->connection_status, g_hash_table_unref);
+
     G_OBJECT_CLASS(clawt_web_app_parent_class)->finalize(object);
 }
 
@@ -664,6 +678,10 @@ clawt_web_app_class_init(ClawtWebAppClass *klass)
 static void
 clawt_web_app_init(ClawtWebApp *self)
 {
+    self->connection_status = g_hash_table_new_full(
+        g_str_hash, g_str_equal, g_free,
+        (GDestroyNotify)clawt_connection_status_free);
+
     self->streams = g_ptr_array_new_with_free_func(g_object_unref);
     self->unread = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                          NULL);
@@ -884,4 +902,30 @@ clawt_web_payload_free(ClawtWebPayload *self)
 
     g_object_unref(self->builder);
     g_free(self);
+}
+
+void
+clawt_web_app_note_connection_status(ClawtWebApp           *self,
+                                     const gchar           *name,
+                                     ClawtConnectionStatus *status)
+{
+    g_return_if_fail(CLAWT_IS_WEB_APP(self));
+    g_return_if_fail(name != NULL);
+
+    if (status == NULL)
+        g_hash_table_remove(self->connection_status, name);
+    else
+        g_hash_table_replace(self->connection_status, g_strdup(name),
+                             status);
+}
+
+ClawtConnectionStatus *
+clawt_web_app_connection_status(ClawtWebApp *self, const gchar *name)
+{
+    g_return_val_if_fail(CLAWT_IS_WEB_APP(self), NULL);
+
+    if (name == NULL)
+        return NULL;
+
+    return g_hash_table_lookup(self->connection_status, name);
 }

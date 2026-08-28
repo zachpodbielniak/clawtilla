@@ -5064,6 +5064,112 @@ test_starting_an_agent_with_no_id_is_an_error(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * What one probe found, and a flag saying it has finished.
+ *
+ * The probe blocks until the far end answers, and the far end here is
+ * this test's own daemon whose loop is this thread -- so it runs on a
+ * thread while the loop keeps being iterated. A real client has the same
+ * problem for the same reason, which is why the probe's documentation
+ * says not to call it on the loop.
+ */
+typedef struct {
+    ClawtConnection       *connection;
+    ClawtConnectionStatus *status;
+    gint                   finished;
+} ProbeRun;
+
+static gpointer
+probe_worker(gpointer data)
+{
+    ProbeRun *run = data;
+
+    run->status = clawt_connection_probe(run->connection);
+    g_atomic_int_set(&run->finished, 1);
+
+    return NULL;
+}
+
+static ClawtConnectionStatus *
+probe_while_the_loop_runs(Fixture *fixture, ClawtConnection *connection)
+{
+    ProbeRun run = { connection, NULL, 0 };
+    GThread *thread = g_thread_new("probe", probe_worker, &run);
+    gint64 deadline = g_get_monotonic_time() + 20 * G_USEC_PER_SEC;
+
+    while (!g_atomic_int_get(&run.finished) &&
+           g_get_monotonic_time() < deadline)
+        g_main_context_iteration(fixture->context, FALSE);
+
+    g_thread_join(thread);
+
+    return run.status;
+}
+
+/*
+ * A saved connection can be asked whether it is up, without switching.
+ *
+ * Until now the only way to find out was to switch to it and fail --
+ * which is a destructive way to ask a read-only question, because
+ * switching tears down and rebuilds the whole window state, so "is that
+ * machine up?" could not be asked without committing to the answer.
+ *
+ * Both halves in one test. The unreachable case on its own would pass in
+ * a build whose probe never answered anything else, and "everything is
+ * unreachable" is exactly as useless to a reader as the silence it
+ * replaces.
+ */
+static void
+test_a_saved_connection_can_be_asked_if_it_is_up(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *socket_path = NULL;
+    g_autofree gchar *missing = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n  - id: scribe\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    socket_path = g_build_filename(fixture.dir, "daemon.sock", NULL);
+    missing = g_build_filename(fixture.dir, "nobody-is-here.sock", NULL);
+
+    {
+        g_autoptr(ClawtConnection) live =
+            clawt_connection_new_local("live", socket_path);
+        ClawtConnectionStatus *status =
+            probe_while_the_loop_runs(&fixture, live);
+
+        g_assert_nonnull(status);
+        g_assert_cmpint(status->reach, ==, CLAWT_REACH_REACHABLE);
+
+        /*
+         * And it brought back what a menu would draw, rather than only a
+         * verdict: the version nobody was comparing and the agent count.
+         */
+        g_assert_nonnull(status->version);
+        g_assert_cmpuint(status->agents, ==, 2);
+
+        clawt_connection_status_free(status);
+    }
+
+    {
+        g_autoptr(ClawtConnection) dead =
+            clawt_connection_new_local("dead", missing);
+        ClawtConnectionStatus *status =
+            probe_while_the_loop_runs(&fixture, dead);
+
+        g_assert_nonnull(status);
+        g_assert_cmpint(status->reach, ==, CLAWT_REACH_UNREACHABLE);
+        g_assert_nonnull(status->detail);
+
+        clawt_connection_status_free(status);
+    }
+
+    fixture_teardown(&fixture);
+}
+
+
 int
 main(int argc, char *argv[])
 {
@@ -5249,6 +5355,8 @@ main(int argc, char *argv[])
                     test_autostart_does_not_run_inside_start);
     g_test_add_func("/daemon/start-returns-with-a-mute-podman-socket",
                     test_start_returns_with_a_podman_socket_that_never_answers);
+    g_test_add_func("/daemon/a-saved-connection-can-be-asked",
+                    test_a_saved_connection_can_be_asked_if_it_is_up);
     g_test_add_func("/daemon/loop-runs-while-a-computer-provisions",
                     test_the_loop_runs_while_a_computer_is_provisioning);
     g_test_add_func("/daemon/restart-policy-reaches-the-runtime",

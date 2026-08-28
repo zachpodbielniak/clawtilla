@@ -56,6 +56,103 @@ typedef struct _ClawtConnection ClawtConnection;
 GType clawt_connection_get_type(void) G_GNUC_CONST;
 
 /**
+ * ClawtReachability:
+ * @CLAWT_REACH_UNKNOWN: not asked yet
+ * @CLAWT_REACH_REACHABLE: the daemon answered
+ * @CLAWT_REACH_REFUSED: the daemon answered and would not have us
+ * @CLAWT_REACH_UNREACHABLE: nothing answered
+ *
+ * What a saved connection is, before anybody switches to it.
+ *
+ * Refused and unreachable are deliberately separate, and it is the whole
+ * point of this type. A rotated token and a sleeping host produce the
+ * same silence from a client that does not tell them apart, and sending
+ * somebody to check the network when the answer is a credential -- or
+ * the reverse -- costs far more than the probe does.
+ *
+ * Unknown is not a failure. It is the honest state of a connection
+ * nobody has asked about yet, and drawing it as "unreachable" would be a
+ * client asserting something it has not established.
+ */
+typedef enum {
+    CLAWT_REACH_UNKNOWN = 0,
+    CLAWT_REACH_REACHABLE,
+    CLAWT_REACH_REFUSED,
+    CLAWT_REACH_UNREACHABLE
+} ClawtReachability;
+
+/**
+ * clawt_reachability_from_error:
+ * @error: (nullable): what a probe failed with, or %NULL if it did not
+ *
+ * Which of the four a probe's outcome was.
+ *
+ * An authentication refusal comes back as %CLAWT_ERROR_AUTH from the
+ * hello the client sends inside connect; everything else -- a refused
+ * socket, a timeout, a route that is gone -- is the network.
+ * %G_IO_ERROR_CONNECTION_REFUSED is a *network* refusal and is read as
+ * unreachable, however much the two are spelled the same in English.
+ *
+ * Returns: the verdict
+ */
+ClawtReachability clawt_reachability_from_error(const GError *error);
+
+/**
+ * clawt_reachability_word:
+ * @reach: a verdict
+ *
+ * One word for it, in both clients.
+ *
+ * Here rather than in each client because the distinction only helps if
+ * the two of them draw it the same way, and a word chosen twice is a
+ * word that will eventually be chosen differently.
+ *
+ * Returns: (transfer none): the word
+ */
+const gchar *clawt_reachability_word(ClawtReachability reach);
+
+/**
+ * ClawtConnectionStatus:
+ * @reach: what the probe found
+ * @version: (nullable): the daemon's version, when it answered
+ * @agents: how many agents it has, when it answered
+ * @detail: (nullable): why, when it did not
+ *
+ * What one probe learned. Freed with clawt_connection_status_free().
+ */
+typedef struct {
+    ClawtReachability  reach;
+    gchar             *version;
+    guint              agents;
+    gchar             *detail;
+} ClawtConnectionStatus;
+
+void clawt_connection_status_free(ClawtConnectionStatus *self);
+
+/**
+ * clawt_connection_probe:
+ * @self: a saved connection
+ *
+ * Asks a saved connection whether it is up, without switching to it.
+ *
+ * `control.status` already answers everything a client wants to show for
+ * a remote -- version, agent count -- and needs no new frame kind. Until
+ * now the only way to find out whether a saved connection was alive was
+ * to switch to it and fail, which is a destructive way to ask a
+ * read-only question: switching tears down and rebuilds the whole window
+ * state, so "is that machine up?" could not be asked without committing
+ * to the answer.
+ *
+ * This connects, asks, and hangs up. It blocks for as long as the far
+ * end takes, so a caller with a main loop to keep running must not call
+ * it on that loop -- a remote host that is asleep takes as long to fail
+ * as its route takes to time out.
+ *
+ * Returns: (transfer full): what it found; never %NULL
+ */
+ClawtConnectionStatus *clawt_connection_probe(ClawtConnection *self);
+
+/**
  * clawt_connection_new_local:
  * @name: what to call it in the client
  * @socket_path: (nullable): the daemon's socket, or %NULL for the default

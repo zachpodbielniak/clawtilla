@@ -473,3 +473,107 @@ clawt_connection_list_find(GPtrArray *connections, const gchar *name)
 
     return NULL;
 }
+
+ClawtReachability
+clawt_reachability_from_error(const GError *error)
+{
+    if (error == NULL)
+        return CLAWT_REACH_REACHABLE;
+
+    /*
+     * Only the daemon's own authentication refusal is a credential
+     * problem. G_IO_ERROR_CONNECTION_REFUSED means nothing was
+     * listening, which is the network, and reading it as a bad token
+     * would send somebody to rotate a credential that was never seen.
+     */
+    if (error->domain == CLAWT_ERROR && error->code == CLAWT_ERROR_AUTH)
+        return CLAWT_REACH_REFUSED;
+
+    return CLAWT_REACH_UNREACHABLE;
+}
+
+const gchar *
+clawt_reachability_word(ClawtReachability reach)
+{
+    switch (reach) {
+    case CLAWT_REACH_REACHABLE:
+        return "reachable";
+    case CLAWT_REACH_REFUSED:
+        return "refused";
+    case CLAWT_REACH_UNREACHABLE:
+        return "unreachable";
+    case CLAWT_REACH_UNKNOWN:
+    default:
+        return "not checked";
+    }
+}
+
+void
+clawt_connection_status_free(ClawtConnectionStatus *self)
+{
+    if (self == NULL)
+        return;
+
+    g_free(self->version);
+    g_free(self->detail);
+    g_free(self);
+}
+
+ClawtConnectionStatus *
+clawt_connection_probe(ClawtConnection *self)
+{
+    ClawtConnectionStatus *status = g_new0(ClawtConnectionStatus, 1);
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GError) error = NULL;
+
+    g_return_val_if_fail(self != NULL, status);
+
+    client = clawt_connection_create_client(self);
+
+    if (client == NULL) {
+        status->reach = CLAWT_REACH_UNREACHABLE;
+        status->detail = g_strdup("that connection could not be opened");
+        return status;
+    }
+
+    /*
+     * Explicitly off. A probe that reconnected in the background would
+     * leave a client alive for a connection nobody switched to, quietly
+     * dialling a host somebody only hovered over in a menu.
+     */
+    clawt_client_set_auto_reconnect(client, FALSE);
+
+    if (!clawt_client_connect(client, &error)) {
+        status->reach = clawt_reachability_from_error(error);
+        status->detail = g_strdup(error->message);
+        return status;
+    }
+
+    reply = clawt_client_request(client, "control.status", NULL, &error);
+
+    if (reply == NULL) {
+        status->reach = clawt_reachability_from_error(error);
+        status->detail = g_strdup(error->message);
+        clawt_client_disconnect(client);
+        return status;
+    }
+
+    status->reach = CLAWT_REACH_REACHABLE;
+
+    if (JSON_NODE_HOLDS_OBJECT(reply)) {
+        JsonObject *payload = json_node_get_object(reply);
+
+        if (json_object_has_member(payload, "version"))
+            status->version =
+                g_strdup(json_object_get_string_member(payload, "version"));
+
+        if (json_object_has_member(payload, "agents"))
+            status->agents =
+                (guint)json_object_get_int_member(payload, "agents");
+    }
+
+    clawt_client_disconnect(client);
+
+    return status;
+}

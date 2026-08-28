@@ -1284,6 +1284,8 @@ connections_content(ClawtWebApp *app)
                 "/settings/connections/%s/use", escaped);
             g_autofree gchar *forget = g_strdup_printf(
                 "/settings/connections/%s/forget", escaped);
+            g_autofree gchar *check = g_strdup_printf(
+                "/settings/connections/%s/check", escaped);
             g_autoptr(HtmxDiv) row = htmx_div_new();
             g_autoptr(HtmxDiv) head = htmx_div_new();
             g_autoptr(HtmxDiv) actions = htmx_div_new();
@@ -1306,6 +1308,41 @@ connections_content(ClawtWebApp *app)
             if (clawt_connection_get_token(connection) != NULL)
                 clawt_web_add(head, clawt_web_badge("token", "info"));
 
+            /*
+             * Whether that machine is up, as far as anybody has asked.
+             *
+             * Every entry was drawn identically whether the daemon
+             * behind it was running, stopped, unreachable or holding a
+             * token that no longer matched -- and the only way to find
+             * out was to switch to it and fail, which is a destructive
+             * way to ask a read-only question.
+             *
+             * Nothing is drawn until somebody presses Check: an absent
+             * verdict is honest, and "unreachable" about a host nobody
+             * asked about would not be.
+             */
+            {
+                ClawtConnectionStatus *status =
+                    clawt_web_app_connection_status(app, name);
+
+                if (status != NULL)
+                    clawt_web_add(head, clawt_web_badge(
+                        clawt_reachability_word(status->reach),
+                        status->reach == CLAWT_REACH_REACHABLE ? "good"
+                                                               : "bad"));
+
+                if (status != NULL &&
+                    status->reach == CLAWT_REACH_REACHABLE &&
+                    status->version != NULL) {
+                    g_autofree gchar *detail = g_strdup_printf(
+                        "clawtillad %s, %u agent%s", status->version,
+                        status->agents, status->agents == 1 ? "" : "s");
+
+                    clawt_web_add(head,
+                                  clawt_web_badge(detail, "neutral"));
+                }
+            }
+
             htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(head));
 
             /*
@@ -1316,6 +1353,13 @@ connections_content(ClawtWebApp *app)
             clawt_web_add(row, clawt_web_text(described, "small muted mono"));
 
             htmx_element_add_class(HTMX_ELEMENT(actions), "btn-row");
+            /*
+             * Read-only, and first: it is the question somebody has
+             * before they decide whether to press Connect, and until now
+             * pressing Connect was the only way to ask it.
+             */
+            clawt_web_add(actions, clawt_web_post_button(
+                "Check", check, NULL, NULL));
             clawt_web_add(actions, clawt_web_post_button(
                 "Connect", use, "primary",
                 "Point this server at that daemon? Every open page moves "
@@ -1502,6 +1546,64 @@ on_connection_forget(HtmxRequest *request, GHashTable *params,
     return settings_response(app, request, "connections", content,
                              "Forgotten. The daemon itself is untouched.",
                              FALSE);
+}
+
+static HtmxResponse *
+on_connection_check(HtmxRequest *request, GHashTable *params,
+                    gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *name = clawt_web_param(params, "connection");
+    g_autofree gchar *path = clawt_connection_list_default_path();
+    g_autoptr(GPtrArray) list = clawt_connection_list_load(path, NULL);
+    g_autoptr(HtmxElement) content = NULL;
+    g_autofree gchar *notice = NULL;
+    ClawtConnection *found = NULL;
+    ClawtConnectionStatus *status;
+    guint i;
+
+    for (i = 0; list != NULL && i < list->len; i++) {
+        ClawtConnection *connection = g_ptr_array_index(list, i);
+
+        if (g_strcmp0(clawt_connection_get_name(connection), name) == 0) {
+            found = connection;
+            break;
+        }
+    }
+
+    if (found == NULL) {
+        content = connections_content(app);
+
+        return settings_response(app, request, "connections", content,
+                                 "There is no profile by that name.", TRUE);
+    }
+
+    /*
+     * One connection, because a reader asked about one. Probing the
+     * whole list here would put every saved daemon's timeout in front of
+     * this page, including the ones nobody is thinking about.
+     */
+    status = clawt_connection_probe(found);
+
+    notice = (status->reach == CLAWT_REACH_REACHABLE)
+        ? g_strdup_printf("%s is reachable: clawtillad %s, %u agent%s.",
+                          name,
+                          status->version != NULL ? status->version : "?",
+                          status->agents, status->agents == 1 ? "" : "s")
+        : g_strdup_printf("%s is %s. %s", name,
+                          clawt_reachability_word(status->reach),
+                          status->detail != NULL ? status->detail : "");
+
+    {
+        gboolean bad = status->reach != CLAWT_REACH_REACHABLE;
+
+        clawt_web_app_note_connection_status(app, name, status);
+
+        content = connections_content(app);
+
+        return settings_response(app, request, "connections", content,
+                                 notice, bad);
+    }
 }
 
 /* ── Routes ──────────────────────────────────────────────────────── */
@@ -2236,6 +2338,8 @@ clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app)
                      app);
     htmx_router_post(router, "/settings/connections/:connection/use",
                      on_connection_use, app);
+    htmx_router_post(router, "/settings/connections/:connection/check",
+                     on_connection_check, app);
     htmx_router_post(router, "/settings/connections/:connection/forget",
                      on_connection_forget, app);
 }

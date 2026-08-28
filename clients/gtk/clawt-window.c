@@ -142,6 +142,17 @@ struct _ClawtWindow {
     GtkWidget         *connection_list;
 
     /*
+     * What the last probe found for each saved connection, by name.
+     *
+     * Kept rather than asked for on every redraw: a probe is a network
+     * round trip and the menu is rebuilt whenever the editor saves. An
+     * entry nobody has probed yet is simply absent, which the row draws
+     * as "not checked" -- a client asserting "unreachable" about
+     * something it has not asked is worse than saying nothing.
+     */
+    GHashTable        *connection_status;   /* name -> ClawtConnectionStatus* */
+
+    /*
      * Two toast overlays, because one cannot mean two places.
      *
      * `toasts` wraps the chat page's transcript region, so a toast lands
@@ -11065,6 +11076,114 @@ switch_connection(ClawtWindow *self, ClawtConnection *connection)
 }
 
 /*
+ * One saved connection, asked whether it is up.
+ *
+ * On a thread, because clawt_connection_probe() blocks until the far end
+ * answers and the far end may be a laptop that is asleep -- which fails
+ * only when its route times out. Answering that on the main context
+ * would freeze the window for the length of every unreachable host in
+ * the list, which is the failure this feature exists to avoid making
+ * worse.
+ */
+typedef struct {
+    ClawtWindow     *window;
+    gchar           *name;
+    ClawtConnection *connection;
+} ProbeJob;
+
+static void
+probe_job_free(gpointer data)
+{
+    ProbeJob *job = data;
+
+    g_clear_pointer(&job->connection, clawt_connection_free);
+    g_free(job->name);
+    g_free(job);
+}
+
+static void
+probe_worker(GTask *task, gpointer source, gpointer data,
+             GCancellable *cancellable)
+{
+    ProbeJob *job = data;
+
+    (void)source;
+    (void)cancellable;
+
+    g_task_return_pointer(task, clawt_connection_probe(job->connection),
+                          (GDestroyNotify)clawt_connection_status_free);
+}
+
+static void
+on_connection_probed(GObject *source, GAsyncResult *result, gpointer data)
+{
+    ClawtWindow *self = CLAWT_WINDOW(source);
+    ProbeJob *job = g_task_get_task_data(G_TASK(result));
+    ClawtConnectionStatus *status =
+        g_task_propagate_pointer(G_TASK(result), NULL);
+
+    (void)data;
+
+    if (status == NULL)
+        return;
+
+    g_hash_table_replace(self->connection_status, g_strdup(job->name),
+                         status);
+
+    /*
+     * The menu is redrawn rather than the one row patched. The rows are
+     * plain buttons rebuilt from the profile list every time anything
+     * changes, so there is no row to hold on to -- and a pointer kept
+     * across a rebuild is how a click on a stale button hands
+     * switch_connection() a freed profile, which the code below already
+     * takes care to avoid.
+     */
+    rebuild_connection_menu(self);
+}
+
+/*
+ * Ask every saved connection, once, when the menu is opened.
+ *
+ * Here rather than on a timer: a probe nobody is looking at is a network
+ * call nobody asked for, and the answer is only interesting at the
+ * moment somebody is deciding where to go.
+ */
+static void
+probe_saved_connections(ClawtWindow *self)
+{
+    guint i;
+
+    for (i = 0; i < self->connections->len; i++) {
+        ClawtConnection *connection = g_ptr_array_index(self->connections, i);
+        ProbeJob *job = g_new0(ProbeJob, 1);
+        g_autoptr(GTask) task = NULL;
+
+        job->window = self;
+        job->name = g_strdup(clawt_connection_get_name(connection));
+
+        /*
+         * Its own copy, for the same reason the row's button takes one:
+         * the list behind it is rebuilt whenever the editor saves, and a
+         * probe outliving that by one round trip would be reading a
+         * freed profile on a thread.
+         */
+        job->connection = clawt_connection_copy(connection);
+
+        task = g_task_new(self, NULL, on_connection_probed, NULL);
+        g_task_set_task_data(task, job, probe_job_free);
+        g_task_run_in_thread(task, probe_worker);
+    }
+}
+
+static void
+on_connection_menu_shown(GtkWidget *popover, gpointer user_data)
+{
+    (void)popover;
+
+    probe_saved_connections(CLAWT_WINDOW(user_data));
+}
+
+/*
  * Rebuilt rather than updated, because the set changes from the editor
  * beside it and a menu that disagrees with the file is worse than one
  * rebuilt more often than it needs to be.
@@ -11111,6 +11230,55 @@ rebuild_connection_menu(ClawtWindow *self)
         gtk_box_append(GTK_BOX(labels), detail);
         gtk_widget_set_hexpand(labels, TRUE);
         gtk_box_append(GTK_BOX(row), labels);
+
+        /*
+         * Whether that machine is up, as far as anybody has asked.
+         *
+         * Every entry used to be drawn identically whether the daemon
+         * behind it was running, stopped, unreachable or holding a token
+         * that no longer matched -- and the only way to find out was to
+         * switch to it and fail.
+         *
+         * "Refused" and "unreachable" are deliberately different words:
+         * one is a credential problem and the other is a network one,
+         * and sending somebody to check the wrong one costs far more
+         * than the probe does.
+         */
+        {
+            ClawtConnectionStatus *status = g_hash_table_lookup(
+                self->connection_status,
+                clawt_connection_get_name(connection));
+            ClawtReachability reach = (status != NULL)
+                                      ? status->reach : CLAWT_REACH_UNKNOWN;
+            GtkWidget *verdict = gtk_label_new(
+                clawt_reachability_word(reach));
+
+            gtk_widget_add_css_class(verdict, "caption");
+            gtk_widget_add_css_class(
+                verdict, (reach == CLAWT_REACH_REACHABLE) ? "success"
+                       : (reach == CLAWT_REACH_UNKNOWN) ? "dim-label"
+                       : "error");
+            gtk_widget_set_valign(verdict, GTK_ALIGN_CENTER);
+
+            /*
+             * The version and the agent count come back on the same
+             * reply, so the tooltip costs nothing extra -- and the
+             * version is the one thing nobody was comparing across the
+             * link at all.
+             */
+            if (status != NULL && status->reach == CLAWT_REACH_REACHABLE) {
+                g_autofree gchar *tip = g_strdup_printf(
+                    "clawtillad %s, %u agent%s",
+                    status->version != NULL ? status->version : "?",
+                    status->agents, status->agents == 1 ? "" : "s");
+
+                gtk_widget_set_tooltip_text(verdict, tip);
+            } else if (status != NULL && status->detail != NULL) {
+                gtk_widget_set_tooltip_text(verdict, status->detail);
+            }
+
+            gtk_box_append(GTK_BOX(row), verdict);
+        }
 
         if (current) {
             GtkWidget *tick =
@@ -17590,6 +17758,13 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
 
         gtk_popover_set_child(GTK_POPOVER(popover), scroll);
 
+        self->connection_status = g_hash_table_new_full(
+            g_str_hash, g_str_equal, g_free,
+            (GDestroyNotify)clawt_connection_status_free);
+
+        g_signal_connect(popover, "show",
+                         G_CALLBACK(on_connection_menu_shown), self);
+
         self->connection_button = gtk_menu_button_new();
         gtk_menu_button_set_child(GTK_MENU_BUTTON(self->connection_button),
                                   label);
@@ -17863,6 +18038,7 @@ clawt_window_dispose(GObject *object)
 
     g_clear_pointer(&self->appearance, clawt_appearance_free);
     g_clear_pointer(&self->connections, g_ptr_array_unref);
+    g_clear_pointer(&self->connection_status, g_hash_table_unref);
     g_clear_pointer(&self->active_connection, clawt_connection_free);
     g_clear_pointer(&self->local_socket, g_free);
     g_clear_pointer(&self->team_ids, g_strfreev);
