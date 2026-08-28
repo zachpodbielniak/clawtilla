@@ -41,6 +41,28 @@ struct _ClawtAgent {
 
 G_DEFINE_FINAL_TYPE(ClawtAgent, clawt_agent, G_TYPE_OBJECT)
 
+/*
+ * Whether an agent in this state can still be part-way through a turn.
+ *
+ * Everything below has either had its process taken away or is about to,
+ * so nothing will finish the turn and nothing will report that it did.
+ * RUNNING and DEGRADED are absent deliberately: a degraded agent has an
+ * unhealthy link and a live process, and its turn may still land.
+ */
+static gboolean
+state_can_be_working(ClawtAgentState state)
+{
+    switch (state) {
+    case CLAWT_AGENT_STATE_STOPPING:
+    case CLAWT_AGENT_STATE_STOPPED:
+    case CLAWT_AGENT_STATE_ERROR:
+    case CLAWT_AGENT_STATE_SHADOW:
+        return FALSE;
+    default:
+        return TRUE;
+    }
+}
+
 static void
 set_state(ClawtAgent *self, ClawtAgentState state, const gchar *detail)
 {
@@ -49,6 +71,36 @@ set_state(ClawtAgent *self, ClawtAgentState state, const gchar *detail)
         return;
 
     self->state = state;
+
+    /*
+     * A turn cannot outlive the process that was taking it.
+     *
+     * `busy` had one setter -- delivery -- and one clearer: the link
+     * reporting typing = FALSE at the end of the turn.  Every route out
+     * of RUNNING closes that link, which is precisely what guarantees
+     * the message that would have cleared the flag can never arrive.  So
+     * an agent stopped or killed mid-turn stayed "working" for the life
+     * of the daemon, drawn with a live spinner beside a state dot
+     * reading stopped.
+     *
+     * Here rather than on either stop path, because the two of them do
+     * not cover the same ground and neither covers all of it: a killed
+     * agent reaches neither clawt_daemon_stop_agent() nor
+     * clawt_agent_stop(), and arrives at ERROR through
+     * on_runtime_exited() instead.  This is the one line every route
+     * passes through, and it is the transition itself rather than any
+     * particular way of reaching it that makes the turn impossible.
+     *
+     * Before the signal, so a handler that re-reads the agent sees the
+     * state and the activity agreeing rather than one of each.
+     *
+     * The peer is kept -- set_activity() preserves it when passed NULL
+     * -- so a stopped agent can still say who its last turn was for.
+     * "Answered researcher" is worth more than "idle", and it is the
+     * only trace of that turn left once the process is gone.
+     */
+    if (!state_can_be_working(state))
+        clawt_agent_set_activity(self, FALSE, NULL);
 
     g_free(self->status_detail);
     self->status_detail = g_strdup(detail);
