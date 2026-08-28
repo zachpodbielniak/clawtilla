@@ -58,6 +58,14 @@ clawt_computer_start(ClawtComputer *self, GError **error)
 }
 
 gboolean
+clawt_computer_reconcile(ClawtComputer *self, GError **error)
+{
+    g_return_val_if_fail(CLAWT_IS_COMPUTER(self), FALSE);
+
+    CALL_OR_TRUE(self, reconcile, error);
+}
+
+gboolean
 clawt_computer_stop(ClawtComputer *self, GError **error)
 {
     g_return_val_if_fail(CLAWT_IS_COMPUTER(self), FALSE);

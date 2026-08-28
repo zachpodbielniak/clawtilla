@@ -3523,6 +3523,154 @@ test_a_guest_is_given_a_cpu_worth_having(void)
     g_assert_true(saw_cpu);
 }
 
+/*
+ * A podman that answers every request with one canned reply.
+ *
+ * Enough to drive the inspect the reconcile does: what matters is the
+ * status line, since that is the only thing distinguishing "this
+ * container is gone" from "podman could not be asked".
+ */
+typedef struct {
+    GSocketListener *listener;
+    GCancellable    *cancel;
+    const gchar     *status;
+    const gchar     *body;
+} CannedPodman;
+
+static gpointer
+canned_podman(gpointer data)
+{
+    CannedPodman *canned = data;
+    GSocketConnection *conn;
+
+    while ((conn = g_socket_listener_accept(canned->listener, NULL,
+                                            canned->cancel, NULL)) != NULL) {
+        GInputStream *in = g_io_stream_get_input_stream(G_IO_STREAM(conn));
+        GOutputStream *out = g_io_stream_get_output_stream(G_IO_STREAM(conn));
+        g_autofree gchar *reply = NULL;
+        gchar buffer[2048];
+
+        /*
+         * One read is enough: podomation sends its whole request in one
+         * write and this only needs to know that it arrived.
+         */
+        g_input_stream_read(in, buffer, sizeof buffer, NULL, NULL);
+
+        reply = g_strdup_printf("HTTP/1.1 %s\r\n"
+                                "Content-Type: application/json\r\n"
+                                "Content-Length: %" G_GSIZE_FORMAT "\r\n"
+                                "Connection: close\r\n"
+                                "\r\n%s",
+                                canned->status, strlen(canned->body),
+                                canned->body);
+
+        g_output_stream_write_all(out, reply, strlen(reply), NULL, NULL,
+                                  NULL);
+        g_output_stream_flush(out, NULL, NULL);
+        g_io_stream_close(G_IO_STREAM(conn), NULL, NULL);
+        g_object_unref(conn);
+    }
+
+    return NULL;
+}
+
+/*
+ * Reconciling against a podman that has the container leaves the state
+ * alone; reconciling against one that does not puts it back to ABSENT.
+ *
+ * Both halves in one test on purpose.  The interesting assertion is the
+ * 404 one, and on its own it would pass in a build where reconcile set
+ * ABSENT unconditionally -- or one where the harness never reached
+ * podman at all.  The 200 case is what makes the 404 case mean
+ * something.
+ */
+static void
+test_reconcile_believes_podman_over_memory(void)
+{
+    struct {
+        const gchar        *status;
+        const gchar        *body;
+        ClawtComputerState  expected;
+    } cases[] = {
+        { "200 OK",
+          "{\"Id\":\"deadbeef\",\"Name\":\"clawt-probe\","
+          "\"Image\":\"example:1\",\"Created\":\"now\"}",
+          CLAWT_COMPUTER_STATE_RUNNING },
+        { "404 Not Found",
+          "{\"cause\":\"no such container\","
+          "\"message\":\"no container with name or ID found\"}",
+          CLAWT_COMPUTER_STATE_ABSENT },
+    };
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autoptr(GSocketListener) listener = g_socket_listener_new();
+        g_autoptr(GSocketAddress) addr = NULL;
+        g_autoptr(ClawtPodBridge) bridge = NULL;
+        g_autoptr(ClawtComputer) computer = NULL;
+        g_autoptr(GError) error = NULL;
+        g_autofree gchar *dir = NULL;
+        g_autofree gchar *sock = NULL;
+        g_autofree gchar *uri = NULL;
+        CannedPodman canned;
+        GThread *server;
+
+        dir = g_dir_make_tmp("clawt-canned-podman-XXXXXX", NULL);
+        g_assert_nonnull(dir);
+        sock = g_build_filename(dir, "podman.sock", NULL);
+        addr = g_unix_socket_address_new(sock);
+
+        g_assert_true(g_socket_listener_add_address(listener, addr,
+                                                    G_SOCKET_TYPE_STREAM,
+                                                    G_SOCKET_PROTOCOL_DEFAULT,
+                                                    NULL, NULL, NULL));
+
+        canned.listener = listener;
+        canned.cancel = g_cancellable_new();
+        canned.status = cases[i].status;
+        canned.body = cases[i].body;
+        server = g_thread_new("canned-podman", canned_podman, &canned);
+
+        bridge = clawt_pod_bridge_new(CLAWT_TEST_POD_MODULE_DIR);
+
+        if (!clawt_pod_bridge_load_module(bridge, "container", NULL)) {
+            g_test_skip("podomation's container module has not been built");
+            g_cancellable_cancel(canned.cancel);
+            g_thread_join(server);
+            g_clear_object(&canned.cancel);
+            g_socket_listener_close(listener);
+            clawt_test_remove_tree(dir);
+            return;
+        }
+
+        uri = g_strdup_printf("unix://%s", sock);
+        computer = clawt_container_computer_new("probe", bridge,
+                                                "example:1");
+        clawt_container_computer_set_connection(
+            CLAWT_CONTAINER_COMPUTER(computer), uri);
+
+        /*
+         * What the daemon believed before anybody asked.  This is the
+         * whole defect: it was written once and never checked again.
+         */
+        clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_RUNNING,
+                                 NULL);
+
+        g_assert_true(clawt_computer_reconcile(computer, &error));
+        g_assert_no_error(error);
+
+        g_assert_cmpint(clawt_computer_get_state(computer), ==,
+                        cases[i].expected);
+
+        g_cancellable_cancel(canned.cancel);
+        g_thread_join(server);
+        g_clear_object(&canned.cancel);
+        g_socket_listener_close(listener);
+        clawt_test_remove_tree(dir);
+    }
+}
+
+
 int
 main(int argc, char *argv[])
 {
@@ -3547,6 +3695,8 @@ main(int argc, char *argv[])
     g_test_add_func("/computer/host/cwd-outside",
                     test_host_refuses_a_working_directory_outside);
     g_test_add_func("/computer/host/timeout", test_host_times_out_a_hanging_command);
+    g_test_add_func("/computer/container/reconcile-believes-podman",
+                    test_reconcile_believes_podman_over_memory);
     g_test_add_func("/computer/host/file-transfer",
                     test_host_file_transfer_respects_the_boundary);
     g_test_add_func("/computer/host/description",

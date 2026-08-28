@@ -94,8 +94,11 @@ struct _ClawtComputerClass {
 
     ClawtComputerType (*get_computer_type)(ClawtComputer   *self);
 
+    gboolean          (*reconcile)  (ClawtComputer        *self,
+                                     GError              **error);
+
     /*< private >*/
-    gpointer _padding[8];
+    gpointer _padding[7];
 };
 
 /**
@@ -116,6 +119,32 @@ struct _ClawtComputerClass {
  */
 gboolean clawt_computer_provision(ClawtComputer *self, GError **error);
 gboolean clawt_computer_start(ClawtComputer *self, GError **error);
+
+/**
+ * clawt_computer_reconcile:
+ * @self: a #ClawtComputer
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Asks the backend what it actually has, and makes the remembered state
+ * agree with the answer.
+ *
+ * The state was only ever written, never read back: whatever the last
+ * operation set is what every surface reported until the daemon exited.
+ * Remove an agent's container behind the daemon's back and it stayed
+ * `running` for the life of the process, with the one honest surface
+ * being an exec that failed by naming a container id nobody could
+ * correlate with anything.
+ *
+ * A backend with nothing to ask answers %TRUE and changes nothing, so a
+ * caller never has to know which kind of computer it holds.
+ *
+ * This costs a round trip, so it belongs on the paths where somebody has
+ * asked a question -- starting an agent, reading a computer's status --
+ * and not on a timer.
+ *
+ * Returns: %FALSE only when the backend could not be asked
+ */
+gboolean clawt_computer_reconcile(ClawtComputer *self, GError **error);
 gboolean clawt_computer_stop(ClawtComputer *self, GError **error);
 gboolean clawt_computer_teardown(ClawtComputer *self, GError **error);
 
