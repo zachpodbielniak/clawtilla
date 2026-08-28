@@ -3523,6 +3523,130 @@ test_a_guest_is_given_a_cpu_worth_having(void)
     g_assert_true(saw_cpu);
 }
 
+/*
+ * A podman socket that accepts and then says nothing.
+ *
+ * Exactly what a wedged podman looks like, and the only case in which the
+ * exec deadline matters: any answer at all, even an error, ends the wait
+ * on its own.
+ */
+typedef struct {
+    GSocketListener *listener;
+    GCancellable    *cancel;
+} SilentPodman;
+
+static gpointer
+silent_podman(gpointer data)
+{
+    SilentPodman *mute = data;
+    GPtrArray *held = g_ptr_array_new_with_free_func(g_object_unref);
+    GSocketConnection *conn;
+
+    /*
+     * Held rather than dropped.  A socket that hangs up is answered
+     * immediately, which is a different failure from one that goes quiet
+     * and not the one this test is about.
+     */
+    while ((conn = g_socket_listener_accept(mute->listener, NULL,
+                                            mute->cancel, NULL)) != NULL)
+        g_ptr_array_add(held, conn);
+
+    g_ptr_array_unref(held);
+
+    return NULL;
+}
+
+/*
+ * A container exec against a silent podman gives up when its timeout
+ * says so.
+ *
+ * The `timeout` argument was accepted and then explicitly discarded by
+ * this backend, so a command that hung hung for ever -- the agent waited
+ * for a deadline that would never arrive, and before the deferral landed
+ * so did the whole daemon.
+ *
+ * Run in a trapped subprocess because the failing shape is a hang: an
+ * in-process test that reproduced the bug would take the suite with it
+ * rather than reporting anything.
+ */
+static void
+test_container_exec_gives_up_at_its_timeout(void)
+{
+    if (g_test_subprocess()) {
+        g_autoptr(GSocketListener) listener = g_socket_listener_new();
+        g_autoptr(GSocketAddress) addr = NULL;
+        g_autoptr(ClawtPodBridge) bridge = NULL;
+        g_autoptr(ClawtComputer) computer = NULL;
+        g_autoptr(ClawtExecResult) result = NULL;
+        g_autoptr(GError) error = NULL;
+        g_autofree gchar *dir = NULL;
+        g_autofree gchar *sock = NULL;
+        g_autofree gchar *uri = NULL;
+        const gchar *argv[] = { "true", NULL };
+        SilentPodman mute;
+        GThread *server;
+        gint64 started;
+
+        dir = g_dir_make_tmp("clawt-silent-podman-XXXXXX", NULL);
+        g_assert_nonnull(dir);
+        sock = g_build_filename(dir, "podman.sock", NULL);
+        addr = g_unix_socket_address_new(sock);
+
+        g_assert_true(g_socket_listener_add_address(listener, addr,
+                                                    G_SOCKET_TYPE_STREAM,
+                                                    G_SOCKET_PROTOCOL_DEFAULT,
+                                                    NULL, NULL, NULL));
+
+        mute.listener = listener;
+        mute.cancel = g_cancellable_new();
+        server = g_thread_new("silent-podman", silent_podman, &mute);
+
+        bridge = clawt_pod_bridge_new(CLAWT_TEST_POD_MODULE_DIR);
+
+        if (!clawt_pod_bridge_load_module(bridge, "container", NULL)) {
+            g_cancellable_cancel(mute.cancel);
+            g_thread_join(server);
+            g_clear_object(&mute.cancel);
+            g_socket_listener_close(listener);
+            clawt_test_remove_tree(dir);
+            return;
+        }
+
+        uri = g_strdup_printf("unix://%s", sock);
+        computer = clawt_container_computer_new("stuck", bridge,
+                                                "example:1");
+        clawt_container_computer_set_connection(
+            CLAWT_CONTAINER_COMPUTER(computer), uri);
+
+        started = g_get_monotonic_time();
+        result = clawt_computer_exec(computer, argv, NULL, 1, NULL, &error);
+
+        g_assert_null(result);
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_TIMEOUT);
+
+        /*
+         * And it waited, rather than failing instantly for some unrelated
+         * reason -- a refusal that never reached the socket would satisfy
+         * the assertions above while proving nothing.
+         */
+        g_assert_cmpint(g_get_monotonic_time() - started, >=,
+                        G_USEC_PER_SEC / 2);
+
+        g_cancellable_cancel(mute.cancel);
+        g_thread_join(server);
+        g_clear_object(&mute.cancel);
+        g_socket_listener_close(listener);
+        clawt_test_remove_tree(dir);
+        return;
+    }
+
+    g_test_trap_subprocess(NULL, 30 * G_USEC_PER_SEC,
+                           G_TEST_SUBPROCESS_INHERIT_STDERR);
+    g_test_trap_assert_passed();
+}
+
+
+
 int
 main(int argc, char *argv[])
 {
@@ -3547,6 +3671,8 @@ main(int argc, char *argv[])
     g_test_add_func("/computer/host/cwd-outside",
                     test_host_refuses_a_working_directory_outside);
     g_test_add_func("/computer/host/timeout", test_host_times_out_a_hanging_command);
+    g_test_add_func("/computer/container/exec-gives-up-at-its-timeout",
+                    test_container_exec_gives_up_at_its_timeout);
     g_test_add_func("/computer/host/file-transfer",
                     test_host_file_transfer_respects_the_boundary);
     g_test_add_func("/computer/host/description",
