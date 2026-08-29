@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-23 Sat]
-#+updated: [2026-08-26 Wed]
-#+version: 0.3.0
+#+updated: [2026-08-29 Sat]
+#+version: 0.4.0
 
 * Connectors
 
@@ -223,6 +223,175 @@ clawtilla connector add weather --provider api-key \
     --command weather-mcp --credential-name OPENWEATHER_KEY
 #+end_src
 
+** The open MCP registry
+
+The catalogue above is somebody's opinion, checked in.  The registry at
+https://registry.modelcontextprotocol.io is nobody's opinion -- it is
+whatever anybody has published -- so it is imported at a lower standard
+of trust: an entry from it only ever *fills a gap*.  It never replaces a
+built-in connector or one from ~connectors.dir~, both of which are a
+choice somebody already made on purpose, and its ids are all prefixed
+~registry:~ so one could never collide with a curated id even if it tried.
+
+#+begin_src yaml
+connectors:
+  registry_enabled: true
+#+end_src
+
+Off by default, because turning it on is the one thing in this file that
+reaches the network.  When it is on, the import happens on a timer of its
+own -- never at daemon start, never inside the handler answering a
+client's request -- into a cache under the daemon's state directory.
+~connector.registry_refresh~ (~clawtilla connector registry-refresh~, or
+the button on the Connectors page in either client) asks for one sooner
+than ~connectors.registry_refresh_hours~ would.
+
+#+begin_src bash
+clawtilla connector registry-refresh
+#+end_src
+
+*** Why this is safe to leave off, and safe to test
+
+~make test~ opens no network socket, which means nothing here is allowed
+to either.  The importer is split so that only one function --
+~clawt_connector_registry_refresh_async()~ -- ever calls out, and it is
+never invoked by anything the test suite runs.  Everything the suite
+*does* exercise is a pure function over a fixture: parsing one page of
+the registry's own JSON shape, merging entries into a catalogue, and
+reading or writing the cache file. That split is the same reasoning
+CLAUDE.md already records against ~model.list~, which once asked five
+provider APIs from an IPC handler and made pressing a button in the GTK
+client feel like it had hung.
+
+*** What an imported entry actually knows
+
+The registry describes a server's *package* (an npm identifier, a
+runtime hint like ~npx~ or ~docker~, and the environment variables it
+needs) or its *remote* (a plain HTTP or SSE URL) -- never a client id,
+and rarely anything OAuth-shaped.  So an imported connector is
+~auth: api_key~ whenever a package names a secret environment variable,
+and its credential name comes from the registry entry itself rather than
+a guess.  A package naming no runtime hint clawtilla recognises falls
+back to running its identifier as a bare command on ~PATH~, which is
+right for a Rust or Go binary and wrong for an npm package that needs
+~npx~ -- the registry does not say which its identifier is, and this file
+is not going to guess twice.
+
+** FOSS connector packs
+
+Most of the catalogue's OAuth entries are commercial services.  The
+things an operator running their own infrastructure actually reaches for
+-- a Forgejo, a Home Assistant, a Grafana -- are shipped as example YAML
+files under ~data/connectors.d/~ in the source tree, one per service,
+ready to copy into ~connectors.dir~:
+
+#+begin_src bash
+cp data/connectors.d/gitlab.yaml $XDG_CONFIG_HOME/clawtilla/connectors.d/
+#+end_src
+
+They are examples on purpose and not installed automatically: a person's
+own ~connectors.dir~ is theirs, and an upgrade silently adding entries to
+it would be indistinguishable from a person's own file mysteriously
+gaining content.
+
+| Pack                | What it adds beyond a bare credential            |
+|----------------------+---------------------------------------------------|
+| ~gitlab.yaml~        | GitLab's own MCP server, ~/api/v4/mcp~ on your instance, once Duo is licensed |
+| ~gitea.yaml~         | OAuth2, the same endpoints Forgejo forked from    |
+| ~matrix.yaml~        | Tool access to a Matrix account -- see below      |
+| ~home-assistant.yaml~ | A long-lived access token's variable name        |
+| ~grafana.yaml~       | A service account token's variable name           |
+| ~nextcloud.yaml~     | An app password's variable name                   |
+| ~jellyfin.yaml~      | An API key's variable name                        |
+| ~immich.yaml~        | An API key's variable name                        |
+| ~paperless-ngx.yaml~ | A token's variable name                           |
+| ~miniflux.yaml~      | An API key's variable name                        |
+| ~vaultwarden.yaml~   | The OAuth2 client secret's variable name           |
+
+*** Why most of these have no ~server_command~
+
+The built-in table's own header comment gives the rule: no
+~server_command~ unless the provider genuinely ships one under a name
+stable enough to survive a release cycle.  As of this writing, GitLab is
+the only one of these eleven with an MCP server run by the service
+itself; every other one is either a community project with several
+competing, sometimes explicitly unstable implementations (Forgejo,
+Gitea, Vaultwarden), or a service whose official server runs three
+different ways with three different invocations (Grafana's binary,
+~uvx~, or Docker) such that naming one would be wrong for the other two.
+
+That is not a gap in the pack -- the credential half is the hard,
+fact-checkable part, and it is what these files get right.  Once you have
+picked a server, name it on your own integration and it wins over
+anything a pack or the built-in table says:
+
+#+begin_src bash
+clawtilla connector add gt --provider gitea \
+    --command gitea-mcp-server --scope all
+#+end_src
+
+*** Matrix, twice
+
+~matrix.yaml~'s ~id: matrix~ is a *connector* -- a tool an existing
+session can call to read or post into rooms as an account you already
+hold.  It has nothing to do with ~type: matrix~ in ~integrations.yaml~,
+which gives an agent a chat identity of its own and is a completely
+different feature that happens to share a name for the service, not for
+the integration kind.  The two ids live in different tables (~provider:~
+values under ~type: connector~, versus top-level ~type:~ values) and
+cannot collide, but a person skimming the config could still read one for
+the other, which is why it is spelled out here.
+
+*** Writing your own pack
+
+The template is every field ~clawt_connector_catalog_load()~ reads,
+named:
+
+#+begin_src yaml
+connectors:
+  - id: my-service            # required, lowercase, stable
+    name: My Service          # shown in a list; defaults to id
+    summary: One line about what connecting it gets you
+    category: Whatever groups it in a list
+    auth: api_key              # none | device | pkce | api_key
+    auth_url: /oauth/authorize # device or pkce only
+    token_url: /oauth/token    # device or pkce only
+    revoke_url: /oauth/revoke  # optional
+    scopes: "read write"       # what to request by default
+    client_id_help: where to register an application
+    docs_url: https://example.com/docs/auth
+    default_instance: https://my-service.example  # only if self-hostable
+    server_command: my-service-mcp  # only if genuinely stable -- see above
+    server_args: [stdio]
+    server_url: /mcp                # instead of server_command
+    known_tools: [list_things, get_thing]  # what the server offers, if known
+    placement: header           # env | header
+    credential_name: Authorization
+    credential_format: "Bearer %s"  # exactly one %s, or omit entirely
+#+end_src
+
+Three things worth getting right the first time:
+
+- *One rule for every URL field.*  Setting ~default_instance~ makes
+  ~auth_url~, ~token_url~, ~revoke_url~ *and* ~server_url~ all read as
+  paths, joined onto whichever ~instance:~ the integration names.
+  Leaving ~default_instance~ unset makes every one of them an absolute
+  URL instead.  A pack that sets ~default_instance~ and then writes one
+  field as an absolute URL anyway is how a connector quietly
+  authenticates against somebody else's server -- ~gitlab.yaml~ is the
+  worked example, and the test suite walks every shipped pack checking
+  none of them do this.
+- *~known_tools~ is optional and worth adding once you know it.*  An
+  integration's own ~tools:~ narrows an agent to a subset; ~known_tools~
+  is what the pack's author believes the *server* offers, so a typo in
+  the former -- a tool name that is not in the latter -- gets a warning
+  naming both, rather than silently narrowing an agent down to nothing.
+- *~placement~ and the transport must agree.*  A ~server_url~ entry needs
+  ~placement: header~, because there is nowhere else on an HTTP request
+  for a credential to go; a ~server_command~ entry can use either,
+  depending on what the server itself expects.  Setting ~server_url~
+  with ~placement: env~ builds a plan with nothing in its header at all.
+
 ** Who gets it
 
 The same three answers as any integration: one agent, some agents, or
@@ -352,6 +521,9 @@ that matter here:
 | ~connectors.dir~                       | where your own connector files live       |
 | ~connectors.refresh_margin_seconds~    | how early to renew                        |
 | ~connectors.redirect_port~             | the loopback port for the PKCE redirect   |
+| ~connectors.registry_enabled~          | import the open MCP registry (off by default) |
+| ~connectors.registry_url~              | where to import it from                   |
+| ~connectors.registry_refresh_hours~    | how often, once it is on                  |
 | ~integrations.provider~                | which catalogue entry                     |
 | ~integrations.account~                 | which account, in your words              |
 | ~integrations.instance~                | for a service you host                    |
@@ -391,3 +563,16 @@ entries know a server.
 
 The connector was narrowed with ~tools~.  The refusal names the tool and
 says so.
+
+*** A warning names a tool the connector does not offer
+
+The integration's ~tools:~ names something the pack's own ~known_tools~
+does not.  Almost always a typo; fix the integration.  A pack that
+declares no ~known_tools~ at all -- the ordinary case -- never warns
+about this, since there is nothing here to check against.
+
+*** "connectors.registry_enabled is off"
+
+~connector.registry_refresh~ refuses until you turn the key on.  Nothing
+imports until then, and nothing was ever asked of the network before
+this point either.

@@ -661,9 +661,9 @@ Connectors: ~connector.catalog~ (the services clawtilla knows how to
 connect, with the auth kind each uses); ~connector.list~ (the ones you
 have, with whether each is live, when it expires and whether it can renew
 itself -- never the credential); ~connector.begin~ and ~connector.await~;
-~connector.key~; ~connector.refresh~; ~connector.revoke~.  Adding and
-removing a connector go through ~integration.add~ and
-~integration.remove~ like any other integration.
+~connector.key~; ~connector.refresh~; ~connector.revoke~;
+~connector.registry_refresh~.  Adding and removing a connector go through
+~integration.add~ and ~integration.remove~ like any other integration.
 
 A secret is written by naming its *reference*: ~secret_key~,
 ~secret_backend~ (~file~, ~env~ or ~command~) and ~secret_locator~.  A
@@ -829,6 +829,26 @@ the *file*, never the value: handing the credential back to the client
 that sent it would put a live secret into every client's memory.  Same
 rule as ~integration.matrix_login~.
 
+*** connector.registry_refresh
+
+Imports the open MCP registry into the connector catalogue, right now
+rather than on ~connectors.registry_refresh_hours~'s own timer.  Refused
+with ~CLAWT_ERROR_NOT_SUPPORTED~ while ~connectors.registry_enabled~ is
+off, and with a plain failure if an import -- from either this verb or
+the periodic timer -- is already running.
+
+The fetch itself happens after this handler returns, exactly like
+~connector.refresh~: the request is deferred and answered with
+~imported~, a count, once the whole paginated walk completes.  A page
+partway through when the daemon is asked to stop, or when the request
+times out and the client gives up, is not lost -- the walk itself is
+unaffected, and the cache is only written once, at the end, so a client
+that stopped waiting never sees a half-imported catalogue either.
+
+An entry the registry has never fills a gap; it never replaces a
+built-in connector or one from ~connectors.dir~, both of which are a
+choice somebody already made on purpose.
+
 *** integration.notify_test
 
 Takes ~integration~ and sends one notification through it, ignoring its
@@ -839,8 +859,8 @@ nothing happens, so this is the only honest way to check one.
 
 ~integration.health~, ~integration.matrix_login~,
 ~integration.matrix_rooms~, ~integration.notify_test~,
-~connector.begin~, ~connector.await~, ~connector.refresh~ and
-~connector.revoke~ all wait on the
+~connector.begin~, ~connector.await~, ~connector.refresh~,
+~connector.revoke~ and ~connector.registry_refresh~ all wait on the
 network, so their handlers
 *defer*: the request is answered when the work finishes rather than
 before the handler returns.  A client sees nothing different -- the reply

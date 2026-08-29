@@ -1,0 +1,26 @@
+# vaultwarden.yaml - Secrets in a Vaultwarden you run yourself
+#
+# Vaultwarden speaks the Bitwarden API, whose programmatic auth is an
+# OAuth2 client-credentials exchange needing *two* values: a client id
+# and a client secret, from Settings -> Security -> Keys. Only the
+# secret is sensitive -- the client id is an account identifier, not a
+# credential -- so it is the one value this file's `credential_name`
+# broker carries; put the client id in your own integration's `args:`
+# alongside whichever wrapper you run. No flagship instance: Vaultwarden
+# is the self-hosted alternative to Bitwarden's own cloud, so there is
+# nothing to default to, and `instance:` (or a full `url:`) is required.
+#
+# No `server_command`: MCP wrappers around the Bitwarden CLI exist as
+# community projects, none shipped under a name stable enough to bake in
+# here. Set `command:`/`args:` on your own integration once you have
+# chosen one -- most such wrappers are a thin shell around `bw`, which
+# itself needs `bw config server <url>` pointed at your instance before
+# anything else works.
+connectors:
+  - id: vaultwarden
+    name: Vaultwarden
+    summary: Secrets, on your own Bitwarden-compatible server.
+    category: Security
+    auth: api_key
+    docs_url: https://bitwarden.com/help/personal-api-key/
+    credential_name: BW_CLIENTSECRET

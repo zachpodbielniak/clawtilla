@@ -541,6 +541,53 @@ clawt_daemon_handle_connector(
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
+    if (g_strcmp0(kind, "connector.registry_refresh") == 0) {
+        g_autofree gchar *cache_path = NULL;
+        const gchar *base_url;
+        RegistryRefreshJob *job;
+
+        if (!clawt_config_get_boolean(self->config,
+                                      "connectors.registry_enabled"))
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
+                                       "connectors.registry_enabled is off; "
+                                       "turn it on before asking for a "
+                                       "refresh");
+
+        if (self->registry_refreshing)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                       "a refresh is already in progress");
+
+        base_url = clawt_config_get_string(self->config,
+                                           "connectors.registry_url");
+        cache_path = clawt_connector_registry_cache_path(self->state_dir);
+
+        job = g_new0(RegistryRefreshJob, 1);
+        job->daemon = self;
+        job->pending = clawt_ipc_server_defer(self->ipc_server, request);
+
+        if (job->pending == NULL) {
+            g_free(job);
+
+            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                       "this request cannot be answered "
+                                       "later");
+        }
+
+        /*
+         * The fetch itself never runs on this handler's stack -- it is
+         * the same clawt_connector_registry_refresh_async() the periodic
+         * sweep uses, which is what makes the "no IPC handler waits on
+         * the network" rule true of this verb rather than merely stated
+         * of it.
+         */
+        self->registry_refreshing = TRUE;
+        clawt_connector_registry_refresh_async(
+            base_url, cache_path, NULL,
+            clawt_daemon_on_registry_refresh_requested, job);
+
+        return NULL;
+    }
+
     *handled = FALSE;
     return NULL;
 }

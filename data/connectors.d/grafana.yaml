@@ -1,0 +1,24 @@
+# grafana.yaml - Dashboards, alerts and datasources on a Grafana you run
+# yourself
+#
+# Grafana's own recommended credential is a service account token
+# (Administration -> Service accounts), which superseded the older
+# API-key mechanism and can be scoped and revoked independently of any
+# person's login. No flagship instance -- Grafana Cloud is a hosted
+# product with its own per-tenant subdomain, not a single shared host --
+# so `instance:` (or a full `url:`) is required on the integration.
+#
+# No `server_command`: Grafana ships an official MCP server
+# (github.com/grafana/mcp-grafana), but it runs three different ways --
+# a downloaded binary, `uvx`, or Docker -- with a different invocation
+# each time, and guessing which one somebody has chosen would be wrong
+# for two of the three. Set `command:`/`args:` on your own integration to
+# whichever of the three you picked.
+connectors:
+  - id: grafana
+    name: Grafana
+    summary: Dashboards, alerts and datasources, on your own instance.
+    category: Observability
+    auth: api_key
+    docs_url: https://grafana.com/docs/grafana/latest/administration/service-accounts/
+    credential_name: GRAFANA_SERVICE_ACCOUNT_TOKEN

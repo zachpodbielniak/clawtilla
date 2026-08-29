@@ -1,0 +1,21 @@
+# paperless-ngx.yaml - Documents, tags and correspondents on a Paperless-ngx
+# you run yourself
+#
+# Paperless-ngx's own credential is a token obtained from its own API
+# (or copied from its admin UI under your user's profile), independent of
+# your login password. No flagship instance -- every Paperless-ngx is
+# somebody's own document store -- so `instance:` (or a full `url:`) is
+# required on the integration.
+#
+# No `server_command`: several community MCP servers exist for
+# Paperless-ngx, none shipped by the project itself under a name stable
+# enough to bake in here. Set `command:`/`url:` on your own integration
+# once you have chosen one.
+connectors:
+  - id: paperless-ngx
+    name: Paperless-ngx
+    summary: Documents, tags and correspondents, on your own server.
+    category: Productivity
+    auth: api_key
+    docs_url: https://docs.paperless-ngx.com/api/#authorization
+    credential_name: PAPERLESS_TOKEN

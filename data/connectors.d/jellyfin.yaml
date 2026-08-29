@@ -1,0 +1,19 @@
+# jellyfin.yaml - Library, playback state and users on a Jellyfin you run
+# yourself
+#
+# Jellyfin's own credential is an API key, minted from Dashboard -> API
+# Keys. No flagship instance -- every Jellyfin is somebody's own media
+# server -- so `instance:` (or a full `url:`) is required on the
+# integration.
+#
+# No `server_command`: no Jellyfin MCP server found stable enough to name
+# here as of this writing. Set `command:`/`url:` on your own integration
+# once you have chosen one.
+connectors:
+  - id: jellyfin
+    name: Jellyfin
+    summary: Library, playback state and users, on your own server.
+    category: Media
+    auth: api_key
+    docs_url: https://jellyfin.org/docs/general/server/api-keys/
+    credential_name: JELLYFIN_API_KEY

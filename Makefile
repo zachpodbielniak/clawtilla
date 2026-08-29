@@ -70,6 +70,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/core/clawt-event-log.h \
 	$(SRCDIR)/integration/clawt-connector.h \
 	$(SRCDIR)/integration/clawt-connector-relay.h \
+	$(SRCDIR)/integration/clawt-connector-registry.h \
 	$(SRCDIR)/integration/clawt-integration.h \
 	$(SRCDIR)/integration/clawt-oauth.h \
 	$(SRCDIR)/integration/clawt-matrix.h \
@@ -194,6 +195,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/clawt-event-log.c \
 	$(SRCDIR)/integration/clawt-connector.c \
 	$(SRCDIR)/integration/clawt-connector-relay.c \
+	$(SRCDIR)/integration/clawt-connector-registry.c \
 	$(SRCDIR)/integration/clawt-integration.c \
 	$(SRCDIR)/integration/clawt-oauth.c \
 	$(SRCDIR)/integration/clawt-matrix.c \
@@ -791,6 +793,9 @@ install: all
 	install -m 644 $(PROJECT_NAME)-1.0.pc $(DESTDIR)$(PKGCONFIGDIR)/
 	install -m 644 $(DATADIR_SRC)/example-config.yaml $(DESTDIR)$(DATADIR)/$(PROJECT_NAME)/
 	install -m 644 $(DATADIR_SRC)/default-config.yaml $(DESTDIR)$(DATADIR)/$(PROJECT_NAME)/
+	install -d $(DESTDIR)$(DATADIR)/$(PROJECT_NAME)/connectors.d
+	install -m 644 $(DATADIR_SRC)/connectors.d/*.yaml \
+		$(DESTDIR)$(DATADIR)/$(PROJECT_NAME)/connectors.d/
 	@for p in $(PLUGIN_OUTDIR)/*.so; do \
 		[ -f "$$p" ] && install -m 755 "$$p" $(DESTDIR)$(PLUGIN_SYSTEM_DIR)/ || true; \
 	done

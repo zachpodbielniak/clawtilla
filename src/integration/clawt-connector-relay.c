@@ -37,6 +37,60 @@
 /* A tool result carrying a file or an image is routinely megabytes. */
 #define RELAY_BUFFER_BYTES (64 * 1024)
 
+/* ── Finding the server itself ───────────────────────────────────── */
+
+gchar *
+clawt_connector_resolve_command(const gchar *command, GError **error)
+{
+    g_autofree gchar *exe = NULL;
+    g_autofree gchar *exe_dir = NULL;
+    g_autofree gchar *beside = NULL;
+    g_autofree gchar *installed = NULL;
+    g_autofree gchar *on_path = NULL;
+
+    g_return_val_if_fail(command != NULL, NULL);
+
+    /*
+     * A path the operator wrote themselves -- absolute, or carrying a
+     * directory separator -- is not searched for; it is trusted, and
+     * checked only for existing, exactly as an explicit `command:` on an
+     * integration is trusted over the catalogue's own guess.
+     */
+    if (g_path_is_absolute(command) || strchr(command, G_DIR_SEPARATOR) != NULL) {
+        if (g_file_test(command, G_FILE_TEST_IS_EXECUTABLE))
+            return g_strdup(command);
+
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "'%s' does not exist, or is not executable", command);
+        return NULL;
+    }
+
+    exe = g_file_read_link("/proc/self/exe", NULL);
+
+    if (exe != NULL) {
+        exe_dir = g_path_get_dirname(exe);
+        beside = g_build_filename(exe_dir, command, NULL);
+
+        if (g_file_test(beside, G_FILE_TEST_IS_EXECUTABLE))
+            return g_steal_pointer(&beside);
+    }
+
+    installed = g_build_filename(CLAWT_MCP_SERVER_DIR, command, NULL);
+
+    if (g_file_test(installed, G_FILE_TEST_IS_EXECUTABLE))
+        return g_steal_pointer(&installed);
+
+    on_path = g_find_program_in_path(command);
+
+    if (on_path != NULL)
+        return g_steal_pointer(&on_path);
+
+    g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                "'%s' was not found beside clawtillad, in %s, or on PATH; "
+                "install it and try again", command, CLAWT_MCP_SERVER_DIR);
+    return NULL;
+}
+
 /* ── Building the plan ───────────────────────────────────────────── */
 
 static void
@@ -118,9 +172,20 @@ clawt_connector_plan_new(const ClawtConnectorInfo *info,
 
     if (command != NULL) {
         g_auto(GStrv) args = NULL;
+        g_autofree gchar *resolved = clawt_connector_resolve_command(command,
+                                                                     NULL);
         GPtrArray *argv = g_ptr_array_new();
 
-        g_ptr_array_add(argv, g_strdup(command));
+        /*
+         * Resolved to an absolute path when it can be, and left as the
+         * bare name otherwise -- silently, since a spawned child's
+         * environment is the allowlist and not this process's, and its
+         * PATH may differ from the one just searched.  Falling back
+         * keeps today's behaviour for a server that genuinely is on the
+         * child's PATH even though it was not found here.
+         */
+        g_ptr_array_add(argv, resolved != NULL ? g_steal_pointer(&resolved)
+                                               : g_strdup(command));
 
         args = clawt_integration_binding_get_string_list(binding, "args");
 
@@ -185,8 +250,40 @@ clawt_connector_plan_new(const ClawtConnectorInfo *info,
      */
     tools = clawt_integration_binding_get_string_list(binding, "tools");
 
-    if (tools != NULL && tools[0] != NULL)
+    if (tools != NULL && tools[0] != NULL) {
+        /*
+         * A pack that declares what its server offers lets a typo in
+         * `tools:` be caught here instead of narrowing an agent down to
+         * nothing and leaving nobody able to say why.  A pack that
+         * declares nothing -- the ordinary case, since most entries have
+         * no server anybody here has looked inside of -- disables the
+         * check rather than treating every name as unrecognised.
+         */
+        if (info->known_tools != NULL) {
+            gsize i;
+
+            for (i = 0; tools[i] != NULL; i++) {
+                gsize j;
+                gboolean known = FALSE;
+
+                for (j = 0; info->known_tools[j] != NULL; j++) {
+                    if (g_strcmp0(tools[i], info->known_tools[j]) == 0) {
+                        known = TRUE;
+                        break;
+                    }
+                }
+
+                if (!known)
+                    g_warning("connector '%s': integration '%s' names tool "
+                             "'%s', which %s is not known to offer",
+                             info->id,
+                             clawt_integration_binding_get_name(binding),
+                             tools[i], info->name);
+            }
+        }
+
         plan->permitted = g_steal_pointer(&tools);
+    }
 
     return g_steal_pointer(&plan);
 }

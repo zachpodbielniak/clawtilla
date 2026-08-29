@@ -1352,34 +1352,35 @@ static const ClawtSchemaEntry schema[] = {
 
 /* ── routines ────────────────────────────────────────────────────── */
 { "connectors.registry_enabled", CLAWT_SCHEMA_BOOLEAN,
-  CLAWT_SCHEMA_FLAG_COMMENTED |
-  CLAWT_SCHEMA_FLAG_INERT, "false", NULL,
+  CLAWT_SCHEMA_FLAG_COMMENTED, "false", NULL,
   "Whether the open MCP registry is imported into the catalogue.\n"
   "\n"
   "Off by default because it reaches the network. When on, the fetch\n"
   "happens on a timer into a cache on disk -- never at daemon start and\n"
   "never from a request handler, so a client pressing a button waits on\n"
-  "this machine and not on somebody else's.\n"
+  "this machine and not on somebody else's. `connector.registry_refresh`\n"
+  "asks for one sooner than the timer would.\n"
   "\n"
-  "Not implemented in this build. Importing the registry is not built yet, so the catalogue is\nthe built-in table and the overlay directory, as before.", "0.2.0" },
+  "An imported entry only ever fills a gap: it never replaces a\n"
+  "built-in connector or one from connectors.dir, which are both a\n"
+  "choice somebody already made on purpose.", "0.2.0" },
 
-{ "connectors.registry_url", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_COMMENTED |
-  CLAWT_SCHEMA_FLAG_INERT,
+{ "connectors.registry_url", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_COMMENTED,
   "https://registry.modelcontextprotocol.io", NULL,
   "Base URL of the MCP registry to import from.\n"
   "\n"
   "Somewhere else entirely is a legitimate answer: the registry is an\n"
   "ordinary HTTP service and an internal mirror serves the same\n"
-  "shape.\n"
-  "\n"
-  "Not implemented in this build. Importing the registry is not built yet, so the catalogue is\nthe built-in table and the overlay directory, as before.", "0.2.0" },
+  "shape.", "0.2.0" },
 
 { "connectors.registry_refresh_hours", CLAWT_SCHEMA_INT,
-  CLAWT_SCHEMA_FLAG_COMMENTED |
-  CLAWT_SCHEMA_FLAG_INERT, "24", NULL,
+  CLAWT_SCHEMA_FLAG_COMMENTED, "24", NULL,
   "How often the cached registry listing is refreshed.\n"
   "\n"
-  "Not implemented in this build. Importing the registry is not built yet, so the catalogue is\nthe built-in table and the overlay directory, as before.", "0.2.0" },
+  "Checked against the cache's own `fetched_at`, not against when the\n"
+  "daemon last started -- a restart must not reset this clock, or a\n"
+  "fleet that bounces every hour would refresh every hour regardless of\n"
+  "what this key says.", "0.2.0" },
 
 { "routines", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Standing work: a prompt, an agent, and when to run it.\n"

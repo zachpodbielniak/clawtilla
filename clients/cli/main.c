@@ -4368,6 +4368,7 @@ print_connector_usage(gboolean asked_for)
 "Commands:\n"
 "  catalog                 services clawtilla knows how to connect\n"
 "  list                    connectors you have, and whether they are live\n"
+"  registry-refresh        import the open MCP registry now\n"
 "  add <name> --provider <id> [options]\n"
 "                          add one, and connect it if it can\n"
 "  connect <name>          authorize, or authorize again\n"
@@ -4405,7 +4406,10 @@ print_connector_usage(gboolean asked_for)
 "      --instance https://gitlab.example.com --client-id abc123\n"
 "\n"
 "  clawtilla connector list\n"
-"  clawtilla connector revoke gh\n";
+"  clawtilla connector revoke gh\n"
+"\n"
+"  # With connectors.registry_enabled: true\n"
+"  clawtilla connector registry-refresh\n";
 
     print_usage_text(text, asked_for);
 }
@@ -4701,6 +4705,25 @@ cmd_connector(int argc, char *argv[])
                     member_or(entry, "provider", "?"),
                     member_or(entry, "scope", ""), status);
         }
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "registry-refresh") == 0) {
+        JsonObject *object;
+        gint64 imported;
+
+        reply = call(client, "connector.registry_refresh", NULL);
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        object = json_node_get_object(reply);
+        imported = json_object_get_int_member_with_default(object,
+                                                            "imported", 0);
+
+        g_print("Imported %" G_GINT64_FORMAT " connector%s from the "
+                "registry.\n", imported, imported == 1 ? "" : "s");
 
         return EXIT_SUCCESS;
     }

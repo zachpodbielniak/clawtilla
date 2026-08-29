@@ -171,6 +171,7 @@ CFLAGS = $(CFLAGS_BASE) $(CFLAGS_OPT) $(CFLAGS_SAN) $(PKG_CFLAGS) \
          -DCLAWT_GIT_SHA=\"$(GIT_SHA)\" \
          -DCLAWT_PLUGIN_DIR=\"$(PLUGIN_SYSTEM_DIR)\" \
          -DCLAWT_POD_MODULE_DIR=\"$(POD_MODULE_SYSTEM_DIR)\" \
+         -DCLAWT_MCP_SERVER_DIR=\"$(MCP_SERVER_SYSTEM_DIR)\" \
          -DCLAWT_DATA_DIR=\"$(DATADIR)/$(PROJECT_NAME)\" \
          -DG_LOG_DOMAIN=\"Clawtilla\" \
          -I$(SRCDIR) -I$(OUTDIR)
@@ -252,3 +253,10 @@ PLUGIN_LDFLAGS = -shared $(PKG_LIBS)
 # Where an installed clawtilla looks for podomation's loadable modules.
 # Uninstalled runs use CLAWT_POD_MODULE_DIR from the build tree instead.
 POD_MODULE_SYSTEM_DIR = $(LIBDIR)/$(PROJECT_NAME)/pod-modules
+
+# Where a connector's own third-party MCP server is looked for once
+# neither "beside the running binary" nor PATH turns it up.  Nothing
+# populates this directory automatically -- it exists so an operator who
+# built or vendored a server has somewhere to drop it that clawtilla will
+# actually find, the same role POD_MODULE_SYSTEM_DIR plays for podomation.
+MCP_SERVER_SYSTEM_DIR = $(LIBDIR)/$(PROJECT_NAME)/mcp-servers

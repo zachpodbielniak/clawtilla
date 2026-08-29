@@ -82,6 +82,28 @@ typedef struct {
 } ClawtConnectorPlan;
 
 /**
+ * clawt_connector_resolve_command:
+ * @command: a bare name or path, from a connector's `server_command`
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Where a connector's own tool server actually is, checked in the same
+ * order and reported the same way `sibling_binary_path()` resolves
+ * clawtilla's own CLI: beside the running binary, then the install
+ * location, then `PATH`.
+ *
+ * An already-absolute or explicitly relative @command (one containing a
+ * directory separator) is trusted as written and only checked for
+ * existing.  A bare name that resolves nowhere is refused naming all
+ * three places that were tried, rather than left to fail later as a
+ * bare "No such file or directory" from the subprocess that tried to
+ * start it -- which points at nothing an operator can act on.
+ *
+ * Returns: (transfer full) (nullable): an executable path, or %NULL if
+ *   @command is nowhere to be found
+ */
+gchar *clawt_connector_resolve_command(const gchar *command, GError **error);
+
+/**
  * clawt_connector_plan_new: (skip)
  * @info: the connector from the catalogue
  * @binding: the integration as this agent has it

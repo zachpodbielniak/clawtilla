@@ -1,0 +1,27 @@
+# nextcloud.yaml - Files, calendar and contacts on a Nextcloud you run yourself
+#
+# Nextcloud's own credential is an *app password* (Settings -> Security
+# -> "Devices & sessions" -> create new app password), not your login
+# password -- so it can be revoked on its own without touching the
+# account it belongs to. There is no flagship instance to default to
+# (unlike Codeberg for Forgejo or gitlab.com for GitLab): Nextcloud is
+# always somebody's own server, so `instance:` is required on the
+# integration rather than optional.
+#
+# No `server_command`: `nextcloud-mcp-server` exists on PyPI, but several
+# of the servers a Nextcloud connector might reasonably need to talk to
+# (host, username, password) is more than this broker injects -- it
+# carries exactly one credential -- and baking in a command this file
+# cannot fully configure would produce a connector that looks wired and
+# is not. Set `command:`/`args:` on your own integration once you have
+# chosen a server; the non-secret values (host, username) go in `args:`
+# there, and the app password is the one value this file's
+# `credential_name` names.
+connectors:
+  - id: nextcloud
+    name: Nextcloud
+    summary: Files, calendar and contacts, on a Nextcloud you run yourself.
+    category: Productivity
+    auth: api_key
+    docs_url: https://docs.nextcloud.com/server/latest/user_manual/en/session_management.html#managing-devices
+    credential_name: NEXTCLOUD_APP_PASSWORD
