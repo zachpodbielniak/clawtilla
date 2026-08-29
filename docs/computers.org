@@ -940,6 +940,31 @@ and if it persists, the cached probe is stale:
 rm -rf ~/.cache/libvirt/qemu/cache/capabilities
 #+end_src
 
+*** A share added after the VM was built
+
+A running libvirt domain keeps the devices it was defined with.
+clawtilla deliberately leaves a live guest's definition alone --
+rebuilding a running guest's overlay destroyed one once --- so a shared
+folder added to an agent after its VM exists does not reach it.
+
+There is no quiet failure afterwards, which is the problem: the tag is
+simply absent, the guest has no fstab entry for it, and the agent looks
+for a directory that is not there and reports the whole feature missing.
+
+So provisioning says so, once per missing share:
+
+#+begin_example
+vm clawt-oryx: the share at /mnt/clawtilla/exchange is configured and
+this guest does not have it. A running domain keeps the devices it was
+defined with; stop the agent and run `clawtilla computer rebuild oryx`
+to give it one.
+#+end_example
+
+Rebuilding is the remedy rather than hot-plugging: attaching a
+=<filesystem>= to a live domain gives the guest a tag and nothing else,
+and the fstab entry that would mount it is written by cloud-init at
+first boot.
+
 *** Who a VM's files belong to
 :PROPERTIES:
 :CUSTOM_ID: vm-share-ownership

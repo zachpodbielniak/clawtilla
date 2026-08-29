@@ -1091,14 +1091,20 @@ libvirt_has_domain(ClawtVmComputer *self)
     return FALSE;
 }
 
+/*
+ * The domain's definition as libvirt holds it.
+ *
+ * Split out from the UUID reader, which was the only caller: what the
+ * shares check needs is the same fetch and a different question, and two
+ * copies of "ask vm_virtmanager for the XML" would be two places to get
+ * the missing-domain case wrong.
+ */
 static gchar *
-libvirt_domain_uuid(ClawtVmComputer *self)
+libvirt_domain_xml(ClawtVmComputer *self)
 {
     g_autoptr(GHashTable) params = NULL;
     g_autoptr(GHashTable) result = NULL;
     const gchar *xml;
-    const gchar *open;
-    const gchar *close;
 
     if (self->bridge == NULL ||
         !clawt_pod_bridge_load_module_for(self->bridge, "vm_virtmanager",
@@ -1123,6 +1129,16 @@ libvirt_domain_uuid(ClawtVmComputer *self)
         return NULL;
 
     xml = g_hash_table_lookup(result, "xml");
+
+    return (xml != NULL) ? g_strdup(xml) : NULL;
+}
+
+static gchar *
+libvirt_domain_uuid(ClawtVmComputer *self)
+{
+    g_autofree gchar *xml = libvirt_domain_xml(self);
+    const gchar *open;
+    const gchar *close;
 
     if (xml == NULL)
         return NULL;
@@ -1610,6 +1626,66 @@ qemu_came_up(ClawtVmComputer *self, GError **error)
     return FALSE;
 }
 
+/*
+ * A share the domain does not carry, on a guest we are not going to
+ * rebuild.
+ *
+ * A running domain's definition is left alone -- rebuilding a live
+ * guest's overlay destroyed one once -- so a mount added to an agent
+ * after its VM was built never reaches it. There is no quiet failure
+ * afterwards either: the tag simply is not there, the guest has no fstab
+ * entry for it, and the agent looks for a directory that does not exist
+ * and reports the whole feature missing.
+ *
+ * Said rather than fixed, because fixing it means rebuilding the guest:
+ * a hot-plugged filesystem gives the guest a tag and nothing else, and
+ * the fstab that would mount it is written by cloud-init at first boot.
+ */
+static void
+warn_about_stale_shares(ClawtVmComputer *self)
+{
+    g_autofree gchar *xml = libvirt_domain_xml(self);
+    GPtrArray *mounts;
+    guint missing = 0;
+    guint i;
+
+    if (xml == NULL)
+        return;
+
+    mounts = clawt_computer_get_mounts(CLAWT_COMPUTER(self));
+
+    for (i = 0; mounts != NULL && i < mounts->len; i++) {
+        ClawtMount *mount = g_ptr_array_index(mounts, i);
+        const gchar *target = clawt_mount_get_target(mount);
+        g_autofree gchar *tag = NULL;
+
+        if (target == NULL)
+            continue;
+
+        /*
+         * Matched on the tag rather than on the path, because the tag is
+         * what the domain carries -- clawt_mount_tag() is the one
+         * spelling of it, and comparing paths here would be a second.
+         */
+        tag = clawt_mount_tag(target);
+
+        if (tag != NULL && strstr(xml, tag) != NULL)
+            continue;
+
+        g_warning("vm %s: the share at %s is configured and this guest "
+                  "does not have it. A running domain keeps the devices "
+                  "it was defined with; stop the agent and run "
+                  "`clawtilla computer rebuild %s` to give it one.",
+                  self->domain, target,
+                  clawt_computer_get_agent_id(CLAWT_COMPUTER(self)));
+        missing++;
+    }
+
+    if (missing > 0)
+        g_message("vm %s: %u share%s missing until it is rebuilt",
+                  self->domain, missing, missing == 1 ? "" : "s");
+}
+
 static gboolean
 vm_provision(ClawtComputer *computer, GError **error)
 {
@@ -1677,6 +1753,8 @@ vm_provision(ClawtComputer *computer, GError **error)
                                          ? (*error)->message : NULL);
                 return FALSE;
             }
+
+            warn_about_stale_shares(self);
 
             clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_RUNNING,
                                      NULL);

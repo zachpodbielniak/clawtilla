@@ -478,6 +478,27 @@ the same program.
   itself was correct throughout; `gdbus call ... SetEnabled true` by hand
   returned `(true,)` on the same guest. Only the launcher was missing.
 
+### A guest that predates a config change says nothing about it
+
+- `vm_provision()` leaves a running domain's definition alone, which is
+  right and is written down -- rebuilding a live guest's overlay
+  destroyed one once. The consequence nobody had stated is that a share
+  added to an agent afterwards never reaches its VM, and **there is no
+  failure to notice**: the tag is absent, the guest has no fstab entry,
+  and the agent looks for a directory that is not there and reports the
+  feature missing. That is what happened to an agent whose persona told
+  it to hand files back through the exchange it did not have.
+- Warned, not fixed. Hot-plugging a `<filesystem>` gives the guest a tag
+  and nothing else -- the fstab that would mount it is written by
+  cloud-init at first boot -- so the remedy really is a rebuild, and the
+  warning names it.
+- Matched on the **tag**, not the path: the tag is what the domain
+  carries, `clawt_mount_tag()` is the one spelling of it, and comparing
+  paths here would have been a second one to drift.
+- No hermetic test is possible for it -- it needs a libvirt domain to
+  read back -- and that is worth saying rather than dressing up. What is
+  testable is the tag, which already is.
+
 ### That entry's reasoning about uids was wrong, and only a boot showed it
 
 - It says the default moved to `clawt` partly because "it lines the uid
