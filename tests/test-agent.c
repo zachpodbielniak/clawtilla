@@ -505,6 +505,161 @@ test_process_runtime_runs_and_reports_exit(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * An exit belonging to a child the runtime has let go of is not this
+ * runtime's exit, and must not be reported as one.
+ *
+ * on_process_exited() took the GSubprocess that exited as `source` and
+ * never compared it with `self->process`.  One runtime object serves an
+ * agent for its whole life and swaps children underneath itself --
+ * process_runtime_start() does `g_clear_object(&self->process)` and
+ * spawns another, and dispose() drops the child while the wait it
+ * started is still outstanding -- so the callback could arrive for a
+ * child that had already been replaced or released, and would then set
+ * `running = FALSE`, `exited = TRUE` and emit "exited" as though the
+ * *current* child had died.
+ *
+ * clawt_agent's handler for that signal clears the link and puts the
+ * agent in STOPPED.  So a live, connected, idle agent was marked
+ * "stopped - exited with status 0" by the death of a process that had
+ * stopped being its own some time earlier; it then answered nothing,
+ * and delegated work failed with "the agent handling this stopped
+ * before finishing" while `ps` showed the agent running normally.
+ *
+ * The reachable trigger in production is a child that does not die
+ * promptly -- process_runtime_stop() gives up waiting for the reap
+ * after KILL_REAP_TICKS, warns that it is "probably in uninterruptible
+ * sleep", and returns, leaving the wait outstanding while the next
+ * start() installs a replacement.  That needs a process the kernel will
+ * not let go of, which cannot be created from a test.  dispose() drops
+ * `self->process` in exactly the same way and can be, so that is the
+ * route driven here: the predicate under test -- "the thing that exited
+ * is not the thing I am holding" -- is identical.
+ *
+ * The first half of this test is the control.  Asserting only that no
+ * exit was reported would pass just as well in a build where "exited"
+ * is never emitted at all, so the same capture must first be shown to
+ * count a real one.
+ */
+static void
+test_a_released_childs_exit_is_not_reported(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtProcessRuntime) live = NULL;
+    ClawtProcessRuntime *released = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *fake = fake_libreclaw_path();
+    RuntimeCapture capture = { 0 };
+    ClawtAgentConfig *agent_config;
+    GPid pid;
+    guint waited;
+
+    if (!g_file_test(fake, G_FILE_TEST_IS_EXECUTABLE)) {
+        g_test_skip("the fake libreclaw fixture is not executable");
+        return;
+    }
+
+    fixture_setup(&fixture);
+    fixture.config = load_config(&fixture, "agents:\n  - id: chief\n");
+    agent_config = clawt_config_get_agent(fixture.config, "chief");
+
+    /*
+     * Control: a child this runtime still owns exits, and the signal
+     * reaches the capture.
+     */
+    live = clawt_process_runtime_new(agent_config, "/dev/null");
+    clawt_process_runtime_set_binary(live, fake);
+    clawt_agent_runtime_set_restart_policy(CLAWT_AGENT_RUNTIME(live),
+                                           CLAWT_RESTART_NEVER, 1, 0);
+    g_signal_connect(live, "exited", G_CALLBACK(on_runtime_exited),
+                     &capture);
+
+    g_assert_true(clawt_agent_runtime_start(CLAWT_AGENT_RUNTIME(live),
+                                            &error));
+    g_assert_no_error(error);
+    g_assert_true(pump_until(has_exited, &capture, 5000));
+    g_assert_cmpuint(capture.exit_count, ==, 1);
+
+    /*
+     * And now one it has let go of.  The child is long-lived, so it is
+     * still alive when the runtime releases it.
+     */
+    released = clawt_process_runtime_new(agent_config, "/dev/null");
+    clawt_process_runtime_set_binary(released, fake);
+    clawt_agent_runtime_set_restart_policy(CLAWT_AGENT_RUNTIME(released),
+                                           CLAWT_RESTART_NEVER, 1, 0);
+    {
+        /*
+         * Through the runtime's own environment rather than g_setenv():
+         * the child's environment is built from an allowlist, so a
+         * variable set in this process never reaches it.
+         */
+        g_autoptr(GHashTable) environment =
+            g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+
+        g_hash_table_insert(environment, g_strdup("FAKE_LIBRECLAW_SLEEP"),
+                            g_strdup("30"));
+        clawt_process_runtime_set_environment(released, environment);
+    }
+    g_signal_connect(released, "exited", G_CALLBACK(on_runtime_exited),
+                     &capture);
+
+    g_assert_true(clawt_agent_runtime_start(CLAWT_AGENT_RUNTIME(released),
+                                            &error));
+    g_assert_no_error(error);
+
+    pid = clawt_agent_runtime_get_pid(CLAWT_AGENT_RUNTIME(released));
+    g_assert_cmpint(pid, >, 0);
+
+    /*
+     * Drops the child and signals it, while the wait started for it is
+     * still outstanding -- the state the replacement path reaches by a
+     * different road.  The callback holds its own reference, so the
+     * runtime object survives to be called back into; that is precisely
+     * what made this reachable.
+     */
+    g_object_run_dispose(G_OBJECT(released));
+
+    /* Let the child actually go, and the queued callback run. */
+    for (waited = 0; waited < 5000 && kill(pid, 0) == 0; waited++) {
+        g_main_context_iteration(NULL, FALSE);
+        g_usleep(1000);
+    }
+
+    g_assert_cmpint(kill(pid, 0), ==, -1);
+
+    for (waited = 0; waited < 500; waited++) {
+        g_main_context_iteration(NULL, FALSE);
+        g_usleep(1000);
+    }
+
+    /*
+     * The exit was seen and rejected, not merely missed.  Asserting only
+     * that nothing was reported would pass just as well in a build where
+     * the callback never ran at all, so the count is what makes this
+     * evidence: one exit arrived for a child this runtime no longer
+     * held, and one was refused.
+     */
+    g_assert_cmpuint(clawt_process_runtime_get_superseded_exits(released),
+                     ==, 1);
+
+    /* And the control's own exit was never counted as superseded. */
+    g_assert_cmpuint(clawt_process_runtime_get_superseded_exits(live),
+                     ==, 0);
+
+    /*
+     * The harm this prevents, asserted directly rather than through the
+     * counter: "exited" was emitted once, by the control, and the
+     * superseded child did not emit a second one.  That signal is what
+     * clawt_agent uses to clear the link and move the agent to STOPPED,
+     * so a second emission here is the whole defect.
+     */
+    g_assert_cmpuint(capture.exit_count, ==, 1);
+
+    g_object_unref(released);
+    fixture_teardown(&fixture);
+}
+
 /* Its output is captured, because by the time anybody wants it the process
  * that owned its stderr is gone. */
 static void
@@ -1129,6 +1284,8 @@ main(int argc, char *argv[])
                     test_losing_the_link_degrades_the_agent);
 
     g_test_add_func("/agent/runtime/runs", test_process_runtime_runs_and_reports_exit);
+    g_test_add_func("/agent/runtime/released-child-exit-is-not-reported",
+                    test_a_released_childs_exit_is_not_reported);
     g_test_add_func("/agent/runtime/captures-output",
                     test_process_runtime_captures_output);
     g_test_add_func("/agent/runtime/redacts-logs", test_log_lines_are_redacted);

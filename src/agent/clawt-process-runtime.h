@@ -63,4 +63,22 @@ void clawt_process_runtime_set_binary(ClawtProcessRuntime *self,
 void clawt_process_runtime_set_environment(ClawtProcessRuntime *self,
                                            GHashTable          *env);
 
+/**
+ * clawt_process_runtime_get_superseded_exits:
+ * @self: a #ClawtProcessRuntime
+ *
+ * How many times a child this runtime had already let go of was seen to
+ * exit.
+ *
+ * A runtime replaces its child in place, so a wait started for one child
+ * can complete after another has taken its place -- which happens when
+ * the stop path gives up on a child the kernel will not reap.  Those
+ * exits are not the runtime's own and are ignored; this is the only way
+ * to tell from outside that any happened.
+ *
+ * Returns: the count since this runtime was created
+ */
+guint clawt_process_runtime_get_superseded_exits(ClawtProcessRuntime *self);
+
+
 G_END_DECLS
