@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-23 Sat]
-#+updated: [2026-08-26 Wed]
-#+version: 0.2.1
+#+updated: [2026-08-29 Sat]
+#+version: 0.2.2
 
 * Routines
 
@@ -22,6 +22,12 @@ clawtilla routine add standup chief-of-staff \
 It runs as a *delegated task*, not a message: it appears in
 ~clawtilla task list~ while it works, and it has a result somebody can
 look at afterwards.
+
+A routine is a clock.  For the same run started by something happening
+elsewhere -- a push, a merge request, a monitoring system -- see
+[[file:triggers.org][triggers.org]].  A trigger goes through this same
+runner, so =routines.directory=, =routines.worktree= and
+=routines.isolate= mean there exactly what they mean here.
 
 *** What a run shares with the conversation
 
@@ -249,14 +255,81 @@ one is not obeyed.  An agent that ignores =worktree= has not hit a bug
 in the scheduler; it has ignored an instruction, which is a question
 about the model and the rest of the prompt.
 
-** What does not work yet
+** Spreading several routines out
 
-=jitter_seconds= is in the schema, is accepted, is saved, and is read by
-nothing.  The runner starts a due routine immediately.  It is documented
-here rather than quietly, because a setting that is accepted and ignored
-is otherwise indistinguishable from one that is working: setting it to
-300 and watching a routine fire at 09:00 looks exactly like a very small
-random offset.
+#+begin_src yaml
+routines:
+  - id: sweep
+    schedule: hourly
+    jitter_seconds: 300
+#+end_src
+
+A due routine with =routines.jitter_seconds= set is *held back* by a
+random 0 to N seconds before it starts.  The tick that finds it due arms
+a timer and starts nothing; the run happens when the delay elapses.
+
+The default is 0, and that is not timidity.  A hosted scheduler jitters
+because thousands of tenants share one server; this is your machine, and
+a routine set for 09:00 should run at 09:00.  It is worth setting when
+several routines share one *rate-limited service* -- four agents all
+asking the same API at the top of the hour -- and worth leaving alone
+otherwise.
+
+*** Only a scheduled run is delayed
+
+~clawtilla routine run~ starts at once, because somebody waiting at a
+terminal is not load to spread, and a command that appeared to do
+nothing for four minutes would be reported as broken.
+
+A catch-up starts at once too: a run that was already missed does not
+need to be later still.
+
+Any run at all cancels a jitter that was still waiting.  The routine has
+run; the delayed copy of the same run is a second one nobody asked for.
+
+*** A second tick does not arm a second run
+
+The tick is once a minute and a jitter is usually longer than that, so
+the obvious implementation fires a routine once per minute of its own
+delay -- =jitter_seconds: 300= would give five runs rather than one late
+one.  The reason is subtle enough to be worth writing down: ~last_run~
+is stamped when the run *starts*, which has not happened yet, so every
+tick in between finds the routine due all over again.  A routine already
+waiting out a jitter is skipped by the tick for exactly that reason.
+
+*** It is clamped at an hour
+
+A value above 3600 is clamped rather than refused.  Past that the run
+that eventually fires is for a time nobody can point at -- a typo of
+=86400= on an hourly routine pushes it past its own next slot, and the
+routine reads as skipped rather than as delayed.
+
+Clamped rather than refused because the number is spreading load, not
+naming a moment: =600= and =900= differ by an amount nobody has an
+opinion about, so refusing a wrong one helps less than quietly keeping
+it a jitter.
+
+*** A reload does not lose a pending run
+
+The delay holds the routine's *id*, not the routine, and looks it up
+again when it elapses.  Saving anything reloads the config and frees
+every routine handle the old one owned, so a five-minute jitter that
+held a pointer would be holding freed memory the moment somebody edited
+the fleet.
+
+A routine removed or disabled while its jitter was waiting simply does
+not run, and that is not an error: a jitter is a delay somebody asked
+for, not a promise to run whatever happens in the meantime.
+
+*** Why this exists rather than being deleted
+
+Because an accepted-and-ignored setting is indistinguishable from a
+working one.  =routines.jitter_seconds= was in the schema, accepted,
+saved and read by nothing for a release: setting it to 300 and watching
+a routine fire at 09:00 looks exactly like a very small random offset,
+and nothing anywhere said otherwise.  The two ways out were to make it
+work or to take it out of the schema; leaving it accepted was the only
+one that could not be right.
 
 ** What the agent is told
 

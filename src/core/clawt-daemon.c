@@ -2835,6 +2835,13 @@ release_components(ClawtDaemon *self)
 
     autostart_cancel(self);
 
+    /*
+     * The listener before anything it can reach.  A delivery dispatched
+     * after the router and the agents are gone would find a half-built
+     * daemon, and the ingress holds a pointer to this one.
+     */
+    clawt_daemon_triggers_stop(self);
+
     g_clear_object(&self->plugins);
 
     /*
@@ -4132,6 +4139,8 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
         clawt_routine_runner_catch_up(self->routines);
         clawt_routine_runner_start(self->routines, self->main_context);
     }
+
+    clawt_daemon_triggers_start(self);
 
     {
         g_autofree gchar *pods =
@@ -6532,6 +6541,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_connector,
     clawt_daemon_handle_integration,
     clawt_daemon_handle_routine,
+    clawt_daemon_handle_trigger,
     clawt_daemon_handle_config,
 };
 

@@ -194,8 +194,7 @@ static const ClawtSchemaEntry schema[] = {
 
 /* ── defaults ────────────────────────────────────────────────────── */
 { "daemon.webhook_enabled", CLAWT_SCHEMA_BOOLEAN,
-  CLAWT_SCHEMA_FLAG_COMMENTED |
-  CLAWT_SCHEMA_FLAG_INERT, "false", NULL,
+  CLAWT_SCHEMA_FLAG_COMMENTED, "false", NULL,
   "Whether to accept inbound trigger deliveries.\n"
   "\n"
   "Off by default. A fleet nothing calls into needs no listener, and a\n"
@@ -204,21 +203,16 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "The receiver is its own server on its own port and serves only\n"
   "/health and the secret /hooks/... paths -- never the IPC surface --\n"
-  "so putting it behind a tunnel exposes nothing else.\n"
-  "\n"
-  "Not implemented in this build. The trigger receiver is not built yet, so nothing listens and\nnothing is delivered.", "0.2.0" },
+  "so putting it behind a tunnel exposes nothing else.", "0.2.0" },
 
-{ "daemon.webhook_port", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_COMMENTED |
-  CLAWT_SCHEMA_FLAG_INERT,
+{ "daemon.webhook_port", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_COMMENTED,
   "8788", NULL,
   "Port the trigger receiver listens on.\n"
   "\n"
   "It binds loopback and the tailnet address when there is one, and\n"
   "loopback alone when there is not -- the same rule the web client\n"
   "follows, and for the same reason: a listener is never widened\n"
-  "because an address was missing.\n"
-  "\n"
-  "Not implemented in this build. The trigger receiver is not built yet, so nothing listens and\nnothing is delivered.", "0.2.0" },
+  "because an address was missing.", "0.2.0" },
 
 { "defaults", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "What a new agent gets when its own block does not say.\n"
@@ -1489,7 +1483,7 @@ static const ClawtSchemaEntry schema[] = {
   "a stack of good mornings at once. Only ever one run, however many\n"
   "were missed.", "0.2.0" },
 
-{ "routines.jitter_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_INERT,
+{ "routines.jitter_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "0", NULL,
   "Delay each run by up to this many seconds, chosen at random.\n"
   "\n"
@@ -1498,9 +1492,10 @@ static const ClawtSchemaEntry schema[] = {
   "for 09:00 should run at 09:00. Worth setting only when several\n"
   "routines share one rate-limited service.\n"
   "\n"
-  "Not implemented in this build. The runner never reads it, so a routine\n"
-  "fires at its scheduled second whatever this says -- which is the\n"
-  "default behaviour, and wrong for the one case the option exists for.",
+  "Only a scheduled run is delayed. `clawtilla routine run` starts at\n"
+  "once, because somebody waiting at a terminal is not load to spread;\n"
+  "so does a catch-up, because a run that was already missed does not\n"
+  "need to be later still.",
   "0.2.0" },
 
 /* ── agents ──────────────────────────────────────────────────────── */
@@ -1520,23 +1515,19 @@ static const ClawtSchemaEntry schema[] = {
   "endpoint, so renaming a trigger does not tell anybody where it\n"
   "lives.", "0.2.0" },
 
-{ "triggers.description", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_INERT,
+{ "triggers.description", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
-  "What this trigger is for, in a line.\n"
-  "\n"
-  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.", "0.2.0" },
+  "What this trigger is for, in a line.", "0.2.0" },
 
 { "triggers.agent", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED,
   NULL, NULL,
   "Which agent runs when it fires.", "0.2.0" },
 
-{ "triggers.room", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_INERT, NULL, NULL,
-  "Where the run reports, if not the agent's own conversation.\n"
-  "\n"
-  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.",
+{ "triggers.room", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Where the run reports, if not the agent's own conversation.",
   "0.2.0" },
 
-{ "triggers.provider", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_INERT,
+{ "triggers.provider", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   "generic", clawt_trigger_provider_get_type,
   "Who is calling: forgejo, gitea, github, gitlab or generic.\n"
   "\n"
@@ -1549,46 +1540,34 @@ static const ClawtSchemaEntry schema[] = {
   "Naming it matters because Forgejo also sends GitHub- and\n"
   "Gitea-shaped headers for compatibility. Sniffing is a fallback for\n"
   "when nobody said, and it can never widen what a configured trigger\n"
-  "accepts.\n"
-  "\n"
-  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.", "0.2.0" },
+  "accepts.", "0.2.0" },
 
-{ "triggers.secret", CLAWT_SCHEMA_SECRET, CLAWT_SCHEMA_FLAG_INERT,
+{ "triggers.secret", CLAWT_SCHEMA_SECRET, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
   "The shared secret the caller proves it knows.\n"
   "\n"
   "Shown once, when it is created or rotated, and never again -- not in\n"
   "a listing, a log line, an event or a transcript. Rotating it stops\n"
-  "the old one working immediately.\n"
-  "\n"
-  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.", "0.2.0" },
+  "the old one working immediately.", "0.2.0" },
 
-{ "triggers.events", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_INERT,
+{ "triggers.events", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
   "Which event names are acted on. Empty means all of them.\n"
   "\n"
   "An event outside the list is answered normally and recorded as\n"
   "ignored, because a caller that gets an error for a delivery you\n"
-  "simply did not want will keep retrying it.\n"
-  "\n"
-  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.", "0.2.0" },
+  "simply did not want will keep retrying it.", "0.2.0" },
 
-{ "triggers.repo", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_INERT, NULL, NULL,
-  "Only act when the delivery names this repository.\n"
-  "\n"
-  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.", "0.2.0" },
+{ "triggers.repo", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Only act when the delivery names this repository.", "0.2.0" },
 
-{ "triggers.branch", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_INERT,
+{ "triggers.branch", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
-  "Only act when the delivery names this branch.\n"
-  "\n"
-  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.", "0.2.0" },
+  "Only act when the delivery names this branch.", "0.2.0" },
 
-{ "triggers.header", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_INERT,
+{ "triggers.header", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
-  "For `provider: generic`, the header carrying the event name.\n"
-  "\n"
-  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.",
+  "For `provider: generic`, the header carrying the event name.",
   "0.2.0" },
 
 { "triggers.instructions", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED,
@@ -1603,33 +1582,25 @@ static const ClawtSchemaEntry schema[] = {
   "The payload arrives marked as untrusted, and the agent is told to\n"
   "read it as data: a webhook body is somebody else's text.", "0.2.0" },
 
-{ "triggers.enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_INERT,
+{ "triggers.enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "true", NULL,
   "Whether it fires.\n"
   "\n"
   "A new trigger starts unverified: the first authenticated delivery is\n"
   "captured and shown to you rather than run, so you can see what the\n"
-  "caller actually sends before an agent acts on it.\n"
-  "\n"
-  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.", "0.2.0" },
+  "caller actually sends before an agent acts on it.", "0.2.0" },
 
-{ "triggers.directory", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_INERT,
+{ "triggers.directory", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
-  "Where the run should work, if somewhere particular.\n"
-  "\n"
-  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.", "0.2.0" },
+  "Where the run should work, if somewhere particular.", "0.2.0" },
 
-{ "triggers.worktree", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_INERT,
+{ "triggers.worktree", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "false", NULL,
-  "Ask the agent to work in a git worktree of its own.\n"
-  "\n"
-  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.", "0.2.0" },
+  "Ask the agent to work in a git worktree of its own.", "0.2.0" },
 
-{ "triggers.isolate", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_INERT,
+{ "triggers.isolate", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "false", NULL,
-  "Give the run a conversation of its own rather than the agent's.\n"
-  "\n"
-  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.",
+  "Give the run a conversation of its own rather than the agent's.",
   "0.2.0" },
 
 { "agents", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,

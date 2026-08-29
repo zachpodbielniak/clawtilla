@@ -75,7 +75,13 @@ typedef struct _ClawtAgentConfig    ClawtAgentConfig;
 typedef struct _ClawtComputerConfig ClawtComputerConfig;
 typedef struct _ClawtIntegrationConfig ClawtIntegrationConfig;
 typedef struct _ClawtRoutine        ClawtRoutine;
+typedef struct _ClawtTrigger        ClawtTrigger;
 typedef struct _ClawtSecretRef      ClawtSecretRef;
+
+/* Triggers */
+typedef struct _ClawtTriggerEvent   ClawtTriggerEvent;
+typedef struct _ClawtTriggerStore   ClawtTriggerStore;
+typedef struct _ClawtWebhookIngress ClawtWebhookIngress;
 
 /* Plugins and interfaces */
 typedef struct _ClawtPlugin         ClawtPlugin;

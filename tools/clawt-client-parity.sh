@@ -187,6 +187,8 @@ declare -A AFFORDANCES=(
     ["decision options stack"]="decision_option_button|decision-options"
     ["sidebar face"]="clawt_gtk_build_avatar|agent-face"
     ["picture editor"]="build_avatar_group|on_avatar_set"
+    ["trigger secret shown once"]="secret_shown_once|secret_shown_once"
+    ["trigger verification capture"]="on_trigger_capture|on_trigger_capture"
 )
 
 usage () {

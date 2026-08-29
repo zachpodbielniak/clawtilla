@@ -1197,4 +1197,145 @@ gboolean clawt_config_remove_routine(ClawtConfig *self, const gchar *id);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtRoutine, clawt_routine_unref)
 
+/* ── Triggers ────────────────────────────────────────────────────── */
+
+/**
+ * ClawtTrigger:
+ *
+ * One entry from the top-level `triggers:` list.
+ *
+ * The same handle shape as #ClawtRoutine -- typed getters over the
+ * entry's own YAML, falling back to the schema -- with the two getters a
+ * routine has no use for: `events` is a list and `secret` is a
+ * reference, and writing either as a scalar would be accepted, saved,
+ * and read back as the default.
+ *
+ * What a trigger has *done* is deliberately not here. The endpoint it
+ * answers on, whether it has been verified, and every delivery receipt
+ * live in #ClawtTriggerStore, because run state in a config file is a
+ * file that rewrites itself.
+ */
+
+#define CLAWT_TYPE_TRIGGER (clawt_trigger_get_type())
+
+GType clawt_trigger_get_type(void) G_GNUC_CONST;
+
+ClawtTrigger *clawt_trigger_ref(ClawtTrigger *self);
+void          clawt_trigger_unref(ClawtTrigger *self);
+
+const gchar *clawt_trigger_get_id(ClawtTrigger *self);
+
+const gchar *clawt_trigger_get_string(ClawtTrigger *self, const gchar *key);
+gboolean     clawt_trigger_get_boolean(ClawtTrigger *self, const gchar *key);
+gint64       clawt_trigger_get_int(ClawtTrigger *self, const gchar *key);
+gboolean     clawt_trigger_has_key(ClawtTrigger *self, const gchar *key);
+
+/**
+ * clawt_trigger_get_string_list:
+ * @self: a #ClawtTrigger
+ * @key: a key below `triggers.`
+ *
+ * Returns: (transfer full): the list, never %NULL and possibly empty
+ */
+GStrv clawt_trigger_get_string_list(ClawtTrigger *self, const gchar *key);
+
+/**
+ * clawt_trigger_get_secret:
+ * @self: a #ClawtTrigger
+ * @key: a key below `triggers.`
+ *
+ * The reference, never the secret. A reference that will not parse is a
+ * warning and %NULL, so the trigger goes on authenticating nothing --
+ * falling back to "no secret needed" would turn a typo into a public
+ * endpoint.
+ *
+ * Returns: (transfer full) (nullable): the reference
+ */
+ClawtSecretRef *clawt_trigger_get_secret(ClawtTrigger *self,
+                                         const gchar  *key);
+
+/**
+ * clawt_trigger_get_provider:
+ * @self: a #ClawtTrigger
+ *
+ * Who this trigger expects to be called by.
+ *
+ * An unreadable value reads as %CLAWT_TRIGGER_PROVIDER_GENERIC, which is
+ * the strictest of the five: it requires a bearer token and understands
+ * no forge's headers, so a misspelled provider accepts less rather than
+ * more.
+ *
+ * Returns: the provider
+ */
+ClawtTriggerProvider clawt_trigger_get_provider(ClawtTrigger *self);
+
+gboolean clawt_trigger_set_string(ClawtTrigger *self, const gchar *key,
+                                  const gchar *value);
+gboolean clawt_trigger_set_boolean(ClawtTrigger *self, const gchar *key,
+                                   gboolean value);
+gboolean clawt_trigger_set_int(ClawtTrigger *self, const gchar *key,
+                               gint64 value);
+
+/**
+ * clawt_trigger_set_string_list:
+ * @self: a #ClawtTrigger
+ * @key: a key below `triggers.`
+ * @values: (nullable) (array zero-terminated=1): the list, or %NULL to unset
+ *
+ * Returns: %TRUE if it was written
+ */
+gboolean clawt_trigger_set_string_list(ClawtTrigger       *self,
+                                       const gchar        *key,
+                                       const gchar *const *values);
+
+/**
+ * clawt_trigger_set_secret:
+ * @self: a #ClawtTrigger
+ * @key: a key below `triggers.`
+ * @backend: how it will be resolved
+ * @locator: (nullable): the path, variable or command, or %NULL to unset
+ *
+ * Writes a reference. There is no spelling that writes a secret's value
+ * into the config, for the reason #ClawtSecretRef exists.
+ *
+ * Returns: %TRUE if it was written
+ */
+gboolean clawt_trigger_set_secret(ClawtTrigger       *self,
+                                  const gchar        *key,
+                                  ClawtSecretBackend  backend,
+                                  const gchar        *locator);
+
+/**
+ * clawt_config_get_triggers:
+ * @self: a #ClawtConfig
+ *
+ * Returns: (transfer none) (element-type ClawtTrigger): the triggers
+ */
+GPtrArray *clawt_config_get_triggers(ClawtConfig *self);
+
+/**
+ * clawt_config_get_trigger:
+ * @self: a #ClawtConfig
+ * @id: a trigger id
+ *
+ * Returns: (transfer none) (nullable): the trigger
+ */
+ClawtTrigger *clawt_config_get_trigger(ClawtConfig *self, const gchar *id);
+
+/**
+ * clawt_config_add_trigger:
+ * @self: a #ClawtConfig
+ * @id: an id unique in the file
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Returns: (transfer none) (nullable): the new trigger
+ */
+ClawtTrigger *clawt_config_add_trigger(ClawtConfig  *self,
+                                       const gchar  *id,
+                                       GError      **error);
+
+gboolean clawt_config_remove_trigger(ClawtConfig *self, const gchar *id);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtTrigger, clawt_trigger_unref)
+
 G_END_DECLS

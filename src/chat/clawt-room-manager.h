@@ -137,6 +137,25 @@ ClawtRoom *clawt_room_manager_get_routine(ClawtRoomManager *self,
                                           const gchar      *agent_id);
 
 /**
+ * clawt_room_manager_get_trigger:
+ * @self: a #ClawtRoomManager
+ * @trigger_id: which trigger
+ * @agent_id: who runs it
+ *
+ * The room an isolated trigger's runs happen in.
+ *
+ * The same shape as clawt_room_manager_get_routine(), under a namespace
+ * of its own: `trigger:<id>`. A shared prefix would put a trigger and a
+ * routine of the same name in one room, and the symptom would be one
+ * of them apparently answering the other's work.
+ *
+ * Returns: (transfer none): the room
+ */
+ClawtRoom *clawt_room_manager_get_trigger(ClawtRoomManager *self,
+                                          const gchar      *trigger_id,
+                                          const gchar      *agent_id);
+
+/**
  * clawt_room_manager_list:
  * @self: a #ClawtRoomManager
  *

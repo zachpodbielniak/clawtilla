@@ -791,6 +791,8 @@ clawt_web_view_body(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view)
         return clawt_web_computer_body(app, agent_id);
     case CLAWT_WEB_VIEW_ROUTINES:
         return clawt_web_routines_body(app, agent_id);
+    case CLAWT_WEB_VIEW_TRIGGERS:
+        return clawt_web_triggers_body(app, agent_id);
     case CLAWT_WEB_VIEW_TASKS:
         return clawt_web_tasks_body(app, agent_id);
     case CLAWT_WEB_VIEW_FLOW:

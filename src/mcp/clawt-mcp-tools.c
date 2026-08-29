@@ -337,6 +337,14 @@ static const ToolDefinition tools[] = {
          "delivery empties it.",
          NEEDS_NOTHING, room_history_params),
 
+    TOOL("clawtilla_trigger_list",
+         "The triggers that can wake you: what event each waits for, from "
+         "which forge and which repository. Read this when a run arrives "
+         "that nobody asked you for -- it is how you find out what started "
+         "it. You cannot create one: a trigger is a public address on the "
+         "operator's network, so only they make them.",
+         NEEDS_NOTHING, no_params),
+
     TOOL("clawtilla_task_list",
          "Every task you delegated and every task delegated to you, with "
          "what each one is doing right now. Use this rather than "
@@ -1226,6 +1234,110 @@ tool_fleet_cost(ClawtMcpTools *self, const gchar *agent_id)
     return g_string_free(g_steal_pointer(&out), FALSE);
 }
 
+
+/*
+ * What can wake this agent, and nothing about how to reach it.
+ *
+ * The endpoint and the secret are both deliberately absent. An agent
+ * that knew its own endpoint could hand it to anything it talks to --
+ * another agent, a web page it read, a skill somebody imported -- and
+ * the whole value of an unguessable address is that it is not written
+ * down anywhere an untrusted string can reach.
+ *
+ * There is no clawtilla_trigger_add for the same reason: creating one
+ * opens a port on the operator's network, and that is a decision for the
+ * person whose network it is.
+ */
+static gchar *
+tool_trigger_list(ClawtMcpTools *self, const gchar *agent_id)
+{
+    g_autoptr(GString) out = g_string_new(NULL);
+    ClawtConfig *config;
+    GPtrArray *triggers;
+    guint i;
+    guint mine = 0;
+
+    config = (self->agents != NULL)
+             ? clawt_agent_manager_get_config(self->agents) : NULL;
+
+    if (config == NULL)
+        return g_strdup("This fleet has no configuration to read triggers "
+                        "from.");
+
+    triggers = clawt_config_get_triggers(config);
+
+    for (i = 0; triggers != NULL && i < triggers->len; i++) {
+        ClawtTrigger *trigger = g_ptr_array_index(triggers, i);
+        g_auto(GStrv) events = NULL;
+        const gchar *repo;
+        const gchar *branch;
+
+        /*
+         * Only the ones pointed at this agent. A roster of every
+         * trigger in the fleet would be somebody else's arrangements,
+         * and it lands in context on every call.
+         */
+        if (g_strcmp0(clawt_trigger_get_string(trigger, "agent"),
+                      agent_id) != 0)
+            continue;
+
+        mine++;
+
+        g_string_append_printf(out, "- %s (%s)",
+                               clawt_trigger_get_id(trigger),
+                               clawt_enum_to_nick(
+                                   CLAWT_TYPE_TRIGGER_PROVIDER,
+                                   (gint)clawt_trigger_get_provider(trigger)));
+
+        if (!clawt_trigger_get_boolean(trigger, "enabled"))
+            g_string_append(out, " -- switched off");
+
+        events = clawt_trigger_get_string_list(trigger, "events");
+
+        if (events != NULL && events[0] != NULL) {
+            g_autofree gchar *joined = g_strjoinv(", ", events);
+
+            g_string_append_printf(out, "\n  on: %s", joined);
+        } else {
+            g_string_append(out, "\n  on: every event it is sent");
+        }
+
+        repo = clawt_trigger_get_string(trigger, "repo");
+        branch = clawt_trigger_get_string(trigger, "branch");
+
+        if (repo != NULL && *repo != '\0')
+            g_string_append_printf(out, "\n  repository: %s", repo);
+
+        if (branch != NULL && *branch != '\0')
+            g_string_append_printf(out, "\n  branch: %s", branch);
+
+        {
+            const gchar *description =
+                clawt_trigger_get_string(trigger, "description");
+
+            if (description != NULL && *description != '\0')
+                g_string_append_printf(out, "\n  %s", description);
+        }
+
+        g_string_append_c(out, '\n');
+    }
+
+    /*
+     * An empty answer says why it is empty. "No triggers" and "triggers
+     * exist but none of them point at you" are different facts, and an
+     * agent that read the first as the second would go looking for a
+     * configuration problem that is not there.
+     */
+    if (mine == 0)
+        return g_strdup("Nothing wakes you from outside. Every run you "
+                        "get comes from a person, a routine, or another "
+                        "agent.");
+
+    g_string_prepend(out, "These can start a run on you without anybody "
+                          "typing:\n\n");
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
 
 /*
  * The teams, written for whoever is deciding where a piece of work goes.
@@ -3366,6 +3478,8 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
         text = tool_list_teams(self, agent_id);
     else if (g_strcmp0(tool_name, "clawtilla_delegate") == 0)
         text = tool_delegate(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_trigger_list") == 0)
+        text = tool_trigger_list(self, agent_id);
     else if (g_strcmp0(tool_name, "clawtilla_task_list") == 0)
         text = tool_task_list(self, agent_id, arguments);
     else if (g_strcmp0(tool_name, "clawtilla_task_status") == 0)

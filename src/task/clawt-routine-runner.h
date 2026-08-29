@@ -99,6 +99,23 @@ void clawt_routine_runner_start(ClawtRoutineRunner *self,
 void clawt_routine_runner_stop(ClawtRoutineRunner *self);
 
 /**
+ * clawt_routine_runner_tick:
+ * @self: a #ClawtRoutineRunner
+ *
+ * Considers every routine once, exactly as the timer does.
+ *
+ * This is what the timer calls, named rather than hidden so that "did
+ * this fire when it should" stays answerable without waiting a minute
+ * for a tick -- which is the whole reason the runner knows nothing about
+ * agents.
+ *
+ * A routine with `jitter_seconds` is *held* rather than started: it is
+ * armed here and runs when its delay elapses, so a tick that arms one
+ * has done its job and started nothing.
+ */
+void clawt_routine_runner_tick(ClawtRoutineRunner *self);
+
+/**
  * clawt_routine_runner_next_run:
  * @self: a #ClawtRoutineRunner
  * @routine_id: which routine

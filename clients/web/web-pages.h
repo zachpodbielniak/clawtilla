@@ -90,6 +90,15 @@ HtmxElement *clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_mailbox_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_computer_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_routines_body(ClawtWebApp *app, const gchar *agent_id);
+
+/**
+ * clawt_web_triggers_body:
+ * @app: a #ClawtWebApp
+ * @agent_id: (nullable): the selected agent, which triggers ignore
+ *
+ * Returns: (transfer full): the triggers page
+ */
+HtmxElement *clawt_web_triggers_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_tasks_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_flow_body(ClawtWebApp *app, const gchar *agent_id);
 
@@ -115,6 +124,20 @@ void clawt_web_register_agent(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_mailbox(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_computer(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_work(HtmxRouter *router, ClawtWebApp *app);
+
+/**
+ * clawt_web_register_triggers:
+ * @router: the router
+ * @app: a #ClawtWebApp
+ *
+ * Registers the trigger routes.
+ *
+ * They live under `/triggers`, never under `/a/:id`, and are registered
+ * before clawt_web_register_views() -- "/a/:id/:view" matches everything
+ * below an agent and renders the chat page with a 200, so a route after
+ * it is unreachable and looks like a page that renders the wrong thing.
+ */
+void clawt_web_register_triggers(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_events(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_alerts(HtmxRouter *router, ClawtWebApp *app);

@@ -23,6 +23,7 @@ struct _ClawtConfig {
     GPtrArray   *agents;      /* ClawtAgentConfig* */
     GPtrArray   *integrations; /* ClawtIntegrationConfig* */
     GPtrArray   *routines;    /* ClawtRoutine* */
+    GPtrArray   *triggers;    /* ClawtTrigger* */
     GPtrArray   *warnings;    /* gchar* */
 };
 
@@ -35,6 +36,7 @@ G_DEFINE_FINAL_TYPE(ClawtConfig, clawt_config, G_TYPE_OBJECT)
  */
 static void reload_integrations(ClawtConfig *self);
 static void reload_routines(ClawtConfig *self);
+static void reload_triggers(ClawtConfig *self);
 
 struct _ClawtAgentConfig {
     gint         ref_count;
@@ -1910,6 +1912,7 @@ clawt_config_finalize(GObject *object)
     g_clear_pointer(&self->agents, g_ptr_array_unref);
     g_clear_pointer(&self->integrations, g_ptr_array_unref);
     g_clear_pointer(&self->routines, g_ptr_array_unref);
+    g_clear_pointer(&self->triggers, g_ptr_array_unref);
     g_clear_pointer(&self->warnings, g_ptr_array_unref);
 
     G_OBJECT_CLASS(clawt_config_parent_class)->finalize(object);
@@ -1933,6 +1936,8 @@ clawt_config_init(ClawtConfig *self)
         (GDestroyNotify)clawt_integration_config_unref);
     self->routines = g_ptr_array_new_with_free_func(
         (GDestroyNotify)clawt_routine_unref);
+    self->triggers = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_trigger_unref);
     self->warnings = g_ptr_array_new_with_free_func(g_free);
 }
 
@@ -2296,6 +2301,7 @@ config_from_parser(YamlParser *parser, const gchar *path, GError **error)
     reload_agents(self);
     reload_integrations(self);
     reload_routines(self);
+    reload_triggers(self);
 
     return self;
 }
@@ -4036,6 +4042,524 @@ clawt_config_remove_routine(ClawtConfig *self, const gchar *id)
 
         yaml_sequence_remove_element(sequence, i);
         reload_routines(self);
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+/* ── Triggers ────────────────────────────────────────────────────── */
+
+/*
+ * The same handle shape as #ClawtRoutine, with two getters it does not
+ * need: a trigger's `events` is a list and its `secret` is a reference.
+ *
+ * Both are here rather than folded into the string getter because a
+ * setter that does not dispatch on what the schema says a key is has
+ * already cost this codebase a working option -- `deny_paths` was
+ * written as a scalar, accepted, saved, and read back as the default,
+ * so it denied nothing.
+ */
+struct _ClawtTrigger {
+    gint         ref_count;
+
+    ClawtConfig *config;      /* unowned; the config outlives its triggers */
+    gchar       *id;
+    YamlNode    *node;        /* the trigger's mapping, unowned */
+};
+
+static ClawtTrigger *
+clawt_trigger_new(ClawtConfig *config, const gchar *id, YamlNode *node)
+{
+    ClawtTrigger *self = g_new0(ClawtTrigger, 1);
+
+    self->ref_count = 1;
+    self->config = config;
+    self->id = g_strdup(id);
+    self->node = node;
+
+    return self;
+}
+
+ClawtTrigger *
+clawt_trigger_ref(ClawtTrigger *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    g_atomic_int_inc(&self->ref_count);
+
+    return self;
+}
+
+void
+clawt_trigger_unref(ClawtTrigger *self)
+{
+    if (self == NULL)
+        return;
+
+    if (!g_atomic_int_dec_and_test(&self->ref_count))
+        return;
+
+    g_free(self->id);
+    g_free(self);
+}
+
+G_DEFINE_BOXED_TYPE(ClawtTrigger, clawt_trigger,
+                    clawt_trigger_ref, clawt_trigger_unref)
+
+const gchar *
+clawt_trigger_get_id(ClawtTrigger *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return self->id;
+}
+
+static gchar *
+trigger_schema_key(const gchar *key)
+{
+    return g_strdup_printf("triggers.%s", key);
+}
+
+const gchar *
+clawt_trigger_get_string(ClawtTrigger *self, const gchar *key)
+{
+    YamlNode *node;
+    g_autofree gchar *schema_key = NULL;
+
+    g_return_val_if_fail(self != NULL, NULL);
+    g_return_val_if_fail(key != NULL, NULL);
+
+    node = node_at_path(self->node, key, FALSE);
+
+    if (node != NULL && yaml_node_get_node_type(node) == YAML_NODE_SCALAR)
+        return yaml_node_get_string(node);
+
+    schema_key = trigger_schema_key(key);
+
+    return schema_default_for(schema_key);
+}
+
+gboolean
+clawt_trigger_get_boolean(ClawtTrigger *self, const gchar *key)
+{
+    YamlNode *node;
+    g_autofree gchar *schema_key = NULL;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    node = node_at_path(self->node, key, FALSE);
+
+    if (node != NULL && yaml_node_get_node_type(node) == YAML_NODE_SCALAR)
+        return yaml_node_get_boolean(node);
+
+    schema_key = trigger_schema_key(key);
+
+    return string_to_boolean(schema_default_for(schema_key), FALSE);
+}
+
+gint64
+clawt_trigger_get_int(ClawtTrigger *self, const gchar *key)
+{
+    YamlNode *node;
+    g_autofree gchar *schema_key = NULL;
+    const gchar *fallback;
+
+    g_return_val_if_fail(self != NULL, 0);
+    g_return_val_if_fail(key != NULL, 0);
+
+    node = node_at_path(self->node, key, FALSE);
+
+    if (node != NULL && yaml_node_get_node_type(node) == YAML_NODE_SCALAR)
+        return yaml_node_get_int(node);
+
+    schema_key = trigger_schema_key(key);
+    fallback = schema_default_for(schema_key);
+
+    return fallback != NULL ? g_ascii_strtoll(fallback, NULL, 10) : 0;
+}
+
+GStrv
+clawt_trigger_get_string_list(ClawtTrigger *self, const gchar *key)
+{
+    GStrv value;
+    g_autofree gchar *schema_key = NULL;
+    const gchar *fallback;
+
+    g_return_val_if_fail(self != NULL, NULL);
+    g_return_val_if_fail(key != NULL, NULL);
+
+    value = node_to_strv(node_at_path(self->node, key, FALSE));
+
+    if (value != NULL)
+        return value;
+
+    schema_key = trigger_schema_key(key);
+    fallback = schema_default_for(schema_key);
+
+    if (fallback == NULL)
+        return g_new0(gchar *, 1);
+
+    return g_strsplit(fallback, ",", -1);
+}
+
+ClawtSecretRef *
+clawt_trigger_get_secret(ClawtTrigger *self, const gchar *key)
+{
+    YamlNode *node;
+    ClawtSecretBackend default_backend;
+    g_autoptr(GError) error = NULL;
+    ClawtSecretRef *ref;
+
+    g_return_val_if_fail(self != NULL, NULL);
+    g_return_val_if_fail(key != NULL, NULL);
+
+    node = node_at_path(self->node, key, FALSE);
+
+    if (node == NULL)
+        return NULL;
+
+    default_backend = (ClawtSecretBackend)
+        clawt_config_get_enum(self->config, "secrets.default_backend");
+
+    ref = clawt_secret_ref_parse(node, default_backend, &error);
+
+    /*
+     * A reference that cannot be parsed is a warning and no secret, so
+     * the trigger authenticates nothing.  Falling back to "no secret
+     * required" would turn a typo into a public endpoint.
+     */
+    if (ref == NULL && error != NULL) {
+        g_warning("trigger %s: %s: %s", self->id, key, error->message);
+        return NULL;
+    }
+
+    return ref;
+}
+
+ClawtTriggerProvider
+clawt_trigger_get_provider(ClawtTrigger *self)
+{
+    const gchar *nick;
+    gint value;
+
+    g_return_val_if_fail(self != NULL, CLAWT_TRIGGER_PROVIDER_GENERIC);
+
+    nick = clawt_trigger_get_string(self, "provider");
+
+    if (nick == NULL ||
+        !clawt_enum_from_nick(CLAWT_TYPE_TRIGGER_PROVIDER, nick, &value))
+        return CLAWT_TRIGGER_PROVIDER_GENERIC;
+
+    return (ClawtTriggerProvider)value;
+}
+
+gboolean
+clawt_trigger_has_key(ClawtTrigger *self, const gchar *key)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    return node_at_path(self->node, key, FALSE) != NULL;
+}
+
+gboolean
+clawt_trigger_set_string(ClawtTrigger *self, const gchar *key,
+                         const gchar *value)
+{
+    g_autoptr(YamlNode) node = NULL;
+    g_autofree gchar *schema_key = NULL;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    if (value == NULL) {
+        YamlMapping *mapping = yaml_node_get_mapping(self->node);
+
+        if (mapping != NULL)
+            yaml_mapping_remove_member(mapping, key);
+
+        return TRUE;
+    }
+
+    node = yaml_node_new_string(value);
+    schema_key = trigger_schema_key(key);
+
+    return set_scalar(self->node, key, node, schema_key);
+}
+
+gboolean
+clawt_trigger_set_boolean(ClawtTrigger *self, const gchar *key,
+                          gboolean value)
+{
+    g_autoptr(YamlNode) node = NULL;
+    g_autofree gchar *schema_key = NULL;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    node = yaml_node_new_boolean(value);
+    schema_key = trigger_schema_key(key);
+
+    return set_scalar(self->node, key, node, schema_key);
+}
+
+gboolean
+clawt_trigger_set_int(ClawtTrigger *self, const gchar *key, gint64 value)
+{
+    g_autoptr(YamlNode) node = NULL;
+    g_autofree gchar *schema_key = NULL;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    node = yaml_node_new_int(value);
+    schema_key = trigger_schema_key(key);
+
+    return set_scalar(self->node, key, node, schema_key);
+}
+
+gboolean
+clawt_trigger_set_string_list(ClawtTrigger       *self,
+                              const gchar        *key,
+                              const gchar *const *values)
+{
+    g_autoptr(YamlNode) node = NULL;
+    g_autoptr(YamlSequence) sequence = NULL;
+    g_autofree gchar *schema_key = NULL;
+    guint i;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    if (values == NULL || values[0] == NULL)
+        return clawt_trigger_set_string(self, key, NULL);
+
+    sequence = yaml_sequence_new();
+
+    for (i = 0; values[i] != NULL; i++) {
+        g_autoptr(YamlNode) element = yaml_node_new_string(values[i]);
+
+        yaml_sequence_add_element(sequence, element);
+    }
+
+    node = yaml_node_new_sequence(sequence);
+    schema_key = trigger_schema_key(key);
+
+    return set_scalar(self->node, key, node, schema_key);
+}
+
+gboolean
+clawt_trigger_set_secret(ClawtTrigger       *self,
+                         const gchar        *key,
+                         ClawtSecretBackend  backend,
+                         const gchar        *locator)
+{
+    g_autoptr(YamlNode) node = NULL;
+    g_autoptr(YamlMapping) mapping = NULL;
+    g_autoptr(YamlNode) value = NULL;
+    g_autofree gchar *schema_key = NULL;
+    const gchar *backend_key;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    if (locator == NULL)
+        return clawt_trigger_set_string(self, key, NULL);
+
+    switch (backend) {
+    case CLAWT_SECRET_BACKEND_ENV:
+        backend_key = "env";
+        break;
+    case CLAWT_SECRET_BACKEND_COMMAND:
+        backend_key = "command";
+        break;
+    case CLAWT_SECRET_BACKEND_FILE:
+    default:
+        backend_key = "file";
+        break;
+    }
+
+    mapping = yaml_mapping_new();
+    value = yaml_node_new_string(locator);
+    yaml_mapping_set_member(mapping, backend_key, value);
+    node = yaml_node_new_mapping(mapping);
+    schema_key = trigger_schema_key(key);
+
+    return set_scalar(self->node, key, node, schema_key);
+}
+
+/*
+ * Rebuilt from the file, with the same three refusals a routine gets.
+ *
+ * A trigger with no id is worse than a routine with none: an endpoint is
+ * derived from it, so an entry nobody can name is an entry nobody can
+ * rotate or remove.
+ */
+static void
+reload_triggers(ClawtConfig *self)
+{
+    YamlNode *list;
+    YamlSequence *sequence;
+    guint i;
+    guint length;
+
+    g_ptr_array_set_size(self->triggers, 0);
+
+    list = node_at_path(self->root, "triggers", FALSE);
+
+    if (list == NULL || yaml_node_get_node_type(list) != YAML_NODE_SEQUENCE)
+        return;
+
+    sequence = yaml_node_get_sequence(list);
+    length = yaml_sequence_get_length(sequence);
+
+    for (i = 0; i < length; i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+        YamlMapping *mapping;
+        const gchar *id;
+
+        if (element == NULL ||
+            yaml_node_get_node_type(element) != YAML_NODE_MAPPING) {
+            g_ptr_array_add(self->warnings,
+                            g_strdup_printf("triggers[%u] is not a mapping; "
+                                            "ignored", i));
+            continue;
+        }
+
+        mapping = yaml_node_get_mapping(element);
+        id = member_string(mapping, "id");
+
+        if (id == NULL || *id == '\0') {
+            g_ptr_array_add(self->warnings,
+                            g_strdup_printf("triggers[%u] has no id; "
+                                            "ignored", i));
+            continue;
+        }
+
+        if (clawt_config_get_trigger(self, id) != NULL) {
+            g_ptr_array_add(self->warnings,
+                            g_strdup_printf("two triggers are called '%s'; "
+                                            "the second is ignored", id));
+            continue;
+        }
+
+        g_ptr_array_add(self->triggers,
+                        clawt_trigger_new(self, id, element));
+    }
+}
+
+GPtrArray *
+clawt_config_get_triggers(ClawtConfig *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return self->triggers;
+}
+
+ClawtTrigger *
+clawt_config_get_trigger(ClawtConfig *self, const gchar *id)
+{
+    guint i;
+
+    g_return_val_if_fail(self != NULL, NULL);
+
+    if (id == NULL)
+        return NULL;
+
+    for (i = 0; i < self->triggers->len; i++) {
+        ClawtTrigger *trigger = g_ptr_array_index(self->triggers, i);
+
+        if (g_strcmp0(trigger->id, id) == 0)
+            return trigger;
+    }
+
+    return NULL;
+}
+
+ClawtTrigger *
+clawt_config_add_trigger(ClawtConfig  *self,
+                         const gchar  *id,
+                         GError      **error)
+{
+    YamlNode *list;
+    g_autoptr(YamlNode) entry = NULL;
+    g_autoptr(YamlNode) id_node = NULL;
+
+    g_return_val_if_fail(self != NULL, NULL);
+
+    if (!clawt_is_valid_id(id)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "'%s' is not a usable trigger id: ids may hold only "
+                    "lowercase letters, digits, '-' and '_', and must not "
+                    "start with punctuation", id != NULL ? id : "");
+        return NULL;
+    }
+
+    if (clawt_config_get_trigger(self, id) != NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_ALREADY_EXISTS,
+                    "a trigger called '%s' already exists", id);
+        return NULL;
+    }
+
+    list = node_at_path(self->root, "triggers", FALSE);
+
+    if (list == NULL || yaml_node_get_node_type(list) != YAML_NODE_SEQUENCE) {
+        g_autoptr(YamlNode) fresh = yaml_node_new_sequence(NULL);
+
+        yaml_mapping_set_member(yaml_node_get_mapping(self->root),
+                                "triggers", fresh);
+        list = node_at_path(self->root, "triggers", FALSE);
+        apply_schema_comment(list, "triggers");
+    }
+
+    entry = yaml_node_new_mapping(NULL);
+    id_node = yaml_node_new_string(id);
+    yaml_mapping_set_member(yaml_node_get_mapping(entry), "id", id_node);
+    yaml_sequence_add_element(yaml_node_get_sequence(list), entry);
+
+    reload_triggers(self);
+
+    return clawt_config_get_trigger(self, id);
+}
+
+gboolean
+clawt_config_remove_trigger(ClawtConfig *self, const gchar *id)
+{
+    YamlNode *list;
+    YamlSequence *sequence;
+    guint i;
+    guint length;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    if (id == NULL)
+        return FALSE;
+
+    list = node_at_path(self->root, "triggers", FALSE);
+
+    if (list == NULL || yaml_node_get_node_type(list) != YAML_NODE_SEQUENCE)
+        return FALSE;
+
+    sequence = yaml_node_get_sequence(list);
+    length = yaml_sequence_get_length(sequence);
+
+    for (i = 0; i < length; i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+        YamlMapping *mapping;
+
+        if (element == NULL ||
+            yaml_node_get_node_type(element) != YAML_NODE_MAPPING)
+            continue;
+
+        mapping = yaml_node_get_mapping(element);
+
+        if (g_strcmp0(member_string(mapping, "id"), id) != 0)
+            continue;
+
+        yaml_sequence_remove_element(sequence, i);
+        reload_triggers(self);
         return TRUE;
     }
 

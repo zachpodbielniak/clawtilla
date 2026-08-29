@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-27 Thu]
-#+version: 0.1.0
+#+updated: [2026-08-29 Sat]
+#+version: 0.2.0
 
 * The client protocol
 
@@ -690,6 +690,56 @@ both the schedule and ~enabled~ and returns the ~task~ it started.
 
 ~routine.ran~ and ~routine.changed~ are published as events.
 
+*** trigger.*
+
+~trigger.list~ returns every trigger with its own schema fields plus
+four the daemon works out: ~endpoint~ (the address it answers on),
+~pending_verification~, ~unfinished~ (runs in flight), and ~has_secret~.
+The reply also carries ~receiving~ -- whether the receiver is listening
+at all -- and ~listening~, the base URLs it bound, so a client can print
+a whole address rather than asking somebody to assemble one.
+
+*The secret is never in a reply except the two that mint it.*
+~trigger.add~ and ~trigger.rotate~ return ~secret~ with
+~secret_shown_once~ beside it, and nothing else ever does.  The
+~CLAWT_SCHEMA_SECRET~ field is skipped outright when a trigger is
+serialised, so not even the *reference* is listed: ~{command: pass show
+fleet/trigger-x}~ names where the credential lives, to every client on
+the tailnet.  There is correspondingly no way to *post* a secret.
+
+~trigger.add~ and ~trigger.update~ take the schema's own keys and
+dispatch on each key's type; a list may be an array or a
+comma-separated string, because a command line and an HTML form both
+produce the latter.  ~trigger.add~ forces ~enabled~ false whatever was
+posted: the first authenticated delivery is captured rather than run,
+and an enabled trigger can never be pending.
+
+~trigger.remove~, ~trigger.rotate~ and ~trigger.capture~ take an ~id~.
+~trigger.rotate~ replaces the secret *and* the endpoint and puts the
+trigger back to pending.  ~trigger.capture~ returns the held delivery
+as ~payload~, with ~pending_verification~ saying whether the handshake
+is still open.
+
+~trigger.test~ takes an ~id~, an optional ~event~ name and ~run~.  With
+~run~ false it returns the ~prompt~ the agent would be asked; with it
+true it starts the run and returns the ~task~.  It builds a synthetic
+event rather than making a loopback request against the real endpoint,
+which would need the secret in a process listing.
+
+~trigger.deliveries~ takes an optional ~id~ and a ~limit~ (50 by
+default) and returns receipts newest first, each with ~trigger~,
+~delivery~, ~event~, ~repo~, ~branch~, ~actor~, ~outcome~, ~detail~,
+~task~ and ~at~.  An empty list carries a ~note~ saying *why* it is
+empty, because "nothing has been delivered" and "the receiver is not
+running" are different facts and only one is about the sender.
+
+~trigger.fired~, ~trigger.changed~, ~trigger.refused~ and
+~trigger.verified~ are published as events.  ~trigger.refused~ is an
+authentication failure and nothing else: a delivery turned away by the
+rate limit or the in-flight cap is in the receipts and publishes
+*nothing*, since an event per refusal is a way to make the daemon
+publish as fast as somebody can POST.
+
 *** connector.begin, then connector.await
 
 Authorising takes as long as a person takes, which is far longer than a
@@ -867,6 +917,7 @@ Every kind published, by subject:
 | a team | ~team.changed~ |
 | an agent | ~decision.asked~ |
 | a routine | ~routine.ran~, ~routine.changed~ |
+| a trigger | ~trigger.fired~, ~trigger.changed~, ~trigger.refused~, ~trigger.verified~ |
 | an integration | ~integration.changed~ |
 | a cloud image | ~image.progress~ (~done~, ~total~), ~image.finished~ (~path~ or ~error~) |
 | an agent | ~computer.exec~ |

@@ -78,6 +78,7 @@ typedef enum {
     CLAWT_REFRESH_IMAGES,
     CLAWT_REFRESH_INTEGRATIONS,
     CLAWT_REFRESH_ROUTINES,
+    CLAWT_REFRESH_TRIGGERS,
     CLAWT_REFRESH_CONNECTORS,
     CLAWT_REFRESH_TEAMS,
     CLAWT_REFRESH_SPENDING,
@@ -237,6 +238,8 @@ struct _ClawtWindow {
     gint64             settings_spending_since;
     GtkWidget         *settings_connectors;
     GtkListBox        *routine_list;
+    GtkListBox        *trigger_list;
+    GtkListBox        *delivery_list;
     GtkWidget         *settings_catalog_row;
     GtkWidget         *settings_url_row;
     JsonNode          *settings_catalog;
@@ -828,6 +831,14 @@ clawt_gtk_build_routine_page(ClawtWindow *self);
 
 void
 clawt_gtk_refresh_routines(ClawtWindow *self);
+
+/* ── Defined in gtk-triggers.c: the triggers page ────────────────── */
+
+GtkWidget *
+clawt_gtk_build_trigger_page(ClawtWindow *self);
+
+void
+clawt_gtk_refresh_triggers(ClawtWindow *self);
 
 /* ── Defined in gtk-sidebar.c: the sidebar ───────────────────────── */
 

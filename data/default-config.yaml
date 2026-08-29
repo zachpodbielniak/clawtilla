@@ -173,9 +173,6 @@ daemon:
   # # The receiver is its own server on its own port and serves only
   # # /health and the secret /hooks/... paths -- never the IPC surface --
   # # so putting it behind a tunnel exposes nothing else.
-  # #
-  # # Not implemented in this build. The trigger receiver is not built yet, so nothing listens and
-  # # nothing is delivered.
   # webhook_enabled: false
 
   # # Port the trigger receiver listens on.
@@ -184,9 +181,6 @@ daemon:
   # # loopback alone when there is not -- the same rule the web client
   # # follows, and for the same reason: a listener is never widened
   # # because an address was missing.
-  # #
-  # # Not implemented in this build. The trigger receiver is not built yet, so nothing listens and
-  # # nothing is delivered.
   # webhook_port: 8788
 
 # What a new agent gets when its own block does not say.

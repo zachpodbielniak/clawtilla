@@ -7114,6 +7114,289 @@ test_the_listing_says_what_can_be_powered(void)
 }
 
 
+/* ── Triggers ────────────────────────────────────────────────────── */
+
+/*
+ * A new trigger is created switched off, with a secret shown once.
+ *
+ * All three parts matter and all three are easy to lose. The secret must
+ * cross IPC exactly here; the trigger must start off, because the first
+ * delivery is captured rather than run; and the endpoint must come back,
+ * because without it there is nothing to put in the forge's form.
+ */
+static void
+test_adding_a_trigger_shows_its_secret_once(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) added = NULL;
+    g_autoptr(JsonNode) listed = NULL;
+    JsonObject *reply;
+    JsonArray *triggers;
+    JsonObject *trigger;
+    g_autofree gchar *secret = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: builder\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    added = request(&fixture, "trigger.add",
+                    "{\"id\": \"ci\", \"agent\": \"builder\","
+                    " \"instructions\": \"Look at {{repo}}.\","
+                    " \"provider\": \"forgejo\", \"enabled\": true}");
+
+    g_assert_false(clawt_ipc_frame_is_error(added));
+    reply = payload_of(added);
+
+    g_assert_true(json_object_has_member(reply, "secret"));
+    g_assert_true(json_object_get_boolean_member(reply, "secret_shown_once"));
+    g_assert_true(json_object_has_member(reply, "endpoint"));
+
+    secret = g_strdup(json_object_get_string_member(reply, "secret"));
+    g_assert_cmpuint(strlen(secret), >=, 32);
+
+    /*
+     * Off, even though the request asked for it on.
+     *
+     * Honouring `enabled: true` here would run an agent on the first
+     * body anybody sent, which is precisely what the handshake exists to
+     * prevent -- so it is overridden rather than obeyed.
+     */
+    listed = request(&fixture, "trigger.list", NULL);
+    triggers = json_object_get_array_member(payload_of(listed), "triggers");
+    g_assert_cmpuint(json_array_get_length(triggers), ==, 1);
+
+    trigger = json_array_get_object_element(triggers, 0);
+    g_assert_false(json_object_get_boolean_member(trigger, "enabled"));
+    g_assert_true(json_object_get_boolean_member(trigger,
+                                                 "pending_verification"));
+    g_assert_true(json_object_get_boolean_member(trigger, "has_secret"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * The secret is in that one reply and nowhere else, ever.
+ *
+ * This is the assertion the whole phase turns on. `trigger.list` walks
+ * the schema to build its rows, and the generic branch of that loop
+ * would read `secret` as a string and put the reference -- for an env or
+ * command backend, effectively the credential's whereabouts -- into
+ * every listing every client makes, on every tailnet the daemon answers
+ * on. Asserted on the serialised frame rather than on named members, so
+ * a member added later cannot smuggle it back in under another name.
+ */
+static void
+test_a_listing_never_carries_the_secret(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) added = NULL;
+    g_autoptr(JsonNode) listed = NULL;
+    g_autoptr(JsonNode) deliveries = NULL;
+    g_autofree gchar *secret = NULL;
+    g_autofree gchar *listing = NULL;
+    g_autofree gchar *receipts = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: builder\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    added = request(&fixture, "trigger.add",
+                    "{\"id\": \"ci\", \"agent\": \"builder\","
+                    " \"instructions\": \"go\"}");
+    g_assert_false(clawt_ipc_frame_is_error(added));
+
+    secret = g_strdup(json_object_get_string_member(payload_of(added),
+                                                    "secret"));
+
+    listed = request(&fixture, "trigger.list", NULL);
+    listing = json_to_string(listed, FALSE);
+
+    g_assert_null(strstr(listing, secret));
+
+    /* Nor the reference, which says where the credential lives. */
+    g_assert_null(strstr(listing, "trigger-ci"));
+    g_assert_null(strstr(listing, "\"secret\""));
+
+    deliveries = request(&fixture, "trigger.deliveries", NULL);
+    receipts = json_to_string(deliveries, FALSE);
+    g_assert_null(strstr(receipts, secret));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A trigger cannot be switched on before it has ever been called.
+ *
+ * The two states together are a lie: the listing would say "on" and the
+ * next delivery would still be captured rather than run, so somebody
+ * watching for a run the client told them to expect would check the
+ * forge, the secret and the filters before finding out the trigger had
+ * simply never been verified.
+ */
+static void
+test_enabling_before_the_first_delivery_is_refused(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) added = NULL;
+    g_autoptr(JsonNode) enabled = NULL;
+    g_autoptr(JsonNode) listed = NULL;
+    JsonObject *trigger;
+
+    fixture_setup(&fixture, "agents:\n  - id: builder\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    added = request(&fixture, "trigger.add",
+                    "{\"id\": \"ci\", \"agent\": \"builder\","
+                    " \"instructions\": \"go\"}");
+    g_assert_false(clawt_ipc_frame_is_error(added));
+
+    enabled = request(&fixture, "trigger.update",
+                      "{\"id\": \"ci\", \"enabled\": true}");
+
+    g_assert_true(clawt_ipc_frame_is_error(enabled));
+
+    /* And the refusal says what to do instead, rather than only no. */
+    {
+        const gchar *text = json_object_get_string_member(
+            json_node_get_object(enabled), "error");
+
+        g_assert_nonnull(text);
+        g_assert_nonnull(strstr(text, "capture"));
+    }
+
+    /* It is still off, rather than half-applied. */
+    listed = request(&fixture, "trigger.list", NULL);
+    trigger = json_array_get_object_element(
+        json_object_get_array_member(payload_of(listed), "triggers"), 0);
+    g_assert_false(json_object_get_boolean_member(trigger, "enabled"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Rotating hands back a new secret and a new address in one step.
+ *
+ * Rotating because a secret leaked and leaving the endpoint in place
+ * would mean whoever had it still knows where to knock -- so the two
+ * move together, and both have to come back or the webhook cannot be
+ * repointed.
+ */
+static void
+test_rotating_changes_the_secret_and_the_address(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) added = NULL;
+    g_autoptr(JsonNode) rotated = NULL;
+    g_autofree gchar *first_secret = NULL;
+    g_autofree gchar *first_endpoint = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: builder\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    added = request(&fixture, "trigger.add",
+                    "{\"id\": \"ci\", \"agent\": \"builder\","
+                    " \"instructions\": \"go\"}");
+    first_secret = g_strdup(json_object_get_string_member(payload_of(added),
+                                                          "secret"));
+    first_endpoint = g_strdup(json_object_get_string_member(
+                                  payload_of(added), "endpoint"));
+
+    rotated = request(&fixture, "trigger.rotate", "{\"id\": \"ci\"}");
+    g_assert_false(clawt_ipc_frame_is_error(rotated));
+
+    g_assert_cmpstr(json_object_get_string_member(payload_of(rotated),
+                                                  "secret"),
+                    !=, first_secret);
+    g_assert_cmpstr(json_object_get_string_member(payload_of(rotated),
+                                                  "endpoint"),
+                    !=, first_endpoint);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * `trigger.test` shows the prompt without asking an agent for anything.
+ *
+ * The point is that somebody can see the placeholders filled in and the
+ * untrusted-payload fence before a forge sends anything real -- so the
+ * default has to be a preview, and running has to be the thing you ask
+ * for.
+ */
+static void
+test_testing_a_trigger_previews_rather_than_runs(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) added = NULL;
+    g_autoptr(JsonNode) tested = NULL;
+    const gchar *prompt;
+
+    fixture_setup(&fixture, "agents:\n  - id: builder\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    added = request(&fixture, "trigger.add",
+                    "{\"id\": \"ci\", \"agent\": \"builder\","
+                    " \"repo\": \"zach/clawtilla\","
+                    " \"instructions\": \"Look at {{repo}} for {{event}}.\"}");
+    g_assert_false(clawt_ipc_frame_is_error(added));
+
+    tested = request(&fixture, "trigger.test", "{\"id\": \"ci\"}");
+    g_assert_false(clawt_ipc_frame_is_error(tested));
+
+    /* A prompt, and no task: nothing was asked of anybody. */
+    g_assert_false(json_object_has_member(payload_of(tested), "task"));
+
+    prompt = json_object_get_string_member(payload_of(tested), "prompt");
+    g_assert_nonnull(strstr(prompt, "Look at zach/clawtilla for push."));
+    g_assert_nonnull(strstr(prompt, "untrusted-event-payload"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * With the receiver off, the listing says so once rather than per row.
+ *
+ * Every trigger is equally unreachable in that state, so repeating it
+ * per trigger would read as a per-trigger fault -- and somebody would go
+ * looking at the secret of whichever one they cared about.
+ */
+static void
+test_the_listing_says_when_nothing_is_listening(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) listed = NULL;
+    g_autoptr(JsonNode) deliveries = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: builder\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    listed = request(&fixture, "trigger.list", NULL);
+
+    /*
+     * FALSE, because `daemon.webhook_enabled` defaults off -- which is
+     * also what keeps `make test` from opening a network socket.
+     */
+    g_assert_false(json_object_get_boolean_member(payload_of(listed),
+                                                  "receiving"));
+
+    /* And an empty receipt list says which kind of empty it is. */
+    deliveries = request(&fixture, "trigger.deliveries", NULL);
+    g_assert_nonnull(strstr(
+        json_object_get_string_member(payload_of(deliveries), "note"),
+        "webhook_enabled"));
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -7355,6 +7638,19 @@ main(int argc, char *argv[])
                     test_a_destroying_stop_is_fenced);
     g_test_add_func("/daemon/computer/listing-says-what-can-be-powered",
                     test_the_listing_says_what_can_be_powered);
+    g_test_add_func("/daemon/trigger/secret-shown-once",
+                    test_adding_a_trigger_shows_its_secret_once);
+    g_test_add_func("/daemon/trigger/listing-has-no-secret",
+                    test_a_listing_never_carries_the_secret);
+    g_test_add_func("/daemon/trigger/enable-before-verified",
+                    test_enabling_before_the_first_delivery_is_refused);
+    g_test_add_func("/daemon/trigger/rotate",
+                    test_rotating_changes_the_secret_and_the_address);
+    g_test_add_func("/daemon/trigger/test-previews",
+                    test_testing_a_trigger_previews_rather_than_runs);
+    g_test_add_func("/daemon/trigger/not-listening",
+                    test_the_listing_says_when_nothing_is_listening);
+
     g_test_add_func("/daemon/start-agent-with-no-id",
                     test_starting_an_agent_with_no_id_is_an_error);
 

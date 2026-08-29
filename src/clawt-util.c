@@ -372,10 +372,25 @@ GSource *
 clawt_timeout_add_seconds(guint interval, GSourceFunc function,
                           gpointer data)
 {
+    return clawt_timeout_add_seconds_full(interval, function, data, NULL);
+}
+
+GSource *
+clawt_timeout_add_seconds_full(guint          interval,
+                               GSourceFunc    function,
+                               gpointer       data,
+                               GDestroyNotify notify)
+{
     GSource *source = g_timeout_source_new_seconds(interval);
+    /*
+     * Read here, in the function that attaches the source, rather than
+     * taken as an argument.  Naming the context at the call site has
+     * been got wrong five times in this tree; asking for it where the
+     * attach happens cannot be got wrong at all.
+     */
     GMainContext *context = g_main_context_get_thread_default();
 
-    g_source_set_callback(source, function, data, NULL);
+    g_source_set_callback(source, function, data, notify);
     g_source_attach(source, context);
 
     return source;
@@ -481,6 +496,54 @@ clawt_generate_token(GError **error)
         g_snprintf(out + (i * 2), 3, "%02x", bytes[i]);
 
     return out;
+}
+
+gboolean
+clawt_secure_equals(const gchar *a, const gchar *b)
+{
+    gsize len_a;
+    gsize len_b;
+    gsize i;
+    /*
+     * volatile so the accumulation survives -O2.  A compiler that can
+     * prove the result is only read at the end is entitled to rewrite
+     * the loop into the early return this function exists to avoid.
+     */
+    volatile guchar diff = 0;
+
+    /*
+     * A missing value is never equal, not even to another missing one.
+     * The alternative -- NULL == NULL -- would mean a trigger with no
+     * secret authenticated a delivery that sent no signature, which is
+     * the one case that must stay a refusal.
+     */
+    if (a == NULL || b == NULL)
+        return FALSE;
+
+    len_a = strlen(a);
+    len_b = strlen(b);
+
+    /*
+     * Folded in rather than returned on.  Comparing the lengths first
+     * would answer "how long is the secret" in constant time, which is
+     * the first thing worth knowing about it.
+     */
+    diff = (guchar)((len_a ^ len_b) | ((len_a ^ len_b) >> 8) |
+                    ((len_a ^ len_b) >> 16));
+
+    /*
+     * Every byte of the longer string is read, and the shorter one is
+     * indexed modulo its own length so the read stays in bounds without
+     * a branch that depends on which ran out.
+     */
+    for (i = 0; i < MAX(len_a, len_b); i++) {
+        guchar ca = (len_a > 0) ? (guchar)a[i % len_a] : 0;
+        guchar cb = (len_b > 0) ? (guchar)b[i % len_b] : 0;
+
+        diff |= (guchar)(ca ^ cb);
+    }
+
+    return diff == 0;
 }
 
 gchar *

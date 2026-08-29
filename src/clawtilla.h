@@ -74,6 +74,12 @@
 #include "task/clawt-task-manager.h"
 #include "task/clawt-routine-runner.h"
 
+#include "trigger/clawt-trigger-event.h"
+#include "trigger/clawt-trigger-provider.h"
+#include "trigger/clawt-trigger.h"
+#include "trigger/clawt-trigger-store.h"
+#include "trigger/clawt-webhook-ingress.h"
+
 #include "plugin/clawt-param-info.h"
 #include "plugin/clawt-plugin.h"
 

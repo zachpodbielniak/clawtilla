@@ -468,6 +468,245 @@ test_the_prompt_says_nobody_is_watching(void)
     fixture_teardown(&fixture);
 }
 
+/* ── Jitter ──────────────────────────────────────────────────────── */
+
+/*
+ * A cron that is due on every tick, so "is it held back" is the only
+ * variable.  A preset schedule would make each of these tests depend on
+ * what time the suite happens to run at.
+ */
+static const gchar EVERY_MINUTE[] =
+    "routines:\n"
+    "  - id: sweep\n"
+    "    agent: researcher\n"
+    "    instructions: \"Check the queue.\"\n"
+    "    schedule: custom\n"
+    "    cron: \"* * * * *\"\n";
+
+static const gchar EVERY_MINUTE_JITTERED[] =
+    "routines:\n"
+    "  - id: sweep\n"
+    "    agent: researcher\n"
+    "    instructions: \"Check the queue.\"\n"
+    "    schedule: custom\n"
+    "    cron: \"* * * * *\"\n"
+    "    jitter_seconds: 1\n";
+
+/*
+ * Waits for a jittered run, with a watchdog.
+ *
+ * A test that can hang is worse than one that fails: without the
+ * deadline, a jitter that was never armed would park the suite here for
+ * ever rather than reporting which assertion did not hold.
+ */
+static gboolean
+wait_for_a_run(Fixture *fixture, guint wanted)
+{
+    gint64 deadline = g_get_monotonic_time() + (10 * G_USEC_PER_SEC);
+
+    while (fixture->started->len < wanted) {
+        if (g_get_monotonic_time() > deadline)
+            return FALSE;
+
+        g_main_context_iteration(NULL, FALSE);
+        g_usleep(5000);
+    }
+
+    return TRUE;
+}
+
+/*
+ * Without jitter, a due routine starts on the tick that finds it.
+ *
+ * The control for everything below: if this did not hold, "it was held
+ * back" and "it was never due" would be the same observation.
+ */
+static void
+test_a_due_routine_starts_on_the_tick(void)
+{
+    Fixture fixture = { 0 };
+
+    fixture_setup(&fixture, EVERY_MINUTE);
+
+    clawt_routine_runner_tick(fixture.runner);
+
+    g_assert_cmpuint(fixture.started->len, ==, 1);
+    g_assert_cmpstr(g_ptr_array_index(fixture.started, 0), ==, "sweep");
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * With jitter, the tick arms it and starts nothing.
+ *
+ * This is the whole feature, and it is also the half that is invisible:
+ * an implementation that read `jitter_seconds` and then started the run
+ * anyway would pass every assertion about the run happening. So the
+ * assertion is that nothing has happened *yet*, and only then that it
+ * eventually does.
+ */
+static void
+test_a_jittered_routine_is_held_and_then_runs(void)
+{
+    Fixture fixture = { 0 };
+
+    fixture_setup(&fixture, EVERY_MINUTE_JITTERED);
+
+    clawt_routine_runner_tick(fixture.runner);
+
+    /* Held: the tick has been and gone, and nothing started. */
+    g_assert_cmpuint(fixture.started->len, ==, 0);
+
+    g_assert_true(wait_for_a_run(&fixture, 1));
+    g_assert_cmpuint(fixture.started->len, ==, 1);
+    g_assert_cmpstr(g_ptr_array_index(fixture.started, 0), ==, "sweep");
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A second tick inside the jitter window does not arm a second run.
+ *
+ * The tick is once a minute and `last_run` is only stamped when the run
+ * actually starts, so without the armed flag every tick inside a
+ * five-minute jitter would find the routine due all over again -- and
+ * `jitter_seconds: 300` would fire five runs rather than delaying one.
+ */
+static void
+test_ticking_twice_inside_the_jitter_arms_one_run(void)
+{
+    Fixture fixture = { 0 };
+    guint i;
+
+    fixture_setup(&fixture, EVERY_MINUTE_JITTERED);
+
+    for (i = 0; i < 5; i++)
+        clawt_routine_runner_tick(fixture.runner);
+
+    g_assert_cmpuint(fixture.started->len, ==, 0);
+
+    g_assert_true(wait_for_a_run(&fixture, 1));
+
+    /*
+     * Settle: anything else that was armed would have fired by now, and
+     * five ticks arming five one-second timers would show up here.
+     */
+    {
+        gint64 until = g_get_monotonic_time() + (2 * G_USEC_PER_SEC);
+
+        while (g_get_monotonic_time() < until) {
+            g_main_context_iteration(NULL, FALSE);
+            g_usleep(5000);
+        }
+    }
+
+    g_assert_cmpuint(fixture.started->len, ==, 1);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Running one by hand runs it now, and retires the jitter that was
+ * waiting.
+ *
+ * "Run now" has to mean now -- the IPC reply hands back a task id
+ * synchronously, and there is nothing to return if the run is deferred.
+ * And the delayed copy has to go, or pressing the button inside the
+ * window would produce two runs from one intention.
+ */
+static void
+test_running_by_hand_ignores_and_cancels_the_jitter(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+
+    fixture_setup(&fixture, EVERY_MINUTE_JITTERED);
+
+    clawt_routine_runner_tick(fixture.runner);
+    g_assert_cmpuint(fixture.started->len, ==, 0);
+
+    g_assert_nonnull(clawt_routine_runner_run_now(fixture.runner, "sweep",
+                                                  &error));
+    g_assert_no_error(error);
+    g_assert_cmpuint(fixture.started->len, ==, 1);
+
+    /* And the armed one does not arrive on top of it. */
+    {
+        gint64 until = g_get_monotonic_time() + (3 * G_USEC_PER_SEC);
+
+        while (g_get_monotonic_time() < until) {
+            g_main_context_iteration(NULL, FALSE);
+            g_usleep(5000);
+        }
+    }
+
+    g_assert_cmpuint(fixture.started->len, ==, 1);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A catch-up starts at once, whatever the jitter says.
+ *
+ * A run that was already missed while the machine was asleep does not
+ * need to be later still, and spreading load is not the problem at
+ * startup -- there is nobody else on the rate-limited service yet.
+ */
+static void
+test_catch_up_does_not_jitter(void)
+{
+    Fixture fixture = { 0 };
+
+    fixture_setup(&fixture,
+                  "routines:\n"
+                  "  - id: sweep\n"
+                  "    agent: researcher\n"
+                  "    instructions: \"Check the queue.\"\n"
+                  "    schedule: daily\n"
+                  "    at: \"09:00\"\n"
+                  "    catch_up: true\n"
+                  "    jitter_seconds: 600\n");
+
+    seed_last_run(&fixture, "sweep", 3);
+    clawt_routine_runner_catch_up(fixture.runner);
+
+    g_assert_cmpuint(fixture.started->len, ==, 1);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A stopped runner does not still have a run coming.
+ *
+ * "A stop that only sends a signal is not a stop" applies here too: a
+ * timer left armed on a runner somebody asked to stop starts a routine
+ * after the answer was no.
+ */
+static void
+test_stopping_disarms_a_pending_jitter(void)
+{
+    Fixture fixture = { 0 };
+    gint64 until;
+
+    fixture_setup(&fixture, EVERY_MINUTE_JITTERED);
+
+    clawt_routine_runner_tick(fixture.runner);
+    g_assert_cmpuint(fixture.started->len, ==, 0);
+
+    clawt_routine_runner_stop(fixture.runner);
+
+    until = g_get_monotonic_time() + (3 * G_USEC_PER_SEC);
+
+    while (g_get_monotonic_time() < until) {
+        g_main_context_iteration(NULL, FALSE);
+        g_usleep(5000);
+    }
+
+    g_assert_cmpuint(fixture.started->len, ==, 0);
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -495,6 +734,19 @@ main(int argc, char *argv[])
     g_test_add_func("/routine/state-corrupt",
                     test_a_corrupt_state_file_is_survivable);
     g_test_add_func("/routine/prompt", test_the_prompt_says_nobody_is_watching);
+
+    g_test_add_func("/routine/due-starts-on-the-tick",
+                    test_a_due_routine_starts_on_the_tick);
+    g_test_add_func("/routine/jitter-holds-then-runs",
+                    test_a_jittered_routine_is_held_and_then_runs);
+    g_test_add_func("/routine/jitter-arms-once",
+                    test_ticking_twice_inside_the_jitter_arms_one_run);
+    g_test_add_func("/routine/jitter-not-for-run-now",
+                    test_running_by_hand_ignores_and_cancels_the_jitter);
+    g_test_add_func("/routine/jitter-not-for-catch-up",
+                    test_catch_up_does_not_jitter);
+    g_test_add_func("/routine/jitter-disarmed-by-stop",
+                    test_stopping_disarms_a_pending_jitter);
 
     return g_test_run();
 }

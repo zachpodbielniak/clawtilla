@@ -5599,6 +5599,393 @@ cmd_routine(int argc, char *argv[])
     return EXIT_FAILURE;
 }
 
+static void
+print_trigger_usage(gboolean asked_for)
+{
+    static const gchar *text =
+        "Usage: clawtilla trigger <verb> [...]\n"
+        "\n"
+        "  list                           what can start a run, and where\n"
+        "  add <id> <agent> [key=value]   add one; prints the secret ONCE\n"
+        "  set <id> [key=value ...]       change one\n"
+        "  rm <id>                        remove it\n"
+        "  rotate <id>                    new secret and new address\n"
+        "  test <id> [--run]              show the prompt, or run it\n"
+        "  capture <id>                   the first delivery, as it arrived\n"
+        "  deliveries [id]                what has been sent, and what came\n"
+        "                                 of it\n"
+        "\n"
+        "Providers: forgejo, gitea, github, gitlab, generic.\n"
+        "\n"
+        "A new trigger starts switched off and unverified: the first\n"
+        "delivery that authenticates is captured for you to look at rather\n"
+        "than run. Read it with `capture`, then `set <id> enabled=true`.\n"
+        "\n"
+        "The secret is printed once, when it is created or rotated, and\n"
+        "never again -- not by `list`, not in a log, not in an event. If\n"
+        "you lose it, rotate.\n"
+        "\n"
+        "Examples:\n"
+        "  clawtilla trigger add ci-failed builder \\\n"
+        "      provider=forgejo repo=zach/clawtilla events=push \\\n"
+        "      instructions=\"A push landed on {{repo}} {{ref}} by\n"
+        "                    {{actor}}. Run the tests and report.\"\n"
+        "  clawtilla trigger capture ci-failed\n"
+        "  clawtilla trigger set ci-failed enabled=true\n"
+        "  clawtilla trigger deliveries ci-failed\n";
+
+    print_usage_text(text, asked_for);
+}
+
+/*
+ * Prints a secret exactly once, with the sentence that makes that
+ * survivable.
+ *
+ * Somebody who does not know it is the only copy will close the terminal
+ * and then ask where to find it again -- and the honest answer is
+ * "nowhere", so the message has to say so at the moment it is readable.
+ */
+static void
+print_secret_once(JsonObject *reply)
+{
+    const gchar *secret = member_or(reply, "secret", NULL);
+    const gchar *endpoint = member_or(reply, "endpoint", NULL);
+
+    if (endpoint != NULL)
+        g_print("Endpoint: %s\n", endpoint);
+
+    if (secret == NULL)
+        return;
+
+    g_print("Secret:   %s\n", secret);
+    g_print("\n");
+    g_print("That is the only time this is printed. Put it in the "
+            "webhook's secret field now;\nif you lose it, "
+            "`clawtilla trigger rotate` makes a new one and retires "
+            "this.\n");
+}
+
+static gint
+cmd_trigger(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verb = (argc > 2) ? argv[2] : "list";
+    const gchar *id = (argc > 3) ? argv[3] : NULL;
+    guint i;
+
+    if (g_strcmp0(verb, "help") == 0 || g_strcmp0(verb, "--help") == 0 ||
+        g_strcmp0(verb, "-h") == 0) {
+        print_trigger_usage(TRUE);
+        return EXIT_SUCCESS;
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    if (g_strcmp0(verb, "list") == 0) {
+        JsonArray *triggers;
+        JsonObject *root;
+
+        reply = call(client, "trigger.list", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        root = json_node_get_object(reply);
+        triggers = json_object_get_array_member(root, "triggers");
+
+        if (json_array_get_length(triggers) == 0) {
+            g_print("Nothing is waiting on an event. "
+                    "`clawtilla trigger add` makes one.\n");
+            return EXIT_SUCCESS;
+        }
+
+        /*
+         * Said once, at the top, rather than per row: with the receiver
+         * off every trigger is equally unreachable, and repeating it
+         * would read as a per-trigger fault.
+         */
+        if (!member_flag(root, "receiving", FALSE))
+            g_print("The receiver is not running, so nothing can arrive. "
+                    "Set daemon.webhook_enabled.\n\n");
+
+        g_print("%-18s %-16s %-10s %-8s %s\n", "ID", "AGENT", "PROVIDER",
+                "STATE", "ENDPOINT");
+
+        for (i = 0; i < json_array_get_length(triggers); i++) {
+            JsonObject *trigger = json_array_get_object_element(triggers, i);
+            const gchar *state;
+
+            /*
+             * One word, in priority order, rather than three flags a
+             * reader has to combine: "why is this not firing" wants one
+             * answer, and the first true one is always the answer.
+             */
+            if (!member_flag(trigger, "has_secret", FALSE))
+                state = "NO KEY";
+            else if (member_flag(trigger, "pending_verification", FALSE))
+                state = "unverified";
+            else if (!member_flag(trigger, "enabled", FALSE))
+                state = "off";
+            else
+                state = "on";
+
+            g_print("%-18s %-16s %-10s %-8s %s\n",
+                    member_or(trigger, "id", "?"),
+                    member_or(trigger, "agent", "?"),
+                    member_or(trigger, "provider", "generic"), state,
+                    member_or(trigger, "endpoint", "-"));
+        }
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "add") == 0 || g_strcmp0(verb, "set") == 0) {
+        gboolean adding = g_strcmp0(verb, "add") == 0;
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        int first = adding ? 5 : 4;
+        int a;
+
+        if (id == NULL || (adding && argc < 5)) {
+            g_printerr("Usage: clawtilla trigger %s <id>%s [key=value ...]\n",
+                       verb, adding ? " <agent>" : "");
+            return EXIT_FAILURE;
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "id");
+        json_builder_add_string_value(builder, id);
+
+        if (adding) {
+            json_builder_set_member_name(builder, "agent");
+            json_builder_add_string_value(builder, argv[4]);
+        }
+
+        for (a = first; a < argc; a++) {
+            g_auto(GStrv) parts = g_strsplit(argv[a], "=", 2);
+            g_autofree gchar *schema_key = NULL;
+            const ClawtSchemaEntry *entry;
+
+            if (parts[0] == NULL || parts[1] == NULL) {
+                g_printerr("clawtilla: '%s' is not key=value\n", argv[a]);
+                return EXIT_FAILURE;
+            }
+
+            schema_key = g_strdup_printf("triggers.%s", parts[0]);
+            entry = clawt_config_schema_lookup(schema_key);
+
+            if (entry == NULL) {
+                g_printerr("clawtilla: '%s' is not something a trigger "
+                           "holds\n", parts[0]);
+                return EXIT_FAILURE;
+            }
+
+            /*
+             * There is deliberately no way to supply a secret. An
+             * argument is in the shell history and in the process
+             * table, and the daemon mints its own from /dev/urandom.
+             */
+            if (entry->type == CLAWT_SCHEMA_SECRET) {
+                g_printerr("clawtilla: a trigger's secret is generated, "
+                           "not given -- it would be in your shell "
+                           "history and in `ps`\n");
+                return EXIT_FAILURE;
+            }
+
+            json_builder_set_member_name(builder, parts[0]);
+
+            switch (entry->type) {
+            case CLAWT_SCHEMA_BOOLEAN:
+                json_builder_add_boolean_value(
+                    builder, g_strcmp0(parts[1], "true") == 0 ||
+                             g_strcmp0(parts[1], "yes") == 0 ||
+                             g_strcmp0(parts[1], "1") == 0);
+                break;
+
+            case CLAWT_SCHEMA_INT:
+                json_builder_add_int_value(
+                    builder, g_ascii_strtoll(parts[1], NULL, 10));
+                break;
+
+            default:
+                /*
+                 * A list goes over as a string; the daemon splits it,
+                 * because it is the side that knows the key is a list.
+                 */
+                json_builder_add_string_value(builder, parts[1]);
+                break;
+            }
+        }
+
+        json_builder_end_object(builder);
+
+        reply = call(client, adding ? "trigger.add" : "trigger.update",
+                     json_builder_get_root(builder));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        print_secret_once(json_node_get_object(reply));
+
+        if (adding)
+            g_print("\nIt is switched off until you have seen a delivery. "
+                    "Point the webhook at\nthe endpoint above, then "
+                    "`clawtilla trigger capture %s`.\n", id);
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "rm") == 0) {
+        if (id == NULL) {
+            g_printerr("Usage: clawtilla trigger rm <id>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "trigger.remove", build_payload("id", id, NULL));
+        return reply != NULL ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+
+    if (g_strcmp0(verb, "rotate") == 0) {
+        if (id == NULL) {
+            g_printerr("Usage: clawtilla trigger rotate <id>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "trigger.rotate", build_payload("id", id, NULL));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        print_secret_once(json_node_get_object(reply));
+        g_print("\nThe old secret and the old address stopped working just "
+                "now, so the webhook\nneeds both of the above before it "
+                "will be accepted again.\n");
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "capture") == 0) {
+        JsonObject *root;
+        const gchar *payload;
+
+        if (id == NULL) {
+            g_printerr("Usage: clawtilla trigger capture <id>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "trigger.capture", build_payload("id", id, NULL));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        root = json_node_get_object(reply);
+        payload = member_or(root, "payload", NULL);
+
+        if (payload == NULL) {
+            g_print("Nothing has arrived yet. Point the webhook at this "
+                    "trigger's endpoint\nand send it a test delivery; "
+                    "the first one that authenticates is held here.\n");
+            return EXIT_SUCCESS;
+        }
+
+        g_print("%s\n", payload);
+
+        if (!member_flag(root, "pending_verification", TRUE))
+            g_print("\nThat is what the caller sent. If it is what you "
+                    "expected, switch the trigger\non with `clawtilla "
+                    "trigger set %s enabled=true`.\n", id);
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "test") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        gboolean run = FALSE;
+        JsonObject *root;
+        int a;
+
+        if (id == NULL) {
+            g_printerr("Usage: clawtilla trigger test <id> [--run]\n");
+            return EXIT_FAILURE;
+        }
+
+        for (a = 4; a < argc; a++) {
+            if (g_strcmp0(argv[a], "--run") == 0)
+                run = TRUE;
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "id");
+        json_builder_add_string_value(builder, id);
+        json_builder_set_member_name(builder, "run");
+        json_builder_add_boolean_value(builder, run);
+        json_builder_end_object(builder);
+
+        reply = call(client, "trigger.test", json_builder_get_root(builder));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        root = json_node_get_object(reply);
+
+        if (run) {
+            g_print("Started as task %s.\n", member_or(root, "task", "?"));
+            return EXIT_SUCCESS;
+        }
+
+        g_print("%s\n", member_or(root, "prompt", ""));
+        g_print("\nThat is what the agent would be asked. "
+                "`--run` sends it.\n");
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "deliveries") == 0) {
+        JsonArray *deliveries;
+        JsonObject *root;
+
+        reply = call(client, "trigger.deliveries",
+                     id != NULL ? build_payload("id", id, NULL) : NULL);
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        root = json_node_get_object(reply);
+        deliveries = json_object_get_array_member(root, "deliveries");
+
+        if (json_array_get_length(deliveries) == 0) {
+            g_print("%s\n", member_or(root, "note",
+                                      "nothing has been delivered yet"));
+            return EXIT_SUCCESS;
+        }
+
+        g_print("%-20s %-16s %-14s %-10s %s\n", "WHEN", "TRIGGER", "EVENT",
+                "OUTCOME", "DETAIL");
+
+        for (i = 0; i < json_array_get_length(deliveries); i++) {
+            JsonObject *row = json_array_get_object_element(deliveries, i);
+            gint64 at = g_ascii_strtoll(member_or(row, "at", "0"), NULL, 10);
+            g_autoptr(GDateTime) when = g_date_time_new_from_unix_local(at);
+            g_autofree gchar *stamp =
+                (when != NULL) ? g_date_time_format(when, "%a %d %b %H:%M")
+                               : g_strdup("-");
+
+            g_print("%-20s %-16s %-14s %-10s %s\n", stamp,
+                    member_or(row, "trigger", "?"),
+                    member_or(row, "event", "-"),
+                    member_or(row, "outcome", "?"),
+                    member_or(row, "detail", ""));
+        }
+
+        return EXIT_SUCCESS;
+    }
+
+    g_printerr("clawtilla: unknown trigger verb '%s'\n", verb);
+    print_trigger_usage(FALSE);
+    return EXIT_FAILURE;
+}
+
 static gint
 cmd_plugin(int argc, char *argv[])
 {
@@ -5987,6 +6374,8 @@ static const ClawtVerb verbs[] = {
       cmd_connector },
     { "routine", "<verb>",   "Standing work on a schedule",
       cmd_routine },
+    { "trigger", "<verb>",   "Work started by a webhook",
+      cmd_trigger },
     { "plugin",  "list",     "List loaded plugins",
       cmd_plugin },
     { NULL, NULL, NULL, NULL }
