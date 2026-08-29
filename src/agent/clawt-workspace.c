@@ -148,6 +148,49 @@ clawt_workspace_detect_identity_files(const gchar *workspace)
     return (GStrv)g_ptr_array_free(g_steal_pointer(&found), FALSE);
 }
 
+/*
+ * The extension order tried, and the only names a written or cleared
+ * picture ever occupies.  Fixed and documented rather than left to
+ * filesystem order, so two of them present resolve the same way twice.
+ */
+static const gchar *const PROFILE_PICTURE_NAMES[] = {
+    "profile-picture.png",
+    "profile-picture.jpg",
+    "profile-picture.jpeg",
+    "profile-picture.webp",
+    NULL
+};
+
+gchar *
+clawt_workspace_find_profile_picture(const gchar *workspace)
+{
+    guint i;
+
+    g_return_val_if_fail(workspace != NULL, NULL);
+
+    for (i = 0; PROFILE_PICTURE_NAMES[i] != NULL; i++) {
+        g_autofree gchar *path = g_build_filename(
+            workspace, PROFILE_PICTURE_NAMES[i], NULL);
+
+        /*
+         * IS_REGULAR rather than EXISTS: a directory that happens to be
+         * named "profile-picture.png" is not a picture, and treating it
+         * as one would hand a client's decoder a path it cannot read
+         * anyway, with nothing to say why.
+         *
+         * g_access() rather than trusting the stat alone: a file this
+         * process cannot read is reported as "no picture" here rather
+         * than as an error -- there is no caller to hand an error to on
+         * this path, and a fallback that can fail is not one.
+         */
+        if (g_file_test(path, G_FILE_TEST_IS_REGULAR) &&
+            g_access(path, R_OK) == 0)
+            return g_steal_pointer(&path);
+    }
+
+    return NULL;
+}
+
 gchar *
 clawt_workspace_file_path(ClawtAgentConfig *agent, const gchar *name)
 {
@@ -658,7 +701,12 @@ static const gchar README_ORG[] =
 "\n"
 "~MEMORY.md~ is written by the agent itself and loaded every turn under a\n"
 "size budget. It is not part of this set and is not scaffolded -- the\n"
-"agent creates it when it has something to remember.\n";
+"agent creates it when it has something to remember.\n"
+"\n"
+"A file named ~profile-picture.png~, ~.jpg~, ~.jpeg~ or ~.webp~ dropped in\n"
+"this directory is picked up automatically as the agent's avatar -- no\n"
+"config needed. It is not an identity file: it never reaches the system\n"
+"prompt.\n";
 
 /*
  * The loader.

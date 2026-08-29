@@ -430,17 +430,14 @@ static const ClawtSchemaEntry schema[] = {
 
 /* ── ai_assist ───────────────────────────────────────────────────── */
 { "defaults.avatar_max_bytes", CLAWT_SCHEMA_INT,
-  CLAWT_SCHEMA_FLAG_COMMENTED |
-  CLAWT_SCHEMA_FLAG_INERT, "4194304", NULL,
+  CLAWT_SCHEMA_FLAG_COMMENTED, "4194304", NULL,
   "Largest profile picture the daemon will read and serve.\n"
   "\n"
   "A picture crosses IPC as bytes rather than as a path, because a\n"
   "client may be on another machine entirely -- so an unbounded\n"
   "picture is an unbounded frame. Over the limit is a refusal naming\n"
   "the limit, never a truncated image, which would surface as a broken\n"
-  "file a long way from the cause.\n"
-  "\n"
-  "Not implemented in this build. Serving a profile picture is not built yet, so nothing is read\nand nothing is measured against this.", "0.2.0" },
+  "file a long way from the cause.", "0.2.0" },
 
 { "defaults.skills", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_COMMENTED |
   CLAWT_SCHEMA_FLAG_INERT,

@@ -188,6 +188,59 @@ clawt_web_state_tone(const gchar *state)
     return "neutral";
 }
 
+HtmxElement *
+clawt_web_avatar(const gchar *name, const gchar *agent_id,
+                 gboolean has_avatar, const gchar *color,
+                 const gchar *css_class)
+{
+    const gchar *ink = clawt_color_ink(color);
+
+    if (has_avatar && agent_id != NULL) {
+        g_autofree gchar *escaped = g_uri_escape_string(agent_id, NULL, FALSE);
+        g_autofree gchar *url = g_strdup_printf("/a/%s/avatar", escaped);
+        g_autoptr(HtmxImg) picture = htmx_img_new_with_src(url, name);
+
+        htmx_element_add_class(HTMX_ELEMENT(picture), css_class);
+        htmx_element_add_class(HTMX_ELEMENT(picture), "web-avatar-img");
+
+        return HTMX_ELEMENT(g_steal_pointer(&picture));
+    }
+
+    {
+        g_autoptr(HtmxSpan) face = htmx_span_new();
+        gunichar first;
+        gchar initial[8] = { 0 };
+
+        htmx_element_add_class(HTMX_ELEMENT(face), css_class);
+
+        first = g_utf8_get_char_validated(name, -1);
+
+        if (first != (gunichar)-1 && first != (gunichar)-2)
+            g_unichar_to_utf8(g_unichar_toupper(first), initial);
+
+        htmx_node_set_text_content(HTMX_NODE(face), initial);
+
+        if (ink != NULL) {
+            g_autofree gchar *style = g_strdup_printf(
+                "background:%s;color:%s", color, ink);
+
+            htmx_element_set_attribute(HTMX_ELEMENT(face), "style", style);
+        } else {
+            /*
+             * One of the sheet's own tones, chosen by the name, rather
+             * than a colour computed here -- so a palette recolours the
+             * faces with everything else.
+             */
+            g_autofree gchar *cls = g_strdup_printf(
+                "avatar-tone-%u", g_str_hash(name) % 6);
+
+            htmx_element_add_class(HTMX_ELEMENT(face), cls);
+        }
+
+        return HTMX_ELEMENT(g_steal_pointer(&face));
+    }
+}
+
 HtmxHeading *
 clawt_web_section_title(const gchar *text)
 {

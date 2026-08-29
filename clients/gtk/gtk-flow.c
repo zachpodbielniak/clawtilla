@@ -206,7 +206,7 @@ show_flow_room(ClawtWindow *self, const gchar *room_id, const gchar *label)
         const gchar *sender = clawt_json_string(message, "sender", "?");
         TranscriptView view = { self->flow_transcript,
                                 &self->flow_run_sender,
-                                &self->flow_run_day, NULL, NULL };
+                                &self->flow_run_day, NULL, FALSE, NULL };
 
         clawt_gtk_append_message_to(self, &view, sender,
                                     clawt_json_string(message, "body", ""),

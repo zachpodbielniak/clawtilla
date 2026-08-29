@@ -133,4 +133,91 @@ JsonObject *clawt_payload_of(JsonNode *reply);
  */
 JsonNode *clawt_build_payload(const gchar *first_key, ...) G_GNUC_NULL_TERMINATED;
 
+/**
+ * CLAWT_AVATAR_DECODE_SIZE:
+ *
+ * The pixel size a profile picture is decoded at, once, regardless of
+ * which of the three faces (sidebar, transcript, inspector) asks for it.
+ *
+ * A single size larger than any of the three slots means the texture
+ * clawt_gtk_avatar_texture() caches is decoded once per agent rather
+ * than once per slot, and GTK scaling a 128px texture down to a 32px
+ * avatar costs nothing next to decoding a multi-megapixel JPEG into
+ * that same slot -- the trap CLAUDE.md already records for a
+ * `GtkPicture` with no maximum size, and the one the previous
+ * `gdk_texture_new_from_filename()` call fell into at full resolution.
+ */
+#define CLAWT_AVATAR_DECODE_SIZE 128
+
+/**
+ * clawt_gtk_avatar_texture:
+ * @client: the daemon connection
+ * @agent_id: the agent to fetch a picture for
+ *
+ * This agent's profile picture, decoded once and cached by id.
+ *
+ * Fetches `agent.avatar` and decodes the reply through
+ * gdk_pixbuf_new_from_stream_at_scale() to %CLAWT_AVATAR_DECODE_SIZE,
+ * then gdk_memory_texture_new() -- never gdk_texture_new_from_filename(),
+ * which only ever worked when the client and the daemon shared a
+ * filesystem.
+ *
+ * A miss (no picture, a refused request, bytes that will not decode) is
+ * cached too, as "nothing to draw", so a face-less agent costs one
+ * request per session rather than one per redraw. Call
+ * clawt_gtk_avatar_invalidate() when the agent's own `agent.changed`
+ * arrives, since that is the only signal that the cached answer might
+ * now be wrong.
+ *
+ * Returns: (transfer full) (nullable): a texture, or %NULL if this
+ *   agent has no picture to show
+ */
+GdkTexture *clawt_gtk_avatar_texture(ClawtClient *client,
+                                     const gchar *agent_id);
+
+/**
+ * clawt_gtk_avatar_invalidate:
+ * @agent_id: (nullable): the agent whose cached picture is stale, or
+ *   %NULL to drop every entry
+ *
+ * Forgets a cached answer from clawt_gtk_avatar_texture(), so the next
+ * call fetches again rather than repeating a texture -- or a "no
+ * picture" -- that `agent.avatar_set` or `agent.avatar_clear` has since
+ * made wrong.
+ */
+void clawt_gtk_avatar_invalidate(const gchar *agent_id);
+
+/**
+ * clawt_gtk_build_avatar:
+ * @client: the daemon connection
+ * @name: the sender's name, for the derived initials and as the
+ *   accessible label
+ * @agent_id: (nullable): whose picture to look up, or %NULL to derive a
+ *   face from @name alone (the Flow tab, which draws several senders)
+ * @has_avatar: whether `agent.avatar` has anything for @agent_id -- from
+ *   `agent.list`/`agent.show`'s own field, so this never has to ask just
+ *   to find out there was nothing to ask for
+ * @color: (nullable): `agents.color`, checked here through
+ *   clawt_color_ink() before it reaches a stylesheet
+ * @size: the avatar's diameter, in pixels
+ *
+ * One face, drawn the same way in the sidebar, the transcript and the
+ * inspector -- the two row builders this codebase already had to
+ * delete into one apply here too: three copies of this decision would
+ * drift the moment one of them learned about pictures and the others
+ * did not, which is exactly the bug this replaces.
+ *
+ * Resolution order: @agent_id's picture when @has_avatar says there is
+ * one and it decodes, then @color through clawt_color_ink(), then the
+ * initials and colour #AdwAvatar derives from @name on its own.
+ *
+ * Returns: (transfer full): a new, unparented #AdwAvatar
+ */
+GtkWidget *clawt_gtk_build_avatar(ClawtClient  *client,
+                                  const gchar  *name,
+                                  const gchar  *agent_id,
+                                  gboolean      has_avatar,
+                                  const gchar  *color,
+                                  gint          size);
+
 G_END_DECLS

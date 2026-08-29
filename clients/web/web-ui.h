@@ -171,6 +171,39 @@ HtmxSpan *clawt_web_badge(const gchar *text, const gchar *tone);
 const gchar *clawt_web_state_tone(const gchar *state);
 
 /**
+ * clawt_web_avatar:
+ * @name: the sender's name, for the derived initials
+ * @agent_id: (nullable): whose picture to draw, or %NULL to derive a
+ *   face from @name alone
+ * @has_avatar: whether `agent.avatar` has bytes for @agent_id -- from
+ *   `agent.list`/`agent.show`'s own field, so this never has to guess
+ * @color: (nullable): `agents.color`, checked here through
+ *   clawt_color_ink() before it reaches a style attribute
+ * @css_class: the size/position class the caller already has CSS for
+ *   (the sidebar and the transcript each draw a face at a different
+ *   size)
+ *
+ * One face, drawn the same way in the sidebar and the transcript --
+ * two builders for one kind of content is how this client's avatars and
+ * the GTK client's drifted apart the first time, and how a second
+ * builder here would drift from the first the same way.
+ *
+ * Resolution order: @agent_id's picture, as an `<img src="/a/:id/avatar">`
+ * -- never a filesystem path, since the browser may not be on the
+ * daemon's machine -- when @has_avatar says there is one; then @color;
+ * then initials and a tone from the sheet's own palette, chosen by
+ * @name.
+ *
+ * Returns: (transfer full): an `<img>` or a `<span>`, with @css_class
+ *   already applied
+ */
+HtmxElement *clawt_web_avatar(const gchar *name,
+                              const gchar *agent_id,
+                              gboolean     has_avatar,
+                              const gchar *color,
+                              const gchar *css_class);
+
+/**
  * clawt_web_row:
  * @title: the label
  * @value: (nullable): what to show on the right

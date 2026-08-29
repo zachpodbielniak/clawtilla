@@ -331,9 +331,12 @@ clawt_gtk_select_agent(ClawtWindow *self, const gchar *agent_id)
     if (g_hash_table_remove(self->unread, agent_id))
         clawt_gtk_update_unread_tab(self);
 
-    g_free(self->selected_avatar);
-    self->selected_avatar = g_strdup(clawt_gtk_agent_row_data(self, agent_id,
-                                                              "agent-avatar"));
+    {
+        const gchar *has_avatar =
+            clawt_gtk_agent_row_data(self, agent_id, "agent-has-avatar");
+
+        self->selected_has_avatar = (has_avatar != NULL && *has_avatar != '\0');
+    }
     g_free(self->selected_color);
     self->selected_color = g_strdup(clawt_gtk_agent_row_data(self, agent_id,
                                                              "agent-color"));
@@ -1255,6 +1258,16 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
     }
 
     if (g_str_has_prefix(kind, "agent.") || g_str_has_prefix(kind, "mailbox.")) {
+        /*
+         * `agent.changed` is what agent.avatar_set and agent.avatar_clear
+         * publish, among other things -- so a cached "here is its face"
+         * or "it has none" answer might now be wrong. A NULL subject
+         * (agent.reorder touches the whole fleet) drops every entry
+         * rather than guessing which agent moved.
+         */
+        if (g_strcmp0(kind, "agent.changed") == 0)
+            clawt_gtk_avatar_invalidate(clawt_event_get_subject(event));
+
         clawt_gtk_refresh_agents(self);
         clawt_gtk_refresh_mailbox(self);
         return;
@@ -5048,7 +5061,6 @@ clawt_window_dispose(GObject *object)
     g_clear_pointer(&self->run_day, g_free);
     g_clear_pointer(&self->flow_run_sender, g_free);
     g_clear_pointer(&self->flow_run_day, g_free);
-    g_clear_pointer(&self->selected_avatar, g_free);
     g_clear_pointer(&self->selected_color, g_free);
     g_clear_pointer(&self->shown, g_hash_table_unref);
     g_clear_pointer(&self->drafts, g_hash_table_unref);

@@ -5149,6 +5149,32 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
         builder, "color", clawt_agent_config_get_string(config, "color"));
 
     /*
+     * Whether `agent.avatar` has anything to hand back, so a client
+     * knows whether to ask for it at all -- a request for bytes that do
+     * not exist is one round trip spent finding that out, on every
+     * agent, every time a list is drawn.
+     *
+     * Never the raw "avatar" string above: that is the *setting*, and an
+     * agent with none configured can still have a picture through
+     * auto-detection.  This is the answer clawt_avatar_resolve_path()
+     * would give, cheaply -- a handful of stats, no bytes read and no
+     * etag computed, which is why the etag is only ever reported by
+     * `agent.avatar` itself.
+     */
+    {
+        g_autofree gchar *workspace = clawt_agent_config_get_workspace(config);
+        g_autofree gchar *resolved =
+            (workspace != NULL)
+                ? clawt_avatar_resolve_path(
+                      clawt_agent_config_get_string(config, "avatar"),
+                      workspace)
+                : NULL;
+
+        json_builder_set_member_name(builder, "has_avatar");
+        json_builder_add_boolean_value(builder, resolved != NULL);
+    }
+
+    /*
      * Reported so a client can show it beside chief_of_staff. The two
      * are separate settings and the obvious-sounding one is not the one
      * that grants the tool -- which is how somebody enabled the wrong

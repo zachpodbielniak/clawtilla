@@ -179,53 +179,6 @@ day_divider(gint64 ts)
     return HTMX_ELEMENT(g_steal_pointer(&row));
 }
 
-/*
- * The face beside a run's first message.
- *
- * Initials and a colour derived from the name when nothing is
- * configured, which is what makes an avatar cost no config at all;
- * `agents.color` as the background when it is set.
- *
- * The colour goes through clawt_color_ink(), which refuses anything that
- * is not `#rgb` or `#rrggbb` -- it is spliced into a style attribute and
- * nothing else validates that key.
- */
-static HtmxElement *
-run_avatar(const gchar *name, const gchar *color)
-{
-    g_autoptr(HtmxSpan) face = htmx_span_new();
-    const gchar *ink = clawt_color_ink(color);
-    gunichar first;
-    gchar initial[8] = { 0 };
-
-    htmx_element_add_class(HTMX_ELEMENT(face), "msg-avatar");
-
-    first = g_utf8_get_char_validated(name, -1);
-
-    if (first != (gunichar)-1 && first != (gunichar)-2)
-        g_unichar_to_utf8(g_unichar_toupper(first), initial);
-
-    htmx_node_set_text_content(HTMX_NODE(face), initial);
-
-    if (ink != NULL) {
-        g_autofree gchar *style = g_strdup_printf("background:%s;color:%s",
-                                                  color, ink);
-
-        htmx_element_set_attribute(HTMX_ELEMENT(face), "style", style);
-    } else {
-        /*
-         * One of the sheet's own tones, chosen by the name, rather than
-         * a colour computed here -- so a palette recolours the avatars
-         * with everything else.
-         */
-        g_autofree gchar *cls = g_strdup_printf("avatar-tone-%u",
-                                                g_str_hash(name) % 6);
-
-        htmx_element_add_class(HTMX_ELEMENT(face), cls);
-    }
-
-    return HTMX_ELEMENT(g_steal_pointer(&face));
-}
 
 /*
  * The rendered body -- the only markup this client sets rather than
@@ -258,7 +211,7 @@ set_body(HtmxNode *node, const gchar *markdown)
 
 static HtmxElement *
 message_element(JsonObject *message, const gchar *agent_id,
-                gboolean run_start, const gchar *color)
+                gboolean has_avatar, gboolean run_start, const gchar *color)
 {
     const gchar *sender = clawt_web_member(message, "sender", "?");
     const gchar *body = clawt_web_member(message, "body", "");
@@ -287,8 +240,6 @@ message_element(JsonObject *message, const gchar *agent_id,
      */
     g_autofree gchar *when = clawt_chat_time_label(at);
 
-    (void)agent_id;
-
     htmx_element_add_class(row, "msg");
     htmx_element_add_class(row, run_start ? "run-start" : "run-cont");
 
@@ -308,7 +259,8 @@ message_element(JsonObject *message, const gchar *agent_id,
     if (run_start && !from_user) {
         g_autoptr(HtmxSpan) name = htmx_span_new();
 
-        clawt_web_add(who, run_avatar(sender, color));
+        clawt_web_add(who, clawt_web_avatar(sender, agent_id, has_avatar,
+                                            color, "msg-avatar"));
         htmx_node_set_text_content(HTMX_NODE(name), sender);
         htmx_node_add_child(HTMX_NODE(who), HTMX_NODE(name));
     }
@@ -579,6 +531,9 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
         g_autofree gchar *color = g_strdup(clawt_web_member(
             clawt_web_member_object(clawt_web_root(agent_reply), "settings"),
             "color", NULL));
+        gboolean has_avatar = clawt_web_member_bool(
+            clawt_web_member_object(clawt_web_root(agent_reply), "agent"),
+            "has_avatar", FALSE);
 
         for (i = 0; messages != NULL && i < json_array_get_length(messages);
              i++) {
@@ -608,7 +563,8 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
             run_day = g_steal_pointer(&day);
 
             clawt_web_add(inner,
-                          message_element(one, agent_id, run_start, color));
+                          message_element(one, agent_id, has_avatar,
+                                          run_start, color));
         }
     }
 

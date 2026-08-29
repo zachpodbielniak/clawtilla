@@ -185,6 +185,8 @@ declare -A AFFORDANCES=(
     ["resync after a gap"]="\"resync\"|\"resync\""
     ["stop the running turn"]="on_stop_turn|stop_turn_button"
     ["decision options stack"]="decision_option_button|decision-options"
+    ["sidebar face"]="clawt_gtk_build_avatar|agent-face"
+    ["picture editor"]="build_avatar_group|on_avatar_set"
 )
 
 usage () {

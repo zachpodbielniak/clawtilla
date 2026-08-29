@@ -1520,6 +1520,323 @@ on_rebuild_computer(GtkButton *button, gpointer user_data)
     adw_dialog_present(ADW_DIALOG(ask), GTK_WIDGET(self));
 }
 
+/* ── The profile picture ─────────────────────────────────────────── */
+
+/*
+ * Sends bytes, and only bytes, to agent.avatar_set.
+ *
+ * Not a path: the daemon writes them into the agent's own directory and
+ * the extension it chooses comes from sniffing them, never from
+ * anything this client claims. On success the cache clawt_gtk_avatar_texture()
+ * keeps has to be told, or the sidebar and the transcript would go on
+ * showing whatever they had -- an event with the same effect is on its
+ * way from the daemon, but this window asked for the change and should
+ * not wait for its own echo to draw it.
+ */
+static void
+avatar_upload_bytes(ClawtWindow *self, const gchar *agent_id, GBytes *bytes)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *encoded = NULL;
+    gconstpointer data;
+    gsize length = 0;
+
+    data = g_bytes_get_data(bytes, &length);
+    encoded = g_base64_encode(data, length);
+
+    reply = clawt_window_request(
+        self, "agent.avatar_set",
+        clawt_build_payload("agent", agent_id, "data", encoded, NULL));
+
+    if (reply == NULL)
+        return;
+
+    clawt_gtk_avatar_invalidate(agent_id);
+    clawt_window_toast(self, "Profile picture updated.");
+    clawt_gtk_refresh_selected(self);
+    clawt_gtk_refresh_agents(self);
+}
+
+static void
+on_avatar_file_chosen(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autoptr(GFile) file = NULL;
+    g_autoptr(GError) error = NULL;
+    const gchar *agent_id = g_object_get_data(source, "agent-id");
+
+    file = gtk_file_dialog_open_finish(GTK_FILE_DIALOG(source), result,
+                                       &error);
+
+    if (file == NULL) {
+        /* Dismissing the dialog is not a failure worth a toast. */
+        if (error != NULL &&
+            !g_error_matches(error, GTK_DIALOG_ERROR, GTK_DIALOG_ERROR_DISMISSED))
+            clawt_window_toast(self, error->message);
+
+        g_object_unref(self);
+        return;
+    }
+
+    if (agent_id != NULL) {
+        g_autofree gchar *contents = NULL;
+        g_autoptr(GError) read_error = NULL;
+        gsize length = 0;
+
+        if (g_file_load_contents(file, NULL, &contents, &length, NULL,
+                                 &read_error)) {
+            g_autoptr(GBytes) bytes = g_bytes_new(contents, length);
+
+            avatar_upload_bytes(self, agent_id, bytes);
+        } else {
+            clawt_window_toast(self, read_error->message);
+        }
+    }
+
+    g_object_unref(self);
+}
+
+static void
+on_avatar_choose_clicked(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autoptr(GtkFileDialog) dialog = gtk_file_dialog_new();
+
+    (void)button;
+
+    if (self->selected_agent == NULL)
+        return;
+
+    /*
+     * No filter set: the daemon sniffs the bytes and refuses anything
+     * that is not png/jpeg/webp with a message this window turns into a
+     * toast, which is a more honest answer than a filter guessing from
+     * a name a file may not even have.
+     */
+    gtk_file_dialog_set_title(dialog, "Choose a profile picture");
+    g_object_set_data_full(G_OBJECT(dialog), "agent-id",
+                           g_strdup(self->selected_agent), g_free);
+
+    gtk_file_dialog_open(dialog, GTK_WINDOW(self), NULL,
+                         on_avatar_file_chosen, g_object_ref(self));
+}
+
+/* One heap struct rather than object data on the window: two pastes in
+ * flight at once (unlikely, but a double-click manages it) must not
+ * clobber each other's agent id. */
+typedef struct {
+    ClawtWindow *window;
+    gchar       *agent_id;
+} AvatarPaste;
+
+static void
+avatar_paste_free(AvatarPaste *paste)
+{
+    g_object_unref(paste->window);
+    g_free(paste->agent_id);
+    g_free(paste);
+}
+
+static void
+on_avatar_texture_pasted(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    AvatarPaste *paste = user_data;
+    g_autoptr(GdkTexture) texture = NULL;
+    g_autoptr(GBytes) png = NULL;
+    g_autoptr(GError) error = NULL;
+
+    texture = gdk_clipboard_read_texture_finish(GDK_CLIPBOARD(source), result,
+                                                &error);
+
+    if (texture != NULL) {
+        /*
+         * PNG, because a pasted screenshot is a texture with no file
+         * behind it, and clawt_avatar_sniff_mime_type() reads png, jpeg
+         * and webp -- the composer's own paste path made the same
+         * choice for the same reason.
+         */
+        png = gdk_texture_save_to_png_bytes(texture);
+        avatar_upload_bytes(paste->window, paste->agent_id, png);
+    } else if (error != NULL &&
+              !g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+        clawt_window_toast(paste->window, error->message);
+    }
+
+    avatar_paste_free(paste);
+}
+
+static void
+on_avatar_paste_clicked(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    GdkClipboard *clipboard = gtk_widget_get_clipboard(GTK_WIDGET(self));
+    GdkContentFormats *formats = gdk_clipboard_get_formats(clipboard);
+    AvatarPaste *paste;
+
+    (void)button;
+
+    if (self->selected_agent == NULL)
+        return;
+
+    if (!gdk_content_formats_contain_gtype(formats, GDK_TYPE_TEXTURE)) {
+        clawt_window_toast(self, "the clipboard does not hold an image");
+        return;
+    }
+
+    paste = g_new0(AvatarPaste, 1);
+    paste->window = g_object_ref(self);
+    paste->agent_id = g_strdup(self->selected_agent);
+
+    gdk_clipboard_read_texture_async(clipboard, NULL, on_avatar_texture_pasted,
+                                     paste);
+}
+
+static gboolean
+on_avatar_drop(GtkDropTarget *target, const GValue *value, gdouble x,
+              gdouble y, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    GdkFileList *list;
+    GSList *files;
+    GFile *file;
+    g_autofree gchar *contents = NULL;
+    g_autoptr(GError) error = NULL;
+    gsize length = 0;
+
+    (void)target;
+    (void)x;
+    (void)y;
+
+    if (self->selected_agent == NULL || !G_VALUE_HOLDS(value, GDK_TYPE_FILE_LIST))
+        return FALSE;
+
+    list = g_value_get_boxed(value);
+    files = gdk_file_list_get_files(list);
+
+    if (files == NULL)
+        return FALSE;
+
+    file = files->data;
+
+    if (g_file_load_contents(file, NULL, &contents, &length, NULL, &error)) {
+        g_autoptr(GBytes) bytes = g_bytes_new(contents, length);
+
+        avatar_upload_bytes(self, self->selected_agent, bytes);
+    } else {
+        clawt_window_toast(self, error->message);
+    }
+
+    g_slist_free(files);
+    return TRUE;
+}
+
+static void
+on_avatar_clear_clicked(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+
+    (void)button;
+
+    if (self->selected_agent == NULL)
+        return;
+
+    reply = clawt_window_request(
+        self, "agent.avatar_clear",
+        clawt_build_payload("agent", self->selected_agent, NULL));
+
+    if (reply == NULL)
+        return;
+
+    clawt_gtk_avatar_invalidate(self->selected_agent);
+    clawt_gtk_refresh_selected(self);
+    clawt_gtk_refresh_agents(self);
+}
+
+/*
+ * The face, and the three ways to change it.
+ *
+ * A dedicated group rather than a row among "Settings": a picture is not
+ * a config value typed into an entry, it is dropped, pasted or chosen,
+ * and the face itself is the preview -- there is nothing else worth
+ * showing beside it.
+ */
+static void
+build_avatar_group(ClawtWindow *self, JsonObject *agent)
+{
+    GtkWidget *group;
+    GtkWidget *row;
+    GtkWidget *avatar;
+    GtkWidget *box;
+    GtkWidget *choose;
+    GtkWidget *paste;
+    GtkWidget *clear;
+    GtkDropTarget *drop;
+    const gchar *agent_id = clawt_json_string(agent, "id", "");
+    const gchar *name = clawt_json_string(agent, "name", agent_id);
+    const gchar *configured = clawt_json_string(agent, "avatar", "");
+    gboolean has_avatar = clawt_json_boolean(agent, "has_avatar", FALSE);
+
+    group = adw_preferences_group_new();
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group),
+                                    "Profile picture");
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(group),
+        has_avatar
+            ? ((configured != NULL && *configured != '\0')
+                   ? "Set from agents.avatar."
+                   : "Auto-detected: profile-picture.png (or .jpg, .jpeg, "
+                     "or .webp) in the agent's own directory.")
+            : "No picture yet, so initials are shown instead. Drop an "
+              "image onto the face, choose one, or paste from the "
+              "clipboard.");
+
+    row = adw_action_row_new();
+    clawt_gtk_set_row_text(row, "Picture",
+                          "PNG, JPEG or WebP -- the file's own bytes decide, "
+                          "not its name.");
+
+    avatar = clawt_gtk_build_avatar(
+        self->client, name, agent_id, has_avatar,
+        clawt_json_string(agent, "color", NULL), 64);
+    gtk_widget_set_valign(avatar, GTK_ALIGN_CENTER);
+    adw_action_row_add_prefix(ADW_ACTION_ROW(row), avatar);
+
+    drop = gtk_drop_target_new(GDK_TYPE_FILE_LIST, GDK_ACTION_COPY);
+    g_signal_connect(drop, "drop", G_CALLBACK(on_avatar_drop), self);
+    gtk_widget_add_controller(avatar, GTK_EVENT_CONTROLLER(drop));
+
+    box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_set_valign(box, GTK_ALIGN_CENTER);
+
+    choose = gtk_button_new_from_icon_name("document-open-symbolic");
+    gtk_widget_set_tooltip_text(choose, "Choose an image file");
+    gtk_widget_add_css_class(choose, "flat");
+    g_signal_connect(choose, "clicked", G_CALLBACK(on_avatar_choose_clicked),
+                     self);
+    gtk_box_append(GTK_BOX(box), choose);
+
+    paste = gtk_button_new_from_icon_name("edit-paste-symbolic");
+    gtk_widget_set_tooltip_text(paste, "Paste an image from the clipboard");
+    gtk_widget_add_css_class(paste, "flat");
+    g_signal_connect(paste, "clicked", G_CALLBACK(on_avatar_paste_clicked),
+                     self);
+    gtk_box_append(GTK_BOX(box), paste);
+
+    clear = gtk_button_new_from_icon_name("edit-clear-symbolic");
+    gtk_widget_set_tooltip_text(clear, "Remove the picture");
+    gtk_widget_add_css_class(clear, "flat");
+    gtk_widget_set_sensitive(clear, has_avatar);
+    g_signal_connect(clear, "clicked", G_CALLBACK(on_avatar_clear_clicked),
+                     self);
+    gtk_box_append(GTK_BOX(box), clear);
+
+    adw_action_row_add_suffix(ADW_ACTION_ROW(row), box);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+
+    gtk_box_append(self->inspector, group);
+}
+
 void
 clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
 {
@@ -1615,6 +1932,8 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
     }
 
     gtk_box_append(self->inspector, group);
+
+    build_avatar_group(self, agent);
 
     /* ── Editable ── */
     group = adw_preferences_group_new();
