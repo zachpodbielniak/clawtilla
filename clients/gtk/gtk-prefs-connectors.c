@@ -380,6 +380,35 @@ on_connector_activated(GtkListBox *list, GtkListBoxRow *row,
     adw_dialog_present(dialog, GTK_WIDGET(self));
 }
 
+/*
+ * The registry is imported by id, not by name -- an entry the daemon
+ * added since the last time this page opened is invisible until the
+ * catalogue is asked for again, which "Add a connector" does on its own
+ * every time it opens.  So this button's only job is to say what
+ * happened, in a fleet's own words: how many, or why not (most often
+ * that connectors.registry_enabled is still off).
+ */
+static void
+on_registry_refresh(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+
+    reply = clawt_window_request(self, "connector.registry_refresh", NULL);
+
+    if (reply != NULL) {
+        gint64 imported = json_object_get_int_member_with_default(
+            json_node_get_object(reply), "imported", 0);
+        g_autofree gchar *message = g_strdup_printf(
+            "Imported %" G_GINT64_FORMAT " connector%s from the registry.",
+            imported, imported == 1 ? "" : "s");
+
+        clawt_window_toast(self, message);
+    }
+
+    (void)button;
+}
+
 void
 clawt_gtk_refresh_settings_connectors(ClawtWindow *self)
 {
@@ -722,6 +751,8 @@ clawt_gtk_build_connectors_page(ClawtWindow *self)
     GtkWidget *page = adw_preferences_page_new();
     GtkWidget *group = adw_preferences_group_new();
     GtkWidget *add;
+    GtkWidget *refresh_registry;
+    GtkWidget *header_suffix = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
 
     adw_preferences_page_set_title(ADW_PREFERENCES_PAGE(page), "Connectors");
     adw_preferences_page_set_icon_name(ADW_PREFERENCES_PAGE(page),
@@ -735,11 +766,22 @@ clawt_gtk_build_connectors_page(ClawtWindow *self)
         "tools; the token stays here, is renewed here, and can be "
         "withdrawn here.");
 
+    refresh_registry = gtk_button_new_from_icon_name("view-refresh-symbolic");
+    gtk_widget_set_tooltip_text(refresh_registry,
+                                "Import the open MCP registry now");
+    gtk_widget_add_css_class(refresh_registry, "flat");
+    g_signal_connect(refresh_registry, "clicked",
+                     G_CALLBACK(on_registry_refresh), self);
+    gtk_box_append(GTK_BOX(header_suffix), refresh_registry);
+
     add = gtk_button_new_from_icon_name("list-add-symbolic");
     gtk_widget_set_tooltip_text(add, "Connect an account");
     gtk_widget_add_css_class(add, "flat");
     g_signal_connect(add, "clicked", G_CALLBACK(on_add_connector), self);
-    adw_preferences_group_set_header_suffix(ADW_PREFERENCES_GROUP(group), add);
+    gtk_box_append(GTK_BOX(header_suffix), add);
+
+    adw_preferences_group_set_header_suffix(ADW_PREFERENCES_GROUP(group),
+                                            header_suffix);
 
     self->settings_connectors = gtk_list_box_new();
     gtk_list_box_set_selection_mode(GTK_LIST_BOX(self->settings_connectors),

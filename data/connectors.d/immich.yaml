@@ -1,0 +1,18 @@
+# immich.yaml - Photo and video library on an Immich you run yourself
+#
+# Immich's own credential is an API key, minted from Account Settings ->
+# API Keys. No flagship instance -- every Immich is somebody's own photo
+# server -- so `instance:` (or a full `url:`) is required on the
+# integration.
+#
+# No `server_command`: no Immich MCP server found stable enough to name
+# here as of this writing. Set `command:`/`url:` on your own integration
+# once you have chosen one.
+connectors:
+  - id: immich
+    name: Immich
+    summary: Photo and video library, on your own server.
+    category: Media
+    auth: api_key
+    docs_url: https://immich.app/docs/features/command-line-interface/
+    credential_name: IMMICH_API_KEY

@@ -1,0 +1,31 @@
+# gitea.yaml - Gitea, the project Forgejo forked from
+#
+# Gitea and Forgejo share the same OAuth2 provider implementation --
+# Forgejo forked Gitea's code before either project renamed anything --
+# so the endpoint paths below are identical to the built-in `forgejo`
+# entry.  `default_instance` is Gitea Ltd's own hosted offering
+# (gitea.com), the closest thing this project has to Codeberg's role for
+# Forgejo; most Gitea instances are still self-run, which is exactly what
+# `instance:` on your own integration is for.
+#
+# No `server_command` or `server_url`: as of this writing every Gitea MCP
+# server found is a community project, several explicitly marked
+# unstable or mirror-only, and none shipped by Gitea itself under a name
+# stable enough to bake in here -- the same reasoning the built-in
+# table's own header comment gives for leaving `forgejo` without one.
+# Set `command:` or `url:` on your own integration once you have picked
+# one; a personal access token (`clawtilla connector key`) works today
+# without any of that.
+connectors:
+  - id: gitea
+    name: Gitea
+    summary: Repositories on a Gitea you run yourself, or on gitea.com.
+    category: Code forges
+    auth: pkce
+    auth_url: /login/oauth/authorize
+    token_url: /login/oauth/access_token
+    scopes: "read:repository write:repository read:issue write:issue"
+    client_id_help: "Settings -> Applications -> Manage OAuth2 Applications"
+    docs_url: https://docs.gitea.com/development/oauth2-provider
+    default_instance: https://gitea.com
+    credential_name: GITEA_TOKEN

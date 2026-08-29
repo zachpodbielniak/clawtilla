@@ -1,0 +1,26 @@
+# matrix.yaml - Tool access to a Matrix account, distinct from the `matrix`
+# channel integration
+#
+# This is a *connector* (auth: api_key, kind: tools) and is a different
+# thing entirely from `type: matrix` in integrations.yaml, which gives an
+# agent a chat identity of its own. This one gives an agent's existing
+# session a *tool* for reading or posting into rooms as an account you
+# already hold -- read-only room search is the common reason to want
+# this without also wanting the agent to have its own Matrix identity.
+# The id namespaces do not collide (this lives under `provider:` on a
+# `type: connector` integration), but the names are close enough that
+# docs/connectors.org spells the difference out.
+#
+# No `server_command`: Matrix MCP servers are all community projects with
+# no single name stable enough to bake in, the same reasoning applied to
+# `gitea` above. `default_instance` is matrix.org, the reference
+# homeserver most accounts that have not chosen otherwise are on.
+connectors:
+  - id: matrix
+    name: Matrix (tool access)
+    summary: Read or post into rooms as an account you already hold.
+    category: Chat
+    auth: api_key
+    default_instance: https://matrix.org
+    docs_url: https://spec.matrix.org/latest/client-server-api/#client-authentication
+    credential_name: MATRIX_ACCESS_TOKEN

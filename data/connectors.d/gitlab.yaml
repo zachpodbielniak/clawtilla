@@ -1,0 +1,38 @@
+# gitlab.yaml - Enriches the built-in GitLab connector with its own MCP server
+#
+# This is an *override*: `id: gitlab` matches the entry compiled into
+# clawtilla, and an overlay entry replaces a built-in one wholesale
+# rather than merging into it (clawt-connector.c documents why -- a
+# half-applied override is a state nobody chose). Every field the
+# built-in table sets is repeated here, unchanged, and the only addition
+# is `server_url`, `placement`, `credential_name` and `credential_format`.
+#
+# `server_url` is GitLab's own instance serving MCP directly at
+# `/api/v4/mcp` (docs.gitlab.com/user/model_context_protocol/mcp_server/,
+# GitLab 18.6+, Premium or Ultimate with Duo licensed) -- so this is
+# GitLab's own endpoint, not a guess at a third-party package name, which
+# is what makes it safe to name here at all. It is read as a *path* and
+# joined onto whichever `instance:` the integration names, because
+# `default_instance` is set below: one Forgejo-style rule applied to
+# every URL field in this entry, auth included.
+#
+# A person who would rather run a stdio MCP server of their own for
+# GitLab can still set `command:` on their own integration -- that wins
+# over both this file and the built-in table, exactly as it always has.
+connectors:
+  - id: gitlab
+    name: GitLab
+    summary: "Projects, issues and merge requests -- plus GitLab's own MCP server, once Duo is licensed."
+    category: Code forges
+    auth: device
+    auth_url: /oauth/authorize_device
+    token_url: /oauth/token
+    revoke_url: /oauth/revoke
+    scopes: "api read_user"
+    client_id_help: "User settings -> Applications, with the device flow ticked"
+    docs_url: https://docs.gitlab.com/api/oauth2/
+    default_instance: https://gitlab.com
+    server_url: /api/v4/mcp
+    placement: header
+    credential_name: Authorization
+    credential_format: "Bearer %s"

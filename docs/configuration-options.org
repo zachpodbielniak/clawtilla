@@ -1908,10 +1908,12 @@ Whether the open MCP registry is imported into the catalogue.
 Off by default because it reaches the network. When on, the fetch
 happens on a timer into a cache on disk -- never at daemon start and
 never from a request handler, so a client pressing a button waits on
-this machine and not on somebody else's.
+this machine and not on somebody else's. `connector.registry_refresh`
+asks for one sooner than the timer would.
 
-Not implemented in this build. Importing the registry is not built yet, so the catalogue is
-the built-in table and the overlay directory, as before.
+An imported entry only ever fills a gap: it never replaces a
+built-in connector or one from connectors.dir, which are both a
+choice somebody already made on purpose.
 
 *** =connectors.registry_url=
 
@@ -1925,9 +1927,6 @@ Somewhere else entirely is a legitimate answer: the registry is an
 ordinary HTTP service and an internal mirror serves the same
 shape.
 
-Not implemented in this build. Importing the registry is not built yet, so the catalogue is
-the built-in table and the overlay directory, as before.
-
 *** =connectors.registry_refresh_hours=
 
 - Type :: integer
@@ -1936,8 +1935,10 @@ the built-in table and the overlay directory, as before.
 
 How often the cached registry listing is refreshed.
 
-Not implemented in this build. Importing the registry is not built yet, so the catalogue is
-the built-in table and the overlay directory, as before.
+Checked against the cache's own `fetched_at`, not against when the
+daemon last started -- a restart must not reset this clock, or a
+fleet that bounces every hour would refresh every hour regardless of
+what this key says.
 
 ** =routines=
 

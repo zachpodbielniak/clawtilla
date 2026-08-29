@@ -98,6 +98,7 @@
 #include "integration/clawt-integration.h"
 #include "integration/clawt-oauth.h"
 #include "integration/clawt-connector-relay.h"
+#include "integration/clawt-connector-registry.h"
 #include "integration/clawt-matrix.h"
 #include "integration/clawt-notify.h"
 

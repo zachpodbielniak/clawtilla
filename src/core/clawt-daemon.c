@@ -2897,6 +2897,125 @@ clawt_daemon_warm_model_cache(ClawtDaemon *self)
     }
 }
 
+/*
+ * Shared by the periodic path below and by `connector.registry_refresh`
+ * in daemon-connector.c: whichever one finished must drop the cached
+ * catalogue and clear the in-flight flag, or the other could never run
+ * again and a freshly imported entry would wait for a reload to appear.
+ */
+void
+clawt_daemon_registry_refresh_landed(ClawtDaemon *self)
+{
+    self->registry_refreshing = FALSE;
+    g_clear_pointer(&self->connector_catalog, g_ptr_array_unref);
+}
+
+static void
+on_registry_swept(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    ClawtDaemon *self = user_data;
+    g_autoptr(GError) error = NULL;
+    guint imported = 0;
+
+    if (!clawt_connector_registry_refresh_finish(result, &imported, &error)) {
+        clawt_daemon_registry_refresh_landed(self);
+        g_warning("connector registry: periodic refresh failed: %s",
+                  error->message);
+        return;
+    }
+
+    clawt_daemon_registry_refresh_landed(self);
+    g_message("connector registry: refreshed, %u entr%s cached", imported,
+              (imported == 1) ? "y" : "ies");
+}
+
+/*
+ * Refreshes the imported registry when it is due, never sooner.
+ *
+ * The cache's own `fetched_at` is the one clock consulted -- not a
+ * daemon-side timestamp -- because a daemon that restarted an hour ago
+ * must not treat that restart as a fresh refresh and wait a whole
+ * `registry_refresh_hours` again for no reason.
+ */
+static void
+sweep_connector_registry(ClawtDaemon *self)
+{
+    gint64 fetched_at = 0;
+    gint64 refresh_hours;
+    g_autofree gchar *cache_path = NULL;
+    g_autoptr(GPtrArray) probe = NULL;
+
+    if (self->registry_refreshing)
+        return;
+
+    if (!clawt_config_get_boolean(self->config, "connectors.registry_enabled"))
+        return;
+
+    cache_path = clawt_connector_registry_cache_path(self->state_dir);
+    probe = clawt_connector_registry_cache_load(cache_path, &fetched_at);
+
+    refresh_hours = clawt_config_get_int(self->config,
+                                         "connectors.registry_refresh_hours");
+
+    if (refresh_hours <= 0)
+        refresh_hours = 24;
+
+    if (fetched_at != 0 &&
+        g_get_real_time() / G_USEC_PER_SEC - fetched_at <
+            refresh_hours * 3600)
+        return;
+
+    self->registry_refreshing = TRUE;
+    clawt_connector_registry_refresh_async(
+        clawt_config_get_string(self->config, "connectors.registry_url"),
+        cache_path, NULL, on_registry_swept, self);
+}
+
+/*
+ * `connector.registry_refresh`'s own completion -- the explicit, waited
+ * for path, as distinct from the periodic one above.  Both call
+ * clawt_daemon_registry_refresh_landed() so a person pressing the button
+ * and the sweep timer firing a moment later cannot leave the fleet
+ * believing an import is still running when it is not.
+ */
+void
+clawt_daemon_on_registry_refresh_requested(GObject *source, GAsyncResult *result,
+                                           gpointer user_data)
+{
+    RegistryRefreshJob *job = user_data;
+    g_autoptr(GError) error = NULL;
+    guint imported = 0;
+    gboolean ok;
+
+    ok = clawt_connector_registry_refresh_finish(result, &imported, &error);
+    clawt_daemon_registry_refresh_landed(job->daemon);
+
+    if (job->pending != NULL) {
+        if (!ok) {
+            clawt_ipc_pending_respond(
+                job->pending,
+                clawt_ipc_error_new(
+                    clawt_ipc_pending_get_request(job->pending),
+                    CLAWT_ERROR_FAILED, error->message));
+        } else {
+            g_autoptr(JsonBuilder) builder = json_builder_new();
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "imported");
+            json_builder_add_int_value(builder, imported);
+            json_builder_end_object(builder);
+
+            clawt_ipc_pending_respond(
+                job->pending,
+                clawt_ipc_response_new(
+                    clawt_ipc_pending_get_request(job->pending),
+                    json_builder_get_root(builder)));
+        }
+    }
+
+    g_free(job);
+}
+
 void
 clawt_daemon_sweep(ClawtDaemon *self)
 {
@@ -2907,6 +3026,7 @@ clawt_daemon_sweep(ClawtDaemon *self)
 
     clawt_mailbox_router_sweep(self->router);
     clawt_event_log_sweep(self->log);
+    sweep_connector_registry(self);
 
     /*
      * And the exchange, which until now had no periodic writer at all.
@@ -2994,6 +3114,25 @@ clawt_daemon_catalog(ClawtDaemon *self)
             clawt_config_get_path_value(self->config, "connectors.dir");
 
         self->connector_catalog = clawt_connector_catalog_load(dir, NULL);
+
+        /*
+         * A pure local file read -- never the network -- so this is
+         * safe on the same lazy path the overlay directory already
+         * uses.  Gated on the flag as well as on there being a cache: a
+         * fleet that has since turned the registry off should not keep
+         * showing entries from when it was on, and clawt_daemon_reload()
+         * already drops this cache whenever connectors.* changes.
+         */
+        if (clawt_config_get_boolean(self->config,
+                                     "connectors.registry_enabled")) {
+            g_autofree gchar *cache_path =
+                clawt_connector_registry_cache_path(self->state_dir);
+            g_autoptr(GPtrArray) imported =
+                clawt_connector_registry_cache_load(cache_path, NULL);
+
+            clawt_connector_catalog_merge_registry(self->connector_catalog,
+                                                   imported);
+        }
     }
 
     return self->connector_catalog;

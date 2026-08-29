@@ -1,0 +1,25 @@
+# home-assistant.yaml - Entities, automations and history on a Home Assistant
+# you run yourself
+#
+# Home Assistant's own credential is a *long-lived access token*, minted
+# from a person's profile page and revocable on its own. No flagship
+# instance -- every Home Assistant is somebody's own network, so
+# `instance:` (or a full `url:`) is required on the integration, not
+# optional.
+#
+# No `server_url` here even though Home Assistant 2025.2 onward ships an
+# MCP server integration of its own (the "Model Context Protocol Server"
+# integration, served over SSE): its exact path has moved during preview
+# and there is no single instance to test it against the way GitLab's own
+# SaaS lets this file's `gitlab.yaml` be checked against a real host.
+# Set `url:` on your own integration to the address that integration's
+# own setup page shows you -- it is an absolute URL, so no
+# `default_instance` is needed for it to work.
+connectors:
+  - id: home-assistant
+    name: Home Assistant
+    summary: Entities, automations and history, on your own instance.
+    category: Home
+    auth: api_key
+    docs_url: https://www.home-assistant.io/integrations/mcp_server/
+    credential_name: HOME_ASSISTANT_TOKEN

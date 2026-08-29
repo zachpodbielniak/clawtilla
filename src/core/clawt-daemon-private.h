@@ -94,6 +94,7 @@ struct _ClawtDaemon {
     GPtrArray  *connector_catalog;
     GHashTable *connector_flows;   /* flow id -> ConnectorFlow */
     GSource    *connector_refresh;
+    gboolean    registry_refreshing; /* an import is already in flight */
 
     /*
      * The fleet coming up, one agent per idle turn.
@@ -234,6 +235,17 @@ typedef struct {
     ClawtIpcPending *pending;
 } RefreshJob;
 
+/*
+ * `connector.registry_refresh`'s own deferred request.  The periodic
+ * sweep import shares the same underlying refresh and completion
+ * bookkeeping (clawt_daemon_registry_refresh_landed()) but has no
+ * request to answer, so it is not built out of this struct at all.
+ */
+typedef struct {
+    ClawtDaemon     *daemon;
+    ClawtIpcPending *pending;
+} RegistryRefreshJob;
+
 typedef struct {
     gchar    *name;
     gchar    *type_id;
@@ -369,6 +381,9 @@ clawt_daemon_connector_client_secret(ClawtDaemon *self,
 GPtrArray *
 clawt_daemon_catalog(ClawtDaemon *self);
 
+void
+clawt_daemon_registry_refresh_landed(ClawtDaemon *self);
+
 ClawtAgentConfig *
 clawt_daemon_create_agent(ClawtDaemon  *self,
                           const gchar  *agent_id,
@@ -432,6 +447,11 @@ clawt_daemon_on_connector_refreshed(GObject *source, GAsyncResult *result,
 void
 clawt_daemon_on_connector_revoked(GObject *source, GAsyncResult *result,
                                   gpointer user_data);
+
+void
+clawt_daemon_on_registry_refresh_requested(GObject      *source,
+                                           GAsyncResult *result,
+                                           gpointer      user_data);
 
 void
 clawt_daemon_on_ipc_exec_finished(GObject *source, GAsyncResult *result,

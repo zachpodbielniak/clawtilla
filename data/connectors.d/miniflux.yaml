@@ -1,0 +1,18 @@
+# miniflux.yaml - Feeds and unread entries on a Miniflux you run yourself
+#
+# Miniflux's own credential is an API key, minted from Settings -> API
+# Keys. No flagship instance -- Miniflux is self-hosted only, with no
+# hosted offering of its own -- so `instance:` (or a full `url:`) is
+# required on the integration.
+#
+# No `server_command`: no Miniflux MCP server found stable enough to name
+# here as of this writing. Set `command:`/`url:` on your own integration
+# once you have chosen one.
+connectors:
+  - id: miniflux
+    name: Miniflux
+    summary: Feeds and unread entries, on your own server.
+    category: Reading
+    auth: api_key
+    docs_url: https://miniflux.app/docs/api.html#authentication
+    credential_name: MINIFLUX_API_KEY

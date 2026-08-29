@@ -43,7 +43,8 @@ static const ClawtConnectorInfo builtin[] = {
       "https://docs.github.com/apps/oauth-apps",
       NULL,
       "github-mcp-server", github_server_args, NULL,
-      CLAWT_CREDENTIAL_PLACEMENT_ENV, "GITHUB_PERSONAL_ACCESS_TOKEN", NULL },
+      CLAWT_CREDENTIAL_PLACEMENT_ENV, "GITHUB_PERSONAL_ACCESS_TOKEN", NULL,
+      NULL },
 
     { "gitlab", "GitLab",
       "Projects, issues and merge requests, on gitlab.com or your own.",
@@ -57,7 +58,8 @@ static const ClawtConnectorInfo builtin[] = {
       "https://docs.gitlab.com/api/oauth2/",
       "https://gitlab.com",
       NULL, NULL, NULL,
-      CLAWT_CREDENTIAL_PLACEMENT_ENV, "GITLAB_TOKEN", NULL },
+      CLAWT_CREDENTIAL_PLACEMENT_ENV, "GITLAB_TOKEN", NULL,
+      NULL },
 
     { "forgejo", "Forgejo",
       "Repositories on Codeberg, or on a Forgejo you run yourself.",
@@ -71,7 +73,8 @@ static const ClawtConnectorInfo builtin[] = {
       "https://forgejo.org/docs/latest/user/oauth2-provider/",
       "https://codeberg.org",
       NULL, NULL, NULL,
-      CLAWT_CREDENTIAL_PLACEMENT_ENV, "FORGEJO_TOKEN", NULL },
+      CLAWT_CREDENTIAL_PLACEMENT_ENV, "FORGEJO_TOKEN", NULL,
+      NULL },
 
     { "google", "Google",
       "Gmail, Drive and Calendar.", "Productivity",
@@ -86,7 +89,8 @@ static const ClawtConnectorInfo builtin[] = {
       "https://developers.google.com/identity/protocols/oauth2/"
       "limited-input-device",
       NULL, NULL, NULL, NULL,
-      CLAWT_CREDENTIAL_PLACEMENT_ENV, "GOOGLE_OAUTH_TOKEN", NULL },
+      CLAWT_CREDENTIAL_PLACEMENT_ENV, "GOOGLE_OAUTH_TOKEN", NULL,
+      NULL },
 
     { "microsoft", "Microsoft 365",
       "Outlook mail, OneDrive and Teams.", "Productivity",
@@ -98,7 +102,8 @@ static const ClawtConnectorInfo builtin[] = {
       "Entra ID -> App registrations, with 'Allow public client flows' on",
       "https://learn.microsoft.com/entra/identity-platform/v2-oauth2-device-code",
       NULL, NULL, NULL, NULL,
-      CLAWT_CREDENTIAL_PLACEMENT_ENV, "MICROSOFT_OAUTH_TOKEN", NULL },
+      CLAWT_CREDENTIAL_PLACEMENT_ENV, "MICROSOFT_OAUTH_TOKEN", NULL,
+      NULL },
 
     { "slack", "Slack",
       "Read and post in channels.", "Chat",
@@ -110,7 +115,8 @@ static const ClawtConnectorInfo builtin[] = {
       "api.slack.com/apps -> your app -> OAuth & Permissions",
       "https://api.slack.com/authentication/oauth-v2",
       NULL, NULL, NULL, NULL,
-      CLAWT_CREDENTIAL_PLACEMENT_ENV, "SLACK_BOT_TOKEN", NULL },
+      CLAWT_CREDENTIAL_PLACEMENT_ENV, "SLACK_BOT_TOKEN", NULL,
+      NULL },
 
     { "notion", "Notion",
       "Pages and databases.", "Productivity",
@@ -122,7 +128,8 @@ static const ClawtConnectorInfo builtin[] = {
       "notion.so/my-integrations, created as a public integration",
       "https://developers.notion.com/docs/authorization",
       NULL, NULL, NULL, NULL,
-      CLAWT_CREDENTIAL_PLACEMENT_HEADER, "Authorization", "Bearer %s" },
+      CLAWT_CREDENTIAL_PLACEMENT_HEADER, "Authorization", "Bearer %s",
+      NULL },
 
     { "linear", "Linear",
       "Issues and projects.", "Project tracking",
@@ -134,7 +141,8 @@ static const ClawtConnectorInfo builtin[] = {
       "Linear -> Settings -> API -> OAuth applications",
       "https://developers.linear.app/docs/oauth/authentication",
       NULL, NULL, NULL, NULL,
-      CLAWT_CREDENTIAL_PLACEMENT_HEADER, "Authorization", "Bearer %s" },
+      CLAWT_CREDENTIAL_PLACEMENT_HEADER, "Authorization", "Bearer %s",
+      NULL },
 
     /*
      * The two that make the catalogue open rather than closed.
@@ -152,14 +160,16 @@ static const ClawtConnectorInfo builtin[] = {
       CLAWT_CONNECTOR_AUTH_API_KEY,
       NULL, NULL, NULL, NULL, NULL, NULL, NULL,
       NULL, NULL, NULL,
-      CLAWT_CREDENTIAL_PLACEMENT_ENV, "API_KEY", NULL },
+      CLAWT_CREDENTIAL_PLACEMENT_ENV, "API_KEY", NULL,
+      NULL },
 
     { "bearer", "Any bearer token",
       "An HTTP MCP server behind an Authorization header.", "Generic",
       CLAWT_CONNECTOR_AUTH_API_KEY,
       NULL, NULL, NULL, NULL, NULL, NULL, NULL,
       NULL, NULL, NULL,
-      CLAWT_CREDENTIAL_PLACEMENT_HEADER, "Authorization", "Bearer %s" }
+      CLAWT_CREDENTIAL_PLACEMENT_HEADER, "Authorization", "Bearer %s",
+      NULL }
 };
 
 const ClawtConnectorInfo *
@@ -203,14 +213,19 @@ clawt_connector_info_free(ClawtConnectorInfo *info)
     g_free((gchar *)info->server_url);
     g_free((gchar *)info->credential_name);
     g_free((gchar *)info->credential_format);
+    g_strfreev((GStrv)info->known_tools);
 
     g_free(info);
 }
 
-static ClawtConnectorInfo *
-connector_info_copy(const ClawtConnectorInfo *src)
+ClawtConnectorInfo *
+clawt_connector_info_copy(const ClawtConnectorInfo *src)
 {
-    ClawtConnectorInfo *out = g_new0(ClawtConnectorInfo, 1);
+    ClawtConnectorInfo *out;
+
+    g_return_val_if_fail(src != NULL, NULL);
+
+    out = g_new0(ClawtConnectorInfo, 1);
 
     out->id = g_strdup(src->id);
     out->name = g_strdup(src->name);
@@ -231,6 +246,8 @@ connector_info_copy(const ClawtConnectorInfo *src)
     out->placement = src->placement;
     out->credential_name = g_strdup(src->credential_name);
     out->credential_format = g_strdup(src->credential_format);
+    out->known_tools = (const gchar *const *)
+        g_strdupv((GStrv)src->known_tools);
 
     return out;
 }
@@ -351,6 +368,7 @@ connector_from_node(YamlNode *node, GError **error)
     ClawtConnectorInfo *out;
     const gchar *id;
     const gchar *format;
+    const gchar *auth_nick;
     gint value = 0;
 
     if (node == NULL || yaml_node_get_node_type(node) != YAML_NODE_MAPPING) {
@@ -377,6 +395,24 @@ connector_from_node(YamlNode *node, GError **error)
         return NULL;
     }
 
+    /*
+     * An absent `auth:` defaults to CLAWT_CONNECTOR_AUTH_NONE, which is a
+     * legitimate value -- plenty of self-hosted servers want no
+     * credential at all.  A *present* one that fails to parse is a
+     * different thing: silently falling back to NONE would tell an
+     * operator their typo'd "device" connector needs no authorization,
+     * which is a worse failure than the typo itself.
+     */
+    auth_nick = member_string(mapping, "auth");
+
+    if (auth_nick != NULL &&
+        !clawt_enum_from_nick(CLAWT_TYPE_CONNECTOR_AUTH, auth_nick, &value)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                    "connector '%s': '%s' is not a known auth kind",
+                    id, auth_nick);
+        return NULL;
+    }
+
     out = g_new0(ClawtConnectorInfo, 1);
 
     out->id = g_strdup(id);
@@ -397,6 +433,8 @@ connector_from_node(YamlNode *node, GError **error)
     out->server_url = g_strdup(member_string(mapping, "server_url"));
     out->credential_name = g_strdup(member_string(mapping, "credential_name"));
     out->credential_format = g_strdup(format);
+    out->known_tools = (const gchar *const *)member_strv(mapping,
+                                                         "known_tools");
 
     if (out->name == NULL)
         out->name = g_strdup(id);
@@ -404,8 +442,10 @@ connector_from_node(YamlNode *node, GError **error)
     if (out->category == NULL)
         out->category = g_strdup("Added here");
 
-    if (read_enum(mapping, "auth", CLAWT_TYPE_CONNECTOR_AUTH, &value))
-        out->auth = (ClawtConnectorAuth)value;
+    /* Already validated above; @value carries whatever it parsed to, or
+     * its zero-initialised CLAWT_CONNECTOR_AUTH_NONE when auth_nick was
+     * absent. */
+    out->auth = (ClawtConnectorAuth)value;
 
     value = 0;
 
@@ -514,7 +554,7 @@ clawt_connector_catalog_load(const gchar *overlay_dir, GError **error)
     gsize i;
 
     for (i = 0; i < G_N_ELEMENTS(builtin); i++)
-        g_ptr_array_add(catalog, connector_info_copy(&builtin[i]));
+        g_ptr_array_add(catalog, clawt_connector_info_copy(&builtin[i]));
 
     if (overlay_dir == NULL)
         goto done;

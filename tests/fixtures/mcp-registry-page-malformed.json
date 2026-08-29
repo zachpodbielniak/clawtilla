@@ -1,0 +1,18 @@
+{
+  "servers": [
+    { "description": "no name at all -- unusable" },
+    {
+      "name": "io.github.acme/fine",
+      "description": "This one is fine.",
+      "packages": [
+        {
+          "registryType": "npm",
+          "identifier": "@acme/fine-mcp",
+          "runtimeHint": "npx"
+        }
+      ]
+    },
+    { "name": "io.github.acme/nothing-to-run" }
+  ],
+  "metadata": { "count": 3 }
+}

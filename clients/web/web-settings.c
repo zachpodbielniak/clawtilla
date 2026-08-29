@@ -734,6 +734,16 @@ connectors_content(ClawtWebApp *app)
                                                   "connectors");
     guint i;
 
+    {
+        g_autoptr(HtmxDiv) registry_row = htmx_div_new();
+
+        htmx_element_add_class(HTMX_ELEMENT(registry_row), "btn-row");
+        clawt_web_add(registry_row, clawt_web_post_button(
+            "Import registry", "/settings/connectors/registry-refresh",
+            "default", NULL));
+        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(registry_row));
+    }
+
     if (list == NULL || json_array_get_length(list) == 0)
         clawt_web_add(box, clawt_web_empty("No connectors", NULL));
 
@@ -843,6 +853,49 @@ connectors_content(ClawtWebApp *app)
     }
 
     return HTMX_ELEMENT(g_steal_pointer(&box));
+}
+
+/*
+ * The registry is imported by id, not by name, so this page's own list
+ * of *connected* accounts never changes from a refresh -- what changes
+ * is what "Add a connector" offers, which already re-asks
+ * `connector.catalog` on every render.  This handler's only job is to
+ * say what happened, in a fleet's own words: how many, or why not (most
+ * often that connectors.registry_enabled is still off).
+ */
+static HtmxResponse *
+on_registry_refresh(HtmxRequest *request, GHashTable *params,
+                    gpointer user_data)
+{
+    g_autofree gchar *failure = NULL;
+    g_autofree gchar *done = NULL;
+    ClawtWebApp *app = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+
+    (void)params;
+
+    reply = clawt_web_app_call(app, "connector.registry_refresh", NULL);
+
+    if (reply == NULL) {
+        failure = g_strdup(clawt_web_app_last_error(app));
+    } else {
+        gint64 imported = clawt_web_member_int(clawt_web_root(reply),
+                                               "imported", 0);
+
+        done = g_strdup_printf(
+            "Imported %" G_GINT64_FORMAT " connector%s from the registry.",
+            imported, imported == 1 ? "" : "s");
+    }
+
+    content = connectors_content(app);
+
+    if (failure != NULL)
+        return settings_response(app, request, "connectors", content,
+                                 failure, TRUE);
+
+    return settings_response(app, request, "connectors", content, done,
+                             FALSE);
 }
 
 /*
@@ -2316,6 +2369,8 @@ clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app)
 
     htmx_router_post(router, "/settings/connectors/add", on_connector_add,
                      app);
+    htmx_router_post(router, "/settings/connectors/registry-refresh",
+                     on_registry_refresh, app);
     htmx_router_get(router, "/settings/connectors/:connector/authorize",
                     on_connector_authorize, app);
     htmx_router_post(router, "/settings/connectors/:connector/await",

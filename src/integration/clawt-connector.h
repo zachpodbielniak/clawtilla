@@ -60,6 +60,8 @@ G_BEGIN_DECLS
  * @placement: where the relay puts the credential
  * @credential_name: (nullable): the variable or header it goes in
  * @credential_format: (nullable): a printf format with one %s for the value
+ * @known_tools: (array zero-terminated=1) (nullable): the tool names this
+ *   server is known to offer
  *
  * One service in the catalogue.
  *
@@ -80,6 +82,15 @@ G_BEGIN_DECLS
  * catalogue's job is the credential; a connector with neither is
  * perfectly useful and takes its server from the integration's own
  * `command` or `url`, exactly as an `mcp` integration does.
+ *
+ * @known_tools is a different kind of hint: what the entry's author
+ * believes the server offers, so an integration's own `tools:` narrowing
+ * can be checked against it.  A name that does not appear there is
+ * almost always a typo, and the relay warns about it rather than
+ * silently narrowing an agent down to nothing.  Left %NULL, which is the
+ * ordinary case for a connector whose server nobody here has looked
+ * inside of, disables the check rather than treating every name as
+ * unknown.
  */
 typedef struct {
     const gchar              *id;
@@ -100,6 +111,7 @@ typedef struct {
     ClawtCredentialPlacement  placement;
     const gchar              *credential_name;
     const gchar              *credential_format;
+    const gchar *const       *known_tools;
 } ClawtConnectorInfo;
 
 /**
@@ -206,6 +218,20 @@ gchar *clawt_connector_format_credential(const ClawtConnectorInfo *info,
  */
 gchar *clawt_connector_token_path(const gchar *secrets_dir,
                                   const gchar *name);
+
+/**
+ * clawt_connector_info_copy:
+ * @src: an entry, built-in or loaded
+ *
+ * A deep copy that owns its own strings, so a caller holding a pointer
+ * into the built-in table -- which is `static const` and shares its
+ * strings with every other reader of it -- can put a copy somewhere it
+ * will later free, such as onto a catalogue built by
+ * clawt_connector_catalog_merge_registry().
+ *
+ * Returns: (transfer full): the copy
+ */
+ClawtConnectorInfo *clawt_connector_info_copy(const ClawtConnectorInfo *src);
 
 /**
  * clawt_connector_info_free:

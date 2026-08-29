@@ -1,0 +1,41 @@
+{
+  "servers": [
+    {
+      "name": "io.github.acme/widget-tools",
+      "title": "Widget Tools",
+      "description": "Manage widgets from an agent session.",
+      "version": "1.2.0",
+      "packages": [
+        {
+          "registryType": "npm",
+          "identifier": "@acme/widget-mcp",
+          "version": "1.2.0",
+          "runtimeHint": "npx",
+          "transport": { "type": "stdio" },
+          "packageArguments": [ "--read-only" ],
+          "environmentVariables": [
+            {
+              "name": "ACME_API_TOKEN",
+              "description": "A token from acme.example/account/tokens",
+              "isRequired": true,
+              "isSecret": true,
+              "format": "string"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "io.github.acme/widget-remote",
+      "description": "The same service, spoken over HTTP.",
+      "version": "1.0.0",
+      "remotes": [
+        { "type": "streamable-http", "url": "https://widgets.example/mcp" }
+      ]
+    }
+  ],
+  "metadata": {
+    "nextCursor": "io.github.acme/widget-remote:1.0.0",
+    "count": 2
+  }
+}
