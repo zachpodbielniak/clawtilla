@@ -322,6 +322,15 @@ clawt_workspace_find_profile_picture(const gchar *workspace);
  * procedure.  Same reasoning as the tool list beside it: an agent
  * believes its own file, because the file is in the prompt and looking
  * something up is a decision it has to make.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+clawt_workspace_update_skills(ClawtAgentConfig *agent,
+                              const gchar      *described,
+                              GError          **error);
+
+/**
  * clawt_workspace_update_operator_profile:
  * @agent: the agent's configuration
  * @profile: (nullable): the profile as org text, from
@@ -348,9 +357,6 @@ clawt_workspace_find_profile_picture(const gchar *workspace);
  * Returns: %TRUE on success
  */
 gboolean
-clawt_workspace_update_skills(ClawtAgentConfig *agent,
-                              const gchar      *described,
-                              GError          **error);
 clawt_workspace_update_operator_profile(ClawtAgentConfig *agent,
                                         const gchar      *profile,
                                         GError          **error);

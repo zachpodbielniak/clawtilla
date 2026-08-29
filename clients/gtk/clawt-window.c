@@ -4813,6 +4813,7 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
                                         clawt_gtk_build_skill_page(self),
                                         "skills", "Skills",
                                         "accessories-text-editor-symbolic");
+    adw_view_stack_add_titled_with_icon(self->pages,
                                         clawt_gtk_build_recall_page(self),
                                         "memory", "Memory",
                                         "document-open-recent-symbolic");

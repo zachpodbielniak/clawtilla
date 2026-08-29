@@ -2297,8 +2297,9 @@ clawt_daemon_render_all_agents_into(ClawtDaemon *self, GPtrArray *refusals)
                     g_warning("agent %s: %s", clawt_agent_get_id(agent),
                               region_error->message);
             }
+        }
 
-/**
+        /*
          * ...and what the fleet knows about the person it works for.
          *
          * Here rather than at agent creation, so an agent made on day

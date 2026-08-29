@@ -2411,7 +2411,8 @@ clawt_workspace_update_skills(ClawtAgentConfig *agent,
     section = g_strdup_printf("%s\n\n%s\n%s\n",
                               SKILLS_BEGIN, described, SKILLS_END);
 
-    return replace_region(agent, SKILLS_BEGIN, SKILLS_END, section, error);
+    return replace_region(agent, "TOOLS.org", SKILLS_BEGIN, SKILLS_END,
+                          section, error);
 }
 
 /* ── Importing an existing workspace ─────────────────────────────── */
