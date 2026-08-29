@@ -159,6 +159,7 @@ static const struct {
     { CLAWT_COMPUTER_DISTROBOX,
       "Distrobox \xe2\x80\x94 a container wired into your session" },
     { CLAWT_COMPUTER_VM, "Virtual machine \xe2\x80\x94 its own kernel" },
+    { CLAWT_COMPUTER_SSH, "SSH \xe2\x80\x94 another machine you already run" },
     { CLAWT_COMPUTER_HOST, "Host \xe2\x80\x94 this machine itself" }
 };
 
@@ -217,10 +218,42 @@ clawt_computer_type_has_machine(ClawtComputerType type)
      * without being something you power on -- an ssh host would be
      * exactly that -- and one predicate answering both would be right
      * until the day it silently was not.
+     *
+     * ssh arrived and settled it from the other side: it is not something
+     * to power on and it does not take shared folders either, so the two
+     * still agree -- but they now disagree with
+     * clawt_computer_type_shares_host_paths(), which is the third
+     * question and the one that decides whether the workspace and the
+     * exchange are placed inside.
      */
     return type == CLAWT_COMPUTER_CONTAINER ||
            type == CLAWT_COMPUTER_DISTROBOX ||
            type == CLAWT_COMPUTER_VM;
+}
+
+gboolean
+clawt_computer_type_shares_host_paths(ClawtComputerType type)
+{
+    /*
+     * A switch naming every value rather than an || chain, so -Wswitch
+     * stops the next backend being added without somebody answering
+     * this. Getting it wrong in the permissive direction promises an
+     * agent a workspace that is not there, which it discovers a turn
+     * later by reading an empty directory and drawing a conclusion.
+     */
+    switch (type) {
+    case CLAWT_COMPUTER_HOST:
+    case CLAWT_COMPUTER_CONTAINER:
+    case CLAWT_COMPUTER_DISTROBOX:
+    case CLAWT_COMPUTER_VM:
+        return TRUE;
+
+    case CLAWT_COMPUTER_NONE:
+    case CLAWT_COMPUTER_SSH:
+        return FALSE;
+    }
+
+    return FALSE;
 }
 
 /* Register ClawtComputerType as a GLib enum type */
@@ -236,6 +269,7 @@ clawt_computer_type_get_type(void)
             { CLAWT_COMPUTER_CONTAINER, "CLAWT_COMPUTER_CONTAINER", "container" },
             { CLAWT_COMPUTER_VM, "CLAWT_COMPUTER_VM", "vm" },
             { CLAWT_COMPUTER_DISTROBOX, "CLAWT_COMPUTER_DISTROBOX", "distrobox" },
+            { CLAWT_COMPUTER_SSH, "CLAWT_COMPUTER_SSH", "ssh" },
             { 0, NULL, NULL }
         };
         GType g_define_type_id = g_enum_register_static("ClawtComputerType", values);

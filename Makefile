@@ -212,6 +212,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/computer/clawt-pod-bridge.c \
 	$(SRCDIR)/computer/clawt-container-computer.c \
 	$(SRCDIR)/computer/clawt-distrobox-computer.c \
+	$(SRCDIR)/computer/clawt-ssh-computer.c \
 	$(SRCDIR)/computer/clawt-cloud-init.c \
 	$(SRCDIR)/computer/clawt-vm-image.c \
 	$(SRCDIR)/computer/clawt-vm-computer.c \

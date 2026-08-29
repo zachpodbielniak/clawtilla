@@ -1,14 +1,14 @@
 #+title: Computers
-#+description: The five backends, host confinement, mount paths and the exchange
+#+description: The six backends, host confinement, mount paths and the exchange
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-26 Wed]
-#+version: 0.1.1
+#+updated: [2026-08-29 Sat]
+#+version: 0.2.0
 
 * Computers
 
-A computer is what an agent can run commands on.  Five types, and an
+A computer is what an agent can run commands on.  Six types, and an
 optional desktop add-on that works alongside any of them.
 
 | Type | What the agent gets | Isolation |
@@ -18,6 +18,11 @@ optional desktop add-on that works alongside any of them.
 | ~container~ | a podman container | namespaces |
 | ~distrobox~ | a distrobox container, wired into the host | namespaces, deliberately porous |
 | ~vm~ | a libvirt or QEMU virtual machine | a kernel of its own |
+| ~ssh~ | another machine you already run | a different computer entirely |
+
+Five of the six are things clawtilla creates and can destroy.  ~ssh~ is
+not: it is somebody's server, and that single fact is what every
+difference in its section below comes from.
 
 ** Three things that are true of every backend
 
@@ -44,10 +49,15 @@ asks a narrower question instead.
 
 *** ~timeout~ means the same thing on four backends of five
 
-~host~, ~container~ and ~distrobox~ all enforce it, and all mean the same
-thing by it: the command is given that many seconds and then abandoned,
-with ~CLAWT_ERROR_TIMEOUT~ and a message saying it may still be running.
-A ~timeout~ of 0 means no deadline.
+~host~, ~container~, ~distrobox~ and ~ssh~ all enforce it, and all mean
+the same thing by it: the command is given that many seconds and then
+abandoned, with ~CLAWT_ERROR_TIMEOUT~ and a message saying it may still
+be running.  A ~timeout~ of 0 means no deadline.
+
+~ssh~ is the one that tries hardest to make "abandoned" mean something:
+~SIGTERM~ to its own client, then ~SIGKILL~ five seconds later.  It still
+cannot reach the remote process -- see [[*Multiplexing, keepalives and
+two-stage kill][Multiplexing, keepalives and two-stage kill]].
 
 The odd one out is ~vm~, which turns it into an SSH ~ConnectTimeout~
 capped at 30 seconds -- so there it bounds *reaching* the guest rather
@@ -1251,6 +1261,300 @@ success, which is the right half to get wrong: the operator was told,
 even if what they were told named a cause they could do nothing about.
 If you have such a leftover, ~podman rm clawt-<agent>~ removes it.
 
+** ssh
+
+The only backend clawtilla does not own.
+
+#+begin_src yaml
+computer:
+  type: ssh
+  ssh:
+    host: buildbox
+    workspace: /srv/agents/chief
+#+end_src
+
+~host~ is an *alias out of ~/.ssh/config*, not a hostname:
+
+#+begin_src conf
+Host buildbox
+    HostName 10.0.0.4
+    User agent
+    Port 2222
+    IdentityFile ~/.ssh/id_clawtilla
+    ProxyJump bastion
+#+end_src
+
+That is the whole point of the setting.  ~IdentityFile~, ~ProxyJump~,
+~Port~ and ~User~ already have a home, that home is already right, and
+clawtilla reimplementing any of it would be a second place for the
+connection to be configured and a second place for it to be wrong.  The
+alias is validated as letters, digits, ~.~, ~_~ and ~-~, and never a
+leading ~-~ --- ssh reads an argument starting with a hyphen as an
+option, so an alias called ~-oProxyCommand=...~ would be a command
+clawtilla ran rather than a machine it connected to.
+
+*** It is somebody's machine, and that decides everything else
+
+A container, a distrobox and a VM are things clawtilla makes.  This one
+was running before the fleet existed and will be running after it.  Four
+consequences follow, and each of them is a thing this backend
+deliberately does *not* do:
+
+- *No Start, no Stop, no Remove.*  ~clawt_computer_type_has_machine()~ is
+  false for ~ssh~, so neither client offers the buttons, and the daemon
+  refuses the verbs by name if anything reaches them another way.  The
+  refusal says what is actually true --- clawtilla never started it ---
+  rather than the generic "whatever it started is still running".
+- *No mounts.*  There is no mount to make across an ssh connection, so
+  the agent does not get ~/mnt/clawtilla/workspace~ or the shared
+  exchange, and fleet-wide shared folders do not reach it.  Promising a
+  workspace at a path that is not there would be a promise the agent
+  discovers is false a turn later.
+- *No directory creation.*  ~computer.ssh.workspace~ must already exist.
+  A ~required~ mount that is not there makes the agent a ~SHADOW~ with
+  that reason, rather than clawtilla making directories on a machine
+  other people are using.
+- *No host key decisions.*  See below.
+
+*** Host keys are never accepted for you
+
+clawtilla does not pass ~StrictHostKeyChecking=no~, ever.  An unknown or
+changed key is a refusal that names the remedy:
+
+#+begin_example
+the host key for 'buildbox' is unknown or has changed, so the connection
+was refused. Run `ssh buildbox true` once by hand and accept the key
+yourself -- clawtilla will not turn host key checking off for you.
+#+end_example
+
+Accepting a key is a decision about who you are talking to.  Turning the
+check off would make clawtilla make it, silently, for every host in the
+fleet --- and would turn a *changed* key, which is the interesting case,
+into no message at all.  A unit test asserts the string
+~StrictHostKeyChecking~ appears nowhere in the command line, because this
+is exactly the sort of thing that gets added to make a demo work.
+
+What clawtilla does pass is ~BatchMode=yes~.  Nobody is watching a
+daemon, so a prompt there can only wedge it: without ~BatchMode~ OpenSSH
+answers an unknown key by running ~SSH_ASKPASS~ --- a graphical dialog
+--- and waits for a person for ever, holding the worker thread and the
+turn with it.
+
+*** Multiplexing, keepalives and two-stage kill
+
+Three settings that each turn a failure into a different failure.
+
+~ControlMaster~/~ControlPersist~ (from ~computer.ssh.control_persist~,
+default 600) means the first command opens a master connection and every
+later one is a channel on it.  Without it every single command pays a
+full TCP connect, key exchange and authentication, which over a WAN is
+most of the time an agent spends running anything.
+
+The control socket goes in ~$XDG_RUNTIME_DIR/clawtilla/ssh/<agent>@<alias>~
+and its length is checked with ~clawt_check_socket_path()~ before
+anything uses it.  ~sockaddr_un.sun_path~ is 108 bytes; an over-long path
+does *not* fail at bind time --- ssh simply never creates the master,
+every command silently pays a fresh handshake, and the only symptom is
+the remote feeling slow.  Too long turns multiplexing off with a warning
+saying so, rather than leaving it on and broken.  Per (agent, alias),
+because two agents sharing a master would mean stopping either one closes
+the connection the other is running a command over.
+
+~ConnectTimeout~ (~computer.ssh.connect_timeout~, default 10) plus
+~ServerAliveInterval~ bound the case that otherwise has no bound: a
+machine that has dropped off the network accepts nothing and refuses
+nothing, and ssh will sit out the kernel's TCP timeout waiting.  That
+turns a turn that should have failed in ten seconds into one that hangs.
+
+On ~timeout~, the kill is two-stage: ~SIGTERM~, then ~SIGKILL~ five
+seconds later.  One second is a LAN number.  A timed-out ssh has to tear
+down a connection that may be on the far side of a slow link, and killing
+it outright leaves the master socket and the remote channel in a state
+the *next* command inherits.
+
+*What clawtilla cannot do is stop the remote command.*  ssh is run
+without a terminal --- a pty would echo the command back and merge stderr
+into stdout --- and without one, sshd does not signal the remote process
+when the channel closes.  So a command that times out is a command
+clawtilla *stopped waiting for*; it may still be running over there.  The
+timeout message says so.  This is the same honesty ~container~ and
+~distrobox~ already have about podman.
+
+*** Confinement: the mount list is the allowlist
+
+There is no kernel mount, so a mount here is not a mount.  It is the
+operator saying "this agent may reach that directory over there", and the
+only thing that can act on it is an allowlist --- exactly what
+~confine: allowlist~ is on the ~host~ backend, through the same
+~ClawtSandbox~.
+
+The *target* is the grant, not the source:
+
+#+begin_src yaml
+computer:
+  type: ssh
+  ssh:
+    host: buildbox
+    workspace: /srv/agents/chief
+  mounts:
+    - source: /unused
+      target: /srv/shared/datasets
+      mode: ro
+#+end_src
+
+~source~ names a path on the machine the daemon runs on and means nothing
+at the far end; ~target~ is by definition where the directory appears
+inside the computer, and the computer *is* that machine.  Every target is
+probed at start, and a ~required~ one that is genuinely absent makes the
+agent a ~SHADOW~ with that reason.
+
+~computer.ssh.allow_sudo~ defaults to false and refuses ~sudo~,
+~pkexec~, ~doas~, ~run0~, ~su~, ~setpriv~ and ~machinectl~ --- including
+inside a shell one-liner, because refusing ~sudo id~ while allowing
+~sh -c 'sudo id'~ is theatre.
+
+**** What this check can and cannot see
+
+It reads the paths in the command and resolves ~.~ and ~..~ *by text*.
+It cannot follow a symlink, because the symlink is on the other machine.
+
+That is why an ssh sandbox is a different object from a host one, built
+with ~clawt_sandbox_new_remote()~ and refused if a local one is handed to
+it.  The local one resolves paths with ~realpath()~, which is right here
+and actively wrong for a path that only exists over there:
+~clawt_canonicalize_missing()~ resolves as far as the path exists and
+hands back the rest verbatim, so for a wholly unknown path the ~..~
+survives --- and ~/srv/work/../../etc/shadow~ then reads as being inside
+~/srv/work~, because it is a prefix with a separator after it, while the
+*remote* kernel resolves the ~..~ perfectly well.  The remote sandbox
+normalises lexically instead, through
+~clawt_normalize_path_lexically()~.
+
+So it is a boundary against mistakes and against paths an agent
+constructs.  It is *not* a boundary against a filesystem laid out to
+defeat it, and a remote symlink pointing out of the allowed tree passes
+it.  ~describe()~ tells the agent that in as many words, because a
+boundary somebody believes is stronger than it is, is worse than none.
+~~~~ is refused rather than guessed at, since the remote account's home
+is not something this process can know.
+
+*** The agent's own tools still run here
+
+This is true of ~container~ and ~vm~ too, and it costs the most turns on
+this backend --- because two Linux machines running the same
+distribution look identical, so nothing tells the agent it is in the
+wrong one until a file it wrote is not where it put it.
+
+~bash~, ~read~ and ~write~ run on the machine clawtilla is on.  Only
+~clawtilla_computer_exec~ crosses the connection.  The per-turn directive
+says so in the strongest wording of the five backends, and ~describe()~
+repeats it.
+
+*** Requirements
+
+| Command | Fedora package | Needed for |
+|---------+----------------+------------|
+| ~ssh~ | ~openssh-clients~ | every command |
+| ~sftp~ | ~openssh-clients~ | ~put_file~ / ~get_file~ |
+
+Resolved beside the running binary, then ~/usr/bin~, then ~PATH~ ---
+the order ~clawt-pod-bridge.c~ uses --- and a refusal names all three
+places plus the package.
+
+~sftp~ rather than ~scp~: scp's traditional protocol lets the *remote*
+end decide which files arrive, which is a poor property for a transfer
+clawtilla makes on an agent's behalf.  sftp's batch language quotes with
+~"~ and has no escape inside quotes, so a path containing ~"~, ~\~ or a
+newline is refused rather than mangled --- the newline especially, which
+would end the line and begin a second sftp command.
+
+*** Why is this not working
+
+One message, not a list.  The status ladder answers with the earliest
+thing that is failing, in this order:
+
+| Rung | What it means |
+|------+---------------|
+| not configured | ~computer.ssh.host~ is unset |
+| unreachable | nothing answered |
+| host key | unknown or changed; run ~ssh <alias> true~ by hand |
+| auth failed | it answered and refused the login |
+| workspace missing | logged in, but the directory is not there |
+| not ready | nothing has been checked yet |
+
+An unreachable host is also unauthenticated, also has no workspace and is
+also not ready.  Reporting four symptoms sends somebody to check four
+things when only the first has a cause.
+
+*** Missing is not broken
+
+A probe answers one of three things, not two: present, missing, or *the
+question never got a real answer*.  Only an explicit ~no such
+(object|image|container|file)~ out of the remote counts as absence, and
+ssh's own exit 255 is always a transport failure whatever the text says.
+
+Failing towards "I could not tell" is the point.  A flaky link read as
+"missing" is how a provisioner comes to create something that already
+exists --- and on a machine clawtilla does not own, that is somebody
+else's data.
+
+** Reaching another machine without the ssh backend
+
+Two settings look as though they already reach a remote.  One mostly
+does; the other does not.  Both were checked rather than assumed, in
+~tests/test-remote-backends.c~.
+
+*** Remote podman works, with one caveat that matters
+
+~computer.container.connection~ takes an ~ssh://~ URI and podomation's
+container module handles it properly: it parses
+~ssh://[user@]host[:port][/socket]~, spawns an ~ssh -N -L~ tunnel with
+~BatchMode=yes~ and ~ConnectTimeout~, and talks to the remote podman over
+it.  clawtilla passes the string through unchanged --- only a bare path
+is rewritten to ~unix://~ --- and the bridge caches a module instance per
+connection, so two agents on two hosts do not share one.
+
+#+begin_src yaml
+computer:
+  type: container
+  container:
+    connection: "ssh://buildbox/run/user/1000/podman/podman.sock"
+#+end_src
+
+*The caveat is mounts.*  A container's shared folders are bind mounts,
+and podman resolves a bind source on the machine its *service* runs on.
+The workspace mount still names a path under this machine's state
+directory, so the remote podman creates an empty directory over there and
+mounts that.  Nothing fails.  The agent finds its own workspace present
+and empty, which is indistinguishable from an agent that has never
+written anything.
+
+So a remote container agent wants ~computer.workspace: false~ and
+~computer.exchange: false~, or it wants to be an ~ssh~ computer instead.
+
+*** Remote libvirt does not work
+
+~computer.vm.uri~ accepts ~qemu+ssh://host/system~ and the URI does reach
+the module --- that half is fine.  Everything the domain *refers to* is
+the problem:
+
+- the qcow2 overlay is created here with ~qemu-img~,
+- the cloud-init seed is built here with ~xorrisofs~,
+- every ~<filesystem>~ share names a directory on this filesystem,
+
+and all three go into the domain XML as absolute paths.  A remote
+libvirtd asked to define that domain gets a disk that is not there ---
+which, per the table above, is a VM that boots and admits nobody.
+
+The address is wrong too.  The ~<portForward>~ is pinned to ~127.0.0.1~,
+so it is the *remote* host's loopback that listens, while the daemon
+dials its own.  Even a domain that started perfectly would be
+unreachable.
+
+Connecting is not provisioning.  If you want an agent on another
+machine's hypervisor, run a daemon over there, or give the agent an
+~ssh~ computer pointed at a guest you manage yourself.
+
 ** Mount paths
 
 Mounts are how files get in and out.
@@ -1602,7 +1906,12 @@ scaffolded section already says it, better.
 
 ** What every computer gets
 
-Two shares, without anybody configuring them.
+Two shares, without anybody configuring them --- on every backend that
+can hold one.  ~none~ has nowhere to put them and ~ssh~ is a different
+computer, so ~clawt_computer_type_shares_host_paths()~ answers for both
+and neither gets either share.  That predicate is asked rather than
+branched on, so a backend added later reaches the factory and the
+daemon's exchange wiring without either being edited.
 
 *** The agent's workspace -- ~/mnt/clawtilla/workspace~
 
@@ -1642,7 +1951,9 @@ sent two agents looking on the host at a guest path, finding nothing, and
 reporting a share that was working as absent.
 
 Container, distrobox and VM all go through that one function, so the
-sentence cannot drift between them.  The *host* backend writes its own
+sentence cannot drift between them.  ~ssh~ has no host path to name at
+all --- its "mounts" are grants over remote paths --- so it writes its
+own list, saying outright that nothing was copied or shared.  The *host* backend writes its own
 line and writes it the other way round -- ~/mnt/shared (~/src on this
 machine)~, target first -- which is harmless where the two are the same
 machine, and is one description of one thing in two orders.

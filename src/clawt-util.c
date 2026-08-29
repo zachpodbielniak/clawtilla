@@ -275,6 +275,67 @@ clawt_canonicalize_missing(const gchar *path)
     }
 }
 
+gchar *
+clawt_normalize_path_lexically(const gchar *path)
+{
+    g_auto(GStrv) parts = NULL;
+    g_autoptr(GPtrArray) kept = NULL;
+    g_autoptr(GString) out = NULL;
+    gboolean absolute;
+    gsize i;
+
+    if (path == NULL)
+        return NULL;
+
+    absolute = (path[0] == '/');
+    parts = g_strsplit(path, "/", -1);
+    kept = g_ptr_array_new();
+
+    for (i = 0; parts[i] != NULL; i++) {
+        /* "" comes from a leading, trailing or doubled separator. */
+        if (parts[i][0] == '\0' || g_strcmp0(parts[i], ".") == 0)
+            continue;
+
+        if (g_strcmp0(parts[i], "..") != 0) {
+            g_ptr_array_add(kept, parts[i]);
+            continue;
+        }
+
+        /*
+         * Pop, unless there is nothing to pop against.  For an absolute
+         * path that means dropping it outright, which is what the kernel
+         * does with "/.." -- the root is its own parent.  For a relative
+         * one it is kept, because a caller comparing it against a root
+         * has to be able to see that it escapes.
+         */
+        if (kept->len > 0 &&
+            g_strcmp0(g_ptr_array_index(kept, kept->len - 1), "..") != 0) {
+            g_ptr_array_remove_index(kept, kept->len - 1);
+        } else if (!absolute) {
+            g_ptr_array_add(kept, parts[i]);
+        }
+    }
+
+    out = g_string_new(NULL);
+
+    for (i = 0; i < kept->len; i++) {
+        if (out->len > 0 || absolute)
+            g_string_append_c(out, '/');
+
+        g_string_append(out, (const gchar *)g_ptr_array_index(kept, i));
+    }
+
+    /*
+     * An absolute path that cancelled down to nothing is the root, and a
+     * relative one that did is the current directory.  Returning "" for
+     * either would make every containment test against it succeed.
+     */
+    if (out->len == 0)
+        g_string_append(out, absolute ? "/" : ".");
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
 gboolean
 clawt_path_is_within(const gchar *path, const gchar *root)
 {

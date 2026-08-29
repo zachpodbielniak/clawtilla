@@ -200,8 +200,9 @@ defaults:
   # Default model for new agents.
   model: "sonnet"
 
-  # Default computer type for new agents: none, host, container,
-  # distrobox or vm.
+  # Default computer type for new agents. The permitted values are
+  # listed above, from the schema itself rather than written out again
+  # here -- the copy that was written out here had already gone stale.
   #
   # none is the default on purpose. An agent that can run commands is a
   # bigger grant than an agent that can only talk, and it should be asked

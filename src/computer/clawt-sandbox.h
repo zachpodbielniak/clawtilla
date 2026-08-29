@@ -51,6 +51,48 @@ G_DECLARE_FINAL_TYPE(ClawtSandbox, clawt_sandbox, CLAWT, SANDBOX, GObject)
 ClawtSandbox *clawt_sandbox_new(ClawtConfineMode  mode,
                                 const gchar      *root);
 
+/**
+ * clawt_sandbox_new_remote:
+ * @mode: how much of that machine to allow
+ * @root: (nullable): the working directory, spelled as it is over there
+ *
+ * The same rules applied to paths on **another** machine.
+ *
+ * Every path a remote sandbox is given names a filesystem this process
+ * cannot see, so realpath() is not merely unhelpful here -- it is wrong.
+ * clawt_canonicalize_missing() resolves what it can and returns the rest
+ * verbatim, which for a wholly unknown path is the whole string: ".."
+ * survives, "/srv/work/../../etc/shadow" reads as a prefix of
+ * "/srv/work" with a separator after it, and the containment test says
+ * yes while the remote kernel resolves the "..". A remote sandbox
+ * therefore normalises lexically instead, through
+ * clawt_normalize_path_lexically().
+ *
+ * The flag belongs to the constructor rather than to a setter because
+ * every stored path is normalised as it is added: a sandbox switched to
+ * remote after its root and its allow list were in would keep three
+ * paths resolved against this machine and compare them against
+ * candidates resolved against another.
+ *
+ * What it costs is symlinks. They are on the other machine and nothing
+ * here can follow them, so a remote symlink pointing out of the allowed
+ * tree passes this check. clawt_sandbox_describe() says exactly that,
+ * because a boundary somebody believes is stronger than it is, is worse
+ * than none -- the same sentence at the top of this file.
+ *
+ * Returns: (transfer full): a new #ClawtSandbox
+ */
+ClawtSandbox *clawt_sandbox_new_remote(ClawtConfineMode  mode,
+                                       const gchar      *root);
+
+/**
+ * clawt_sandbox_is_remote:
+ * @self: a #ClawtSandbox
+ *
+ * Returns: %TRUE if the paths name another machine
+ */
+gboolean clawt_sandbox_is_remote(ClawtSandbox *self);
+
 void clawt_sandbox_add_allow_path(ClawtSandbox *self, const gchar *path);
 
 /**

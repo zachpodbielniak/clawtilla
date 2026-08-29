@@ -23,9 +23,51 @@ struct _ClawtSandbox {
     GPtrArray        *deny_paths;
     gboolean          allow_network;
     gboolean          allow_sudo;
+    gboolean          remote;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtSandbox, clawt_sandbox, G_TYPE_OBJECT)
+
+/*
+ * One spelling of "put this path in the form we compare in".
+ *
+ * Every stored path and every candidate goes through here, so the two
+ * can never be normalised by different rules -- which is the whole way a
+ * containment test comes to be more permissive than it reads.
+ *
+ * On this machine that is realpath(), which collapses symlinks and ".."
+ * together.  On another machine there is nothing to call realpath()
+ * against, and clawt_canonicalize_missing() would hand back the string
+ * unchanged with its ".." intact; see clawt_sandbox_new_remote().
+ */
+static gchar *
+sandbox_normalize(ClawtSandbox *self, const gchar *path)
+{
+    if (!self->remote)
+        return clawt_canonicalize_missing(path);
+
+    /*
+     * A relative path is relative to the remote working directory, which
+     * is the root.  Resolved here rather than left alone, or "../etc" is
+     * compared against an absolute root, matches nothing, and is refused
+     * for the wrong reason -- and "notes" is refused although it is
+     * exactly where the agent was told to work.
+     */
+    if (path != NULL && path[0] != '/' && path[0] != '~' &&
+        self->root != NULL) {
+        g_autofree gchar *joined = g_build_filename(self->root, path, NULL);
+
+        return clawt_normalize_path_lexically(joined);
+    }
+
+    /*
+     * "~" is the remote account's home and this process has no way to
+     * know it.  Left as written, so it falls outside every allowed root
+     * and is refused -- the safe direction, and clawt_sandbox_describe()
+     * tells the agent to use absolute paths.
+     */
+    return clawt_normalize_path_lexically(path);
+}
 
 /*
  * Programs that hand an agent another user's authority.
@@ -65,9 +107,35 @@ clawt_sandbox_new(ClawtConfineMode mode, const gchar *root)
     ClawtSandbox *self = g_object_new(CLAWT_TYPE_SANDBOX, NULL);
 
     self->mode = mode;
-    self->root = clawt_canonicalize_missing(root);
+    self->root = sandbox_normalize(self, root);
 
     return self;
+}
+
+ClawtSandbox *
+clawt_sandbox_new_remote(ClawtConfineMode mode, const gchar *root)
+{
+    ClawtSandbox *self = g_object_new(CLAWT_TYPE_SANDBOX, NULL);
+
+    /*
+     * Set before the root is stored, which is why this is a constructor
+     * and not a setter: the root is normalised on the way in, and a
+     * sandbox told afterwards that it is remote would already be holding
+     * a path resolved against the wrong machine.
+     */
+    self->remote = TRUE;
+    self->mode = mode;
+    self->root = sandbox_normalize(self, root);
+
+    return self;
+}
+
+gboolean
+clawt_sandbox_is_remote(ClawtSandbox *self)
+{
+    g_return_val_if_fail(CLAWT_IS_SANDBOX(self), FALSE);
+
+    return self->remote;
 }
 
 void
@@ -78,7 +146,7 @@ clawt_sandbox_add_mount_path(ClawtSandbox *self, const gchar *path)
     if (path == NULL)
         return;
 
-    g_ptr_array_add(self->mount_paths, clawt_canonicalize_missing(path));
+    g_ptr_array_add(self->mount_paths, sandbox_normalize(self, path));
 }
 
 /*
@@ -95,7 +163,7 @@ clawt_sandbox_add_allow_path(ClawtSandbox *self, const gchar *path)
     g_return_if_fail(CLAWT_IS_SANDBOX(self));
     g_return_if_fail(path != NULL);
 
-    g_ptr_array_add(self->allow_paths, clawt_canonicalize_missing(path));
+    g_ptr_array_add(self->allow_paths, sandbox_normalize(self, path));
 }
 
 void
@@ -104,7 +172,7 @@ clawt_sandbox_add_deny_path(ClawtSandbox *self, const gchar *path)
     g_return_if_fail(CLAWT_IS_SANDBOX(self));
     g_return_if_fail(path != NULL);
 
-    g_ptr_array_add(self->deny_paths, clawt_canonicalize_missing(path));
+    g_ptr_array_add(self->deny_paths, sandbox_normalize(self, path));
 }
 
 void
@@ -170,7 +238,7 @@ clawt_sandbox_path_is_allowed(ClawtSandbox *self, const gchar *path)
     if (self->mode == CLAWT_CONFINE_NONE)
         return TRUE;
 
-    resolved = clawt_canonicalize_missing(path);
+    resolved = sandbox_normalize(self, path);
 
     /*
      * Denials are checked first and win outright, so ~/.ssh stays out even
@@ -295,7 +363,7 @@ check_escalation(ClawtSandbox        *self,
          * still executes the setuid binary, so matching only the spelling
          * in argv makes the block trivial to walk around.
          */
-        resolved = clawt_canonicalize_missing(argv[i]);
+        resolved = sandbox_normalize(self, argv[i]);
 
         if (!basename_matches(argv[i], escalation_commands) &&
             !basename_matches(resolved, escalation_commands))
@@ -546,6 +614,22 @@ clawt_sandbox_describe(ClawtSandbox *self)
 
     if (!self->allow_network && self->mode == CLAWT_CONFINE_BWRAP)
         g_string_append(out, " You have no network access.");
+
+    /*
+     * Said out loud, because the header of this file says a confinement
+     * mode people believe is stronger than it is, is worse than none --
+     * and a remote one is weaker than the local one wearing the same
+     * name.  Nothing here can follow a symlink on the other machine, so
+     * the check is on the text of the path and stops there.
+     */
+    if (self->remote && self->mode != CLAWT_CONFINE_NONE) {
+        g_string_append(out,
+            " That check reads the paths in your command and nothing "
+            "else: it is on another machine, so a symlink over there is "
+            "not something clawtilla can follow. Write absolute paths -- "
+            "\"~\" is your remote account's home and cannot be resolved "
+            "from here, so a command naming one is refused.");
+    }
 
     /*
      * Saying so plainly saves an agent three turns discovering it by trial,

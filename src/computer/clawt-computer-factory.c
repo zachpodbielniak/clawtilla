@@ -14,6 +14,7 @@
 #include "computer/clawt-container-computer.h"
 #include "computer/clawt-distrobox-computer.h"
 #include "computer/clawt-vm-computer.h"
+#include "computer/clawt-ssh-computer.h"
 
 static void
 apply_mounts(ClawtComputer    *computer,
@@ -99,8 +100,16 @@ apply_mounts(ClawtComputer    *computer,
      * Here rather than beside the exchange in the daemon, because it is
      * derivable from the config alone -- which is this function's whole
      * input, and what makes it testable without a hypervisor.
+     *
+     * Asked of clawt_computer_type_shares_host_paths() rather than
+     * `type != none`, which is what it was. An ssh computer is a
+     * different machine: there is no mount to make, so declaring the
+     * workspace at /mnt/clawtilla/workspace over there would put a
+     * directory that does not exist into the agent's allowlist and into
+     * its prompt, and it would find out by reading nothing at a path it
+     * had been told about.
      */
-    if (type != CLAWT_COMPUTER_NONE &&
+    if (clawt_computer_type_shares_host_paths(type) &&
         clawt_agent_config_get_boolean(agent_config, "computer.workspace")) {
         g_autofree gchar *workspace =
             clawt_agent_config_get_workspace(agent_config);
@@ -454,6 +463,74 @@ clawt_computer_factory_create(ClawtAgentConfig  *agent_config,
             CLAWT_DISTROBOX_COMPUTER(computer),
             clawt_agent_config_get_boolean(agent_config,
                                            "computer.distrobox.keep"));
+        break;
+    }
+
+    case CLAWT_COMPUTER_SSH: {
+        const gchar *host =
+            clawt_agent_config_get_string(agent_config, "computer.ssh.host");
+
+        /*
+         * Validated here as well as at provision time. This catches a
+         * typo when the agent is built, which is where the operator is
+         * looking; provision catches an agent constructed some other
+         * way. The cost of checking twice is nothing against handing a
+         * destination beginning with "-" to ssh once.
+         */
+        if (!clawt_ssh_host_is_valid(host, error))
+            return NULL;
+
+        computer = clawt_ssh_computer_new(agent_id, host);
+
+        /*
+         * get_string(), not get_path_value(), although the schema calls
+         * this a path. It is a path on *another* machine, and expanding
+         * "~" or "$XDG_DATA_HOME" against this one would produce a
+         * directory that exists here and means nothing over there.
+         */
+        clawt_ssh_computer_set_workspace(
+            CLAWT_SSH_COMPUTER(computer),
+            clawt_agent_config_get_string(agent_config,
+                                          "computer.ssh.workspace"));
+        clawt_ssh_computer_set_shell(
+            CLAWT_SSH_COMPUTER(computer),
+            clawt_agent_config_get_string(agent_config,
+                                          "computer.ssh.shell"));
+        clawt_ssh_computer_set_connect_timeout(
+            CLAWT_SSH_COMPUTER(computer),
+            (guint)clawt_agent_config_get_int(agent_config,
+                                              "computer.ssh.connect_timeout"));
+        clawt_ssh_computer_set_control_persist(
+            CLAWT_SSH_COMPUTER(computer),
+            (guint)clawt_agent_config_get_int(agent_config,
+                                              "computer.ssh.control_persist"));
+
+        {
+            /*
+             * Built with clawt_sandbox_new_remote(), not
+             * clawt_sandbox_new(). Every path here names the other
+             * machine, and the local constructor resolves paths with
+             * realpath() against this one -- which for a wholly unknown
+             * path leaves ".." in the string, so
+             * "/srv/work/../../etc/shadow" would read as being inside
+             * "/srv/work" while the remote kernel resolved it.
+             *
+             * allowlist rather than workspace, because the mount targets
+             * are the grants and workspace mode ignores them.
+             */
+            g_autoptr(ClawtSandbox) sandbox = clawt_sandbox_new_remote(
+                CLAWT_CONFINE_ALLOWLIST,
+                clawt_agent_config_get_string(agent_config,
+                                              "computer.ssh.workspace"));
+
+            clawt_sandbox_set_allow_sudo(
+                sandbox,
+                clawt_agent_config_get_boolean(agent_config,
+                                               "computer.ssh.allow_sudo"));
+
+            clawt_ssh_computer_set_sandbox(CLAWT_SSH_COMPUTER(computer),
+                                           sandbox);
+        }
         break;
     }
 

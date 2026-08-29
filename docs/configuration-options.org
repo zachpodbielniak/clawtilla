@@ -294,12 +294,13 @@ Default model for new agents.
 *** =defaults.computer=
 
 - Type :: enum
-- Values :: none, host, container, vm, distrobox
+- Values :: none, host, container, vm, distrobox, ssh
 - Default :: =none=
 - Since :: 0.1.0
 
-Default computer type for new agents: none, host, container,
-distrobox or vm.
+Default computer type for new agents. The permitted values are
+listed above, from the schema itself rather than written out again
+here -- the copy that was written out here had already gone stale.
 
 none is the default on purpose. An agent that can run commands is a
 bigger grant than an agent that can only talk, and it should be asked
@@ -2706,11 +2707,14 @@ What the agent can run commands on.
 *** =agents.computer.type=
 
 - Type :: enum
-- Values :: none, host, container, vm, distrobox
+- Values :: none, host, container, vm, distrobox, ssh
 - Default :: unset
 - Since :: 0.1.0
 
-none, host, container or vm. Defaults to defaults.computer.
+Which kind of computer this agent gets. Defaults to
+defaults.computer. The permitted values are listed above, from the
+schema itself -- the copy that used to be written out here had
+already gone stale by omitting distrobox.
 
 Desktop control is not a type -- it is the desktop block below, and
 works alongside any of these.
@@ -3066,6 +3070,18 @@ gone rather than offline, which is not what the word stop suggests.
 
 A machine reached over ssh.
 
+The only backend clawtilla does not own. A container, a distrobox and
+a VM are things it creates and can destroy; this one was running
+before the fleet existed. So clawtilla will not start, stop or take
+apart an ssh computer, and both clients leave those buttons out
+rather than offering them and failing.
+
+Nothing is mounted into it either -- there is no mount to make across
+an ssh connection. That means the agent does NOT get the workspace at
+/mnt/clawtilla/workspace or the shared exchange, which every other
+backend does get, and fleet-wide shared folders do not apply. What
+the mount list does instead is described under workspace below.
+
 *** =agents.computer.ssh.host=
 
 - Type :: string
@@ -3078,17 +3094,14 @@ An alias from ~/.ssh/config, not a hostname -- so the identity file,
 the jump host, the port and the user stay where ssh already keeps
 them, and clawtilla never reimplements ssh's own configuration.
 
-Give the alias ControlMaster, ControlPersist and a ConnectTimeout.
-Without multiplexing every command pays a fresh handshake; without a
-timeout a machine that drops off the network hangs a turn instead of
-failing it.
+Letters, digits, '.', '_' and '-' only, and never a leading '-'. ssh
+reads an argument beginning with '-' as an option, so an alias called
+-oProxyCommand=... would be a command rather than a destination.
 
 Run `ssh <alias> true` once by hand first. The host key is accepted
-on your terms, never automatically: an unknown key is a refusal that
-says so.
-
-Not implemented in this build. The ssh backend is not built yet. `computer.type: ssh` is not a
-type this build knows, so nothing here is reached.
+on your terms, never automatically: an unknown or changed key is a
+refusal that names this as the remedy. clawtilla does not pass
+StrictHostKeyChecking=no, because accepting a key is your decision.
 
 *** =agents.computer.ssh.workspace=
 
@@ -3098,12 +3111,23 @@ type this build knows, so nothing here is reached.
 
 Where the agent works on that machine.
 
+A path as that machine spells it. It is not expanded here: '~' and
+$XDG_* would be resolved against this machine's home and produce a
+path that exists here and means nothing over there.
+
 There is no kernel mount to make over ssh, so the mount list becomes
 the allowlist instead -- the same shape `confine: allowlist` has on
-the host backend.
+the host backend. Each mount's *target* is the grant, because that is
+the path inside the computer and the computer is the other machine;
+the source names a directory on this one and is not used.
 
-Not implemented in this build. The ssh backend is not built yet. `computer.type: ssh` is not a
-type this build knows, so nothing here is reached.
+That check reads the paths in a command and resolves '.' and '..' by
+text. It cannot follow a symlink, because the symlink is on the other
+machine -- so it is a boundary against mistakes and against paths an
+agent constructs, not against a filesystem laid out to defeat it. The
+directory must already exist; clawtilla creates nothing on a machine
+it does not own, and a mount marked required that is not there makes
+the agent a SHADOW with that reason rather than starting it anyway.
 
 *** =agents.computer.ssh.shell=
 
@@ -3111,10 +3135,13 @@ type this build knows, so nothing here is reached.
 - Default :: =/bin/sh=
 - Since :: 0.2.0
 
-Which shell to name when one is needed.
+Which shell runs the command over there.
 
-Not implemented in this build. The ssh backend is not built yet. `computer.type: ssh` is not a
-type this build knows, so nothing here is reached.
+ssh hands the remote login shell one string whatever we do, so this
+is not a way to avoid a shell -- it is a way to name one that behaves
+the same everywhere. A login shell that is fish or csh reads the
+`cd <dir> && ...` prologue differently, and naming /bin/sh is what
+makes an agent behave identically on every host in a fleet.
 
 *** =agents.computer.ssh.allow_sudo=
 
@@ -3124,12 +3151,14 @@ type this build knows, so nothing here is reached.
 
 Whether sudo and its neighbours may be run there.
 
-Off refuses sudo, pkexec, doas, run0 and machinectl shell at the
-point the command is built, including inside a shell one-liner, and
-the agent is told so rather than discovering it a turn later.
+Off refuses sudo, pkexec, doas, run0, su, setpriv and machinectl at
+the point the command is built, including inside a shell one-liner,
+and the agent is told so rather than discovering it a turn later.
 
-Not implemented in this build. The ssh backend is not built yet. `computer.type: ssh` is not a
-type this build knows, so nothing here is reached.
+It is an argument check, not a kernel boundary: it stops a command
+that names one of those, and cannot stop a program that escalates
+once it is already running. Nothing on this backend can -- the kernel
+doing the enforcing is on the other machine.
 
 *** =agents.computer.ssh.connect_timeout=
 
@@ -3139,8 +3168,11 @@ type this build knows, so nothing here is reached.
 
 Seconds to wait for the connection before failing.
 
-Not implemented in this build. The ssh backend is not built yet. `computer.type: ssh` is not a
-type this build knows, so nothing here is reached.
+Bounds the one failure that otherwise has none. A machine that has
+dropped off the network accepts nothing and refuses nothing, and ssh
+will sit out the kernel's TCP timeout waiting -- turning a turn that
+should have failed in ten seconds into one that hangs. Zero is
+treated as one second rather than as no limit.
 
 *** =agents.computer.ssh.control_persist=
 
@@ -3150,8 +3182,17 @@ type this build knows, so nothing here is reached.
 
 Seconds an idle multiplexed connection is kept open.
 
-Not implemented in this build. The ssh backend is not built yet. `computer.type: ssh` is not a
-type this build knows, so nothing here is reached.
+Without multiplexing every single command pays a full TCP connect,
+key exchange and authentication, which over a WAN is most of the time
+an agent spends running anything. With it the first command opens a
+master and every later one is a channel on the connection already
+there.
+
+Zero turns it off. It also turns itself off, with a warning, when the
+control socket path would exceed the 108 bytes the kernel allows in a
+unix address -- an over-long path does not fail at bind time, it just
+means the master is never created and every command silently pays a
+fresh handshake.
 
 ** =agents.computer.distrobox=
 

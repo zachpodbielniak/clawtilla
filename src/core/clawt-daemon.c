@@ -1913,11 +1913,19 @@ apply_mounts(ClawtDaemon *self, ClawtAgent *agent, ClawtComputer *computer)
      */
 
     /*
-     * Every computer gets the exchange unless the agent turned it off,
-     * because the alternative is each pair of agents needing a hand-wired
-     * mount before they can pass a file.
+     * Every computer that can hold one gets the exchange unless the
+     * agent turned it off, because the alternative is each pair of
+     * agents needing a hand-wired mount before they can pass a file.
+     *
+     * An ssh computer cannot hold one. The exchange is a directory under
+     * the daemon's state directory and there is no mount to make it
+     * appear on another machine, so adding it would tell an agent about
+     * /mnt/clawtilla/exchange over there and leave it looking for files
+     * its peers had "handed" it.
      */
     if (self->exchange != NULL &&
+        clawt_computer_type_shares_host_paths(
+            clawt_computer_get_computer_type(computer)) &&
         clawt_agent_config_get_boolean(config, "computer.exchange")) {
         g_autoptr(GError) error = NULL;
 

@@ -235,8 +235,9 @@ static const ClawtSchemaEntry schema[] = {
 
 { "defaults.computer", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   "none", clawt_computer_type_get_type,
-  "Default computer type for new agents: none, host, container,\n"
-  "distrobox or vm.\n"
+  "Default computer type for new agents. The permitted values are\n"
+  "listed above, from the schema itself rather than written out again\n"
+  "here -- the copy that was written out here had already gone stale.\n"
   "\n"
   "none is the default on purpose. An agent that can run commands is a\n"
   "bigger grant than an agent that can only talk, and it should be asked\n"
@@ -1874,7 +1875,10 @@ static const ClawtSchemaEntry schema[] = {
 
 { "agents.computer.type", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   NULL, clawt_computer_type_get_type,
-  "none, host, container or vm. Defaults to defaults.computer.\n"
+  "Which kind of computer this agent gets. Defaults to\n"
+  "defaults.computer. The permitted values are listed above, from the\n"
+  "schema itself -- the copy that used to be written out here had\n"
+  "already gone stale by omitting distrobox.\n"
   "\n"
   "Desktop control is not a type -- it is the desktop block below, and\n"
   "works alongside any of these.", "0.1.0" },
@@ -2120,13 +2124,25 @@ static const ClawtSchemaEntry schema[] = {
   "gone rather than offline, which is not what the word stop suggests.",
   "0.1.0" },
 
-/* ── agents.computer.distrobox ───────────────────────────────────── */
 /* ── agents.computer.ssh ─────────────────────────────────────────── */
 { "agents.computer.ssh", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
-  "A machine reached over ssh.", "0.2.0" },
+  "A machine reached over ssh.\n"
+  "\n"
+  "The only backend clawtilla does not own. A container, a distrobox and\n"
+  "a VM are things it creates and can destroy; this one was running\n"
+  "before the fleet existed. So clawtilla will not start, stop or take\n"
+  "apart an ssh computer, and both clients leave those buttons out\n"
+  "rather than offering them and failing.\n"
+  "\n"
+  "Nothing is mounted into it either -- there is no mount to make across\n"
+  "an ssh connection. That means the agent does NOT get the workspace at\n"
+  "/mnt/clawtilla/workspace or the shared exchange, which every other\n"
+  "backend does get, and fleet-wide shared folders do not apply. What\n"
+  "the mount list does instead is described under workspace below.",
+  "0.2.0" },
 
-{ "agents.computer.ssh.host", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_INERT,
+{ "agents.computer.ssh.host", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
   "The ssh config alias to connect to.\n"
   "\n"
@@ -2134,56 +2150,93 @@ static const ClawtSchemaEntry schema[] = {
   "the jump host, the port and the user stay where ssh already keeps\n"
   "them, and clawtilla never reimplements ssh's own configuration.\n"
   "\n"
-  "Give the alias ControlMaster, ControlPersist and a ConnectTimeout.\n"
-  "Without multiplexing every command pays a fresh handshake; without a\n"
-  "timeout a machine that drops off the network hangs a turn instead of\n"
-  "failing it.\n"
+  "Letters, digits, '.', '_' and '-' only, and never a leading '-'. ssh\n"
+  "reads an argument beginning with '-' as an option, so an alias called\n"
+  "-oProxyCommand=... would be a command rather than a destination.\n"
   "\n"
   "Run `ssh <alias> true` once by hand first. The host key is accepted\n"
-  "on your terms, never automatically: an unknown key is a refusal that\n"
-  "says so.\n"
-  "\n"
-  "Not implemented in this build. The ssh backend is not built yet. `computer.type: ssh` is not a\ntype this build knows, so nothing here is reached.", "0.2.0" },
+  "on your terms, never automatically: an unknown or changed key is a\n"
+  "refusal that names this as the remedy. clawtilla does not pass\n"
+  "StrictHostKeyChecking=no, because accepting a key is your decision.",
+  "0.2.0" },
 
 { "agents.computer.ssh.workspace", CLAWT_SCHEMA_PATH,
-  CLAWT_SCHEMA_FLAG_INERT, NULL, NULL,
+  CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Where the agent works on that machine.\n"
+  "\n"
+  "A path as that machine spells it. It is not expanded here: '~' and\n"
+  "$XDG_* would be resolved against this machine's home and produce a\n"
+  "path that exists here and means nothing over there.\n"
   "\n"
   "There is no kernel mount to make over ssh, so the mount list becomes\n"
   "the allowlist instead -- the same shape `confine: allowlist` has on\n"
-  "the host backend.\n"
+  "the host backend. Each mount's *target* is the grant, because that is\n"
+  "the path inside the computer and the computer is the other machine;\n"
+  "the source names a directory on this one and is not used.\n"
   "\n"
-  "Not implemented in this build. The ssh backend is not built yet. `computer.type: ssh` is not a\ntype this build knows, so nothing here is reached.", "0.2.0" },
+  "That check reads the paths in a command and resolves '.' and '..' by\n"
+  "text. It cannot follow a symlink, because the symlink is on the other\n"
+  "machine -- so it is a boundary against mistakes and against paths an\n"
+  "agent constructs, not against a filesystem laid out to defeat it. The\n"
+  "directory must already exist; clawtilla creates nothing on a machine\n"
+  "it does not own, and a mount marked required that is not there makes\n"
+  "the agent a SHADOW with that reason rather than starting it anyway.",
+  "0.2.0" },
 
-{ "agents.computer.ssh.shell", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_INERT,
+{ "agents.computer.ssh.shell", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   "/bin/sh", NULL,
-  "Which shell to name when one is needed.\n"
+  "Which shell runs the command over there.\n"
   "\n"
-  "Not implemented in this build. The ssh backend is not built yet. `computer.type: ssh` is not a\ntype this build knows, so nothing here is reached.", "0.2.0" },
+  "ssh hands the remote login shell one string whatever we do, so this\n"
+  "is not a way to avoid a shell -- it is a way to name one that behaves\n"
+  "the same everywhere. A login shell that is fish or csh reads the\n"
+  "`cd <dir> && ...` prologue differently, and naming /bin/sh is what\n"
+  "makes an agent behave identically on every host in a fleet.",
+  "0.2.0" },
 
 { "agents.computer.ssh.allow_sudo", CLAWT_SCHEMA_BOOLEAN,
-  CLAWT_SCHEMA_FLAG_INERT, "false", NULL,
+  CLAWT_SCHEMA_FLAG_NONE, "false", NULL,
   "Whether sudo and its neighbours may be run there.\n"
   "\n"
-  "Off refuses sudo, pkexec, doas, run0 and machinectl shell at the\n"
-  "point the command is built, including inside a shell one-liner, and\n"
-  "the agent is told so rather than discovering it a turn later.\n"
+  "Off refuses sudo, pkexec, doas, run0, su, setpriv and machinectl at\n"
+  "the point the command is built, including inside a shell one-liner,\n"
+  "and the agent is told so rather than discovering it a turn later.\n"
   "\n"
-  "Not implemented in this build. The ssh backend is not built yet. `computer.type: ssh` is not a\ntype this build knows, so nothing here is reached.",
+  "It is an argument check, not a kernel boundary: it stops a command\n"
+  "that names one of those, and cannot stop a program that escalates\n"
+  "once it is already running. Nothing on this backend can -- the kernel\n"
+  "doing the enforcing is on the other machine.",
   "0.2.0" },
 
 { "agents.computer.ssh.connect_timeout", CLAWT_SCHEMA_INT,
-  CLAWT_SCHEMA_FLAG_INERT, "10", NULL,
+  CLAWT_SCHEMA_FLAG_NONE, "10", NULL,
   "Seconds to wait for the connection before failing.\n"
   "\n"
-  "Not implemented in this build. The ssh backend is not built yet. `computer.type: ssh` is not a\ntype this build knows, so nothing here is reached.", "0.2.0" },
+  "Bounds the one failure that otherwise has none. A machine that has\n"
+  "dropped off the network accepts nothing and refuses nothing, and ssh\n"
+  "will sit out the kernel's TCP timeout waiting -- turning a turn that\n"
+  "should have failed in ten seconds into one that hangs. Zero is\n"
+  "treated as one second rather than as no limit.",
+  "0.2.0" },
 
 { "agents.computer.ssh.control_persist", CLAWT_SCHEMA_INT,
-  CLAWT_SCHEMA_FLAG_INERT, "600", NULL,
+  CLAWT_SCHEMA_FLAG_NONE, "600", NULL,
   "Seconds an idle multiplexed connection is kept open.\n"
   "\n"
-  "Not implemented in this build. The ssh backend is not built yet. `computer.type: ssh` is not a\ntype this build knows, so nothing here is reached.", "0.2.0" },
+  "Without multiplexing every single command pays a full TCP connect,\n"
+  "key exchange and authentication, which over a WAN is most of the time\n"
+  "an agent spends running anything. With it the first command opens a\n"
+  "master and every later one is a channel on the connection already\n"
+  "there.\n"
+  "\n"
+  "Zero turns it off. It also turns itself off, with a warning, when the\n"
+  "control socket path would exceed the 108 bytes the kernel allows in a\n"
+  "unix address -- an over-long path does not fail at bind time, it just\n"
+  "means the master is never created and every command silently pays a\n"
+  "fresh handshake.",
+  "0.2.0" },
 
+/* ── agents.computer.distrobox ───────────────────────────────────── */
 { "agents.computer.distrobox", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
   "Settings for computer.type: distrobox.\n"

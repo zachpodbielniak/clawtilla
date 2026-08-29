@@ -800,10 +800,50 @@ render_computer_directive(ClawtAgentConfig *for_agent)
             "on. Confinement is in force and will refuse paths outside "
             "it. Every command affects a machine somebody uses.");
 
+    case CLAWT_COMPUTER_DISTROBOX:
+        /*
+         * Named rather than left to a default. A distrobox is a
+         * container too, so the same redirection applies -- the agent's
+         * own bash runs out here, and by default the box has a home of
+         * its own that the host tools cannot see.
+         */
+        return g_strdup_printf(
+            "[clawtilla] Your computer is the distrobox 'clawt-%s'. Run "
+            "every shell command in it with clawtilla_computer_exec. Your "
+            "own bash, read and write tools run on the host, outside it, "
+            "which is not where your work belongs. Touch the host only "
+            "when the user asks, and say so when you do.", id);
+
+    case CLAWT_COMPUTER_SSH:
+        /*
+         * The strongest wording of the four, because this is the one
+         * backend where the two filesystems look alike. A container's
+         * host paths at least differ visibly; another machine running
+         * the same distribution does not, so an agent will believe a
+         * file it wrote with `write` is over there until something is
+         * missing.
+         */
+        return g_strdup(
+            "[clawtilla] Your computer is another machine, reached over "
+            "ssh. Run every shell command on it with "
+            "clawtilla_computer_exec. Your own bash, read and write tools "
+            "run on the machine clawtilla is on -- a DIFFERENT computer "
+            "with a different filesystem -- so a file you write with one "
+            "is not visible to the other. That machine is not "
+            "clawtilla's: it belongs to somebody who is using it.");
+
     case CLAWT_COMPUTER_NONE:
-    default:
         return NULL;
     }
+
+    /*
+     * No default: above, so -Wswitch names the next backend added here.
+     * The permissive answer is NULL -- no directive at all -- and a
+     * backend that silently got one would be an agent never told its own
+     * tools run somewhere else, which is the single most expensive thing
+     * this function exists to say.
+     */
+    return NULL;
 }
 
 gchar *

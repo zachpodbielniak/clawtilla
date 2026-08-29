@@ -412,6 +412,13 @@ test_which_types_have_a_machine(void)
     g_assert_false(clawt_computer_type_has_machine(CLAWT_COMPUTER_NONE));
     g_assert_false(clawt_computer_type_has_machine(CLAWT_COMPUTER_HOST));
 
+    /*
+     * Nor an ssh host. It is somebody's server, running before the fleet
+     * existed -- offering a Stop for it would be offering to shut down a
+     * machine other people are using.
+     */
+    g_assert_false(clawt_computer_type_has_machine(CLAWT_COMPUTER_SSH));
+
     g_assert_true(clawt_computer_type_has_machine(CLAWT_COMPUTER_CONTAINER));
     g_assert_true(clawt_computer_type_has_machine(CLAWT_COMPUTER_DISTROBOX));
     g_assert_true(clawt_computer_type_has_machine(CLAWT_COMPUTER_VM));
@@ -2779,7 +2786,7 @@ test_every_computer_type_is_offered_and_round_trips(void)
 {
     static const ClawtComputerType every[] = {
         CLAWT_COMPUTER_NONE, CLAWT_COMPUTER_HOST, CLAWT_COMPUTER_CONTAINER,
-        CLAWT_COMPUTER_DISTROBOX, CLAWT_COMPUTER_VM
+        CLAWT_COMPUTER_DISTROBOX, CLAWT_COMPUTER_VM, CLAWT_COMPUTER_SSH
     };
     guint i;
     guint j;
@@ -2846,6 +2853,29 @@ test_the_type_predicates_cover_every_type(void)
      */
     g_assert_false(clawt_computer_type_takes_mounts(CLAWT_COMPUTER_NONE));
     g_assert_false(clawt_computer_type_takes_mounts(CLAWT_COMPUTER_HOST));
+
+    /* Nor ssh, for the same reason and one more: a fleet-wide default
+     * names a directory on *this* machine, and contributing it to an
+     * allowlist over there would grant a path that is not even on the
+     * same computer. */
+    g_assert_false(clawt_computer_type_takes_mounts(CLAWT_COMPUTER_SSH));
+    g_assert_false(clawt_computer_type_takes_image(CLAWT_COMPUTER_SSH));
+
+    /*
+     * The third question, which is not either of the first two: can
+     * clawtilla put its *own* directories -- the workspace and the
+     * exchange -- inside. host says yes although it takes no mounts,
+     * because they are already on the same filesystem; ssh says no
+     * although it is a real computer, because it is a different one.
+     */
+    g_assert_true(clawt_computer_type_shares_host_paths(CLAWT_COMPUTER_HOST));
+    g_assert_true(
+        clawt_computer_type_shares_host_paths(CLAWT_COMPUTER_CONTAINER));
+    g_assert_true(
+        clawt_computer_type_shares_host_paths(CLAWT_COMPUTER_DISTROBOX));
+    g_assert_true(clawt_computer_type_shares_host_paths(CLAWT_COMPUTER_VM));
+    g_assert_false(clawt_computer_type_shares_host_paths(CLAWT_COMPUTER_NONE));
+    g_assert_false(clawt_computer_type_shares_host_paths(CLAWT_COMPUTER_SSH));
 }
 
 /*

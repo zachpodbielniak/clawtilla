@@ -149,6 +149,37 @@ gchar *clawt_generate_id(const gchar *prefix);
 gchar *clawt_canonicalize_missing(const gchar *path);
 
 /**
+ * clawt_normalize_path_lexically:
+ * @path: (nullable): a path, absolute or relative
+ *
+ * Collapses "." and ".." by text alone, touching no filesystem.
+ *
+ * The companion to clawt_canonicalize_missing() for a path that names
+ * *another machine's* filesystem.  realpath() is the right answer when
+ * the path is here and the wrong one when it is not: over ssh the whole
+ * path is unresolvable locally, so clawt_canonicalize_missing() walks up
+ * to "/" and hands back the string it was given -- ".." and all.  A
+ * containment check then reads "/srv/work/../../etc/shadow" as being
+ * inside "/srv/work", because it is a prefix with a separator after it,
+ * while the *remote* kernel resolves the "..". That is an escape, and it
+ * is why the remote sandbox does not share the local canonicaliser.
+ *
+ * ".." above the root of an absolute path is dropped rather than kept,
+ * which is what the kernel does with "/..".  In a relative path a
+ * leading ".." has nothing to cancel against and is kept, so the caller
+ * can still see that it escapes.
+ *
+ * What this deliberately cannot do is resolve a symlink -- the file is
+ * on the other machine.  A remote symlink pointing out of the allowed
+ * tree is not visible to this check, and clawt_sandbox_describe() says
+ * so rather than implying the boundary is complete.
+ *
+ * Returns: (transfer full) (nullable): the normalised path, or %NULL if
+ *   @path was %NULL
+ */
+gchar *clawt_normalize_path_lexically(const gchar *path);
+
+/**
  * clawt_path_is_within:
  * @path: a canonical path
  * @root: a canonical directory

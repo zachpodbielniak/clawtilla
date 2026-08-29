@@ -155,6 +155,7 @@ typedef enum {
  * @CLAWT_COMPUTER_CONTAINER: a podman container
  * @CLAWT_COMPUTER_DISTROBOX: a distrobox container, wired into the host
  * @CLAWT_COMPUTER_VM: a virtual machine
+ * @CLAWT_COMPUTER_SSH: another machine, reached over ssh
  *
  * The kind of computer an agent has.
  *
@@ -171,6 +172,12 @@ typedef enum {
  * the container one. A reader scanning `computer.type` should see the
  * difference.
  *
+ * %CLAWT_COMPUTER_SSH is the only one clawtilla does not own. The
+ * others it creates and can destroy; an ssh host is somebody's server,
+ * already running before the fleet existed and still running after it.
+ * That is why clawt_computer_type_has_machine() is %FALSE for it -- there
+ * is nothing here that should be able to power-cycle it.
+ *
  * Appended rather than inserted: the value is written into
  * clawtilla.yaml as a nick, but a config read by an older build that
  * has never heard of it becomes a shadow agent with a reason, and
@@ -181,7 +188,8 @@ typedef enum {
     CLAWT_COMPUTER_HOST,
     CLAWT_COMPUTER_CONTAINER,
     CLAWT_COMPUTER_VM,
-    CLAWT_COMPUTER_DISTROBOX
+    CLAWT_COMPUTER_DISTROBOX,
+    CLAWT_COMPUTER_SSH
 } ClawtComputerType;
 
 /**
@@ -835,10 +843,16 @@ gboolean clawt_computer_type_takes_image(ClawtComputerType type);
  *
  * Whether @type can be given shared folders.
  *
- * %FALSE for `none`, which has nothing to mount into, and for `host`,
- * where the mount list is the confinement allowlist rather than a set
- * of kernel mounts -- so a "Shared folders" editor there would be
- * editing something else under a name that does not fit.
+ * %FALSE for `none`, which has nothing to mount into, and for `host`
+ * and `ssh`, where the mount list is the confinement allowlist rather
+ * than a set of kernel mounts -- so a "Shared folders" editor there
+ * would be editing something else under a name that does not fit.
+ *
+ * It is also what stops a fleet-wide default folder being contributed
+ * to one of those two. A default names a directory on the machine the
+ * daemon runs on, and adding it to an allowlist would quietly widen
+ * what an agent may reach -- which for `ssh` would also be widening it
+ * to a path that is not even on the same computer.
  *
  * Returns: %TRUE if mounts apply
  */
@@ -858,13 +872,40 @@ gboolean clawt_computer_type_takes_mounts(ClawtComputerType type);
  * of bug this tree keeps finding: a control that reports success and
  * does nothing.
  *
- * %FALSE for `none`, which has no machine at all, and for `host`, whose
- * machine is the one clawtilla is running on. Stopping that is not a
- * thing to offer carefully; it is a thing not to offer.
+ * %FALSE for `none`, which has no machine at all; for `host`, whose
+ * machine is the one clawtilla is running on; and for `ssh`, whose
+ * machine is somebody's server that was already running. Stopping any
+ * of those is not a thing to offer carefully; it is a thing not to
+ * offer.
  *
  * Returns: %TRUE if there is something to start, stop and restart
  */
 gboolean clawt_computer_type_has_machine(ClawtComputerType type);
+
+/**
+ * clawt_computer_type_shares_host_paths:
+ * @type: a #ClawtComputerType
+ *
+ * Whether a directory on the machine the daemon runs on can be made to
+ * appear inside @type.
+ *
+ * A separate question from clawt_computer_type_takes_mounts(), which
+ * asks whether the *operator's* shared folders apply. This one asks
+ * whether clawtilla can place its own -- the agent's workspace and the
+ * shared exchange -- and the two differ exactly on `host`, where the
+ * mount list is an allowlist but the workspace and the exchange are
+ * already right there on the same filesystem.
+ *
+ * %FALSE only for `none`, which has nowhere to put them, and for `ssh`,
+ * which is a different computer. Adding them there would promise an
+ * agent a workspace at /mnt/clawtilla/workspace on a machine where
+ * nothing of the sort exists, and clawtilla does not create directories
+ * on a machine it does not own -- so the promise could never be made
+ * good, only discovered to be false a turn later.
+ *
+ * Returns: %TRUE if clawtilla's own directories can be placed inside
+ */
+gboolean clawt_computer_type_shares_host_paths(ClawtComputerType type);
 
 /**
  * clawt_enum_to_nick:
