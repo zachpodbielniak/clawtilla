@@ -910,19 +910,45 @@ clawt_config_render_agent(ClawtConfig       *config,
      */
     {
         g_autofree gchar *directive = render_computer_directive(agent);
+        /*
+         * The memory nudge rides here rather than being a mechanism of
+         * its own, so an operator wondering where a line in the prompt
+         * came from finds it in `clawtilla config render` beside the
+         * computer directive rather than nowhere.  0 means off and
+         * produces nothing at all -- an empty reminder in every turn's
+         * context is a cost with no instruction in it.
+         */
+        g_autofree gchar *nudge = clawt_summariser_nudge_text(
+            (guint)clawt_agent_config_get_int(agent,
+                                              "memories.nudge_turns"));
         const gchar *configured =
             clawt_agent_config_get_string(agent, "prompt_suffix");
-        g_autofree gchar *suffix = NULL;
+        g_autoptr(GString) suffix = g_string_new(NULL);
 
-        if (directive != NULL && configured != NULL)
-            suffix = g_strconcat(directive, "\n\n", configured, NULL);
-        else if (directive != NULL)
-            suffix = g_strdup(directive);
-        else if (configured != NULL)
-            suffix = g_strdup(configured);
+        if (directive != NULL)
+            g_string_append(suffix, directive);
 
-        if (suffix != NULL)
-            append_key_value(out, 2, "prompt_suffix", suffix);
+        if (nudge != NULL) {
+            if (suffix->len > 0)
+                g_string_append(suffix, "\n\n");
+
+            g_string_append(suffix, nudge);
+        }
+
+        /*
+         * The operator's own text last, because it is the one somebody
+         * wrote deliberately and the last thing in the suffix is the
+         * last thing the model reads before the message.
+         */
+        if (configured != NULL) {
+            if (suffix->len > 0)
+                g_string_append(suffix, "\n\n");
+
+            g_string_append(suffix, configured);
+        }
+
+        if (suffix->len > 0)
+            append_key_value(out, 2, "prompt_suffix", suffix->str);
     }
 
     /*

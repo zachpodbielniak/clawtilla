@@ -213,6 +213,9 @@ declare -A AFFORDANCES=(
     ["skills library"]="clawt_gtk_refresh_skills|clawt_web_skills_body"
     ["skill provenance"]="Provenance|sha256"
     ["skill scan warnings"]="Not copied|Not copied"
+    ["fleet recall"]="recall_entry|recall-form"
+    ["recall results"]="refresh_recall_once|recall-hit"
+    ["operator profile"]="operator_view|operator-profile"
 )
 
 usage () {

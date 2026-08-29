@@ -27,6 +27,16 @@ struct _ClawtAgentManager {
 
     GPtrArray   *agents;   /* ClawtAgent*, configuration order */
     GHashTable  *by_id;    /* agent_id -> ClawtAgent, unowned */
+
+    /*
+     * The team and fleet memory databases, one set per fleet.
+     *
+     * Built lazily from state_dir, because clawt_agent_manager_new()
+     * runs before clawt_agent_manager_set_state_dir() on the daemon's
+     * path and a set built from the wrong directory would quietly write
+     * a fleet's shared memories somewhere nobody reads.
+     */
+    ClawtMemoryScopes *scopes;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtAgentManager, clawt_agent_manager, G_TYPE_OBJECT)
@@ -53,6 +63,132 @@ clawt_agent_manager_set_state_dir(ClawtAgentManager *self,
 
     g_free(self->state_dir);
     self->state_dir = clawt_expand_path(state_dir);
+}
+
+ClawtMemoryScopes *
+clawt_agent_manager_get_memory_scopes(ClawtAgentManager *self)
+{
+    g_return_val_if_fail(CLAWT_IS_AGENT_MANAGER(self), NULL);
+
+    if (self->scopes == NULL && self->state_dir != NULL)
+        self->scopes = clawt_memory_scopes_new(self->state_dir);
+
+    return self->scopes;
+}
+
+/*
+ * The team this agent is on, or %NULL.
+ *
+ * Read from the agent's config each time rather than remembered: a team
+ * is edited in clawtilla.yaml, and a value cached at load would have an
+ * agent still writing into the memories of a team it has left.
+ */
+static const gchar *
+team_of(ClawtAgentManager *self, const gchar *agent_id)
+{
+    ClawtAgent *agent = clawt_agent_manager_get(self, agent_id);
+    const gchar *team;
+
+    if (agent == NULL)
+        return NULL;
+
+    team = clawt_agent_config_get_string(clawt_agent_get_config(agent),
+                                         "team");
+
+    return (team != NULL && *team != '\0') ? team : NULL;
+}
+
+ClawtMemoryStore *
+clawt_agent_manager_memory_write_store(ClawtAgentManager *self,
+                                       const gchar *agent_id,
+                                       GError **error)
+{
+    ClawtAgent *agent;
+    ClawtMemoryScopes *scopes;
+    ClawtMemoryScope scope = CLAWT_MEMORY_SCOPE_AGENT;
+
+    g_return_val_if_fail(CLAWT_IS_AGENT_MANAGER(self), NULL);
+
+    agent = (agent_id != NULL) ? clawt_agent_manager_get(self, agent_id)
+                               : NULL;
+
+    if (agent == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "there is no agent called '%s'",
+                    agent_id != NULL ? agent_id : "");
+        return NULL;
+    }
+
+    scope = (ClawtMemoryScope)clawt_agent_config_get_enum(
+        clawt_agent_get_config(agent), "memories.scope");
+
+    /*
+     * Agent scope is answered from the store the manager already opened,
+     * rather than by opening the same file again.  Two connections to
+     * one sqlite file are two page caches, and the one that did not
+     * write is the one a search reads from.
+     */
+    if (scope == CLAWT_MEMORY_SCOPE_AGENT)
+        return clawt_agent_get_memory(agent);
+
+    scopes = clawt_agent_manager_get_memory_scopes(self);
+
+    if (scopes == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                            "this fleet has no state directory, so it has "
+                            "no shared memories");
+        return NULL;
+    }
+
+    return clawt_memory_scopes_open_for_write(
+        scopes, scope,
+        (scope == CLAWT_MEMORY_SCOPE_TEAM) ? team_of(self, agent_id) : NULL,
+        error);
+}
+
+GPtrArray *
+clawt_agent_manager_memory_search(ClawtAgentManager *self,
+                                  const gchar *agent_id, const gchar *query,
+                                  const gchar *category, gboolean pinned_only,
+                                  guint limit)
+{
+    ClawtAgent *agent;
+    ClawtMemoryScopes *scopes;
+    ClawtMemoryStore *own;
+
+    g_return_val_if_fail(CLAWT_IS_AGENT_MANAGER(self), NULL);
+
+    agent = (agent_id != NULL) ? clawt_agent_manager_get(self, agent_id)
+                               : NULL;
+
+    if (agent == NULL)
+        return g_ptr_array_new_with_free_func(
+            (GDestroyNotify)clawt_memory_free);
+
+    own = clawt_agent_get_memory(agent);
+    scopes = clawt_agent_manager_get_memory_scopes(self);
+
+    if (scopes == NULL) {
+        /*
+         * No shared scopes to fan out across, so the agent's own store
+         * is the whole answer -- and an agent whose memories are off has
+         * none of that either.
+         */
+        if (own == NULL)
+            return g_ptr_array_new_with_free_func(
+                (GDestroyNotify)clawt_memory_free);
+
+        return (query != NULL && *query != '\0')
+            ? clawt_memory_store_search(own, query, category, limit, NULL)
+            : clawt_memory_store_list(own, category, pinned_only, limit,
+                                      NULL);
+    }
+
+    return (query != NULL && *query != '\0')
+        ? clawt_memory_scopes_search(scopes, own, team_of(self, agent_id),
+                                     query, category, limit, NULL)
+        : clawt_memory_scopes_list(scopes, own, team_of(self, agent_id),
+                                   category, pinned_only, limit, NULL);
 }
 
 static void
@@ -422,6 +558,7 @@ clawt_agent_manager_dispose(GObject *object)
 
     g_clear_pointer(&self->by_id, g_hash_table_unref);
     g_clear_pointer(&self->agents, g_ptr_array_unref);
+    g_clear_object(&self->scopes);
     g_clear_object(&self->config);
 
     G_OBJECT_CLASS(clawt_agent_manager_parent_class)->dispose(object);

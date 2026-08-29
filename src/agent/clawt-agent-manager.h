@@ -18,6 +18,7 @@
 #include "clawt-types.h"
 #include "agent/clawt-agent.h"
 #include "config/clawt-config.h"
+#include "memory/clawt-memory-scopes.h"
 
 G_BEGIN_DECLS
 
@@ -137,5 +138,65 @@ void clawt_agent_manager_stop_all(ClawtAgentManager *self);
  */
 void clawt_agent_manager_set_state_dir(ClawtAgentManager *self,
                                        const gchar       *state_dir);
+
+/**
+ * clawt_agent_manager_get_memory_scopes:
+ * @self: a #ClawtAgentManager
+ *
+ * The team and fleet memory databases this fleet shares.
+ *
+ * Held here rather than on each agent because there is one of each per
+ * *fleet*, and forty agents each opening `fleet.db` would be forty
+ * connections and forty page caches disagreeing about what was just
+ * written.
+ *
+ * Returns: (transfer none): the shared scopes
+ */
+ClawtMemoryScopes *clawt_agent_manager_get_memory_scopes(
+    ClawtAgentManager *self);
+
+/**
+ * clawt_agent_manager_memory_write_store:
+ * @self: a #ClawtAgentManager
+ * @agent_id: whose memory is being written
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Where a memory this agent forms lands, per its `memories.scope`.
+ *
+ * The scope decides which *file* is opened, so an agent that may not
+ * write to the fleet's memories cannot -- there is no query to get
+ * wrong.  Refuses, saying which, when the agent asked for team scope and
+ * is on no team: writing it to the agent's own store instead would leave
+ * it believing it had shared something nobody else can see.
+ *
+ * Returns: (transfer none) (nullable): the store, or %NULL
+ */
+ClawtMemoryStore *clawt_agent_manager_memory_write_store(
+    ClawtAgentManager  *self,
+    const gchar        *agent_id,
+    GError            **error);
+
+/**
+ * clawt_agent_manager_memory_search:
+ * @self: a #ClawtAgentManager
+ * @agent_id: whose view of the fleet's memories
+ * @query: (nullable): what to look for, or %NULL to list recent ones
+ * @category: (nullable): narrow to one category
+ * @pinned_only: only the pinned ones; ignored when @query is set
+ * @limit: how many at most, 0 for a sensible default
+ *
+ * Every memory this agent may read, from every scope it is entitled to.
+ *
+ * Its own, its team's and the fleet's, narrowest first -- and nothing
+ * else, because nothing else was opened.
+ *
+ * Returns: (transfer full) (element-type ClawtMemory): the memories
+ */
+GPtrArray *clawt_agent_manager_memory_search(ClawtAgentManager *self,
+                                             const gchar       *agent_id,
+                                             const gchar       *query,
+                                             const gchar       *category,
+                                             gboolean           pinned_only,
+                                             guint              limit);
 
 G_END_DECLS

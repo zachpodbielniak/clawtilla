@@ -547,6 +547,95 @@ clawt_secure_equals(const gchar *a, const gchar *b)
 }
 
 gchar *
+clawt_fts5_phrase(const gchar *query, GError **error)
+{
+    g_auto(GStrv) parts = NULL;
+    g_autofree gchar *escaped = NULL;
+    const gchar *p;
+    gboolean has_token = FALSE;
+
+    if (query == NULL || *query == '\0') {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "there is nothing to search for");
+        return NULL;
+    }
+
+    /*
+     * Whether the query has anything an FTS5 tokenizer would keep.
+     *
+     * The unicode61 tokenizer keeps letters and digits and drops
+     * everything else, so a query of pure punctuation quotes into a
+     * phrase with no terms in it -- which matches nothing, silently,
+     * and reads as an empty store.  Checked against g_unichar_isalnum()
+     * rather than ASCII, because a search in any other script is a
+     * search.
+     */
+    for (p = query; *p != '\0'; p = g_utf8_next_char(p)) {
+        if (g_unichar_isalnum(g_utf8_get_char(p))) {
+            has_token = TRUE;
+            break;
+        }
+    }
+
+    if (!has_token) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "'%s' has no letters or digits in it, so there is "
+                    "nothing to match", query);
+        return NULL;
+    }
+
+    parts = g_strsplit(query, "\"", -1);
+    escaped = g_strjoinv("\"\"", parts);
+
+    return g_strdup_printf("\"%s\"", escaped);
+}
+
+gchar *
+clawt_utf8_truncate(const gchar *text, gsize max_bytes, gboolean from_end)
+{
+    gsize length;
+    const gchar *start;
+    const gchar *end;
+
+    if (text == NULL)
+        return NULL;
+
+    length = strlen(text);
+
+    if (length <= max_bytes || max_bytes == 0)
+        return (max_bytes == 0) ? g_strdup("") : g_strdup(text);
+
+    if (from_end) {
+        start = text + (length - max_bytes);
+
+        /*
+         * Forwards, never backwards.  Moving the start back to the
+         * previous boundary would put the whole character back and take
+         * the result *over* budget, which is exactly what a budget is
+         * for.  g_utf8_find_next_char() from a continuation byte lands
+         * on the next lead byte, which is the first whole character
+         * inside the allowance.
+         */
+        if ((*start & 0xC0) == 0x80)
+            start = g_utf8_find_next_char(start, text + length);
+
+        return g_strdup(start != NULL ? start : "");
+    }
+
+    end = text + max_bytes;
+
+    /*
+     * And backwards at the other end, for the same reason: the cut has
+     * to land on a boundary at or before the budget, so a character
+     * straddling it is dropped rather than halved.
+     */
+    while (end > text && (*end & 0xC0) == 0x80)
+        end--;
+
+    return g_strndup(text, (gsize)(end - text));
+}
+
+gchar *
 clawt_redact_secrets(const gchar *text)
 {
     /*

@@ -90,6 +90,10 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.h \
 	$(SRCDIR)/memory/clawt-memory.h \
 	$(SRCDIR)/memory/clawt-memory-store.h \
+	$(SRCDIR)/memory/clawt-memory-scopes.h \
+	$(SRCDIR)/memory/clawt-transcript-index.h \
+	$(SRCDIR)/memory/clawt-summariser.h \
+	$(SRCDIR)/memory/clawt-operator-profile.h \
 	$(SRCDIR)/usage/clawt-usage.h \
 	$(SRCDIR)/mailbox/clawt-mailbox.h \
 	$(SRCDIR)/mailbox/clawt-mailbox-router.h \
@@ -176,6 +180,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-control.c \
 	$(SRCDIR)/core/daemon-misc.c \
 	$(SRCDIR)/core/daemon-agent.c \
+	$(SRCDIR)/core/daemon-memory.c \
 	$(SRCDIR)/core/daemon-mount.c \
 	$(SRCDIR)/core/daemon-image.c \
 	$(SRCDIR)/core/daemon-team.c \
@@ -214,6 +219,10 @@ LIB_SOURCES = \
 	$(SRCDIR)/ipc/clawt-connection.c \
 	$(SRCDIR)/memory/clawt-memory.c \
 	$(SRCDIR)/memory/clawt-memory-store.c \
+	$(SRCDIR)/memory/clawt-memory-scopes.c \
+	$(SRCDIR)/memory/clawt-transcript-index.c \
+	$(SRCDIR)/memory/clawt-summariser.c \
+	$(SRCDIR)/memory/clawt-operator-profile.c \
 	$(SRCDIR)/usage/clawt-usage.c \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.c \
 	$(SRCDIR)/mailbox/clawt-mailbox.c \

@@ -794,8 +794,22 @@ pod_action(const gchar *action, GHashTable *params, GHashTable **out_result,
             const gchar *category = g_hash_table_lookup(params, "category");
             g_autofree gchar *id = NULL;
 
-            if (category != NULL)
-                g_object_set(memory, "category", category, NULL);
+            /*
+             * Assigned, not set through g_object_set().
+             *
+             * #ClawtMemory is a G_DEFINE_BOXED_TYPE with public fields
+             * and no properties at all, so g_object_set() was reading a
+             * GTypeInstance out of a plain struct: it does not warn and
+             * return, it takes the daemon down with SIGSEGV.  Any pod
+             * that classified what it was recording killed the process
+             * that was running it, and the fleet came back without the
+             * memory, without the pod's remaining actions, and with
+             * nothing in the log naming the line.
+             */
+            if (category != NULL && category[0] != '\0') {
+                g_free(memory->category);
+                memory->category = g_strdup(category);
+            }
 
             id = clawt_memory_store_add(store, memory, error);
 
@@ -1013,6 +1027,109 @@ on_agent_state_changed(ClawtAgentManager *manager,
  * declared, documented and mapped to `task.changed` -- named an event
  * that could never once fire.
  */
+/*
+ * A finished task, distilled into the assignee's memories.
+ *
+ * Off by default -- `memories.summarise` -- because it is a model call
+ * nobody asked for, billed to whoever turned it on.  Asynchronous
+ * because this runs on the daemon's main context: a completion is an
+ * HTTP round trip, and taken synchronously here the whole fleet would
+ * stop answering for the length of it.
+ *
+ * The result and the prompt, rather than the room transcript: a task
+ * runs in a session of its own and what it *concluded* is the part
+ * worth remembering.  Reading the room would fold in every unrelated
+ * message the operator sent while it ran.
+ */
+static void
+on_summary_finished(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    ClawtSummariser *summariser = CLAWT_SUMMARISER(source);
+    g_autofree gchar *task_id = user_data;
+    g_autoptr(GError) error = NULL;
+    guint written;
+
+    written = clawt_summariser_summarise_finish(summariser, result, &error);
+
+    if (error != NULL) {
+        /*
+         * A warning and nothing else.  A summary that did not happen is
+         * a fleet that remembers less, not a fleet that is broken, and
+         * the task itself completed regardless.
+         */
+        g_warning("summarise %s: %s", task_id, error->message);
+        return;
+    }
+
+    if (written > 0)
+        g_message("summarise %s: %u memor%s recorded", task_id, written,
+                  written == 1 ? "y" : "ies");
+}
+
+static void
+summarise_finished_work(ClawtDaemon *self, ClawtTask *task)
+{
+    const gchar *assignee = clawt_task_get_assignee(task);
+    ClawtAgentConfig *config;
+    ClawtMemoryStore *store;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *source = NULL;
+    g_autofree gchar *transcript = NULL;
+
+    if (assignee == NULL)
+        return;
+
+    config = clawt_config_get_agent(self->config, assignee);
+
+    if (config == NULL ||
+        !clawt_agent_config_get_boolean(config, "memories.summarise"))
+        return;
+
+    /*
+     * Written to wherever this agent's memories.scope says, so a
+     * summary of team work lands where the team can read it.
+     */
+    store = clawt_agent_manager_memory_write_store(self->agents, assignee,
+                                                   &error);
+
+    if (store == NULL) {
+        g_warning("summarise %s: %s", clawt_task_get_id(task),
+                  error->message);
+        return;
+    }
+
+    if (self->summariser == NULL) {
+        self->summariser = clawt_summariser_new(self->config);
+        clawt_summariser_set_main_context(self->summariser,
+                                          self->main_context);
+
+        if (!clawt_summariser_use_configured_provider(self->summariser,
+                                                      &error)) {
+            /*
+             * Dropped rather than kept in a state where every summary
+             * fails the same way: the provider is built from config, and
+             * a config edit should be enough to make the next one work.
+             */
+            g_warning("summarise: %s", error->message);
+            g_clear_object(&self->summariser);
+            return;
+        }
+    }
+
+    source = g_strdup_printf("task:%s", clawt_task_get_id(task));
+    transcript = g_strdup_printf("Task: %s\n\nResult:\n%s",
+                                 clawt_task_get_prompt(task) != NULL
+                                 ? clawt_task_get_prompt(task) : "(none)",
+                                 clawt_task_get_result(task) != NULL
+                                 ? clawt_task_get_result(task) : "(none)");
+
+    clawt_summariser_summarise_async(
+        self->summariser, store, source, transcript,
+        clawt_task_get_created_at(task),
+        g_get_real_time() / G_USEC_PER_SEC, NULL, on_summary_finished,
+        g_strdup(clawt_task_get_id(task)));
+}
+
 static void
 on_task_changed(ClawtTaskManager *manager,
                 const gchar      *task_id,
@@ -1053,10 +1170,15 @@ on_task_changed(ClawtTaskManager *manager,
         clawt_event_bus_publish(self->bus, event);
     }
 
-    if (state != CLAWT_TASK_COMPLETED || self->notifier == NULL)
+    if (state != CLAWT_TASK_COMPLETED)
         return;
 
     if (task == NULL)
+        return;
+
+    summarise_finished_work(self, task);
+
+    if (self->notifier == NULL)
         return;
 
     config = clawt_config_get_agent(self->config,
@@ -2175,6 +2297,29 @@ clawt_daemon_render_all_agents_into(ClawtDaemon *self, GPtrArray *refusals)
                     g_warning("agent %s: %s", clawt_agent_get_id(agent),
                               region_error->message);
             }
+
+/**
+         * ...and what the fleet knows about the person it works for.
+         *
+         * Here rather than at agent creation, so an agent made on day
+         * one and an agent made on day ninety are told the same thing.
+         * `memories.operator_profile` off writes NULL, which removes the
+         * region: a setting somebody turned off must leave nothing
+         * behind in a prompt that is already written.
+         */
+        if (self->operator_profile != NULL) {
+            g_autofree gchar *profile = NULL;
+            g_autoptr(GError) profile_error = NULL;
+
+            if (clawt_config_get_boolean(self->config,
+                                         "memories.operator_profile"))
+                profile = clawt_operator_profile_render(
+                    self->operator_profile, 0);
+
+            if (!clawt_workspace_update_operator_profile(config, profile,
+                                                         &profile_error))
+                g_warning("agent %s: %s", clawt_agent_get_id(agent),
+                          profile_error->message);
         }
     }
 }
@@ -3023,6 +3168,9 @@ release_components(ClawtDaemon *self)
     g_clear_object(&self->vm_images);
     g_clear_object(&self->exchange);
     g_clear_object(&self->decisions);
+    g_clear_object(&self->operator_profile);
+    g_clear_object(&self->summariser);
+    g_clear_object(&self->transcripts);
     g_clear_object(&self->log);
     g_clear_object(&self->bus);
     g_clear_object(&self->config);
@@ -4389,6 +4537,23 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     }
 
     {
+        g_autofree gchar *transcript_db =
+            g_build_filename(self->state_dir, "transcripts.db", NULL);
+        g_autoptr(GError) index_error = NULL;
+
+        self->transcripts = clawt_transcript_index_new(transcript_db,
+                                                       &index_error);
+
+        /*
+         * A warning, like the decision store: a fleet that cannot search
+         * what it said is a fleet with one feature missing, and refusing
+         * to start over it would take the other twenty with it.
+         */
+        if (self->transcripts == NULL)
+            g_warning("transcripts: %s", index_error->message);
+    }
+
+    {
         /*
          * Download progress reaches clients as ordinary events, so a
          * progress bar is a fold over the same stream everything else
@@ -4422,6 +4587,19 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
             g_main_context_pop_thread_default(self->main_context);
         return FALSE;
     }
+
+    /*
+     * The model of the person this fleet works for.
+     *
+     * After the agent manager, because the learned half of the profile
+     * lives in the fleet-scope memory database and the manager is what
+     * owns the shared scopes.  Written at a fixed place --
+     * `<state_dir>/OPERATOR.org` -- so it can be opened in an editor
+     * whether or not anything has been recorded in it yet.
+     */
+    self->operator_profile = clawt_operator_profile_new(
+        self->state_dir,
+        clawt_agent_manager_get_memory_scopes(self->agents));
 
     self->rooms = clawt_room_manager_new(transcript_dir);
     clawt_room_manager_load(self->rooms, self->config);
@@ -4492,6 +4670,49 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     self->router = clawt_mailbox_router_new(self->agents, self->rooms,
                                             self->guard);
     clawt_mailbox_router_set_event_bus(self->router, self->bus);
+    clawt_mailbox_router_set_transcript_index(self->router,
+                                              self->transcripts);
+
+    /*
+     * And what the fleet said before there was an index to say it into.
+     *
+     * Only when the index is empty.  Every message from here on is
+     * indexed by the router as it is routed, so the one gap is the
+     * conversations that predate the index -- and re-walking every room
+     * on every start would cost a large fleet seconds of a daemon that
+     * answers nothing, to write rows it already has.  Deleting
+     * transcripts.db is therefore how a rebuild is asked for, which is
+     * also the only way to ask for one that cannot go wrong.
+     *
+     * The transcripts are already in memory: clawt_room_manager_load()
+     * has just read every one of them back through clawt_room_restore().
+     */
+    if (self->transcripts != NULL &&
+        clawt_transcript_index_count(self->transcripts) == 0) {
+        g_autoptr(GPtrArray) rooms = clawt_room_manager_list(self->rooms);
+        guint indexed = 0;
+        guint room_index;
+
+        for (room_index = 0; rooms != NULL && room_index < rooms->len;
+             room_index++) {
+            ClawtRoom *room = g_ptr_array_index(rooms, room_index);
+            g_autoptr(GPtrArray) history = clawt_room_get_history(room, 0);
+            guint message_index;
+
+            for (message_index = 0;
+                 history != NULL && message_index < history->len;
+                 message_index++) {
+                if (clawt_transcript_index_add(
+                        self->transcripts, clawt_room_get_id(room),
+                        g_ptr_array_index(history, message_index), NULL))
+                    indexed++;
+            }
+        }
+
+        if (indexed > 0)
+            g_message("transcripts: indexed %u message(s) already on disk",
+                      indexed);
+    }
 
     self->mcp_tools = clawt_mcp_tools_new(self->agents, self->tasks,
                                           self->guard);
@@ -4524,6 +4745,8 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      */
     clawt_mcp_tools_set_event_bus(self->mcp_tools, self->bus);
     clawt_mcp_tools_set_room_manager(self->mcp_tools, self->rooms);
+    clawt_mcp_tools_set_transcript_index(self->mcp_tools,
+                                         self->transcripts);
 
     /*
      * Where a file an agent sends its operator is kept.
@@ -6896,6 +7119,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_control,
     clawt_daemon_handle_misc,
     clawt_daemon_handle_agent,
+    clawt_daemon_handle_memory,
     clawt_daemon_handle_mount,
     clawt_daemon_handle_image,
     clawt_daemon_handle_team,

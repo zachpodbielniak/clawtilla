@@ -879,6 +879,8 @@ static const struct {
     { "/edit",    "[file]",  "open a workspace file to edit here" },
     { "/files",   NULL,      "list this agent's workspace files" },
     { "/memory",  "<query>", "search what this agent has remembered" },
+    { "/recall",  "<query>", "search what was said, in every room and "
+                             "every session" },
     { "/agents",  NULL,      "who is in the fleet" },
     { "/flow",    NULL,      "go to the conversations between agents" },
     { "/tasks",   NULL,      "go to the task board" },
@@ -1049,6 +1051,20 @@ run_command(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
 
     if (g_strcmp0(verb, "/agents") == 0)
         return clawt_web_redirect(request, "/fleet");
+
+    /*
+     * Recall is not under the agent, because it is not about one: it
+     * searches every room in the fleet, and the results say which room
+     * each line came from.
+     */
+    if (g_strcmp0(verb, "/recall") == 0) {
+        g_autofree gchar *query = (argument != NULL)
+            ? g_uri_escape_string(argument, NULL, FALSE) : NULL;
+        g_autofree gchar *url = g_strdup_printf(
+            "/memory?q=%s", query != NULL ? query : "");
+
+        return clawt_web_redirect(request, url);
+    }
 
     if (g_strcmp0(verb, "/files") == 0 || g_strcmp0(verb, "/memory") == 0 ||
         g_strcmp0(verb, "/edit") == 0) {

@@ -28,6 +28,8 @@ G_BEGIN_DECLS
  * @importance: low, normal, high or critical
  * @tags: (nullable): comma-separated, for narrowing a search
  * @source: (nullable): where it came from -- a peer's id, a task, a person
+ * @scope: (nullable): which database it was read from -- "agent", "team"
+ *   or "fleet" -- set by the reader, never stored
  * @pinned: %TRUE to keep it at the top of every listing
  * @archived: %TRUE when forgotten; kept, but out of the way
  * @created_at: unix seconds
@@ -49,6 +51,16 @@ typedef struct {
     gchar    *importance;
     gchar    *tags;
     gchar    *source;
+    /*
+     * Filled in by whoever read the memory, not by the store.
+     *
+     * A row cannot know which file it was read out of, and the answer is
+     * exactly what a person needs when a listing mixes three scopes:
+     * "the fleet believes this" and "I worked this out" are different
+     * claims and look identical without it.  NULL from a single-store
+     * read, where there is nothing to disambiguate.
+     */
+    gchar    *scope;
     gboolean  pinned;
     gboolean  archived;
     gint64    created_at;
@@ -111,6 +123,27 @@ const gchar * const *clawt_memory_categories(gsize *n_categories);
  *   the names
  */
 const gchar * const *clawt_memory_importances(gsize *n_levels);
+
+/**
+ * clawt_memory_provenance_rule:
+ *
+ * The one sentence every agent is told about what may be remembered.
+ *
+ * Memory is a prompt-injection *persistence* vector, and it is the worst
+ * kind: an instruction an agent copies into its own memory is read back
+ * as its own conclusion, in a later session, with nothing left to say
+ * where it came from.  A webhook payload and an imported skill both
+ * reach an agent as text, so "I read it somewhere" and "I established
+ * it" have to be distinguished by the agent at the moment it writes.
+ *
+ * One spelling, because this appears in the memory tool descriptions,
+ * in the summariser's system prompt and in every agent's AGENTS.org --
+ * and a rule that is written out three times is a rule with three
+ * versions of it in the fleet.
+ *
+ * Returns: (transfer none): the rule
+ */
+const gchar *clawt_memory_provenance_rule(void);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtMemory, clawt_memory_free)
 

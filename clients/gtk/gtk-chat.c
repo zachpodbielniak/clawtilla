@@ -2564,6 +2564,8 @@ static const SlashCommand slash_commands[] = {
     { "/edit",    "[file]",  "open a workspace file in $EDITOR" },
     { "/files",   NULL,      "list this agent's workspace files" },
     { "/memory",  "<query>", "search what this agent has remembered" },
+    { "/recall",  "<query>", "search what was said, in every room and "
+                             "every session" },
     { "/agents",  NULL,      "who is in the fleet" },
     { "/flow",    NULL,      "go to the conversations between agents" },
     { "/tasks",   NULL,      "go to the task board" },
@@ -2912,6 +2914,22 @@ run_slash_command(ClawtWindow *self, const gchar *text, gchar **expanded)
             append_local(self, message);
         }
 
+        return TRUE;
+    }
+
+    /*
+     * Recall is not about one agent, so it goes to the memory page
+     * rather than printing into this transcript: a result names the room
+     * it came from, and a list of rooms rendered inside one of them
+     * reads as that conversation having said all of it.
+     */
+    if (g_strcmp0(name, "/recall") == 0) {
+        if (self->recall_entry != NULL)
+            gtk_editable_set_text(GTK_EDITABLE(self->recall_entry),
+                                  rest != NULL ? rest : "");
+
+        adw_view_stack_set_visible_child_name(self->pages, "memory");
+        clawt_gtk_refresh_recall(self);
         return TRUE;
     }
 

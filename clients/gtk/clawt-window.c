@@ -4426,6 +4426,25 @@ on_settings_closed(AdwDialog *dialog, gpointer user_data)
     g_hash_table_remove_all(self->settings_bars);
 }
 
+/*
+ * A page that has to read something reads it when it is opened.
+ *
+ * The memory page costs two round trips to fill, and filling it on every
+ * connect would pay for both whether or not anybody looks -- which is
+ * the same mistake as warming a provider cache in clawt_daemon_start().
+ */
+static void
+on_page_shown(ClawtWindow *self)
+{
+    const gchar *name = adw_view_stack_get_visible_child_name(self->pages);
+
+    if (g_strcmp0(name, "memory") != 0)
+        return;
+
+    clawt_gtk_refresh_operator(self);
+    clawt_gtk_refresh_recall(self);
+}
+
 static void
 on_settings_activate(GSimpleAction *action, GVariant *parameter,
                      gpointer user_data)
@@ -4794,6 +4813,9 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
                                         clawt_gtk_build_skill_page(self),
                                         "skills", "Skills",
                                         "accessories-text-editor-symbolic");
+                                        clawt_gtk_build_recall_page(self),
+                                        "memory", "Memory",
+                                        "document-open-recent-symbolic");
 
     header = adw_header_bar_new();
     gtk_widget_set_name(header, "clawt-headerbar");
@@ -5011,6 +5033,17 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
      */
     g_signal_connect_swapped(self->pages, "notify::visible-child-name",
                              G_CALLBACK(clawt_gtk_update_unread_tab), self);
+
+    /*
+     * And the memory page reads itself when it is opened.
+     *
+     * Not on connect: the operator profile is one IPC round trip and the
+     * recall query is another, and paying for both on every reconnect to
+     * fill a page nobody has looked at is exactly the shape of thing the
+     * daemon's own start had to stop doing.
+     */
+    g_signal_connect_swapped(self->pages, "notify::visible-child-name",
+                             G_CALLBACK(on_page_shown), self);
     g_signal_connect_swapped(self->split, "notify::collapsed",
                              G_CALLBACK(clawt_gtk_update_unread_tab), self);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sidebar_button), TRUE);
