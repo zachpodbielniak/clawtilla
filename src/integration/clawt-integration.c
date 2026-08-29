@@ -733,7 +733,8 @@ check_identity(GHashTable  *seen,
                const gchar *key,
                const gchar *value,
                const gchar *agent_id,
-               const gchar *name)
+               const gchar *name,
+               const gchar *note)
 {
     g_autofree gchar *slot = NULL;
     const gchar *previous;
@@ -749,11 +750,81 @@ check_identity(GHashTable  *seen,
         return;
     }
 
-    if (warnings != NULL)
+    if (warnings == NULL)
+        return;
+
+    /*
+     * @note is what the sharing actually costs, supplied by whoever knew
+     * -- a connector entry knows that its service audits by actor, and
+     * the generic sentence below does not.  Without it the warning is an
+     * instruction with no reason attached, which reads as pedantry and
+     * gets turned off.
+     */
+    if (note != NULL)
+        g_ptr_array_add(warnings, g_strdup_printf(
+            "integration '%s': %s and %s share one %s -- give each its own "
+            "under per_agent. %s",
+            name, previous, agent_id, key, note));
+    else
         g_ptr_array_add(warnings, g_strdup_printf(
             "integration '%s': %s and %s share one %s -- give each its own "
             "under per_agent, or they will both answer as the same account",
             name, previous, agent_id, key));
+}
+
+/*
+ * A connector's own identity keys, which are not its integration type's.
+ *
+ * The `connector` type declares none on purpose: a fleet-wide GitHub
+ * account read through by every agent is what "give all of them GitHub"
+ * means, and warning about it would be warning about the feature.  But
+ * that is a fact about GitHub rather than about connectors, and a
+ * service that records *who* did something has the opposite answer.  So
+ * the entry says, and this is the one place that asks it.
+ *
+ * The catalogue is loaded here rather than passed in because the fleet
+ * validation's only caller has no catalogue to give it, and the overlay
+ * directory is named by the same config this is already holding -- an
+ * entry somebody added in connectors.d is checked exactly like a
+ * built-in one.
+ */
+static void
+check_connector_identity(GPtrArray               *catalog,
+                         GHashTable              *seen,
+                         GPtrArray               *warnings,
+                         ClawtIntegrationBinding *binding,
+                         const gchar             *agent_id)
+{
+    const ClawtConnectorInfo *info;
+    const gchar *provider;
+    g_autofree gchar *slot_type = NULL;
+    gsize k;
+
+    if (catalog == NULL)
+        return;
+
+    provider = clawt_integration_binding_get_string(binding, "provider");
+    info = clawt_connector_catalog_find(catalog, provider);
+
+    if (info == NULL || info->identity_keys == NULL)
+        return;
+
+    /*
+     * Keyed by provider as well as by type, so two agents sharing a
+     * venture token collide and an agent whose Forgejo token file
+     * happens to have the same name does not.
+     */
+    slot_type = g_strdup_printf("connector:%s", info->id);
+
+    for (k = 0; info->identity_keys[k] != NULL; k++) {
+        const gchar *key = info->identity_keys[k];
+
+        check_identity(seen, warnings, slot_type, key,
+                       clawt_integration_binding_get_string(binding, key),
+                       agent_id,
+                       clawt_integration_binding_get_name(binding),
+                       info->identity_note);
+    }
 }
 
 gboolean
@@ -761,6 +832,8 @@ clawt_integration_validate_fleet(ClawtConfig *config, GPtrArray **warnings)
 {
     g_autoptr(GHashTable) identities = NULL;
     g_autoptr(GHashTable) fleet_exclusive = NULL;
+    g_autoptr(GPtrArray) catalog = NULL;
+    g_autofree gchar *overlay_dir = NULL;
     GPtrArray *agents;
     GPtrArray *instances;
     GPtrArray *found;
@@ -769,6 +842,8 @@ clawt_integration_validate_fleet(ClawtConfig *config, GPtrArray **warnings)
     g_return_val_if_fail(CLAWT_IS_CONFIG(config), FALSE);
 
     found = g_ptr_array_new_with_free_func(g_free);
+    overlay_dir = clawt_config_get_path_value(config, "connectors.dir");
+    catalog = clawt_connector_catalog_load(overlay_dir, NULL);
     identities = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     fleet_exclusive = g_hash_table_new_full(g_str_hash, g_str_equal,
                                             g_free, g_free);
@@ -870,8 +945,14 @@ clawt_integration_validate_fleet(ClawtConfig *config, GPtrArray **warnings)
                                clawt_integration_binding_get_string(binding,
                                                                     key),
                                agent_id,
-                               clawt_integration_binding_get_name(binding));
+                               clawt_integration_binding_get_name(binding),
+                               NULL);
             }
+
+            /* And the connector's own, which the type does not have. */
+            if (g_strcmp0(binding->info->id, "connector") == 0)
+                check_connector_identity(catalog, identities, found, binding,
+                                         agent_id);
         }
     }
 

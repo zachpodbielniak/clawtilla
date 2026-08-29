@@ -238,6 +238,40 @@ clawt_connector_plan_new(const ClawtConnectorInfo *info,
         GPtrArray *envp = g_ptr_array_new();
 
         g_ptr_array_add(envp, g_strdup_printf("%s=%s", name, formatted));
+
+        /*
+         * And which instance, for a stdio server that has to be told.
+         *
+         * An HTTP server needs nothing here -- the resolved instance is
+         * the URL the relay dials.  A stdio server is a separate program
+         * with its own idea of where the service lives, and every one of
+         * them takes it from the environment; without this a connector
+         * pointed at a second instance starts a server that quietly
+         * talks to the first, which is the failure `default_instance`
+         * exists to prevent one layer up.
+         *
+         * Resolved through the same function every URL field goes
+         * through, so the instance an agent's tools reach and the
+         * instance its credential was minted against cannot disagree.
+         */
+        if (info->instance_var != NULL) {
+            g_autofree gchar *base = clawt_connector_resolve_url(
+                info, "/",
+                clawt_integration_binding_get_string(binding, "instance"));
+
+            if (base != NULL) {
+                gsize length = strlen(base);
+
+                /* "/" made it a URL; the servers want the origin. */
+                if (length > 0 && base[length - 1] == '/')
+                    base[length - 1] = '\0';
+
+                g_ptr_array_add(envp, g_strdup_printf("%s=%s",
+                                                      info->instance_var,
+                                                      base));
+            }
+        }
+
         g_ptr_array_add(envp, NULL);
         plan->envp = (GStrv)g_ptr_array_free(envp, FALSE);
     }

@@ -1,0 +1,18 @@
+[
+  {
+    "summary": "Create expense \"No id at all\"",
+    "action": "create",
+    "state": "pending",
+    "type": "expense"
+  },
+  {
+    "id": "77bd0e42",
+    "summary": "Update sale \"Sale #42\"",
+    "action": "update",
+    "state": "pending",
+    "type": "sale",
+    "record_id": 42,
+    "origin": { "kind": "import", "name": "books-agent", "via": "rest-api" },
+    "diff": { "memo": "paid in full" }
+  }
+]

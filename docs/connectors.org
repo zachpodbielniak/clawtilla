@@ -223,6 +223,207 @@ clawtilla connector add weather --provider api-key \
     --command weather-mcp --credential-name OPENWEATHER_KEY
 #+end_src
 
+** VENTURE, and the writes it holds back
+
+VENTURE is an ERP and CRM you run yourself -- sales, expenses,
+invoices, tickets, contacts, a ledger -- and it is the one built-in
+connector that is *yours* rather than somebody else's service.  It is
+compiled in rather than shipped as a pack in =connectors.dir= for
+exactly that reason: a fleet that runs VENTURE should reach it out of
+the box, and an entry somebody has to copy into a directory before
+anything works is an entry most people never find.
+
+#+begin_src bash
+clawtilla connector add books --provider venture \
+    --instance https://books.example
+#+end_src
+
+=default_instance= is =http://localhost:8747=, so a fleet on the same
+machine needs no =--instance= at all.
+
+*** The credential is a token you mint yourself
+
+Sign in to VENTURE's web UI and create an API token.  =POST
+/api/v1/tokens= returns the plaintext exactly once and stores only its
+hash, so copy it then -- there is no way to read it back afterwards, by
+design.
+
+clawtilla keeps it in a 0600 file under =secrets.dir= and injects it
+into the tool server's environment as =VENTURE_TOKEN=.  It never
+reaches the agent's =.mcp.json=, its argument vector or its transcript.
+=VENTURE_URL= goes in beside it, because =venturectl mcp= is a separate
+program with its own default of localhost and has no other way to learn
+which instance it was pointed at.
+
+*** The tools are generated from VENTURE's own schema
+
+=venturectl mcp= fetches =GET /api/v1/schema= at startup and builds its
+tools from what came back.  Nothing in its C names a record type, so a
+type a plugin registers appears in the =type= enumeration of every tool
+that takes one, with no release anywhere.
+
+That is why the catalogue can write the tool list down at all.  There
+are nine, and they are verbs:
+
+| Tool                    | What it does                                    |
+|-------------------------+-------------------------------------------------|
+| =venture_schema=        | the record types, or one of them in full        |
+| =venture_list=          | list records of a type, filtered                |
+| =venture_get=           | fetch one by id                                 |
+| =venture_create=        | create one                                      |
+| =venture_update=        | change named fields of one                      |
+| =venture_delete=        | soft-delete one                                 |
+| =venture_reports=       | what reports there are                          |
+| =venture_report=        | run one                                         |
+| =venture_confirmations= | list, approve or reject what is waiting         |
+
+They are the entry's =known_tools=, so a =tools:= narrowing that
+misspells one is a warning naming it rather than an agent silently
+left with nothing.  A tool per record type would be 31 built-in types
+times five verbs in every context window, and would be a second copy of
+VENTURE's data model besides.
+
+*** One token is one actor
+
+The =connector= integration type declares no identity keys because a
+shared account is usually the point.  This entry declares =token_file=,
+and the reason is VENTURE's audit trail: every change records who made
+it and how, which is what distinguishes an automation's write from a
+person's from the AI's.  Two agents holding one token are one name in
+every row they write.
+
+So a shared instance covering two agents is reported by
+=clawtilla integration list=, with a message that says what it costs.
+Give each its own under =per_agent=:
+
+#+begin_src yaml
+integrations:
+  - name: books
+    type: connector
+    provider: venture
+    scope: selected
+    agents: [bookkeeper, analyst]
+    instance: "https://books.example"
+    per_agent:
+      bookkeeper:
+        token_file: "~/.clawtilla/secrets/connector-books-bookkeeper.json"
+      analyst:
+        token_file: "~/.clawtilla/secrets/connector-books-analyst.json"
+#+end_src
+
+** Staged writes land in the decision inbox
+
+=venturectl mcp= stages its writes by default: =venture_create=,
+=venture_update= and =venture_delete= send the change with =?stage=1=,
+and VENTURE builds and validates the record exactly as it would for a
+direct write, holds it, and answers =202= with a confirmation.  Nothing
+is in the books until somebody says so.
+
+Without a bridge, "somebody says so" means opening VENTURE's own web
+interface and finding the card.  So clawtilla polls
+=GET /api/v1/confirmations= while a venture connector is bound and
+turns each pending change into an ordinary ~ClawtDecision~ -- answerable
+from the GTK client, the web client, or ~clawtilla decision~ over ssh,
+beside every other thing an agent is waiting on you for.
+
+#+begin_src
+$ clawtilla decision list
+venture-books-a3f9c118  bookkeeper
+  books-agent wants to Create expense "Cover art" (via the 'books'
+  connector).
+
+  Record type: expense
+
+  What would change:
+    description: Cover art
+    amount: {"amount":25000,"currency":"USD"}
+
+  VENTURE drops this card unanswered at 2026-08-29T15:02:11Z.
+
+  approve / reject   (default: reject)
+
+$ clawtilla decision answer venture-books-a3f9c118 approve
+#+end_src
+
+Answering posts to =/api/v1/confirmations/<id>/approve= or =/reject=.
+
+*** The fields are used honestly
+
+The *question* is the staged change as VENTURE summarised it, with the
+diff rendered underneath so it can be answered without opening
+VENTURE at all.  The card is deliberately self-contained upstream, for
+this reader.
+
+The *default* is =reject=, and that is a description rather than a
+policy: VENTURE drops a card nobody answers when its own confirmation TTL
+runs out (an hour by default), so leaving it is the same as rejecting
+it.
+
+=reversible_until= stays *unset*.  Nothing is written until an approval,
+so there is nothing to reverse -- and after one, VENTURE's soft delete
+is the undo.  A deadline invented here would be a promise clawtilla
+cannot keep, and the inbox reads a deadline as pressure.
+
+An answer that is not recognisably an approval is a rejection.  A
+=ClawtDecision= carries free text because an operator whose answer is
+"neither, do X" is giving the most useful answer there is; VENTURE has
+only two endpoints, and a misread "yes" writes to somebody's books
+while a misread "no" leaves a card to answer again.
+
+*** Polling, and what it costs
+
+VENTURE raises its change events into its *own* podomation engine, in
+its own process.  There is no change stream out of it, so this is a
+poll -- on a timer attached to the daemon's context, never from a
+request handler and never during daemon start.  The first poll is one
+interval after the daemon comes up.
+
+| Key                            | Default | What it does                             |
+|--------------------------------+---------+------------------------------------------|
+| =integrations.confirm_writes=  | =true=  | whether clawtilla polls this connector   |
+| =integrations.poll_seconds=    | =60=    | how long between polls                   |
+
+One timer covers every venture connector, so the shortest interval
+anybody asked for is the one that runs.  A fleet with no venture
+connector arms no timer at all.
+
+=integrations.confirm_writes= does not switch staging on -- =venturectl
+mcp= decides that for itself and stages by default.  Turning it off
+here stops clawtilla polling, which leaves the staged changes in
+VENTURE for somebody to find in its own web interface.
+
+A confirmation already raised is matched on its own id, so the same
+card polled every minute for an hour is one decision, not sixty.  The
+match is against the decision store rather than a set held in memory,
+so a daemon that restarted does not raise everything again.
+
+*** An answer is owed until it lands
+
+A POST that fails is *kept* and retried on the next poll.  The operator
+answered once and has no reason to look again; an answer that vanished
+would leave the change waiting in VENTURE until its TTL dropped it, and
+nobody would ever know.
+
+That survives a restart too, and not because the queue is durable -- it
+is not.  VENTURE still holding the card is itself the proof that the
+answer never landed, so a card still pending against a decision the
+store says was *answered* is queued again from what the store
+remembers.
+
+Dismissing a decision is left alone on purpose.  "I am not deciding
+this" is not an answer to post, and VENTURE drops the card on its own
+clock.
+
+*** Telling an agent that a record changed
+
+The bridge is a pull in the other direction: clawtilla asks VENTURE
+what is waiting.  For a push -- "tell the bookkeeper when a deal
+closes" -- VENTURE's podomation module raises =on_created=,
+=on_updated= and =on_deleted= for every record change from every
+surface, and podomation can POST.  That reaches clawtilla's generic
+trigger provider with no C in either project; see
+[[file:triggers.org][Triggers]] for the recipe and the loop it can make.
+
 ** The open MCP registry
 
 The catalogue above is somebody's opinion, checked in.  The registry at

@@ -107,11 +107,11 @@ on_request(SoupServer        *server,
     const gchar *name;
     const gchar *value;
     const gchar *endpoint = NULL;
+    const gchar *presented = NULL;
     g_autofree gchar *reply = NULL;
     guint status = SOUP_STATUS_INTERNAL_SERVER_ERROR;
 
     (void)server;
-    (void)query;
 
     switch (clawt_webhook_route(soup_server_message_get_method(message),
                                 path, &endpoint)) {
@@ -172,7 +172,17 @@ on_request(SoupServer        *server,
     while (soup_message_headers_iter_next(&iter, &name, &value))
         clawt_trigger_headers_add(headers, name, value);
 
-    reply = self->deliver(endpoint, headers,
+    /*
+     * The capability form, for a sender that can name a URL and nothing
+     * else. Read here because this is the only place that sees a query
+     * string at all, and passed on rather than acted on: whether a URL
+     * may authenticate depends on which provider the trigger named,
+     * which the ingress deliberately does not know.
+     */
+    if (query != NULL)
+        presented = g_hash_table_lookup(query, "token");
+
+    reply = self->deliver(endpoint, headers, presented,
                           (body != NULL) ? (const guchar *)body->data : NULL,
                           (body != NULL) ? (gsize)body->length : 0,
                           self->deliver_data, &status);

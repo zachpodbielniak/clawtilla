@@ -1831,8 +1831,12 @@ than something to be found later in the other system's web
 interface. Turning this off means the agent's writes land
 immediately and unreviewed.
 
-Not implemented in this build. No connector stages its writes yet, so this permits nothing
-and prevents nothing.
+Read by the `venture` connector, which is the one built-in that
+stages. It does not switch staging on -- `venturectl mcp` decides
+that for itself and stages by default -- it decides whether
+clawtilla polls the queue and raises what is waiting as a decision.
+Turning it off leaves the changes in VENTURE for somebody to find in
+its own web interface.
 
 *** =integrations.poll_seconds=
 
@@ -1847,7 +1851,9 @@ event loop. It runs on a timer attached to the daemon's context --
 never from a request handler, which would make a client wait on
 somebody else's network.
 
-Not implemented in this build. Nothing polls a connector yet, so this interval is never used.
+One timer covers every connector, so the shortest interval anybody
+asked for is the one that runs. The first poll is one interval after
+the daemon starts, never during it.
 
 ** =connectors=
 

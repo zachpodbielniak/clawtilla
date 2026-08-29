@@ -149,9 +149,29 @@ list per agent is an ordinary thing to want.
 | =webhook=  | =port=                     |
 | =mcp=      | nothing; share it freely   |
 | =notify=   | nothing; share it freely   |
-| =connector= | nothing; sharing one is the point |
+| =connector= | whatever the connector itself declares -- see below |
 | =local=    | nothing -- but only one agent in the whole fleet may have it |
 | =cmacs=    | nothing                    |
+
+*** A connector answers this for itself
+
+The =connector= *type* names no identity key, and that is deliberate: a
+fleet-wide GitHub account every agent reads through is what "give all of
+them GitHub" means, and warning about it would be warning about the
+feature.
+
+But that is a fact about GitHub rather than about connectors.  A service
+that records *who* did something has the opposite answer, so the
+catalogue entry says so rather than the type having to choose one answer
+for every provider.  The built-in =venture= entry names =token_file=,
+because VENTURE audits by actor: two agents holding one token are one
+name in every row they write, and which of them filed a change stops
+being answerable -- as does whether a person, a rule or the AI did.
+
+The warning says that, not just "give each its own".  An instruction
+with no reason attached reads as pedantry and gets ignored.  An overlay
+file in =connectors.dir= may declare =identity_keys= and an
+=identity_note= of its own the same way.
 
 Two agents that end up sharing one of these are reported by
 =clawtilla integration list= and in the Integrations page, because it is

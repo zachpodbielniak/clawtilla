@@ -244,6 +244,7 @@ finish(Answer answer, guint *out_status)
 static gchar *
 on_delivery(const gchar  *endpoint,
             GHashTable   *headers,
+            const gchar  *presented,
             const guchar *body,
             gsize         body_length,
             gpointer      user_data,
@@ -318,7 +319,18 @@ on_delivery(const gchar  *endpoint,
     handler = clawt_trigger_handler_for(provider);
     secret = resolve_secret(self, trigger);
 
-    if (!clawt_trigger_handler_verify(handler, secret, headers, body,
+    /*
+     * A capability URL first, and only where it is allowed.
+     *
+     * A sender that can name a URL and nothing else -- podomation's
+     * webhook module is the one this exists for -- has no way to prove
+     * anything in a header. clawt_trigger_verify_url_secret() answers
+     * for the provider rather than for this call site, so a
+     * `provider: forgejo` trigger goes on requiring its signature and a
+     * forge cannot be opened by a string somebody put in a query.
+     */
+    if (!clawt_trigger_verify_url_secret(provider, secret, presented, NULL) &&
+        !clawt_trigger_handler_verify(handler, secret, headers, body,
                                       body_length, &error)) {
         /*
          * Recorded without the event, because nothing here is trusted
