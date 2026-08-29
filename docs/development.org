@@ -272,6 +272,47 @@ Do not hand-edit ~data/*.yaml~ or ~docs/configuration-options.org~.
 ~tests/test-config-schema.c~ fails when they have drifted, which is what
 makes this rule enforceable rather than merely written down.
 
+** Adding an IPC frame kind
+
+The daemon's client surface is one file per verb family in ~src/core/~:
+~daemon-agent.c~ answers ~agent.*~ and ~memory.*~, ~daemon-computer.c~
+answers ~computer.*~, and so on, with ~daemon-misc.c~ for the handful
+that belong to no family of their own.  A new verb goes in the file for
+its family; a new *family* is a new ~daemon-<name>.c~, an entry in
+~LIB_SOURCES~, a prototype in ~src/core/clawt-daemon-private.h~ and a
+line in ~family_handlers[]~ in ~src/core/clawt-daemon.c~.
+
+Each family exports one function:
+
+#+begin_src c
+JsonNode *
+clawt_daemon_handle_agent(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
+#+end_src
+
+~handled~ is separate from the return value on purpose.  A handler that
+defers -- ~clawt_ipc_server_defer()~ then ~clawt_ipc_pending_respond()~
+when the work finishes -- returns ~NULL~ *now*, and eleven of them do.
+Reading that ~NULL~ as "not mine" would hand the frame to the next family
+and then to the unknown-kind error, so the client would be answered
+twice: once with an error and once with the real reply.  Set ~*handled~
+before returning anything, including ~NULL~.
+
+This was a single chain of about a hundred ~if (g_strcmp0(kind, ...))~
+blocks inside ~clawt_daemon_handle_request()~.  Splitting it is why two
+branches adding two verbs no longer conflict.
+
+Then: document the kind in [[file:ipc-protocol.org][ipc-protocol.org]] -- ~make docs-check~ fails on
+one that is handled and absent -- and reach it from *both* graphical
+clients, or add it to the exception map in
+~tools/clawt-client-parity.sh~ with a reason.  Both checks read the
+family files by glob, so a kind is compared from the moment it exists.
+
 ** Adding a connector to the catalogue
 
 Two ways, and the second is usually right.

@@ -294,8 +294,12 @@ check_cli_verb_coverage () {
 check_ipc_kind_coverage () {
     [ -f docs/ipc-protocol.org ] || return 0
 
+    # The dispatch is one file per verb family, so this reads the glob
+    # rather than a name: after the split, clawt-daemon.c on its own held
+    # no kinds at all and this reported nothing missing.
     for local_kind in $(grep -rhoE 'g_strcmp0\(kind, "[a-z_.]+"\)' \
-                            src/core/clawt-daemon.c src/ipc/clawt-ipc-server.c \
+                            src/core/clawt-daemon.c src/core/daemon-*.c \
+                            src/ipc/clawt-ipc-server.c \
                             2>/dev/null \
                         | sed 's/.*"\(.*\)".*/\1/' | sort -u)
     do

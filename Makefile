@@ -156,6 +156,21 @@ LIB_SOURCES = \
 	$(SRCDIR)/config/clawt-secret-ref.c \
 	$(SRCDIR)/core/clawt-event.c \
 	$(SRCDIR)/core/clawt-daemon.c \
+	$(SRCDIR)/core/daemon-control.c \
+	$(SRCDIR)/core/daemon-misc.c \
+	$(SRCDIR)/core/daemon-agent.c \
+	$(SRCDIR)/core/daemon-mount.c \
+	$(SRCDIR)/core/daemon-image.c \
+	$(SRCDIR)/core/daemon-team.c \
+	$(SRCDIR)/core/daemon-room.c \
+	$(SRCDIR)/core/daemon-mailbox.c \
+	$(SRCDIR)/core/daemon-task.c \
+	$(SRCDIR)/core/daemon-computer.c \
+	$(SRCDIR)/core/daemon-design.c \
+	$(SRCDIR)/core/daemon-connector.c \
+	$(SRCDIR)/core/daemon-integration.c \
+	$(SRCDIR)/core/daemon-routine.c \
+	$(SRCDIR)/core/daemon-config.c \
 	$(SRCDIR)/core/clawt-event-bus.c \
 	$(SRCDIR)/core/clawt-event-log.c \
 	$(SRCDIR)/integration/clawt-connector.c \
