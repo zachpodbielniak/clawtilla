@@ -145,6 +145,18 @@ clawt_daemon_handle_misc(
          */
         clawt_daemon_deliver_decision_answer(self, settled);
 
+        /*
+         * And back to whichever system staged the change, if one did.
+         *
+         * A decision raised from VENTURE's queue is only half answered
+         * by telling the agent: the change is still sitting there
+         * waiting for an approve or a reject, and venture drops it
+         * unanswered when its own TTL runs out.  The bridge takes the
+         * ones that are its own and says so; every other decision
+         * answers here exactly as it always did.
+         */
+        clawt_daemon_venture_answer(self, settled);
+
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "decision");
         clawt_daemon_add_decision_object(builder, settled,

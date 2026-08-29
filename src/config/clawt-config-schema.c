@@ -1294,7 +1294,7 @@ static const ClawtSchemaEntry schema[] = {
 
 /* ── connectors ──────────────────────────────────────────────────── */
 { "integrations.confirm_writes", CLAWT_SCHEMA_BOOLEAN,
-  CLAWT_SCHEMA_FLAG_INERT, "true", NULL,
+  CLAWT_SCHEMA_FLAG_NONE, "true", NULL,
   "For a connector that can stage its writes, whether it does.\n"
   "\n"
   "A staged write becomes a decision in the operator's own inbox rather\n"
@@ -1302,9 +1302,14 @@ static const ClawtSchemaEntry schema[] = {
   "interface. Turning this off means the agent's writes land\n"
   "immediately and unreviewed.\n"
   "\n"
-  "Not implemented in this build. No connector stages its writes yet, so this permits nothing\nand prevents nothing.", "0.2.0" },
+  "Read by the `venture` connector, which is the one built-in that\n"
+  "stages. It does not switch staging on -- `venturectl mcp` decides\n"
+  "that for itself and stages by default -- it decides whether\n"
+  "clawtilla polls the queue and raises what is waiting as a decision.\n"
+  "Turning it off leaves the changes in VENTURE for somebody to find in\n"
+  "its own web interface.", "0.2.0" },
 
-{ "integrations.poll_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_INERT,
+{ "integrations.poll_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "60", NULL,
   "How often a connector that has something to report is asked.\n"
   "\n"
@@ -1313,7 +1318,9 @@ static const ClawtSchemaEntry schema[] = {
   "never from a request handler, which would make a client wait on\n"
   "somebody else's network.\n"
   "\n"
-  "Not implemented in this build. Nothing polls a connector yet, so this interval is never used.", "0.2.0" },
+  "One timer covers every connector, so the shortest interval anybody\n"
+  "asked for is the one that runs. The first poll is one interval after\n"
+  "the daemon starts, never during it.", "0.2.0" },
 
 { "connectors", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Connected accounts: how clawtilla obtains credentials and keeps them.\n"

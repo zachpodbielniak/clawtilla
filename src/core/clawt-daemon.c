@@ -3161,6 +3161,7 @@ release_components(ClawtDaemon *self)
      * daemon, and the ingress holds a pointer to this one.
      */
     clawt_daemon_triggers_stop(self);
+    clawt_daemon_venture_stop(self);
 
     g_clear_object(&self->plugins);
 
@@ -4699,6 +4700,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     }
 
     clawt_daemon_triggers_start(self);
+    clawt_daemon_venture_start(self);
 
     {
         g_autofree gchar *pods =
@@ -5335,6 +5337,14 @@ clawt_daemon_reload_internal(ClawtDaemon *self, GPtrArray *refusals,
      * right about the wrong directory.
      */
     clawt_daemon_reload_skills(self);
+
+    /*
+     * And the venture bridge, for the same reason the notifier is
+     * reloaded here: its credential is resolved from a file the config
+     * names, so a connector added, removed or re-authorised reaches it
+     * on a reload rather than on a restart.
+     */
+    clawt_daemon_venture_sync(self);
 
     /*
      * Files are re-rendered for running agents too, so a restart picks up

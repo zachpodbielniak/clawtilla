@@ -31,6 +31,40 @@
 
 static const gchar *const github_server_args[] = { "stdio", NULL };
 
+static const gchar *const venture_server_args[] = { "mcp", NULL };
+
+/*
+ * The nine tools `venturectl mcp` serves, so a `tools:` narrowing that
+ * names one of them wrongly is caught when the plan is built rather
+ * than by an agent finding its tool list empty.
+ *
+ * The names are verbs and there is deliberately no noun among them:
+ * venture's surface is generated from its own record registry, so a
+ * tool per record type would be a copy of somebody else's data model
+ * and would go stale the first time a plugin registered one.
+ */
+static const gchar *const venture_tools[] = {
+    "venture_schema", "venture_list", "venture_get", "venture_create",
+    "venture_update", "venture_delete", "venture_reports", "venture_report",
+    "venture_confirmations", NULL
+};
+
+/*
+ * One token is one actor in venture's audit trail, and the trail is the
+ * point: it is what distinguishes a change an automation made from one
+ * a person made from one the AI made.  Two agents sharing a token
+ * collapse into a single name in every row they write, which is the
+ * same failure two agents on one Matrix login have -- the fleet looks
+ * like it is misbehaving and the file that caused it looks fine.
+ *
+ * Keyed on `token_file` rather than on the token, because the value
+ * never appears in the configuration at all: `connector.begin` writes
+ * it to a 0600 file and puts the *path* in `clawtilla.yaml`.  Two
+ * agents naming one path are two agents holding one token, and the path
+ * is the only spelling of that this check can see.
+ */
+static const gchar *const venture_identity[] = { "token_file", NULL };
+
 static const ClawtConnectorInfo builtin[] = {
     { "github", "GitHub",
       "Repositories, issues and pull requests.", "Code forges",
@@ -43,8 +77,9 @@ static const ClawtConnectorInfo builtin[] = {
       "https://docs.github.com/apps/oauth-apps",
       NULL,
       "github-mcp-server", github_server_args, NULL,
+      NULL,
       CLAWT_CREDENTIAL_PLACEMENT_ENV, "GITHUB_PERSONAL_ACCESS_TOKEN", NULL,
-      NULL },
+      NULL, NULL, NULL },
 
     { "gitlab", "GitLab",
       "Projects, issues and merge requests, on gitlab.com or your own.",
@@ -58,8 +93,9 @@ static const ClawtConnectorInfo builtin[] = {
       "https://docs.gitlab.com/api/oauth2/",
       "https://gitlab.com",
       NULL, NULL, NULL,
+      NULL,
       CLAWT_CREDENTIAL_PLACEMENT_ENV, "GITLAB_TOKEN", NULL,
-      NULL },
+      NULL, NULL, NULL },
 
     { "forgejo", "Forgejo",
       "Repositories on Codeberg, or on a Forgejo you run yourself.",
@@ -73,8 +109,9 @@ static const ClawtConnectorInfo builtin[] = {
       "https://forgejo.org/docs/latest/user/oauth2-provider/",
       "https://codeberg.org",
       NULL, NULL, NULL,
+      NULL,
       CLAWT_CREDENTIAL_PLACEMENT_ENV, "FORGEJO_TOKEN", NULL,
-      NULL },
+      NULL, NULL, NULL },
 
     { "google", "Google",
       "Gmail, Drive and Calendar.", "Productivity",
@@ -89,8 +126,9 @@ static const ClawtConnectorInfo builtin[] = {
       "https://developers.google.com/identity/protocols/oauth2/"
       "limited-input-device",
       NULL, NULL, NULL, NULL,
+      NULL,
       CLAWT_CREDENTIAL_PLACEMENT_ENV, "GOOGLE_OAUTH_TOKEN", NULL,
-      NULL },
+      NULL, NULL, NULL },
 
     { "microsoft", "Microsoft 365",
       "Outlook mail, OneDrive and Teams.", "Productivity",
@@ -102,8 +140,9 @@ static const ClawtConnectorInfo builtin[] = {
       "Entra ID -> App registrations, with 'Allow public client flows' on",
       "https://learn.microsoft.com/entra/identity-platform/v2-oauth2-device-code",
       NULL, NULL, NULL, NULL,
+      NULL,
       CLAWT_CREDENTIAL_PLACEMENT_ENV, "MICROSOFT_OAUTH_TOKEN", NULL,
-      NULL },
+      NULL, NULL, NULL },
 
     { "slack", "Slack",
       "Read and post in channels.", "Chat",
@@ -115,8 +154,9 @@ static const ClawtConnectorInfo builtin[] = {
       "api.slack.com/apps -> your app -> OAuth & Permissions",
       "https://api.slack.com/authentication/oauth-v2",
       NULL, NULL, NULL, NULL,
+      NULL,
       CLAWT_CREDENTIAL_PLACEMENT_ENV, "SLACK_BOT_TOKEN", NULL,
-      NULL },
+      NULL, NULL, NULL },
 
     { "notion", "Notion",
       "Pages and databases.", "Productivity",
@@ -128,8 +168,9 @@ static const ClawtConnectorInfo builtin[] = {
       "notion.so/my-integrations, created as a public integration",
       "https://developers.notion.com/docs/authorization",
       NULL, NULL, NULL, NULL,
+      NULL,
       CLAWT_CREDENTIAL_PLACEMENT_HEADER, "Authorization", "Bearer %s",
-      NULL },
+      NULL, NULL, NULL },
 
     { "linear", "Linear",
       "Issues and projects.", "Project tracking",
@@ -141,8 +182,48 @@ static const ClawtConnectorInfo builtin[] = {
       "Linear -> Settings -> API -> OAuth applications",
       "https://developers.linear.app/docs/oauth/authentication",
       NULL, NULL, NULL, NULL,
+      NULL,
       CLAWT_CREDENTIAL_PLACEMENT_HEADER, "Authorization", "Bearer %s",
-      NULL },
+      NULL, NULL, NULL },
+
+    /*
+     * The one that is ours.
+     *
+     * Compiled in rather than shipped as an overlay file because it is
+     * the operator's own books: a fleet that runs venture should reach
+     * it out of the box, and an entry somebody has to copy into
+     * connectors.d before anything works is an entry most people never
+     * find.
+     *
+     * `venturectl mcp` builds its tool surface from `GET
+     * /api/v1/schema`, so the nine names below are the whole of it and
+     * always will be -- a record type added by a plugin appears inside
+     * `venture_list`'s type enumeration rather than as a tenth tool.
+     * That is what makes @known_tools safe to write down here at all;
+     * a catalogue naming venture's *record types* would be a copy of
+     * somebody else's data model and would go stale on the first plugin.
+     *
+     * API_KEY rather than a flow: venture mints a bearer token from
+     * `POST /api/v1/tokens` and returns the plaintext exactly once,
+     * which is a key somebody already holds by the time they configure
+     * this and not something clawtilla can obtain for them.
+     */
+    { "venture", "VENTURE",
+      "Your own books: sales, expenses, invoices, tickets and contacts.",
+      "Business",
+      CLAWT_CONNECTOR_AUTH_API_KEY,
+      NULL, NULL, NULL, NULL,
+      "Sign in to the VENTURE web UI and create an API token; the "
+      "plaintext is shown once",
+      NULL,
+      "http://localhost:8747",
+      "venturectl", venture_server_args, NULL,
+      "VENTURE_URL",
+      CLAWT_CREDENTIAL_PLACEMENT_ENV, "VENTURE_TOKEN", NULL,
+      venture_tools, venture_identity,
+      "venture audits by actor, and two agents holding one token are one "
+      "actor in that trail -- so which of them filed a change stops being "
+      "answerable, and so does whether a person or a rule did" },
 
     /*
      * The two that make the catalogue open rather than closed.
@@ -160,16 +241,18 @@ static const ClawtConnectorInfo builtin[] = {
       CLAWT_CONNECTOR_AUTH_API_KEY,
       NULL, NULL, NULL, NULL, NULL, NULL, NULL,
       NULL, NULL, NULL,
+      NULL,
       CLAWT_CREDENTIAL_PLACEMENT_ENV, "API_KEY", NULL,
-      NULL },
+      NULL, NULL, NULL },
 
     { "bearer", "Any bearer token",
       "An HTTP MCP server behind an Authorization header.", "Generic",
       CLAWT_CONNECTOR_AUTH_API_KEY,
       NULL, NULL, NULL, NULL, NULL, NULL, NULL,
       NULL, NULL, NULL,
+      NULL,
       CLAWT_CREDENTIAL_PLACEMENT_HEADER, "Authorization", "Bearer %s",
-      NULL }
+      NULL, NULL, NULL }
 };
 
 const ClawtConnectorInfo *
@@ -211,9 +294,12 @@ clawt_connector_info_free(ClawtConnectorInfo *info)
     g_free((gchar *)info->server_command);
     g_strfreev((GStrv)info->server_args);
     g_free((gchar *)info->server_url);
+    g_free((gchar *)info->instance_var);
     g_free((gchar *)info->credential_name);
     g_free((gchar *)info->credential_format);
     g_strfreev((GStrv)info->known_tools);
+    g_strfreev((GStrv)info->identity_keys);
+    g_free((gchar *)info->identity_note);
 
     g_free(info);
 }
@@ -243,11 +329,15 @@ clawt_connector_info_copy(const ClawtConnectorInfo *src)
     out->server_args = (const gchar *const *)
         g_strdupv((GStrv)src->server_args);
     out->server_url = g_strdup(src->server_url);
+    out->instance_var = g_strdup(src->instance_var);
     out->placement = src->placement;
     out->credential_name = g_strdup(src->credential_name);
     out->credential_format = g_strdup(src->credential_format);
     out->known_tools = (const gchar *const *)
         g_strdupv((GStrv)src->known_tools);
+    out->identity_keys = (const gchar *const *)
+        g_strdupv((GStrv)src->identity_keys);
+    out->identity_note = g_strdup(src->identity_note);
 
     return out;
 }
@@ -431,10 +521,14 @@ connector_from_node(YamlNode *node, GError **error)
     out->server_args = (const gchar *const *)member_strv(mapping,
                                                          "server_args");
     out->server_url = g_strdup(member_string(mapping, "server_url"));
+    out->instance_var = g_strdup(member_string(mapping, "instance_var"));
     out->credential_name = g_strdup(member_string(mapping, "credential_name"));
     out->credential_format = g_strdup(format);
     out->known_tools = (const gchar *const *)member_strv(mapping,
                                                          "known_tools");
+    out->identity_keys = (const gchar *const *)member_strv(mapping,
+                                                           "identity_keys");
+    out->identity_note = g_strdup(member_string(mapping, "identity_note"));
 
     if (out->name == NULL)
         out->name = g_strdup(id);

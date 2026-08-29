@@ -496,6 +496,10 @@ entry_to_json_node(const ClawtConnectorInfo *info)
     if (info->server_url != NULL)
         json_object_set_string_member(object, "server_url", info->server_url);
 
+    if (info->instance_var != NULL)
+        json_object_set_string_member(object, "instance_var",
+                                      info->instance_var);
+
     json_object_set_string_member(
         object, "placement",
         clawt_enum_to_nick(CLAWT_TYPE_CREDENTIAL_PLACEMENT,
@@ -518,6 +522,20 @@ entry_to_json_node(const ClawtConnectorInfo *info)
 
         json_object_set_array_member(object, "known_tools", tools);
     }
+
+    if (info->identity_keys != NULL) {
+        JsonArray *keys = json_array_new();
+        gsize i;
+
+        for (i = 0; info->identity_keys[i] != NULL; i++)
+            json_array_add_string_element(keys, info->identity_keys[i]);
+
+        json_object_set_array_member(object, "identity_keys", keys);
+    }
+
+    if (info->identity_note != NULL)
+        json_object_set_string_member(object, "identity_note",
+                                      info->identity_note);
 
     node = json_node_alloc();
     json_node_take_object(node, object);
@@ -552,10 +570,14 @@ entry_from_cache_object(JsonObject *object)
     out->server_args = (const gchar *const *)
         strv_from_array(obj_array(object, "server_args"));
     out->server_url = g_strdup(obj_string(object, "server_url"));
+    out->instance_var = g_strdup(obj_string(object, "instance_var"));
     out->credential_name = g_strdup(obj_string(object, "credential_name"));
     out->credential_format = g_strdup(obj_string(object, "credential_format"));
     out->known_tools = (const gchar *const *)
         strv_from_array(obj_array(object, "known_tools"));
+    out->identity_keys = (const gchar *const *)
+        strv_from_array(obj_array(object, "identity_keys"));
+    out->identity_note = g_strdup(obj_string(object, "identity_note"));
 
     if (out->name == NULL)
         out->name = g_strdup(id);

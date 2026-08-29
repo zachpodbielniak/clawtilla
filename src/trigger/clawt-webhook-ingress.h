@@ -81,6 +81,7 @@ ClawtWebhookRoute clawt_webhook_route(const gchar  *method,
  * ClawtWebhookDeliverFunc:
  * @endpoint: the endpoint id from the path
  * @headers: (element-type utf8 utf8): the request's headers, names lowercased
+ * @presented: (nullable): a secret carried in the URL's `token` parameter
  * @body: (array length=body_length): the raw body, exactly as it arrived
  * @body_length: how many bytes of @body
  * @user_data: data passed to clawt_webhook_ingress_set_deliver_func()
@@ -94,10 +95,20 @@ ClawtWebhookRoute clawt_webhook_route(const gchar  *method,
  * because a re-serialised body has a different digest, and the headers,
  * because that is where every forge puts its signature.
  *
+ * @presented is the other half of that -- a sender that cannot set a
+ * header at all. podomation's webhook module is the worked example: its
+ * `post()` takes a URL and nothing else, so a recipe that assumed a
+ * bearer token or an HMAC would authenticate nothing. Whether it is
+ * *accepted* is not the ingress's decision; it hands it on and
+ * clawt_trigger_verify_url_secret() answers, because only the trigger
+ * knows which provider it named and a forge must go on proving it can
+ * sign.
+ *
  * Returns: (transfer full) (nullable): a short body for the response
  */
 typedef gchar *(*ClawtWebhookDeliverFunc)(const gchar  *endpoint,
                                           GHashTable   *headers,
+                                          const gchar  *presented,
                                           const guchar *body,
                                           gsize         body_length,
                                           gpointer      user_data,

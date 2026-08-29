@@ -582,6 +582,123 @@ test_the_delivery_path_end_to_end(void)
     end_to_end_teardown(&fixture);
 }
 
+/*
+ * The capability URL, driven through the real listener.
+ *
+ * clawt_trigger_verify_url_secret() is unit-tested in test-venture.c,
+ * but a rule that reaches nobody is the shape this codebase keeps
+ * hitting: the secret has to survive libsoup's query parsing, the
+ * ingress has to hand it on, and the delivery path has to prefer it
+ * over the header check. None of that is visible from the function.
+ *
+ * The sender this is for is podomation's webhook module, whose post()
+ * takes a URL and sets no headers at all -- so if this does not work,
+ * the shipped VENTURE recipe authenticates nothing.
+ */
+static void
+test_a_capability_url_opens_a_generic_trigger(void)
+{
+    EndToEnd fixture = { 0 };
+    g_autofree gchar *generic_secret = NULL;
+    g_autofree gchar *forge_secret = NULL;
+    g_autofree gchar *generic_endpoint = NULL;
+    g_autofree gchar *forge_endpoint = NULL;
+    static const gchar body[] = "{\"type\": \"sale\", \"id\": 42}";
+
+    if (!integration_enabled()) {
+        g_test_skip("needs CLAWT_TEST_INTEGRATION; opens a loopback socket");
+        return;
+    }
+
+    end_to_end_setup(&fixture, NULL);
+
+    generic_secret = add_trigger(&fixture,
+                                 "{\"id\": \"deal\", \"agent\": \"builder\","
+                                 " \"instructions\": \"go\","
+                                 " \"provider\": \"generic\"}");
+    forge_secret = add_trigger(&fixture,
+                               "{\"id\": \"ci\", \"agent\": \"builder\","
+                               " \"instructions\": \"go\","
+                               " \"provider\": \"forgejo\"}");
+
+    g_assert_nonnull(generic_secret);
+    g_assert_nonnull(forge_secret);
+
+    {
+        g_autoptr(JsonNode) frame = clawt_ipc_request_new("trigger.list",
+                                                          "t2");
+        g_autoptr(JsonNode) reply =
+            clawt_daemon_handle_request(fixture.daemon, frame);
+        JsonArray *rows = json_object_get_array_member(
+            json_object_get_object_member(json_node_get_object(reply),
+                                          "payload"),
+            "triggers");
+        guint i;
+
+        for (i = 0; i < json_array_get_length(rows); i++) {
+            JsonObject *row = json_array_get_object_element(rows, i);
+            const gchar *id = json_object_get_string_member(row, "id");
+
+            if (g_strcmp0(id, "deal") == 0)
+                generic_endpoint =
+                    g_strdup(json_object_get_string_member(row, "endpoint"));
+            else if (g_strcmp0(id, "ci") == 0)
+                forge_endpoint =
+                    g_strdup(json_object_get_string_member(row, "endpoint"));
+        }
+    }
+
+    g_assert_nonnull(generic_endpoint);
+    g_assert_nonnull(forge_endpoint);
+
+    /* The wrong secret in the URL is a 401, not an accident. */
+    {
+        g_autofree gchar *path =
+            g_strdup_printf("/hooks/%s?token=not-the-secret",
+                            generic_endpoint);
+
+        g_assert_cmpuint(post(&fixture, path, NULL, body), ==,
+                         SOUP_STATUS_UNAUTHORIZED);
+    }
+
+    /* And no secret at all, which is what an open endpoint would be. */
+    {
+        g_autofree gchar *path = g_strdup_printf("/hooks/%s",
+                                                 generic_endpoint);
+
+        g_assert_cmpuint(post(&fixture, path, NULL, body), ==,
+                         SOUP_STATUS_UNAUTHORIZED);
+    }
+
+    /* The right one, with no headers whatsoever, is accepted. */
+    {
+        g_autofree gchar *path = g_strdup_printf("/hooks/%s?token=%s",
+                                                 generic_endpoint,
+                                                 generic_secret);
+
+        g_assert_cmpuint(post(&fixture, path, NULL, body), ==,
+                         SOUP_STATUS_OK);
+    }
+
+    /*
+     * And the same proof against a forge is refused.
+     *
+     * A forge can sign, and every one of them does. If a query string
+     * opened this, the weakest scheme any caller could reach for would
+     * be the scheme every trigger accepted.
+     */
+    {
+        g_autofree gchar *path = g_strdup_printf("/hooks/%s?token=%s",
+                                                 forge_endpoint,
+                                                 forge_secret);
+
+        g_assert_cmpuint(post(&fixture, path, NULL, body), ==,
+                         SOUP_STATUS_UNAUTHORIZED);
+    }
+
+    end_to_end_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -601,6 +718,8 @@ main(int argc, char *argv[])
     g_test_add_func("/webhook/unstarted-listens-nowhere",
                     test_an_unstarted_ingress_is_listening_nowhere);
     g_test_add_func("/webhook/end-to-end", test_the_delivery_path_end_to_end);
+    g_test_add_func("/webhook/capability-url",
+                    test_a_capability_url_opens_a_generic_trigger);
 
     return g_test_run();
 }

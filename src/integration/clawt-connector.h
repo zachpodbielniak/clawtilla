@@ -57,11 +57,16 @@ G_BEGIN_DECLS
  * @server_command: (nullable): a stdio MCP server that fronts it
  * @server_args: (array zero-terminated=1) (nullable): its arguments
  * @server_url: (nullable): an HTTP or SSE MCP server that fronts it
+ * @instance_var: (nullable): the environment variable a stdio server reads
+ *   to learn which instance to reach
  * @placement: where the relay puts the credential
  * @credential_name: (nullable): the variable or header it goes in
  * @credential_format: (nullable): a printf format with one %s for the value
  * @known_tools: (array zero-terminated=1) (nullable): the tool names this
  *   server is known to offer
+ * @identity_keys: (array zero-terminated=1) (nullable): keys that must
+ *   differ between two agents sharing one instance of this connector
+ * @identity_note: (nullable): what goes wrong when they do not
  *
  * One service in the catalogue.
  *
@@ -91,6 +96,23 @@ G_BEGIN_DECLS
  * ordinary case for a connector whose server nobody here has looked
  * inside of, disables the check rather than treating every name as
  * unknown.
+ *
+ * @instance_var is the other half of @default_instance.  For an HTTP
+ * server the resolved instance *is* the URL the relay dials, so nothing
+ * more is needed; a stdio server is a separate program and has to be
+ * told, and every one of them takes it from the environment.  Without
+ * it a connector pointed at a second instance starts a server that
+ * quietly talks to the first -- which is the same failure
+ * @default_instance exists to prevent, one layer along.
+ *
+ * @identity_keys is the connector's own version of the field
+ * #ClawtIntegrationInfo carries: the `connector` integration type sets
+ * none, because sharing one account across a fleet is usually the whole
+ * point of connecting it.  For a service that records *who* did
+ * something it is not, and the entry says so here rather than the type
+ * having to choose one answer for every provider.  @identity_note is
+ * appended to the warning, because "give each its own" without saying
+ * what breaks reads as pedantry.
  */
 typedef struct {
     const gchar              *id;
@@ -108,10 +130,13 @@ typedef struct {
     const gchar              *server_command;
     const gchar *const       *server_args;
     const gchar              *server_url;
+    const gchar              *instance_var;
     ClawtCredentialPlacement  placement;
     const gchar              *credential_name;
     const gchar              *credential_format;
     const gchar *const       *known_tools;
+    const gchar *const       *identity_keys;
+    const gchar              *identity_note;
 } ClawtConnectorInfo;
 
 /**

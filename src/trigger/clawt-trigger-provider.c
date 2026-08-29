@@ -1046,3 +1046,50 @@ clawt_trigger_sniff_provider(GHashTable           *headers,
 
     return FALSE;
 }
+
+/* ── A secret in the URL ─────────────────────────────────────────── */
+
+gboolean
+clawt_trigger_provider_accepts_url_secret(ClawtTriggerProvider provider)
+{
+    /*
+     * Named exhaustively rather than defaulted, so -Wswitch says
+     * something the next time a provider is added.  The permissive
+     * answer must never be the one a new value falls into: a forge that
+     * arrived while nobody was looking would silently start accepting a
+     * query string in place of a signature.
+     */
+    switch (provider) {
+    case CLAWT_TRIGGER_PROVIDER_GENERIC:
+        return TRUE;
+
+    case CLAWT_TRIGGER_PROVIDER_FORGEJO:
+    case CLAWT_TRIGGER_PROVIDER_GITEA:
+    case CLAWT_TRIGGER_PROVIDER_GITHUB:
+    case CLAWT_TRIGGER_PROVIDER_GITLAB:
+        return FALSE;
+    }
+
+    return FALSE;
+}
+
+gboolean
+clawt_trigger_verify_url_secret(ClawtTriggerProvider   provider,
+                                const gchar           *secret,
+                                const gchar           *presented,
+                                GError               **error)
+{
+    if (presented == NULL || *presented == '\0')
+        return refuse(error);
+
+    if (!clawt_trigger_provider_accepts_url_secret(provider))
+        return refuse(error);
+
+    if (secret == NULL || *secret == '\0')
+        return refuse(error);
+
+    if (!clawt_secure_equals(secret, presented))
+        return refuse(error);
+
+    return TRUE;
+}

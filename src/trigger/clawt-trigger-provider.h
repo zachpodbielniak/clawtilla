@@ -172,6 +172,58 @@ gboolean clawt_trigger_sniff_provider(GHashTable           *headers,
                                       ClawtTriggerProvider *out_provider);
 
 /**
+ * clawt_trigger_provider_accepts_url_secret:
+ * @provider: which provider a trigger named
+ *
+ * Whether a secret carried in the URL may authenticate a delivery.
+ *
+ * Only %CLAWT_TRIGGER_PROVIDER_GENERIC, and that is the point of the
+ * generic provider: it exists for callers that are not a forge, and
+ * some of them cannot set a header at all.  podomation's webhook
+ * module is the one this was built for -- its `post()` takes a URL and
+ * sends `application/json`, with no `Authorization` and no signature,
+ * so a recipe assuming either authenticates nothing.
+ *
+ * A forge is refused because it *can* sign, and every one of them
+ * does.  Letting a `provider: forgejo` trigger be opened by a string in
+ * a query would mean the weakest scheme any caller could reach for was
+ * the scheme every trigger accepted, which is exactly what "sniffing
+ * may never widen a configured trigger" already forbids one layer up.
+ *
+ * Returns: %TRUE if a URL secret is a proof this provider takes
+ */
+gboolean clawt_trigger_provider_accepts_url_secret(
+    ClawtTriggerProvider provider);
+
+/**
+ * clawt_trigger_verify_url_secret:
+ * @provider: which provider the trigger named
+ * @secret: the trigger's own secret
+ * @presented: (nullable): what arrived in the URL
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Whether a capability URL opens this trigger.
+ *
+ * Constant-time, through clawt_secure_equals(), for the same reason the
+ * header comparisons are: a `strcmp` on a secret leaks its prefix by
+ * timing, and a query string is the easiest thing in the world to
+ * retry.
+ *
+ * A URL is a weaker proof than a signature and it is worth being plain
+ * about why it is still offered: it is in whatever file names the
+ * endpoint, and it reaches the receiver's access log.  It is here
+ * because the alternative for a sender that cannot set headers is no
+ * authentication whatsoever, and an unauthenticated endpoint is worse
+ * than a secret that has to be rotated.
+ *
+ * Returns: %TRUE if @presented proves knowledge of @secret
+ */
+gboolean clawt_trigger_verify_url_secret(ClawtTriggerProvider   provider,
+                                         const gchar           *secret,
+                                         const gchar           *presented,
+                                         GError               **error);
+
+/**
  * clawt_trigger_headers_new:
  *
  * A header table with the lifetime and comparison rules the handlers

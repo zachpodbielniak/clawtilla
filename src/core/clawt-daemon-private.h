@@ -27,6 +27,7 @@
 #include "plugin/clawt-automation.h"
 #include "task/clawt-handoff-store.h"
 #include "task/clawt-routine-runner.h"
+#include "integration/clawt-venture-bridge.h"
 #include "trigger/clawt-trigger-store.h"
 #include "trigger/clawt-webhook-ingress.h"
 #include "usage/clawt-usage.h"
@@ -221,6 +222,16 @@ struct _ClawtDaemon {
      */
     ClawtTriggerStore   *trigger_store;
     ClawtWebhookIngress *ingress;
+
+    /*
+     * VENTURE's staged writes, as decisions.
+     *
+     * Built whether or not a venture connector is configured, because
+     * whether one *is* changes on a reload and the bridge is what asks
+     * -- it simply arms no timer when nothing is bound, so a fleet that
+     * has never heard of venture pays nothing for it.
+     */
+    ClawtVentureBridge  *venture;
 
     /* Pods that watch the fleet and act on it. */
     ClawtAutomation *automation;
@@ -628,6 +639,19 @@ typedef JsonNode *(*ClawtDaemonFamilyFunc)(
  */
 void clawt_daemon_triggers_start(ClawtDaemon *self);
 void clawt_daemon_triggers_stop(ClawtDaemon *self);
+
+/*
+ * The VENTURE bridge's own lifecycle, in daemon-venture.c for the same
+ * reason: which connectors are bound, where their tokens are and the
+ * one outbound HTTP request the daemon makes on its own context are all
+ * one subject.
+ */
+void clawt_daemon_venture_start(ClawtDaemon *self);
+void clawt_daemon_venture_stop(ClawtDaemon *self);
+void clawt_daemon_venture_sync(ClawtDaemon *self);
+
+gboolean
+clawt_daemon_venture_answer(ClawtDaemon *self, ClawtDecision *decision);
 
 JsonNode *
 clawt_daemon_handle_trigger(
