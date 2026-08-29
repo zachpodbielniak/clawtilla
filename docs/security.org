@@ -630,7 +630,7 @@ Getting that description backwards is the dangerous direction, and it has
 happened -- a guest agent was once told it was driving the operator's
 real screen.
 
-Two grants, both off by default, and they are not the same size:
+Three grants, all off by default, and they are not the same size:
 
 - ~allow_input~ permits key and pointer injection rather than only
   observation.  With it false an agent can take screenshots and query
@@ -642,6 +642,43 @@ Two grants, both off by default, and they are not the same size:
   *none of clawtilla's confinement applies to it* -- not the path
   checks, not the sudo block, and not bwrap.  Turning it on gives the
   agent a way to run anything, whatever ~computer.host.confine~ says.
+- ~allow_recording~ permits *capturing* what a person does on that
+  screen.  Its own grant, and its own category in the tool vocabulary
+  beside the observing, acting and spawning ones -- because injecting a
+  keystroke and recording one are opposite directions.  Folding it into
+  the observing tools, where it would otherwise have gone since it
+  neither clicks nor spawns, would have made "may take a screenshot"
+  silently mean "may record my keystrokes".
+
+~screenshot_frame~ stays an *observing* tool.  Watching a screen must not
+require the keylogger grant.
+
+*** Recording is a keylogger, and the suppression is narrower than it sounds
+
+While a recording runs, every key pressed on that desktop is written
+down.  Both compositors pause capture for what they can recognise as a
+secret, and what they can recognise is bounded by what a compositor can
+see at all.
+
+In a *guest*, GNOME Shell can tell that the actor holding key focus is a
+password entry, so capture pauses for its lock screen and its polkit and
+keyring prompts.  On *this machine's* desktop, gowl cannot: under Wayland
+a client's widget tree is private to the client, so its guard is the
+session being locked plus a deny list of credential app-ids and title
+patterns -- and **a password typed into a form inside any other window is
+recorded**.  In both cases an application window is a Wayland client
+whose insides the compositor does not see.
+
+Every trace carries that sentence, both clients draw it beside the
+recording, and the draft the model is given contains it.  Read a
+recording before it is stored, shared or turned into a skill, and treat
+one as credential material until you have.
+
+Three switches have to be on: ~allow_recording~ here, gowl's own
+~input-recording~ or the guest extension's ~recording-consent~, and a
+person to start it.  Neither compositor's flag can be set over its own
+D-Bus or MCP interface, and turning either off stops a recording that is
+already running.  See [[file:teach.org][Teaching a task]].
 
 For a *guest* desktop the tools arrive over the agent's ~.mcp.json~ as an
 ssh to a server inside the VM, and that server has never heard of
@@ -688,6 +725,15 @@ Nothing an import brings in reaches any prompt until a person has read
 it and said so.  A skill somebody *wrote* in the library is enabled,
 because writing it was the review; that is the only difference between
 the two paths and it is what the whole posture turns on.
+
+A skill *synthesized* from a recorded demonstration lands disabled as
+well, and is not more trusted for having been written here.  The model
+that wrote it read a trace, and a trace of a demonstration is untrusted
+input the moment it contains anything a person typed -- including, as
+above, a password the compositor could not recognise as one.  It is
+written through the same function with a different provenance, so it
+gets the same name rules, the same bound on the description, the same
+traversal gate and the same scan.
 
 The order the two files are written in matters for the same reason.
 clawtilla's record of a skill goes down *before* the ~SKILL.md~ it

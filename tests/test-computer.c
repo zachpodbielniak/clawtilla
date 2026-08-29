@@ -1411,6 +1411,118 @@ test_desktop_with_input_permits_acting(void)
 }
 
 /*
+ * Recording is a fourth grant, and it is off even for an agent that may
+ * click.
+ *
+ * Folding it into the observing tools -- where it would otherwise have
+ * gone, since it neither clicks nor spawns -- would have made "may take
+ * a screenshot" silently mean "may record my keystrokes".
+ */
+static void
+test_recording_needs_its_own_grant(void)
+{
+    g_autoptr(ClawtDesktop) desktop =
+        clawt_desktop_new(CLAWT_DESKTOP_BACKEND_GOWL, "/tmp/nowhere.sock");
+
+    clawt_desktop_set_allow_input(desktop, TRUE);
+    clawt_desktop_set_allow_spawn(desktop, TRUE);
+
+    g_assert_false(clawt_desktop_tool_is_permitted(desktop,
+                                                   "start_recording"));
+    g_assert_false(clawt_desktop_tool_is_permitted(desktop,
+                                                   "drain_recording"));
+    g_assert_false(clawt_desktop_tool_is_permitted(desktop,
+                                                   "start_input_recording"));
+    g_assert_false(clawt_desktop_tool_is_permitted(desktop,
+                                                   "get_recording_status"));
+}
+
+/*
+ * And it does not need the *input* grant either.
+ *
+ * The check has to come before the allow_input early return, or the
+ * recording grant would be unreachable in exactly the configuration it
+ * is most likely to be used in: somebody who wants to demonstrate a task
+ * without also handing their pointer over.
+ */
+static void
+test_recording_does_not_need_input(void)
+{
+    g_autoptr(ClawtDesktop) desktop =
+        clawt_desktop_new(CLAWT_DESKTOP_BACKEND_GOWL, "/tmp/nowhere.sock");
+
+    clawt_desktop_set_allow_input(desktop, FALSE);
+    clawt_desktop_set_allow_recording(desktop, TRUE);
+
+    g_assert_true(clawt_desktop_tool_is_permitted(desktop,
+                                                  "start_recording"));
+    g_assert_true(clawt_desktop_tool_is_permitted(desktop,
+                                                  "stop_input_recording"));
+
+    /* Still cannot click. */
+    g_assert_false(clawt_desktop_tool_is_permitted(desktop, "mouse_click"));
+    g_assert_false(clawt_desktop_tool_is_permitted(desktop, "send_key"));
+}
+
+/*
+ * `screenshot_frame` is an observing tool and stays one.
+ *
+ * Watching a screen must not require the keylogger grant: taking a
+ * picture of what is on a screen and transcribing what was typed into it
+ * are different acts, and the live preview needs the first.
+ */
+static void
+test_screenshot_frame_is_not_a_recording_tool(void)
+{
+    g_autoptr(ClawtDesktop) desktop =
+        clawt_desktop_new(CLAWT_DESKTOP_BACKEND_GOWL, "/tmp/nowhere.sock");
+
+    g_assert_false(clawt_desktop_get_allow_recording(desktop));
+
+    g_assert_true(clawt_desktop_tool_is_permitted(desktop,
+                                                  "screenshot_frame"));
+    g_assert_false(clawt_desktop_tool_is_recording("screenshot_frame"));
+    g_assert_false(clawt_desktop_tool_is_recording("screenshot_monitor"));
+
+    g_assert_true(clawt_desktop_tool_is_recording("start_recording"));
+    g_assert_true(clawt_desktop_tool_is_recording("stop_input_recording"));
+    g_assert_false(clawt_desktop_tool_is_recording(NULL));
+}
+
+/*
+ * The list handed to the relay is what actually enforces this, so it is
+ * asserted on rather than only the predicate.  The relay is given a
+ * fixed list before it starts; a predicate that agreed with nothing the
+ * relay was told would be a check about itself.
+ */
+static void
+test_the_tool_list_carries_recording_only_when_granted(void)
+{
+    g_autoptr(ClawtDesktop) desktop =
+        clawt_desktop_new(CLAWT_DESKTOP_BACKEND_GOWL, "/tmp/nowhere.sock");
+    g_auto(GStrv) without = NULL;
+    g_auto(GStrv) with = NULL;
+
+    without = clawt_desktop_get_tool_names(desktop);
+    g_assert_false(g_strv_contains((const gchar * const *)without,
+                                   "start_recording"));
+    g_assert_true(g_strv_contains((const gchar * const *)without,
+                                  "screenshot_frame"));
+
+    clawt_desktop_set_allow_recording(desktop, TRUE);
+
+    with = clawt_desktop_get_tool_names(desktop);
+    g_assert_true(g_strv_contains((const gchar * const *)with,
+                                  "start_recording"));
+    g_assert_true(g_strv_contains((const gchar * const *)with,
+                                  "start_input_recording"));
+
+    /* Still no acting tools: the grants are independent. */
+    g_assert_false(g_strv_contains((const gchar * const *)with,
+                                   "mouse_click"));
+}
+
+/*
  * An unknown tool is refused rather than passed through.  A newer
  * compositor may add one that injects input, and defaulting to allow would
  * quietly widen an observe-only grant on upgrade.
@@ -4987,6 +5099,14 @@ main(int argc, char *argv[])
                     test_desktop_observe_only_omits_input_tools);
     g_test_add_func("/computer/desktop/with-input",
                     test_desktop_with_input_permits_acting);
+    g_test_add_func("/computer/desktop/recording-grant",
+                    test_recording_needs_its_own_grant);
+    g_test_add_func("/computer/desktop/recording-without-input",
+                    test_recording_does_not_need_input);
+    g_test_add_func("/computer/desktop/frame-is-observing",
+                    test_screenshot_frame_is_not_a_recording_tool);
+    g_test_add_func("/computer/desktop/recording-tool-list",
+                    test_the_tool_list_carries_recording_only_when_granted);
     g_test_add_func("/computer/desktop/unknown-tool",
                     test_unknown_desktop_tool_is_refused);
     g_test_add_func("/computer/desktop/dead-socket",

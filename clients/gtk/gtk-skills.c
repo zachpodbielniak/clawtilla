@@ -280,6 +280,356 @@ skill_group(ClawtWindow *self, JsonObject *skill)
     return group;
 }
 
+/* ── Teaching a task ─────────────────────────────────────────────── */
+
+/*
+ * One button on a recording.
+ *
+ * The id travels, never the widget: the list is rebuilt whenever a
+ * teach.changed event arrives, which can happen between a click being
+ * queued and the handler running.
+ */
+typedef struct {
+    ClawtWindow *window;
+    gchar       *id;
+    gchar       *kind;
+} TeachAction;
+
+static void
+teach_action_free(gpointer data, GClosure *closure)
+{
+    TeachAction *action = data;
+
+    (void)closure;
+
+    g_free(action->id);
+    g_free(action->kind);
+    g_free(action);
+}
+
+static void
+on_teach_action(GtkButton *button, gpointer user_data)
+{
+    TeachAction *action = user_data;
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(JsonNode) reply = NULL;
+
+    (void)button;
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "id");
+    json_builder_add_string_value(builder, action->id);
+    json_builder_end_object(builder);
+
+    reply = clawt_window_request(action->window, action->kind,
+                                 json_builder_get_root(builder));
+
+    if (reply == NULL)
+        return;
+
+    if (g_strcmp0(action->kind, "teach.synthesize") == 0)
+        clawt_window_toast(action->window,
+                           "Drafted. Read it, then commit it.");
+    else if (g_strcmp0(action->kind, "teach.commit") == 0)
+        clawt_window_toast(action->window,
+                           "Written, and disabled. Read it before you "
+                           "enable it.");
+
+    clawt_gtk_refresh_skills(action->window);
+}
+
+/*
+ * The steps, fetched only when somebody asks for them.
+ *
+ * `teach.list` deliberately answers without them -- a demonstration can
+ * be twenty thousand steps and a listing that carried every one of them
+ * would be a listing nobody could load.
+ */
+static void
+on_teach_show(GtkButton *button, gpointer user_data)
+{
+    TeachAction *action = user_data;
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GString) text = g_string_new(NULL);
+    JsonObject *trace;
+    JsonArray *steps;
+    AdwDialog *dialog;
+    GtkWidget *scroll;
+    GtkWidget *label;
+    guint i;
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "id");
+    json_builder_add_string_value(builder, action->id);
+    json_builder_end_object(builder);
+
+    reply = clawt_window_request(action->window, "teach.show",
+                                 json_builder_get_root(builder));
+
+    if (reply == NULL)
+        return;
+
+    trace = clawt_payload_of(reply);
+    steps = json_object_get_array_member(trace, "steps");
+
+    for (i = 0; steps != NULL && i < json_array_get_length(steps); i++) {
+        JsonObject *step = json_array_get_object_element(steps, i);
+
+        g_string_append_printf(text, "%u. [%s] %s\n", i + 1,
+                               clawt_json_string(step, "kind", "?"),
+                               clawt_json_string(step, "label", ""));
+
+        if (clawt_json_string(step, "detail", NULL) != NULL)
+            g_string_append_printf(text, "    %s\n",
+                                   clawt_json_string(step, "detail", ""));
+    }
+
+    if (text->len == 0)
+        g_string_append(text, "Nothing was captured.");
+
+    dialog = adw_alert_dialog_new("What was recorded", NULL);
+    label = gtk_label_new(text->str);
+    scroll = gtk_scrolled_window_new();
+
+    gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    gtk_label_set_selectable(GTK_LABEL(label), TRUE);
+    gtk_widget_set_size_request(scroll, 480, 400);
+
+    /*
+     * NEVER horizontally, for the reason every other list here uses it:
+     * a wrapping label reports its unwrapped width as natural, and an
+     * AUTOMATIC policy hands it exactly that.
+     */
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), label);
+
+    adw_alert_dialog_set_extra_child(ADW_ALERT_DIALOG(dialog), scroll);
+    adw_alert_dialog_add_responses(ADW_ALERT_DIALOG(dialog),
+                                   "close", "Close", NULL);
+    adw_dialog_present(dialog, GTK_WIDGET(button));
+}
+
+static void
+add_teach_button(ClawtWindow *self, GtkWidget *box, const gchar *label,
+                 const gchar *kind, const gchar *id, GCallback callback,
+                 const gchar *css)
+{
+    GtkWidget *button = gtk_button_new_with_label(label);
+    TeachAction *action = g_new0(TeachAction, 1);
+
+    action->window = self;
+    action->id = g_strdup(id);
+    action->kind = g_strdup(kind);
+
+    if (css != NULL)
+        gtk_widget_add_css_class(button, css);
+
+    g_signal_connect_data(button, "clicked", callback, action,
+                          teach_action_free, 0);
+    gtk_box_append(GTK_BOX(box), button);
+}
+
+static void
+on_teach_start_response(AdwAlertDialog *dialog, const gchar *response,
+                        gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    GtkWidget *agent = g_object_get_data(G_OBJECT(dialog), "agent");
+    GtkWidget *kind = g_object_get_data(G_OBJECT(dialog), "kind");
+    GtkWidget *goal = g_object_get_data(G_OBJECT(dialog), "goal");
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(JsonNode) reply = NULL;
+    guint selected;
+
+    if (g_strcmp0(response, "record") != 0)
+        return;
+
+    selected = adw_combo_row_get_selected(ADW_COMBO_ROW(kind));
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "agent");
+    json_builder_add_string_value(builder,
+                                  gtk_editable_get_text(GTK_EDITABLE(agent)));
+    json_builder_set_member_name(builder, "source");
+    json_builder_add_string_value(builder,
+                                  clawt_teach_source_nth_nick(selected));
+
+    if (*gtk_editable_get_text(GTK_EDITABLE(goal)) != '\0') {
+        json_builder_set_member_name(builder, "goal");
+        json_builder_add_string_value(
+            builder, gtk_editable_get_text(GTK_EDITABLE(goal)));
+    }
+
+    json_builder_end_object(builder);
+
+    reply = clawt_window_request(self, "teach.start",
+                                 json_builder_get_root(builder));
+
+    if (reply == NULL)
+        return;
+
+    clawt_gtk_refresh_skills(self);
+}
+
+static void
+on_teach_start_clicked(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    AdwDialog *dialog;
+    GtkWidget *group = adw_preferences_group_new();
+    GtkWidget *agent = adw_entry_row_new();
+    GtkWidget *kind = adw_combo_row_new();
+    GtkWidget *goal = adw_entry_row_new();
+    GtkStringList *kinds = gtk_string_list_new(NULL);
+    guint i;
+
+    dialog = adw_alert_dialog_new(
+        "Record a task",
+        "Watching the agent captures the calls it makes. Demonstrating "
+        "captures every key you press, in any window -- read the trace "
+        "before you turn it into a skill.");
+
+    /*
+     * Walked from the library rather than listed here.  A client with a
+     * list of its own is a client that can disagree with the daemon
+     * about what exists, and every hand-written copy in this tree has.
+     */
+    for (i = 0; i < clawt_teach_source_count(); i++)
+        gtk_string_list_append(kinds, clawt_teach_source_nth_label(i));
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(agent), "Agent");
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(kind), "What to watch");
+    adw_combo_row_set_model(ADW_COMBO_ROW(kind), G_LIST_MODEL(kinds));
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(goal),
+                                  "What you are teaching");
+
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), agent);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), kind);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), goal);
+
+    adw_alert_dialog_set_extra_child(ADW_ALERT_DIALOG(dialog), group);
+    adw_alert_dialog_add_responses(ADW_ALERT_DIALOG(dialog),
+                                   "cancel", "Cancel",
+                                   "record", "Record", NULL);
+    adw_alert_dialog_set_response_appearance(ADW_ALERT_DIALOG(dialog),
+                                             "record",
+                                             ADW_RESPONSE_SUGGESTED);
+
+    g_object_set_data(G_OBJECT(dialog), "agent", agent);
+    g_object_set_data(G_OBJECT(dialog), "kind", kind);
+    g_object_set_data(G_OBJECT(dialog), "goal", goal);
+    g_signal_connect(dialog, "response",
+                     G_CALLBACK(on_teach_start_response), self);
+    adw_dialog_present(dialog, GTK_WIDGET(button));
+}
+
+/*
+ * The recordings, above the skills.
+ *
+ * Above because a running recording is a thing happening to somebody's
+ * screen right now, and the list of skills is a thing that will still
+ * be there later.
+ */
+static GtkWidget *
+teach_group(ClawtWindow *self)
+{
+    GtkWidget *group = adw_preferences_group_new();
+    GtkWidget *record = gtk_button_new_with_label("Record a task");
+    g_autoptr(JsonNode) reply = NULL;
+    JsonArray *recordings = NULL;
+    guint i;
+
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group),
+                                    "Teach a task");
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(group),
+        "Record a task being done, then have a model write the procedure "
+        "up as a skill. The draft lands disabled, with the same checks an "
+        "imported skill gets.");
+
+    reply = clawt_window_request(self, "teach.list", NULL);
+
+    if (reply != NULL)
+        recordings = json_object_get_array_member(clawt_payload_of(reply),
+                                                  "recordings");
+
+    for (i = 0; recordings != NULL && i < json_array_get_length(recordings);
+         i++) {
+        JsonObject *trace = json_array_get_object_element(recordings, i);
+        const gchar *id = clawt_json_string(trace, "id", "?");
+        gboolean active = json_object_get_boolean_member(trace, "active");
+        JsonArray *caveats = json_object_get_array_member(trace, "caveats");
+        GtkWidget *row = adw_action_row_new();
+        GtkWidget *buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        g_autofree gchar *subtitle = NULL;
+        guint c;
+
+        subtitle = g_strdup_printf(
+            "%s, agent %s, %" G_GINT64_FORMAT " step(s)%s",
+            clawt_json_string(trace, "source", "?"),
+            clawt_json_string(trace, "agent", "-"),
+            json_object_get_int_member(trace, "step_count"),
+            active ? " -- recording now" : "");
+
+        adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row), FALSE);
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                      clawt_json_string(trace, "goal", id));
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
+        adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(row), 0);
+
+        gtk_widget_set_valign(buttons, GTK_ALIGN_CENTER);
+
+        if (active)
+            add_teach_button(self, buttons, "Stop", "teach.stop", id,
+                             G_CALLBACK(on_teach_action), "destructive-action");
+        else {
+            add_teach_button(self, buttons, "Steps", "teach.show", id,
+                             G_CALLBACK(on_teach_show), NULL);
+            add_teach_button(self, buttons, "Draft a skill",
+                             "teach.synthesize", id,
+                             G_CALLBACK(on_teach_action), "suggested-action");
+            add_teach_button(self, buttons, "Commit", "teach.commit", id,
+                             G_CALLBACK(on_teach_action), NULL);
+            add_teach_button(self, buttons, "Remove", "teach.remove", id,
+                             G_CALLBACK(on_teach_action), NULL);
+        }
+
+        adw_action_row_add_suffix(ADW_ACTION_ROW(row), buttons);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+
+        /*
+         * The caveat under every recording, not in a document.  This is
+         * where somebody decides whether the trace is safe to keep, and
+         * a limitation they have to go and look up is one they will not.
+         */
+        for (c = 0; caveats != NULL && c < json_array_get_length(caveats);
+             c++) {
+            GtkWidget *note = adw_action_row_new();
+
+            adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(note),
+                                               FALSE);
+            adw_preferences_row_set_title(ADW_PREFERENCES_ROW(note),
+                                          "Before you share this");
+            adw_action_row_set_subtitle(
+                ADW_ACTION_ROW(note),
+                json_array_get_string_element(caveats, c));
+            adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(note), 0);
+            adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), note);
+        }
+    }
+
+    gtk_widget_set_halign(record, GTK_ALIGN_END);
+    gtk_widget_set_margin_top(record, 6);
+    g_signal_connect(record, "clicked",
+                     G_CALLBACK(on_teach_start_clicked), self);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), record);
+
+    return group;
+}
+
 void
 clawt_gtk_refresh_skills(ClawtWindow *self)
 {
@@ -299,6 +649,8 @@ clawt_gtk_refresh_skills(ClawtWindow *self)
     do {
         while ((child = gtk_widget_get_first_child(self->skill_box)) != NULL)
             gtk_box_remove(GTK_BOX(self->skill_box), child);
+
+        gtk_box_append(GTK_BOX(self->skill_box), teach_group(self));
 
         reply = clawt_window_request(self, "skill.list", NULL);
 

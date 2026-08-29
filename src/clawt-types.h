@@ -100,6 +100,12 @@ typedef struct _ClawtSkill          ClawtSkill;
 typedef struct _ClawtSkillLibrary   ClawtSkillLibrary;
 typedef struct _ClawtSkillBinding   ClawtSkillBinding;
 
+/* Teaching a task */
+typedef struct _ClawtTeachStep      ClawtTeachStep;
+typedef struct _ClawtTeachTrace     ClawtTeachTrace;
+typedef struct _ClawtTeachRecorder  ClawtTeachRecorder;
+typedef struct _ClawtSkillSynthesizer ClawtSkillSynthesizer;
+
 /* AI */
 typedef struct _ClawtAgentDesigner  ClawtAgentDesigner;
 

@@ -249,6 +249,16 @@ struct _ClawtDaemon {
      */
     ClawtSkillLibrary *skills;
 
+    /*
+     * Recordings, and the drafts written from them.
+     *
+     * Built on first use rather than at start: a fleet that never
+     * teaches a task pays nothing, and the tables are the only state
+     * either half needs. See src/core/daemon-teach.c.
+     */
+    GHashTable *teach_recorders;  /* id -> ClawtTeachRecorder */
+    GHashTable *teach_drafts;     /* id -> ClawtSkillSynthesizer */
+
     gchar   *libreclaw_binary;
     gchar   *state_dir;
 
@@ -838,6 +848,45 @@ clawt_daemon_handle_skill(
     JsonObject   *payload,
     gboolean     *handled
 );
+
+JsonNode *
+clawt_daemon_handle_teach(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
+
+/*
+ * An agent's step, as it happens.
+ *
+ * Both are fed from points the daemon already has -- the MCP tool
+ * observer and the desktop control gate -- rather than from hooks of
+ * their own. A second place that sees a tool call is a second place to
+ * forget one, which is the shape behind a good deal of this file.
+ *
+ * Both are no-ops unless that agent is being recorded right now.
+ */
+void clawt_daemon_teach_note_tool_call(ClawtDaemon *self,
+                                       const gchar *agent_id,
+                                       const gchar *tool,
+                                       const gchar *args);
+
+void clawt_daemon_teach_note_desktop(ClawtDaemon *self,
+                                     const gchar *agent_id,
+                                     const gchar *tool);
+
+/*
+ * Stops every running recording, synchronously, on the way down.
+ *
+ * Synchronously because the async form would post a worker and a
+ * completion onto a context that is about to stop being iterated -- and
+ * for a demonstration that means the compositor goes on recording after
+ * clawtilla has gone, with its indicator still on the screen and nobody
+ * holding the token that would end it.
+ */
+void clawt_daemon_teach_teardown(ClawtDaemon *self);
 
 JsonNode *
 clawt_daemon_handle_config(

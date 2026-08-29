@@ -187,6 +187,79 @@ gboolean clawt_screen_parse_gdbus_frame(const gchar           *text,
                                         GError               **error);
 
 /**
+ * clawt_screen_gnome_record_start_argv:
+ * @max_seconds: the recording's own deadline
+ * @max_events: the ring's capacity inside GNOME Shell
+ *
+ * The `gdbus` command that starts capturing input in a guest.
+ *
+ * A separate consent flag inside the extension governs whether this is
+ * answered at all, and `SetEnabled` does not touch it -- an agent
+ * allowed to click is not thereby allowed to watch somebody type. So a
+ * refusal here is ordinary, and its text is the extension's own.
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the argv
+ */
+GStrv clawt_screen_gnome_record_start_argv(guint max_seconds,
+                                           guint max_events);
+
+/**
+ * clawt_screen_gnome_record_drain_argv:
+ * @token: what the start answered with
+ *
+ * The `gdbus` command that takes what has been captured so far.
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the argv
+ */
+GStrv clawt_screen_gnome_record_drain_argv(const gchar *token);
+
+/**
+ * clawt_screen_gnome_record_stop_argv:
+ * @token: what the start answered with
+ *
+ * The `gdbus` command that ends the recording and takes the tail.
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the argv
+ */
+GStrv clawt_screen_gnome_record_stop_argv(const gchar *token);
+
+/**
+ * clawt_screen_gnome_record_status_argv:
+ *
+ * The `gdbus` command that asks whether recording is permitted and
+ * whether one is running.
+ *
+ * Worth asking before starting: it distinguishes "the consent flag is
+ * off" from "the extension is not answering", and those send somebody
+ * to entirely different places.
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the argv
+ */
+GStrv clawt_screen_gnome_record_status_argv(void);
+
+/**
+ * clawt_screen_parse_gdbus_events:
+ * @text: what `gdbus call` printed for a drain or a stop
+ * @events_out: (out) (transfer full): the events, as a JSON array
+ * @dropped_out: (out) (optional): how many the ring lost since the last
+ *   drain
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Reads the `(s, u)` tuple `DrainRecording` and `StopRecording` answer.
+ *
+ * A real parser rather than a scan, for the reason
+ * clawt_screen_parse_gdbus_frame() gives: `gdbus` writes type
+ * annotations, and the `32` in `uint32` is a digit run that a scan
+ * reads as the value.
+ *
+ * Returns: %TRUE if @text was such a tuple
+ */
+gboolean clawt_screen_parse_gdbus_events(const gchar  *text,
+                                         gchar       **events_out,
+                                         guint        *dropped_out,
+                                         GError      **error);
+
+/**
  * clawt_screen_gowl_input_tool:
  * @event: what to do to the screen
  * @arguments: (out) (transfer full): the tool's arguments

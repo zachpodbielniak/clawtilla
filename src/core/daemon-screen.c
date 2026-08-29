@@ -582,8 +582,19 @@ clawt_daemon_handle_screen(
          * is the one place that already sees every desktop action --
          * a hook of its own would be a second place to forget.
          */
-        if (acting && !held)
+        if (acting && !held) {
             clawt_observer_note_touched(self->observer, agent_id);
+
+            /*
+             * And into the recording, if one is running.  Desktop tools
+             * never pass through ClawtMcpTools -- they go straight from
+             * the agent's own MCP client to a compositor through the
+             * relay -- so this gate is the only place clawtilla sees
+             * them at all. Without it a trace of a task done on a
+             * screen would have every command and no clicks.
+             */
+            clawt_daemon_teach_note_desktop(self, agent_id, tool);
+        }
 
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "allowed");

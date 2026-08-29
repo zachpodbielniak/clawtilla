@@ -1170,8 +1170,11 @@ How long a demonstration may record before it stops itself.
 A recording that has been forgotten is worse than one that ended
 early, because what it captures is whatever you did next.
 
-Not implemented in this build. Recording a demonstration is not built yet, so nothing is ever
-captured and this bound is never reached.
+The deadline is armed when the recording starts and is not a
+request: it fires whether or not anything is still listening, and
+it is passed to the compositor as well, so a clawtilla that dies
+mid-demonstration does not leave one running. Zero means the
+default rather than no limit.
 
 *** =skills.teach_max_events=
 
@@ -1184,8 +1187,12 @@ How many recorded steps a demonstration keeps.
 Bounded, and the count of what was dropped is reported rather than
 hidden: a silently truncated demonstration teaches half a task.
 
-Not implemented in this build. Recording a demonstration is not built yet, so nothing is ever
-captured and this bound is never reached.
+The earliest steps are the ones kept, because the first part of a
+procedure is a usable prefix of it while a slice out of the middle
+is not. Pointer motion is never counted: a drag is hundreds of
+events and would spend the whole budget on the mouse travelling,
+so every click and scroll carries the position it happened at
+instead.
 
 ** =rooms=
 
@@ -3774,13 +3781,19 @@ what a person types is categorically different from injecting
 keystrokes. An agent allowed to click must not thereby be allowed to
 watch you type.
 
-While a recording runs the desktop says so visibly, capture pauses
-whenever a password field has focus, and the recording stops itself
-after `skills.teach_max_seconds`.
+While a recording runs the desktop says so visibly and the
+recording stops itself after `skills.teach_max_seconds`.
 
-Not implemented in this build. Recording a demonstration is not built yet. This grant is
-parsed and offered to nobody, and no capture can happen
-whatever it says.
+Capture pauses for a password field only as far as the compositor
+can see one, and that is less far than it sounds. In a guest, GNOME
+Shell recognises its own password entries -- the lock screen, its
+polkit and keyring prompts -- and pauses. On the host, gowl cannot:
+under Wayland a client's widget tree is private, so it suppresses
+capture while the session is locked and while the focused window's
+app-id or title matches its deny list of credential applications,
+and a password typed into a form inside any other window IS
+recorded. Every trace carries that sentence. Read a recording
+before you turn it into a skill.
 
 *** =agents.env=
 

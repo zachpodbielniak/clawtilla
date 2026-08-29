@@ -171,7 +171,13 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/skill/clawt-skill-provision.h \
 	$(SRCDIR)/skill/clawt-skill-commands.h \
 	$(SRCDIR)/ai/clawt-model-catalog.h \
-	$(SRCDIR)/ai/clawt-agent-designer.h
+	$(SRCDIR)/ai/clawt-agent-designer.h \
+	$(SRCDIR)/teach/clawt-teach-trace.h \
+	$(SRCDIR)/teach/clawt-teach-recorder.h \
+	$(SRCDIR)/teach/clawt-agent-trace-recorder.h \
+	$(SRCDIR)/teach/clawt-gowl-demo-recorder.h \
+	$(SRCDIR)/teach/clawt-guest-demo-recorder.h \
+	$(SRCDIR)/teach/clawt-skill-synthesizer.h
 
 # ============================================================
 # Library sources
@@ -314,7 +320,14 @@ LIB_SOURCES = \
 	$(SRCDIR)/skill/clawt-skill-provision.c \
 	$(SRCDIR)/skill/clawt-skill-commands.c \
 	$(SRCDIR)/ai/clawt-model-catalog.c \
-	$(SRCDIR)/ai/clawt-agent-designer.c
+	$(SRCDIR)/ai/clawt-agent-designer.c \
+	$(SRCDIR)/teach/clawt-teach-trace.c \
+	$(SRCDIR)/teach/clawt-teach-recorder.c \
+	$(SRCDIR)/teach/clawt-agent-trace-recorder.c \
+	$(SRCDIR)/teach/clawt-gowl-demo-recorder.c \
+	$(SRCDIR)/teach/clawt-guest-demo-recorder.c \
+	$(SRCDIR)/teach/clawt-skill-synthesizer.c \
+	$(SRCDIR)/core/daemon-teach.c
 
 # Object files
 LIB_OBJECTS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(LIB_SOURCES))

@@ -857,25 +857,23 @@ static const ClawtSchemaEntry schema[] = {
   "typo in this path leaves an empty directory to puzzle over later.",
   "0.2.0" },
 
-{ "skills.teach_max_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_COMMENTED |
-  CLAWT_SCHEMA_FLAG_INERT,
+{ "skills.teach_max_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_COMMENTED,
   "900", NULL,
   "How long a demonstration may record before it stops itself.\n"
   "\n"
   "A recording that has been forgotten is worse than one that ended\n"
   "early, because what it captures is whatever you did next.\n"
   "\n"
-  "Not implemented in this build. Recording a demonstration is not built yet, so nothing is ever\ncaptured and this bound is never reached.", "0.2.0" },
+  "The deadline is armed when the recording starts and is not a\nrequest: it fires whether or not anything is still listening, and\nit is passed to the compositor as well, so a clawtilla that dies\nmid-demonstration does not leave one running. Zero means the\ndefault rather than no limit.", "0.2.0" },
 
-{ "skills.teach_max_events", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_COMMENTED |
-  CLAWT_SCHEMA_FLAG_INERT,
+{ "skills.teach_max_events", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_COMMENTED,
   "20000", NULL,
   "How many recorded steps a demonstration keeps.\n"
   "\n"
   "Bounded, and the count of what was dropped is reported rather than\n"
   "hidden: a silently truncated demonstration teaches half a task.\n"
   "\n"
-  "Not implemented in this build. Recording a demonstration is not built yet, so nothing is ever\ncaptured and this bound is never reached.",
+  "The earliest steps are the ones kept, because the first part of a\nprocedure is a usable prefix of it while a slice out of the middle\nis not. Pointer motion is never counted: a drag is hundreds of\nevents and would spend the whole budget on the mouse travelling,\nso every click and scroll carries the position it happened at\ninstead.",
   "0.2.0" },
 
 { "rooms", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
@@ -2677,7 +2675,7 @@ static const ClawtSchemaEntry schema[] = {
   "which is what a client does while somebody is still working.", "0.2.0" },
 
 { "agents.computer.desktop.allow_recording", CLAWT_SCHEMA_BOOLEAN,
-  CLAWT_SCHEMA_FLAG_DANGEROUS | CLAWT_SCHEMA_FLAG_INERT, "false", NULL,
+  CLAWT_SCHEMA_FLAG_DANGEROUS, "false", NULL,
   "Whether a demonstration may be recorded on this screen.\n"
   "\n"
   "Its own setting, and not part of `allow_input`, because capturing\n"
@@ -2685,11 +2683,10 @@ static const ClawtSchemaEntry schema[] = {
   "keystrokes. An agent allowed to click must not thereby be allowed to\n"
   "watch you type.\n"
   "\n"
-  "While a recording runs the desktop says so visibly, capture pauses\n"
-  "whenever a password field has focus, and the recording stops itself\n"
-  "after `skills.teach_max_seconds`.\n"
+  "While a recording runs the desktop says so visibly and the\n"
+  "recording stops itself after `skills.teach_max_seconds`.\n"
   "\n"
-  "Not implemented in this build. Recording a demonstration is not built yet. This grant is\nparsed and offered to nobody, and no capture can happen\nwhatever it says.", "0.2.0" },
+  "Capture pauses for a password field only as far as the compositor\ncan see one, and that is less far than it sounds. In a guest, GNOME\nShell recognises its own password entries -- the lock screen, its\npolkit and keyring prompts -- and pauses. On the host, gowl cannot:\nunder Wayland a client's widget tree is private, so it suppresses\ncapture while the session is locked and while the focused window's\napp-id or title matches its deny list of credential applications,\nand a password typed into a form inside any other window IS\nrecorded. Every trace carries that sentence. Read a recording\nbefore you turn it into a skill.", "0.2.0" },
 
 { "agents.env", CLAWT_SCHEMA_MAPPING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Environment variables for this agent's process.\n"

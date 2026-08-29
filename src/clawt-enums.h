@@ -1265,6 +1265,104 @@ GType clawt_skill_source_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_SKILL_SOURCE (clawt_skill_source_get_type())
 
 /**
+ * ClawtTeachSource:
+ * @CLAWT_TEACH_SOURCE_AGENT: an agent's own steps, while it worked
+ * @CLAWT_TEACH_SOURCE_HOST_DEMO: a person demonstrating on the host's
+ *   own desktop, through gowl
+ * @CLAWT_TEACH_SOURCE_GUEST_DEMO: a person demonstrating inside an
+ *   agent's VM, through gnome-desktop-mcp
+ *
+ * Where a recorded demonstration came from.
+ *
+ * Unlike #ClawtSkillSource this *is* a choice somebody makes -- "watch
+ * me do it" and "watch the agent do it" are different requests -- so it
+ * carries the walk-the-enumeration family both clients use rather than
+ * each of them listing three strings.
+ *
+ * The distinction is not cosmetic.  An agent trace contains tool calls
+ * and command lines clawtilla itself issued; a demonstration contains
+ * every key a person pressed, which is credential material until
+ * somebody has read it.  A reviewer has to be told which of the two is
+ * in front of them.
+ */
+typedef enum {
+    CLAWT_TEACH_SOURCE_AGENT = 0,
+    CLAWT_TEACH_SOURCE_HOST_DEMO,
+    CLAWT_TEACH_SOURCE_GUEST_DEMO
+} ClawtTeachSource;
+
+GType clawt_teach_source_get_type(void) G_GNUC_CONST;
+#define CLAWT_TYPE_TEACH_SOURCE (clawt_teach_source_get_type())
+
+/**
+ * clawt_teach_source_count:
+ *
+ * Returns: how many kinds of recorder there are
+ */
+guint clawt_teach_source_count(void);
+
+/**
+ * clawt_teach_source_nth:
+ * @n: an index below clawt_teach_source_count()
+ *
+ * Returns: the source at @n, least invasive first
+ */
+ClawtTeachSource clawt_teach_source_nth(guint n);
+
+/**
+ * clawt_teach_source_nth_nick:
+ * @n: an index below clawt_teach_source_count()
+ *
+ * Returns: (transfer none): the spelling used on the wire
+ */
+const gchar *clawt_teach_source_nth_nick(guint n);
+
+/**
+ * clawt_teach_source_nth_label:
+ * @n: an index below clawt_teach_source_count()
+ *
+ * Returns: (transfer none): the wording for a person
+ */
+const gchar *clawt_teach_source_nth_label(guint n);
+
+/**
+ * ClawtTeachStepKind:
+ * @CLAWT_TEACH_STEP_TOOL: an MCP tool call the agent made
+ * @CLAWT_TEACH_STEP_EXEC: a command run on the agent's computer
+ * @CLAWT_TEACH_STEP_DESKTOP: something the agent did to a screen
+ * @CLAWT_TEACH_STEP_KEY: a key a person pressed
+ * @CLAWT_TEACH_STEP_POINTER: a pointer press, release or move
+ * @CLAWT_TEACH_STEP_SCROLL: a scroll
+ * @CLAWT_TEACH_STEP_MARKER: capture stopped or resumed, and why
+ * @CLAWT_TEACH_STEP_NOTE: something clawtilla itself recorded
+ *
+ * What one entry in a trace is.
+ *
+ * Not offered as a choice and so deliberately without a
+ * `_count()`/`_nth()` family: nothing picks a step kind, it is whatever
+ * the recorder saw.
+ *
+ * %CLAWT_TEACH_STEP_MARKER earns its place by being the opposite of a
+ * step.  Both upstream recorders pause themselves for a password field
+ * or a locked screen, and a trace that simply omitted those seconds
+ * would read as somebody doing nothing -- so the gap is written down as
+ * a step of its own, carrying the reason and no key material.
+ */
+typedef enum {
+    CLAWT_TEACH_STEP_TOOL = 0,
+    CLAWT_TEACH_STEP_EXEC,
+    CLAWT_TEACH_STEP_DESKTOP,
+    CLAWT_TEACH_STEP_KEY,
+    CLAWT_TEACH_STEP_POINTER,
+    CLAWT_TEACH_STEP_SCROLL,
+    CLAWT_TEACH_STEP_MARKER,
+    CLAWT_TEACH_STEP_NOTE
+} ClawtTeachStepKind;
+
+GType clawt_teach_step_kind_get_type(void) G_GNUC_CONST;
+#define CLAWT_TYPE_TEACH_STEP_KIND (clawt_teach_step_kind_get_type())
+
+/**
  * ClawtTriggerProvider:
  * @CLAWT_TRIGGER_PROVIDER_GENERIC: a bearer token and nothing forge-shaped
  * @CLAWT_TRIGGER_PROVIDER_FORGEJO: Forgejo

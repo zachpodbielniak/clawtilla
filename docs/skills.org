@@ -189,6 +189,18 @@ library is enabled, because writing it was the review.  That is the one
 difference between the two paths and it is what the whole posture turns
 on.
 
+*A synthesized skill lands disabled too, and for the same reason.*  One
+written from a recorded demonstration by ~clawtilla teach~ is not more
+trusted for having come from us: the model that wrote it read a trace,
+and a trace of a demonstration is untrusted input the moment it contains
+anything a person typed.  It goes through
+~clawt_skill_library_create_taught()~, which is the same write with a
+different provenance -- the same name rules, the same description bound,
+the same traversal gate, the same scan.  Its ~source~ is ~taught~ and its
+~origin~ names the recording.  See [[file:teach.org][Teaching a task]],
+and read the section there on how far the secret suppression reaches
+before you record a demonstration.
+
 *Markdown only.*  Sibling scripts are not copied.  They are recorded on
 the skill and *shown*, because a skill whose steps say "run
 scripts/setup.sh" fails confusingly rather than obviously when the
@@ -298,6 +310,24 @@ See [[file:configuration-options.org][the option reference]] for
 ~skills.dir~ is not created for you.  A read with a side effect is how a
 typo in the path leaves an empty directory for somebody to puzzle over a
 week later.
+
+** Teaching one instead of writing it
+
+A procedure you already do is often easier to demonstrate than to
+describe.  ~clawtilla teach~ records a task being done -- by the agent,
+or by you on a desktop -- and has a model write the procedure up.
+
+#+begin_src bash
+clawtilla teach start builder agent "cut a release"
+clawtilla teach stop 4f2c8a1b
+clawtilla teach draft 4f2c8a1b
+clawtilla teach commit 4f2c8a1b
+#+end_src
+
+The draft lands disabled with everything above applied to it.  A
+*demonstration* records every key you press, in any window, and how far
+the compositor's own suppression reaches is narrower than it sounds --
+[[file:teach.org][Teaching a task]] says exactly where it stops.
 
 ** Command line
 

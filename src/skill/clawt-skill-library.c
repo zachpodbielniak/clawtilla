@@ -600,12 +600,28 @@ library_write(ClawtSkillLibrary  *self,
     return clawt_write_file_atomic(file, text, -1, 0600, FALSE, error);
 }
 
-ClawtSkill *
-clawt_skill_library_create(ClawtSkillLibrary  *self,
-                           const gchar        *name,
-                           const gchar        *description,
-                           const gchar        *body,
-                           GError            **error)
+/*
+ * The one write path, whoever asked for it.
+ *
+ * `create` and `create_taught` differ in exactly two values -- the
+ * provenance and whether the skill is enabled -- and in nothing else.
+ * A separate implementation for the AI-written one would be a second
+ * copy of the name rules, the description bound and the traversal gate,
+ * and it would be the copy nobody read.
+ *
+ * Enabled follows from the source rather than being a parameter: a
+ * person who sat and wrote a skill has reviewed it, and nothing else
+ * has. Making that a flag a caller passes would be an invitation to
+ * pass TRUE.
+ */
+static ClawtSkill *
+library_create(ClawtSkillLibrary  *self,
+               const gchar        *name,
+               const gchar        *description,
+               const gchar        *body,
+               ClawtSkillSource    source,
+               const gchar        *origin,
+               GError            **error)
 {
     g_autofree gchar *directory = NULL;
     g_autofree gchar *rendered = NULL;
@@ -650,8 +666,12 @@ clawt_skill_library_create(ClawtSkillLibrary  *self,
 
     skill = clawt_skill_new(name);
     clawt_skill_set_description(skill, description);
-    clawt_skill_set_source(skill, CLAWT_SKILL_SOURCE_USER);
-    clawt_skill_set_enabled(skill, TRUE);
+    clawt_skill_set_source(skill, source);
+    clawt_skill_set_enabled(skill, source == CLAWT_SKILL_SOURCE_USER);
+    clawt_skill_set_origin_url(skill, origin);
+
+    if (source != CLAWT_SKILL_SOURCE_USER)
+        clawt_skill_set_imported_at(skill, g_get_real_time());
     clawt_skill_set_body(skill,
         (body != NULL && *body != '\0')
             ? body
@@ -672,6 +692,33 @@ clawt_skill_library_create(ClawtSkillLibrary  *self,
     g_signal_emit(self, signals[SIGNAL_CHANGED], 0);
 
     return clawt_skill_library_lookup(self, name);
+}
+
+ClawtSkill *
+clawt_skill_library_create(ClawtSkillLibrary  *self,
+                           const gchar        *name,
+                           const gchar        *description,
+                           const gchar        *body,
+                           GError            **error)
+{
+    g_return_val_if_fail(CLAWT_IS_SKILL_LIBRARY(self), NULL);
+
+    return library_create(self, name, description, body,
+                          CLAWT_SKILL_SOURCE_USER, NULL, error);
+}
+
+ClawtSkill *
+clawt_skill_library_create_taught(ClawtSkillLibrary  *self,
+                                  const gchar        *name,
+                                  const gchar        *description,
+                                  const gchar        *body,
+                                  const gchar        *origin,
+                                  GError            **error)
+{
+    g_return_val_if_fail(CLAWT_IS_SKILL_LIBRARY(self), NULL);
+
+    return library_create(self, name, description, body,
+                          CLAWT_SKILL_SOURCE_TAUGHT, origin, error);
 }
 
 /*
