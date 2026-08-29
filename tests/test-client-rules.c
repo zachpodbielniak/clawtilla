@@ -231,6 +231,31 @@ test_the_noisy_kinds_are_skipped(void)
                     CLAWT_ALERT_SKIP);
 }
 
+/*
+ * A handoff that did not happen is a notice; one that did is routine.
+ *
+ * The successful case is already written into the pair's room and both
+ * agents' threads, so a badge would be telling somebody about something
+ * on their screen. Every other outcome means work is still where it was
+ * and nobody was watching that pair when it was decided.
+ */
+static void
+test_a_failed_handoff_is_a_notice(void)
+{
+    g_assert_cmpint(tier_of("handoff.settled", "state", "done"), ==,
+                    CLAWT_ALERT_ROUTINE);
+    g_assert_cmpint(tier_of("handoff.settled", "state", "busy-gave-up"), ==,
+                    CLAWT_ALERT_NOTICE);
+    g_assert_cmpint(tier_of("handoff.settled", "state", "denied"), ==,
+                    CLAWT_ALERT_NOTICE);
+    g_assert_cmpint(tier_of("handoff.settled", "state", "dropped"), ==,
+                    CLAWT_ALERT_NOTICE);
+
+    /* Queueing one is what the agent just did, and nothing has happened. */
+    g_assert_cmpint(tier_of("handoff.queued", "to", "worker"), ==,
+                    CLAWT_ALERT_ROUTINE);
+}
+
 /* Anything the daemon grows later is routine rather than dropped. */
 static void
 test_an_unknown_kind_is_routine(void)
@@ -708,7 +733,9 @@ main(int argc, char *argv[])
                     test_a_bad_agent_state_is_a_notice);
     g_test_add_func("/client-rules/tier/skipped",
                     test_the_noisy_kinds_are_skipped);
-    g_test_add_func("/client-rules/tier/unknown",
+        g_test_add_func("/client-rules/alerts/failed-handoff",
+                    test_a_failed_handoff_is_a_notice);
+g_test_add_func("/client-rules/tier/unknown",
                     test_an_unknown_kind_is_routine);
 
     g_test_add_func("/client-rules/alert-arrival/unseen",

@@ -45,6 +45,8 @@ typedef struct _ClawtMailboxFilter  ClawtMailboxFilter;
 /* Tasks */
 typedef struct _ClawtTask           ClawtTask;
 typedef struct _ClawtTaskManager    ClawtTaskManager;
+typedef struct _ClawtHandoff        ClawtHandoff;
+typedef struct _ClawtHandoffStore   ClawtHandoffStore;
 
 /* Computers */
 typedef struct _ClawtComputer       ClawtComputer;

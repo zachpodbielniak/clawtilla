@@ -666,8 +666,7 @@ static const ClawtSchemaEntry schema[] = {
   "counting again from one.", "0.2.0" },
 
 { "orchestration.handoff_max_per_turn", CLAWT_SCHEMA_INT,
-  CLAWT_SCHEMA_FLAG_COMMENTED |
-  CLAWT_SCHEMA_FLAG_INERT, "4", NULL,
+  CLAWT_SCHEMA_FLAG_COMMENTED, "4", NULL,
   "How many handoffs one turn may queue.\n"
   "\n"
   "Small deliberately. A blocking ask gets backpressure for free\n"
@@ -675,11 +674,18 @@ static const ClawtSchemaEntry schema[] = {
   "is the only thing standing between a confused chief of staff and a\n"
   "fan-out of real turns that each cost money.\n"
   "\n"
-  "Not implemented in this build. Handoff is not built yet, so no work is ever queued against this\nlimit.", "0.2.0" },
+  "Counted as handoffs still *waiting*, not as a tally reset each turn.\n"
+  "Usually the same number, because a queue drains when the turn that\n"
+  "filled it ends -- and deliberately not the same when it does not: a\n"
+  "transfer still waiting for a busy recipient goes on counting, so an\n"
+  "agent with three stuck cannot queue four more on top of them.\n"
+  "\n"
+  "The refusal says how many are waiting and suggests doing the piece\n"
+  "rather than queueing another. 0 removes the limit.",
+  "0.2.0" },
 
 { "orchestration.handoff_busy_retries", CLAWT_SCHEMA_INT,
-  CLAWT_SCHEMA_FLAG_COMMENTED |
-  CLAWT_SCHEMA_FLAG_INERT, "3", NULL,
+  CLAWT_SCHEMA_FLAG_COMMENTED, "3", NULL,
   "How many times a handoff waits for a busy assignee before giving up\n"
   "and saying so.\n"
   "\n"
@@ -687,18 +693,25 @@ static const ClawtSchemaEntry schema[] = {
   "free' and 'it went wrong' need different answers from whoever reads\n"
   "the receipt.\n"
   "\n"
-  "Not implemented in this build. Handoff is not built yet, so no work is ever queued against this\nlimit.", "0.2.0" },
+  "These are tries, not seconds. A queued handoff is looked at every\n"
+  "time any turn in the fleet ends, so three tries means three turn\n"
+  "boundaries went by with the recipient still mid-turn. 0 waits\n"
+  "indefinitely, which is only sensible in a fleet where every turn\n"
+  "ends.", "0.2.0" },
 
 { "orchestration.handoff_receipt_days", CLAWT_SCHEMA_INT,
-  CLAWT_SCHEMA_FLAG_COMMENTED |
-  CLAWT_SCHEMA_FLAG_INERT, "2", NULL,
+  CLAWT_SCHEMA_FLAG_COMMENTED, "2", NULL,
   "How long a finished handoff's receipt is kept.\n"
   "\n"
   "Tasks live in memory and do not survive a restart, so the receipt is\n"
   "the only thing that lets an agent ask what became of work it handed\n"
   "over before the daemon was restarted underneath it.\n"
   "\n"
-  "Not implemented in this build. Handoff is not built yet, so no work is ever queued against this\nlimit.", "0.2.0" },
+  "A count bounds the file as well as this age, because a fleet that\n"
+  "passes work around all day fills two days faster than a quiet one\n"
+  "fills two years. A handoff that has not run yet is never pruned\n"
+  "however old it is: it is undrained rather than finished. 0 keeps\n"
+  "receipts until the count alone drops them.", "0.2.0" },
 
 { "memories", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "What an agent remembers between conversations.\n"

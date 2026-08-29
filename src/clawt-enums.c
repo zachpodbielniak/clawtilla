@@ -525,6 +525,36 @@ clawt_stall_reason_get_type(void)
     return g_define_type_id__volatile;
 }
 
+/*
+ * Register ClawtHandoffState as a GLib enum type.
+ *
+ * The nicks are what a receipt reads as in a tool's answer, so they are
+ * the words an agent sees: `busy-gave-up` says nobody was free, which is
+ * a different instruction from `failed`.
+ */
+GType
+clawt_handoff_state_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_HANDOFF_QUEUED, "CLAWT_HANDOFF_QUEUED", "queued" },
+            { CLAWT_HANDOFF_DONE, "CLAWT_HANDOFF_DONE", "done" },
+            { CLAWT_HANDOFF_FAILED, "CLAWT_HANDOFF_FAILED", "failed" },
+            { CLAWT_HANDOFF_DENIED, "CLAWT_HANDOFF_DENIED", "denied" },
+            { CLAWT_HANDOFF_BUSY_GAVE_UP, "CLAWT_HANDOFF_BUSY_GAVE_UP",
+              "busy-gave-up" },
+            { CLAWT_HANDOFF_DROPPED, "CLAWT_HANDOFF_DROPPED", "dropped" },
+            { CLAWT_HANDOFF_ERROR, "CLAWT_HANDOFF_ERROR", "error" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtHandoffState", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
 /* Register ClawtSecretBackend as a GLib enum type */
 GType
 clawt_secret_backend_get_type(void)

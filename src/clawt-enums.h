@@ -446,6 +446,41 @@ typedef enum {
 } ClawtStallReason;
 
 /**
+ * ClawtHandoffState:
+ * @CLAWT_HANDOFF_QUEUED: waiting for the turn that asked for it to end
+ * @CLAWT_HANDOFF_DONE: the new owner has the task and has been told
+ * @CLAWT_HANDOFF_FAILED: the delivery to the new owner was refused
+ * @CLAWT_HANDOFF_DENIED: the team check refused it when it came to run
+ * @CLAWT_HANDOFF_BUSY_GAVE_UP: the new owner stayed busy for every retry
+ * @CLAWT_HANDOFF_DROPPED: the turn was interrupted, or what it named went away
+ * @CLAWT_HANDOFF_ERROR: something else went wrong, with a message
+ *
+ * What became of an ownership transfer.
+ *
+ * Six terminal answers rather than "worked" and "did not", because they
+ * call for different things from whoever reads the receipt.
+ * #CLAWT_HANDOFF_BUSY_GAVE_UP means nobody was free and the work is
+ * still yours; #CLAWT_HANDOFF_DENIED means you may not assign to that
+ * agent and never could; #CLAWT_HANDOFF_DROPPED means the turn or the
+ * task disappeared under it.  Recording all three as a failure sends the
+ * reader looking for a bug in the two cases where there is none.
+ *
+ * There is deliberately no _count()/_nth() family, for the same reason
+ * #ClawtStallReason has none: this is reported, never chosen from a
+ * list, and a chooser nothing calls is the shape this codebase keeps
+ * finding at the bottom of its bugs.
+ */
+typedef enum {
+    CLAWT_HANDOFF_QUEUED = 0,
+    CLAWT_HANDOFF_DONE,
+    CLAWT_HANDOFF_FAILED,
+    CLAWT_HANDOFF_DENIED,
+    CLAWT_HANDOFF_BUSY_GAVE_UP,
+    CLAWT_HANDOFF_DROPPED,
+    CLAWT_HANDOFF_ERROR
+} ClawtHandoffState;
+
+/**
  * ClawtLogLevel:
  * @CLAWT_LOG_ERROR: only failures
  * @CLAWT_LOG_WARNING: failures and things that look wrong
@@ -767,6 +802,7 @@ GType clawt_priority_get_type(void) G_GNUC_CONST;
 GType clawt_overflow_policy_get_type(void) G_GNUC_CONST;
 GType clawt_task_state_get_type(void) G_GNUC_CONST;
 GType clawt_stall_reason_get_type(void) G_GNUC_CONST;
+GType clawt_handoff_state_get_type(void) G_GNUC_CONST;
 GType clawt_secret_backend_get_type(void) G_GNUC_CONST;
 GType clawt_log_level_get_type(void) G_GNUC_CONST;
 GType clawt_scope_get_type(void) G_GNUC_CONST;
@@ -797,6 +833,7 @@ GType clawt_credential_placement_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_OVERFLOW_POLICY  (clawt_overflow_policy_get_type())
 #define CLAWT_TYPE_TASK_STATE       (clawt_task_state_get_type())
 #define CLAWT_TYPE_STALL_REASON     (clawt_stall_reason_get_type())
+#define CLAWT_TYPE_HANDOFF_STATE    (clawt_handoff_state_get_type())
 #define CLAWT_TYPE_SECRET_BACKEND   (clawt_secret_backend_get_type())
 #define CLAWT_TYPE_LOG_LEVEL        (clawt_log_level_get_type())
 #define CLAWT_TYPE_SCOPE (clawt_scope_get_type())

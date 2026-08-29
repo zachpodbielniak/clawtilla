@@ -2764,6 +2764,21 @@ clawt_daemon_interrupt_agent(ClawtDaemon  *self,
     clawt_agent_set_activity(agent, FALSE, NULL);
 
     /*
+     * Handoffs first, and dropped rather than run.  A turn somebody
+     * stopped did not finish deciding, so carrying out the transfers it
+     * had queued would be acting on half a decision -- which is the
+     * opposite of what pressing stop means.  It has to happen *before*
+     * the settle, because the settle is what would otherwise run them.
+     *
+     * Deliberately unlike the steer queue, which survives an interrupt:
+     * a steer is what somebody typed *instead*, and a handoff is part of
+     * what was stopped.
+     */
+    clawt_daemon_handoff_drop_queued(
+        self, agent_id,
+        "the turn that asked for it was interrupted before it finished");
+
+    /*
      * And everything that ends with a turn.  A steer typed while the
      * agent was working is drained here on purpose: pressing stop is how
      * somebody says "not that, this", and dropping the "this" would
@@ -2894,6 +2909,7 @@ release_components(ClawtDaemon *self)
      * dropped it -- never reaches clawt_daemon_stop().
      */
     clawt_daemon_turn_teardown(self);
+    clawt_daemon_handoff_teardown(self);
 
     g_clear_object(&self->mcp_tools);
     g_clear_object(&self->ipc_server);
@@ -4514,6 +4530,13 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     clawt_daemon_turn_setup(self);
 
     /*
+     * After the turn machinery, because the handoff queue drains from
+     * clawt_daemon_turn_settle() and setup runs anything that was left
+     * queued when this daemon last stopped -- which settles turns.
+     */
+    clawt_daemon_handoff_setup(self);
+
+    /*
      * Started here rather than earlier, because start can still refuse
      * after the components are built -- a second daemon on the same
      * fleet is turned away at the socket.  A timer armed before that
@@ -4640,6 +4663,7 @@ clawt_daemon_stop(ClawtDaemon *self)
      * manager it would look an agent up in.
      */
     clawt_daemon_turn_teardown(self);
+    clawt_daemon_handoff_teardown(self);
 
     if (self->connector_refresh != NULL) {
         g_source_destroy(self->connector_refresh);

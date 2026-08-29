@@ -1,10 +1,10 @@
 #+title: Orchestration
-#+description: Rooms, tasks, the chief-of-staff pattern, and the limits that stop runaways
+#+description: Rooms, tasks, handing work over, the chief-of-staff pattern, and the limits that stop runaways
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-26 Wed]
-#+version: 0.1.1
+#+updated: [2026-08-29 Sat]
+#+version: 0.2.0
 
 * Orchestration
 
@@ -277,6 +277,7 @@ Served over each agent's link as an MCP endpoint.
 | ~clawtilla_message_agent~ | queue a message; returns without waiting |
 | ~clawtilla_ask_agent~ | ask a question; the answer arrives in your mailbox |
 | ~clawtilla_delegate~ | hand over work, get a task id |
+| ~clawtilla_handoff~ | give a task you own to somebody else, and stop owning it |
 | ~clawtilla_task_list~ | everything you delegated and were delegated, in one call |
 | ~clawtilla_task_status~ / ~clawtilla_task_result~ / ~clawtilla_task_cancel~ | follow it |
 | ~clawtilla_task_complete~ | report your own assigned task done |
@@ -298,6 +299,7 @@ offered depends on a gate per tool:
 |-------------+----------|
 | peer comms | a capability every agent has, so it gates nothing today |
 | assigning (~clawtilla_delegate~) | ~agents.chief_of_staff~, or ~team_role: lead~ |
+| handing over (~clawtilla_handoff~) | the same, *and* the daemon offering the hook |
 | fleet admin (create agent, options) | ~agents.tools.manage_fleet~, *and* the daemon offering the hook |
 | a computer | ~computer.type~ not ~none~ |
 | memories | ~memories.enabled~ |
@@ -904,6 +906,39 @@ the only thing on screen that distinguishes a loop from a conversation:
 two agents politely agreeing to do nothing look the same on the tenth
 exchange as on the first.
 
+**** Past the limit the tools are not there at all
+
+The limit is enforced twice, and the two are not the same strength.
+
+**The gate that matters is structural**: for a turn that began at
+~orchestration.max_hops~ or deeper, ~clawtilla_message_agent~,
+~clawtilla_ask_agent~, ~clawtilla_delegate~ and ~clawtilla_handoff~ are
+**not offered**.  A → B is allowed; B → C never starts, because B was
+never handed the tool.
+
+That is stronger than refusing the call, and the difference is money: a
+refusal arrives after the model has decided to make the call and after
+the tokens that decided it were paid for, and this tree already knows
+what an agent does with a refusal --- it tries the same thing in a
+different shape.  ~tests/test-routing.c~ therefore asserts on the *tool
+list* and never on a refusal; a test phrased the other way would pass
+against the version this replaces.
+
+The other four tools that need peer comms --- ~clawtilla_post_room~,
+~clawtilla_create_room~, ~clawtilla_room_history~,
+~clawtilla_list_teams~, ~clawtilla_mailbox_reply~ --- stay.  An agent out
+of hops has run out of hops; it has not been cut off from its
+colleagues, and telling it otherwise is the refusal-shaped mistake
+again.
+
+~max_hops: 0~ means no limit, so it withholds nothing.
+
+The call-time check stays as the backstop, because the tool list is read
+once at session start and there are ways to reach a tool that did not go
+through it --- an allow list, a plugin, a session that outlived the gate.
+A limit enforced only where it is convenient is a limit about that call
+site.
+
 **** A room reaches it on its own, and the refusal says so
 
 Every reply in a room counts as a hop, because it is one --- so three
@@ -1219,6 +1254,178 @@ reaching a workstation may have no fleet at all.
 
 The key carries the connection profile as well as the agent, so two
 daemons that each have an agent called ~chief~ do not share one composer.
+
+** Handing work over
+
+~clawtilla_handoff(task_id, agent_id, reason)~ moves a task onto somebody
+else's list and takes it off yours.
+
+*** It is not delegation, and the difference is who is responsible
+
+Delegating creates *new* work and keeps the delegator responsible for it;
+handing off moves work that already exists and stops it being yours.
+Sharing one verb is why a chief of staff kept re-delegating things it had
+already passed on --- the task came back with its original origin, so it
+read as work it still owed.
+
+The ~reason~ is required, where ~clawtilla_delegate~'s is optional.  A
+delegation arrives with the work itself, which explains it; a handoff
+arrives as somebody else's half-finished task, and "why has this landed
+on me" is the first thing its new owner needs.  They cannot see the
+conversation it was decided in, so the reason is the only context they
+get.
+
+*** It runs when your turn ends, not when you call it
+
+The call queues and answers immediately.  Waiting for the recipient would
+mean waiting for a whole turn, because an agent that is mid-turn will not
+look at anything until it finishes.
+
+So a handoff is drained by ~clawt_daemon_turn_settle()~, which is also
+what makes it safe: the source has finished writing whatever it was
+writing before the task moves out from under it.
+
+**Everything is re-read before it runs.**  Between the call and the turn
+boundary --- and on the restart path, across whatever the downtime was
+--- an agent can be removed, a team can be re-arranged, and the task can
+be finished by somebody else.  A handoff that trusted its arguments would
+start a turn on an agent that is now busy, or move a task onto a list
+nobody owns.  So the task, both agents and the team rule are all looked
+up again, and the ownership transfer is written only once the delivery
+has been *accepted* --- the other order leaves a task whose assignee has
+never heard of it.
+
+*** Receipts, and why they are durable
+
+~ClawtTaskManager~ is in memory and says so.  After a restart it has
+nothing to say about a task, and "there is no task X" to an agent that
+handed one over reads as "your handoff never happened" --- which is how
+you get two of everything.
+
+So ~<state_dir>/handoffs.db~ keeps a terminal receipt per handoff, and
+~clawtilla_task_status~ answers from it when the task itself has gone.
+
+| Receipt | What it means | What to do |
+|---+---+---|
+| ~done~ | the new owner has it and has been told | nothing; it is theirs |
+| ~busy_gave_up~ | they stayed mid-turn for every retry | it is *still yours* --- do it, or find somebody else |
+| ~denied~ | the team rule refused it when it came to run | it was never yours to assign there |
+| ~dropped~ | the turn was interrupted, or the task or agent went away | re-read the task before doing anything |
+| ~failed~ | the delivery itself was refused, usually by a hop limit | answer directly rather than passing it on |
+| ~error~ | something else, with a message | read the message |
+
+Six answers rather than "worked" and "did not", because three of them are
+not failures and sending somebody to look for a bug in those three wastes
+the day.  Each receipt carries a **sentence** as well as its state ---
+~too_deep~ gives a model nothing to do, where "delegation chains are
+limited to one hop, do this one yourself" gives it the next action.  A
+tool's output is part of its behaviour, and one sentence in
+~clawtilla_message_user~'s description has already cost this project a
+fleet-wide misbehaviour.
+
+The queue is durable for a different reason: a handoff an agent was told
+was on its way stopped being that agent's problem the instant the tool
+answered, and the turn that could have been asked again is over.  So one
+queued just before a restart runs after it.  ~orchestration.handoff_receipt_days~
+(default 2) and a row bound retire the *receipts*; a queued handoff is
+never pruned however old it is, because age means "finished a while ago"
+for one and "nothing has drained this" for the other.
+
+*** The two limits
+
+~orchestration.handoff_max_per_turn~ (default 4) bounds fan-out.  A
+blocking ask gets backpressure for free because the caller waits; an
+asynchronous handoff does not, so this is the only thing between a
+confused chief of staff and a fan-out of real turns that each cost money.
+It counts what is *queued* rather than keeping a per-turn tally.  Usually
+the same number, since the queue drains when the turn that filled it
+ends --- and deliberately not the same when it does not: a transfer still
+waiting for a busy recipient goes on counting, so an agent with three
+stuck cannot queue four more on top of them.  It also means there is no
+counter to forget to clear, which is the shape that produces a limit
+nothing ever reaches.
+
+~orchestration.handoff_busy_retries~ (default 3) bounds waiting for a
+recipient that is mid-turn.  **These are tries, not seconds**: a queued
+handoff is looked at every time any turn in the fleet ends, so three
+tries means three turn boundaries went by with the recipient still busy.
+Then it is *reported*, never dropped --- "nobody was free" is a different
+instruction from "it went wrong".
+
+*** An interrupt drops the queue
+
+A turn somebody stopped did not finish deciding, so the transfers it had
+queued would be acting on half a decision.  Each gets a ~dropped~ receipt
+saying so, and the task stays where it was.
+
+This is deliberately the opposite of the steer queue, which survives an
+interrupt: a steer is what somebody typed *instead*, and a handoff is
+part of what was stopped.
+
+*** You can see all of it
+
+Every outcome is written into the pair's room and into both agents' own
+threads, through ~clawt_mailbox_router_note()~ --- which appends and
+delivers to nobody, so reporting a handoff never starts a turn of its
+own.  Agent-to-agent turns cost real money, and a hidden exchange is the
+mistake peer coordination exists to prevent.
+
+~handoff.queued~ and ~handoff.settled~ go on the event bus with both
+agents, the state and the verdict.
+
+** Who is here, and how an agent chooses
+
+There is **no scorer, no embedding and no description matcher**, and
+there is not going to be one.  Which agent should do a piece of work is a
+judgement about the work; a matcher in the daemon would be a second and
+worse opinion about it, one that needs tuning for ever and that an agent
+cannot argue with.
+
+What clawtilla owes is the facts, in two places that are read at
+different moments.
+
+*** ~clawtilla_list_agents~, for when it has decided to look
+
+One line per agent, carrying the id and name, the team and standing, the
+description, the state, whether the agent is *mid-turn*, and the
+configured computer type.  So "who can run a container" needs no second
+call.
+
+~running~ is not ~available~: an agent mid-turn will not look at anything
+new until it finishes, and a chief that reads the two as the same thing
+hands three pieces of work to the one agent that is already working.
+
+The computer type is the **configured** one, not a live object.  A
+stopped agent has no computer built yet, and the question is usually
+being asked in order to decide whether to start it.
+
+Everything here is clipped --- the description to 200 characters, the
+name to 80 --- and the listing stops at 40 agents and says how many it
+left out.  This lands in context on *every* call an agent makes, so an
+unclipped fleet is a fixed cost paid for ever.
+
+*** The roster in ~TOOLS.org~, for when it is deciding whether to look
+
+An agent that can assign to somebody gets a *Who is here* table in the
+managed region of its own ~TOOLS.org~, through the same permission gate
+as everything else in that file.  A chief that has to call a tool to find
+out a fleet exists mostly does not call it.
+
+It is written when the agent starts and does not move, so it says so and
+points at ~clawtilla_list_agents~ for anything about availability.
+
+**These fields are operator-written, and through an imported team
+third-party-written, and they are being interpolated into a file the
+agent treats as its own instructions.**  So: 40 agents, then "...and N
+more"; 80 characters of name, 120 of role, 200 of description; one line
+each, with a newline in a description clipped away rather than forging a
+second row; and a vertical bar replaced, because org has no escape for
+one inside a table cell and three columns of somebody else's choosing is
+a place to smuggle in a heading.
+
+An agent that cannot assign gets no roster.  A list of candidates it has
+no way to use is an invitation to try, be refused, and try again in a
+different shape.
 
 ** Rooms, transcripts and branching
 

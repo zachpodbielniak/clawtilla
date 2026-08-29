@@ -221,6 +221,14 @@ clawt_loop_guard_set_limits(ClawtLoopGuard *self,
     self->cycle_window = cycle_window;
 }
 
+guint
+clawt_loop_guard_get_max_hops(ClawtLoopGuard *self)
+{
+    g_return_val_if_fail(CLAWT_IS_LOOP_GUARD(self), 0);
+
+    return self->max_hops;
+}
+
 void
 clawt_loop_guard_set_cycle_seconds(ClawtLoopGuard *self, guint seconds)
 {

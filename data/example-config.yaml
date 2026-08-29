@@ -579,8 +579,14 @@ orchestration:
   # is the only thing standing between a confused chief of staff and a
   # fan-out of real turns that each cost money.
   #
-  # Not implemented in this build. Handoff is not built yet, so no work is ever queued against this
-  # limit.
+  # Counted as handoffs still *waiting*, not as a tally reset each turn.
+  # Usually the same number, because a queue drains when the turn that
+  # filled it ends -- and deliberately not the same when it does not: a
+  # transfer still waiting for a busy recipient goes on counting, so an
+  # agent with three stuck cannot queue four more on top of them.
+  #
+  # The refusal says how many are waiting and suggests doing the piece
+  # rather than queueing another. 0 removes the limit.
   handoff_max_per_turn: 4
 
   # How many times a handoff waits for a busy assignee before giving up
@@ -590,8 +596,11 @@ orchestration:
   # free' and 'it went wrong' need different answers from whoever reads
   # the receipt.
   #
-  # Not implemented in this build. Handoff is not built yet, so no work is ever queued against this
-  # limit.
+  # These are tries, not seconds. A queued handoff is looked at every
+  # time any turn in the fleet ends, so three tries means three turn
+  # boundaries went by with the recipient still mid-turn. 0 waits
+  # indefinitely, which is only sensible in a fleet where every turn
+  # ends.
   handoff_busy_retries: 3
 
   # How long a finished handoff's receipt is kept.
@@ -600,8 +609,11 @@ orchestration:
   # the only thing that lets an agent ask what became of work it handed
   # over before the daemon was restarted underneath it.
   #
-  # Not implemented in this build. Handoff is not built yet, so no work is ever queued against this
-  # limit.
+  # A count bounds the file as well as this age, because a fleet that
+  # passes work around all day fills two days faster than a quiet one
+  # fills two years. A handoff that has not run yet is never pruned
+  # however old it is: it is undrained rather than finished. 0 keeps
+  # receipts until the count alone drops them.
   handoff_receipt_days: 2
 
 # What an agent remembers between conversations.

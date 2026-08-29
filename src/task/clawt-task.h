@@ -93,6 +93,41 @@ gint64         clawt_task_get_created_at(ClawtTask *self);
 gint64         clawt_task_get_finished_at(ClawtTask *self);
 
 /**
+ * clawt_task_get_owner_history:
+ * @self: a #ClawtTask
+ *
+ * Everyone who has owned this task, oldest first.
+ *
+ * The first entry is whoever it was created for and the last is
+ * clawt_task_get_assignee(), so the two can never disagree -- there is
+ * one place an owner changes and it appends here as it goes.
+ *
+ * A task nobody has handed on has one entry rather than none, because
+ * "never moved" and "no history recorded" are different facts and a
+ * reader who cannot tell them apart goes looking for a lost record.
+ *
+ * Returns: (transfer none) (element-type utf8): the owners, in order
+ */
+GPtrArray *clawt_task_get_owner_history(ClawtTask *self);
+
+/**
+ * clawt_task_transfer_owner:
+ * @self: a #ClawtTask
+ * @new_owner: who owns it now
+ *
+ * Moves ownership and records the move.
+ *
+ * There is deliberately no plain set_assignee(): an assignee changed
+ * without an entry in the history is a task whose past cannot be
+ * reconstructed, and the one caller that forgot would be the one whose
+ * work went missing.  Handing it the current owner is a no-op rather
+ * than a repeated entry.
+ *
+ * Returns: %TRUE if the owner changed
+ */
+gboolean clawt_task_transfer_owner(ClawtTask *self, const gchar *new_owner);
+
+/**
  * clawt_task_set_room:
  * @self: a #ClawtTask
  * @room: (nullable): the room this task belongs to
