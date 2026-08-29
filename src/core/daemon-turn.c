@@ -699,6 +699,17 @@ clawt_daemon_turn_settle(ClawtDaemon *self, const gchar *agent_id)
         }
     }
 
+    /*
+     * And any handoff waiting on a turn boundary.
+     *
+     * Every settle, not only this agent's own queue: a handoff held
+     * because its recipient was mid-turn is retried when *that* agent
+     * finishes, and that settle belongs to somebody else.  Draining only
+     * the settling agent's own rows would leave a handoff waiting for a
+     * turn its source will never take again.
+     */
+    clawt_daemon_handoff_pump(self);
+
     if (self->steers == NULL)
         return;
 

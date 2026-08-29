@@ -31,6 +31,7 @@
 #include "chat/clawt-room.h"
 #include "core/clawt-event-bus.h"
 #include "memory/clawt-transcript-index.h"
+#include "task/clawt-handoff-store.h"
 #include "task/clawt-task-manager.h"
 
 G_BEGIN_DECLS
@@ -159,6 +160,72 @@ void clawt_mcp_tools_set_ask_decision_func(ClawtMcpTools           *self,
                                            ClawtMcpAskDecisionFunc  func,
                                            gpointer                 user_data,
                                            GDestroyNotify           destroy);
+
+/**
+ * ClawtMcpHandoffFunc:
+ * @from_agent: who is giving the task up
+ * @task_id: the task whose ownership is moving
+ * @to_agent: who is taking it on
+ * @reason: (nullable): why
+ * @out_queued: (out) (optional): how many handoffs this agent now has queued
+ * @user_data: as supplied
+ * @error: return location for a #GError
+ *
+ * Queues an ownership transfer against the turn that asked for it.
+ *
+ * A hook for the same reason delivering a message is one: the tools
+ * belong to the library and the daemon owns the queue, the store and the
+ * turn boundary this runs on.  It **queues** and returns; it does not
+ * wait for the recipient, because the recipient may be mid-turn and a
+ * turn is minutes.
+ *
+ * Whatever supplies this enforces orchestration.handoff_max_per_turn,
+ * since only it can see the queue.  Everything that can be judged from
+ * the caller -- the task exists, the target exists, the team allows it,
+ * the chain is not too deep -- is judged before this is reached, so a
+ * refusal names the reason nearest the agent.
+ *
+ * Returns: %TRUE if it was queued
+ */
+typedef gboolean (*ClawtMcpHandoffFunc)(const gchar  *from_agent,
+                                        const gchar  *task_id,
+                                        const gchar  *to_agent,
+                                        const gchar  *reason,
+                                        guint        *out_queued,
+                                        gpointer      user_data,
+                                        GError      **error);
+
+/**
+ * clawt_mcp_tools_set_handoff_func:
+ * @self: a #ClawtMcpTools
+ * @func: (nullable) (scope notified): the hook
+ * @user_data: passed to @func
+ * @destroy: frees @user_data
+ *
+ * Unset, `clawtilla_handoff` is not offered.  A library embedded
+ * without a daemon has no turn boundary to run a handoff on and no
+ * store to leave a receipt in, and a tool that is listed and then fails
+ * teaches an agent to keep trying.
+ */
+void clawt_mcp_tools_set_handoff_func(ClawtMcpTools       *self,
+                                      ClawtMcpHandoffFunc  func,
+                                      gpointer             user_data,
+                                      GDestroyNotify       destroy);
+
+/**
+ * clawt_mcp_tools_set_handoff_store:
+ * @self: a #ClawtMcpTools
+ * @store: (nullable): where handoff receipts are kept
+ *
+ * So `clawtilla_task_status` can answer about a task the in-memory
+ * #ClawtTaskManager has forgotten.
+ *
+ * Separate from the hook, because reading a receipt and queueing a
+ * handoff are different permissions: an agent that may not hand work
+ * over may still ask what became of work handed to *it*.
+ */
+void clawt_mcp_tools_set_handoff_store(ClawtMcpTools     *self,
+                                       ClawtHandoffStore *store);
 
 /**
  * clawt_mcp_tools_describe_for_agent:

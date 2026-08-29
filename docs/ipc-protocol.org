@@ -1116,6 +1116,7 @@ Every kind published, by subject:
 | a cloud image | ~image.progress~ (~done~, ~total~), ~image.finished~ (~path~ or ~error~) |
 | an agent | ~computer.exec~ |
 | an agent | ~turn.timed_out~, ~turn.repeating~, ~message.steered~ |
+| a task | ~handoff.queued~, ~handoff.settled~ |
 
 ~agent.state~ is published for *every* state and carries the state's nick
 plus a ~detail~ saying why.  ~agent.started~ and ~agent.stopped~ are
@@ -1203,6 +1204,25 @@ error, because at every threshold but the last **nothing has been
 stopped** -- clawtilla does not own the model's own tool-call loop and
 cannot steer a turn that is already running.  At the last threshold the
 turn is interrupted and a ~turn.timed_out~ follows.
+
+~handoff.queued~ is published when an agent asks to give a task away,
+subject the *task*, with ~handoff~ (the transfer's own id), ~from~, ~to~
+and ~state~ (~queued~).  Nothing has moved yet: a handoff runs when the
+turn that asked for it ends, so this says a promise was made rather than
+kept.
+
+~handoff.settled~ is published when it finishes one way or another, with
+the same members plus ~verdict~ -- a sentence rather than a code, because
+it is what an agent reads back out of ~clawtilla_task_status~ and a code
+gives it nothing to do.  ~state~ is a #ClawtHandoffState nickname:
+~done~, ~failed~, ~denied~, ~busy-gave-up~, ~dropped~ or ~error~.
+
+Only ~done~ is routine.  The other five mean the work did not move and is
+still where it was, and they arrived on their own while nobody was
+watching that pair, so ~clawt_alert_tier_for_event()~ makes them notices
+-- classified on ~state~ rather than on the kind, since a kind-only rule
+would put every successful handoff in the loud list and teach somebody to
+stop reading it.
 
 ~message.steered~ is published when a message to a busy agent is held
 rather than routed, subject the agent, with ~room~ and ~held~ (how many

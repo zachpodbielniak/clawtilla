@@ -23,6 +23,14 @@ struct _ClawtTask {
     gchar *reason;
     gchar *session_key;
 
+    /*
+     * Everyone who has owned it, oldest first, with the current
+     * assignee always last.  One array rather than a "previous owner"
+     * field: a task can be handed on twice, and the second handoff would
+     * have overwritten the record of the first.
+     */
+    GPtrArray *owners;
+
     ClawtTaskState state;
     gint           depth;
     gint64         created_at;
@@ -57,6 +65,16 @@ clawt_task_new(const gchar *origin_agent,
     self->prompt = g_strdup(prompt);
     self->state = CLAWT_TASK_PENDING;
     self->created_at = g_get_real_time() / G_USEC_PER_SEC;
+
+    /*
+     * Seeded with the first assignee rather than left empty, so the
+     * history and clawt_task_get_assignee() can never disagree about
+     * who owns it now: the answer is always the last entry.
+     */
+    self->owners = g_ptr_array_new_with_free_func(g_free);
+
+    if (assignee != NULL)
+        g_ptr_array_add(self->owners, g_strdup(assignee));
 
     /*
      * What a session key *would* be if a task had a session of its own.
@@ -97,6 +115,21 @@ clawt_task_copy(ClawtTask *self)
     copy->parent_id = g_strdup(self->parent_id);
     copy->reason = g_strdup(self->reason);
     copy->session_key = g_strdup(self->session_key);
+
+    /*
+     * Deep, because g_ptr_array_copy() carries the source's element-free
+     * func and the copy would then own every string twice.
+     */
+    copy->owners = g_ptr_array_new_with_free_func(g_free);
+
+    {
+        guint i;
+
+        for (i = 0; self->owners != NULL && i < self->owners->len; i++)
+            g_ptr_array_add(copy->owners,
+                            g_strdup(g_ptr_array_index(self->owners, i)));
+    }
+
     copy->state = self->state;
     copy->depth = self->depth;
     copy->created_at = self->created_at;
@@ -123,6 +156,7 @@ clawt_task_free(ClawtTask *self)
     g_free(self->parent_id);
     g_free(self->reason);
     g_free(self->session_key);
+    g_clear_pointer(&self->owners, g_ptr_array_unref);
     g_free(self);
 }
 
@@ -211,6 +245,35 @@ clawt_task_set_depth(ClawtTask *self, gint depth)
 {
     g_return_if_fail(self != NULL);
     self->depth = depth;
+}
+
+GPtrArray *
+clawt_task_get_owner_history(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+    return self->owners;
+}
+
+gboolean
+clawt_task_transfer_owner(ClawtTask *self, const gchar *new_owner)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(new_owner != NULL, FALSE);
+
+    /*
+     * Handing a task to whoever already has it is not a move.  Recorded
+     * as one it would read as a round trip that never happened, and a
+     * chief reading its own history would conclude the work had bounced.
+     */
+    if (g_strcmp0(self->assignee, new_owner) == 0)
+        return FALSE;
+
+    g_free(self->assignee);
+    self->assignee = g_strdup(new_owner);
+
+    g_ptr_array_add(self->owners, g_strdup(new_owner));
+
+    return TRUE;
 }
 
 gboolean

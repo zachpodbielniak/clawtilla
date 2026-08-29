@@ -80,6 +80,8 @@
 #include "task/clawt-cron.h"
 #include "task/clawt-task.h"
 #include "task/clawt-task-manager.h"
+#include "task/clawt-handoff.h"
+#include "task/clawt-handoff-store.h"
 #include "task/clawt-routine-runner.h"
 
 #include "trigger/clawt-trigger-event.h"

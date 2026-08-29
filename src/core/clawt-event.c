@@ -290,6 +290,26 @@ clawt_alert_tier_for_event(ClawtEvent *event)
                    ? CLAWT_ALERT_ERROR : CLAWT_ALERT_ROUTINE;
 
     /*
+     * An ownership transfer that did *not* happen.
+     *
+     * `done` is routine: the exchange is already written into the pair's
+     * room and both threads, so a badge would be telling somebody about
+     * something they can see.  Every other outcome means work did not
+     * move and is still where it was -- and it arrived on its own, while
+     * nobody was watching that pair, which is exactly what makes it a
+     * notice rather than a toast.
+     *
+     * Classified on the detail rather than on the kind, for the reason
+     * `image.finished` already is: a kind-only rule would put every
+     * successful handoff in the loud list and teach somebody to stop
+     * reading it.
+     */
+    if (g_strcmp0(kind, "handoff.settled") == 0)
+        return (g_strcmp0(clawt_event_get_detail(event, "state"),
+                          "done") == 0)
+                   ? CLAWT_ALERT_ROUTINE : CLAWT_ALERT_NOTICE;
+
+    /*
      * A persona that has outgrown what a command line can carry.  It only
      * arrives at all past 80% of the limit, so there is nothing routine
      * about it -- and it arrives while somebody is starting an agent

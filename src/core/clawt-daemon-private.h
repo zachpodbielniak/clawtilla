@@ -25,6 +25,7 @@
 #include "memory/clawt-transcript-index.h"
 #include "integration/clawt-notify.h"
 #include "plugin/clawt-automation.h"
+#include "task/clawt-handoff-store.h"
 #include "task/clawt-routine-runner.h"
 #include "trigger/clawt-trigger-store.h"
 #include "trigger/clawt-webhook-ingress.h"
@@ -194,6 +195,18 @@ struct _ClawtDaemon {
     GHashTable       *turn_grace;   /* agent id -> GSource*, see arm_grace() */
     GSource          *turn_sweep;
     guint             turn_grace_seconds;
+
+    /*
+     * Ownership transfers waiting for the turn that asked for them, and
+     * a receipt for every one that has finished.
+     *
+     * Durable because #ClawtTaskManager is not: after a restart these
+     * receipts are the only answer clawtilla has to "what became of the
+     * task I handed over", and an agent that reads silence as "it never
+     * happened" hands the same work over twice.  See daemon-handoff.c.
+     */
+    ClawtHandoffStore *handoffs;
+    gboolean           handoff_pumping;
 
     /* Standing work, and when it is next due. */
     ClawtRoutineRunner *routines;
@@ -863,6 +876,41 @@ void clawt_daemon_turn_arm_grace(ClawtDaemon *self, const gchar *agent_id);
  * the worst thing that could happen to it.
  */
 void clawt_daemon_turn_set_grace_seconds(ClawtDaemon *self, guint seconds);
+
+/* -- Handing work over (src/core/daemon-handoff.c) -------------- */
+
+/*
+ * Opens the handoff store, wires the tool's hook to it, and runs
+ * anything that was queued when the daemon last stopped.
+ *
+ * Called after clawt_daemon_turn_setup(), because the queue drains from
+ * clawt_daemon_turn_settle() and the objects that settle a turn have to
+ * exist before one can.
+ */
+void clawt_daemon_handoff_setup(ClawtDaemon *self);
+void clawt_daemon_handoff_teardown(ClawtDaemon *self);
+
+/*
+ * Runs every queued handoff whose source agent is no longer mid-turn.
+ *
+ * Called from clawt_daemon_turn_settle() for *every* agent rather than
+ * only the one whose queue it is: a handoff waiting on a busy recipient
+ * is retried when that recipient's own turn ends, and that settle
+ * belongs to a different agent.
+ */
+void clawt_daemon_handoff_pump(ClawtDaemon *self);
+
+/*
+ * Ends every handoff an agent had queued, with a receipt each.
+ *
+ * Called from the interrupt path, before the turn settles.  A turn
+ * somebody stopped did not finish deciding, and carrying out the
+ * handoffs it had queued would be acting on half a decision -- the
+ * opposite of what pressing stop means.
+ */
+void clawt_daemon_handoff_drop_queued(ClawtDaemon *self,
+                                      const gchar *agent_id,
+                                      const gchar *why);
 
 /*
  * One tool call the daemon served, for the repeat counter.  Both MCP

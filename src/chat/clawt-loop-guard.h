@@ -95,6 +95,28 @@ void clawt_loop_guard_set_limits(ClawtLoopGuard *self,
                                  guint           cycle_window);
 
 /**
+ * clawt_loop_guard_get_max_hops:
+ * @self: a #ClawtLoopGuard
+ *
+ * The fleet's hop limit, for anything that has to decide *before* a
+ * message exists.
+ *
+ * clawt_mcp_tools_is_permitted() withholds the peer tools from a turn
+ * already at the limit rather than letting them be called and refused,
+ * and it has no message to check -- so it asks here.  Reading
+ * `orchestration.max_hops` a second time from the config would be a
+ * second answer to the same question, and the two would differ the day
+ * somebody set the guard from anywhere else.
+ *
+ * A room's own limit is deliberately not consulted: which room a call
+ * will land in is not known until the message is built, and a gate that
+ * guessed would hide a tool an agent could legitimately use.
+ *
+ * Returns: the limit, or 0 when there is none
+ */
+guint clawt_loop_guard_get_max_hops(ClawtLoopGuard *self);
+
+/**
  * clawt_loop_guard_set_cycle_seconds:
  * @self: a #ClawtLoopGuard
  * @seconds: how long a repeat counts as a loop, or 0 to disable the check
