@@ -16,6 +16,11 @@
 # previous *failing* run leaves its directories behind on purpose -- they
 # are the evidence -- and those must not be reported as this run's fault.
 #
+# It sees only this run's directories, because `make test` gives each run
+# a private TMPDIR and g_get_tmp_dir() honours it.  That is what makes the
+# comparison exact: two branches building at once cannot see each other's
+# fixtures, which they could when every run shared /tmp.
+#
 # Usage: clawt-test-litter.sh snapshot <file>
 #        clawt-test-litter.sh check <file>
 #
@@ -80,28 +85,6 @@ list_dirs () {
 }
 
 
-# Whether some other test run is going on right now.
-#
-# The glob cannot tell whose directories it is looking at, so a second
-# run's fixtures are indistinguishable from this run's litter -- and
-# with several branches building at once that is the common case, not
-# the rare one. Asked of the kernel rather than of `pgrep`, which
-# matches the probe's own command line.
-other_test_processes () {
-    local_count=0
-
-    for local_proc in /proc/[0-9]*
-    do
-        local_exe="$(readlink "${local_proc}/exe" 2>/dev/null)"
-
-        case "${local_exe}" in
-            */tests/test-*) local_count=$((local_count + 1)) ;;
-        esac
-    done
-
-    echo "${local_count}"
-}
-
 main () {
     if [ $# -ne 2 ]
     then
@@ -131,18 +114,6 @@ main () {
         echo "test-litter: no snapshot at ${local_file}"
         echo 'test-litter: refusing to call this run clean'
         exit 1
-    fi
-
-    # This run's own binaries have all exited by the time the check
-    # runs, so anything still alive belongs to somebody else and the
-    # comparison below cannot mean anything. Saying which is better than
-    # failing a clean run for another branch's temporary files.
-    if [ "$(other_test_processes)" -gt 0 ]
-    then
-        echo 'test-litter: another test run is in progress -- skipped'
-        echo 'test-litter: this check cannot tell two runs apart'
-        rm -f "${local_file}"
-        exit 0
     fi
 
     local_after="${local_file}.after"

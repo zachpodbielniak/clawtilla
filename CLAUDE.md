@@ -186,12 +186,11 @@ does nothing to a non-empty directory and `g_unlink()` on the file leaves
 the directory above it, so a fixture ending in either looks tidy and is
 not -- three did, and 2710 directories built up in `/tmp` over six days
 of green runs. It compares the same run against itself, because a
-*failing* run's directories are evidence and must stay. What it cannot
-tell apart is two runs: the glob sees `/tmp/clawt-*` and has no way to
-know whose fixtures those are, so with several worktrees building at
-once it would fail a clean run for somebody else's directories. It asks
-the kernel whether another test binary is alive and says it skipped
-rather than guessing. A `g_test_add()`
+*failing* run's directories are evidence and must stay. It sees only this run's
+directories: `make test` runs under a private `TMPDIR` and
+`g_get_tmp_dir()` honours it, so two worktrees building at once cannot
+see each other's fixtures. Sharing `/tmp` made every parallel build a
+false failure. A `g_test_add()`
 teardown is not the answer: a failed `g_assert` aborts, so no teardown
 runs on that path either.
 
