@@ -491,7 +491,12 @@ test_clear_removes_it(void)
 
     g_assert_true(clawt_avatar_write(fixture.dir, PNG_BYTES,
                                      sizeof(PNG_BYTES), NULL, NULL));
-    g_assert_nonnull(clawt_workspace_find_profile_picture(fixture.dir));
+    {
+        g_autofree gchar *before =
+            clawt_workspace_find_profile_picture(fixture.dir);
+
+        g_assert_nonnull(before);
+    }
 
     g_assert_true(clawt_avatar_clear(fixture.dir));
     g_assert_null(clawt_workspace_find_profile_picture(fixture.dir));

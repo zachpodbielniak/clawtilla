@@ -570,7 +570,11 @@ test_a_dangling_link_is_repaired(void)
     link = g_build_filename(workspace, ".claude/skills/release", NULL);
     nowhere = g_build_filename(fixture.skills_dir, "gone", NULL);
 
-    g_assert_true(clawt_ensure_dir(g_path_get_dirname(link), 0700, NULL));
+    {
+        g_autofree gchar *parent = g_path_get_dirname(link);
+
+        g_assert_true(clawt_ensure_dir(parent, 0700, NULL));
+    }
     g_assert_cmpint(symlink(nowhere, link), ==, 0);
     g_assert_true(g_file_test(link, G_FILE_TEST_IS_SYMLINK));
     g_assert_false(g_file_test(link, G_FILE_TEST_EXISTS));

@@ -288,9 +288,12 @@ test_the_budget_keeps_the_end_of_the_transcript(void)
      */
     {
         GList *messages = ai_mock_provider_get_last_messages(provider);
-        const gchar *sent;
+        g_autofree gchar *sent = NULL;
 
         g_assert_nonnull(messages);
+
+        /* ai_message_get_text() copies; the borrowed-looking name was a
+         * leak the ASan run found. */
         sent = ai_message_get_text(AI_MESSAGE(messages->data));
 
         g_assert_nonnull(sent);

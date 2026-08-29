@@ -518,7 +518,19 @@ write_manifest(const gchar  *directory,
     json_builder_end_object(builder);
 
     generator = json_generator_new();
-    json_generator_set_root(generator, json_builder_get_root(builder));
+
+    /*
+     * json_builder_get_root() copies, and json_generator_set_root()
+     * takes its own reference -- so the copy has to be held and dropped
+     * here. Passing it straight in leaks one node per manifest write,
+     * which is once per agent per start.
+     */
+    {
+        g_autoptr(JsonNode) root = json_builder_get_root(builder);
+
+        json_generator_set_root(generator, root);
+    }
+
     json_generator_set_pretty(generator, TRUE);
     text = json_generator_to_data(generator, NULL);
 
