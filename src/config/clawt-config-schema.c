@@ -1636,9 +1636,23 @@ static const ClawtSchemaEntry schema[] = {
   "on podman's default network however this is set.", "0.1.0" },
 
 { "agents.computer.container.keep", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
-  "false", NULL,
+  "true", NULL,
   "Keep the container when the agent stops, instead of removing it.\n"
-  "Useful when the agent installs things it should not have to reinstall.", "0.1.0" },
+  "\n"
+  "Stopping an agent stops its machine, and with this off the container\n"
+  "is removed as well: everything the agent installed goes with it and\n"
+  "the next start builds a fresh one from the image.\n"
+  "\n"
+  "On by default. It reads as the smaller of the two settings and it is\n"
+  "not -- a bare image has no toolchain, so the first thing an agent does\n"
+  "in a new container is install one, and discarding that on every stop\n"
+  "means paying for it again on every start. The distrobox backend has\n"
+  "defaulted to keeping for exactly this reason since it was written.\n"
+  "\n"
+  "Turned off, `computer stop` and `computer restart` refuse without\n"
+  "`--remove`, and both graphical clients ask first: the contents are\n"
+  "gone rather than offline, which is not what the word stop suggests.",
+  "0.1.0" },
 
 /* ── agents.computer.distrobox ───────────────────────────────────── */
 { "agents.computer.distrobox", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE,

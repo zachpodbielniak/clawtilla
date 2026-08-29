@@ -329,10 +329,35 @@ gboolean clawt_daemon_start_agent(ClawtDaemon  *self,
  * clawt_daemon_stop_agent:
  * @self: a #ClawtDaemon
  * @agent_id: which agent
+ * @stop_machine: also take its container or VM down
+ *
+ * Stops the agent's process, and optionally the machine it was using.
+ *
+ * The two are separate because the callers mean different things. `agent
+ * stop` and `agent restart` mean "this agent is finished for now", and
+ * leaving a container running for an agent nobody is running is a
+ * resource nobody can see -- `podman ps` full of machines whose agents
+ * are stopped. `agent reset` and `agent remove` stop the process as a
+ * *step* in something larger: reset needs the sqlite connection closed
+ * before it clears a session, and remove has its own teardown.
+ *
+ * @stop_machine is **synchronous**, and blocking deliberately, in the
+ * same way clawt_daemon_start_agent() is: every caller that passes %TRUE
+ * has somebody waiting on the answer, and the wait is bounded by
+ * podomation's socket timeout. The two IPC handlers a person drives pass
+ * %FALSE and take the machine down through
+ * clawt_computer_lifecycle_async() instead, because a handler may not
+ * wait on the network.
+ *
+ * Whether the machine survives being stopped is the backend's business:
+ * a VM always does, and a container does unless
+ * `computer.container.keep` is turned off.
  *
  * Returns: %TRUE if it was running
  */
-gboolean clawt_daemon_stop_agent(ClawtDaemon *self, const gchar *agent_id);
+gboolean clawt_daemon_stop_agent(ClawtDaemon *self,
+                                 const gchar *agent_id,
+                                 gboolean     stop_machine);
 
 /**
  * clawt_daemon_set_libreclaw_binary:

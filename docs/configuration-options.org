@@ -2389,11 +2389,24 @@ on podman's default network however this is set.
 *** =agents.computer.container.keep=
 
 - Type :: boolean
-- Default :: =false=
+- Default :: =true=
 - Since :: 0.1.0
 
 Keep the container when the agent stops, instead of removing it.
-Useful when the agent installs things it should not have to reinstall.
+
+Stopping an agent stops its machine, and with this off the container
+is removed as well: everything the agent installed goes with it and
+the next start builds a fresh one from the image.
+
+On by default. It reads as the smaller of the two settings and it is
+not -- a bare image has no toolchain, so the first thing an agent does
+in a new container is install one, and discarding that on every stop
+means paying for it again on every start. The distrobox backend has
+defaulted to keeping for exactly this reason since it was written.
+
+Turned off, `computer stop` and `computer restart` refuse without
+`--remove`, and both graphical clients ask first: the contents are
+gone rather than offline, which is not what the word stop suggests.
 
 ** =agents.computer.distrobox=
 

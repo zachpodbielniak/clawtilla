@@ -3995,7 +3995,7 @@ test_a_changed_restart_policy_reaches_the_runtime(void)
         clawt_agent_runtime_get_restart_policy(clawt_agent_get_runtime(agent)),
         ==, CLAWT_RESTART_ON_FAILURE);
 
-    clawt_daemon_stop_agent(fixture.daemon, "worker");
+    clawt_daemon_stop_agent(fixture.daemon, "worker", FALSE);
 
     /* The operator changes it and reloads, exactly as the CLI does. */
     {
@@ -5276,7 +5276,7 @@ test_an_oversized_persona_is_announced_at_start(void)
                             "worker")),
                     !=, CLAWT_AGENT_STATE_SHADOW);
 
-    clawt_daemon_stop_agent(fixture.daemon, "worker");
+    clawt_daemon_stop_agent(fixture.daemon, "worker", FALSE);
 
     g_free(watch.verdict);
     g_free(watch.over);
@@ -5327,7 +5327,7 @@ test_an_ordinary_persona_is_not_announced(void)
 
     g_assert_cmpuint(watch.count, ==, 0);
 
-    clawt_daemon_stop_agent(fixture.daemon, "worker");
+    clawt_daemon_stop_agent(fixture.daemon, "worker", FALSE);
     fixture_teardown(&fixture);
 }
 
@@ -5933,7 +5933,7 @@ test_a_second_start_reaches_the_computer(void)
     g_assert_cmpint(clawt_computer_get_state(computer), ==,
                     CLAWT_COMPUTER_STATE_RUNNING);
 
-    clawt_daemon_stop_agent(fixture.daemon, "worker");
+    clawt_daemon_stop_agent(fixture.daemon, "worker", FALSE);
 
     /* Whatever the backend was holding is gone. */
     clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ABSENT, NULL);
@@ -6303,7 +6303,7 @@ test_stopping_an_agent_ends_its_turn(void)
      */
     g_assert_true(busy_in_agent_list(&fixture, "worker"));
 
-    g_assert_true(clawt_daemon_stop_agent(fixture.daemon, "worker"));
+    g_assert_true(clawt_daemon_stop_agent(fixture.daemon, "worker", FALSE));
 
     g_assert_false(busy_in_agent_list(&fixture, "worker"));
 
@@ -6439,6 +6439,130 @@ test_an_agent_that_dies_mid_turn_is_not_left_working(void)
 
 
 /*
+ * Stopping an agent stops the machine it was using.
+ *
+ * `computer.container.keep` has said "keep the container when the agent
+ * stops, instead of removing it" for as long as it has existed, and
+ * nothing stopped the computer when an agent stopped -- so the setting
+ * described a moment that never happened and every container an agent
+ * had used went on running under a stopped agent.
+ *
+ * Driven against the *host* backend, which needs nothing but a temporary
+ * directory and whose start and stop both move the state. A container
+ * would need podman to say anything at all.
+ */
+static void
+test_stopping_an_agent_stops_its_machine(void)
+{
+    Fixture fixture;
+    g_autofree gchar *binary = g_build_filename(CLAWT_TEST_FIXTURES,
+                                                "fake-libreclaw", NULL);
+    g_autofree gchar *extra = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgent *agent;
+    ClawtComputer *computer;
+
+    extra = g_strdup_printf(
+        "  libreclaw_binary: \"%s\"\n"
+        "agents:\n"
+        "  - id: worker\n"
+        "    enabled: true\n"
+        "    computer:\n"
+        "      type: host\n"
+        "      host:\n"
+        "        confirm_host_control: true\n",
+        binary);
+
+    fixture_setup(&fixture, extra);
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    g_assert_true(clawt_daemon_start_agent(fixture.daemon, "worker", &error));
+    g_assert_no_error(error);
+
+    agent = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                    "worker");
+    g_assert_nonnull(agent);
+
+    computer = clawt_agent_get_computer(agent);
+    g_assert_nonnull(computer);
+    g_assert_cmpint(clawt_computer_get_state(computer), ==,
+                    CLAWT_COMPUTER_STATE_RUNNING);
+
+    /*
+     * FALSE leaves it alone. `agent reset` and `agent remove` stop the
+     * process as a step in something larger and have no business
+     * powering the machine down underneath it.
+     */
+    clawt_daemon_stop_agent(fixture.daemon, "worker", FALSE);
+    g_assert_cmpint(clawt_computer_get_state(computer), ==,
+                    CLAWT_COMPUTER_STATE_RUNNING);
+
+    g_assert_true(clawt_daemon_start_agent(fixture.daemon, "worker", &error));
+    g_assert_no_error(error);
+
+    /*
+     * And the agent's computer is rebuilt by a start, so the one to ask
+     * afterwards is the one it holds now.
+     */
+    computer = clawt_agent_get_computer(agent);
+
+    clawt_daemon_stop_agent(fixture.daemon, "worker", TRUE);
+    g_assert_cmpint(clawt_computer_get_state(computer), ==,
+                    CLAWT_COMPUTER_STATE_STOPPED);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And the frame a person presses does it, which is the wiring rather
+ * than the rule. A parameter defaulting the wrong way at one of five
+ * call sites is exactly how this feature would exist and reach nobody.
+ */
+static void
+test_the_agent_stop_frame_stops_the_machine(void)
+{
+    Fixture fixture;
+    g_autofree gchar *binary = g_build_filename(CLAWT_TEST_FIXTURES,
+                                                "fake-libreclaw", NULL);
+    g_autofree gchar *extra = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    ClawtAgent *agent;
+    ClawtComputer *computer;
+
+    extra = g_strdup_printf(
+        "  libreclaw_binary: \"%s\"\n"
+        "agents:\n"
+        "  - id: worker\n"
+        "    enabled: true\n"
+        "    computer:\n"
+        "      type: host\n"
+        "      host:\n"
+        "        confirm_host_control: true\n",
+        binary);
+
+    fixture_setup(&fixture, extra);
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+    g_assert_true(clawt_daemon_start_agent(fixture.daemon, "worker", &error));
+
+    agent = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                    "worker");
+    computer = clawt_agent_get_computer(agent);
+    g_assert_cmpint(clawt_computer_get_state(computer), ==,
+                    CLAWT_COMPUTER_STATE_RUNNING);
+
+    reply = request(&fixture, "agent.stop", "{\"agent\": \"worker\"}");
+    g_assert_false(clawt_ipc_frame_is_error(reply));
+
+    g_assert_cmpint(clawt_computer_get_state(computer), ==,
+                    CLAWT_COMPUTER_STATE_STOPPED);
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * Powering an agent's machine on and off is offered only where there is
  * one, and refused where there is not.
  *
@@ -6504,7 +6628,8 @@ test_a_destroying_stop_is_fenced(void)
                   "  - id: boxy\n"
                   "    computer:\n"
                   "      type: container\n"
-                  "      container:\n        image: \"alpine\"\n");
+                  "      container:\n"
+                  "        image: \"alpine\"\n        keep: false\n");
     g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
 
     refused = request(&fixture, "computer.stop", "{\"agent\": \"boxy\"}");
@@ -6547,7 +6672,8 @@ test_the_listing_says_what_can_be_powered(void)
                   "  - id: boxy\n"
                   "    computer:\n"
                   "      type: container\n"
-                  "      container:\n        image: \"alpine\"\n"
+                  "      container:\n"
+                  "        image: \"alpine\"\n        keep: false\n"
                   "  - id: keepy\n"
                   "    computer:\n"
                   "      type: container\n"
@@ -6583,11 +6709,12 @@ test_the_listing_says_what_can_be_powered(void)
             g_assert_true(json_object_get_boolean_member(
                 agent, "computer_machine"));
 
-            /* keep is false by default, so a stop takes it with it. */
+            /* keep turned off, so a stop takes the container with it. */
             g_assert_true(json_object_get_boolean_member(
                 agent, "computer_stop_removes"));
             seen++;
         } else if (g_strcmp0(id, "keepy") == 0) {
+            /* And on -- which is the default -- it survives. */
             g_assert_true(json_object_get_boolean_member(
                 agent, "computer_machine"));
             g_assert_false(json_object_get_boolean_member(
@@ -6821,6 +6948,10 @@ main(int argc, char *argv[])
                     test_agent_set_refuses_a_value_the_enum_lacks);
     g_test_add_func("/daemon/agent-set-reports-a-role-needs-a-session",
                     test_agent_set_reports_a_role_needs_a_new_session);
+    g_test_add_func("/daemon/computer/agent-stop-stops-the-machine",
+                    test_stopping_an_agent_stops_its_machine);
+    g_test_add_func("/daemon/computer/agent-stop-frame-stops-the-machine",
+                    test_the_agent_stop_frame_stops_the_machine);
     g_test_add_func("/daemon/computer/no-machine-is-refused",
                     test_a_machineless_agent_cannot_be_powered);
     g_test_add_func("/daemon/computer/a-destroying-stop-is-fenced",

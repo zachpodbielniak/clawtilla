@@ -700,6 +700,51 @@ the same program.
   check reported OK with the feature in one client only. Verified by
   breaking one and watching it fail.
 
+### `computer.container.keep` described a moment that never happened
+
+- "Keep the container when the agent stops, instead of removing it" --
+  and **nothing stopped the computer when an agent stopped**. So the
+  setting was written about an event the code did not have, every
+  container an agent had ever used went on running under a stopped agent
+  until somebody found it in `podman ps`, and the flag's only reader was
+  `container_stop()`, which until the power verbs existed had no caller
+  outside teardown.
+- Found by reading the flag while building something else, not by any
+  check. It is the third shape of the same family in this file -- the
+  factory nothing called, the limit nothing incremented, the signal
+  nothing connected -- and the tell is the same one every time: grep for
+  the caller, not the implementation.
+- `clawt_daemon_stop_agent()` takes `stop_machine` now, and the parameter
+  is the point. `agent stop` and `agent restart` mean "this agent is
+  finished for now" and pass TRUE; `agent reset` and `agent remove` stop
+  the process as a **step** in something larger -- reset needs the sqlite
+  connection closed, remove has its own teardown -- and pass FALSE. A
+  single function that always did both would be wrong at two of its five
+  call sites, and one that never did would be wrong at three.
+- Blocking, deliberately, rather than deferred. `clawt_daemon_start_agent()`
+  already carries that decision in a comment -- "every caller of this one
+  has somebody waiting on the answer, and the wait is bounded by
+  podomation's socket timeout; it is the *fleet* coming up that must not
+  hold the loop" -- and stopping one agent is the symmetric case. The
+  alternative was deferring `agent.stop`, which returns NULL from
+  `clawt_daemon_handle_request()` and would break every test and every
+  embedding host that calls it directly.
+- **The default flipped to keep.** It reads as the smaller of the two
+  settings and it is not: a bare image has no toolchain, so the first
+  thing an agent does in a new container is install one, and discarding
+  that on every stop means paying for it again on every start. The
+  distrobox backend had defaulted to keeping since it was written, for
+  that reason, in writing. Turning it off is now the opt-in to a
+  destructive stop, and the schema text says so where somebody turns it
+  off.
+- Tested against the **host** backend, whose start and stop both move the
+  state and which needs nothing but a temporary directory. A container
+  would have needed podman to say anything at all, and the thing being
+  asserted -- that the parameter reaches `clawt_computer_stop()` -- is not
+  about containers. Proved three ways: the machine stop neutered, and the
+  frame's own argument flipped to FALSE, each failing the test that
+  covers it.
+
 ### A duplicate JSON member is silent, and the last one wins
 
 - `add_agent_object()` already emitted a `computer` string. Adding the
@@ -4124,6 +4169,10 @@ the same program.
 - Never pass `environ` wholesale to a spawned agent -- use the allowlist
 - Never write a secret's value into an IPC response, a log line or a transcript
 - Never let a plugin load failure take down the daemon
+- Never write a config key whose documentation names an event the code
+  does not have. `computer.container.keep` said "when the agent stops"
+  for as long as it existed, and nothing stopped an agent's computer when
+  the agent stopped
 - Never let a libvirt domain name no emulator. libvirt fills one in by
   searching the session daemon's PATH, so the binary a guest runs is
   decided by somebody else's environment -- and SELinux refuses one

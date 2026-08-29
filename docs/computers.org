@@ -235,7 +235,7 @@ computer:
     image: "fedora:latest"
     name: "clawt-researcher"      # optional; generated if absent
     connection: "unix"            # unix | ssh://… | tcp://… | a named connection
-    keep: false                   # keep the container after the agent stops
+    keep: true                    # the default: it survives the agent stopping
 #+end_src
 
 ~computer.container.network~ is parsed and stored and never sent to
@@ -965,24 +965,40 @@ nothing, and a =host= agent's machine is the one clawtilla is running
 on.  Which types have one is answered once, in the library, so a backend
 added later reaches all three surfaces without any of them being edited.
 
-**** Stopping a container destroys it
+Stopping the *agent* stops its machine too --- ~clawtilla agent stop~,
+~agent restart~, and the same two from either graphical client.  Leaving
+a container running for an agent nobody is running is a resource nobody
+can see: ~podman ps~ full of machines whose agents are stopped.
 
-~computer.container.keep~ is false by default, so stopping a container
-removes it: the contents are gone rather than offline, and starting it
-again builds a fresh one.  That is not a word anybody reads that way, so
-both graphical clients warn before they send and the daemon refuses
-without an explicit flag:
+~agent reset~ and ~agent remove~ do not.  Those stop the process as a
+*step* in something larger --- reset needs the agent's sqlite connection
+closed before it clears a session, and remove has its own teardown ---
+and powering the machine down underneath either would be doing something
+nobody asked for.  Shutting the daemon down does not either: a machine
+outliving the daemon is the documented norm here, and a shutdown that
+waited on every container to stop would be a slow one.
+
+**** Turning keep off destroys the container
+
+~computer.container.keep~ is *on* by default, so a container survives
+the agent stopping and keeps whatever was installed in it.  It reads as
+the smaller of the two settings and it is not: a bare image has no
+toolchain, so the first thing an agent does in a new container is
+install one, and discarding that on every stop means paying for it again
+on every start.  The distrobox backend has defaulted to keeping for
+exactly this reason since it was written.
+
+Turned off, stopping the container *removes* it: the contents are gone
+rather than offline, and starting it again builds a fresh one from the
+image.  That is not what the word stop suggests, so both graphical
+clients ask first and the daemon refuses without an explicit flag:
 
 #+begin_src bash
 clawtilla computer stop oxpecker --remove
 #+end_src
 
-Set ~computer.container.keep: true~ to keep what the agent installed.  A
-distrobox already keeps its box by default, and a VM is never destroyed
-by a stop.
-
-A restart of a container is therefore a rebuild rather than a reboot,
-and carries the same warning.
+A restart is then a rebuild rather than a reboot, and carries the same
+warning.  A VM is never destroyed by a stop.
 
 *** Which emulator a domain runs
 :PROPERTIES:

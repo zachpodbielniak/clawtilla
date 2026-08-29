@@ -843,9 +843,9 @@ pod_action(const gchar *action, GHashTable *params, GHashTable **out_result,
             return clawt_daemon_start_agent(self, agent, error);
 
         if (g_strcmp0(action, "stop_agent") == 0)
-            return clawt_daemon_stop_agent(self, agent);
+            return clawt_daemon_stop_agent(self, agent, TRUE);
 
-        clawt_daemon_stop_agent(self, agent);
+        clawt_daemon_stop_agent(self, agent, TRUE);
         return clawt_daemon_start_agent(self, agent, error);
     }
 
@@ -2761,9 +2761,11 @@ daemon_start_agent_async(ClawtDaemon *self, const gchar *agent_id,
 }
 
 gboolean
-clawt_daemon_stop_agent(ClawtDaemon *self, const gchar *agent_id)
+clawt_daemon_stop_agent(ClawtDaemon *self, const gchar *agent_id,
+                        gboolean stop_machine)
 {
     ClawtAgent *agent;
+    ClawtComputer *computer;
 
     g_return_val_if_fail(CLAWT_IS_DAEMON(self), FALSE);
 
@@ -2773,7 +2775,33 @@ clawt_daemon_stop_agent(ClawtDaemon *self, const gchar *agent_id)
         clawt_agent_get_state(agent) == CLAWT_AGENT_STATE_STOPPED)
         return FALSE;
 
+    /*
+     * Read before the agent is stopped, though it survives that -- the
+     * computer is only dropped when the agent object is finalised. Read
+     * here anyway, so the order this function does things in is not a
+     * thing the next reader has to know.
+     */
+    computer = clawt_agent_get_computer(agent);
+
     clawt_agent_stop(agent);
+
+    /*
+     * And its machine, when the caller meant the whole thing.
+     *
+     * `computer.container.keep` said "keep the container when the agent
+     * stops, instead of removing it" for as long as it has existed, and
+     * nothing stopped the computer when an agent stopped -- so the
+     * setting described a moment that never happened, and every
+     * container an agent had ever used went on running under a stopped
+     * agent until somebody found it in `podman ps`.
+     */
+    if (stop_machine && computer != NULL) {
+        g_autoptr(GError) local = NULL;
+
+        if (!clawt_computer_stop(computer, &local))
+            g_warning("agent %s: its machine did not stop: %s", agent_id,
+                      local != NULL ? local->message : "no reason given");
+    }
     clawt_event_bus_emit(self->bus, "agent.stopped", agent_id);
 
     /*
@@ -6986,7 +7014,7 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "stopped");
         json_builder_add_boolean_value(
-            builder, clawt_daemon_stop_agent(self, agent_id));
+            builder, clawt_daemon_stop_agent(self, agent_id, TRUE));
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
@@ -6995,7 +7023,15 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
     if (g_strcmp0(kind, "agent.restart") == 0) {
         const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
 
-        clawt_daemon_stop_agent(self, agent_id);
+        /*
+         * The machine goes down with it and comes back up with the
+         * start.  Blocking, in the same way clawt_daemon_start_agent()
+         * is and for the reason written there: every caller of this one
+         * has somebody waiting on the answer, and the wait is bounded by
+         * podomation's socket timeout. It is the *fleet* coming up that
+         * must not hold the loop.
+         */
+        clawt_daemon_stop_agent(self, agent_id, TRUE);
 
         if (!clawt_daemon_start_agent(self, agent_id, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
@@ -7626,7 +7662,7 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
          * half-reset session that resumes anyway.
          */
         if (was_running)
-            clawt_daemon_stop_agent(self, agent_id);
+            clawt_daemon_stop_agent(self, agent_id, FALSE);
 
         state_dir = clawt_config_agent_state_dir(self->config, agent_id);
         sessions = g_build_filename(state_dir, "sessions", NULL);
@@ -8471,7 +8507,7 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
             }
         }
 
-        clawt_daemon_stop_agent(self, agent_id);
+        clawt_daemon_stop_agent(self, agent_id, FALSE);
 
         /*
          * The files, before the config entry goes: every path is

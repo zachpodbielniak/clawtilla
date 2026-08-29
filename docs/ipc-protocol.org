@@ -250,6 +250,16 @@ An agent object carries ~vm_cpus~ and ~vm_memory_mb~ for a VM agent, and
 ~computer_stop_removes~ (whether stopping that machine destroys it), so
 no client has to work any of the three out from the type.
 
+~agent.stop~ and ~agent.restart~ stop the agent's *machine* as well ---
+those two verbs mean "this agent is finished for now", and a container
+left running under a stopped agent is a resource nobody can see.
+~agent.reset~ and ~agent.remove~ stop only the process: both stop it as a
+step in something larger, and reset in particular needs the sqlite
+connection closed rather than the machine powered off.  Blocking, in the
+same way ~agent.start~ is and for the reason written there --- every
+caller has somebody waiting on the answer, and the wait is bounded by
+podomation's socket timeout.
+
 ~agent.remove~ takes ~remove_computer~: %TRUE tears the agent's
 container or VM down before removing it, forcing it if it is running.
 Off by default. The reply carries ~computer~ saying what happened, or
@@ -445,9 +455,9 @@ per agent as ~computer_machine~.
 
 ~computer.stop~ and ~computer.restart~ are also refused, without
 ~remove~, when stopping would *destroy* the machine.  That is a
-container's default: ~computer.container.keep~ is false, so the backend
-removes the container when it stops one and the contents are gone rather
-than offline.  The listing says so in advance as
+~computer.container.keep~ is off: the backend then removes the container
+when it stops one, and the contents are gone rather than offline.  It is
+on by default, so this is the case somebody chose.  The listing says so in advance as
 ~computer_stop_removes~, both graphical clients warn before they send,
 and the fence is what protects a client that does not.  ~removes~ in the
 reply is that same policy rather than an observed destruction --- a
