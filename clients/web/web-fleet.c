@@ -940,11 +940,22 @@ on_agent_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
     g_autoptr(HtmxElement) body = NULL;
     g_autofree gchar *html = NULL;
 
-    if (view == CLAWT_WEB_VIEW_CHAT &&
-        htmx_request_get_query_param(request, "clear") != NULL)
-        body = clawt_web_chat_body_full(app, agent_id, TRUE);
-    else
+    if (view == CLAWT_WEB_VIEW_CHAT) {
+        /*
+         * `with` names one of this agent's peer conversations. Read here
+         * rather than in a route of its own, because this handler
+         * already has the request -- and a new route under an agent
+         * would have to be registered before /a/:id/:view, which
+         * swallows everything.
+         */
+        const gchar *peer = htmx_request_get_query_param(request, "with");
+
+        body = clawt_web_chat_body_full(
+            app, agent_id,
+            htmx_request_get_query_param(request, "clear") != NULL, peer);
+    } else {
         body = clawt_web_view_body(app, agent_id, view);
+    }
 
     html = clawt_web_page(app, agent_id, view, body, request);
 

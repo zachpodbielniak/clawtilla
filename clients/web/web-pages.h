@@ -84,7 +84,8 @@ HtmxElement *clawt_web_chat_body(ClawtWebApp *app, const gchar *agent_id);
  */
 HtmxElement *clawt_web_chat_body_full(ClawtWebApp *app,
                                       const gchar *agent_id,
-                                      gboolean     cleared);
+                                      gboolean     cleared,
+                                      const gchar *peer);
 HtmxElement *clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_mailbox_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_computer_body(ClawtWebApp *app, const gchar *agent_id);

@@ -96,6 +96,31 @@ gchar *clawt_chat_day_label(GDateTime *when, GDateTime *now);
  */
 gchar *clawt_chat_time_label(GDateTime *when);
 
+/**
+ * clawt_chat_conversation_peer:
+ * @members: (array zero-terminated=1) (nullable): a room's members
+ * @agent_id: the agent whose conversations are being listed
+ *
+ * The other party in a two-member room, or %NULL if this is not one of
+ * @agent_id's direct conversations.
+ *
+ * A rule both clients need and neither should own. An agent has one
+ * conversation with its operator and one with each peer it has talked
+ * to, and telling them apart is a question about the room's membership
+ * rather than about its id -- a client that took `dm:a:b` apart would
+ * break the day the daemon spelled a direct room differently, which is
+ * already written down as the reason `dm_room` is reported rather than
+ * derived.
+ *
+ * The caller decides what the answer means: "user" is the operator's own
+ * chat, anything else is a conversation between two agents that the
+ * operator can read but is not in.
+ *
+ * Returns: (transfer none) (nullable): the other member
+ */
+const gchar *clawt_chat_conversation_peer(const gchar * const *members,
+                                          const gchar         *agent_id);
+
 G_END_DECLS
 
 #endif /* CLAWT_CHAT_RUN_H */

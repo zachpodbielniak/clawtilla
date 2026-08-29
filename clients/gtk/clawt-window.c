@@ -70,6 +70,7 @@ static gboolean     apply_schema_rows(ClawtWindow *self);
 static void         on_new_agent(GtkButton *button,
                                  gpointer   user_data);
 static void         refresh_settings_folders(ClawtWindow *self);
+static void         fill_conversation_menu(ClawtWindow *self);
 static void         on_import_agent(GtkButton *button,
                                     gpointer   user_data);
 static void         open_path_in_editor(ClawtWindow *self,
@@ -389,6 +390,16 @@ struct _ClawtWindow {
      * what put an agent's reply to one of its peers in the user's chat.
      */
     gchar             *selected_room;
+
+    /*
+     * Which of the selected agent's conversations is on screen: NULL for
+     * the operator's own, or a peer's id for one between two agents that
+     * the operator can read but is not in.
+     */
+    gchar             *selected_conversation;
+    GtkWidget         *conversation_bar;
+    GtkWidget         *conversation_button;
+    GMenu             *conversation_menu;
 
     /*
      * What arrived while you were looking somewhere else.
@@ -5335,10 +5346,18 @@ load_history(ClawtWindow *self)
     if (self->selected_agent == NULL)
         return;
 
+    /*
+     * The operator's own conversation, or one between this agent and a
+     * peer. The daemon resolves either from a member and a viewer, so
+     * neither client has to know how a direct room is named.
+     */
     reply = clawt_window_request(
         self, "room.history",
-        clawt_build_payload("room", self->selected_agent, "as", "user",
-                            NULL));
+        (self->selected_conversation != NULL)
+        ? clawt_build_payload("room", self->selected_conversation,
+                              "as", self->selected_agent, NULL)
+        : clawt_build_payload("room", self->selected_agent, "as", "user",
+                              NULL));
 
     if (reply == NULL)
         return;
@@ -8046,6 +8065,14 @@ select_agent(ClawtWindow *self, const gchar *agent_id)
     self->selected_agent = g_strdup(agent_id);
 
     /*
+     * A different agent opens on its operator conversation. Keeping the
+     * peer would mean clicking an agent and landing in a conversation
+     * between two others -- and "with gnuisaince" means a different room
+     * for every agent it is shown under.
+     */
+    g_clear_pointer(&self->selected_conversation, g_free);
+
+    /*
      * Opening a conversation is the only thing that clears its count.
      *
      * Not scrolling, not the window gaining focus, not time passing: a
@@ -8068,6 +8095,7 @@ select_agent(ClawtWindow *self, const gchar *agent_id)
         agent_id);
 
     load_history(self);
+    fill_conversation_menu(self);
     refresh_selected(self);
 
     /*
@@ -12338,6 +12366,152 @@ on_import_agent_activate(GSimpleAction *action, GVariant *parameter,
 
 /* ── Construction ────────────────────────────────────────────────── */
 
+/*
+ * The conversations this agent is in, and which one is on screen.
+ *
+ * An agent has one with its operator and one with each peer it has
+ * talked to. Work handed down a chain is answered back up it, so those
+ * peer conversations are where a delegated answer actually is -- and
+ * before this there was nowhere to read them: the operator saw an agent
+ * go busy and had no way to see what it was saying to whom.
+ *
+ * Filled from room.list per agent rather than kept, because a direct
+ * room is created the first time two agents speak; an agent that has
+ * never delegated has one conversation and no switcher at all.
+ */
+static void
+fill_conversation_menu(ClawtWindow *self)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    JsonArray *rooms;
+    GAction *action;
+    guint peers = 0;
+    guint i;
+
+    if (self->conversation_menu == NULL)
+        return;
+
+    g_menu_remove_all(self->conversation_menu);
+
+    if (self->selected_agent == NULL) {
+        gtk_widget_set_visible(self->conversation_bar, FALSE);
+        return;
+    }
+
+    /*
+     * The operator's own, always first and always present. It is the one
+     * the client opens on, and an agent with no peers still needs the
+     * button to say which conversation this is when one appears later.
+     */
+    {
+        g_autoptr(GMenuItem) item = g_menu_item_new("Chat", NULL);
+
+        g_menu_item_set_action_and_target_value(item, "win.conversation",
+                                                g_variant_new_string(""));
+        g_menu_append_item(self->conversation_menu, item);
+    }
+
+    reply = clawt_window_request(self, "room.list", NULL);
+    rooms = (reply != NULL)
+        ? json_object_get_array_member(clawt_payload_of(reply), "rooms")
+        : NULL;
+
+    for (i = 0; rooms != NULL && i < json_array_get_length(rooms); i++) {
+        JsonObject *room = json_array_get_object_element(rooms, i);
+        JsonArray *members = json_object_get_array_member(room, "members");
+        g_autofree GStrv ids = NULL;
+        const gchar *peer;
+        guint m;
+
+        if (members == NULL)
+            continue;
+
+        ids = g_new0(gchar *, json_array_get_length(members) + 1);
+
+        for (m = 0; m < json_array_get_length(members); m++)
+            ids[m] = (gchar *)json_array_get_string_element(members, m);
+
+        peer = clawt_chat_conversation_peer((const gchar *const *)ids,
+                                            self->selected_agent);
+
+        /*
+         * The operator's own room is already the first entry, and a room
+         * this agent is not in belongs to somebody else.
+         */
+        if (peer == NULL || g_strcmp0(peer, "user") == 0)
+            continue;
+
+        {
+            g_autofree gchar *label = g_strdup_printf("with %s", peer);
+            g_autoptr(GMenuItem) item = g_menu_item_new(label, NULL);
+
+            g_menu_item_set_action_and_target_value(
+                item, "win.conversation", g_variant_new_string(peer));
+            g_menu_append_item(self->conversation_menu, item);
+            peers++;
+        }
+    }
+
+    /*
+     * Hidden entirely when there is nothing to switch to. A control
+     * offering one choice is a control that costs a line of the
+     * transcript and answers a question nobody asked.
+     */
+    gtk_widget_set_visible(self->conversation_bar, peers > 0);
+
+    /*
+     * A peer conversation is read-only. Typing into it would post as the
+     * operator into a room the operator is not a member of -- and what
+     * the composer actually sends is a message to the agent, which would
+     * land in the main chat while you were looking at a different one.
+     *
+     * Insensitive rather than hidden: a composer that disappears reads
+     * as the client having lost the connection.
+     */
+    if (self->entry != NULL) {
+        gboolean own = self->selected_conversation == NULL;
+
+        gtk_widget_set_sensitive(GTK_WIDGET(self->entry), own);
+        gtk_text_view_set_editable(self->entry, own);
+    }
+
+    action = g_action_map_lookup_action(G_ACTION_MAP(self), "conversation");
+
+    if (action != NULL)
+        g_simple_action_set_state(
+            G_SIMPLE_ACTION(action),
+            g_variant_new_string(self->selected_conversation != NULL
+                                 ? self->selected_conversation : ""));
+
+    {
+        g_autofree gchar *label =
+            (self->selected_conversation != NULL)
+            ? g_strdup_printf("with %s", self->selected_conversation)
+            : g_strdup("Chat");
+
+        gtk_menu_button_set_label(GTK_MENU_BUTTON(self->conversation_button),
+                                  label);
+    }
+}
+
+static void
+on_conversation_chosen(GSimpleAction *action, GVariant *parameter,
+                       gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *peer = g_variant_get_string(parameter, NULL);
+
+    g_simple_action_set_state(action, g_variant_new_string(peer));
+
+    g_clear_pointer(&self->selected_conversation, g_free);
+
+    if (*peer != '\0')
+        self->selected_conversation = g_strdup(peer);
+
+    load_history(self);
+    fill_conversation_menu(self);
+}
+
 static GtkWidget *
 build_chat_page(ClawtWindow *self)
 {
@@ -12661,6 +12835,36 @@ build_chat_page(ClawtWindow *self)
         gtk_widget_set_vexpand(GTK_WIDGET(self->toasts), TRUE);
 
         gtk_box_append(GTK_BOX(box), GTK_WIDGET(self->toasts));
+    }
+
+    /*
+     * Which conversation is on screen, above the transcript rather than
+     * on the tab: the tab says what kind of thing this page is, and this
+     * says which of several the page is showing.
+     */
+    {
+        GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        GtkWidget *button = gtk_menu_button_new();
+
+        self->conversation_menu = g_menu_new();
+
+        gtk_menu_button_set_menu_model(
+            GTK_MENU_BUTTON(button),
+            G_MENU_MODEL(self->conversation_menu));
+        gtk_widget_add_css_class(button, "flat");
+        gtk_menu_button_set_label(GTK_MENU_BUTTON(button), "Chat");
+
+        gtk_widget_set_margin_start(bar, 12);
+        gtk_widget_set_margin_end(bar, 12);
+        gtk_widget_set_margin_top(bar, 6);
+        gtk_box_append(GTK_BOX(bar), button);
+
+        self->conversation_bar = bar;
+        self->conversation_button = button;
+
+        /* Nothing to switch to until an agent has a peer conversation. */
+        gtk_widget_set_visible(bar, FALSE);
+        gtk_box_prepend(GTK_BOX(box), bar);
     }
 
     /*
@@ -18212,6 +18416,23 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
     {
         GMenu *menu = g_menu_new();
         GtkWidget *menu_button = gtk_menu_button_new();
+        /*
+         * Stateful and taking the peer id, so the menu draws as radios
+         * with the conversation on screen ticked -- a switcher that
+         * cannot say where you are makes you open one to find out.
+         */
+        {
+            g_autoptr(GSimpleAction) conversation =
+                g_simple_action_new_stateful("conversation",
+                                             G_VARIANT_TYPE_STRING,
+                                             g_variant_new_string(""));
+
+            g_signal_connect(conversation, "activate",
+                             G_CALLBACK(on_conversation_chosen), self);
+            g_action_map_add_action(G_ACTION_MAP(self),
+                                    G_ACTION(conversation));
+        }
+
         GSimpleAction *settings_action = g_simple_action_new("settings",
                                                              NULL);
 

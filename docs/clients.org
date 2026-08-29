@@ -1641,6 +1641,39 @@ because this crosses the IPC socket base64-encoded.
 
 
 
+*** Reading what an agent said to another agent
+:PROPERTIES:
+:CUSTOM_ID: peer-conversations
+:END:
+
+An agent has one conversation with you and one with each peer it has
+talked to.  Work handed down a chain is answered back up it --- a chief
+of staff delegates to a lead, the lead to a member, and each answer goes
+to whoever asked --- so a delegated answer is in a *peer* conversation,
+not in yours.
+
+Above the transcript there is a switcher: /Chat/, which is yours, and
+one /with <agent>/ entry per peer.  In the GTK client it is a menu
+button; in the web client a row of tabs, and the peer conversation has
+its own URL (~/a/<id>/chat?with=<peer>~) so it can be linked and
+bookmarked.
+
+It appears only when there is something to switch to.  An agent that has
+never delegated has one conversation, and a control offering a single
+choice costs a line of the transcript and answers a question nobody
+asked.
+
+A peer conversation is **read-only**.  What the composer sends is a
+message to the agent whose page you are on, which would land in your own
+chat while you were looking at a different one --- so it is disabled
+there and says why.  To say something to either agent, open its own
+chat.
+
+Which rooms count is ~clawt_chat_conversation_peer()~ in the library
+rather than a rule in each client: it is a question about a room's
+membership, not about its id, and a client that took ~dm:a:b~ apart
+would break the day the daemon spelled a direct room differently.
+
 *** Right-click
 
 | Where | What you get |

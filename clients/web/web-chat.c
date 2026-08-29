@@ -402,8 +402,98 @@ message_element(JsonObject *message, const gchar *agent_id,
     return g_steal_pointer(&row);
 }
 
+/*
+ * The conversations this agent is in, and which one is on screen.
+ *
+ * An agent has one with its operator and one with each peer it has
+ * talked to. Work handed down a chain is answered back up it, so a
+ * delegated answer lives in a peer conversation -- and before this there
+ * was nowhere to read one: the operator saw an agent go busy and had no
+ * way to see what it was saying to whom.
+ *
+ * Built from room.list, because a direct room is created the first time
+ * two agents speak. An agent that has never delegated has one
+ * conversation and no switcher at all: a control offering a single
+ * choice costs a line of the page and answers a question nobody asked.
+ */
 static HtmxElement *
-transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared)
+conversation_switcher(ClawtWebApp *app, const gchar *agent_id,
+                      const gchar *peer)
+{
+    g_autoptr(JsonNode) reply = clawt_web_app_call(app, "room.list", NULL);
+    JsonArray *rooms = clawt_web_member_array(clawt_web_root(reply), "rooms");
+    g_autoptr(HtmxDiv) bar = htmx_div_new();
+    g_autofree gchar *escaped = g_uri_escape_string(agent_id, NULL, FALSE);
+    g_autofree gchar *own = g_strdup_printf("/a/%s/chat", escaped);
+    guint peers = 0;
+    guint i;
+
+    htmx_element_add_class(HTMX_ELEMENT(bar), "tabs");
+    htmx_element_add_class(HTMX_ELEMENT(bar), "conversation-switcher");
+
+    {
+        g_autoptr(HtmxA) link = htmx_a_new_with_href(own);
+
+        htmx_element_add_class(HTMX_ELEMENT(link), "tab");
+        htmx_node_set_text_content(HTMX_NODE(link), "Chat");
+
+        if (peer == NULL)
+            htmx_element_set_attribute(HTMX_ELEMENT(link), "aria-current",
+                                       "page");
+
+        htmx_node_add_child(HTMX_NODE(bar), HTMX_NODE(link));
+    }
+
+    for (i = 0; rooms != NULL && i < json_array_get_length(rooms); i++) {
+        JsonObject *room = json_array_get_object_element(rooms, i);
+        JsonArray *members = clawt_web_member_array(room, "members");
+        g_autofree GStrv ids = NULL;
+        const gchar *other;
+        guint m;
+
+        if (members == NULL)
+            continue;
+
+        ids = g_new0(gchar *, json_array_get_length(members) + 1);
+
+        for (m = 0; m < json_array_get_length(members); m++)
+            ids[m] = (gchar *)json_array_get_string_element(members, m);
+
+        other = clawt_chat_conversation_peer((const gchar *const *)ids,
+                                             agent_id);
+
+        if (other == NULL || g_strcmp0(other, "user") == 0)
+            continue;
+
+        {
+            g_autofree gchar *label = g_strdup_printf("with %s", other);
+            g_autofree gchar *quoted = g_uri_escape_string(other, NULL, FALSE);
+            g_autofree gchar *href = g_strdup_printf("/a/%s/chat?with=%s",
+                                                     escaped, quoted);
+
+            g_autoptr(HtmxA) link = htmx_a_new_with_href(href);
+
+            htmx_element_add_class(HTMX_ELEMENT(link), "tab");
+            htmx_node_set_text_content(HTMX_NODE(link), label);
+
+            if (g_strcmp0(peer, other) == 0)
+                htmx_element_set_attribute(HTMX_ELEMENT(link),
+                                           "aria-current", "page");
+
+            htmx_node_add_child(HTMX_NODE(bar), HTMX_NODE(link));
+            peers++;
+        }
+    }
+
+    if (peers == 0)
+        return NULL;
+
+    return HTMX_ELEMENT(g_steal_pointer(&bar));
+}
+
+static HtmxElement *
+transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
+           const gchar *peer)
 {
     g_autoptr(HtmxDiv) scroll = htmx_div_new();
     g_autoptr(HtmxDiv) inner = htmx_div_new();
@@ -461,8 +551,13 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared)
         return HTMX_ELEMENT(g_steal_pointer(&scroll));
     }
 
-    clawt_web_payload_set(payload, "room", agent_id);
-    clawt_web_payload_set(payload, "as", "user");
+    /*
+     * The operator's own conversation, or one between this agent and a
+     * peer. The daemon resolves either from a member and a viewer, so
+     * neither client has to know how a direct room is named.
+     */
+    clawt_web_payload_set(payload, "room", peer != NULL ? peer : agent_id);
+    clawt_web_payload_set(payload, "as", peer != NULL ? agent_id : "user");
     clawt_web_payload_set_int(payload, "limit", 200);
 
     reply = clawt_web_app_call(app, "room.history",
@@ -616,7 +711,7 @@ composer(const gchar *agent_id)
 
 HtmxElement *
 clawt_web_chat_body_full(ClawtWebApp *app, const gchar *agent_id,
-                         gboolean cleared)
+                         gboolean cleared, const gchar *peer)
 {
     g_autoptr(HtmxElement) main_el = HTMX_ELEMENT(htmx_main_new());
 
@@ -639,6 +734,8 @@ clawt_web_chat_body_full(ClawtWebApp *app, const gchar *agent_id,
      * is outside the swap target on purpose, so its state is not thrown
      * away by the arrival that set it.
      */
+    clawt_web_add(main_el, conversation_switcher(app, agent_id, peer));
+
     {
         g_autoptr(HtmxDiv) body = htmx_div_new();
         g_autoptr(HtmxButton) pill = htmx_button_new_with_label("New messages");
@@ -656,12 +753,23 @@ clawt_web_chat_body_full(ClawtWebApp *app, const gchar *agent_id,
         htmx_element_set_attribute(HTMX_ELEMENT(pill), "aria-label",
                                    "Jump to the newest message");
 
-        clawt_web_add(body, transcript(app, agent_id, cleared));
+        clawt_web_add(body, transcript(app, agent_id, cleared, peer));
         htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(pill));
         htmx_node_add_child(HTMX_NODE(main_el), HTMX_NODE(body));
     }
 
-    clawt_web_add(main_el, composer(agent_id));
+    /*
+     * A peer conversation is read-only: the composer sends a message to
+     * the agent, which would land in the operator's own chat while a
+     * different one was on screen. Said rather than left blank -- an
+     * absent composer reads as the page having failed to render.
+     */
+    if (peer == NULL)
+        clawt_web_add(main_el, composer(agent_id));
+    else
+        clawt_web_add(main_el, clawt_web_text(
+            "You are reading a conversation between two agents. Send to "
+            "this one from its own chat.", "lede"));
 
     return g_steal_pointer(&main_el);
 }
@@ -669,7 +777,7 @@ clawt_web_chat_body_full(ClawtWebApp *app, const gchar *agent_id,
 HtmxElement *
 clawt_web_chat_body(ClawtWebApp *app, const gchar *agent_id)
 {
-    return clawt_web_chat_body_full(app, agent_id, FALSE);
+    return clawt_web_chat_body_full(app, agent_id, FALSE, NULL);
 }
 
 /* ── Slash commands ──────────────────────────────────────────────── */
@@ -1288,7 +1396,7 @@ on_transcript_fragment(HtmxRequest *request, GHashTable *params,
      */
     clawt_web_app_set_viewing(app, agent_id);
 
-    fragment = transcript(app, agent_id, FALSE);
+    fragment = transcript(app, agent_id, FALSE, NULL);
 
     return clawt_web_fragment_response(fragment);
 }

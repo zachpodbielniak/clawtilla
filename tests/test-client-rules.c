@@ -566,6 +566,56 @@ test_only_a_running_agent_can_be_working(void)
 }
 
 
+/*
+ * Which of an agent's rooms is a conversation, and with whom.
+ *
+ * The operator's chat and a peer conversation are the same shape -- two
+ * members, one of them this agent -- and the difference is only who the
+ * other one is. Answered here so neither client takes a room id apart,
+ * which is already recorded as the reason the daemon reports `dm_room`
+ * rather than letting a client build it.
+ */
+static void
+test_a_conversation_names_its_other_party(void)
+{
+    const gchar *with_user[] = { "user", "oryx", NULL };
+    const gchar *with_peer[] = { "oryx", "gnuisaince", NULL };
+    const gchar *standup[] = { "oryx", "kudu", "mamba", NULL };
+    const gchar *elsewhere[] = { "kudu", "mamba", NULL };
+    const gchar *alone[] = { "oryx", NULL };
+    const gchar *doubled[] = { "oryx", "oryx", NULL };
+
+    /* The operator's own chat, which is the one the client opens on. */
+    g_assert_cmpstr(clawt_chat_conversation_peer(with_user, "oryx"), ==,
+                    "user");
+
+    /* And a peer's, whichever order the members happen to be in. */
+    g_assert_cmpstr(clawt_chat_conversation_peer(with_peer, "oryx"), ==,
+                    "gnuisaince");
+    g_assert_cmpstr(clawt_chat_conversation_peer(with_peer, "gnuisaince"),
+                    ==, "oryx");
+
+    /* A room of three is not a conversation between two. */
+    g_assert_null(clawt_chat_conversation_peer(standup, "oryx"));
+
+    /* Nor is one this agent is not in. */
+    g_assert_null(clawt_chat_conversation_peer(elsewhere, "oryx"));
+
+    /* Nor a room of one, which is what a half-built config produces. */
+    g_assert_null(clawt_chat_conversation_peer(alone, "oryx"));
+
+    /*
+     * And an agent listed twice is a room of two that is not a
+     * conversation with anybody. Returning "oryx" here would put an
+     * agent in a chat with itself in the switcher.
+     */
+    g_assert_null(clawt_chat_conversation_peer(doubled, "oryx"));
+
+    g_assert_null(clawt_chat_conversation_peer(NULL, "oryx"));
+    g_assert_null(clawt_chat_conversation_peer(with_peer, NULL));
+}
+
+
 int
 main(int argc, char *argv[])
 {
@@ -633,6 +683,8 @@ main(int argc, char *argv[])
                     test_a_wider_panel_needs_a_wider_window);
     g_test_add_func("/client-rules/alerts-push/generous-margin",
                     test_a_generous_row_margin_never_shrinks_the_column);
+    g_test_add_func("/client-rules/conversation/names-its-other-party",
+                    test_a_conversation_names_its_other_party);
     g_test_add_func("/client-rules/alerts-push/impossible-fraction",
                     test_an_impossible_fraction_is_refused);
 

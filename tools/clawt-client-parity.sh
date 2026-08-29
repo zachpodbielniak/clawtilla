@@ -153,6 +153,7 @@ declare -A AFFORDANCES=(
     ["unread rule"]="clawt_unread_should_count|clawt_unread_should_count"
     ["team tally"]="clawt_team_tally|clawt_team_tally"
     ["fleet warnings"]="append_warning_rows|clawt_web_warnings"
+    ["peer conversations"]="fill_conversation_menu|conversation_switcher"
     ["team busy marker"]="clawt-team-busy|clawt-team-busy"
     ["follow the live edge"]="clawt_transcript_is_at_bottom|transcript-end"
     ["alert filter"]="alerts_show_all|show_all"

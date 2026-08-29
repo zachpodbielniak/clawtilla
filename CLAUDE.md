@@ -700,6 +700,39 @@ the same program.
   check reported OK with the feature in one client only. Verified by
   breaking one and watching it fail.
 
+### Answers that go back up the chain have to be readable somewhere
+
+- Stopping agents reporting into the operator's chat is only half of it:
+  the other half is that the conversation they *should* be having was
+  invisible. An operator saw an agent go busy and had no way to see what
+  it was saying to whom -- which is why the traffic ending up in the main
+  chat looked like the only way it could work.
+- One switcher above the transcript in both clients: "Chat" and one
+  "with <agent>" per peer, built from `room.list` because a direct room
+  is created the first time two agents speak. An agent that has never
+  delegated has one conversation and no switcher -- a control offering a
+  single choice is a line of the transcript spent on a question nobody
+  asked.
+- **Read-only.** The composer sends a message to the agent whose page you
+  are on, so typing into a peer conversation would post into your own
+  chat while a different one was on screen. Disabled and said, rather
+  than hidden: a composer that disappears reads as the client having lost
+  the connection.
+- `clawt_chat_conversation_peer()` is in the library because it is a
+  question about a room's *membership* and not about its id. A client
+  taking `dm:a:b` apart is already recorded here as the thing `dm_room`
+  exists to prevent. The rule has an edge worth having a test for: a room
+  listing one agent twice has two members and no other party, and
+  answering with the agent itself would put it in a conversation with
+  itself in the switcher.
+- Verified against a real daemon on both sides: the web client rendered
+  Chat / with gnuisaince / with kudu for one agent and Chat / with oryx
+  for another, with the composer element absent from the peer view and
+  present in the operator's; the GTK menu printed the same entries under
+  a probe. **The composer check had to assert on `class="composer-inner"`
+  rather than the bare class name** -- the stylesheet is in every page,
+  so the first version of that check passed for both.
+
 ### Every agent in a chain reported to the operator, because the tool said to
 
 - `clawtilla_message_user`'s description read: "if they asked you to find

@@ -70,3 +70,39 @@ clawt_chat_time_label(GDateTime *when)
 
     return g_date_time_format(when, "%H:%M");
 }
+
+const gchar *
+clawt_chat_conversation_peer(const gchar * const *members,
+                             const gchar         *agent_id)
+{
+    const gchar *other = NULL;
+    gboolean saw_agent = FALSE;
+    guint count = 0;
+    guint i;
+
+    if (members == NULL || agent_id == NULL)
+        return NULL;
+
+    for (i = 0; members[i] != NULL; i++) {
+        count++;
+
+        if (g_strcmp0(members[i], agent_id) == 0) {
+            saw_agent = TRUE;
+            continue;
+        }
+
+        if (other == NULL)
+            other = members[i];
+    }
+
+    /*
+     * Two members, one of them this agent, and somebody else. A room
+     * listing the agent twice -- which a hand-edited config produces --
+     * has two members and no other party, and returning the agent here
+     * would put it in a conversation with itself in the switcher.
+     */
+    if (!saw_agent || count != 2 || other == NULL)
+        return NULL;
+
+    return other;
+}
