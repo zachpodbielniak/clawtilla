@@ -2677,6 +2677,128 @@ test_a_pod_remembers_in_the_category_it_named(void)
 }
 
 /*
+ * A message the router routed can be recalled through the daemon.
+ *
+ * The index, the router and the IPC verb each work on their own; what
+ * this asserts is the *wire* between them, which is the half that has
+ * gone missing three times in this tree -- a factory nothing calls, a
+ * signal nothing connects to, a limit nothing increments.  Driven end to
+ * end through `memory.recall` for that reason: an assertion against
+ * ClawtTranscriptIndex directly would pass with the router never having
+ * been given one.
+ */
+static void
+test_a_routed_message_can_be_recalled(void)
+{
+    Fixture fixture = { 0 };
+    ClawtMailboxRouter *router;
+    g_autoptr(JsonNode) reply = NULL;
+    JsonArray *hits;
+    JsonObject *hit;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    router = clawt_daemon_get_router(fixture.daemon);
+    g_assert_cmpint(clawt_mailbox_router_send_to(router, "alpha", "beta",
+                                                 "the deploy key expired",
+                                                 NULL, 0, NULL),
+                    >=, 0);
+
+    reply = request(&fixture, "memory.recall",
+                    "{\"query\": \"deploy key\"}");
+
+    hits = json_object_get_array_member(clawt_ipc_frame_get_payload(reply),
+                                        "hits");
+
+    g_assert_cmpuint(json_array_get_length(hits), ==, 1);
+
+    hit = json_array_get_object_element(hits, 0);
+    g_assert_cmpstr(json_object_get_string_member(hit, "body"), ==,
+                    "the deploy key expired");
+    g_assert_cmpstr(json_object_get_string_member(hit, "from"), ==, "alpha");
+
+    /*
+     * And the room, which is the reason the index is fed from the router
+     * rather than from either end of the link: `beta` is an agent id,
+     * and the message landed in the direct room between the two.  An
+     * index that recorded what the message *said* would have filed this
+     * under a room that does not exist.
+     */
+    g_assert_cmpstr(json_object_get_string_member(hit, "room"), !=, "beta");
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * The operator profile reaches every agent's USER.org, and leaves when
+ * it is turned off.
+ *
+ * Written to every agent rather than only a newly created one: a fleet
+ * that learnt something in March and told only the agents made after it
+ * has two halves that know different things, and nothing to say which is
+ * which.  And a setting somebody turned off has to take the region back
+ * out, not leave it in a prompt that is already written.
+ */
+static void
+test_the_operator_profile_reaches_every_agent(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) written = NULL;
+    g_autoptr(JsonNode) read_back = NULL;
+    g_autofree gchar *user_org = NULL;
+    g_autofree gchar *contents = NULL;
+
+    fixture_setup(&fixture,
+                  "memories:\n  operator_profile: true\n"
+                  "agents:\n  - id: alpha\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    written = request(&fixture, "operator.set",
+                      "{\"text\": \"* Vitals\\n- Timezone: UTC-5\"}");
+    g_assert_nonnull(clawt_ipc_frame_get_payload(written));
+
+    read_back = request(&fixture, "operator.get", NULL);
+    g_assert_cmpstr(
+        json_object_get_string_member(clawt_ipc_frame_get_payload(read_back),
+                                      "text"),
+        ==, "* Vitals\n- Timezone: UTC-5");
+
+    user_org = g_build_filename(fixture.dir, "agents", "alpha", "USER.org",
+                                NULL);
+    g_assert_true(g_file_get_contents(user_org, &contents, NULL, NULL));
+
+    g_assert_nonnull(strstr(contents, "BEGIN clawtilla operator profile"));
+    g_assert_nonnull(strstr(contents, "UTC-5"));
+
+    /*
+     * Off, and the region goes.  Asserted on the marker rather than on
+     * the text: a rewrite that left an empty heading behind would still
+     * be costing every turn's context to say nothing.
+     */
+    {
+        g_autoptr(JsonNode) off = NULL;
+        g_autofree gchar *after = NULL;
+        g_autoptr(GPtrArray) refusals = NULL;
+
+        fixture_write_config(&fixture,
+                             "memories:\n  operator_profile: false\n"
+                             "agents:\n  - id: alpha\n");
+        g_assert_true(clawt_daemon_reload(fixture.daemon, NULL));
+
+        off = request(&fixture, "operator.set",
+                      "{\"text\": \"* Vitals\\n- Timezone: UTC-5\"}");
+        g_assert_nonnull(off);
+        (void)refusals;
+
+        g_assert_true(g_file_get_contents(user_org, &after, NULL, NULL));
+        g_assert_null(strstr(after, "BEGIN clawtilla operator profile"));
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * A finished turn leaves no depth behind for the next one.
  *
  * hop_depth answers "how far had the message I am handling already
@@ -7363,6 +7485,10 @@ main(int argc, char *argv[])
                     test_a_pod_can_send_at_a_band);
     g_test_add_func("/daemon/memory/a-pod-remembers-in-its-category",
                     test_a_pod_remembers_in_the_category_it_named);
+    g_test_add_func("/daemon/memory/a-routed-message-can-be-recalled",
+                    test_a_routed_message_can_be_recalled);
+    g_test_add_func("/daemon/memory/operator-profile-reaches-agents",
+                    test_the_operator_profile_reaches_every_agent);
     g_test_add_func("/daemon/hop-depth/limit-still-fires-across-turns",
                     test_the_limit_still_fires_across_turns);
     g_test_add_func("/daemon/hop-depth/cleared-when-a-turn-ends",
