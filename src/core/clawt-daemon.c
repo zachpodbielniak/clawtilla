@@ -794,8 +794,22 @@ pod_action(const gchar *action, GHashTable *params, GHashTable **out_result,
             const gchar *category = g_hash_table_lookup(params, "category");
             g_autofree gchar *id = NULL;
 
-            if (category != NULL)
-                g_object_set(memory, "category", category, NULL);
+            /*
+             * Assigned, not set through g_object_set().
+             *
+             * #ClawtMemory is a G_DEFINE_BOXED_TYPE with public fields
+             * and no properties at all, so g_object_set() was reading a
+             * GTypeInstance out of a plain struct: it does not warn and
+             * return, it takes the daemon down with SIGSEGV.  Any pod
+             * that classified what it was recording killed the process
+             * that was running it, and the fleet came back without the
+             * memory, without the pod's remaining actions, and with
+             * nothing in the log naming the line.
+             */
+            if (category != NULL && category[0] != '\0') {
+                g_free(memory->category);
+                memory->category = g_strdup(category);
+            }
 
             id = clawt_memory_store_add(store, memory, error);
 

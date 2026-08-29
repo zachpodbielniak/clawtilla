@@ -2603,6 +2603,80 @@ test_a_pod_can_send_at_a_band(void)
 }
 
 /*
+ * And a pod's `memory_add` files what it records under the category it
+ * named.
+ *
+ * #ClawtMemory is a boxed record with public fields and no properties,
+ * and the daemon set the category with g_object_set() -- which on a
+ * pointer that is not a GObject does not warn, it segfaults.  Restoring
+ * the call makes this test abort with SIGSEGV rather than fail an
+ * assertion, which is the size of what it was: a pod that classified
+ * what it recorded killed the daemon running it.
+ *
+ * Driven through a real `.pod` file rather than by calling the handler,
+ * because the handler is static and what is being fixed is the wiring
+ * between a declared parameter and the row on disk.
+ */
+static void
+test_a_pod_remembers_in_the_category_it_named(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentManager *agents;
+    ClawtMemoryStore *store;
+    g_autofree gchar *pods = NULL;
+    g_autofree gchar *pod_file = NULL;
+    g_autoptr(GPtrArray) found = NULL;
+    g_autoptr(GError) error = NULL;
+    gint64 deadline;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n");
+
+    pods = g_build_filename(fixture.dir, "pods", NULL);
+    g_assert_cmpint(g_mkdir_with_parents(pods, 0700), ==, 0);
+
+    pod_file = g_build_filename(pods, "learn.pod", NULL);
+    g_file_set_contents(
+        pod_file,
+        "pod fleet = clawtilla->new();\n"
+        "fleet->on_daemon_started => clawtilla->memory_add("
+        "agent: \"alpha\", content: \"the build needs libyaml-devel\", "
+        "category: \"decision\");\n", -1, &error);
+    g_assert_no_error(error);
+
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    agents = clawt_daemon_get_agents(fixture.daemon);
+    store = clawt_agent_get_memory(clawt_agent_manager_get(agents, "alpha"));
+    g_assert_nonnull(store);
+
+    /*
+     * Against wall time, for the same reason the band test is: the pod
+     * engine does its work off this context, so a fixed number of
+     * non-blocking iterations proves nothing about whether it ran.
+     */
+    deadline = g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
+
+    while (clawt_memory_store_count(store, TRUE) == 0 &&
+           g_get_monotonic_time() < deadline)
+        g_main_context_iteration(fixture.context, FALSE);
+
+    g_assert_cmpuint(clawt_memory_store_count(store, TRUE), ==, 1);
+
+    /*
+     * Asked for by category rather than read back whole: the listing
+     * with no category passed throughout the bug, because the memory was
+     * always written -- only under the wrong name.
+     */
+    found = clawt_memory_store_list(store, "decision", FALSE, 0, &error);
+    g_assert_no_error(error);
+    g_assert_cmpuint(found->len, ==, 1);
+    g_assert_cmpstr(((ClawtMemory *)g_ptr_array_index(found, 0))->content,
+                    ==, "the build needs libyaml-devel");
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * A finished turn leaves no depth behind for the next one.
  *
  * hop_depth answers "how far had the message I am handling already
@@ -7287,6 +7361,8 @@ main(int argc, char *argv[])
                     test_urgent_overtakes_an_earlier_ordinary_message);
     g_test_add_func("/daemon/priority/a-pod-can-send-at-a-band",
                     test_a_pod_can_send_at_a_band);
+    g_test_add_func("/daemon/memory/a-pod-remembers-in-its-category",
+                    test_a_pod_remembers_in_the_category_it_named);
     g_test_add_func("/daemon/hop-depth/limit-still-fires-across-turns",
                     test_the_limit_still_fires_across_turns);
     g_test_add_func("/daemon/hop-depth/cleared-when-a-turn-ends",
