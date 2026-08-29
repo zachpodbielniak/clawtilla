@@ -55,6 +55,84 @@ gint clawt_mcp_relay_run(GStrv argv, GStrv envp, GStrv permitted,
                          const gchar *hint);
 
 /**
+ * ClawtMcpRelayGate: (skip)
+ * @tool: the tool about to be called
+ * @refusal: (out) (transfer full) (nullable): what to tell the agent
+ *   instead, when the answer is no
+ * @user_data: whatever was handed to clawt_mcp_relay_run_gated()
+ *
+ * A second opinion, asked per call, on a tool the agent is otherwise
+ * allowed.
+ *
+ * The permitted list answers "may this agent ever do this", which is
+ * fixed for the life of the relay. This answers "may it do it right
+ * now", which is not: somebody can take the screen while the relay is
+ * running, and the relay has no way to hear about it.
+ *
+ * **It must fail open.** A gate that cannot reach whoever knows the
+ * answer has to allow the call. This is cooperation between an operator
+ * and their own agent, not a boundary against a hostile one -- nothing
+ * here confines a program or protects a secret -- and a daemon hiccup
+ * that bricked every desktop tool mid-turn would cost far more than the
+ * race it prevented. Every real permission gate in clawtilla fails
+ * closed; this is not one of them, and the difference is the point.
+ *
+ * Returns: %TRUE if the call may go through
+ */
+typedef gboolean (*ClawtMcpRelayGate)(const gchar  *tool,
+                                      gchar       **refusal,
+                                      gpointer      user_data);
+
+/**
+ * clawt_mcp_relay_run_gated:
+ * @argv: (array zero-terminated=1): the server to run
+ * @envp: (array zero-terminated=1) (nullable): added to its environment
+ * @permitted: (array zero-terminated=1) (nullable): the tools this agent
+ *   may use
+ * @hint: (nullable): one sentence on why, for a refusal from @permitted
+ * @gate: (scope call) (nullable): asked once per permitted tool call
+ * @gate_data: data for @gate
+ *
+ * The relay, with a per-call gate in front of it.
+ *
+ * Returns: the exit status for the process
+ */
+gint clawt_mcp_relay_run_gated(GStrv              argv,
+                               GStrv              envp,
+                               GStrv              permitted,
+                               const gchar       *hint,
+                               ClawtMcpRelayGate  gate,
+                               gpointer           gate_data);
+
+/**
+ * clawt_mcp_relay_call_name:
+ * @line: one JSON-RPC message from the agent's MCP client
+ *
+ * The tool a `tools/call` message names, or %NULL for anything else.
+ *
+ * Exposed because a gate has to know what it is being asked about, and
+ * a second JSON parse in the caller would be a second answer to "is
+ * this a tool call" -- which would differ on a notification, the shape
+ * that has no id and therefore no way to be refused.
+ *
+ * Returns: (transfer full) (nullable): the tool name
+ */
+gchar *clawt_mcp_relay_call_name(const gchar *line);
+
+/**
+ * clawt_mcp_relay_build_refusal:
+ * @line: the `tools/call` message being refused
+ * @message: what to tell the agent
+ *
+ * A JSON-RPC error carrying the caller's own id.
+ *
+ * Returns: (transfer full) (nullable): the reply, or %NULL when @line is
+ *   a notification and there is nothing to answer into
+ */
+gchar *clawt_mcp_relay_build_refusal(const gchar *line,
+                                     const gchar *message);
+
+/**
  * clawt_mcp_relay_run_unfiltered:
  * @argv: (array zero-terminated=1): the server to run
  * @envp: (array zero-terminated=1) (nullable): `NAME=value` pairs added to

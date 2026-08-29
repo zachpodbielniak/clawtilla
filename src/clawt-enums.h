@@ -278,6 +278,104 @@ typedef enum {
 } ClawtDesktopBackend;
 
 /**
+ * ClawtComputerView:
+ * @CLAWT_COMPUTER_VIEW_SHELL: run a command and read what it said
+ * @CLAWT_COMPUTER_VIEW_SCREEN: watch the desktop, and take it
+ * @CLAWT_COMPUTER_VIEW_MOUNTS: which host paths are inside
+ * @CLAWT_COMPUTER_VIEW_EXCHANGE: the shared drop-box
+ *
+ * The four halves of the Computer page.
+ *
+ * In the library rather than in each client because both of them offer
+ * exactly these four, in this order, and a list spelled out twice is a
+ * list that drifts -- which here would mean a tab that exists in a
+ * browser and not in the window, with nothing to say so. `make parity`
+ * checks that both walk it.
+ */
+typedef enum {
+    CLAWT_COMPUTER_VIEW_SHELL = 0,
+    CLAWT_COMPUTER_VIEW_SCREEN,
+    CLAWT_COMPUTER_VIEW_MOUNTS,
+    CLAWT_COMPUTER_VIEW_EXCHANGE
+} ClawtComputerView;
+
+/**
+ * clawt_computer_view_count:
+ *
+ * Returns: how many sub-views the Computer page has
+ */
+guint clawt_computer_view_count(void);
+
+/**
+ * clawt_computer_view_nth:
+ * @n: an index below clawt_computer_view_count()
+ *
+ * Returns: the view at @n
+ */
+ClawtComputerView clawt_computer_view_nth(guint n);
+
+/**
+ * clawt_computer_view_nth_nick:
+ * @n: an index below clawt_computer_view_count()
+ *
+ * The spelling that appears in a URL, so a link to a sub-view survives
+ * being pasted to somebody else.
+ *
+ * Returns: (transfer none): the nickname
+ */
+const gchar *clawt_computer_view_nth_nick(guint n);
+
+/**
+ * clawt_computer_view_nth_label:
+ * @n: an index below clawt_computer_view_count()
+ *
+ * Returns: (transfer none): what to put on the tab
+ */
+const gchar *clawt_computer_view_nth_label(guint n);
+
+/**
+ * clawt_computer_view_from_nick:
+ * @nick: (nullable): a spelling from a URL
+ *
+ * An unknown name is %CLAWT_COMPUTER_VIEW_SHELL rather than an error:
+ * this arrives from a path somebody typed, and the console is the one
+ * sub-view every computer has.
+ *
+ * Returns: the view
+ */
+ClawtComputerView clawt_computer_view_from_nick(const gchar *nick);
+
+/**
+ * ClawtInputKind:
+ * @CLAWT_INPUT_KEY: one key or combo, named the way XKB names it
+ * @CLAWT_INPUT_TEXT: a string typed character by character
+ * @CLAWT_INPUT_CLICK: a pointer button pressed and released at a point
+ * @CLAWT_INPUT_MOVE: the pointer moved, with nothing pressed
+ * @CLAWT_INPUT_SCROLL: a scroll at a point
+ *
+ * What a person holding a takeover lease is doing to a screen.
+ *
+ * Five shapes because that is what both backends already speak: gowl's
+ * `send_key`/`send_text`/`send_mouse`/`send_mouse_move`/`send_scroll`
+ * and gnome-desktop-mcp's `KeyCombo`/`TypeText`/`MouseClick`/
+ * `MouseMove`/`MouseScroll` line up one for one.  Anything a backend
+ * has that the other does not is deliberately absent: an event only one
+ * of them can honour is a control that works on one machine.
+ *
+ * Deliberately without a `_count()`/`_nth()` family.  No client offers
+ * these as a list to pick from -- a click comes from clicking the
+ * picture and typing comes from a text field -- and an enumeration
+ * nobody walks is a list to keep in step with for no reader.
+ */
+typedef enum {
+    CLAWT_INPUT_KEY = 0,
+    CLAWT_INPUT_TEXT,
+    CLAWT_INPUT_CLICK,
+    CLAWT_INPUT_MOVE,
+    CLAWT_INPUT_SCROLL
+} ClawtInputKind;
+
+/**
  * ClawtMountType:
  * @CLAWT_MOUNT_BIND: a host directory or file bound into the computer
  * @CLAWT_MOUNT_VOLUME: a named podman volume
@@ -720,6 +818,7 @@ GType clawt_computer_state_get_type(void) G_GNUC_CONST;
 GType clawt_vm_backend_get_type(void) G_GNUC_CONST;
 GType clawt_confine_mode_get_type(void) G_GNUC_CONST;
 GType clawt_desktop_backend_get_type(void) G_GNUC_CONST;
+GType clawt_input_kind_get_type(void) G_GNUC_CONST;
 GType clawt_mount_type_get_type(void) G_GNUC_CONST;
 GType clawt_mount_mode_get_type(void) G_GNUC_CONST;
 GType clawt_relabel_get_type(void) G_GNUC_CONST;
@@ -749,6 +848,7 @@ GType clawt_credential_placement_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_VM_BACKEND       (clawt_vm_backend_get_type())
 #define CLAWT_TYPE_CONFINE_MODE     (clawt_confine_mode_get_type())
 #define CLAWT_TYPE_DESKTOP_BACKEND  (clawt_desktop_backend_get_type())
+#define CLAWT_TYPE_INPUT_KIND       (clawt_input_kind_get_type())
 #define CLAWT_TYPE_MOUNT_TYPE       (clawt_mount_type_get_type())
 #define CLAWT_TYPE_MOUNT_MODE       (clawt_mount_mode_get_type())
 #define CLAWT_TYPE_RELABEL          (clawt_relabel_get_type())
@@ -906,6 +1006,29 @@ gboolean clawt_computer_type_has_machine(ClawtComputerType type);
  * Returns: %TRUE if clawtilla's own directories can be placed inside
  */
 gboolean clawt_computer_type_shares_host_paths(ClawtComputerType type);
+
+/**
+ * clawt_computer_type_has_screen:
+ * @type: a #ClawtComputerType
+ *
+ * Whether @type can be asked for a picture of a screen.
+ *
+ * The fourth predicate of this shape, and asked for exactly the reason
+ * the first three are: a client that answered from a list of its own
+ * would offer a Screen tab on a backend that has none, or fail to offer
+ * one on a backend added later, with nothing to say which.
+ *
+ * %TRUE says the *type* has somewhere a screen could be. Whether this
+ * particular agent has one is a second question -- `computer.desktop`
+ * has to be enabled, and the compositor has to answer -- and it is
+ * answered by whether the computer implements #ClawtObservable and by
+ * what clawt_observable_start() says. A tab that appears and then
+ * explains itself is much better than one that is silently absent,
+ * which reads as the feature not existing.
+ *
+ * Returns: %TRUE if there might be a screen to watch
+ */
+gboolean clawt_computer_type_has_screen(ClawtComputerType type);
 
 /**
  * clawt_enum_to_nick:

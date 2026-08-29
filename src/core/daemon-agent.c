@@ -1319,6 +1319,17 @@ clawt_daemon_handle_agent(
          * disk. Removing an agent from the fleet is reversible; deleting
          * its history is not, so it is asked for rather than assumed.
          */
+        /*
+         * The screen goes with the agent.
+         *
+         * A watch is a timer holding a reference to a computer, and a
+         * lease outlives every client on purpose -- so an agent removed
+         * while somebody was watching it would leave both behind,
+         * grabbing a machine that no longer belongs to anybody.
+         */
+        clawt_observer_drop_agent(self->observer, agent_id);
+        clawt_takeover_clear_agent(self->takeover, agent_id);
+
         clawt_agent_manager_load(self->agents, NULL);
         clawt_event_bus_emit(self->bus, "agent.removed", agent_id);
 

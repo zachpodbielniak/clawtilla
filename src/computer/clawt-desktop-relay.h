@@ -34,6 +34,8 @@
 
 #include <glib.h>
 
+#include "mcp/clawt-mcp-relay.h"
+
 G_BEGIN_DECLS
 
 /**
@@ -48,6 +50,32 @@ G_BEGIN_DECLS
  * Returns: the exit status for the process
  */
 gint clawt_desktop_relay_run(GStrv argv, GStrv permitted);
+
+/**
+ * clawt_desktop_relay_run_gated:
+ * @argv: (array zero-terminated=1): the command that reaches the guest's
+ *   MCP server
+ * @permitted: (array zero-terminated=1) (nullable): the tools this agent
+ *   may use; %NULL permits none
+ * @gate: (scope call) (nullable): asked before each permitted call
+ * @gate_data: data for @gate
+ *
+ * The same relay, with a per-call gate in front of it.
+ *
+ * The gate is how a takeover reaches an agent that is already running.
+ * `permitted` is fixed when the relay starts -- it is the answer to "may
+ * this agent ever click" -- and somebody taking the screen is a
+ * different question, asked while the relay is halfway through a turn.
+ * Refused there rather than at a second enforcement point, because two
+ * places that decide whether an agent may touch a screen would disagree
+ * exactly once.
+ *
+ * Returns: the exit status for the process
+ */
+gint clawt_desktop_relay_run_gated(GStrv              argv,
+                                   GStrv              permitted,
+                                   ClawtMcpRelayGate  gate,
+                                   gpointer           gate_data);
 
 /**
  * clawt_desktop_relay_filter_outbound:

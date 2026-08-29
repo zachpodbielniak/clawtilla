@@ -614,6 +614,76 @@ pure function of the config, so a stopped agent is answered from the
 config rather than told it has no desktop -- which is what it used to be
 told, naming a key that was already set.
 
+*** computer.screen and the takeover
+
+~computer.screen~ (~agent~) answers everything a client needs to draw the
+Screen tab in one frame: ~type~, ~has_screen~, ~observable~, ~watchers~,
+~fps~, ~stamp~, ~stale~, ~frame_width~, ~frame_height~, ~screen_width~,
+~screen_height~, ~held~, ~holder~, ~expires_at~, ~lease_seconds~,
+~request~, ~can_input~, ~allow_input~, and ~viewer~ and ~error~ when
+there are any.
+
+~has_screen~ and ~observable~ are two different questions and both are
+needed.  The first is about the *type* -- ~clawt_computer_type_has_screen()~
+-- and decides whether the tab is drawn at all; the second is about this
+agent right now, and decides whether the tab holds a picture or an
+explanation.  A client with only the first shows an empty panel on a
+stopped agent; one with only the second silently drops the tab whenever
+the agent is off, which reads as the feature not existing.
+
+~stale~ is the daemon's answer to "is this picture old enough to be
+labelled rather than shown as current", so both clients agree about it.
+~viewer~ is *absent* rather than empty when there is nothing to open: an
+address for a VM that is off sends whoever clicks it to debug their
+viewer.
+
+~computer.observe~ (~agent~, ~watcher~, ~fps~) starts watching and
+~computer.observe_stop~ (~agent~, ~watcher~) lets go.  Nothing is
+captured unless somebody is subscribed, because a frame comes out of the
+same channel the agent is using for its own work.  A subscription is a
+**lease** keyed by ~watcher~: asking twice under one name is one watcher
+whose lease moves forward, and a client that stops asking stops being
+one.  That is the only way a browser can say goodbye -- a closed tab
+sends nothing, and a count nobody decremented would leave a screen
+grabbed for ever.
+
+~computer.frame~ (~agent~, ~refresh~) answers ~mime~, ~bytes~, ~base64~,
+~stamp~ and ~stale~.  Bytes and never a path, for the reason
+~attachment.get~ already records: a client may be on another machine, so
+a filename would work on this host and show nothing anywhere else.
+
+~computer.takeover~ (~agent~, ~holder~) and ~computer.release~ (~agent~)
+are how a *person* takes the screen, and only a person: while it is held
+the agent's actions on that screen are refused rather than queued, since
+a queued click lands after somebody has moved on.  Releasing also settles
+an open request for hands, so there is no separate "done helping" step to
+forget.  Taking a screen somebody else holds is refused and names them;
+taking one you already hold extends the lease.
+
+~computer.input~ (~agent~, ~kind~, ~text~, ~x~, ~y~, ~button~, ~dx~,
+~dy~) sends one event, and is refused unless you are holding the screen.
+It *defers*: a keystroke into a guest is an SSH round trip, and waiting
+for it on the daemon's context would be every agent's messages stopped
+once per key.
+
+~computer.control~ (~agent~, ~tool~) → ~allowed~ and ~refusal~ is not a
+client frame.  It is what the desktop relay asks before forwarding an
+acting tool, and it is the only place a takeover reaches an agent that is
+already running -- the permitted tool list is fixed when the relay starts
+and cannot know that somebody has since taken the screen.  **The caller
+fails open**: a gate that cannot reach the daemon allows the call, because
+this is cooperation between an operator and their own agent rather than a
+boundary against a hostile one, and a daemon hiccup bricking every
+desktop tool mid-turn costs more than the race.  ~computer.desktop.allow_input~
+is the permission that is *not* like this, and it is enforced through the
+tool list rather than here.
+
+Three events go with these.  ~computer.frame~ carries ~stamp~ and names
+the agent, never the path -- a client fetches the bytes.
+~computer.frame_failed~ carries the backend's own ~error~, because a
+preview that stops updating in silence reads as a machine doing nothing.
+~computer.takeover~ carries ~held~, ~holder~ and ~request~.
+
 *** image.* and state.*
 
 ~image.list~ is container images and is described below.  The ~vm_~

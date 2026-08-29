@@ -57,6 +57,16 @@ clawt_desktop_relay_filter_inbound(const gchar *line, GStrv permitted)
 }
 
 gint
+clawt_desktop_relay_run_gated(GStrv              argv,
+                              GStrv              permitted,
+                              ClawtMcpRelayGate  gate,
+                              gpointer           gate_data)
+{
+    return clawt_mcp_relay_run_gated(argv, NULL, permitted,
+                                     DESKTOP_REFUSAL_HINT, gate, gate_data);
+}
+
+gint
 clawt_desktop_relay_run(GStrv argv, GStrv permitted)
 {
     /*

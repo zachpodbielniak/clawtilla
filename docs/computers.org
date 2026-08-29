@@ -2552,6 +2552,194 @@ For the host backends, gowl needs to be built with ~MCP=1~ and have
 ~modules.mcp.enabled: true~, and the GNOME fallback needs
 ~gnome-desktop-mcp~ on ~PATH~.
 
+** Watching a screen, and taking it
+
+Two different jobs, and clawtilla offers both rather than making one
+pretend to be the other.
+
+*Watching* is a picture every second or two, cheap enough to leave open
+next to the transcript while an agent works. *Using* is a real
+remote-desktop viewer, and for a VM that already exists -- every domain
+clawtilla defines carries a VNC server -- so it is offered as a link
+rather than reimplemented in a browser.
+
+*** Nothing is captured unless somebody is looking
+
+This is the rule the whole thing is shaped around, and it is not a
+performance note.  A frame comes out of the same channel the agent is
+using for its own work -- an SSH connection into its guest, or a
+compositor's socket -- so every picture is latency taken from the task
+you are watching.  A preview that ran all the time would make every
+agent with a desktop permanently slower in exchange for pictures nobody
+was looking at.
+
+So:
+
+- a client *subscribes*, and the first subscriber starts the timer;
+- two clients watching one agent share **one** grab per interval, not
+  two -- whether the agent slows down must not depend on how many people
+  have the tab open;
+- the last one leaving stops it;
+- an explicit refresh and the interval timer go through one capture path
+  with a minimum gap between them, so holding a refresh button is not a
+  way to make an agent's connection unusable;
+- there is one capture in flight at a time, and a second request while
+  one is running is *dropped* rather than queued: a queued screenshot
+  arrives showing a moment that has passed.
+
+A subscription is a **lease**, pushed forward each time a client asks.
+A window can say goodbye and does; a browser tab cannot -- closing it
+sends nothing at all -- so a count nobody decremented would leave a
+screen being grabbed for ever after somebody shut their laptop, with the
+agent as the only thing that noticed.  A client that stops asking stops
+being a watcher within ~CLAWT_OBSERVE_LEASE_SECONDS~.
+
+~computer.desktop.observe_fps~ is the rate, clamped to 1-4.  Zero means
+the default rather than never: a client that subscribed and then
+received nothing would be looking at a blank panel with nothing to
+explain it.
+
+*A turn that never touched the screen settles no frame.*  When an agent
+finishes a turn the preview is refreshed only if that turn actually did
+something to the desktop -- otherwise every one-word reply would end
+with a fresh picture of an idle desktop.  Whether it did is noticed at
+the one place that already sees every desktop action the agent takes:
+the check in front of the MCP relay.
+
+*** Which computers have a screen
+
+~clawt_computer_type_has_screen()~ answers, and every client asks it
+rather than keeping a list.  ~host~ and ~vm~ are %TRUE; ~none~,
+~container~, ~distrobox~ and ~ssh~ are %FALSE.
+
+A container is the interesting one.  You can perfectly well install a
+compositor in a container, and saying yes here would mean every
+container agent offering a Screen tab that never produces a frame --
+which reads as clawtilla being broken rather than as there being no
+desktop in there.  Whoever wants a screen should give the agent a VM,
+which is the type that comes with one built.
+
+~ssh~ is %FALSE because ~computer.ssh.desktop~ was never implemented.
+The ssh backend can reach a remote ~gnome-desktop-mcp~ in principle and
+nothing in this build does it; the day it does, that predicate is the
+line that changes.
+
+Two questions, not one: ~has_screen~ is about the *type* and decides
+whether the tab is drawn at all, and whether *this* agent has a screen
+right now is answered separately.  A client with only the first would
+show an empty panel on a stopped agent; one with only the second would
+silently drop the tab whenever the agent was off, which reads as the
+feature not existing.
+
+*** How a frame is actually taken
+
+| Backend | How |
+|---------+-----|
+| guest desktop in a VM | ~ScreenshotFrame~ over the guest's session bus, reached by ssh as the account GDM logged in |
+| GNOME on this machine | the same method, on the daemon's own session bus |
+| gowl on this machine | ~screenshot_monitor~ over gowl's MCP socket |
+
+~ScreenshotFrame~ is a method added to ~gnome-desktop-mcp~ for this.  The
+older ~Screenshot~ writes a new full-resolution PNG per call and returns
+its path, which cannot be polled: an hour at one frame a second leaves
+3,600 files in the guest's =/tmp=.  ~ScreenshotFrame~ writes **one reused
+path**, replaced atomically by rename, downscaled in the compositor, and
+returns a SHA-256 of the bytes.
+
+The hash is what makes polling affordable.  clawtilla hands back the
+hash it already holds, and an unchanged screen answers with *no image at
+all* -- an idle desktop is the ordinary state of a machine being
+supervised, and re-reading an identical PNG once a second is a cost paid
+for nothing.  The stamp still moves forward, because a still desktop
+reported as an ever older picture of itself would be labelled stale,
+which is exactly the wrong thing to tell somebody watching a machine
+that is working.
+
+The frame never includes the cursor.  Compositing the pointer into the
+image means two frames of a perfectly still screen differ whenever the
+mouse has moved a pixel, and the hash would then change on every grab.
+
+*The guest's path is not this machine's path.*  The extension writes to
+=/tmp/gnome-mcp=, which the guest's tmpfiles rule links into the
+workspace share -- so the same bytes are already on the host and reading
+them costs nothing more.  A guest whose seed predates that link reports
+its frame in a place this machine cannot open, and the remedy is
+~computer.rebuild~: the link is written by cloud-init at first boot.
+
+*** A click on a picture is not a click on the screen
+
+The frame is downscaled where the pixels are, so the picture and the
+screen are two different sizes and a coordinate read off one is not a
+coordinate on the other.  Both are reported -- the frame's from the
+PNG's own header, the screen's from the backend -- and the clients say
+which pixels their coordinate fields are in.  A screen size of zero
+means the backend does not know, and that is shown plainly rather than
+guessed at: a control that silently mis-clicks by a factor of three
+reads as the pointer being unreliable.
+
+*** Taking the screen
+
+While a person holds it, the agent's actions on that screen are
+**refused, not queued**.  Queuing sounds kinder and is much worse: a
+click queued during a takeover lands after the person has moved on, on
+whatever happens to be under it then.
+
+Three decisions, each arrived at by imagining the alternative:
+
+- *Only a person takes and releases.*  The agent can ask --
+  ~clawtilla_request_hands~ -- and asking is a message, not a handover.
+  An agent that could hand itself the screen could take it back from
+  somebody mid-sentence.
+- *Releasing settles the request.*  There is no separate "done helping"
+  step to forget, because forgetting it leaves the agent waiting for
+  something that already happened.
+- *The lease expires.*  ~computer.desktop.takeover_lease_seconds~,
+  default 900.  A browser tab closed mid-takeover would otherwise lock
+  an agent out for ever with nothing on any screen to say why.
+
+Only the *acting* tools are gated.  An agent that can still take
+screenshots can wait usefully; one that has been blinded as well simply
+stops.
+
+The refusal an agent sees is one invariant sentence and says three
+things: nothing happened, do not retry, and how to wait.  An agent told
+only "no" invents a way to wait, and the ones it invents are polling
+loops.
+
+*The check fails open, deliberately.*  A gate that cannot reach the
+daemon allows the call.  This is cooperation between an operator and
+their own agent, not a boundary against a hostile one -- nothing here
+confines a program or protects a secret -- and a daemon hiccup that
+bricked every desktop tool in the fleet mid-turn would cost far more
+than the race it prevented.  Every real permission gate in clawtilla
+(~allow_input~, ~allow_spawn~, the connector grants) fails closed, and
+none of them is this one.  ~allow_input~ in particular is enforced
+through the tool list, which is fixed before the relay starts and cannot
+fail open.
+
+*** Opening it in a real viewer
+
+Every VM domain clawtilla defines carries
+~<graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'/>~.
+libvirt picks the port when the domain *starts*, so the address is read
+back out of the running domain rather than remembered -- a remembered
+port would be last boot's, and pointing a viewer at it reaches either
+nothing or somebody else's guest.
+
+A domain that is not running reports ~-1~, and clawtilla then offers no
+address at all.  That is the important case: an address for a VM that is
+off sends whoever clicks it to debug their viewer.
+
+The GTK client spawns ~remote-viewer~ (Fedora: =virt-viewer=) and says so
+plainly when it is not installed.  The web client offers the same
+~vnc://host:port~ and a ~.vv~ file, and **no noVNC is vendored**: the
+page has to work on a tailnet with no route out, and a megabyte of
+JavaScript with its own checksum is a burden this does not need.
+
+Bound to loopback, so reaching it from another machine means an SSH
+tunnel you set up on purpose.  A live view of whatever an agent is doing
+does not belong on the network because a default was convenient.
+
 ** Adding a backend
 
 ~ClawtComputerProvider~ is the interface a plugin would implement:

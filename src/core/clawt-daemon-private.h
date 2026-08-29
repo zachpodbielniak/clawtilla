@@ -77,6 +77,19 @@ struct _ClawtDaemon {
      */
     ClawtDecisionStore *decisions;
     ClawtExchange      *exchange;
+
+    /*
+     * The screen: frames while somebody is watching, and who is holding
+     * the pointer.
+     *
+     * Two objects rather than one because they answer to different
+     * things -- the observer is stopped when the last tab closes, the
+     * lease outlives every client and lapses on its own clock -- and a
+     * lease that went away with the last subscriber would hand the agent
+     * back the pointer the moment somebody scrolled the page.
+     */
+    ClawtObserver      *observer;
+    ClawtTakeover      *takeover;
     ClawtLinkServer    *link_server;
     ClawtIpcServer     *ipc_server;
     ClawtMcpTools      *mcp_tools;
@@ -588,6 +601,39 @@ clawt_daemon_handle_task(
 
 JsonNode *
 clawt_daemon_handle_computer(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
+
+/*
+ * The observer's and the lease's news, turned into events.
+ *
+ * In daemon-screen.c beside the verbs they belong with rather than in
+ * clawt-daemon.c, which is already the file this split exists to stop
+ * growing.
+ */
+void
+clawt_daemon_on_observer_frame(ClawtObserver *observer,
+                               const gchar   *agent_id,
+                               const gchar   *path,
+                               gpointer       user_data);
+
+void
+clawt_daemon_on_observer_failed(ClawtObserver *observer,
+                                const gchar   *agent_id,
+                                const gchar   *message,
+                                gpointer       user_data);
+
+void
+clawt_daemon_on_takeover_changed(ClawtTakeover *takeover,
+                                 const gchar   *agent_id,
+                                 gpointer       user_data);
+
+JsonNode *
+clawt_daemon_handle_screen(
     ClawtDaemon  *self,
     const gchar  *kind,
     JsonNode     *request,

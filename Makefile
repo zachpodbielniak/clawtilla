@@ -78,6 +78,10 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/config/clawt-config-render.h \
 	$(SRCDIR)/computer/clawt-mount.h \
 	$(SRCDIR)/computer/clawt-exchange.h \
+	$(SRCDIR)/computer/clawt-observable.h \
+	$(SRCDIR)/computer/clawt-screen.h \
+	$(SRCDIR)/computer/clawt-takeover.h \
+	$(SRCDIR)/computer/clawt-observer.h \
 	$(SRCDIR)/computer/clawt-image-catalog.h \
 	$(SRCDIR)/link/clawt-link.h \
 	$(SRCDIR)/link/clawt-link-server.h \
@@ -140,6 +144,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/interfaces/clawt-computer-provider.h \
 	$(SRCDIR)/interfaces/clawt-integration-provider.h \
 	$(SRCDIR)/mcp/clawt-mcp-relay.h \
+	$(SRCDIR)/mcp/clawt-mcp-socket.h \
 	$(SRCDIR)/mcp/clawt-mcp-tools.h \
 	$(SRCDIR)/ai/clawt-model-catalog.h \
 	$(SRCDIR)/ai/clawt-agent-designer.h
@@ -167,6 +172,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-mailbox.c \
 	$(SRCDIR)/core/daemon-task.c \
 	$(SRCDIR)/core/daemon-computer.c \
+	$(SRCDIR)/core/daemon-screen.c \
 	$(SRCDIR)/core/daemon-design.c \
 	$(SRCDIR)/core/daemon-connector.c \
 	$(SRCDIR)/core/daemon-integration.c \
@@ -208,6 +214,10 @@ LIB_SOURCES = \
 	$(SRCDIR)/agent/clawt-team.c \
 	$(SRCDIR)/computer/clawt-exec-result.c \
 	$(SRCDIR)/computer/clawt-sandbox.c \
+	$(SRCDIR)/computer/clawt-observable.c \
+	$(SRCDIR)/computer/clawt-screen.c \
+	$(SRCDIR)/computer/clawt-takeover.c \
+	$(SRCDIR)/computer/clawt-observer.c \
 	$(SRCDIR)/computer/clawt-computer.c \
 	$(SRCDIR)/computer/clawt-null-computer.c \
 	$(SRCDIR)/computer/clawt-host-computer.c \
@@ -247,6 +257,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/interfaces/clawt-computer-provider.c \
 	$(SRCDIR)/interfaces/clawt-integration-provider.c \
 	$(SRCDIR)/mcp/clawt-mcp-relay.c \
+	$(SRCDIR)/mcp/clawt-mcp-socket.c \
 	$(SRCDIR)/mcp/clawt-mcp-tools.c \
 	$(SRCDIR)/ai/clawt-model-catalog.c \
 	$(SRCDIR)/ai/clawt-agent-designer.c

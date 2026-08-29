@@ -150,6 +150,35 @@ JsonNode *clawt_build_payload(const gchar *first_key, ...) G_GNUC_NULL_TERMINATE
 #define CLAWT_AVATAR_DECODE_SIZE 128
 
 /**
+ * CLAWT_SCREEN_DECODE_WIDTH:
+ *
+ * The width a screen frame is decoded at before it becomes a texture.
+ *
+ * The same trap as %CLAWT_AVATAR_DECODE_SIZE and a worse one: GTK has no
+ * maximum size, a size request is a floor, and #GtkPicture takes its
+ * natural size from its paintable -- so a full-resolution decode into a
+ * preview panel costs the memory of the whole framebuffer. An avatar
+ * pays that once per agent; a frame arrives once a second.
+ *
+ * Wider than any panel it is drawn in on purpose, so the picture stays
+ * legible when somebody widens the window, and a good deal narrower than
+ * a 4K guest.
+ */
+#define CLAWT_SCREEN_DECODE_WIDTH 1280
+
+/**
+ * CLAWT_GTK_WATCHER_NAME:
+ *
+ * What this client calls itself when it subscribes to a screen.
+ *
+ * A watch is keyed by name so that asking twice does not count twice,
+ * and so that letting go stops this client's watch rather than
+ * somebody else's -- a browser looking at the same agent keeps its own.
+ * The name is shown to nobody; it is the key.
+ */
+#define CLAWT_GTK_WATCHER_NAME "clawtilla-gtk"
+
+/**
  * clawt_gtk_avatar_texture:
  * @client: the daemon connection
  * @agent_id: the agent to fetch a picture for

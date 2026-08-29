@@ -239,6 +239,20 @@ void clawt_mcp_tools_set_attachment_dir(ClawtMcpTools *self,
  * Unowned.  The bus outlives the tools, which the daemon builds and
  * drops with the rest of its components.
  */
+/**
+ * clawt_mcp_tools_set_takeover:
+ * @self: a #ClawtMcpTools
+ * @takeover: (transfer none) (nullable): who is holding which screen
+ *
+ * Gives the tools the lease, so an agent can ask for a person.
+ *
+ * Unowned, like the other hooks here: the daemon owns it and outlives
+ * this. Without it `clawtilla_request_hands` refuses rather than
+ * pretending -- a library embedded without a daemon has nobody to ask.
+ */
+void clawt_mcp_tools_set_takeover(ClawtMcpTools *self,
+                                  ClawtTakeover *takeover);
+
 void clawt_mcp_tools_set_event_bus(ClawtMcpTools *self,
                                    ClawtEventBus *bus);
 

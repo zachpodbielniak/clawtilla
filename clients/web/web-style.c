@@ -301,6 +301,35 @@ clawt_web_stylesheet(void)
     ".btn-danger:hover{background:var(--bad-bg)}"
     ".btn:disabled{opacity:.45;cursor:default}"
     ".btn-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}"
+
+    /*
+     * The Computer page's four tabs.
+     *
+     * A row of links rather than a control, so each of them is a real
+     * URL somebody can paste -- which is the whole reason the sub-view
+     * is in the path rather than in a cookie.
+     */
+    ".computer-subnav{display:flex;gap:4px;flex-wrap:wrap;"
+      "margin:0 0 12px;border-bottom:1px solid var(--line)}"
+    ".subnav-tab{padding:6px 12px;border-radius:6px 6px 0 0;"
+      "text-decoration:none;color:var(--ink-2);font-size:.9rem}"
+    ".subnav-tab[aria-current=page]{color:var(--ink);"
+      "background:var(--surface-2);font-weight:600}"
+
+    /*
+     * The screen preview.
+     *
+     * The picture keeps its own pixels and the box scrolls, rather than
+     * the image being scaled to fit: a coordinate measured on a scaled
+     * picture is a coordinate scaled by a factor nobody stated, and the
+     * click that follows it lands somewhere else. `overflow-x` on the
+     * frame is what keeps the page itself from scrolling sideways.
+     */
+    ".screen-frame{overflow:auto;max-height:60vh;border-radius:8px;"
+      "border:1px solid var(--line);background:var(--surface-2);"
+      "margin-bottom:8px}"
+    ".screen-image{display:block}"
+    ".screen-input{margin-top:12px}"
     /*
      * A decision's options, one per line and read from the left.
      *

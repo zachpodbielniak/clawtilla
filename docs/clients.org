@@ -1232,7 +1232,7 @@ Restart, and still asks twice.
 | Chat | the transcript, with bottom-follow that does not yank you down mid-read, and an activity line under it |
 | Agent | edit name, description, provider, model, effort, computer, restart policy, autostart and chief-of-staff; credentials by reference; start/stop/restart; delete |
 | Mailbox | what is waiting, with acknowledge |
-| Computer | an exec console showing stdout *and* stderr |
+| Computer | four halves: Shell, Screen, Mounts and Exchange |
 | Routines | standing work for this agent: the schedule, when it last ran and what happened |
 | Tasks | what has been delegated to whom, and where it got to |
 | Flow | every conversation between agents, newest first, and what was said |
@@ -1243,6 +1243,69 @@ is one of the five and nobody should have to write ~0 9 * * 1-5~ to get
 weekday mornings.  A routine that did not fire because the machine was
 asleep is shown as *missed*, not failed: showing it as broken would train
 you to ignore the one that is.  See [[file:routines.org][routines.org]].
+
+*** The Computer tab has four halves
+
+Shell, Screen, Mounts, Exchange -- in that order, in both clients, walked
+out of ~clawt_computer_view_count()~ rather than listed in either.  A
+list spelled out twice is one that drifts, and here the drift would be a
+tab that exists in a browser and not in this window with nothing to say
+so.  ~make parity~ compares which enumerations each client walks.
+
+| Sub-view | What it is |
+|----------+------------|
+| Shell | the exec console, showing stdout *and* stderr |
+| Screen | what is on the agent's desktop, and the controls for taking it |
+| Mounts | the paths from this machine that appear inside the computer, host spelling first |
+| Exchange | the shared drop-box every computer gets |
+
+Shell is first because it is the one every computer has -- a container
+with no desktop still runs commands -- and it is where a link with no
+sub-view on it lands.  Screen is drawn only where there could be one,
+which the daemon answers per agent from
+~clawt_computer_type_has_screen()~.
+
+The web client puts the sub-view in the *path* (=/a/<id>/computer/screen=)
+rather than in a cookie, so a link to somebody's screen survives being
+pasted into a chat.
+
+**** The Screen sub-view
+
+The picture is polled while somebody is looking at it and at no other
+time: a frame comes out of the same connection the agent is working
+over, so watching costs the thing you are watching.  The GTK client
+subscribes when the tab is selected and lets go when it is not; the
+browser subscribes on each poll and its lease lapses when the tab is
+closed, because a closed tab cannot say goodbye.  Both are the same
+mechanism -- see [[file:computers.org][computers.org]].
+
+A stale frame is *labelled with its age*, never presented as current.
+The threshold is the library's, so a browser and a window agree about
+when a picture stopped being news, and a frame that has never been taken
+is not stale -- there is nothing to label, and "0 seconds ago" over an
+empty panel describes a picture that does not exist.
+
+Both clients decode at display size.  A size request in GTK is a floor
+rather than a cap and ~GtkPicture~ takes its natural size from its
+paintable, so a full-resolution decode into a preview panel costs the
+memory of the whole framebuffer -- an avatar pays that once per agent,
+and a frame arrives once a second.
+
+*Taking the screen* stops the agent acting on it; giving it back also
+settles any request the agent made for hands.  Input is offered only
+while you are holding it, rather than shown greyed out: a control that
+is there and does nothing teaches somebody to click it twice.
+
+The coordinate fields say which pixels they are in.  The picture is
+downscaled where the pixels are, so the two sizes differ, and both
+clients are told both -- a control that silently mis-clicked by a factor
+of three would read as the pointer being unreliable rather than as
+arithmetic.
+
+*Open in a viewer* appears for a VM whose domain is running.  The GTK
+client spawns ~remote-viewer~ and names the package when it is missing;
+the browser offers the same ~vnc://~ address and a ~.vv~ file.  No noVNC
+is vendored -- the page has to work on a tailnet with no route out.
 
 *** The transcript
 

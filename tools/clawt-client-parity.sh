@@ -106,8 +106,6 @@ declare -A WEB_MAY_LACK=(
 
 # shellcheck disable=SC2034
 declare -A GTK_MAY_LACK=(
-    ["computer.status"]="the GTK computer panel shows state from agent.show; worth closing, not a blocker"
-    ["exchange.list"]="the GTK client offers drag-and-drop into the exchange rather than a listing"
     ["agent.file_read"]="same capability, different mechanism: /edit opens the file in \$EDITOR there, which is the better answer when the client and the daemon share a machine"
     ["agent.file_write"]="the other half of the same; \$EDITOR writes the file directly"
 )
@@ -187,6 +185,11 @@ declare -A AFFORDANCES=(
     ["decision options stack"]="decision_option_button|decision-options"
     ["sidebar face"]="clawt_gtk_build_avatar|agent-face"
     ["picture editor"]="build_avatar_group|on_avatar_set"
+    ["screen preview"]="screen_picture|screen-frame"
+    ["screen takeover"]="on_screen_take|on_screen_take"
+    ["screen input"]="on_screen_input|on_screen_input"
+    ["stale frame label"]="\"stale\"|\"stale\""
+    ["vnc viewer"]="remote-viewer|viewer.vv"
 )
 
 usage () {

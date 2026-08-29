@@ -52,6 +52,13 @@ typedef struct {
     gboolean        filter;
     const gchar    *hint;
 
+    /*
+     * Asked once per permitted call, for the answer that can change
+     * while the relay runs: whether a person has taken the screen.
+     */
+    ClawtMcpRelayGate gate;
+    gpointer          gate_data;
+
     GDataInputStream  *from_client;
     GDataInputStream  *from_guest;
     GOutputStream     *to_client;
@@ -163,6 +170,63 @@ build_refusal(JsonObject *request, const gchar *tool, const gchar *hint)
         : g_strdup_printf("clawtilla does not permit '%s' for this agent.",
                           tool);
 
+    json_object_set_int_member(error, "code", JSONRPC_METHOD_NOT_FOUND);
+    json_object_set_string_member(error, "message", message);
+    json_object_set_object_member(reply, "error", error);
+
+    return render(reply);
+}
+
+gchar *
+clawt_mcp_relay_call_name(const gchar *line)
+{
+    g_autoptr(JsonObject) object = NULL;
+    JsonObject *params;
+    const gchar *tool;
+
+    parse_object(line, &object);
+
+    if (object == NULL)
+        return NULL;
+
+    if (g_strcmp0(json_object_get_string_member_with_default(object, "method",
+                                                             ""),
+                  "tools/call") != 0)
+        return NULL;
+
+    if (!json_object_has_member(object, "params") ||
+        !JSON_NODE_HOLDS_OBJECT(json_object_get_member(object, "params")))
+        return NULL;
+
+    params = json_object_get_object_member(object, "params");
+    tool = json_object_get_string_member_with_default(params, "name", NULL);
+
+    return g_strdup(tool);
+}
+
+gchar *
+clawt_mcp_relay_build_refusal(const gchar *line, const gchar *message)
+{
+    g_autoptr(JsonObject) object = NULL;
+    g_autoptr(JsonObject) reply = NULL;
+    JsonObject *error;
+
+    parse_object(line, &object);
+
+    /*
+     * A notification -- no id -- expects no answer, so there is nothing
+     * to refuse it with and dropping it is the whole of the response.
+     */
+    if (object == NULL || !json_object_has_member(object, "id"))
+        return NULL;
+
+    reply = json_object_new();
+    error = json_object_new();
+
+    json_object_set_string_member(reply, "jsonrpc", "2.0");
+    json_object_set_member(reply, "id",
+                           json_node_copy(json_object_get_member(object,
+                                                                 "id")));
     json_object_set_int_member(error, "code", JSONRPC_METHOD_NOT_FOUND);
     json_object_set_string_member(error, "message", message);
     json_object_set_object_member(reply, "error", error);
@@ -342,6 +406,37 @@ on_line(GObject *source, GAsyncResult *result, gpointer user_data)
         if (!relay->filter ||
             clawt_mcp_relay_filter_outbound(line, relay->permitted,
                                             relay->hint, &refusal)) {
+            /*
+             * The permitted list said yes; the gate gets the question
+             * that could not be answered when the relay started.
+             *
+             * Only for a real tools/call: everything else -- the
+             * handshake, tools/list, a notification -- goes straight
+             * through, so a gate that has to reach the daemon costs
+             * nothing on the messages that make up most of the traffic.
+             */
+            g_autofree gchar *tool =
+                (relay->gate != NULL) ? clawt_mcp_relay_call_name(line)
+                                      : NULL;
+            g_autofree gchar *denied = NULL;
+
+            if (tool != NULL &&
+                !relay->gate(tool, &denied, relay->gate_data)) {
+                g_autofree gchar *reply = clawt_mcp_relay_build_refusal(
+                    line,
+                    (denied != NULL) ? denied
+                                     : "clawtilla is not allowing that "
+                                       "right now.");
+
+                if (reply != NULL && !write_line(relay->to_client, reply)) {
+                    direction_closed(relay);
+                    return;
+                }
+
+                relay_read_next(relay, stream);
+                return;
+            }
+
             if (!write_line(relay->to_guest, line)) {
                 direction_closed(relay);
                 return;
@@ -380,7 +475,7 @@ relay_read_next(Relay *relay, GDataInputStream *source)
 
 static gint
 relay_run(GStrv argv, GStrv envp, GStrv permitted, gboolean filter,
-          const gchar *hint)
+          const gchar *hint, ClawtMcpRelayGate gate, gpointer gate_data)
 {
     Relay relay = { 0 };
     g_autoptr(GSubprocessLauncher) launcher = NULL;
@@ -453,6 +548,8 @@ relay_run(GStrv argv, GStrv envp, GStrv permitted, gboolean filter,
     relay.permitted = permitted;
     relay.filter = filter;
     relay.hint = hint;
+    relay.gate = gate;
+    relay.gate_data = gate_data;
     relay.from_client = from_client;
     relay.from_guest = from_guest;
     relay.to_client = stdout_stream;
@@ -481,11 +578,22 @@ gint
 clawt_mcp_relay_run(GStrv argv, GStrv envp, GStrv permitted,
                     const gchar *hint)
 {
-    return relay_run(argv, envp, permitted, TRUE, hint);
+    return relay_run(argv, envp, permitted, TRUE, hint, NULL, NULL);
+}
+
+gint
+clawt_mcp_relay_run_gated(GStrv              argv,
+                          GStrv              envp,
+                          GStrv              permitted,
+                          const gchar       *hint,
+                          ClawtMcpRelayGate  gate,
+                          gpointer           gate_data)
+{
+    return relay_run(argv, envp, permitted, TRUE, hint, gate, gate_data);
 }
 
 gint
 clawt_mcp_relay_run_unfiltered(GStrv argv, GStrv envp)
 {
-    return relay_run(argv, envp, NULL, FALSE, NULL);
+    return relay_run(argv, envp, NULL, FALSE, NULL, NULL, NULL);
 }

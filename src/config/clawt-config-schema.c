@@ -2646,7 +2646,7 @@ static const ClawtSchemaEntry schema[] = {
 
 /* ── agents: the rest ────────────────────────────────────────────── */
 { "agents.computer.desktop.observe_fps", CLAWT_SCHEMA_INT,
-  CLAWT_SCHEMA_FLAG_INERT, "1", NULL,
+  CLAWT_SCHEMA_FLAG_NONE, "1", NULL,
   "Frames a second while somebody is watching the screen.\n"
   "\n"
   "A supervision view, not a video call. Grabbing shares the one\n"
@@ -2654,10 +2654,12 @@ static const ClawtSchemaEntry schema[] = {
   "latency taken from the task being watched. Nothing is captured at\n"
   "all unless a client is subscribed.\n"
   "\n"
-  "Not implemented in this build. Watching the screen is not built yet, so no frame is ever\ngrabbed and this rate applies to nothing.", "0.2.0" },
+  "Clamped to 1-4. A zero means the default rather than never: a\n"
+  "client that subscribed and then received nothing would show an\n"
+  "empty panel with nothing to explain it.", "0.2.0" },
 
 { "agents.computer.desktop.takeover_lease_seconds", CLAWT_SCHEMA_INT,
-  CLAWT_SCHEMA_FLAG_INERT, "900", NULL,
+  CLAWT_SCHEMA_FLAG_NONE, "900", NULL,
   "How long a person may hold the screen before the hold lapses.\n"
   "\n"
   "While it is held the agent's input is refused rather than queued: a\n"
@@ -2665,7 +2667,8 @@ static const ClawtSchemaEntry schema[] = {
   "happens to be under it then. The lease expires so that a browser tab\n"
   "closed mid-takeover cannot lock an agent out for good.\n"
   "\n"
-  "Not implemented in this build. Taking over the screen is not built yet, so no hold is ever\ntaken and none can lapse.", "0.2.0" },
+  "Taking the screen again while you already hold it extends the lease,\n"
+  "which is what a client does while somebody is still working.", "0.2.0" },
 
 { "agents.computer.desktop.allow_recording", CLAWT_SCHEMA_BOOLEAN,
   CLAWT_SCHEMA_FLAG_DANGEROUS | CLAWT_SCHEMA_FLAG_INERT, "false", NULL,
