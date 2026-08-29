@@ -834,7 +834,7 @@ render_install_script(ClawtGuestDesktop *self, GString *out)
 /*
  * Where the extension's screenshots land.
  *
- * gnome-desktop-mcp writes them to /tmp/gnome-mcp inside the guest and
+ * gnome-desktop-mcp writes them to CLAWT_GUEST_SCREENSHOT_DIR in the guest and
  * returns the path.  An agent's own `read` runs on the *host*, so that
  * path names a file it cannot open -- and the agent has no way to tell
  * that from a screenshot that failed.  One spent a session reasoning
@@ -860,7 +860,7 @@ render_screenshot_share(ClawtGuestDesktop *self, GString *out)
         "# 0777 because the uid the session runs as and the uid that owns\n"
         "# the workspace on the host are not the same question.\n"
         "d " CLAWT_WORKSPACE_MOUNT_POINT "/screenshots 0777 - - -\n"
-        "L+ /tmp/gnome-mcp - - - - "
+        "L+ " CLAWT_GUEST_SCREENSHOT_DIR " - - - - "
         CLAWT_WORKSPACE_MOUNT_POINT "/screenshots\n");
 }
 

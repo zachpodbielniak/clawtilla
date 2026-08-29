@@ -2355,8 +2355,9 @@ agents:
         # latency taken from the task being watched. Nothing is captured at
         # all unless a client is subscribed.
         #
-        # Not implemented in this build. Watching the screen is not built yet, so no frame is ever
-        # grabbed and this rate applies to nothing.
+        # Clamped to 1-4. A zero means the default rather than never: a
+        # client that subscribed and then received nothing would show an
+        # empty panel with nothing to explain it.
         observe_fps: 1
 
         # How long a person may hold the screen before the hold lapses.
@@ -2366,8 +2367,8 @@ agents:
         # happens to be under it then. The lease expires so that a browser tab
         # closed mid-takeover cannot lock an agent out for good.
         #
-        # Not implemented in this build. Taking over the screen is not built yet, so no hold is ever
-        # taken and none can lapse.
+        # Taking the screen again while you already hold it extends the lease,
+        # which is what a client does while somebody is still working.
         takeover_lease_seconds: 900
 
         # Whether a demonstration may be recorded on this screen.

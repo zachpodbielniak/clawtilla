@@ -1303,6 +1303,15 @@ on_link_typing(ClawtLinkServer *server,
     else
         clawt_daemon_turn_settle(self, agent_id);
 
+    /*
+     * And the moment that decides whether the last frame is worth
+     * taking.  Only a turn that actually went near the screen settles
+     * one -- a one-word reply must not end with a fresh picture of an
+     * idle desktop, grabbed down the connection the agent works over.
+     */
+    if (agent != NULL && !typing && self->observer != NULL)
+        clawt_observer_settle_turn(self->observer, agent_id);
+
     event = clawt_event_new("agent.typing", agent_id);
     clawt_event_set_detail(event, "typing", typing ? "true" : "false");
 
@@ -3156,6 +3165,18 @@ release_components(ClawtDaemon *self)
      */
     clawt_daemon_turn_teardown(self);
 
+    /*
+     * The observer first, and before the context it attached its timers
+     * to can go: a timer that outlives its main context is a source
+     * dispatched against freed memory, and the symptom would be a crash
+     * in the loop rather than anywhere near here.
+     */
+    if (self->observer != NULL)
+        clawt_observer_stop_all(self->observer);
+
+    g_clear_object(&self->observer);
+    g_clear_object(&self->takeover);
+
     g_clear_object(&self->mcp_tools);
     g_clear_object(&self->ipc_server);
     g_clear_object(&self->link_server);
@@ -4612,6 +4633,31 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      */
     clawt_room_manager_load_direct(self->rooms);
 
+    /*
+     * The screen, before any client can ask about it.
+     *
+     * The observer is given this daemon's context explicitly. It attaches
+     * a timer per watched agent, and g_timeout_add() would put those on
+     * the global default -- which for an embedded daemon is a loop
+     * nobody runs, so the preview would show its first frame and never
+     * move again with nothing logged to say why.
+     */
+    {
+        g_autofree gchar *frame_dir =
+            g_build_filename(self->state_dir, "frames", NULL);
+
+        self->observer = clawt_observer_new(frame_dir, self->main_context);
+    }
+
+    self->takeover = clawt_takeover_new();
+
+    g_signal_connect(self->observer, "frame",
+                     G_CALLBACK(clawt_daemon_on_observer_frame), self);
+    g_signal_connect(self->observer, "failed",
+                     G_CALLBACK(clawt_daemon_on_observer_failed), self);
+    g_signal_connect(self->takeover, "changed",
+                     G_CALLBACK(clawt_daemon_on_takeover_changed), self);
+
     self->tasks = clawt_task_manager_new();
     self->guard = clawt_loop_guard_new();
     self->usage = clawt_usage_new();
@@ -4745,6 +4791,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      * up -- what the agent ran on its own initiative -- was missing.
      */
     clawt_mcp_tools_set_event_bus(self->mcp_tools, self->bus);
+    clawt_mcp_tools_set_takeover(self->mcp_tools, self->takeover);
     clawt_mcp_tools_set_room_manager(self->mcp_tools, self->rooms);
     clawt_mcp_tools_set_transcript_index(self->mcp_tools,
                                          self->transcripts);
@@ -5832,6 +5879,17 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
     json_builder_set_member_name(builder, "computer_machine");
     json_builder_add_boolean_value(
         builder, clawt_computer_type_has_machine(
+                     (ClawtComputerType)clawt_agent_config_get_enum(
+                         config, "computer.type")));
+
+    /*
+     * And whether there could be a screen, for the same reason and from
+     * the same kind of predicate: a client deciding for itself which
+     * types have one would draw a Screen tab on a backend that has none.
+     */
+    json_builder_set_member_name(builder, "computer_screen");
+    json_builder_add_boolean_value(
+        builder, clawt_computer_type_has_screen(
                      (ClawtComputerType)clawt_agent_config_get_enum(
                          config, "computer.type")));
 
@@ -7128,6 +7186,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_mailbox,
     clawt_daemon_handle_task,
     clawt_daemon_handle_computer,
+    clawt_daemon_handle_screen,
     clawt_daemon_handle_design,
     clawt_daemon_handle_connector,
     clawt_daemon_handle_integration,

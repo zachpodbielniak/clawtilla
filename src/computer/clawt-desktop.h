@@ -146,6 +146,26 @@ gboolean clawt_desktop_tool_is_permitted(ClawtDesktop *self,
                                          const gchar  *tool_name);
 
 /**
+ * clawt_desktop_tool_is_acting:
+ * @tool_name: a tool name
+ *
+ * Whether @tool_name does something to the screen rather than only
+ * looking at it.
+ *
+ * Asked by the relay so that a takeover can refuse the agent's *actions*
+ * without refusing its screenshots -- an agent that can still see what
+ * the person is doing can wait usefully; one that has been blinded as
+ * well simply stops.
+ *
+ * A static question about the tool, not about this agent: what this
+ * agent may do is clawt_desktop_tool_is_permitted(), which is a
+ * different gate and stays where it is.
+ *
+ * Returns: %TRUE if it injects input
+ */
+gboolean clawt_desktop_tool_is_acting(const gchar *tool_name);
+
+/**
  * clawt_desktop_describe:
  * @self: a #ClawtDesktop
  *

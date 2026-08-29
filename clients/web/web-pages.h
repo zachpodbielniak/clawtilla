@@ -89,6 +89,20 @@ HtmxElement *clawt_web_chat_body_full(ClawtWebApp *app,
 HtmxElement *clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_mailbox_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_computer_body(ClawtWebApp *app, const gchar *agent_id);
+
+/**
+ * clawt_web_computer_view_body:
+ * @app: a #ClawtWebApp
+ * @agent_id: (nullable): the selected agent
+ * @tab: which of the four sub-views to draw
+ *
+ * The Computer page showing one of its four halves.
+ *
+ * Returns: (transfer full): the view
+ */
+HtmxElement *clawt_web_computer_view_body(ClawtWebApp       *app,
+                                          const gchar       *agent_id,
+                                          ClawtComputerView  tab);
 HtmxElement *clawt_web_routines_body(ClawtWebApp *app, const gchar *agent_id);
 
 /**

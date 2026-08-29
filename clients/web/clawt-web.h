@@ -26,6 +26,19 @@
 
 G_BEGIN_DECLS
 
+/**
+ * CLAWT_WEB_WATCHER_NAME:
+ *
+ * What this client calls itself when it subscribes to a screen.
+ *
+ * One name for the whole process rather than one per browser, and
+ * deliberately: two browsers pointed at the same clawtilla-web share a
+ * watch, which is what they would get anyway -- the daemon grabs once
+ * per interval whoever is looking. Per-browser names would mean two
+ * leases to expire and nothing gained.
+ */
+#define CLAWT_WEB_WATCHER_NAME "clawtilla-web"
+
 /* ── The application ─────────────────────────────────────────────── */
 
 #define CLAWT_TYPE_WEB_APP (clawt_web_app_get_type())

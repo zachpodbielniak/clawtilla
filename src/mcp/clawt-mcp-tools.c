@@ -31,7 +31,8 @@ typedef enum {
     NEEDS_RECALL,
     NEEDS_FLEET_ADMIN,
     NEEDS_ASSIGNMENT,
-    NEEDS_SKILLS
+    NEEDS_SKILLS,
+    NEEDS_SCREEN
 } ToolRequirement;
 
 typedef struct {
@@ -261,6 +262,13 @@ static const ClawtParamInfo create_agent_params[] = {
       "machine.", FALSE }
 };
 
+static const ClawtParamInfo request_hands_params[] = {
+    { "reason", "string",
+      "What you need a person to do at the screen, in one sentence. It "
+      "is shown to them beside the picture, so name the thing rather "
+      "than describing the problem.", TRUE }
+};
+
 /* ── The tools ───────────────────────────────────────────────────── */
 
 #define TOOL(name_, desc_, req_, params_) \
@@ -487,7 +495,16 @@ static const ToolDefinition tools[] = {
          "Read one of your skills in full. Do this before working from a "
          "skill -- the one-line description in the listing is a summary "
          "written to help you choose, not the procedure.",
-         NEEDS_SKILLS, skill_read_params)
+         NEEDS_SKILLS, skill_read_params),
+
+    TOOL("clawtilla_request_hands",
+         "Ask a person to take the screen and do something you cannot. "
+         "This does not hand the screen over and does not wait -- only a "
+         "person takes it, from their own client. Say what you need done "
+         "and why, then finish your turn: you will be told when the "
+         "screen comes back. Also use this when your input is being "
+         "refused because somebody is already holding it.",
+         NEEDS_SCREEN, request_hands_params)
 };
 
 #undef TOOL
@@ -528,6 +545,7 @@ struct _ClawtMcpTools {
 
     ClawtVmImageStore *images;   /* unowned */
     ClawtEventBus     *bus;      /* unowned */
+    ClawtTakeover     *takeover; /* unowned */
 
     /*
      * Unowned, and replaced by the daemon on every reload.  A library
@@ -638,6 +656,14 @@ clawt_mcp_tools_set_attachment_dir(ClawtMcpTools *self, const gchar *dir)
 
     g_free(self->attachment_dir);
     self->attachment_dir = g_strdup(dir);
+}
+
+void
+clawt_mcp_tools_set_takeover(ClawtMcpTools *self, ClawtTakeover *takeover)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    self->takeover = takeover;
 }
 
 void
@@ -942,6 +968,17 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
 
         if (!clawt_agent_config_get_boolean(clawt_agent_get_config(agent),
                                             "tools.manage_fleet"))
+            return FALSE;
+        break;
+
+    case NEEDS_SCREEN:
+        /*
+         * Offered only to an agent that has a screen at all. A tool an
+         * agent can only ever be refused for is a tool it will call,
+         * misread the refusal from, and call again in a different shape
+         * -- which is the whole reason this switch exists.
+         */
+        if ((clawt_agent_get_caps(agent) & CLAWT_AGENT_CAPS_DESKTOP) == 0)
             return FALSE;
         break;
 
@@ -2733,6 +2770,46 @@ tool_skill_read(ClawtMcpTools *self, const gchar *agent_id,
         "you do have.", name);
 }
 
+/*
+ * The agent asking for a person, which is all it can do.
+ *
+ * Deliberately not "take the screen for me". An agent that could hand
+ * itself the pointer could take it out from under somebody mid-sentence,
+ * and an agent that could give it away could strand its own work waiting
+ * for a person who never looked. Asking is the only verb on this side.
+ */
+static gchar *
+tool_request_hands(ClawtMcpTools *self, const gchar *agent_id,
+                   JsonObject *arguments, gboolean *is_error)
+{
+    const gchar *reason = argument_string(arguments, "reason");
+
+    if (self->takeover == NULL) {
+        *is_error = TRUE;
+        return g_strdup("There is nobody to ask: this build has no daemon "
+                        "holding the screen.");
+    }
+
+    if (reason == NULL || *reason == '\0') {
+        *is_error = TRUE;
+        return g_strdup("Say what you need done at the screen. A request "
+                        "with no reason on it is one nobody can act on.");
+    }
+
+    clawt_takeover_request(self->takeover, agent_id, reason);
+
+    /*
+     * What happens next, said plainly, because the alternative is an
+     * agent that polls. Nothing here blocks and nothing will call back
+     * mid-turn: the person's answer arrives as a message.
+     */
+    return g_strdup_printf(
+        "Asked. Your operator now sees \"%s\" beside your screen, with a "
+        "button to take it. Finish your turn and say you are waiting -- "
+        "nothing will interrupt you, and while somebody is holding the "
+        "screen your own input is refused rather than queued.", reason);
+}
+
 static gchar *
 tool_mailbox_list(ClawtMcpTools *self, const gchar *agent_id,
                   JsonObject *arguments)
@@ -3977,6 +4054,8 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
         text = tool_skill_list(self, agent_id);
     else if (g_strcmp0(tool_name, "clawtilla_skill_read") == 0)
         text = tool_skill_read(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_request_hands") == 0)
+        text = tool_request_hands(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_mailbox_list") == 0)
         text = tool_mailbox_list(self, agent_id, arguments);
     else if (g_strcmp0(tool_name, "clawtilla_mailbox_read") == 0)

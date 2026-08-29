@@ -341,6 +341,39 @@ clawt_desktop_tool_is_permitted(ClawtDesktop *self, const gchar *tool_name)
     return FALSE;
 }
 
+gboolean
+clawt_desktop_tool_is_acting(const gchar *tool_name)
+{
+    gsize i;
+
+    if (tool_name == NULL)
+        return FALSE;
+
+    /*
+     * Walked from the same table clawt_desktop_tool_is_permitted() uses.
+     * A second list here would be a copy, and the copy that drifted
+     * would be the one deciding whether a takeover actually stops the
+     * agent -- which is only discovered when somebody's pointer jumps
+     * while they are using it.
+     */
+    for (i = 0; acting_tools[i] != NULL; i++) {
+        if (g_strcmp0(tool_name, acting_tools[i]) == 0)
+            return TRUE;
+    }
+
+    /*
+     * Spawning counts too. Launching an application puts a window on the
+     * screen somebody has taken, which is exactly as disruptive as a
+     * click and rather harder to undo.
+     */
+    for (i = 0; spawning_tools[i] != NULL; i++) {
+        if (g_strcmp0(tool_name, spawning_tools[i]) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
 gchar *
 clawt_desktop_describe(ClawtDesktop *self)
 {

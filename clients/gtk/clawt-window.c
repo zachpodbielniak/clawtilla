@@ -1341,6 +1341,16 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
         return;
     }
 
+    /*
+     * A new frame, or a screen that changed hands. Both redraw the
+     * Screen tab; neither touches anything else, so this is deliberately
+     * not folded into the agent refresh above.
+     */
+    if (g_str_has_prefix(kind, "computer.")) {
+        clawt_gtk_refresh_screen(self);
+        return;
+    }
+
     if (g_str_has_prefix(kind, "task."))
         clawt_gtk_refresh_tasks(self);
 
@@ -5169,6 +5179,14 @@ clawt_window_dispose(GObject *object)
 
         clawt_gtk_persist_draft(self, self->selected_agent, draft);
     }
+
+    /*
+     * Before the client goes, because letting go of a screen is a
+     * request. A window that closed while watching would leave the
+     * daemon grabbing for a client that is not there, and the count
+     * nobody decremented never reaches zero.
+     */
+    clawt_gtk_stop_watching_screen(self);
 
     if (self->client != NULL)
         g_signal_handlers_disconnect_by_data(self->client, self);

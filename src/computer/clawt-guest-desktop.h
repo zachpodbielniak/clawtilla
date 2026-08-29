@@ -85,6 +85,19 @@ G_BEGIN_DECLS
 #define CLAWT_GUEST_DESKTOP_RUN_SCRIPT \
     "/usr/local/bin/clawtilla-desktop-run"
 
+/*
+ * Where gnome-desktop-mcp writes its screenshots inside the guest.
+ *
+ * Compiled into the extension, so it is a fact about that program
+ * rather than a choice made here -- but it is a fact two places in
+ * clawtilla need: the tmpfiles rule that links it into the workspace
+ * share, and the frame reader that turns a path the guest named into
+ * one this machine can open.  Two spellings of it would agree until
+ * upstream moved the directory, and then the reader would go looking in
+ * a place nothing writes to and report every frame as missing.
+ */
+#define CLAWT_GUEST_SCREENSHOT_DIR "/tmp/gnome-mcp"
+
 #define CLAWT_TYPE_GUEST_DESKTOP (clawt_guest_desktop_get_type())
 
 GType clawt_guest_desktop_get_type(void) G_GNUC_CONST;

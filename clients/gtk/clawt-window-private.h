@@ -86,6 +86,9 @@ typedef enum {
     CLAWT_REFRESH_SKILLS,
     CLAWT_REFRESH_RECALL,
     CLAWT_REFRESH_OPERATOR,
+    CLAWT_REFRESH_SCREEN,
+    CLAWT_REFRESH_COMPUTER_MOUNTS,
+    CLAWT_REFRESH_EXCHANGE,
     CLAWT_N_REFRESH
 } ClawtRefreshKind;
 
@@ -323,6 +326,32 @@ struct _ClawtWindow {
     GtkEntry          *exec_entry;
     GtkTextView       *exec_output;
     GtkLabel          *computer_state;
+    AdwViewStack      *computer_stack;
+    AdwViewStackPage  *computer_screen_page;
+    GtkListBox        *computer_mount_list;
+    GtkListBox        *exchange_list;
+
+    /*
+     * The screen, and whether this window is one of the things making
+     * the daemon grab it.
+     *
+     * @screen_watching is recorded when the subscribe is *sent* rather
+     * than when it succeeds: a client that only remembered a successful
+     * one would ask again on every refresh against an agent that has no
+     * screen, which is the shape the event subscription was already
+     * bitten by.
+     */
+    GtkPicture        *screen_picture;
+    GtkLabel          *screen_status;
+    GtkWidget         *screen_take;
+    GtkWidget         *screen_release;
+    GtkWidget         *screen_viewer_button;
+    GtkEntry          *screen_input;
+    GtkEntry          *screen_click;
+    gchar             *screen_agent;
+    gchar             *screen_viewer;
+    gboolean           screen_watching;
+    gboolean           screen_held;
 
     /* Tasks */
     GtkListBox        *task_list;
@@ -753,6 +782,18 @@ clawt_gtk_build_computer_page(ClawtWindow *self);
 
 void
 clawt_gtk_refresh_computer(ClawtWindow *self, JsonObject *agent);
+
+void
+clawt_gtk_refresh_screen(ClawtWindow *self);
+
+void
+clawt_gtk_refresh_computer_mounts(ClawtWindow *self);
+
+void
+clawt_gtk_refresh_exchange(ClawtWindow *self);
+
+void
+clawt_gtk_stop_watching_screen(ClawtWindow *self);
 
 /* ── Defined in gtk-decisions.c: the decisions page ──────────────── */
 

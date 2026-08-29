@@ -9,6 +9,8 @@
 
 #include "clawtilla.h"
 #include "computer/clawt-vm-computer.h"
+#include "computer/clawt-observable.h"
+#include "computer/clawt-screen.h"
 
 #include <string.h>
 #include <glib/gstdio.h>
@@ -85,9 +87,14 @@ struct _ClawtVmComputer {
     gchar       *qmp_socket;
 };
 
-G_DEFINE_FINAL_TYPE(ClawtVmComputer, clawt_vm_computer, CLAWT_TYPE_COMPUTER)
+static void vm_observable_init(ClawtObservableInterface *iface);
+
+G_DEFINE_FINAL_TYPE_WITH_CODE(
+    ClawtVmComputer, clawt_vm_computer, CLAWT_TYPE_COMPUTER,
+    G_IMPLEMENT_INTERFACE(CLAWT_TYPE_OBSERVABLE, vm_observable_init))
 
 static gboolean libvirt_has_domain(ClawtVmComputer *self);
+static gchar   *libvirt_domain_xml(ClawtVmComputer *self);
 static GStrv    build_ssh_argv_as(ClawtVmComputer *self,
                                   const gchar     *login,
                                   const gchar     *command,
@@ -2149,10 +2156,384 @@ clawt_vm_computer_build_desktop_argv(ClawtVmComputer *self)
                              CLAWT_GUEST_DESKTOP_LAUNCHER, 0, TRUE);
 }
 
+
+/* ── Watching the guest's screen ─────────────────────────────────── */
+
+/*
+ * The command that runs @tail inside the guest's graphical session.
+ *
+ * Three things have to line up and each of them has cost a session
+ * before: the login has to be the account GDM logged in, not
+ * `ssh_user` -- which defaults to root, which GDM refuses; the session
+ * bus address has to be worked out inside the guest, because ssh
+ * arrives without one; and the command has to survive ssh's own
+ * re-parse, which is why every word is quoted before it goes.
+ */
+static GStrv
+vm_session_ssh_argv(ClawtVmComputer *self, GStrv tail, guint timeout_seconds)
+{
+    g_auto(GStrv) wrapped = NULL;
+    g_autoptr(GString) command = NULL;
+    gsize i;
+
+    if (self->desktop == NULL || self->ssh_host == NULL || tail == NULL)
+        return NULL;
+
+    wrapped = clawt_screen_in_session_argv((const gchar * const *)tail);
+    command = g_string_new(NULL);
+
+    for (i = 0; wrapped[i] != NULL; i++) {
+        g_autofree gchar *quoted = g_shell_quote(wrapped[i]);
+
+        if (i > 0)
+            g_string_append_c(command, ' ');
+
+        g_string_append(command, quoted);
+    }
+
+    return build_ssh_argv_as(self,
+                             clawt_guest_desktop_get_session_user(
+                                 self->desktop),
+                             command->str, timeout_seconds, FALSE);
+}
+
+/*
+ * Runs a command in the guest's session and hands back its stdout.
+ */
+static gchar *
+vm_session_run(ClawtVmComputer *self, GStrv tail, GError **error)
+{
+    g_auto(GStrv) argv = vm_session_ssh_argv(self, tail, 10);
+    g_autoptr(GSubprocess) process = NULL;
+    g_autofree gchar *out = NULL;
+    g_autofree gchar *err = NULL;
+
+    if (argv == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                            "nothing reaches this VM's desktop yet: it may "
+                            "not be running, or no port is forwarded to it");
+        return NULL;
+    }
+
+    process = g_subprocess_newv((const gchar * const *)argv,
+                                G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+                                G_SUBPROCESS_FLAGS_STDERR_PIPE, error);
+
+    if (process == NULL)
+        return NULL;
+
+    if (!g_subprocess_communicate_utf8(process, NULL, NULL, &out, &err,
+                                       error))
+        return NULL;
+
+    if (g_subprocess_get_exit_status(process) != 0) {
+        /*
+         * The guest's own words, not a summary.  A refusal from the
+         * extension ("Automation is disabled") and a missing extension
+         * ("no such interface") have completely different remedies, and
+         * a message of our own would hide which of the two happened.
+         */
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_COMPUTER_EXEC,
+                    "the guest's desktop refused: %s",
+                    (err != NULL && *g_strstrip(err) != '\0')
+                    ? err : "no reason given");
+        return NULL;
+    }
+
+    return g_steal_pointer(&out);
+}
+
+/*
+ * The path on *this* machine for a file the guest named.
+ *
+ * The extension writes its frames to /tmp/gnome-mcp, which the guest's
+ * tmpfiles rule makes a symlink into the workspace share -- so the same
+ * bytes are already here, and reading them costs nothing more.  Without
+ * this the frame would have to come back over the SSH channel as base64,
+ * which is the transfer the whole hash-and-skip design exists to avoid.
+ */
+static gchar *
+vm_guest_path_on_host(ClawtVmComputer *self, const gchar *guest_path)
+{
+    GPtrArray *mounts;
+    const gchar *tail;
+    guint i;
+
+    if (guest_path == NULL ||
+        !g_str_has_prefix(guest_path, CLAWT_GUEST_SCREENSHOT_DIR "/"))
+        return NULL;
+
+    tail = guest_path + strlen(CLAWT_GUEST_SCREENSHOT_DIR "/");
+    mounts = clawt_computer_get_mounts(CLAWT_COMPUTER(self));
+
+    for (i = 0; mounts != NULL && i < mounts->len; i++) {
+        ClawtMount *mount = g_ptr_array_index(mounts, i);
+
+        if (g_strcmp0(clawt_mount_get_target(mount),
+                      CLAWT_WORKSPACE_MOUNT_POINT) != 0)
+            continue;
+
+        if (clawt_mount_get_source(mount) == NULL)
+            continue;
+
+        return g_build_filename(clawt_mount_get_source(mount),
+                                "screenshots", tail, NULL);
+    }
+
+    return NULL;
+}
+
+static gboolean
+vm_observe_start(ClawtObservable *observable, guint fps, GError **error)
+{
+    ClawtVmComputer *self = CLAWT_VM_COMPUTER(observable);
+
+    (void)fps;
+
+    if (self->desktop == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                            "this VM has no desktop in it; set "
+                            "computer.desktop.enabled and rebuild the "
+                            "computer, since the desktop is installed at "
+                            "the guest's first boot");
+        return FALSE;
+    }
+
+    if (self->ssh_host == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_AGENT_STATE,
+                            "this VM is not running, so there is no screen "
+                            "to watch yet");
+        return FALSE;
+    }
+
+    /*
+     * Nothing to reserve. The frames come out of the guest's own
+     * compositor on demand, and holding something open between grabs
+     * would be an SSH session kept alive for a panel somebody may have
+     * closed.
+     */
+    return TRUE;
+}
+
+static GBytes *
+vm_observe_frame(ClawtObservable  *observable,
+                 const gchar      *if_changed_from,
+                 gint64           *stamp_out,
+                 gchar           **hash_out,
+                 GError          **error)
+{
+    ClawtVmComputer *self = CLAWT_VM_COMPUTER(observable);
+    g_auto(GStrv) tail = NULL;
+    g_autofree gchar *reply = NULL;
+    g_autofree gchar *host_path = NULL;
+    g_autofree gchar *contents = NULL;
+    ClawtScreenFrameInfo info = { 0 };
+    gsize length = 0;
+
+    if (stamp_out != NULL)
+        *stamp_out = 0;
+
+    if (hash_out != NULL)
+        *hash_out = NULL;
+
+    tail = clawt_screen_gnome_frame_argv(CLAWT_SCREEN_FRAME_WIDTH, FALSE);
+    reply = vm_session_run(self, tail, error);
+
+    if (reply == NULL)
+        return NULL;
+
+    if (!clawt_screen_parse_gdbus_frame(reply, &info, error))
+        return NULL;
+
+    if (stamp_out != NULL)
+        *stamp_out = info.stamp;
+
+    /*
+     * The hash decided this before anything was read.  That is the whole
+     * point of ScreenshotFrame: an idle desktop is the ordinary state of
+     * a machine being supervised, and re-reading an identical PNG once a
+     * second over virtiofs is a cost paid for nothing.
+     */
+    if (if_changed_from != NULL && info.hash != NULL &&
+        g_strcmp0(if_changed_from, info.hash) == 0) {
+        if (hash_out != NULL)
+            *hash_out = g_strdup(info.hash);
+
+        clawt_screen_frame_info_clear(&info);
+
+        return NULL;
+    }
+
+    host_path = vm_guest_path_on_host(self, info.path);
+
+    if (host_path == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "the guest wrote its frame to %s, which is not inside "
+                    "the workspace share -- so this machine cannot read it. "
+                    "Rebuild the computer: the symlink that puts it there "
+                    "is written by cloud-init at the guest's first boot.",
+                    info.path != NULL ? info.path : "nowhere it named");
+        clawt_screen_frame_info_clear(&info);
+        return NULL;
+    }
+
+    if (!g_file_get_contents(host_path, &contents, &length, error)) {
+        clawt_screen_frame_info_clear(&info);
+        return NULL;
+    }
+
+    if (hash_out != NULL)
+        *hash_out = g_strdup(info.hash);
+
+    clawt_screen_frame_info_clear(&info);
+
+    return g_bytes_new_take(g_steal_pointer(&contents), length);
+}
+
+static gboolean
+vm_observe_can_input(ClawtObservable *observable)
+{
+    ClawtVmComputer *self = CLAWT_VM_COMPUTER(observable);
+
+    return self->desktop != NULL && self->ssh_host != NULL;
+}
+
+static gboolean
+vm_observe_send_input(ClawtObservable  *observable,
+                      ClawtInputEvent  *event,
+                      GError          **error)
+{
+    ClawtVmComputer *self = CLAWT_VM_COMPUTER(observable);
+    g_auto(GStrv) tail = clawt_screen_gnome_input_argv(event);
+    g_autofree gchar *reply = NULL;
+
+    if (tail == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "there is nothing to send: a key or a string "
+                            "was asked for and none was given");
+        return FALSE;
+    }
+
+    /*
+     * A click is a move and then a press, because MouseClick takes the
+     * point itself -- so unlike gowl there is nothing to sequence here.
+     */
+    reply = vm_session_run(self, tail, error);
+
+    return reply != NULL;
+}
+
+/*
+ * The VNC address of a *running* domain.
+ *
+ * Read back from libvirt rather than remembered, because the domain XML
+ * asks for `port='-1' autoport='yes'` -- libvirt picks the port when the
+ * domain starts and there is nothing to know before then. A remembered
+ * port would be last boot's, and pointing a viewer at it reaches either
+ * nothing or somebody else's guest.
+ *
+ * NULL for a domain that is not running, and that is the important case:
+ * offering an address for a VM that is off sends whoever clicks it to
+ * debug their viewer.
+ */
+static gchar *
+vm_observe_viewer_uri(ClawtObservable *observable)
+{
+    ClawtVmComputer *self = CLAWT_VM_COMPUTER(observable);
+    g_autofree gchar *xml = NULL;
+    const gchar *graphics;
+    const gchar *port_attr;
+    const gchar *listen_attr;
+    g_autofree gchar *listen = NULL;
+    gint64 port;
+
+    if (self->backend != CLAWT_VM_BACKEND_LIBVIRT)
+        return NULL;
+
+    xml = libvirt_domain_xml(self);
+
+    if (xml == NULL)
+        return NULL;
+
+    graphics = strstr(xml, "<graphics type='vnc'");
+
+    if (graphics == NULL)
+        graphics = strstr(xml, "<graphics type=\"vnc\"");
+
+    if (graphics == NULL)
+        return NULL;
+
+    port_attr = strstr(graphics, "port='");
+
+    if (port_attr == NULL)
+        return NULL;
+
+    port = g_ascii_strtoll(port_attr + strlen("port='"), NULL, 10);
+
+    /*
+     * -1 is libvirt saying "not allocated", which is what a defined but
+     * stopped domain reports.  Not a failure, and not something to
+     * report as one: the VM is simply off.
+     */
+    if (port <= 0)
+        return NULL;
+
+    listen_attr = strstr(graphics, "listen='");
+
+    if (listen_attr != NULL) {
+        const gchar *start = listen_attr + strlen("listen='");
+        const gchar *end = strchr(start, '\'');
+
+        if (end != NULL)
+            listen = g_strndup(start, (gsize)(end - start));
+    }
+
+    return g_strdup_printf("vnc://%s:%" G_GINT64_FORMAT,
+                           (listen != NULL && *listen != '\0')
+                           ? listen : "127.0.0.1", port);
+}
+
+/*
+ * The guest's screen size, which clawtilla chose.
+ *
+ * `computer.vm.resolution` reaches the virtio GPU as its preferred mode
+ * and GNOME takes the preferred mode when nothing says otherwise, so
+ * this is the size by construction rather than by measurement -- there
+ * is nothing to ask the guest, and asking would be a round trip to
+ * confirm a number written into the domain XML on this side.
+ */
+static gboolean
+vm_observe_geometry(ClawtObservable *observable, guint *width, guint *height)
+{
+    ClawtVmComputer *self = CLAWT_VM_COMPUTER(observable);
+
+    if (self->width == 0 || self->height == 0)
+        return FALSE;
+
+    if (width != NULL)
+        *width = self->width;
+
+    if (height != NULL)
+        *height = self->height;
+
+    return TRUE;
+}
+
+static void
+vm_observable_init(ClawtObservableInterface *iface)
+{
+    iface->observe_start = vm_observe_start;
+    iface->observe_frame = vm_observe_frame;
+    iface->observe_can_input = vm_observe_can_input;
+    iface->observe_send_input = vm_observe_send_input;
+    iface->observe_viewer_uri = vm_observe_viewer_uri;
+    iface->observe_geometry = vm_observe_geometry;
+}
+
 /*
  * Assembles the ssh command line.
  *
- * Shared by the two callers because everything except the login, the
+ * Shared by every caller because everything except the login, the
  * remote command and whether the pipe is long-lived is the same, and two
  * copies of the option list would drift.
  */

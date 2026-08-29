@@ -256,6 +256,45 @@ clawt_computer_type_shares_host_paths(ClawtComputerType type)
     return FALSE;
 }
 
+gboolean
+clawt_computer_type_has_screen(ClawtComputerType type)
+{
+    /*
+     * The fourth of these predicates, and a switch for the same reason
+     * the third is one: -Wswitch is what stops a backend being added
+     * without somebody deciding whether it can be watched.
+     *
+     * `host` and `vm` are the two with a compositor clawtilla can ask
+     * for a picture -- gowl or GNOME Shell on the machine the daemon
+     * runs on, and the guest desktop `computer.desktop.enabled` builds
+     * inside a VM.
+     *
+     * A container is %FALSE and that is the interesting one. It is
+     * perfectly possible to install a compositor in a container, and
+     * saying %TRUE here would mean every container agent offering a
+     * Screen tab that never produces a frame -- which reads as clawtilla
+     * being broken rather than as there being no desktop in there.
+     * Whoever wants that should give the agent a VM, which is the type
+     * that comes with a screen built.
+     *
+     * `ssh` is %FALSE because `computer.ssh.desktop` was never
+     * implemented; the day it is, this is the line that changes.
+     */
+    switch (type) {
+    case CLAWT_COMPUTER_HOST:
+    case CLAWT_COMPUTER_VM:
+        return TRUE;
+
+    case CLAWT_COMPUTER_NONE:
+    case CLAWT_COMPUTER_CONTAINER:
+    case CLAWT_COMPUTER_DISTROBOX:
+    case CLAWT_COMPUTER_SSH:
+        return FALSE;
+    }
+
+    return FALSE;
+}
+
 /* Register ClawtComputerType as a GLib enum type */
 GType
 clawt_computer_type_get_type(void)
@@ -354,6 +393,94 @@ clawt_desktop_backend_get_type(void)
             { 0, NULL, NULL }
         };
         GType g_define_type_id = g_enum_register_static("ClawtDesktopBackend", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
+/*
+ * The Computer page's sub-views, in the order both clients show them.
+ *
+ * Shell first because it is the one every computer has -- a container
+ * with no desktop still runs commands -- and Screen second because it is
+ * the reason somebody opened the page when there is one.
+ */
+static const struct {
+    ClawtComputerView  view;
+    const gchar       *nick;
+    const gchar       *label;
+} clawt_computer_view_order[] = {
+    { CLAWT_COMPUTER_VIEW_SHELL, "shell", "Shell" },
+    { CLAWT_COMPUTER_VIEW_SCREEN, "screen", "Screen" },
+    { CLAWT_COMPUTER_VIEW_MOUNTS, "mounts", "Mounts" },
+    { CLAWT_COMPUTER_VIEW_EXCHANGE, "exchange", "Exchange" }
+};
+
+guint
+clawt_computer_view_count(void)
+{
+    return G_N_ELEMENTS(clawt_computer_view_order);
+}
+
+ClawtComputerView
+clawt_computer_view_nth(guint n)
+{
+    if (n >= G_N_ELEMENTS(clawt_computer_view_order))
+        return CLAWT_COMPUTER_VIEW_SHELL;
+
+    return clawt_computer_view_order[n].view;
+}
+
+const gchar *
+clawt_computer_view_nth_nick(guint n)
+{
+    if (n >= G_N_ELEMENTS(clawt_computer_view_order))
+        return clawt_computer_view_order[0].nick;
+
+    return clawt_computer_view_order[n].nick;
+}
+
+const gchar *
+clawt_computer_view_nth_label(guint n)
+{
+    if (n >= G_N_ELEMENTS(clawt_computer_view_order))
+        return clawt_computer_view_order[0].label;
+
+    return clawt_computer_view_order[n].label;
+}
+
+ClawtComputerView
+clawt_computer_view_from_nick(const gchar *nick)
+{
+    gsize i;
+
+    if (nick == NULL)
+        return CLAWT_COMPUTER_VIEW_SHELL;
+
+    for (i = 0; i < G_N_ELEMENTS(clawt_computer_view_order); i++) {
+        if (g_strcmp0(nick, clawt_computer_view_order[i].nick) == 0)
+            return clawt_computer_view_order[i].view;
+    }
+
+    return CLAWT_COMPUTER_VIEW_SHELL;
+}
+
+/* Register ClawtInputKind as a GLib enum type */
+GType
+clawt_input_kind_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_INPUT_KEY, "CLAWT_INPUT_KEY", "key" },
+            { CLAWT_INPUT_TEXT, "CLAWT_INPUT_TEXT", "text" },
+            { CLAWT_INPUT_CLICK, "CLAWT_INPUT_CLICK", "click" },
+            { CLAWT_INPUT_MOVE, "CLAWT_INPUT_MOVE", "move" },
+            { CLAWT_INPUT_SCROLL, "CLAWT_INPUT_SCROLL", "scroll" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtInputKind", values);
         g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
     }
     return g_define_type_id__volatile;

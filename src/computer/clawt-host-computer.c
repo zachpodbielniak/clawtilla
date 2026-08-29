@@ -9,6 +9,9 @@
 
 #include "clawtilla.h"
 #include "computer/clawt-host-computer.h"
+#include "computer/clawt-observable.h"
+#include "computer/clawt-screen.h"
+#include "mcp/clawt-mcp-socket.h"
 
 #include <glib/gstdio.h>
 #include <string.h>
@@ -29,10 +32,24 @@ struct _ClawtHostComputer {
     ClawtSandbox *sandbox;
     GHashTable   *environment;
     gint          nice_level;
+
+    /*
+     * The desktop this agent was granted, or NULL.
+     *
+     * Held here rather than looked up, because #ClawtObservable is asked
+     * of the *computer* and the desktop is configured beside it -- and a
+     * host computer that had to reach back for the agent's config to
+     * find out whether it has a screen would be a second answer to a
+     * question clawt_computer_factory_create_desktop() already gives.
+     */
+    ClawtDesktop *desktop;
 };
 
-G_DEFINE_FINAL_TYPE(ClawtHostComputer, clawt_host_computer,
-                    CLAWT_TYPE_COMPUTER)
+static void host_observable_init(ClawtObservableInterface *iface);
+
+G_DEFINE_FINAL_TYPE_WITH_CODE(
+    ClawtHostComputer, clawt_host_computer, CLAWT_TYPE_COMPUTER,
+    G_IMPLEMENT_INTERFACE(CLAWT_TYPE_OBSERVABLE, host_observable_init))
 
 ClawtComputer *
 clawt_host_computer_new(const gchar *agent_id, ClawtSandbox *sandbox)
@@ -74,6 +91,450 @@ clawt_host_computer_set_nice(ClawtHostComputer *self, gint nice_level)
     g_return_if_fail(CLAWT_IS_HOST_COMPUTER(self));
 
     self->nice_level = nice_level;
+}
+
+void
+clawt_host_computer_set_desktop(ClawtHostComputer *self,
+                                ClawtDesktop      *desktop)
+{
+    g_return_if_fail(CLAWT_IS_HOST_COMPUTER(self));
+
+    g_clear_object(&self->desktop);
+
+    if (desktop != NULL)
+        self->desktop = g_object_ref(desktop);
+}
+
+/* ── Watching the machine clawtilla is running on ───────────── */
+
+/*
+ * Which of the two host backends is in force.
+ *
+ * Resolved rather than read: `auto` is the default and it probes, so a
+ * host computer asked for a frame before anything else has resolved the
+ * desktop would otherwise see AUTO and match neither branch -- which is
+ * how clawt_desktop_describe() once told a guest agent it was driving
+ * somebody's real screen.
+ */
+static ClawtDesktopBackend
+host_backend(ClawtHostComputer *self)
+{
+    if (self->desktop == NULL)
+        return CLAWT_DESKTOP_BACKEND_AUTO;
+
+    return clawt_desktop_resolve_backend(self->desktop, NULL);
+}
+
+static gboolean
+host_observe_start(ClawtObservable *observable, guint fps, GError **error)
+{
+    ClawtHostComputer *self = CLAWT_HOST_COMPUTER(observable);
+
+    (void)fps;
+
+    if (self->desktop == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                            "this agent has no desktop; set "
+                            "computer.desktop.enabled to watch the screen "
+                            "of the machine clawtilla is running on");
+        return FALSE;
+    }
+
+    /*
+     * Asked before the first grab rather than discovered at it.  A
+     * compositor that is not there answers with a connection refused
+     * from deep inside a socket call, and somebody watching a blank
+     * panel would be reading that in a log rather than on the panel.
+     */
+    return clawt_desktop_is_available(self->desktop, error);
+}
+
+/*
+ * The gowl half: an MCP tool call over the compositor's own socket.
+ *
+ * gowl answers a screenshot as base64 in the reply, so unlike the guest
+ * there is no file and no hash from the compositor -- the hash is
+ * computed here from the bytes.  That is a strictly worse deal (the
+ * whole image crosses the socket even when nothing has changed) and it
+ * is the deal gowl offers; the comparison still saves writing the file
+ * and waking every client.
+ */
+static GBytes *
+host_frame_gowl(ClawtHostComputer *self, GError **error)
+{
+    g_autoptr(JsonNode) result = NULL;
+    GBytes *bytes;
+
+    result = clawt_mcp_socket_call(
+        clawt_desktop_get_socket_path(self->desktop),
+        "screenshot_monitor", NULL, 15, error);
+
+    if (result == NULL)
+        return NULL;
+
+    bytes = clawt_mcp_socket_result_image(result);
+
+    if (bytes == NULL) {
+        g_autofree gchar *text = clawt_mcp_socket_result_text(result);
+
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                    "the compositor answered with no picture: %s",
+                    (text != NULL && *text != '\0') ? text
+                                                    : "nothing at all");
+        return NULL;
+    }
+
+    return bytes;
+}
+
+/*
+ * The GNOME half: the same ScreenshotFrame the guest uses, on this
+ * machine's own session bus.
+ *
+ * No ssh and no session wrapper -- the daemon is already inside the
+ * session whose screen this is, so DBUS_SESSION_BUS_ADDRESS is in its
+ * own environment.  Wrapping it anyway would work and would mean two
+ * spellings of the same call, one of which nothing exercises.
+ */
+static GBytes *
+host_frame_gnome(ClawtHostComputer *self,
+                 const gchar       *if_changed_from,
+                 gint64            *stamp_out,
+                 gchar            **hash_out,
+                 GError           **error)
+{
+    g_auto(GStrv) argv = NULL;
+    g_autoptr(GSubprocess) process = NULL;
+    g_autofree gchar *out = NULL;
+    g_autofree gchar *err = NULL;
+    g_autofree gchar *contents = NULL;
+    ClawtScreenFrameInfo info = { 0 };
+    gsize length = 0;
+
+    (void)self;
+
+    argv = clawt_screen_gnome_frame_argv(CLAWT_SCREEN_FRAME_WIDTH, FALSE);
+    process = g_subprocess_newv((const gchar * const *)argv,
+                                G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+                                G_SUBPROCESS_FLAGS_STDERR_PIPE, error);
+
+    if (process == NULL)
+        return NULL;
+
+    if (!g_subprocess_communicate_utf8(process, NULL, NULL, &out, &err,
+                                       error))
+        return NULL;
+
+    if (g_subprocess_get_exit_status(process) != 0) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                    "the desktop refused: %s",
+                    (err != NULL && *g_strstrip(err) != '\0')
+                    ? err : "no reason given");
+        return NULL;
+    }
+
+    if (!clawt_screen_parse_gdbus_frame(out, &info, error))
+        return NULL;
+
+    if (stamp_out != NULL)
+        *stamp_out = info.stamp;
+
+    if (if_changed_from != NULL && info.hash != NULL &&
+        g_strcmp0(if_changed_from, info.hash) == 0) {
+        if (hash_out != NULL)
+            *hash_out = g_strdup(info.hash);
+
+        clawt_screen_frame_info_clear(&info);
+
+        return NULL;
+    }
+
+    if (info.path == NULL ||
+        !g_file_get_contents(info.path, &contents, &length, error)) {
+        clawt_screen_frame_info_clear(&info);
+        return NULL;
+    }
+
+    if (hash_out != NULL)
+        *hash_out = g_strdup(info.hash);
+
+    clawt_screen_frame_info_clear(&info);
+
+    return g_bytes_new_take(g_steal_pointer(&contents), length);
+}
+
+static GBytes *
+host_observe_frame(ClawtObservable  *observable,
+                   const gchar      *if_changed_from,
+                   gint64           *stamp_out,
+                   gchar           **hash_out,
+                   GError          **error)
+{
+    ClawtHostComputer *self = CLAWT_HOST_COMPUTER(observable);
+    g_autoptr(GBytes) bytes = NULL;
+    g_autofree gchar *hash = NULL;
+
+    if (stamp_out != NULL)
+        *stamp_out = 0;
+
+    if (hash_out != NULL)
+        *hash_out = NULL;
+
+    if (self->desktop == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                            "this agent has no desktop to photograph");
+        return NULL;
+    }
+
+    if (host_backend(self) == CLAWT_DESKTOP_BACKEND_GNOME)
+        return host_frame_gnome(self, if_changed_from, stamp_out, hash_out,
+                                error);
+
+    bytes = host_frame_gowl(self, error);
+
+    if (bytes == NULL)
+        return NULL;
+
+    hash = clawt_screen_hash_bytes(bytes);
+
+    if (stamp_out != NULL)
+        *stamp_out = g_get_real_time();
+
+    if (hash_out != NULL)
+        *hash_out = g_strdup(hash);
+
+    if (if_changed_from != NULL && hash != NULL &&
+        g_strcmp0(if_changed_from, hash) == 0)
+        return NULL;
+
+    return g_steal_pointer(&bytes);
+}
+
+static gboolean
+host_observe_can_input(ClawtObservable *observable)
+{
+    ClawtHostComputer *self = CLAWT_HOST_COMPUTER(observable);
+
+    return self->desktop != NULL;
+}
+
+static gboolean
+host_observe_send_input(ClawtObservable  *observable,
+                        ClawtInputEvent  *event,
+                        GError          **error)
+{
+    ClawtHostComputer *self = CLAWT_HOST_COMPUTER(observable);
+
+    if (self->desktop == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                            "this agent has no desktop to send anything to");
+        return FALSE;
+    }
+
+    if (host_backend(self) == CLAWT_DESKTOP_BACKEND_GNOME) {
+        g_auto(GStrv) argv = clawt_screen_gnome_input_argv(event);
+        g_autoptr(GSubprocess) process = NULL;
+        g_autofree gchar *err = NULL;
+
+        if (argv == NULL) {
+            g_set_error_literal(error, CLAWT_ERROR,
+                                CLAWT_ERROR_INVALID_ARGUMENT,
+                                "there is nothing to send: a key or a "
+                                "string was asked for and none was given");
+            return FALSE;
+        }
+
+        process = g_subprocess_newv((const gchar * const *)argv,
+                                    G_SUBPROCESS_FLAGS_STDOUT_SILENCE |
+                                    G_SUBPROCESS_FLAGS_STDERR_PIPE, error);
+
+        if (process == NULL)
+            return FALSE;
+
+        if (!g_subprocess_communicate_utf8(process, NULL, NULL, NULL, &err,
+                                           error))
+            return FALSE;
+
+        if (g_subprocess_get_exit_status(process) != 0) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                        "the desktop refused: %s",
+                        (err != NULL && *g_strstrip(err) != '\0')
+                        ? err : "no reason given");
+            return FALSE;
+        }
+
+        return TRUE;
+    }
+
+    {
+        const gchar *socket_path =
+            clawt_desktop_get_socket_path(self->desktop);
+        g_autoptr(JsonNode) arguments = NULL;
+        g_autoptr(JsonNode) result = NULL;
+        const gchar *tool;
+
+        /*
+         * A click is two calls here and one on GNOME.  gowl's
+         * send_mouse presses wherever the pointer already is, so a click
+         * that skipped the move would land at the last place anything
+         * touched -- which during a takeover is wherever the *agent*
+         * left it.
+         */
+        if (event->kind == CLAWT_INPUT_CLICK) {
+            g_autoptr(ClawtInputEvent) move =
+                clawt_input_event_new(CLAWT_INPUT_MOVE);
+            g_autoptr(JsonNode) move_arguments = NULL;
+            g_autoptr(JsonNode) move_result = NULL;
+            const gchar *move_tool;
+
+            move->x = event->x;
+            move->y = event->y;
+            move_tool = clawt_screen_gowl_input_tool(move, &move_arguments);
+            move_result = clawt_mcp_socket_call(socket_path, move_tool,
+                                                move_arguments, 10, error);
+
+            if (move_result == NULL)
+                return FALSE;
+        }
+
+        tool = clawt_screen_gowl_input_tool(event, &arguments);
+
+        if (tool == NULL) {
+            g_set_error_literal(error, CLAWT_ERROR,
+                                CLAWT_ERROR_INVALID_ARGUMENT,
+                                "there is nothing to send: a key or a "
+                                "string was asked for and none was given");
+            return FALSE;
+        }
+
+        result = clawt_mcp_socket_call(socket_path, tool, arguments, 10,
+                                       error);
+
+        return result != NULL;
+    }
+}
+
+/*
+ * The size of the screen this agent can see, asked once and remembered.
+ *
+ * Not remembered for ever: a monitor change is real, and a cached size
+ * that outlived one would put every click in the wrong place with
+ * nothing to say why. It is re-asked whenever a watch starts, which is
+ * the only moment a client has to notice.
+ *
+ * Both backends already offer this among the *observing* tools, so
+ * asking costs no new grant.
+ */
+static gboolean
+host_query_geometry(ClawtHostComputer *self, guint *width, guint *height)
+{
+    g_autofree gchar *json = NULL;
+    g_autoptr(JsonParser) parser = NULL;
+    JsonArray *monitors;
+    JsonObject *first;
+
+    if (self->desktop == NULL)
+        return FALSE;
+
+    if (host_backend(self) == CLAWT_DESKTOP_BACKEND_GNOME) {
+        g_auto(GStrv) argv = clawt_screen_gnome_monitors_argv();
+        g_autoptr(GSubprocess) process = NULL;
+        g_autofree gchar *out = NULL;
+
+        process = g_subprocess_newv((const gchar * const *)argv,
+                                    G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+                                    G_SUBPROCESS_FLAGS_STDERR_SILENCE, NULL);
+
+        if (process == NULL)
+            return FALSE;
+
+        if (!g_subprocess_communicate_utf8(process, NULL, NULL, &out, NULL,
+                                           NULL) ||
+            g_subprocess_get_exit_status(process) != 0)
+            return FALSE;
+
+        json = clawt_screen_parse_gdbus_string(out);
+    } else {
+        g_autoptr(JsonNode) result = NULL;
+
+        result = clawt_mcp_socket_call(
+            clawt_desktop_get_socket_path(self->desktop),
+            "list_monitors", NULL, 10, NULL);
+
+        if (result == NULL)
+            return FALSE;
+
+        json = clawt_mcp_socket_result_text(result);
+    }
+
+    if (json == NULL)
+        return FALSE;
+
+    parser = json_parser_new();
+
+    if (!json_parser_load_from_data(parser, json, -1, NULL))
+        return FALSE;
+
+    if (json_node_get_node_type(json_parser_get_root(parser)) !=
+        JSON_NODE_ARRAY)
+        return FALSE;
+
+    monitors = json_node_get_array(json_parser_get_root(parser));
+
+    if (json_array_get_length(monitors) == 0)
+        return FALSE;
+
+    first = json_array_get_object_element(monitors, 0);
+
+    if (first == NULL)
+        return FALSE;
+
+    if (width != NULL)
+        *width = (guint)json_object_get_int_member_with_default(first,
+                                                                "width", 0);
+
+    if (height != NULL)
+        *height = (guint)json_object_get_int_member_with_default(first,
+                                                                 "height", 0);
+
+    return TRUE;
+}
+
+static gboolean
+host_observe_geometry(ClawtObservable *observable, guint *width,
+                      guint *height)
+{
+    ClawtHostComputer *self = CLAWT_HOST_COMPUTER(observable);
+    guint w = 0;
+    guint h = 0;
+
+    if (!host_query_geometry(self, &w, &h) || w == 0 || h == 0)
+        return FALSE;
+
+    if (width != NULL)
+        *width = w;
+
+    if (height != NULL)
+        *height = h;
+
+    return TRUE;
+}
+
+static void
+host_observable_init(ClawtObservableInterface *iface)
+{
+    iface->observe_start = host_observe_start;
+    iface->observe_frame = host_observe_frame;
+    iface->observe_can_input = host_observe_can_input;
+    iface->observe_send_input = host_observe_send_input;
+    iface->observe_geometry = host_observe_geometry;
+
+    /*
+     * observe_viewer_uri is left refusing.  There is no VNC server in
+     * front of somebody's own session, and inventing one -- starting
+     * wayvnc, say -- would be clawtilla putting a remote-desktop
+     * listener on the operator's machine because they opened a tab.
+     */
 }
 
 /*
@@ -578,6 +1039,7 @@ clawt_host_computer_dispose(GObject *object)
 
     g_clear_pointer(&self->environment, g_hash_table_unref);
     g_clear_object(&self->sandbox);
+    g_clear_object(&self->desktop);
 
     G_OBJECT_CLASS(clawt_host_computer_parent_class)->dispose(object);
 }

@@ -365,6 +365,22 @@ clawt_computer_factory_create(ClawtAgentConfig  *agent_config,
             CLAWT_HOST_COMPUTER(computer),
             (gint)clawt_agent_config_get_int(agent_config,
                                              "computer.host.nice"));
+
+        /*
+         * The screen, so the computer can answer #ClawtObservable.
+         *
+         * Built from the same function every other caller uses rather
+         * than assembled here: a second construction would be a second
+         * set of grants, and the one that drifted would be the one
+         * deciding whether an agent may click.
+         */
+        {
+            g_autoptr(ClawtDesktop) desktop =
+                clawt_computer_factory_create_desktop(agent_config);
+
+            clawt_host_computer_set_desktop(CLAWT_HOST_COMPUTER(computer),
+                                            desktop);
+        }
         break;
     }
 

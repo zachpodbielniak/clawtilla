@@ -3351,6 +3351,70 @@ cmd_task(int argc, char *argv[])
     return EXIT_FAILURE;
 }
 
+/*
+ * Whether the agent may act on its screen right now.
+ *
+ * **Fails open, deliberately.** Every path that cannot get an answer --
+ * no daemon, a refused connection, a reply in a shape this does not
+ * understand -- allows the call. This is cooperation between an operator
+ * and their own agent, not a boundary against a hostile one: nothing
+ * here is confining a program or protecting a secret, and the worst a
+ * lost race does is put one click somewhere unexpected on a screen the
+ * person is already looking at. A daemon restart that bricked every
+ * desktop tool in the fleet mid-turn would cost a great deal more.
+ *
+ * The permission that is *not* like this -- computer.desktop.allow_input
+ * -- is enforced through the tool list, which is fixed before the relay
+ * starts and so cannot fail open.
+ */
+static gboolean
+desktop_control_gate(const gchar *tool, gchar **refusal, gpointer user_data)
+{
+    const gchar *agent_id = user_data;
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GError) error = NULL;
+    JsonObject *result;
+
+    *refusal = NULL;
+
+    /*
+     * Only the tools that do something. A screenshot during a takeover
+     * is exactly what an agent should still be able to take -- one that
+     * can watch can wait usefully, and one that has been blinded as well
+     * simply stops.
+     */
+    if (!clawt_desktop_tool_is_acting(tool))
+        return TRUE;
+
+    client = connect_to_daemon();
+
+    if (client == NULL)
+        return TRUE;
+
+    reply = clawt_client_request(
+        client, "computer.control",
+        build_payload("agent", agent_id, "tool", tool, NULL), &error);
+
+    if (reply == NULL || !JSON_NODE_HOLDS_OBJECT(reply))
+        return TRUE;
+
+    result = json_node_get_object(reply);
+
+    if (result == NULL || !json_object_has_member(result, "allowed"))
+        return TRUE;
+
+    if (json_object_get_boolean_member(result, "allowed"))
+        return TRUE;
+
+    *refusal = g_strdup(
+        json_object_get_string_member_with_default(
+            result, "refusal",
+            "clawtilla is not allowing that right now."));
+
+    return FALSE;
+}
+
 /* ── computers ───────────────────────────────────────────────────── */
 
 static gint
@@ -3363,8 +3427,8 @@ cmd_computer(int argc, char *argv[])
 
     if (verb == NULL || agent_id == NULL) {
         g_printerr("Usage: clawtilla computer "
-                   "<exec|status|start|stop|restart|rebuild|desktop-mcp> "
-                   "<agent> [-- COMMAND...]\n");
+                   "<exec|status|screen|takeover|release|start|stop|restart|"
+                   "rebuild|desktop-mcp> <agent> [-- COMMAND...]\n");
         g_printerr("\n");
         g_printerr("  start <agent>          power the machine on\n");
         g_printerr("  stop <agent> [--remove]\n");
@@ -3374,6 +3438,14 @@ cmd_computer(int argc, char *argv[])
                    "container's default\n");
         g_printerr("  restart <agent> [--remove]\n");
         g_printerr("                         both, in that order\n");
+        g_printerr("\n");
+        g_printerr("\n");
+        g_printerr("  screen <agent>         what is on its screen, and "
+                   "who is holding it\n");
+        g_printerr("  takeover <agent>       stop the agent acting on the "
+                   "screen and drive it\n");
+        g_printerr("  release <agent>        give it back; this also "
+                   "settles a request for hands\n");
         g_printerr("\n");
         g_printerr("  e.g. clawtilla computer restart oxpecker\n");
         return EXIT_FAILURE;
@@ -3415,7 +3487,67 @@ cmd_computer(int argc, char *argv[])
          */
         g_clear_object(&client);
 
-        return clawt_desktop_relay_run(relay_argv, tools);
+        /*
+         * The gate reconnects per call rather than holding this one, for
+         * the same reason: an acting tool is a handful of calls a
+         * minute at most, and a connection kept open for hours to answer
+         * one question is a client slot spent on nothing.
+         */
+        return clawt_desktop_relay_run_gated(relay_argv, tools,
+                                             desktop_control_gate,
+                                             (gpointer)agent_id);
+    }
+
+    if (g_strcmp0(verb, "screen") == 0 ||
+        g_strcmp0(verb, "takeover") == 0 ||
+        g_strcmp0(verb, "release") == 0) {
+        JsonObject *screen;
+        const gchar *kind;
+
+        /*
+         * Spelled out rather than pasted together from the verb, for
+         * the reason the power verbs are: a frame kind built with
+         * g_strconcat() is one `make parity` cannot see, and a verb
+         * from the command line pasted into a frame name is a frame
+         * name somebody else chose.
+         */
+        if (g_strcmp0(verb, "screen") == 0)
+            kind = "computer.screen";
+        else if (g_strcmp0(verb, "takeover") == 0)
+            kind = "computer.takeover";
+        else
+            kind = "computer.release";
+
+        reply = call(client, kind,
+                     build_payload("agent", agent_id,
+                                   "holder", "the command line", NULL));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        screen = json_node_get_object(reply);
+
+        g_print("type:     %s\n", member_or(screen, "type", "?"));
+        g_print("watching: %" G_GINT64_FORMAT " client(s) at %"
+                G_GINT64_FORMAT " fps\n",
+                json_object_get_int_member_with_default(screen, "watchers", 0),
+                json_object_get_int_member_with_default(screen, "fps", 0));
+
+        if (json_object_get_boolean_member_with_default(screen, "held", FALSE))
+            g_print("held by:  %s\n", member_or(screen, "holder", "somebody"));
+        else
+            g_print("held by:  nobody -- the agent may act on it\n");
+
+        if (json_object_has_member(screen, "request"))
+            g_print("asked:    %s\n", member_or(screen, "request", ""));
+
+        if (json_object_has_member(screen, "viewer"))
+            g_print("viewer:   %s\n", member_or(screen, "viewer", ""));
+
+        if (json_object_has_member(screen, "error"))
+            g_print("error:    %s\n", member_or(screen, "error", ""));
+
+        return EXIT_SUCCESS;
     }
 
     if (g_strcmp0(verb, "start") == 0 ||

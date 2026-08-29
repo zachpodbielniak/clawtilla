@@ -71,4 +71,21 @@ void clawt_host_computer_set_environment(ClawtHostComputer *self,
 void clawt_host_computer_set_nice(ClawtHostComputer *self,
                                   gint               nice_level);
 
+/**
+ * clawt_host_computer_set_desktop:
+ * @self: a #ClawtHostComputer
+ * @desktop: (nullable) (transfer none): the desktop this agent was
+ *   granted, or %NULL for none
+ *
+ * Gives the computer the screen it can be watched through.
+ *
+ * A host agent's desktop is configured beside its computer rather than
+ * inside it, and until this existed nothing joined the two -- so the
+ * computer had no way to answer #ClawtObservable and a Screen tab on a
+ * host agent would have been permanently empty. Set by the factory,
+ * which is the one place that reads both halves of the config.
+ */
+void clawt_host_computer_set_desktop(ClawtHostComputer *self,
+                                     ClawtDesktop      *desktop);
+
 G_END_DECLS
