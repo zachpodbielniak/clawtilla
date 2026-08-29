@@ -605,6 +605,7 @@ static const struct {
     { "files", "<agent>", "the org files that become its prompt" },
     { "edit", "<agent> [FILE...]", "open those files in $EDITOR" },
     { "mount", "<verb> <agent> [...]", "folders shared with just this agent" },
+    { "avatar", "<verb> <agent> [...]", "its profile picture" },
     { "git-init", "[agent]", "version an agent's state directory" },
     { "discover", "", "agents on disk the config does not know" },
     { "import", "<id> [--from DIR]", "adopt one, keeping its state" },
@@ -1541,6 +1542,118 @@ cmd_agent(int argc, char *argv[])
         }
 
         g_printerr("clawtilla: unknown mount action '%s'\n", action);
+        return EXIT_FAILURE;
+    }
+
+    if (g_strcmp0(verb, "avatar") == 0) {
+        const gchar *action = (argc > 3) ? argv[3] : NULL;
+        const gchar *who = (argc > 4) ? argv[4] : NULL;
+
+        if (action == NULL || who == NULL) {
+            g_printerr("Usage: clawtilla agent avatar show <agent> [FILE]\n");
+            g_printerr("       clawtilla agent avatar set <agent> <file>\n");
+            g_printerr("       clawtilla agent avatar clear <agent>\n");
+            return EXIT_FAILURE;
+        }
+
+        if (g_strcmp0(action, "show") == 0) {
+            JsonObject *result;
+            const gchar *mime;
+            const gchar *etag;
+            const gchar *encoded;
+
+            reply = call(client, "agent.avatar",
+                        build_payload("agent", who, NULL));
+            if (reply == NULL)
+                return EXIT_FAILURE;
+
+            result = json_node_get_object(reply);
+            mime = member_or(result, "mime", "?");
+            etag = member_or(result, "etag", "?");
+            encoded = member_or(result, "base64", NULL);
+
+            /*
+             * A file argument writes the bytes; without one this only
+             * reports what there is, since a terminal is not a useful
+             * place to dump an image.
+             */
+            if (argc > 5) {
+                g_autofree guchar *raw = NULL;
+                gsize length = 0;
+                g_autoptr(GError) write_error = NULL;
+
+                if (encoded == NULL) {
+                    g_printerr("clawtilla: %s has no profile picture\n",
+                              who);
+                    return EXIT_FAILURE;
+                }
+
+                raw = g_base64_decode(encoded, &length);
+
+                if (!g_file_set_contents(argv[5], (const gchar *)raw,
+                                         (gssize)length, &write_error)) {
+                    g_printerr("clawtilla: %s\n", write_error->message);
+                    return EXIT_FAILURE;
+                }
+
+                g_print("Wrote %" G_GSIZE_FORMAT " bytes to %s (%s)\n",
+                       length, argv[5], mime);
+                return EXIT_SUCCESS;
+            }
+
+            g_print("mime:  %s\n", mime);
+            g_print("bytes: %" G_GINT64_FORMAT "\n",
+                    json_object_get_int_member(result, "bytes"));
+            g_print("etag:  %s\n", etag);
+
+            return EXIT_SUCCESS;
+        }
+
+        if (g_strcmp0(action, "set") == 0) {
+            g_autofree gchar *contents = NULL;
+            g_autofree gchar *encoded = NULL;
+            g_autoptr(GError) read_error = NULL;
+            gsize length = 0;
+
+            if (argc < 6) {
+                g_printerr("Usage: clawtilla agent avatar set <agent> "
+                          "<file>\n");
+                return EXIT_FAILURE;
+            }
+
+            /*
+             * Read and re-encoded here, never a path sent to the daemon:
+             * agent.avatar_set takes bytes and only bytes, so a client
+             * cannot ask it to read an arbitrary file off its own disk.
+             */
+            if (!g_file_get_contents(argv[5], &contents, &length,
+                                     &read_error)) {
+                g_printerr("clawtilla: %s\n", read_error->message);
+                return EXIT_FAILURE;
+            }
+
+            encoded = g_base64_encode((const guchar *)contents, length);
+
+            reply = call(client, "agent.avatar_set",
+                        build_payload("agent", who, "data", encoded, NULL));
+            if (reply == NULL)
+                return EXIT_FAILURE;
+
+            g_print("%s's profile picture is set.\n", who);
+            return EXIT_SUCCESS;
+        }
+
+        if (g_strcmp0(action, "clear") == 0) {
+            reply = call(client, "agent.avatar_clear",
+                        build_payload("agent", who, NULL));
+            if (reply == NULL)
+                return EXIT_FAILURE;
+
+            g_print("%s's profile picture is cleared.\n", who);
+            return EXIT_SUCCESS;
+        }
+
+        g_printerr("clawtilla: unknown avatar action '%s'\n", action);
         return EXIT_FAILURE;
     }
 

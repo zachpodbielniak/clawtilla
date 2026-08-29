@@ -279,6 +279,33 @@ clawt_workspace_update_computer(ClawtAgentConfig *agent,
                                 GError          **error);
 
 /**
+ * clawt_workspace_find_profile_picture:
+ * @workspace: the agent's own directory
+ *
+ * The auto-detected profile picture, if this workspace has one.
+ *
+ * The **only** place that knows where a picture lives: a file named
+ * `profile-picture.png`, `.jpg`, `.jpeg` or `.webp` directly in
+ * @workspace, tried in that fixed order regardless of what the
+ * filesystem would otherwise hand back for a directory listing -- so two
+ * of them present resolve the same way on every call rather than by
+ * whichever order `readdir()` happens to return.
+ *
+ * A directory of that name is not a picture, and a file this process
+ * cannot read is reported the same as no file at all: this is a
+ * fallback with no caller to hand an error to, and a fallback that can
+ * fail is not one.
+ *
+ * Nothing else in the tree guesses. `clawt_avatar_resolve_path()` is
+ * what layers `agents.avatar` in front of this.
+ *
+ * Returns: (transfer full) (nullable): the picture's path, or %NULL if
+ *   @workspace has none
+ */
+gchar *
+clawt_workspace_find_profile_picture(const gchar *workspace);
+
+/**
  * clawt_workspace_file_path:
  * @agent: the agent's configuration
  * @name: a file name from the standard set, or any other name

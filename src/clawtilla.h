@@ -124,6 +124,7 @@
 #include "agent/clawt-agent.h"
 #include "agent/clawt-agent-manager.h"
 #include "agent/clawt-workspace.h"
+#include "agent/clawt-avatar.h"
 #include "agent/clawt-team.h"
 
 #undef CLAWT_INSIDE

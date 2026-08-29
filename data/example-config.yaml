@@ -378,9 +378,6 @@ defaults:
   # picture is an unbounded frame. Over the limit is a refusal naming
   # the limit, never a truncated image, which would surface as a broken
   # file a long way from the cause.
-  #
-  # Not implemented in this build. Serving a profile picture is not built yet, so nothing is read
-  # and nothing is measured against this.
   avatar_max_bytes: 4194304
 
   # Skills every agent gets unless it says otherwise.

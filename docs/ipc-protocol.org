@@ -190,6 +190,7 @@ several agents at once.
 ~agent.import~,
 ~agent.remove~, ~agent.set~, ~agent.reorder~, ~agent.discover~,
 ~agent.forget~, ~agent.files~, ~agent.file_read~, ~agent.file_write~,
+~agent.avatar~, ~agent.avatar_set~, ~agent.avatar_clear~,
 ~agent.mount.list~, ~agent.mount.add~, ~agent.mount.remove~.
 
 ~team.list~, ~team.create~, ~team.set~ and ~team.remove~ manage teams.
@@ -374,6 +375,33 @@ request, so the name is whatever the client sent, and
 ~../../agents/other/credentials~ is a perfectly good relative path that
 would hand one client another agent's secrets.  ~g_path_is_absolute()~
 alone does not stop it.
+
+~agent.avatar~ (~agent~) → ~mime~, ~bytes~, ~base64~ and ~etag~ --- the
+profile picture, as bytes and never as a path, for the same reason
+~attachment.get~ already gives: a client may be on another machine
+entirely, so a filename would work on this host and show nothing
+anywhere else.  It resolves ~agents.avatar~ against the workspace when
+set, falls back to a ~profile-picture.png~/~.jpg~/~.jpeg~/~.webp~
+found directly in the agent's own directory, and refuses with
+~NOT_FOUND~ when there is neither.  The type comes from sniffing the
+bytes' own magic numbers, never from the file's name, and a file over
+~defaults.avatar_max_bytes~ is refused by name rather than served
+truncated.  ~etag~ is a SHA-256 of the bytes, so a client can cache the
+decoded texture per (agent, etag) and know when to throw it away.
+
+~agent.avatar_set~ (~agent~, ~data~) writes a new picture from
+base64-encoded bytes --- there is deliberately no path parameter, so a
+client cannot ask the daemon to read an arbitrary file off its own disk
+and hand the bytes back as this agent's face.  The stored extension
+comes from sniffing ~data~, never from anything the client claims, and
+a payload that is not a recognised image is refused before anything is
+written.  ~agents.avatar~ is left unset, so the picture is found through
+the same auto-detection as one dropped in by hand.  Publishes
+~agent.changed~.
+
+~agent.avatar_clear~ (~agent~) removes the auto-detected picture and
+answers with ~removed~ --- %TRUE if a file was actually there to take
+away.  Publishes ~agent.changed~ only when it removed something.
 
 ~agent.reset~ (~agent~) clears the agent's AI session and answers with
 ~sessions_cleared~, ~moved~ and ~restarted~.  It stops the agent if it

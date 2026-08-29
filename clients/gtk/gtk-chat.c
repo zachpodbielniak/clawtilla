@@ -1433,127 +1433,6 @@ day_divider(GDateTime *when)
 }
 
 /*
- * The face beside a run's first message.
- *
- * AdwAvatar derives both the initials and a colour from the text it is
- * given, so identity costs one widget, no palette and no hashing scheme
- * of ours -- which is why an avatar could ship before either of the two
- * config keys was wired up, and why neither is a prerequisite.
- *
- * `agents.avatar` wins when it loads, then `agents.color`, then the
- * derived colour.  A file that is missing or unreadable falls through
- * rather than producing an empty circle: the fallback is already a
- * complete answer, so there is nothing to report.
- */
-/*
- * A style class painting an avatar in one configured colour.
- *
- * One provider on the display carrying a rule per colour, rather than a
- * provider per widget: gtk_style_context_add_provider() is deprecated,
- * and adding one provider per avatar would leave a sheet on the display
- * for every message ever drawn.  The class name is derived from the
- * colour, so two agents sharing one produce one rule and a colour that
- * has already been seen costs a hash lookup.
- *
- * @color reached clawt_color_ink() before this, which is what makes it
- * safe to splice: nothing but `#rgb` and `#rrggbb` gets this far.
- *
- * Above the appearance sheet, at PRIORITY_APPLICATION + 2, because a
- * tint is about one particular agent and a palette is an opinion about
- * surfaces in general.  A single `avatar { background-color: ... }` in a
- * theme would otherwise flatten every agent to one swatch -- and it
- * would win despite being the less specific selector, because a
- * provider's priority decides before specificity is consulted.
- * Measured: a bare `avatar` rule one layer up beats `avatar.clawt-tint-*`
- * one layer down.
- *
- * Still below PRIORITY_USER, so somebody who does want uniform avatars
- * can say so.  The stack ascends from the most general to the closest to
- * the data, with the person on top.
- */
-static GHashTable     *avatar_tints = NULL;
-static GtkCssProvider *avatar_tint_provider = NULL;
-
-static gchar *
-tint_class(const gchar *color, const gchar *ink)
-{
-    gchar *name = g_strdup_printf("clawt-tint-%s", color + 1);
-
-    if (avatar_tints == NULL)
-        avatar_tints = g_hash_table_new_full(g_str_hash, g_str_equal,
-                                             g_free, g_free);
-
-    if (!g_hash_table_contains(avatar_tints, name)) {
-        g_autoptr(GString) sheet = g_string_new(NULL);
-        GHashTableIter iter;
-        gpointer key;
-        gpointer value;
-
-        g_hash_table_insert(avatar_tints, g_strdup(name),
-                            g_strdup_printf("%s %s", color, ink));
-
-        g_hash_table_iter_init(&iter, avatar_tints);
-
-        while (g_hash_table_iter_next(&iter, &key, &value)) {
-            g_auto(GStrv) pair = g_strsplit(value, " ", 2);
-
-            g_string_append_printf(
-                sheet,
-                "avatar.%s { background-image: none; background-color: %s; "
-                "color: %s; }\n",
-                (const gchar *)key, pair[0], pair[1]);
-        }
-
-        if (avatar_tint_provider == NULL) {
-            avatar_tint_provider = gtk_css_provider_new();
-            gtk_style_context_add_provider_for_display(
-                gdk_display_get_default(),
-                GTK_STYLE_PROVIDER(avatar_tint_provider),
-                GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 2);
-        }
-
-        gtk_css_provider_load_from_string(avatar_tint_provider, sheet->str);
-    }
-
-    return name;
-}
-
-static GtkWidget *
-run_avatar(const gchar *name, const gchar *image_path, const gchar *color)
-{
-    GtkWidget *avatar = adw_avatar_new(CHAT_AVATAR, name, TRUE);
-    gtk_widget_add_css_class(avatar, "clawt-avatar");
-    const gchar *ink;
-
-    if (image_path != NULL && *image_path != '\0') {
-        g_autoptr(GdkTexture) texture =
-            gdk_texture_new_from_filename(image_path, NULL);
-
-        if (texture != NULL) {
-            adw_avatar_set_custom_image(ADW_AVATAR(avatar),
-                                        GDK_PAINTABLE(texture));
-            return avatar;
-        }
-    }
-
-    /*
-     * A colour somebody typed into a YAML file, so it is checked before
-     * it is spliced into a stylesheet -- clawt_color_ink() refuses
-     * anything that is not #rgb or #rrggbb, and answers which of black
-     * or white is legible on it.  Nothing else validates this key.
-     */
-    ink = clawt_color_ink(color);
-
-    if (ink != NULL) {
-        g_autofree gchar *class_name = tint_class(color, ink);
-
-        gtk_widget_add_css_class(avatar, class_name);
-    }
-
-    return avatar;
-}
-
-/*
  * The task and the hop count, which belong to a message rather than to a
  * run.
  *
@@ -1740,8 +1619,9 @@ clawt_gtk_append_message_to(ClawtWindow *self, const TranscriptView *view,
             GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
             GtkWidget *who = gtk_label_new(sender);
             GtkWidget *at = gtk_label_new(stamp);
-            GtkWidget *avatar = run_avatar(sender, view->avatar,
-                                           view->color);
+            GtkWidget *avatar = clawt_gtk_build_avatar(
+                self->client, sender, view->agent_id, view->has_avatar,
+                view->color, CHAT_AVATAR);
 
             gtk_widget_add_css_class(header, "clawt-run-header");
 
@@ -1933,7 +1813,8 @@ clawt_gtk_append_message(ClawtWindow *self, const gchar *sender, const gchar *bo
                          gboolean from_user, gint64 ts)
 {
     TranscriptView view = { self->transcript, &self->run_sender,
-                            &self->run_day, self->selected_avatar,
+                            &self->run_day, self->selected_agent,
+                            self->selected_has_avatar,
                             self->selected_color };
 
     clawt_gtk_append_message_to(self, &view, sender, body, from_user, ts, NULL, 0);

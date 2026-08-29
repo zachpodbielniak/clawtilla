@@ -154,6 +154,19 @@ agent_row(JsonObject *agent, const gchar *selected, ClawtWebView view,
 
     htmx_element_add_class(HTMX_ELEMENT(line), "agent-line");
 
+    /*
+     * The face, drawn through the one builder the transcript also
+     * calls -- clawt_web_avatar() -- so picking an agent out of the
+     * sidebar and reading its turns cannot disagree about what it
+     * looks like.
+     */
+    clawt_web_add(
+        line,
+        clawt_web_avatar(name, id,
+                         clawt_web_member_bool(agent, "has_avatar", FALSE),
+                         clawt_web_member(agent, "color", NULL),
+                         "agent-face"));
+
     dot_class = g_strdup_printf("dot-%s", clawt_web_state_tone(state));
     htmx_element_add_class(HTMX_ELEMENT(dot), "dot");
     htmx_element_add_class(HTMX_ELEMENT(dot), dot_class);

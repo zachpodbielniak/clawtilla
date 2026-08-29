@@ -448,8 +448,13 @@ struct _ClawtWindow {
     gchar             *flow_run_sender;
     gchar             *flow_run_day;
 
-    /* How the selected agent's avatar is drawn, from its own config. */
-    gchar             *selected_avatar;
+    /*
+     * How the selected agent's face is drawn: its configured colour, and
+     * whether `agent.avatar` has bytes worth asking for at all -- the
+     * bytes themselves are never held here, only fetched and cached by
+     * clawt_gtk_build_avatar() when a run header actually needs one.
+     */
+    gboolean           selected_has_avatar;
     gchar             *selected_color;
 
     /*
@@ -546,7 +551,8 @@ typedef struct {
     GtkBox       *into;
     gchar       **run_sender;   /* the view's own place in the run */
     gchar       **run_day;
-    const gchar  *avatar;       /* NULL derives one from the name */
+    const gchar  *agent_id;     /* NULL derives a face from the name alone */
+    gboolean      has_avatar;   /* whether agent_id has bytes worth asking for */
     const gchar  *color;
 } TranscriptView;
 

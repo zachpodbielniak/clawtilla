@@ -435,6 +435,89 @@ add_summary_card(HtmxElement *parent, JsonObject *agent,
     htmx_node_add_child(HTMX_NODE(parent), HTMX_NODE(card));
 }
 
+/*
+ * The face, and the three ways the web client can change it: choose a
+ * file, or drop one on the browser's own file input -- there is no
+ * clipboard-paste route here the way there is in GTK, since a browser
+ * form has no equivalent of gdk_clipboard_read_texture_async().
+ *
+ * The `<img>` points at /a/:id/avatar rather than a filesystem path --
+ * the whole reason this half of the feature did not already work: the
+ * browser may be on a different machine than the daemon entirely, and a
+ * path only ever draws on the host that has it.
+ */
+static void
+add_avatar_card(HtmxElement *parent, JsonObject *agent, const gchar *agent_id)
+{
+    g_autoptr(HtmxDiv) card = clawt_web_card(
+        "Profile picture",
+        "PNG, JPEG or WebP -- the file's own bytes decide, not its name.");
+    HtmxElement *body = clawt_web_card_body(card);
+    gboolean has_avatar = clawt_web_member_bool(agent, "has_avatar", FALSE);
+    const gchar *configured = clawt_web_member(agent, "avatar", "");
+    g_autofree gchar *escaped = g_uri_escape_string(agent_id, NULL, FALSE);
+
+    clawt_web_add(body, clawt_web_text(
+        has_avatar
+            ? ((configured != NULL && *configured != '\0')
+                   ? "Set from agents.avatar."
+                   : "Auto-detected: profile-picture.png (or .jpg, .jpeg, "
+                     "or .webp) in the agent's own directory.")
+            : "No picture yet -- initials are shown instead.",
+        "small muted"));
+
+    if (has_avatar) {
+        g_autofree gchar *url = g_strdup_printf("/a/%s/avatar", escaped);
+        g_autoptr(HtmxImg) picture =
+            htmx_img_new_with_src(url, "Profile picture");
+
+        htmx_element_add_class(HTMX_ELEMENT(picture), "avatar-preview");
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(picture));
+    }
+
+    /*
+     * A form of its own, exactly for the reason the attachment picker in
+     * the composer is one: it posts multipart, and the settings form
+     * below it does not.
+     */
+    {
+        g_autofree gchar *action =
+            g_strdup_printf("/a/%s/avatar/set", escaped);
+        g_autoptr(HtmxForm) form = clawt_web_form(action);
+        g_autoptr(HtmxDiv) row = htmx_div_new();
+        g_autoptr(HtmxInput) picker = htmx_input_new(HTMX_INPUT_FILE);
+        g_autoptr(HtmxButton) upload = clawt_web_button("Upload", "default");
+
+        htmx_element_set_attribute(HTMX_ELEMENT(form), "enctype",
+                                   "multipart/form-data");
+        htmx_element_set_attribute(HTMX_ELEMENT(form), "hx-encoding",
+                                   "multipart/form-data");
+
+        htmx_input_set_name(picker, "file");
+        htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(picker));
+
+        htmx_element_set_attribute(HTMX_ELEMENT(upload), "type", "submit");
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(upload));
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(row));
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
+    }
+
+    if (has_avatar) {
+        g_autofree gchar *action =
+            g_strdup_printf("/a/%s/avatar/clear", escaped);
+        g_autoptr(HtmxForm) form = clawt_web_form(action);
+        g_autoptr(HtmxButton) clear =
+            clawt_web_button("Remove picture", "default");
+
+        htmx_element_set_attribute(HTMX_ELEMENT(clear), "type", "submit");
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(clear));
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
+    }
+
+    htmx_node_add_child(HTMX_NODE(parent), HTMX_NODE(card));
+}
+
 static void
 add_danger_card(HtmxElement *parent, const gchar *agent_id)
 {
@@ -526,6 +609,8 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
     add_summary_card(HTMX_ELEMENT(pad), agent,
                      clawt_web_member(root, "computer_detail", NULL),
                      clawt_web_member_object(root, "identity"));
+
+    add_avatar_card(HTMX_ELEMENT(pad), agent, agent_id);
 
     escaped = g_uri_escape_string(agent_id, NULL, FALSE);
     action = g_strdup_printf("/a/%s/set", escaped);
@@ -843,10 +928,176 @@ on_reset(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                   CLAWT_WEB_VIEW_AGENT, said);
 }
 
+/*
+ * Streams this agent's picture from the daemon's own bytes.
+ *
+ * Not a static file: `agent.avatar` is the only place these bytes are
+ * kept, and this is the one route that asks for them -- no static-file
+ * route reaches an agent's directory, so nothing here can become an
+ * arbitrary-file-read primitive by way of a clever id.
+ */
+static HtmxResponse *
+on_avatar_get(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GBytes) bytes = NULL;
+    HtmxResponse *response;
+    JsonObject *root;
+    const gchar *encoded;
+    const gchar *mime;
+    const gchar *etag;
+    guchar *raw;
+    gsize length = 0;
+
+    (void)request;
+
+    clawt_web_payload_set(payload, "agent", agent_id);
+
+    reply = clawt_web_app_call(
+        app, "agent.avatar",
+        clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        return htmx_response_not_found();
+
+    root = clawt_web_root(reply);
+    encoded = clawt_web_member(root, "base64", NULL);
+    mime = clawt_web_member(root, "mime", "application/octet-stream");
+    etag = clawt_web_member(root, "etag", NULL);
+
+    if (encoded == NULL)
+        return htmx_response_not_found();
+
+    raw = g_base64_decode(encoded, &length);
+    bytes = g_bytes_new_take(raw, length);
+
+    response = htmx_response_new();
+    htmx_response_set_bytes(response, bytes);
+
+    /*
+     * The type the daemon sniffed from the bytes, not a guess from the
+     * request path -- there is no extension here to guess from at all.
+     */
+    htmx_response_set_content_type(response, mime);
+
+    if (etag != NULL)
+        htmx_response_add_header(response, "ETag", etag);
+
+    /*
+     * A day, not "no-cache": the etag already says when the picture has
+     * changed, so a browser holding the bytes that long saves a request
+     * on every sidebar redraw without needing agent.changed plumbed
+     * through as a cache-buster.
+     */
+    htmx_response_add_header(response, "Cache-Control",
+                             "private, max-age=86400");
+
+    return response;
+}
+
+static HtmxResponse *
+on_avatar_set(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    g_autoptr(GPtrArray) files = NULL;
+    g_autoptr(GHashTable) fields = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *encoded = NULL;
+    const HtmxUploadedFile *file;
+
+    /*
+     * Bytes, never a path -- the daemon's agent.avatar_set has no path
+     * parameter at all, which is what stops a client asking it to read
+     * an arbitrary file off its own disk and hand the bytes back as this
+     * agent's face.
+     */
+    files = htmx_uploaded_file_parse_multipart(
+        htmx_request_get_content_type(request),
+        htmx_request_get_body_bytes(request), &fields, &error);
+
+    if (files == NULL || files->len == 0)
+        return clawt_web_error_page(
+            app, request, agent_id, CLAWT_WEB_VIEW_AGENT,
+            error != NULL ? error->message : "Choose a file first.");
+
+    file = g_ptr_array_index(files, 0);
+
+    {
+        GBytes *bytes = htmx_uploaded_file_get_data(file);
+        gsize size = 0;
+        const guint8 *data;
+
+        if (bytes == NULL)
+            return clawt_web_error_page(app, request, agent_id,
+                                        CLAWT_WEB_VIEW_AGENT,
+                                        "That file is empty.");
+
+        data = g_bytes_get_data(bytes, &size);
+
+        if (data == NULL || size == 0)
+            return clawt_web_error_page(app, request, agent_id,
+                                        CLAWT_WEB_VIEW_AGENT,
+                                        "That file is empty.");
+
+        encoded = g_base64_encode(data, size);
+    }
+
+    clawt_web_payload_set(payload, "agent", agent_id);
+    clawt_web_payload_set(payload, "data", encoded);
+
+    reply = clawt_web_app_call(
+        app, "agent.avatar_set",
+        clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        return clawt_web_error_page(app, request, agent_id,
+                                    CLAWT_WEB_VIEW_AGENT,
+                                    clawt_web_app_last_error(app));
+
+    return clawt_web_after_action(app, request, agent_id,
+                                  CLAWT_WEB_VIEW_AGENT,
+                                  "Profile picture updated.");
+}
+
+static HtmxResponse *
+on_avatar_clear(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+
+    (void)request;
+
+    clawt_web_payload_set(payload, "agent", agent_id);
+
+    reply = clawt_web_app_call(
+        app, "agent.avatar_clear",
+        clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        return clawt_web_error_page(app, request, agent_id,
+                                    CLAWT_WEB_VIEW_AGENT,
+                                    clawt_web_app_last_error(app));
+
+    return clawt_web_after_action(app, request, agent_id,
+                                  CLAWT_WEB_VIEW_AGENT,
+                                  "Profile picture removed.");
+}
+
 void
 clawt_web_register_agent(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_post(router, "/a/:id/set", on_save, app);
     htmx_router_post(router, "/a/:id/remove", on_remove, app);
     htmx_router_post(router, "/a/:id/reset", on_reset, app);
+    htmx_router_get(router, "/a/:id/avatar", on_avatar_get, app);
+    htmx_router_post(router, "/a/:id/avatar/set", on_avatar_set, app);
+    htmx_router_post(router, "/a/:id/avatar/clear", on_avatar_clear, app);
 }

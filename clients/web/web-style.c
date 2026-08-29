@@ -217,6 +217,16 @@ clawt_web_stylesheet(void)
     ".agent-row.selected{background:var(--surface-2);"
       "border-left-color:var(--ink)}"
     ".agent-line{display:flex;align-items:center;gap:8px}"
+    /*
+     * The sidebar's own size for clawt_web_avatar() -- smaller than the
+     * transcript's .msg-avatar, because a row of these runs down a list
+     * a person scans quickly rather than sitting beside one message at a
+     * time.
+     */
+    ".agent-face{display:inline-flex;align-items:center;"
+      "justify-content:center;width:24px;height:24px;border-radius:50%;"
+      "font-size:11px;font-weight:700;flex:0 0 auto;"
+      "background:var(--neutral-bg);color:var(--neutral-fg)}"
     ".agent-name{font-weight:500;overflow:hidden;text-overflow:ellipsis;"
       "white-space:nowrap}"
     ".agent-meta{display:flex;align-items:center;gap:6px;margin-top:2px;"
@@ -460,6 +470,12 @@ clawt_web_stylesheet(void)
       "justify-content:center;width:28px;height:28px;border-radius:50%;"
       "font-size:12px;font-weight:700;flex:0 0 auto;"
       "background:var(--neutral-bg);color:var(--neutral-fg)}"
+    /*
+     * The `<img>` half of clawt_web_avatar(): decoded and cropped to
+     * fill its circle rather than stretched to it, whatever the
+     * picture's own aspect ratio was.
+     */
+    ".web-avatar-img{object-fit:cover}"
     /*
      * The derived tones, from the palette rather than computed, so a
      * colour scheme recolours the faces with everything else.

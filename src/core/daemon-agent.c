@@ -311,6 +311,163 @@ clawt_daemon_handle_agent(
         }
     }
 
+    if (g_strcmp0(kind, "agent.avatar") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        ClawtAgentConfig *config = (agent_id != NULL)
+            ? clawt_config_get_agent(self->config, agent_id) : NULL;
+        g_autofree gchar *workspace = NULL;
+        g_autofree guchar *bytes = NULL;
+        g_autofree gchar *mime = NULL;
+        g_autofree gchar *etag = NULL;
+        g_autofree gchar *encoded = NULL;
+        gsize length = 0;
+
+        /*
+         * Bytes, never a path -- attachment.get already wrote down why:
+         * a client may be on another machine entirely, so a filename
+         * would work on this host and show nothing anywhere else, which
+         * reads as a broken image rather than as an unsupported setup.
+         */
+        if (config == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such agent");
+
+        workspace = clawt_agent_config_get_workspace(config);
+
+        if (workspace == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "this agent has no workspace");
+
+        if (!clawt_avatar_read(
+                clawt_agent_config_get_string(config, "avatar"), workspace,
+                clawt_config_get_int(self->config,
+                                     "defaults.avatar_max_bytes"),
+                &bytes, &length, &mime, &etag, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        encoded = g_base64_encode(bytes, length);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "mime");
+        json_builder_add_string_value(builder, mime);
+        json_builder_set_member_name(builder, "bytes");
+        json_builder_add_int_value(builder, (gint64)length);
+        json_builder_set_member_name(builder, "base64");
+        json_builder_add_string_value(builder, encoded);
+        json_builder_set_member_name(builder, "etag");
+        json_builder_add_string_value(builder, etag);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "agent.avatar_set") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        const gchar *encoded = clawt_ipc_payload_string(payload, "data");
+        ClawtAgentConfig *config = (agent_id != NULL)
+            ? clawt_config_get_agent(self->config, agent_id) : NULL;
+        g_autofree gchar *workspace = NULL;
+        g_autofree guchar *bytes = NULL;
+        g_autofree gchar *mime = NULL;
+        gsize length = 0;
+        gint64 max_bytes;
+
+        /*
+         * Bytes and never a path -- deliberately.  A "path" parameter
+         * here would let a client ask the daemon to read any file it
+         * likes off its own disk and hand the bytes back as this
+         * agent's face; there is no such parameter to read, so there is
+         * nothing for a future edit to wire up by accident.
+         */
+        if (config == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such agent");
+
+        if (encoded == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "data is required");
+
+        workspace = clawt_agent_config_get_workspace(config);
+
+        if (workspace == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "this agent has no workspace");
+
+        bytes = g_base64_decode(encoded, &length);
+
+        if (bytes == NULL || length == 0)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "the picture is empty");
+
+        max_bytes = clawt_config_get_int(self->config,
+                                         "defaults.avatar_max_bytes");
+
+        if (max_bytes > 0 && (gint64)length > max_bytes) {
+            g_autofree gchar *message = g_strdup_printf(
+                "that picture is %" G_GSIZE_FORMAT " bytes, over "
+                "defaults.avatar_max_bytes (%" G_GINT64_FORMAT ")",
+                length, max_bytes);
+
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       message);
+        }
+
+        /*
+         * Copied into the workspace rather than referenced: a path into
+         * somebody's ~/Pictures breaks the moment the fleet is reached
+         * from a laptop, and this directory is what a client actually
+         * has to draw from wherever it is.
+         */
+        if (!clawt_avatar_write(workspace, bytes, length, &mime, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        /*
+         * agents.avatar is left alone (and normally unset): the picture
+         * now lives at the auto-detected name, so the zero-config path
+         * keeps resolving to it without clawtilla.yaml being touched.
+         */
+        clawt_event_bus_emit(self->bus, "agent.changed", agent_id);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "mime");
+        json_builder_add_string_value(builder, mime);
+        json_builder_set_member_name(builder, "bytes");
+        json_builder_add_int_value(builder, (gint64)length);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "agent.avatar_clear") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        ClawtAgentConfig *config = (agent_id != NULL)
+            ? clawt_config_get_agent(self->config, agent_id) : NULL;
+        g_autofree gchar *workspace = NULL;
+        gboolean removed;
+
+        if (config == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such agent");
+
+        workspace = clawt_agent_config_get_workspace(config);
+
+        if (workspace == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "this agent has no workspace");
+
+        removed = clawt_avatar_clear(workspace);
+
+        if (removed)
+            clawt_event_bus_emit(self->bus, "agent.changed", agent_id);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "removed");
+        json_builder_add_boolean_value(builder, removed);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
     if (g_strcmp0(kind, "agent.files") == 0) {
         const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
         ClawtAgent *agent = (agent_id != NULL)

@@ -459,6 +459,71 @@ above.
 ~MEMORY.md~ also lives here, but is not scaffolded: the agent writes it
 when it has something to remember.
 
+** Profile picture
+
+A file named ~profile-picture.png~, ~.jpg~, ~.jpeg~ or ~.webp~ directly
+in the workspace is picked up with no configuration at all -- drop it in
+and it appears in the sidebar, the transcript's run header and the
+inspector, in both clients.  ~clawt_workspace_find_profile_picture()~ is
+the one place that tries those four names, in that fixed order, so two
+of them present resolve the same way on every call rather than by
+whatever order the filesystem happens to list a directory in.  A
+directory of that name is not a picture, and a file this process cannot
+read counts as no picture at all rather than as an error -- there is
+nobody to hand an error to on this path.
+
+~agents.avatar~ overrides the auto-detected file when it is set: an
+absolute path, or one resolved against the workspace.  Naming a path
+that turns out not to exist is not the same thing as never naming one,
+so it falls back to the auto-detected file (or to initials) *with a
+warning* rather than in silence -- a typo in the setting and no picture
+at all otherwise look identical.
+
+*** It is not an identity file
+
+The picture is discovered, not scaffolded, and it never joins
+~workspace_files[]~: that table is what
+~lc_agent_context_load_identity()~ concatenates into the system prompt,
+and a JPEG in there is not a thing anyone wants.  ~README.org~ says so
+in the scaffolded workspace, for whoever finds the file later and
+wonders why it works with no line in any config.
+
+*** Bytes, never a path
+
+A client may not share a filesystem with the daemon at all -- that is
+what connection profiles are for -- so ~agent.avatar~ answers with the
+picture's bytes, base64-encoded, alongside a sniffed ~mime~ and a
+content-derived ~etag~.  ~attachment.get~ already carries this reasoning
+for files an agent sends; the avatar is the same shape.  The type comes
+from the bytes' own magic numbers and never from a file's name, so a
+text file saved as ~profile-picture.png~ is refused rather than served
+as an image, and a picture over ~defaults.avatar_max_bytes~ is refused
+by name rather than truncated.
+
+Editing goes through ~agent.avatar_set~, which takes base64-encoded
+bytes and *never* a path -- there is no path parameter for a future
+edit to wire up by accident, which is what would let a client ask the
+daemon to read an arbitrary file off its own disk and hand the bytes
+back as a face.  The extension the daemon stores it under comes from
+sniffing those bytes, not from anything the client claims about them.
+~agent.avatar_clear~ removes it.  Both leave ~agents.avatar~ untouched,
+so the zero-configuration path keeps resolving to the file that is
+actually there.
+
+Both clients decode the picture once per agent, at a fixed size well
+above anything either draws it at, and cache the result -- the
+~GtkPicture~/~AdwAvatar~-has-no-maximum-size trap CLAUDE.md already
+records for a full-resolution decode landing in a 32-pixel slot.
+
+*** CLI
+
+#+begin_src sh
+clawtilla agent avatar show researcher            # mime, bytes, etag
+clawtilla agent avatar show researcher out.png     # writes the bytes
+clawtilla agent avatar set researcher ./face.png
+clawtilla agent avatar clear researcher
+#+end_src
+
 ** Runtimes
 
 *** process (default)

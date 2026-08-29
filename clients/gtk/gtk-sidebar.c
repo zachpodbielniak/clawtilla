@@ -171,11 +171,14 @@ unread_badge(guint count)
 }
 
 static GtkWidget *
-agent_row(JsonObject *agent, guint unread)
+agent_row(ClawtWindow *self, JsonObject *agent, guint unread)
 {
     GtkWidget *row = adw_action_row_new();
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     const gchar *state = clawt_json_string(agent, "state", "stopped");
+    const gchar *agent_id = clawt_json_string(agent, "id", "");
+    const gchar *name = clawt_json_string(agent, "name", agent_id);
+    gboolean has_avatar = clawt_json_boolean(agent, "has_avatar", FALSE);
     gtk_widget_add_css_class(row, "clawt-agent-row");
     gtk_widget_add_css_class(box, "clawt-agent-caps");
     const gchar *caps = clawt_json_string(agent, "caps", "");
@@ -239,6 +242,18 @@ agent_row(JsonObject *agent, guint unread)
             gtk_box_append(GTK_BOX(box), spinner);
         }
     }
+
+    /*
+     * The face, so picking an agent out of the list does not start with
+     * reading its name.  Built through the one shared face-builder the
+     * transcript and the inspector also call -- three copies of "how is
+     * this agent drawn" is how the sidebar ended up as the client that
+     * never got a face at all while the transcript header did.
+     */
+    adw_action_row_add_prefix(
+        ADW_ACTION_ROW(row),
+        clawt_gtk_build_avatar(self->client, name, agent_id, has_avatar,
+                               clawt_json_string(agent, "color", NULL), 32));
 
     adw_action_row_add_prefix(ADW_ACTION_ROW(row), state_dot(state));
 
@@ -339,10 +354,15 @@ agent_row(JsonObject *agent, guint unread)
      * agent.show at selection time: the sidebar was drawn from the same
      * reply a moment ago, and a round trip between clicking an agent and
      * seeing its first message is a round trip nobody asked for.
+     *
+     * "agent-has-avatar" rather than a path: the bytes themselves come
+     * from clawt_gtk_avatar_texture()'s own cache, keyed on the agent id
+     * clawt_window already carries selected -- a path only ever worked
+     * when the client and the daemon shared a filesystem.
      */
-    g_object_set_data_full(G_OBJECT(row), "agent-avatar",
-                           g_strdup(clawt_json_string(agent, "avatar", "")),
-                           g_free);
+    g_object_set_data_full(
+        G_OBJECT(row), "agent-has-avatar",
+        g_strdup(has_avatar ? "1" : ""), g_free);
     g_object_set_data_full(G_OBJECT(row), "agent-color",
                            g_strdup(clawt_json_string(agent, "color", "")),
                            g_free);
@@ -1258,8 +1278,8 @@ refresh_agents_once(ClawtWindow *self)
         if (team_is_collapsed(self, team != NULL ? team : ""))
             continue;
 
-        row = agent_row(agent, unread_for(self, clawt_json_string(agent, "id",
-                                                                  "")));
+        row = agent_row(self, agent,
+                       unread_for(self, clawt_json_string(agent, "id", "")));
         gtk_list_box_append(self->sidebar, row);
 
         /*
