@@ -122,6 +122,36 @@ void clawt_message_set_timestamp(ClawtMessage *self, gint64 timestamp);
 void clawt_message_set_depth(ClawtMessage *self, gint depth);
 
 /**
+ * clawt_message_get_invites_reply:
+ * @self: a #ClawtMessage
+ *
+ * Whether the recipient's ordinary turn output should be sent back.
+ *
+ * Returns: %TRUE unless the sender cleared it
+ */
+gboolean clawt_message_get_invites_reply(ClawtMessage *self);
+
+/**
+ * clawt_message_set_invites_reply:
+ * @self: a #ClawtMessage
+ * @invites: %TRUE if an answer is wanted
+ *
+ * Says whether the agent this reaches should answer it by ordinary
+ * reply.  %TRUE by default; the daemon clears it on the message an
+ * agent's own reply produces, which is what makes a peer exchange end.
+ *
+ * An AI CLI answers whatever it is handed -- the text it writes at the
+ * end of a turn *is* the reply, and there is no way for it to write
+ * nothing.  So two agents each replying politely could only be stopped
+ * by `orchestration.max_hops`, eight turns later, and a one-line
+ * greeting cost eight.  Clearing this on a reply means a deliberate
+ * message earns exactly one answer and the exchange stops there;
+ * anything further has to be another deliberate call, which is the
+ * difference between a conversation and a loop.
+ */
+void clawt_message_set_invites_reply(ClawtMessage *self, gboolean invites);
+
+/**
  * clawt_message_set_priority:
  * @self: a #ClawtMessage
  * @priority: the band to queue at

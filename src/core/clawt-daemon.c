@@ -1395,6 +1395,19 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
     clawt_message_set_task_id(message, thread_id);
 
     /*
+     * This is the reply, so it invites none of its own.
+     *
+     * Everything else that reaches a mailbox was written on purpose: an
+     * agent calling clawtilla_message_agent, an operator typing. This
+     * path is the one the AI CLI takes by simply finishing a turn, and
+     * it takes it whether or not the agent had anything to add -- which
+     * is why two of them acknowledging each other could not stop. A
+     * deliberate message earns one answer and the answer earns none, so
+     * an exchange settles at one round instead of running to max_hops.
+     */
+    clawt_message_set_invites_reply(message, FALSE);
+
+    /*
      * One hop further than the message being answered, not a flat 1.
      *
      * The router records how far each delivery had travelled, and the
@@ -1478,6 +1491,36 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
                    "to %s", agent_id, thread_id);
         else
             clawt_task_manager_complete(self->tasks, thread_id, body);
+    }
+
+    /*
+     * And the turn that produced it may have had nowhere to send it.
+     *
+     * A turn started by another agent's reply is the end of that
+     * exchange: the delivery preamble told the agent so, and said to use
+     * clawtilla_message_agent for anything that genuinely has to reach
+     * them. What it writes here is what an AI CLI writes at the end of
+     * every turn whether or not it has anything to say, so routing it
+     * would restart the exchange the preamble just closed -- and the
+     * agent would be answering a message that was itself only an answer.
+     *
+     * Checked with a task id in hand, because a task delivery always
+     * invites its result: suppressing one would leave the delegator
+     * waiting on work that is finished. A turn that has both is a turn
+     * the flag was never set on.
+     *
+     * And never for the operator's own room, whatever else is true. A
+     * person waiting on an answer must not be met with silence because
+     * of a rule about how agents talk among themselves.
+     */
+    if (thread_id == NULL && !is_operator_room(destination)) {
+        ClawtAgent *replier = clawt_agent_manager_get(self->agents, agent_id);
+
+        if (replier != NULL && !clawt_agent_get_turn_replies(replier)) {
+            g_info("daemon: %s ended a closed exchange, so its reply to %s "
+                   "was not sent", agent_id, destination);
+            return;
+        }
     }
 
     if (clawt_mailbox_router_send(self->router, message, &error) < 0) {

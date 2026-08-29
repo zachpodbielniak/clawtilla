@@ -68,6 +68,7 @@ static const gchar *SCHEMA_SQL =
     "  state INTEGER NOT NULL DEFAULT 0,"
     "  depth INTEGER NOT NULL DEFAULT 0,"
     "  attempts INTEGER NOT NULL DEFAULT 0,"
+    "  invites_reply INTEGER NOT NULL DEFAULT 1,"
     "  created_at INTEGER NOT NULL,"
     "  not_before INTEGER NOT NULL DEFAULT 0,"
     "  expires_at INTEGER NOT NULL DEFAULT 0,"
@@ -95,6 +96,83 @@ set_sqlite_error(GError **error, sqlite3 *db, const gchar *what)
 {
     g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
                 "%s: %s", what, sqlite3_errmsg(db));
+}
+
+/*
+ * Whether a column is already on the items table.
+ *
+ * Asked rather than inferred from a failed ALTER.  "Add it and ignore
+ * the error" cannot tell a column that is already there from a database
+ * that is unwritable, and the second one has to keep being an error --
+ * a mailbox that silently declines to migrate would answer every read
+ * with the column's default for ever.
+ */
+static gboolean
+has_column(sqlite3 *db, const gchar *table, const gchar *column)
+{
+    g_autofree gchar *sql = NULL;
+    sqlite3_stmt *stmt = NULL;
+    gboolean found = FALSE;
+
+    /*
+     * PRAGMA takes no parameters, so the table name is spliced in.  It
+     * is a literal at every call site below and never reaches here from
+     * a config file or a message.
+     */
+    sql = g_strdup_printf("PRAGMA table_info(%s)", table);
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
+        return FALSE;
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (g_strcmp0((const gchar *)sqlite3_column_text(stmt, 1),
+                      column) == 0) {
+            found = TRUE;
+            break;
+        }
+    }
+
+    sqlite3_finalize(stmt);
+    return found;
+}
+
+/*
+ * The schema, and the migrations that bring an older file up to it.
+ *
+ * One function because there are two places a mailbox is opened -- the
+ * ordinary path and the one that recreates a quarantined file -- and a
+ * migration applied at only one of them is a migration that runs
+ * whenever the file happens to be corrupt.
+ *
+ * CREATE TABLE IF NOT EXISTS covers a new file and does nothing to an
+ * existing one, which is exactly why every column added after the first
+ * release needs a line here as well.
+ */
+static gboolean
+apply_schema(sqlite3 *db, GError **error)
+{
+    if (db == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                            "the mailbox database is not open");
+        return FALSE;
+    }
+
+    if (sqlite3_exec(db, SCHEMA_SQL, NULL, NULL, NULL) != SQLITE_OK) {
+        set_sqlite_error(error, db, "creating the mailbox schema");
+        return FALSE;
+    }
+
+    /* Since 0.1.0: which items leave their recipient free to reply. */
+    if (!has_column(db, "items", "invites_reply") &&
+        sqlite3_exec(db,
+                     "ALTER TABLE items ADD COLUMN invites_reply"
+                     " INTEGER NOT NULL DEFAULT 1",
+                     NULL, NULL, NULL) != SQLITE_OK) {
+        set_sqlite_error(error, db, "adding invites_reply to the mailbox");
+        return FALSE;
+    }
+
+    return TRUE;
 }
 
 /* ── Row <-> item ────────────────────────────────────────────────── */
@@ -131,6 +209,8 @@ item_from_row(sqlite3_stmt *stmt)
     clawt_mailbox_item_set_created_at(item, sqlite3_column_int64(stmt, 14));
     clawt_mailbox_item_set_not_before(item, sqlite3_column_int64(stmt, 15));
     clawt_mailbox_item_set_expires_at(item, sqlite3_column_int64(stmt, 16));
+    clawt_mailbox_item_set_invites_reply(item,
+        sqlite3_column_int(stmt, 17) != 0);
 
     return item;
 }
@@ -138,7 +218,7 @@ item_from_row(sqlite3_stmt *stmt)
 #define SELECT_COLUMNS \
     "id, sender, recipient, body, room, task_id, reply_to, subject, " \
     "idempotency_key, last_error, priority, state, depth, attempts, " \
-    "created_at, not_before, expires_at"
+    "created_at, not_before, expires_at, invites_reply"
 
 /* ── Depth ───────────────────────────────────────────────────────── */
 
@@ -288,12 +368,7 @@ quarantine_and_recreate(ClawtMailbox *self, GError **error)
 
     set_busy_timeout(self->db);
 
-    if (sqlite3_exec(self->db, SCHEMA_SQL, NULL, NULL, NULL) != SQLITE_OK) {
-        set_sqlite_error(error, self->db, "creating the mailbox schema");
-        return FALSE;
-    }
-
-    return TRUE;
+    return apply_schema(self->db, error);
 }
 
 ClawtMailbox *
@@ -318,8 +393,7 @@ clawt_mailbox_new(const gchar *agent_id, const gchar *db_path, GError **error)
     if (sqlite3_open(self->db_path, &self->db) == SQLITE_OK)
         set_busy_timeout(self->db);
 
-    if (self->db == NULL ||
-        sqlite3_exec(self->db, SCHEMA_SQL, NULL, NULL, NULL) != SQLITE_OK) {
+    if (!apply_schema(self->db, NULL)) {
         if (!quarantine_and_recreate(self, error)) {
             g_object_unref(self);
             return NULL;
@@ -474,8 +548,8 @@ clawt_mailbox_post(ClawtMailbox *self, ClawtMailboxItem *item, GError **error)
     if (sqlite3_prepare_v2(self->db,
             "INSERT INTO items (id, sender, recipient, body, room, task_id,"
             " reply_to, subject, idempotency_key, priority, state, depth,"
-            " attempts, created_at, not_before, expires_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " attempts, created_at, not_before, expires_at, invites_reply)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             -1, &stmt, NULL) != SQLITE_OK) {
         set_sqlite_error(error, self->db, "queueing a message");
         return NULL;
@@ -505,6 +579,8 @@ clawt_mailbox_post(ClawtMailbox *self, ClawtMailboxItem *item, GError **error)
     sqlite3_bind_int64(stmt, 14, clawt_mailbox_item_get_created_at(item));
     sqlite3_bind_int64(stmt, 15, clawt_mailbox_item_get_not_before(item));
     sqlite3_bind_int64(stmt, 16, expires_at);
+    sqlite3_bind_int(stmt, 17,
+                     clawt_mailbox_item_get_invites_reply(item) ? 1 : 0);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);

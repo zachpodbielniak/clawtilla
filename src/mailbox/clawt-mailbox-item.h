@@ -70,6 +70,18 @@ ClawtMailboxState clawt_mailbox_item_get_state(ClawtMailboxItem *self);
 
 gint   clawt_mailbox_item_get_depth(ClawtMailboxItem *self);
 gint   clawt_mailbox_item_get_attempts(ClawtMailboxItem *self);
+
+/**
+ * clawt_mailbox_item_get_invites_reply:
+ * @self: a #ClawtMailboxItem
+ *
+ * Whether delivering this should leave the recipient free to answer it
+ * by ordinary reply.  Carried from the #ClawtMessage it came from, and
+ * stored, because an item can outlive the daemon that queued it.
+ *
+ * Returns: %TRUE unless the sender cleared it
+ */
+gboolean clawt_mailbox_item_get_invites_reply(ClawtMailboxItem *self);
 gint64 clawt_mailbox_item_get_created_at(ClawtMailboxItem *self);
 gint64 clawt_mailbox_item_get_not_before(ClawtMailboxItem *self);
 gint64 clawt_mailbox_item_get_expires_at(ClawtMailboxItem *self);
@@ -98,6 +110,17 @@ void clawt_mailbox_item_set_state(ClawtMailboxItem *self, ClawtMailboxState stat
  */
 void clawt_mailbox_item_set_depth(ClawtMailboxItem *self, gint depth);
 void clawt_mailbox_item_set_attempts(ClawtMailboxItem *self, gint attempts);
+
+/**
+ * clawt_mailbox_item_set_invites_reply:
+ * @self: a #ClawtMailboxItem
+ * @invites: %TRUE if an answer is wanted
+ *
+ * See clawt_message_set_invites_reply(), which is where the value comes
+ * from.
+ */
+void clawt_mailbox_item_set_invites_reply(ClawtMailboxItem *self,
+                                          gboolean          invites);
 void clawt_mailbox_item_set_created_at(ClawtMailboxItem *self, gint64 when);
 void clawt_mailbox_item_set_not_before(ClawtMailboxItem *self, gint64 when);
 void clawt_mailbox_item_set_expires_at(ClawtMailboxItem *self, gint64 when);

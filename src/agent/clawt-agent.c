@@ -36,7 +36,8 @@ struct _ClawtAgent {
     ClawtAgentState state;
     ClawtAgentCaps  caps;
     gint            hop_depth;
-    gboolean        hop_depth_fresh;
+    gboolean        turn_was_delivered;
+    gboolean        turn_replies;
     gchar          *turn_origin;
     gchar          *status_detail;
 };
@@ -393,7 +394,36 @@ clawt_agent_set_hop_depth(ClawtAgent *self, gint depth)
      * Set for a turn that has not started yet.  clawt_agent_begin_turn()
      * spends it; a turn that begins without one starts from zero.
      */
-    self->hop_depth_fresh = TRUE;
+    self->turn_was_delivered = TRUE;
+}
+
+gboolean
+clawt_agent_get_turn_replies(ClawtAgent *self)
+{
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), TRUE);
+
+    return self->turn_replies;
+}
+
+void
+clawt_agent_set_turn_replies(ClawtAgent *self, gboolean replies)
+{
+    g_return_if_fail(CLAWT_IS_AGENT(self));
+
+    self->turn_replies = replies;
+
+    /*
+     * And this counts as the delivery, exactly as the hop depth does.
+     *
+     * One flag says a turn was set up by a delivery, and every field
+     * that describes such a turn has to arm it -- otherwise a caller
+     * that sets this one and not the depth has its value thrown away by
+     * the next clawt_agent_begin_turn(), silently, on the path where the
+     * turn is about to read it.  The router sets all three together, so
+     * this is about the setter being safe on its own rather than about
+     * any caller it has today.
+     */
+    self->turn_was_delivered = TRUE;
 }
 
 void
@@ -435,7 +465,7 @@ clawt_agent_begin_turn(ClawtAgent *self)
      * max_hops was measuring the last message of a turn rather than the
      * conversation.
      */
-    if (!self->hop_depth_fresh) {
+    if (!self->turn_was_delivered) {
         self->hop_depth = 0;
 
         /*
@@ -444,9 +474,16 @@ clawt_agent_begin_turn(ClawtAgent *self)
          * daemon can name.
          */
         g_clear_pointer(&self->turn_origin, g_free);
+
+        /*
+         * And a turn nobody handed anything to answers normally.  An
+         * operator typing, a cron routine, a webhook: each is a fresh
+         * request, and the agent's reply is the whole point of it.
+         */
+        self->turn_replies = TRUE;
     }
 
-    self->hop_depth_fresh = FALSE;
+    self->turn_was_delivered = FALSE;
 }
 
 void
@@ -842,4 +879,10 @@ clawt_agent_init(ClawtAgent *self)
 {
     self->state = CLAWT_AGENT_STATE_STOPPED;
     self->caps = CLAWT_AGENT_CAPS_NONE;
+
+    /*
+     * Named, because g_object_new() zeroes and FALSE here would mean an
+     * agent that had never been delivered to could not answer anybody.
+     */
+    self->turn_replies = TRUE;
 }

@@ -323,6 +323,36 @@ void clawt_agent_set_turn_origin(ClawtAgent *self, const gchar *from);
  */
 const gchar *clawt_agent_get_turn_origin(ClawtAgent *self);
 
+/**
+ * clawt_agent_set_turn_replies:
+ * @self: a #ClawtAgent
+ * @replies: %TRUE if this turn's ordinary output should be delivered
+ *
+ * Says whether the text this turn ends with is a message to send.
+ *
+ * Set at delivery beside the hop depth and the turn origin, from
+ * clawt_mailbox_item_get_invites_reply(), and spent by the same
+ * clawt_agent_begin_turn().
+ *
+ * A turn cannot decline to produce text: an AI CLI answers whatever it
+ * is handed, so "reply only if you have something to say" was advice no
+ * agent could follow, and two of them acknowledging each other ran until
+ * `orchestration.max_hops` cut it off eight turns later.  This is the
+ * mechanism behind that advice -- a reply earns no reply, so an exchange
+ * settles at one -- and the delivery preamble says so, because an agent
+ * whose closing text goes nowhere has to be told to use
+ * clawtilla_message_agent when it genuinely does need to reach somebody.
+ */
+void clawt_agent_set_turn_replies(ClawtAgent *self, gboolean replies);
+
+/**
+ * clawt_agent_get_turn_replies:
+ * @self: a #ClawtAgent
+ *
+ * Returns: %TRUE if the daemon should route what this turn says
+ */
+gboolean clawt_agent_get_turn_replies(ClawtAgent *self);
+
 void clawt_agent_begin_turn(ClawtAgent *self);
 
 /**

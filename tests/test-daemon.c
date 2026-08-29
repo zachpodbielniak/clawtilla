@@ -3974,6 +3974,162 @@ test_a_reply_after_the_turn_ends_still_counts_hops(void)
 
 
 /*
+ * An agent's own reply invites none of its own, and a turn started by
+ * one sends nothing.
+ *
+ * This is the pair that stops two agents talking for ever, and neither
+ * half is any use alone.  An AI CLI cannot end a turn without writing
+ * something: whatever it produces is the reply, and clawtilla used to
+ * route every one -- so the delivery preamble's "end your turn without
+ * replying if you have nothing to say" was asking for something no agent
+ * could do.  Asked to greet a peer, two of them exchanged a greeting, an
+ * acknowledgement, a correction, an acknowledgement of the correction,
+ * and kept going until `orchestration.max_hops` cut it off eight turns
+ * in.  The hop limit was working; it was the only thing that was.
+ *
+ * max_hops is disabled here on purpose.  With it set, a test could pass
+ * because the *hop limit* stopped the exchange, which is the behaviour
+ * being replaced rather than the one being added.
+ */
+static void
+test_a_reply_earns_no_reply(void)
+{
+    Fixture fixture = { 0 };
+    ClawtLinkServer *links;
+    ClawtAgentManager *agents;
+    ClawtMailboxRouter *router;
+    ClawtAgent *alpha;
+    ClawtAgent *beta;
+    ClawtMailboxFilter filter = { -1, 0, TRUE };
+    g_autoptr(GError) error = NULL;
+
+    fixture_setup(&fixture,
+                  "orchestration:\n"
+                  "  max_hops: 0\n"
+                  "  cycle_window: 0\n"
+                  "  rate_limit_per_minute: 0\n"
+                  "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    links = clawt_daemon_get_link_server(fixture.daemon);
+    agents = clawt_daemon_get_agents(fixture.daemon);
+    router = clawt_daemon_get_router(fixture.daemon);
+    alpha = clawt_agent_manager_get(agents, "alpha");
+    beta = clawt_agent_manager_get(agents, "beta");
+
+    /*
+     * alpha deliberately writes to beta -- a clawtilla_message_agent
+     * call, which is how "say hi to oryx" reaches a peer.
+     */
+    g_assert_cmpint(clawt_mailbox_router_send_to(router, "alpha", "beta",
+                                                 "hi, welcome to the team",
+                                                 NULL, 1, &error), >, 0);
+    g_assert_no_error(error);
+
+    /*
+     * beta answers.  Nothing is running, so the drain never handed the
+     * message over and never set beta's turn state; stand in for it the
+     * way the router would, which is what these tests do for the hop
+     * depth beside it.
+     */
+    clawt_agent_set_turn_replies(beta, TRUE);
+    g_signal_emit_by_name(links, "typing", "beta", "alpha", TRUE);
+    g_signal_emit_by_name(links, "typing", "beta", "alpha", FALSE);
+    g_signal_emit_by_name(links, "message", "beta", "alpha",
+                          "Thanks -- noted.", NULL);
+
+    /* It arrived, because a deliberate message earns an answer. */
+    {
+        g_autoptr(GPtrArray) queued =
+            clawt_mailbox_list(clawt_agent_get_mailbox(alpha), &filter);
+
+        g_assert_cmpuint(queued->len, ==, 1);
+
+        /*
+         * And it arrived marked as answering, which is the whole
+         * mechanism: this is what closes alpha's next turn.
+         */
+        g_assert_false(clawt_mailbox_item_get_invites_reply(
+                           g_ptr_array_index(queued, 0)));
+    }
+
+    /*
+     * Now alpha's turn, started by that reply.  Whatever it writes goes
+     * nowhere -- and a build without the rule queues "You're welcome"
+     * for beta, who thanks alpha for it, for ever.
+     *
+     * Counted before and after rather than asserted as empty: beta's
+     * first message is still sitting in its own mailbox, undrained,
+     * because nothing here is running to hand it to.
+     */
+    {
+        guint before = clawt_mailbox_depth(clawt_agent_get_mailbox(beta));
+
+        clawt_agent_set_turn_replies(alpha, FALSE);
+        g_signal_emit_by_name(links, "typing", "alpha", "beta", TRUE);
+        g_signal_emit_by_name(links, "typing", "alpha", "beta", FALSE);
+        g_signal_emit_by_name(links, "message", "alpha", "beta",
+                              "You're welcome -- shout if you need anything.",
+                              NULL);
+
+        g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(beta)),
+                         ==, before);
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A closed turn still answers the operator.
+ *
+ * The rule is about agents talking among themselves.  Applied to the
+ * operator's own room it would meet a waiting person with silence, which
+ * is a worse bug than the one it fixes -- and an easy one to introduce,
+ * since the check sits on the path every reply takes.
+ */
+static void
+test_a_closed_turn_still_answers_the_operator(void)
+{
+    Fixture fixture = { 0 };
+    ClawtLinkServer *links;
+    ClawtAgent *worker;
+    ClawtRoom *room;
+
+    fixture_setup(&fixture,
+                  "orchestration:\n  cycle_window: 0\n"
+                  "agents:\n  - id: worker\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    links = clawt_daemon_get_link_server(fixture.daemon);
+    worker = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                     "worker");
+
+    /*
+     * The room the person is looking at.  A direct room exists once
+     * somebody has written in it, which in a live daemon is the
+     * operator's first message.
+     */
+    room = clawt_room_manager_get_direct(
+               clawt_daemon_get_rooms(fixture.daemon), "user", "worker");
+    g_assert_nonnull(room);
+
+    clawt_agent_set_turn_replies(worker, FALSE);
+    g_signal_emit_by_name(links, "message", "worker", "dm:user:worker",
+                          "Done -- the build is green.", NULL);
+
+    {
+        g_autoptr(GPtrArray) history = clawt_room_get_history(room, 10);
+
+        g_assert_cmpuint(history->len, ==, 1);
+        g_assert_cmpstr(clawt_message_get_body(
+                            g_ptr_array_index(history, 0)),
+                        ==, "Done -- the build is green.");
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * A restart policy changed in the config reaches the agent's runtime at
  * its next start.
  *
@@ -6849,6 +7005,10 @@ main(int argc, char *argv[])
                     test_stopping_releases_the_state_lock);
     g_test_add_func("/daemon/reply-after-turn-counts-hops",
                     test_a_reply_after_the_turn_ends_still_counts_hops);
+    g_test_add_func("/daemon/a-reply-earns-no-reply",
+                    test_a_reply_earns_no_reply);
+    g_test_add_func("/daemon/closed-turn-still-answers-the-operator",
+                    test_a_closed_turn_still_answers_the_operator);
     g_test_add_func("/daemon/progress-note-is-not-an-answer",
                     test_a_progress_note_does_not_finish_a_task);
     g_test_add_func("/daemon/silent-agent-still-finishes",

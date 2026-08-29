@@ -452,6 +452,13 @@ work by luck depending on how the caller was reached. That is not a plan.
 
 ### sqlite
 
+- **`CREATE TABLE IF NOT EXISTS` does nothing to a file that already has the
+  table**, so a column added later reaches new databases only. Every mailbox
+  in a live fleet then fails its first read and is *quarantined as corrupt* --
+  a fleet's queued work moved aside on upgrade. `apply_schema()` is the one
+  place both open paths go through; ask `PRAGMA table_info` rather than
+  ignoring a failed `ALTER`, which cannot tell an existing column from an
+  unwritable file.
 - `sqlite3_close_v2()`, not `sqlite3_close()`. The plain form refuses with
   `SQLITE_BUSY` and leaves the connection allocated.
 - `sqlite3_open()` leaves a usable handle **even when it fails**. Close it
@@ -697,10 +704,25 @@ versions apart.
 
 ### Orchestration
 
+- **An AI CLI cannot end a turn without writing something**, so a peer message
+  answered itself for ever: whatever the model wrote at the end was routed
+  back, and "reply only if you have something to say" was advice no agent
+  could take. A message carries `invites_reply`; an agent's own reply clears
+  it, and a turn started by a cleared one sends nothing. One deliberate
+  message earns one answer. The preamble says which of the two the agent is
+  holding, because a rule the agent cannot see is a rule it will violate --
+  and it names `clawtilla_message_agent` as the way to reach them anyway.
+  `max_hops` stays as the backstop for chains of deliberate calls.
+- **A drain hands over everything queued at once**, so a per-turn decision
+  taken from the last item is taken from the wrong one. Accumulate: a
+  question followed by an acknowledgement must still be answerable.
 - **A turn is not one message.** The hop depth is dropped at the start of a
   turn no delivery preceded, not after a reply -- a chief that answers its
   operator *and* delegates in one turn sent the second message at depth 1, and
-  two agents could sign off at each other for ever.
+  two agents could sign off at each other for ever. Every field describing
+  that turn (depth, origin, whether it replies) arms the same "a delivery set
+  this up" flag: one that does not is silently discarded by the next
+  `clawt_agent_begin_turn()`.
 - An ordinary reply goes back to the room the delegation arrived in.
   `clawtilla_message_user` is **refused** during a peer-started turn: a
   redirect delivers a message written for the operator to somebody else. A

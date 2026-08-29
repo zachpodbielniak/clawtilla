@@ -24,6 +24,7 @@ struct _ClawtMessage {
     gint64        timestamp;
     gint          depth;
     ClawtPriority priority;
+    gboolean      invites_reply;
 };
 
 static ClawtMessage *
@@ -62,6 +63,17 @@ clawt_message_new(const gchar *room_id,
      */
     self->priority = CLAWT_PRIORITY_NORMAL;
 
+    /*
+     * A message invites a reply unless whoever made it says otherwise.
+     *
+     * Deliberate messages -- an agent calling clawtilla_message_agent, an
+     * operator typing -- are the ones that arrive here, and every one of
+     * them is somebody choosing to write.  The exception is the reply
+     * itself, built in the daemon's link handler, which clears this: see
+     * clawt_message_set_invites_reply().
+     */
+    self->invites_reply = TRUE;
+
     return self;
 }
 
@@ -84,6 +96,7 @@ clawt_message_copy(ClawtMessage *self)
     copy->timestamp = self->timestamp;
     copy->depth = self->depth;
     copy->priority = self->priority;
+    copy->invites_reply = self->invites_reply;
 
     return copy;
 }
@@ -168,6 +181,20 @@ clawt_message_set_depth(ClawtMessage *self, gint depth)
 {
     g_return_if_fail(self != NULL);
     self->depth = depth;
+}
+
+gboolean
+clawt_message_get_invites_reply(ClawtMessage *self)
+{
+    g_return_val_if_fail(self != NULL, TRUE);
+    return self->invites_reply;
+}
+
+void
+clawt_message_set_invites_reply(ClawtMessage *self, gboolean invites)
+{
+    g_return_if_fail(self != NULL);
+    self->invites_reply = invites;
 }
 
 ClawtPriority

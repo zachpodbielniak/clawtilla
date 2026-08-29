@@ -27,11 +27,12 @@ struct _ClawtMailboxItem {
     ClawtPriority     priority;
     ClawtMailboxState state;
 
-    gint   depth;
-    gint   attempts;
-    gint64 created_at;
-    gint64 not_before;
-    gint64 expires_at;
+    gint     depth;
+    gint     attempts;
+    gboolean invites_reply;
+    gint64   created_at;
+    gint64   not_before;
+    gint64   expires_at;
 };
 
 static ClawtMailboxItem *
@@ -67,6 +68,7 @@ clawt_mailbox_item_new(const gchar *from, const gchar *to, const gchar *body)
 
     self->priority = CLAWT_PRIORITY_NORMAL;
     self->state = CLAWT_MAILBOX_PENDING;
+    self->invites_reply = TRUE;
     self->created_at = g_get_real_time() / G_USEC_PER_SEC;
 
     return self;
@@ -97,6 +99,7 @@ clawt_mailbox_item_copy(ClawtMailboxItem *self)
     copy->state = self->state;
     copy->depth = self->depth;
     copy->attempts = self->attempts;
+    copy->invites_reply = self->invites_reply;
     copy->created_at = self->created_at;
     copy->not_before = self->not_before;
     copy->expires_at = self->expires_at;
@@ -193,6 +196,20 @@ clawt_mailbox_item_get_attempts(ClawtMailboxItem *self)
 {
     g_return_val_if_fail(self != NULL, 0);
     return self->attempts;
+}
+
+gboolean
+clawt_mailbox_item_get_invites_reply(ClawtMailboxItem *self)
+{
+    g_return_val_if_fail(self != NULL, TRUE);
+    return self->invites_reply;
+}
+
+void
+clawt_mailbox_item_set_invites_reply(ClawtMailboxItem *self, gboolean invites)
+{
+    g_return_if_fail(self != NULL);
+    self->invites_reply = invites;
 }
 
 gint64

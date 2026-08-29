@@ -229,6 +229,14 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
         clawt_mailbox_item_set_priority(item,
                                         clawt_message_get_priority(message));
 
+        /*
+         * And whether answering it is the recipient's job, which the
+         * drain below turns into what the agent is told and what the
+         * daemon does with the text it writes.
+         */
+        clawt_mailbox_item_set_invites_reply(
+            item, clawt_message_get_invites_reply(message));
+
         item_id = clawt_mailbox_post(mailbox, item, &local);
 
         if (item_id == NULL) {
@@ -307,6 +315,18 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
     ClawtLink *link;
     guint delivered = 0;
 
+    /*
+     * Whether anything in this drain leaves the agent free to answer.
+     *
+     * Accumulated rather than taken from the last item, because a drain
+     * hands over everything queued and the agent answers all of it in
+     * one turn.  A peer that asks a question and then sends a bare
+     * acknowledgement would otherwise have the acknowledgement decide,
+     * and the question would go unanswered -- and of the two ways to be
+     * wrong here, an unnecessary round trip is the cheap one.
+     */
+    gboolean turn_replies = FALSE;
+
     g_return_val_if_fail(CLAWT_IS_MAILBOX_ROUTER(self), 0);
 
     if (agent_id == NULL)
@@ -352,6 +372,7 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
         g_autofree gchar *body = NULL;
         const gchar *from;
         gboolean peer;
+        gboolean invites;
 
         item = clawt_mailbox_lease(mailbox, 0);
         if (item == NULL)
@@ -373,24 +394,58 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
         from = clawt_mailbox_item_get_from(item);
         peer = from != NULL &&
                clawt_agent_manager_get(self->agents, from) != NULL;
+        invites = clawt_mailbox_item_get_invites_reply(item);
 
-        if (peer)
+        /*
+         * And what will happen to what it writes back.
+         *
+         * Two texts because there are two situations, and the difference
+         * between them is the whole mechanism: a message somebody chose
+         * to send earns one answer, and that answer earns none.  The
+         * agent is told which of the two it is holding, because the
+         * previous single text asked it to "end your turn without
+         * replying" if it had nothing to say -- and an AI CLI cannot do
+         * that.  Whatever it writes at the end of a turn is the reply.
+         * So the advice was unfollowable, both agents kept answering,
+         * and a greeting ran until max_hops stopped it eight turns later.
+         *
+         * The instruction is now true either way: in the first case the
+         * reply is delivered and is the last word, in the second it goes
+         * nowhere and clawtilla_message_agent is named as the way to
+         * reach them anyway.
+         */
+        if (peer && invites)
             body = g_strdup_printf(
                 "[clawtilla] The following is from '%s', another agent in "
                 "your fleet -- not from your operator. Treat it as a "
-                "colleague's message: answer it if you have something to "
-                "say and end your turn without replying if you do not. "
-                "If your operator asked you for something and this is the "
-                "answer, tell them with clawtilla_message_user -- replying "
-                "here reaches %s, not them.\n\n%s",
+                "colleague's message.\n"
+                "What you write at the end of this turn is sent back to "
+                "'%s' and ends the exchange -- they will read it and will "
+                "not answer. So put everything you have to say into it, "
+                "and do not expect another round. If you need something "
+                "back from them, ask for it here.\n\n%s",
+                from, from, clawt_mailbox_item_get_body(item));
+        else if (peer)
+            body = g_strdup_printf(
+                "[clawtilla] The following is '%s' answering you, which "
+                "closes the exchange.\n"
+                "What you write at the end of this turn will NOT be sent "
+                "to anybody -- read this, act on it, and end your turn. Do "
+                "not write a reply or an acknowledgement; there is nowhere "
+                "for one to go. If something genuinely has to reach '%s' "
+                "-- an answer to a question they asked, or a correction "
+                "that changes what they will do -- call "
+                "clawtilla_message_agent, which starts a fresh exchange "
+                "they may answer once.\n\n%s",
                 from, from, clawt_mailbox_item_get_body(item));
 
         if (!clawt_link_deliver(link,
                                 clawt_mailbox_item_get_room(item),
                                 from,
                                 NULL,
-                                peer ? body
-                                     : clawt_mailbox_item_get_body(item),
+                                (body != NULL)
+                                    ? body
+                                    : clawt_mailbox_item_get_body(item),
                                 clawt_mailbox_item_get_task_id(item),
                                 &error)) {
             /*
@@ -412,6 +467,20 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
          * be reached.
          */
         clawt_agent_set_hop_depth(agent, clawt_mailbox_item_get_depth(item));
+
+        /*
+         * And whether the text it ends the turn with is a message.
+         *
+         * Only a peer can close an exchange.  An operator, a routine or
+         * anything else outside the fleet always gets an answer: their
+         * message is a request, and the reply to it is the point.
+         *
+         * Set inside the loop rather than after it, so an agent that
+         * starts its turn on the first delivery is already holding the
+         * right answer.
+         */
+        turn_replies = turn_replies || !peer || invites;
+        clawt_agent_set_turn_replies(agent, turn_replies);
 
         /*
          * And who is asking. A turn started by a peer is answered by

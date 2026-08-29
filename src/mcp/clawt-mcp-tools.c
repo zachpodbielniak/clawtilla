@@ -276,7 +276,9 @@ static const ToolDefinition tools[] = {
     TOOL("clawtilla_message_agent",
          "Send a message to another agent. It is queued, so this works even "
          "if they are stopped -- they will see it when they start. Returns "
-         "immediately without waiting for a reply.",
+         "immediately without waiting for a reply. They get one answer back "
+         "to you and the exchange ends there, so say everything you need to "
+         "in one message rather than expecting to go back and forth.",
          NEEDS_PEER_COMMS, message_agent_params),
 
     TOOL("clawtilla_ask_agent",
@@ -284,7 +286,9 @@ static const ToolDefinition tools[] = {
          "in your mailbox rather than as the result of this call -- "
          "nothing here blocks a turn waiting. If you need the answer "
          "before you can continue, use clawtilla_delegate and check "
-         "clawtilla_task_status.",
+         "clawtilla_task_status. Ask everything you need in one go: their "
+         "answer closes the exchange, and following up means calling this "
+         "again.",
          NEEDS_PEER_COMMS, ask_agent_params),
 
     TOOL("clawtilla_delegate",

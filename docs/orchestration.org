@@ -550,7 +550,9 @@ A message from a peer says so, in the body, at delivery time:
 
 #+begin_example
 [clawtilla] The following is from 'researcher', another agent in your
-fleet -- not from your operator. ...
+fleet -- not from your operator. Treat it as a colleague's message.
+What you write at the end of this turn is sent back to 'researcher' and
+ends the exchange -- they will read it and will not answer. ...
 #+end_example
 
 The sender already travels in its own field, and models do not reliably
@@ -561,6 +563,71 @@ colleague asking a question and the human giving an order.
 
 Applied on the way out, not stored: the transcript keeps what was
 actually said.
+
+**** A reply earns no reply
+
+An AI CLI cannot end a turn without writing something. Whatever it
+produces at the end is the reply, and clawtilla used to route every one
+of them --- so an agent told "answer if you have something to say and
+end your turn without replying if you do not" was being asked for
+something it had no way to do.
+
+Asked to greet a peer, two agents exchanged a greeting, an
+acknowledgement, a correction, an acknowledgement of the correction, and
+carried on until ~orchestration.max_hops~ cut it off eight turns in. The
+hop limit was working. It was the only thing that was.
+
+So a message carries whether it invites a reply, and an agent's own
+reply carries ~false~:
+
+| The turn was started by             | Its closing text        |
+|-------------------------------------+-------------------------|
+| a person, a routine, a webhook      | is delivered            |
+| ~clawtilla_message_agent~ from a peer | is delivered, and ends it |
+| ~clawtilla_delegate~ (a task)         | is the result, delivered |
+| another agent's reply               | is not sent anywhere    |
+
+A message somebody chose to send earns exactly one answer, and the
+exchange settles there. Anything past that has to be another deliberate
+~clawtilla_message_agent~ call, which is the difference between a
+conversation and a loop --- and still counts against ~max_hops~, which
+stays as the backstop for chains built out of deliberate calls.
+
+The agent is told which of the two it is holding, because the rule is
+useless as a secret: an agent whose closing text goes nowhere has to
+know that, and has to be told what to call instead.
+
+#+begin_example
+[clawtilla] The following is 'oryx' answering you, which closes the
+exchange.
+What you write at the end of this turn will NOT be sent to anybody --
+read this, act on it, and end your turn. Do not write a reply or an
+acknowledgement; there is nowhere for one to go. If something genuinely
+has to reach 'oryx' -- an answer to a question they asked, or a
+correction that changes what they will do -- call
+clawtilla_message_agent, which starts a fresh exchange they may answer
+once.
+#+end_example
+
+The operator is never on the receiving end of this. Their message is a
+request whose whole point is the reply, and a reply into their own room
+is delivered whatever the flag says --- a fleet that went quiet on its
+human would be a worse bug than the one this fixes.
+
+***** It is on the message, and it is stored
+
+The flag rides on the ~ClawtMailboxItem~ and is written to the mailbox
+database, because a mailbox is durable precisely so a stopped agent
+still gets its post. Holding it in memory would mean a reply queued
+before a daemon restart was delivered afterwards as though somebody had
+chosen to send it, reopening the exchange it closed.
+
+An existing mailbox is migrated on open. ~CREATE TABLE IF NOT EXISTS~
+does nothing to a file that already has the table, so without the
+migration every mailbox in a live fleet would fail its first read and be
+quarantined as corrupt --- a fleet's queued work moved aside on upgrade.
+Rows written by an older build read as inviting a reply, which is what
+they meant.
 
 *** Reaching the operator is not the same as replying
 
