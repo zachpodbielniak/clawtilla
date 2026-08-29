@@ -296,6 +296,33 @@ void clawt_agent_set_hop_depth(ClawtAgent *self, gint depth);
  * inheriting the last one, which is what stops an agent that answers
  * Matrix between two peer messages from running out of hops.
  */
+/**
+ * clawt_agent_set_turn_origin:
+ * @self: a #ClawtAgent
+ * @from: (nullable): who the message being delivered came from
+ *
+ * Records who started the turn about to run.
+ *
+ * Set at delivery beside the hop depth, and spent by the same
+ * clawt_agent_begin_turn() -- the two answer the same question one field
+ * apart, and setting them together is what keeps them from disagreeing
+ * about which turn they describe.
+ *
+ * Distinct from clawt_agent_get_activity_peer(), which is kept after the
+ * turn ends so a stopped agent can still say who its last one was for.
+ * This one is only true of the turn actually running.
+ */
+void clawt_agent_set_turn_origin(ClawtAgent *self, const gchar *from);
+
+/**
+ * clawt_agent_get_turn_origin:
+ * @self: a #ClawtAgent
+ *
+ * Returns: (transfer none) (nullable): who started this turn, or %NULL
+ *   when nothing the daemon can see did
+ */
+const gchar *clawt_agent_get_turn_origin(ClawtAgent *self);
+
 void clawt_agent_begin_turn(ClawtAgent *self);
 
 /**

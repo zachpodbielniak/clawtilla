@@ -1648,6 +1648,69 @@ test_a_team_with_no_description_says_so(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * Work handed down a chain comes back up the same one.
+ *
+ * A chief of staff delegates to a lead, which delegates to a member, and
+ * each of them reported straight into the operator's chat -- three
+ * separate answers arriving in the middle of a conversation they were
+ * not part of, and no answer to the thing that was actually asked. The
+ * tool description used to encourage it in as many words.
+ */
+static void
+test_message_user_is_refused_during_a_peers_turn(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) refused = NULL;
+    g_autoptr(JsonNode) allowed = NULL;
+    ClawtAgent *worker;
+    const gchar *text;
+    gboolean is_error = FALSE;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n  - id: worker\n");
+
+    worker = clawt_agent_manager_get(fixture.agents, "worker");
+    g_assert_nonnull(worker);
+
+    /* The delivery that started this turn came from another agent. */
+    clawt_agent_set_hop_depth(worker, 1);
+    clawt_agent_set_turn_origin(worker, "chief");
+    clawt_agent_begin_turn(worker);
+
+    refused = call_tool(&fixture, "worker", "clawtilla_message_user",
+                        "{\"body\": \"Done, boss.\"}");
+    text = response_text(refused, &is_error);
+
+    g_assert_true(is_error);
+
+    /* It names who is waiting, and how to reach them. */
+    g_assert_nonnull(strstr(text, "chief"));
+    g_assert_nonnull(strstr(text, "clawtilla_message_agent"));
+
+    /* And nothing was delivered anywhere. */
+    g_assert_null(fixture.last_target);
+
+    /*
+     * A turn the operator started is untouched -- which is the case this
+     * tool exists for, and refusing it would cut every agent off from
+     * the person running the fleet.
+     */
+    clawt_agent_set_hop_depth(worker, 0);
+    clawt_agent_set_turn_origin(worker, "user");
+    clawt_agent_begin_turn(worker);
+
+    is_error = TRUE;
+    allowed = call_tool(&fixture, "worker", "clawtilla_message_user",
+                        "{\"body\": \"Here is what you asked for.\"}");
+    response_text(allowed, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_nonnull(fixture.last_target);
+
+    fixture_teardown(&fixture);
+}
+
+
 int
 main(int argc, char *argv[])
 {
@@ -1719,6 +1782,8 @@ main(int argc, char *argv[])
                     test_an_agents_exec_is_audited);
     g_test_add_func("/mcp/audit/a-refused-exec-is-recorded",
                     test_a_refused_exec_is_audited_too);
+    g_test_add_func("/mcp/message-user/refused-during-a-peers-turn",
+                    test_message_user_is_refused_during_a_peers_turn);
     g_test_add_func("/mcp/failing-command", test_failing_command_reports_why);
 
     return g_test_run();

@@ -700,6 +700,33 @@ the same program.
   check reported OK with the feature in one client only. Verified by
   breaking one and watching it fail.
 
+### Every agent in a chain reported to the operator, because the tool said to
+
+- `clawtilla_message_user`'s description read: "if they asked you to find
+  something out and a peer has now told you, report it with this --
+  otherwise they are left asking whether you ever heard back." That is
+  right for the agent the operator spoke to and wrong for **everyone
+  below it**. A chief of staff delegated to a lead which delegated to two
+  members, and all of them answered into the operator's chat -- three
+  reports in a conversation they were not part of, and no answer to the
+  thing that was actually asked.
+- The routing was never wrong: an ordinary reply goes back to the room
+  the delegation arrived in. What sent the traffic sideways was a
+  sentence in a tool description, which is a reminder that **a tool's
+  description is part of its behaviour** and gets read far more carefully
+  than the docs.
+- Refused during a peer-started turn, not redirected. A redirect delivers
+  a message written for the operator to somebody else -- addressed to the
+  wrong reader, in the wrong register. The refusal names who is waiting
+  so the next attempt is written for them.
+- Which turn an agent is on comes from the delivery that started it, and
+  it is held **beside the hop depth and dropped by the same turn
+  boundary** -- one flag for both, because they answer the same question
+  one field apart and two mechanisms would disagree about which turn they
+  described. `clawt_agent_get_activity_peer()` is deliberately not that:
+  it is kept after the turn ends so a stopped agent can say who its last
+  one was for.
+
 ### A turn is not one message, and the hop count was measuring the last one
 
 - `on_link_message()` stamped an agent's reply one hop beyond what it was

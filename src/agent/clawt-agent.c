@@ -37,6 +37,7 @@ struct _ClawtAgent {
     ClawtAgentCaps  caps;
     gint            hop_depth;
     gboolean        hop_depth_fresh;
+    gchar          *turn_origin;
     gchar          *status_detail;
 };
 
@@ -396,6 +397,23 @@ clawt_agent_set_hop_depth(ClawtAgent *self, gint depth)
 }
 
 void
+clawt_agent_set_turn_origin(ClawtAgent *self, const gchar *from)
+{
+    g_return_if_fail(CLAWT_IS_AGENT(self));
+
+    g_free(self->turn_origin);
+    self->turn_origin = g_strdup(from);
+}
+
+const gchar *
+clawt_agent_get_turn_origin(ClawtAgent *self)
+{
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), NULL);
+
+    return self->turn_origin;
+}
+
+void
 clawt_agent_begin_turn(ClawtAgent *self)
 {
     g_return_if_fail(CLAWT_IS_AGENT(self));
@@ -417,8 +435,16 @@ clawt_agent_begin_turn(ClawtAgent *self)
      * max_hops was measuring the last message of a turn rather than the
      * conversation.
      */
-    if (!self->hop_depth_fresh)
+    if (!self->hop_depth_fresh) {
         self->hop_depth = 0;
+
+        /*
+         * And who asked, which is the same question one field along: a
+         * turn nothing delivered into was not started by anybody the
+         * daemon can name.
+         */
+        g_clear_pointer(&self->turn_origin, g_free);
+    }
 
     self->hop_depth_fresh = FALSE;
 }
@@ -749,6 +775,7 @@ clawt_agent_dispose(GObject *object)
                                              self);
 
     g_clear_object(&self->runtime);
+    g_clear_pointer(&self->turn_origin, g_free);
     g_clear_object(&self->computer);
     g_clear_object(&self->desktop);
     g_clear_object(&self->link);

@@ -361,11 +361,13 @@ static const ToolDefinition tools[] = {
          NEEDS_PEER_COMMS, mailbox_reply_params),
 
     TOOL("clawtilla_message_user",
-         "Say something to your human operator. This is the only way to "
-         "reach them: replying to a message from another agent reaches "
-         "that agent. If they asked you to find something out and a peer "
-         "has now told you, report it with this -- otherwise they are "
-         "left asking whether you ever heard back.",
+         "Say something to your human operator. Use it when the operator "
+         "asked *you*, and for anything you decided they should know "
+         "unprompted. It is refused during a turn another agent started: "
+         "work handed down a chain comes back up the same one, so answer "
+         "whoever asked you and they will pass it on. Replying to a "
+         "message from another agent reaches that agent, which is what "
+         "you want there.",
          NEEDS_NOTHING, message_user_params),
 
     TOOL("clawtilla_memory_add",
@@ -2209,6 +2211,45 @@ tool_message_user(ClawtMcpTools *self, const gchar *agent_id,
     if (self->room_manager == NULL || self->deliver == NULL) {
         *is_error = TRUE;
         return g_strdup("There is no way to reach your operator from here.");
+    }
+
+    /*
+     * A turn a peer started is answered back to that peer.
+     *
+     * The operator's conversation is theirs, and work handed down a
+     * chain has to come back up the same one: a chief of staff that
+     * delegated to a lead, which delegated to a member, gets three
+     * separate reports in its operator's chat and no answer to the thing
+     * it asked. The description used to *encourage* this -- "if they
+     * asked you to find something out and a peer has now told you,
+     * report it with this" -- which is right for the agent the operator
+     * spoke to and wrong for everyone below it.
+     *
+     * Refused rather than redirected. A redirect would deliver a message
+     * written for the operator to somebody else, addressed to the wrong
+     * reader; the refusal names who is waiting so the next attempt is
+     * written for them. The chief of staff is not a special case: its
+     * turns come from the operator, so it never sees this.
+     */
+    {
+        ClawtAgent *me = (self->agents != NULL)
+                         ? clawt_agent_manager_get(self->agents, agent_id)
+                         : NULL;
+        const gchar *asked_by = (me != NULL)
+                                ? clawt_agent_get_turn_origin(me) : NULL;
+
+        if (asked_by != NULL && self->agents != NULL &&
+            clawt_agent_manager_get(self->agents, asked_by) != NULL) {
+            *is_error = TRUE;
+            return g_strdup_printf(
+                "'%s' asked you this, not your operator -- so the answer "
+                "goes back to '%s', who is waiting for it and who will "
+                "pass it on. Reply to their message, or use "
+                "clawtilla_message_agent with agent_id '%s'. Your operator "
+                "sees that conversation without it arriving in the middle "
+                "of theirs.",
+                asked_by, asked_by, asked_by);
+        }
     }
 
     /*

@@ -414,6 +414,14 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
         clawt_agent_set_hop_depth(agent, clawt_mailbox_item_get_depth(item));
 
         /*
+         * And who is asking. A turn started by a peer is answered by
+         * replying to that peer -- the answer travels back up the chain
+         * it came down -- rather than by going over their head to the
+         * operator, which is what clawtilla_message_user() would do.
+         */
+        clawt_agent_set_turn_origin(agent, from);
+
+        /*
          * And who this turn is for.  Delivery is the only moment that
          * knows it: by the time the agent raises its typing indicator
          * the message is inside libreclaw and the sender is not
