@@ -99,6 +99,8 @@ HtmxElement *clawt_web_routines_body(ClawtWebApp *app, const gchar *agent_id);
  * Returns: (transfer full): the triggers page
  */
 HtmxElement *clawt_web_triggers_body(ClawtWebApp *app, const gchar *agent_id);
+
+/**
  * clawt_web_skills_body:
  * @app: a #ClawtWebApp
  * @agent_id: (nullable): the selected agent, unused here
@@ -148,6 +150,8 @@ void clawt_web_register_work(HtmxRouter *router, ClawtWebApp *app);
  * it is unreachable and looks like a page that renders the wrong thing.
  */
 void clawt_web_register_triggers(HtmxRouter *router, ClawtWebApp *app);
+
+/**
  * clawt_web_register_skills:
  * @router: the router
  * @app: a #ClawtWebApp

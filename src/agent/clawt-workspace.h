@@ -304,6 +304,8 @@ clawt_workspace_update_computer(ClawtAgentConfig *agent,
  */
 gchar *
 clawt_workspace_find_profile_picture(const gchar *workspace);
+
+/**
  * clawt_workspace_update_skills:
  * @agent: the agent's configuration
  * @described: org text naming the skills it has, from

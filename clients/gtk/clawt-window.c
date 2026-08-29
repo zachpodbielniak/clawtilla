@@ -1367,6 +1367,8 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
      */
     if (g_str_has_prefix(kind, "trigger."))
         clawt_gtk_refresh_triggers(self);
+
+    /*
      * A skill enabled, imported or removed changes both the page and
      * what `/` offers, and the cached command list is the half that
      * would otherwise stay right until the window was reopened.
