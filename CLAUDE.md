@@ -294,6 +294,17 @@ only on a success path is NULL on the failure path that needs it.
 `GTask` pushes its own context around its callback, which makes some of this
 work by luck depending on how the caller was reached. That is not a plan.
 
+**A blocking API taken onto a worker thread must bring its own context.** A
+worker started by `g_task_run_in_thread()` has no thread-default, so anything
+that reaches for one gets the **global default** -- the loop the window is
+running. `clawt_connection_probe()` did, and then called
+`g_main_context_iteration()` on it from the worker: with the main thread
+holding the context the push failed with a pair of GLib criticals, and with
+the main thread idle the acquire *succeeded* and the worker dispatched GTK's
+own sources. The second is the dangerous one and it is silent, so the test
+asserts the caller's sources were **not** dispatched rather than that no
+critical fired.
+
 ### Other GLib facts
 
 - `g_task_new()` refs its source object, so it must be a GObject. Carry a
@@ -684,6 +695,13 @@ versions apart.
 
 ### The wire
 
+- **A JsonNode can hold the object *type* and no object.**
+  `json_node_new(JSON_NODE_OBJECT)` answers `JSON_NODE_HOLDS_OBJECT()` with
+  TRUE and `json_node_get_object()` with NULL, so a type check is not a
+  pointer check. Every payload-less reply -- eleven handlers, `agent.start`
+  among them -- arrived as one, and the reader `clawt_window_request()` runs
+  on *every* reply got a json-glib CRITICAL and its fallback. An empty reply
+  is an **empty object**.
 - **A duplicate JSON member is silent and the last one wins.** Count members as
   well as braces. And a member in the wrong object is still valid JSON --
   `json_builder_set_member_name()` puts it wherever the builder currently is.

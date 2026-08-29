@@ -558,6 +558,14 @@ typedef struct {
      */
     gboolean      stay;
     gint          subscribes;    /* atomic */
+
+    /*
+     * A daemon that answers without a payload at all.
+     *
+     * Eleven of clawtillad's own handlers do -- agent.start and
+     * agent.restart among them -- so this is not a hypothetical shape.
+     */
+    gboolean      no_payload;
 } FakeDaemon;
 
 static void
@@ -604,6 +612,14 @@ on_fake_incoming(GSocketService *service, GSocketConnection *connection,
             break;
 
         kind = clawt_ipc_frame_get_kind(request);
+
+        if (fake->no_payload) {
+            g_autoptr(JsonNode) bare = clawt_ipc_response_new(request, NULL);
+
+            send_line(out, bare);
+            continue;
+        }
+
         builder = json_builder_new();
         json_builder_begin_object(builder);
 
@@ -667,7 +683,7 @@ run_fake_daemon(gpointer data)
 }
 
 static FakeDaemon *
-fake_daemon_start_at(const gchar *path, gboolean stay)
+fake_daemon_start_full(const gchar *path, gboolean stay, gboolean no_payload)
 {
     FakeDaemon *fake = g_new0(FakeDaemon, 1);
     g_autoptr(GSocketAddress) address = NULL;
@@ -675,6 +691,7 @@ fake_daemon_start_at(const gchar *path, gboolean stay)
 
     fake->path = g_strdup(path);
     fake->stay = stay;
+    fake->no_payload = no_payload;
     fake->context = g_main_context_new();
     fake->loop = g_main_loop_new(fake->context, FALSE);
 
@@ -708,11 +725,26 @@ fake_daemon_start_at(const gchar *path, gboolean stay)
 }
 
 static FakeDaemon *
+fake_daemon_start_at(const gchar *path, gboolean stay)
+{
+    return fake_daemon_start_full(path, stay, FALSE);
+}
+
+static FakeDaemon *
 fake_daemon_start(const gchar *dir)
 {
     g_autofree gchar *path = g_build_filename(dir, "fake.sock", NULL);
 
     return fake_daemon_start_at(path, FALSE);
+}
+
+/* Answers every request with `ok` and nothing else. */
+static FakeDaemon *
+fake_daemon_start_silent(const gchar *dir)
+{
+    g_autofree gchar *path = g_build_filename(dir, "silent.sock", NULL);
+
+    return fake_daemon_start_full(path, FALSE, TRUE);
 }
 
 static void
@@ -1436,6 +1468,156 @@ test_a_connected_client_is_not_retried(void)
     clawt_test_remove_tree(dir);
 }
 
+/*
+ * A reply that carried no payload is an *empty object*, not a node that
+ * claims to be one.
+ *
+ * json_node_new(JSON_NODE_OBJECT) answers JSON_NODE_HOLDS_OBJECT() with
+ * TRUE and json_node_get_object() with NULL, so every reader that checked
+ * the type and then took the pointer got NULL from something it had just
+ * been told was an object.  In the GTK client that reader is
+ * clawt_ipc_reply_refusal_text(), which runs on *every* reply -- so
+ * pressing Start printed a json-glib CRITICAL and the agent started
+ * anyway, which is the shape that gets ignored until somebody reads their
+ * console.
+ *
+ * Asserted on the node rather than on any one reader, because eleven
+ * daemon handlers answer this way and the readers are in three clients.
+ */
+static void
+test_a_reply_with_no_payload_is_an_empty_object(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-bare-XXXXXX", NULL);
+    g_autoptr(GMainContext) context = g_main_context_new();
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *path = g_build_filename(dir, "silent.sock", NULL);
+    FakeDaemon *fake = fake_daemon_start_silent(dir);
+
+    g_main_context_push_thread_default(context);
+    client = clawt_client_new(path);
+
+    g_assert_true(clawt_client_connect(client, &error));
+    g_assert_no_error(error);
+
+    reply = clawt_client_request(client, "agent.start", NULL, &error);
+
+    g_assert_no_error(error);
+    g_assert_nonnull(reply);
+    g_assert_true(JSON_NODE_HOLDS_OBJECT(reply));
+
+    /* The whole point: the type and the contents agree. */
+    g_assert_nonnull(json_node_get_object(reply));
+    g_assert_cmpuint(json_object_get_size(json_node_get_object(reply)),
+                     ==, 0);
+
+    /*
+     * And the reader that fires on every reply is happy with it.  Under
+     * GTest a critical is fatal, so this line is the regression itself
+     * rather than a restatement of the assertions above.
+     */
+    g_assert_null(clawt_ipc_reply_refusal_text(reply, NULL));
+
+    clawt_client_disconnect(client);
+    fake_daemon_stop(fake);
+    g_main_context_pop_thread_default(context);
+    clawt_test_remove_tree(dir);
+}
+
+typedef struct {
+    ClawtConnection       *connection;
+    ClawtConnectionStatus *status;
+} ProbeRun;
+
+static gpointer
+run_probe(gpointer data)
+{
+    ProbeRun *run = data;
+
+    run->status = clawt_connection_probe(run->connection);
+
+    return NULL;
+}
+
+static gboolean
+note_dispatch(gpointer data)
+{
+    gboolean *dispatched = data;
+
+    *dispatched = TRUE;
+
+    return G_SOURCE_REMOVE;
+}
+
+/*
+ * A probe runs on a context of its own, whichever thread called it.
+ *
+ * clawt_connection_probe() blocks, so both graphical clients run it off
+ * their main thread -- the GTK client from a GTask worker, the web client
+ * from a request handler.  A ClawtClient settles on the thread-default
+ * context when it connects, and a fresh worker thread has none, so the
+ * probe used to settle on the *global* default: the context the
+ * application's own loop lives on.  It then called
+ * g_main_context_iteration() on it from the worker, which acquires that
+ * context and dispatches its sources -- GTK's among them -- on a thread
+ * that must never touch them.  On the GTK client that showed up first as
+ * a pair of GLib criticals from g_main_context_push_thread_default(),
+ * because the main thread already held the context.
+ *
+ * The assertion is deliberately not "no critical fired": the criticals
+ * only appear when the caller's loop happens to be running, and the
+ * dangerous case is the one where it is idle and the acquire *succeeds*.
+ * So this arms a source on the default context and asserts the probe did
+ * not dispatch it -- then dispatches it here, which is the control: a
+ * test that armed nothing would pass either way.
+ */
+static void
+test_a_probe_leaves_the_callers_context_alone(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-probe-XXXXXX", NULL);
+    g_autofree gchar *path = g_build_filename(dir, "silent.sock", NULL);
+    g_autoptr(ClawtConnection) connection = NULL;
+    g_autoptr(GSource) source = g_idle_source_new();
+    FakeDaemon *fake = fake_daemon_start_silent(dir);
+    gboolean dispatched = FALSE;
+    ProbeRun run;
+    GThread *thread;
+
+    g_source_set_callback(source, note_dispatch, &dispatched, NULL);
+    g_source_attach(source, g_main_context_default());
+
+    connection = clawt_connection_new_local("silent", path);
+
+    run.connection = connection;
+    run.status = NULL;
+
+    thread = g_thread_new("probe", run_probe, &run);
+    g_thread_join(thread);
+
+    g_assert_nonnull(run.status);
+
+    /*
+     * It really did talk to the fake.  Without this a probe that failed
+     * before it reached the context at all would satisfy everything
+     * below.
+     */
+    g_assert_cmpint(run.status->reach, ==, CLAWT_REACH_REACHABLE);
+
+    g_assert_false(dispatched);
+
+    /* The control. */
+    while (g_main_context_iteration(g_main_context_default(), FALSE))
+        ;
+
+    g_assert_true(dispatched);
+
+    g_source_destroy(source);
+    clawt_connection_status_free(run.status);
+    fake_daemon_stop(fake);
+    clawt_test_remove_tree(dir);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1449,6 +1631,10 @@ main(int argc, char *argv[])
                     test_start_reconnecting_does_not_stack);
     g_test_add_func("/connection/a-connected-client-is-not-retried",
                     test_a_connected_client_is_not_retried);
+    g_test_add_func("/connection/bare-reply-is-an-empty-object",
+                    test_a_reply_with_no_payload_is_an_empty_object);
+    g_test_add_func("/connection/probe-leaves-the-callers-context-alone",
+                    test_a_probe_leaves_the_callers_context_alone);
     g_test_add_func("/connection/never-and-lost-differ-only-in-history",
                     test_never_and_lost_differ_only_in_history);
     g_test_add_func("/connection/advice-matches-where-the-daemon-is",

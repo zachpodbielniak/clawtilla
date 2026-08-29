@@ -335,6 +335,35 @@ dispatch_event(ClawtClient *self, JsonNode *frame)
 }
 
 /*
+ * A reply's payload as a node -- an *empty* object when it carried none.
+ *
+ * json_node_new(JSON_NODE_OBJECT) makes a node that answers
+ * JSON_NODE_HOLDS_OBJECT() with TRUE and json_node_get_object() with
+ * NULL: a node that lies about what is in it.  Eleven daemon handlers
+ * answer without a payload -- agent.start and agent.restart among them
+ * -- so every one of those replies reached the clients as that node, and
+ * the first thing to ask it for a member got a json-glib CRITICAL and
+ * the fallback answer.  It surfaced as three criticals on the console
+ * for three presses of Start, with the start itself working.
+ *
+ * Here rather than at the two callers, because they are the same
+ * decision made twice: the synchronous path and the asynchronous one.
+ */
+static JsonNode *
+reply_node(JsonNode *frame)
+{
+    JsonObject *payload = clawt_ipc_frame_get_payload(frame);
+    g_autoptr(JsonObject) empty = NULL;
+
+    if (payload == NULL) {
+        empty = json_object_new();
+        payload = empty;
+    }
+
+    return json_node_init_object(json_node_alloc(), payload);
+}
+
+/*
  * Hands a reply to whoever is waiting for it.
  *
  * A reply with no waiter is dropped rather than warned about: a caller
@@ -363,14 +392,8 @@ complete_pending(ClawtClient *self, JsonNode *frame)
         if (clawt_ipc_frame_is_error(frame)) {
             g_task_return_error(task, clawt_ipc_frame_to_error(frame));
         } else {
-            JsonObject *payload = clawt_ipc_frame_get_payload(frame);
-
-            g_task_return_pointer(
-                task,
-                payload != NULL
-                    ? json_node_init_object(json_node_alloc(), payload)
-                    : json_node_new(JSON_NODE_OBJECT),
-                (GDestroyNotify)json_node_unref);
+            g_task_return_pointer(task, reply_node(frame),
+                                  (GDestroyNotify)json_node_unref);
         }
 
         g_hash_table_remove(self->pending, id);
@@ -932,11 +955,7 @@ finish_request(ClawtClient *self, const gchar *id, const gchar *kind,
     } else if (clawt_ipc_frame_is_error(pending->reply)) {
         g_propagate_error(error, clawt_ipc_frame_to_error(pending->reply));
     } else {
-        JsonObject *payload = clawt_ipc_frame_get_payload(pending->reply);
-
-        result = (payload != NULL)
-                 ? json_node_init_object(json_node_alloc(), payload)
-                 : json_node_new(JSON_NODE_OBJECT);
+        result = reply_node(pending->reply);
     }
 
     g_hash_table_remove(self->pending, id);

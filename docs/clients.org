@@ -2030,6 +2030,17 @@ a host that is asleep fails only when its route times out --- answering
 that on the loop would freeze the window for the length of every
 unreachable host in the list.
 
+~clawt_connection_probe()~ runs on a =GMainContext= of its own, which is
+what makes calling it from a worker thread safe.  A #ClawtClient settles
+on whatever context is thread-default at the moment it connects, and a
+fresh worker thread has none --- so the probe used to settle on the
+*global* default, the context the window's own loop is running.  It then
+called ~g_main_context_iteration()~ on it from the worker: with the main
+thread holding that context the push failed with a pair of GLib
+criticals, and with the main thread idle the acquire *succeeded* and the
+worker dispatched GTK's own sources.  The second case is the dangerous
+one and it is silent.
+
 There are four verdicts and the distinction between two of them is the
 point:
 

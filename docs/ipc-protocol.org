@@ -47,6 +47,23 @@ was upgraded and the other was not.
 *An unknown kind names itself.*  A client from a newer build should learn
 what is missing, not merely that something failed.
 
+*A reply with nothing to say still carries an object.*  Eleven handlers
+answer with ~ok~ and no ~payload~ --- ~agent.start~ and ~agent.restart~
+among them, because there is nothing to report beyond that it worked ---
+and ~clawt_client_request()~ hands those back as an *empty* object rather
+than as nothing.  A caller may always take the object and ask it for a
+member; the answer is simply that it has none.
+
+This is a contract about the node, not about any one reader.  A
+=JsonNode= built with ~json_node_new(JSON_NODE_OBJECT)~ and left there
+answers ~JSON_NODE_HOLDS_OBJECT()~ with =TRUE= and
+~json_node_get_object()~ with =NULL=: a node that lies about what is in
+it.  Every reply used to arrive that way when it had no payload, and the
+first reader to check the type and then take the pointer got a json-glib
+CRITICAL and its fallback answer.  In ~clawtilla-gtk~ that reader runs on
+*every* reply, so pressing Start printed a critical and started the agent
+anyway.
+
 ** Kinds
 
 *** control.*

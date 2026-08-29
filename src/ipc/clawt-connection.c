@@ -519,15 +519,13 @@ clawt_connection_status_free(ClawtConnectionStatus *self)
     g_free(self);
 }
 
-ClawtConnectionStatus *
-clawt_connection_probe(ClawtConnection *self)
+static ClawtConnectionStatus *
+probe_on_this_context(ClawtConnection *self)
 {
     ClawtConnectionStatus *status = g_new0(ClawtConnectionStatus, 1);
     g_autoptr(ClawtClient) client = NULL;
     g_autoptr(JsonNode) reply = NULL;
     g_autoptr(GError) error = NULL;
-
-    g_return_val_if_fail(self != NULL, status);
 
     client = clawt_connection_create_client(self);
 
@@ -574,6 +572,42 @@ clawt_connection_probe(ClawtConnection *self)
     }
 
     clawt_client_disconnect(client);
+
+    return status;
+}
+
+/*
+ * On a context this thread owns, whichever thread that is.
+ *
+ * A ClawtClient arms its reader and waits for its replies on the
+ * thread-default context at the moment it connects, and a fresh worker
+ * thread has none -- so it settled on the *global* default, the one the
+ * GTK client's main loop is running.  Pushing that from the worker made
+ * g_main_context_acquire() fail, which is a pair of GLib criticals, and
+ * then g_main_context_iteration() sat waiting for the main thread to let
+ * go of it and dispatched that thread's sources -- GTK's among them --
+ * off the main thread while it had it.
+ *
+ * Both callers run this on a thread precisely because it blocks: the GTK
+ * client from a GTask worker, the web client from a request handler.  A
+ * private context is what makes that safe, and it is no worse on the
+ * main thread: a probe must not pump the application's loop while it
+ * waits, which is how a menu re-enters the code that is drawing it.
+ */
+ClawtConnectionStatus *
+clawt_connection_probe(ClawtConnection *self)
+{
+    g_autoptr(GMainContext) context = NULL;
+    ClawtConnectionStatus *status;
+
+    g_return_val_if_fail(self != NULL, g_new0(ClawtConnectionStatus, 1));
+
+    context = g_main_context_new();
+    g_main_context_push_thread_default(context);
+
+    status = probe_on_this_context(self);
+
+    g_main_context_pop_thread_default(context);
 
     return status;
 }

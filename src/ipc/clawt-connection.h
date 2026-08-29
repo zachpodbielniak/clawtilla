@@ -154,6 +154,13 @@ void clawt_connection_status_free(ClawtConnectionStatus *self);
  * it on that loop -- a remote host that is asleep takes as long to fail
  * as its route takes to time out.
  *
+ * Safe to call from any thread: it runs on a #GMainContext of its own,
+ * so it never acquires, iterates or dispatches the caller's. Without
+ * that the client it builds settled on whatever context was
+ * thread-default when it connected -- on a fresh worker thread, none,
+ * which means the *global* default -- and then pumped the application's
+ * own loop from the wrong thread.
+ *
  * Returns: (transfer full): what it found; never %NULL
  */
 ClawtConnectionStatus *clawt_connection_probe(ClawtConnection *self);

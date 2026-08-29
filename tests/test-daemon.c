@@ -3422,6 +3422,42 @@ test_a_refused_render_is_reported(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * The refusal reader is total over JsonNodes, not just over the ones the
+ * daemon happens to build.
+ *
+ * JSON_NODE_HOLDS_OBJECT() is true of a node whose object is NULL --
+ * json_node_new(JSON_NODE_OBJECT) makes exactly that -- so a type check
+ * is not the same as a pointer check.  All three clients hand this
+ * function whatever came back, the GTK one on every single reply, and a
+ * json-glib CRITICAL there is a line on somebody's console pointing at
+ * the wrong layer entirely.
+ *
+ * A critical is fatal under GTest, so the call is the assertion.
+ */
+static void
+test_the_refusal_reader_survives_an_object_that_is_not_there(void)
+{
+    g_autoptr(JsonNode) hollow = json_node_new(JSON_NODE_OBJECT);
+    g_autoptr(JsonNode) array = json_node_new(JSON_NODE_ARRAY);
+    guint counted = 1;
+
+    g_assert_true(JSON_NODE_HOLDS_OBJECT(hollow));
+    g_assert_null(json_node_get_object(hollow));
+
+    g_assert_null(clawt_ipc_reply_refusal_text(hollow, &counted));
+    g_assert_cmpuint(counted, ==, 0);
+
+    /* The neighbours that were already safe, so this stays a set. */
+    counted = 1;
+    g_assert_null(clawt_ipc_reply_refusal_text(array, &counted));
+    g_assert_cmpuint(counted, ==, 0);
+
+    counted = 1;
+    g_assert_null(clawt_ipc_reply_refusal_text(NULL, &counted));
+    g_assert_cmpuint(counted, ==, 0);
+}
+
 
 /*
  * Removing an agent can take everything it owns, and only when asked.
@@ -7144,6 +7180,8 @@ main(int argc, char *argv[])
                     test_setting_a_key_rewrites_what_it_affects);
     g_test_add_func("/daemon/refused-render-is-reported",
                     test_a_refused_render_is_reported);
+    g_test_add_func("/daemon/refusal-reader-survives-a-hollow-node",
+                    test_the_refusal_reader_survives_an_object_that_is_not_there);
     g_test_add_func("/daemon/agents-report-their-direct-room",
                     test_agents_report_their_direct_room);
     g_test_add_func("/daemon/create-starts-the-agent",

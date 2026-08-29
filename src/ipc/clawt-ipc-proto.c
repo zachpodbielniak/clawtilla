@@ -499,9 +499,18 @@ clawt_ipc_reply_refusal_text(JsonNode *payload, guint *n_refused)
     if (payload == NULL || !JSON_NODE_HOLDS_OBJECT(payload))
         return NULL;
 
+    /*
+     * A node can hold the object *type* and no object: that is what
+     * json_node_new(JSON_NODE_OBJECT) builds, and what an empty reply
+     * used to arrive as.  JSON_NODE_HOLDS_OBJECT() answers TRUE for it,
+     * so the type check above is not enough to make the pointer safe.
+     * Every client hands this function whatever the daemon answered, so
+     * it has to be total over JsonNodes rather than over the ones the
+     * daemon happens to build today.
+     */
     object = json_node_get_object(payload);
 
-    if (!json_object_has_member(object, "refused"))
+    if (object == NULL || !json_object_has_member(object, "refused"))
         return NULL;
 
     refused = json_object_get_array_member(object, "refused");
