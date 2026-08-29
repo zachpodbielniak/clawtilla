@@ -505,6 +505,42 @@ test_the_composer_stands_on_the_message_column(void)
 }
 
 /*
+ * Stop does not reflow the composer row when it arrives.
+ *
+ * It is drawn only while a turn is running, so it appears and
+ * disappears under a cursor that may be aiming at Send.  Without
+ * `flex:none` a flex row shrinks its items to fit, so Send moves as
+ * Stop arrives -- and the click meant for one lands on the other, which
+ * here means stopping an agent somebody was talking to.
+ */
+static void
+test_stop_does_not_move_send(void)
+{
+    const gchar *css = clawt_web_stylesheet();
+    const gchar *rule = strstr(css, ".composer-inner .stop-turn{");
+    g_autofree gchar *block = NULL;
+    const gchar *close;
+
+    g_assert_nonnull(rule);
+
+    /*
+     * Cut at this rule's own closing brace before looking inside it.
+     *
+     * strstr() from the rule searches the rest of the sheet, so an
+     * assertion phrased that way passes on any declaration that appears
+     * anywhere later -- and `flex:none` does. The test then reports the
+     * rule as correct however it is written, which is the failure a CSS
+     * test is most likely to have and least likely to show.
+     */
+    close = strchr(rule, '}');
+    g_assert_nonnull(close);
+    block = g_strndup(rule, (gsize)(close - rule));
+
+    g_assert_nonnull(strstr(block, "flex:none"));
+    g_assert_nonnull(strstr(block, "white-space:nowrap"));
+}
+
+/*
  * And the narrow regime hides the avatar, so the composer goes back to
  * the clamp with the bodies.
  *
@@ -1283,6 +1319,8 @@ main(int argc, char *argv[])
                     test_dark_is_reachable_by_preference_and_by_choice);
     g_test_add_func("/web/composer-stands-on-the-message-column",
                     test_the_composer_stands_on_the_message_column);
+    g_test_add_func("/web/stop-does-not-move-send",
+                    test_stop_does_not_move_send);
     g_test_add_func("/web/narrow-composer-override-can-win",
                     test_the_narrow_composer_override_can_win);
     g_test_add_func("/web/reading-measurements-are-tokens",
