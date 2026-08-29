@@ -115,6 +115,10 @@
 #include "mailbox/clawt-mailbox-item.h"
 #include "memory/clawt-memory.h"
 #include "memory/clawt-memory-store.h"
+#include "memory/clawt-memory-scopes.h"
+#include "memory/clawt-transcript-index.h"
+#include "memory/clawt-summariser.h"
+#include "memory/clawt-operator-profile.h"
 #include "usage/clawt-usage.h"
 #include "mailbox/clawt-mailbox.h"
 

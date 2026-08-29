@@ -30,6 +30,7 @@
 #include "chat/clawt-loop-guard.h"
 #include "chat/clawt-room.h"
 #include "core/clawt-event-bus.h"
+#include "memory/clawt-transcript-index.h"
 #include "task/clawt-task-manager.h"
 
 G_BEGIN_DECLS
@@ -253,6 +254,20 @@ void clawt_mcp_tools_set_event_bus(ClawtMcpTools *self,
  */
 void clawt_mcp_tools_set_room_manager(ClawtMcpTools    *self,
                                       ClawtRoomManager *rooms);
+
+/**
+ * clawt_mcp_tools_set_transcript_index:
+ * @self: a #ClawtMcpTools
+ * @index: (transfer none) (nullable): the fleet's searchable transcript
+ *
+ * Lets clawtilla_recall search past conversations.
+ *
+ * Without it the tool is not offered at all rather than offered and
+ * failing -- a library embedded without a daemon has no index, and an
+ * agent that can see a tool will try it.
+ */
+void clawt_mcp_tools_set_transcript_index(ClawtMcpTools        *self,
+                                          ClawtTranscriptIndex *index);
 
 /**
  * clawt_mcp_tools_list:

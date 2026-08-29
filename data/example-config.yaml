@@ -663,8 +663,10 @@ memories:
   # permission that is structural cannot be lost to a missing
   # condition.
   #
-  # Not implemented in this build. Team and fleet memories are not built yet: every memory is
-  # written to the agent's own database whatever this says.
+  # `team` needs the agent to be on one. An agent with no `team:` that
+  # asks for team scope is refused rather than quietly written to its own
+  # database -- a memory whose whole purpose was to reach the team is worse
+  # in the wrong place than not written at all.
   # Values: agent, team, fleet
   scope: "agent"
 
@@ -674,8 +676,9 @@ memories:
   # chose to record. This is about the transcript itself, which it never
   # chose and which is much larger.
   #
-  # Not implemented in this build. Searching past conversations is not built yet, so there is
-  # nothing for this to permit or refuse.
+  # Off means `clawtilla_recall` is not offered, rather than offered and
+  # refused. Only rooms the agent is a member of are ever searched, so this
+  # is about the agent reading its own past rather than anybody else's.
   recall: true
 
   # Whether finished work is summarised into memories automatically.
@@ -684,19 +687,24 @@ memories:
   # to whoever set it. On, a completed task or a closed routine run is
   # distilled into memories tagged with the transcript they came from.
   #
-  # Not implemented in this build. Summarising finished work is not built yet, so nothing is
-  # distilled whether this is on or off.
+  # It uses the `ai_assist` provider, so that has to be configured too,
+  # and the memories land in whichever scope `memories.scope` names. A
+  # summary that produced nothing is the common answer and not a failure.
   summarise: false
 
-  # How many turns between reminders to record what was learned. 0 is
+  # The cadence the reminder to record what was learned asks for. 0 is
   # off.
   #
   # The reminder rides the per-agent prompt suffix rather than being a
   # mechanism of its own, so it is visible in the same place as every
-  # other per-turn instruction.
+  # other per-turn instruction -- `clawtilla config render` shows it
+  # beside the computer directive.
   #
-  # Not implemented in this build. The reminder is not built yet, so no turn carries it however
-  # this is set.
+  # A prompt suffix reaches every turn, so this number is what the
+  # reminder asks the agent for rather than something clawtilla counts.
+  # Counting turns from the daemon would need a per-turn channel to the
+  # agent, and the only one there is is the delivery preamble -- which not
+  # every turn has.
   nudge_turns: 0
 
   # Whether the fleet keeps a profile of the person it works for.
@@ -706,8 +714,11 @@ memories:
   # editable: a model of a person that the person cannot read is not
   # something to build.
   #
-  # Not implemented in this build. The operator profile is not built yet, so nothing is gathered
-  # and no agent inherits anything.
+  # Two halves: `<state_dir>/OPERATOR.org`, which you write, and
+  # fleet-scope memories in the `operator` category, which agents record.
+  # Both are written into a marked region of every agent's USER.org, so a
+  # change reaches the whole fleet rather than only agents made afterwards.
+  # Off removes the region again.
   operator_profile: false
 
 # Reusable procedure, shared across the fleet.

@@ -371,15 +371,23 @@ clawt_memory_store_search(ClawtMemoryStore *self, const gchar *query,
 
     if (self->full_text) {
         /*
-         * Quoted as an FTS5 string literal.  A query is whatever a
-         * person or a model typed, and unquoted it is FTS5 syntax --
-         * a stray '"' or a bare 'NOT' is a parse error rather than a
-         * search for those words.
+         * Quoted as an FTS5 string literal, through the one helper every
+         * FTS5 table here uses.  A query is whatever a person or a model
+         * typed, and unquoted it is FTS5 syntax -- a stray '"' or a bare
+         * 'NOT' is a parse error rather than a search for those words,
+         * and a parse error comes back as no rows.
+         *
+         * A query with nothing tokenizable in it is refused by the
+         * helper with a reason, for the same reason: an empty phrase
+         * matches nothing and reads as an empty store.
          */
-        g_auto(GStrv) parts = g_strsplit(query, "\"", -1);
-        g_autofree gchar *escaped = g_strjoinv("\"\"", parts);
+        pattern = clawt_fts5_phrase(query, error);
 
-        pattern = g_strdup_printf("\"%s\"", escaped);
+        if (pattern == NULL) {
+            sqlite3_finalize(stmt);
+            return g_steal_pointer(&out);
+        }
+
         sqlite3_bind_text(stmt, bind++, pattern, -1, SQLITE_TRANSIENT);
     } else {
         pattern = g_strdup_printf("%%%s%%", query);

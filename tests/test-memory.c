@@ -179,6 +179,12 @@ test_search_finds_by_content_summary_and_tags(void)
 /*
  * A query is whatever a model typed, and unquoted it is FTS5 syntax --
  * a stray quote or a bare NOT is a parse error rather than a search.
+ *
+ * This used to assert only "no crash, no error", which accepted the
+ * silent half of the failure: a query that could never match anything
+ * came back as zero rows, and zero rows is also what an empty store
+ * says.  A search must not answer "no matches" to a question it did not
+ * ask, so the two cases are now separated.
  */
 static void
 test_search_survives_hostile_queries(void)
@@ -186,8 +192,14 @@ test_search_survives_hostile_queries(void)
     Fixture fixture = { 0 };
     g_autoptr(ClawtMemoryStore) store = NULL;
     g_autofree gchar *id = NULL;
-    static const gchar *queries[] = {
-        "\"", "NOT", "a AND", "*", "(", "x OR", "\"unclosed", "^", NULL
+    /* Each of these has something an FTS5 tokenizer keeps. */
+    static const gchar *searchable[] = {
+        "NOT", "a AND", "(something", "x OR", "\"unclosed", "something to",
+        NULL
+    };
+    /* And each of these has nothing at all. */
+    static const gchar *tokenless[] = {
+        "\"", "*", "(", "^", "  ", NULL
     };
     gsize i;
 
@@ -196,15 +208,33 @@ test_search_survives_hostile_queries(void)
 
     id = remember(store, "something to find", NULL, NULL);
 
-    for (i = 0; queries[i] != NULL; i++) {
+    for (i = 0; searchable[i] != NULL; i++) {
         g_autoptr(GPtrArray) found = NULL;
         g_autoptr(GError) error = NULL;
 
-        found = clawt_memory_store_search(store, queries[i], NULL, 0, &error);
+        found = clawt_memory_store_search(store, searchable[i], NULL, 0,
+                                          &error);
 
-        /* No crash, no error -- a bad query is nought results. */
         g_assert_no_error(error);
         g_assert_nonnull(found);
+    }
+
+    for (i = 0; tokenless[i] != NULL; i++) {
+        g_autoptr(GPtrArray) found = NULL;
+        g_autoptr(GError) error = NULL;
+
+        found = clawt_memory_store_search(store, tokenless[i], NULL, 0,
+                                          &error);
+
+        /*
+         * Refused, with a reason.  Quoted as a phrase these become an
+         * *empty* phrase, which matches nothing anywhere -- so "no
+         * results" would be a true statement about a search that was
+         * never a search.
+         */
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT);
+        g_assert_nonnull(found);
+        g_assert_cmpuint(found->len, ==, 0);
     }
 
     fixture_teardown(&fixture);

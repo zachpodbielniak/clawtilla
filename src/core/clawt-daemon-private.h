@@ -20,6 +20,9 @@
 #include "computer/clawt-computer.h"
 #include "computer/clawt-vm-image.h"
 #include "decision/clawt-decision-store.h"
+#include "memory/clawt-operator-profile.h"
+#include "memory/clawt-summariser.h"
+#include "memory/clawt-transcript-index.h"
 #include "integration/clawt-notify.h"
 #include "plugin/clawt-automation.h"
 #include "task/clawt-routine-runner.h"
@@ -76,6 +79,28 @@ struct _ClawtDaemon {
      * saw the question has no way to know that happened.
      */
     ClawtDecisionStore *decisions;
+
+    /*
+     * The fleet's searchable transcript, and the model of the person it
+     * works for.
+     *
+     * The index is fed by the router, which is the only place that knows
+     * which room a message landed in.  The profile is read when an
+     * agent's workspace is scaffolded, so a new agent inherits what the
+     * fleet already worked out instead of learning it again.
+     */
+    ClawtTranscriptIndex *transcripts;
+    ClawtOperatorProfile *operator_profile;
+
+    /*
+     * Built on the first task that asks for a summary, not at start.
+     *
+     * Building it eagerly would construct an AI provider for every fleet
+     * whether or not any agent has `memories.summarise` on, and the
+     * provider is the part that costs money and reaches the network.
+     */
+    ClawtSummariser *summariser;
+
     ClawtExchange      *exchange;
     ClawtLinkServer    *link_server;
     ClawtIpcServer     *ipc_server;
@@ -525,6 +550,15 @@ clawt_daemon_handle_misc(
 
 JsonNode *
 clawt_daemon_handle_agent(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
+
+JsonNode *
+clawt_daemon_handle_memory(
     ClawtDaemon  *self,
     const gchar  *kind,
     JsonNode     *request,

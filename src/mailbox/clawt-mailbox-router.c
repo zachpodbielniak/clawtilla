@@ -17,6 +17,9 @@ struct _ClawtMailboxRouter {
     ClawtRoomManager  *rooms;
     ClawtLoopGuard    *guard;
     ClawtEventBus     *bus;      /* unowned */
+
+    /* Where every routed message is indexed for recall.  Owned. */
+    ClawtTranscriptIndex *transcripts;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtMailboxRouter, clawt_mailbox_router, G_TYPE_OBJECT)
@@ -47,6 +50,18 @@ clawt_mailbox_router_set_event_bus(ClawtMailboxRouter *self,
     g_return_if_fail(CLAWT_IS_MAILBOX_ROUTER(self));
 
     self->bus = bus;
+}
+
+void
+clawt_mailbox_router_set_transcript_index(ClawtMailboxRouter *self,
+                                          ClawtTranscriptIndex *index)
+{
+    g_return_if_fail(CLAWT_IS_MAILBOX_ROUTER(self));
+
+    g_clear_object(&self->transcripts);
+
+    if (index != NULL)
+        self->transcripts = g_object_ref(index);
 }
 
 static void
@@ -154,6 +169,22 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
     }
 
     clawt_room_append(room, message, NULL);
+
+    /*
+     * Indexed here, beside the append, because this is where the room is
+     * known.  A failure is warned about and nothing else: a search that
+     * has lost a line is worse than nothing to search, but a message
+     * that was not delivered because it could not be indexed is worse
+     * than both.
+     */
+    if (self->transcripts != NULL) {
+        g_autoptr(GError) indexing = NULL;
+
+        if (!clawt_transcript_index_add(self->transcripts,
+                                        clawt_room_get_id(room), message,
+                                        &indexing))
+            g_warning("transcript index: %s", indexing->message);
+    }
 
     /*
      * One event per message, published here because this is the only
@@ -568,6 +599,7 @@ clawt_mailbox_router_dispose(GObject *object)
     g_clear_object(&self->agents);
     g_clear_object(&self->rooms);
     g_clear_object(&self->guard);
+    g_clear_object(&self->transcripts);
 
     G_OBJECT_CLASS(clawt_mailbox_router_parent_class)->dispose(object);
 }

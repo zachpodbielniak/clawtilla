@@ -130,6 +130,20 @@ void clawt_web_register_alerts(HtmxRouter *router, ClawtWebApp *app);
  * nobody can act on.
  */
 void clawt_web_register_decisions(HtmxRouter *router, ClawtWebApp *app);
+
+/**
+ * clawt_web_register_memory:
+ * @router: the router
+ * @app: a #ClawtWebApp
+ *
+ * `/memory`: fleet-wide recall and the operator profile.
+ *
+ * Not under `/a/:id`, because neither is about one agent -- recall
+ * searches every room and the profile is the same for the whole fleet.
+ * Registered before `/a/:id/:view`, which matches everything below an
+ * agent and would swallow it.
+ */
+void clawt_web_register_memory(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_creation(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_extras(HtmxRouter *router, ClawtWebApp *app);
 

@@ -752,8 +752,7 @@ static const ClawtSchemaEntry schema[] = {
   "a permission somebody granted silently denied.", "0.1.0" },
 
 { "memories.scope", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_PER_AGENT |
-  CLAWT_SCHEMA_FLAG_COMMENTED |
-  CLAWT_SCHEMA_FLAG_INERT, "agent", clawt_memory_scope_get_type,
+  CLAWT_SCHEMA_FLAG_COMMENTED, "agent", clawt_memory_scope_get_type,
   "Where this agent's own memories are written: agent, team or fleet.\n"
   "\n"
   "Reading always fans out across every scope the agent is entitled to;\n"
@@ -766,46 +765,44 @@ static const ClawtSchemaEntry schema[] = {
   "permission that is structural cannot be lost to a missing\n"
   "condition.\n"
   "\n"
-  "Not implemented in this build. Team and fleet memories are not built yet: every memory is\nwritten to the agent's own database whatever this says.", "0.2.0" },
+  "`team` needs the agent to be on one. An agent with no `team:` that\nasks for team scope is refused rather than quietly written to its own\ndatabase -- a memory whose whole purpose was to reach the team is worse\nin the wrong place than not written at all.", "0.2.0" },
 
 { "memories.recall", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_PER_AGENT |
-  CLAWT_SCHEMA_FLAG_COMMENTED |
-  CLAWT_SCHEMA_FLAG_INERT, "true", NULL,
+  CLAWT_SCHEMA_FLAG_COMMENTED, "true", NULL,
   "Whether the agent may search past conversations.\n"
   "\n"
   "Separate from `memories.enabled`, which is about facts the agent\n"
   "chose to record. This is about the transcript itself, which it never\n"
   "chose and which is much larger.\n"
   "\n"
-  "Not implemented in this build. Searching past conversations is not built yet, so there is\nnothing for this to permit or refuse.", "0.2.0" },
+  "Off means `clawtilla_recall` is not offered, rather than offered and\nrefused. Only rooms the agent is a member of are ever searched, so this\nis about the agent reading its own past rather than anybody else's.",
+  "0.2.0" },
 
 { "memories.summarise", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_PER_AGENT |
-  CLAWT_SCHEMA_FLAG_COMMENTED |
-  CLAWT_SCHEMA_FLAG_INERT, "false", NULL,
+  CLAWT_SCHEMA_FLAG_COMMENTED, "false", NULL,
   "Whether finished work is summarised into memories automatically.\n"
   "\n"
   "Off by default because it is a model call nobody asked for, billed\n"
   "to whoever set it. On, a completed task or a closed routine run is\n"
   "distilled into memories tagged with the transcript they came from.\n"
   "\n"
-  "Not implemented in this build. Summarising finished work is not built yet, so nothing is\ndistilled whether this is on or off.",
+  "It uses the `ai_assist` provider, so that has to be configured too,\nand the memories land in whichever scope `memories.scope` names. A\nsummary that produced nothing is the common answer and not a failure.",
   "0.2.0" },
 
 { "memories.nudge_turns", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_PER_AGENT |
-  CLAWT_SCHEMA_FLAG_COMMENTED |
-  CLAWT_SCHEMA_FLAG_INERT, "0", NULL,
-  "How many turns between reminders to record what was learned. 0 is\n"
+  CLAWT_SCHEMA_FLAG_COMMENTED, "0", NULL,
+  "The cadence the reminder to record what was learned asks for. 0 is\n"
   "off.\n"
   "\n"
   "The reminder rides the per-agent prompt suffix rather than being a\n"
   "mechanism of its own, so it is visible in the same place as every\n"
-  "other per-turn instruction.\n"
+  "other per-turn instruction -- `clawtilla config render` shows it\n"
+  "beside the computer directive.\n"
   "\n"
-  "Not implemented in this build. The reminder is not built yet, so no turn carries it however\nthis is set.", "0.2.0" },
+  "A prompt suffix reaches every turn, so this number is what the\nreminder asks the agent for rather than something clawtilla counts.\nCounting turns from the daemon would need a per-turn channel to the\nagent, and the only one there is is the delivery preamble -- which not\nevery turn has.", "0.2.0" },
 
 { "memories.operator_profile", CLAWT_SCHEMA_BOOLEAN,
-  CLAWT_SCHEMA_FLAG_COMMENTED |
-  CLAWT_SCHEMA_FLAG_INERT, "false", NULL,
+  CLAWT_SCHEMA_FLAG_COMMENTED, "false", NULL,
   "Whether the fleet keeps a profile of the person it works for.\n"
   "\n"
   "A fleet-scope memory a newly created agent inherits, so it starts\n"
@@ -813,7 +810,7 @@ static const ClawtSchemaEntry schema[] = {
   "editable: a model of a person that the person cannot read is not\n"
   "something to build.\n"
   "\n"
-  "Not implemented in this build. The operator profile is not built yet, so nothing is gathered\nand no agent inherits anything.", "0.2.0" },
+  "Two halves: `<state_dir>/OPERATOR.org`, which you write, and\nfleet-scope memories in the `operator` category, which agents record.\nBoth are written into a marked region of every agent's USER.org, so a\nchange reaches the whole fleet rather than only agents made afterwards.\nOff removes the region again.", "0.2.0" },
 
 /* ── skills ──────────────────────────────────────────────────────── */
 { "skills", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,

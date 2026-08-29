@@ -21,6 +21,7 @@
 #include "chat/clawt-message.h"
 #include "chat/clawt-room-manager.h"
 #include "core/clawt-event-bus.h"
+#include "memory/clawt-transcript-index.h"
 
 G_BEGIN_DECLS
 
@@ -48,6 +49,26 @@ ClawtMailboxRouter *clawt_mailbox_router_new(ClawtAgentManager *agents,
  */
 void clawt_mailbox_router_set_event_bus(ClawtMailboxRouter *self,
                                         ClawtEventBus      *bus);
+
+/**
+ * clawt_mailbox_router_set_transcript_index:
+ * @self: a #ClawtMailboxRouter
+ * @index: (transfer none) (nullable): where to record what was said, or
+ *   %NULL to record nothing
+ *
+ * Gives the router somewhere to index every message it routes.
+ *
+ * Here rather than at either end of the wire, for the reason the
+ * `message` event is published here: this is the only place that knows
+ * which *room* a message ended up in.  An index fed from the link
+ * handler would file every direct message under the agent id it was
+ * addressed to, and a recall filtered by room would then match nothing.
+ *
+ * A failure to index is a warning, never a failed send.  A full disk
+ * should cost the fleet its search, not its conversation.
+ */
+void clawt_mailbox_router_set_transcript_index(ClawtMailboxRouter   *self,
+                                               ClawtTranscriptIndex *index);
 
 /**
  * clawt_mailbox_router_send:

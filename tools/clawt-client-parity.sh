@@ -185,6 +185,9 @@ declare -A AFFORDANCES=(
     ["resync after a gap"]="\"resync\"|\"resync\""
     ["stop the running turn"]="on_stop_turn|stop_turn_button"
     ["decision options stack"]="decision_option_button|decision-options"
+    ["fleet recall"]="recall_entry|recall-form"
+    ["recall results"]="refresh_recall_once|recall-hit"
+    ["operator profile"]="operator_view|operator-profile"
 )
 
 usage () {

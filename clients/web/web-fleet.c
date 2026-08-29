@@ -462,6 +462,20 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtWebView view)
     htmx_node_set_text_content(HTMX_NODE(wordmark), "clawtilla");
     htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(wordmark));
 
+    /*
+     * Beside Settings, where this client already puts what is about the
+     * whole fleet rather than one agent.  Recall searches every room and
+     * the operator profile is the same for all of them, so neither
+     * belongs under an agent's tabs.
+     */
+    {
+        g_autoptr(HtmxA) memory = htmx_a_new_with_href("/memory");
+
+        htmx_element_add_class(HTMX_ELEMENT(memory), "tab");
+        htmx_node_set_text_content(HTMX_NODE(memory), "Memory");
+        htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(memory));
+    }
+
     {
         g_autoptr(HtmxA) settings = htmx_a_new_with_href("/settings");
 

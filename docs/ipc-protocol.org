@@ -447,9 +447,56 @@ as ~CLAWT_ERROR_NOT_SUPPORTED~ naming the key rather than as an empty
 list -- an empty result and a feature that is switched off look identical
 from a client, and only one of them is worth acting on.
 
+Each memory also carries ~scope~ -- ~agent~, ~team~ or ~fleet~ -- saying
+which database it was read out of.  A listing that mixed an agent's own
+conclusion with something the whole fleet believes and did not say which
+was which would have turned two different claims into the same row.
+
 This is ~memories.*~, the searchable per-agent sqlite store, and not
 ~agents.memory~, which is libreclaw's ~MEMORY.md~ size budget.  The two
 are unrelated and the plural is the whole distinction.
+
+~memory.recall~ (~query~, and optionally ~agent~, ~days~ and ~limit~) →
+~hits~, ~full_text~ and ~indexed~.  This searches the *transcript*, not
+the memories: every message the fleet has routed, across every room and
+every session, out of ~<state_dir>/transcripts.db~.  Each hit carries
+~id~, ~room~, ~from~, ~from_name~, ~body~ and ~at~ (unix seconds).
+
+A client's recall is not room-filtered, because a person can already open
+any transcript in the state directory.  An *agent* asking through
+~clawtilla_recall~ is held to the rooms it is a member of, and that is a
+filter on the query rather than on the result -- a hit fetched and then
+dropped would still have spent the caller's limit.
+
+~full_text~ says whether the search was FTS5-ranked or a substring scan,
+so a thin result can be told apart from a sqlite built without FTS5;
+~indexed~ says how many messages there are at all, so "nothing matched"
+can be told apart from "nothing has been said yet".  A query with no
+letters or digits in it is refused with ~CLAWT_ERROR_INVALID_ARGUMENT~
+rather than answered with an empty list: quoted as an FTS5 phrase it
+would match nothing anywhere, and "no matches" is what an empty store
+says too.
+
+*** operator.*
+
+~operator.get~ → ~text~, ~path~, ~enabled~ and ~learned~.  The model of
+the person the fleet works for, in two halves: ~text~ is the file at
+~<state_dir>/OPERATOR.org~, which a person writes, and ~learned~ is the
+fleet-scope memories filed under the ~operator~ category, which agents
+write.  Each learned entry carries ~id~, ~content~, ~source~ and
+~created_at~.
+
+They are returned separately rather than merged, because only one of them
+is editable and a client that could see only the merged text would have
+to guess which lines it may offer to change.  ~enabled~ is
+~memories.operator_profile~: off means no agent is told any of it, which
+a client has to be able to say rather than showing an editor for a file
+nothing reads.
+
+~operator.set~ (~text~) → ~path~ and ~refused~.  Replaces the written
+half and re-renders every agent's ~USER.org~ at once -- a correction that
+reached no agent until the next daemon start is a correction somebody
+makes twice.
 
 *** tool.*
 

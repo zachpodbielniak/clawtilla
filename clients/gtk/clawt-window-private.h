@@ -82,6 +82,8 @@ typedef enum {
     CLAWT_REFRESH_TEAMS,
     CLAWT_REFRESH_SPENDING,
     CLAWT_REFRESH_SHARED_FOLDERS,
+    CLAWT_REFRESH_RECALL,
+    CLAWT_REFRESH_OPERATOR,
     CLAWT_N_REFRESH
 } ClawtRefreshKind;
 
@@ -320,6 +322,20 @@ struct _ClawtWindow {
      */
     GtkListBox        *decision_list;
     AdwViewStackPage  *decision_page;
+
+    /*
+     * The memory page: what the fleet said, and what it believes about
+     * the person running it.
+     *
+     * Not per-agent, which is why it is not on the inspector: recall
+     * searches every room in every session, and the operator profile is
+     * the same for the whole fleet.
+     */
+    GtkWidget         *recall_entry;
+    GtkListBox        *recall_list;
+    GtkWidget         *operator_view;
+    GtkWidget         *operator_banner;
+    GtkListBox        *operator_learned;
 
     GtkWidget         *activity_bar;
 
@@ -697,6 +713,35 @@ clawt_gtk_refresh_computer(ClawtWindow *self, JsonObject *agent);
 
 GtkWidget *
 clawt_gtk_build_decision_page(ClawtWindow *self);
+
+/**
+ * clawt_gtk_build_recall_page:
+ * @self: the window
+ *
+ * The memory page: fleet-wide transcript search and the operator model.
+ *
+ * Returns: (transfer none): the page
+ */
+GtkWidget *
+clawt_gtk_build_recall_page(ClawtWindow *self);
+
+/**
+ * clawt_gtk_refresh_recall:
+ * @self: the window
+ *
+ * Re-runs the recall query in the search box.
+ */
+void
+clawt_gtk_refresh_recall(ClawtWindow *self);
+
+/**
+ * clawt_gtk_refresh_operator:
+ * @self: the window
+ *
+ * Re-reads the operator profile, both halves.
+ */
+void
+clawt_gtk_refresh_operator(ClawtWindow *self);
 
 void
 clawt_gtk_refresh_decisions(ClawtWindow *self);

@@ -279,6 +279,37 @@ clawt_workspace_update_computer(ClawtAgentConfig *agent,
                                 GError          **error);
 
 /**
+ * clawt_workspace_update_operator_profile:
+ * @agent: the agent's configuration
+ * @profile: (nullable): the profile as org text, from
+ *   clawt_operator_profile_render(), or %NULL to remove it
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Writes what the fleet knows about its operator into a marked region of
+ * `USER.org`.
+ *
+ * This is what makes a new agent start knowing how the person works
+ * rather than learning it again: USER.org is already one of the identity
+ * files loaded into every system prompt, so the profile arrives in the
+ * agent's context without any new mechanism.
+ *
+ * A marked region and not the file, because USER.org is scaffolded with
+ * headings for somebody to fill in and then belongs to them. And every
+ * agent rather than only a newly created one -- a fleet that learnt
+ * something in March and told only the agents made after it has two
+ * halves that know different things and no way to tell which is which.
+ *
+ * %NULL, or an empty profile, removes the region. `memories.operator_profile`
+ * being turned off must leave nothing behind in a prompt.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+clawt_workspace_update_operator_profile(ClawtAgentConfig *agent,
+                                        const gchar      *profile,
+                                        GError          **error);
+
+/**
  * clawt_workspace_file_path:
  * @agent: the agent's configuration
  * @name: a file name from the standard set, or any other name

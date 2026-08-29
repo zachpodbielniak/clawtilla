@@ -1,5 +1,5 @@
 /*
- * daemon-agent.c - The client surface: agent.* and memory.*
+ * daemon-agent.c - The client surface: agent.*
  *
  * Copyright (C) 2026
  * SPDX-License-Identifier: AGPL-3.0-or-later
@@ -423,84 +423,6 @@ clawt_daemon_handle_agent(
 
             for (i = 0; lines != NULL && lines[i] != NULL; i++)
                 json_builder_add_string_value(builder, lines[i]);
-        }
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "memory.list") == 0 ||
-        g_strcmp0(kind, "memory.search") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        ClawtAgent *agent = (agent_id != NULL)
-                            ? clawt_agent_manager_get(self->agents, agent_id)
-                            : NULL;
-        ClawtMemoryStore *store;
-        g_autoptr(GPtrArray) memories = NULL;
-        guint i;
-
-        if (agent == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such agent");
-
-        store = clawt_agent_get_memory(agent);
-
-        if (store == NULL)
-            return clawt_ipc_error_new(
-                request, CLAWT_ERROR_NOT_SUPPORTED,
-                "that agent has no memory store; memories.enabled is off");
-
-        if (g_strcmp0(kind, "memory.search") == 0)
-            memories = clawt_memory_store_search(
-                store, clawt_ipc_payload_string(payload, "query"),
-                clawt_ipc_payload_string(payload, "category"),
-                (guint)clawt_ipc_payload_int(payload, "limit", 20), NULL);
-        else
-            memories = clawt_memory_store_list(
-                store, clawt_ipc_payload_string(payload, "category"),
-                clawt_ipc_payload_boolean(payload, "pinned", FALSE),
-                (guint)clawt_ipc_payload_int(payload, "limit", 20), NULL);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "total");
-        json_builder_add_int_value(builder,
-                                   clawt_memory_store_count(store, FALSE));
-        json_builder_set_member_name(builder, "memories");
-        json_builder_begin_array(builder);
-
-        for (i = 0; memories != NULL && i < memories->len; i++) {
-            ClawtMemory *memory = g_ptr_array_index(memories, i);
-
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "id");
-            json_builder_add_string_value(builder, memory->id);
-            json_builder_set_member_name(builder, "content");
-            json_builder_add_string_value(builder, memory->content);
-
-            if (memory->summary != NULL) {
-                json_builder_set_member_name(builder, "summary");
-                json_builder_add_string_value(builder, memory->summary);
-            }
-
-            json_builder_set_member_name(builder, "category");
-            json_builder_add_string_value(builder, memory->category);
-            json_builder_set_member_name(builder, "importance");
-            json_builder_add_string_value(builder, memory->importance);
-
-            if (memory->tags != NULL) {
-                json_builder_set_member_name(builder, "tags");
-                json_builder_add_string_value(builder, memory->tags);
-            }
-
-            json_builder_set_member_name(builder, "pinned");
-            json_builder_add_boolean_value(builder, memory->pinned);
-            json_builder_set_member_name(builder, "created_at");
-            json_builder_add_int_value(builder, memory->created_at);
-            json_builder_set_member_name(builder, "access_count");
-            json_builder_add_int_value(builder, memory->access_count);
-            json_builder_end_object(builder);
         }
 
         json_builder_end_array(builder);

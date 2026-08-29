@@ -271,6 +271,62 @@ GSource *clawt_timeout_add_seconds(guint       interval,
 gchar *clawt_redact_secrets(const gchar *text);
 
 /**
+ * clawt_fts5_phrase:
+ * @query: whatever a person or a model typed
+ * @error: (out) (optional): return location for a #GError
+ *
+ * @query as an FTS5 phrase literal, or %NULL with a reason.
+ *
+ * An FTS5 query is *syntax*, not a search string.  A stray `"` ends the
+ * literal, a bare `NOT` is an operator with nothing on its right, and an
+ * unbalanced `(` is a parse error -- and every one of those comes back
+ * as zero rows rather than as an error, which is indistinguishable from
+ * a store that has never held the word.  Doubling the quotes and
+ * wrapping the whole thing makes it one phrase, which is what was meant.
+ *
+ * A query with nothing tokenizable in it -- a lone quote, a row of
+ * punctuation -- becomes an *empty* phrase, which matches nothing and
+ * looks exactly the same again.  That is refused here with a message
+ * saying so, because the one thing a search must never do is answer
+ * "no matches" to a question it did not ask.
+ *
+ * One spelling, used by every FTS5 table in the tree: two would differ
+ * exactly once, and the one that differed would be the silent half.
+ *
+ * Returns: (transfer full) (nullable): the quoted phrase, or %NULL
+ */
+gchar *clawt_fts5_phrase(const gchar  *query,
+                         GError      **error);
+
+/**
+ * clawt_utf8_truncate:
+ * @text: (nullable): the text to cut
+ * @max_bytes: how many bytes the result may occupy
+ * @from_end: %TRUE to keep the last @max_bytes, %FALSE to keep the first
+ *
+ * Cuts @text to @max_bytes without splitting a character.
+ *
+ * A byte budget applied to UTF-8 lands mid-sequence roughly half the
+ * time, and what comes out is not shorter text -- it is text ending in a
+ * replacement character, which reads as a corrupt transcript rather than
+ * as a truncated one, and which json-glib and sqlite will both carry
+ * onwards without complaint.  The cut is moved to the nearest character
+ * boundary in the direction that keeps the result within budget.
+ *
+ * @from_end is what a summariser wants: what a piece of work concluded
+ * is at the end of it, so a budget taken off the front records the plan
+ * rather than the outcome.
+ *
+ * Text already inside the budget is copied unchanged, so a caller never
+ * has to ask whether it needs to.
+ *
+ * Returns: (transfer full) (nullable): the cut text, or %NULL for %NULL
+ */
+gchar *clawt_utf8_truncate(const gchar *text,
+                           gsize        max_bytes,
+                           gboolean     from_end);
+
+/**
  * clawt_is_valid_id:
  * @id: (nullable): a candidate identifier
  *
