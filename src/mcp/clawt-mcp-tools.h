@@ -206,6 +206,21 @@ void clawt_mcp_tools_set_image_store(ClawtMcpTools     *self,
                                      ClawtVmImageStore *store);
 
 /**
+ * clawt_mcp_tools_set_skill_library:
+ * @self: a #ClawtMcpTools
+ * @library: (nullable): the fleet's skills, or %NULL when there are none
+ *
+ * So an agent can list and read the procedures it has been given.
+ *
+ * Unowned, and re-set on every reload: `skills.dir` is in the file a
+ * reload rereads, so a library kept by reference here would go on
+ * answering correctly about a directory nobody has configured any more.
+ * %NULL withdraws both skill tools rather than leaving them to fail.
+ */
+void clawt_mcp_tools_set_skill_library(ClawtMcpTools     *self,
+                                       ClawtSkillLibrary *library);
+
+/**
  * clawt_mcp_tools_set_attachment_dir:
  * @self: a #ClawtMcpTools
  * @dir: (nullable): where files sent to an operator are kept

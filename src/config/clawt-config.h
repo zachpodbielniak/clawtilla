@@ -208,6 +208,27 @@ gboolean clawt_config_has_key(ClawtConfig *self, const gchar *key);
 
 gboolean clawt_config_set_string(ClawtConfig *self, const gchar *key,
                                  const gchar *value);
+/**
+ * clawt_config_set_string_list:
+ * @self: a #ClawtConfig
+ * @key: a dotted path to a list-valued key
+ * @values: (array zero-terminated=1) (nullable): the entries, or %NULL
+ *   to clear
+ *
+ * Writes @key as a YAML sequence.
+ *
+ * A list written through clawt_config_set_string() is accepted, echoed
+ * back and saved, and then read as the schema default -- the reader
+ * refuses a scalar where it expects a sequence.  Dispatching on what the
+ * schema says a key is, rather than on what the caller happens to have,
+ * is what stops that.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean clawt_config_set_string_list(ClawtConfig        *self,
+                                      const gchar        *key,
+                                      const gchar *const *values);
+
 gboolean clawt_config_set_boolean(ClawtConfig *self, const gchar *key,
                                   gboolean value);
 gboolean clawt_config_set_int(ClawtConfig *self, const gchar *key,
@@ -385,6 +406,43 @@ gboolean clawt_config_set_team_string(ClawtConfig *self,
                                       const gchar *team_id,
                                       const gchar *key,
                                       const gchar *value);
+
+/**
+ * clawt_config_set_team_string_list:
+ * @self: a #ClawtConfig
+ * @team_id: which team
+ * @key: the field, as it appears in the schema under `teams.`
+ * @values: (array zero-terminated=1) (nullable): the entries, or %NULL
+ *   to remove the key
+ *
+ * Writes a list-valued team field, such as `teams.skills`.
+ *
+ * Returns: %TRUE when the team exists
+ */
+gboolean clawt_config_set_team_string_list(ClawtConfig        *self,
+                                           const gchar        *team_id,
+                                           const gchar        *key,
+                                           const gchar *const *values);
+
+/**
+ * clawt_config_get_team_string_list:
+ * @self: a #ClawtConfig
+ * @team_id: which team
+ * @key: the field, as it appears in the schema under `teams.`
+ *
+ * A list-valued team field, such as `teams.skills`.
+ *
+ * #ClawtTeamSpec deliberately carries only the fields that decide how a
+ * team is *drawn* -- name, description, colour, order.  A list a team
+ * hands to its members is not one of those, and adding it to the struct
+ * would mean every caller that builds a spec had to know about it.
+ *
+ * Returns: (transfer full) (nullable) (array zero-terminated=1): the
+ *   values, or %NULL when the team or the key is absent
+ */
+GStrv clawt_config_get_team_string_list(ClawtConfig *self,
+                                        const gchar *team_id,
+                                        const gchar *key);
 
 /**
  * clawt_config_remove_team:

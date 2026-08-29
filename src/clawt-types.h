@@ -85,6 +85,11 @@ typedef struct _ClawtParamInfo      ClawtParamInfo;
 /* Integrations */
 typedef struct _ClawtIntegration    ClawtIntegration;
 
+/* Skills */
+typedef struct _ClawtSkill          ClawtSkill;
+typedef struct _ClawtSkillLibrary   ClawtSkillLibrary;
+typedef struct _ClawtSkillBinding   ClawtSkillBinding;
+
 /* AI */
 typedef struct _ClawtAgentDesigner  ClawtAgentDesigner;
 

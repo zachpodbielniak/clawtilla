@@ -71,6 +71,7 @@ thing somebody actually sits down to write.
 | ~rooms~                     | [[file:orchestration.org][orchestration.org]]                                    |
 | ~integrations~, ~connectors~ | [[file:integrations.org][integrations.org]], [[file:connectors.org][connectors.org]]                     |
 | ~routines~                  | [[file:routines.org][routines.org]]                                         |
+| ~skills~, ~agents.skills~   | [[file:skills.org][skills.org]]                                           |
 | everything under ~computer:~ | [[file:computers.org][computers.org]]                                        |
 | ~orchestration.task_budget_usd~ | [[file:spending.org][spending.org]]                                         |
 

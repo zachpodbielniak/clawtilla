@@ -5280,6 +5280,399 @@ cmd_integration(int argc, char *argv[])
 
 /* @asked_for: see print_usage_text(). */
 static void
+print_skill_usage(gboolean asked_for)
+{
+    static const gchar *text =
+        "Usage: clawtilla skill <verb> [...]\n"
+        "\n"
+        "  list                       every skill, and whether it is on\n"
+        "  show <name>                one in full, with its provenance\n"
+        "  new <name> <description>   write a new one and open it\n"
+        "  import <dir> [origin]      copy one in, disabled, markdown only\n"
+        "  edit <name>                open its SKILL.md in $EDITOR\n"
+        "  rm <name>                  delete it\n"
+        "  enable <name>              let it reach the agents that have it\n"
+        "  disable <name>             stop it reaching them\n"
+        "  assign <name> <target>     to an agent, team:<id>, or fleet\n"
+        "  unassign <name> <target>   take it away again\n"
+        "  reload                     rescan the library now\n"
+        "\n"
+        "An imported skill lands disabled and its scripts are left behind.\n"
+        "Read it, then enable it: what a skill says goes into a model's\n"
+        "context with your agent's own authority.\n"
+        "\n"
+        "Examples:\n"
+        "  clawtilla skill import ~/src/some-repo/skills/release\n"
+        "  clawtilla skill show release\n"
+        "  clawtilla skill enable release\n"
+        "  clawtilla skill assign release team:engineering\n";
+
+    print_usage_text(text, asked_for);
+}
+
+/*
+ * Print a skill's warnings and skipped files.
+ *
+ * Shown in `list` as a count and in `show` in full, because the whole
+ * point of the scan is that a person reads it before enabling anything
+ * -- a warning that only appears if you go looking is one that gets
+ * enabled around.
+ */
+static void
+print_skill_notes(JsonObject *skill)
+{
+    JsonArray *warnings = json_object_has_member(skill, "warnings")
+                          ? json_object_get_array_member(skill, "warnings")
+                          : NULL;
+    JsonArray *skipped = json_object_has_member(skill, "skipped")
+                         ? json_object_get_array_member(skill, "skipped")
+                         : NULL;
+    guint i;
+
+    for (i = 0; warnings != NULL && i < json_array_get_length(warnings); i++)
+        g_print("  ! %s\n", json_array_get_string_element(warnings, i));
+
+    if (skipped != NULL && json_array_get_length(skipped) > 0) {
+        g_print("  Not copied (markdown only):");
+
+        for (i = 0; i < json_array_get_length(skipped); i++)
+            g_print(" %s", json_array_get_string_element(skipped, i));
+
+        g_print("\n");
+    }
+}
+
+static gint
+cmd_skill(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verb = (argc > 2) ? argv[2] : "list";
+    const gchar *name = (argc > 3) ? argv[3] : NULL;
+    guint i;
+
+    if (g_strcmp0(verb, "help") == 0 || g_strcmp0(verb, "--help") == 0 ||
+        g_strcmp0(verb, "-h") == 0) {
+        print_skill_usage(TRUE);
+        return EXIT_SUCCESS;
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    if (g_strcmp0(verb, "list") == 0) {
+        JsonObject *object;
+        JsonArray *skills;
+        JsonArray *problems;
+
+        reply = call(client, "skill.list", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        object = json_node_get_object(reply);
+        skills = json_object_get_array_member(object, "skills");
+        problems = json_object_get_array_member(object, "problems");
+
+        /*
+         * An empty list has two causes and they send you to different
+         * places, so it says which rather than printing nothing.
+         */
+        if (json_array_get_length(skills) == 0) {
+            if (!json_object_get_boolean_member(object, "enabled"))
+                g_print("Skills are turned off for this fleet "
+                        "(skills.enabled).\n");
+            else
+                g_print("No skills in %s. `clawtilla skill new` writes one, "
+                        "`clawtilla skill import` copies one in.\n",
+                        member_or(object, "directory", "the skills "
+                                                       "directory"));
+        } else {
+            g_print("%-24s %-4s %-9s %s\n", "NAME", "ON", "SOURCE",
+                    "DESCRIPTION");
+
+            for (i = 0; i < json_array_get_length(skills); i++) {
+                JsonObject *skill = json_array_get_object_element(skills, i);
+                JsonArray *warnings =
+                    json_object_get_array_member(skill, "warnings");
+                guint n = json_array_get_length(warnings);
+
+                g_print("%-24s %-4s %-9s %s%s\n",
+                        member_or(skill, "name", "?"),
+                        json_object_get_boolean_member(skill, "enabled")
+                            ? "yes" : "no",
+                        member_or(skill, "source", "?"),
+                        member_or(skill, "description", ""),
+                        n > 0 ? "" : "");
+
+                if (n > 0)
+                    g_print("  ! %u warning%s -- `clawtilla skill show %s`\n",
+                            n, n == 1 ? "" : "s",
+                            member_or(skill, "name", "?"));
+            }
+        }
+
+        for (i = 0; i < json_array_get_length(problems); i++)
+            g_printerr("clawtilla: %s\n",
+                       json_array_get_string_element(problems, i));
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "show") == 0 || g_strcmp0(verb, "edit") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        JsonObject *skill;
+
+        if (name == NULL) {
+            g_printerr("Usage: clawtilla skill %s <name>\n", verb);
+            return EXIT_FAILURE;
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "name");
+        json_builder_add_string_value(builder, name);
+        json_builder_end_object(builder);
+
+        reply = call(client, "skill.show", json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        skill = json_node_get_object(reply);
+
+        if (g_strcmp0(verb, "edit") == 0) {
+            g_autofree gchar *path =
+                g_build_filename(member_or(skill, "directory", "."),
+                                 "SKILL.md", NULL);
+
+            {
+                g_autoptr(GPtrArray) paths = g_ptr_array_new();
+
+                g_ptr_array_add(paths, path);
+
+                return run_editor(paths);
+            }
+        }
+
+        g_print("%s\n", member_or(skill, "name", "?"));
+        g_print("  %s\n", member_or(skill, "description", ""));
+        g_print("  enabled: %s\n",
+                json_object_get_boolean_member(skill, "enabled")
+                    ? "yes"
+                    : "no -- nothing in it reaches an agent");
+        g_print("  source:  %s\n", member_or(skill, "source", "?"));
+
+        if (member_or(skill, "origin", NULL) != NULL)
+            g_print("  from:    %s\n", member_or(skill, "origin", ""));
+
+        if (member_or(skill, "sha256", NULL) != NULL)
+            g_print("  sha256:  %s\n", member_or(skill, "sha256", ""));
+
+        g_print("  at:      %s\n", member_or(skill, "directory", "?"));
+        print_skill_notes(skill);
+        g_print("\n%s\n", member_or(skill, "body", ""));
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "new") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+
+        if (name == NULL || argc < 5) {
+            g_printerr("Usage: clawtilla skill new <name> <description>\n");
+            return EXIT_FAILURE;
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "name");
+        json_builder_add_string_value(builder, name);
+        json_builder_set_member_name(builder, "description");
+        json_builder_add_string_value(builder, argv[4]);
+        json_builder_end_object(builder);
+
+        reply = call(client, "skill.create", json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        {
+            JsonObject *skill = json_node_get_object(reply);
+            g_autofree gchar *path =
+                g_build_filename(member_or(skill, "directory", "."),
+                                 "SKILL.md", NULL);
+
+            g_print("Wrote %s\n", path);
+
+            {
+                g_autoptr(GPtrArray) paths = g_ptr_array_new();
+
+                g_ptr_array_add(paths, path);
+
+                return run_editor(paths);
+            }
+        }
+    }
+
+    if (g_strcmp0(verb, "import") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        JsonObject *skill;
+
+        if (name == NULL) {
+            g_printerr("Usage: clawtilla skill import <dir> [origin]\n");
+            return EXIT_FAILURE;
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "source");
+        json_builder_add_string_value(builder, name);
+
+        if (argc > 4) {
+            json_builder_set_member_name(builder, "origin");
+            json_builder_add_string_value(builder, argv[4]);
+        }
+
+        json_builder_end_object(builder);
+
+        reply = call(client, "skill.import", json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        skill = json_node_get_object(reply);
+
+        g_print("Imported %s, disabled.\n", member_or(skill, "name", "?"));
+        print_skill_notes(skill);
+        g_print("Read it (`clawtilla skill show %s`), then "
+                "`clawtilla skill enable %s`.\n",
+                member_or(skill, "name", "?"), member_or(skill, "name", "?"));
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "enable") == 0 || g_strcmp0(verb, "disable") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+
+        if (name == NULL) {
+            g_printerr("Usage: clawtilla skill %s <name>\n", verb);
+            return EXIT_FAILURE;
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "name");
+        json_builder_add_string_value(builder, name);
+        json_builder_set_member_name(builder, "enabled");
+        json_builder_add_boolean_value(builder,
+                                       g_strcmp0(verb, "enable") == 0);
+        json_builder_end_object(builder);
+
+        reply = call(client, "skill.enable", json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("%s is now %s.\n", name,
+                g_strcmp0(verb, "enable") == 0 ? "enabled" : "disabled");
+        report_refusals(reply);
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "rm") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+
+        if (name == NULL) {
+            g_printerr("Usage: clawtilla skill rm <name>\n");
+            return EXIT_FAILURE;
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "name");
+        json_builder_add_string_value(builder, name);
+        json_builder_end_object(builder);
+
+        reply = call(client, "skill.remove", json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Removed %s.\n", name);
+        report_refusals(reply);
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "assign") == 0 || g_strcmp0(verb, "unassign") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        const gchar *target = (argc > 4) ? argv[4] : NULL;
+
+        if (name == NULL || target == NULL) {
+            g_printerr("Usage: clawtilla skill %s <name> "
+                       "<agent|team:<id>|fleet>\n", verb);
+            return EXIT_FAILURE;
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "name");
+        json_builder_add_string_value(builder, name);
+
+        /*
+         * `team:` rather than a flag, because an agent id and a team id
+         * are both bare words and a client guessing which one somebody
+         * meant would sometimes assign to the wrong thing silently.
+         */
+        if (g_str_has_prefix(target, "team:")) {
+            json_builder_set_member_name(builder, "team");
+            json_builder_add_string_value(builder,
+                                          target + strlen("team:"));
+        } else if (g_strcmp0(target, "fleet") == 0) {
+            json_builder_set_member_name(builder, "fleet");
+            json_builder_add_boolean_value(builder, TRUE);
+        } else {
+            json_builder_set_member_name(builder, "agent");
+            json_builder_add_string_value(builder, target);
+        }
+
+        json_builder_end_object(builder);
+
+        reply = call(client,
+                     g_strcmp0(verb, "assign") == 0
+                         ? "skill.assign" : "skill.unassign",
+                     json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        if (!json_object_get_boolean_member(json_node_get_object(reply),
+                                            "changed"))
+            g_print("No change: %s was already %s %s.\n", name,
+                    g_strcmp0(verb, "assign") == 0 ? "assigned to"
+                                                   : "absent from",
+                    target);
+        else
+            g_print("%s %s %s.\n", name,
+                    g_strcmp0(verb, "assign") == 0 ? "assigned to"
+                                                   : "taken from",
+                    target);
+
+        report_refusals(reply);
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "reload") == 0) {
+        reply = call(client, "skill.reload", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("%" G_GINT64_FORMAT " skill(s) in the library.\n",
+                json_object_get_int_member(json_node_get_object(reply),
+                                           "count"));
+        report_refusals(reply);
+
+        return EXIT_SUCCESS;
+    }
+
+    g_printerr("clawtilla: unknown skill verb '%s'\n", verb);
+    print_skill_usage(FALSE);
+    return EXIT_FAILURE;
+}
+
+/* @asked_for: see print_usage_text(). */
+static void
 print_routine_usage(gboolean asked_for)
 {
     static const gchar *text =
@@ -5874,6 +6267,8 @@ static const ClawtVerb verbs[] = {
       cmd_connector },
     { "routine", "<verb>",   "Standing work on a schedule",
       cmd_routine },
+    { "skill",   "<verb>",   "Procedures agents can be given",
+      cmd_skill },
     { "plugin",  "list",     "List loaded plugins",
       cmd_plugin },
     { NULL, NULL, NULL, NULL }

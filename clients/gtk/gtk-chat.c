@@ -2749,14 +2749,23 @@ show_command_help(ClawtWindow *self)
  * the caller does not also send it to the agent -- a mistyped command
  * reaching the model as a message is how a person learns to distrust
  * the feature.
+ *
+ * @expanded is the one exception: a skill command is a command *and* a
+ * message, so it comes back as text for the caller to send through the
+ * ordinary path. Sending it here instead would be a second send with
+ * its own attachment handling, its own draft clearing and its own idea
+ * of what to do about a stopped agent.
  */
 static gboolean
-run_slash_command(ClawtWindow *self, const gchar *text)
+run_slash_command(ClawtWindow *self, const gchar *text, gchar **expanded)
 {
     g_auto(GStrv) parts = NULL;
     const gchar *name;
     const gchar *rest;
     gsize i;
+
+    if (expanded != NULL)
+        *expanded = NULL;
 
     if (text == NULL || text[0] != '/')
         return FALSE;
@@ -2771,7 +2780,26 @@ run_slash_command(ClawtWindow *self, const gchar *text)
     }
 
     if (i == G_N_ELEMENTS(slash_commands)) {
-        g_autofree gchar *message = g_strdup_printf(
+        g_autofree gchar *prompt = NULL;
+        g_autofree gchar *message = NULL;
+
+        /*
+         * Not a built-in, so it may be one of the agent's own skills.
+         *
+         * Expanded by the daemon and sent as an ordinary message, which
+         * is what makes this and the web client send identical text.
+         * Still returns TRUE either way: a mistyped command reaching
+         * the model as prose is how a person learns to distrust the
+         * feature.
+         */
+        if (clawt_gtk_skill_expand(self, text, &prompt) && prompt != NULL) {
+            if (expanded != NULL)
+                *expanded = g_steal_pointer(&prompt);
+
+            return TRUE;
+        }
+
+        message = g_strdup_printf(
             "There is no %s. Type /help for the list.", name);
 
         append_local(self, message);
@@ -3106,6 +3134,14 @@ on_entry_changed(GtkTextBuffer *buffer, gpointer user_data)
     if (text == NULL || text[0] != '/' || strchr(text, ' ') != NULL) {
         gtk_revealer_set_reveal_child(GTK_REVEALER(self->command_revealer),
                                       FALSE);
+
+        /*
+         * Dropped when the line stops being a command, so the next `/`
+         * asks again. A skill can be enabled while this window is open,
+         * and a cache held for the life of the window would be right
+         * about the fleet as it was when somebody last typed a slash.
+         */
+        clawt_gtk_skill_commands_forget(self);
         return;
     }
 
@@ -3134,6 +3170,58 @@ on_entry_changed(GtkTextBuffer *buffer, gpointer user_data)
 
         gtk_list_box_append(self->command_list, row);
         matches++;
+    }
+
+    /*
+     * ...and the agent's own, from its workspace.
+     *
+     * In the same list rather than a second control, because a skill's
+     * `/name` is the same kind of thing as a built-in: something you
+     * type after a slash. Two lists would need two positions, two
+     * dismiss rules and two keyboard behaviours, and a reader would
+     * have to learn which one holds what.
+     */
+    {
+        JsonNode *reply = clawt_gtk_skill_commands(self);
+        JsonArray *commands = (reply != NULL)
+            ? json_object_get_array_member(clawt_payload_of(reply),
+                                           "commands")
+            : NULL;
+        guint c;
+
+        for (c = 0; commands != NULL && c < json_array_get_length(commands);
+             c++) {
+            JsonObject *command = json_array_get_object_element(commands, c);
+            const gchar *hint = clawt_json_string(command, "argument_hint",
+                                                  NULL);
+            GtkWidget *row;
+            g_autofree gchar *name = NULL;
+            g_autofree gchar *label = NULL;
+
+            name = g_strconcat("/", clawt_json_string(command, "name", ""),
+                               NULL);
+
+            if (!g_str_has_prefix(name, text))
+                continue;
+
+            label = g_strdup_printf("%s%s%s", name,
+                                    hint != NULL ? " " : "",
+                                    hint != NULL ? hint : "");
+
+            row = adw_action_row_new();
+            clawt_gtk_set_row_text(row, label,
+                                   clawt_json_string(command, "description",
+                                                     ""));
+            g_object_set_data_full(G_OBJECT(row), "command",
+                                   g_steal_pointer(&name), g_free);
+
+            if (hint != NULL)
+                g_object_set_data(G_OBJECT(row), "takes-argument",
+                                  GINT_TO_POINTER(1));
+
+            gtk_list_box_append(self->command_list, row);
+            matches++;
+        }
     }
 
     gtk_revealer_set_reveal_child(GTK_REVEALER(self->command_revealer),
@@ -3270,9 +3358,23 @@ on_send(GtkWidget *widget, gpointer user_data)
      * A command never reaches the agent.  A mistyped one arriving as a
      * message is how somebody learns not to trust the feature.
      */
-    if (run_slash_command(self, body)) {
-        clawt_gtk_entry_set_text(self, "");
-        return;
+    {
+        g_autofree gchar *expanded = NULL;
+
+        if (run_slash_command(self, body, &expanded)) {
+            clawt_gtk_entry_set_text(self, "");
+
+            /*
+             * A skill command expands to a message, so it carries on
+             * down the ordinary send path below rather than getting a
+             * second one of its own.
+             */
+            if (expanded == NULL)
+                return;
+
+            g_free(body);
+            body = g_steal_pointer(&expanded);
+        }
     }
 
     full = body_with_attachments(self, body);

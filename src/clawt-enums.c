@@ -1000,6 +1000,28 @@ clawt_memory_scope_nth_label(guint n)
     return memory_scopes[n].label;
 }
 
+/* Register ClawtSkillSource as a GLib enum type */
+GType
+clawt_skill_source_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_SKILL_SOURCE_USER, "CLAWT_SKILL_SOURCE_USER", "user" },
+            { CLAWT_SKILL_SOURCE_IMPORTED, "CLAWT_SKILL_SOURCE_IMPORTED",
+              "imported" },
+            { CLAWT_SKILL_SOURCE_TAUGHT, "CLAWT_SKILL_SOURCE_TAUGHT",
+              "taught" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id =
+            g_enum_register_static("ClawtSkillSource", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
 /* Register ClawtTriggerProvider as a GLib enum type */
 GType
 clawt_trigger_provider_get_type(void)

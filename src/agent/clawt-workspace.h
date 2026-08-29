@@ -279,6 +279,31 @@ clawt_workspace_update_computer(ClawtAgentConfig *agent,
                                 GError          **error);
 
 /**
+ * clawt_workspace_update_skills:
+ * @agent: the agent's configuration
+ * @described: org text naming the skills it has, from
+ *   clawt_skill_provision_describe()
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Writes the agent's assigned skills into a marked region of `TOOLS.org`
+ * of its own -- the fourth region clawtilla owns in that file.
+ *
+ * A skill arrives as a symlink in a directory the agent's CLI happens to
+ * scan, which is the least discoverable route anything in this system
+ * takes.  Nothing in a session says the fleet chose these deliberately,
+ * or that the one-line description is a summary rather than the
+ * procedure.  Same reasoning as the tool list beside it: an agent
+ * believes its own file, because the file is in the prompt and looking
+ * something up is a decision it has to make.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+clawt_workspace_update_skills(ClawtAgentConfig *agent,
+                              const gchar      *described,
+                              GError          **error);
+
+/**
  * clawt_workspace_file_path:
  * @agent: the agent's configuration
  * @name: a file name from the standard set, or any other name

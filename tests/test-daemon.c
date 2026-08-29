@@ -72,10 +72,25 @@ fixture_write_config(Fixture *fixture, const gchar *extra_yaml)
          * were already pinned here; this is the third thing that
          * escapes a temporary directory if nobody says otherwise.
          */
+        /*
+         * And the skills, which are the fifth.  `skills.dir` defaults
+         * to ~/.clawtilla/skills, so without this every daemon fixture
+         * here scanned the developer's own library, watched it, and
+         * linked whatever was in it into the agents these tests create
+         * -- a green run whose result depends on what somebody happens
+         * to have written on that machine.
+         *
+         * Before `defaults:` rather than after, because `defaults:` has
+         * to stay the last block: several tests pass @extra_yaml that
+         * continues it with another indented key, and a top-level
+         * section wedged in between turns those into an unknown key
+         * under `skills`.
+         */
+        "skills:\n  dir: \"%s/skills\"\n"
         "defaults:\n  workspace_root: \"%s/agents\"\n"
         "%s",
         fixture->dir, fixture->dir, fixture->dir, fixture->dir,
-        extra_yaml != NULL ? extra_yaml : "");
+        fixture->dir, extra_yaml != NULL ? extra_yaml : "");
 
     g_file_set_contents(fixture->config_path, yaml, -1, &error);
     g_assert_no_error(error);
@@ -1476,9 +1491,30 @@ test_creating_an_agent_records_its_provider(void)
     fixture_setup(&fixture, NULL);
     g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
 
-    created = request(&fixture, "agent.create",
-                      "{\"id\":\"researcher\",\"provider\":\"ollama\","
-                      "\"model\":\"llama3.3\"}");
+    /*
+     * `ollama` is not a CLI libreclaw can drive, so it warns and runs
+     * Claude Code -- which is the behaviour this test is about keeping,
+     * and which the skills provisioner now also asks about when it
+     * works out which harness's directories to link into.  Swallowed on
+     * the domain libreclaw logs in, because the warning is true and the
+     * assertion below is about the value being recorded, not about how
+     * many things noticed it.
+     */
+    {
+        GLogLevelFlags was_fatal = g_log_set_always_fatal(G_LOG_FATAL_MASK);
+        guint handler = g_log_set_handler("LibreClaw",
+                                          G_LOG_LEVEL_WARNING |
+                                          G_LOG_FLAG_FATAL |
+                                          G_LOG_FLAG_RECURSION,
+                                          swallow_warnings, NULL);
+
+        created = request(&fixture, "agent.create",
+                          "{\"id\":\"researcher\",\"provider\":\"ollama\","
+                          "\"model\":\"llama3.3\"}");
+
+        g_log_remove_handler("LibreClaw", handler);
+        g_log_set_always_fatal(was_fatal);
+    }
 
     g_assert_false(clawt_ipc_frame_is_error(created));
 

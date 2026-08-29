@@ -29,7 +29,8 @@ typedef enum {
     NEEDS_COMPUTER,
     NEEDS_MEMORY,
     NEEDS_FLEET_ADMIN,
-    NEEDS_ASSIGNMENT
+    NEEDS_ASSIGNMENT,
+    NEEDS_SKILLS
 } ToolRequirement;
 
 typedef struct {
@@ -205,6 +206,10 @@ static const ClawtParamInfo memory_pin_params[] = {
     { "id",     "string", "Which memory.", TRUE },
     { "pinned", "boolean", "Pin it, or unpin it. Defaults to pinning.",
       FALSE }
+};
+
+static const ClawtParamInfo skill_read_params[] = {
+    { "name", "string", "Which skill, by the name in the listing.", TRUE }
 };
 
 static const ClawtParamInfo create_agent_params[] = {
@@ -430,7 +435,20 @@ static const ToolDefinition tools[] = {
 
     TOOL("clawtilla_computer_state",
          "Describe your computer: what it is and what you can reach from it.",
-         NEEDS_COMPUTER, no_params)
+         NEEDS_COMPUTER, no_params),
+
+    TOOL("clawtilla_skill_list",
+         "The procedures you have been given, with what each is for. Your "
+         "own TOOLS.org lists them too; call this when you want the list as "
+         "it is right now, since a skill can be assigned or enabled while "
+         "you are running.",
+         NEEDS_SKILLS, no_params),
+
+    TOOL("clawtilla_skill_read",
+         "Read one of your skills in full. Do this before working from a "
+         "skill -- the one-line description in the listing is a summary "
+         "written to help you choose, not the procedure.",
+         NEEDS_SKILLS, skill_read_params)
 };
 
 #undef TOOL
@@ -459,6 +477,14 @@ struct _ClawtMcpTools {
 
     ClawtVmImageStore *images;   /* unowned */
     ClawtEventBus     *bus;      /* unowned */
+
+    /*
+     * Unowned, and replaced by the daemon on every reload.  A library
+     * held by reference here would go on describing the directory the
+     * config named before it was edited, which is the worst kind of
+     * wrong: every answer correct, about the wrong files.
+     */
+    ClawtSkillLibrary *skills;
 
     /*
      * The context an asynchronous answer must arrive on.  Named rather
@@ -510,6 +536,15 @@ clawt_mcp_tools_set_image_store(ClawtMcpTools *self, ClawtVmImageStore *store)
     g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
 
     self->images = store;
+}
+
+void
+clawt_mcp_tools_set_skill_library(ClawtMcpTools     *self,
+                                  ClawtSkillLibrary *library)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    self->skills = library;
 }
 
 ClawtMcpTools *
@@ -734,6 +769,40 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
 
         if ((clawt_agent_get_caps(agent) & CLAWT_AGENT_CAPS_PEER_COMMS) == 0)
             return FALSE;
+        break;
+
+    case NEEDS_SKILLS:
+        /*
+         * Not offered when the fleet has no library, and not offered to
+         * an agent that has been assigned nothing.
+         *
+         * The second half is the one that matters: an agent shown a
+         * skill tool will call it, be told it has none, and go looking
+         * for the skill it assumes it was meant to have.  The same
+         * reasoning as NEEDS_MEMORY -- a refusal costs a turn to learn
+         * something the tool list could have said for free.
+         */
+        if (self->skills == NULL)
+            return FALSE;
+
+        {
+            ClawtAgentConfig *mine = clawt_agent_get_config(agent);
+            g_autoptr(GPtrArray) bindings = clawt_skill_resolve_for_agent(
+                clawt_agent_config_get_config(mine), mine, self->skills);
+            guint b;
+            gboolean any = FALSE;
+
+            for (b = 0; b < bindings->len; b++) {
+                if (clawt_skill_binding_is_active(
+                        g_ptr_array_index(bindings, b))) {
+                    any = TRUE;
+                    break;
+                }
+            }
+
+            if (!any)
+                return FALSE;
+        }
         break;
 
     case NEEDS_FLEET_ADMIN:
@@ -2310,6 +2379,133 @@ tool_computer_state(ClawtMcpTools *self, const gchar *agent_id)
     return clawt_agent_describe_computer(agent);
 }
 
+/*
+ * The agent's own bindings, resolved the way everything else resolves
+ * them.
+ *
+ * Through clawt_skill_resolve_for_agent() rather than by reading the
+ * agent's list here: the fleet's and the team's assignments are
+ * invisible from an agent's own config block, so an agent asking what
+ * it has would be told only about the skills somebody named on it
+ * specifically.
+ */
+static GPtrArray *
+skill_bindings_for(ClawtMcpTools *self, const gchar *agent_id)
+{
+    ClawtAgent *agent;
+    ClawtAgentConfig *config;
+
+    if (self->skills == NULL)
+        return NULL;
+
+    agent = clawt_agent_manager_get(self->agents, agent_id);
+
+    if (agent == NULL)
+        return NULL;
+
+    config = clawt_agent_get_config(agent);
+
+    return clawt_skill_resolve_for_agent(
+        clawt_agent_config_get_config(config), config, self->skills);
+}
+
+static gchar *
+tool_skill_list(ClawtMcpTools *self, const gchar *agent_id)
+{
+    g_autoptr(GPtrArray) bindings = skill_bindings_for(self, agent_id);
+    g_autoptr(GString) out = NULL;
+    guint shown = 0;
+    guint i;
+
+    if (bindings == NULL)
+        return g_strdup("You have no skills.");
+
+    out = g_string_new(NULL);
+
+    for (i = 0; i < bindings->len; i++) {
+        ClawtSkillBinding *binding = g_ptr_array_index(bindings, i);
+        ClawtSkill *skill;
+
+        if (!clawt_skill_binding_is_active(binding))
+            continue;
+
+        skill = clawt_skill_binding_get_skill(binding);
+        shown++;
+
+        g_string_append_printf(out, "%s -- %s\n",
+                               clawt_skill_get_name(skill),
+                               clawt_skill_get_description(skill) != NULL
+                                   ? clawt_skill_get_description(skill)
+                                   : "(no description)");
+    }
+
+    if (shown == 0)
+        return g_strdup("You have no skills.");
+
+    /*
+     * Said at the end rather than assumed.  A description is written to
+     * help a model *choose*, and a model that acts on the summary
+     * without opening the file will do a plausible-looking version of
+     * the procedure rather than the procedure.
+     */
+    g_string_append(out,
+        "\nEach line is a summary, not the procedure. Read one with "
+        "clawtilla_skill_read before working from it.");
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+static gchar *
+tool_skill_read(ClawtMcpTools *self, const gchar *agent_id,
+                JsonObject *arguments, gboolean *is_error)
+{
+    const gchar *name = argument_string(arguments, "name");
+    g_autoptr(GPtrArray) bindings = NULL;
+    guint i;
+
+    if (name == NULL) {
+        *is_error = TRUE;
+        return g_strdup("name is required.");
+    }
+
+    bindings = skill_bindings_for(self, agent_id);
+
+    /*
+     * Looked up in the agent's own bindings rather than in the library.
+     *
+     * That is the permission check, and it is structural: an agent
+     * cannot read a skill it was not given, because the only names it
+     * can reach are the ones resolution produced for it.  A lookup
+     * against the library with a separate "may it?" test afterwards
+     * would be the same rule in two places.
+     */
+    for (i = 0; bindings != NULL && i < bindings->len; i++) {
+        ClawtSkillBinding *binding = g_ptr_array_index(bindings, i);
+        ClawtSkill *skill;
+
+        if (g_strcmp0(clawt_skill_binding_get_name(binding), name) != 0)
+            continue;
+
+        if (!clawt_skill_binding_is_active(binding))
+            break;
+
+        skill = clawt_skill_binding_get_skill(binding);
+
+        return g_strdup_printf("# %s\n\n%s\n\n%s",
+                               clawt_skill_get_name(skill),
+                               clawt_skill_get_description(skill) != NULL
+                                   ? clawt_skill_get_description(skill) : "",
+                               clawt_skill_get_body(skill) != NULL
+                                   ? clawt_skill_get_body(skill) : "");
+    }
+
+    *is_error = TRUE;
+
+    return g_strdup_printf(
+        "You have no skill called '%s'. clawtilla_skill_list has the ones "
+        "you do have.", name);
+}
+
 static gchar *
 tool_mailbox_list(ClawtMcpTools *self, const gchar *agent_id,
                   JsonObject *arguments)
@@ -3414,6 +3610,10 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
         text = tool_computer_exec(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_computer_state") == 0)
         text = tool_computer_state(self, agent_id);
+    else if (g_strcmp0(tool_name, "clawtilla_skill_list") == 0)
+        text = tool_skill_list(self, agent_id);
+    else if (g_strcmp0(tool_name, "clawtilla_skill_read") == 0)
+        text = tool_skill_read(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_mailbox_list") == 0)
         text = tool_mailbox_list(self, agent_id, arguments);
     else if (g_strcmp0(tool_name, "clawtilla_mailbox_read") == 0)

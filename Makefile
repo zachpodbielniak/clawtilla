@@ -140,6 +140,12 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/interfaces/clawt-integration-provider.h \
 	$(SRCDIR)/mcp/clawt-mcp-relay.h \
 	$(SRCDIR)/mcp/clawt-mcp-tools.h \
+	$(SRCDIR)/skill/clawt-skill.h \
+	$(SRCDIR)/skill/clawt-skill-scan.h \
+	$(SRCDIR)/skill/clawt-skill-library.h \
+	$(SRCDIR)/skill/clawt-skill-binding.h \
+	$(SRCDIR)/skill/clawt-skill-provision.h \
+	$(SRCDIR)/skill/clawt-skill-commands.h \
 	$(SRCDIR)/ai/clawt-model-catalog.h \
 	$(SRCDIR)/ai/clawt-agent-designer.h
 
@@ -171,6 +177,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-integration.c \
 	$(SRCDIR)/core/daemon-routine.c \
 	$(SRCDIR)/core/daemon-config.c \
+	$(SRCDIR)/core/daemon-skill.c \
 	$(SRCDIR)/core/clawt-event-bus.c \
 	$(SRCDIR)/core/clawt-event-log.c \
 	$(SRCDIR)/integration/clawt-connector.c \
@@ -245,6 +252,12 @@ LIB_SOURCES = \
 	$(SRCDIR)/interfaces/clawt-integration-provider.c \
 	$(SRCDIR)/mcp/clawt-mcp-relay.c \
 	$(SRCDIR)/mcp/clawt-mcp-tools.c \
+	$(SRCDIR)/skill/clawt-skill.c \
+	$(SRCDIR)/skill/clawt-skill-scan.c \
+	$(SRCDIR)/skill/clawt-skill-library.c \
+	$(SRCDIR)/skill/clawt-skill-binding.c \
+	$(SRCDIR)/skill/clawt-skill-provision.c \
+	$(SRCDIR)/skill/clawt-skill-commands.c \
 	$(SRCDIR)/ai/clawt-model-catalog.c \
 	$(SRCDIR)/ai/clawt-agent-designer.c
 

@@ -1975,6 +1975,79 @@ render_refusal_free(gpointer data)
  * hostage.  @refusals, when it is not %NULL, collects the ones that were
  * turned down so whoever asked can be told.
  */
+/*
+ * Rebuild the skill library from whatever the config now says.
+ *
+ * Called from start and from reload rather than from a lazy getter,
+ * because the library holds a #GFileMonitor: a getter would attach one
+ * on whichever context happened to call it first, and for an embedded
+ * daemon that is the difference between a watch that works and one that
+ * never fires.  Here it is always the daemon's own.
+ */
+void
+clawt_daemon_reload_skills(ClawtDaemon *self)
+{
+    g_autofree gchar *directory = NULL;
+
+    g_clear_object(&self->skills);
+
+    /*
+     * Cleared first, on every path.  Three of the four ways out of this
+     * function leave no library at all, and the tools holding a pointer
+     * to the one that was just unreffed is a use-after-free reached by
+     * an ordinary tool call.
+     */
+    if (self->mcp_tools != NULL)
+        clawt_mcp_tools_set_skill_library(self->mcp_tools, NULL);
+
+    if (self->config == NULL)
+        return;
+
+    /*
+     * Off means off, not empty.  A fleet that has turned skills off
+     * should pay nothing -- no scan, no watch, no links written into a
+     * workspace -- and every reader treats a NULL library as "no
+     * skills" rather than as a failure.
+     */
+    if (!clawt_config_get_boolean(self->config, "skills.enabled"))
+        return;
+
+    directory = clawt_config_get_path_value(self->config, "skills.dir");
+
+    if (directory == NULL || *directory == '\0')
+        return;
+
+    self->skills = clawt_skill_library_new(directory);
+    clawt_skill_library_scan(self->skills);
+
+    /*
+     * Watching is what makes editing a SKILL.md take effect without a
+     * reload.  The monitor and its debounce are attached to whatever is
+     * thread-default here, which is the daemon's context: start() and
+     * reload() both run on it.
+     */
+    clawt_skill_library_set_watching(self->skills, TRUE);
+
+    {
+        GPtrArray *problems = clawt_skill_library_get_problems(self->skills);
+        guint i;
+
+        for (i = 0; i < problems->len; i++)
+            g_warning("skills: %s", (const gchar *)
+                      g_ptr_array_index(problems, i));
+    }
+
+    /*
+     * The agent-facing tools read the same library, so they are handed
+     * the new one here.  The old pointer is dangling the moment
+     * g_clear_object() above runs, and an agent calling
+     * clawtilla_skill_list between a reload and a restart is entirely
+     * ordinary.
+     */
+    if (self->mcp_tools != NULL)
+        clawt_mcp_tools_set_skill_library(self->mcp_tools, self->skills);
+}
+
 void
 clawt_daemon_render_all_agents_into(ClawtDaemon *self, GPtrArray *refusals)
 {
@@ -2025,6 +2098,48 @@ clawt_daemon_render_all_agents_into(ClawtDaemon *self, GPtrArray *refusals)
                                                   &tools_error))
                 g_warning("agent %s: %s", clawt_agent_get_id(agent),
                           tools_error->message);
+        }
+
+        /*
+         * ...and the skills, linked where this agent's own CLI looks.
+         *
+         * Here rather than in the renderer for the same reason the tool
+         * list is: the renderer writes a config file, and this writes
+         * into a workspace against a library only the daemon holds.
+         * Both halves go together -- a link with no paragraph in
+         * TOOLS.org is a procedure the agent has and does not know it
+         * has, and this project has already paid for that once with a
+         * tool table written at scaffold time and never again.
+         */
+        if (self->skills != NULL) {
+            g_autoptr(GPtrArray) skill_warnings = NULL;
+            g_autoptr(GPtrArray) bindings = NULL;
+            g_autoptr(GError) skill_error = NULL;
+            guint w;
+
+            if (!clawt_skill_provision(self->config, config, self->skills,
+                                       &skill_warnings, &skill_error))
+                g_warning("agent %s: %s", clawt_agent_get_id(agent),
+                          skill_error->message);
+
+            for (w = 0; skill_warnings != NULL && w < skill_warnings->len;
+                 w++)
+                g_warning("skills: %s", (const gchar *)
+                          g_ptr_array_index(skill_warnings, w));
+
+            bindings = clawt_skill_resolve_for_agent(self->config, config,
+                                                     self->skills);
+
+            {
+                g_autofree gchar *described =
+                    clawt_skill_provision_describe(bindings);
+                g_autoptr(GError) region_error = NULL;
+
+                if (!clawt_workspace_update_skills(config, described,
+                                                   &region_error))
+                    g_warning("agent %s: %s", clawt_agent_get_id(agent),
+                              region_error->message);
+            }
         }
     }
 }
@@ -4174,6 +4289,14 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
                                      self, NULL);
 
     /*
+     * After the tools exist, because reload_skills() hands them the
+     * library it just built.  Doing it earlier and setting the pointer
+     * again here would be the same rule at two call sites, which is how
+     * one of them comes to be forgotten.
+     */
+    clawt_daemon_reload_skills(self);
+
+    /*
      * So an agent's own tool calls land on the same audit trail as a
      * person's.  The client `computer.exec` handler has published one
      * per command since the daemon was written; the tools had no route
@@ -4665,6 +4788,15 @@ clawt_daemon_reload_internal(ClawtDaemon *self, GPtrArray *refusals,
 
     if (self->routines != NULL)
         clawt_routine_runner_set_config(self->routines, self->config);
+
+    /*
+     * Rebuilt rather than rescanned, because `skills.dir` and
+     * `skills.enabled` are both in the file that just changed.  Keeping
+     * the old library would leave it watching a directory nobody has
+     * configured any more, which is invisible: every listing would be
+     * right about the wrong directory.
+     */
+    clawt_daemon_reload_skills(self);
 
     /*
      * Files are re-rendered for running agents too, so a restart picks up
@@ -6499,6 +6631,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_integration,
     clawt_daemon_handle_routine,
     clawt_daemon_handle_config,
+    clawt_daemon_handle_skill,
 };
 
 JsonNode *
@@ -6617,6 +6750,7 @@ clawt_daemon_finalize(GObject *object)
     g_clear_object(&self->notifier);
     g_clear_object(&self->routines);
     g_clear_object(&self->automation);
+    g_clear_object(&self->skills);
     g_clear_pointer(&self->model_cache, g_hash_table_unref);
     g_clear_pointer(&self->connector_flows, g_hash_table_unref);
     g_clear_pointer(&self->connector_catalog, g_ptr_array_unref);

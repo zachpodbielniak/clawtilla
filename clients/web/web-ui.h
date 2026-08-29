@@ -32,8 +32,9 @@ G_BEGIN_DECLS
  * @CLAWT_WEB_VIEW_ROUTINES: scheduled work
  * @CLAWT_WEB_VIEW_TASKS: delegated work
  * @CLAWT_WEB_VIEW_FLOW: what the agents are saying to each other
+ * @CLAWT_WEB_VIEW_SKILLS: the fleet's procedures, and what they carry
  *
- * The seven pages, in the order the GTK client's view switcher has them.
+ * The eight pages, in the order the GTK client's view switcher has them.
  * Kept as one enum so the nav cannot list a view no handler serves.
  */
 typedef enum {
@@ -44,6 +45,7 @@ typedef enum {
     CLAWT_WEB_VIEW_ROUTINES,
     CLAWT_WEB_VIEW_TASKS,
     CLAWT_WEB_VIEW_FLOW,
+    CLAWT_WEB_VIEW_SKILLS,
     CLAWT_WEB_N_VIEWS
 } ClawtWebView;
 

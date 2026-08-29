@@ -147,6 +147,19 @@ struct _ClawtDaemon {
     /* Pods that watch the fleet and act on it. */
     ClawtAutomation *automation;
 
+    /*
+     * The fleet's skills, scanned once and watched.
+     *
+     * One library for the whole daemon rather than one per agent: a
+     * skill lives in exactly one directory and is linked into whichever
+     * workspaces need it, so a second scan would be a second answer
+     * about the same files.  %NULL when `skills.enabled` is off, which
+     * every caller has to treat as "no skills" rather than as an error
+     * -- the feature is opt-out and a fleet that never wanted it should
+     * pay nothing for it.
+     */
+    ClawtSkillLibrary *skills;
+
     gchar   *libreclaw_binary;
     gchar   *state_dir;
 
@@ -466,6 +479,9 @@ void
 clawt_daemon_refresh_job_free(RefreshJob *job);
 
 void
+clawt_daemon_reload_skills(ClawtDaemon *self);
+
+void
 clawt_daemon_render_all_agents_into(ClawtDaemon *self, GPtrArray *refusals);
 
 GPtrArray *
@@ -624,6 +640,15 @@ clawt_daemon_handle_integration(
 
 JsonNode *
 clawt_daemon_handle_routine(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
+
+JsonNode *
+clawt_daemon_handle_skill(
     ClawtDaemon  *self,
     const gchar  *kind,
     JsonNode     *request,

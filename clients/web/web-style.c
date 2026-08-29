@@ -678,7 +678,8 @@ clawt_web_stylesheet(void)
      * edges stay together.
      */
     ".composer-inner{max-width:var(--chat-measure);margin:0 auto;display:flex;gap:10px;"
-      "align-items:flex-end;padding-left:var(--chat-gutter)}"
+      "align-items:flex-end;padding-left:var(--chat-gutter);"
+      "position:relative}"
     /*
      * Narrow enough and the avatar is hidden, so there is no gutter to
      * stand past and the composer goes back to the clamp with the
@@ -689,6 +690,29 @@ clawt_web_stylesheet(void)
      * nothing at all.
      */
     "@media (max-width:26rem){.composer-inner{padding-left:0}}"
+    /*
+     * The `/` completions.
+     *
+     * Positioned against the composer row rather than the page, so it
+     * opens over the transcript directly above the box being typed in.
+     * `display:none` until the script adds `.on`: an empty popover
+     * drawn under every composer would take a row of height from the
+     * conversation for something nobody has asked for.
+     */
+    ".slash-popover{display:none;position:absolute;bottom:100%;left:0;"
+      "right:0;z-index:6;max-height:16rem;overflow-y:auto;margin-bottom:6px;"
+      "border:1px solid var(--line);border-radius:8px;"
+      "background:var(--surface);box-shadow:0 2px 12px rgba(0,0,0,0.14)}"
+    ".slash-popover.on{display:block}"
+    ".slash-item{display:flex;gap:10px;align-items:baseline;width:100%;"
+      "padding:7px 12px;border:0;background:none;color:var(--ink);"
+      "font-family:var(--sans);font-size:13px;text-align:left;"
+      "cursor:pointer}"
+    ".slash-item:hover{background:var(--canvas)}"
+    ".slash-name{font-family:var(--mono);color:var(--info-fg);"
+      "white-space:nowrap}"
+    ".slash-hint{color:var(--muted);font-size:12px;overflow:hidden;"
+      "text-overflow:ellipsis;white-space:nowrap}"
     ".composer textarea{flex:1;min-height:2.6rem;max-height:14rem;"
       "font-family:var(--sans);font-size:14px}"
     /*

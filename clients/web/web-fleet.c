@@ -782,6 +782,8 @@ clawt_web_view_body(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view)
         return clawt_web_tasks_body(app, agent_id);
     case CLAWT_WEB_VIEW_FLOW:
         return clawt_web_flow_body(app, agent_id);
+    case CLAWT_WEB_VIEW_SKILLS:
+        return clawt_web_skills_body(app, agent_id);
     default:
         break;
     }

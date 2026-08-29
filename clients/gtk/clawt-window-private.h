@@ -82,6 +82,7 @@ typedef enum {
     CLAWT_REFRESH_TEAMS,
     CLAWT_REFRESH_SPENDING,
     CLAWT_REFRESH_SHARED_FOLDERS,
+    CLAWT_REFRESH_SKILLS,
     CLAWT_N_REFRESH
 } ClawtRefreshKind;
 
@@ -265,6 +266,16 @@ struct _ClawtWindow {
     GtkBox            *inspector;
     GtkWidget         *name_row;
     GtkWidget         *description_row;
+
+    /*
+     * The skills this agent is assigned, comma-separated.
+     *
+     * A hand-built row rather than a generated one, because the
+     * schema walk below deliberately skips `agents.*` keys -- and
+     * because a list of names needs the sentence about a name that
+     * matches nothing, which a generated row cannot carry.
+     */
+    GtkWidget         *skills_row;
     GtkWidget         *effort_row;
     GtkWidget         *computer_row;
     GtkWidget         *restart_row;
@@ -525,6 +536,18 @@ struct _ClawtWindow {
      */
     GtkWidget         *command_revealer;
     GtkListBox        *command_list;
+
+    /*
+     * The skills page, and the agent's own `/` commands.
+     *
+     * The commands are cached for as long as the line stays a command
+     * rather than asked per keystroke: the answer cannot change between
+     * two characters, and a round trip per key makes typing feel like
+     * the daemon is struggling.
+     */
+    GtkWidget         *skill_box;
+    JsonNode          *slash_commands;
+
     gboolean           following;
 };
 
@@ -819,6 +842,65 @@ clawt_gtk_refresh_settings_teams(ClawtWindow *self);
 
 GtkWidget *
 clawt_gtk_build_routine_page(ClawtWindow *self);
+
+/**
+ * clawt_gtk_build_skill_page:
+ * @self: the window
+ *
+ * The fleet's skills, each with its provenance and whatever the scan
+ * noticed about it.
+ *
+ * Returns: (transfer none): the page
+ */
+GtkWidget *
+clawt_gtk_build_skill_page(ClawtWindow *self);
+
+/**
+ * clawt_gtk_refresh_skills:
+ * @self: the window
+ *
+ * Rebuilds the skills page from `skill.list`.
+ */
+void
+clawt_gtk_refresh_skills(ClawtWindow *self);
+
+/**
+ * clawt_gtk_skill_commands:
+ * @self: the window
+ *
+ * The `/` commands the selected agent's workspace offers, cached.
+ *
+ * Returns: (transfer none) (nullable): the `skill.commands` reply
+ */
+JsonNode *
+clawt_gtk_skill_commands(ClawtWindow *self);
+
+/**
+ * clawt_gtk_skill_commands_forget:
+ * @self: the window
+ *
+ * Drops the cache, so the next `/` asks again.
+ */
+void
+clawt_gtk_skill_commands_forget(ClawtWindow *self);
+
+/**
+ * clawt_gtk_skill_expand:
+ * @self: the window
+ * @line: what was typed, starting with a slash
+ * @out: (out) (optional): the prompt to send
+ *
+ * Asks the daemon what `/name args` means for this agent.
+ *
+ * Daemon-side on purpose: both graphical clients then send identical
+ * text for the same line, and there is one implementation of the
+ * argument substitution rather than two that agree until somebody types
+ * a `$`.
+ *
+ * Returns: %TRUE when the line was a command this agent has
+ */
+gboolean
+clawt_gtk_skill_expand(ClawtWindow *self, const gchar *line, gchar **out);
 
 void
 clawt_gtk_refresh_routines(ClawtWindow *self);

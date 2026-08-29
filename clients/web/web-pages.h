@@ -90,6 +90,18 @@ HtmxElement *clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_mailbox_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_computer_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_routines_body(ClawtWebApp *app, const gchar *agent_id);
+
+/**
+ * clawt_web_skills_body:
+ * @app: a #ClawtWebApp
+ * @agent_id: (nullable): the selected agent, unused here
+ *
+ * The fleet's skills, each with its provenance and whatever the scan
+ * noticed about it.
+ *
+ * Returns: (transfer full): the view
+ */
+HtmxElement *clawt_web_skills_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_tasks_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_flow_body(ClawtWebApp *app, const gchar *agent_id);
 
@@ -115,6 +127,15 @@ void clawt_web_register_agent(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_mailbox(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_computer(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_work(HtmxRouter *router, ClawtWebApp *app);
+
+/**
+ * clawt_web_register_skills:
+ * @router: the router
+ * @app: a #ClawtWebApp
+ *
+ * The skills page's actions, and the composer's `/` completions.
+ */
+void clawt_web_register_skills(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_events(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_alerts(HtmxRouter *router, ClawtWebApp *app);

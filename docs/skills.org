@@ -1,0 +1,334 @@
+#+title: Skills
+#+description: Reusable procedures, where each harness really looks for them, and why an imported one arrives switched off
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-29 Fri]
+#+updated: [2026-08-29 Fri]
+#+version: 0.2.0
+
+* Skills
+
+A skill is a procedure written once and handed to whichever agents need
+it.  It lives in exactly one place and is *linked* into their
+workspaces, so editing it edits it for all of them and reviewing it
+reviews it for all of them.
+
+#+begin_src bash
+clawtilla skill new release "Use this when cutting a release."
+clawtilla skill assign release team:engineering
+#+end_src
+
+** What one is
+
+A directory holding a ~SKILL.md~: markdown with YAML front matter.
+
+#+begin_src markdown
+---
+name: release
+description: Use this when cutting a release of a C project here.
+---
+
+First run `make clean all` and read the output, not the exit status.
+...
+#+end_src
+
+That layout is not clawtilla's invention.  It is the intersection every
+CLI libreclaw can drive already understands, which is what makes a skill
+written once readable by all of them without translation.
+
+Two rules on the front matter, and both are load-bearing:
+
+- ~name~ must match the directory.  The directory is what a harness
+  resolves; the front matter is what the model is shown.  A skill whose
+  two names differ answers to one and describes itself as the other, so
+  the mismatch is refused rather than resolved either way.
+- ~description~ is required, and capped at 1024 characters.  It is the
+  *only* part of a skill that is in context before the skill is opened
+  -- every harness lists name and description so the model can decide
+  whether to read the body.  An unbounded description is an unbounded
+  prompt on every turn, paid for by every agent the skill is assigned
+  to.
+
+Every other front-matter key is preserved verbatim and acted on by
+nobody.  ~allowed-tools~ is the reason that is the rule rather than an
+omission: it is a Claude Code extension that grok, antigravity and
+opencode ignore entirely, and it is documented not to restrict anything
+even where it is read.  Treating it as a permission boundary would be a
+boundary that holds on one harness in five, which is worse than none
+because somebody would rely on it.
+
+** The name is the traversal gate
+
+A skill's name is joined onto a directory on every path in this
+subsystem -- reading it, linking it into five workspaces, removing it.
+So the check is the function, not a line at whichever entry point
+somebody remembered:
+
+- lowercase ASCII letters, digits and single interior hyphens;
+- no leading or trailing hyphen;
+- at most 64 characters.
+
+Which leaves no way to name a skill ~..~, ~.~, ~a/b~ or ~.hidden~.
+
+A name arriving from a client, a URL or a config file is
+**percent-decoded before it is validated**, and what comes back is the
+decoded form.
+
+It is worth being exact about what that buys, because the obvious claim
+is not quite true: ~%~ is not in the allowlist either, so a single
+encoded traversal is refused whichever way round the two steps go.  The
+allowlist is doing that work.  What the order buys is two other things.
+The refusal names ~../~ rather than ~%2e%2e%2f~, which is what a person
+needs in order to see what was actually asked for.  And a caller cannot
+hand a validated-but-still-encoded string to something further down that
+unescapes it a second time -- which is the shape the traversal would
+actually take, since it needs a decode somebody else performs.
+
+** Where they are linked, and why it is asked rather than written down
+
+The five harnesses genuinely disagree about where a skill lives, and the
+disagreement is not the shape anyone expects.
+
+*The counterintuitive fact:* ~~/.claude/skills~ is read by *four* of the
+five, and ~~/.agents/skills~ -- the path the agentskills.io branding
+implies is universal -- by *three*, but not the same three.  Neither is
+a universal answer.  A constant in clawtilla would silently install
+nothing for whichever harnesses it left out, and nothing would say so:
+the harness would simply not have the skill.
+
+So the paths come from ai-glib's resource registry, per provider, per
+workspace.  What that produces today:
+
+| Provider | Skill link | Command file |
+|----------+------------+--------------|
+| ~claude-code~ | ~<ws>/.claude/skills/<name>~ | ~<ws>/.claude/commands/<name>.md~ |
+| ~claude-tmux~ | ~<ws>/.claude/skills/<name>~ | ~<ws>/.claude/commands/<name>.md~ |
+| ~opencode~ | ~<ws>/.opencode/skill/<name>~ | ~<ws>/.opencode/command/<name>.md~ |
+| ~grok-build~ | ~<ws>/.grok/skills/<name>~ | *none* |
+| ~cursor~ | ~<ws>/.cursor/skills/<name>~ | ~<ws>/.cursor/commands/<name>.md~ |
+| ~antigravity~ | ~<ws>/.agents/skills.json~ | *none* |
+
+Two rows there are worth reading twice.
+
+*grok has no commands directory at all.*  Its entire slash mechanism
+*is* skills, so a command file would be a file nothing ever reads.
+Antigravity has no commands concept either.
+
+*Antigravity is not a symlink.*  Symlink support there is undocumented
+and untestable, and the vendor shipped a first-class indirection
+instead: ~.agents/skills.json~ with ~entries[].path~.  Using the
+mechanism they built is more likely to keep working than relying on
+behaviour nobody has written down.
+
+An agent configured for a provider libreclaw cannot drive -- ~openai~,
+say -- is *not* an error there: libreclaw warns and runs Claude Code.
+So clawtilla asks libreclaw what the provider normalises to and links
+into Claude Code's directories, because provisioning for a CLI that is
+not the one being run would leave the harness finding nothing with
+nothing to say why.
+
+*** Ownership
+
+The same discipline ~.mcp.json~ has: clawtilla removes only what
+clawtilla put there.
+
+A link is recognised as ours by *where it points* -- into the library's
+own directory -- rather than by a record kept somewhere else.  A record
+and a filesystem drift, and the drift is silent: a link removed by hand
+would stay in the record for ever, and one added by hand would never be
+recognised.
+
+- A **real directory** at one of those paths is somebody's own work.  It
+  is left exactly as it is, and reported.
+- A **dangling link** is repaired or removed on every pass, never left.
+  A broken symlink enumerates as a symlink and is then skipped in
+  silence by every reader -- which is precisely how the GNOME extensions
+  bug presented: the directory looked perfect and nothing loaded.
+- A **command file** is ours when its front matter carries
+  ~clawtilla-skill~.  One somebody wrote by hand is left alone.
+
+Provisioning twice leaves the workspace byte-identical, links included.
+The daemon re-renders every agent on a reload, and a harness watching
+these directories would otherwise see a change on every one of them.
+
+** Assignment
+
+~skills:~ on an agent, on a team, and in ~defaults:~.  All three are
+resolved by *one* function, exactly as integrations are -- two resolvers
+would be two behaviours, and the one nobody tested would be the one that
+ran.
+
+The three lists are additive.  A skill named in two of them is one
+skill, counted once, attributed to the most specific place it was asked
+for.  Agent beats team beats fleet, and that only decides the reported
+origin.
+
+A name that matches no skill still produces a binding, so the fleet can
+say the selector reached nothing.  Silence there is the failure that
+rule exists to prevent: an agent quietly missing the procedure it was
+configured with looks exactly like one that has it and ignored it.
+
+Assignment is edited on the agent page in both clients -- it is an
+ordinary agent setting -- or from the command line:
+
+#+begin_src bash
+clawtilla skill assign release researcher
+clawtilla skill assign release team:engineering
+clawtilla skill assign release fleet
+#+end_src
+
+** Security
+
+The posture here is copied from a registry audit that found confirmed
+exfiltration payloads in between 2% and 13% of public skills -- almost
+always in a sibling script rather than in the markdown.
+
+*An imported skill lands disabled.*  Nothing in it reaches any prompt
+until a person has read it and said so.  A skill somebody *wrote* in the
+library is enabled, because writing it was the review.  That is the one
+difference between the two paths and it is what the whole posture turns
+on.
+
+*Markdown only.*  Sibling scripts are not copied.  They are recorded on
+the skill and *shown*, because a skill whose steps say "run
+scripts/setup.sh" fails confusingly rather than obviously when the
+script is silently absent.  Sibling markdown does come across: it is
+text and runs nothing.
+
+*Provenance is pinned.*  The source and a SHA-256 of the rendered
+~SKILL.md~ are recorded at import, and compared on every read -- so an
+edit after review is detectable rather than merely deniable.  It is a
+warning, not a refusal: the ordinary reason for it is that somebody
+edited the skill on purpose.
+
+*The scan warns and never rejects.*  Every pattern it looks for has an
+entirely legitimate use, and a checker that refused would be wrong often
+enough to be turned off.  Three checks earn their place, because each is
+something a person cannot see by reading the file:
+
+1. *A long base64-looking blob* -- unreadable by construction.  Threshold
+   is an unbroken run of 120 characters of the base64 alphabet: prose
+   has a space every few of them, so the space is what distinguishes a
+   paragraph from a payload.
+2. *A download piped into a shell.*  What matters is not that it runs
+   something -- most skills tell an agent to run things.  It is that
+   *what* runs is chosen by a server at the moment it runs, so the file
+   being reviewed does not contain the instruction being approved, and
+   re-reading it tomorrow will not reveal the change.
+3. *Invisible Unicode* -- zero-width characters and bidirectional
+   overrides.  The sharpest of the three, and the reason the scan exists
+   rather than being left to "read the file": a zero-width joiner
+   carries instructions the reviewer cannot see, and a right-to-left
+   override reverses the *display* of a line while leaving what the
+   model reads untouched.
+
+The scan runs over the whole rendered file, front matter included: a
+zero-width character in a ~description~ is in every agent's context on
+every turn without the skill ever being opened.
+
+Angle brackets are refused in front matter, and only there.  The body is
+markdown and belongs to whoever wrote it; the two front-matter values
+are rendered into a client's page, into an org file and into the agent's
+own files -- three escaping contexts that have to agree.
+
+** ~/name~ in clawtilla's own chat
+
+A skill assigned to an agent becomes a ~/name~ in that agent's composer,
+in both clients, beside the built-in commands.
+
+Expansion happens **in the daemon**.  Both clients then send
+byte-identical text for the same ~/name args~, and there is one
+implementation of the argument substitution rather than two that agree
+until somebody types a ~$~.
+
+Nothing on that path can start a process.  ai-glib's default policy is
+opt-in -- a resource declaring ~shell: true~ has its backticked commands
+executed at resolve time -- and clawtilla pins it *off*.  That closes
+two things at once: a subprocess started from an IPC handler on the
+daemon's own context, and a file dropped into a skills directory
+deciding to run code on the daemon's host, which is not a permission
+anybody granted by assigning a skill.
+
+What ~/name~ expands to differs by harness, correctly.  Where the
+provider has a commands directory, clawtilla's generated command file
+wins and it is a *pointer*: "use your ~release~ skill, reading its
+SKILL.md first", plus the arguments.  Pasting the skill's body into the
+message instead would bypass the harness's own skill mechanism and put
+the whole procedure in the message rather than where the CLI loads it
+from.  Where the provider has no commands directory -- grok --
+the skill itself is what a slash resolves to.
+
+** What an agent is told
+
+~TOOLS.org~ gains a fourth region clawtilla owns, listing the agent's
+skills and saying that the one-line description is a summary rather than
+the procedure.
+
+A skill arrives as a symlink in a directory the CLI happens to scan,
+which is the least discoverable route anything in this system takes.
+Nothing in a session says the fleet chose these deliberately.  An agent
+believes its own file, because the file is in the prompt and looking
+something up is a decision it has to make.
+
+Two tools go with it, offered only to an agent that actually has a
+skill: ~clawtilla_skill_list~ for the list as it is *right now* -- a
+skill can be assigned or enabled while an agent is running -- and
+~clawtilla_skill_read~ for one in full.  Reading is permission-checked
+structurally: the only names an agent can reach are the ones resolution
+produced for it, so it cannot read a skill it was not given.
+
+Writing a skill is deliberately not a tool.  That route is a person
+reviewing text before it reaches a prompt, and a tool that skipped the
+person would skip the only step the security posture has.
+
+** Not libreclaw's ~skills:~
+
+libreclaw has a ~skills.dir~ of its own, rendered into every agent's
+~config.yaml~ as ~<workspace>/skills~.  It is a different mechanism: a
+flat directory of ~.md~ or ~.org~ files, read by libreclaw itself.
+clawtilla's library is the agentskills layout, read by the agent's
+*CLI*, and the two do not interact.
+
+** Configuration
+
+See [[file:configuration-options.org][the option reference]] for
+~skills.enabled~, ~skills.dir~, ~defaults.skills~, ~teams.skills~ and
+~agents.skills~.
+
+~skills.dir~ is not created for you.  A read with a side effect is how a
+typo in the path leaves an empty directory for somebody to puzzle over a
+week later.
+
+** Command line
+
+#+begin_src bash
+clawtilla skill list
+clawtilla skill show release
+clawtilla skill new release "Use this when cutting a release."
+clawtilla skill import ~/src/some-repo/skills/release
+clawtilla skill edit release
+clawtilla skill enable release
+clawtilla skill disable release
+clawtilla skill assign release team:engineering
+clawtilla skill unassign release team:engineering
+clawtilla skill rm release
+clawtilla skill reload
+#+end_src
+
+** Troubleshooting
+
+*The agent does not seem to have it.*  Check three things in order: that
+the skill is ~enabled~ (an imported one is not), that the assignment
+reaches this agent (~clawtilla skill list~ reports a selector that
+matches nothing), and that the link exists where this agent's provider
+looks -- ~ls -l ~/.clawtilla/agents/<id>/.claude/skills~ for Claude
+Code, and the table above for the rest.
+
+*A skill vanished from every listing.*  It probably failed to parse.
+~clawtilla skill list~ prints a line per unreadable directory; a skill
+that will not parse is otherwise invisible, and assigning it reports
+that no skill of that name exists.
+
+*The link is there and the harness ignores it.*  Check that it is not
+dangling -- ~ls -l~ shows a broken link as a link, and every harness
+skips one in silence.  A rescan repairs it.

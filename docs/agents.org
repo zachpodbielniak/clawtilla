@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-26 Wed]
+#+updated: [2026-08-29 Fri]
 #+version: 0.1.1
 
 * Agents
@@ -977,12 +977,21 @@ which overstates what the code does.)
 
 ~TOOLS.org~ carries a marked region, ~# BEGIN clawtilla tools~,
 regenerated on every start from the same gate that answers ~tools/list~.
-It is one of *three* regions clawtilla owns in that one file.  The others
-are ~# BEGIN clawtilla integrations~ and ~# BEGIN clawtilla computer~ --
-the last rewritten on every start with the agent's mounts and the
-host-path-left-of-~=~ rule, because an agent that reads the wrong side
-of that ~=~ concludes a shared folder is missing.  Everything outside all
-three markers belongs to whoever edits the file.
+It is one of *four* regions clawtilla owns in that one file.  The others
+are ~# BEGIN clawtilla integrations~, ~# BEGIN clawtilla computer~ and
+~# BEGIN clawtilla skills~ -- the computer one rewritten on every start
+with the agent's mounts and the host-path-left-of-~=~ rule, because an
+agent that reads the wrong side of that ~=~ concludes a shared folder is
+missing.  Everything outside all four markers belongs to whoever edits
+the file.
+
+The skills region exists for the same reason the tool region does, and
+is if anything more necessary: a skill reaches an agent as a *symlink*
+in a directory its CLI happens to scan, which is the least discoverable
+route anything in this system takes.  The harness lists the name and the
+description somewhere in its own context and nothing says the fleet
+chose these deliberately, or that the one-line description is a summary
+rather than the procedure.  See [[file:skills.org][Skills]].
 
 It exists because the file used to list the tools in a table written when
 the workspace was scaffolded and never touched again.  A tool granted
@@ -1017,6 +1026,36 @@ An agent *with* a computer is unaffected and still gets the full
 section: the shell-quoting rule, the host-versus-guest paths, and the
 shares.
 
+
+** Skills
+
+An agent's ~skills:~ names procedures from the fleet's library, and is
+resolved together with its team's list and the fleet default by one
+function.  The three are additive: a skill named in two of them is one
+skill.
+
+Two things are worth knowing here rather than only in
+[[file:skills.org][Skills]]:
+
+- *Assigned is not the same as in effect.*  An imported skill arrives
+  disabled and stays that way until somebody has read it, so an
+  assignment can be perfectly correct and reach no prompt.  Both states
+  are reported, in different words, because phrasing them alike would
+  send somebody looking for a file that is right there.
+- *A name that matches nothing warns rather than failing.*  A fleet is
+  edited by hand and half-built states are ordinary -- but it is never
+  silent, because an agent quietly missing the procedure it was
+  configured with looks exactly like one that has it and ignored it.
+
+Two agent-facing tools go with it, and they are offered only to an agent
+that actually has a skill: ~clawtilla_skill_list~ and
+~clawtilla_skill_read~.  Reading is permission-checked *structurally* --
+the only names an agent can reach are the ones resolution produced for
+it, so there is no separate "may it?" test to keep in step.
+
+Writing a skill is deliberately not a tool.  That route is a person
+reviewing text before it reaches a prompt, and a tool that skipped the
+person would skip the only step the security posture has.
 
 ** Changing a setting under a running agent
 

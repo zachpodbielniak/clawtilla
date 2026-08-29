@@ -27,7 +27,8 @@ static const struct {
     { "computer", "Computer" },
     { "routines", "Routines" },
     { "tasks",    "Tasks" },
-    { "flow",     "Flow" }
+    { "flow",     "Flow" },
+    { "skills",   "Skills" }
 };
 
 const gchar *
@@ -994,6 +995,42 @@ open_document(HtmxBuilder *builder, const gchar *title,
         "document.addEventListener('scroll',function(e){"
         "var b=box();if(!b||e.target!==b||!mark){return;}"
         "if(at_end(b)){to_end();}},true);"
+        /*
+         * The `/` completions.
+         *
+         * Delegated on `document` for the same reason everything else
+         * here is: htmx replaces the composer on every fleet event, so a
+         * listener bound to the textarea survives exactly until the next
+         * arrival -- which is the moment it stops working, and the first
+         * swap is also the first thing anybody tests.
+         *
+         * The list is asked for once per composer, on the first `/`.
+         * Clicking an entry only fills the box; sending is still the
+         * ordinary submit, and the expansion happens in the daemon so
+         * that this client and the GTK one send identical text.
+         */
+        "function slash(){return document.getElementById('slash-popover');}"
+        "document.addEventListener('input',function(e){"
+        "var a=e.target;if(!a||a.id!=='composer-body'){return;}"
+        "var p=slash();if(!p){return;}"
+        "var v=a.value;"
+        "var on=v.charAt(0)==='/'&&v.indexOf(' ')<0&&v.indexOf('\\n')<0;"
+        "if(!on){p.classList.remove('on');return;}"
+        "p.classList.add('on');"
+        "if(!p.dataset.loaded){p.dataset.loaded='1';"
+        "p.dispatchEvent(new CustomEvent('clawtilla:slash'));}"
+        "var q=v.slice(1).toLowerCase();"
+        "var items=p.querySelectorAll('.slash-item');"
+        "for(var i=0;i<items.length;i++){"
+        "var n=(items[i].dataset.command||'').slice(1).toLowerCase();"
+        "items[i].style.display=n.indexOf(q)===0?'':'none';}});"
+        "document.addEventListener('click',function(e){"
+        "var it=e.target.closest?e.target.closest('.slash-item'):null;"
+        "if(!it){return;}"
+        "e.preventDefault();"
+        "var a=document.getElementById('composer-body');"
+        "if(a){a.value=(it.dataset.command||'')+' ';a.focus();}"
+        "var p=slash();if(p){p.classList.remove('on');}});"
         "})();");
     htmx_builder_end(builder);
 
