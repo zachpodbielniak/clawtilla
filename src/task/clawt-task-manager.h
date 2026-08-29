@@ -81,6 +81,29 @@ GPtrArray *clawt_task_manager_list(ClawtTaskManager *self,
                                    gboolean          include_finished);
 
 /**
+ * clawt_task_manager_list_involving:
+ * @self: a #ClawtTaskManager
+ * @agent_id: the agent whose tasks are wanted
+ * @include_finished: whether to include tasks that have ended
+ *
+ * Every task @agent_id delegated **or** was assigned, newest first.
+ *
+ * Both roles, because "my tasks" means both to the agent asking and the
+ * two are answered from the same place.  clawt_task_manager_list() takes
+ * an assignee alone, which is the operator's question -- an agent that
+ * handed work out is not the assignee of any of it, so filtering that
+ * way returns nothing to the caller who most needs an answer.
+ *
+ * The caller tells the two apart by comparing the origin itself; that is
+ * presentation rather than filtering.
+ *
+ * Returns: (transfer container) (element-type ClawtTask): matching tasks
+ */
+GPtrArray *clawt_task_manager_list_involving(ClawtTaskManager *self,
+                                             const gchar      *agent_id,
+                                             gboolean          include_finished);
+
+/**
  * clawt_task_manager_complete:
  * @self: a #ClawtTaskManager
  * @task_id: a task id

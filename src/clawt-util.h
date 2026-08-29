@@ -307,4 +307,32 @@ gboolean clawt_is_valid_id(const gchar *id);
  */
 const gchar *clawt_color_ink(const gchar *hex);
 
+/**
+ * clawt_time_ago_label:
+ * @timestamp: when it happened, in microseconds since the epoch
+ * @now: the current time, in the same units
+ *
+ * How long ago @timestamp was, as `just now`, `4m ago`, `2h ago` or
+ * `3d ago`.
+ *
+ * For a list whose subject *is* recency -- alerts, mailbox items,
+ * delegated tasks -- where a wall-clock time is a number the reader has
+ * to subtract.  A chat transcript is the other case and uses
+ * clawt_chat_time_label() instead: nothing re-renders a message that has
+ * not changed, so a relative stamp there goes on saying `2m ago` for an
+ * hour.
+ *
+ * @now is a parameter rather than a call to g_get_real_time() so this is
+ * a pure function: both clients and the orchestration tools had their
+ * own copy of this arithmetic, and a rule three surfaces apply is one
+ * that has to be testable without any of them.
+ *
+ * A @timestamp in the future reads as `just now` rather than as a
+ * negative age -- clocks move backwards, and a list is not the place to
+ * report it.
+ *
+ * Returns: (transfer full): the label
+ */
+gchar *clawt_time_ago_label(gint64 timestamp, gint64 now);
+
 G_END_DECLS

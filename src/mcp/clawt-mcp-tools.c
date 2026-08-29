@@ -115,6 +115,13 @@ static const ClawtParamInfo task_result_params[] = {
     { "result",  "string", "What it produced.", TRUE }
 };
 
+static const ClawtParamInfo task_list_params[] = {
+    { "agent_id", "string", "Only tasks involving this agent. Defaults to "
+                            "all of yours.", FALSE },
+    { "include_finished", "boolean", "Include tasks that have ended. "
+                                     "Defaults to false.", FALSE }
+};
+
 static const ClawtParamInfo mailbox_list_params[] = {
     { "limit", "integer", "How many to return. Defaults to 20.", FALSE }
 };
@@ -325,6 +332,15 @@ static const ToolDefinition tools[] = {
          "someone answered you; your mailbox will be empty because "
          "delivery empties it.",
          NEEDS_NOTHING, room_history_params),
+
+    TOOL("clawtilla_task_list",
+         "Every task you delegated and every task delegated to you, with "
+         "what each one is doing right now. Use this rather than "
+         "clawtilla_task_status per task -- it is one call, and it does "
+         "not need you to have kept the ids. This is how you answer "
+         "\"what is everyone working on\": clawtilla_list_agents tells you "
+         "who is running, which is not the same as what they are running.",
+         NEEDS_NOTHING, task_list_params),
 
     TOOL("clawtilla_task_status",
          "Check how a delegated task is going.",
@@ -1847,6 +1863,166 @@ tool_delegate(ClawtMcpTools *self,
         "clawtilla_task_status.", assignee, clawt_task_get_id(task));
 }
 
+/*
+ * A prompt is as long as whoever wrote it made it, and this is a
+ * listing.  One line each, so twenty tasks stay readable; the whole
+ * thing is a clawtilla_task_status away.
+ */
+#define TASK_LIST_PROMPT_CHARS (72)
+
+static gchar *
+task_prompt_summary(ClawtTask *task)
+{
+    const gchar *prompt = clawt_task_get_prompt(task);
+    const gchar *newline;
+    g_autofree gchar *line = NULL;
+
+    if (prompt == NULL)
+        return g_strdup("(no prompt recorded)");
+
+    newline = strchr(prompt, '\n');
+    line = (newline != NULL) ? g_strndup(prompt, (gsize)(newline - prompt))
+                             : g_strdup(prompt);
+    g_strstrip(line);
+
+    if (g_utf8_strlen(line, -1) <= TASK_LIST_PROMPT_CHARS)
+        return g_steal_pointer(&line);
+
+    {
+        const gchar *end = g_utf8_offset_to_pointer(line,
+                                                    TASK_LIST_PROMPT_CHARS);
+        g_autofree gchar *cut = g_strndup(line, (gsize)(end - line));
+
+        g_strchomp(cut);
+        return g_strdup_printf("%s...", cut);
+    }
+}
+
+static void
+append_task_line(GString *out, ClawtTask *task, const gchar *counterpart,
+                 gint64 now)
+{
+    g_autofree gchar *summary = task_prompt_summary(task);
+    /*
+     * A task stamps itself in *seconds* (clawt-task.c divides by
+     * G_USEC_PER_SEC) while every other timestamp in the tree -- events,
+     * alerts, messages -- is microseconds, which is what
+     * clawt_time_ago_label() takes.  Handing it the raw value reads as
+     * `20694d ago`, i.e. the epoch, on every row.
+     */
+    gint64 stamp = clawt_task_is_finished(task)
+                   ? clawt_task_get_finished_at(task)
+                   : clawt_task_get_created_at(task);
+    g_autofree gchar *age = clawt_time_ago_label(stamp * G_USEC_PER_SEC, now);
+
+    g_string_append_printf(out, "  %s  %s  %s  %s  %s\n",
+                           clawt_task_get_id(task),
+                           counterpart,
+                           clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE,
+                                              clawt_task_get_state(task)),
+                           age,
+                           summary);
+}
+
+static gchar *
+tool_task_list(ClawtMcpTools *self, const gchar *agent_id,
+               JsonObject *arguments)
+{
+    const gchar *peer = argument_string(arguments, "agent_id");
+    gboolean include_finished = argument_boolean(arguments,
+                                                 "include_finished", FALSE);
+    gint64 now = g_get_real_time();
+    g_autoptr(GPtrArray) tasks = NULL;
+    g_autoptr(GString) delegated = g_string_new(NULL);
+    g_autoptr(GString) assigned = g_string_new(NULL);
+    guint delegated_n = 0;
+    guint delegated_pending = 0;
+    guint assigned_n = 0;
+    guint i;
+
+    if (self->tasks == NULL)
+        return g_strdup("This fleet is not tracking tasks.");
+
+    tasks = clawt_task_manager_list_involving(self->tasks, agent_id,
+                                              include_finished);
+
+    for (i = 0; i < tasks->len; i++) {
+        ClawtTask *task = g_ptr_array_index(tasks, i);
+        gboolean mine = g_strcmp0(clawt_task_get_origin(task), agent_id) == 0;
+        const gchar *other = mine ? clawt_task_get_assignee(task)
+                                  : clawt_task_get_origin(task);
+
+        if (peer != NULL && g_strcmp0(other, peer) != 0)
+            continue;
+
+        if (mine) {
+            append_task_line(delegated, task, other, now);
+            delegated_n++;
+
+            if (clawt_task_get_state(task) == CLAWT_TASK_PENDING)
+                delegated_pending++;
+        } else {
+            g_autofree gchar *from = g_strdup_printf("from %s", other);
+
+            append_task_line(assigned, task, from, now);
+            assigned_n++;
+        }
+    }
+
+    if (delegated_n == 0 && assigned_n == 0) {
+        /*
+         * An empty list here is not "nothing was delegated" -- tasks are
+         * held in memory, so a daemon restart clears them, and saying so
+         * is the difference between reporting a fact and reporting a
+         * gap.  The same shape as clawtilla_mailbox_list being empty for
+         * a running agent.
+         */
+        return g_strdup_printf(
+            "No %stasks%s%s. Tasks are held in memory, so any from before "
+            "the daemon last restarted are gone -- what happened is in the "
+            "event log, not here.",
+            include_finished ? "" : "live ",
+            peer != NULL ? " involving " : "",
+            peer != NULL ? peer : "");
+    }
+
+    {
+        g_autoptr(GString) out = g_string_new(NULL);
+
+        if (delegated_n > 0)
+            g_string_append_printf(out, "Delegated by you (%u):\n%s",
+                                   delegated_n, delegated->str);
+
+        if (assigned_n > 0)
+            g_string_append_printf(out, "%sAssigned to you (%u):\n%s",
+                                   delegated_n > 0 ? "\n" : "",
+                                   assigned_n, assigned->str);
+
+        /*
+         * The state column is about to mislead, so it is explained
+         * where it is read rather than in a doc the agent has not got.
+         * clawtilla_delegate does not mark a task running -- only the
+         * operator and routine paths do -- so work an agent handed out
+         * reads `pending` for its whole life and then goes straight to
+         * `completed`.  A chief reading that as "never picked up" and
+         * delegating again makes two of everything, which is the one
+         * mistake this tool exists to prevent.
+         */
+        if (delegated_pending > 0)
+            g_string_append(out,
+                "\n`pending` is normal for work you delegated: it becomes "
+                "`completed` without ever reading `running`. It does not "
+                "mean nobody picked it up, so do not delegate it again -- "
+                "the age is the thing to watch.\n");
+
+        if (!include_finished)
+            g_string_append(out, "\nFinished tasks are omitted; pass "
+                                 "include_finished to see them.");
+
+        return g_strdup(out->str);
+    }
+}
+
 static gchar *
 tool_task_status(ClawtMcpTools *self, JsonObject *arguments,
                  gboolean *is_error)
@@ -3186,6 +3362,8 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
         text = tool_list_teams(self, agent_id);
     else if (g_strcmp0(tool_name, "clawtilla_delegate") == 0)
         text = tool_delegate(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_task_list") == 0)
+        text = tool_task_list(self, agent_id, arguments);
     else if (g_strcmp0(tool_name, "clawtilla_task_status") == 0)
         text = tool_task_status(self, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_task_result") == 0)

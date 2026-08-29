@@ -8816,23 +8816,10 @@ update_alert_badge(ClawtWindow *self)
     }
 }
 
-/* "4 minutes ago", roughly, because a wall-clock time in a list of
- * things that just happened is a number you have to subtract. */
 static gchar *
 alert_when(gint64 ts)
 {
-    gint64 seconds = (g_get_real_time() - ts) / G_USEC_PER_SEC;
-
-    if (seconds < 60)
-        return g_strdup("just now");
-
-    if (seconds < 3600)
-        return g_strdup_printf("%" G_GINT64_FORMAT "m ago", seconds / 60);
-
-    if (seconds < 86400)
-        return g_strdup_printf("%" G_GINT64_FORMAT "h ago", seconds / 3600);
-
-    return g_strdup_printf("%" G_GINT64_FORMAT "d ago", seconds / 86400);
+    return clawt_time_ago_label(ts, g_get_real_time());
 }
 
 static void

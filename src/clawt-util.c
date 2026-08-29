@@ -746,3 +746,20 @@ clawt_color_ink(const gchar *hex)
 
     return (luminance > 0.55) ? "#000000" : "#ffffff";
 }
+
+gchar *
+clawt_time_ago_label(gint64 timestamp, gint64 now)
+{
+    gint64 seconds = (now - timestamp) / G_USEC_PER_SEC;
+
+    if (seconds < 60)
+        return g_strdup("just now");
+
+    if (seconds < 3600)
+        return g_strdup_printf("%" G_GINT64_FORMAT "m ago", seconds / 60);
+
+    if (seconds < 86400)
+        return g_strdup_printf("%" G_GINT64_FORMAT "h ago", seconds / 3600);
+
+    return g_strdup_printf("%" G_GINT64_FORMAT "d ago", seconds / 86400);
+}

@@ -713,6 +713,16 @@ versions apart.
 - An agent's mailbox is empty while it is running -- delivery acknowledges at
   the socket. Anywhere an empty result could read as an answer, say why it is
   empty.
+- **A task stamps itself in seconds**; every other timestamp in the tree --
+  events, alerts, messages -- is microseconds, which is what
+  `clawt_time_ago_label()` takes. Handing it `clawt_task_get_created_at()` raw
+  renders `20694d ago` (the epoch) on every row, and a test asserting only on
+  the *shape* of a listing passes throughout. Assert on the value.
+- `clawtilla_delegate` does not mark a task running -- only the operator and
+  routine paths do -- so agent-delegated work reads `pending` for its whole
+  life and then goes straight to `completed`. A chief reading that as "never
+  picked up" re-delegates and makes two of everything, so
+  `clawtilla_task_list` says so in its own output rather than only in the docs.
 - A thread carries more than the answer: progress notes, guardian refusals,
   restart notices. Act only on a message arriving after the typing indicator
   drops. A task that ends late is a delay; one that ends early is a lie.

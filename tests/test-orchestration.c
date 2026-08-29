@@ -697,6 +697,45 @@ test_task_listing_filters(void)
     g_assert_cmpuint(theirs->len, ==, 2);
 }
 
+/*
+ * The listing an agent asks for is not the one the operator asks for.
+ * A chief that delegated everything is the assignee of nothing, so the
+ * assignee filter -- the only one there was -- answered it with an
+ * empty list.
+ */
+static void
+test_task_listing_by_involvement(void)
+{
+    g_autoptr(ClawtTaskManager) manager = clawt_task_manager_new();
+    g_autoptr(GPtrArray) chiefs = NULL;
+    g_autoptr(GPtrArray) theirs = NULL;
+    g_autoptr(GPtrArray) live = NULL;
+    g_autoptr(GPtrArray) stranger = NULL;
+    ClawtTask *done;
+
+    clawt_task_manager_create(manager, "chief", "a", "one", NULL, NULL);
+    clawt_task_manager_create(manager, "chief", "b", "two", NULL, NULL);
+    /* Work handed *to* the chief, so it is in the listing for a second reason. */
+    clawt_task_manager_create(manager, "operator", "chief", "three", NULL, NULL);
+    done = clawt_task_manager_create(manager, "chief", "a", "four", NULL, NULL);
+    clawt_task_manager_complete(manager, clawt_task_get_id(done), "ok");
+
+    /* Three delegated plus one received; the assignee filter sees one. */
+    chiefs = clawt_task_manager_list_involving(manager, "chief", TRUE);
+    g_assert_cmpuint(chiefs->len, ==, 4);
+
+    theirs = clawt_task_manager_list(manager, "chief", TRUE);
+    g_assert_cmpuint(theirs->len, ==, 1);
+
+    /* A task appears once, however many of its roles the agent fills. */
+    live = clawt_task_manager_list_involving(manager, "chief", FALSE);
+    g_assert_cmpuint(live->len, ==, 3);
+
+    /* An agent with no part in any of them gets nothing, not everything. */
+    stranger = clawt_task_manager_list_involving(manager, "nobody", TRUE);
+    g_assert_cmpuint(stranger->len, ==, 0);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -733,6 +772,8 @@ main(int argc, char *argv[])
     g_test_add_func("/task/depth-bounded", test_delegation_depth_is_bounded);
     g_test_add_func("/task/orphans", test_stopped_agent_orphans_its_tasks);
     g_test_add_func("/task/listing", test_task_listing_filters);
+    g_test_add_func("/task/listing-by-involvement",
+                    test_task_listing_by_involvement);
 
     return g_test_run();
 }

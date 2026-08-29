@@ -105,15 +105,19 @@ clawt_task_manager_get(ClawtTaskManager *self, const gchar *task_id)
     return g_hash_table_lookup(self->tasks, task_id);
 }
 
-GPtrArray *
-clawt_task_manager_list(ClawtTaskManager *self,
-                        const gchar      *assignee,
-                        gboolean          include_finished)
+/*
+ * One loop behind both public listings.  They differ only in which
+ * field an agent id is compared against, and two copies of "newest
+ * first, skip the finished ones" would differ exactly once.
+ */
+static GPtrArray *
+list_filtered(ClawtTaskManager *self,
+              const gchar      *assignee,
+              const gchar      *involving,
+              gboolean          include_finished)
 {
     GPtrArray *out;
     guint i;
-
-    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), NULL);
 
     out = g_ptr_array_new();
 
@@ -129,6 +133,11 @@ clawt_task_manager_list(ClawtTaskManager *self,
             g_strcmp0(clawt_task_get_assignee(task), assignee) != 0)
             continue;
 
+        if (involving != NULL &&
+            g_strcmp0(clawt_task_get_assignee(task), involving) != 0 &&
+            g_strcmp0(clawt_task_get_origin(task), involving) != 0)
+            continue;
+
         if (!include_finished && clawt_task_is_finished(task))
             continue;
 
@@ -136,6 +145,27 @@ clawt_task_manager_list(ClawtTaskManager *self,
     }
 
     return out;
+}
+
+GPtrArray *
+clawt_task_manager_list(ClawtTaskManager *self,
+                        const gchar      *assignee,
+                        gboolean          include_finished)
+{
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), NULL);
+
+    return list_filtered(self, assignee, NULL, include_finished);
+}
+
+GPtrArray *
+clawt_task_manager_list_involving(ClawtTaskManager *self,
+                                  const gchar      *agent_id,
+                                  gboolean          include_finished)
+{
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), NULL);
+    g_return_val_if_fail(agent_id != NULL, NULL);
+
+    return list_filtered(self, NULL, agent_id, include_finished);
 }
 
 gboolean

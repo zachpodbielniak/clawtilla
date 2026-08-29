@@ -651,6 +651,145 @@ test_undeliverable_delegation_fails_its_task(void)
 
 /* ── Tasks ───────────────────────────────────────────────────────── */
 
+/*
+ * The gap this tool closes: a chief could ask about a task it had kept
+ * the id of, and had no way to ask what it had handed out.  It is the
+ * assignee of none of that work, so every listing that existed answered
+ * it with nothing.
+ */
+static void
+test_task_list_shows_both_directions(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) out = NULL;
+    g_autoptr(JsonNode) response = NULL;
+    gboolean is_error = FALSE;
+    const gchar *text;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: researcher\n  - id: writer\n");
+
+    out = call_tool(&fixture, "chief", "clawtilla_delegate",
+                    "{\"agent_id\":\"researcher\",\"task\":\"read the logs\"}");
+    response_text(out, &is_error);
+    g_assert_false(is_error);
+
+    /* Work handed to the chief by somebody else. */
+    clawt_task_manager_create(fixture.tasks, "writer", "chief",
+                              "approve the draft", NULL, NULL);
+
+    response = call_tool(&fixture, "chief", "clawtilla_task_list", "{}");
+    text = response_text(response, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_nonnull(strstr(text, "Delegated by you"));
+    g_assert_nonnull(strstr(text, "researcher"));
+    g_assert_nonnull(strstr(text, "read the logs"));
+    g_assert_nonnull(strstr(text, "Assigned to you"));
+    g_assert_nonnull(strstr(text, "from writer"));
+    g_assert_nonnull(strstr(text, "approve the draft"));
+
+    /*
+     * The age, not just the shape.  A task stamps itself in seconds and
+     * the label takes microseconds, so the first version of this printed
+     * "20694d ago" -- the epoch -- on every row, and every assertion
+     * above still passed.  Asserting on structure alone cannot see a
+     * wrong value.
+     */
+    g_assert_nonnull(strstr(text, "just now"));
+    g_assert_null(strstr(text, "d ago"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * `pending` is what an agent-delegated task reads for its whole life,
+ * because clawtilla_delegate does not mark it running.  A chief that
+ * reads that as "never picked up" delegates again and makes two of
+ * everything, so the tool says so where the column is read.
+ */
+static void
+test_task_list_explains_pending(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) out = NULL;
+    g_autoptr(JsonNode) response = NULL;
+    gboolean is_error = FALSE;
+    const gchar *text;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: researcher\n");
+
+    out = call_tool(&fixture, "chief", "clawtilla_delegate",
+                    "{\"agent_id\":\"researcher\",\"task\":\"a thing\"}");
+    response_text(out, &is_error);
+
+    response = call_tool(&fixture, "chief", "clawtilla_task_list", "{}");
+    text = response_text(response, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_nonnull(strstr(text, "do not delegate it again"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * An empty list is not "nothing was delegated".  Tasks are held in
+ * memory, so a restart clears them -- the same shape as an empty
+ * mailbox for a running agent, and it has to say which it is.
+ */
+static void
+test_an_empty_task_list_says_why(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    gboolean is_error = FALSE;
+    const gchar *text;
+
+    fixture_setup(&fixture,
+                  "agents:\n  - id: chief\n    chief_of_staff: true\n");
+
+    response = call_tool(&fixture, "chief", "clawtilla_task_list", "{}");
+    text = response_text(response, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_nonnull(strstr(text, "held in memory"));
+    g_assert_nonnull(strstr(text, "event log"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * One agent's tasks are not another's.  The listing is scoped to the
+ * caller, so a tool with no permission gate still cannot be used to read
+ * what the rest of the fleet is doing.
+ */
+static void
+test_task_list_is_scoped_to_the_caller(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    gboolean is_error = FALSE;
+    const gchar *text;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: researcher\n  - id: writer\n");
+
+    clawt_task_manager_create(fixture.tasks, "researcher", "writer",
+                              "nothing to do with the chief", NULL, NULL);
+
+    response = call_tool(&fixture, "chief", "clawtilla_task_list", "{}");
+    text = response_text(response, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_null(strstr(text, "nothing to do with the chief"));
+
+    fixture_teardown(&fixture);
+}
+
 static void
 test_task_status_and_result(void)
 {
@@ -1768,6 +1907,14 @@ main(int argc, char *argv[])
                     test_undeliverable_delegation_fails_its_task);
 
     g_test_add_func("/mcp/task-status-result", test_task_status_and_result);
+    g_test_add_func("/mcp/task-list/both-directions",
+                    test_task_list_shows_both_directions);
+    g_test_add_func("/mcp/task-list/explains-pending",
+                    test_task_list_explains_pending);
+    g_test_add_func("/mcp/task-list/empty-says-why",
+                    test_an_empty_task_list_says_why);
+    g_test_add_func("/mcp/task-list/scoped-to-caller",
+                    test_task_list_is_scoped_to_the_caller);
     g_test_add_func("/mcp/assignee-completes",
                     test_assignee_can_complete_its_task);
 

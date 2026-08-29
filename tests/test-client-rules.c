@@ -616,6 +616,54 @@ test_a_conversation_names_its_other_party(void)
 }
 
 
+/*
+ * The "4m ago" rule, which both clients and the orchestration tools
+ * draw.  It was two byte-identical copies in two clients and about to
+ * become a third; the comments above them had already drifted, one
+ * claiming "4 minutes ago" for code that writes "4m ago".
+ *
+ * `now` is a parameter, which is the whole reason these boundaries can
+ * be asserted at all -- a helper calling g_get_real_time() itself can
+ * only be tested at whatever time it happens to be.
+ */
+static void
+test_relative_ages_read_the_way_they_are_written(void)
+{
+    gint64 now = 1000000000LL * G_USEC_PER_SEC;
+    struct { gint64 seconds_ago; const gchar *want; } cases[] = {
+        {     0, "just now" },
+        {    59, "just now" },   /* the last second before minutes */
+        {    60, "1m ago" },
+        {  3599, "59m ago" },    /* and the last before hours */
+        {  3600, "1h ago" },
+        { 86399, "23h ago" },
+        { 86400, "1d ago" },
+        { 172800, "2d ago" }
+    };
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree gchar *got = clawt_time_ago_label(
+            now - cases[i].seconds_ago * G_USEC_PER_SEC, now);
+
+        g_assert_cmpstr(got, ==, cases[i].want);
+    }
+}
+
+/*
+ * A clock that went backwards must not produce "-3m ago".  A task list
+ * is not the place to report that the machine's time moved.
+ */
+static void
+test_a_future_timestamp_reads_as_just_now(void)
+{
+    gint64 now = 1000000000LL * G_USEC_PER_SEC;
+    g_autofree gchar *got = clawt_time_ago_label(now + 3600LL * G_USEC_PER_SEC,
+                                                 now);
+
+    g_assert_cmpstr(got, ==, "just now");
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -687,6 +735,11 @@ main(int argc, char *argv[])
                     test_a_conversation_names_its_other_party);
     g_test_add_func("/client-rules/alerts-push/impossible-fraction",
                     test_an_impossible_fraction_is_refused);
+
+    g_test_add_func("/client-rules/age/boundaries",
+                    test_relative_ages_read_the_way_they_are_written);
+    g_test_add_func("/client-rules/age/backwards-clock",
+                    test_a_future_timestamp_reads_as_just_now);
 
     return g_test_run();
 }
