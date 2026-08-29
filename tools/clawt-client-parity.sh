@@ -185,6 +185,8 @@ declare -A AFFORDANCES=(
     ["resync after a gap"]="\"resync\"|\"resync\""
     ["stop the running turn"]="on_stop_turn|stop_turn_button"
     ["decision options stack"]="decision_option_button|decision-options"
+    ["composer drafts"]="clawt_gtk_persist_draft|draft_key_for"
+    ["steer a busy agent"]="\"steered\"|\"steered\""
 )
 
 usage () {

@@ -21,6 +21,32 @@
  * Applied before a message is enqueued rather than on delivery, so a
  * runaway fan-out is stopped at the source rather than after the queue has
  * already grown.
+ *
+ * Four limits that **refuse a message** are not four limits that end a
+ * loop.  A stuck pair kept producing turns, each of which was refused,
+ * and each of those turns had already cost a model call before the
+ * refusal arrived -- so the guard was billed for the runaway it was
+ * built to prevent.  The cycle detector therefore does more than refuse:
+ * it **stalls the room**, and everything an agent sends into a stalled
+ * room is refused without a turn until a person says something there.
+ *
+ * Which limit stalls is a decision, not an oversight:
+ *
+ *   cycle   stalls.  The agent has demonstrated that it will produce the
+ *           same text again, so there is nothing to wait for.
+ *   hops    does not.  A conversation reaches the ceiling on its own and
+ *           the refusal tells the agent to answer directly, which is an
+ *           instruction it can follow.
+ *   rate    does not.  It clears by itself in under a minute.
+ *   budget  does not.  It is about money rather than about progress, and
+ *           raising the budget is the operator's call.
+ *
+ * Ending an exchange needs to know which senders are agents, because
+ * clawtilla ends conversations between agents and never a person's.  The
+ * guard does not know that on its own, so it is told:
+ * clawt_loop_guard_set_peer_func().  With no peer function set nothing
+ * is a peer, nothing ever stalls, and the guard behaves exactly as it
+ * did before stalls existed.
  */
 
 #pragma once
@@ -151,6 +177,92 @@ gboolean clawt_loop_guard_check_in_room(ClawtLoopGuard  *self,
                                         ClawtMessage    *message,
                                         guint            room_max_hops,
                                         GError         **error);
+
+/**
+ * ClawtLoopGuardPeerFunc:
+ * @sender_id: (nullable): who sent a message
+ * @user_data: what was passed to clawt_loop_guard_set_peer_func()
+ *
+ * Whether @sender_id is an agent in the fleet rather than a person.
+ *
+ * Returns: %TRUE for a fleet agent
+ */
+typedef gboolean (*ClawtLoopGuardPeerFunc)(const gchar *sender_id,
+                                           gpointer     user_data);
+
+/**
+ * clawt_loop_guard_set_peer_func:
+ * @self: a #ClawtLoopGuard
+ * @func: (nullable) (scope notified) (closure user_data): the predicate, or
+ *   %NULL to treat nobody as a peer
+ * @user_data: passed to @func
+ * @notify: (nullable): frees @user_data
+ *
+ * Teaches the guard which senders are agents, which is what lets it end
+ * an exchange rather than only refuse one more message.
+ *
+ * Set on the guard rather than passed at each check, so that the rule
+ * lives in the function that applies it. A check that took the answer as
+ * an argument would be a rule about whichever caller remembered to pass
+ * it, which this codebase has paid for five times.
+ */
+void clawt_loop_guard_set_peer_func(ClawtLoopGuard         *self,
+                                    ClawtLoopGuardPeerFunc  func,
+                                    gpointer                user_data,
+                                    GDestroyNotify          notify);
+
+/**
+ * clawt_loop_guard_stall_room:
+ * @self: a #ClawtLoopGuard
+ * @room_id: the room whose exchange is over
+ * @reason: why
+ * @detail: (nullable): the repeated text, or whatever names the loop
+ *
+ * Ends an exchange from outside the guard -- the turn watchdog and the
+ * room budget both arrive here. Stalling a room that is already stalled
+ * keeps the first reason, because the first one is the one that explains
+ * how the fleet got here.
+ *
+ * Returns: %TRUE if this call is what stalled it
+ */
+gboolean clawt_loop_guard_stall_room(ClawtLoopGuard   *self,
+                                     const gchar      *room_id,
+                                     ClawtStallReason  reason,
+                                     const gchar      *detail);
+
+/**
+ * clawt_loop_guard_get_stall_reason:
+ * @self: a #ClawtLoopGuard
+ * @room_id: (nullable): a room
+ *
+ * Returns: why the exchange in @room_id was ended, or %CLAWT_STALL_NONE
+ */
+ClawtStallReason clawt_loop_guard_get_stall_reason(ClawtLoopGuard *self,
+                                                   const gchar    *room_id);
+
+/**
+ * clawt_loop_guard_get_stall_detail:
+ * @self: a #ClawtLoopGuard
+ * @room_id: (nullable): a room
+ *
+ * Returns: (transfer none) (nullable): what was repeating, or %NULL
+ */
+const gchar *clawt_loop_guard_get_stall_detail(ClawtLoopGuard *self,
+                                               const gchar    *room_id);
+
+/**
+ * clawt_loop_guard_clear_stall:
+ * @self: a #ClawtLoopGuard
+ * @room_id: a room
+ *
+ * Lets the agents in @room_id talk again. A person sending into the room
+ * does this on their own; this is for the client verbs that say so
+ * explicitly.
+ *
+ * Returns: %TRUE if the room had been stalled
+ */
+gboolean clawt_loop_guard_clear_stall(ClawtLoopGuard *self,
+                                      const gchar    *room_id);
 
 /**
  * clawt_loop_guard_record_spend:

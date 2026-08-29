@@ -1170,6 +1170,17 @@ on_link_typing(ClawtLinkServer *server,
     if (agent != NULL && typing)
         clawt_agent_begin_turn(agent);
 
+    /*
+     * And the budgets that end a turn nothing else would.  Both edges of
+     * the same frame: this is the only place the daemon is told a turn
+     * began or ended, so it is the only place either can be started or
+     * stopped from.
+     */
+    if (typing)
+        clawt_daemon_turn_begin(self, agent_id, room_id);
+    else
+        clawt_daemon_turn_settle(self, agent_id);
+
     event = clawt_event_new("agent.typing", agent_id);
     clawt_event_set_detail(event, "typing", typing ? "true" : "false");
 
@@ -1243,6 +1254,14 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
 
     if (body == NULL)
         return;
+
+    /*
+     * A sign of life, so the activity watchdog does not stop a turn that
+     * is talking.  An agent's own bash and read never reach the daemon,
+     * so a message and a clawtilla tool call are the whole of what
+     * "activity" can honestly mean from out here.
+     */
+    clawt_daemon_turn_activity(self, agent_id);
 
     /*
      * An agent that replies without naming a room is answering whoever
@@ -1802,6 +1821,14 @@ file_decision_for_tools(const gchar    *agent_id,
      */
     if (self->bus != NULL)
         clawt_event_bus_emit(self->bus, "decision.asked", agent_id);
+
+    /*
+     * And both turn budgets hold while the question is open.  Waiting on
+     * a person is not a stall, and stopping a turn under an unanswered
+     * question manufactures a stranded decision the daemon then has to
+     * repair.
+     */
+    clawt_daemon_turn_hold(self, agent_id);
 
     return g_strdup_printf(
         "Filed as %s. Do not wait for it: carry on with what you said "
@@ -2728,6 +2755,14 @@ clawt_daemon_interrupt_agent(ClawtDaemon  *self,
      */
     clawt_agent_set_activity(agent, FALSE, NULL);
 
+    /*
+     * And everything that ends with a turn.  A steer typed while the
+     * agent was working is drained here on purpose: pressing stop is how
+     * somebody says "not that, this", and dropping the "this" would
+     * leave them having only cancelled.
+     */
+    clawt_daemon_turn_settle(self, agent_id);
+
     event = clawt_event_new("agent.interrupted", agent_id);
     clawt_event_set_detail_int(event, "killed", (gint64)killed);
     clawt_event_bus_publish(self->bus, event);
@@ -2837,6 +2872,13 @@ release_components(ClawtDaemon *self)
      */
     if (self->drafts != NULL)
         g_hash_table_remove_all(self->drafts);
+
+    /*
+     * Idempotent, and repeated here because a daemon that was never
+     * started -- a construction that failed, or a test that built one and
+     * dropped it -- never reaches clawt_daemon_stop().
+     */
+    clawt_daemon_turn_teardown(self);
 
     g_clear_object(&self->mcp_tools);
     g_clear_object(&self->ipc_server);
@@ -3668,6 +3710,20 @@ on_ipc_request(JsonNode *request, gpointer user_data)
     return clawt_daemon_handle_request(CLAWT_DAEMON(user_data), request);
 }
 
+/*
+ * One tool call an agent made, on its way to the turn watch.
+ *
+ * A thin adapter rather than the work itself: what is done with it lives
+ * in daemon-turn.c beside the counters it feeds.
+ */
+static void
+on_tool_call_observed(const gchar *agent_id, const gchar *tool,
+                      const gchar *args, gpointer user_data)
+{
+    clawt_daemon_turn_note_tool_call(CLAWT_DAEMON(user_data), agent_id, tool,
+                                     args);
+}
+
 static void
 configure_limits(ClawtDaemon *self)
 {
@@ -3691,6 +3747,13 @@ configure_limits(ClawtDaemon *self)
     clawt_task_manager_set_max_depth(
         self->tasks,
         (guint)clawt_config_get_int(self->config, "orchestration.max_hops"));
+
+    /*
+     * The turn budgets go through here too, so a reload reaches them.
+     * A no-op before clawt_daemon_turn_setup() has run, which is what
+     * lets start call this before the objects exist.
+     */
+    clawt_daemon_turn_configure(self);
 }
 
 /*
@@ -4215,6 +4278,14 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
                                           NULL);
     clawt_mcp_tools_set_image_store(self->mcp_tools, self->vm_images);
 
+    /*
+     * Every tool call is reported to the turn watch: it is both the
+     * clearest sign of life the daemon gets and the only place a
+     * repeated call can be counted.
+     */
+    clawt_mcp_tools_set_observer(self->mcp_tools, on_tool_call_observed,
+                                 self, NULL);
+
     {
         /*
          * NULL means "search", which is what we want unless the config
@@ -4417,6 +4488,15 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     }
 
     /*
+     * The turn budgets, the repeat counter and the steer queue.  Here
+     * rather than beside the guard, because this builds a timer of its
+     * own and start can still refuse after the components exist -- a
+     * timer armed before that point belongs to a daemon that never ran
+     * and nothing takes it down again.
+     */
+    clawt_daemon_turn_setup(self);
+
+    /*
      * Started here rather than earlier, because start can still refuse
      * after the components are built -- a second daemon on the same
      * fleet is turned away at the socket.  A timer armed before that
@@ -4536,6 +4616,13 @@ clawt_daemon_stop(ClawtDaemon *self)
 
         self->sweep_source_id = 0;
     }
+
+    /*
+     * Before the fleet is stopped, because a grace timer left armed past
+     * this point fires into a daemon that has already dropped the agent
+     * manager it would look an agent up in.
+     */
+    clawt_daemon_turn_teardown(self);
 
     if (self->connector_refresh != NULL) {
         g_source_destroy(self->connector_refresh);
@@ -4924,6 +5011,14 @@ clawt_daemon_deliver_decision_answer(ClawtDaemon *self,
 
     if (agent == NULL || *agent == '\0')
         return;
+
+    /*
+     * The clock starts again with whatever was left.  Clamped at zero in
+     * the watch itself, because a resolve can arrive for a card the
+     * current turn never opened -- the stale cleanup after an interrupt
+     * does exactly that.
+     */
+    clawt_daemon_turn_release(self, agent);
 
     /*
      * The question is repeated back.  The agent asked it some time ago

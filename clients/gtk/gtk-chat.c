@@ -3294,6 +3294,7 @@ on_send(GtkWidget *widget, gpointer user_data)
      */
     clawt_gtk_entry_set_text(self, "");
     g_hash_table_remove(self->drafts, self->selected_agent);
+    clawt_gtk_persist_draft(self, self->selected_agent, NULL);
 
     /*
      * A stopped agent accepts the message -- that is what a durable
@@ -3305,8 +3306,22 @@ on_send(GtkWidget *widget, gpointer user_data)
     {
         const gchar *state = clawt_json_string(clawt_payload_of(reply),
                                                "target_state", NULL);
+        gboolean steered = clawt_json_boolean(clawt_payload_of(reply),
+                                           "steered", FALSE);
 
-        if (state != NULL && g_strcmp0(state, "running") != 0) {
+        /*
+         * A steer is deliberately absent from the transcript until the
+         * turn it is steering has ended, so this has to say where it
+         * went: a message that leaves the composer and appears nowhere
+         * reads exactly like a message that was lost.
+         */
+        if (steered) {
+            g_autofree gchar *note = g_strdup_printf(
+                "%s is mid-turn -- held, and sent when this turn ends",
+                self->selected_agent);
+
+            clawt_window_toast(self, note);
+        } else if (state != NULL && g_strcmp0(state, "running") != 0) {
             g_autofree gchar *warning = g_strdup_printf(
                 "%s is %s -- held in its mailbox until it starts",
                 self->selected_agent, state);

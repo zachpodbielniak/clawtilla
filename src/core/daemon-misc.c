@@ -157,16 +157,30 @@ clawt_daemon_handle_misc(
 
     if (g_strcmp0(kind, "decision.dismiss") == 0) {
         const gchar *id = clawt_ipc_payload_string(payload, "decision");
+        g_autoptr(ClawtDecision) dismissed = NULL;
         g_autoptr(GError) dismiss_error = NULL;
 
         if (self->decisions == NULL)
             return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
                                        "this daemon keeps no decisions");
 
+        /*
+         * Read before it is dismissed, because the turn budget it was
+         * holding has to be released and only the record says whose turn
+         * that was.  A dismissal that did not release would leave the
+         * agent's clock parked for ever on a question nobody is going to
+         * answer, which is a turn that can never time out.
+         */
+        dismissed = clawt_decision_store_get(self->decisions, id);
+
         if (!clawt_decision_store_dismiss(self->decisions, id,
                                           &dismiss_error))
             return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
                                        dismiss_error->message);
+
+        if (dismissed != NULL)
+            clawt_daemon_turn_release(self,
+                                      clawt_decision_get_agent(dismissed));
 
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "dismissed");

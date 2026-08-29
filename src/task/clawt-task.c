@@ -220,5 +220,6 @@ clawt_task_is_finished(ClawtTask *self)
 
     return self->state == CLAWT_TASK_COMPLETED ||
            self->state == CLAWT_TASK_FAILED ||
-           self->state == CLAWT_TASK_CANCELLED;
+           self->state == CLAWT_TASK_CANCELLED ||
+           self->state == CLAWT_TASK_STALLED;
 }

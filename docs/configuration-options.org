@@ -890,8 +890,12 @@ A count lands on a threshold exactly once, so the fifth identical
 call reports and the sixth does not. Reporting every repeat past a
 floor turns a signal into noise, and noise is what gets skipped.
 
-Not implemented in this build. Repeat detection is not built yet, so a repeated call is counted
-by nobody and this never fires.
+This one observes rather than intervenes. clawtilla does not own the
+model's own tool-call loop, so it cannot steer a turn that is already
+running: it counts the calls it serves, writes a note into the
+thread, and at the highest threshold interrupts the turn.
+
+An empty list turns the counting off.
 
 *** =orchestration.repeat_max_keys=
 
@@ -906,9 +910,6 @@ Bounded on purpose: an unlimited set of unique arguments lets one
 pathological turn grow the daemon for as long as it runs. The least
 recently seen call is dropped first, and a dropped one starts
 counting again from one.
-
-Not implemented in this build. Repeat detection is not built yet, so a repeated call is counted
-by nobody and this never fires.
 
 *** =orchestration.handoff_max_per_turn=
 
@@ -1240,9 +1241,7 @@ decision, which the daemon then has to repair.
 Different from the runtime's turn timeout: that one catches a wedged
 worker, this one catches a wedged conversation.
 
-Not implemented in this build. Room turns are not bounded yet, so a member that stops
-responding holds its turn until the conversation is
-interrupted by hand.
+Anything below 60 is raised to 60, and 0 turns it off.
 
 ** =teams=
 
@@ -2696,8 +2695,10 @@ while events keep arriving, and a turn that has emitted nothing at
 all for this long is wedged. A turn parked on a decision is exempt,
 because waiting for a person is not a stall.
 
-Not implemented in this build. Not passed to the runtime yet, so a turn is bounded by
-libreclaw's own default rather than by this.
+Watched in two places, on purpose. The daemon watches activity and
+publishes turn.timed_out; the same number is rendered into the
+agent's own session.watchdog_timeout_seconds, so a turn wedged
+somewhere the daemon cannot see is still unwound from inside.
 
 ** =agents.computer=
 

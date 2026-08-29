@@ -123,6 +123,10 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/chat/clawt-markdown.h \
 	$(SRCDIR)/chat/clawt-export.h \
 	$(SRCDIR)/chat/clawt-loop-guard.h \
+	$(SRCDIR)/chat/clawt-repeat-watch.h \
+	$(SRCDIR)/chat/clawt-turn-watch.h \
+	$(SRCDIR)/chat/clawt-steer-queue.h \
+	$(SRCDIR)/chat/clawt-draft-store.h \
 	$(SRCDIR)/chat/clawt-room.h \
 	$(SRCDIR)/chat/clawt-room-manager.h \
 	$(SRCDIR)/task/clawt-cron.h \
@@ -163,6 +167,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-image.c \
 	$(SRCDIR)/core/daemon-team.c \
 	$(SRCDIR)/core/daemon-room.c \
+	$(SRCDIR)/core/daemon-turn.c \
 	$(SRCDIR)/core/daemon-mailbox.c \
 	$(SRCDIR)/core/daemon-task.c \
 	$(SRCDIR)/core/daemon-computer.c \
@@ -228,6 +233,10 @@ LIB_SOURCES = \
 	$(SRCDIR)/chat/clawt-markdown.c \
 	$(SRCDIR)/chat/clawt-export.c \
 	$(SRCDIR)/chat/clawt-loop-guard.c \
+	$(SRCDIR)/chat/clawt-repeat-watch.c \
+	$(SRCDIR)/chat/clawt-turn-watch.c \
+	$(SRCDIR)/chat/clawt-steer-queue.c \
+	$(SRCDIR)/chat/clawt-draft-store.c \
 	$(SRCDIR)/chat/clawt-room.c \
 	$(SRCDIR)/chat/clawt-room-manager.c \
 	$(SRCDIR)/task/clawt-cron.c \

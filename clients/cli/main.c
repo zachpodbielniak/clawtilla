@@ -1909,6 +1909,9 @@ cmd_send(int argc, char *argv[])
     {
         JsonObject *payload = json_node_get_object(reply);
         gint64 queued = json_object_get_int_member(payload, "queued");
+        gboolean steered =
+            json_object_has_member(payload, "steered") &&
+            json_object_get_boolean_member(payload, "steered");
         const gchar *state =
             json_object_has_member(payload, "target_state")
             ? json_object_get_string_member(payload, "target_state") : NULL;
@@ -1917,8 +1920,17 @@ cmd_send(int argc, char *argv[])
          * Says where it went, because "sent" is ambiguous when the
          * recipient is stopped -- the message is queued and will arrive,
          * and a person watching for a reply should know that.
+         *
+         * The steered case is checked first because it queues nothing at
+         * all: without it a correction typed at a working agent printed
+         * "nobody was queued", which is both wrong and the opposite of
+         * reassuring.
          */
-        if (queued == 0)
+        if (steered)
+            g_print("Held: %s is mid-turn. It will be sent when this turn "
+                    "ends, and is not in the transcript until then.\n",
+                    argv[2]);
+        else if (queued == 0)
             g_print("Nobody was queued: check the room's members.\n");
         else if (state != NULL && g_strcmp0(state, "running") != 0)
             g_print("Queued: %s is %s, so it is held in the mailbox until "

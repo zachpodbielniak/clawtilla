@@ -387,16 +387,55 @@ typedef enum {
  * @CLAWT_TASK_COMPLETED: finished with a result
  * @CLAWT_TASK_FAILED: finished with an error
  * @CLAWT_TASK_CANCELLED: cancelled before finishing
+ * @CLAWT_TASK_STALLED: stopped because it was going in circles
  *
  * State of a delegated #ClawtTask.
+ *
+ * CLAWT_TASK_STALLED is terminal like the three before it, and is its own
+ * answer rather than a flavour of failed: work that a limit stopped is
+ * work somebody can pick up and finish, where failed work needs
+ * diagnosing first.  Reading a stall as a failure sends the reader to
+ * look for a bug that is not there.
  */
 typedef enum {
     CLAWT_TASK_PENDING = 0,
     CLAWT_TASK_RUNNING,
     CLAWT_TASK_COMPLETED,
     CLAWT_TASK_FAILED,
-    CLAWT_TASK_CANCELLED
+    CLAWT_TASK_CANCELLED,
+    CLAWT_TASK_STALLED
 } ClawtTaskState;
+
+/**
+ * ClawtStallReason:
+ * @CLAWT_STALL_NONE: nothing has stalled
+ * @CLAWT_STALL_REPEATED_MESSAGE: the same message went round again
+ * @CLAWT_STALL_TURN_TIMEOUT: a turn produced nothing for its whole budget
+ * @CLAWT_STALL_ROOM_TIMEOUT: a member held a room's turn for its whole budget
+ * @CLAWT_STALL_REPEATED_TOOL_CALL: one turn made the same call over and over
+ *
+ * Why an exchange or a turn was ended.
+ *
+ * The four are worth telling apart because two of them clawtilla can
+ * genuinely stop and two it can only observe.  #CLAWT_STALL_REPEATED_MESSAGE,
+ * #CLAWT_STALL_TURN_TIMEOUT and #CLAWT_STALL_ROOM_TIMEOUT are about things
+ * the daemon owns -- the mailbox router, the runtime, the room -- so the
+ * exchange really ends.  #CLAWT_STALL_REPEATED_TOOL_CALL is about the loop
+ * inside the model's own CLI, which nothing on this side of the socket
+ * steers: it is reported, and escalated to an interrupt, and that is the
+ * whole of its reach.
+ *
+ * There is deliberately no _count()/_nth() family: a reason is reported,
+ * never chosen from a list, and a chooser nothing calls is the shape this
+ * codebase keeps finding at the bottom of its bugs.
+ */
+typedef enum {
+    CLAWT_STALL_NONE = 0,
+    CLAWT_STALL_REPEATED_MESSAGE,
+    CLAWT_STALL_TURN_TIMEOUT,
+    CLAWT_STALL_ROOM_TIMEOUT,
+    CLAWT_STALL_REPEATED_TOOL_CALL
+} ClawtStallReason;
 
 /**
  * ClawtLogLevel:
@@ -719,6 +758,7 @@ GType clawt_mailbox_state_get_type(void) G_GNUC_CONST;
 GType clawt_priority_get_type(void) G_GNUC_CONST;
 GType clawt_overflow_policy_get_type(void) G_GNUC_CONST;
 GType clawt_task_state_get_type(void) G_GNUC_CONST;
+GType clawt_stall_reason_get_type(void) G_GNUC_CONST;
 GType clawt_secret_backend_get_type(void) G_GNUC_CONST;
 GType clawt_log_level_get_type(void) G_GNUC_CONST;
 GType clawt_scope_get_type(void) G_GNUC_CONST;
@@ -748,6 +788,7 @@ GType clawt_credential_placement_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_PRIORITY         (clawt_priority_get_type())
 #define CLAWT_TYPE_OVERFLOW_POLICY  (clawt_overflow_policy_get_type())
 #define CLAWT_TYPE_TASK_STATE       (clawt_task_state_get_type())
+#define CLAWT_TYPE_STALL_REASON     (clawt_stall_reason_get_type())
 #define CLAWT_TYPE_SECRET_BACKEND   (clawt_secret_backend_get_type())
 #define CLAWT_TYPE_LOG_LEVEL        (clawt_log_level_get_type())
 #define CLAWT_TYPE_SCOPE (clawt_scope_get_type())

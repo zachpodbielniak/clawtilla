@@ -141,6 +141,19 @@ struct _ClawtDaemon {
      */
     ClawtNotifier *notifier;
 
+    /*
+     * Turn hygiene: what stops a turn, and an exchange, going round for
+     * ever.  See src/core/daemon-turn.c, which owns all of it.
+     */
+    ClawtRepeatWatch *repeats;      /* the same tool call, over and over */
+    ClawtTurnWatch   *turn_watch;   /* agents.runtime.turn_timeout_seconds */
+    ClawtTurnWatch   *room_watch;   /* rooms.turn_timeout_seconds */
+    ClawtSteerQueue  *steers;       /* messages typed at a busy agent */
+    GHashTable       *room_holder;  /* room id -> agent id holding its turn */
+    GHashTable       *turn_grace;   /* agent id -> GSource*, see arm_grace() */
+    GSource          *turn_sweep;
+    guint             turn_grace_seconds;
+
     /* Standing work, and when it is next due. */
     ClawtRoutineRunner *routines;
 
@@ -639,5 +652,80 @@ clawt_daemon_handle_config(
     JsonObject   *payload,
     gboolean     *handled
 );
+
+/* ── Turn hygiene (src/core/daemon-turn.c) ───────────────────────── */
+
+/*
+ * Built once when the daemon starts, and torn down when it stops.
+ * Separate from clawt_daemon_turn_configure() because the objects
+ * outlive a reload and the budgets do not.
+ */
+void clawt_daemon_turn_setup(ClawtDaemon *self);
+void clawt_daemon_turn_configure(ClawtDaemon *self);
+void clawt_daemon_turn_teardown(ClawtDaemon *self);
+
+/*
+ * A turn started, produced something, or settled.
+ *
+ * Called from the link's typing and message handlers and from the
+ * interrupt verb.  Settling is idempotent, which is what lets the
+ * interrupt and the runtime's own end-of-turn frame both call it.
+ */
+void clawt_daemon_turn_begin(ClawtDaemon *self, const gchar *agent_id,
+                             const gchar *room_id);
+void clawt_daemon_turn_activity(ClawtDaemon *self, const gchar *agent_id);
+void clawt_daemon_turn_settle(ClawtDaemon *self, const gchar *agent_id);
+
+/*
+ * A turn is waiting on a person, and is waiting no longer.
+ *
+ * Both budgets hold: stopping a turn under an unanswered question
+ * manufactures a stranded decision, which the daemon then has to repair.
+ */
+void clawt_daemon_turn_hold(ClawtDaemon *self, const gchar *agent_id);
+void clawt_daemon_turn_release(ClawtDaemon *self, const gchar *agent_id);
+
+/*
+ * Waits for a turn that has been stopped to report that it ended, and
+ * releases the agent itself when it never does.
+ *
+ * Armed by every path that stops a turn.  A stop that only signals is
+ * not a stop: without this the agent stays marked busy for ever, the
+ * next delivery overlaps a turn nobody is running, and the watch never
+ * begins again.
+ */
+void clawt_daemon_turn_arm_grace(ClawtDaemon *self, const gchar *agent_id);
+
+/*
+ * How long that wait is.  0 restores the default.
+ *
+ * Settable for tests.  The default is fifteen seconds, and a test that
+ * waits fifteen seconds for a timer is a test people start skipping --
+ * which for the one mechanism that catches a stop that did not stop is
+ * the worst thing that could happen to it.
+ */
+void clawt_daemon_turn_set_grace_seconds(ClawtDaemon *self, guint seconds);
+
+/*
+ * One tool call the daemon served, for the repeat counter.  Both MCP
+ * dispatch paths reach it -- the synchronous chain and the deferred
+ * computer_exec -- because a rule applied at one of two call sites is a
+ * rule about that call site.
+ */
+void clawt_daemon_turn_note_tool_call(ClawtDaemon *self,
+                                      const gchar *agent_id,
+                                      const gchar *tool,
+                                      const gchar *args);
+
+/*
+ * Whether a message to @target should be held rather than routed.
+ *
+ * Returns %TRUE when it was queued as a steer, in which case nothing has
+ * been sent and nothing is in the transcript yet.
+ */
+gboolean clawt_daemon_turn_steer(ClawtDaemon *self,
+                                 const gchar *from,
+                                 const gchar *target,
+                                 const gchar *body);
 
 G_END_DECLS

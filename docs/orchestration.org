@@ -1061,6 +1061,165 @@ gets an error saying which limit and why.  Refusing at the source is what
 stops a runaway fan-out; checking at delivery time would mean the
 messages already exist and cleaning up rather than preventing.
 
+** Turn hygiene
+
+Loop safety above answers "may this message be sent".  Turn hygiene
+answers the question it does not: *what ends the exchange*.
+
+The four limits refuse a message.  They do not stop anything, so a stuck
+pair kept taking turns --- each turn produced a message, each message was
+refused, and the turn had already been paid for before the refusal
+arrived.  The limits were being billed for the runaway they exist to
+prevent.
+
+*** Which loops clawtilla can actually stop
+
+This distinction is the important one, because a check that implies more
+reach than it has sends you to the wrong layer when something goes wrong.
+
+| Loop | Owned by | What happens |
+|---+---+---|
+| Two agents sending the same thing | clawtilla --- it owns the mailbox router | The *exchange ends*.  The room is stalled, the tasks move to ~stalled~, one alert names both agents and the repeated text. |
+| A turn that produces nothing | clawtilla --- it owns the runtime | The turn is *interrupted*, the reason goes into the thread, and anything waiting on it is failed. |
+| A member holding a room's turn | clawtilla --- it owns the room | The turn is *yielded* and the room is stalled. |
+| One turn calling the same tool over and over | *Nobody on this side of the socket.*  The loop lives in the model's own CLI. | Counted and *reported* in the thread; at the last threshold, escalated to an interrupt.  That is the whole of its reach. |
+
+*** A stalled exchange, and how it restarts
+
+A stalled room refuses every message an agent sends into it, immediately
+and without a turn.  That is the point: the refusal an agent would
+otherwise get arrives *after* it has written the message, so a pair that
+will not stop is billed for every refusal.
+
+**A person saying something in the room clears it.**  Nothing else does,
+deliberately --- the stall was raised for somebody to look at, and an
+exchange that reopened on its own would reopen into the same loop.
+
+Only an agent's exact repeat stalls a room.  A person repeating
+themselves is refused exactly as before and the room stays open;
+clawtilla does not end a person's conversation.
+
+*** Counting up is not progress
+
+An exact-match detector is blind to a loop that renumbers itself:
+"finished run 41", "finished run 42", "finished run 43" is three
+distinct messages and runs for ever.
+
+So the cycle check also compares each message with the numbers taken out
+of it, and refuses the sixth near-identical one inside the window.  Two
+things keep that from silencing real work:
+
+- it takes *six*, not two, so an agent reporting "step 1 done" through
+  "step 4 done" gets through;
+- a near match never stalls a room.  It is a refusal that can be waited
+  out, because being wrong about a stall means somebody has to come and
+  restart the conversation.
+
+An hourly status line is not caught at all, and what protects it is the
+*window*: the previous one fell out of ~orchestration.cycle_seconds~
+fifty-five minutes ago.
+
+*** The turn watchdog
+
+~agents.runtime.turn_timeout_seconds~ (default 1200) bounds a turn that
+has stopped producing anything.
+
+**Activity, not duration.**  A turn may legitimately run for an hour
+while things keep happening; a turn that has emitted nothing at all for
+the whole budget is wedged.  What counts as activity is a message the
+agent sent or a ~clawtilla_*~ tool call it made --- an agent's own
+~bash~ and ~read~ belong to the CLI and never reach the daemon, so those
+two are the whole of what the daemon can honestly observe.
+
+**A turn parked on an open decision is exempt.**  Waiting for a person is
+not a stall, and stopping a turn under an unanswered question
+manufactures a stranded decision the daemon then has to repair.  The
+clock resumes when the decision is answered or dismissed.
+
+When it fires: the repeat counters are dropped, the turn is interrupted,
+the reason is written into the thread, anything waiting on it is moved to
+~stalled~, and a short grace timer force-releases the agent if the
+runtime never reports the end.  That last step is the lesson
+~agent.restart~ already learned --- a stop that only signals is not a
+stop, and without it a second turn overlaps the one being stopped.
+
+The same number is also rendered into the agent's own libreclaw config as
+~session.watchdog_timeout_seconds~, so a turn wedged somewhere the daemon
+cannot see is still unwound from inside.  Two watchers on purpose: this
+one ends the exchange and tells the clients, that one unwinds the worker.
+
+*** The room's turn
+
+~rooms.turn_timeout_seconds~ (default 300, floored at 60) bounds how long
+one member may hold a room's turn.
+
+Counted in *work*, not wall time: the clock holds while the turn is
+parked on an open decision and resumes with **the remainder**, not with a
+fresh budget.  A turn credited the whole budget on every release could
+hold a room for ever by asking a question every four minutes.
+
+Different from the runtime's turn timeout: that one catches a wedged
+worker, this one catches a wedged conversation.
+
+*** Repeated tool calls
+
+~orchestration.repeat_thresholds~ (default ~5,10,20~) and
+~orchestration.repeat_max_keys~ (default 256).
+
+The key is the tool name and its arguments with runs of whitespace
+collapsed.  **A bare tool name is not a call worth counting** --- five
+~bash~ calls may be five different commands, and a report that says
+otherwise is what teaches somebody to stop reading these.
+
+Counts are cumulative for the whole turn rather than a sliding window,
+because "the same thing over and over" is a total and a window lets a
+slow loop pass for ever.  A threshold fires only when the count lands
+*exactly* on it, so the fifth identical call reports and the sixth says
+nothing.  The table is an LRU bounded by ~repeat_max_keys~, so one
+pathological turn cannot grow the daemon; a call it dropped starts
+counting again from one.  Everything is forgotten when the turn ends.
+
+At the highest threshold the turn is interrupted.  Below it, the note in
+the thread is all there is --- see the table above for why.
+
+*** Steering an agent that is already working
+
+A message typed at an agent mid-turn is **held, not routed**, and does
+not enter the transcript until the turn ends.
+
+Appending it straight away would make the queued line the active leaf, so
+the rest of the turn already in flight would hang off a line the model
+was never shown --- and the transcript would read as though the agent had
+answered something nobody had said.  Both clients say where it went,
+because a message that leaves the composer and appears nowhere reads
+exactly like a message that was lost.
+
+On settle every held message for that conversation is delivered as one
+follow-up turn, joined by newlines.  Two sentences typed three seconds
+apart are one turn, not two.
+
+**It survives an interrupt.**  Queue a correction, press stop, the
+correction runs --- that is the feature.  Pressing stop is how somebody
+says "not that, this", and dropping the "this" would leave them having
+only cancelled.
+
+Only a person steers.  A message from one agent to another is ordinary
+traffic and goes to the mailbox, which is durable and ordered precisely
+so a busy recipient is not a special case; and a message to an agent that
+is *not* working goes to the mailbox too, because nothing settles a turn
+that never started.
+
+*** Drafts
+
+Composer text that has not been sent lives in the *client's* own config
+--- ~$XDG_CONFIG_HOME/clawtilla/drafts.yaml~, mode 0600, beside
+~connections.yaml~ --- and never in ~clawtilla.yaml~.  A half-typed
+message belongs to the person rather than to the fleet, and a laptop
+reaching a workstation may have no fleet at all.
+
+The key carries the connection profile as well as the agent, so two
+daemons that each have an agent called ~chief~ do not share one composer.
+
 ** Rooms, transcripts and branching
 
 ~ClawtMessage~ carries a ~parent_id~, so an edit forks a branch rather

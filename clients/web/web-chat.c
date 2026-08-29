@@ -662,13 +662,29 @@ stop_turn_button(const gchar *agent_id)
     return HTMX_ELEMENT(g_steal_pointer(&stop));
 }
 
+/*
+ * Where a half-typed message is kept for this page.
+ *
+ * Through clawt_draft_key() and #ClawtDraftStore, which is the same
+ * pair the GTK composer uses -- one file, one spelling of the key, so
+ * the two clients cannot disagree about where a draft lives.
+ */
+static gchar *
+draft_key_for(ClawtWebApp *app, const gchar *agent_id)
+{
+    return clawt_draft_key(clawt_web_app_get_connection_name(app), agent_id);
+}
+
 static HtmxElement *
-composer(const gchar *agent_id, gboolean busy)
+composer(ClawtWebApp *app, const gchar *agent_id, gboolean busy)
 {
     g_autoptr(HtmxElement) foot = HTMX_ELEMENT(htmx_footer_new());
     g_autoptr(HtmxDiv) inner = htmx_div_new();
     g_autofree gchar *escaped = g_uri_escape_string(agent_id, NULL, FALSE);
     g_autofree gchar *action = g_strdup_printf("/a/%s/send", escaped);
+    g_autofree gchar *draft_action = g_strdup_printf("/a/%s/draft", escaped);
+    g_autofree gchar *key = draft_key_for(app, agent_id);
+    g_autofree gchar *draft = clawt_draft_store_get(NULL, key);
     g_autoptr(HtmxForm) form = clawt_web_form(action);
     g_autoptr(HtmxTextarea) area = htmx_textarea_new_with_name("body");
 
@@ -679,6 +695,24 @@ composer(const gchar *agent_id, gboolean busy)
     htmx_element_set_attribute(HTMX_ELEMENT(area), "placeholder",
                                "Message, or /help for commands");
     htmx_element_set_attribute(HTMX_ELEMENT(area), "autofocus", "autofocus");
+
+    /*
+     * What was left here last time, and a post that keeps it up to date.
+     *
+     * Debounced by a second rather than saved per keystroke: this writes
+     * a file, and a page open while somebody types a paragraph would
+     * otherwise rewrite it two hundred times.  hx-swap="none" because
+     * the answer is 204 and replacing the composer under the cursor is
+     * how you lose the rest of the sentence.
+     */
+    if (draft != NULL)
+        htmx_node_set_text_content(HTMX_NODE(area), draft);
+
+    htmx_element_set_attribute(HTMX_ELEMENT(area), "hx-post", draft_action);
+    htmx_element_set_attribute(HTMX_ELEMENT(area), "hx-trigger",
+                               "keyup changed delay:1s");
+    htmx_element_set_attribute(HTMX_ELEMENT(area), "hx-swap", "none");
+
     htmx_node_add_child(HTMX_NODE(inner), HTMX_NODE(area));
 
     if (busy)
@@ -815,7 +849,7 @@ clawt_web_chat_body_full(ClawtWebApp *app, const gchar *agent_id,
                         strstr(clawt_web_member(info, "caps", ""),
                                "interrupt") != NULL;
 
-        clawt_web_add(main_el, composer(agent_id, busy));
+        clawt_web_add(main_el, composer(app, agent_id, busy));
     }
     else
         clawt_web_add(main_el, clawt_web_text(
@@ -1402,6 +1436,29 @@ clawt_web_send_message(ClawtWebApp *app, HtmxRequest *request,
                                     CLAWT_WEB_VIEW_CHAT,
                                     clawt_web_app_last_error(app));
 
+    {
+        g_autofree gchar *key = draft_key_for(app, agent_id);
+
+        clawt_draft_store_set(NULL, key, NULL, NULL);
+    }
+
+    /*
+     * A steer does not enter the transcript until the turn it is
+     * steering has ended, so the page has to say where it went. A
+     * message that leaves the composer and appears nowhere reads exactly
+     * like a message that was lost.
+     */
+    if (clawt_web_member_bool(clawt_web_member_object(clawt_web_root(reply),
+                                                      "payload"),
+                              "steered", FALSE)) {
+        g_autofree gchar *note = g_strdup_printf(
+            "%s is mid-turn -- held, and sent when this turn ends",
+            agent_id);
+
+        return clawt_web_after_action(app, request, agent_id,
+                                      CLAWT_WEB_VIEW_CHAT, note);
+    }
+
     return clawt_web_after_action(app, request, agent_id,
                                   CLAWT_WEB_VIEW_CHAT, NULL);
 }
@@ -1585,10 +1642,38 @@ on_interrupt(HtmxRequest *request, GHashTable *params, gpointer user_data)
     return clawt_web_chat_interrupt(app, request, agent_id);
 }
 
+/*
+ * The composer's contents, saved without sending anything.
+ *
+ * Answers 204 rather than a page: this fires while somebody is typing,
+ * and re-rendering the composer under the cursor would take the rest of
+ * the sentence with it.
+ */
+static HtmxResponse *
+on_draft(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    const gchar *body = clawt_web_form_value(request, "body");
+    g_autofree gchar *key = NULL;
+    HtmxResponse *response;
+
+    if (agent_id != NULL) {
+        key = draft_key_for(app, agent_id);
+        clawt_draft_store_set(NULL, key, body, NULL);
+    }
+
+    response = htmx_response_new();
+    htmx_response_set_status(response, 204);
+
+    return response;
+}
+
 void
 clawt_web_register_chat(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_post(router, "/a/:id/send", on_send, app);
+    htmx_router_post(router, "/a/:id/draft", on_draft, app);
     htmx_router_post(router, "/a/:id/interrupt", on_interrupt, app);
     htmx_router_get(router, "/f/a/:id/transcript", on_transcript_fragment, app);
     htmx_router_get(router, "/f/attachment/:id", on_attachment, app);

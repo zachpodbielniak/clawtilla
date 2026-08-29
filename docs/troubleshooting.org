@@ -675,6 +675,166 @@ one for the next ten hours refused, while looking idle throughout.  If
 ~cycle_seconds~ is not in ~clawtilla --generate-config~ output, this is
 that build.
 
+** Two agents will not talk to each other any more
+
+The exchange was *ended* rather than refused.  Two limits do that, and
+both say so in the room:
+
+#+begin_example
+[clawtilla] The exchange in dm:chief:worker has been ended: chief and
+worker kept sending the same thing and each refusal was costing a turn.
+What was going round: nothing further, ending turn
+Say something here to restart it.
+#+end_example
+
+The event is ~exchange.stalled~, subject the *room*, and it reaches both
+clients' alert panels as an error.
+
+#+begin_src bash
+clawtilla event list dm:chief:worker
+#+end_src
+
+*** Restarting it
+
+**Say something in the room.**  That is the only thing that clears a
+stall, and it is deliberate: an exchange that reopened on its own would
+reopen into the same loop.
+
+#+begin_src bash
+clawtilla msg chief "stop doing that and summarise what you found"
+#+end_src
+
+Anything a *person* sends into the room clears it.  Anything an agent
+sends is refused, immediately and without costing a turn --- which is the
+whole reason the exchange was ended rather than left refusing.
+
+*** Why it is not a refusal
+
+A refusal arrives *after* the sender has written the message, so the turn
+has already been paid for.  A pair that will not stop is billed for every
+refusal, which is the runaway the limits exist to prevent.  If the fleet
+is on a build where this never happens and ~message.refused~ repeats
+instead, that build refuses without ending.
+
+** A turn was stopped and the agent says it produced nothing
+
+~agents.runtime.turn_timeout_seconds~ (default 1200) fired.
+
+#+begin_example
+[clawtilla] This turn produced nothing for 1200 seconds and was stopped.
+That is agents.runtime.turn_timeout_seconds, which counts activity rather
+than elapsed time -- a turn may run for an hour while it is doing things.
+#+end_example
+
+*** What counts as activity
+
+A message the agent sent, or a ~clawtilla_*~ tool call it made.  **Not**
+its own ~bash~, ~read~ or ~write~: those belong to the CLI and never
+reach the daemon.
+
+So an agent that spends twenty minutes inside one long build, without
+saying anything and without calling a clawtilla tool, looks silent from
+out here.  If that is what your fleet does, raise the number --- it is
+per agent:
+
+#+begin_src yaml
+agents:
+  - id: builder
+    runtime:
+      turn_timeout_seconds: 5400
+#+end_src
+
+~0~ turns it off entirely.  Note that libreclaw applies its own watchdog
+to the same value as a *duration*, so turning this off removes both.
+
+*** A turn waiting on a decision is not stalled
+
+The clock holds while the agent has an open decision and resumes when it
+is answered or dismissed.  If a turn seems to be running for ever, look
+at the decision inbox first:
+
+#+begin_src bash
+clawtilla decision list
+#+end_src
+
+A decision nobody is going to answer should be dismissed rather than left
+open --- dismissing releases the clock.
+
+** An agent is stuck showing as working
+
+Two possibilities, and the second is the one worth knowing about.
+
+Either the turn really is running --- see the section above --- or the
+runtime never reported that the turn ended.  The daemon catches the
+second itself, fifteen seconds after it stops a turn:
+
+#+begin_example
+turn: chief did not report the end of its turn 15 seconds after being
+interrupted; releasing it here
+#+end_example
+
+That line in the journal means the grace timer did its job.  A stop that
+only signals is not a stop, and without this the agent would show a
+spinner until the daemon was restarted --- and the next delivery would
+begin a second turn on top of the one being stopped.
+
+If the agent is still showing as working a minute after an interrupt and
+there is no such line, the daemon is not dispatching its own timers.
+That is the embedded-context failure: check that whatever is hosting the
+daemon is running the loop the daemon was given.
+
+** An agent keeps making the same call
+
+~turn.repeating~ in the alerts panel, and a note in the thread:
+
+#+begin_example
+[clawtilla] 'chief' has made the same call 10 times in this turn:
+clawtilla_computer_exec:{"argv":["ls","/srv"]}
+Nothing has been stopped; clawtilla cannot steer a turn that is already
+running.
+#+end_example
+
+**Read that sentence literally.**  clawtilla does not own the loop that
+decides to call a tool again --- it lives inside the model's own CLI ---
+so at every threshold but the last this is a *report*.  Looking for a
+setting that stops it is looking at the wrong layer.
+
+At the highest threshold in ~orchestration.repeat_thresholds~ the turn is
+interrupted, which is the one lever there is.  Lower that number if you
+want it to happen sooner:
+
+#+begin_src yaml
+orchestration:
+  repeat_thresholds: ["3", "6", "10"]
+#+end_src
+
+An empty list turns the counting off.  A call with no arguments is never
+counted at all, because five ~bash~ calls may be five different commands.
+
+** A message I sent has not appeared in the transcript
+
+If the agent was working when you sent it, it was **held** rather than
+routed, and both clients say so:
+
+#+begin_example
+chief is mid-turn -- held, and sent when this turn ends
+#+end_example
+
+It arrives when the turn settles, as one follow-up turn with everything
+else you typed in that conversation, joined by newlines.
+
+This is deliberate.  Appending it straight away would make the queued
+line the active leaf, so the rest of the turn already in flight would
+hang off a line the model was never shown --- and the transcript would
+read as though the agent had answered something nobody had said.
+
+**Pressing stop still runs it.**  Queue a correction, press stop, the
+correction runs; that is the feature rather than a leak.
+
+Only what a *person* sends is held.  An agent messaging a busy peer goes
+straight to the mailbox, and so does anything sent to an agent that is
+not working.
+
 ** The whole fleet went quiet at once
 
 The account's session usage allowance is spent. It is per *account*, so

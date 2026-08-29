@@ -457,6 +457,10 @@ struct _ClawtMcpTools {
     gpointer                ask_decision_data;
     GDestroyNotify          ask_decision_destroy;
 
+    ClawtMcpToolObserverFunc observer;
+    gpointer                 observer_data;
+    GDestroyNotify           observer_destroy;
+
     ClawtVmImageStore *images;   /* unowned */
     ClawtEventBus     *bus;      /* unowned */
 
@@ -571,6 +575,51 @@ clawt_mcp_tools_set_main_context(ClawtMcpTools *self, GMainContext *context)
 
     if (context != NULL)
         self->main_context = g_main_context_ref(context);
+}
+
+void
+clawt_mcp_tools_set_observer(ClawtMcpTools            *self,
+                             ClawtMcpToolObserverFunc  func,
+                             gpointer                  user_data,
+                             GDestroyNotify            notify)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    if (self->observer_destroy != NULL && self->observer_data != NULL)
+        self->observer_destroy(self->observer_data);
+
+    self->observer = func;
+    self->observer_data = user_data;
+    self->observer_destroy = notify;
+}
+
+/*
+ * Tells the observer about one call.
+ *
+ * Both dispatch paths come through here rather than each calling the
+ * observer for itself.  There are two of them -- the synchronous chain
+ * and the deferred computer_exec -- and a rule enforced at one of two
+ * call sites is a rule about that call site: `computer_exec` is exactly
+ * the call an agent loops on, and it is the one that does not take the
+ * synchronous path.
+ */
+static void
+observe_call(ClawtMcpTools *self, const gchar *agent_id,
+             const gchar *tool_name, JsonObject *arguments)
+{
+    g_autofree gchar *args = NULL;
+
+    if (self->observer == NULL || agent_id == NULL || tool_name == NULL)
+        return;
+
+    if (arguments != NULL) {
+        g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
+
+        json_node_set_object(node, arguments);
+        args = json_to_string(node, FALSE);
+    }
+
+    self->observer(agent_id, tool_name, args, self->observer_data);
 }
 
 void
@@ -3219,6 +3268,8 @@ clawt_mcp_tools_call_async(ClawtMcpTools       *self,
     if (json_object_has_member(params, "arguments"))
         arguments = json_object_get_object_member(params, "arguments");
 
+    observe_call(self, agent_id, argument_string(params, "name"), arguments);
+
     call = exec_call_prepare(self, agent_id, arguments, &refusal);
 
     /*
@@ -3335,6 +3386,8 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
 
     if (tool_name == NULL)
         return make_response(request_id, "No tool was named.", TRUE);
+
+    observe_call(self, agent_id, tool_name, arguments);
 
     if (!clawt_mcp_tools_is_permitted(self, agent_id, tool_name)) {
         /*
@@ -3456,6 +3509,14 @@ static void
 clawt_mcp_tools_dispose(GObject *object)
 {
     ClawtMcpTools *self = CLAWT_MCP_TOOLS(object);
+
+    if (self->observer_destroy != NULL && self->observer_data != NULL) {
+        self->observer_destroy(self->observer_data);
+        self->observer_data = NULL;
+        self->observer_destroy = NULL;
+    }
+
+    self->observer = NULL;
 
     if (self->deliver_destroy != NULL && self->deliver_data != NULL) {
         self->deliver_destroy(self->deliver_data);

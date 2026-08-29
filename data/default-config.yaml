@@ -489,8 +489,12 @@ orchestration:
   # # call reports and the sixth does not. Reporting every repeat past a
   # # floor turns a signal into noise, and noise is what gets skipped.
   # #
-  # # Not implemented in this build. Repeat detection is not built yet, so a repeated call is counted
-  # # by nobody and this never fires.
+  # # This one observes rather than intervenes. clawtilla does not own the
+  # # model's own tool-call loop, so it cannot steer a turn that is already
+  # # running: it counts the calls it serves, writes a note into the
+  # # thread, and at the highest threshold interrupts the turn.
+  # #
+  # # An empty list turns the counting off.
   # repeat_thresholds: ["5", "10", "20"]
 
   # # How many distinct calls one turn remembers while watching for
@@ -500,9 +504,6 @@ orchestration:
   # # pathological turn grow the daemon for as long as it runs. The least
   # # recently seen call is dropped first, and a dropped one starts
   # # counting again from one.
-  # #
-  # # Not implemented in this build. Repeat detection is not built yet, so a repeated call is counted
-  # # by nobody and this never fires.
   # repeat_max_keys: 256
 
   # # How many handoffs one turn may queue.

@@ -32,6 +32,7 @@ struct _ClawtRoom {
 
     gboolean   require_mention;
     guint      max_hops;
+    guint      turn_timeout_seconds;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtRoom, clawt_room, G_TYPE_OBJECT)
@@ -155,6 +156,22 @@ clawt_room_set_max_hops(ClawtRoom *self, guint max_hops)
 {
     g_return_if_fail(CLAWT_IS_ROOM(self));
     self->max_hops = max_hops;
+}
+
+guint
+clawt_room_get_turn_timeout(ClawtRoom *self)
+{
+    g_return_val_if_fail(CLAWT_IS_ROOM(self), 0);
+
+    return self->turn_timeout_seconds;
+}
+
+void
+clawt_room_set_turn_timeout(ClawtRoom *self, guint seconds)
+{
+    g_return_if_fail(CLAWT_IS_ROOM(self));
+
+    self->turn_timeout_seconds = seconds;
 }
 
 gboolean

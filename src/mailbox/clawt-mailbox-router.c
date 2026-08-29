@@ -268,6 +268,55 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
     return (gint)queued;
 }
 
+gboolean
+clawt_mailbox_router_note(ClawtMailboxRouter  *self,
+                          const gchar         *target,
+                          const gchar         *body,
+                          GError             **error)
+{
+    g_autoptr(ClawtMessage) message = NULL;
+    ClawtRoom *room;
+
+    g_return_val_if_fail(CLAWT_IS_MAILBOX_ROUTER(self), FALSE);
+    g_return_val_if_fail(target != NULL, FALSE);
+    g_return_val_if_fail(body != NULL, FALSE);
+
+    room = clawt_room_manager_get(self->rooms, target);
+
+    if (room == NULL) {
+        if (clawt_agent_manager_get(self->agents, target) == NULL) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                        "there is no agent or room called '%s'", target);
+            return FALSE;
+        }
+
+        room = clawt_room_manager_get_direct(self->rooms, "user", target);
+    }
+
+    message = clawt_message_new(clawt_room_get_id(room), "clawtilla", body);
+
+    clawt_room_append(room, message, NULL);
+
+    /*
+     * Published from here, like every other message, because this is the
+     * only place that knows which room it ended up in.  Deliberately no
+     * mailbox post and no drain: a note is for the people reading, and
+     * the agent has just been interrupted or cut off.
+     */
+    if (self->bus != NULL) {
+        g_autoptr(ClawtEvent) event = NULL;
+
+        event = clawt_event_new("message", clawt_room_get_id(room));
+        clawt_event_set_detail(event, "id", clawt_message_get_id(message));
+        clawt_event_set_detail(event, "from", "clawtilla");
+        clawt_event_set_detail(event, "to", target);
+        clawt_event_set_detail(event, "body", body);
+        clawt_event_bus_publish(self->bus, event);
+    }
+
+    return TRUE;
+}
+
 gint
 clawt_mailbox_router_send_to(ClawtMailboxRouter  *self,
                              const gchar         *from,
