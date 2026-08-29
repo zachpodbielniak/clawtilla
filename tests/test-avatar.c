@@ -19,6 +19,7 @@
 
 #include <glib/gstdio.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "clawt-test-util.h"
 
@@ -171,6 +172,19 @@ test_an_unreadable_file_reads_as_absent(void)
     WorkspaceFixture fixture = { 0 };
     g_autofree gchar *path = NULL;
     g_autofree gchar *found = NULL;
+
+    /*
+     * Root ignores the permission bits, so a mode-0000 file is still
+     * readable and this case cannot be made to happen.  Skipped rather
+     * than quietly weakened, because `unshare -rn` -- the project's own
+     * hermeticity check -- runs every test binary as root in a new user
+     * namespace, and a test that fails there makes that check unusable
+     * for the whole suite.
+     */
+    if (geteuid() == 0) {
+        g_test_skip("root bypasses the permission bits");
+        return;
+    }
 
     workspace_fixture_setup(&fixture);
     path = g_build_filename(fixture.dir, "profile-picture.png", NULL);
