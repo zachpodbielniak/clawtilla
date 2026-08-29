@@ -781,6 +781,35 @@ reason the mailbox is: an agent that asked and got no answer carried on
 with its default, and an operator who never saw the question has no way
 to know that happened.
 
+**** How it is laid out, and why it had to be fixed
+
+A decision is three pieces of prose and a list of choices: the question,
+what happens if you say nothing, and the options. All four are sentences
+an agent wrote, and none of them has a length anybody controls.
+
+Both clients now give them a reading column, wrap every one of them, and
+stack the options one per line, left-aligned. That last part is not
+decoration --- an option like "Re-provision clawt-oryx from a proper
+Fedora cloud image, so the exchange mounts and the default-user config
+land too" is a sentence, and two of those side by side is wider than any
+window.
+
+The GTK page was unreadable before that, and the cause is worth knowing
+because it will happen again. *A wrapping ~GtkLabel~ still reports the
+unwrapped string as its natural width*, and a ~GtkScrolledWindow~ left
+at the default ~GTK_POLICY_AUTOMATIC~ gives its child exactly that. So
+the row became as wide as the question, ran off the right edge of the
+window, and took the default line, the answer box and every option
+button with it. Nothing was ellipsised and no warning was logged --- the
+page had simply become wider than the screen, so all anybody saw was the
+first screenful of each line, and it read as text that had been cut off
+rather than as a page that was scrolled.
+
+Refusing the horizontal scroll is what makes the wrap that libadwaita
+already asks for actually happen. The clamp then comes from the same
+resolver the chat uses, so a reader who widened their conversation gets
+the same column here.
+
 ** Your mailbox is empty while you are running
 
 This trips up agents, so it is worth stating plainly: a message is

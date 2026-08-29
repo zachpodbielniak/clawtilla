@@ -291,6 +291,17 @@ clawt_web_stylesheet(void)
     ".btn-danger:hover{background:var(--bad-bg)}"
     ".btn:disabled{opacity:.45;cursor:default}"
     ".btn-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}"
+    /*
+     * A decision's options, one per line and read from the left.
+     *
+     * An option is a sentence rather than a verb, so a row of them wraps
+     * into a block with no left edge to come back to. Stacked and
+     * left-aligned they read as the list of choices they are, which is
+     * how the GTK client draws them too.
+     */
+    ".decision-options{display:flex;flex-direction:column;gap:8px;"
+      "align-items:stretch;margin-bottom:12px}"
+    ".decision-options .btn{text-align:left;white-space:normal}"
     ".field{margin-bottom:16px}"
     ".field>label{display:block;font-size:12px;letter-spacing:0.02em;"
       "color:var(--muted);margin-bottom:5px}"

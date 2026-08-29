@@ -505,6 +505,52 @@ test_the_composer_stands_on_the_message_column(void)
 }
 
 /*
+ * A decision's options stack, and read from the left.
+ *
+ * An option is a sentence rather than a verb -- "Re-provision
+ * clawt-oryx from a proper Fedora cloud image, so the exchange mounts
+ * and the default-user config land too" is a real one.  In a wrapping
+ * button row each of those is centred and broken across lines with no
+ * left edge for the eye to come back to, which is most of why the
+ * decisions page was unreadable in both clients.
+ */
+static void
+test_decision_options_stack(void)
+{
+    const gchar *css = clawt_web_stylesheet();
+    const gchar *rule = strstr(css, ".decision-options{");
+    const gchar *inner = strstr(css, ".decision-options .btn{");
+    g_autofree gchar *block = NULL;
+    g_autofree gchar *inner_block = NULL;
+    const gchar *close;
+
+    g_assert_nonnull(rule);
+    g_assert_nonnull(inner);
+
+    /* Cut at each rule's own brace: strstr() from here would otherwise
+     * find a declaration anywhere later in the sheet and report the rule
+     * as correct however it is written. */
+    close = strchr(rule, '}');
+    g_assert_nonnull(close);
+    block = g_strndup(rule, (gsize)(close - rule));
+
+    close = strchr(inner, '}');
+    g_assert_nonnull(close);
+    inner_block = g_strndup(inner, (gsize)(close - inner));
+
+    g_assert_nonnull(strstr(block, "flex-direction:column"));
+
+    /*
+     * And the label wraps inside the button rather than making it as
+     * wide as the sentence, which is the same failure the GTK client
+     * had -- there as a button whose label did not wrap, here as a
+     * `white-space` that would keep it on one line.
+     */
+    g_assert_nonnull(strstr(inner_block, "text-align:left"));
+    g_assert_nonnull(strstr(inner_block, "white-space:normal"));
+}
+
+/*
  * Stop does not reflow the composer row when it arrives.
  *
  * It is drawn only while a turn is running, so it appears and
@@ -1319,6 +1365,8 @@ main(int argc, char *argv[])
                     test_dark_is_reachable_by_preference_and_by_choice);
     g_test_add_func("/web/composer-stands-on-the-message-column",
                     test_the_composer_stands_on_the_message_column);
+    g_test_add_func("/web/decision-options-stack",
+                    test_decision_options_stack);
     g_test_add_func("/web/stop-does-not-move-send",
                     test_stop_does_not_move_send);
     g_test_add_func("/web/narrow-composer-override-can-win",

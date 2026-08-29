@@ -172,7 +172,17 @@ decision_row(ClawtWebApp *app, JsonObject *decision, gint64 now)
 
         clawt_web_add(form, clawt_web_hidden("decision", id));
 
-        htmx_element_add_class(HTMX_ELEMENT(buttons), "btn-row");
+        /*
+         * One option per line, not a row of buttons.
+         *
+         * An option is a sentence -- "Re-provision clawt-oryx from a
+         * proper Fedora cloud image, so the exchange mounts and the
+         * default-user config land too" is a real one -- and a wrapping
+         * button row centres each of them, which gives the eye no left
+         * edge to come back to on the second line.  The GTK client
+         * stacks them for the same reason.
+         */
+        htmx_element_add_class(HTMX_ELEMENT(buttons), "decision-options");
 
         for (i = 0; options != NULL && i < json_array_get_length(options);
              i++) {

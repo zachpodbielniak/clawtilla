@@ -921,6 +921,18 @@ versions apart.
 
 ### Layout and drawing
 
+- **A wrapping `GtkLabel` still reports the unwrapped string as its natural
+  width**, and a `GtkScrolledWindow` left at the default
+  `GTK_POLICY_AUTOMATIC` gives its child exactly that. So a long sentence
+  makes its row as wide as itself and the whole page scrolls sideways --
+  nothing is ellipsised and nothing is logged, so it reads as text that was
+  cut off rather than as a page wider than the screen. `GTK_POLICY_NEVER`
+  horizontally is what makes the wrap actually happen. The decisions page
+  had this; every other `boxed-list` page still does, and is only saved by
+  its rows being short.
+- **A `GtkListBox` in a `GtkScrolledWindow` fills the viewport** unless its
+  alignment says otherwise, so one short row draws a card with eight hundred
+  pixels of empty frame under it. `GTK_ALIGN_START`.
 - **A size request is a floor, not a cap**, so a child in a box sets the box's
   width. Use an *overlay* child for something that must cost no width (the
   chat gutter's timestamps).

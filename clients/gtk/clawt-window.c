@@ -203,6 +203,14 @@ struct _ClawtWindow {
     GtkWidget         *flow_clamp;
 
     /*
+     * The decisions page reads its column from the same resolver, and
+     * so needs the same pair: the clamp to size, and the scroller whose
+     * viewport it resolves against.
+     */
+    GtkWidget         *decision_clamp;
+    GtkScrolledWindow *decision_scroll;
+
+    /*
      * The two scrolled windows the measure is a share of.
      *
      * A share is only a number once there is something to take it of,
@@ -3577,6 +3585,13 @@ push_chat_measure(ClawtWindow *self)
                       chat_measure_for(
                           self,
                           viewport_width(GTK_WIDGET(self->flow_scroll))));
+
+    if (self->decision_clamp != NULL)
+        apply_measure(self->decision_clamp,
+                      chat_measure_for(
+                          self,
+                          viewport_width(
+                              GTK_WIDGET(self->decision_scroll))));
 }
 
 static void
@@ -7963,6 +7978,50 @@ on_decision_dismiss(GtkButton *button, gpointer user_data)
         refresh_decisions(self);
 }
 
+/*
+ * The inset every row inside a decision shares.
+ *
+ * One function because four of them take it and a fifth added later
+ * would otherwise be the one that sits flush against the card edge --
+ * which is exactly how the options row and the answer box came to have
+ * different margins from each other.
+ */
+/*
+ * One offered option, as a button whose label wraps.
+ *
+ * gtk_button_new_with_label() makes a label that does not wrap, so the
+ * button becomes as wide as the sentence and pushes the whole card past
+ * the window -- which, with the page's horizontal scroll, is how the
+ * decisions view became unreadable.
+ *
+ * Left-aligned because an option is read rather than scanned: a centred
+ * label broken over three lines gives the eye no edge to come back to.
+ */
+static GtkWidget *
+decision_option_button(const gchar *option)
+{
+    GtkWidget *text = gtk_label_new(option);
+    GtkWidget *button = gtk_button_new();
+
+    gtk_label_set_wrap(GTK_LABEL(text), TRUE);
+    gtk_label_set_wrap_mode(GTK_LABEL(text), PANGO_WRAP_WORD_CHAR);
+    gtk_label_set_xalign(GTK_LABEL(text), 0.0);
+
+    gtk_button_set_child(GTK_BUTTON(button), text);
+    gtk_widget_set_halign(button, GTK_ALIGN_FILL);
+
+    return button;
+}
+
+static void
+pad_decision_row(GtkWidget *widget)
+{
+    gtk_widget_set_margin_top(widget, 6);
+    gtk_widget_set_margin_bottom(widget, 6);
+    gtk_widget_set_margin_start(widget, 12);
+    gtk_widget_set_margin_end(widget, 12);
+}
+
 static void
 refresh_decisions_once(ClawtWindow *self)
 {
@@ -7993,6 +8052,7 @@ refresh_decisions_once(ClawtWindow *self)
         JsonArray *options = json_object_get_array_member(decision,
                                                           "options");
         GtkWidget *entry = gtk_entry_new();
+        GtkWidget *choices = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
         GtkWidget *actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
         GtkWidget *answer = gtk_button_new_with_label("Answer");
         GtkWidget *drop = gtk_button_new_with_label("Does not need me");
@@ -8034,6 +8094,15 @@ refresh_decisions_once(ClawtWindow *self)
             GTK_ENTRY(entry),
             "\"neither, do X\" is a perfectly good answer");
 
+        /*
+         * One option per line, not a row of buttons.
+         *
+         * An option is a sentence -- "Re-provision clawt-oryx from a
+         * proper Fedora cloud image, so the exchange mounts and the
+         * default-user config land too" is a real one -- and two of
+         * those side by side is wider than any window.  Stacked, each
+         * reads as the thing it is: a choice somebody is being offered.
+         */
         for (o = 0; options != NULL && o < json_array_get_length(options);
              o++) {
             const gchar *option = json_array_get_string_element(options, o);
@@ -8042,14 +8111,15 @@ refresh_decisions_once(ClawtWindow *self)
             if (option == NULL || *option == '\0')
                 continue;
 
-            pick = gtk_button_new_with_label(option);
+            pick = decision_option_button(option);
+
             g_object_set_data_full(G_OBJECT(pick), "decision-id",
                                    g_strdup(id), g_free);
             g_object_set_data_full(G_OBJECT(pick), "option",
                                    g_strdup(option), g_free);
             g_signal_connect(pick, "clicked",
                              G_CALLBACK(on_decision_answer), self);
-            gtk_box_append(GTK_BOX(actions), pick);
+            gtk_box_append(GTK_BOX(choices), pick);
         }
 
         g_object_set_data_full(G_OBJECT(answer), "decision-id",
@@ -8064,18 +8134,38 @@ refresh_decisions_once(ClawtWindow *self)
                          self);
 
         gtk_widget_add_css_class(answer, "suggested-action");
-        gtk_box_append(GTK_BOX(actions), answer);
-        gtk_box_append(GTK_BOX(actions), drop);
-        gtk_widget_set_margin_top(actions, 6);
-        gtk_widget_set_margin_bottom(actions, 6);
-        gtk_widget_set_margin_start(actions, 12);
-        gtk_widget_set_margin_end(actions, 12);
 
-        gtk_widget_set_margin_start(entry, 12);
-        gtk_widget_set_margin_end(entry, 12);
+        /*
+         * The answer box and its button on one line, because they are
+         * one action.  They used to sit in separate rows with the
+         * option buttons between them, so the control that sends what
+         * you typed was three widgets away from where you typed it.
+         */
+        {
+            GtkWidget *typed = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
 
-        adw_expander_row_add_row(ADW_EXPANDER_ROW(row), entry);
+            gtk_widget_set_hexpand(entry, TRUE);
+            gtk_box_append(GTK_BOX(typed), entry);
+            gtk_box_append(GTK_BOX(typed), answer);
+            gtk_box_append(GTK_BOX(actions), typed);
+            gtk_widget_set_hexpand(typed, TRUE);
+        }
+
+        gtk_widget_set_halign(drop, GTK_ALIGN_START);
+
+        if (gtk_widget_get_first_child(choices) != NULL) {
+            pad_decision_row(choices);
+            adw_expander_row_add_row(ADW_EXPANDER_ROW(row), choices);
+        } else {
+            g_object_ref_sink(choices);
+            g_object_unref(choices);
+        }
+
+        pad_decision_row(actions);
+        pad_decision_row(drop);
+
         adw_expander_row_add_row(ADW_EXPANDER_ROW(row), actions);
+        adw_expander_row_add_row(ADW_EXPANDER_ROW(row), drop);
 
         gtk_list_box_append(self->decision_list, row);
     }
@@ -8107,16 +8197,66 @@ static GtkWidget *
 build_decision_page(ClawtWindow *self)
 {
     GtkWidget *scroll = gtk_scrolled_window_new();
+    GtkWidget *clamp = adw_clamp_new();
 
     self->decision_list = GTK_LIST_BOX(gtk_list_box_new());
     gtk_list_box_set_selection_mode(self->decision_list, GTK_SELECTION_NONE);
     gtk_widget_add_css_class(GTK_WIDGET(self->decision_list), "boxed-list");
     gtk_widget_set_margin_top(GTK_WIDGET(self->decision_list), 12);
+    gtk_widget_set_margin_bottom(GTK_WIDGET(self->decision_list), 12);
     gtk_widget_set_margin_start(GTK_WIDGET(self->decision_list), 12);
     gtk_widget_set_margin_end(GTK_WIDGET(self->decision_list), 12);
 
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll),
-                                  GTK_WIDGET(self->decision_list));
+    /*
+     * The same measure the chat has, from the same resolver, so a reader
+     * who widened the conversation gets it here too and there is no
+     * second answer to what a readable line is.  A decision's question
+     * is prose and is read the same way.
+     */
+    self->decision_clamp = clamp;
+    adw_clamp_set_maximum_size(ADW_CLAMP(clamp), chat_measure(self));
+    adw_clamp_set_child(ADW_CLAMP(clamp), GTK_WIDGET(self->decision_list));
+
+    /*
+     * Hugging the top rather than filling the viewport.  A GtkListBox
+     * left at the default alignment takes the whole height a scrolled
+     * window offers it, so one short decision drew a card with the
+     * question at the top and eight hundred pixels of empty frame under
+     * it -- which reads as a page that failed to load the rest.
+     */
+    gtk_widget_set_valign(clamp, GTK_ALIGN_START);
+
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), clamp);
+
+    /*
+     * And it does not scroll sideways.
+     *
+     * This is the whole reason the page was unreadable.  A wrapping
+     * GtkLabel still reports the *unwrapped* string as its natural
+     * width, and a GtkScrolledWindow left at the default
+     * GTK_POLICY_AUTOMATIC gives its child exactly that -- so a
+     * question of any length made the row as wide as the sentence, ran
+     * it off the right edge of the window, and took the default line,
+     * the answer box and every option button with it.  Nothing was
+     * ellipsised and nothing looked broken; the page had simply become
+     * wider than the screen, so all anybody saw was the first screenful
+     * of each line.
+     *
+     * Refusing the horizontal scroll is what makes the wrap that
+     * libadwaita already asks for actually happen.
+     */
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                                   GTK_POLICY_NEVER,
+                                   GTK_POLICY_AUTOMATIC);
+
+    /*
+     * Recorded before the follow is armed.  push_chat_measure() reads
+     * this scroller to resolve the column, and the notify it connects
+     * to can fire during realisation -- before a later assignment would
+     * have run.
+     */
+    self->decision_scroll = GTK_SCROLLED_WINDOW(scroll);
+    follow_viewport_width(self, scroll);
 
     return scroll;
 }
