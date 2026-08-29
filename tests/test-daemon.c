@@ -2629,9 +2629,18 @@ test_a_finished_turn_clears_the_depth(void)
     alpha = clawt_agent_manager_get(agents, "alpha");
     g_assert_nonnull(alpha);
 
-    /* Seven hops in, mid-turn: the depth is real and must be kept. */
+    /*
+     * Seven hops in, and the turn begins: the depth is real and must be
+     * kept for the whole of it.
+     *
+     * Through the typing signal rather than clawt_agent_set_activity(),
+     * because the start of a turn is what decides whether the depth is
+     * this turn's or the last one's -- and driving the state directly
+     * would skip the decision this test is about.
+     */
     clawt_agent_set_hop_depth(alpha, 7);
-    clawt_agent_set_activity(alpha, TRUE, "beta");
+    g_signal_emit_by_name(clawt_daemon_get_link_server(fixture.daemon),
+                          "typing", "alpha", "beta", TRUE);
     g_assert_cmpint(clawt_agent_get_hop_depth(alpha), ==, 7);
 
     /*
@@ -2643,12 +2652,30 @@ test_a_finished_turn_clears_the_depth(void)
      * reply from zero and made max_hops unreachable on the one path it
      * exists for.
      */
-    clawt_agent_set_activity(alpha, FALSE, NULL);
+    g_signal_emit_by_name(clawt_daemon_get_link_server(fixture.daemon),
+                          "typing", "alpha", "beta", FALSE);
     g_assert_cmpint(clawt_agent_get_hop_depth(alpha), ==, 7);
 
-    /* The reply is what carries it away: stamped one further, then gone. */
+    /*
+     * And the reply does *not* carry it away.
+     *
+     * This asserted zero here, which encoded the defect as the
+     * intention: a turn is not one message, so clearing on the first
+     * outbound started the second at depth 1 and two agents signing off
+     * at each other never reached max_hops. What clears it is the start
+     * of a turn nothing delivered into, below.
+     */
     g_signal_emit_by_name(clawt_daemon_get_link_server(fixture.daemon),
                           "message", "alpha", "beta", "Done.", NULL);
+    g_assert_cmpint(clawt_agent_get_hop_depth(alpha), ==, 7);
+
+    /*
+     * A second turn, with no delivery before it -- Matrix, a webhook,
+     * the person typing into libreclaw directly. That one starts from
+     * zero rather than nine hops into somebody else's conversation.
+     */
+    g_signal_emit_by_name(clawt_daemon_get_link_server(fixture.daemon),
+                          "typing", "alpha", "beta", TRUE);
     g_assert_cmpint(clawt_agent_get_hop_depth(alpha), ==, 0);
 
     fixture_teardown(&fixture);
@@ -2690,20 +2717,28 @@ test_a_channel_turn_starts_from_zero(void)
     alpha = clawt_agent_manager_get(agents, "alpha");
     g_assert_nonnull(alpha);
 
-    /* A deep chain reached alpha and alpha answered it, and the answer
-     * is what takes the depth with it. */
+    /* A deep chain reached alpha, and alpha's turn ran and answered it. */
     clawt_agent_set_hop_depth(alpha, 4);
-    clawt_agent_set_activity(alpha, TRUE, "beta");
-    clawt_agent_set_activity(alpha, FALSE, NULL);
+    g_signal_emit_by_name(clawt_daemon_get_link_server(fixture.daemon),
+                          "typing", "alpha", "beta", TRUE);
+    g_signal_emit_by_name(clawt_daemon_get_link_server(fixture.daemon),
+                          "typing", "alpha", "beta", FALSE);
     g_signal_emit_by_name(clawt_daemon_get_link_server(fixture.daemon),
                           "message", "alpha", "beta", "Done.", NULL);
 
     /*
-     * Now a person says something in Matrix. Nothing in that path
-     * touches the router, so the only depth available is whatever the
-     * agent still carries -- and the first hop of a new conversation
-     * must be allowed.
+     * Now a person says something in Matrix.  Nothing in that path
+     * touches the router, so no delivery records a depth for it -- and
+     * the turn starting is what says so. The first hop of a new
+     * conversation must be allowed.
+     *
+     * The turn boundary is the signal, rather than the agent's previous
+     * message: a turn that sends two messages must count both from the
+     * same place, which is why the depth outlives the first of them.
      */
+    g_signal_emit_by_name(clawt_daemon_get_link_server(fixture.daemon),
+                          "typing", "alpha", "beta", TRUE);
+
     depth = clawt_agent_get_hop_depth(alpha) + 1;
     g_assert_cmpint(depth, ==, 1);
 
@@ -6439,6 +6474,64 @@ test_an_agent_that_dies_mid_turn_is_not_left_working(void)
 
 
 /*
+ * Every message an agent sends in one turn counts from the same depth.
+ *
+ * A turn is not one message. A chief-of-staff answers its operator *and*
+ * hands work to a peer; a lead reports upwards and asks downwards. The
+ * depth was cleared as soon as the first of those went out, so the
+ * second started a fresh chain at 1 -- and two agents signing off at each
+ * other could then do it for ever, because max_hops was measuring the
+ * last message of a turn rather than the conversation.
+ */
+static void
+test_a_turn_sends_every_message_at_the_same_depth(void)
+{
+    Fixture fixture;
+    ClawtLinkServer *links;
+    ClawtAgentManager *agents;
+    ClawtAgent *alpha;
+    ClawtAgent *beta;
+    g_autoptr(GPtrArray) queued = NULL;
+
+    fixture_setup(&fixture,
+                  "orchestration:\n"
+                  "  max_hops: 8\n"
+                  "  cycle_window: 0\n"
+                  "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    links = clawt_daemon_get_link_server(fixture.daemon);
+    agents = clawt_daemon_get_agents(fixture.daemon);
+    alpha = clawt_agent_manager_get(agents, "alpha");
+    beta = clawt_agent_manager_get(agents, "beta");
+
+    /* A peer's message reached alpha having travelled three hops. */
+    clawt_agent_set_hop_depth(alpha, 3);
+
+    g_signal_emit_by_name(links, "typing", "alpha", "beta", TRUE);
+
+    /* Two messages out of one turn, which is the ordinary case. */
+    g_signal_emit_by_name(links, "message", "alpha", "beta", "First.", NULL);
+    g_signal_emit_by_name(links, "message", "alpha", "beta", "Second.", NULL);
+
+    queued = clawt_mailbox_list(clawt_agent_get_mailbox(beta), NULL);
+    g_assert_nonnull(queued);
+    g_assert_cmpuint(queued->len, ==, 2);
+
+    /*
+     * Both at four. The second one arriving at 1 is the whole bug: it
+     * means the chain has restarted, and a pair of agents exchanging
+     * sign-offs never reaches max_hops however long they keep it up.
+     */
+    g_assert_cmpint(clawt_mailbox_item_get_depth(
+                        g_ptr_array_index(queued, 0)), ==, 4);
+    g_assert_cmpint(clawt_mailbox_item_get_depth(
+                        g_ptr_array_index(queued, 1)), ==, 4);
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * Stopping an agent stops the machine it was using.
  *
  * `computer.container.keep` has said "keep the container when the agent
@@ -6948,6 +7041,8 @@ main(int argc, char *argv[])
                     test_agent_set_refuses_a_value_the_enum_lacks);
     g_test_add_func("/daemon/agent-set-reports-a-role-needs-a-session",
                     test_agent_set_reports_a_role_needs_a_new_session);
+    g_test_add_func("/daemon/hop-depth/one-turn-one-depth",
+                    test_a_turn_sends_every_message_at_the_same_depth);
     g_test_add_func("/daemon/computer/agent-stop-stops-the-machine",
                     test_stopping_an_agent_stops_its_machine);
     g_test_add_func("/daemon/computer/agent-stop-frame-stops-the-machine",

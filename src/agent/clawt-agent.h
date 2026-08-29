@@ -285,6 +285,20 @@ gint clawt_agent_get_hop_depth(ClawtAgent *self);
 void clawt_agent_set_hop_depth(ClawtAgent *self, gint depth);
 
 /**
+ * clawt_agent_begin_turn:
+ * @self: a #ClawtAgent
+ *
+ * Tells the agent a turn is starting, so it knows which chain it is on.
+ *
+ * A depth set by a delivery is kept for the whole turn -- every message
+ * the agent sends counts from the same place, because a turn is not one
+ * message. A turn that no delivery preceded starts from zero rather than
+ * inheriting the last one, which is what stops an agent that answers
+ * Matrix between two peer messages from running out of hops.
+ */
+void clawt_agent_begin_turn(ClawtAgent *self);
+
+/**
  * clawt_agent_start:
  * @self: a #ClawtAgent
  * @error: (out) (optional): return location for a #GError

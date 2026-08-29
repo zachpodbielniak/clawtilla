@@ -702,6 +702,25 @@ conversation and the one limit built for two agents answering each other
 for ever could never be reached on the path where that actually happens.
 Two agents traded fifty messages of "Idle." and nothing stopped them.
 
+A *turn* is counted, not a message.  Every message an agent sends in one
+turn is stamped from the same depth --- because a turn is not one
+message: a chief-of-staff answers its operator and hands work to a peer
+in the same breath, and a lead reports upwards while asking downwards.
+
+The depth used to be dropped as soon as the first of those went out, on
+the reasoning that the reply is the last thing that needs it.  That is
+true of a turn that sends one message and false of every other kind: the
+second message started a fresh chain at depth 1, so two agents signing
+off at each other never reached ~max_hops~ however long they kept it up.
+Six rounds of "nothing further, ending turn" on a real fleet is what
+found it.
+
+What drops the depth now is the *start* of a turn that no delivery
+preceded.  Matrix, webhook, local and cmacs belong to libreclaw and the
+daemon never sees those messages, so an agent answering a person there
+must not inherit nine hops from the last peer conversation and be
+refused a delegation one hop deep.
+
 A hop count is shown against each message on the GTK client's Flow tab
 from the second hop on, because a number climbing towards the limit is
 the only thing on screen that distinguishes a loop from a conversation:

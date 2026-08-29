@@ -36,6 +36,7 @@ struct _ClawtAgent {
     ClawtAgentState state;
     ClawtAgentCaps  caps;
     gint            hop_depth;
+    gboolean        hop_depth_fresh;
     gchar          *status_detail;
 };
 
@@ -386,6 +387,40 @@ clawt_agent_set_hop_depth(ClawtAgent *self, gint depth)
     g_return_if_fail(CLAWT_IS_AGENT(self));
 
     self->hop_depth = depth;
+
+    /*
+     * Set for a turn that has not started yet.  clawt_agent_begin_turn()
+     * spends it; a turn that begins without one starts from zero.
+     */
+    self->hop_depth_fresh = TRUE;
+}
+
+void
+clawt_agent_begin_turn(ClawtAgent *self)
+{
+    g_return_if_fail(CLAWT_IS_AGENT(self));
+
+    /*
+     * A turn nothing delivered into starts a fresh chain.
+     *
+     * The depth answers "how far had the message I am handling come",
+     * which is true of a *turn* rather than of an agent -- so a turn that
+     * began somewhere the daemon never sees (Matrix, webhook, local,
+     * cmacs) must not inherit whatever the last peer delivery left, or
+     * an agent eventually cannot delegate at all.
+     *
+     * Dropped here rather than after the agent's first outbound message,
+     * which is where it was. A turn is not one message: a chief-of-staff
+     * answers its operator *and* hands work to a peer, and clearing on
+     * the first of those started the second at depth 1. Two agents
+     * signing off at each other could then do it for ever, because
+     * max_hops was measuring the last message of a turn rather than the
+     * conversation.
+     */
+    if (!self->hop_depth_fresh)
+        self->hop_depth = 0;
+
+    self->hop_depth_fresh = FALSE;
 }
 
 void

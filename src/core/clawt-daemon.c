@@ -1294,6 +1294,14 @@ on_link_typing(ClawtLinkServer *server,
     if (agent != NULL)
         clawt_agent_set_activity(agent, typing, NULL);
 
+    /*
+     * A turn is starting, which is the moment that decides how far the
+     * message being answered had come. Every message this turn sends
+     * counts from there.
+     */
+    if (agent != NULL && typing)
+        clawt_agent_begin_turn(agent);
+
     event = clawt_event_new("agent.typing", agent_id);
     clawt_event_set_detail(event, "typing", typing ? "true" : "false");
 
@@ -1406,27 +1414,21 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
             (sender != NULL) ? clawt_agent_get_hop_depth(sender) + 1 : 1);
 
         /*
-         * And then forget it, now that the reply carries it.
+         * And it is *not* cleared here.
          *
-         * hop_depth answers "how far had the message I am handling
-         * come", which is true of a turn rather than of an agent. The
-         * router is its only other writer, so a turn that began
-         * somewhere the daemon never sees -- Matrix, webhook, local,
-         * cmacs -- used to inherit whatever the last agent-to-agent
-         * delivery had left, and add one to it. Enough of those and an
-         * agent could not start a delegation at all.
+         * It was, on the reasoning that the reply is the last thing that
+         * needs the number -- which is true of a turn that sends one
+         * message and false of every other kind. A chief-of-staff
+         * answers its operator and hands work to a peer in the same
+         * turn; clearing on the first of those started the second at
+         * depth 1, so two agents signing off at each other never reached
+         * max_hops however long they kept it up. Six rounds of "nothing
+         * further, ending turn" on a real fleet is what found it.
          *
-         * Cleared *here* rather than when the turn ends, which is where
-         * it was first tried. libreclaw drops its typing indicator
-         * before it posts the answer, so clearing on that transition
-         * lands in the window between the two: the reply is then stamped
-         * from zero, every chain restarts at one, and max_hops stops
-         * being reachable on the one path it exists for -- two agents
-         * answering each other for ever. The reply is the last thing
-         * that needs the number, so it is the right place to drop it.
+         * clawt_agent_begin_turn() drops it instead, at the start of a
+         * turn no delivery preceded -- which is the case the clearing
+         * was protecting against.
          */
-        if (sender != NULL)
-            clawt_agent_set_hop_depth(sender, 0);
     }
 
     /*

@@ -700,6 +700,41 @@ the same program.
   check reported OK with the feature in one client only. Verified by
   breaking one and watching it fail.
 
+### A turn is not one message, and the hop count was measuring the last one
+
+- `on_link_message()` stamped an agent's reply one hop beyond what it was
+  handling and then **cleared the depth to zero**, with a comment saying
+  the reply is the last thing that needs the number. True of a turn that
+  sends one message; false of every other kind. A chief-of-staff answers
+  its operator *and* hands work to a peer in one turn, so the second
+  message went out at depth 1 -- and two agents signing off at each other
+  could do it for ever, because `max_hops` was measuring the last message
+  of a turn rather than the conversation.
+- Reported from a real fleet as six rounds of "nothing further, ending
+  turn" between two agents, with a lead insisting it had sent nothing
+  since its last substantive reply -- which was true of the *content* and
+  not of the traffic. The prompt prefix already tells a peer-messaged
+  agent to end its turn without replying if it has nothing to say; that
+  is advice, and `max_hops` is the thing that does not depend on the
+  model taking it.
+- The clear existed for a real reason -- a turn that began in Matrix or a
+  webhook never touches the router, so nothing records a depth for it and
+  a stale one would eventually refuse an agent its first delegation. So
+  the depth is now dropped at the **start of a turn no delivery
+  preceded**: `clawt_agent_set_hop_depth()` marks it fresh, and
+  `clawt_agent_begin_turn()` on the typing indicator spends that mark.
+  Both cases fall out of one flag.
+- **Two existing tests encoded the defect as the intention.** One
+  asserted the depth was zero after a reply; the other simulated a
+  Matrix turn by calling `clawt_agent_set_activity()` directly, which
+  skips the very decision it was about. Both now drive the real typing
+  signal. That is twice in two days a test has pinned the bug -- the
+  `argv[0] == "qemu-system-x86_64"` one was the other -- and both were
+  found by running the whole suite after the fix, never by reading.
+- And once more, at the end: `make` after restoring a sabotaged file
+  does **not** relink `build/release/tests/*`, so the first run after the
+  revert still failed. It is written in this file twice already.
+
 ### `computer.container.keep` described a moment that never happened
 
 - "Keep the container when the agent stops, instead of removing it" --
