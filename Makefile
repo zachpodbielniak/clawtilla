@@ -663,7 +663,8 @@ tests: $(TEST_BINARIES) test-plugins plugins
 .PHONY: test  ## Build and run the hermetic test suite
 test: $(TEST_BINARIES) test-plugins plugins
 	@echo "Running tests..."
-	@fail=0; ran=0; \
+	@sh $(TOOLSDIR)/clawt-test-litter.sh snapshot $(OUTDIR)/test-litter; \
+	fail=0; ran=0; \
 	for t in $(TEST_BINARIES); do \
 		[ -x "$$t" ] || continue; \
 		ran=$$((ran+1)); \
@@ -677,6 +678,7 @@ test: $(TEST_BINARIES) test-plugins plugins
 	done; \
 	if [ $$fail -ne 0 ]; then echo "TESTS FAILED"; exit 1; fi; \
 	sh $(TOOLSDIR)/clawt-test-floor.sh $$ran || exit 1; \
+	sh $(TOOLSDIR)/clawt-test-litter.sh check $(OUTDIR)/test-litter || exit 1; \
 	echo "All tests passed."
 
 .PHONY: test-verbose  ## Same as test, with each binary's own output

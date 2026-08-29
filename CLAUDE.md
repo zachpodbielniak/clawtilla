@@ -180,6 +180,16 @@ via the `CLAWT_TEST_FIXTURES` define, never by guessing at the cwd.
 binaries ran, because a green run that built almost nothing still looks
 green. Raise the floor as the suite grows.
 
+`tools/clawt-test-litter.sh` fails a **green** run that left a temporary
+directory behind. Clean up with `clawt_test_remove_tree()`: `g_rmdir()`
+does nothing to a non-empty directory and `g_unlink()` on the file leaves
+the directory above it, so a fixture ending in either looks tidy and is
+not -- three did, and 2710 directories built up in `/tmp` over six days
+of green runs. It compares the same run against itself, because a
+*failing* run's directories are evidence and must stay. A `g_test_add()`
+teardown is not the answer: a failed `g_assert` aborts, so no teardown
+runs on that path either.
+
 ## Architecture
 
 ```

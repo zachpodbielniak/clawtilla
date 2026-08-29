@@ -347,6 +347,39 @@ binaries ran, because a green run that built almost nothing still looks
 green.  ~TEST_FLOOR~ is a number in that script and adding a test file is
 the moment to raise it.  It is run from ~make test~ only.
 
+*** Clean up with ~clawt_test_remove_tree()~, never ~g_rmdir()~
+
+A fixture that made a temporary directory has to remove the *tree*.
+~g_rmdir()~ does nothing at all to a directory that is not empty, and
+~g_unlink()~ on the file a test wrote leaves the directory above it ---
+so a fixture that ends with either looks tidy and is not.  Three did:
+~test-attachment~ freed the path in its teardown without touching the
+directory, and ~test-appearance~ and ~test-connection~ each unlinked a
+file two levels down.  2710 directories had built up in ~/tmp~ over six
+days before anybody counted them, and every one of those runs was green.
+
+~clawt_test_remove_tree()~ in ~tests/clawt-test-util.h~ is the one
+spelling.  A directory that belongs to the whole binary --- an
+~XDG_CONFIG_HOME~ set before ~g_test_init()~ --- is removed after
+~g_test_run()~ returns, not by any one test, because nothing before that
+may take it away.
+
+~tools/clawt-test-litter.sh~ enforces this: ~make test~ lists the
+temporary directories before the run and again after, and a *green* run
+that added any fails, naming each one.  It compares the same run against
+itself rather than asking whether the temporary directory is empty,
+because a previous *failing* run leaves its directories behind on
+purpose --- they are the evidence, and GTest aborts on a failed
+assertion, so no teardown of any kind runs on that path.  That is also
+why moving cleanup into a ~g_test_add()~ teardown fixes nothing: the
+teardown does not run either.
+
+What the check cannot see: a fixture whose ~g_dir_make_tmp()~ template is
+not a string literal in ~tests/test-*.c~.  The prefixes are read from
+those literals, so the check grows with the suite instead of being a
+hand-written list that drifts --- but a template built at runtime is
+invisible to it.
+
 *** Tests stay hermetic
 
 No network, no podman, no libvirt, no gowl.  Anything needing real

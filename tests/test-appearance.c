@@ -449,7 +449,7 @@ test_a_missing_file_is_not_an_error(void)
     g_assert_cmpint(clawt_appearance_get_theme(appearance), ==,
                     CLAWT_THEME_SYSTEM);
 
-    g_rmdir(dir);
+    clawt_test_remove_tree(dir);
 }
 
 static void
@@ -472,7 +472,13 @@ test_saving_and_loading_a_file(void)
     g_assert_cmpint(clawt_appearance_get_theme(back), ==, CLAWT_THEME_LIGHT);
     g_assert_cmpstr(clawt_appearance_get_monospace_font(back), ==, "Iosevka");
 
-    g_unlink(path);
+    /*
+     * The tree.  The path here is deliberately two levels down, because
+     * what is under test is that saving *creates* the directory -- so
+     * unlinking the file left both the directory it made and the
+     * temporary one above it, once per run for ever.
+     */
+    clawt_test_remove_tree(dir);
 }
 
 /*
@@ -1391,6 +1397,9 @@ test_the_palette_clears_aa(void)
 int
 main(int argc, char *argv[])
 {
+    g_autofree gchar *config_home = NULL;
+    gint result;
+
     /*
      * Before g_test_init(), and before anything can ask for a config
      * directory.
@@ -1403,13 +1412,10 @@ main(int argc, char *argv[])
      * whatever happens to be in there: a suite that passes on one
      * machine and fails on another, for a reason nothing names.
      */
-    {
-        g_autofree gchar *tmp = g_dir_make_tmp("clawt-appearance-XXXXXX",
-                                               NULL);
+    config_home = g_dir_make_tmp("clawt-appearance-XXXXXX", NULL);
 
-        if (tmp != NULL)
-            g_setenv("XDG_CONFIG_HOME", tmp, TRUE);
-    }
+    if (config_home != NULL)
+        g_setenv("XDG_CONFIG_HOME", config_home, TRUE);
 
     g_test_init(&argc, &argv, NULL);
 
@@ -1505,5 +1511,15 @@ main(int argc, char *argv[])
     g_test_add_func("/appearance/markdown-font-escaping",
                     test_a_font_name_cannot_break_the_markup);
 
-    return g_test_run();
+    result = g_test_run();
+
+    /*
+     * Removed after the run rather than by the test that made it: it is
+     * the whole binary's XDG_CONFIG_HOME, so nothing before g_test_run()
+     * returns may take it away.  Palette discovery writes into it, so
+     * this is a tree and not a g_rmdir().
+     */
+    clawt_test_remove_tree(config_home);
+
+    return result;
 }

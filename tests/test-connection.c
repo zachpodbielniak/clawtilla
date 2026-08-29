@@ -281,7 +281,13 @@ test_the_file_is_written_private(void)
     g_assert_cmpstr(clawt_connection_get_token(g_ptr_array_index(back, 0)),
                     ==, "s3cret");
 
-    g_unlink(path);
+    /*
+     * The tree.  The path is two levels down on purpose -- the assertion
+     * above is that saving created the 0700 directory along the way --
+     * so unlinking the file left that directory and the temporary one
+     * holding it behind on every run.
+     */
+    clawt_test_remove_tree(dir);
 }
 
 /*
@@ -301,7 +307,7 @@ test_a_missing_file_is_not_an_error(void)
     g_assert_nonnull(list);
     g_assert_cmpuint(list->len, ==, 0);
 
-    g_rmdir(dir);
+    clawt_test_remove_tree(dir);
 }
 
 /*

@@ -16,6 +16,8 @@
 #include <glib/gstdio.h>
 #include <string.h>
 
+#include "clawt-test-util.h"
+
 typedef struct {
     gchar *dir;
     gchar *source;
@@ -40,6 +42,14 @@ fixture_setup(Fixture *fixture)
 static void
 fixture_teardown(Fixture *fixture)
 {
+    /*
+     * The tree, not the strings alone.  Every test here writes an
+     * attachment store *inside* this directory, so freeing the path and
+     * walking away left one /tmp/clawt-attachment-XXXXXX per test per
+     * run -- a thousand of them had accumulated before anybody looked.
+     */
+    clawt_test_remove_tree(fixture->dir);
+
     g_free(fixture->dir);
     g_free(fixture->source);
 }
