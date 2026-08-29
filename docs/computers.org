@@ -940,6 +940,35 @@ and if it persists, the cached probe is stale:
 rm -rf ~/.cache/libvirt/qemu/cache/capabilities
 #+end_src
 
+*** Giving a guest the packages it is missing
+
+A cloud image is deliberately small, and what is missing differs by
+distribution --- Arch's has no =hostname=, which agents reach for
+reflexively.  ~computer.vm.packages~ is where to put what yours needs,
+rather than having every agent install it again on every fresh machine:
+
+#+begin_src yaml
+computer:
+  type: vm
+  vm:
+    packages: [git, inetutils]
+#+end_src
+
+The names are the *guest's*.  The same tool is =inetutils= on Arch and
+=hostname= on Fedora, and cloud-init treats a package it cannot find as
+a failure of the **whole** install --- so one wrong name costs every
+other package here, and on a guest with a desktop it takes the desktop
+with it.
+
+They are folded into the desktop's own list when there is a desktop, and
+emitted as a block of their own when there is not, never both:
+cloud-config has one top-level =packages:= key and two would be a
+duplicate that YAML resolves by keeping the last.
+
+Read once, by cloud-init, from a seed written before the guest ever ran.
+Adding one to a VM that already exists needs the computer rebuilt, like
+everything else in that seed.
+
 *** A share added after the VM was built
 
 A running libvirt domain keeps the devices it was defined with.

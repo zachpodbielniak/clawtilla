@@ -522,6 +522,15 @@ clawt_computer_factory_create(ClawtAgentConfig  *agent_config,
                                                   "computer.vm.ssh_port"));
         }
 
+        {
+            g_auto(GStrv) packages = clawt_agent_config_get_string_list(
+                agent_config, "computer.vm.packages");
+
+            clawt_vm_computer_set_packages(
+                CLAWT_VM_COMPUTER(computer),
+                (const gchar *const *)packages);
+        }
+
         clawt_vm_computer_set_cloud_init(
             CLAWT_VM_COMPUTER(computer),
             clawt_agent_config_get_boolean(agent_config,

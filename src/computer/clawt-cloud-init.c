@@ -152,6 +152,54 @@ clawt_cloud_init_build_user_data_full(const gchar       *user,
                                       ClawtGuestDesktop *desktop,
                                       GPtrArray         *mounts)
 {
+    return clawt_cloud_init_build_user_data_packages(user, authorized_key,
+                                                     hostname, desktop,
+                                                     mounts, NULL);
+}
+
+/*
+ * The packages a guest with no desktop asks for.
+ *
+ * Its own block only when there is no desktop renderer to fold them
+ * into: cloud-config has one top-level `packages:` key, and two would be
+ * a duplicate YAML resolves by keeping the last -- so one of the lists
+ * would reach nothing at all.
+ *
+ * A name the guest's package manager cannot find fails the *whole*
+ * install, which on a desktop guest takes the desktop with it. Worth
+ * saying wherever this list is offered.
+ */
+static void
+render_packages(GString *out, const gchar * const *packages)
+{
+    gsize i;
+
+    if (packages == NULL || packages[0] == NULL)
+        return;
+
+    /*
+     * A cloud image's package metadata is however old the image is, and
+     * an install against a stale index fails on a package that has since
+     * been rebuilt.
+     */
+    g_string_append(out, "package_update: true\n");
+    g_string_append(out, "packages:\n");
+
+    for (i = 0; packages[i] != NULL; i++) {
+        g_string_append(out, "  - ");
+        append_quoted(out, packages[i]);
+        g_string_append_c(out, '\n');
+    }
+}
+
+gchar *
+clawt_cloud_init_build_user_data_packages(const gchar         *user,
+                                          const gchar         *authorized_key,
+                                          const gchar         *hostname,
+                                          ClawtGuestDesktop   *desktop,
+                                          GPtrArray           *mounts,
+                                          const gchar * const *packages)
+{
     g_autoptr(GString) out = NULL;
     gboolean is_root;
 
@@ -245,7 +293,9 @@ clawt_cloud_init_build_user_data_full(const gchar       *user,
      * same reason in reverse.
      */
     if (desktop != NULL)
-        clawt_guest_desktop_render_setup(desktop, out);
+        clawt_guest_desktop_render_setup(desktop, out, packages);
+    else
+        render_packages(out, packages);
 
     render_mounts(out, mounts);
 
@@ -331,6 +381,7 @@ clawt_cloud_init_write_seed(const gchar        *dir,
                             const gchar        *hostname,
                             ClawtGuestDesktop  *desktop,
                             GPtrArray          *mounts,
+                            const gchar *const *packages,
                             GError            **error)
 {
     g_autofree gchar *seed_dir = NULL;
@@ -353,9 +404,8 @@ clawt_cloud_init_write_seed(const gchar        *dir,
     if (!clawt_ensure_dir(seed_dir, 0700, error))
         return NULL;
 
-    user_data = clawt_cloud_init_build_user_data_full(user, authorized_key,
-                                                      hostname, desktop,
-                                                      mounts);
+    user_data = clawt_cloud_init_build_user_data_packages(
+        user, authorized_key, hostname, desktop, mounts, packages);
     meta_data = clawt_cloud_init_build_meta_data(instance_id, hostname);
 
     user_data_path = g_build_filename(seed_dir, "user-data", NULL);

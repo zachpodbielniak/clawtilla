@@ -1877,6 +1877,27 @@ static const ClawtSchemaEntry schema[] = {
   "Port SSH is reached on. Ignored when clawtilla is forwarding a port of\n"
   "its own choosing, which is the default.", "0.1.0" },
 
+{ "agents.computer.vm.packages", CLAWT_SCHEMA_STRING_LIST,
+  CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Packages the guest installs at first boot.\n"
+  "\n"
+  "  packages: [git, inetutils]\n"
+  "\n"
+  "A cloud image is deliberately small, and what is missing differs by\n"
+  "distribution -- Arch's has no `hostname`, which agents reach for\n"
+  "reflexively. This is where to put what yours needs, rather than\n"
+  "having every agent install it again on every fresh machine.\n"
+  "\n"
+  "Names are the guest's, not yours: the same tool is `inetutils` on\n"
+  "Arch and `hostname` on Fedora. cloud-init treats a package it cannot\n"
+  "find as a failure of the *whole* install, so one wrong name costs\n"
+  "every other package here -- and on a guest with a desktop, the\n"
+  "desktop with them.\n"
+  "\n"
+  "Read once, by cloud-init, from a seed written before the guest ever\n"
+  "ran. Adding one to a VM that already exists needs computer.rebuild,\n"
+  "like everything else in that seed.", "0.1.0" },
+
 { "agents.computer.vm.cloud_init", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "true", NULL,
   "Hand the guest a cloud-init seed on first boot.\n"

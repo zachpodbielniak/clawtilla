@@ -944,7 +944,8 @@ render_scripts(ClawtGuestDesktop *self, GString *out)
 }
 
 void
-clawt_guest_desktop_render_setup(ClawtGuestDesktop *self, GString *out)
+clawt_guest_desktop_render_setup(ClawtGuestDesktop *self, GString *out,
+                                 const gchar * const *extra)
 {
     const FlavourSpec *spec;
     gsize i;
@@ -965,6 +966,21 @@ clawt_guest_desktop_render_setup(ClawtGuestDesktop *self, GString *out)
         g_string_append(out, "package_upgrade: true\n");
 
     g_string_append(out, "packages:\n");
+
+    /*
+     * Whatever `computer.vm.packages` asked for, first.
+     *
+     * Rendered here rather than as a block of its own, because
+     * cloud-config has *one* top-level `packages:` key -- two would be a
+     * duplicate that YAML resolves by keeping the last and silently
+     * discarding the first, which is how a list somebody wrote reaches
+     * nothing.
+     */
+    for (i = 0; extra != NULL && extra[i] != NULL; i++) {
+        g_string_append(out, "  - ");
+        append_quoted(out, extra[i]);
+        g_string_append_c(out, '\n');
+    }
 
     /*
      * A configured list wins outright and is not merged with the

@@ -187,17 +187,25 @@ void clawt_guest_desktop_render_account(ClawtGuestDesktop *self,
  * clawt_guest_desktop_render_setup:
  * @self: a #ClawtGuestDesktop
  * @out: the `#cloud-config` being built
+ * @extra: (nullable) (array zero-terminated=1): packages to install as
+ *   well, from `computer.vm.packages`
  *
  * Appends everything that is not an account: the packages, the files, and
  * the commands that turn a headless cloud image into a machine sitting at
  * a logged-in GNOME session with automation switched on.
  *
+ * @extra goes into the same `packages:` list rather than one of its own,
+ * because cloud-config has a single top-level key for it -- two would be
+ * a duplicate that YAML resolves by keeping the last, so one of the
+ * lists would silently reach nothing.
+ *
  * Emitted after the `users:` block, because cloud-config is a mapping and
  * reopening a key that is already there loses everything under the first
  * one.
  */
-void clawt_guest_desktop_render_setup(ClawtGuestDesktop *self,
-                                      GString           *out);
+void clawt_guest_desktop_render_setup(ClawtGuestDesktop  *self,
+                                      GString             *out,
+                                      const gchar * const *extra);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtGuestDesktop, clawt_guest_desktop_unref)
 

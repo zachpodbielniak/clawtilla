@@ -478,6 +478,26 @@ the same program.
   itself was correct throughout; `gdbus call ... SetEnabled true` by hand
   returned `(true,)` on the same guest. Only the launcher was missing.
 
+### There was no way to give a plain VM a package
+
+- The seed installs nothing unless a guest has a *desktop* -- the package
+  block belongs to the desktop renderer and always has. So a headless VM
+  gets exactly what its image ships, and an Arch cloud image ships no
+  `hostname`, which agents reach for reflexively and then work around.
+- `computer.vm.packages` is one list for any VM, and the whole design
+  question is where it is emitted: cloud-config has **one** top-level
+  `packages:` key, and two would be a duplicate that YAML resolves by
+  keeping the last -- so one of the lists would silently reach nothing.
+  It is folded into the desktop's list when there is a desktop and given
+  a block of its own when there is not, never both, and there is a test
+  asserting exactly one `packages:` in each case.
+- The names are the guest's, and the failure is all-or-nothing:
+  cloud-init treats a package it cannot find as a failure of the whole
+  install, which on a desktop guest takes the desktop with it. That is
+  already recorded here for the family lists; it is worth repeating
+  wherever a list is offered to somebody who does not know the guest's
+  distribution as well as their own.
+
 ### A guest that predates a config change says nothing about it
 
 - `vm_provision()` leaves a running domain's definition alone, which is

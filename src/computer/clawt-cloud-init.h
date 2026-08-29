@@ -77,6 +77,39 @@ gchar *clawt_cloud_init_build_user_data_full(const gchar       *user,
                                              GPtrArray         *mounts);
 
 /**
+ * clawt_cloud_init_build_user_data_packages:
+ * @user: the login to create in the guest
+ * @authorized_key: (nullable): one OpenSSH public key line
+ * @hostname: (nullable): the guest's hostname
+ * @desktop: (nullable): a graphical session to install
+ * @mounts: (nullable) (element-type ClawtMount): the shares the domain
+ *   carries
+ * @packages: (nullable) (array zero-terminated=1): packages to install at
+ *   first boot, from `computer.vm.packages`
+ *
+ * As clawt_cloud_init_build_user_data_full(), and additionally installs
+ * @packages.
+ *
+ * They go into the desktop's own `packages:` list when there is a
+ * desktop, and into a block of their own when there is not --- never
+ * both. cloud-config has a single top-level `packages:` key, and two
+ * would be a duplicate that YAML resolves by keeping the last, so one of
+ * the lists would silently reach nothing.
+ *
+ * A name the guest's package manager cannot find fails the *whole*
+ * install, which on a guest with a desktop takes the desktop with it.
+ *
+ * Returns: (transfer full): the `#cloud-config` document
+ */
+gchar *clawt_cloud_init_build_user_data_packages(
+    const gchar         *user,
+    const gchar         *authorized_key,
+    const gchar         *hostname,
+    ClawtGuestDesktop   *desktop,
+    GPtrArray           *mounts,
+    const gchar * const *packages);
+
+/**
  * clawt_cloud_init_build_meta_data:
  * @instance_id: identifies this instance to cloud-init
  * @hostname: (nullable): the guest's hostname
@@ -139,6 +172,7 @@ gchar *clawt_cloud_init_write_seed(const gchar        *dir,
                                    const gchar        *hostname,
                                    ClawtGuestDesktop  *desktop,
                                    GPtrArray          *mounts,
+                                   const gchar *const *packages,
                                    GError            **error);
 
 /**

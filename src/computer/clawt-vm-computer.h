@@ -140,6 +140,21 @@ void clawt_vm_computer_set_emulator(ClawtVmComputer *self,
  *   backend is left to find its own
  */
 const gchar *clawt_vm_computer_get_emulator(ClawtVmComputer *self);
+
+/**
+ * clawt_vm_computer_set_packages:
+ * @self: a #ClawtVmComputer
+ * @packages: (nullable) (array zero-terminated=1): what to install
+ *
+ * Packages the guest installs at first boot, from
+ * `computer.vm.packages`.
+ *
+ * Read once, by cloud-init, from a seed built before the guest ever
+ * ran -- so adding one to a VM that exists needs its computer rebuilt,
+ * like every other thing in that seed.
+ */
+void clawt_vm_computer_set_packages(ClawtVmComputer     *self,
+                                    const gchar * const *packages);
 /**
  * clawt_vm_computer_parse_resolution:
  * @text: (nullable): a resolution as `WIDTHxHEIGHT`

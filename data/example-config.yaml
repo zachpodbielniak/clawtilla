@@ -1660,6 +1660,26 @@ agents:
         # its own choosing, which is the default.
         ssh_port: 22
 
+        # Packages the guest installs at first boot.
+        #
+        #   packages: [git, inetutils]
+        #
+        # A cloud image is deliberately small, and what is missing differs by
+        # distribution -- Arch's has no `hostname`, which agents reach for
+        # reflexively. This is where to put what yours needs, rather than
+        # having every agent install it again on every fresh machine.
+        #
+        # Names are the guest's, not yours: the same tool is `inetutils` on
+        # Arch and `hostname` on Fedora. cloud-init treats a package it cannot
+        # find as a failure of the *whole* install, so one wrong name costs
+        # every other package here -- and on a guest with a desktop, the
+        # desktop with them.
+        #
+        # Read once, by cloud-init, from a seed written before the guest ever
+        # ran. Adding one to a VM that already exists needs computer.rebuild,
+        # like everything else in that seed.
+        packages: []
+
         # Hand the guest a cloud-init seed on first boot.
         #
         # A cloud image has no account, no password and no authorised key: it

@@ -54,6 +54,9 @@ struct _ClawtVmComputer {
      */
     gchar *emulator;
 
+    /* computer.vm.packages: installed at first boot, and only then. */
+    GStrv  packages;
+
     /*
      * The graphical session to build inside the guest, or NULL for a
      * headless VM -- which is every VM unless the agent was granted a
@@ -197,6 +200,16 @@ clawt_vm_computer_get_emulator(ClawtVmComputer *self)
     g_return_val_if_fail(CLAWT_IS_VM_COMPUTER(self), NULL);
 
     return self->emulator;
+}
+
+void
+clawt_vm_computer_set_packages(ClawtVmComputer     *self,
+                               const gchar * const *packages)
+{
+    g_return_if_fail(CLAWT_IS_VM_COMPUTER(self));
+
+    g_strfreev(self->packages);
+    self->packages = g_strdupv((GStrv)packages);
 }
 
 void
@@ -1573,6 +1586,7 @@ ensure_cloud_init(ClawtVmComputer *self, GError **error)
                                        self->desktop,
                                        clawt_computer_get_mounts(
                                            CLAWT_COMPUTER(self)),
+                                       (const gchar *const *)self->packages,
                                        error);
 
     if (seed == NULL)
@@ -2465,6 +2479,7 @@ clawt_vm_computer_finalize(GObject *object)
     g_clear_pointer(&self->seed_iso, g_free);
     g_clear_pointer(&self->uuid, g_free);
     g_clear_pointer(&self->emulator, g_free);
+    g_clear_pointer(&self->packages, g_strfreev);
     g_clear_pointer(&self->qmp_socket, g_free);
 
     G_OBJECT_CLASS(clawt_vm_computer_parent_class)->finalize(object);

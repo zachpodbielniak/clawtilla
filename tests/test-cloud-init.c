@@ -188,7 +188,7 @@ test_write_seed_builds_a_labelled_image(void)
 
     iso = clawt_cloud_init_write_seed(dir, "clawt-scribe", "agent",
                                       "ssh-ed25519 AAAA x", "clawt-scribe",
-                                      NULL, NULL, &error);
+                                      NULL, NULL, NULL, &error);
     g_assert_no_error(error);
     g_assert_nonnull(iso);
     g_assert_true(g_file_test(iso, G_FILE_TEST_EXISTS));
@@ -201,7 +201,7 @@ test_write_seed_builds_a_labelled_image(void)
      */
     again = clawt_cloud_init_write_seed(dir, "clawt-scribe", "agent",
                                         "ssh-ed25519 AAAA x", "clawt-scribe",
-                                        NULL, NULL, &error);
+                                        NULL, NULL, NULL, &error);
     g_assert_no_error(error);
     g_assert_cmpstr(again, ==, iso);
 
@@ -305,6 +305,74 @@ test_no_shares_means_no_mounts_block(void)
     g_assert_null(strstr(data, "mounts:"));
 }
 
+/*
+ * Packages a guest with no desktop asks for, in a block of its own.
+ *
+ * cloud-config has *one* top-level `packages:` key. Two would be a
+ * duplicate that YAML resolves by keeping the last and silently
+ * discarding the first -- so the list somebody wrote would reach
+ * nothing, which is the failure this whole arrangement is shaped to
+ * avoid.
+ */
+static void
+test_a_headless_guest_installs_its_packages(void)
+{
+    const gchar *packages[] = { "git", "inetutils", NULL };
+    g_autofree gchar *data = clawt_cloud_init_build_user_data_packages(
+        "root", NULL, NULL, NULL, NULL, packages);
+    const gchar *first;
+
+    g_assert_nonnull(strstr(data, "packages:"));
+    g_assert_nonnull(strstr(data, "\"git\""));
+    g_assert_nonnull(strstr(data, "\"inetutils\""));
+
+    /* The index is refreshed first, or the install fails on a rebuild. */
+    g_assert_nonnull(strstr(data, "package_update: true"));
+
+    /* Exactly one packages: key. */
+    first = strstr(data, "packages:");
+    g_assert_null(strstr(first + 1, "\npackages:"));
+}
+
+/*
+ * And with a desktop they go into the desktop's list rather than a
+ * second one -- same reason, from the other side.
+ */
+static void
+test_a_desktop_guest_folds_them_into_one_list(void)
+{
+    const gchar *packages[] = { "inetutils", NULL };
+    g_autoptr(ClawtGuestDesktop) desktop = clawt_guest_desktop_new("clawt");
+    g_autofree gchar *data = NULL;
+    const gchar *first;
+
+    clawt_guest_desktop_set_flavour(desktop, CLAWT_GUEST_FLAVOUR_ARCH);
+
+    data = clawt_cloud_init_build_user_data_packages(
+        "root", NULL, NULL, desktop, NULL, packages);
+
+    g_assert_nonnull(strstr(data, "\"inetutils\""));
+
+    /* The desktop's own are still there... */
+    g_assert_nonnull(strstr(data, "gnome-shell"));
+
+    /* ...and there is still only one packages: key. */
+    first = strstr(data, "packages:");
+    g_assert_nonnull(first);
+    g_assert_null(strstr(first + 1, "\npackages:"));
+}
+
+/* Nothing asked for is nothing emitted, not an empty list. */
+static void
+test_no_packages_means_no_block(void)
+{
+    g_autofree gchar *data = clawt_cloud_init_build_user_data_packages(
+        "root", NULL, NULL, NULL, NULL, NULL);
+
+    g_assert_null(strstr(data, "packages:"));
+}
+
+
 int
 main(int argc, char *argv[])
 {
@@ -314,6 +382,12 @@ main(int argc, char *argv[])
                     test_the_guest_gets_fstab_entries_for_its_shares);
     g_test_add_func("/cloud-init/mounts/nested-after-its-parent",
                     test_a_nested_share_is_mounted_after_its_parent);
+    g_test_add_func("/cloud-init/packages/headless-guest",
+                    test_a_headless_guest_installs_its_packages);
+    g_test_add_func("/cloud-init/packages/one-list-with-a-desktop",
+                    test_a_desktop_guest_folds_them_into_one_list);
+    g_test_add_func("/cloud-init/packages/none-means-no-block",
+                    test_no_packages_means_no_block);
     g_test_add_func("/cloud-init/mounts/none-means-no-block",
                     test_no_shares_means_no_mounts_block);
     g_test_add_func("/cloud-init/user-data/only-the-named-user",
