@@ -201,10 +201,15 @@ clawtilla agent show scribe | grep identity
 | =claude-code=  | =--system-prompt-file=        | no      |
 | =opencode=     | stdin, in ~<system>~ tags     | no      |
 | =grok-build=   | =--system-prompt-override=    | *yes*   |
+| =antigravity=  | stdin, in ~<system>~ tags     | no      |
+| =cursor=       | stdin, in ~<system>~ tags     | no      |
 | =claude-tmux=  | not sent at all               | n/a     |
 
 ai-glib spills the prompt to a 0600 temporary for the Claude Code
-client, so the default backend has no practical ceiling.  =grok-build=
+client, so the default backend has no practical ceiling.  =antigravity=
+and =cursor= pipe it on stdin the way =opencode= does --- and both send
+it only on a *fresh* session, since a resumed one already has it ---
+which is unbounded for the same reason.  =grok-build=
 has no file-taking flag, so there the limit is real --- and
 =ai_cli_client_spawn()= refuses an over-long word up front, naming the
 flag, the size and the limit, rather than letting =execve= answer
@@ -278,7 +283,7 @@ one to reach for when an agent writes prose rather than code.
 *** An agent runs on a CLI backend, and only on a CLI backend
 
 libreclaw drives command-line tools, not HTTP APIs.  Its provider table
-knows exactly four:
+knows exactly six:
 
 | Provider       | What it is                                          |
 |----------------+-----------------------------------------------------|
@@ -286,6 +291,8 @@ knows exactly four:
 | ~claude-tmux~  | the same CLI driven interactively through tmux, so it bills as ordinary subscription use |
 | ~grok-build~   | xAI's ~grok~ CLI in headless mode; it authenticates itself rather than taking a key from clawtilla |
 | ~opencode~     | the OpenCode CLI, which routes to xAI, Google, OpenAI and others itself |
+| ~antigravity~  | Google's ~agy~ CLI in print mode; alias ~agy~, ~AGY_PATH~ overrides the binary |
+| ~cursor~       | Cursor's ~cursor-agent~ CLI in print mode; alias ~cursor-agent~, ~CURSOR_AGENT_PATH~ overrides |
 
 Anything else is *not* an error.  ~lc_provider_type_normalize()~
 rewrites an unrecognised provider to ~claude-code~ with a warning in the
@@ -305,15 +312,41 @@ nothing in the log to say so.  The warning fires only for ~openai~,
 libreclaw's own older spelling of what clawtilla calls ~claude-tmux~.
 
 So ~model.list~ reports ~agent~ per provider and clients offer only
-those four for an agent.  ~grok-build~ was missing from that list for a
+those six for an agent.  ~grok-build~ was missing from that list for a
 while and could not be chosen at all, which is the bug this table
 exists to stop recurring; ~tests/test-model-catalog.c~ checks the column
 against ~lc_provider_type_normalize()~ itself rather than against a
 second copy of the list.
 
-To reach OpenAI or Gemini from an agent, use ~opencode~, which is a CLI
-that routes to them.  The HTTP providers are offered for *designing* an
-agent, where ai-glib drives them directly -- see below.
+To reach OpenAI or Gemini from an agent, use ~opencode~, ~cursor~ or
+~antigravity~ --- all three are CLIs that route to other people's models.
+The HTTP providers are offered for *designing* an agent, where ai-glib
+drives them directly -- see below.
+
+**** The two newest, and what is different about them
+
+~antigravity~ and ~cursor~ arrived together and behave like the others
+from clawtilla's side: pick the provider, pick a model, the agent runs.
+Three things are worth knowing before pointing an agent at one.
+
+*Their model lists are long and they change.* ~cursor-agent~ alone
+offers over two hundred ids --- every model crossed with an effort level
+and a "fast" variant. The catalog here carries a handful worth reaching
+for and is marked open-ended; ~model.list~ with ~refresh: true~ asks the
+CLI itself, which is the only answer that stays true.
+
+*Effort is not always a flag.* ~antigravity~ takes ~--effort~ but accepts
+only ~low~, ~medium~ and ~high~ --- ~xhigh~ and ~max~ fold onto ~high~
+rather than being passed through and rejected. ~cursor~ has no effort
+flag at all: it is baked into the model id, so ~gpt-5.3-codex-high~ and
+~gpt-5.3-codex-low~ are different names for the same model.
+
+*Neither takes an API key from clawtilla.* Both CLIs authenticate
+themselves, the same way ~grok-build~ does. ~cursor~ will read a
+~CURSOR_API_KEY~ if ai-glib is given one, and it reaches the child
+through its environment rather than through ~argv~ --- so it does not
+appear in ~ps~, which is where the other spelling of that idea has
+leaked keys before.
 
 ** Memories, which are not the memory budget
 
@@ -1116,7 +1149,8 @@ Unset falls back to ~ai_assist.provider~ and ~ai_assist.model~.
 *** Only an HTTP provider can design
 
 The designer works entirely through tool calls, and ai-glib's
-command-line clients -- ~claude-code~, ~claude-tmux~, ~opencode~ -- drop
+command-line clients -- ~claude-code~, ~claude-tmux~, ~opencode~,
+~grok-build~, ~antigravity~, ~cursor~ -- drop
 the tool list rather than passing it to the CLI.  The model then gets a
 system prompt describing tools it was never given and answers in prose.
 

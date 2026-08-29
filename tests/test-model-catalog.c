@@ -203,6 +203,52 @@ test_entries_are_complete(void)
     }
 }
 
+/*
+ * The two newest backends resolve to themselves, and their aliases
+ * resolve to them.
+ *
+ * Named separately from the loop above because the loop only sees the
+ * catalog's spellings.  Somebody configuring an agent by hand will
+ * write what the binary is called -- `agy`, `cursor-agent` -- and an
+ * alias that fell through to the warning would run their agent on
+ * claude-code while blaming a typo they had not made.
+ */
+static void
+test_the_new_cli_backends_and_their_aliases_resolve(void)
+{
+    g_assert_cmpstr(lc_provider_type_normalize("antigravity", "t"), ==,
+                    "antigravity");
+    g_assert_cmpstr(lc_provider_type_normalize("agy", "t"), ==,
+                    "antigravity");
+
+    g_assert_cmpstr(lc_provider_type_normalize("cursor", "t"), ==,
+                    "cursor");
+    g_assert_cmpstr(lc_provider_type_normalize("cursor-agent", "t"), ==,
+                    "cursor");
+
+    /* And they are both offered as something an agent can run on. */
+    {
+        const ClawtProviderInfo *ag =
+            clawt_model_catalog_find_provider("antigravity");
+        const ClawtProviderInfo *cu =
+            clawt_model_catalog_find_provider("cursor");
+
+        g_assert_nonnull(ag);
+        g_assert_nonnull(cu);
+        g_assert_true(ag->agent);
+        g_assert_true(cu->agent);
+
+        /*
+         * And not as something the designer runs on. ai-glib's CLI
+         * clients drop the tool list, and the designer is nothing but
+         * tool calls -- offering one there produces a model that
+         * answers in prose and a draft that never gets built.
+         */
+        g_assert_false(ag->tools);
+        g_assert_false(cu->tools);
+    }
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -210,6 +256,8 @@ main(int argc, char *argv[])
 
     g_test_add_func("/model-catalog/agent-providers-are-libreclaws",
                     test_agent_providers_are_the_ones_libreclaw_runs);
+    g_test_add_func("/model-catalog/new-cli-backends-resolve",
+                    test_the_new_cli_backends_and_their_aliases_resolve);
     g_test_add_func("/model-catalog/http-providers-are-not-agents",
                     test_http_providers_are_not_offered_as_agents);
     g_test_add_func("/model-catalog/every-backend-is-offered",

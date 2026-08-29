@@ -776,7 +776,7 @@ web client cannot disagree about what exists.
 
 ~agent~ and ~tools~ are what a client filters on, and they answer two
 different questions.  ~agent~ is whether libreclaw can run an agent on
-it -- four CLI backends, and anything else is silently rewritten to
+it -- six CLI backends, and anything else is silently rewritten to
 ~claude-code~, so offering the rest let a person pick OpenAI and get
 Claude Code with ~gpt-4o~ in the model field.  ~tools~ is whether it can
 be given tool definitions, which is what the agent designer needs.  A

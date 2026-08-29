@@ -69,6 +69,40 @@ static const ClawtModelInfo grok_build_models[] = {
 };
 
 /*
+ * Google's `agy`, whose model names carry their effort level in the id
+ * rather than in a flag.  A starting point, not the whole list: `agy
+ * models` is the truth, and clawt_model_catalog_fetch_models() asks it.
+ */
+static const ClawtModelInfo antigravity_models[] = {
+    { "gemini-3.7-flash-high",   "Gemini 3.7 Flash (high)",
+      "the CLI's default" },
+    { "gemini-3.7-flash-medium", "Gemini 3.7 Flash (medium)", NULL },
+    { "gemini-3.1-pro-high",     "Gemini 3.1 Pro (high)",     NULL },
+    { "claude-sonnet-4-6",       "Claude Sonnet 4.6",         NULL },
+    { "claude-opus-4-6-thinking", "Claude Opus 4.6 (thinking)", NULL }
+};
+
+/*
+ * Cursor's `cursor-agent`, which offers over two hundred model ids --
+ * every model crossed with an effort level and a fast variant.  Naming
+ * them all here would be a copy of ai-glib's list that goes stale on
+ * its next release, so this is the handful worth reaching for and
+ * `cursor-agent models` is what a client should show.
+ *
+ * `auto` first because it is the CLI's own default and the right answer
+ * when nobody has a reason to pick.
+ */
+static const ClawtModelInfo cursor_models[] = {
+    { "auto",              "Auto",
+      "the CLI's default; it picks per request" },
+    { "composer-2.5",      "Composer 2.5",   "Cursor's own model" },
+    { "claude-4.6-sonnet-medium", "Claude Sonnet 4.6", NULL },
+    { "claude-4.6-opus-max", "Claude Opus 4.6 (max)", NULL },
+    { "gpt-5.3-codex",     "GPT-5.3 Codex",  NULL },
+    { "gemini-3.7-flash-high", "Gemini 3.7 Flash (high)", NULL }
+};
+
+/*
  * Ollama runs whatever has been pulled locally, so these are only the
  * common ones.  open_ended is TRUE so a client offers a way to type a
  * name that is not here.
@@ -85,14 +119,17 @@ static const ClawtModelInfo ollama_models[] = {
  *
  * The `agent` column is libreclaw's list, not a preference: its
  * provider table is command-line only, and lc_provider_type_normalize()
- * silently rewrites anything it does not know to claude-code.  An agent
+ * silently rewrites anything it does not know to claude-code.  Adding a
+ * name here without adding it there is therefore worse than leaving it
+ * out: the client offers it, the agent is created, and it runs on
+ * Claude Code holding a model name Claude Code rejects.  An agent
  * configured for "openai" was therefore running Claude Code with
  * "gpt-4o" in the model field -- so those providers are offered for
  * designing an agent, where ai-glib drives them over HTTP directly, and
  * not for being one.
  */
 static const ClawtProviderInfo providers[] = {
-    /* ── can back an agent: libreclaw's four CLI backends ────────── */
+    /* ── can back an agent: libreclaw's six CLI backends ─────────── */
     { "claude-code", "Claude Code",
       "the CLI, billed against your subscription",
       claude_code_models, G_N_ELEMENTS(claude_code_models),
@@ -113,6 +150,18 @@ static const ClawtProviderInfo providers[] = {
     { "opencode", "OpenCode",
       "the OpenCode CLI; routes to xAI, Google, OpenAI and others itself",
       NULL, 0, TRUE, TRUE, FALSE },
+
+    { "antigravity", "Antigravity",
+      "Google's agy CLI in print mode; it edits files and runs commands, "
+      "and authenticates itself rather than taking a key from here",
+      antigravity_models, G_N_ELEMENTS(antigravity_models),
+      TRUE, TRUE, FALSE },
+
+    { "cursor", "Cursor",
+      "Cursor's cursor-agent CLI in print mode; over two hundred models, "
+      "so this list is a starting point and the CLI has the rest",
+      cursor_models, G_N_ELEMENTS(cursor_models),
+      TRUE, TRUE, FALSE },
 
     /* ── can design an agent: ai-glib's HTTP providers ───────────── */
     { "claude", "Claude API",

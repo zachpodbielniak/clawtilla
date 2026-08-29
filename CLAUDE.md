@@ -358,13 +358,24 @@ work by luck depending on how the caller was reached. That is not a plan.
 - `libreclaw-1.0.pc` has an incomplete `Requires:`; replicate `PKG_DEPS` in
   `config.mk` rather than trusting it. `liblc-1.0.a` holds only libreclaw's own
   objects -- a static link must also pull in all five bundled dep archives.
-- **It drives four CLI backends and nothing else.**
-  `lc_provider_type_normalize()` knows `claude-code`, `claude-tmux`, `opencode`
-  and `grok-build`. Anything else is not an error: it is rewritten to
-  `claude-code` with a `g_warning`, so an agent configured for `openai` runs
-  Claude Code and is handed `gpt-4o` as a model name. The HTTP providers belong
-  to ai-glib and can only drive the agent *designer*, which needs tool calls.
-  Hence `agent` and `tools` as separate flags on `ClawtProviderInfo`.
+- **It drives six CLI backends and nothing else.**
+  `lc_provider_type_normalize()` knows `claude-code`, `claude-tmux`, `opencode`,
+  `grok-build`, `antigravity` and `cursor`. Anything else is not an error: it is
+  rewritten to `claude-code` with a `g_warning`, so an agent configured for
+  `openai` runs Claude Code and is handed `gpt-4o` as a model name. The HTTP
+  providers belong to ai-glib and can only drive the agent *designer*, which
+  needs tool calls. Hence `agent` and `tools` as separate flags on
+  `ClawtProviderInfo`.
+- **A name added to clawtilla's catalog and not to libreclaw is worse than one
+  left out**: the client offers it, the agent is created, and it runs on Claude
+  Code holding a model name Claude Code rejects.
+  `tests/test-model-catalog.c` pins the `agent` column to
+  `lc_provider_type_normalize()` itself, so the two cannot drift.
+- `lc_client_factory_matches_type()` answers "is this client that cli_type"
+  beside the constructor. LcSession kept its own copy and it had drifted --
+  `else return AI_IS_OPENCODE_CLIENT()` meant a grok-build session never
+  matched its own client and spawned a fresh one per message, reported by
+  nothing.
 - It **ignores `database.path`**. The sqlite backend builds the filename from
   `session.persist_dir`, so the database is `<state_dir>/sessions/libreclaw.db`.
   `clawt_usage_database_path()` is the one spelling, used by the renderer,
