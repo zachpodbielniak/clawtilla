@@ -1819,24 +1819,33 @@ static const ClawtSchemaEntry schema[] = {
   "0.1.0" },
 
 { "agents.computer.vm.ssh_user", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
-  "clawt", NULL,
+  "root", NULL,
   "User commands are run as inside the guest, over SSH.\n"
   "\n"
   "With cloud_init on, this account is created in the guest rather than\n"
-  "having to exist already, and gets passwordless sudo -- so an agent\n"
-  "that needs root writes `sudo` and gets it, without a password.\n"
+  "having to exist already, and a non-root one gets passwordless sudo.\n"
   "\n"
-  "It used to be root, and that was the wrong way round. GDM will not\n"
-  "log root in, so a desktop VM ended up with two accounts: the screen\n"
-  "belonged to one and every command arrived as the other. Anything\n"
-  "touching the session -- the display, the session bus, a file in that\n"
-  "home directory -- then needed a workaround an agent had to invent.\n"
-  "It also lines the guest's uid up with the host's, so files on a\n"
-  "shared directory are owned by somebody on both sides.\n"
+  "root, because of how a shared directory is mapped. An unprivileged\n"
+  "libvirt session runs virtiofsd in a user namespace where the *guest's*\n"
+  "root is the host user who started the daemon, and every other guest\n"
+  "id lands in that user's subuid range. So a share of your own files\n"
+  "appears inside the guest as root:root 0755, and an agent running as\n"
+  "any other account can read it and cannot write to it -- including its\n"
+  "own workspace, which arrives as 0700 root and is not even readable.\n"
   "\n"
-  "Set it to root to get the old behaviour. A guest built before this\n"
-  "changed has no such account unless it had a desktop, so name root\n"
-  "explicitly there or rebuild it.",
+  "This was `clawt` for a while, on the reasoning that the guest's first\n"
+  "account is uid 1000 and so lines up with the host user. That is true\n"
+  "of the numbers and false of the mapping, and booting one is the only\n"
+  "way to find out: guest uid 1000 maps to a subuid around 525287, which\n"
+  "owns nothing. Naming an <idmap> on the share does not help either --\n"
+  "virtiofsd's sandbox cannot set one up for a session daemon at all, and\n"
+  "the domain then fails to start rather than starting without it.\n"
+  "\n"
+  "The cost is that GDM will not log root in, so a VM with a desktop gets\n"
+  "a second account for the screen -- see computer.vm.desktop.user, which\n"
+  "is created for exactly this. That account is a normal guest user, so\n"
+  "it cannot write to a share either; anything the session produces for\n"
+  "you goes through a path root writes.",
   "0.1.0" },
 
 { "agents.computer.vm.ssh_key", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE,

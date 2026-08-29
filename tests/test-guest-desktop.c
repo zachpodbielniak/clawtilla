@@ -1104,17 +1104,99 @@ test_the_installer_checks_the_desktop_arrived(void)
 }
 
 
+/*
+ * The default login is root, and the reason is the shares.
+ *
+ * An unprivileged libvirt session runs virtiofsd in a user namespace
+ * where guest uid 0 is the host user who started the daemon and every
+ * other guest id lands in that user's subuid range. Measured by booting
+ * a Fedora guest: as `clawt` (guest uid 1000) the share reads
+ * `root:root 0755` and `touch` is refused, the agent's own workspace
+ * arrives `0700 root` and is not even readable, and `sudo touch`
+ * succeeds and lands on the host owned by the host user. As root
+ * everything is writable and host ownership is right.
+ *
+ * Naming an <idmap> on the share is not the way out. virtiofsd's sandbox
+ * cannot set one up for a session daemon -- `newuidmap: write to uid_map
+ * failed: Invalid argument`, for a mapping of one id and for a whole
+ * subuid range alike -- and the domain then fails to start rather than
+ * starting without it.
+ */
+static void
+test_the_default_login_is_root(void)
+{
+    const ClawtSchemaEntry *entries;
+    gsize n;
+    gsize i;
+    gboolean found = FALSE;
+
+    entries = clawt_config_schema_get(&n);
+
+    for (i = 0; i < n; i++) {
+        if (g_strcmp0(entries[i].key, "agents.computer.vm.ssh_user") != 0)
+            continue;
+
+        g_assert_cmpstr(entries[i].default_value, ==, "root");
+        found = TRUE;
+    }
+
+    g_assert_true(found);
+}
+
+/*
+ * And a root login still gets a desktop, because GDM will not log root
+ * in: the seed makes a second account for the screen.
+ *
+ * That is the cost of the default and it is stated rather than hidden.
+ * A desktop account is an ordinary guest user, so it cannot write to a
+ * share either -- anything the session produces for the operator has to
+ * travel by a path root writes.
+ */
+static void
+test_a_root_login_still_gets_a_desktop_account(void)
+{
+    g_autoptr(ClawtGuestDesktop) desktop = NULL;
+    g_autofree gchar *session = NULL;
+    g_autofree gchar *data = NULL;
+
+    session = clawt_guest_desktop_resolve_user(NULL, "root");
+
+    /* Not root, because GDM refuses it. */
+    g_assert_cmpstr(session, !=, "root");
+    g_assert_nonnull(session);
+
+    desktop = clawt_guest_desktop_new(session);
+    clawt_guest_desktop_set_flavour(desktop, CLAWT_GUEST_FLAVOUR_FEDORA);
+
+    data = clawt_cloud_init_build_user_data("root", "ssh-ed25519 AAAA k",
+                                            "clawt-vm", desktop);
+
+    /*
+     * The key reaches root as well as the session account. cloud-init
+     * installs a `users:` key only while *creating* an account, and root
+     * always exists -- so the top-level ssh_authorized_keys is what
+     * reaches it, and both are emitted on purpose.
+     */
+    g_assert_nonnull(strstr(data, "ssh_authorized_keys"));
+    g_assert_nonnull(strstr(data, session));
+
+    /* Root is not shut out when it is the account commands arrive as. */
+    g_assert_null(strstr(data, "disable_root: true"));
+}
+
 /* ── One login, not two ──────────────────────────────────────────── */
 
 /*
- * The session and the commands are the same account now.
+ * A non-root ssh_user gives one account for both the session and the
+ * commands, which is what makes a desktop VM pleasant to work in: the
+ * display, the session bus and that home directory all belong to
+ * whoever the commands arrive as.
  *
- * ssh_user used to default to root, and GDM will not log root in -- so a
- * desktop VM got a second account for the screen while every command
- * still arrived as the first. Anything touching the session (the
- * display, the session bus, a file in that home directory) then needed a
- * workaround, and an agent duly invented one: it re-ran things as clawt
- * with XAUTHORITY pointed at the Xwayland cookie by hand.
+ * It is not the default any more, and the reason is measured rather than
+ * argued: an unprivileged libvirt session maps the *guest's* root to the
+ * host user, so a share -- including the agent's own workspace -- is
+ * root-owned inside the guest and unwritable by anybody else. See
+ * test_only_root_can_write_to_a_share() below.
  */
 static void
 test_the_session_and_the_commands_share_an_account(void)
@@ -1241,6 +1323,10 @@ main(int argc, char *argv[])
     g_test_add_func("/guest-desktop/install/same-on-every-family",
                     test_every_family_installs_the_same_way);
 
+    g_test_add_func("/guest-desktop/default-login-is-root",
+                    test_the_default_login_is_root);
+    g_test_add_func("/guest-desktop/root-still-gets-a-desktop-account",
+                    test_a_root_login_still_gets_a_desktop_account);
     g_test_add_func("/guest-desktop/login/one-account-by-default",
                     test_the_session_and_the_commands_share_an_account);
     g_test_add_func("/guest-desktop/login/root-still-gets-a-session",

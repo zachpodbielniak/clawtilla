@@ -1611,21 +1611,30 @@ agents:
         # User commands are run as inside the guest, over SSH.
         #
         # With cloud_init on, this account is created in the guest rather than
-        # having to exist already, and gets passwordless sudo -- so an agent
-        # that needs root writes `sudo` and gets it, without a password.
+        # having to exist already, and a non-root one gets passwordless sudo.
         #
-        # It used to be root, and that was the wrong way round. GDM will not
-        # log root in, so a desktop VM ended up with two accounts: the screen
-        # belonged to one and every command arrived as the other. Anything
-        # touching the session -- the display, the session bus, a file in that
-        # home directory -- then needed a workaround an agent had to invent.
-        # It also lines the guest's uid up with the host's, so files on a
-        # shared directory are owned by somebody on both sides.
+        # root, because of how a shared directory is mapped. An unprivileged
+        # libvirt session runs virtiofsd in a user namespace where the *guest's*
+        # root is the host user who started the daemon, and every other guest
+        # id lands in that user's subuid range. So a share of your own files
+        # appears inside the guest as root:root 0755, and an agent running as
+        # any other account can read it and cannot write to it -- including its
+        # own workspace, which arrives as 0700 root and is not even readable.
         #
-        # Set it to root to get the old behaviour. A guest built before this
-        # changed has no such account unless it had a desktop, so name root
-        # explicitly there or rebuild it.
-        ssh_user: "clawt"
+        # This was `clawt` for a while, on the reasoning that the guest's first
+        # account is uid 1000 and so lines up with the host user. That is true
+        # of the numbers and false of the mapping, and booting one is the only
+        # way to find out: guest uid 1000 maps to a subuid around 525287, which
+        # owns nothing. Naming an <idmap> on the share does not help either --
+        # virtiofsd's sandbox cannot set one up for a session daemon at all, and
+        # the domain then fails to start rather than starting without it.
+        #
+        # The cost is that GDM will not log root in, so a VM with a desktop gets
+        # a second account for the screen -- see computer.vm.desktop.user, which
+        # is created for exactly this. That account is a normal guest user, so
+        # it cannot write to a share either; anything the session produces for
+        # you goes through a path root writes.
+        ssh_user: "root"
 
         # Private key used to reach the guest.
         #

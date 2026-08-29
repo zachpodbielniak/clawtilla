@@ -478,6 +478,43 @@ the same program.
   itself was correct throughout; `gdbus call ... SetEnabled true` by hand
   returned `(true,)` on the same guest. Only the launcher was missing.
 
+### That entry's reasoning about uids was wrong, and only a boot showed it
+
+- It says the default moved to `clawt` partly because "it lines the uid
+  up. The account is the guest's first, so uid 1000 -- the same as the
+  host user owning the files on a virtiofs share, which root was not."
+  **True of the numbers and false of the mapping.** An unprivileged
+  libvirt session runs virtiofsd in a user namespace where the *guest's*
+  root is the host user, and every other guest id lands in that user's
+  subuid range -- so guest 1000 is a subuid around 525287, which owns
+  nothing.
+- Measured, both ways, on a real Fedora guest: as `clawt` a share reads
+  `root:root 0755` and `touch` is refused; the agent's **own workspace**
+  arrives `0700 root` and cannot even be listed; `sudo touch` succeeds
+  and the file lands on the host owned by the host user. As root
+  everything works and host ownership is right.
+- The reported symptom was a shared source tree an agent could not write
+  to. The workspace being unreadable was **worse and nobody had noticed**
+  -- found only by asking the guest about it while checking the reported
+  case.
+- `<idmap>` on the `<filesystem>` is the obvious fix and is a trap.
+  libvirt accepts it and stores it; virtiofsd's sandbox then cannot set
+  it up -- `newuidmap: write to uid_map failed: Invalid argument`, for a
+  single id and for a whole subuid range alike -- and **the domain fails
+  to start**. Shipping it on the strength of `virsh define` succeeding
+  would have broken every VM share on the fleet. Defining is not
+  starting, and starting is not working.
+- So the default is root again, with the cost stated where somebody meets
+  it: GDM still refuses root, so a desktop VM still gets a second account
+  for the screen, and that account still cannot write to a share. A VM
+  whose agent cannot read its own workspace is the worse of the two.
+- The general shape, for the fourth time in this file: **a decision
+  recorded with a reason can outlive the reason being true.** The entry
+  above is still right about GDM and still right that two accounts invite
+  a workaround; it was wrong about the one fact that could only be
+  established by booting something, and it was that fact the default
+  rested on.
+
 ### Two accounts for one machine is a workaround waiting to be invented
 
 - `computer.vm.ssh_user` defaulted to **root**, and GDM will not log root

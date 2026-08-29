@@ -911,6 +911,29 @@ clawtilla agent mount list oxpecker
 
 and for a container, ~podman inspect clawt-<agent>~ is the last word.
 
+*** In a VM: it is mounted and readable, and every write is refused
+
+#+begin_example
+touch: cannot touch '/data/source/x': Permission denied
+#+end_example
+
+The mount is fine.  An unprivileged libvirt session maps the *guest's*
+root to the host user, so a share shows as =root:root= inside the guest
+and an agent running as anything else cannot write to it.  Its own
+workspace, being 0700, is not even readable.
+
+~computer.vm.ssh_user~ is =root= for this reason.  A guest built before
+that changed still has whatever account it was created with, and
+cloud-init reads its seed once --- so name root explicitly and rebuild:
+
+#+begin_src bash
+clawtilla agent set <agent> computer.vm.ssh_user root
+clawtilla agent stop <agent> && clawtilla computer rebuild <agent>
+#+end_src
+
+~sudo~ works meanwhile, and the files land on the host owned by you.
+See [[file:computers.org::#vm-share-ownership][computers.org]] for why an ~<idmap>~ is not the way out.
+
 *** In a VM: the guest never boots, and the audit log names the emulator
 
 #+begin_example

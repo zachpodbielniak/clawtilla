@@ -940,6 +940,55 @@ and if it persists, the cached probe is stale:
 rm -rf ~/.cache/libvirt/qemu/cache/capabilities
 #+end_src
 
+*** Who a VM's files belong to
+:PROPERTIES:
+:CUSTOM_ID: vm-share-ownership
+:END:
+
+An unprivileged libvirt session runs =virtiofsd= inside a user
+namespace, and the mapping is not the one the numbers suggest: the
+*guest's* root is the host user who started the daemon, and every other
+guest id lands in that user's subuid range.
+
+So a share of your own files appears inside the guest as =root:root
+0755=.  An agent running as any other account can read it and cannot
+write to it --- and its own workspace, which is 0700, is not even
+readable.  Writes that do go through land on the host owned by you,
+which is the right answer; it is only *who* may make them that is
+surprising.
+
+That is why ~computer.vm.ssh_user~ is =root=.  Measured by booting a
+Fedora guest both ways: as a normal account ~touch~ on a share is
+refused and the workspace cannot be listed; as root both work and the
+files arrive on the host owned by the host user.
+
+**** Why not an idmap
+
+libvirt accepts an ~<idmap>~ on a ~<filesystem>~ and it looks like the
+answer.  It is not: virtiofsd's sandbox cannot set one up for a session
+daemon at all.
+
+#+begin_example
+virtiofsd::sandbox] sandbox: couldn't setup id mappings:
+  write to uid map failed: newuidmap: write to uid_map failed: Invalid argument
+#+end_example
+
+The same for a mapping of a single id and for a whole subuid range, and
+the domain then *fails to start* rather than starting without the
+mapping --- so this is worse than not trying.  Verified on libvirt 12.
+
+**** What it costs
+
+GDM will not log root in, so a VM with a desktop gets a second account
+for the screen --- ~computer.vm.desktop.user~, created for exactly this.
+That account is an ordinary guest user, so it cannot write to a share
+either: anything the session produces for you travels by a path root
+writes.
+
+A ~qemu:///system~ connection does not have this shape, since there is
+no user namespace in the way.  ~computer.vm.uri~ is where that is set,
+and it needs a privileged libvirt you can reach.
+
 *** Starting and stopping the machine itself
 :PROPERTIES:
 :CUSTOM_ID: computer-power
