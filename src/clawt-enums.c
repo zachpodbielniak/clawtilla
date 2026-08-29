@@ -1209,6 +1209,107 @@ clawt_skill_source_get_type(void)
     return g_define_type_id__volatile;
 }
 
+/* Register ClawtTeachSource as a GLib enum type */
+GType
+clawt_teach_source_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_TEACH_SOURCE_AGENT, "CLAWT_TEACH_SOURCE_AGENT",
+              "agent" },
+            { CLAWT_TEACH_SOURCE_HOST_DEMO, "CLAWT_TEACH_SOURCE_HOST_DEMO",
+              "host-demo" },
+            { CLAWT_TEACH_SOURCE_GUEST_DEMO, "CLAWT_TEACH_SOURCE_GUEST_DEMO",
+              "guest-demo" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id =
+            g_enum_register_static("ClawtTeachSource", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
+/*
+ * The recorders, least invasive first.
+ *
+ * Order is the order a client offers them in, and it is deliberate: an
+ * agent trace watches a program, and the two demonstrations watch a
+ * person.  Listing the keylogger first would be offering it first.
+ */
+static const struct {
+    ClawtTeachSource  source;
+    const gchar      *nick;
+    const gchar      *label;
+} teach_sources[] = {
+    { CLAWT_TEACH_SOURCE_AGENT,      "agent",      "Watch the agent work" },
+    { CLAWT_TEACH_SOURCE_HOST_DEMO,  "host-demo",  "Demonstrate on this "
+                                                   "desktop" },
+    { CLAWT_TEACH_SOURCE_GUEST_DEMO, "guest-demo", "Demonstrate in the "
+                                                   "agent's VM" }
+};
+
+guint
+clawt_teach_source_count(void)
+{
+    return G_N_ELEMENTS(teach_sources);
+}
+
+ClawtTeachSource
+clawt_teach_source_nth(guint n)
+{
+    g_return_val_if_fail(n < G_N_ELEMENTS(teach_sources),
+                         CLAWT_TEACH_SOURCE_AGENT);
+
+    return teach_sources[n].source;
+}
+
+const gchar *
+clawt_teach_source_nth_nick(guint n)
+{
+    g_return_val_if_fail(n < G_N_ELEMENTS(teach_sources), "agent");
+
+    return teach_sources[n].nick;
+}
+
+const gchar *
+clawt_teach_source_nth_label(guint n)
+{
+    g_return_val_if_fail(n < G_N_ELEMENTS(teach_sources),
+                         "Watch the agent work");
+
+    return teach_sources[n].label;
+}
+
+/* Register ClawtTeachStepKind as a GLib enum type */
+GType
+clawt_teach_step_kind_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_TEACH_STEP_TOOL, "CLAWT_TEACH_STEP_TOOL", "tool" },
+            { CLAWT_TEACH_STEP_EXEC, "CLAWT_TEACH_STEP_EXEC", "exec" },
+            { CLAWT_TEACH_STEP_DESKTOP, "CLAWT_TEACH_STEP_DESKTOP",
+              "desktop" },
+            { CLAWT_TEACH_STEP_KEY, "CLAWT_TEACH_STEP_KEY", "key" },
+            { CLAWT_TEACH_STEP_POINTER, "CLAWT_TEACH_STEP_POINTER",
+              "pointer" },
+            { CLAWT_TEACH_STEP_SCROLL, "CLAWT_TEACH_STEP_SCROLL", "scroll" },
+            { CLAWT_TEACH_STEP_MARKER, "CLAWT_TEACH_STEP_MARKER", "marker" },
+            { CLAWT_TEACH_STEP_NOTE, "CLAWT_TEACH_STEP_NOTE", "note" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id =
+            g_enum_register_static("ClawtTeachStepKind", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
 /* Register ClawtTriggerProvider as a GLib enum type */
 GType
 clawt_trigger_provider_get_type(void)

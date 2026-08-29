@@ -709,5 +709,10 @@ clawt_computer_factory_create_desktop(ClawtAgentConfig *agent_config)
         clawt_agent_config_get_boolean(agent_config,
                                        "computer.desktop.allow_input"));
 
+    clawt_desktop_set_allow_recording(
+        desktop,
+        clawt_agent_config_get_boolean(agent_config,
+                                       "computer.desktop.allow_recording"));
+
     return desktop;
 }

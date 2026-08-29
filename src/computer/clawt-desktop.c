@@ -20,6 +20,7 @@ struct _ClawtDesktop {
     gchar               *socket_path;
     gboolean             allow_input;
     gboolean             allow_spawn;
+    gboolean             allow_recording;
 
     /*
      * Whether this agent has a VM with a desktop in it.  Set by the
@@ -44,6 +45,21 @@ static const gchar *const observing_tools[] = {
     "find_window", "list_workspaces", "screenshot", "screenshot_client",
     "screenshot_window", "screenshot_monitor", "screenshot_region",
     "screenshot_area", "pick_color", "get_client_process_info",
+
+    /*
+     * The pollable frame, which is an *observing* tool and has to be
+     * named here to be one.
+     *
+     * gnome-desktop-mcp grew `screenshot_frame` alongside the recorder,
+     * and the two arrived together -- which is exactly why they must not
+     * be in the same category. Taking a picture of a screen and
+     * transcribing what was typed into it are different acts, and a
+     * frame left out of this list would either be refused to an agent
+     * that may already screenshot, or end up behind the recording grant
+     * because that is where it was added.
+     */
+    "screenshot_frame",
+
     "list_keybinds", "get_config", "ping",
 
     /*
@@ -78,6 +94,36 @@ static const gchar *const observing_tools[] = {
  */
 static const gchar *const spawning_tools[] = {
     "spawn", "signal_client", NULL
+};
+
+/*
+ * The tools that watch a person.
+ *
+ * A fourth category rather than more entries in observing_tools[], and
+ * the distinction is the whole reason `computer.desktop.allow_recording`
+ * exists: folding these in would make "may take a screenshot" silently
+ * mean "may record my keystrokes". A screenshot is a picture of what is
+ * on a screen; a recording is a transcript of what somebody typed into
+ * it, into any window, including the ones they did not know were being
+ * watched.
+ *
+ * `screenshot_frame` is emphatically *not* here -- it is an observing
+ * tool, and putting it here would make watching a screen need the
+ * keylogger grant.
+ *
+ * Both spellings are listed because gowl and gnome-desktop-mcp named
+ * these differently, and an agent should not have to know which
+ * compositor it is talking to. Every name here is one of theirs: gowl's
+ * start_recording/drain_recording/stop_recording/recording_status, and
+ * gnome-desktop-mcp's start_input_recording/drain_input_recording/
+ * stop_input_recording/get_recording_status.
+ */
+static const gchar *const recording_tools[] = {
+    "start_recording", "drain_recording", "stop_recording",
+    "recording_status",
+    "start_input_recording", "drain_input_recording",
+    "stop_input_recording", "get_recording_status",
+    NULL
 };
 
 static const gchar *const acting_tools[] = {
@@ -139,6 +185,22 @@ clawt_desktop_set_allow_spawn(ClawtDesktop *self, gboolean allow)
     g_return_if_fail(CLAWT_IS_DESKTOP(self));
 
     self->allow_spawn = allow;
+}
+
+void
+clawt_desktop_set_allow_recording(ClawtDesktop *self, gboolean allow)
+{
+    g_return_if_fail(CLAWT_IS_DESKTOP(self));
+
+    self->allow_recording = allow;
+}
+
+gboolean
+clawt_desktop_get_allow_recording(ClawtDesktop *self)
+{
+    g_return_val_if_fail(CLAWT_IS_DESKTOP(self), FALSE);
+
+    return self->allow_recording;
 }
 
 static gboolean
@@ -297,6 +359,18 @@ clawt_desktop_get_tool_names(ClawtDesktop *self)
             g_ptr_array_add(out, g_strdup(acting_tools[i]));
     }
 
+    /*
+     * Independent of allow_input, not nested inside it.  Watching a
+     * demonstration and clicking are two different grants and either
+     * can be given without the other -- an operator who wants to teach
+     * a task by doing it has no reason to also let the agent move their
+     * pointer.
+     */
+    if (self->allow_recording) {
+        for (i = 0; recording_tools[i] != NULL; i++)
+            g_ptr_array_add(out, g_strdup(recording_tools[i]));
+    }
+
     g_ptr_array_add(out, NULL);
 
     return (GStrv)g_ptr_array_free(out, FALSE);
@@ -313,6 +387,20 @@ clawt_desktop_tool_is_permitted(ClawtDesktop *self, const gchar *tool_name)
     for (i = 0; observing_tools[i] != NULL; i++) {
         if (g_strcmp0(tool_name, observing_tools[i]) == 0)
             return TRUE;
+    }
+
+    /*
+     * Checked **before** the allow_input gate below, not after it.
+     *
+     * Recording does not depend on being allowed to click, and an
+     * early return on !allow_input would make the recording grant
+     * unreachable for exactly the configuration it is most likely to
+     * be used in: somebody who wants to demonstrate a task without
+     * also handing their pointer over.
+     */
+    for (i = 0; recording_tools[i] != NULL; i++) {
+        if (g_strcmp0(tool_name, recording_tools[i]) == 0)
+            return self->allow_recording;
     }
 
     if (!self->allow_input)
@@ -374,10 +462,33 @@ clawt_desktop_tool_is_acting(const gchar *tool_name)
     return FALSE;
 }
 
+gboolean
+clawt_desktop_tool_is_recording(const gchar *tool_name)
+{
+    gsize i;
+
+    if (tool_name == NULL)
+        return FALSE;
+
+    /*
+     * Walked from the same table clawt_desktop_tool_is_permitted()
+     * uses, for the reason clawt_desktop_tool_is_acting() gives: a
+     * second list here would be the copy that drifted, and it would be
+     * the one deciding whether a keylogger counts as a keylogger.
+     */
+    for (i = 0; recording_tools[i] != NULL; i++) {
+        if (g_strcmp0(tool_name, recording_tools[i]) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
 gchar *
 clawt_desktop_describe(ClawtDesktop *self)
 {
     const gchar *backend_name;
+    const gchar *recording = "";
 
     g_return_val_if_fail(CLAWT_IS_DESKTOP(self), NULL);
 
@@ -523,15 +634,34 @@ clawt_desktop_describe(ClawtDesktop *self)
     backend_name = (self->resolved == CLAWT_DESKTOP_BACKEND_GNOME)
                    ? "the GNOME desktop" : "the gowl compositor";
 
+    /*
+     * Said out loud when it is on.
+     *
+     * A tool an agent has and does not know about is a tool it will not
+     * use -- but that is the smaller half. The larger half is that an
+     * agent which can record somebody's keyboard should be told, in the
+     * same breath, that what it captures is theirs and not to be
+     * repeated back. An instruction the agent cannot see is one it will
+     * violate.
+     */
+    if (self->allow_recording)
+        recording =
+            " You may also record a demonstration on that screen, with "
+            "start_recording and stop_recording. That captures every key "
+            "the person presses, in any window -- so treat a recording as "
+            "the user's private material: do not quote it back, do not "
+            "summarise what was typed, and do not copy anything from it "
+            "that looks like a password or a token.";
+
     if (self->allow_input)
         return g_strdup_printf(
             "You can see and control %s: list windows, take screenshots, "
             "and send keystrokes and pointer events. Anything you click is "
-            "clicked on the user's real screen.", backend_name);
+            "clicked on the user's real screen.%s", backend_name, recording);
 
     return g_strdup_printf(
         "You can observe %s: list windows and take screenshots. You cannot "
-        "send keystrokes or pointer events.", backend_name);
+        "send keystrokes or pointer events.%s", backend_name, recording);
 }
 
 const gchar *
@@ -564,4 +694,5 @@ clawt_desktop_init(ClawtDesktop *self)
     self->backend = CLAWT_DESKTOP_BACKEND_AUTO;
     self->resolved = CLAWT_DESKTOP_BACKEND_AUTO;
     self->allow_input = FALSE;
+    self->allow_recording = FALSE;
 }

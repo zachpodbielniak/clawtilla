@@ -3141,6 +3141,17 @@ release_components(ClawtDaemon *self)
     autostart_cancel(self);
 
     /*
+     * Recordings before anything else.
+     *
+     * A demonstration that is still running holds a token in a
+     * compositor and has a red frame on somebody's screen; releasing
+     * the daemon's other components first would leave the observer it
+     * subscribes to gone while the recorder still holds a reference to
+     * it.
+     */
+    clawt_daemon_teach_teardown(self);
+
+    /*
      * The listener before anything it can reach.  A delivery dispatched
      * after the router and the agents are gone would find a half-built
      * daemon, and the ingress holds a pointer to this one.
@@ -4161,6 +4172,16 @@ on_tool_call_observed(const gchar *agent_id, const gchar *tool,
 {
     clawt_daemon_turn_note_tool_call(CLAWT_DAEMON(user_data), agent_id, tool,
                                      args);
+
+    /*
+     * The same hook feeds a recording.  This is the one place that sees
+     * every tool call an agent makes, including clawtilla_computer_exec
+     * -- adding a second would be a second place for a call to be
+     * missed, and the trace would be missing exactly the steps nobody
+     * thought about.
+     */
+    clawt_daemon_teach_note_tool_call(CLAWT_DAEMON(user_data), agent_id,
+                                      tool, args);
 }
 
 static void
@@ -7194,6 +7215,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_trigger,
     clawt_daemon_handle_config,
     clawt_daemon_handle_skill,
+    clawt_daemon_handle_teach,
 };
 
 JsonNode *

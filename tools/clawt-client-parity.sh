@@ -219,6 +219,18 @@ declare -A AFFORDANCES=(
     ["screen input"]="on_screen_input|on_screen_input"
     ["stale frame label"]="\"stale\"|\"stale\""
     ["vnc viewer"]="remote-viewer|viewer.vv"
+    ["teach recordings"]="teach_group|add_teach_section"
+    #
+    # The caveat, which is the one part of this feature that must not be
+    # in only one client.
+    #
+    # A recording of a demonstration is credential material until
+    # somebody has read it, and the sentence saying so is carried on the
+    # trace precisely so that every surface shows it. A client that drew
+    # the recordings and not the caveat would be the one somebody used
+    # to decide a trace was safe to share.
+    #
+    ["teach caveats"]="caveats|caveats"
 )
 
 usage () {

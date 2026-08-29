@@ -136,6 +136,36 @@ ClawtSkill *clawt_skill_library_create(ClawtSkillLibrary  *self,
                                        GError            **error);
 
 /**
+ * clawt_skill_library_create_taught:
+ * @self: a #ClawtSkillLibrary
+ * @name: what to call it
+ * @description: when an agent should reach for it
+ * @body: the markdown a model wrote from a recorded demonstration
+ * @origin: (nullable): which recording it came from, as `teach:<id>`
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Writes a synthesized skill into the library, **disabled**.
+ *
+ * The same write as clawt_skill_library_create() with a different
+ * provenance, so the name rules, the description bound, the traversal
+ * gate and the warning scan are one implementation rather than two --
+ * and the AI-written half is not the one that skipped a check.
+ *
+ * Disabled because nobody has read it.  A skill clawtilla wrote is not
+ * more trusted than one somebody downloaded: the model that wrote it
+ * read a recording, and a recording of a demonstration is untrusted
+ * input the moment it contains anything a person typed.
+ *
+ * Returns: (transfer none) (nullable): the new skill, or %NULL
+ */
+ClawtSkill *clawt_skill_library_create_taught(ClawtSkillLibrary  *self,
+                                              const gchar        *name,
+                                              const gchar        *description,
+                                              const gchar        *body,
+                                              const gchar        *origin,
+                                              GError            **error);
+
+/**
  * clawt_skill_library_import:
  * @self: a #ClawtSkillLibrary
  * @source: a directory holding a `SKILL.md`, or a `SKILL.md` itself

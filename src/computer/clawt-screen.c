@@ -355,6 +355,136 @@ clawt_screen_parse_gdbus_string(const gchar *text)
     return value;
 }
 
+GStrv
+clawt_screen_gnome_record_start_argv(guint max_seconds, guint max_events)
+{
+    GPtrArray *argv = g_ptr_array_new_with_free_func(g_free);
+
+    add_gdbus_prefix(argv, "StartRecording");
+    g_ptr_array_add(argv, g_strdup_printf("%u", max_seconds));
+    g_ptr_array_add(argv, g_strdup_printf("%u", max_events));
+    g_ptr_array_add(argv, NULL);
+
+    return (GStrv)g_ptr_array_free(argv, FALSE);
+}
+
+/*
+ * A token is a string the extension chose, and it still gets quoted.
+ *
+ * Everything on this argv is re-parsed by a remote shell after
+ * clawt_screen_in_session_argv() has wrapped it, so a value that reached
+ * there unquoted would be shell syntax rather than an argument -- the
+ * same reason every other argument in this file is quoted on the way in.
+ */
+static GStrv
+record_token_argv(const gchar *method, const gchar *token)
+{
+    GPtrArray *argv = g_ptr_array_new_with_free_func(g_free);
+
+    add_gdbus_prefix(argv, method);
+    g_ptr_array_add(argv, g_strdup((token != NULL) ? token : ""));
+    g_ptr_array_add(argv, NULL);
+
+    return (GStrv)g_ptr_array_free(argv, FALSE);
+}
+
+GStrv
+clawt_screen_gnome_record_drain_argv(const gchar *token)
+{
+    return record_token_argv("DrainRecording", token);
+}
+
+GStrv
+clawt_screen_gnome_record_stop_argv(const gchar *token)
+{
+    return record_token_argv("StopRecording", token);
+}
+
+GStrv
+clawt_screen_gnome_record_status_argv(void)
+{
+    GPtrArray *argv = g_ptr_array_new_with_free_func(g_free);
+
+    add_gdbus_prefix(argv, "GetRecordingStatus");
+    g_ptr_array_add(argv, NULL);
+
+    return (GStrv)g_ptr_array_free(argv, FALSE);
+}
+
+gboolean
+clawt_screen_parse_gdbus_events(const gchar  *text,
+                                gchar       **events_out,
+                                guint        *dropped_out,
+                                GError      **error)
+{
+    const gchar *cursor = text;
+    gchar *events = NULL;
+    gint64 dropped = 0;
+    gsize string_count = 0;
+    gsize number_count = 0;
+
+    g_return_val_if_fail(events_out != NULL, FALSE);
+
+    *events_out = NULL;
+
+    if (dropped_out != NULL)
+        *dropped_out = 0;
+
+    if (text == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                            "the desktop said nothing at all");
+        return FALSE;
+    }
+
+    while (TRUE) {
+        gchar *string_value = NULL;
+        gint64 number_value = 0;
+        TokenKind kind = next_token(&cursor, &string_value, &number_value);
+
+        if (kind == TOKEN_END)
+            break;
+
+        if (kind == TOKEN_STRING) {
+            if (string_count == 0)
+                events = string_value;
+            else
+                g_free(string_value);
+
+            string_count++;
+            continue;
+        }
+
+        if (number_count == 0)
+            dropped = number_value;
+
+        number_count++;
+    }
+
+    /*
+     * Exactly one string and one number, or this is not a drain.
+     *
+     * Strict for the reason the frame parser is: what arrives here
+     * instead is a gdbus error, and a lenient reader would take the
+     * first quoted fragment of an exception message as a list of
+     * events and hand it to a JSON parser a long way from here.
+     */
+    if (string_count != 1 || number_count != 1) {
+        g_free(events);
+
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                    "the desktop did not answer with recorded events: %s",
+                    text);
+        return FALSE;
+    }
+
+    *events_out = events;
+
+    if (dropped_out != NULL)
+        *dropped_out = (dropped > 0) ? (guint)dropped : 0;
+
+    return TRUE;
+}
+
 const gchar *
 clawt_screen_gowl_input_tool(ClawtInputEvent *event, JsonNode **arguments)
 {

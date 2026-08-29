@@ -126,6 +126,164 @@ add_skill_card(HtmxElement *parent, JsonObject *skill)
     htmx_node_add_child(HTMX_NODE(parent), HTMX_NODE(card));
 }
 
+/* ── Teaching a task ─────────────────────────────────────────────── */
+
+/*
+ * One recording, with what can be done to it.
+ *
+ * The caveat is inside the card rather than once at the top of the
+ * page: this is where somebody decides whether the trace is safe to
+ * keep, and a warning several cards away is one they have scrolled
+ * past.
+ */
+static void
+add_recording_card(ClawtWebApp *app, HtmxElement *parent, JsonObject *trace)
+{
+    const gchar *id = clawt_web_member(trace, "id", "?");
+    gboolean active = clawt_web_member_bool(trace, "active", FALSE);
+    g_autofree gchar *subtitle = NULL;
+    g_autoptr(HtmxDiv) card = NULL;
+    HtmxElement *body;
+    JsonArray *caveats;
+    guint i;
+
+    (void)app;
+
+    subtitle = g_strdup_printf(
+        "%s, agent %s, %" G_GINT64_FORMAT " step(s)%s",
+        clawt_web_member(trace, "source", "?"),
+        clawt_web_member(trace, "agent", "-"),
+        json_object_get_int_member(trace, "step_count"),
+        active ? " -- recording now" : "");
+
+    card = clawt_web_card(clawt_web_member(trace, "goal", id), subtitle);
+    body = clawt_web_card_body(card);
+
+    caveats = clawt_web_member_array(trace, "caveats");
+
+    for (i = 0; caveats != NULL && i < json_array_get_length(caveats); i++)
+        clawt_web_add(body, clawt_web_notice(
+            json_array_get_string_element(caveats, i), "warn"));
+
+    if (json_object_get_int_member(trace, "dropped") > 0) {
+        g_autofree gchar *note = g_strdup_printf(
+            "%" G_GINT64_FORMAT " step(s) were not recorded: the recording "
+            "reached skills.teach_max_events.",
+            json_object_get_int_member(trace, "dropped"));
+
+        clawt_web_add(body, clawt_web_text(note, NULL));
+    }
+
+    {
+        g_autoptr(HtmxDiv) actions = htmx_div_new();
+        g_autofree gchar *base = g_strdup_printf("/teach/%s", id);
+
+        htmx_element_add_class(HTMX_ELEMENT(actions), "row-actions");
+
+        if (active) {
+            g_autofree gchar *path = g_strconcat(base, "/stop", NULL);
+
+            clawt_web_add(actions, clawt_web_post_button("Stop", path,
+                                                         "danger", NULL));
+        } else {
+            g_autofree gchar *steps = g_strconcat(base, "/steps", NULL);
+            g_autofree gchar *draft = g_strconcat(base, "/draft", NULL);
+            g_autofree gchar *commit = g_strconcat(base, "/commit", NULL);
+            g_autofree gchar *remove = g_strconcat(base, "/remove", NULL);
+
+            clawt_web_add(actions, clawt_web_post_button("Steps", steps,
+                                                         "default", NULL));
+            clawt_web_add(actions, clawt_web_post_button("Draft a skill",
+                                                         draft, "primary",
+                                                         NULL));
+            clawt_web_add(actions, clawt_web_post_button("Commit", commit,
+                                                         "default", NULL));
+            clawt_web_add(actions, clawt_web_post_button("Remove", remove,
+                                                         "danger", NULL));
+        }
+
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(actions));
+    }
+
+    htmx_node_add_child(HTMX_NODE(parent), HTMX_NODE(card));
+}
+
+/*
+ * The teach section of the skills page.
+ *
+ * Built here rather than on a page of its own: a recording exists to
+ * become a skill, and putting the two on separate pages would mean the
+ * draft you are reviewing and the library it lands in are never on the
+ * screen together.
+ */
+static void
+add_teach_section(ClawtWebApp *app, HtmxElement *parent)
+{
+    g_autoptr(JsonNode) reply = clawt_web_app_call(app, "teach.list", NULL);
+    JsonArray *recordings = NULL;
+    const gchar *kinds[8] = { NULL };
+    const gchar *labels[8] = { NULL };
+    guint count;
+    guint i;
+
+    clawt_web_add(parent, clawt_web_section_title("Teach a task"));
+    clawt_web_add(parent, clawt_web_text(
+        "Record a task being done, then have a model write the procedure "
+        "up as a skill. Watching the agent captures the calls it makes; "
+        "demonstrating captures every key you press, in any window. The "
+        "draft lands disabled, with the same checks an imported skill "
+        "gets.", "lede"));
+
+    if (reply != NULL)
+        recordings = clawt_web_member_array(clawt_web_root(reply),
+                                            "recordings");
+
+    if (recordings == NULL || json_array_get_length(recordings) == 0)
+        clawt_web_add(parent, clawt_web_empty(
+            "No recordings",
+            "Record one below, then draft a skill from it."));
+
+    for (i = 0; recordings != NULL && i < json_array_get_length(recordings);
+         i++)
+        add_recording_card(app, parent,
+                           json_array_get_object_element(recordings, i));
+
+    /*
+     * The kinds are walked from the library, never spelled out here.
+     * A client with its own copy is a client that can offer a recorder
+     * the daemon does not have, or miss one it does.
+     */
+    count = clawt_teach_source_count();
+
+    if (count > G_N_ELEMENTS(kinds) - 1)
+        count = G_N_ELEMENTS(kinds) - 1;
+
+    for (i = 0; i < count; i++) {
+        kinds[i] = clawt_teach_source_nth_nick(i);
+        labels[i] = clawt_teach_source_nth_label(i);
+    }
+
+    {
+        g_autoptr(HtmxDiv) card = clawt_web_card(
+            "Record a task",
+            "The agent has to exist and, for a demonstration, to have "
+            "computer.desktop.allow_recording turned on.");
+        HtmxElement *body = clawt_web_card_body(card);
+        g_autoptr(HtmxForm) form = clawt_web_form("/teach/start");
+
+        clawt_web_add(form, clawt_web_field("Agent", "agent", NULL,
+                                            "builder"));
+        clawt_web_add(form, clawt_web_select_field(
+            "What to watch", "source", kinds, labels, kinds[0]));
+        clawt_web_add(form, clawt_web_field("What you are teaching", "goal",
+                                            NULL, "cut a release"));
+        clawt_web_add(form, clawt_web_button("Record", "primary"));
+
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
+        htmx_node_add_child(HTMX_NODE(parent), HTMX_NODE(card));
+    }
+}
+
 HtmxElement *
 clawt_web_skills_body(ClawtWebApp *app, const gchar *agent_id)
 {
@@ -230,6 +388,8 @@ clawt_web_skills_body(ClawtWebApp *app, const gchar *agent_id)
         htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
         htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(card));
     }
+
+    add_teach_section(app, HTMX_ELEMENT(pad));
 
     htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
 
@@ -520,6 +680,148 @@ on_new(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                   "Written.");
 }
 
+/* ── Teaching a task: the routes ─────────────────────────────────── */
+
+/*
+ * One of the id-only teach verbs.
+ *
+ * Four routes that differ in the frame kind and the sentence afterwards,
+ * so they share one handler and a table rather than being four copies
+ * of the same twenty lines -- the copies would drift on the error path,
+ * which is the one nobody exercises.
+ */
+typedef struct {
+    ClawtWebApp *app;
+    const gchar *kind;
+    const gchar *done;
+} TeachAction;
+
+static HtmxResponse *
+on_teach_action(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    TeachAction *action = user_data;
+    g_autofree gchar *id = clawt_web_param(params, "id");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+
+    clawt_web_payload_set(payload, "id", id);
+
+    reply = clawt_web_app_call(action->app, action->kind,
+                               clawt_web_payload_take(
+                                   g_steal_pointer(&payload)));
+
+    if (reply == NULL) {
+        /*
+         * Copied at the point of failure: the borrowed string is freed
+         * by the next call, and rendering makes several.
+         */
+        g_autofree gchar *message =
+            g_strdup(clawt_web_app_last_error(action->app));
+
+        return clawt_web_error_page(action->app, request, NULL,
+                                    CLAWT_WEB_VIEW_SKILLS, message);
+    }
+
+    return clawt_web_after_action(action->app, request, NULL,
+                                  CLAWT_WEB_VIEW_SKILLS, action->done);
+}
+
+/*
+ * The steps, which are not in the listing.
+ *
+ * A demonstration can be twenty thousand steps, so `teach.show` is a
+ * separate request and this renders it on its own page rather than
+ * making every listing carry it.
+ */
+static HtmxResponse *
+on_teach_steps(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *id = clawt_web_param(params, "id");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GString) text = g_string_new(NULL);
+    JsonObject *trace;
+    JsonArray *steps;
+    guint i;
+
+    clawt_web_payload_set(payload, "id", id);
+
+    reply = clawt_web_app_call(app, "teach.show",
+                               clawt_web_payload_take(
+                                   g_steal_pointer(&payload)));
+
+    if (reply == NULL) {
+        g_autofree gchar *message = g_strdup(clawt_web_app_last_error(app));
+
+        return clawt_web_error_page(app, request, NULL,
+                                    CLAWT_WEB_VIEW_SKILLS, message);
+    }
+
+    trace = clawt_web_root(reply);
+    steps = clawt_web_member_array(trace, "steps");
+
+    for (i = 0; steps != NULL && i < json_array_get_length(steps); i++) {
+        JsonObject *step = json_array_get_object_element(steps, i);
+
+        g_string_append_printf(text, "%u. [%s] %s\n", i + 1,
+                               clawt_web_member(step, "kind", "?"),
+                               clawt_web_member(step, "label", ""));
+
+        if (clawt_web_member(step, "detail", NULL) != NULL)
+            g_string_append_printf(text, "    %s\n",
+                                   clawt_web_member(step, "detail", ""));
+    }
+
+    return clawt_web_after_action(
+        app, request, NULL, CLAWT_WEB_VIEW_SKILLS,
+        (text->len > 0) ? text->str : "Nothing was captured.");
+}
+
+static HtmxResponse *
+on_teach_start(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+
+    (void)params;
+
+    clawt_web_payload_set(payload, "agent",
+                          clawt_web_form_value(request, "agent"));
+    clawt_web_payload_set(payload, "source",
+                          clawt_web_form_value(request, "source"));
+    clawt_web_payload_set(payload, "goal",
+                          clawt_web_form_value(request, "goal"));
+
+    reply = clawt_web_app_call(app, "teach.start",
+                               clawt_web_payload_take(
+                                   g_steal_pointer(&payload)));
+
+    if (reply == NULL) {
+        g_autofree gchar *message = g_strdup(clawt_web_app_last_error(app));
+
+        return clawt_web_error_page(app, request, NULL,
+                                    CLAWT_WEB_VIEW_SKILLS, message);
+    }
+
+    return clawt_web_after_action(
+        app, request, NULL, CLAWT_WEB_VIEW_SKILLS,
+        "Recording. Read the trace before you turn it into a skill.");
+}
+
+static TeachAction *
+teach_action_new(ClawtWebApp *app, const gchar *kind, const gchar *done)
+{
+    TeachAction *action = g_new0(TeachAction, 1);
+
+    action->app = app;
+    action->kind = kind;
+    action->done = done;
+
+    return action;
+}
+
 static EnableAction *
 enable_action_new(ClawtWebApp *app, gboolean enable)
 {
@@ -554,4 +856,18 @@ clawt_web_register_skills(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_post(router, "/skills/:skill/disable", on_enable,
                      enable_action_new(app, FALSE));
     htmx_router_post(router, "/skills/:skill/remove", on_remove, app);
+
+    htmx_router_post(router, "/teach/start", on_teach_start, app);
+    htmx_router_post(router, "/teach/:id/steps", on_teach_steps, app);
+    htmx_router_post(router, "/teach/:id/stop", on_teach_action,
+                     teach_action_new(app, "teach.stop", "Stopped."));
+    htmx_router_post(router, "/teach/:id/draft", on_teach_action,
+                     teach_action_new(app, "teach.synthesize",
+                                      "Drafted. Read it, then commit it."));
+    htmx_router_post(router, "/teach/:id/commit", on_teach_action,
+                     teach_action_new(app, "teach.commit",
+                                      "Written, and disabled. Read it "
+                                      "before you enable it."));
+    htmx_router_post(router, "/teach/:id/remove", on_teach_action,
+                     teach_action_new(app, "teach.remove", "Removed."));
 }

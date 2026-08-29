@@ -913,6 +913,43 @@ moment it is unescaped.
 
 ~skill.changed~ is published as an event.
 
+*** teach.*
+
+Recording a task, and turning the recording into a skill.
+
+~teach.list~ returns every recording under ~<state_dir>/teach/~, each
+with its kind, its agent, how many steps it holds and whether it is
+running now.  It carries the *caveats* too, and does so whether or not
+the steps are included: a listing that showed a demonstration without
+saying what its guard does not cover would be the place somebody decided
+it was safe to share.  ~teach.show~ adds the steps, which the listing
+deliberately omits -- a demonstration can be twenty thousand of them.
+
+~teach.start~ takes an ~agent~, a ~source~ (~agent~, ~host-demo~ or
+~guest-demo~) and an optional ~goal~.  The two demonstration kinds are
+refused unless that agent has ~computer.desktop.allow_recording~, which
+is a separate grant from ~allow_input~ on purpose.  ~teach.stop~ takes
+the ~id~.
+
+Both **defer**: starting and stopping a demonstration is a round trip to
+a compositor, over a unix socket on this machine or over SSH into a
+guest.  ~teach.synthesize~ defers too, because it is a model call.  A
+stop that the backend refused still answers with the trace: the
+recording has ended either way, and answering with only an error would
+leave somebody thinking their demonstration was lost when it is on disk.
+
+~teach.synthesize~ takes an ~id~ and optional ~provider~ and ~model~, and
+returns the ~preview~ -- the whole ~SKILL.md~ the draft would become,
+not a summary of it, because that is what the reviewer has to read.  The
+draft is kept so that ~teach.commit~ writes exactly what was previewed;
+running the model again would create something nobody reviewed.
+
+~teach.commit~ takes the ~id~ and writes the skill **disabled**, through
+the same path manual creation uses.  ~teach.remove~ deletes a recording
+and its frames, and refuses while it is still running.
+
+~teach.changed~ is published as an event.
+
 *** connector.begin, then connector.await
 
 Authorising takes as long as a person takes, which is far longer than a
@@ -1112,6 +1149,7 @@ Every kind published, by subject:
 | a routine | ~routine.ran~, ~routine.changed~ |
 | a trigger | ~trigger.fired~, ~trigger.changed~, ~trigger.refused~, ~trigger.verified~ |
 | a skill | ~skill.changed~ |
+| a recording | ~teach.changed~ |
 | an integration | ~integration.changed~ |
 | a cloud image | ~image.progress~ (~done~, ~total~), ~image.finished~ (~path~ or ~error~) |
 | an agent | ~computer.exec~ |

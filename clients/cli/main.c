@@ -5953,6 +5953,290 @@ cmd_skill(int argc, char *argv[])
 
 /* @asked_for: see print_usage_text(). */
 static void
+print_teach_usage(gboolean asked_for)
+{
+    g_autoptr(GString) text = g_string_new(
+        "Usage: clawtilla teach <verb> [...]\n"
+        "\n"
+        "  list                          recordings, and what is running\n"
+        "  start <agent> [kind] [goal]   watch a task being done\n"
+        "  stop <id>                     end the recording\n"
+        "  show <id>                     the steps it captured\n"
+        "  rm <id>                       delete it and its frames\n"
+        "  draft <id>                    write a SKILL.md from it\n"
+        "  commit <id>                   add that draft to the library\n"
+        "\n"
+        "Kinds:\n");
+    guint i;
+
+    /*
+     * Walked, not written down.  A fourth recorder added to the library
+     * has to reach this list without anybody remembering to edit it --
+     * the rule this tree applies to every other set of values a person
+     * chooses between.
+     */
+    for (i = 0; i < clawt_teach_source_count(); i++)
+        g_string_append_printf(text, "  %-12s %s\n",
+                               clawt_teach_source_nth_nick(i),
+                               clawt_teach_source_nth_label(i));
+
+    g_string_append(
+        text,
+        "\n"
+        "A demonstration records every key you press, in any window. Read\n"
+        "the trace before you turn it into a skill, and read the caveat it\n"
+        "carries: on this machine's own desktop a password typed into a\n"
+        "window the deny list does not name IS captured.\n"
+        "\n"
+        "A drafted skill lands disabled and gets the same checks an\n"
+        "imported one does.\n"
+        "\n"
+        "Examples:\n"
+        "  clawtilla teach start builder agent \"cut a release\"\n"
+        "  clawtilla teach stop 4f2c...\n"
+        "  clawtilla teach draft 4f2c...\n"
+        "  clawtilla teach commit 4f2c...\n");
+
+    print_usage_text(text->str, asked_for);
+}
+
+/*
+ * The caveats, printed above everything else.
+ *
+ * Above, because they are the reason somebody is reading the trace at
+ * all -- a caveat under a hundred steps is a caveat scrolled past.
+ */
+static void
+print_teach_caveats(JsonObject *trace)
+{
+    JsonArray *caveats = json_object_has_member(trace, "caveats")
+                         ? json_object_get_array_member(trace, "caveats")
+                         : NULL;
+    guint i;
+
+    for (i = 0; caveats != NULL && i < json_array_get_length(caveats); i++)
+        g_print("! %s\n\n", json_array_get_string_element(caveats, i));
+}
+
+static gint
+cmd_teach(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verb = (argc > 2) ? argv[2] : "list";
+    const gchar *id = (argc > 3) ? argv[3] : NULL;
+    guint i;
+
+    if (g_strcmp0(verb, "help") == 0 || g_strcmp0(verb, "--help") == 0 ||
+        g_strcmp0(verb, "-h") == 0) {
+        print_teach_usage(TRUE);
+        return EXIT_SUCCESS;
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    if (g_strcmp0(verb, "list") == 0) {
+        JsonArray *recordings;
+
+        reply = call(client, "teach.list", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        recordings = json_object_get_array_member(json_node_get_object(reply),
+                                                  "recordings");
+
+        if (json_array_get_length(recordings) == 0) {
+            g_print("No recordings. `clawtilla teach start <agent>` makes "
+                    "one.\n");
+            return EXIT_SUCCESS;
+        }
+
+        g_print("%-34s %-11s %-12s %-7s %s\n", "ID", "KIND", "AGENT",
+                "STEPS", "STATE");
+
+        for (i = 0; i < json_array_get_length(recordings); i++) {
+            JsonObject *trace = json_array_get_object_element(recordings, i);
+
+            g_print("%-34s %-11s %-12s %-7" G_GINT64_FORMAT " %s\n",
+                    member_or(trace, "id", "?"),
+                    member_or(trace, "source", "?"),
+                    member_or(trace, "agent", "-"),
+                    json_object_get_int_member(trace, "step_count"),
+                    json_object_get_boolean_member(trace, "active")
+                        ? "recording" : "stopped");
+        }
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "start") == 0) {
+        const gchar *agent = (argc > 3) ? argv[3] : NULL;
+        const gchar *kind = (argc > 4) ? argv[4] : "agent";
+        const gchar *goal = (argc > 5) ? argv[5] : NULL;
+        JsonObject *trace;
+
+        if (agent == NULL) {
+            g_printerr("Usage: clawtilla teach start <agent> [kind] "
+                       "[goal]\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "teach.start",
+                     build_payload("agent", agent, "source", kind,
+                                   "goal", goal, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        trace = json_node_get_object(reply);
+        print_teach_caveats(trace);
+        g_print("Recording %s. Stop it with `clawtilla teach stop %s`.\n",
+                member_or(trace, "id", "?"), member_or(trace, "id", "?"));
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "stop") == 0) {
+        JsonObject *trace;
+
+        if (id == NULL) {
+            g_printerr("Usage: clawtilla teach stop <id>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "teach.stop", build_payload("id", id, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        trace = json_node_get_object(reply);
+        g_print("Stopped. %" G_GINT64_FORMAT " step(s)",
+                json_object_get_int_member(trace, "step_count"));
+
+        if (json_object_get_int_member(trace, "dropped") > 0)
+            g_print(", %" G_GINT64_FORMAT " not recorded",
+                    json_object_get_int_member(trace, "dropped"));
+
+        g_print(". `clawtilla teach show %s` to read it.\n", id);
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "show") == 0) {
+        JsonObject *trace;
+        JsonArray *steps;
+
+        if (id == NULL) {
+            g_printerr("Usage: clawtilla teach show <id>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "teach.show", build_payload("id", id, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        trace = json_node_get_object(reply);
+        print_teach_caveats(trace);
+
+        g_print("%s  %s  agent %s\n", member_or(trace, "id", "?"),
+                member_or(trace, "source", "?"),
+                member_or(trace, "agent", "-"));
+
+        if (member_or(trace, "goal", NULL) != NULL)
+            g_print("Teaching: %s\n", member_or(trace, "goal", ""));
+
+        if (json_object_get_int_member(trace, "dropped") > 0)
+            g_print("%" G_GINT64_FORMAT " step(s) were not recorded: the "
+                    "recording hit skills.teach_max_events.\n",
+                    json_object_get_int_member(trace, "dropped"));
+
+        if (json_object_get_int_member(trace, "suppressed") > 0)
+            g_print("%" G_GINT64_FORMAT " event(s) were withheld while "
+                    "capture was paused.\n",
+                    json_object_get_int_member(trace, "suppressed"));
+
+        steps = json_object_get_array_member(trace, "steps");
+        g_print("\n");
+
+        for (i = 0; steps != NULL && i < json_array_get_length(steps); i++) {
+            JsonObject *step = json_array_get_object_element(steps, i);
+
+            g_print("%3u. [%s] %s\n", i + 1, member_or(step, "kind", "?"),
+                    member_or(step, "label", ""));
+
+            if (member_or(step, "detail", NULL) != NULL)
+                g_print("     %s\n", member_or(step, "detail", ""));
+        }
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "rm") == 0 || g_strcmp0(verb, "remove") == 0) {
+        if (id == NULL) {
+            g_printerr("Usage: clawtilla teach rm <id>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "teach.remove", build_payload("id", id, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Removed %s.\n", id);
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "draft") == 0 ||
+        g_strcmp0(verb, "synthesize") == 0) {
+        JsonObject *result;
+
+        if (id == NULL) {
+            g_printerr("Usage: clawtilla teach draft <id>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "teach.synthesize",
+                     build_payload("id", id, "provider",
+                                   (argc > 4) ? argv[4] : NULL, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        result = json_node_get_object(reply);
+
+        g_print("%s\n", member_or(result, "preview", ""));
+        g_print("\n%s\n", member_or(result, "note", ""));
+        g_print("`clawtilla teach commit %s` writes it.\n", id);
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "commit") == 0) {
+        JsonObject *result;
+
+        if (id == NULL) {
+            g_printerr("Usage: clawtilla teach commit <id>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "teach.commit", build_payload("id", id, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        result = json_node_get_object(reply);
+
+        g_print("Wrote skill '%s'.\n%s\n", member_or(result, "name", "?"),
+                member_or(result, "note", ""));
+
+        return EXIT_SUCCESS;
+    }
+
+    g_printerr("clawtilla: unknown teach verb '%s'\n", verb);
+    print_teach_usage(FALSE);
+    return EXIT_FAILURE;
+}
+
+/* @asked_for: see print_usage_text(). */
+static void
 print_routine_usage(gboolean asked_for)
 {
     static const gchar *text =
@@ -6938,6 +7222,8 @@ static const ClawtVerb verbs[] = {
       cmd_trigger },
     { "skill",   "<verb>",   "Procedures agents can be given",
       cmd_skill },
+    { "teach",   "<verb>",   "Record a task, and write a skill from it",
+      cmd_teach },
     { "plugin",  "list",     "List loaded plugins",
       cmd_plugin },
     { NULL, NULL, NULL, NULL }

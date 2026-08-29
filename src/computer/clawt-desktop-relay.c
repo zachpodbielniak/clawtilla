@@ -29,10 +29,22 @@
  * a shared message would tell an agent refused a repository tool to turn
  * on a setting about the screen.
  */
+/*
+ * All three grants are named, in one string, because the relay's run
+ * loop carries one hint for every refusal it will ever emit -- there is
+ * no per-line hook on that path, and a hint chosen per tool would exist
+ * only on the filter path the tests call.
+ *
+ * Recording is named separately from input rather than lumped in with
+ * it: an agent refused a keylogger that was told to turn on
+ * `allow_input` would be given an instruction that does not work, and
+ * an operator following it would hand over their pointer for nothing.
+ */
 #define DESKTOP_REFUSAL_HINT \
-    "Seeing the screen and acting on it are separate grants: turn on " \
-    "computer.desktop.allow_input (or allow_spawn) if this agent should " \
-    "have it."
+    "Seeing the screen, acting on it, launching programs and recording " \
+    "what a person does are four separate grants: turn on " \
+    "computer.desktop.allow_input, allow_spawn or allow_recording -- " \
+    "whichever this call needed -- if this agent should have it."
 
 gboolean
 clawt_desktop_relay_filter_outbound(const gchar  *line,

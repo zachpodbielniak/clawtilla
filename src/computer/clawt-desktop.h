@@ -100,6 +100,37 @@ void clawt_desktop_set_allow_input(ClawtDesktop *self, gboolean allow);
 void clawt_desktop_set_allow_spawn(ClawtDesktop *self, gboolean allow);
 
 /**
+ * clawt_desktop_set_allow_recording:
+ * @self: a #ClawtDesktop
+ * @allow: whether the agent may record what a person does
+ *
+ * `computer.desktop.allow_recording`: the fourth grant, off by default.
+ *
+ * Its own grant rather than part of @allow_input, and the difference is
+ * not a nicety.  Injecting a keystroke and capturing one are opposite
+ * directions: the first does something to a screen, the second writes
+ * down what the person at it typed -- into any window, including the
+ * ones they had forgotten were open.  Folding it into the observing
+ * tools would have made "may take a screenshot" silently mean "may
+ * record my keystrokes", which is exactly the quiet widening this key
+ * exists to prevent.
+ *
+ * Both compositors gate their own side too, behind a consent flag that
+ * enabling automation does not set.  This is clawtilla's half of that,
+ * enforced where every other desktop grant is: in the tool list the
+ * relay is given.
+ */
+void clawt_desktop_set_allow_recording(ClawtDesktop *self, gboolean allow);
+
+/**
+ * clawt_desktop_get_allow_recording:
+ * @self: a #ClawtDesktop
+ *
+ * Returns: %TRUE if this agent may record a demonstration
+ */
+gboolean clawt_desktop_get_allow_recording(ClawtDesktop *self);
+
+/**
  * clawt_desktop_resolve_backend:
  * @self: a #ClawtDesktop
  * @error: (out) (optional): return location for a #GError
@@ -128,8 +159,12 @@ gboolean clawt_desktop_is_available(ClawtDesktop  *self,
  * clawt_desktop_get_tool_names:
  * @self: a #ClawtDesktop
  *
- * The desktop tools this agent may use, with the input-injecting ones
- * omitted when allow_input is off.
+ * The desktop tools this agent may use.
+ *
+ * The input-injecting ones are omitted when `allow_input` is off, the
+ * spawning ones when `allow_spawn` is off, and the recording ones when
+ * `allow_recording` is off -- three independent gates, because an
+ * operator may want any one of them without the others.
  *
  * Returns: (transfer full) (array zero-terminated=1): the tool names
  */
@@ -164,6 +199,25 @@ gboolean clawt_desktop_tool_is_permitted(ClawtDesktop *self,
  * Returns: %TRUE if it injects input
  */
 gboolean clawt_desktop_tool_is_acting(const gchar *tool_name);
+
+/**
+ * clawt_desktop_tool_is_recording:
+ * @tool_name: a tool name
+ *
+ * Whether @tool_name captures what a person is doing.
+ *
+ * A static question about the tool, like clawt_desktop_tool_is_acting()
+ * and answered from the same table the permission check walks -- a
+ * second list would be the copy that drifted, and it would be the one
+ * deciding whether a keylogger counts as one.
+ *
+ * `screenshot_frame` is **not** one of these. Taking a picture of a
+ * screen and transcribing what was typed into it are different acts,
+ * and a live preview must not need the recording grant.
+ *
+ * Returns: %TRUE if it records input
+ */
+gboolean clawt_desktop_tool_is_recording(const gchar *tool_name);
 
 /**
  * clawt_desktop_describe:

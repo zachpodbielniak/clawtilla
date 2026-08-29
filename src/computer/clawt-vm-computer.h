@@ -84,6 +84,35 @@ ClawtGuestDesktop *clawt_vm_computer_get_desktop(ClawtVmComputer *self);
  * Returns: (transfer full) (nullable) (array zero-terminated=1): the argv
  */
 GStrv clawt_vm_computer_build_desktop_argv(ClawtVmComputer *self);
+
+/**
+ * clawt_vm_computer_session_run:
+ * @self: a #ClawtVmComputer
+ * @tail: (array zero-terminated=1): the command to run inside the guest's
+ *   graphical session
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Runs a command in the guest's logged-in session and hands back its
+ * stdout.
+ *
+ * The route every call to the guest's desktop takes: SSH as the session's
+ * account, wrapped so that `DBUS_SESSION_BUS_ADDRESS` is worked out
+ * inside the guest, with each argument quoted. Exposed because the input
+ * recorder needs it and reimplementing the wrapping would be a second
+ * spelling of the one thing that is easy to get subtly wrong.
+ *
+ * **It blocks** -- an SSH round trip into a guest -- so every caller is
+ * on a worker thread.
+ *
+ * A non-zero exit is reported with the guest's own stderr rather than a
+ * summary: "Automation is disabled" and "no such interface" have
+ * completely different remedies.
+ *
+ * Returns: (transfer full) (nullable): what the command printed
+ */
+gchar *clawt_vm_computer_session_run(ClawtVmComputer  *self,
+                                     GStrv             tail,
+                                     GError          **error);
 void clawt_vm_computer_set_uri(ClawtVmComputer *self, const gchar *uri);
 void clawt_vm_computer_set_image(ClawtVmComputer *self, const gchar *image);
 

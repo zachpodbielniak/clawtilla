@@ -1,0 +1,225 @@
+#+title: Teaching a task
+#+description: Recording a task being done, turning it into a skill, and exactly how far the secret suppression reaches
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-08-29 Fri]
+#+updated: [2026-08-29 Fri]
+#+version: 0.2.0
+
+* Teaching a task
+
+Writing a skill by hand means describing a procedure you already know how
+to do.  Teaching one means doing it once while clawtilla watches, and
+then having a model write it up.
+
+#+begin_src bash
+clawtilla teach start builder agent "cut a release"
+# ... the agent works ...
+clawtilla teach stop 4f2c8a1b
+clawtilla teach draft 4f2c8a1b     # read the SKILL.md it wrote
+clawtilla teach commit 4f2c8a1b    # lands disabled, for review
+#+end_src
+
+Three things can be watched, and they are not equivalent.  The first
+watches a *program*; the other two watch a *person*.
+
+| Kind | What it captures | What it needs |
+|------+------------------+---------------|
+| ~agent~ | an agent's own steps: its orchestration tool calls, the commands it ran on its computer, the desktop actions it took, and a frame beside each | nothing |
+| ~host-demo~ | a demonstration on this machine's real desktop, through gowl | ~computer.desktop.allow_recording~, and gowl's own ~input-recording~ |
+| ~guest-demo~ | the same inside the agent's own VM, through gnome-desktop-mcp | ~computer.desktop.allow_recording~, and the extension's own ~recording-consent~ |
+
+** Read this before you record a demonstration
+
+A demonstration is a keylogger.  Not as a figure of speech: while it
+runs, every key pressed on that desktop is written into a file clawtilla
+keeps, and then read back in a chat window by whoever reviews the draft.
+
+Both compositors pause capture for what they can recognise as a secret,
+and *what they can recognise is less than it sounds*.
+
+*** On this machine's desktop, through gowl
+
+gowl suppresses capture while the session is locked, and while the
+focused window's app-id or title matches its deny list of credential
+applications -- pinentry, polkit, the keyring prompts, the password
+managers, and titles containing "password", "passphrase", "sign in",
+"log in", "unlock".
+
+That is the *whole* of the guard.  Under Wayland a client's widget tree
+is private to the client: a compositor knows a surface, a size, an app-id
+and a title, and nothing at all about what is inside.  There is no
+equivalent of GNOME Shell's "the actor holding key focus is a password
+entry".
+
+**So a password typed into a form inside an ordinary window the deny list
+does not name IS recorded.**  A browser login page whose title says
+nothing about passwords is the obvious case, and it is not an unusual
+one.
+
+That sentence is in gowl's every payload, on every trace clawtilla makes
+from one, in both graphical clients beside the recording, and in the
+draft the model is given.  It is repeated deliberately: the place
+somebody decides a trace is safe to keep is not the place a document is.
+
+Add your own patterns with gowl's ~input-recording-deny-apps~.  They are
+*added* to the built-in list rather than replacing it, so a pattern for
+your own vault cannot silently drop the protection for pinentry.
+
+*** In a guest, through gnome-desktop-mcp
+
+Better, and still not complete.  GNOME Shell can see that the actor
+holding key focus is a password entry -- a ~Clutter.Text~ with a
+~password_char~ set -- so capture pauses for the lock screen, the polkit
+prompt and the keyring prompt, and the trace carries a marker for the gap
+rather than simply missing eight seconds.
+
+But that is the *shell's* actor tree.  An application window inside that
+session is a Wayland client like any other, and what is inside it is just
+as private.  A password typed into a browser in the guest is recorded.
+
+*** What follows from that
+
+- Review a trace before it is stored, shared, or turned into a skill, and
+  treat one as credential material until you have.
+- The model that writes the draft is told, in its system prompt, not to
+  copy any credential out of the recording in any form.  That is a
+  mitigation, not a boundary: it is an instruction to a model, and the
+  reason the draft lands disabled is that instructions to models are not
+  guarantees.
+- ~clawtilla teach rm <id>~ deletes a recording and its frames.  Do that
+  when you are done with one.
+
+** The grants
+
+~computer.desktop.allow_recording~ is a *fourth* grant category beside
+observing, acting and spawning, and it is off by default.
+
+It is deliberately not part of ~computer.desktop.allow_input~.  Injecting
+a keystroke and capturing one are opposite directions: the first does
+something to a screen, the second writes down what the person at it
+typed.  Folding recording into the observing tools -- where it would
+otherwise have gone, since it neither clicks nor spawns -- would have
+made "may take a screenshot" silently mean "may record my keystrokes".
+
+~screenshot_frame~ is an observing tool and stays one.  Watching a screen
+must not need the keylogger grant.
+
+Both compositors gate their own side as well, behind a consent flag that
+enabling automation does not set:
+
+#+begin_src bash
+# gowl, in the gowl config, followed live on reload
+input-recording: true
+
+# a guest, from inside the session
+gsettings set org.gnome.shell.extensions.desktop-automation \
+    recording-consent true
+#+end_src
+
+So three switches have to be on before a demonstration records anything,
+and turning off any one of them stops one that is already running.
+
+** Bounds
+
+| Setting | Default | What it does |
+|---------+---------+--------------|
+| =skills.teach_max_seconds= | 900 | the recording stops itself after this, whether or not anybody is still listening |
+| =skills.teach_max_events= | 20000 | how many steps a recording keeps |
+
+The deadline is not a request.  It is armed by clawtilla *and* passed to
+the compositor, so a clawtilla that dies mid-demonstration does not leave
+one running with the indicator on somebody's screen and nobody holding
+the token that would end it.
+
+When the event bound is reached the *earliest* steps are the ones kept,
+because the first part of a procedure is a usable prefix of it while a
+slice out of the middle is not.  What was refused is counted and
+reported, in the listing and in the trace -- a silently truncated
+demonstration teaches half a task and reads as a whole one.
+
+Pointer motion is never a step.  A single drag is hundreds of motion
+events even after the compositor has coalesced them, and a trace made
+mostly of them would spend its whole budget on the mouse travelling and
+evict the clicks the demonstration is about.  Every click and scroll
+carries the position it happened at, so nothing a procedure needs is
+lost.
+
+** What an agent trace contains, and what it does not
+
+The ~agent~ kind needs no compositor, no consent and no computer.  It
+works on ~computer.type: none~, where it produces steps and no frames and
+says so on the trace.
+
+It holds the calls that passed through clawtilla: the orchestration
+tools, ~clawtilla_computer_exec~ (recorded as the command, not as a tool
+call -- the step somebody would repeat is ~git push~), and the desktop
+actions the control gate saw.
+
+It does **not** hold the agent's own ~bash~, ~read~ and ~write~.  Those
+run inside its CLI and never reach clawtilla at all.  So a task done
+mostly in the agent's own shell leaves a shorter trace than the work it
+did, and the trace says so rather than leaving somebody to conclude the
+agent did very little.
+
+Frames come from the same watch the Screen tab uses: the recorder
+subscribes as an ordinary watcher, so two people watching one agent
+produce one grab per interval rather than two.  A frame costs the agent
+latency on its own connection; a second capture path would cost it twice.
+
+** From a trace to a skill
+
+~teach draft~ hands the trace to the ~ai_assist~ provider with a small
+set of tools -- ~set_name~, ~set_description~, ~write_body~, ~preview~,
+~commit~ -- and nothing else.  The executor is built with
+~ai_tool_executor_new_empty()~: a model asked to write markdown from a
+list of steps does not need a shell, and this one has just been handed a
+transcript of somebody's keyboard.
+
+The model is asked to write the *procedure*, not a narrative of the
+recording: to generalise the paths and names that were specific to one
+run, to say when a gap is a gap rather than filling it in, and never to
+copy a credential out of the trace.
+
+The draft is validated before the model is told it is done -- the same
+parse a hand-written skill gets, so a draft that will not parse comes
+back to the model while it still has a turn left rather than failing at
+commit.
+
+*** It lands disabled, and it is not more trusted for having come from us
+
+~teach commit~ writes through ~clawt_skill_library_create_taught()~,
+which is ~clawt_skill_library_create()~ with a different provenance and
+nothing else: the same name rules, the same description bound, the same
+traversal gate, the same warning scan.  A separate write path for
+AI-written skills would be a second implementation of the validation, and
+it would be the half nobody read.
+
+The skill's ~source~ is ~taught~ and its ~origin~ is ~teach:<id>~, so a
+reviewer can see which recording it came from.
+
+Nothing in it reaches any prompt until a person has read it and enabled
+it.  See [[file:skills.org][Skills]] for what enabling means, and
+[[file:security.org][Security]] for why an imported or synthesized skill
+starts switched off.
+
+** What is not covered by tests
+
+Said plainly rather than implied, because a check finds the layer it
+looks at.
+
+- The trace, the bounds, the caveats, the payload parsers for both
+  compositors, the fourth grant category, the refusing base class and the
+  synthesizer driven by a mock provider are all covered by
+  ~tests/test-teach.c~ and ~tests/test-computer.c~.
+- The *transports* are not, and cannot be without a compositor: the unix
+  socket call into gowl, and the SSH-plus-gdbus call into a guest.  The
+  argv those build is asserted on; whether the far end answers is not.
+- ~make test~ starts no compositor and opens no socket, so a green suite
+  says the decisions are right and says nothing about a real desktop.
+
+** See also
+
+- [[file:skills.org][Skills]] -- what a skill is and where each harness looks for it
+- [[file:security.org][Security]] -- the grants, and why a skill arrives disabled
+- [[file:computers.org][Computers]] -- desktops, and what an agent can reach

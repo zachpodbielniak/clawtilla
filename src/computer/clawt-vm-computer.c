@@ -2243,6 +2243,15 @@ vm_session_run(ClawtVmComputer *self, GStrv tail, GError **error)
     return g_steal_pointer(&out);
 }
 
+gchar *
+clawt_vm_computer_session_run(ClawtVmComputer *self, GStrv tail,
+                              GError **error)
+{
+    g_return_val_if_fail(CLAWT_IS_VM_COMPUTER(self), NULL);
+
+    return vm_session_run(self, tail, error);
+}
+
 /*
  * The path on *this* machine for a file the guest named.
  *
