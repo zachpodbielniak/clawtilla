@@ -932,3 +932,140 @@ clawt_scope_covers(ClawtScope           scope,
 
     return FALSE;
 }
+
+/* Register ClawtMemoryScope as a GLib enum type */
+GType
+clawt_memory_scope_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_MEMORY_SCOPE_AGENT, "CLAWT_MEMORY_SCOPE_AGENT", "agent" },
+            { CLAWT_MEMORY_SCOPE_TEAM, "CLAWT_MEMORY_SCOPE_TEAM", "team" },
+            { CLAWT_MEMORY_SCOPE_FLEET, "CLAWT_MEMORY_SCOPE_FLEET", "fleet" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtMemoryScope", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
+/*
+ * The scopes, narrowest first, so a list of them reads as a widening.
+ *
+ * Walked rather than written down: a client that spelled these itself
+ * would be a second copy of the set, and every hand-written copy in this
+ * tree has drifted from the one the library keeps.
+ */
+static const struct {
+    ClawtMemoryScope  scope;
+    const gchar      *nick;
+    const gchar      *label;
+} memory_scopes[] = {
+    { CLAWT_MEMORY_SCOPE_AGENT, "agent", "This agent only" },
+    { CLAWT_MEMORY_SCOPE_TEAM,  "team",  "Its team" },
+    { CLAWT_MEMORY_SCOPE_FLEET, "fleet", "The whole fleet" }
+};
+
+guint
+clawt_memory_scope_count(void)
+{
+    return G_N_ELEMENTS(memory_scopes);
+}
+
+ClawtMemoryScope
+clawt_memory_scope_nth(guint n)
+{
+    g_return_val_if_fail(n < G_N_ELEMENTS(memory_scopes),
+                         CLAWT_MEMORY_SCOPE_AGENT);
+
+    return memory_scopes[n].scope;
+}
+
+const gchar *
+clawt_memory_scope_nth_nick(guint n)
+{
+    g_return_val_if_fail(n < G_N_ELEMENTS(memory_scopes), "agent");
+
+    return memory_scopes[n].nick;
+}
+
+const gchar *
+clawt_memory_scope_nth_label(guint n)
+{
+    g_return_val_if_fail(n < G_N_ELEMENTS(memory_scopes), "This agent only");
+
+    return memory_scopes[n].label;
+}
+
+/* Register ClawtTriggerProvider as a GLib enum type */
+GType
+clawt_trigger_provider_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_TRIGGER_PROVIDER_GENERIC, "CLAWT_TRIGGER_PROVIDER_GENERIC", "generic" },
+            { CLAWT_TRIGGER_PROVIDER_FORGEJO, "CLAWT_TRIGGER_PROVIDER_FORGEJO", "forgejo" },
+            { CLAWT_TRIGGER_PROVIDER_GITEA, "CLAWT_TRIGGER_PROVIDER_GITEA", "gitea" },
+            { CLAWT_TRIGGER_PROVIDER_GITHUB, "CLAWT_TRIGGER_PROVIDER_GITHUB", "github" },
+            { CLAWT_TRIGGER_PROVIDER_GITLAB, "CLAWT_TRIGGER_PROVIDER_GITLAB", "gitlab" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id =
+            g_enum_register_static("ClawtTriggerProvider", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
+/*
+ * Generic first, because it is the one that needs no forge at all and is
+ * the right answer for anything that can set a header.
+ */
+static const struct {
+    ClawtTriggerProvider  provider;
+    const gchar          *nick;
+    const gchar          *label;
+} trigger_providers[] = {
+    { CLAWT_TRIGGER_PROVIDER_GENERIC, "generic", "Anything (bearer token)" },
+    { CLAWT_TRIGGER_PROVIDER_FORGEJO, "forgejo", "Forgejo" },
+    { CLAWT_TRIGGER_PROVIDER_GITEA,   "gitea",   "Gitea" },
+    { CLAWT_TRIGGER_PROVIDER_GITHUB,  "github",  "GitHub" },
+    { CLAWT_TRIGGER_PROVIDER_GITLAB,  "gitlab",  "GitLab" }
+};
+
+guint
+clawt_trigger_provider_count(void)
+{
+    return G_N_ELEMENTS(trigger_providers);
+}
+
+ClawtTriggerProvider
+clawt_trigger_provider_nth(guint n)
+{
+    g_return_val_if_fail(n < G_N_ELEMENTS(trigger_providers),
+                         CLAWT_TRIGGER_PROVIDER_GENERIC);
+
+    return trigger_providers[n].provider;
+}
+
+const gchar *
+clawt_trigger_provider_nth_nick(guint n)
+{
+    g_return_val_if_fail(n < G_N_ELEMENTS(trigger_providers), "generic");
+
+    return trigger_providers[n].nick;
+}
+
+const gchar *
+clawt_trigger_provider_nth_label(guint n)
+{
+    g_return_val_if_fail(n < G_N_ELEMENTS(trigger_providers),
+                         "Anything (bearer token)");
+
+    return trigger_providers[n].label;
+}

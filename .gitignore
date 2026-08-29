@@ -26,3 +26,6 @@ vgcore.*
 # behind -- which a sanitizer build used to cause every time.
 g-ir-cpp-*.c
 tmp-introspect*/
+
+# Worktrees for feature and bugfix work live here.
+trees/

@@ -193,6 +193,33 @@ static const ClawtSchemaEntry schema[] = {
   "loaded.", "0.2.0" },
 
 /* ── defaults ────────────────────────────────────────────────────── */
+{ "daemon.webhook_enabled", CLAWT_SCHEMA_BOOLEAN,
+  CLAWT_SCHEMA_FLAG_COMMENTED |
+  CLAWT_SCHEMA_FLAG_INERT, "false", NULL,
+  "Whether to accept inbound trigger deliveries.\n"
+  "\n"
+  "Off by default. A fleet nothing calls into needs no listener, and a\n"
+  "port opened because a feature exists rather than because somebody\n"
+  "asked for it is a port nobody is watching.\n"
+  "\n"
+  "The receiver is its own server on its own port and serves only\n"
+  "/health and the secret /hooks/... paths -- never the IPC surface --\n"
+  "so putting it behind a tunnel exposes nothing else.\n"
+  "\n"
+  "Not implemented in this build. The trigger receiver is not built yet, so nothing listens and\nnothing is delivered.", "0.2.0" },
+
+{ "daemon.webhook_port", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_COMMENTED |
+  CLAWT_SCHEMA_FLAG_INERT,
+  "8788", NULL,
+  "Port the trigger receiver listens on.\n"
+  "\n"
+  "It binds loopback and the tailnet address when there is one, and\n"
+  "loopback alone when there is not -- the same rule the web client\n"
+  "follows, and for the same reason: a listener is never widened\n"
+  "because an address was missing.\n"
+  "\n"
+  "Not implemented in this build. The trigger receiver is not built yet, so nothing listens and\nnothing is delivered.", "0.2.0" },
+
 { "defaults", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "What a new agent gets when its own block does not say.\n"
   "\n"
@@ -401,6 +428,31 @@ static const ClawtSchemaEntry schema[] = {
   "Whether new agents start with the daemon.", "0.1.0" },
 
 /* ── ai_assist ───────────────────────────────────────────────────── */
+{ "defaults.avatar_max_bytes", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_COMMENTED |
+  CLAWT_SCHEMA_FLAG_INERT, "4194304", NULL,
+  "Largest profile picture the daemon will read and serve.\n"
+  "\n"
+  "A picture crosses IPC as bytes rather than as a path, because a\n"
+  "client may be on another machine entirely -- so an unbounded\n"
+  "picture is an unbounded frame. Over the limit is a refusal naming\n"
+  "the limit, never a truncated image, which would surface as a broken\n"
+  "file a long way from the cause.\n"
+  "\n"
+  "Not implemented in this build. Serving a profile picture is not built yet, so nothing is read\nand nothing is measured against this.", "0.2.0" },
+
+{ "defaults.skills", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_COMMENTED |
+  CLAWT_SCHEMA_FLAG_INERT,
+  NULL, NULL,
+  "Skills every agent gets unless it says otherwise.\n"
+  "\n"
+  "Resolved together with the team's list and the agent's own through\n"
+  "one function, the way integrations already are. Two resolvers would\n"
+  "be two behaviours, and the one nobody tested would be the one that\n"
+  "ran.\n"
+  "\n"
+  "Not implemented in this build. The skill library is not built yet, so no skill is scanned,\nassigned or linked into a workspace.", "0.2.0" },
+
 { "ai_assist", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "The model that helps design new agents.\n"
   "\n"
@@ -595,6 +647,67 @@ static const ClawtSchemaEntry schema[] = {
   "two agents claim it.", "0.1.0" },
 
 /* ── memories ────────────────────────────────────────────────────── */
+{ "orchestration.repeat_thresholds", CLAWT_SCHEMA_STRING_LIST,
+  CLAWT_SCHEMA_FLAG_COMMENTED |
+  CLAWT_SCHEMA_FLAG_INERT, "5,10,20", NULL,
+  "Repeat counts worth reporting when an agent keeps making the same\n"
+  "call.\n"
+  "\n"
+  "A count lands on a threshold exactly once, so the fifth identical\n"
+  "call reports and the sixth does not. Reporting every repeat past a\n"
+  "floor turns a signal into noise, and noise is what gets skipped.\n"
+  "\n"
+  "Not implemented in this build. Repeat detection is not built yet, so a repeated call is counted\nby nobody and this never fires.",
+  "0.2.0" },
+
+{ "orchestration.repeat_max_keys", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_COMMENTED |
+  CLAWT_SCHEMA_FLAG_INERT, "256", NULL,
+  "How many distinct calls one turn remembers while watching for\n"
+  "repeats.\n"
+  "\n"
+  "Bounded on purpose: an unlimited set of unique arguments lets one\n"
+  "pathological turn grow the daemon for as long as it runs. The least\n"
+  "recently seen call is dropped first, and a dropped one starts\n"
+  "counting again from one.\n"
+  "\n"
+  "Not implemented in this build. Repeat detection is not built yet, so a repeated call is counted\nby nobody and this never fires.", "0.2.0" },
+
+{ "orchestration.handoff_max_per_turn", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_COMMENTED |
+  CLAWT_SCHEMA_FLAG_INERT, "4", NULL,
+  "How many handoffs one turn may queue.\n"
+  "\n"
+  "Small deliberately. A blocking ask gets backpressure for free\n"
+  "because the caller waits; an asynchronous handoff does not, so this\n"
+  "is the only thing standing between a confused chief of staff and a\n"
+  "fan-out of real turns that each cost money.\n"
+  "\n"
+  "Not implemented in this build. Handoff is not built yet, so no work is ever queued against this\nlimit.", "0.2.0" },
+
+{ "orchestration.handoff_busy_retries", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_COMMENTED |
+  CLAWT_SCHEMA_FLAG_INERT, "3", NULL,
+  "How many times a handoff waits for a busy assignee before giving up\n"
+  "and saying so.\n"
+  "\n"
+  "Giving up is its own outcome rather than a failure: 'nobody was\n"
+  "free' and 'it went wrong' need different answers from whoever reads\n"
+  "the receipt.\n"
+  "\n"
+  "Not implemented in this build. Handoff is not built yet, so no work is ever queued against this\nlimit.", "0.2.0" },
+
+{ "orchestration.handoff_receipt_days", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_COMMENTED |
+  CLAWT_SCHEMA_FLAG_INERT, "2", NULL,
+  "How long a finished handoff's receipt is kept.\n"
+  "\n"
+  "Tasks live in memory and do not survive a restart, so the receipt is\n"
+  "the only thing that lets an agent ask what became of work it handed\n"
+  "over before the daemon was restarted underneath it.\n"
+  "\n"
+  "Not implemented in this build. Handoff is not built yet, so no work is ever queued against this\nlimit.", "0.2.0" },
+
 { "memories", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "What an agent remembers between conversations.\n"
   "\n"
@@ -638,6 +751,120 @@ static const ClawtSchemaEntry schema[] = {
   "nothing, so the loader warns about that spelling rather than leaving\n"
   "a permission somebody granted silently denied.", "0.1.0" },
 
+{ "memories.scope", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_PER_AGENT |
+  CLAWT_SCHEMA_FLAG_COMMENTED |
+  CLAWT_SCHEMA_FLAG_INERT, "agent", clawt_memory_scope_get_type,
+  "Where this agent's own memories are written: agent, team or fleet.\n"
+  "\n"
+  "Reading always fans out across every scope the agent is entitled to;\n"
+  "this says only where a new memory lands. A fact the whole fleet\n"
+  "needs is worth writing once rather than being relearned by each\n"
+  "agent in turn.\n"
+  "\n"
+  "Each scope is a separate database, so what an agent may read is\n"
+  "decided by which file is opened rather than by a WHERE clause. A\n"
+  "permission that is structural cannot be lost to a missing\n"
+  "condition.\n"
+  "\n"
+  "Not implemented in this build. Team and fleet memories are not built yet: every memory is\nwritten to the agent's own database whatever this says.", "0.2.0" },
+
+{ "memories.recall", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_PER_AGENT |
+  CLAWT_SCHEMA_FLAG_COMMENTED |
+  CLAWT_SCHEMA_FLAG_INERT, "true", NULL,
+  "Whether the agent may search past conversations.\n"
+  "\n"
+  "Separate from `memories.enabled`, which is about facts the agent\n"
+  "chose to record. This is about the transcript itself, which it never\n"
+  "chose and which is much larger.\n"
+  "\n"
+  "Not implemented in this build. Searching past conversations is not built yet, so there is\nnothing for this to permit or refuse.", "0.2.0" },
+
+{ "memories.summarise", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_PER_AGENT |
+  CLAWT_SCHEMA_FLAG_COMMENTED |
+  CLAWT_SCHEMA_FLAG_INERT, "false", NULL,
+  "Whether finished work is summarised into memories automatically.\n"
+  "\n"
+  "Off by default because it is a model call nobody asked for, billed\n"
+  "to whoever set it. On, a completed task or a closed routine run is\n"
+  "distilled into memories tagged with the transcript they came from.\n"
+  "\n"
+  "Not implemented in this build. Summarising finished work is not built yet, so nothing is\ndistilled whether this is on or off.",
+  "0.2.0" },
+
+{ "memories.nudge_turns", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_PER_AGENT |
+  CLAWT_SCHEMA_FLAG_COMMENTED |
+  CLAWT_SCHEMA_FLAG_INERT, "0", NULL,
+  "How many turns between reminders to record what was learned. 0 is\n"
+  "off.\n"
+  "\n"
+  "The reminder rides the per-agent prompt suffix rather than being a\n"
+  "mechanism of its own, so it is visible in the same place as every\n"
+  "other per-turn instruction.\n"
+  "\n"
+  "Not implemented in this build. The reminder is not built yet, so no turn carries it however\nthis is set.", "0.2.0" },
+
+{ "memories.operator_profile", CLAWT_SCHEMA_BOOLEAN,
+  CLAWT_SCHEMA_FLAG_COMMENTED |
+  CLAWT_SCHEMA_FLAG_INERT, "false", NULL,
+  "Whether the fleet keeps a profile of the person it works for.\n"
+  "\n"
+  "A fleet-scope memory a newly created agent inherits, so it starts\n"
+  "knowing how you work instead of learning it again. Plain text and\n"
+  "editable: a model of a person that the person cannot read is not\n"
+  "something to build.\n"
+  "\n"
+  "Not implemented in this build. The operator profile is not built yet, so nothing is gathered\nand no agent inherits anything.", "0.2.0" },
+
+/* ── skills ──────────────────────────────────────────────────────── */
+{ "skills", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Reusable procedure, shared across the fleet.\n"
+  "\n"
+  "A skill is a directory holding a SKILL.md, in the layout every\n"
+  "supported CLI understands. clawtilla links the ones an agent is\n"
+  "assigned into that agent's workspace at whichever path its provider\n"
+  "actually reads -- the paths differ per provider and are asked of the\n"
+  "library rather than written down here.", "0.2.0" },
+
+{ "skills.enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_COMMENTED |
+  CLAWT_SCHEMA_FLAG_INERT,
+  "true", NULL,
+  "Whether skills are scanned and linked at all.\n"
+  "\n"
+  "Not implemented in this build. The skill library is not built yet, so no skill is scanned,\nassigned or linked into a workspace.", "0.2.0" },
+
+{ "skills.dir", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_COMMENTED |
+  CLAWT_SCHEMA_FLAG_INERT,
+  "~/.clawtilla/skills", NULL,
+  "Where the fleet's skills live.\n"
+  "\n"
+  "One directory per skill, each holding a SKILL.md whose front matter\n"
+  "names it and says when to use it. The directory name and the `name`\n"
+  "must agree, because that name is the traversal gate: no dots, no\n"
+  "slashes, and no way to call a skill `..`.\n"
+  "\n"
+  "Not implemented in this build. The skill library is not built yet, so no skill is scanned,\nassigned or linked into a workspace.", "0.2.0" },
+
+{ "skills.teach_max_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_COMMENTED |
+  CLAWT_SCHEMA_FLAG_INERT,
+  "900", NULL,
+  "How long a demonstration may record before it stops itself.\n"
+  "\n"
+  "A recording that has been forgotten is worse than one that ended\n"
+  "early, because what it captures is whatever you did next.\n"
+  "\n"
+  "Not implemented in this build. Recording a demonstration is not built yet, so nothing is ever\ncaptured and this bound is never reached.", "0.2.0" },
+
+{ "skills.teach_max_events", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_COMMENTED |
+  CLAWT_SCHEMA_FLAG_INERT,
+  "20000", NULL,
+  "How many recorded steps a demonstration keeps.\n"
+  "\n"
+  "Bounded, and the count of what was dropped is reported rather than\n"
+  "hidden: a silently truncated demonstration teaches half a task.\n"
+  "\n"
+  "Not implemented in this build. Recording a demonstration is not built yet, so nothing is ever\ncaptured and this bound is never reached.",
+  "0.2.0" },
+
 { "rooms", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Standing rooms, created at startup if they do not exist.\n"
   "\n"
@@ -675,6 +902,20 @@ static const ClawtSchemaEntry schema[] = {
   "money still has three limits on it.", "0.1.0" },
 
 /* ── teams ───────────────────────────────────────────────────────── */
+{ "rooms.turn_timeout_seconds", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_INERT, "300", NULL,
+  "How long one member may hold a room's turn before it is yielded.\n"
+  "\n"
+  "Counted in work, not wall time: the clock holds while the turn is\n"
+  "parked on an open decision and resumes with what is left. Stopping a\n"
+  "turn under a question nobody has answered manufactures a stranded\n"
+  "decision, which the daemon then has to repair.\n"
+  "\n"
+  "Different from the runtime's turn timeout: that one catches a wedged\n"
+  "worker, this one catches a wedged conversation.\n"
+  "\n"
+  "Not implemented in this build. Room turns are not bounded yet, so a member that stops\nresponding holds its turn until the conversation is\ninterrupted by hand.", "0.2.0" },
+
 { "teams", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Teams, so a fleet larger than a handful has a shape.\n"
   "\n"
@@ -709,6 +950,15 @@ static const ClawtSchemaEntry schema[] = {
   "0.1.0" },
 
 /* ── integrations ────────────────────────────────────────────────── */
+{ "teams.skills", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_INERT,
+  NULL, NULL,
+  "Skills every agent on this team gets.\n"
+  "\n"
+  "Between the fleet default and the agent's own list, resolved by the\n"
+  "same function as both.\n"
+  "\n"
+  "Not implemented in this build. The skill library is not built yet, so no skill is scanned,\nassigned or linked into a workspace.", "0.2.0" },
+
 { "integrations", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Named integrations, each handed to one agent, some agents or all of them.\n"
   "\n"
@@ -1030,6 +1280,28 @@ static const ClawtSchemaEntry schema[] = {
 
 
 /* ── connectors ──────────────────────────────────────────────────── */
+{ "integrations.confirm_writes", CLAWT_SCHEMA_BOOLEAN,
+  CLAWT_SCHEMA_FLAG_INERT, "true", NULL,
+  "For a connector that can stage its writes, whether it does.\n"
+  "\n"
+  "A staged write becomes a decision in the operator's own inbox rather\n"
+  "than something to be found later in the other system's web\n"
+  "interface. Turning this off means the agent's writes land\n"
+  "immediately and unreviewed.\n"
+  "\n"
+  "Not implemented in this build. No connector stages its writes yet, so this permits nothing\nand prevents nothing.", "0.2.0" },
+
+{ "integrations.poll_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_INERT,
+  "60", NULL,
+  "How often a connector that has something to report is asked.\n"
+  "\n"
+  "Polling, because the other end is another process with its own\n"
+  "event loop. It runs on a timer attached to the daemon's context --\n"
+  "never from a request handler, which would make a client wait on\n"
+  "somebody else's network.\n"
+  "\n"
+  "Not implemented in this build. Nothing polls a connector yet, so this interval is never used.", "0.2.0" },
+
 { "connectors", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Connected accounts: how clawtilla obtains credentials and keeps them.\n"
   "\n"
@@ -1076,6 +1348,36 @@ static const ClawtSchemaEntry schema[] = {
   "on the network reaches the port first.", "0.2.0" },
 
 /* ── routines ────────────────────────────────────────────────────── */
+{ "connectors.registry_enabled", CLAWT_SCHEMA_BOOLEAN,
+  CLAWT_SCHEMA_FLAG_COMMENTED |
+  CLAWT_SCHEMA_FLAG_INERT, "false", NULL,
+  "Whether the open MCP registry is imported into the catalogue.\n"
+  "\n"
+  "Off by default because it reaches the network. When on, the fetch\n"
+  "happens on a timer into a cache on disk -- never at daemon start and\n"
+  "never from a request handler, so a client pressing a button waits on\n"
+  "this machine and not on somebody else's.\n"
+  "\n"
+  "Not implemented in this build. Importing the registry is not built yet, so the catalogue is\nthe built-in table and the overlay directory, as before.", "0.2.0" },
+
+{ "connectors.registry_url", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_COMMENTED |
+  CLAWT_SCHEMA_FLAG_INERT,
+  "https://registry.modelcontextprotocol.io", NULL,
+  "Base URL of the MCP registry to import from.\n"
+  "\n"
+  "Somewhere else entirely is a legitimate answer: the registry is an\n"
+  "ordinary HTTP service and an internal mirror serves the same\n"
+  "shape.\n"
+  "\n"
+  "Not implemented in this build. Importing the registry is not built yet, so the catalogue is\nthe built-in table and the overlay directory, as before.", "0.2.0" },
+
+{ "connectors.registry_refresh_hours", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_COMMENTED |
+  CLAWT_SCHEMA_FLAG_INERT, "24", NULL,
+  "How often the cached registry listing is refreshed.\n"
+  "\n"
+  "Not implemented in this build. Importing the registry is not built yet, so the catalogue is\nthe built-in table and the overlay directory, as before.", "0.2.0" },
+
 { "routines", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Standing work: a prompt, an agent, and when to run it.\n"
   "\n"
@@ -1204,6 +1506,134 @@ static const ClawtSchemaEntry schema[] = {
   "0.2.0" },
 
 /* ── agents ──────────────────────────────────────────────────────── */
+/* ── triggers ────────────────────────────────────────────────────── */
+{ "triggers", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
+  "Work started by something happening elsewhere.\n"
+  "\n"
+  "A routine is a clock; a trigger is an event. Both end in the same\n"
+  "queued run against the same agent, so a trigger inherits the\n"
+  "routine's ordering behind a busy agent and its durable receipts\n"
+  "rather than growing a second set.", "0.2.0" },
+
+{ "triggers.id", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
+  "How the trigger is named on the command line and in the clients.\n"
+  "\n"
+  "Not the address it is called on: that is a separate unguessable\n"
+  "endpoint, so renaming a trigger does not tell anybody where it\n"
+  "lives.", "0.2.0" },
+
+{ "triggers.description", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_INERT,
+  NULL, NULL,
+  "What this trigger is for, in a line.\n"
+  "\n"
+  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.", "0.2.0" },
+
+{ "triggers.agent", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED,
+  NULL, NULL,
+  "Which agent runs when it fires.", "0.2.0" },
+
+{ "triggers.room", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_INERT, NULL, NULL,
+  "Where the run reports, if not the agent's own conversation.\n"
+  "\n"
+  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.",
+  "0.2.0" },
+
+{ "triggers.provider", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_INERT,
+  "generic", clawt_trigger_provider_get_type,
+  "Who is calling: forgejo, gitea, github, gitlab or generic.\n"
+  "\n"
+  "This decides how the delivery is authenticated, and the four forges\n"
+  "genuinely disagree. Forgejo and Gitea sign the body with HMAC-SHA256\n"
+  "and send the hex bare; GitHub sends the same digest behind a\n"
+  "`sha256=` prefix; GitLab sends the secret itself, verbatim, and\n"
+  "signs nothing.\n"
+  "\n"
+  "Naming it matters because Forgejo also sends GitHub- and\n"
+  "Gitea-shaped headers for compatibility. Sniffing is a fallback for\n"
+  "when nobody said, and it can never widen what a configured trigger\n"
+  "accepts.\n"
+  "\n"
+  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.", "0.2.0" },
+
+{ "triggers.secret", CLAWT_SCHEMA_SECRET, CLAWT_SCHEMA_FLAG_INERT,
+  NULL, NULL,
+  "The shared secret the caller proves it knows.\n"
+  "\n"
+  "Shown once, when it is created or rotated, and never again -- not in\n"
+  "a listing, a log line, an event or a transcript. Rotating it stops\n"
+  "the old one working immediately.\n"
+  "\n"
+  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.", "0.2.0" },
+
+{ "triggers.events", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_INERT,
+  NULL, NULL,
+  "Which event names are acted on. Empty means all of them.\n"
+  "\n"
+  "An event outside the list is answered normally and recorded as\n"
+  "ignored, because a caller that gets an error for a delivery you\n"
+  "simply did not want will keep retrying it.\n"
+  "\n"
+  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.", "0.2.0" },
+
+{ "triggers.repo", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_INERT, NULL, NULL,
+  "Only act when the delivery names this repository.\n"
+  "\n"
+  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.", "0.2.0" },
+
+{ "triggers.branch", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_INERT,
+  NULL, NULL,
+  "Only act when the delivery names this branch.\n"
+  "\n"
+  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.", "0.2.0" },
+
+{ "triggers.header", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_INERT,
+  NULL, NULL,
+  "For `provider: generic`, the header carrying the event name.\n"
+  "\n"
+  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.",
+  "0.2.0" },
+
+{ "triggers.instructions", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED,
+  NULL, NULL,
+  "What the agent is asked to do, with the event fenced beneath it.\n"
+  "\n"
+  "Placeholders -- {{event}}, {{repo}}, {{ref}}, {{actor}}, {{title}},\n"
+  "{{url}}, {{number}} -- are expanded by hand rather than by a format\n"
+  "function, because this string comes out of a configuration file and\n"
+  "a stray percent sign must be a percent sign.\n"
+  "\n"
+  "The payload arrives marked as untrusted, and the agent is told to\n"
+  "read it as data: a webhook body is somebody else's text.", "0.2.0" },
+
+{ "triggers.enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_INERT,
+  "true", NULL,
+  "Whether it fires.\n"
+  "\n"
+  "A new trigger starts unverified: the first authenticated delivery is\n"
+  "captured and shown to you rather than run, so you can see what the\n"
+  "caller actually sends before an agent acts on it.\n"
+  "\n"
+  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.", "0.2.0" },
+
+{ "triggers.directory", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_INERT,
+  NULL, NULL,
+  "Where the run should work, if somewhere particular.\n"
+  "\n"
+  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.", "0.2.0" },
+
+{ "triggers.worktree", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_INERT,
+  "false", NULL,
+  "Ask the agent to work in a git worktree of its own.\n"
+  "\n"
+  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.", "0.2.0" },
+
+{ "triggers.isolate", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_INERT,
+  "false", NULL,
+  "Give the run a conversation of its own rather than the agent's.\n"
+  "\n"
+  "Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and\nacted on by nothing.",
+  "0.2.0" },
+
 { "agents", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "The fleet.\n"
   "\n"
@@ -1271,7 +1701,31 @@ static const ClawtSchemaEntry schema[] = {
   "0.1.0" },
 
 { "agents.avatar", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
-  "Path to an avatar image.", "0.1.0" },
+  "The agent's profile picture. Optional, and usually unnecessary.\n"
+  "\n"
+  "A file called profile-picture.png, .jpg, .jpeg or .webp in the\n"
+  "agent's own directory is found without being configured, which is\n"
+  "the expected way to set one: drop the file in and it appears. This\n"
+  "key is for pointing somewhere else, and is resolved against the\n"
+  "workspace when it is relative.\n"
+  "\n"
+  "A path named here that does not exist warns and falls back to the\n"
+  "initials, rather than falling back silently -- a mistyped path and\n"
+  "no picture at all otherwise look identical.\n"
+  "\n"
+  "The picture reaches a client as bytes, never as a path, because a\n"
+  "client may be running on another machine.", "0.1.0" },
+
+{ "agents.skills", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_INERT,
+  NULL, NULL,
+  "Skills this agent gets, on top of its team's and the fleet's.\n"
+  "\n"
+  "Named, not paths: a skill lives once under `skills.dir` and is\n"
+  "linked into the workspace at whatever path this agent's provider\n"
+  "reads. A selector naming a skill that does not exist warns rather\n"
+  "than silently reaching nobody.\n"
+  "\n"
+  "Not implemented in this build. The skill library is not built yet, so no skill is scanned,\nassigned or linked into a workspace.", "0.2.0" },
 
 { "agents.workspace", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Workspace directory. Defaults to defaults.workspace_root/<id>.\n"
@@ -1401,6 +1855,18 @@ static const ClawtSchemaEntry schema[] = {
   "10", NULL,
   "Consecutive failures before the agent is left in error rather than\n"
   "restarted again. 0 means never give up.", "0.1.0" },
+
+{ "agents.runtime.turn_timeout_seconds", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_INERT, "1200", NULL,
+  "How long a turn may go without producing anything before it is\n"
+  "cancelled. 0 disables it.\n"
+  "\n"
+  "Activity, not duration: a turn may legitimately run for an hour\n"
+  "while events keep arriving, and a turn that has emitted nothing at\n"
+  "all for this long is wedged. A turn parked on a decision is exempt,\n"
+  "because waiting for a person is not a stall.\n"
+  "\n"
+  "Not implemented in this build. Not passed to the runtime yet, so a turn is bounded by\nlibreclaw's own default rather than by this.", "0.2.0" },
 
 /* ── agents.computer ─────────────────────────────────────────────── */
 { "agents.computer", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
@@ -1655,6 +2121,69 @@ static const ClawtSchemaEntry schema[] = {
   "0.1.0" },
 
 /* ── agents.computer.distrobox ───────────────────────────────────── */
+/* ── agents.computer.ssh ─────────────────────────────────────────── */
+{ "agents.computer.ssh", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "A machine reached over ssh.", "0.2.0" },
+
+{ "agents.computer.ssh.host", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_INERT,
+  NULL, NULL,
+  "The ssh config alias to connect to.\n"
+  "\n"
+  "An alias from ~/.ssh/config, not a hostname -- so the identity file,\n"
+  "the jump host, the port and the user stay where ssh already keeps\n"
+  "them, and clawtilla never reimplements ssh's own configuration.\n"
+  "\n"
+  "Give the alias ControlMaster, ControlPersist and a ConnectTimeout.\n"
+  "Without multiplexing every command pays a fresh handshake; without a\n"
+  "timeout a machine that drops off the network hangs a turn instead of\n"
+  "failing it.\n"
+  "\n"
+  "Run `ssh <alias> true` once by hand first. The host key is accepted\n"
+  "on your terms, never automatically: an unknown key is a refusal that\n"
+  "says so.\n"
+  "\n"
+  "Not implemented in this build. The ssh backend is not built yet. `computer.type: ssh` is not a\ntype this build knows, so nothing here is reached.", "0.2.0" },
+
+{ "agents.computer.ssh.workspace", CLAWT_SCHEMA_PATH,
+  CLAWT_SCHEMA_FLAG_INERT, NULL, NULL,
+  "Where the agent works on that machine.\n"
+  "\n"
+  "There is no kernel mount to make over ssh, so the mount list becomes\n"
+  "the allowlist instead -- the same shape `confine: allowlist` has on\n"
+  "the host backend.\n"
+  "\n"
+  "Not implemented in this build. The ssh backend is not built yet. `computer.type: ssh` is not a\ntype this build knows, so nothing here is reached.", "0.2.0" },
+
+{ "agents.computer.ssh.shell", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_INERT,
+  "/bin/sh", NULL,
+  "Which shell to name when one is needed.\n"
+  "\n"
+  "Not implemented in this build. The ssh backend is not built yet. `computer.type: ssh` is not a\ntype this build knows, so nothing here is reached.", "0.2.0" },
+
+{ "agents.computer.ssh.allow_sudo", CLAWT_SCHEMA_BOOLEAN,
+  CLAWT_SCHEMA_FLAG_INERT, "false", NULL,
+  "Whether sudo and its neighbours may be run there.\n"
+  "\n"
+  "Off refuses sudo, pkexec, doas, run0 and machinectl shell at the\n"
+  "point the command is built, including inside a shell one-liner, and\n"
+  "the agent is told so rather than discovering it a turn later.\n"
+  "\n"
+  "Not implemented in this build. The ssh backend is not built yet. `computer.type: ssh` is not a\ntype this build knows, so nothing here is reached.",
+  "0.2.0" },
+
+{ "agents.computer.ssh.connect_timeout", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_INERT, "10", NULL,
+  "Seconds to wait for the connection before failing.\n"
+  "\n"
+  "Not implemented in this build. The ssh backend is not built yet. `computer.type: ssh` is not a\ntype this build knows, so nothing here is reached.", "0.2.0" },
+
+{ "agents.computer.ssh.control_persist", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_INERT, "600", NULL,
+  "Seconds an idle multiplexed connection is kept open.\n"
+  "\n"
+  "Not implemented in this build. The ssh backend is not built yet. `computer.type: ssh` is not a\ntype this build knows, so nothing here is reached.", "0.2.0" },
+
 { "agents.computer.distrobox", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
   "Settings for computer.type: distrobox.\n"
@@ -2066,6 +2595,43 @@ static const ClawtSchemaEntry schema[] = {
   "smaller grant.", "0.1.0" },
 
 /* ── agents: the rest ────────────────────────────────────────────── */
+{ "agents.computer.desktop.observe_fps", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_INERT, "1", NULL,
+  "Frames a second while somebody is watching the screen.\n"
+  "\n"
+  "A supervision view, not a video call. Grabbing shares the one\n"
+  "channel the agent is using for its own work, so every frame is\n"
+  "latency taken from the task being watched. Nothing is captured at\n"
+  "all unless a client is subscribed.\n"
+  "\n"
+  "Not implemented in this build. Watching the screen is not built yet, so no frame is ever\ngrabbed and this rate applies to nothing.", "0.2.0" },
+
+{ "agents.computer.desktop.takeover_lease_seconds", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_INERT, "900", NULL,
+  "How long a person may hold the screen before the hold lapses.\n"
+  "\n"
+  "While it is held the agent's input is refused rather than queued: a\n"
+  "queued click lands after the person has moved on, on whatever\n"
+  "happens to be under it then. The lease expires so that a browser tab\n"
+  "closed mid-takeover cannot lock an agent out for good.\n"
+  "\n"
+  "Not implemented in this build. Taking over the screen is not built yet, so no hold is ever\ntaken and none can lapse.", "0.2.0" },
+
+{ "agents.computer.desktop.allow_recording", CLAWT_SCHEMA_BOOLEAN,
+  CLAWT_SCHEMA_FLAG_DANGEROUS | CLAWT_SCHEMA_FLAG_INERT, "false", NULL,
+  "Whether a demonstration may be recorded on this screen.\n"
+  "\n"
+  "Its own setting, and not part of `allow_input`, because capturing\n"
+  "what a person types is categorically different from injecting\n"
+  "keystrokes. An agent allowed to click must not thereby be allowed to\n"
+  "watch you type.\n"
+  "\n"
+  "While a recording runs the desktop says so visibly, capture pauses\n"
+  "whenever a password field has focus, and the recording stops itself\n"
+  "after `skills.teach_max_seconds`.\n"
+  "\n"
+  "Not implemented in this build. Recording a demonstration is not built yet. This grant is\nparsed and offered to nobody, and no capture can happen\nwhatever it says.", "0.2.0" },
+
 { "agents.env", CLAWT_SCHEMA_MAPPING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Environment variables for this agent's process.\n"
   "\n"
@@ -2277,6 +2843,11 @@ static const ClawtSchemaAgentKey agent_keys[] = {
     { "memories.enabled",           "memories.enabled" },
     { "memories.max_results",       "memories.max_results" },
     { "memories.readers",           "memories.readers" },
+    { "memories.scope",             "memories.scope" },
+    { "memories.recall",            "memories.recall" },
+    { "memories.summarise",         "memories.summarise" },
+    { "memories.nudge_turns",       "memories.nudge_turns" },
+    { "skills",                     "defaults.skills" },
 
     /*
      * `agents.*` options whose default comes from the `defaults:`

@@ -164,6 +164,31 @@ daemon:
   # # loaded.
   # automation_dir: "~/.clawtilla/pods"
 
+  # # Whether to accept inbound trigger deliveries.
+  # #
+  # # Off by default. A fleet nothing calls into needs no listener, and a
+  # # port opened because a feature exists rather than because somebody
+  # # asked for it is a port nobody is watching.
+  # #
+  # # The receiver is its own server on its own port and serves only
+  # # /health and the secret /hooks/... paths -- never the IPC surface --
+  # # so putting it behind a tunnel exposes nothing else.
+  # #
+  # # Not implemented in this build. The trigger receiver is not built yet, so nothing listens and
+  # # nothing is delivered.
+  # webhook_enabled: false
+
+  # # Port the trigger receiver listens on.
+  # #
+  # # It binds loopback and the tailnet address when there is one, and
+  # # loopback alone when there is not -- the same rule the web client
+  # # follows, and for the same reason: a listener is never widened
+  # # because an address was missing.
+  # #
+  # # Not implemented in this build. The trigger receiver is not built yet, so nothing listens and
+  # # nothing is delivered.
+  # webhook_port: 8788
+
 # What a new agent gets when its own block does not say.
 #
 # Every key here can be overridden per agent.
@@ -273,6 +298,29 @@ defaults:
 
   # Whether new agents start with the daemon.
   autostart: false
+
+  # # Largest profile picture the daemon will read and serve.
+  # #
+  # # A picture crosses IPC as bytes rather than as a path, because a
+  # # client may be on another machine entirely -- so an unbounded
+  # # picture is an unbounded frame. Over the limit is a refusal naming
+  # # the limit, never a truncated image, which would surface as a broken
+  # # file a long way from the cause.
+  # #
+  # # Not implemented in this build. Serving a profile picture is not built yet, so nothing is read
+  # # and nothing is measured against this.
+  # avatar_max_bytes: 4194304
+
+  # # Skills every agent gets unless it says otherwise.
+  # #
+  # # Resolved together with the team's list and the agent's own through
+  # # one function, the way integrations already are. Two resolvers would
+  # # be two behaviours, and the one nobody tested would be the one that
+  # # ran.
+  # #
+  # # Not implemented in this build. The skill library is not built yet, so no skill is scanned,
+  # # assigned or linked into a workspace.
+  # skills: []
 
 # The model that helps design new agents.
 #
@@ -434,6 +482,61 @@ orchestration:
   # # two agents claim it.
   # chief_of_staff: null
 
+  # # Repeat counts worth reporting when an agent keeps making the same
+  # # call.
+  # #
+  # # A count lands on a threshold exactly once, so the fifth identical
+  # # call reports and the sixth does not. Reporting every repeat past a
+  # # floor turns a signal into noise, and noise is what gets skipped.
+  # #
+  # # Not implemented in this build. Repeat detection is not built yet, so a repeated call is counted
+  # # by nobody and this never fires.
+  # repeat_thresholds: ["5", "10", "20"]
+
+  # # How many distinct calls one turn remembers while watching for
+  # # repeats.
+  # #
+  # # Bounded on purpose: an unlimited set of unique arguments lets one
+  # # pathological turn grow the daemon for as long as it runs. The least
+  # # recently seen call is dropped first, and a dropped one starts
+  # # counting again from one.
+  # #
+  # # Not implemented in this build. Repeat detection is not built yet, so a repeated call is counted
+  # # by nobody and this never fires.
+  # repeat_max_keys: 256
+
+  # # How many handoffs one turn may queue.
+  # #
+  # # Small deliberately. A blocking ask gets backpressure for free
+  # # because the caller waits; an asynchronous handoff does not, so this
+  # # is the only thing standing between a confused chief of staff and a
+  # # fan-out of real turns that each cost money.
+  # #
+  # # Not implemented in this build. Handoff is not built yet, so no work is ever queued against this
+  # # limit.
+  # handoff_max_per_turn: 4
+
+  # # How many times a handoff waits for a busy assignee before giving up
+  # # and saying so.
+  # #
+  # # Giving up is its own outcome rather than a failure: 'nobody was
+  # # free' and 'it went wrong' need different answers from whoever reads
+  # # the receipt.
+  # #
+  # # Not implemented in this build. Handoff is not built yet, so no work is ever queued against this
+  # # limit.
+  # handoff_busy_retries: 3
+
+  # # How long a finished handoff's receipt is kept.
+  # #
+  # # Tasks live in memory and do not survive a restart, so the receipt is
+  # # the only thing that lets an agent ask what became of work it handed
+  # # over before the daemon was restarted underneath it.
+  # #
+  # # Not implemented in this build. Handoff is not built yet, so no work is ever queued against this
+  # # limit.
+  # handoff_receipt_days: 2
+
 # What an agent remembers between conversations.
 #
 # Not agents.memory, which is the MEMORY.md size budget and a different
@@ -473,6 +576,108 @@ memories:
   # # nothing, so the loader warns about that spelling rather than leaving
   # # a permission somebody granted silently denied.
   # readers: null
+
+  # # Where this agent's own memories are written: agent, team or fleet.
+  # #
+  # # Reading always fans out across every scope the agent is entitled to;
+  # # this says only where a new memory lands. A fact the whole fleet
+  # # needs is worth writing once rather than being relearned by each
+  # # agent in turn.
+  # #
+  # # Each scope is a separate database, so what an agent may read is
+  # # decided by which file is opened rather than by a WHERE clause. A
+  # # permission that is structural cannot be lost to a missing
+  # # condition.
+  # #
+  # # Not implemented in this build. Team and fleet memories are not built yet: every memory is
+  # # written to the agent's own database whatever this says.
+  # scope: "agent"
+
+  # # Whether the agent may search past conversations.
+  # #
+  # # Separate from `memories.enabled`, which is about facts the agent
+  # # chose to record. This is about the transcript itself, which it never
+  # # chose and which is much larger.
+  # #
+  # # Not implemented in this build. Searching past conversations is not built yet, so there is
+  # # nothing for this to permit or refuse.
+  # recall: true
+
+  # # Whether finished work is summarised into memories automatically.
+  # #
+  # # Off by default because it is a model call nobody asked for, billed
+  # # to whoever set it. On, a completed task or a closed routine run is
+  # # distilled into memories tagged with the transcript they came from.
+  # #
+  # # Not implemented in this build. Summarising finished work is not built yet, so nothing is
+  # # distilled whether this is on or off.
+  # summarise: false
+
+  # # How many turns between reminders to record what was learned. 0 is
+  # # off.
+  # #
+  # # The reminder rides the per-agent prompt suffix rather than being a
+  # # mechanism of its own, so it is visible in the same place as every
+  # # other per-turn instruction.
+  # #
+  # # Not implemented in this build. The reminder is not built yet, so no turn carries it however
+  # # this is set.
+  # nudge_turns: 0
+
+  # # Whether the fleet keeps a profile of the person it works for.
+  # #
+  # # A fleet-scope memory a newly created agent inherits, so it starts
+  # # knowing how you work instead of learning it again. Plain text and
+  # # editable: a model of a person that the person cannot read is not
+  # # something to build.
+  # #
+  # # Not implemented in this build. The operator profile is not built yet, so nothing is gathered
+  # # and no agent inherits anything.
+  # operator_profile: false
+
+# Reusable procedure, shared across the fleet.
+#
+# A skill is a directory holding a SKILL.md, in the layout every
+# supported CLI understands. clawtilla links the ones an agent is
+# assigned into that agent's workspace at whichever path its provider
+# actually reads -- the paths differ per provider and are asked of the
+# library rather than written down here.
+skills:
+
+  # # Whether skills are scanned and linked at all.
+  # #
+  # # Not implemented in this build. The skill library is not built yet, so no skill is scanned,
+  # # assigned or linked into a workspace.
+  # enabled: true
+
+  # # Where the fleet's skills live.
+  # #
+  # # One directory per skill, each holding a SKILL.md whose front matter
+  # # names it and says when to use it. The directory name and the `name`
+  # # must agree, because that name is the traversal gate: no dots, no
+  # # slashes, and no way to call a skill `..`.
+  # #
+  # # Not implemented in this build. The skill library is not built yet, so no skill is scanned,
+  # # assigned or linked into a workspace.
+  # dir: "~/.clawtilla/skills"
+
+  # # How long a demonstration may record before it stops itself.
+  # #
+  # # A recording that has been forgotten is worse than one that ended
+  # # early, because what it captures is whatever you did next.
+  # #
+  # # Not implemented in this build. Recording a demonstration is not built yet, so nothing is ever
+  # # captured and this bound is never reached.
+  # teach_max_seconds: 900
+
+  # # How many recorded steps a demonstration keeps.
+  # #
+  # # Bounded, and the count of what was dropped is reported rather than
+  # # hidden: a silently truncated demonstration teaches half a task.
+  # #
+  # # Not implemented in this build. Recording a demonstration is not built yet, so nothing is ever
+  # # captured and this bound is never reached.
+  # teach_max_events: 20000
 
 # # Standing rooms, created at startup if they do not exist.
 # #
@@ -548,6 +753,33 @@ connectors:
   # on the network reaches the port first.
   redirect_port: 8765
 
+  # # Whether the open MCP registry is imported into the catalogue.
+  # #
+  # # Off by default because it reaches the network. When on, the fetch
+  # # happens on a timer into a cache on disk -- never at daemon start and
+  # # never from a request handler, so a client pressing a button waits on
+  # # this machine and not on somebody else's.
+  # #
+  # # Not implemented in this build. Importing the registry is not built yet, so the catalogue is
+  # # the built-in table and the overlay directory, as before.
+  # registry_enabled: false
+
+  # # Base URL of the MCP registry to import from.
+  # #
+  # # Somewhere else entirely is a legitimate answer: the registry is an
+  # # ordinary HTTP service and an internal mirror serves the same
+  # # shape.
+  # #
+  # # Not implemented in this build. Importing the registry is not built yet, so the catalogue is
+  # # the built-in table and the overlay directory, as before.
+  # registry_url: "https://registry.modelcontextprotocol.io"
+
+  # # How often the cached registry listing is refreshed.
+  # #
+  # # Not implemented in this build. Importing the registry is not built yet, so the catalogue is
+  # # the built-in table and the overlay directory, as before.
+  # registry_refresh_hours: 24
+
 # # Standing work: a prompt, an agent, and when to run it.
 # #
 # # A routine is the thing you would otherwise remember to ask for every
@@ -564,6 +796,14 @@ connectors:
 # # asleep at nine o'clock has missed nine o'clock, and the routine says
 # # so rather than pretending otherwise -- see `catch_up`.
 # routines: []
+
+# # Work started by something happening elsewhere.
+# #
+# # A routine is a clock; a trigger is an event. Both end in the same
+# # queued run against the same agent, so a trigger inherits the
+# # routine's ordering behind a busy agent and its durable receipts
+# # rather than growing a second set.
+# triggers: []
 
 # The fleet.  Empty to start with; `clawtilla agent create` or
 # `clawtilla agent new --ai` fills this in.

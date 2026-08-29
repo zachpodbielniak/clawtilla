@@ -944,4 +944,121 @@ gboolean clawt_flags_from_nick(GType flags_type, const gchar *nick,
  */
 gchar *clawt_flags_to_string(GType flags_type, guint value);
 
+/**
+ * ClawtMemoryScope:
+ * @CLAWT_MEMORY_SCOPE_AGENT: the agent's own, and nobody else's by default
+ * @CLAWT_MEMORY_SCOPE_TEAM: shared with the team the agent is on
+ * @CLAWT_MEMORY_SCOPE_FLEET: shared with every agent
+ *
+ * Where a memory an agent forms is written.
+ *
+ * Reading fans out across every scope an agent is entitled to; this says
+ * only where a new one lands.  Each scope is a separate database file, so
+ * "may this agent read that" is answered by which file is opened rather
+ * than by a condition in a query -- a permission that is structural
+ * cannot be lost to a missing WHERE clause.
+ */
+typedef enum {
+    CLAWT_MEMORY_SCOPE_AGENT = 0,
+    CLAWT_MEMORY_SCOPE_TEAM,
+    CLAWT_MEMORY_SCOPE_FLEET
+} ClawtMemoryScope;
+
+GType clawt_memory_scope_get_type(void) G_GNUC_CONST;
+#define CLAWT_TYPE_MEMORY_SCOPE (clawt_memory_scope_get_type())
+
+/**
+ * clawt_memory_scope_count:
+ *
+ * Returns: how many scopes there are
+ */
+guint clawt_memory_scope_count(void);
+
+/**
+ * clawt_memory_scope_nth:
+ * @n: an index below clawt_memory_scope_count()
+ *
+ * Returns: the scope at @n, narrowest first
+ */
+ClawtMemoryScope clawt_memory_scope_nth(guint n);
+
+/**
+ * clawt_memory_scope_nth_nick:
+ * @n: an index below clawt_memory_scope_count()
+ *
+ * Returns: (transfer none): the spelling used in clawtilla.yaml
+ */
+const gchar *clawt_memory_scope_nth_nick(guint n);
+
+/**
+ * clawt_memory_scope_nth_label:
+ * @n: an index below clawt_memory_scope_count()
+ *
+ * Returns: (transfer none): the wording for a person
+ */
+const gchar *clawt_memory_scope_nth_label(guint n);
+
+/**
+ * ClawtTriggerProvider:
+ * @CLAWT_TRIGGER_PROVIDER_GENERIC: a bearer token and nothing forge-shaped
+ * @CLAWT_TRIGGER_PROVIDER_FORGEJO: Forgejo
+ * @CLAWT_TRIGGER_PROVIDER_GITEA: Gitea
+ * @CLAWT_TRIGGER_PROVIDER_GITHUB: GitHub
+ * @CLAWT_TRIGGER_PROVIDER_GITLAB: GitLab
+ *
+ * Who is delivering an event, which decides how it is authenticated.
+ *
+ * The four forges genuinely disagree, and the disagreement is not
+ * cosmetic.  Forgejo and Gitea sign the raw body with HMAC-SHA256 and
+ * send the hex bare; GitHub sends the same digest behind a `sha256=`
+ * prefix; GitLab signs nothing at all and sends the shared secret
+ * verbatim in a header, which still has to be compared in constant time.
+ *
+ * Forgejo additionally sends GitHub- and Gitea-shaped headers for
+ * compatibility, so sniffing cannot be the primary answer: it is a
+ * fallback for a delivery nobody declared, and it may never widen what a
+ * configured trigger accepts.
+ */
+typedef enum {
+    CLAWT_TRIGGER_PROVIDER_GENERIC = 0,
+    CLAWT_TRIGGER_PROVIDER_FORGEJO,
+    CLAWT_TRIGGER_PROVIDER_GITEA,
+    CLAWT_TRIGGER_PROVIDER_GITHUB,
+    CLAWT_TRIGGER_PROVIDER_GITLAB
+} ClawtTriggerProvider;
+
+GType clawt_trigger_provider_get_type(void) G_GNUC_CONST;
+#define CLAWT_TYPE_TRIGGER_PROVIDER (clawt_trigger_provider_get_type())
+
+/**
+ * clawt_trigger_provider_count:
+ *
+ * Returns: how many providers are understood
+ */
+guint clawt_trigger_provider_count(void);
+
+/**
+ * clawt_trigger_provider_nth:
+ * @n: an index below clawt_trigger_provider_count()
+ *
+ * Returns: the provider at @n
+ */
+ClawtTriggerProvider clawt_trigger_provider_nth(guint n);
+
+/**
+ * clawt_trigger_provider_nth_nick:
+ * @n: an index below clawt_trigger_provider_count()
+ *
+ * Returns: (transfer none): the spelling used in clawtilla.yaml
+ */
+const gchar *clawt_trigger_provider_nth_nick(guint n);
+
+/**
+ * clawt_trigger_provider_nth_label:
+ * @n: an index below clawt_trigger_provider_count()
+ *
+ * Returns: (transfer none): the wording for a person
+ */
+const gchar *clawt_trigger_provider_nth_label(guint n);
+
 G_END_DECLS
