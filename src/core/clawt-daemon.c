@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include "core/clawt-daemon.h"
+#include "core/clawt-daemon-private.h"
 
 #include <string.h>
 
@@ -33,140 +34,6 @@ typedef struct {
     gchar   *host;
     guint16  port;
 } BindSpec;
-
-struct _ClawtDaemon {
-    GObject parent_instance;
-
-    /*
-     * Set by clawt_daemon_set_bind_addresses(), which replaces whatever
-     * the config says about network listeners.  The flag is separate from
-     * the list because "bind nothing" and "bind whatever is configured"
-     * are different answers and an empty list has to mean the first.
-     */
-    gboolean   bind_override;
-    GPtrArray *bind_specs;   /* BindSpec*, owned */
-
-    gchar        *config_path;
-    GMainContext *main_context;
-    GMainLoop    *loop;
-
-    ClawtConfig        *config;
-    ClawtAgentManager  *agents;
-    ClawtRoomManager   *rooms;
-    ClawtTaskManager   *tasks;
-    ClawtMailboxRouter *router;
-    ClawtLoopGuard     *guard;
-    ClawtUsage         *usage;
-    ClawtEventBus      *bus;
-    ClawtEventLog      *log;
-
-    /*
-     * Choices agents need a person to make.
-     *
-     * Beside the alerts rather than inside them: an alert is something
-     * that happened and a decision is something that needs you, so one
-     * badge meaning both would be a badge nobody could act on.  Durable
-     * for the same reason the mailbox is -- an agent that asked and got
-     * no answer carried on with its default, and an operator who never
-     * saw the question has no way to know that happened.
-     */
-    ClawtDecisionStore *decisions;
-    ClawtExchange      *exchange;
-    ClawtLinkServer    *link_server;
-    ClawtIpcServer     *ipc_server;
-    ClawtMcpTools      *mcp_tools;
-    ClawtPodBridge     *pod_bridge;
-    ClawtPluginManager *plugins;
-    ClawtVmImageStore  *vm_images;
-
-    /*
-     * The connector catalogue, and the authorizations in progress.
-     *
-     * The catalogue is cached because it is read on paths a person is
-     * waiting on; it is dropped on reload so that editing a file in
-     * connectors.dir takes effect without a restart.
-     */
-    GPtrArray  *connector_catalog;
-    GHashTable *connector_flows;   /* flow id -> ConnectorFlow */
-    GSource    *connector_refresh;
-
-    /*
-     * The fleet coming up, one agent per idle turn.
-     *
-     * Autostart used to run inline in clawt_daemon_start(), which is
-     * called before the main loop exists -- so for the whole time the
-     * fleet took to provision, the daemon dispatched nothing.  No IPC
-     * frame was answered, no signal source ran, and on ~30 container
-     * agents that was minutes of a process that could not be talked to
-     * and could not be asked to stop; systemd eventually escalated to
-     * SIGABRT and the agents were SIGKILLed rather than stopped.
-     */
-    GSource    *autostart_source;
-    GPtrArray  *autostart_queue;   /* gchar*, agent ids, in order */
-    guint       autostart_next;
-
-    /*
-     * Designs waiting to be reviewed.
-     *
-     * design.agent used to run the model, show a preview, and then --
-     * when the person said yes -- run the model *again* with commit set.
-     * The second run is a fresh conversation, so what was created was not
-     * what was reviewed, which is the one thing the preview exists to
-     * guarantee. The designer is kept here between the two steps instead.
-     */
-    GHashTable *drafts;          /* draft id -> ClawtAgentDesigner */
-
-    /*
-     * What each provider says it runs, cached.
-     *
-     * model.list used to ask the providers while the client waited, and
-     * both the new-agent dialog and the agent inspector ask on every
-     * build -- so pressing + or clicking an agent stalled for as long as
-     * the slowest provider took. Warmed in the background instead, and
-     * every request answers from here at once.
-     */
-    GHashTable *model_cache;     /* provider id -> GStrv (owned) */
-    gint64      model_cache_at;  /* monotonic, when it was last warmed */
-
-    /*
-     * Who to tell when something is worth interrupting somebody for.
-     *
-     * Rebuilt on every reload, because that is when its credentials are
-     * resolved -- see ClawtNotifier.
-     */
-    ClawtNotifier *notifier;
-
-    /* Standing work, and when it is next due. */
-    ClawtRoutineRunner *routines;
-
-    /* Pods that watch the fleet and act on it. */
-    ClawtAutomation *automation;
-
-    gchar   *libreclaw_binary;
-    gchar   *state_dir;
-
-    /*
-     * An exclusive flock on <state_dir>/daemon.lock, held for the life of
-     * the daemon.  See acquire_state_lock().
-     */
-    gint     state_lock_fd;
-    gchar   *link_socket;
-
-    /*
-     * Where a file an agent sent its operator is kept, so `attachment.get`
-     * can serve the bytes to a client that may be on another machine.
-     */
-    gchar   *attachment_dir;
-    guint    sweep_source_id;
-    gboolean running;
-};
-
-/*
- * How many designs may sit unreviewed at once.  Small on purpose: a
- * draft is a step in a conversation somebody is having right now, not
- * something to accumulate.
- */
-#define MAX_PENDING_DRAFTS (8)
 
 G_DEFINE_FINAL_TYPE(ClawtDaemon, clawt_daemon, G_TYPE_OBJECT)
 
@@ -322,9 +189,9 @@ clawt_daemon_get_mcp_tools(ClawtDaemon *self)
  * stops one of your own agents claiming to be another and reading its
  * mail.
  */
-static gboolean
-authenticate_agent(const gchar *agent_id, const gchar *token,
-                   gpointer user_data)
+gboolean
+clawt_daemon_authenticate_agent(const gchar *agent_id, const gchar *token,
+                                gpointer user_data)
 {
     ClawtDaemon *self = user_data;
     g_autofree gchar *state_dir = NULL;
@@ -642,9 +509,10 @@ acquire_state_lock(const gchar *state_dir, gint *out_fd, GError **error)
     return TRUE;
 }
 
-static gboolean
-prepare_state_git(const gchar *state_dir, gboolean init_repo,
-                  gboolean *created, gchar **ignore_path, GError **error)
+gboolean
+clawt_daemon_prepare_state_git(const gchar *state_dir, gboolean init_repo,
+                               gboolean *created, gchar **ignore_path,
+                               GError **error)
 {
     g_autofree gchar *path = g_build_filename(state_dir, ".gitignore", NULL);
     g_autofree gchar *git_dir = g_build_filename(state_dir, ".git", NULL);
@@ -1577,9 +1445,9 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
  * here, and writing `[]` into every mount that has no scope list is
  * noise in a reply somebody reads with `jq`.
  */
-static void
-add_string_array(JsonBuilder *builder, const gchar *name,
-                 const gchar * const *items)
+void
+clawt_daemon_add_string_array(JsonBuilder *builder, const gchar *name,
+                              const gchar * const *items)
 {
     gsize i;
 
@@ -1595,11 +1463,11 @@ add_string_array(JsonBuilder *builder, const gchar *name,
     json_builder_end_array(builder);
 }
 
-static ClawtMount *
-mount_from_payload(ClawtConfig  *config,
-                   JsonObject   *payload,
-                   const gchar  *target,
-                   GError      **error)
+ClawtMount *
+clawt_daemon_mount_from_payload(ClawtConfig  *config,
+                                JsonObject   *payload,
+                                const gchar  *target,
+                                GError      **error)
 {
     const gchar *source = clawt_ipc_payload_string(payload, "source");
     const gchar *mode = clawt_ipc_payload_string(payload, "mode");
@@ -1730,7 +1598,7 @@ mount_from_payload(ClawtConfig  *config,
     return g_steal_pointer(&mount);
 }
 
-static gboolean
+gboolean
 clawt_daemon_purge_agent_files(ClawtDaemon      *self,
                                ClawtAgentConfig *config,
                                gboolean         *out_was_linked,
@@ -1852,8 +1720,9 @@ group_position(GPtrArray *teams, ClawtAgentConfig *config)
     return G_MAXINT;
 }
 
-static gint
-compare_by_order(gconstpointer a, gconstpointer b, gpointer user_data)
+gint
+clawt_daemon_compare_by_order(gconstpointer a, gconstpointer b,
+                              gpointer user_data)
 {
     GPtrArray *teams = user_data;
     ClawtAgentConfig *first = clawt_agent_get_config(*(ClawtAgent *const *)a);
@@ -1881,7 +1750,7 @@ compare_by_order(gconstpointer a, gconstpointer b, gpointer user_data)
 }
 
 /* Defined below, beside the frame that is its other caller. */
-static ClawtAgentConfig *daemon_create_agent(ClawtDaemon  *self,
+ClawtAgentConfig *clawt_daemon_create_agent(ClawtDaemon  *self,
                                              const gchar  *agent_id,
                                              GHashTable   *fields,
                                              const gchar  *purpose,
@@ -1891,7 +1760,7 @@ static ClawtAgentConfig *daemon_create_agent(ClawtDaemon  *self,
 /*
  * An agent creating an agent, through the same door a person uses.
  *
- * It goes to daemon_create_agent() rather than reimplementing any of it,
+ * It goes to clawt_daemon_create_agent() rather than reimplementing any of it,
  * which is the whole point: the validation, the rollback on a bad
  * computer, the reload and the start are one implementation. An agent
  * asking is not a reason to trust the request more, and the last time
@@ -1956,8 +1825,8 @@ create_agent_for_tools(const gchar  *agent_id,
     g_autoptr(GString) out = NULL;
     gboolean purpose_landed = FALSE;
 
-    if (daemon_create_agent(self, agent_id, settings, purpose,
-                            &purpose_landed, error) == NULL)
+    if (clawt_daemon_create_agent(self, agent_id, settings, purpose,
+                                  &purpose_landed, error) == NULL)
         return NULL;
 
     out = g_string_new(NULL);
@@ -2106,8 +1975,8 @@ render_refusal_free(gpointer data)
  * hostage.  @refusals, when it is not %NULL, collects the ones that were
  * turned down so whoever asked can be told.
  */
-static void
-render_all_agents_into(ClawtDaemon *self, GPtrArray *refusals)
+void
+clawt_daemon_render_all_agents_into(ClawtDaemon *self, GPtrArray *refusals)
 {
     GPtrArray *agents = clawt_agent_manager_list(self->agents);
     guint i;
@@ -2166,8 +2035,8 @@ render_all_agents_into(ClawtDaemon *self, GPtrArray *refusals)
  * that discards them is exactly how six handlers came to report success
  * about an agent left running on its previous config.
  */
-static GPtrArray *
-render_refusals_new(void)
+GPtrArray *
+clawt_daemon_render_refusals_new(void)
 {
     return g_ptr_array_new_with_free_func(render_refusal_free);
 }
@@ -2184,8 +2053,8 @@ render_refusals_new(void)
  * the one that mattered day to day: rendering is the whole point of the
  * call there, and a refusal left it doing nothing at all.
  */
-static void
-add_render_refusals(JsonBuilder *builder, GPtrArray *refusals)
+void
+clawt_daemon_add_render_refusals(JsonBuilder *builder, GPtrArray *refusals)
 {
     guint i;
 
@@ -2359,11 +2228,12 @@ start_agent_prepare(ClawtDaemon    *self,
          * And write what that computer turned out to be into the
          * agent's own TOOLS.org, before the child is spawned to read it.
          *
-         * Here rather than in render_all_agents_into(), which also runs
-         * for a *stopped* agent -- there the computer is NULL, so that
-         * version filled the region on the first start and emptied it on
-         * the next restart. Worse than not writing it at all: an agent
-         * that had been told about a shared folder stopped being told.
+         * Here rather than in clawt_daemon_render_all_agents_into(),
+         * which also runs for a *stopped* agent -- there the computer is
+         * NULL, so that version filled the region on the first start and
+         * emptied it on the next restart. Worse than not writing it at
+         * all: an agent that had been told about a shared folder stopped
+         * being told.
          *
          * From the built computer rather than from the config, because
          * the config does not know what the fleet shared: a default
@@ -2926,7 +2796,7 @@ clawt_daemon_stop_agent(ClawtDaemon *self, const gchar *agent_id,
  * control.shutdown reaches the client before the socket closes.  Without
  * it a clean shutdown looks to the client exactly like a crash.
  */
-static gboolean
+gboolean
 clawt_daemon_quit_idle(gpointer user_data)
 {
     clawt_daemon_quit(CLAWT_DAEMON(user_data));
@@ -2990,14 +2860,6 @@ release_components(ClawtDaemon *self)
     g_clear_pointer(&self->attachment_dir, g_free);
 }
 
-/*
- * How long a cached model list is trusted.
- *
- * Providers add models in weeks, not minutes, so this only has to be
- * short enough that a daemon left running for days notices.
- */
-#define MODEL_CACHE_TTL_SECONDS (6 * 60 * 60)
-
 static void
 on_models_ready(const gchar *provider_id, GStrv models, gpointer user_data)
 {
@@ -3016,8 +2878,8 @@ on_models_ready(const gchar *provider_id, GStrv models, gpointer user_data)
  * Answers land in the cache as they arrive; a request made in the
  * meantime is served from the built-in table rather than blocked.
  */
-static void
-warm_model_cache(ClawtDaemon *self)
+void
+clawt_daemon_warm_model_cache(ClawtDaemon *self)
 {
     const ClawtProviderInfo *catalog;
     gsize n_providers = 0;
@@ -3093,38 +2955,13 @@ on_sweep(gpointer user_data)
 /* ── Connectors ──────────────────────────────────────────────────── */
 
 /* Saves repeating the two-line dance for every optional string field. */
-static void
-add_string_member(JsonBuilder *builder, const gchar *name, const gchar *value)
+void
+clawt_daemon_add_string_member(JsonBuilder *builder, const gchar *name,
+                               const gchar *value)
 {
     json_builder_set_member_name(builder, name);
     json_builder_add_string_value(builder, value);
 }
-
-/*
- * A flow in progress.
- *
- * Authorising takes as long as a person takes, which is far longer than
- * an IPC request may block -- so `connector.begin` answers as soon as
- * there is something to show them, and `connector.await` is the deferred
- * one that finishes when they have done it.  Splitting it in two is what
- * lets a client display the code the instant it exists rather than after
- * the whole thing has completed, which would be no use to anybody.
- */
-typedef struct {
-    ClawtDaemon     *daemon;      /* not owned; the daemon outlives a flow */
-    gchar           *id;
-    gchar           *name;
-    gchar           *token_url;
-    gchar           *client_id;
-    gchar           *client_secret;
-    gchar           *verifier;
-    gchar           *redirect_uri;
-    ClawtIpcPending *waiter;
-    gboolean         settled;
-    gboolean         ok;
-    gchar           *message;
-    gint64           settled_at;
-} ConnectorFlow;
 
 static void
 connector_flow_free(ConnectorFlow *flow)
@@ -3149,8 +2986,8 @@ connector_flow_free(ConnectorFlow *flow)
  * otherwise.  Dropped on reload, so editing a connector file and
  * reloading the daemon picks it up.
  */
-static GPtrArray *
-daemon_catalog(ClawtDaemon *self)
+GPtrArray *
+clawt_daemon_catalog(ClawtDaemon *self)
 {
     if (self->connector_catalog == NULL) {
         g_autofree gchar *dir =
@@ -3167,11 +3004,11 @@ daemon_catalog(ClawtDaemon *self)
  * what every connector operation needs and neither half is any use
  * without.
  */
-static ClawtIntegrationBinding *
-connector_binding(ClawtDaemon               *self,
-                  const gchar               *name,
-                  const ClawtConnectorInfo **out_info,
-                  GError                   **error)
+ClawtIntegrationBinding *
+clawt_daemon_connector_binding(ClawtDaemon               *self,
+                               const gchar               *name,
+                               const ClawtConnectorInfo **out_info,
+                               GError                   **error)
 {
     ClawtIntegrationConfig *instance = (name != NULL)
         ? clawt_config_get_integration(self->config, name) : NULL;
@@ -3195,7 +3032,8 @@ connector_binding(ClawtDaemon               *self,
     }
 
     provider = clawt_integration_config_get_string(instance, NULL, "provider");
-    connector = clawt_connector_catalog_find(daemon_catalog(self), provider);
+    connector = clawt_connector_catalog_find(clawt_daemon_catalog(self),
+                                             provider);
 
     if (connector == NULL) {
         g_autofree gchar *dir =
@@ -3224,8 +3062,9 @@ connector_binding(ClawtDaemon               *self,
  * resolved rather than read: somebody who put theirs in `pass` should
  * not have to make an exception for this one field.
  */
-static gchar *
-connector_client_secret(ClawtDaemon *self, ClawtIntegrationBinding *binding)
+gchar *
+clawt_daemon_connector_client_secret(ClawtDaemon *self,
+                                     ClawtIntegrationBinding *binding)
 {
     g_autoptr(ClawtSecretRef) ref =
         clawt_integration_binding_get_secret(binding, "client_secret");
@@ -3252,11 +3091,11 @@ connector_client_secret(ClawtDaemon *self, ClawtIntegrationBinding *binding)
  * what the person asked for into what they were given, so re-connecting
  * later would ask for less each time.
  */
-static gboolean
-store_connector_token(ClawtDaemon      *self,
-                      const gchar      *name,
-                      ClawtOauthToken  *token,
-                      GError          **error)
+gboolean
+clawt_daemon_store_connector_token(ClawtDaemon      *self,
+                                   const gchar      *name,
+                                   ClawtOauthToken  *token,
+                                   GError          **error)
 {
     g_autofree gchar *secrets_dir =
         clawt_config_get_path_value(self->config, "secrets.dir");
@@ -3336,7 +3175,8 @@ connector_flow_finish_token(ConnectorFlow *flow, ClawtOauthToken *token)
 {
     g_autoptr(GError) error = NULL;
 
-    if (!store_connector_token(flow->daemon, flow->name, token, &error)) {
+    if (!clawt_daemon_store_connector_token(flow->daemon, flow->name, token,
+                                            &error)) {
         connector_flow_settle(flow, FALSE, error->message);
         return;
     }
@@ -3346,25 +3186,15 @@ connector_flow_finish_token(ConnectorFlow *flow, ClawtOauthToken *token)
 }
 
 /*
- * The client waiting to be shown a user code.
- *
- * Separate from the flow because it is answered once, the moment the
- * provider hands over the codes -- long before the flow itself settles.
- */
-typedef struct {
-    ConnectorFlow   *flow;
-    ClawtIpcPending *pending;
-} BeginWait;
-
-/*
  * Deletes the credential and forgets where it was.
  *
  * Both halves, and in that order: a config still naming a token_file
  * that is gone reads as connected right up until something tries to use
  * it.
  */
-static gboolean
-forget_connector_token(ClawtDaemon *self, const gchar *name, GError **error)
+gboolean
+clawt_daemon_forget_connector_token(ClawtDaemon *self, const gchar *name,
+                                    GError **error)
 {
     ClawtIntegrationConfig *instance =
         clawt_config_get_integration(self->config, name);
@@ -3390,13 +3220,9 @@ forget_connector_token(ClawtDaemon *self, const gchar *name, GError **error)
     return clawt_daemon_reload(self, error);
 }
 
-typedef struct {
-    gchar           *name;
-    ClawtIpcPending *pending;
-} RevokeJob;
-
-static void
-on_connector_revoked(GObject *source, GAsyncResult *result, gpointer user_data)
+void
+clawt_daemon_on_connector_revoked(GObject *source, GAsyncResult *result,
+                                  gpointer user_data)
 {
     RevokeJob *job = user_data;
     g_autoptr(JsonBuilder) builder = json_builder_new();
@@ -3415,7 +3241,7 @@ on_connector_revoked(GObject *source, GAsyncResult *result, gpointer user_data)
     json_builder_add_boolean_value(builder, told);
 
     if (!told)
-        add_string_member(builder, "note", error->message);
+        clawt_daemon_add_string_member(builder, "note", error->message);
 
     json_builder_end_object(builder);
 
@@ -3463,9 +3289,9 @@ on_connector_exchanged(GObject *source, GAsyncResult *result,
     connector_flow_finish_token(flow, token);
 }
 
-static void
-on_connector_redirected(GObject *source, GAsyncResult *result,
-                        gpointer user_data)
+void
+clawt_daemon_on_connector_redirected(GObject *source, GAsyncResult *result,
+                                     gpointer user_data)
 {
     ConnectorFlow *flow = user_data;
     g_autofree gchar *code = NULL;
@@ -3492,8 +3318,9 @@ on_connector_redirected(GObject *source, GAsyncResult *result,
  * code is the half meant to be read aloud.  Sending both would put a
  * live credential in every client's memory and in anybody's scrollback.
  */
-static void
-on_connector_begun(GObject *source, GAsyncResult *result, gpointer user_data)
+void
+clawt_daemon_on_connector_begun(GObject *source, GAsyncResult *result,
+                                gpointer user_data)
 {
     BeginWait *begin = user_data;
     ConnectorFlow *flow = begin->flow;
@@ -3515,12 +3342,13 @@ on_connector_begun(GObject *source, GAsyncResult *result, gpointer user_data)
     }
 
     json_builder_begin_object(builder);
-    add_string_member(builder, "flow", flow->id);
-    add_string_member(builder, "method", "device");
-    add_string_member(builder, "user_code", code->user_code);
-    add_string_member(builder, "verification_uri", code->verification_uri);
-    add_string_member(builder, "verification_uri_complete",
-                      code->verification_uri_complete);
+    clawt_daemon_add_string_member(builder, "flow", flow->id);
+    clawt_daemon_add_string_member(builder, "method", "device");
+    clawt_daemon_add_string_member(builder, "user_code", code->user_code);
+    clawt_daemon_add_string_member(builder, "verification_uri",
+                                   code->verification_uri);
+    clawt_daemon_add_string_member(builder, "verification_uri_complete",
+                                   code->verification_uri_complete);
     json_builder_set_member_name(builder, "expires_at");
     json_builder_add_int_value(builder, code->expires_at);
     json_builder_set_member_name(builder, "interval");
@@ -3544,8 +3372,8 @@ on_connector_begun(GObject *source, GAsyncResult *result, gpointer user_data)
  * for the answer.  Without it a daemon that runs for months accumulates
  * one entry per connection attempt that was started and abandoned.
  */
-static void
-sweep_connector_flows(ClawtDaemon *self)
+void
+clawt_daemon_sweep_connector_flows(ClawtDaemon *self)
 {
     GHashTableIter iter;
     gpointer value;
@@ -3563,19 +3391,8 @@ sweep_connector_flows(ClawtDaemon *self)
 
 /* ── Renewal ─────────────────────────────────────────────────────── */
 
-/*
- * A renewal, which may or may not have somebody waiting on it: the timer
- * starts these with no client attached, and `connector.refresh` starts
- * one with a deferred request to answer.
- */
-typedef struct {
-    ClawtDaemon     *daemon;
-    gchar           *name;
-    ClawtIpcPending *pending;
-} RefreshJob;
-
-static void
-refresh_job_free(RefreshJob *job)
+void
+clawt_daemon_refresh_job_free(RefreshJob *job)
 {
     g_free(job->name);
     g_free(job);
@@ -3609,9 +3426,9 @@ refresh_job_answer(RefreshJob *job, gboolean ok, const gchar *message)
                                json_builder_get_root(builder)));
 }
 
-static void
-on_connector_refreshed(GObject *source, GAsyncResult *result,
-                       gpointer user_data)
+void
+clawt_daemon_on_connector_refreshed(GObject *source, GAsyncResult *result,
+                                    gpointer user_data)
 {
     RefreshJob *job = user_data;
     g_autoptr(ClawtOauthToken) token = NULL;
@@ -3623,7 +3440,7 @@ on_connector_refreshed(GObject *source, GAsyncResult *result,
         g_warning("could not renew the credential for '%s': %s", job->name,
                   error->message);
         refresh_job_answer(job, FALSE, error->message);
-        refresh_job_free(job);
+        clawt_daemon_refresh_job_free(job);
         return;
     }
 
@@ -3645,7 +3462,8 @@ on_connector_refreshed(GObject *source, GAsyncResult *result,
             token->refresh_token = g_strdup(previous->refresh_token);
     }
 
-    if (!store_connector_token(job->daemon, job->name, token, &error)) {
+    if (!clawt_daemon_store_connector_token(job->daemon, job->name, token,
+                                            &error)) {
         g_warning("could not store the renewed credential for '%s': %s",
                   job->name, error->message);
         refresh_job_answer(job, FALSE, error->message);
@@ -3656,7 +3474,7 @@ on_connector_refreshed(GObject *source, GAsyncResult *result,
         refresh_job_answer(job, TRUE, NULL);
     }
 
-    refresh_job_free(job);
+    clawt_daemon_refresh_job_free(job);
 }
 
 static void
@@ -3685,7 +3503,7 @@ refresh_connector(ClawtDaemon *self, ClawtIntegrationConfig *instance,
     if (!clawt_oauth_token_is_expired(token, now, margin))
         return;
 
-    binding = connector_binding(self, name, &connector, NULL);
+    binding = clawt_daemon_connector_binding(self, name, &connector, NULL);
 
     if (binding == NULL)
         return;
@@ -3703,11 +3521,12 @@ refresh_connector(ClawtDaemon *self, ClawtIntegrationConfig *instance,
     job->name = g_strdup(name);
 
     {
-        g_autofree gchar *secret = connector_client_secret(self, binding);
+        g_autofree gchar *secret =
+            clawt_daemon_connector_client_secret(self, binding);
 
         clawt_oauth_refresh_async(token_url, client_id, secret,
                                   token->refresh_token, NULL,
-                                  on_connector_refreshed, job);
+                                  clawt_daemon_on_connector_refreshed, job);
     }
 }
 
@@ -3755,13 +3574,13 @@ on_connector_refresh_tick(gpointer user_data)
  * calls things, so the translation stays with the caller that has the
  * vocabulary.
  */
-static ClawtAgentConfig *
-daemon_create_agent(ClawtDaemon  *self,
-                    const gchar  *agent_id,
-                    GHashTable   *fields,
-                    const gchar  *purpose,
-                    gboolean     *purpose_landed,
-                    GError      **error)
+ClawtAgentConfig *
+clawt_daemon_create_agent(ClawtDaemon  *self,
+                          const gchar  *agent_id,
+                          GHashTable   *fields,
+                          const gchar  *purpose,
+                          gboolean     *purpose_landed,
+                          GError      **error)
 {
     ClawtAgentConfig *created;
     GHashTableIter iter;
@@ -4183,10 +4002,10 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
         g_autofree gchar *ignore = NULL;
         gboolean created = FALSE;
 
-        if (!prepare_state_git(self->state_dir,
-                               clawt_config_get_boolean(self->config,
-                                                        "daemon.git"),
-                               &created, &ignore, &git_error))
+        if (!clawt_daemon_prepare_state_git(
+                self->state_dir,
+                clawt_config_get_boolean(self->config, "daemon.git"),
+                &created, &ignore, &git_error))
             g_warning("state: %s", git_error->message);
         else if (created)
             g_message("state: %s is now a git repository; %s keeps "
@@ -4440,8 +4259,8 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     }
 
     self->link_server = clawt_link_server_new(self->link_socket);
-    clawt_link_server_set_auth_func(self->link_server, authenticate_agent,
-                                    self, NULL);
+    clawt_link_server_set_auth_func(
+        self->link_server, clawt_daemon_authenticate_agent, self, NULL);
     g_signal_connect(self->link_server, "link-added",
                      G_CALLBACK(on_link_added), self);
     g_signal_connect(self->link_server, "link-removed",
@@ -4625,11 +4444,11 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      * agents are running against a stale config.
      */
     {
-        g_autoptr(GPtrArray) refusals = render_refusals_new();
+        g_autoptr(GPtrArray) refusals = clawt_daemon_render_refusals_new();
         g_autoptr(GString) names = g_string_new(NULL);
         guint refused;
 
-        render_all_agents_into(self, refusals);
+        clawt_daemon_render_all_agents_into(self, refusals);
 
         for (refused = 0; refused < refusals->len; refused++) {
             RenderRefusal *refusal = g_ptr_array_index(refusals, refused);
@@ -4794,8 +4613,9 @@ clawt_daemon_quit(ClawtDaemon *self)
  * the fleet was rendered from it -- so they are reported alongside
  * success rather than instead of it.
  */
-static gboolean
-daemon_reload(ClawtDaemon *self, GPtrArray *refusals, GError **error)
+gboolean
+clawt_daemon_reload_internal(ClawtDaemon *self, GPtrArray *refusals,
+                             GError **error)
 {
     g_autoptr(ClawtConfig) reloaded = NULL;
 
@@ -4852,7 +4672,7 @@ daemon_reload(ClawtDaemon *self, GPtrArray *refusals, GError **error)
      * interrupted every agent mid-turn would make editing one description
      * cost the whole fleet's work.
      */
-    render_all_agents_into(self, refusals);
+    clawt_daemon_render_all_agents_into(self, refusals);
 
     clawt_event_bus_emit(self->bus, "daemon.reloaded", NULL);
     g_signal_emit(self, signals[SIGNAL_RELOADED], 0);
@@ -4863,7 +4683,7 @@ daemon_reload(ClawtDaemon *self, GPtrArray *refusals, GError **error)
 gboolean
 clawt_daemon_reload(ClawtDaemon *self, GError **error)
 {
-    return daemon_reload(self, NULL, error);
+    return clawt_daemon_reload_internal(self, NULL, error);
 }
 
 
@@ -4874,14 +4694,15 @@ clawt_daemon_reload(ClawtDaemon *self, GError **error)
  * schema has never heard of.
  *
  * Found by asking every entry what it is called inside an agent block,
- * because that is the same question add_agent_settings() below walks the
- * schema to answer -- and the two have to agree. `mailbox.overflow` in
- * an agent is the schema's `orchestration.mailbox.overflow`, so a
- * lookup that only tried `agents.<key>` would find nothing for exactly
- * the nine options that are settable in two places.
+ * because that is the same question clawt_daemon_add_agent_settings()
+ * below walks the schema to answer -- and the two have to agree.
+ * `mailbox.overflow` in an agent is the schema's
+ * `orchestration.mailbox.overflow`, so a lookup that only tried
+ * `agents.<key>` would find nothing for exactly the nine options that
+ * are settable in two places.
  */
-static const ClawtSchemaEntry *
-agent_setting_entry(const gchar *key)
+const ClawtSchemaEntry *
+clawt_daemon_agent_setting_entry(const gchar *key)
 {
     const ClawtSchemaEntry *schema;
     gsize n_entries = 0;
@@ -4929,8 +4750,8 @@ agent_setting_entry(const gchar *key)
  * enough, while a resumed session is never handed a system prompt at
  * all and only `agent reset` applies a `persona.` change.
  */
-static gboolean
-setting_needs_a_new_session(const gchar *key)
+gboolean
+clawt_daemon_setting_needs_a_new_session(const gchar *key)
 {
     static const gchar *const session_scoped[] = {
         /* Both gate NEEDS_ASSIGNMENT, which decides the tool list. */
@@ -4966,8 +4787,8 @@ setting_needs_a_new_session(const gchar *key)
  * schema -- so a second opinion here about what an integer looks like
  * would be a second parser to disagree with.
  */
-static void
-add_agent_settings(JsonBuilder *builder, ClawtAgent *agent)
+void
+clawt_daemon_add_agent_settings(JsonBuilder *builder, ClawtAgent *agent)
 {
     ClawtAgentConfig *config = clawt_agent_get_config(agent);
     g_autoptr(GHashTable) seen = g_hash_table_new_full(g_str_hash, g_str_equal,
@@ -5088,8 +4909,9 @@ add_agent_settings(JsonBuilder *builder, ClawtAgent *agent)
  * rather than continuing the one that raised the question, and stamping
  * it deeper would spend the hop budget on the operator's own reply.
  */
-static void
-deliver_decision_answer(ClawtDaemon *self, ClawtDecision *decision)
+void
+clawt_daemon_deliver_decision_answer(ClawtDaemon *self,
+                                     ClawtDecision *decision)
 {
     g_autofree gchar *body = NULL;
     g_autoptr(GError) error = NULL;
@@ -5137,10 +4959,10 @@ deliver_decision_answer(ClawtDaemon *self, ClawtDecision *decision)
  * the item whose deadline had just passed, which is the one that
  * matters.  The raw deadline goes too, so a client can still say when.
  */
-static void
-add_decision_object(JsonBuilder   *builder,
-                    ClawtDecision *decision,
-                    gint64         now)
+void
+clawt_daemon_add_decision_object(JsonBuilder   *builder,
+                                 ClawtDecision *decision,
+                                 gint64         now)
 {
     const gchar * const *options = clawt_decision_get_options(decision);
 
@@ -5218,8 +5040,8 @@ add_decision_object(JsonBuilder   *builder,
  * stop handler has to report it afterwards, and two readings of one
  * setting is how those two would come to disagree.
  */
-static gboolean
-computer_stop_removes(ClawtAgentConfig *config)
+gboolean
+clawt_daemon_computer_stop_removes(ClawtAgentConfig *config)
 {
     ClawtComputerType type;
 
@@ -5240,8 +5062,8 @@ computer_stop_removes(ClawtAgentConfig *config)
     return FALSE;
 }
 
-static void
-add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
+void
+clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
 {
     ClawtAgentConfig *config = clawt_agent_get_config(agent);
     g_autofree gchar *caps = NULL;
@@ -5313,10 +5135,10 @@ add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
      * nothing to have and these two an improvement rather than a
      * prerequisite.
      */
-    add_string_member(builder, "avatar",
-                      clawt_agent_config_get_string(config, "avatar"));
-    add_string_member(builder, "color",
-                      clawt_agent_config_get_string(config, "color"));
+    clawt_daemon_add_string_member(
+        builder, "avatar", clawt_agent_config_get_string(config, "avatar"));
+    clawt_daemon_add_string_member(
+        builder, "color", clawt_agent_config_get_string(config, "color"));
 
     /*
      * Reported so a client can show it beside chief_of_staff. The two
@@ -5381,7 +5203,8 @@ add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
                          config, "computer.type")));
 
     json_builder_set_member_name(builder, "computer_stop_removes");
-    json_builder_add_boolean_value(builder, computer_stop_removes(config));
+    json_builder_add_boolean_value(builder,
+                                   clawt_daemon_computer_stop_removes(config));
 
     /*
      * Reported for a container agent so a client can show what it will
@@ -5544,8 +5367,8 @@ add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
     json_builder_end_object(builder);
 }
 
-static void
-add_task_object(JsonBuilder *builder, ClawtTask *task)
+void
+clawt_daemon_add_task_object(JsonBuilder *builder, ClawtTask *task)
 {
     json_builder_begin_object(builder);
 
@@ -5582,8 +5405,8 @@ add_task_object(JsonBuilder *builder, ClawtTask *task)
     json_builder_end_object(builder);
 }
 
-static void
-add_mailbox_item(JsonBuilder *builder, ClawtMailboxItem *item)
+void
+clawt_daemon_add_mailbox_item(JsonBuilder *builder, ClawtMailboxItem *item)
 {
     json_builder_begin_object(builder);
 
@@ -5632,8 +5455,9 @@ add_mailbox_item(JsonBuilder *builder, ClawtMailboxItem *item)
     json_builder_end_object(builder);
 }
 
-static ClawtMailbox *
-mailbox_for(ClawtDaemon *self, JsonObject *payload, GError **error)
+ClawtMailbox *
+clawt_daemon_mailbox_for(ClawtDaemon *self, JsonObject *payload,
+                         GError **error)
 {
     const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
     ClawtAgent *agent;
@@ -5663,9 +5487,9 @@ mailbox_for(ClawtDaemon *self, JsonObject *payload, GError **error)
 
 /* ── Integrations ────────────────────────────────────────────────── */
 
-static void
-add_key_array(JsonBuilder *builder, const gchar *member,
-              const gchar *const *keys)
+void
+clawt_daemon_add_key_array(JsonBuilder *builder, const gchar *member,
+                           const gchar *const *keys)
 {
     gsize i;
 
@@ -5835,11 +5659,11 @@ add_integration_values(JsonBuilder            *builder,
     }
 }
 
-static void
-add_integration_object(JsonBuilder            *builder,
-                       ClawtConfig            *config,
-                       ClawtIntegrationConfig *instance,
-                       const gchar            *agent_id)
+void
+clawt_daemon_add_integration_object(JsonBuilder            *builder,
+                                    ClawtConfig            *config,
+                                    ClawtIntegrationConfig *instance,
+                                    const gchar            *agent_id)
 {
     const ClawtIntegrationInfo *info;
     g_auto(GStrv) agents = NULL;
@@ -5932,8 +5756,9 @@ add_integration_object(JsonBuilder            *builder,
  * One integration as one agent has it, whether it came from an instance
  * or from the agent's own block.
  */
-static void
-add_binding_object(JsonBuilder *builder, ClawtIntegrationBinding *binding)
+void
+clawt_daemon_add_binding_object(JsonBuilder *builder,
+                                ClawtIntegrationBinding *binding)
 {
     const ClawtIntegrationInfo *info =
         clawt_integration_binding_get_info(binding);
@@ -5976,10 +5801,10 @@ add_binding_object(JsonBuilder *builder, ClawtIntegrationBinding *binding)
  * dialog editing one field would have to send every other field back or
  * silently erase them.
  */
-static gboolean
-apply_integration_fields(ClawtIntegrationConfig  *instance,
-                         JsonObject              *payload,
-                         GError                 **error)
+gboolean
+clawt_daemon_apply_integration_fields(ClawtIntegrationConfig  *instance,
+                                      JsonObject              *payload,
+                                      GError                 **error)
 {
     const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
     const ClawtSchemaEntry *entries;
@@ -6111,15 +5936,8 @@ apply_integration_fields(ClawtIntegrationConfig  *instance,
 
 /* ── Health, which has to wait on the network ────────────────────── */
 
-typedef struct {
-    gchar    *name;
-    gchar    *type_id;
-    gboolean  ok;
-    gchar    *message;
-} HealthResult;
-
-static void
-health_result_free(HealthResult *self)
+void
+clawt_daemon_health_result_free(HealthResult *self)
 {
     if (self == NULL)
         return;
@@ -6130,18 +5948,10 @@ health_result_free(HealthResult *self)
     g_free(self);
 }
 
-typedef struct {
-    ClawtIpcPending *pending;
-    GPtrArray       *checks;    /* ClawtIntegrationBinding* */
-    GPtrArray       *results;   /* HealthResult* */
-    guint            timeout;
-    guint            next;
-} HealthRun;
-
 static void health_run_step(HealthRun *run);
 
-static void
-health_run_free(HealthRun *run)
+void
+clawt_daemon_health_run_free(HealthRun *run)
 {
     if (run == NULL)
         return;
@@ -6188,7 +5998,7 @@ health_run_finish(HealthRun *run)
         clawt_ipc_response_new(clawt_ipc_pending_get_request(run->pending),
                                json_builder_get_root(builder)));
 
-    health_run_free(run);
+    clawt_daemon_health_run_free(run);
 }
 
 static void
@@ -6243,24 +6053,16 @@ health_run_step(HealthRun *run)
                                          on_health_checked, run);
 }
 
-static void
-health_run_start(HealthRun *run)
+void
+clawt_daemon_health_run_start(HealthRun *run)
 {
     health_run_step(run);
 }
 
 /* ── Matrix sign-in ──────────────────────────────────────────────── */
 
-typedef struct {
-    ClawtDaemon     *daemon;      /* unowned; it outlives the request */
-    ClawtIpcPending *pending;
-    gchar           *name;
-    gchar           *agent_id;
-    gchar           *homeserver;
-} MatrixLogin;
-
-static void
-matrix_login_free(MatrixLogin *self)
+void
+clawt_daemon_matrix_login_free(MatrixLogin *self)
 {
     if (self == NULL)
         return;
@@ -6271,8 +6073,9 @@ matrix_login_free(MatrixLogin *self)
     g_free(self);
 }
 
-static void
-on_matrix_login(GObject *source, GAsyncResult *result, gpointer user_data)
+void
+clawt_daemon_on_matrix_login(GObject *source, GAsyncResult *result,
+                             gpointer user_data)
 {
     MatrixLogin *login = user_data;
     ClawtDaemon *self = login->daemon;
@@ -6291,7 +6094,7 @@ on_matrix_login(GObject *source, GAsyncResult *result, gpointer user_data)
             login->pending,
             clawt_ipc_error_new(clawt_ipc_pending_get_request(login->pending),
                                 CLAWT_ERROR_AUTH, error->message));
-        matrix_login_free(login);
+        clawt_daemon_matrix_login_free(login);
         return;
     }
 
@@ -6304,7 +6107,7 @@ on_matrix_login(GObject *source, GAsyncResult *result, gpointer user_data)
                                 CLAWT_ERROR_NOT_FOUND,
                                 "that integration was removed while signing "
                                 "in"));
-        matrix_login_free(login);
+        clawt_daemon_matrix_login_free(login);
         return;
     }
 
@@ -6321,7 +6124,7 @@ on_matrix_login(GObject *source, GAsyncResult *result, gpointer user_data)
             login->pending,
             clawt_ipc_error_new(clawt_ipc_pending_get_request(login->pending),
                                 CLAWT_ERROR_SECRET, error->message));
-        matrix_login_free(login);
+        clawt_daemon_matrix_login_free(login);
         return;
     }
 
@@ -6336,7 +6139,7 @@ on_matrix_login(GObject *source, GAsyncResult *result, gpointer user_data)
             login->pending,
             clawt_ipc_error_new(clawt_ipc_pending_get_request(login->pending),
                                 CLAWT_ERROR_SECRET, error->message));
-        matrix_login_free(login);
+        clawt_daemon_matrix_login_free(login);
         return;
     }
 
@@ -6361,7 +6164,7 @@ on_matrix_login(GObject *source, GAsyncResult *result, gpointer user_data)
             login->pending,
             clawt_ipc_error_new(clawt_ipc_pending_get_request(login->pending),
                                 error->code, error->message));
-        matrix_login_free(login);
+        clawt_daemon_matrix_login_free(login);
         return;
     }
 
@@ -6382,11 +6185,12 @@ on_matrix_login(GObject *source, GAsyncResult *result, gpointer user_data)
         clawt_ipc_response_new(clawt_ipc_pending_get_request(login->pending),
                                json_builder_get_root(builder)));
 
-    matrix_login_free(login);
+    clawt_daemon_matrix_login_free(login);
 }
 
-static void
-on_notify_tested(GObject *source, GAsyncResult *result, gpointer user_data)
+void
+clawt_daemon_on_notify_tested(GObject *source, GAsyncResult *result,
+                              gpointer user_data)
 {
     ClawtIpcPending *pending = user_data;
     g_autoptr(GError) error = NULL;
@@ -6404,8 +6208,9 @@ on_notify_tested(GObject *source, GAsyncResult *result, gpointer user_data)
         clawt_ipc_response_new(clawt_ipc_pending_get_request(pending), NULL));
 }
 
-static void
-on_matrix_rooms(GObject *source, GAsyncResult *result, gpointer user_data)
+void
+clawt_daemon_on_matrix_rooms(GObject *source, GAsyncResult *result,
+                             gpointer user_data)
 {
     ClawtIpcPending *pending = user_data;
     g_autoptr(GPtrArray) rooms = NULL;
@@ -6465,9 +6270,9 @@ on_matrix_rooms(GObject *source, GAsyncResult *result, gpointer user_data)
  * client cannot tell which way its request was served -- which is the
  * point: the protocol did not change, only where the waiting happens.
  */
-static void
-on_tool_rpc_finished(GObject *source, GAsyncResult *result,
-                     gpointer user_data)
+void
+clawt_daemon_on_tool_rpc_finished(GObject *source, GAsyncResult *result,
+                                  gpointer user_data)
 {
     ClawtIpcPending *pending = user_data;
     g_autoptr(JsonNode) rpc_response = NULL;
@@ -6497,26 +6302,8 @@ on_tool_rpc_finished(GObject *source, GAsyncResult *result,
 }
 
 
-/*
- * One operator-run command, waiting for its own answer.
- *
- * `computer.exec` used to run on the daemon's main context and answer
- * from there, so a command from the CLI blocked every other agent's
- * messages, task delivery and timers for as long as it took -- up to the
- * advertised 120 second default.  The tool path had already been moved
- * off the loop; this is the same defect reached from the caller most
- * likely to run something long on purpose.
- */
-typedef struct {
-    ClawtDaemon     *daemon;     /* reffed: the trail is written at the end */
-    ClawtIpcPending *pending;
-    ClawtComputer   *computer;   /* reffed: the agent may stop meanwhile */
-    gchar           *agent_id;
-    gchar           *command;
-} ExecJob;
-
-static void
-exec_job_free(ExecJob *job)
+void
+clawt_daemon_exec_job_free(ExecJob *job)
 {
     if (job == NULL)
         return;
@@ -6528,8 +6315,9 @@ exec_job_free(ExecJob *job)
     g_free(job);
 }
 
-static void
-on_ipc_exec_finished(GObject *source, GAsyncResult *result, gpointer user_data)
+void
+clawt_daemon_on_ipc_exec_finished(GObject *source, GAsyncResult *result,
+                                  gpointer user_data)
 {
     ExecJob *job = user_data;
     g_autoptr(ClawtExecResult) exec = NULL;
@@ -6566,7 +6354,7 @@ on_ipc_exec_finished(GObject *source, GAsyncResult *result, gpointer user_data)
             job->pending,
             clawt_ipc_error_new(clawt_ipc_pending_get_request(job->pending),
                                 error->code, error->message));
-        exec_job_free(job);
+        clawt_daemon_exec_job_free(job);
         return;
     }
 
@@ -6584,21 +6372,12 @@ on_ipc_exec_finished(GObject *source, GAsyncResult *result, gpointer user_data)
         job->pending,
         clawt_ipc_response_new(clawt_ipc_pending_get_request(job->pending),
                                json_builder_get_root(builder)));
-    exec_job_free(job);
+    clawt_daemon_exec_job_free(job);
 }
 
 
-typedef struct {
-    ClawtDaemon            *daemon;
-    ClawtIpcPending        *pending;
-    ClawtComputer          *computer;   /* reffed: the agent may stop */
-    gchar                  *agent_id;
-    ClawtComputerLifecycle  op;
-    gboolean                removes;
-} LifecycleJob;
-
-static void
-lifecycle_job_free(LifecycleJob *job)
+void
+clawt_daemon_lifecycle_job_free(LifecycleJob *job)
 {
     g_clear_object(&job->daemon);
     g_clear_object(&job->computer);
@@ -6620,9 +6399,9 @@ lifecycle_name(ClawtComputerLifecycle op)
     }
 }
 
-static void
-on_ipc_lifecycle_finished(GObject *source, GAsyncResult *result,
-                          gpointer user_data)
+void
+clawt_daemon_on_ipc_lifecycle_finished(GObject *source, GAsyncResult *result,
+                                       gpointer user_data)
 {
     LifecycleJob *job = user_data;
     g_autoptr(GError) error = NULL;
@@ -6660,13 +6439,13 @@ on_ipc_lifecycle_finished(GObject *source, GAsyncResult *result,
             job->pending,
             clawt_ipc_error_new(clawt_ipc_pending_get_request(job->pending),
                                 error->code, error->message));
-        lifecycle_job_free(job);
+        clawt_daemon_lifecycle_job_free(job);
         return;
     }
 
     json_builder_begin_object(builder);
-    add_string_member(builder, "agent", job->agent_id);
-    add_string_member(builder, "action", lifecycle_name(job->op));
+    clawt_daemon_add_string_member(builder, "agent", job->agent_id);
+    clawt_daemon_add_string_member(builder, "action", lifecycle_name(job->op));
     json_builder_set_member_name(builder, "state");
     json_builder_add_string_value(
         builder, clawt_enum_to_nick(CLAWT_TYPE_COMPUTER_STATE,
@@ -6693,5453 +6472,59 @@ on_ipc_lifecycle_finished(GObject *source, GAsyncResult *result,
         job->pending,
         clawt_ipc_response_new(clawt_ipc_pending_get_request(job->pending),
                                json_builder_get_root(builder)));
-    lifecycle_job_free(job);
+    clawt_daemon_lifecycle_job_free(job);
 }
+
+/*
+ * The client surface, one file per verb family.
+ *
+ * The order is the order these were in when this was one chain of
+ * `if (g_strcmp0(kind, ...))`.  No kind is spelled in two families, so
+ * nothing depends on it; it is kept so that a reader can follow this
+ * against the chain it came from.
+ */
+static const ClawtDaemonFamilyFunc family_handlers[] = {
+    clawt_daemon_handle_control,
+    clawt_daemon_handle_misc,
+    clawt_daemon_handle_agent,
+    clawt_daemon_handle_mount,
+    clawt_daemon_handle_image,
+    clawt_daemon_handle_team,
+    clawt_daemon_handle_room,
+    clawt_daemon_handle_mailbox,
+    clawt_daemon_handle_task,
+    clawt_daemon_handle_computer,
+    clawt_daemon_handle_design,
+    clawt_daemon_handle_connector,
+    clawt_daemon_handle_integration,
+    clawt_daemon_handle_routine,
+    clawt_daemon_handle_config,
+};
 
 JsonNode *
 clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
 {
-    g_autoptr(JsonBuilder) builder = NULL;
-    g_autoptr(GError) error = NULL;
     JsonObject *payload;
     const gchar *kind;
+    gsize i;
 
     g_return_val_if_fail(CLAWT_IS_DAEMON(self), NULL);
     g_return_val_if_fail(request != NULL, NULL);
 
     kind = clawt_ipc_frame_get_kind(request);
     payload = clawt_ipc_frame_get_payload(request);
-    builder = json_builder_new();
 
     if (!self->running)
         return clawt_ipc_error_new(request, CLAWT_ERROR_AGENT_STATE,
                                    "the daemon is not running");
 
-    /* ── control ── */
-
-    if (g_strcmp0(kind, "control.status") == 0) {
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "version");
-        json_builder_add_string_value(builder, CLAWT_VERSION_STRING);
-        json_builder_set_member_name(builder, "config");
-        json_builder_add_string_value(builder, self->config_path);
-        json_builder_set_member_name(builder, "agents");
-        json_builder_add_int_value(
-            builder, clawt_agent_manager_list(self->agents)->len);
-        json_builder_set_member_name(builder, "connected");
-        json_builder_add_int_value(
-            builder, clawt_link_server_count_links(self->link_server));
-        json_builder_set_member_name(builder, "clients");
-        json_builder_add_int_value(
-            builder, clawt_ipc_server_count_clients(self->ipc_server));
-        json_builder_set_member_name(builder, "cursor");
-        json_builder_add_int_value(
-            builder, (gint64)clawt_event_bus_get_cursor(self->bus));
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "control.reload") == 0) {
-        g_autoptr(GPtrArray) refusals = render_refusals_new();
-
-        if (!daemon_reload(self, refusals, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        /*
-         * A response and not an error: the configuration was reloaded and
-         * every agent clawtilla could render was.  But an agent it
-         * refused is still running against the config.yaml it had, and
-         * the only person who can fix that is the one who just asked for
-         * the reload -- so they are handed the names and the reasons
-         * rather than a bare success and a warning in the journal.
-         *
-         * The array is always present, so a client can tell "nothing was
-         * refused" from "this daemon does not report refusals".
-         */
-        json_builder_begin_object(builder);
-        add_render_refusals(builder, refusals);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request,
-                                      json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "attachment.get") == 0) {
-        const gchar *id = clawt_ipc_payload_string(payload, "id");
-        g_autofree gchar *path = NULL;
-        g_autofree gchar *name = NULL;
-        g_autofree gchar *contents = NULL;
-        g_autofree gchar *encoded = NULL;
-        gsize length = 0;
-
-        /*
-         * The bytes, not the path.
-         *
-         * A client may be on another machine entirely -- that is what
-         * connection profiles are for -- so handing it a filename would
-         * work on this host and show nothing anywhere else, which reads
-         * as a broken image rather than as an unsupported setup.
-         *
-         * The id is checked rather than trusted: clawt_attachment_path()
-         * refuses anything outside the character set an id is made of,
-         * which is what stops a request for a path of somebody's
-         * choosing reading a file this was never meant to serve.
-         */
-        if (id == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "which attachment?");
-
-        if (self->attachment_dir == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "this daemon keeps no attachments");
-
-        path = clawt_attachment_path(self->attachment_dir, id);
-
-        if (path == NULL || !g_file_get_contents(path, &contents, &length,
-                                                 NULL))
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such attachment");
-
-        name = clawt_attachment_name(id);
-        encoded = g_base64_encode((const guchar *)contents, length);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "name");
-        json_builder_add_string_value(builder, name);
-        json_builder_set_member_name(builder, "bytes");
-        json_builder_add_int_value(builder, (gint64)length);
-        json_builder_set_member_name(builder, "base64");
-        json_builder_add_string_value(builder, encoded);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "decision.list") == 0) {
-        gboolean open_only = clawt_ipc_payload_boolean(payload, "open", TRUE);
-        g_autoptr(GPtrArray) decisions = NULL;
-        gint64 now = g_get_real_time() / G_USEC_PER_SEC;
-        guint i;
-
-        if (self->decisions == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "this daemon keeps no decisions");
-
-        decisions = clawt_decision_store_list(self->decisions, open_only);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "decisions");
-        json_builder_begin_array(builder);
-
-        for (i = 0; decisions != NULL && i < decisions->len; i++)
-            add_decision_object(builder, g_ptr_array_index(decisions, i),
-                                now);
-
-        json_builder_end_array(builder);
-        json_builder_set_member_name(builder, "open");
-        json_builder_add_int_value(
-            builder, clawt_decision_store_count_open(self->decisions));
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request,
-                                      json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "decision.answer") == 0) {
-        const gchar *id = clawt_ipc_payload_string(payload, "decision");
-        const gchar *answer = clawt_ipc_payload_string(payload, "answer");
-        g_autoptr(ClawtDecision) settled = NULL;
-        g_autoptr(GError) answer_error = NULL;
-
-        if (self->decisions == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "this daemon keeps no decisions");
-
-        if (id == NULL || answer == NULL || *answer == '\0')
-            return clawt_ipc_error_new(
-                request, CLAWT_ERROR_INVALID_ARGUMENT,
-                "answering needs a decision and an answer");
-
-        settled = clawt_decision_store_answer(self->decisions, id, answer,
-                                              &answer_error);
-
-        if (settled == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
-                                       answer_error->message);
-
-        /*
-         * And it goes back to whoever asked.
-         *
-         * Without this the inbox is a suggestion box: the operator
-         * answers into the void and the agent never learns.  Routed as
-         * an ordinary message so it costs the agent a turn and reaches
-         * it through the machinery everything else uses -- and carrying
-         * the task id, so an answer that arrives after the agent has
-         * moved on can still be attached to what it was about.
-         */
-        deliver_decision_answer(self, settled);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "decision");
-        add_decision_object(builder, settled,
-                            g_get_real_time() / G_USEC_PER_SEC);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request,
-                                      json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "decision.dismiss") == 0) {
-        const gchar *id = clawt_ipc_payload_string(payload, "decision");
-        g_autoptr(GError) dismiss_error = NULL;
-
-        if (self->decisions == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "this daemon keeps no decisions");
-
-        if (!clawt_decision_store_dismiss(self->decisions, id,
-                                          &dismiss_error))
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       dismiss_error->message);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "dismissed");
-        json_builder_add_string_value(builder, id);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request,
-                                      json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "event.list") == 0) {
-        const gchar *subject = clawt_ipc_payload_string(payload, "subject");
-        guint limit = (guint)clawt_ipc_payload_int(payload, "limit", 200);
-        g_autoptr(GPtrArray) events = NULL;
-        guint i;
-
-        /*
-         * What the fleet has been doing, from the log that has been
-         * recording it all along.
-         *
-         * ClawtEventLog has written every published event to NDJSON
-         * since the daemon was written, sweeps on `daemon.event_log_days`
-         * -- and was read back by nobody.  A client can hold the recent
-         * ones in memory; anything older than that was on disk and
-         * unreachable, which is why diagnosing a message loop meant
-         * running sqlite3 and grep on the host.
-         *
-         * Fleet-wide unless a subject is named, because the case that
-         * sends somebody to the shell is watching several agents at
-         * once.
-         */
-        if (self->log == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "this daemon keeps no event log");
-
-        events = clawt_event_log_read(self->log, subject, limit);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "events");
-        json_builder_begin_array(builder);
-
-        for (i = 0; events != NULL && i < events->len; i++) {
-            ClawtEvent *event = g_ptr_array_index(events, i);
-            g_autoptr(JsonNode) node = clawt_ipc_event_new(event);
-            JsonObject *frame = json_node_get_object(node);
-
-            /*
-             * The event frame's own payload, rather than a second
-             * spelling of what an event is.  clawt_ipc_event_new() is
-             * what a subscriber receives, so a client reading history
-             * and a client receiving live events parse one shape.
-             */
-            json_builder_add_value(
-                builder,
-                json_node_ref(json_object_get_member(frame, "payload")));
-        }
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "control.shutdown") == 0) {
-        JsonNode *reply = clawt_ipc_response_new(request, NULL);
-
-        /*
-         * Answered first, then queued.  Quitting the loop inside this
-         * call would close the socket before the reply reached the client,
-         * which looks to them like the daemon crashed.
-         */
-        g_idle_add((GSourceFunc)clawt_daemon_quit_idle, self);
-
-        return reply;
-    }
-
-    /* ── agents ── */
-
-    if (g_strcmp0(kind, "agent.list") == 0) {
-        GPtrArray *agents = clawt_agent_manager_list(self->agents);
-        guint i;
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "agents");
-        json_builder_begin_array(builder);
-
-        {
-            /*
-             * Sorted here rather than in the manager, which keeps the
-             * fleet in the order the file has it -- that order is what a
-             * tie falls back to, so it has to survive.
-             */
-            g_autoptr(GPtrArray) ordered = g_ptr_array_new();
-
-            for (i = 0; i < agents->len; i++)
-                g_ptr_array_add(ordered, g_ptr_array_index(agents, i));
-
-            {
-                g_autoptr(GPtrArray) teams =
-                    clawt_config_get_teams(self->config);
-
-                g_ptr_array_sort_with_data(ordered, compare_by_order, teams);
-            }
-
-            for (i = 0; i < ordered->len; i++)
-                add_agent_object(builder, g_ptr_array_index(ordered, i));
-        }
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "agent.show") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        ClawtAgent *agent = (agent_id != NULL)
-                            ? clawt_agent_manager_get(self->agents, agent_id)
-                            : NULL;
-        ClawtComputer *computer;
-
-        if (agent == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such agent");
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "agent");
-        add_agent_object(builder, agent);
-
-        /*
-         * Every settable key, so a client can build an editor from the
-         * schema instead of from a list of its own. The GTK inspector
-         * predates this and names its rows by hand, which is why a
-         * setting added to the schema shows up there only when somebody
-         * remembers to add a row for it.
-         */
-        add_agent_settings(builder, agent);
-
-        computer = clawt_agent_get_computer(agent);
-
-        if (computer != NULL) {
-            g_autofree gchar *described =
-                clawt_agent_describe_computer(agent);
-
-            json_builder_set_member_name(builder, "computer_detail");
-            json_builder_add_string_value(builder, described);
-        }
-
-        /*
-         * What the persona costs, and where the cost is.
-         *
-         * Always reported, so a client never has to decide whether to
-         * ask; `verdict` is what decides whether there is anything to
-         * *say*, and it is absent below the threshold.  A byte count on
-         * every agent is noise, and noise is what stops the one that
-         * matters from being read.
-         */
-        {
-            g_autoptr(ClawtIdentitySize) size =
-                clawt_workspace_measure_identity(clawt_agent_get_config(agent));
-            g_autofree gchar *verdict =
-                clawt_workspace_identity_verdict(size);
-            guint i;
-
-            json_builder_set_member_name(builder, "identity");
-            json_builder_begin_object(builder);
-
-            json_builder_set_member_name(builder, "bytes");
-            json_builder_add_int_value(builder, (gint64)size->total);
-            json_builder_set_member_name(builder, "limit");
-            json_builder_add_int_value(builder, (gint64)size->limit);
-
-            if (verdict != NULL) {
-                json_builder_set_member_name(builder, "verdict");
-                json_builder_add_string_value(builder, verdict);
-            }
-
-            json_builder_set_member_name(builder, "files");
-            json_builder_begin_array(builder);
-
-            for (i = 0; i < size->files->len; i++) {
-                ClawtIdentityFile *file = g_ptr_array_index(size->files, i);
-
-                json_builder_begin_object(builder);
-                json_builder_set_member_name(builder, "name");
-                json_builder_add_string_value(builder, file->name);
-                json_builder_set_member_name(builder, "bytes");
-                json_builder_add_int_value(builder, (gint64)file->bytes);
-                json_builder_set_member_name(builder, "present");
-                json_builder_add_boolean_value(builder, file->present);
-                json_builder_end_object(builder);
-            }
-
-            json_builder_end_array(builder);
-            json_builder_end_object(builder);
-        }
-
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "agent.start") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-
-        if (!clawt_daemon_start_agent(self, agent_id, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        return clawt_ipc_response_new(request, NULL);
-    }
-
-    if (g_strcmp0(kind, "agent.stop") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "stopped");
-        json_builder_add_boolean_value(
-            builder, clawt_daemon_stop_agent(self, agent_id, TRUE));
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "agent.interrupt") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        guint killed = 0;
-
-        if (!clawt_daemon_interrupt_agent(self, agent_id, &killed, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "interrupted");
-        json_builder_add_boolean_value(builder, TRUE);
-
-        /*
-         * The count, because zero and several mean different things to
-         * whoever pressed the button: nothing was running, or that much
-         * was. A bare "done" reads the same either way, and the client
-         * has to say which.
-         */
-        json_builder_set_member_name(builder, "killed");
-        json_builder_add_int_value(builder, (gint64)killed);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "agent.restart") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-
-        /*
-         * The machine goes down with it and comes back up with the
-         * start.  Blocking, in the same way clawt_daemon_start_agent()
-         * is and for the reason written there: every caller of this one
-         * has somebody waiting on the answer, and the wait is bounded by
-         * podomation's socket timeout. It is the *fleet* coming up that
-         * must not hold the loop.
-         */
-        clawt_daemon_stop_agent(self, agent_id, TRUE);
-
-        if (!clawt_daemon_start_agent(self, agent_id, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        return clawt_ipc_response_new(request, NULL);
-    }
-
-    if (g_strcmp0(kind, "agent.mount.add") == 0 ||
-        g_strcmp0(kind, "agent.mount.remove") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        const gchar *target = clawt_ipc_payload_string(payload, "target");
-        ClawtAgentConfig *agent_config;
-
-        /*
-         * Shared folders, settable.
-         *
-         * computer.mounts has always been read and applied -- bind
-         * mounts for a container, virtiofs devices for a VM -- and no
-         * client could write one, so the only way to share a folder
-         * with an agent was to edit the YAML by hand.
-         */
-        if (agent_id == NULL || target == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "agent and target are both required");
-
-        agent_config = clawt_config_get_agent(self->config, agent_id);
-
-        if (agent_config == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such agent");
-
-        if (g_strcmp0(kind, "agent.mount.remove") == 0) {
-            if (!clawt_agent_config_remove_mount(agent_config, target))
-                return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                           "that agent has no such mount");
-        } else {
-            g_autoptr(ClawtMount) mount =
-                mount_from_payload(self->config, payload, target, &error);
-
-            if (mount == NULL)
-                return clawt_ipc_error_new(request, error->code,
-                                           error->message);
-
-            if (!clawt_agent_config_add_mount(agent_config, mount))
-                return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
-                                           "could not add the mount");
-        }
-
-        if (!clawt_config_save(self->config, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        clawt_agent_manager_load(self->agents, NULL);
-
-        {
-            g_autoptr(GPtrArray) refusals = render_refusals_new();
-
-            render_all_agents_into(self, refusals);
-            clawt_event_bus_emit(self->bus, "agent.changed", agent_id);
-
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "target");
-            json_builder_add_string_value(builder, target);
-            add_render_refusals(builder, refusals);
-            json_builder_end_object(builder);
-        }
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    /*
-     * The fleet's shared folders.
-     *
-     * Same three verbs as the per-agent family and the same parser, so
-     * a folder added here behaves exactly like one added to an agent.
-     * Named `defaults.*` rather than reusing `agent.mount.*` with the
-     * agent omitted, because a frame whose name says "agent" and whose
-     * meaning changes when a field is missing is one every client has
-     * to be told about.
-     */
-    if (g_strcmp0(kind, "defaults.mount.add") == 0 ||
-        g_strcmp0(kind, "defaults.mount.remove") == 0) {
-        const gchar *target = clawt_ipc_payload_string(payload, "target");
-
-        if (target == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "target is required");
-
-        if (g_strcmp0(kind, "defaults.mount.remove") == 0) {
-            if (!clawt_config_remove_default_mount(self->config, target))
-                return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                           "there is no default shared "
-                                           "folder at that path");
-        } else {
-            g_autoptr(ClawtMount) mount =
-                mount_from_payload(self->config, payload, target, &error);
-
-            if (mount == NULL)
-                return clawt_ipc_error_new(request, error->code,
-                                           error->message);
-
-            if (!clawt_config_add_default_mount(self->config, mount))
-                return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
-                                           "could not add the shared folder");
-        }
-
-        if (!clawt_config_save(self->config, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        /*
-         * Every agent is re-rendered, because this changed what all of
-         * them get. Skipping it would leave the fleet's config.yaml
-         * files describing the mounts they had before -- the "saved but
-         * nothing rewrote what it produces" gap agent.set had, one
-         * level up and affecting every agent at once.
-         */
-        clawt_agent_manager_load(self->agents, NULL);
-
-        {
-            g_autoptr(GPtrArray) refusals = render_refusals_new();
-
-            render_all_agents_into(self, refusals);
-            clawt_event_bus_emit(self->bus, "config.changed", NULL);
-
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "target");
-            json_builder_add_string_value(builder, target);
-
-            /*
-             * A mount reaches a running agent's computer when it is
-             * next built, which is at its next start -- the container
-             * or the domain already exists and its devices were decided
-             * when it was created. Said here rather than discovered.
-             */
-            json_builder_set_member_name(builder, "restart_required");
-            json_builder_add_boolean_value(builder, TRUE);
-            add_render_refusals(builder, refusals);
-            json_builder_end_object(builder);
-        }
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "defaults.mount.list") == 0) {
-        g_autoptr(GPtrArray) mounts =
-            clawt_config_get_default_mounts(self->config);
-        guint i;
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "mounts");
-        json_builder_begin_array(builder);
-
-        for (i = 0; mounts != NULL && i < mounts->len; i++) {
-            ClawtMount *mount = g_ptr_array_index(mounts, i);
-
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "source");
-            json_builder_add_string_value(builder,
-                                          clawt_mount_get_source(mount));
-            json_builder_set_member_name(builder, "target");
-            json_builder_add_string_value(builder,
-                                          clawt_mount_get_target(mount));
-            json_builder_set_member_name(builder, "mode");
-            json_builder_add_string_value(
-                builder, clawt_enum_to_nick(CLAWT_TYPE_MOUNT_MODE,
-                                            clawt_mount_get_mode(mount)));
-            json_builder_set_member_name(builder, "type");
-            json_builder_add_string_value(
-                builder, clawt_enum_to_nick(CLAWT_TYPE_MOUNT_TYPE,
-                                            clawt_mount_get_mount_type(mount)));
-            json_builder_set_member_name(builder, "relabel");
-            json_builder_add_string_value(
-                builder, clawt_enum_to_nick(CLAWT_TYPE_RELABEL,
-                                            clawt_mount_get_relabel(mount)));
-            json_builder_set_member_name(builder, "required");
-            json_builder_add_boolean_value(builder,
-                                           clawt_mount_get_required(mount));
-            json_builder_set_member_name(builder, "scope");
-            json_builder_add_string_value(
-                builder, clawt_enum_to_nick(CLAWT_TYPE_SCOPE,
-                                            clawt_mount_get_scope(mount)));
-            add_string_array(builder, "agents",
-                             clawt_mount_get_agents(mount));
-            add_string_array(builder, "teams", clawt_mount_get_teams(mount));
-            json_builder_end_object(builder);
-        }
-
-        json_builder_end_array(builder);
-
-        /*
-         * What only the whole fleet can show: a folder scoped to an
-         * agent or a team that is not there, and so shared with nobody.
-         * Reported here beside the list rather than refused, the same
-         * way team.list reports what it can see -- and reported at all
-         * because the alternative is silence, which is what made a team
-         * id written under agents: cost somebody an agent with no
-         * source tree and nothing to say why.
-         */
-        {
-            g_auto(GStrv) warnings = NULL;
-            guint w;
-
-            clawt_mount_validate_fleet(self->config, &warnings);
-
-            json_builder_set_member_name(builder, "warnings");
-            json_builder_begin_array(builder);
-
-            for (w = 0; warnings != NULL && warnings[w] != NULL; w++)
-                json_builder_add_string_value(builder, warnings[w]);
-
-            json_builder_end_array(builder);
-        }
-
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "agent.mount.list") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        ClawtAgentConfig *agent_config = (agent_id != NULL)
-            ? clawt_config_get_agent(self->config, agent_id) : NULL;
-        g_autoptr(GPtrArray) mounts = NULL;
-        guint inherited = 0;
-        guint i;
-
-        if (agent_config == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such agent");
-
-        /*
-         * The mounts this agent actually gets, not only the ones it
-         * declared.
-         *
-         * Reporting its own list alone would show an empty "Shared
-         * folders" for an agent that has two, because the fleet's
-         * defaults reach it without appearing anywhere on its page --
-         * two answers to "what do I have", with the wrong one on the
-         * screen somebody is looking at.
-         *
-         * Each entry says where it came from, so a client can show a
-         * default as a default rather than as something removable here.
-         */
-        {
-            g_autoptr(GPtrArray) own =
-                clawt_agent_config_get_mounts(agent_config);
-            ClawtComputerType type = (ClawtComputerType)
-                clawt_agent_config_get_enum(agent_config, "computer.type");
-
-            if (clawt_computer_type_takes_mounts(type) &&
-                clawt_agent_config_get_boolean(agent_config,
-                                               "computer.default_mounts")) {
-                g_autoptr(GPtrArray) defaults =
-                    clawt_config_get_default_mounts(self->config);
-                g_autoptr(GPtrArray) mine = g_ptr_array_new_with_free_func(
-                    (GDestroyNotify)clawt_mount_free);
-                const gchar *team =
-                    clawt_agent_config_get_string(agent_config, "team");
-                guint d;
-
-                /*
-                 * Narrowed by scope first, exactly as the factory does.
-                 * Reporting a folder this agent does not get would be
-                 * the same "two answers to what do I have" this list
-                 * was widened to fix, arrived at from the other side.
-                 */
-                for (d = 0; d < defaults->len; d++) {
-                    ClawtMount *candidate = g_ptr_array_index(defaults, d);
-
-                    if (clawt_mount_covers(candidate, agent_id, team))
-                        g_ptr_array_add(mine, clawt_mount_copy(candidate));
-                }
-
-                mounts = clawt_mount_merge_defaults(mine, own);
-
-                /*
-                 * merge_defaults drops a default the agent overrode, so
-                 * the count of inherited entries is however many
-                 * survived -- not the number configured.
-                 */
-                inherited = mounts->len - own->len;
-            } else {
-                mounts = g_ptr_array_ref(own);
-            }
-        }
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "mounts");
-        json_builder_begin_array(builder);
-
-        for (i = 0; i < mounts->len; i++) {
-            ClawtMount *mount = g_ptr_array_index(mounts, i);
-
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "inherited");
-            json_builder_add_boolean_value(builder, i < inherited);
-            json_builder_set_member_name(builder, "source");
-            json_builder_add_string_value(builder,
-                                          clawt_mount_get_source(mount));
-            json_builder_set_member_name(builder, "target");
-            json_builder_add_string_value(builder,
-                                          clawt_mount_get_target(mount));
-            json_builder_set_member_name(builder, "mode");
-            json_builder_add_string_value(
-                builder, clawt_enum_to_nick(CLAWT_TYPE_MOUNT_MODE,
-                                            clawt_mount_get_mode(mount)));
-            json_builder_set_member_name(builder, "type");
-            json_builder_add_string_value(
-                builder, clawt_enum_to_nick(CLAWT_TYPE_MOUNT_TYPE,
-                                            clawt_mount_get_mount_type(mount)));
-            json_builder_end_object(builder);
-        }
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    /*
-     * Reading and writing one workspace file.
-     *
-     * The GTK client opens these in $EDITOR, which is a local program on
-     * the machine a person is sitting at -- so a client reached over the
-     * network has no way to offer the same thing without a wire path.
-     * These are that path, and nothing else uses them.
-     *
-     * The name goes through clawt_workspace_file_path(), which refuses
-     * anything containing a separator or "..": this is reached from an
-     * IPC request, and a client that could name "../../secrets" would be
-     * reading another agent's credentials.
-     */
-    if (g_strcmp0(kind, "agent.file_read") == 0 ||
-        g_strcmp0(kind, "agent.file_write") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        const gchar *name = clawt_ipc_payload_string(payload, "name");
-        ClawtAgentConfig *config = (agent_id != NULL)
-            ? clawt_config_get_agent(self->config, agent_id) : NULL;
-        g_autofree gchar *path = NULL;
-
-        if (config == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such agent");
-
-        if (name == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "name is required");
-
-        path = clawt_workspace_file_path(config, name);
-
-        if (path == NULL)
-            return clawt_ipc_error_new(
-                request, CLAWT_ERROR_INVALID_ARGUMENT,
-                "that is not a plain file name inside the workspace");
-
-        if (g_strcmp0(kind, "agent.file_write") == 0) {
-            const gchar *content = clawt_ipc_payload_string(payload,
-                                                            "content");
-
-            if (content == NULL)
-                return clawt_ipc_error_new(request,
-                                           CLAWT_ERROR_INVALID_ARGUMENT,
-                                           "content is required");
-
-            if (!g_file_set_contents(path, content, -1, &error))
-                return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
-                                           error->message);
-
-            clawt_event_bus_emit(self->bus, "agent.changed", agent_id);
-
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "path");
-            json_builder_add_string_value(builder, path);
-            json_builder_set_member_name(builder, "bytes");
-            json_builder_add_int_value(builder, (gint64)strlen(content));
-            json_builder_end_object(builder);
-
-            return clawt_ipc_response_new(request,
-                                          json_builder_get_root(builder));
-        }
-
-        {
-            g_autofree gchar *content = NULL;
-
-            /*
-             * A file that is not there yet is empty rather than an
-             * error. The standard set is scaffolded at first start, so
-             * asking for one before then is an ordinary thing to do --
-             * and an editor that refused to open a file it is about to
-             * create would be a strange editor.
-             */
-            if (!g_file_get_contents(path, &content, NULL, NULL))
-                content = g_strdup("");
-
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "name");
-            json_builder_add_string_value(builder, name);
-            json_builder_set_member_name(builder, "path");
-            json_builder_add_string_value(builder, path);
-            json_builder_set_member_name(builder, "content");
-            json_builder_add_string_value(builder, content);
-            json_builder_end_object(builder);
-
-            return clawt_ipc_response_new(request,
-                                          json_builder_get_root(builder));
-        }
-    }
-
-    if (g_strcmp0(kind, "agent.files") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        ClawtAgent *agent = (agent_id != NULL)
-                            ? clawt_agent_manager_get(self->agents, agent_id)
-                            : NULL;
-        ClawtAgentConfig *agent_config;
-        const ClawtWorkspaceFile *files;
-        guint n_files = 0;
-        guint i;
-
-        if (agent == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such agent");
-
-        agent_config = clawt_agent_get_config(agent);
-
-        /*
-         * Scaffolded on the way out, so `agent edit` works on an agent
-         * that has never been started.  Nothing is overwritten.
-         */
-        if (!clawt_workspace_scaffold(agent_config, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        /*
-         * .mcp.json too, so `agent edit <id> .mcp.json` opens a real
-         * file on an agent that has never been started.  It is written
-         * here rather than by the full render because that resolves
-         * credentials, which can run a command, and a handler runs on
-         * the daemon's main context while the client waits.
-         */
-        {
-            g_autofree gchar *state_dir = clawt_config_agent_state_dir(
-                self->config, clawt_agent_config_get_id(agent_config));
-            g_autofree gchar *socket_path =
-                clawt_config_get_path_value(self->config, "daemon.socket");
-
-            if (!clawt_workspace_write_mcp_config(self->config, agent_config,
-                                                  socket_path, state_dir,
-                                                  &error))
-                return clawt_ipc_error_new(request, error->code,
-                                           error->message);
-        }
-
-        files = clawt_workspace_files(&n_files);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "workspace");
-
-        {
-            g_autofree gchar *workspace =
-                clawt_agent_config_get_workspace(agent_config);
-
-            json_builder_add_string_value(builder, workspace);
-        }
-
-        json_builder_set_member_name(builder, "files");
-        json_builder_begin_array(builder);
-
-        for (i = 0; i < n_files; i++) {
-            g_autofree gchar *path =
-                clawt_workspace_file_path(agent_config, files[i].name);
-
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "name");
-            json_builder_add_string_value(builder, files[i].name);
-            json_builder_set_member_name(builder, "path");
-            json_builder_add_string_value(builder, path != NULL ? path : "");
-            json_builder_set_member_name(builder, "title");
-            json_builder_add_string_value(builder, files[i].title);
-            json_builder_set_member_name(builder, "identity");
-            json_builder_add_boolean_value(builder, files[i].identity);
-            json_builder_set_member_name(builder, "generated");
-            json_builder_add_boolean_value(builder, files[i].generated);
-            json_builder_set_member_name(builder, "exists");
-            json_builder_add_boolean_value(
-                builder,
-                path != NULL && g_file_test(path, G_FILE_TEST_EXISTS));
-            json_builder_end_object(builder);
-        }
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "agent.logs") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        ClawtAgent *agent = (agent_id != NULL)
-                            ? clawt_agent_manager_get(self->agents, agent_id)
-                            : NULL;
-        ClawtAgentRuntime *runtime;
-        g_auto(GStrv) lines = NULL;
-        gsize i;
-
-        if (agent == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such agent");
-
-        runtime = clawt_agent_get_runtime(agent);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "lines");
-        json_builder_begin_array(builder);
-
-        if (runtime != NULL) {
-            lines = clawt_agent_runtime_get_log_tail(
-                runtime,
-                (guint)clawt_ipc_payload_int(payload, "limit", 200));
-
-            for (i = 0; lines != NULL && lines[i] != NULL; i++)
-                json_builder_add_string_value(builder, lines[i]);
-        }
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "memory.list") == 0 ||
-        g_strcmp0(kind, "memory.search") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        ClawtAgent *agent = (agent_id != NULL)
-                            ? clawt_agent_manager_get(self->agents, agent_id)
-                            : NULL;
-        ClawtMemoryStore *store;
-        g_autoptr(GPtrArray) memories = NULL;
-        guint i;
-
-        if (agent == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such agent");
-
-        store = clawt_agent_get_memory(agent);
-
-        if (store == NULL)
-            return clawt_ipc_error_new(
-                request, CLAWT_ERROR_NOT_SUPPORTED,
-                "that agent has no memory store; memories.enabled is off");
-
-        if (g_strcmp0(kind, "memory.search") == 0)
-            memories = clawt_memory_store_search(
-                store, clawt_ipc_payload_string(payload, "query"),
-                clawt_ipc_payload_string(payload, "category"),
-                (guint)clawt_ipc_payload_int(payload, "limit", 20), NULL);
-        else
-            memories = clawt_memory_store_list(
-                store, clawt_ipc_payload_string(payload, "category"),
-                clawt_ipc_payload_boolean(payload, "pinned", FALSE),
-                (guint)clawt_ipc_payload_int(payload, "limit", 20), NULL);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "total");
-        json_builder_add_int_value(builder,
-                                   clawt_memory_store_count(store, FALSE));
-        json_builder_set_member_name(builder, "memories");
-        json_builder_begin_array(builder);
-
-        for (i = 0; memories != NULL && i < memories->len; i++) {
-            ClawtMemory *memory = g_ptr_array_index(memories, i);
-
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "id");
-            json_builder_add_string_value(builder, memory->id);
-            json_builder_set_member_name(builder, "content");
-            json_builder_add_string_value(builder, memory->content);
-
-            if (memory->summary != NULL) {
-                json_builder_set_member_name(builder, "summary");
-                json_builder_add_string_value(builder, memory->summary);
-            }
-
-            json_builder_set_member_name(builder, "category");
-            json_builder_add_string_value(builder, memory->category);
-            json_builder_set_member_name(builder, "importance");
-            json_builder_add_string_value(builder, memory->importance);
-
-            if (memory->tags != NULL) {
-                json_builder_set_member_name(builder, "tags");
-                json_builder_add_string_value(builder, memory->tags);
-            }
-
-            json_builder_set_member_name(builder, "pinned");
-            json_builder_add_boolean_value(builder, memory->pinned);
-            json_builder_set_member_name(builder, "created_at");
-            json_builder_add_int_value(builder, memory->created_at);
-            json_builder_set_member_name(builder, "access_count");
-            json_builder_add_int_value(builder, memory->access_count);
-            json_builder_end_object(builder);
-        }
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "agent.reset") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        ClawtAgent *agent = (agent_id != NULL)
-                            ? clawt_agent_manager_get(self->agents, agent_id)
-                            : NULL;
-        g_autofree gchar *state_dir = NULL;
-        g_autofree gchar *sessions = NULL;
-        g_autofree gchar *aside = NULL;
-        g_autofree gchar *db_path = NULL;
-        gboolean was_running;
-        guint cleared = 0;
-
-        if (agent == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such agent");
-
-        was_running = clawt_agent_get_state(agent) != CLAWT_AGENT_STATE_STOPPED;
-
-        /*
-         * Stopped first, and not only to be tidy: the agent holds its
-         * own session files and its own sqlite connection open, and
-         * clearing either underneath a running process is how you get a
-         * half-reset session that resumes anyway.
-         */
-        if (was_running)
-            clawt_daemon_stop_agent(self, agent_id, FALSE);
-
-        state_dir = clawt_config_agent_state_dir(self->config, agent_id);
-        sessions = g_build_filename(state_dir, "sessions", NULL);
-        db_path = clawt_usage_database_path(state_dir);
-
-        /*
-         * Moved aside rather than deleted. A reset is what you reach for
-         * when something is wedged, which is exactly when you might want
-         * to look at what it was doing.
-         */
-        if (g_file_test(sessions, G_FILE_TEST_IS_DIR)) {
-            aside = g_strdup_printf("%s.reset-%" G_GINT64_FORMAT, sessions,
-                                    g_get_real_time() / G_USEC_PER_SEC);
-
-            if (g_rename(sessions, aside) != 0)
-                g_clear_pointer(&aside, g_free);
-        }
-
-        /*
-         * And the database rows, because libreclaw restores a session
-         * from either place -- clearing only the files leaves the agent
-         * resuming the same CLI session from sqlite and looking like the
-         * reset did nothing.
-         *
-         * Through libreclaw's own API rather than by opening its schema:
-         * the daemon links liblc, and the agent is stopped, so this is
-         * the same code the agent itself would run.
-         *
-         * The path comes from clawt_usage_database_path() because this
-         * block spelled it itself for a long time, as
-         * `<state_dir>/libreclaw.db` -- which is not where libreclaw
-         * puts it.  Its sqlite backend builds the name from
-         * `session.persist_dir` and never reads `database.path`, so the
-         * file tested for here has never existed on any machine: the
-         * branch was skipped every time and `sessions_cleared` was
-         * always 0.  Reset appeared to work only because moving the
-         * sessions directory aside takes the database with it, which is
-         * luck rather than the two-places-to-clear this was written for.
-         */
-        if (g_file_test(db_path, G_FILE_TEST_EXISTS)) {
-            g_autoptr(LcDatabase) db = LC_DATABASE(lc_sqlite_database_new());
-            g_autoptr(GError) db_error = NULL;
-
-            if (lc_database_open(db, db_path, &db_error)) {
-                GPtrArray *rows = lc_database_load_sessions(db, NULL);
-                guint i;
-
-                for (i = 0; rows != NULL && i < rows->len; i++) {
-                    LcDbSession *row = g_ptr_array_index(rows, i);
-
-                    if (lc_database_remove_session(db, row->session_key,
-                                                   NULL))
-                        cleared++;
-                }
-
-                g_clear_pointer(&rows, g_ptr_array_unref);
-                lc_database_close(db);
-            } else {
-                g_warning("agent %s: could not clear its session rows: %s",
-                          agent_id, db_error->message);
-            }
-        }
-
-        /*
-         * The database that comes back is a new one, numbering its rows
-         * from 1 again.  A watermark from the old one would suppress
-         * every row in it, so the agent would appear to spend nothing
-         * ever again.
-         */
-        if (self->usage != NULL)
-            clawt_usage_forget(self->usage, agent_id);
-
-        if (was_running && !clawt_daemon_start_agent(self, agent_id, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "sessions_cleared");
-        json_builder_add_int_value(builder, cleared);
-        json_builder_set_member_name(builder, "moved");
-        json_builder_add_string_value(builder, aside != NULL ? aside : "");
-        json_builder_set_member_name(builder, "restarted");
-        json_builder_add_boolean_value(builder, was_running);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "attachment.remove") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        const gchar *name = clawt_ipc_payload_string(payload, "name");
-        g_autofree gchar *safe = NULL;
-        g_autofree gchar *relative = NULL;
-        g_autofree gchar *host_path = NULL;
-
-        if (agent_id == NULL || name == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "agent and name are both required");
-
-        if (self->exchange == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
-                                       "there is no exchange directory");
-
-        /*
-         * Rebuilt from its basename and resolved through the exchange,
-         * exactly as attachment.put does. A client asking to delete
-         * "../../../etc/passwd" gets a refusal about a file in its own
-         * drop-box that does not exist.
-         */
-        safe = g_path_get_basename(name);
-        relative = g_build_filename(agent_id, safe, NULL);
-        host_path = clawt_exchange_resolve(self->exchange, agent_id, relative,
-                                           TRUE, &error);
-
-        if (host_path == NULL)
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        if (g_unlink(host_path) != 0)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
-                                       g_strerror(errno));
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "removed");
-        json_builder_add_string_value(builder, host_path);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "agent.discover") == 0) {
-        g_autofree gchar *agents_dir = NULL;
-        g_autofree gchar *workspace_root = NULL;
-        g_autoptr(GHashTable) seen = NULL;
-        gsize d;
-        static const gchar *interesting[] = {
-            "mailbox.db", "memory.db", "config.yaml", "SOUL.org",
-            "IDENTITY.org", "AGENTS.md", NULL
-        };
-
-        /*
-         * Directories that look like agents but are not in the config.
-         *
-         * They accumulate: an agent removed from the config keeps its
-         * state, a design that was never committed leaves a workspace,
-         * and a config restored from a backup leaves everything it did
-         * not mention. None of that is visible anywhere, so it just
-         * sits on disk and surprises people.
-         */
-        agents_dir = g_build_filename(self->state_dir, "agents", NULL);
-        workspace_root = clawt_config_get_path_value(
-            self->config, "defaults.workspace_root");
-
-        seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "found");
-        json_builder_begin_array(builder);
-
-        for (d = 0; d < 2; d++) {
-            const gchar *root = (d == 0) ? agents_dir : workspace_root;
-            g_autoptr(GDir) dir = NULL;
-            const gchar *name;
-
-            if (root == NULL)
-                continue;
-
-            /* One root may be inside the other; do not list twice. */
-            if (d == 1 && g_strcmp0(root, agents_dir) == 0)
-                continue;
-
-            dir = g_dir_open(root, 0, NULL);
-
-            if (dir == NULL)
-                continue;
-
-            while ((name = g_dir_read_name(dir)) != NULL) {
-                g_autofree gchar *path = g_build_filename(root, name, NULL);
-                GStatBuf info;
-                gsize i;
-
-                if (!g_file_test(path, G_FILE_TEST_IS_DIR))
-                    continue;
-
-                /*
-                 * Already put aside once.  Listing it again would ask
-                 * the same question a second time, which is the one
-                 * thing "forget" was supposed to stop.
-                 */
-                if (g_str_has_suffix(name, ".discarded"))
-                    continue;
-
-                if (clawt_agent_manager_get(self->agents, name) != NULL)
-                    continue;
-
-                if (g_hash_table_contains(seen, name))
-                    continue;
-
-                json_builder_begin_object(builder);
-                json_builder_set_member_name(builder, "id");
-                json_builder_add_string_value(builder, name);
-                json_builder_set_member_name(builder, "path");
-                json_builder_add_string_value(builder, path);
-                json_builder_set_member_name(builder, "kind");
-                json_builder_add_string_value(builder,
-                                              d == 0 ? "state" : "workspace");
-
-                /*
-                 * What is actually in there, so a person can tell a
-                 * real agent's leftovers from an empty directory
-                 * somebody made by hand.
-                 */
-                json_builder_set_member_name(builder, "holds");
-                json_builder_begin_array(builder);
-
-                for (i = 0; interesting[i] != NULL; i++) {
-                    g_autofree gchar *file =
-                        g_build_filename(path, interesting[i], NULL);
-
-                    if (g_file_test(file, G_FILE_TEST_EXISTS))
-                        json_builder_add_string_value(builder, interesting[i]);
-                }
-
-                json_builder_end_array(builder);
-
-                json_builder_set_member_name(builder, "modified");
-                json_builder_add_int_value(
-                    builder, g_stat(path, &info) == 0 ? info.st_mtime : 0);
-
-                json_builder_end_object(builder);
-
-                g_hash_table_add(seen, g_strdup(name));
-            }
-        }
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "agent.import") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "id");
-        const gchar *from = clawt_ipc_payload_string(payload, "from");
-        const gchar *mode_nick = clawt_ipc_payload_string(payload, "mode");
-        gboolean keep_git = clawt_ipc_payload_boolean(payload, "keep_git",
-                                                       FALSE);
-        ClawtImportMode mode = CLAWT_IMPORT_COPY;
-        g_autofree gchar *source = NULL;
-        g_autofree gchar *workspace = NULL;
-        g_autofree gchar *detail = NULL;
-        ClawtAgentConfig *created;
-        guint copied = 0;
-
-        if (agent_id == NULL || from == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "id and from are both required");
-
-        /*
-         * Refused rather than quietly defaulted. An unrecognised mode
-         * would otherwise become a copy, so somebody who typed `--lnik`
-         * would get a fork of their workspace instead of a link to it
-         * and find out only when their edits stopped reaching the agent.
-         */
-        if (mode_nick != NULL &&
-            g_strcmp0(mode_nick,
-                      clawt_import_mode_nth_nick(
-                          clawt_import_mode_from_nick(mode_nick))) != 0)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "mode must be copy, link or git");
-
-        mode = clawt_import_mode_from_nick(mode_nick);
-
-        /*
-         * A git import names a URL rather than a directory, so the
-         * directory check belongs to the two modes that take one --
-         * clawt_workspace_adopt() makes it, where it can say which kind
-         * of thing was expected.
-         */
-        source = g_strdup(from);
-
-        if (clawt_agent_manager_get(self->agents, agent_id) != NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_ALREADY_EXISTS,
-                                       "there is already an agent with that "
-                                       "id");
-
-        /*
-         * The config entry first, so the workspace path is whatever
-         * clawtilla would have chosen -- an import is an agent like any
-         * other afterwards, not one that remembers where it came from.
-         */
-        created = clawt_config_add_agent(self->config, agent_id, &error);
-
-        if (created == NULL)
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        workspace = clawt_agent_config_get_workspace(created);
-
-        if (!clawt_workspace_adopt(mode, source, workspace, keep_git,
-                                   &copied, &detail, &error)) {
-            clawt_config_remove_agent(self->config, agent_id);
-            return clawt_ipc_error_new(request, error->code, error->message);
-        }
-
-        /*
-         * Anything the source said about itself that clawtilla owns
-         * too. A standalone libreclaw instance keeps its provider and
-         * model in its own config.yaml, and an import that dropped them
-         * would quietly move the agent onto the fleet defaults.
-         */
-        {
-            g_autofree gchar *imported = g_build_filename(workspace,
-                                                          "config.yaml", NULL);
-
-            clawt_config_adopt_libreclaw(created, imported);
-        }
-
-        /*
-         * And the persona it already had.
-         *
-         * clawtilla names its identity files in org, a workspace from
-         * anywhere else names them in markdown, and the two sets do not
-         * collide -- so the copy above brought a complete persona across
-         * and the scaffolder then wrote a blank .org beside every file
-         * of it. The agent loaded the blanks: an import that succeeded,
-         * reported every file copied, and produced something wearing the
-         * right name with "/(fill in)/" where its character should be.
-         *
-         * Only when nothing was configured. An id and a persona given on
-         * the import frame are the caller's, not ours to overrule.
-         */
-        if (!clawt_agent_config_has_key(created, "persona.identity_files")) {
-            g_auto(GStrv) adopted =
-                clawt_workspace_detect_identity_files(workspace);
-
-            if (adopted != NULL && adopted[0] != NULL) {
-                g_autofree gchar *joined = g_strjoinv(", ", adopted);
-
-                clawt_agent_config_set_string_list(
-                    created, "persona.identity_files",
-                    (const gchar *const *)adopted);
-
-                g_message("import: '%s' already had a persona; loading %s "
-                          "rather than scaffolding blanks beside it",
-                          agent_id, joined);
-            }
-        }
-
-        if (!clawt_config_save(self->config, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        /*
-         * The same two steps agent.create takes.  Saving the config is
-         * not enough to make an agent exist: the manager builds its
-         * agents from a reloaded config, and without this the import
-         * succeeded, wrote everything correctly, and then did not
-         * appear in `agent list`.
-         */
-        if (!clawt_daemon_reload(self, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        clawt_agent_manager_load(self->agents, NULL);
-        clawt_event_bus_emit(self->bus, "agent.created", agent_id);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "id");
-        json_builder_add_string_value(builder, agent_id);
-        json_builder_set_member_name(builder, "workspace");
-        json_builder_add_string_value(builder, workspace);
-        json_builder_set_member_name(builder, "files");
-        json_builder_add_int_value(builder, copied);
-        json_builder_set_member_name(builder, "mode");
-        json_builder_add_string_value(builder,
-                                      clawt_import_mode_nth_nick(mode));
-
-        /*
-         * What actually happened, in a sentence.
-         *
-         * Two of the three modes have an outcome the client could not
-         * predict -- a git import is a submodule only where the
-         * workspace root is inside a repository -- and the difference
-         * between a workspace somebody's `git status` tracks and one it
-         * does not is worth saying rather than leaving to be discovered.
-         */
-        if (detail != NULL) {
-            json_builder_set_member_name(builder, "detail");
-            json_builder_add_string_value(builder, detail);
-        }
-
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    /*
-     * Cloud images.  A VM needs one, clawtilla ships none, and they are
-     * several hundred megabytes -- so they are fetched deliberately,
-     * ahead of any agent needing one, with progress to watch.
-     */
-    if (g_strcmp0(kind, "image.vm_catalog") == 0) {
-        const ClawtVmImageSource *catalog;
-        gsize n_sources = 0;
-        gsize i;
-
-        catalog = clawt_vm_image_catalog(&n_sources);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "sources");
-        json_builder_begin_array(builder);
-
-        for (i = 0; i < n_sources; i++) {
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "id");
-            json_builder_add_string_value(builder, catalog[i].id);
-            json_builder_set_member_name(builder, "name");
-            json_builder_add_string_value(builder, catalog[i].name);
-            json_builder_set_member_name(builder, "group");
-            json_builder_add_string_value(builder, catalog[i].group);
-            json_builder_set_member_name(builder, "url");
-            json_builder_add_string_value(builder, catalog[i].url);
-
-            if (catalog[i].note != NULL) {
-                json_builder_set_member_name(builder, "note");
-                json_builder_add_string_value(builder, catalog[i].note);
-            }
-
-            json_builder_end_object(builder);
-        }
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request,
-                                     json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "image.vm_list") == 0) {
-        g_autoptr(GPtrArray) images = clawt_vm_image_store_list(self->vm_images);
-        guint i;
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "images");
-        json_builder_begin_array(builder);
-
-        for (i = 0; images != NULL && i < images->len; i++) {
-            ClawtVmImage *image = g_ptr_array_index(images, i);
-
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "name");
-            json_builder_add_string_value(builder, image->name);
-            json_builder_set_member_name(builder, "path");
-            json_builder_add_string_value(builder, image->path);
-            json_builder_set_member_name(builder, "bytes");
-            json_builder_add_int_value(builder, image->bytes);
-            json_builder_set_member_name(builder, "total");
-            json_builder_add_int_value(builder, image->total);
-            json_builder_set_member_name(builder, "downloading");
-            json_builder_add_boolean_value(builder, image->downloading);
-
-            if (image->url != NULL) {
-                json_builder_set_member_name(builder, "url");
-                json_builder_add_string_value(builder, image->url);
-            }
-
-            json_builder_end_object(builder);
-        }
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request,
-                                     json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "image.vm_download") == 0) {
-        const gchar *url = clawt_ipc_payload_string(payload, "url");
-        g_autoptr(GError) start_error = NULL;
-        g_autofree gchar *name = NULL;
-
-        if (url == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "a url or a catalog id is required");
-
-        /*
-         * Returns as soon as the transfer is under way.  A handler runs on
-         * the daemon's main context while the client blocks, so waiting
-         * here for half a gigabyte would stall every other client for the
-         * length of the download.
-         */
-        name = clawt_vm_image_store_start(self->vm_images, url,
-                                          clawt_ipc_payload_string(payload,
-                                                                   "name"),
-                                          &start_error);
-
-        if (name == NULL)
-            return clawt_ipc_error_new(request, start_error->code,
-                                       start_error->message);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "name");
-        json_builder_add_string_value(builder, name);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request,
-                                     json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "image.vm_cancel") == 0) {
-        const gchar *name = clawt_ipc_payload_string(payload, "name");
-
-        if (name == NULL || !clawt_vm_image_store_cancel(self->vm_images,
-                                                         name))
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "nothing by that name is downloading");
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "cancelled");
-        json_builder_add_boolean_value(builder, TRUE);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request,
-                                     json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "image.vm_remove") == 0) {
-        const gchar *name = clawt_ipc_payload_string(payload, "name");
-        g_autoptr(GError) remove_error = NULL;
-        g_autofree gchar *image_path = NULL;
-
-        if (name == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "a name is required");
-
-        /*
-         * An agent's overlay records the base it was built on, so
-         * deleting the base breaks that VM the next time it starts --
-         * with an error from qemu about a missing backing file, a long
-         * way from the button that caused it.
-         */
-        image_path = clawt_vm_image_store_path(self->vm_images, name);
-
-        if (image_path != NULL &&
-            !clawt_ipc_payload_boolean(payload, "force", FALSE)) {
-            GPtrArray *agents = clawt_agent_manager_list(self->agents);
-            g_autoptr(GString) users = g_string_new(NULL);
-            guint i;
-
-            for (i = 0; agents != NULL && i < agents->len; i++) {
-                ClawtAgent *agent = g_ptr_array_index(agents, i);
-                g_autofree gchar *configured = clawt_agent_config_get_path_value(
-                    clawt_agent_get_config(agent), "computer.vm.image");
-
-                if (g_strcmp0(configured, image_path) != 0)
-                    continue;
-
-                if (users->len > 0)
-                    g_string_append(users, ", ");
-
-                g_string_append(users, clawt_agent_get_id(agent));
-            }
-
-            if (users->len > 0) {
-                g_autofree gchar *refusal = g_strdup_printf(
-                    "%s is the disk image for %s. Deleting it breaks that "
-                    "VM the next time it starts, because its overlay is "
-                    "built on this file. Point the agent at another image "
-                    "first, or pass force to delete it anyway.",
-                    name, users->str);
-
-                return clawt_ipc_error_new(request,
-                                           CLAWT_ERROR_INVALID_ARGUMENT,
-                                           refusal);
-            }
-        }
-
-        if (!clawt_vm_image_store_remove(self->vm_images, name,
-                                         &remove_error))
-            return clawt_ipc_error_new(request, remove_error->code,
-                                       remove_error->message);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "removed");
-        json_builder_add_string_value(builder, name);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request,
-                                     json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "state.git_init") == 0) {
-        g_autofree gchar *ignore_path = NULL;
-        gboolean created = FALSE;
-
-        if (self->state_dir == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
-                                       "there is no state directory yet");
-
-        if (!prepare_state_git(self->state_dir, TRUE, &created, &ignore_path,
-                               &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "path");
-        json_builder_add_string_value(builder, self->state_dir);
-        json_builder_set_member_name(builder, "created");
-        json_builder_add_boolean_value(builder, created);
-        json_builder_set_member_name(builder, "gitignore");
-        json_builder_add_string_value(builder, ignore_path);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "agent.forget") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "id");
-        g_autofree gchar *state_path = NULL;
-        g_autofree gchar *workspace_root = NULL;
-        g_autofree gchar *workspace_path = NULL;
-
-        if (agent_id == NULL || strchr(agent_id, '/') != NULL ||
-            g_strcmp0(agent_id, "..") == 0)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "not a plain agent id");
-
-        if (clawt_agent_manager_get(self->agents, agent_id) != NULL)
-            return clawt_ipc_error_new(
-                request, CLAWT_ERROR_AGENT_STATE,
-                "that agent is in the config; remove it with agent.remove");
-
-        state_path = g_build_filename(self->state_dir, "agents", agent_id,
-                                      NULL);
-        workspace_root = clawt_config_get_path_value(
-            self->config, "defaults.workspace_root");
-
-        if (workspace_root != NULL)
-            workspace_path = g_build_filename(workspace_root, agent_id, NULL);
-
-        /*
-         * Moved aside rather than deleted.  This is somebody's agent --
-         * its transcripts, its memories, whatever it was told about
-         * them -- and "I never created this" is a thing people say
-         * about directories they later want back.
-         */
-        {
-            g_autoptr(GString) moved = g_string_new(NULL);
-            const gchar *paths[] = { state_path, workspace_path };
-            gsize i;
-
-            for (i = 0; i < G_N_ELEMENTS(paths); i++) {
-                g_autofree gchar *aside = NULL;
-
-                if (paths[i] == NULL ||
-                    !g_file_test(paths[i], G_FILE_TEST_IS_DIR))
-                    continue;
-
-                aside = g_strconcat(paths[i], ".discarded", NULL);
-
-                if (g_rename(paths[i], aside) == 0) {
-                    if (moved->len > 0)
-                        g_string_append(moved, ", ");
-
-                    g_string_append(moved, aside);
-                }
-            }
-
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "moved");
-            json_builder_add_string_value(builder, moved->str);
-            json_builder_end_object(builder);
-        }
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "agent.create") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "id");
-        g_autoptr(GHashTable) fields = NULL;
-        ClawtAgentConfig *created;
-
-        if (agent_id == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "an agent needs an id");
-
-        /*
-         * The frame's vocabulary, translated into configuration keys
-         * here so the shared implementation never has to know it.
-         */
-        {
-            static const struct {
-                const gchar *from;
-                const gchar *to;
-            } names[] = {
-                { "name",           "name" },
-                { "description",    "description" },
-                { "model",          "model.model" },
-                { "provider",       "model.provider" },
-                { "computer",       "computer.type" },
-                { "confine",        "computer.host.confine" },
-                { "image",          "computer.container.image" },
-                { "vm_image",       "computer.vm.image" },
-                { "vm_cpus",        "computer.vm.cpus" },
-                { "vm_memory_mb",   "computer.vm.memory_mb" },
-                { "vm_disk_gb",     "computer.vm.disk_gb" },
-                { "vm_resolution",  "computer.vm.resolution" },
-                { "team",           "team" },
-                { "team_role",      "team_role" },
-                { "workspace",      "workspace" },
-                { NULL, NULL }
-            };
-            gsize i;
-
-            fields = g_hash_table_new(g_str_hash, g_str_equal);
-
-            for (i = 0; names[i].from != NULL; i++) {
-                const gchar *value = clawt_ipc_payload_string(payload,
-                                                              names[i].from);
-
-                if (value != NULL)
-                    g_hash_table_insert(fields, (gpointer)names[i].to,
-                                        (gpointer)value);
-            }
-        }
-
-        created = daemon_create_agent(self, agent_id, fields, NULL, NULL,
-                                      &error);
-
-        if (created == NULL)
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "id");
-        json_builder_add_string_value(builder, agent_id);
-
-        /*
-         * ...and started, because creating an agent and building the
-         * thing it works in were two steps and only one of them had a
-         * button.
-         *
-         * A computer is built at *start*, not at create: a VM agent
-         * created and left alone has a config file and no machine.
-         * `defaults.autostart` does not cover it either -- it is false
-         * by default and means "comes back with the daemon", which is a
-         * different question from whether the thing somebody just asked
-         * for exists.
-         */
-        if (clawt_ipc_payload_boolean(payload, "start", TRUE)) {
-            g_autoptr(GError) start_error = NULL;
-            gboolean started = clawt_daemon_start_agent(self, agent_id,
-                                                        &start_error);
-
-            json_builder_set_member_name(builder, "started");
-            json_builder_add_boolean_value(builder, started);
-
-            /*
-             * Reported, never fatal. The agent exists and its
-             * configuration is on disk; rolling that back because a
-             * hypervisor was busy would throw away everything the person
-             * had just typed.
-             */
-            if (!started && start_error != NULL) {
-                json_builder_set_member_name(builder, "start_error");
-                json_builder_add_string_value(builder, start_error->message);
-            }
-        }
-
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "agent.remove") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        gboolean with_computer =
-            clawt_ipc_payload_boolean(payload, "remove_computer", FALSE);
-        g_autofree gchar *computer_detail = NULL;
-        g_autofree gchar *files_detail = NULL;
-        gboolean linked_workspace = FALSE;
-
-        if (agent_id == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "which agent?");
-
-        /*
-         * The container or VM, torn down before the agent goes.
-         *
-         * Removing an agent used to leave its computer running, with a
-         * name derived from an agent that no longer existed -- so the
-         * only way to find it again was to remember what it had been
-         * called. Opt-in, because a container may hold work that was
-         * never anywhere else.
-         *
-         * Done before the config entry is dropped: the computer is built
-         * from that config, and afterwards there is nothing left to
-         * build it from.
-         */
-        if (with_computer) {
-            ClawtAgent *agent = clawt_agent_manager_get(self->agents,
-                                                         agent_id);
-            ClawtComputer *computer = (agent != NULL)
-                                      ? clawt_agent_get_computer(agent)
-                                      : NULL;
-            g_autoptr(ClawtComputer) built = NULL;
-
-            /*
-             * An agent that was never started has no computer object,
-             * but its container may still be there from a previous run.
-             * Building one from the config finds it by name.
-             */
-            if (computer == NULL) {
-                ClawtAgentConfig *agent_config =
-                    clawt_config_get_agent(self->config, agent_id);
-
-                if (agent_config != NULL) {
-                    g_autoptr(GPtrArray) defaults =
-                        clawt_config_get_default_mounts(self->config);
-
-                    built = clawt_computer_factory_create(agent_config,
-                                                          defaults,
-                                                          self->pod_bridge,
-                                                          NULL);
-                    computer = built;
-                }
-            }
-
-            if (computer != NULL &&
-                clawt_computer_get_computer_type(computer) !=
-                    CLAWT_COMPUTER_NONE) {
-                g_autoptr(GError) teardown_error = NULL;
-
-                if (clawt_computer_teardown(computer, &teardown_error)) {
-                    computer_detail = g_strdup("removed");
-                } else {
-                    /*
-                     * Reported, not fatal.  The agent is still going, and
-                     * refusing to remove it because its container had
-                     * already been deleted by hand would be absurd.
-                     */
-                    computer_detail = g_strdup(
-                        teardown_error != NULL ? teardown_error->message
-                                               : "could not be removed");
-                    g_warning("agent %s: computer not removed: %s", agent_id,
-                              computer_detail);
-                }
-            }
-        }
-
-        clawt_daemon_stop_agent(self, agent_id, FALSE);
-
-        /*
-         * The files, before the config entry goes: every path is
-         * derived from that entry, and afterwards there is nothing left
-         * to derive them from.
-         */
-        if (clawt_ipc_payload_boolean(payload, "remove_files", FALSE)) {
-            ClawtAgentConfig *doomed = clawt_config_get_agent(self->config,
-                                                              agent_id);
-            g_autoptr(GError) purge_error = NULL;
-            gboolean was_linked = FALSE;
-
-            /*
-             * Reported beside `files` rather than instead of it. `files`
-             * is the success sentinel every client already branches on,
-             * and a linked workspace genuinely was removed -- what
-             * differs is what survived, which is a sentence rather than
-             * an outcome.
-             */
-            if (doomed != NULL &&
-                !clawt_daemon_purge_agent_files(self, doomed, &was_linked,
-                                                &purge_error))
-                files_detail = g_strdup(purge_error->message);
-            else if (doomed != NULL)
-                files_detail = g_strdup("removed");
-
-            linked_workspace = was_linked;
-        }
-
-        if (!clawt_config_remove_agent(self->config, agent_id))
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such agent");
-
-        if (!clawt_config_save(self->config, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        /*
-         * Without remove_files the agent's state directory -- its
-         * mailbox, its transcripts, its rendered config -- is left on
-         * disk. Removing an agent from the fleet is reversible; deleting
-         * its history is not, so it is asked for rather than assumed.
-         */
-        clawt_agent_manager_load(self->agents, NULL);
-        clawt_event_bus_emit(self->bus, "agent.removed", agent_id);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "id");
-        json_builder_add_string_value(builder, agent_id);
-
-        /* What happened to the computer, so a client can say so. */
-        if (computer_detail != NULL) {
-            json_builder_set_member_name(builder, "computer");
-            json_builder_add_string_value(builder, computer_detail);
-        }
-
-        /* ...and to the files, which is the irreversible half. */
-        if (files_detail != NULL) {
-            json_builder_set_member_name(builder, "files");
-            json_builder_add_string_value(builder, files_detail);
-        }
-
-        if (linked_workspace) {
-            json_builder_set_member_name(builder, "linked_workspace");
-            json_builder_add_boolean_value(builder, TRUE);
-        }
-
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    /* ── teams ── */
-
-    if (g_strcmp0(kind, "team.list") == 0) {
-        g_autoptr(GPtrArray) teams = clawt_config_get_teams(self->config);
-        GPtrArray *agents = clawt_agent_manager_list(self->agents);
-        g_auto(GStrv) warnings = NULL;
-        guint i;
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "teams");
-        json_builder_begin_array(builder);
-
-        for (i = 0; i < teams->len; i++) {
-            ClawtTeamSpec *team = g_ptr_array_index(teams, i);
-            guint running = 0;
-            guint total = 0;
-            const gchar *lead = NULL;
-            guint j;
-
-            json_builder_begin_object(builder);
-            add_string_member(builder, "id", team->id);
-            add_string_member(builder, "name",
-                              team->name != NULL ? team->name : team->id);
-            add_string_member(builder, "description", team->description);
-            add_string_member(builder, "color", team->color);
-
-            json_builder_set_member_name(builder, "order");
-            json_builder_add_int_value(builder, team->order);
-
-            json_builder_set_member_name(builder, "members");
-            json_builder_begin_array(builder);
-
-            for (j = 0; agents != NULL && j < agents->len; j++) {
-                ClawtAgent *agent = g_ptr_array_index(agents, j);
-                ClawtAgentConfig *config = clawt_agent_get_config(agent);
-
-                if (g_strcmp0(clawt_agent_config_get_string(config, "team"),
-                              team->id) != 0)
-                    continue;
-
-                json_builder_add_string_value(builder,
-                                              clawt_agent_get_id(agent));
-                total++;
-
-                if (clawt_agent_get_state(agent) ==
-                    CLAWT_AGENT_STATE_RUNNING)
-                    running++;
-
-                if (clawt_team_role_of(config) == CLAWT_TEAM_LEAD)
-                    lead = clawt_agent_get_id(agent);
-            }
-
-            json_builder_end_array(builder);
-
-            add_string_member(builder, "lead", lead);
-
-            /*
-             * Counted here rather than in each client. Three clients
-             * counting the same thing is three chances to disagree about
-             * what "active" means.
-             */
-            json_builder_set_member_name(builder, "running");
-            json_builder_add_int_value(builder, running);
-            json_builder_set_member_name(builder, "total");
-            json_builder_add_int_value(builder, total);
-
-            json_builder_end_object(builder);
-        }
-
-        json_builder_end_array(builder);
-
-        /*
-         * What only the whole fleet can show: two leads on one team, an
-         * agent naming a team nobody declared. Reported rather than
-         * enforced, because a fleet is edited by hand and half-built
-         * states are ordinary.
-         */
-        clawt_team_validate_fleet(self->config, &warnings);
-
-        json_builder_set_member_name(builder, "warnings");
-        json_builder_begin_array(builder);
-
-        for (i = 0; warnings != NULL && warnings[i] != NULL; i++)
-            json_builder_add_string_value(builder, warnings[i]);
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "team.create") == 0) {
-        const gchar *team_id = clawt_ipc_payload_string(payload, "id");
-
-        if (team_id == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "a team needs an id");
-
-        if (!clawt_config_add_team(self->config, team_id, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        {
-            static const gchar *const fields[] = {
-                "name", "description", "color", NULL
-            };
-            gsize i;
-
-            for (i = 0; fields[i] != NULL; i++) {
-                const gchar *value = clawt_ipc_payload_string(payload,
-                                                              fields[i]);
-
-                if (value != NULL)
-                    clawt_config_set_team_string(self->config, team_id,
-                                                 fields[i], value);
-            }
-        }
-
-        if (!clawt_config_save(self->config, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        clawt_event_bus_emit(self->bus, "team.changed", team_id);
-
-        json_builder_begin_object(builder);
-        add_string_member(builder, "id", team_id);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "team.set") == 0) {
-        const gchar *team_id = clawt_ipc_payload_string(payload, "team");
-        const gchar *key = clawt_ipc_payload_string(payload, "key");
-        const gchar *value = clawt_ipc_payload_string(payload, "value");
-
-        if (team_id == NULL || key == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "team and key are both required");
-
-        if (!clawt_config_set_team_string(self->config, team_id, key, value))
-            return clawt_ipc_error_new(
-                request, CLAWT_ERROR_NOT_FOUND,
-                g_strcmp0(key, "id") == 0
-                    ? "a team's id cannot be changed: everything refers to "
-                      "it by that. Create the new one, move the agents, "
-                      "remove the old."
-                    : "no such team");
-
-        if (!clawt_config_save(self->config, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        /*
-         * The agents' own files describe their team, so they are
-         * rewritten here for the same reason agent.set rewrites them:
-         * a description that changed and did not reach the prompt is a
-         * second answer to what the team is for.
-         */
-        {
-            g_autoptr(GPtrArray) refusals = render_refusals_new();
-
-            render_all_agents_into(self, refusals);
-            clawt_event_bus_emit(self->bus, "team.changed", team_id);
-
-            json_builder_begin_object(builder);
-            add_render_refusals(builder, refusals);
-            json_builder_end_object(builder);
-        }
-
-        return clawt_ipc_response_new(request,
-                                      json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "team.remove") == 0) {
-        const gchar *team_id = clawt_ipc_payload_string(payload, "team");
-
-        if (team_id == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "which team?");
-
-        if (!clawt_config_remove_team(self->config, team_id))
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such team");
-
-        if (!clawt_config_save(self->config, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        /*
-         * The agents that were on it are left naming a team that is no
-         * longer declared, which is a state they are allowed to be in --
-         * and saying how many is more use than silently reassigning
-         * them somewhere nobody chose.
-         */
-        {
-            GPtrArray *agents;
-            g_autoptr(GPtrArray) refusals = render_refusals_new();
-            guint orphaned = 0;
-            guint i;
-
-            render_all_agents_into(self, refusals);
-            clawt_event_bus_emit(self->bus, "team.changed", team_id);
-
-            agents = clawt_agent_manager_list(self->agents);
-
-            for (i = 0; agents != NULL && i < agents->len; i++) {
-                ClawtAgent *agent = g_ptr_array_index(agents, i);
-
-                if (g_strcmp0(clawt_agent_config_get_string(
-                                  clawt_agent_get_config(agent), "team"),
-                              team_id) == 0)
-                    orphaned++;
-            }
-
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "orphaned");
-            json_builder_add_int_value(builder, orphaned);
-            add_render_refusals(builder, refusals);
-            json_builder_end_object(builder);
-        }
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "agent.reorder") == 0) {
-        const gchar *ids = clawt_ipc_payload_string(payload, "agents");
-        g_auto(GStrv) wanted = NULL;
-        gsize i;
-
-        if (ids == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "agents is required: the ids in the "
-                                       "order you want them, comma "
-                                       "separated");
-
-        wanted = g_strsplit(ids, ",", -1);
-
-        /*
-         * Numbered from one, in steps of ten.
-         *
-         * The gap is not decoration: it leaves room to place one agent
-         * between two others by setting a single number by hand, which
-         * is the only way to do it in a text editor without renumbering
-         * the whole file.
-         */
-        for (i = 0; wanted[i] != NULL; i++) {
-            const gchar *agent_id = g_strstrip(wanted[i]);
-            ClawtAgentConfig *config;
-            g_autofree gchar *position = NULL;
-
-            if (*agent_id == '\0')
-                continue;
-
-            config = clawt_config_get_agent(self->config, agent_id);
-
-            /*
-             * An id that is not there is skipped rather than refused.
-             * The list comes from a client's view of the fleet, which
-             * may be a moment behind one that has just been removed --
-             * and failing the whole reorder over that would lose the
-             * arrangement somebody had just made.
-             */
-            if (config == NULL)
-                continue;
-
-            position = g_strdup_printf("%u", (guint)((i + 1) * 10));
-            clawt_agent_config_set_string(config, "order", position);
-        }
-
-        if (!clawt_config_save(self->config, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        clawt_event_bus_emit(self->bus, "agent.changed", NULL);
-
-        return clawt_ipc_response_new(request, NULL);
-    }
-
-    if (g_strcmp0(kind, "agent.set") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        const gchar *key = clawt_ipc_payload_string(payload, "key");
-        const gchar *value = clawt_ipc_payload_string(payload, "value");
-        ClawtAgentConfig *config;
-
-        if (agent_id == NULL || key == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "agent and key are both required");
-
-        config = clawt_config_get_agent(self->config, agent_id);
-
-        if (config == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such agent");
-
-        /*
-         * An enum is checked against the schema before it is written.
-         *
-         * Nothing did, so `computer.type teleporter` was accepted here,
-         * echoed back as saved, and written to clawtilla.yaml. Every
-         * reader of it then fell back to the schema default, so the
-         * agent went on with the computer it already had while the file
-         * said otherwise -- and at the next daemon load the validator
-         * caught what this did not and turned the agent into a shadow,
-         * a long way from the command that caused it.
-         *
-         * The allowed values come off the enum's own #GType through
-         * clawt_enum_nick_list(), for the same reason the type comes off
-         * the schema: a set of values spelled out beside the refusal is
-         * the enum written a second time, and the second copy stops
-         * being true in silence.
-         */
-        {
-            const ClawtSchemaEntry *entry = agent_setting_entry(key);
-            gint parsed = 0;
-
-            /*
-             * An empty value is refused with the rest, deliberately.
-             * There is no "unset" here, so clearing an enum writes
-             * `key: ""` -- and the loader reads that as an unknown
-             * nickname and shadows the agent, which is the very failure
-             * this check exists to prevent.
-             */
-            if (entry != NULL && entry->type == CLAWT_SCHEMA_ENUM &&
-                value != NULL &&
-                !clawt_enum_from_nick(entry->enum_type(), value, &parsed)) {
-                g_autofree gchar *allowed =
-                    clawt_enum_nick_list(entry->enum_type());
-                g_autofree gchar *message = g_strdup_printf(
-                    "'%s' is not a value for %s: it takes one of %s",
-                    value, key, allowed);
-
-                return clawt_ipc_error_new(request,
-                                           CLAWT_ERROR_INVALID_ARGUMENT,
-                                           message);
-            }
-        }
-
-        /*
-         * Dispatch on what the schema says the key *is*, rather than
-         * writing every value as a scalar.
-         *
-         * A STRING_LIST written as a scalar is not merely ugly: the
-         * reader refuses anything that is not a YAML sequence, so the
-         * value was accepted here, echoed back to the client, saved to
-         * clawtilla.yaml, and then read back as the schema default. The
-         * one that exposed it was persona.identity_files -- an agent
-         * pointed at its real persona files went on loading the seven
-         * generated .org stubs, and every surface agreed the setting
-         * had been saved.
-         */
-        clawt_agent_config_set_from_string(config, key, value);
-
-        if (!clawt_config_save(self->config, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        /*
-         * ...and the agent's own files, which are derived from what was
-         * just changed.
-         *
-         * Saving used to be the whole of it, so a setting was written to
-         * clawtilla.yaml and nothing the agent reads was touched. The
-         * one that made that visible was tools.manage_fleet: the gate
-         * answers from the live config and was right immediately, while
-         * TOOLS.org went on listing the tools as they were at the last
-         * daemon start. Two answers to "what do I have", and the file is
-         * the one that reaches the agent's prompt.
-         */
-        {
-            g_autoptr(GPtrArray) refusals = render_refusals_new();
-
-            render_all_agents_into(self, refusals);
-            clawt_event_bus_emit(self->bus, "agent.changed", agent_id);
-
-            json_builder_begin_object(builder);
-            add_render_refusals(builder, refusals);
-        }
-
-        json_builder_set_member_name(builder, "agent");
-        json_builder_add_string_value(builder, agent_id);
-
-        /*
-         * The shadow decision is retaken here, not left to the next load.
-         *
-         * It is made once, when the config is parsed -- so setting the
-         * very key an agent was disabled for wrote the value, answered
-         * with the key and its new value, and left the agent shadowed
-         * with the old reason.  `agent list` still said `shadow`, which
-         * reads as the setting not having worked.  The only remedy was
-         * restarting the daemon, and on a remote one there was no way to
-         * ask for that at all.
-         *
-         * Reported either way: still refusing is the interesting answer,
-         * and a client that only hears "saved" cannot tell the two apart.
-         */
-        {
-            ClawtAgentConfig *agent_config =
-                clawt_config_get_agent(self->config, agent_id);
-            gboolean usable = TRUE;
-
-            if (agent_config != NULL) {
-                ClawtAgent *agent =
-                    clawt_agent_manager_get(self->agents, agent_id);
-
-                usable = clawt_agent_config_revalidate(agent_config);
-
-                /*
-                 * And the agent, which keeps its own state.  Revalidating
-                 * only the config left `agent list` reporting the old
-                 * answer -- the shadow decision reaches a client through
-                 * ClawtAgent, not through ClawtAgentConfig.
-                 */
-                if (agent != NULL)
-                    clawt_agent_revalidate(agent);
-            }
-
-            json_builder_set_member_name(builder, "shadow");
-            json_builder_add_boolean_value(builder, !usable);
-
-            if (!usable && agent_config != NULL) {
-                json_builder_set_member_name(builder, "shadow_reason");
-                json_builder_add_string_value(
-                    builder,
-                    clawt_agent_config_get_shadow_reason(agent_config));
-            }
-        }
-
-        /*
-         * Which keys those are is setting_needs_a_new_session()'s to
-         * say; only a *running* agent is told, because a stopped one
-         * will start a fresh session anyway and telling it to restart
-         * would be advice about nothing.
-         */
-        json_builder_set_member_name(builder, "restart_required");
-        json_builder_add_boolean_value(
-            builder, setting_needs_a_new_session(key) &&
-                     clawt_agent_get_state(
-                         clawt_agent_manager_get(self->agents, agent_id)) ==
-                     CLAWT_AGENT_STATE_RUNNING);
-
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    /* ── messages and rooms ── */
-
-    if (g_strcmp0(kind, "msg.send") == 0) {
-        const gchar *target = clawt_ipc_payload_string(payload, "target");
-        const gchar *body = clawt_ipc_payload_string(payload, "body");
-        const gchar *from = clawt_ipc_payload_string(payload, "from");
-        gint queued;
-
-        if (target == NULL || body == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "target and body are both required");
-
-        queued = clawt_mailbox_router_send_to(self->router,
-                                              from != NULL ? from : "user",
-                                              target, body, NULL, 0, &error);
-
-        if (queued < 0)
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "queued");
-        json_builder_add_int_value(builder, queued);
-
-        /*
-         * Whether anything is going to read it.  A mailbox accepts a
-         * message for a stopped agent by design -- that is the point of
-         * making it durable -- but a client that cannot tell "queued" from
-         * "delivered" leaves the user watching a spinner for an agent that
-         * is not running and never will answer.  Reported only for a
-         * single agent; for a room the members each have their own state
-         * and the client can ask for them.
-         */
-        {
-            ClawtAgent *agent = clawt_agent_manager_get(self->agents, target);
-
-            if (agent != NULL) {
-                json_builder_set_member_name(builder, "target_state");
-                json_builder_add_string_value(
-                    builder, clawt_enum_to_nick(CLAWT_TYPE_AGENT_STATE,
-                                                clawt_agent_get_state(agent)));
-            }
-        }
-
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "room.list") == 0) {
-        g_autoptr(GPtrArray) rooms = clawt_room_manager_list(self->rooms);
-        guint i;
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "rooms");
-        json_builder_begin_array(builder);
-
-        for (i = 0; i < rooms->len; i++) {
-            ClawtRoom *room = g_ptr_array_index(rooms, i);
-            GPtrArray *members = clawt_room_get_members(room);
-            guint j;
-
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "id");
-            json_builder_add_string_value(builder, clawt_room_get_id(room));
-            json_builder_set_member_name(builder, "name");
-            json_builder_add_string_value(builder, clawt_room_get_name(room));
-            json_builder_set_member_name(builder, "members");
-            json_builder_begin_array(builder);
-
-            for (j = 0; j < members->len; j++)
-                json_builder_add_string_value(
-                    builder, g_ptr_array_index(members, j));
-
-            json_builder_end_array(builder);
-
-            /*
-             * Enough for a client to draw a conversation list without
-             * fetching every transcript to find out which rooms have
-             * anything in them.  A fleet accumulates a direct room per
-             * pair, and most of them are empty.
-             */
-            json_builder_set_member_name(builder, "messages");
-            json_builder_add_int_value(
-                builder, clawt_room_get_message_count(room));
-
-            {
-                g_autoptr(GPtrArray) last = clawt_room_get_history(room, 1);
-
-                if (last->len > 0) {
-                    ClawtMessage *message = g_ptr_array_index(last, 0);
-
-                    json_builder_set_member_name(builder, "last_sender");
-                    json_builder_add_string_value(
-                        builder, clawt_message_get_sender_id(message));
-                    json_builder_set_member_name(builder, "last_body");
-                    json_builder_add_string_value(
-                        builder, clawt_message_get_body(message));
-                    json_builder_set_member_name(builder, "last_ts");
-                    json_builder_add_int_value(
-                        builder, clawt_message_get_timestamp(message));
-                }
-            }
-
-            json_builder_end_object(builder);
-        }
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "room.create") == 0) {
-        const gchar *room_id = clawt_ipc_payload_string(payload, "room");
-        const gchar *name = clawt_ipc_payload_string(payload, "name");
-        const gchar *members = clawt_ipc_payload_string(payload, "members");
-        ClawtRoom *room;
-
-        room = clawt_room_manager_create(self->rooms, room_id, name, &error);
-
-        if (room == NULL)
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        if (members != NULL) {
-            g_auto(GStrv) parts = g_strsplit(members, ",", -1);
-            gsize i;
-
-            for (i = 0; parts[i] != NULL; i++)
-                clawt_room_add_member(room, g_strstrip(parts[i]));
-        }
-
-        clawt_event_bus_emit(self->bus, "room.created", room_id);
-
-        return clawt_ipc_response_new(request, NULL);
-    }
-
-    if (g_strcmp0(kind, "room.add") == 0) {
-        const gchar *room_id = clawt_ipc_payload_string(payload, "room");
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        ClawtRoom *room = clawt_room_manager_get(self->rooms, room_id);
-
-        if (room == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such room");
-
-        /*
-         * Checked rather than passed straight through: without it a
-         * request with no agent named added nobody and reported success,
-         * which is the one answer a caller cannot act on.
-         */
-        if (agent_id == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "which agent should be added?");
-
-        clawt_room_add_member(room, agent_id);
-        clawt_event_bus_emit(self->bus, "room.changed", room_id);
-
-        return clawt_ipc_response_new(request, NULL);
-    }
-
-    if (g_strcmp0(kind, "room.history") == 0) {
-        const gchar *room_id = clawt_ipc_payload_string(payload, "room");
-        const gchar *viewer = clawt_ipc_payload_string(payload, "as");
-        ClawtRoom *room = clawt_room_manager_get(self->rooms, room_id);
-        g_autoptr(GPtrArray) history = NULL;
-        guint i;
-
-        /*
-         * An agent id means the direct room with that agent, the same way
-         * it does for msg.send.  Without this a client showing a
-         * conversation had to know how a direct room is named -- and the
-         * GTK client did not, so every chat opened empty with a "no such
-         * room" error behind it.
-         */
-        if (room == NULL && room_id != NULL &&
-            clawt_agent_manager_get(self->agents, room_id) != NULL)
-            room = clawt_room_manager_get_direct(
-                self->rooms, viewer != NULL ? viewer : "user", room_id);
-
-        if (room == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such room or agent");
-
-        history = clawt_room_get_history(
-            room, (guint)clawt_ipc_payload_int(payload, "limit", 50));
-
-        json_builder_begin_object(builder);
-
-        /*
-         * Which room this actually is, because the request may have
-         * named an agent and let the daemon resolve the direct room. A
-         * client that shows a conversation has to be able to tell
-         * whether an incoming message belongs in it, and comparing
-         * against the agent it asked for is not the same question --
-         * that is how a reply from an agent to one of its peers ended up
-         * drawn in the user's own chat with it.
-         */
-        json_builder_set_member_name(builder, "room");
-        json_builder_add_string_value(builder, clawt_room_get_id(room));
-
-        json_builder_set_member_name(builder, "messages");
-        json_builder_begin_array(builder);
-
-        for (i = 0; i < history->len; i++) {
-            ClawtMessage *message = g_ptr_array_index(history, i);
-
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "id");
-            json_builder_add_string_value(builder,
-                                          clawt_message_get_id(message));
-            json_builder_set_member_name(builder, "sender");
-            json_builder_add_string_value(
-                builder, clawt_message_get_sender_id(message));
-            json_builder_set_member_name(builder, "body");
-            json_builder_add_string_value(builder,
-                                          clawt_message_get_body(message));
-            json_builder_set_member_name(builder, "ts");
-            json_builder_add_int_value(
-                builder, clawt_message_get_timestamp(message));
-
-            /*
-             * The task this message belongs to, when it belongs to one.
-             * It is what turns a transcript into a chain you can follow:
-             * without it a delegated reply is just another line from an
-             * agent, with no sign of what asked for it.
-             */
-            if (clawt_message_get_task_id(message) != NULL) {
-                json_builder_set_member_name(builder, "task");
-                json_builder_add_string_value(
-                    builder, clawt_message_get_task_id(message));
-            }
-
-            /*
-             * How far this message had travelled agent-to-agent.  It is
-             * what makes a runaway visible: a conversation whose hop
-             * count climbs towards max_hops is a loop, and reading two
-             * agents politely agreeing to do nothing gives no sign of
-             * that at all.
-             */
-            json_builder_set_member_name(builder, "depth");
-            json_builder_add_int_value(builder,
-                                       clawt_message_get_depth(message));
-
-            json_builder_end_object(builder);
-        }
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    /* ── mailboxes ── */
-
-    if (g_strcmp0(kind, "mailbox.list") == 0 ||
-        g_strcmp0(kind, "mailbox.dead") == 0) {
-        ClawtMailbox *mailbox = mailbox_for(self, payload, &error);
-        g_autoptr(GPtrArray) items = NULL;
-        guint i;
-
-        if (mailbox == NULL)
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        if (g_strcmp0(kind, "mailbox.dead") == 0) {
-            items = clawt_mailbox_dead_letters(mailbox);
-        } else {
-            ClawtMailboxFilter filter = { CLAWT_MAILBOX_PENDING, 50, TRUE };
-
-            filter.limit = (guint)clawt_ipc_payload_int(payload, "limit", 50);
-            items = clawt_mailbox_list(mailbox, &filter);
-        }
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "items");
-        json_builder_begin_array(builder);
-
-        for (i = 0; i < items->len; i++)
-            add_mailbox_item(builder, g_ptr_array_index(items, i));
-
-        json_builder_end_array(builder);
-        json_builder_set_member_name(builder, "depth");
-        json_builder_add_int_value(builder, clawt_mailbox_depth(mailbox));
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "mailbox.ack") == 0 ||
-        g_strcmp0(kind, "mailbox.requeue") == 0) {
-        ClawtMailbox *mailbox = mailbox_for(self, payload, &error);
-        const gchar *item_id = clawt_ipc_payload_string(payload, "item");
-        gboolean ok;
-
-        if (mailbox == NULL)
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        if (item_id == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "which message?");
-
-        ok = (g_strcmp0(kind, "mailbox.ack") == 0)
-             ? clawt_mailbox_ack(mailbox, item_id, &error)
-             : clawt_mailbox_requeue(mailbox, item_id, &error);
-
-        if (!ok)
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        return clawt_ipc_response_new(request, NULL);
-    }
-
-    if (g_strcmp0(kind, "mailbox.purge") == 0) {
-        ClawtMailbox *mailbox = mailbox_for(self, payload, &error);
-
-        if (mailbox == NULL)
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "purged");
-        json_builder_add_int_value(builder,
-                                   clawt_mailbox_purge_expired(mailbox));
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    /* ── tasks ── */
-
-    if (g_strcmp0(kind, "task.list") == 0) {
-        g_autoptr(GPtrArray) tasks = NULL;
-        guint i;
-
-        tasks = clawt_task_manager_list(
-            self->tasks, clawt_ipc_payload_string(payload, "agent"),
-            clawt_ipc_payload_boolean(payload, "all", TRUE));
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "tasks");
-        json_builder_begin_array(builder);
-
-        for (i = 0; i < tasks->len; i++)
-            add_task_object(builder, g_ptr_array_index(tasks, i));
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "task.show") == 0) {
-        const gchar *task_id = clawt_ipc_payload_string(payload, "task");
-        ClawtTask *task = (task_id != NULL)
-                          ? clawt_task_manager_get(self->tasks, task_id)
-                          : NULL;
-
-        if (task == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such task");
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "task");
-        add_task_object(builder, task);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "task.cancel") == 0) {
-        const gchar *task_id = clawt_ipc_payload_string(payload, "task");
-        guint cancelled;
-
-        if (task_id == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "which task?");
-
-        cancelled = clawt_task_manager_cancel(self->tasks, task_id,
-                                              "cancelled from a client");
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "cancelled");
-        json_builder_add_int_value(builder, cancelled);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    /* ── usage ── */
-
-    if (g_strcmp0(kind, "usage.summary") == 0) {
-        GPtrArray *agents = clawt_agent_manager_list(self->agents);
-        ClawtUsageTotals fleet = { 0, 0, 0, 0 };
-        gint64 since = clawt_ipc_payload_int(payload, "since", 0);
-        guint i;
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "agents");
-        json_builder_begin_array(builder);
-
-        for (i = 0; i < agents->len; i++) {
-            ClawtAgent *agent = g_ptr_array_index(agents, i);
-            const gchar *agent_id = clawt_agent_get_id(agent);
-            g_autofree gchar *state_dir = NULL;
-            g_autofree gchar *db_path = NULL;
-            g_autoptr(GError) read_error = NULL;
-            ClawtUsageTotals totals = { 0, 0, 0, 0 };
-
-            state_dir = clawt_config_agent_state_dir(self->config, agent_id);
-            if (state_dir == NULL)
-                continue;
-
-            db_path = clawt_usage_database_path(state_dir);
-
-            /*
-             * One unreadable database does not fail the summary.  A
-             * fleet report that refuses because one agent's file is
-             * mid-write tells you nothing about the other nine.
-             */
-            if (!clawt_usage_read_totals(db_path, since, &totals,
-                                         &read_error)) {
-                g_debug("usage: %s: %s", agent_id,
-                        read_error != NULL ? read_error->message : "unknown");
-            }
-
-            clawt_usage_totals_add(&fleet, &totals);
-
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "id");
-            json_builder_add_string_value(builder, agent_id);
-            json_builder_set_member_name(builder, "name");
-            json_builder_add_string_value(builder,
-                                          clawt_agent_get_name(agent));
-            json_builder_set_member_name(builder, "turns");
-            json_builder_add_int_value(builder, totals.turns);
-            json_builder_set_member_name(builder, "input_tokens");
-            json_builder_add_int_value(builder, totals.input_tokens);
-            json_builder_set_member_name(builder, "output_tokens");
-            json_builder_add_int_value(builder, totals.output_tokens);
-            json_builder_set_member_name(builder, "cost_micros");
-            json_builder_add_int_value(builder, totals.cost_micros);
-            json_builder_end_object(builder);
-        }
-
-        json_builder_end_array(builder);
-
-        json_builder_set_member_name(builder, "total");
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "turns");
-        json_builder_add_int_value(builder, fleet.turns);
-        json_builder_set_member_name(builder, "input_tokens");
-        json_builder_add_int_value(builder, fleet.input_tokens);
-        json_builder_set_member_name(builder, "output_tokens");
-        json_builder_add_int_value(builder, fleet.output_tokens);
-        json_builder_set_member_name(builder, "cost_micros");
-        json_builder_add_int_value(builder, fleet.cost_micros);
-        json_builder_end_object(builder);
-
-        json_builder_set_member_name(builder, "since");
-        json_builder_add_int_value(builder, since);
-
-        /*
-         * What the budget would refuse right now, so a client can show
-         * the cap beside the spend rather than making somebody go and
-         * read the config to find out what the number means.
-         */
-        json_builder_set_member_name(builder, "task_budget_usd");
-        json_builder_add_double_value(
-            builder,
-            clawt_config_get_double(self->config,
-                                    "orchestration.task_budget_usd"));
-
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    /* ── computers ── */
-
-    if (g_strcmp0(kind, "computer.exec") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        const gchar *command = clawt_ipc_payload_string(payload, "command");
-        ClawtAgent *agent = (agent_id != NULL)
-                            ? clawt_agent_manager_get(self->agents, agent_id)
-                            : NULL;
-        ClawtComputer *computer = (agent != NULL)
-                                  ? clawt_agent_get_computer(agent) : NULL;
-        g_auto(GStrv) argv = NULL;
-        ExecJob *job;
-
-        /*
-         * The computer is built when the agent starts, so a stopped
-         * agent has none -- and "that agent has no computer" then reads
-         * as a configuration mistake rather than a stopped agent, which
-         * is a different thing to go and check.
-         */
-        if (computer == NULL) {
-            const gchar *configured =
-                (agent != NULL)
-                ? clawt_agent_config_get_string(clawt_agent_get_config(agent),
-                                                "computer.type")
-                : NULL;
-            g_autofree gchar *detail = NULL;
-
-            if (configured != NULL && g_strcmp0(configured, "none") != 0)
-                detail = g_strdup_printf(
-                    "%s has a %s computer configured, but it is only built "
-                    "when the agent starts. Start it first.",
-                    agent_id, configured);
-            else
-                detail = g_strdup_printf("%s has no computer", agent_id);
-
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       detail);
-        }
-
-        /*
-         * An argv is taken as it stands.  A caller that already has the
-         * arguments separated -- the CLI has them from the shell that
-         * split them -- must not have them joined and re-split here:
-         * `echo 'x\\ny'` came back as `xny`, because the backslash the
-         * user quoted was consumed a second time, and `sh -c 'a; b'`
-         * turned into four arguments and ran nothing.
-         *
-         * The string form stays for callers that genuinely have a
-         * command line, which is what a model writes.
-         */
-        argv = clawt_ipc_payload_strv(payload, "argv");
-
-        if (argv != NULL && argv[0] == NULL)
-            g_clear_pointer(&argv, g_strfreev);
-
-        if (argv == NULL &&
-            (command == NULL || !g_shell_parse_argv(command, NULL, &argv,
-                                                    &error)))
-            return clawt_ipc_error_new(
-                request, CLAWT_ERROR_INVALID_ARGUMENT,
-                error != NULL ? error->message : "no command given");
-
-        job = g_new0(ExecJob, 1);
-        job->daemon = g_object_ref(self);
-        job->pending = clawt_ipc_server_defer(self->ipc_server, request);
-
-        if (job->pending == NULL) {
-            exec_job_free(job);
-            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
-                                       "this request cannot be answered "
-                                       "later");
-        }
-
-        /*
-         * A reference of its own, for the same reason the tool path takes
-         * one: the agent can be stopped while the command is still
-         * running, and the worker must not be left holding a computer the
-         * manager has dropped.
-         */
-        job->computer = g_object_ref(computer);
-        job->agent_id = g_strdup(agent_id);
-
-        /*
-         * The command is copied because the audit line is written when it
-         * *ends*, and by then the request frame it was read from is gone.
-         * An argv caller has no command string, so the trail records what
-         * it would have been rather than nothing -- a record that says a
-         * command ran and not which one answers the wrong question.
-         */
-        job->command = (command != NULL)
-                       ? g_strdup(command)
-                       : g_strjoinv(" ", argv);
-
-        clawt_computer_exec_async(
-            computer, (const gchar * const *)argv,
-            clawt_ipc_payload_string(payload, "cwd"),
-            (guint)clawt_ipc_payload_int(payload, "timeout", 120),
-            self->main_context, NULL, on_ipc_exec_finished, job);
-
-        /*
-         * NULL, not a frame.  The answer goes out from
-         * on_ipc_exec_finished() when the command ends; waiting here
-         * would hold the daemon's main context for the whole timeout,
-         * which is the two minutes in which nothing else is routed.
-         */
-        return NULL;
-    }
-
-    if (g_strcmp0(kind, "computer.start") == 0 ||
-        g_strcmp0(kind, "computer.stop") == 0 ||
-        g_strcmp0(kind, "computer.restart") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        ClawtAgent *agent = (agent_id != NULL)
-                            ? clawt_agent_manager_get(self->agents, agent_id)
-                            : NULL;
-        ClawtAgentConfig *agent_config = (agent_id != NULL)
-            ? clawt_config_get_agent(self->config, agent_id) : NULL;
-        g_autoptr(ClawtComputer) built = NULL;
-        ClawtComputer *computer;
-        ClawtComputerLifecycle op;
-        ClawtComputerType type;
-        LifecycleJob *job;
-
-        if (agent_config == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such agent");
-
-        op = (g_strcmp0(kind, "computer.start") == 0)
-             ? CLAWT_COMPUTER_LIFECYCLE_START
-             : (g_strcmp0(kind, "computer.stop") == 0)
-               ? CLAWT_COMPUTER_LIFECYCLE_STOP
-               : CLAWT_COMPUTER_LIFECYCLE_RESTART;
-
-        type = (ClawtComputerType)clawt_agent_config_get_enum(
-            agent_config, "computer.type");
-
-        /*
-         * Refused here rather than by the backend, and on the *type*
-         * rather than on whether the vfunc happens to exist.  A host
-         * agent's machine is the one clawtilla is running on: there is a
-         * host_stop(), it is a no-op, and answering "stopped" about the
-         * operator's own workstation is exactly the quiet lie this path
-         * exists to avoid. Both clients ask the same predicate before
-         * offering the verb, so a type added later reaches all three
-         * without any of them being edited.
-         */
-        if (!clawt_computer_type_has_machine(type))
-            return clawt_ipc_error_new(
-                request, CLAWT_ERROR_NOT_SUPPORTED,
-                (type == CLAWT_COMPUTER_HOST)
-                ? "a host agent has no machine of its own to start or "
-                  "stop: it runs on this one"
-                : "this agent has no computer");
-
-        /*
-         * A fence, because for a container this is not reversible.
-         * `computer.container.keep` is false by default and the backend
-         * removes the container when it stops one -- so the contents are
-         * gone, not merely offline, and "stop" is not a word anybody
-         * reads that way. Refused rather than done carefully, and the
-         * refusal names both the flag to pass and the setting that would
-         * make it unnecessary.
-         */
-        if (op != CLAWT_COMPUTER_LIFECYCLE_START &&
-            computer_stop_removes(agent_config) &&
-            !clawt_ipc_payload_boolean(payload, "remove", FALSE)) {
-            g_autofree gchar *detail = g_strdup_printf(
-                "stopping this %s removes it and everything in it, because "
-                "computer.%s.keep is false. Pass remove to go ahead, or set "
-                "that key to keep what the agent installed.",
-                clawt_enum_to_nick(CLAWT_TYPE_COMPUTER_TYPE, type),
-                clawt_enum_to_nick(CLAWT_TYPE_COMPUTER_TYPE, type));
-
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       detail);
-        }
-
-        /*
-         * The agent's own computer when it has one, so its state and the
-         * machine's stay the same object.  A stopped agent has none --
-         * the computer is built at start -- and a machine outliving its
-         * agent is the ordinary case here rather than an edge one: a
-         * libvirt domain survives the daemon, and a container with
-         * keep: true survives everything. So one is built from the
-         * config, the same way computer.rebuild does.
-         */
-        computer = (agent != NULL) ? clawt_agent_get_computer(agent) : NULL;
-
-        if (computer == NULL) {
-            g_autoptr(GPtrArray) defaults =
-                clawt_config_get_default_mounts(self->config);
-
-            built = clawt_computer_factory_create(agent_config, defaults,
-                                                  self->pod_bridge, &error);
-
-            if (built == NULL)
-                return clawt_ipc_error_new(request, error->code,
-                                           error->message);
-
-            computer = built;
-        }
-
-        job = g_new0(LifecycleJob, 1);
-        job->daemon = g_object_ref(self);
-        job->pending = clawt_ipc_server_defer(self->ipc_server, request);
-
-        if (job->pending == NULL) {
-            lifecycle_job_free(job);
-            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
-                                       "this request cannot be answered "
-                                       "later");
-        }
-
-        job->computer = g_object_ref(computer);
-        job->agent_id = g_strdup(agent_id);
-        job->op = op;
-        job->removes = computer_stop_removes(agent_config);
-
-        clawt_computer_lifecycle_async(computer, op, self->main_context, NULL,
-                                       on_ipc_lifecycle_finished, job);
-
-        /*
-         * NULL, not a frame.  Starting a container is a blocking request
-         * to podman and stopping a VM waits up to thirty seconds for the
-         * guest to flush; either held here is thirty seconds in which
-         * nothing else is routed.
-         */
-        return NULL;
-    }
-
-    if (g_strcmp0(kind, "computer.rebuild") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        ClawtAgent *agent = (agent_id != NULL)
-                            ? clawt_agent_manager_get(self->agents, agent_id)
-                            : NULL;
-        ClawtAgentConfig *agent_config = (agent_id != NULL)
-            ? clawt_config_get_agent(self->config, agent_id) : NULL;
-        g_autoptr(ClawtComputer) built = NULL;
-        g_autoptr(GError) teardown_error = NULL;
-        g_autofree gchar *removed = NULL;
-
-        if (agent_config == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such agent");
-
-        /*
-         * Refused while it runs, rather than done carefully.  Rebuilding
-         * is destroying the machine the agent is working on; there is no
-         * version of that which is safe to do underneath it.
-         */
-        if (agent != NULL &&
-            clawt_agent_get_state(agent) != CLAWT_AGENT_STATE_STOPPED)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_AGENT_STATE,
-                                       "stop the agent first: rebuilding "
-                                       "destroys the computer it is using");
-
-        if ((ClawtComputerType)clawt_agent_config_get_enum(
-                agent_config, "computer.type") == CLAWT_COMPUTER_NONE)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
-                                       "this agent has no computer to "
-                                       "rebuild");
-
-        /*
-         * Built from the config rather than taken from the agent: a
-         * stopped agent has no computer object, and stopped is the only
-         * state this is allowed in.
-         */
-        {
-            g_autoptr(GPtrArray) defaults =
-                clawt_config_get_default_mounts(self->config);
-
-            built = clawt_computer_factory_create(agent_config, defaults,
-                                                  self->pod_bridge, &error);
-        }
-
-        if (built == NULL)
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        /*
-         * A teardown that fails is reported and not fatal.  The common
-         * reason to reach for this is that the guest is already gone --
-         * deleted by hand in virt-manager -- and refusing to rebuild
-         * because there was nothing to tear down would be absurd.
-         */
-        if (!clawt_computer_teardown(built, &teardown_error)) {
-            removed = g_strdup(teardown_error->message);
-            g_message("agent %s: nothing to tear down before rebuilding "
-                      "(%s)", agent_id, removed);
-        }
-
-        if (!clawt_computer_provision(built, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        clawt_event_bus_emit(self->bus, "agent.changed", agent_id);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "rebuilt");
-        json_builder_add_boolean_value(builder, TRUE);
-        add_string_member(builder, "agent", agent_id);
-
-        if (removed != NULL)
-            add_string_member(builder, "note", removed);
-
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "computer.status") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        ClawtAgent *agent = (agent_id != NULL)
-                            ? clawt_agent_manager_get(self->agents, agent_id)
-                            : NULL;
-        ClawtComputer *computer = (agent != NULL)
-                                  ? clawt_agent_get_computer(agent) : NULL;
-        g_autofree gchar *described = NULL;
-
-        if (computer == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "that agent has no computer");
-
-        described = clawt_agent_describe_computer(agent);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "state");
-        json_builder_add_string_value(
-            builder, clawt_enum_to_nick(CLAWT_TYPE_COMPUTER_STATE,
-                                        clawt_computer_get_state(computer)));
-        json_builder_set_member_name(builder, "description");
-        json_builder_add_string_value(builder, described);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "computer.desktop") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        ClawtAgent *agent = (agent_id != NULL)
-                            ? clawt_agent_manager_get(self->agents, agent_id)
-                            : NULL;
-        ClawtComputer *computer = (agent != NULL)
-                                  ? clawt_agent_get_computer(agent) : NULL;
-        ClawtAgentConfig *agent_config = (agent != NULL)
-                                         ? clawt_agent_get_config(agent)
-                                         : NULL;
-        g_autoptr(ClawtDesktop) built = NULL;
-        ClawtDesktop *desktop = NULL;
-        g_auto(GStrv) argv = NULL;
-        g_auto(GStrv) tools = NULL;
-        gsize i;
-
-        if (agent == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "there is no such agent");
-
-        /*
-         * The attached desktop when there is one, and otherwise one built
-         * from the config.
-         *
-         * An agent only gets a ClawtDesktop when it is started, so a
-         * stopped agent with the grant plainly set was told it "has no
-         * desktop; set computer.desktop.enabled" -- naming the key that
-         * was already true. The policy is a pure function of the config,
-         * so it can be answered without the agent running.
-         */
-        desktop = clawt_agent_get_desktop(agent);
-
-        if (desktop == NULL) {
-            built = clawt_computer_factory_create_desktop(agent_config);
-            desktop = built;
-        }
-
-        if (desktop == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "that agent has no desktop; set "
-                                       "computer.desktop.enabled");
-
-        if (clawt_agent_config_get_enum(agent_config, "computer.type") !=
-            CLAWT_COMPUTER_VM)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
-                                       "that agent's desktop is not in a "
-                                       "VM, so there is nothing to relay "
-                                       "to");
-
-        /*
-         * Configured for a VM but without one built means the agent is
-         * not running, which is a different thing from being misconfigured
-         * and deserves saying so.
-         */
-        if (computer == NULL ||
-            clawt_computer_get_computer_type(computer) != CLAWT_COMPUTER_VM)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_AGENT_STATE,
-                                       "that agent is not running, so its "
-                                       "VM has no address yet. Start the "
-                                       "agent first.");
-
-        /*
-         * Built here rather than written into the agent's .mcp.json,
-         * because the port that reaches the guest is chosen when the VM
-         * is provisioned -- which is after the workspace files are
-         * written, and again after anybody edits the config. A command
-         * line captured at render time would name a port nothing is
-         * listening on.
-         */
-        argv = clawt_vm_computer_build_desktop_argv(CLAWT_VM_COMPUTER(computer));
-
-        if (argv == NULL)
-            return clawt_ipc_error_new(
-                request, CLAWT_ERROR_COMPUTER_EXEC,
-                "nothing reaches that agent's VM yet: it may not be "
-                "running, or no port is forwarded to it. Start the agent "
-                "and try again.");
-
-        tools = clawt_desktop_get_tool_names(desktop);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "backend");
-        json_builder_add_string_value(
-            builder, clawt_enum_to_nick(CLAWT_TYPE_DESKTOP_BACKEND,
-                                        clawt_desktop_resolve_backend(desktop,
-                                                                      NULL)));
-
-        json_builder_set_member_name(builder, "argv");
-        json_builder_begin_array(builder);
-        for (i = 0; argv[i] != NULL; i++)
-            json_builder_add_string_value(builder, argv[i]);
-        json_builder_end_array(builder);
-
-        /*
-         * The permitted tools travel with the command, so the relay does
-         * not need its own copy of the policy -- and so an agent whose
-         * allow_input was turned off stops being able to click the moment
-         * the daemon is reloaded, rather than whenever its MCP client is
-         * next restarted.
-         */
-        json_builder_set_member_name(builder, "tools");
-        json_builder_begin_array(builder);
-        for (i = 0; tools != NULL && tools[i] != NULL; i++)
-            json_builder_add_string_value(builder, tools[i]);
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "computer.copy") == 0) {
-        const gchar *src = clawt_ipc_payload_string(payload, "src");
-        const gchar *dst = clawt_ipc_payload_string(payload, "dst");
-        g_auto(GStrv) src_parts = NULL;
-        g_auto(GStrv) dst_parts = NULL;
-        ClawtAgent *agent;
-        ClawtComputer *computer;
-        gboolean ok;
-
-        if (src == NULL || dst == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "src and dst are both required");
-
-        /*
-         * Exactly one side may name an agent.  Copying between two agents
-         * would need a temporary file on the host and a policy about who
-         * owns it; the exchange directory already solves that case, and
-         * saying so is better than half-implementing it.
-         */
-        src_parts = g_strsplit(src, ":", 2);
-        dst_parts = g_strsplit(dst, ":", 2);
-
-        if (g_strv_length(src_parts) == 2 && g_strv_length(dst_parts) == 2)
-            return clawt_ipc_error_new(
-                request, CLAWT_ERROR_NOT_SUPPORTED,
-                "copying straight between two agents is not supported; "
-                "copy through the exchange directory instead");
-
-        /*
-         * A copy into the exchange goes through the exchange's own rule,
-         * which is what says an agent may write to shared/ and its own
-         * directory and nowhere else.  Skipping it -- as this used to --
-         * let any agent overwrite another's drop-box, the exact thing the
-         * rule exists to prevent.
-         */
-        if (self->exchange != NULL && g_strv_length(dst_parts) == 2 &&
-            g_str_has_prefix(dst_parts[1], CLAWT_EXCHANGE_MOUNT_POINT)) {
-            g_autofree gchar *resolved =
-                clawt_exchange_resolve(self->exchange, dst_parts[0],
-                                       dst_parts[1], TRUE, &error);
-
-            if (resolved == NULL)
-                return clawt_ipc_error_new(request, error->code,
-                                           error->message);
-        }
-
-        if (g_strv_length(src_parts) == 2) {
-            agent = clawt_agent_manager_get(self->agents, src_parts[0]);
-            computer = (agent != NULL) ? clawt_agent_get_computer(agent)
-                                       : NULL;
-
-            if (computer == NULL)
-                return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                           "that agent has no computer");
-
-            ok = clawt_computer_get_file(computer, src_parts[1], dst, &error);
-        } else if (g_strv_length(dst_parts) == 2) {
-            agent = clawt_agent_manager_get(self->agents, dst_parts[0]);
-            computer = (agent != NULL) ? clawt_agent_get_computer(agent)
-                                       : NULL;
-
-            if (computer == NULL)
-                return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                           "that agent has no computer");
-
-            ok = clawt_computer_put_file(computer, src, dst_parts[1], &error);
-        } else {
-            return clawt_ipc_error_new(
-                request, CLAWT_ERROR_INVALID_ARGUMENT,
-                "one side must be <agent>:<path>");
-        }
-
-        if (!ok)
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        return clawt_ipc_response_new(request, NULL);
-    }
-
-    if (g_strcmp0(kind, "attachment.put") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        const gchar *name = clawt_ipc_payload_string(payload, "name");
-        const gchar *encoded = clawt_ipc_payload_string(payload, "data");
-        ClawtAgent *agent = (agent_id != NULL)
-                            ? clawt_agent_manager_get(self->agents, agent_id)
-                            : NULL;
-        g_autofree guchar *bytes = NULL;
-        g_autofree gchar *safe = NULL;
-        g_autofree gchar *relative = NULL;
-        g_autofree gchar *host_path = NULL;
-        gsize length = 0;
-
-        if (agent == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such agent");
-
-        if (name == NULL || encoded == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "name and data are both required");
-
-        if (self->exchange == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
-                                       "there is no exchange directory");
-
-        /*
-         * The name is taken apart and rebuilt rather than trusted.  It
-         * comes from a filename a person dragged in or a clipboard
-         * suggestion, and "../../.ssh/authorized_keys" is a name.
-         */
-        safe = g_path_get_basename(name);
-
-        if (safe[0] == '\0' || g_strcmp0(safe, ".") == 0 ||
-            g_strcmp0(safe, "..") == 0 || g_strcmp0(safe, G_DIR_SEPARATOR_S) == 0)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "that is not a usable file name");
-
-        bytes = g_base64_decode(encoded, &length);
-
-        if (bytes == NULL || length == 0)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "the attachment is empty");
-
-        /*
-         * The agent's own directory, made if this is the first thing
-         * ever put in it. resolve() answers where a path *would* be, so
-         * without this the very first attachment failed on a directory
-         * that had never been created.
-         */
-        if (!clawt_exchange_prepare(self->exchange, agent_id, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        relative = g_build_filename(agent_id, safe, NULL);
-        host_path = clawt_exchange_resolve(self->exchange, agent_id, relative,
-                                           TRUE, &error);
-
-        if (host_path == NULL)
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        if (!clawt_write_file_atomic(host_path, (const gchar *)bytes,
-                                     (gssize)length, 0600, FALSE, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "name");
-        json_builder_add_string_value(builder, safe);
-        json_builder_set_member_name(builder, "host_path");
-        json_builder_add_string_value(builder, host_path);
-
-        /*
-         * The path to *tell the agent*, which is not the host path when
-         * it lives in a container: the exchange is mounted, so the
-         * agent sees it somewhere else entirely and a host path would
-         * send it looking for a file that is not there.
-         */
-        json_builder_set_member_name(builder, "path");
-
-        {
-            const gchar *computer = clawt_agent_config_get_string(
-                clawt_agent_get_config(agent), "computer.type");
-
-            if (g_strcmp0(computer, "container") == 0 ||
-                g_strcmp0(computer, "vm") == 0) {
-                g_autofree gchar *guest = g_build_filename(
-                    CLAWT_EXCHANGE_MOUNT_POINT, agent_id, safe, NULL);
-
-                json_builder_add_string_value(builder, guest);
-            } else {
-                json_builder_add_string_value(builder, host_path);
-            }
-        }
-
-        json_builder_set_member_name(builder, "bytes");
-        json_builder_add_int_value(builder, (gint64)length);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "exchange.list") == 0) {
-        g_autoptr(GPtrArray) entries = NULL;
-        guint i;
-
-        if (self->exchange == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
-                                       "this fleet has no exchange "
-                                       "directory");
-
-        entries = clawt_exchange_list(self->exchange,
-                                      clawt_ipc_payload_string(payload,
-                                                               "path"));
-
-        if (entries == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such directory in the exchange");
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "entries");
-        json_builder_begin_array(builder);
-
-        for (i = 0; i < entries->len; i++)
-            json_builder_add_string_value(builder,
-                                          g_ptr_array_index(entries, i));
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "design.agent") == 0) {
-        /*
-         * The questionnaire.
-         *
-         * One free-text box asked the person to write a paragraph that
-         * happened to contain everything the model needed, and a
-         * paragraph that leaves out the boundaries produces an agent
-         * with none.  Named questions ask for each thing once, and an
-         * unanswered one is visibly unanswered rather than silently
-         * absent.
-         */
-        static const struct {
-            const gchar *field;
-            const gchar *question;
-        } questions[] = {
-            { "purpose",     "What should this agent do?" },
-            { "boundaries",  "What should it never do?" },
-            { "needs",       "What does it need to work on: files, "
-                             "commands, the network, nothing?" },
-            { "personality", "How should it come across?" },
-            { "projects",    "What is it working on, and where does that "
-                             "live?" },
-            { "notes",       "Anything else it should know?" },
-            { NULL, NULL }
-        };
-        const gchar *description = clawt_ipc_payload_string(payload,
-                                                            "description");
-        g_autoptr(GString) brief = g_string_new(NULL);
-        g_autoptr(ClawtAgentDesigner) designer = NULL;
-        g_autofree gchar *preview = NULL;
-        g_autofree gchar *draft_id = NULL;
-        GHashTable *draft;
-        gsize i;
-
-        for (i = 0; questions[i].field != NULL; i++) {
-            const gchar *answer = clawt_ipc_payload_string(payload,
-                                                            questions[i].field);
-
-            if (answer == NULL || *answer == '\0')
-                continue;
-
-            g_string_append_printf(brief, "%s\n%s\n\n",
-                                   questions[i].question, answer);
-        }
-
-        /*
-         * The old single-field form still works.  The CLI takes a
-         * sentence, and a client that has not been updated should keep
-         * designing agents rather than start failing.
-         */
-        if (brief->len == 0 && description != NULL && *description != '\0')
-            g_string_append(brief, description);
-
-        if (brief->len == 0)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "answer at least one question, or "
-                                       "send a description");
-
-        designer = clawt_agent_designer_new(self->config);
-
-        /*
-         * An id or name the person typed is theirs.  Models rename
-         * routinely -- to something they consider more descriptive --
-         * and the agent then appears under a name nobody chose, with
-         * any script that asked for the original looking at the wrong
-         * agent.
-         */
-        clawt_agent_designer_pin_identity(
-            designer, clawt_ipc_payload_string(payload, "id"),
-            clawt_ipc_payload_string(payload, "name"));
-
-        /*
-         * And so is the computer, for a sharper reason than the name.
-         * The designer cannot name a disk image, so a VM it chose by
-         * itself never provisions -- it refuses naming computer.vm.image,
-         * a setting nothing in the design ever set. The client collects
-         * that above the Design button; this is where it arrives.
-         */
-        if (clawt_ipc_payload_string(payload, "computer") != NULL) {
-            g_autoptr(GHashTable) settings =
-                g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
-                                      g_free);
-            static const struct {
-                const gchar *member;
-                const gchar *key;
-            } carried[] = {
-                { "image",     "computer.container.image" },
-                { "vm_image",  "computer.vm.image" },
-                { "vm_cpus",   "computer.vm.cpus" },
-                { "vm_memory", "computer.vm.memory_mb" },
-                { "vm_disk",   "computer.vm.disk_gb" },
-                /*
-                 * The team is a choice made on the form, and the model
-                 * has no way to know which teams exist -- so it is
-                 * carried through rather than left for the designer to
-                 * guess at, the same as the disk image.
-                 */
-                { "team",      "team" },
-                { NULL, NULL }
-            };
-            gsize c;
-
-            for (c = 0; carried[c].member != NULL; c++) {
-                const gchar *value =
-                    clawt_ipc_payload_string(payload, carried[c].member);
-
-                if (value != NULL && *value != '\0')
-                    g_hash_table_insert(settings, g_strdup(carried[c].key),
-                                        g_strdup(value));
-            }
-
-            clawt_agent_designer_pin_computer(
-                designer, clawt_ipc_payload_string(payload, "computer"),
-                settings);
-        }
-
-        /*
-         * The model that designs is chosen per request, falling back to
-         * ai_assist.  The one that drafts an agent and the one that then
-         * runs it have no reason to be the same: a person will often
-         * want their best model for the first and a cheap one for the
-         * second.
-         */
-        if (clawt_ipc_payload_string(payload, "provider") != NULL) {
-            if (!clawt_config_get_boolean(self->config, "ai_assist.enabled"))
-                return clawt_ipc_error_new(
-                    request, CLAWT_ERROR_NOT_SUPPORTED,
-                    "AI-assisted agent creation is turned off; set "
-                    "ai_assist.enabled: true");
-
-            if (!clawt_agent_designer_set_provider_by_name(
-                    designer,
-                    clawt_ipc_payload_string(payload, "provider"),
-                    clawt_ipc_payload_string(payload, "model"), &error))
-                return clawt_ipc_error_new(request, error->code,
-                                           error->message);
-        } else if (!clawt_agent_designer_use_configured_provider(designer,
-                                                                 &error)) {
-            return clawt_ipc_error_new(request, error->code, error->message);
-        }
-
-        draft = clawt_agent_designer_design(designer, brief->str, NULL,
-                                            &error);
-
-        if (draft == NULL)
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        preview = clawt_agent_designer_preview(designer);
-
-        /*
-         * Kept so design.commit creates exactly what was reviewed.
-         * Bounded, because a client that designs and walks away should
-         * not grow the daemon without limit.
-         */
-        draft_id = clawt_generate_token(NULL);
-
-        if (draft_id == NULL)
-            draft_id = g_strdup(g_hash_table_lookup(draft, "id"));
-
-        if (g_hash_table_size(self->drafts) >= MAX_PENDING_DRAFTS) {
-            GHashTableIter iter;
-            gpointer oldest = NULL;
-
-            g_hash_table_iter_init(&iter, self->drafts);
-
-            if (g_hash_table_iter_next(&iter, &oldest, NULL))
-                g_hash_table_remove(self->drafts, oldest);
-        }
-
-        g_hash_table_insert(self->drafts, g_strdup(draft_id),
-                            g_object_ref(designer));
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "draft");
-        json_builder_add_string_value(builder, draft_id);
-        json_builder_set_member_name(builder, "yaml");
-        json_builder_add_string_value(builder, preview);
-        json_builder_set_member_name(builder, "id");
-        json_builder_add_string_value(builder,
-                                      g_hash_table_lookup(draft, "id"));
-
-        /* The org files the model wrote, so a client can show them. */
-        {
-            GHashTable *files = clawt_agent_designer_get_files(designer);
-            g_autoptr(GList) names = g_hash_table_get_keys(files);
-            GList *f;
-
-            names = g_list_sort(names, (GCompareFunc)g_strcmp0);
-
-            json_builder_set_member_name(builder, "files");
-            json_builder_begin_array(builder);
-
-            for (f = names; f != NULL; f = f->next) {
-                json_builder_begin_object(builder);
-                json_builder_set_member_name(builder, "name");
-                json_builder_add_string_value(builder, f->data);
-                json_builder_set_member_name(builder, "content");
-                json_builder_add_string_value(
-                    builder, g_hash_table_lookup(files, f->data));
-                json_builder_end_object(builder);
-            }
-
-            json_builder_end_array(builder);
-        }
-
-        json_builder_set_member_name(builder, "committed");
-        json_builder_add_boolean_value(builder, FALSE);
-        json_builder_set_member_name(builder, "notes");
-        json_builder_add_string_value(
-            builder, clawt_agent_designer_get_transcript(designer));
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "design.commit") == 0) {
-        const gchar *draft_id = clawt_ipc_payload_string(payload, "draft");
-        ClawtAgentDesigner *designer = (draft_id != NULL)
-            ? g_hash_table_lookup(self->drafts, draft_id) : NULL;
-        ClawtAgentConfig *created;
-
-        /*
-         * Creates the design that was reviewed, rather than asking the
-         * model again.  A second run is a fresh conversation and would
-         * produce something else -- which makes the preview a
-         * demonstration rather than a decision.
-         */
-        if (designer == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such draft; design it again");
-
-        created = clawt_agent_designer_commit(designer, &error);
-
-        if (created == NULL) {
-            g_hash_table_remove(self->drafts, draft_id);
-            return clawt_ipc_error_new(request, error->code, error->message);
-        }
-
-        if (!clawt_config_save(self->config, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        clawt_agent_manager_load(self->agents, NULL);
-
-        {
-            g_autoptr(GPtrArray) refusals = render_refusals_new();
-
-            render_all_agents_into(self, refusals);
-
-            json_builder_begin_object(builder);
-            add_render_refusals(builder, refusals);
-        }
-
-        json_builder_set_member_name(builder, "id");
-        json_builder_add_string_value(builder,
-                                      clawt_agent_config_get_id(created));
-        json_builder_set_member_name(builder, "committed");
-        json_builder_add_boolean_value(builder, TRUE);
-
-        /*
-         * The same start agent.create does, and for the same reason: an
-         * agent designed and committed is an agent somebody wanted. The
-         * designer's own comment says it commits "the same path as
-         * creating an agent by hand", which was true of the config call
-         * and had already stopped being true of the validation around
-         * it once before.
-         */
-        if (clawt_ipc_payload_boolean(payload, "start", TRUE)) {
-            const gchar *created_id = clawt_agent_config_get_id(created);
-            g_autoptr(GError) start_error = NULL;
-            gboolean started = clawt_daemon_start_agent(self, created_id,
-                                                        &start_error);
-
-            json_builder_set_member_name(builder, "started");
-            json_builder_add_boolean_value(builder, started);
-
-            if (!started && start_error != NULL) {
-                json_builder_set_member_name(builder, "start_error");
-                json_builder_add_string_value(builder, start_error->message);
-            }
-        }
-
-        json_builder_end_object(builder);
-
-        g_hash_table_remove(self->drafts, draft_id);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "design.discard") == 0) {
-        const gchar *draft_id = clawt_ipc_payload_string(payload, "draft");
-
-        if (draft_id != NULL)
-            g_hash_table_remove(self->drafts, draft_id);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "discarded");
-        json_builder_add_boolean_value(builder, TRUE);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "image.list") == 0) {
-        const ClawtImageInfo *catalog;
-        g_auto(GStrv) configured = NULL;
-        gsize n_images = 0;
-        gsize i;
-
-        catalog = clawt_image_catalog_get(&n_images);
-        configured = clawt_config_get_string_list(self->config,
-                                                  "defaults.container_images");
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "default");
-        json_builder_add_string_value(
-            builder, clawt_config_get_string(self->config,
-                                             "defaults.container_image"));
-
-        /*
-         * Nothing here is a restriction: any reference podman can pull
-         * is valid.  Said explicitly so a client offers a way to type
-         * one that is not listed rather than treating this as a menu.
-         */
-        json_builder_set_member_name(builder, "open_ended");
-        json_builder_add_boolean_value(builder, TRUE);
-
-        json_builder_set_member_name(builder, "images");
-        json_builder_begin_array(builder);
-
-        /*
-         * The user's own first.  A list where the images they added sit
-         * below a dozen they will never pick is one they scroll past.
-         */
-        for (i = 0; configured != NULL && configured[i] != NULL; i++) {
-            const gchar *entry = configured[i];
-            const gchar *separator = strstr(entry, " -- ");
-            g_autofree gchar *reference = NULL;
-
-            if (*entry == '\0')
-                continue;
-
-            reference = (separator != NULL)
-                        ? g_strndup(entry, separator - entry)
-                        : g_strdup(entry);
-            g_strstrip(reference);
-
-            if (*reference == '\0')
-                continue;
-
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "reference");
-            json_builder_add_string_value(builder, reference);
-
-            /*
-             * The last path component as the label.  A registry-and-org
-             * prefix is the same on all of a user's own images, so a
-             * list showing the whole reference truncates to
-             * "registry.exampl..." for every one of them and
-             * distinguishes none.  The full reference is still on the
-             * row's subtitle once selected.
-             */
-            json_builder_set_member_name(builder, "label");
-            {
-                const gchar *slash = strrchr(reference, '/');
-
-                json_builder_add_string_value(
-                    builder, (slash != NULL && slash[1] != '\0') ? slash + 1
-                                                                 : reference);
-            }
-
-            if (separator != NULL) {
-                json_builder_set_member_name(builder, "note");
-                json_builder_add_string_value(builder, separator + 4);
-            }
-
-            json_builder_set_member_name(builder, "group");
-            json_builder_add_string_value(builder, "Yours");
-            json_builder_end_object(builder);
-        }
-
-        for (i = 0; i < n_images; i++) {
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "reference");
-            json_builder_add_string_value(builder, catalog[i].reference);
-            json_builder_set_member_name(builder, "label");
-            json_builder_add_string_value(builder, catalog[i].label);
-
-            if (catalog[i].note != NULL) {
-                json_builder_set_member_name(builder, "note");
-                json_builder_add_string_value(builder, catalog[i].note);
-            }
-
-            json_builder_set_member_name(builder, "group");
-            json_builder_add_string_value(builder, catalog[i].group);
-            json_builder_end_object(builder);
-        }
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "tool.rpc") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        const gchar *token = clawt_ipc_payload_string(payload, "token");
-        JsonNode *rpc = (payload != NULL &&
-                         json_object_has_member(payload, "request"))
-                        ? json_object_get_member(payload, "request") : NULL;
-        g_autoptr(JsonNode) rpc_response = NULL;
-
-        /*
-         * The orchestration tools, reachable over IPC.
-         *
-         * They were served only over the agent's link, as mcp.request
-         * frames -- which assumed something on the agent side would
-         * relay them into its AI session. Nothing did, and nothing
-         * could: an agent runs a CLI whose only way of being given
-         * tools is an --mcp-config pointing at a real MCP server. This
-         * is the verb clawtilla-mcp-server speaks so that server can
-         * exist.
-         */
-        if (agent_id == NULL || rpc == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "agent and request are both required");
-
-        /*
-         * The agent's own token, checked the same way the link checks
-         * it. The socket's permissions are the first line; this stops
-         * one agent on this machine calling tools as another.
-         */
-        if (!authenticate_agent(agent_id, token, self))
-            return clawt_ipc_error_new(request, CLAWT_ERROR_AUTH,
-                                       "that is not this agent's token");
-
-        /*
-         * computer.exec waits for a command the agent chose, so it is
-         * answered from a worker thread rather than from here.  A
-         * handler that waited would hold the daemon's main context for
-         * the length of that command -- a build, a test run, something
-         * reading from a terminal that is not there -- and while it did,
-         * every other agent's link, every client, the event stream and
-         * the daemon's own SIGTERM would go unserved.  That is the
-         * documented rule about IPC handlers and the network, met on the
-         * one path where the wait is not a round trip but an arbitrary
-         * command.
-         */
-        if (clawt_mcp_tools_call_defers(self->mcp_tools, agent_id, rpc)) {
-            ClawtIpcPending *pending =
-                clawt_ipc_server_defer(self->ipc_server, request);
-
-            if (pending == NULL)
-                return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
-                                           "this request cannot be "
-                                           "answered later");
-
-            clawt_mcp_tools_call_async(self->mcp_tools, agent_id, rpc,
-                                       on_tool_rpc_finished, pending);
-
-            return NULL;
-        }
-
-        rpc_response = clawt_mcp_tools_call(self->mcp_tools, agent_id, rpc);
-
-        if (rpc_response == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
-                                       "the tool produced no response");
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "response");
-        json_builder_add_value(builder, json_node_ref(rpc_response));
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "model.list") == 0) {
-        const ClawtProviderInfo *catalog;
-        gboolean refresh = clawt_ipc_payload_boolean(payload, "refresh",
-                                                      FALSE);
-        gsize n_providers = 0;
-        gsize i;
-
-        catalog = clawt_model_catalog_get(&n_providers);
-
-        /*
-         * A stale cache is refreshed behind this request rather than
-         * during it. The caller gets whatever is known now; the next
-         * one gets the fresh answer.
-         */
-        if (refresh &&
-            (self->model_cache_at == 0 ||
-             g_get_monotonic_time() - self->model_cache_at >
-                 (gint64)MODEL_CACHE_TTL_SECONDS * G_USEC_PER_SEC))
-            warm_model_cache(self);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "providers");
-        json_builder_begin_array(builder);
-
-        for (i = 0; i < n_providers; i++) {
-            gsize j;
-
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "id");
-            json_builder_add_string_value(builder, catalog[i].id);
-            json_builder_set_member_name(builder, "label");
-            json_builder_add_string_value(builder, catalog[i].label);
-
-            if (catalog[i].note != NULL) {
-                json_builder_set_member_name(builder, "note");
-                json_builder_add_string_value(builder, catalog[i].note);
-            }
-
-            /*
-             * Passed on so a client knows to offer a way to type a name
-             * that is not listed.  The catalogue is curated and goes
-             * stale; nothing validates against it.
-             */
-            json_builder_set_member_name(builder, "open_ended");
-            json_builder_add_boolean_value(builder, catalog[i].open_ended);
-
-            /*
-             * Whether libreclaw can actually run an agent on this
-             * provider.  Its provider table is command-line only and
-             * rewrites anything else to claude-code with a warning, so a
-             * client that offers every provider here lets someone pick
-             * OpenAI and quietly get Claude Code with "gpt-4o" in the
-             * model field.
-             */
-            json_builder_set_member_name(builder, "agent");
-            json_builder_add_boolean_value(builder, catalog[i].agent);
-
-            /*
-             * Whether this provider can be given tools, which decides
-             * whether it can design an agent.  A client that offers
-             * every provider for designing offers ones that will be
-             * refused after the person has filled in the whole form.
-             */
-            json_builder_set_member_name(builder, "tools");
-            json_builder_add_boolean_value(builder, catalog[i].tools);
-
-            json_builder_set_member_name(builder, "models");
-            json_builder_begin_array(builder);
-
-            /*
-             * The provider's own list, when asked for and reachable.
-             *
-             * The hardcoded table goes stale -- it offered grok-3 and
-             * grok-4 well after 4.5 and 4.6 had shipped -- so a person
-             * choosing a model should be shown what the provider
-             * actually runs. Falls back to the table rather than
-             * failing: no key, or no network, is not a reason to offer
-             * nothing.
-             */
-            if (refresh && catalog[i].tools) {
-                /*
-                 * From the cache, never by asking now.  Asking here made
-                 * the request take as long as the slowest provider, and
-                 * both the new-agent dialog and the agent inspector ask
-                 * on every build -- so pressing + or clicking an agent
-                 * appeared to hang.
-                 */
-                GStrv live = g_hash_table_lookup(self->model_cache,
-                                                  catalog[i].id);
-
-                if (live != NULL && live[0] != NULL) {
-                    gsize k;
-
-                    for (k = 0; live[k] != NULL; k++) {
-                        json_builder_begin_object(builder);
-                        json_builder_set_member_name(builder, "id");
-                        json_builder_add_string_value(builder, live[k]);
-                        json_builder_set_member_name(builder, "label");
-                        json_builder_add_string_value(builder, live[k]);
-                        json_builder_end_object(builder);
-                    }
-
-                    json_builder_end_array(builder);
-                    json_builder_set_member_name(builder, "live");
-                    json_builder_add_boolean_value(builder, TRUE);
-                    json_builder_end_object(builder);
-                    continue;
-                }
-            }
-
-            for (j = 0; j < catalog[i].n_models; j++) {
-                json_builder_begin_object(builder);
-                json_builder_set_member_name(builder, "id");
-                json_builder_add_string_value(builder,
-                                              catalog[i].models[j].id);
-                json_builder_set_member_name(builder, "label");
-                json_builder_add_string_value(builder,
-                                              catalog[i].models[j].label);
-
-                if (catalog[i].models[j].note != NULL) {
-                    json_builder_set_member_name(builder, "note");
-                    json_builder_add_string_value(
-                        builder, catalog[i].models[j].note);
-                }
-
-                json_builder_end_object(builder);
-            }
-
-            json_builder_end_array(builder);
-            json_builder_end_object(builder);
-        }
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "connector.catalog") == 0) {
-        GPtrArray *catalog = daemon_catalog(self);
-        guint i;
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "connectors");
-        json_builder_begin_array(builder);
-
-        for (i = 0; catalog != NULL && i < catalog->len; i++) {
-            const ClawtConnectorInfo *info = g_ptr_array_index(catalog, i);
-
-            json_builder_begin_object(builder);
-            add_string_member(builder, "id", info->id);
-            add_string_member(builder, "name", info->name);
-            add_string_member(builder, "summary", info->summary);
-            add_string_member(builder, "category", info->category);
-            add_string_member(builder, "auth",
-                              clawt_enum_to_nick(CLAWT_TYPE_CONNECTOR_AUTH,
-                                                 (gint)info->auth));
-            add_string_member(builder, "scopes", info->scopes);
-            add_string_member(builder, "client_id_help", info->client_id_help);
-            add_string_member(builder, "docs_url", info->docs_url);
-            add_string_member(builder, "default_instance",
-                              info->default_instance);
-
-            /*
-             * Whether a server is known matters as much as the auth
-             * does: a connector with neither this nor a `command` in
-             * the integration authenticates perfectly and hands the
-             * agent nothing.
-             */
-            json_builder_set_member_name(builder, "has_server");
-            json_builder_add_boolean_value(builder,
-                                           info->server_command != NULL ||
-                                           info->server_url != NULL);
-
-            json_builder_end_object(builder);
-        }
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "connector.list") == 0) {
-        GPtrArray *integrations = clawt_config_get_integrations(self->config);
-        guint i;
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "connectors");
-        json_builder_begin_array(builder);
-
-        for (i = 0; integrations != NULL && i < integrations->len; i++) {
-            ClawtIntegrationConfig *instance =
-                g_ptr_array_index(integrations, i);
-            const gchar *token_file;
-            g_autoptr(ClawtOauthToken) token = NULL;
-
-            if (g_strcmp0(clawt_integration_config_get_type_id(instance),
-                          "connector") != 0)
-                continue;
-
-            json_builder_begin_object(builder);
-            add_string_member(builder, "name",
-                              clawt_integration_config_get_name(instance));
-            add_string_member(builder, "provider",
-                              clawt_integration_config_get_string(
-                                  instance, NULL, "provider"));
-            add_string_member(builder, "account",
-                              clawt_integration_config_get_string(
-                                  instance, NULL, "account"));
-            add_string_member(builder, "scope",
-                              clawt_enum_to_nick(
-                                  CLAWT_TYPE_SCOPE,
-                                  (gint)clawt_integration_config_get_scope(
-                                      instance)));
-
-            json_builder_set_member_name(builder, "enabled");
-            json_builder_add_boolean_value(
-                builder, clawt_integration_config_get_enabled(instance));
-
-            token_file = clawt_integration_config_get_string(instance, NULL,
-                                                             "token_file");
-
-            if (token_file != NULL)
-                token = clawt_oauth_token_load(token_file, NULL);
-
-            /*
-             * Everything about the credential except the credential.
-             * Whether it exists, when it stops working and whether it
-             * can renew itself are the three things somebody looking at
-             * this list needs; the value is the one thing that must
-             * never come back over IPC.
-             */
-            json_builder_set_member_name(builder, "connected");
-            json_builder_add_boolean_value(builder, token != NULL);
-
-            json_builder_set_member_name(builder, "expires_at");
-            json_builder_add_int_value(builder,
-                                       token != NULL ? token->expires_at : 0);
-
-            json_builder_set_member_name(builder, "renewable");
-            json_builder_add_boolean_value(
-                builder, token != NULL && token->refresh_token != NULL);
-
-            if (token != NULL)
-                add_string_member(builder, "granted_scopes", token->scopes);
-
-            json_builder_end_object(builder);
-        }
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "connector.begin") == 0) {
-        const gchar *name = clawt_ipc_payload_string(payload, "name");
-        const ClawtConnectorInfo *connector = NULL;
-        g_autoptr(ClawtIntegrationBinding) binding = NULL;
-        g_autofree gchar *auth_url = NULL;
-        g_autofree gchar *token_url = NULL;
-        const gchar *client_id;
-        const gchar *instance_url;
-        const gchar *scopes;
-        ConnectorFlow *flow;
-
-        sweep_connector_flows(self);
-
-        binding = connector_binding(self, name, &connector, &error);
-
-        if (binding == NULL)
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        if (connector->auth == CLAWT_CONNECTOR_AUTH_API_KEY ||
-            connector->auth == CLAWT_CONNECTOR_AUTH_NONE)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
-                                       "this connector takes a key rather "
-                                       "than an authorization; use "
-                                       "`clawtilla connector key`");
-
-        client_id = clawt_integration_binding_get_string(binding, "client_id");
-
-        if (client_id == NULL)
-            return clawt_ipc_error_new(
-                request, CLAWT_ERROR_CONFIG_INVALID,
-                connector->client_id_help != NULL
-                ? connector->client_id_help
-                : "this connector needs a client_id you registered with "
-                  "the provider");
-
-        instance_url = clawt_integration_binding_get_string(binding,
-                                                            "instance");
-        auth_url = clawt_connector_resolve_url(connector, connector->auth_url,
-                                               instance_url);
-        token_url = clawt_connector_resolve_url(connector,
-                                                connector->token_url,
-                                                instance_url);
-
-        if (auth_url == NULL || token_url == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_CONFIG_INVALID,
-                                       "this connector has no authorization "
-                                       "endpoints");
-
-        scopes = clawt_integration_binding_get_string(binding, "scopes");
-
-        if (scopes == NULL)
-            scopes = connector->scopes;
-
-        flow = g_new0(ConnectorFlow, 1);
-        flow->daemon = self;
-        flow->id = g_uuid_string_random();
-        flow->name = g_strdup(name);
-        flow->token_url = g_steal_pointer(&token_url);
-        flow->client_id = g_strdup(client_id);
-        flow->client_secret = connector_client_secret(self, binding);
-
-        g_hash_table_insert(self->connector_flows, g_strdup(flow->id), flow);
-
-        if (connector->auth == CLAWT_CONNECTOR_AUTH_DEVICE) {
-            BeginWait *begin = g_new0(BeginWait, 1);
-
-            begin->flow = flow;
-            begin->pending = clawt_ipc_server_defer(self->ipc_server, request);
-
-            if (begin->pending == NULL) {
-                g_free(begin);
-                g_hash_table_remove(self->connector_flows, flow->id);
-
-                return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
-                                           "this request cannot be answered "
-                                           "later");
-            }
-
-            /*
-             * Deferred because the codes come from the provider, and
-             * there is nothing to show anybody until they do.  The poll
-             * that follows is *not* deferred onto this request -- it
-             * takes as long as a person takes, which is what
-             * connector.await is for.
-             */
-            clawt_oauth_device_begin_async(auth_url, client_id, scopes, NULL,
-                                           on_connector_begun, begin);
-            return NULL;
-        }
-
-        /* The authorization-code flow, for providers with no device grant. */
-        {
-            g_autofree gchar *state = clawt_oauth_pkce_verifier();
-            g_autofree gchar *challenge = NULL;
-            g_autofree gchar *url = NULL;
-            gint64 port = clawt_config_get_int(self->config,
-                                               "connectors.redirect_port");
-
-            flow->verifier = clawt_oauth_pkce_verifier();
-
-            if (flow->verifier == NULL || state == NULL) {
-                g_hash_table_remove(self->connector_flows, flow->id);
-
-                return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
-                                           "this machine has no usable "
-                                           "randomness, and a guessable "
-                                           "verifier is no protection at "
-                                           "all");
-            }
-
-            flow->redirect_uri =
-                g_strdup_printf("http://127.0.0.1:%d/callback", (gint)port);
-
-            challenge = clawt_oauth_pkce_challenge(flow->verifier);
-            url = clawt_oauth_authorize_url(auth_url, client_id,
-                                            flow->redirect_uri, scopes, state,
-                                            challenge);
-
-            /*
-             * The listener goes up before the URL is handed out.  A
-             * person who is quick would otherwise be redirected to a
-             * port nothing is listening on, and the browser would show
-             * a connection refused for an authorization that in fact
-             * succeeded.
-             */
-            clawt_oauth_await_redirect_async((guint)port, state, 600, NULL,
-                                             on_connector_redirected, flow);
-
-            json_builder_begin_object(builder);
-            add_string_member(builder, "flow", flow->id);
-            add_string_member(builder, "method", "pkce");
-            add_string_member(builder, "authorize_url", url);
-            json_builder_end_object(builder);
-
-            return clawt_ipc_response_new(request,
-                                          json_builder_get_root(builder));
-        }
-    }
-
-    if (g_strcmp0(kind, "connector.await") == 0) {
-        const gchar *id = clawt_ipc_payload_string(payload, "flow");
-        ConnectorFlow *flow = (id != NULL)
-            ? g_hash_table_lookup(self->connector_flows, id) : NULL;
-
-        if (flow == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "there is no connection attempt with "
-                                       "that id");
-
-        /*
-         * A flow that finished before anybody asked keeps its answer.
-         * Somebody who started an authorization, walked away and came
-         * back should not find that the result was delivered to nobody.
-         */
-        if (flow->settled) {
-            gboolean ok = flow->ok;
-            g_autofree gchar *message = g_strdup(flow->message);
-            g_autofree gchar *flow_name = g_strdup(flow->name);
-
-            g_hash_table_remove(self->connector_flows, id);
-
-            if (!ok)
-                return clawt_ipc_error_new(request, CLAWT_ERROR_AUTH,
-                                           message != NULL ? message
-                                           : "the flow did not complete");
-
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "connected");
-            json_builder_add_boolean_value(builder, TRUE);
-            add_string_member(builder, "name", flow_name);
-            json_builder_end_object(builder);
-
-            return clawt_ipc_response_new(request,
-                                          json_builder_get_root(builder));
-        }
-
-        flow->waiter = clawt_ipc_server_defer(self->ipc_server, request);
-
-        if (flow->waiter == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
-                                       "this request cannot be answered "
-                                       "later");
-
-        return NULL;
-    }
-
-    if (g_strcmp0(kind, "connector.key") == 0) {
-        const gchar *name = clawt_ipc_payload_string(payload, "name");
-        const gchar *key = clawt_ipc_payload_string(payload, "key");
-        const ClawtConnectorInfo *connector = NULL;
-        g_autoptr(ClawtIntegrationBinding) binding = NULL;
-        g_autoptr(ClawtOauthToken) token = NULL;
-        g_autofree gchar *secrets_dir = NULL;
-        g_autofree gchar *path = NULL;
-
-        binding = connector_binding(self, name, &connector, &error);
-
-        if (binding == NULL)
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        if (key == NULL || *key == '\0')
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "no key was given");
-
-        /*
-         * Accepted for any connector, not only the api_key ones.  A
-         * personal access token is a perfectly good credential for
-         * GitHub or GitLab, and taking one here means somebody who
-         * wants an agent reading their repositories does not first have
-         * to go and register an OAuth application.
-         *
-         * It is stored in the same shape as a negotiated token, so
-         * everything downstream -- the relay, the health check, the
-         * list -- has one thing to read rather than two.
-         */
-        token = g_new0(ClawtOauthToken, 1);
-        token->access_token = g_strdup(key);
-
-        if (!store_connector_token(self, name, token, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        clawt_event_bus_emit(self->bus, "integration.changed", name);
-
-        secrets_dir = clawt_config_get_path_value(self->config, "secrets.dir");
-        path = clawt_connector_token_path(secrets_dir, name);
-
-        /*
-         * The path, never the value.  Handing the key back to the client
-         * that sent it would put a live credential into the memory of
-         * every client that asked.
-         */
-        json_builder_begin_object(builder);
-        add_string_member(builder, "token_file", path);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "connector.refresh") == 0) {
-        const gchar *name = clawt_ipc_payload_string(payload, "name");
-        const ClawtConnectorInfo *connector = NULL;
-        g_autoptr(ClawtIntegrationBinding) binding = NULL;
-        g_autoptr(ClawtOauthToken) token = NULL;
-        g_autofree gchar *token_url = NULL;
-        const gchar *token_file;
-        const gchar *client_id;
-        RefreshJob *job;
-
-        binding = connector_binding(self, name, &connector, &error);
-
-        if (binding == NULL)
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        token_file = clawt_integration_binding_get_string(binding,
-                                                          "token_file");
-        token = (token_file != NULL) ? clawt_oauth_token_load(token_file, NULL)
-                                     : NULL;
-
-        if (token == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_AUTH,
-                                       "it is not connected yet");
-
-        if (token->refresh_token == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
-                                       "the provider issued nothing to renew "
-                                       "with; connect again instead");
-
-        client_id = clawt_integration_binding_get_string(binding, "client_id");
-        token_url = clawt_connector_resolve_url(
-            connector, connector->token_url,
-            clawt_integration_binding_get_string(binding, "instance"));
-
-        if (client_id == NULL || token_url == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_CONFIG_INVALID,
-                                       "there is nowhere to renew it");
-
-        job = g_new0(RefreshJob, 1);
-        job->daemon = self;
-        job->name = g_strdup(name);
-        job->pending = clawt_ipc_server_defer(self->ipc_server, request);
-
-        if (job->pending == NULL) {
-            refresh_job_free(job);
-
-            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
-                                       "this request cannot be answered "
-                                       "later");
-        }
-
-        {
-            g_autofree gchar *secret = connector_client_secret(self, binding);
-
-            clawt_oauth_refresh_async(token_url, client_id, secret,
-                                      token->refresh_token, NULL,
-                                      on_connector_refreshed, job);
-        }
-
-        return NULL;
-    }
-
-    if (g_strcmp0(kind, "connector.revoke") == 0) {
-        const gchar *name = clawt_ipc_payload_string(payload, "name");
-        const ClawtConnectorInfo *connector = NULL;
-        g_autoptr(ClawtIntegrationBinding) binding = NULL;
-        g_autoptr(ClawtOauthToken) token = NULL;
-        g_autofree gchar *revoke_url = NULL;
-        const gchar *token_file;
-
-        binding = connector_binding(self, name, &connector, &error);
-
-        if (binding == NULL)
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        token_file = clawt_integration_binding_get_string(binding,
-                                                          "token_file");
-        token = (token_file != NULL) ? clawt_oauth_token_load(token_file, NULL)
-                                     : NULL;
-
-        revoke_url = clawt_connector_resolve_url(
-            connector, connector->revoke_url,
-            clawt_integration_binding_get_string(binding, "instance"));
-
-        /*
-         * The local copy goes whatever the provider says.  Somebody who
-         * asked to revoke wants the fleet to stop using it now, and a
-         * provider that is unreachable must not leave an agent holding
-         * a working credential until the network comes back.
-         */
-        if (!forget_connector_token(self, name, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        clawt_event_bus_emit(self->bus, "integration.changed", name);
-
-        if (token != NULL && revoke_url != NULL) {
-            RevokeJob *job = g_new0(RevokeJob, 1);
-
-            job->pending = clawt_ipc_server_defer(self->ipc_server, request);
-
-            if (job->pending != NULL) {
-                job->name = g_strdup(name);
-
-                clawt_oauth_revoke_async(
-                    revoke_url, clawt_integration_binding_get_string(
-                                    binding, "client_id"),
-                    NULL, token->access_token, NULL, on_connector_revoked,
-                    job);
-
-                return NULL;
-            }
-
-            g_free(job);
-        }
-
-        /*
-         * Says plainly when the provider was not told.  A person who
-         * believes a token is dead and finds it working months later
-         * has been misled by this reply, and the fix -- their settings
-         * page -- is somewhere only they can go.
-         */
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "forgotten");
-        json_builder_add_boolean_value(builder, TRUE);
-        json_builder_set_member_name(builder, "told_provider");
-        json_builder_add_boolean_value(builder, FALSE);
-
-        if (token != NULL && revoke_url == NULL)
-            add_string_member(builder, "note",
-                              "this provider offers no revocation endpoint; "
-                              "the credential is gone from here but remains "
-                              "valid until you withdraw it in their "
-                              "settings");
-
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "integration.types") == 0) {
-        const ClawtIntegrationInfo *info;
-        gsize n_integrations = 0;
-        gsize i;
-
-        info = clawt_integration_list(&n_integrations);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "types");
-        json_builder_begin_array(builder);
-
-        for (i = 0; i < n_integrations; i++) {
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "id");
-            json_builder_add_string_value(builder, info[i].id);
-            json_builder_set_member_name(builder, "kind");
-            json_builder_add_string_value(
-                builder, clawt_enum_to_nick(CLAWT_TYPE_INTEGRATION_KIND,
-                                            (gint)info[i].kind));
-            json_builder_set_member_name(builder, "summary");
-            json_builder_add_string_value(builder, info[i].summary);
-            json_builder_set_member_name(builder, "one_per_agent");
-            json_builder_add_boolean_value(builder, info[i].one_per_agent);
-            json_builder_set_member_name(builder, "one_per_fleet");
-            json_builder_add_boolean_value(builder, info[i].one_per_fleet);
-
-            add_key_array(builder, "required_keys", info[i].required_keys);
-            add_key_array(builder, "credential_keys", info[i].credential_keys);
-            add_key_array(builder, "identity_keys", info[i].identity_keys);
-
-            json_builder_end_object(builder);
-        }
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "integration.list") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        ClawtAgentConfig *agent_config = (agent_id != NULL)
-            ? clawt_config_get_agent(self->config, agent_id) : NULL;
-        GPtrArray *instances = clawt_config_get_integrations(self->config);
-        g_autoptr(GPtrArray) warnings = NULL;
-        guint i;
-
-        if (agent_id != NULL && agent_config == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such agent");
-
-        json_builder_begin_object(builder);
-
-        /*
-         * The shared instances, whatever was asked for.  A settings page
-         * shows all of them; an agent inspector shows which of them reach
-         * that agent, which is the `covers` flag rather than a filter --
-         * the dialog needs the ones it could turn on as well as the ones
-         * that are on.
-         */
-        json_builder_set_member_name(builder, "integrations");
-        json_builder_begin_array(builder);
-
-        for (i = 0; instances != NULL && i < instances->len; i++) {
-            ClawtIntegrationConfig *instance =
-                g_ptr_array_index(instances, i);
-
-            add_integration_object(builder, self->config, instance, agent_id);
-        }
-
-        json_builder_end_array(builder);
-
-        /*
-         * And what one agent actually has, inline blocks included.  A
-         * client cannot work this out from the list above, because an
-         * agent's own `integrations:` block is not an instance and never
-         * appears there.
-         */
-        if (agent_config != NULL) {
-            g_autoptr(GPtrArray) bindings =
-                clawt_integration_resolve_for_agent(self->config,
-                                                    agent_config);
-
-            json_builder_set_member_name(builder, "bindings");
-            json_builder_begin_array(builder);
-
-            for (i = 0; i < bindings->len; i++)
-                add_binding_object(builder,
-                                   g_ptr_array_index(bindings, i));
-
-            json_builder_end_array(builder);
-        }
-
-        clawt_integration_validate_fleet(self->config, &warnings);
-
-        json_builder_set_member_name(builder, "warnings");
-        json_builder_begin_array(builder);
-
-        for (i = 0; warnings != NULL && i < warnings->len; i++)
-            json_builder_add_string_value(builder,
-                                          g_ptr_array_index(warnings, i));
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "integration.add") == 0) {
-        const gchar *name = clawt_ipc_payload_string(payload, "name");
-        const gchar *type_id = clawt_ipc_payload_string(payload, "type");
-        ClawtIntegrationConfig *instance;
-
-        instance = clawt_config_add_integration(self->config, name, type_id,
-                                                &error);
-
-        if (instance == NULL)
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        if (clawt_integration_find(type_id) == NULL) {
-            /*
-             * Rolled back rather than left as a shadow.  A shadow agent
-             * earns its keep because the config was already on disk when
-             * we met it; here somebody has just typed a type that does
-             * not exist, and the honest answer is to say so and change
-             * nothing.
-             */
-            clawt_config_remove_integration(self->config, name);
-
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "there is no integration type called "
-                                       "that");
-        }
-
-        if (!apply_integration_fields(instance, payload, &error)) {
-            clawt_config_remove_integration(self->config, name);
-            return clawt_ipc_error_new(request, error->code, error->message);
-        }
-
-        if (!clawt_config_save(self->config, &error)) {
-            clawt_config_remove_integration(self->config, name);
-            return clawt_ipc_error_new(request, error->code, error->message);
-        }
-
-        if (!clawt_daemon_reload(self, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        clawt_event_bus_emit(self->bus, "integration.changed", name);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "name");
-        json_builder_add_string_value(builder, name);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "integration.update") == 0) {
-        const gchar *name = clawt_ipc_payload_string(payload, "name");
-        ClawtIntegrationConfig *instance = (name != NULL)
-            ? clawt_config_get_integration(self->config, name) : NULL;
-
-        if (instance == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "there is no integration called that");
-
-        if (!apply_integration_fields(instance, payload, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        if (!clawt_config_save(self->config, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        if (!clawt_daemon_reload(self, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        clawt_event_bus_emit(self->bus, "integration.changed", name);
-
-        return clawt_ipc_response_new(request, NULL);
-    }
-
-    if (g_strcmp0(kind, "integration.remove") == 0) {
-        const gchar *name = clawt_ipc_payload_string(payload, "name");
-
-        if (name == NULL ||
-            !clawt_config_remove_integration(self->config, name))
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "there is no integration called that");
-
-        if (!clawt_config_save(self->config, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        if (!clawt_daemon_reload(self, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        /*
-         * The credential file it wrote is deliberately left where it is.
-         * Removing an integration is a config change, and taking a token
-         * off disk as a side effect of it is the kind of helpfulness that
-         * is only noticed when it was wrong.
-         */
-        clawt_event_bus_emit(self->bus, "integration.changed", name);
-
-        return clawt_ipc_response_new(request, NULL);
-    }
-
-    if (g_strcmp0(kind, "integration.health") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        const gchar *name = clawt_ipc_payload_string(payload, "integration");
-        ClawtAgentConfig *agent_config = (agent_id != NULL)
-            ? clawt_config_get_agent(self->config, agent_id) : NULL;
-        g_autoptr(GPtrArray) bindings = NULL;
-        HealthRun *run;
-        guint i;
-
-        if (agent_config == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such agent");
-
-        bindings = clawt_integration_resolve_for_agent(self->config,
-                                                       agent_config);
-
-        run = g_new0(HealthRun, 1);
-        run->pending = clawt_ipc_server_defer(self->ipc_server, request);
-        run->checks = g_ptr_array_new_with_free_func(
-            (GDestroyNotify)clawt_integration_binding_unref);
-        run->results = g_ptr_array_new_with_free_func(
-            (GDestroyNotify)health_result_free);
-        run->timeout = (guint)clawt_ipc_payload_int(payload, "timeout", 10);
-
-        if (run->pending == NULL) {
-            health_run_free(run);
-            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
-                                       "this request cannot be answered "
-                                       "later");
-        }
-
-        for (i = 0; i < bindings->len; i++) {
-            ClawtIntegrationBinding *binding = g_ptr_array_index(bindings, i);
-
-            if (name != NULL &&
-                g_strcmp0(clawt_integration_binding_get_name(binding),
-                          name) != 0 &&
-                g_strcmp0(clawt_integration_binding_get_info(binding)->id,
-                          name) != 0)
-                continue;
-
-            g_ptr_array_add(run->checks,
-                            clawt_integration_binding_ref(binding));
-        }
-
-        health_run_start(run);
-
-        /*
-         * NULL, not a frame: the answer goes out from health_run_finish()
-         * when the last check comes back.  A handler that waits here
-         * would hold the daemon's main context for the whole timeout,
-         * which is exactly the ten seconds in which nothing else is
-         * routed.
-         */
-        return NULL;
-    }
-
-    if (g_strcmp0(kind, "integration.notify_test") == 0) {
-        const gchar *name = clawt_ipc_payload_string(payload, "integration");
-        ClawtIpcPending *pending;
-
-        if (self->notifier == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
-                                       "this daemon has no notifier");
-
-        pending = clawt_ipc_server_defer(self->ipc_server, request);
-
-        if (pending == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
-                                       "this request cannot be answered "
-                                       "later");
-
-        /*
-         * A notifier is the one thing in a fleet you cannot tell is
-         * working by looking at it: it is correct precisely when nothing
-         * happens. This is the button that makes something happen.
-         */
-        clawt_notifier_test_async(self->notifier, name, NULL,
-                                  on_notify_tested, pending);
-
-        return NULL;
-    }
-
-    if (g_strcmp0(kind, "integration.matrix_login") == 0) {
-        const gchar *name = clawt_ipc_payload_string(payload, "integration");
-        const gchar *homeserver = clawt_ipc_payload_string(payload,
-                                                           "homeserver");
-        const gchar *user = clawt_ipc_payload_string(payload, "user");
-        const gchar *password = clawt_ipc_payload_string(payload, "password");
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        ClawtIntegrationConfig *instance = (name != NULL)
-            ? clawt_config_get_integration(self->config, name) : NULL;
-        MatrixLogin *login;
-
-        if (instance == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "there is no integration called that");
-
-        if (homeserver == NULL)
-            homeserver = clawt_integration_config_get_string(instance,
-                                                             agent_id,
-                                                             "homeserver");
-
-        if (homeserver == NULL || user == NULL || password == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "a homeserver, a user and a password "
-                                       "are all needed");
-
-        login = g_new0(MatrixLogin, 1);
-        login->daemon = self;
-        login->pending = clawt_ipc_server_defer(self->ipc_server, request);
-        login->name = g_strdup(name);
-        login->agent_id = g_strdup(agent_id);
-        login->homeserver = g_strdup(homeserver);
-
-        if (login->pending == NULL) {
-            matrix_login_free(login);
-            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
-                                       "this request cannot be answered "
-                                       "later");
-        }
-
-        {
-            g_autofree gchar *device = g_strdup_printf(
-                "clawtilla (%s)", agent_id != NULL ? agent_id : name);
-
-            clawt_matrix_login_async(homeserver, user, password, device,
-                                     NULL, on_matrix_login, login);
-        }
-
-        return NULL;
-    }
-
-    if (g_strcmp0(kind, "integration.matrix_rooms") == 0) {
-        const gchar *name = clawt_ipc_payload_string(payload, "integration");
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        ClawtIntegrationConfig *instance = (name != NULL)
-            ? clawt_config_get_integration(self->config, name) : NULL;
-        g_autoptr(ClawtSecretRef) ref = NULL;
-        g_autofree gchar *token = NULL;
-        g_autofree gchar *secrets_dir = NULL;
-        const gchar *homeserver;
-        ClawtIpcPending *pending;
-
-        if (instance == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "there is no integration called that");
-
-        homeserver = clawt_integration_config_get_string(instance, agent_id,
-                                                         "homeserver");
-        ref = clawt_integration_config_get_secret(instance, agent_id,
-                                                  "access_token");
-
-        if (homeserver == NULL || ref == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_CONFIG_INVALID,
-                                       "sign in first: there is no "
-                                       "homeserver and token to list with");
-
-        secrets_dir = clawt_config_get_path_value(self->config, "secrets.dir");
-        token = clawt_secret_ref_resolve(
-            ref, secrets_dir,
-            (guint)clawt_config_get_int(self->config,
-                                        "secrets.command_timeout_seconds"),
-            &error);
-
-        if (token == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_SECRET,
-                                       error->message);
-
-        pending = clawt_ipc_server_defer(self->ipc_server, request);
-
-        if (pending == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
-                                       "this request cannot be answered "
-                                       "later");
-
-        clawt_matrix_rooms_async(homeserver, token, NULL, on_matrix_rooms,
-                                 pending);
-
-        return NULL;
-    }
-
-    /* ── routines ── */
-
-    if (g_strcmp0(kind, "routine.list") == 0) {
-        GPtrArray *routines = clawt_config_get_routines(self->config);
-        guint i;
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "routines");
-        json_builder_begin_array(builder);
-
-        for (i = 0; routines != NULL && i < routines->len; i++) {
-            ClawtRoutine *routine = g_ptr_array_index(routines, i);
-            const gchar *id = clawt_routine_get_id(routine);
-            g_autofree gchar *expression = NULL;
-            g_autoptr(GDateTime) next = NULL;
-            g_autoptr(GError) cron_error = NULL;
-            const ClawtSchemaEntry *entries;
-            ClawtRunState state = CLAWT_RUN_NEVER;
-            const gchar *detail = NULL;
-            gint64 last;
-            gsize n_entries = 0;
-            gsize k;
-
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "id");
-            json_builder_add_string_value(builder, id);
-
-            /*
-             * The fields come from the schema rather than a list here,
-             * for the reason the integration ones now do: a list in the
-             * daemon and a list in the schema drift, and the drift is
-             * silent.
-             */
-            entries = clawt_config_schema_get(&n_entries);
-
-            for (k = 0; k < n_entries; k++) {
-                const gchar *leaf;
-
-                if (!g_str_has_prefix(entries[k].key, "routines."))
-                    continue;
-
-                leaf = entries[k].key + strlen("routines.");
-
-                if (strchr(leaf, '.') != NULL || g_strcmp0(leaf, "id") == 0)
-                    continue;
-
-                switch (entries[k].type) {
-                case CLAWT_SCHEMA_BOOLEAN:
-                    json_builder_set_member_name(builder, leaf);
-                    json_builder_add_boolean_value(
-                        builder, clawt_routine_get_boolean(routine, leaf));
-                    break;
-
-                case CLAWT_SCHEMA_INT:
-                    json_builder_set_member_name(builder, leaf);
-                    json_builder_add_int_value(
-                        builder, clawt_routine_get_int(routine, leaf));
-                    break;
-
-                default: {
-                    const gchar *value =
-                        clawt_routine_get_string(routine, leaf);
-
-                    if (value == NULL)
-                        break;
-
-                    json_builder_set_member_name(builder, leaf);
-                    json_builder_add_string_value(builder, value);
-                    break;
-                }
-                }
-            }
-
-            /*
-             * What it actually means, worked out here.  A client that
-             * had to turn "weekdays at 09:00" into an expression itself
-             * would be a second implementation of the schedule.
-             */
-            expression = clawt_routine_get_cron(routine, &cron_error);
-
-            if (expression != NULL) {
-                json_builder_set_member_name(builder, "expression");
-                json_builder_add_string_value(builder, expression);
-            } else if (cron_error != NULL) {
-                json_builder_set_member_name(builder, "problem");
-                json_builder_add_string_value(builder, cron_error->message);
-            }
-
-            next = (self->routines != NULL)
-                ? clawt_routine_runner_next_run(self->routines, id) : NULL;
-
-            if (next != NULL) {
-                g_autofree gchar *formatted =
-                    g_date_time_format_iso8601(next);
-
-                json_builder_set_member_name(builder, "next_run");
-                json_builder_add_string_value(builder, formatted);
-            }
-
-            last = (self->routines != NULL)
-                ? clawt_routine_runner_last_run(self->routines, id, &state,
-                                                &detail) : 0;
-
-            json_builder_set_member_name(builder, "last_run");
-            json_builder_add_int_value(builder, last);
-            json_builder_set_member_name(builder, "last_state");
-            json_builder_add_string_value(
-                builder, clawt_enum_to_nick(CLAWT_TYPE_RUN_STATE,
-                                            (gint)state));
-
-            if (detail != NULL) {
-                json_builder_set_member_name(builder, "last_detail");
-                json_builder_add_string_value(builder, detail);
-            }
-
-            json_builder_end_object(builder);
-        }
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "routine.add") == 0 ||
-        g_strcmp0(kind, "routine.update") == 0) {
-        const gchar *id = clawt_ipc_payload_string(payload, "id");
-        gboolean adding = g_strcmp0(kind, "routine.add") == 0;
-        ClawtRoutine *routine;
-        const ClawtSchemaEntry *entries;
-        gsize n_entries = 0;
-        gsize i;
-
-        if (adding) {
-            routine = clawt_config_add_routine(self->config, id, &error);
-
-            if (routine == NULL)
-                return clawt_ipc_error_new(request, error->code,
-                                           error->message);
-        } else {
-            routine = (id != NULL)
-                ? clawt_config_get_routine(self->config, id) : NULL;
-
-            if (routine == NULL)
-                return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                           "there is no routine called "
-                                           "that");
-        }
-
-        entries = clawt_config_schema_get(&n_entries);
-
-        for (i = 0; i < n_entries; i++) {
-            const gchar *leaf;
-
-            if (!g_str_has_prefix(entries[i].key, "routines."))
-                continue;
-
-            leaf = entries[i].key + strlen("routines.");
-
-            if (strchr(leaf, '.') != NULL || g_strcmp0(leaf, "id") == 0 ||
-                !json_object_has_member(payload, leaf))
-                continue;
-
-            switch (entries[i].type) {
-            case CLAWT_SCHEMA_BOOLEAN:
-                clawt_routine_set_boolean(
-                    routine, leaf,
-                    clawt_ipc_payload_boolean(payload, leaf, FALSE));
-                break;
-
-            case CLAWT_SCHEMA_INT:
-                clawt_routine_set_int(routine, leaf,
-                                      clawt_ipc_payload_int(payload, leaf, 0));
-                break;
-
-            default:
-                clawt_routine_set_string(
-                    routine, leaf, clawt_ipc_payload_string(payload, leaf));
-                break;
-            }
-        }
-
-        /*
-         * The schedule is checked here, while somebody is still looking
-         * at what they typed -- rather than at the next tick, in a
-         * warning nobody is watching for.
-         */
-        {
-            g_autofree gchar *expression = NULL;
-            g_autoptr(GError) cron_error = NULL;
-
-            expression = clawt_routine_get_cron(routine, &cron_error);
-
-            if (expression == NULL && cron_error != NULL) {
-                if (adding)
-                    clawt_config_remove_routine(self->config, id);
-
-                return clawt_ipc_error_new(request,
-                                           CLAWT_ERROR_INVALID_ARGUMENT,
-                                           cron_error->message);
-            }
-        }
-
-        if (!clawt_config_save(self->config, &error)) {
-            if (adding)
-                clawt_config_remove_routine(self->config, id);
-
-            return clawt_ipc_error_new(request, error->code, error->message);
-        }
-
-        if (!clawt_daemon_reload(self, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        clawt_event_bus_emit(self->bus, "routine.changed", id);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "id");
-        json_builder_add_string_value(builder, id);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "routine.remove") == 0) {
-        const gchar *id = clawt_ipc_payload_string(payload, "id");
-
-        if (id == NULL || !clawt_config_remove_routine(self->config, id))
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "there is no routine called that");
-
-        if (!clawt_config_save(self->config, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        if (!clawt_daemon_reload(self, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        clawt_event_bus_emit(self->bus, "routine.changed", id);
-
-        return clawt_ipc_response_new(request, NULL);
-    }
-
-    if (g_strcmp0(kind, "routine.run") == 0) {
-        const gchar *id = clawt_ipc_payload_string(payload, "id");
-        const gchar *task_id;
-
-        if (self->routines == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
-                                       "this daemon has no scheduler");
-
-        task_id = clawt_routine_runner_run_now(self->routines, id, &error);
-
-        if (task_id == NULL)
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "task");
-        json_builder_add_string_value(builder, task_id);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "plugin.list") == 0) {
-        g_autoptr(GPtrArray) plugins = NULL;
-        guint i;
-
-        plugins = clawt_plugin_manager_list(self->plugins);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "plugins");
-        json_builder_begin_array(builder);
-
-        for (i = 0; i < plugins->len; i++) {
-            ClawtPlugin *plugin = g_ptr_array_index(plugins, i);
-
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, "id");
-            json_builder_add_string_value(builder,
-                                          clawt_plugin_get_id(plugin));
-            json_builder_set_member_name(builder, "name");
-            json_builder_add_string_value(builder,
-                                          clawt_plugin_get_name(plugin));
-            json_builder_set_member_name(builder, "version");
-            json_builder_add_string_value(builder,
-                                          clawt_plugin_get_version(plugin));
-            json_builder_set_member_name(builder, "description");
-            json_builder_add_string_value(
-                builder, clawt_plugin_get_description(plugin));
-            json_builder_set_member_name(builder, "active");
-            json_builder_add_boolean_value(builder,
-                                           clawt_plugin_is_active(plugin));
-            json_builder_end_object(builder);
-        }
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    /* ── config ── */
-
-    if (g_strcmp0(kind, "config.show") == 0) {
-        g_autofree gchar *text = clawt_config_to_string(self->config);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "yaml");
-        json_builder_add_string_value(builder, text);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "config.render") == 0) {
-        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        ClawtAgentConfig *config = (agent_id != NULL)
-                                   ? clawt_config_get_agent(self->config,
-                                                            agent_id)
-                                   : NULL;
-        g_autofree gchar *rendered = NULL;
-        g_autofree gchar *state_dir = NULL;
-
-        if (config == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such agent");
-
-        state_dir = clawt_config_agent_state_dir(self->config, agent_id);
-        rendered = clawt_config_render_agent(self->config, config,
-                                             self->link_socket, state_dir,
-                                             &error);
-
-        if (rendered == NULL)
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "yaml");
-        json_builder_add_string_value(builder, rendered);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
-    }
-
-    if (g_strcmp0(kind, "config.validate") == 0) {
-        GPtrArray *warnings;
-        guint i;
-
-        clawt_config_validate(self->config, &error);
-        warnings = clawt_config_get_warnings(self->config);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "valid");
-        json_builder_add_boolean_value(builder, error == NULL);
-
-        if (error != NULL) {
-            json_builder_set_member_name(builder, "error");
-            json_builder_add_string_value(builder, error->message);
-        }
-
-        json_builder_set_member_name(builder, "warnings");
-        json_builder_begin_array(builder);
-
-        for (i = 0; warnings != NULL && i < warnings->len; i++)
-            json_builder_add_string_value(builder,
-                                          g_ptr_array_index(warnings, i));
-
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    for (i = 0; i < G_N_ELEMENTS(family_handlers); i++) {
+        gboolean handled = FALSE;
+        JsonNode *reply = family_handlers[i](self, kind, request, payload,
+                                             &handled);
+
+        if (handled)
+            return reply;
     }
 
     /*

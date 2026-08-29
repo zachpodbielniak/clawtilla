@@ -630,10 +630,14 @@ proxy for "feature" rather than a definition of one -- a client could
 name a kind and do nothing useful with it -- but every real feature has
 to talk to the daemon to do anything, so a kind one client sends and the
 other never mentions is a capability that exists in one place only.  The
-kinds themselves are read out of =src/core/clawt-daemon.c=, so one added
-there is compared from the moment it exists, and each client's set is
-intersected with it -- a client source is full of dotted strings that
-are not frame kinds.
+kinds themselves are read out of the daemon's dispatch --
+=src/core/clawt-daemon.c= and =src/core/daemon-*.c=, one file per verb
+family -- so one added there is compared from the moment it exists, and
+each client's set is intersected with it -- a client source is full of
+dotted strings that are not frame kinds.  It is a glob rather than a
+name because it was a name: when the dispatch moved out of
+=clawt-daemon.c=, the check read a file with no kinds in it and reported
+every client complete.
 
 It runs from ~make parity~, from ~make docs-check~, and as a case in
 ~make test~.  A check that only runs in one target is one somebody can go

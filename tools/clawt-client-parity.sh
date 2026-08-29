@@ -82,7 +82,15 @@ trap cleanup EXIT
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GTK_DIR="${ROOT}/clients/gtk"
 WEB_DIR="${ROOT}/clients/web"
-DAEMON="${ROOT}/src/core/clawt-daemon.c"
+#
+# The daemon's client surface, which is one file per verb family.
+#
+# A glob rather than a name, because the dispatch used to be one chain in
+# clawt-daemon.c and moving it out left this reading a file with no kinds
+# in it at all -- which reported OK for every client, since a client
+# cannot be missing a kind that nothing found.
+#
+DAEMON_SOURCES=("${ROOT}"/src/core/clawt-daemon.c "${ROOT}"/src/core/daemon-*.c)
 
 #
 # Kinds a client is allowed to lack, each with the reason.
@@ -220,7 +228,7 @@ USAGE
 # there is compared from the moment it exists.
 #
 daemon_kinds () {
-    grep -oh 'kind, "[a-z_.]*"' "${DAEMON}" \
+    grep -oh 'kind, "[a-z_.]*"' "${DAEMON_SOURCES[@]}" \
         | sed 's/kind, "//; s/"//' \
         | sort -u
 }
