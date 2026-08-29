@@ -40,7 +40,35 @@ $(OBJ_DIRS_STAMP): Makefile config.mk
 #
 # -MP emits a phony target for each header so that *deleting* one does
 # not leave make refusing to build anything with "No rule to make target".
-$(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJ_DIRS_STAMP)
+
+# Objects rebuild when the build *configuration* changes, not only when a
+# source does.
+#
+# Without this, `make DEBUG=1 ASAN=1 all` followed by `make DEBUG=1 all`
+# leaves instrumented objects in place and the link fails on unresolved
+# __asan_* symbols -- pointing at whichever file happened to be linked
+# first rather than at the flag change that caused it. That cost a bad
+# push here: the build failed, the code was fine, and the two look
+# identical from the exit status.
+#
+# FORCE runs the comparison every time; the stamp's timestamp moves only
+# when the flags actually differ, so repeated identical builds stay
+# incremental. Copied from ai-glib, which had already paid for it.
+.PHONY: FORCE
+FORCE:
+
+$(BUILD_FLAGS_STAMP): FORCE | $(OUTDIR)
+	@{ \
+		printf '%s\n' "CC=$(CC)" "CFLAGS=$(CFLAGS)" \
+			"LDFLAGS=$(LDFLAGS)" > $@.tmp; \
+		if test -r $@ && cmp -s $@.tmp $@; then \
+			rm -f $@.tmp; \
+		else \
+			mv -f $@.tmp $@; \
+		fi; \
+	}
+
+$(OBJDIR)/%.o: $(SRCDIR)/%.c $(BUILD_FLAGS_STAMP) | $(OBJ_DIRS_STAMP)
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 # Create build directories
@@ -71,7 +99,8 @@ $(OBJDIR):
 # needs a real module names this and skips when it is absent -- passing
 # because the module could not be loaded is passing for the wrong reason,
 # and that is precisely what the first draft of the mute-socket test did.
-$(OUTDIR)/tests/%: $(TESTDIR)/%.c $(LIB_STATIC) $(LIBRECLAW_STATIC) | $(OUTDIR)/tests
+$(OUTDIR)/tests/%: $(TESTDIR)/%.c $(LIB_STATIC) $(LIBRECLAW_STATIC) \
+                   $(BUILD_FLAGS_STAMP) | $(OUTDIR)/tests
 	$(CC) $(CFLAGS) -MMD -MP -I$(SRCDIR) -I$(TESTDIR) \
 		-DBUILD_OUTDIR='"$(OUTDIR)"' \
 		-DCLAWT_TEST_FIXTURES='"$(CURDIR)/$(TESTDIR)/fixtures"' \

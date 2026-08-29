@@ -132,6 +132,9 @@ ifeq ($(DEBUG),1)
 else
     OBJDIR := $(OBJDIR_RELEASE)
     OUTDIR := $(BINDIR_RELEASE)
+
+# The signature of the build configuration itself.
+BUILD_FLAGS_STAMP := $(OUTDIR)/.build-flags
     BUILD_TYPE := release
     CFLAGS_OPT = -O2 -DNDEBUG
 endif
