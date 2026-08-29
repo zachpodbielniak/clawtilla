@@ -193,7 +193,7 @@ counting segments is how somebody gets it wrong.
 
 *** Slash commands
 
-The same eighteen the GTK composer answers, typed into the message box.
+The same nineteen the GTK composer answers, typed into the message box.
 Three mean something slightly different in a browser, and the help says
 so rather than leaving anybody to find out.
 
@@ -621,8 +621,8 @@ make parity
 #+end_src
 
 #+begin_example
-client parity: OK (76 kinds and 18 commands in gtk, 80 kinds and 26 commands in web;
-4 enumeration(s), 2 vocabulary(ies), 28 affordance(s))
+client parity: OK (81 kinds and 19 commands in gtk, 85 kinds and 27 commands in web;
+4 enumeration(s), 2 vocabulary(ies), 40 affordance(s))
 #+end_example
 
 Layer one is the set of IPC frame kinds each client sends.  That is a
@@ -650,18 +650,19 @@ a long time without seeing.
 | 5 | declared interface affordances | *yes* |
 
 The command check exists because the frame-kind one missed them entirely:
-thirteen of the eighteen were absent from the web client and nothing said
+thirteen of the eighteen then shipped were absent from the web client and
+nothing said
 so, since =/files=, =/agents= and =/export= are all built out of frames
 both clients already sent.  A check that only looks at one layer will
 keep finding nothing at the others.
 
-*The =26 commands in web= in that line is not a command count.*  Layer
+*The =27 commands in web= in that line is not a command count.*  Layer
 two greps each client for ~"/name"~ string literals, which is enough to
 compare without either client declaring anything -- and in the web
 client it also matches route paths and hrefs, so =/fleet=, =/settings=,
 =/alerts=, =/events=, =/decisions=, =/design=, =/import= and =/static=
 are counted alongside the real ones.  Both composers answer the same
-eighteen; the eight extra are pages.
+nineteen; the eight extra are pages.
 
 That over-count is harmless rather than fixed, and deliberately so.
 Commands are compared *one way* -- a command the GTK composer answers

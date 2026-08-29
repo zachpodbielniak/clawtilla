@@ -680,6 +680,12 @@ clawt_web_stylesheet(void)
     "@media (max-width:26rem){.composer-inner{padding-left:0}}"
     ".composer textarea{flex:1;min-height:2.6rem;max-height:14rem;"
       "font-family:var(--sans);font-size:14px}"
+    /*
+     * Stop does not wrap or shrink.  It appears mid-conversation, and a
+     * button that reflows the row as it arrives moves Send under a
+     * cursor that was aiming at it.
+     */
+    ".composer-inner .stop-turn{white-space:nowrap;flex:none}"
 
     /* ── Console ── */
     ".console{font-family:var(--mono);font-size:var(--mono-size);white-space:pre-wrap;"

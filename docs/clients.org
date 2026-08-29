@@ -1569,8 +1569,8 @@ is a second way to do anything. A command never reaches the agent, and
 an unrecognised one says so rather than being sent: a mistyped command
 arriving as a message is how somebody learns not to trust the feature.
 
-Eighteen in total, counting the four under *More commands* below, and
-the web composer answers the same eighteen by the same names.  Three
+Nineteen in total, counting the five under *More commands* below, and
+the web composer answers the same nineteen by the same names.  Three
 mean something slightly different in a browser -- ~/compose~ opens a
 full-page box rather than ~$EDITOR~, ~/copy~ shows the text to select
 rather than reaching a clipboard on a machine that may not be yours, and
@@ -1736,10 +1736,35 @@ screenful of it.
 
 | Command | What it does |
 |---------+--------------|
+| ~/interrupt~ | stop what it is doing now; leave it running |
 | ~/reset~ | start the agent's AI session again, from nothing |
 | ~/retry~ | send your last message again |
 | ~/export [org]~ | save the conversation |
 | ~/copy [org]~ | copy the conversation |
+
+~/interrupt~ is the composer's *Stop* button written out, and both go to
+the same place. The button is beside Send in each client and appears only
+while there is a turn to stop --- a control that is always there and
+usually does nothing is one people stop reading, and "is something
+running I can end?" is exactly the question its presence answers.
+
+It is not ~/stop~. That takes the agent down along with its container or
+VM and needs a start afterwards; this kills the AI CLI running the turn
+and everything it started, and leaves the agent connected with its
+session and mailbox intact. ~docs/agents.org~ has the table.
+
+Both clients say how many processes were signalled rather than "stopped",
+because zero and several mean different things to whoever pressed it: the
+agent was between turns, or that much was running. Neither offers the
+button for an agent whose runtime declares no ~interrupt~ --- an embedded
+agent takes its turn inside the daemon, where the only process to signal
+is the daemon itself.
+
+Both also hide the button the moment the request succeeds rather than
+waiting for the next typing frame. The turn was just taken out from under
+the code that lowers the indicator, so that frame may never arrive, and a
+Stop button still sitting there after a successful stop reads as the
+press having failed.
 
 ~/reset~ is for an agent that has got itself wedged. It stops the agent,
 moves its session files aside, clears its stored sessions from
@@ -2237,7 +2262,7 @@ clawtilla-web [--port 8790] [--bind ADDR] [--no-tailscale] [--socket PATH]
 
 Everything ~clawtilla-gtk~ does, served over HTTP.  The same seven views
 -- chat, agent, mailbox, computer, routines, tasks, flow -- the same
-eighteen slash commands, and seven settings pages behind them, driven by
+nineteen slash commands, and seven settings pages behind them, driven by
 the same ~ClawtClient~ over the same socket.  See
 [[file:web-client.org][web-client.org]] for the whole of it.
 

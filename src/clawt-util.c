@@ -763,3 +763,132 @@ clawt_time_ago_label(gint64 timestamp, gint64 now)
 
     return g_strdup_printf("%" G_GINT64_FORMAT "d ago", seconds / 86400);
 }
+
+/* ── Process trees ───────────────────────────────────────────────── */
+
+GPid
+clawt_process_parent_of(GPid pid)
+{
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *contents = NULL;
+    const gchar *line;
+
+    if (pid <= 0)
+        return 0;
+
+    path = g_strdup_printf("/proc/%d/status", (gint)pid);
+
+    if (!g_file_get_contents(path, &contents, NULL, NULL))
+        return 0;
+
+    /*
+     * `status` rather than `stat`, because the comm field in `stat` is
+     * wrapped in brackets and may contain both `)` and spaces -- so a
+     * field split of it reads the wrong column for any process whose
+     * name has one, which is every shell one-liner an agent runs.
+     */
+    line = strstr(contents, "\nPPid:");
+
+    if (line == NULL)
+        return 0;
+
+    return (GPid)g_ascii_strtoll(line + strlen("\nPPid:"), NULL, 10);
+}
+
+gboolean
+clawt_process_is_descendant_of(GPid pid, GPid root)
+{
+    guint hops;
+
+    if (pid <= 0 || root <= 0 || pid == root)
+        return FALSE;
+
+    /*
+     * Bounded, because the walk is over a tree read from /proc one
+     * process at a time and nothing guarantees the snapshot is
+     * consistent: a reparent between two reads could in principle be
+     * seen as a cycle, and an unbounded loop here would hang the daemon
+     * rather than answer wrongly.
+     */
+    for (hops = 0; hops < 64; hops++) {
+        pid = clawt_process_parent_of(pid);
+
+        if (pid == root)
+            return TRUE;
+
+        /* 1 is init, and 0 means the process went away mid-walk. */
+        if (pid <= 1)
+            return FALSE;
+    }
+
+    return FALSE;
+}
+
+/*
+ * Depth-first pre-order: a parent is appended before everything below
+ * it, so reversing the result puts every descendant before its parent.
+ */
+static void
+collect_children(GPid parent, GArray *out, guint depth)
+{
+    g_autoptr(GDir) proc = NULL;
+    const gchar *name;
+
+    /*
+     * A tree deeper than this is a runaway rather than an agent's work,
+     * and the recursion is on the daemon's own stack.
+     */
+    if (depth > 32)
+        return;
+
+    proc = g_dir_open("/proc", 0, NULL);
+
+    if (proc == NULL)
+        return;
+
+    while ((name = g_dir_read_name(proc)) != NULL) {
+        GPid pid;
+
+        if (!g_ascii_isdigit(name[0]))
+            continue;
+
+        pid = (GPid)g_ascii_strtoll(name, NULL, 10);
+
+        if (pid <= 1 || pid == parent)
+            continue;
+
+        if (clawt_process_parent_of(pid) != parent)
+            continue;
+
+        g_array_append_val(out, pid);
+        collect_children(pid, out, depth + 1);
+    }
+}
+
+GArray *
+clawt_process_descendants(GPid root)
+{
+    GArray *found = g_array_new(FALSE, FALSE, sizeof(GPid));
+    GArray *ordered;
+    guint i;
+
+    if (root <= 1)
+        return found;
+
+    collect_children(root, found, 0);
+
+    /*
+     * Reversed, so the deepest process is signalled first.  Killing a
+     * parent before its children hands those children to init, and they
+     * are then no longer reachable from @root at all -- an agent's stop
+     * would leave the compiler it had launched running for ever.
+     */
+    ordered = g_array_sized_new(FALSE, FALSE, sizeof(GPid), found->len);
+
+    for (i = found->len; i > 0; i--)
+        g_array_append_val(ordered, g_array_index(found, GPid, i - 1));
+
+    g_array_unref(found);
+
+    return ordered;
+}

@@ -169,7 +169,8 @@ several agents at once.
 *** agent.*
 
 ~agent.list~, ~agent.show~, ~agent.start~, ~agent.stop~, ~agent.restart~,
-~agent.reset~, ~agent.logs~, ~agent.create~, ~agent.import~,
+~agent.interrupt~, ~agent.reset~, ~agent.logs~, ~agent.create~,
+~agent.import~,
 ~agent.remove~, ~agent.set~, ~agent.reorder~, ~agent.discover~,
 ~agent.forget~, ~agent.files~, ~agent.file_read~, ~agent.file_write~,
 ~agent.mount.list~, ~agent.mount.add~, ~agent.mount.remove~.
@@ -259,6 +260,65 @@ connection closed rather than the machine powered off.  Blocking, in the
 same way ~agent.start~ is and for the reason written there --- every
 caller has somebody waiting on the answer, and the wait is bounded by
 podomation's socket timeout.
+
+**** agent.interrupt
+
+~agent.interrupt~ (~agent~) → ~interrupted~, ~killed~.
+
+Ends what the agent is doing *now* and leaves the agent up. It is not a
+smaller ~agent.stop~ --- it is a different thing entirely:
+
+| | ~agent.interrupt~ | ~agent.stop~ |
+|---+---+---|
+| the AI CLI mid-turn | killed | killed with everything else |
+| the libreclaw process | keeps running | stopped |
+| its container or VM | untouched | stopped |
+| its link, session, mailbox | kept | dropped, and the session resumes on start |
+| afterwards | it is idle, message it | it needs ~agent.start~ |
+
+A turn is carried out by an AI CLI that the agent's libreclaw spawned,
+and that CLI spawns whatever the model asked for --- a build, a test run,
+a search. All of it sits below the agent's own process in the process
+tree and none of it is clawtilla's child, so the daemon walks ~/proc~ for
+the descendants of the agent's pid rather than using ~GSubprocess~, which
+knows only about the one process it started.
+
+Killing the CLI is what actually ends the work. Cancelling libreclaw's
+own ~GCancellable~ --- which is what its ~!stop~ command does --- makes
+~g_subprocess_communicate_async()~ abandon the read and leaves the
+process running, so the model goes on burning tokens against a wait
+nobody is holding. Coming at it from the process side is the half that
+ends it; libreclaw then sees its child exit and finishes the turn on its
+own.
+
+~killed~ is the number of processes signalled, and it is in the reply
+because zero and several mean different things to whoever pressed the
+button: nothing was running, or that much was. Zero is not a failure ---
+an agent between turns has no CLI --- so the frame answers ~interrupted:
+true~ either way and the clients say which happened rather than reporting
+"stopped" over an agent that was already idle.
+
+Every pid is re-checked against the agent's process tree immediately
+before it is signalled. A pid read a moment earlier may have exited and
+been reused by then, and what inherits a recycled pid belongs to somebody
+else; on a busy machine that is the difference between stopping an agent
+and killing the operator's editor. SIGTERM first, then SIGKILL after a
+short grace period, deepest process first --- a parent killed before its
+children hands them to init, where they are no longer reachable from the
+agent at all.
+
+The daemon marks the agent idle itself rather than waiting for
+libreclaw's typing indicator to drop. Killing a turn mid-flight is the
+one case where that frame may never arrive, since the code that sends it
+runs when the turn finishes and the turn was just taken out from under
+it. An agent that shows as working for ever after somebody pressed stop
+is precisely the state the button exists to get out of.
+
+It is refused, naming the runtime type, for an agent that has no such
+tree: an embedded agent takes its turn inside the daemon, where the only
+process to signal is the daemon itself. That is a capability
+(~interrupt~ in ~caps~), so a client can tell before it offers the
+button, and the refusal exists for the client that does not ask.
 
 ~agent.remove~ takes ~remove_computer~: %TRUE tears the agent's
 container or VM down before removing it, forcing it if it is running.
@@ -756,7 +816,7 @@ Every kind published, by subject:
 | Subject | Kinds |
 |---------+-------|
 | the daemon | ~daemon.started~, ~daemon.stopped~, ~daemon.reloaded~, ~config.changed~ |
-| an agent | ~agent.created~, ~agent.removed~, ~agent.changed~, ~agent.started~, ~agent.stopped~, ~agent.state~, ~agent.connected~, ~agent.disconnected~, ~agent.typing~, ~agent.identity~ |
+| an agent | ~agent.created~, ~agent.removed~, ~agent.changed~, ~agent.started~, ~agent.stopped~, ~agent.interrupted~, ~agent.state~, ~agent.connected~, ~agent.disconnected~, ~agent.typing~, ~agent.identity~ |
 | a room | ~message~, ~message.refused~, ~room.created~, ~room.changed~ |
 | an agent's mailbox | ~mailbox.queued~, ~mailbox.delivered~ |
 | a team | ~team.changed~ |
@@ -771,6 +831,13 @@ plus a ~detail~ saying why.  ~agent.started~ and ~agent.stopped~ are
 published by the frames that asked for them, so an agent that crashed
 raises ~agent.state~ and nothing else -- a client that watched only the
 pair would show a running agent that is not.
+
+~agent.interrupted~ carries ~killed~, the number of processes signalled.
+It is *not* an ~agent.state~ change: the agent is still running, and a
+client that redrew its state from this would show it as stopped. What
+changes is that it is no longer busy, which is why the daemon lowers the
+activity itself rather than waiting for a ~agent.typing~ frame that a
+killed turn may never send.
 
 ~agent.identity~ is published when an agent is started whose identity
 files have reached 80% of what a single command-line argument may hold.

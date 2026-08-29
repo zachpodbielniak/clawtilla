@@ -4130,6 +4130,106 @@ test_a_closed_turn_still_answers_the_operator(void)
 }
 
 /*
+ * Interrupting says why it cannot, rather than reporting success.
+ *
+ * Both refusals matter for the same reason: a client that was told the
+ * turn stopped and then watched the agent go on working would go looking
+ * at the agent, when the thing that failed was the request.
+ */
+static void
+test_interrupting_names_what_it_cannot_do(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) missing = NULL;
+    g_autoptr(GError) idle = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: worker\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    /* Nobody by that name. */
+    g_assert_false(clawt_daemon_interrupt_agent(fixture.daemon, "nobody",
+                                                NULL, &missing));
+    g_assert_error(missing, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND);
+    g_assert_nonnull(strstr(missing->message, "nobody"));
+
+    /*
+     * And an agent that has never been started has no runtime at all,
+     * which is a different failure from a runtime that cannot do it.
+     */
+    g_assert_false(clawt_daemon_interrupt_agent(fixture.daemon, "worker",
+                                                NULL, &idle));
+    g_assert_error(idle, CLAWT_ERROR, CLAWT_ERROR_AGENT_STATE);
+    g_assert_nonnull(strstr(idle->message, "worker"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Interrupting clears the agent's activity, and says so.
+ *
+ * The daemon lowers it rather than waiting for libreclaw's typing frame.
+ * Killing a turn mid-flight is the one case where that frame may never
+ * arrive -- the code that sends it runs when the turn finishes, and the
+ * turn was just taken out from under it. An agent that shows as working
+ * for ever after somebody pressed stop is exactly the state the button
+ * exists to get out of.
+ */
+static void
+test_interrupting_clears_the_activity(void)
+{
+    Fixture fixture = { 0 };
+    ClawtLinkServer *links;
+    ClawtAgent *worker;
+    g_autoptr(GError) error = NULL;
+    guint killed = 99;
+
+    fixture_setup(&fixture, "agents:\n  - id: worker\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    links = clawt_daemon_get_link_server(fixture.daemon);
+    worker = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                     "worker");
+
+    /*
+     * A runtime that exists and refuses, which is the path the guard is
+     * actually on. Without one the daemon returns at its own
+     * `runtime == NULL` check and never reaches the clearing at all --
+     * so a test phrased around an agent that was never started passes
+     * against a build that clears the flag unconditionally.
+     */
+    {
+        ClawtAgentConfig *agent_config =
+            clawt_config_get_agent(clawt_daemon_get_config(fixture.daemon),
+                                   "worker");
+        g_autoptr(ClawtProcessRuntime) runtime =
+            clawt_process_runtime_new(agent_config, "/dev/null");
+
+        clawt_agent_set_runtime(worker, CLAWT_AGENT_RUNTIME(runtime));
+    }
+
+    /* A turn is running as far as every client can see. */
+    g_signal_emit_by_name(links, "typing", "worker", "dm:user:worker", TRUE);
+    g_assert_true(clawt_agent_get_busy(worker));
+
+    /*
+     * The runtime refuses -- it was never started, so there is nothing
+     * below it -- and the activity must survive that. A handler that
+     * cleared the flag before finding out whether it could do anything
+     * would report an idle agent that is still working, which is the lie
+     * this whole path is built to avoid.
+     */
+    g_assert_false(clawt_daemon_interrupt_agent(fixture.daemon, "worker",
+                                                &killed, &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_AGENT_STATE);
+    g_assert_true(clawt_agent_get_busy(worker));
+
+    /* And the count is cleared even on the failure path. */
+    g_assert_cmpuint(killed, ==, 0);
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * A restart policy changed in the config reaches the agent's runtime at
  * its next start.
  *
@@ -7007,6 +7107,10 @@ main(int argc, char *argv[])
                     test_a_reply_after_the_turn_ends_still_counts_hops);
     g_test_add_func("/daemon/a-reply-earns-no-reply",
                     test_a_reply_earns_no_reply);
+    g_test_add_func("/daemon/interrupt-names-what-it-cannot-do",
+                    test_interrupting_names_what_it_cannot_do);
+    g_test_add_func("/daemon/interrupt-keeps-activity-on-refusal",
+                    test_interrupting_clears_the_activity);
     g_test_add_func("/daemon/closed-turn-still-answers-the-operator",
                     test_a_closed_turn_still_answers_the_operator);
     g_test_add_func("/daemon/progress-note-is-not-an-answer",

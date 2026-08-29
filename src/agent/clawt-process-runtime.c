@@ -492,6 +492,97 @@ process_runtime_get_pid(ClawtAgentRuntime *runtime)
 }
 
 /*
+ * Kills what the agent's libreclaw spawned, and nothing above it.
+ *
+ * The agent's turn is carried out by an AI CLI that libreclaw spawned,
+ * and that CLI spawns whatever the model asked for. All of it is below
+ * our own child in the process tree, and none of it is our child -- so
+ * this walks /proc rather than using GSubprocess, which only knows about
+ * the one process it started.
+ *
+ * Killing the CLI does not cancel libreclaw's wait on it: GLib's
+ * g_subprocess_communicate_*_async() abandons the read when its
+ * cancellable fires but leaves the process running, which is exactly why
+ * `!stop` was never enough. Coming at it from the process side is the
+ * half that actually ends the work; libreclaw then sees its child exit
+ * and finishes the turn on its own.
+ *
+ * SIGTERM first and SIGKILL after a grace period, both re-checking that
+ * the pid still descends from our child. A pid read a moment ago may
+ * have exited and been reused by then, and what inherits a recycled pid
+ * belongs to somebody else -- on a busy machine that is the difference
+ * between stopping an agent and killing the operator's editor.
+ */
+static gboolean
+process_runtime_interrupt(ClawtAgentRuntime *runtime, guint *out_killed,
+                          GError **error)
+{
+    ClawtProcessRuntime *self = CLAWT_PROCESS_RUNTIME(runtime);
+    g_autoptr(GArray) descendants = NULL;
+    GPid root;
+    guint signalled = 0;
+    guint i;
+
+    root = process_runtime_get_pid(runtime);
+
+    if (root <= 0 || !self->running) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_AGENT_STATE,
+                            "the agent is not running, so it has nothing "
+                            "in flight to stop");
+        return FALSE;
+    }
+
+    descendants = clawt_process_descendants(root);
+
+    /*
+     * Nothing to kill is a success, not a failure.
+     *
+     * An agent between turns has no CLI running, and pressing stop then
+     * is a person confirming what they wanted rather than a mistake to
+     * report. The count says what happened, so a caller that cares can
+     * tell the two apart.
+     */
+    for (i = 0; i < descendants->len; i++) {
+        GPid pid = g_array_index(descendants, GPid, i);
+
+        if (!clawt_process_is_descendant_of(pid, root))
+            continue;
+
+        if (kill(pid, SIGTERM) == 0)
+            signalled++;
+    }
+
+    if (out_killed != NULL)
+        *out_killed = signalled;
+
+    if (signalled > 0) {
+        /*
+         * A short grace period, then SIGKILL whatever ignored the first
+         * signal. Blocking here at all is a deliberate exception: this
+         * is the one IPC handler whose whole promise is that the work
+         * has stopped by the time it answers, and 200ms is under the
+         * threshold at which a button feels unresponsive. An AI CLI that
+         * needs longer than that to die is one that is not going to.
+         */
+        g_usleep(200 * 1000);
+
+        for (i = 0; i < descendants->len; i++) {
+            GPid pid = g_array_index(descendants, GPid, i);
+
+            if (clawt_process_is_descendant_of(pid, root))
+                kill(pid, SIGKILL);
+        }
+    }
+
+    g_info("runtime: interrupted %s, signalling %u process(es) below pid %d",
+           clawt_agent_runtime_get_agent_id(runtime) != NULL
+               ? clawt_agent_runtime_get_agent_id(runtime) : "an agent",
+           signalled, (gint)root);
+
+    return TRUE;
+}
+
+/*
  * What a separate process adds over and above what every agent has: a turn
  * that can be interrupted, because there is a process to signal.
  *
@@ -554,6 +645,7 @@ clawt_process_runtime_class_init(ClawtProcessRuntimeClass *klass)
     runtime_class->is_alive = process_runtime_is_alive;
     runtime_class->get_pid = process_runtime_get_pid;
     runtime_class->get_caps = process_runtime_get_caps;
+    runtime_class->interrupt = process_runtime_interrupt;
 }
 
 static void

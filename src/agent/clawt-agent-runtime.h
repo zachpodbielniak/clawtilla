@@ -56,9 +56,12 @@ struct _ClawtAgentRuntimeClass {
     gboolean       (*is_alive)  (ClawtAgentRuntime  *self);
     GPid           (*get_pid)   (ClawtAgentRuntime  *self);
     ClawtAgentCaps (*get_caps)  (ClawtAgentRuntime  *self);
+    gboolean       (*interrupt) (ClawtAgentRuntime  *self,
+                                 guint              *out_killed,
+                                 GError            **error);
 
     /*< private >*/
-    gpointer _padding[8];
+    gpointer _padding[7];
 };
 
 /**
@@ -85,6 +88,36 @@ void clawt_agent_runtime_stop(ClawtAgentRuntime *self);
 gboolean       clawt_agent_runtime_is_alive(ClawtAgentRuntime *self);
 GPid           clawt_agent_runtime_get_pid(ClawtAgentRuntime *self);
 ClawtAgentCaps clawt_agent_runtime_get_caps(ClawtAgentRuntime *self);
+
+/**
+ * clawt_agent_runtime_interrupt:
+ * @self: a #ClawtAgentRuntime
+ * @out_killed: (out) (optional): how many processes were signalled
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Kills what the agent is running right now, and leaves the agent up.
+ *
+ * An agent's turn is carried out by an AI CLI its libreclaw spawned, and
+ * that CLI spawns whatever the model asked for -- a build, a test run, a
+ * search. Interrupting kills that whole tree and nothing above it: the
+ * libreclaw process keeps its link, its session and its mailbox, so the
+ * agent is idle rather than stopped, and the next message reaches it
+ * without a start.
+ *
+ * That is the difference from clawt_agent_runtime_stop(), which takes
+ * the agent down and needs a start afterwards.
+ *
+ * A runtime that has no such tree refuses and says so, naming its own
+ * type: an embedded agent runs its turn inside the daemon, where there
+ * is no process to signal that is not the daemon itself. Answering %TRUE
+ * from a runtime that killed nothing would report a stopped turn that is
+ * still running, which is worse than refusing.
+ *
+ * Returns: %TRUE if the tree was signalled
+ */
+gboolean clawt_agent_runtime_interrupt(ClawtAgentRuntime  *self,
+                                       guint              *out_killed,
+                                       GError            **error);
 
 /**
  * clawt_agent_runtime_get_agent_id:

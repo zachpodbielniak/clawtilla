@@ -177,6 +177,41 @@ clawt_agent_runtime_get_caps(ClawtAgentRuntime *self)
                                      : CLAWT_AGENT_CAPS_NONE;
 }
 
+gboolean
+clawt_agent_runtime_interrupt(ClawtAgentRuntime  *self,
+                              guint              *out_killed,
+                              GError            **error)
+{
+    ClawtAgentRuntimeClass *klass;
+
+    g_return_val_if_fail(CLAWT_IS_AGENT_RUNTIME(self), FALSE);
+
+    if (out_killed != NULL)
+        *out_killed = 0;
+
+    klass = CLAWT_AGENT_RUNTIME_GET_CLASS(self);
+
+    /*
+     * Refused by default, naming the type that refused.
+     *
+     * A missing vfunc that answered TRUE would report a turn stopped
+     * while the model carried on working -- and the operator, having
+     * pressed the button and been told it worked, would read the next
+     * message to arrive as the agent ignoring them.  A gap that reports
+     * failure is a gap; one that reports success is a lie.
+     */
+    if (klass->interrupt == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                    "a %s runs its turn inside the daemon, so there is no "
+                    "separate process to stop -- stopping the agent is the "
+                    "only way to end it",
+                    G_OBJECT_TYPE_NAME(self));
+        return FALSE;
+    }
+
+    return klass->interrupt(self, out_killed, error);
+}
+
 const gchar *
 clawt_agent_runtime_get_agent_id(ClawtAgentRuntime *self)
 {

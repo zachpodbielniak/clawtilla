@@ -65,6 +65,7 @@ static void         disk_chooser_build(ImageChooser *chooser,
 static gchar *      disk_chooser_value(ImageChooser *chooser);
 static const gchar *editor_command(void);
 static void         on_send(GtkWidget *widget, gpointer user_data);
+static void         sync_stop_turn(ClawtWindow *self, gboolean busy);
 static void         load_history(ClawtWindow *self);
 static gboolean     apply_schema_rows(ClawtWindow *self);
 static void         on_new_agent(GtkButton *button,
@@ -352,6 +353,23 @@ struct _ClawtWindow {
     AdwViewStackPage  *decision_page;
 
     GtkWidget         *activity_bar;
+
+    /*
+     * Stop, beside Send: kills the AI CLI carrying out the current turn
+     * and everything it spawned, and leaves the agent up.  Shown only
+     * while there is a turn to stop -- a control that is always there
+     * and usually does nothing teaches people it does nothing.
+     */
+    GtkWidget         *stop_turn;
+
+    /*
+     * Whether the selected agent declares `interrupt`, read from its own
+     * row in the last listing.  Kept rather than re-derived, because the
+     * other place that needs it -- a typing frame -- carries no caps,
+     * and working them out there from the runtime type would be a second
+     * answer to a question the daemon already answers.
+     */
+    gboolean           selected_can_interrupt;
     GtkSpinner        *activity_spinner;
 
     GtkWidget         *agent_menu;
@@ -1995,6 +2013,26 @@ refresh_agents_once(ClawtWindow *self)
                       self->selected_agent) == 0 ||
             (self->selected_agent == NULL && i == 0))
             gtk_list_box_select_row(self->sidebar, GTK_LIST_BOX_ROW(row));
+
+        /*
+         * Stop follows the selected agent's own row.
+         *
+         * Done here as well as on the typing event, because a typing
+         * frame only arrives on a transition: selecting an agent that is
+         * already mid-turn, or reconnecting to a daemon that has been
+         * working the whole time, produces no event at all and the
+         * button would never appear.
+         */
+        if (g_strcmp0(clawt_json_string(agent, "id", ""),
+                      self->selected_agent) == 0) {
+            self->selected_can_interrupt =
+                strstr(clawt_json_string(agent, "caps", ""),
+                       "interrupt") != NULL;
+
+            sync_stop_turn(self,
+                           json_object_has_member(agent, "busy") &&
+                           json_object_get_boolean_member(agent, "busy"));
+        }
     }
 
     /* Whatever the fleet declares and nobody is on yet, at the bottom. */
@@ -2037,6 +2075,97 @@ set_activity(ClawtWindow *self, const gchar *text)
     gtk_label_set_text(self->streaming, text);
     gtk_widget_set_visible(self->activity_bar, TRUE);
     gtk_spinner_start(self->activity_spinner);
+}
+
+/*
+ * Shows or hides Stop, and says why it is not offered.
+ *
+ * Visible only while there is a turn to stop.  A button that is present
+ * whether or not it can do anything is one people stop reading, and the
+ * question it answers -- "is something running that I can end?" -- is
+ * exactly the one its presence already answers.
+ *
+ * @caps is the agent's own capability list rather than a guess from the
+ * runtime type: an embedded agent takes its turn inside the daemon,
+ * where the only process to signal is the daemon itself, so it declares
+ * no `interrupt` and must not be offered a button that would refuse.
+ */
+static void
+sync_stop_turn(ClawtWindow *self, gboolean busy)
+{
+    if (self->stop_turn == NULL)
+        return;
+
+    gtk_widget_set_visible(self->stop_turn,
+                           busy && self->selected_can_interrupt);
+}
+
+/*
+ * Kills what the agent is doing, and leaves the agent running.
+ *
+ * Deliberately not `agent.stop`: that takes the agent down and needs a
+ * start afterwards, along with its container or VM.  This ends the work
+ * and leaves the conversation where it was, which is what somebody
+ * watching an agent go the wrong way actually wants.
+ */
+static gchar *
+interrupt_selected(ClawtWindow *self)
+{
+    g_autoptr(JsonNode) reply = NULL;
+
+    if (self->selected_agent == NULL)
+        return NULL;
+
+    reply = clawt_window_request(
+        self, "agent.interrupt",
+        clawt_build_payload("agent", self->selected_agent, NULL));
+
+    if (reply == NULL)
+        return NULL;
+
+    /*
+     * Hidden straight away rather than waiting for the next typing
+     * frame.  The turn was just taken out from under the code that
+     * lowers the indicator, so the frame may never come -- and a Stop
+     * button still sitting there after a successful stop reads as the
+     * press having failed.
+     */
+    sync_stop_turn(self, FALSE);
+    set_activity(self, NULL);
+
+    /*
+     * The count is the answer.  "Stopped" over an agent that was between
+     * turns claims something happened that did not, and the next thing
+     * it says would then read as it ignoring the button.
+     */
+    {
+        JsonObject *payload = clawt_payload_of(reply);
+        gint64 killed = (payload != NULL &&
+                         json_object_has_member(payload, "killed"))
+                        ? json_object_get_int_member(payload, "killed") : 0;
+
+        if (killed > 0)
+            return g_strdup_printf("Stopped %s: %" G_GINT64_FORMAT
+                                   " process(es) ended.",
+                                   self->selected_agent, killed);
+
+        return g_strdup_printf("%s was between turns -- nothing was running "
+                               "to stop.", self->selected_agent);
+    }
+}
+
+static void
+on_stop_turn(GtkWidget *widget, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autofree gchar *said = NULL;
+
+    (void)widget;
+
+    said = interrupt_selected(self);
+
+    if (said != NULL)
+        clawt_window_toast(self, said);
 }
 
 /*
@@ -4828,6 +4957,7 @@ static const SlashCommand slash_commands[] = {
     { "/start",   NULL,      "start this agent" },
     { "/stop",    NULL,      "stop this agent" },
     { "/restart", NULL,      "restart this agent" },
+    { "/interrupt", NULL,    "stop what it is doing now, without stopping it" },
     { "/attach",  NULL,      "pick files to send with the next message" },
     { "/compose", NULL,      "write the message in $EDITOR (same as Ctrl+G)" },
     { "/edit",    "[file]",  "open a workspace file in $EDITOR" },
@@ -4987,6 +5117,16 @@ run_slash_command(ClawtWindow *self, const gchar *text)
 
             append_local(self, message);
         }
+
+        refresh_agents(self);
+        return TRUE;
+    }
+
+    if (g_strcmp0(name, "/interrupt") == 0) {
+        g_autofree gchar *said = interrupt_selected(self);
+
+        if (said != NULL)
+            append_local(self, said);
 
         refresh_agents(self);
         return TRUE;
@@ -9546,6 +9686,13 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
                 what = g_strdup("thinking");
 
             set_activity(self, what);
+
+            /*
+             * And the button that ends it.  The caps come from the
+             * listing rather than the event, so this asks the row we
+             * already drew rather than inventing a second answer.
+             */
+            sync_stop_turn(self, g_strcmp0(typing, "true") == 0);
         }
 
         /*
@@ -12724,6 +12871,27 @@ build_chat_page(ClawtWindow *self)
     gtk_widget_set_name(send, "clawt-send");
     g_signal_connect(send, "clicked", G_CALLBACK(on_send), self);
 
+    /*
+     * Stop, beside Send rather than in the agent menu, because it is
+     * about the turn happening in front of you: the menu's Stop takes
+     * the agent down and needs a start afterwards, and reaching for that
+     * one to end a runaway turn costs the container or VM as well.
+     */
+    self->stop_turn = gtk_button_new_from_icon_name(
+                          "process-stop-symbolic");
+    gtk_widget_set_name(self->stop_turn, "clawt-stop-turn");
+    gtk_widget_add_css_class(self->stop_turn, "destructive-action");
+    gtk_widget_set_tooltip_text(self->stop_turn,
+                                "Stop what this agent is doing now. Kills "
+                                "the CLI running the turn and everything it "
+                                "started; the agent stays up.");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(self->stop_turn),
+                                   GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                   "Stop this turn", -1);
+    gtk_widget_set_visible(self->stop_turn, FALSE);
+    g_signal_connect(self->stop_turn, "clicked", G_CALLBACK(on_stop_turn),
+                     self);
+
     {
         GtkWidget *overlay = gtk_overlay_new();
         GtkWidget *entry_scroll = gtk_scrolled_window_new();
@@ -12754,7 +12922,9 @@ build_chat_page(ClawtWindow *self)
 
     gtk_widget_set_valign(attach, GTK_ALIGN_END);
     gtk_widget_set_valign(send, GTK_ALIGN_END);
+    gtk_widget_set_valign(self->stop_turn, GTK_ALIGN_END);
     gtk_box_append(GTK_BOX(entry_box), attach);
+    gtk_box_append(GTK_BOX(entry_box), self->stop_turn);
     gtk_box_append(GTK_BOX(entry_box), send);
     gtk_widget_set_margin_top(entry_box, 6);
     gtk_widget_set_margin_bottom(entry_box, 12);

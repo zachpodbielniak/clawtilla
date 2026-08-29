@@ -335,4 +335,57 @@ const gchar *clawt_color_ink(const gchar *hex);
  */
 gchar *clawt_time_ago_label(gint64 timestamp, gint64 now);
 
+/**
+ * clawt_process_parent_of:
+ * @pid: the process to ask about
+ *
+ * The parent of @pid, read from `/proc`.
+ *
+ * Returns: the parent pid, or 0 if @pid is gone or unreadable
+ */
+GPid clawt_process_parent_of(GPid pid);
+
+/**
+ * clawt_process_descendants:
+ * @root: the process whose tree to walk
+ *
+ * Every process below @root, deepest first.
+ *
+ * @root itself is never in the result.  That is the whole point of the
+ * function: interrupting an agent kills what its libreclaw spawned --
+ * the AI CLI and whatever the AI CLI is running -- while libreclaw
+ * itself keeps its link, its session and its mailbox.  Killing the root
+ * as well would be stopping the agent, which is a different button.
+ *
+ * Deepest first so a kill walk signals a child before its parent: a
+ * parent killed first reparents its children to init, and they are then
+ * no longer findable through @root.
+ *
+ * Reads `/proc/<pid>/status`, not `/proc/<pid>/stat` -- the comm field
+ * in the latter is bracketed and may itself contain `)` and spaces, so
+ * every naive field split of it is wrong for a process whose name has
+ * one.
+ *
+ * Returns: (transfer full) (element-type GPid): the descendants, deepest
+ *   first, empty if there are none
+ */
+GArray *clawt_process_descendants(GPid root);
+
+/**
+ * clawt_process_is_descendant_of:
+ * @pid: the process to check
+ * @root: the ancestor to look for
+ *
+ * Whether @pid is still somewhere below @root right now.
+ *
+ * Asked again immediately before a signal is sent, because a pid read a
+ * moment ago may have exited and been reused by then -- and the thing
+ * that inherits a recycled pid is somebody else's process.  A stale
+ * snapshot is the difference between stopping an agent's work and
+ * killing an unrelated program.
+ *
+ * Returns: %TRUE if @pid descends from @root
+ */
+gboolean clawt_process_is_descendant_of(GPid pid, GPid root);
+
 G_END_DECLS

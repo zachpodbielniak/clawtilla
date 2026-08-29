@@ -2806,6 +2806,66 @@ daemon_start_agent_async(ClawtDaemon *self, const gchar *agent_id,
 }
 
 gboolean
+clawt_daemon_interrupt_agent(ClawtDaemon  *self,
+                             const gchar  *agent_id,
+                             guint        *out_killed,
+                             GError      **error)
+{
+    ClawtAgent *agent;
+    ClawtAgentRuntime *runtime;
+    g_autoptr(ClawtEvent) event = NULL;
+    guint killed = 0;
+
+    g_return_val_if_fail(CLAWT_IS_DAEMON(self), FALSE);
+
+    if (out_killed != NULL)
+        *out_killed = 0;
+
+    agent = clawt_agent_manager_get(self->agents, agent_id);
+
+    if (agent == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "there is no agent called '%s'",
+                    agent_id != NULL ? agent_id : "");
+        return FALSE;
+    }
+
+    runtime = clawt_agent_get_runtime(agent);
+
+    if (runtime == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_AGENT_STATE,
+                    "%s is not running, so it has nothing in flight to stop",
+                    agent_id);
+        return FALSE;
+    }
+
+    if (!clawt_agent_runtime_interrupt(runtime, &killed, error))
+        return FALSE;
+
+    if (out_killed != NULL)
+        *out_killed = killed;
+
+    /*
+     * Marked idle here rather than waiting for libreclaw to lower its
+     * typing indicator.
+     *
+     * Killing a turn mid-flight is the one case where that indicator may
+     * never arrive -- the code that lowers it runs when the turn
+     * finishes, and the turn was just taken out from under it. An agent
+     * that shows as working for ever after somebody pressed stop is
+     * precisely the state the button exists to get out of, so the daemon
+     * says so itself. A later typing frame from libreclaw is idempotent.
+     */
+    clawt_agent_set_activity(agent, FALSE, NULL);
+
+    event = clawt_event_new("agent.interrupted", agent_id);
+    clawt_event_set_detail_int(event, "killed", (gint64)killed);
+    clawt_event_bus_publish(self->bus, event);
+
+    return TRUE;
+}
+
+gboolean
 clawt_daemon_stop_agent(ClawtDaemon *self, const gchar *agent_id,
                         gboolean stop_machine)
 {
@@ -7060,6 +7120,30 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
         json_builder_set_member_name(builder, "stopped");
         json_builder_add_boolean_value(
             builder, clawt_daemon_stop_agent(self, agent_id, TRUE));
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "agent.interrupt") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        guint killed = 0;
+
+        if (!clawt_daemon_interrupt_agent(self, agent_id, &killed, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "interrupted");
+        json_builder_add_boolean_value(builder, TRUE);
+
+        /*
+         * The count, because zero and several mean different things to
+         * whoever pressed the button: nothing was running, or that much
+         * was. A bare "done" reads the same either way, and the client
+         * has to say which.
+         */
+        json_builder_set_member_name(builder, "killed");
+        json_builder_add_int_value(builder, (gint64)killed);
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));

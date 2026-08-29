@@ -175,6 +175,7 @@ declare -A AFFORDANCES=(
     ["connection notice"]="clawt_connection_notice_text|clawt_connection_notice_text"
     ["start on a remote daemon"]="opt_profile|opt_profile"
     ["resync after a gap"]="\"resync\"|\"resync\""
+    ["stop the running turn"]="on_stop_turn|stop_turn_button"
 )
 
 usage () {

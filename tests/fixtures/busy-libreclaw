@@ -1,0 +1,46 @@
+#!/bin/sh
+# busy-libreclaw - a fake agent that is in the middle of a turn
+#
+# Copyright (C) 2026
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Stands in for libreclaw with an AI CLI running under it.  The point of
+# the interrupt tests is the *shape* of the tree, not what is in it: an
+# agent process that clawtilla started, a CLI below it that clawtilla did
+# not, and something below that which the CLI started.  Nothing here needs
+# a model or a network.
+#
+#   BUSY_LIBRECLAW_PIDFILE  where to write the grandchild's pid
+#
+# The grandchild is a shell rather than a bare `sleep` so the tree is
+# genuinely three deep -- a two-level walk would pass against a one-level
+# implementation, and the reparenting hazard the deepest-first order
+# exists for only appears below the second level.
+#
+# It keeps running after its child is killed, which is the behaviour under
+# test: libreclaw sees the CLI exit, reports the turn failed and waits for
+# the next message.  A fixture that exited with its child would make the
+# test pass against an implementation that killed the agent too -- which
+# is `agent.stop`, and is the button this one exists not to be.
+
+set -eu
+
+echo "busy-libreclaw: pretending to take a turn"
+
+# Interruptible, so an ordinary stop in the tests is not a wait.
+trap 'exit 0' TERM INT
+
+# The CLI, and the thing the CLI ran.
+sh -c 'sleep 600 & echo "$!" > "$0"; wait' "${BUSY_LIBRECLAW_PIDFILE}" &
+cli=$!
+
+# `wait` returns when the CLI is killed; the agent carries on regardless.
+wait "${cli}" || true
+
+echo "busy-libreclaw: the turn ended, still up"
+
+while true
+do
+    sleep 0.05 &
+    wait $!
+done

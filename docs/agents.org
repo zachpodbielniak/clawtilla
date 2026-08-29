@@ -618,8 +618,55 @@ STOPPING.  STOPPING means somebody asked.
 clawtilla agent start researcher
 clawtilla agent stop researcher
 clawtilla agent restart researcher
+clawtilla agent interrupt researcher
 clawtilla agent logs researcher
 #+end_src
+
+*** Stopping the work is not stopping the agent
+
+~agent interrupt~ ends what an agent is doing *now*. It is not a gentler
+~stop~ --- it is a different thing, and reaching for the wrong one costs
+more than it looks:
+
+| | ~interrupt~ | ~stop~ |
+|---+---+---|
+| the AI CLI mid-turn | killed | killed with everything else |
+| the agent's own process | keeps running | stopped |
+| its container or VM | untouched | stopped |
+| its link, session, mailbox | kept | dropped; the session resumes on start |
+| afterwards | idle --- message it | needs ~agent start~ |
+
+The case it is for is an agent that has gone the wrong way: it has
+misread the task, or it is three minutes into a build nobody wants. What
+you want there is for the work to end and the conversation to stay where
+it is, and ~stop~ gives you neither --- it takes the VM down with it and
+the session comes back from disk on the next start.
+
+A turn is carried out by an AI CLI the agent's libreclaw spawned, and
+that CLI spawns whatever the model asked for. None of it is clawtilla's
+own child, so the daemon finds it by walking ~/proc~ for everything below
+the agent's pid, signals deepest-first, and re-checks each pid's ancestry
+immediately before signalling it. SIGTERM, a short grace period, then
+SIGKILL.
+
+Killing the CLI is what actually ends the work. libreclaw's own ~!stop~
+cancels a ~GCancellable~, and cancelling
+~g_subprocess_communicate_async()~ abandons the read while leaving the
+process running --- so the model goes on burning tokens against a wait
+nobody is holding. Coming at it from the process side is the half that
+ends it; libreclaw then sees its child exit and finishes the turn.
+
+It answers with how many processes it signalled, and zero is not a
+failure: an agent between turns has no CLI, and pressing stop then is a
+person confirming what they wanted.
+
+An *embedded* agent cannot be interrupted, and says so rather than
+pretending. Its turn runs inside the daemon, where the only process to
+signal is the daemon itself. That is a capability (~interrupt~), so a
+client can tell before it offers the button.
+
+Both graphical clients put Stop beside Send, and it appears only while
+there is a turn to stop. ~/interrupt~ does the same from the composer.
 
 Starting an agent, in order:
 
@@ -643,7 +690,7 @@ Starting an agent, in order:
 | ~host-control~ | that computer being a host |
 | ~desktop~, ~desktop-input~ | the desktop add-on, and ~allow_input~ |
 | ~mounts~ | having any |
-| ~streaming~, ~interrupt~ | the runtime |
+| ~streaming~, ~interrupt~ | the runtime --- ~process~ has both, ~embedded~ neither |
 | ~effort-levels~ | the model configuration |
 
 Two consequences:

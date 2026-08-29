@@ -360,6 +360,34 @@ gboolean clawt_daemon_stop_agent(ClawtDaemon *self,
                                  gboolean     stop_machine);
 
 /**
+ * clawt_daemon_interrupt_agent:
+ * @self: a #ClawtDaemon
+ * @agent_id: which agent
+ * @out_killed: (out) (optional): how many processes were signalled
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Stops what the agent is doing right now without stopping the agent.
+ *
+ * The AI CLI carrying out the turn is killed, along with everything it
+ * had spawned; the agent's own process keeps its link, its session and
+ * its mailbox, so it is idle rather than stopped and the next message
+ * reaches it with no start in between.
+ *
+ * The agent is marked idle here rather than left to libreclaw's typing
+ * indicator. Killing a turn mid-flight is exactly the case where the
+ * indicator may never be lowered, and an agent that shows as working for
+ * ever after somebody pressed stop is the failure the button exists to
+ * prevent.
+ *
+ * Returns: %TRUE if the turn was interrupted; @out_killed may still be 0
+ *   when the agent was between turns, which is not a failure
+ */
+gboolean clawt_daemon_interrupt_agent(ClawtDaemon  *self,
+                                      const gchar  *agent_id,
+                                      guint        *out_killed,
+                                      GError      **error);
+
+/**
  * clawt_daemon_set_libreclaw_binary:
  * @self: a #ClawtDaemon
  * @path: (nullable): the libreclaw binary, or %NULL to search PATH

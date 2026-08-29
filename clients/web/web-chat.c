@@ -631,8 +631,39 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
 
 /* ── The composer ────────────────────────────────────────────────── */
 
+/*
+ * Stop, inside the composer row so it sits beside Send.
+ *
+ * Explicitly type="button" and posting on its own. A <button> with no
+ * type inside a <form> is a submit button, so the obvious spelling would
+ * have sent the half-typed message instead of stopping the turn -- and a
+ * nested <form> is not an option either: the browser drops the inner
+ * tags silently and the click posts the message just the same.
+ *
+ * Before Send in the row, so Send never moves as this appears and
+ * disappears. A button that shifts under the cursor mid-click is how
+ * somebody stops an agent they meant to talk to.
+ */
 static HtmxElement *
-composer(const gchar *agent_id)
+stop_turn_button(const gchar *agent_id)
+{
+    g_autofree gchar *escaped = g_uri_escape_string(agent_id, NULL, FALSE);
+    g_autofree gchar *action = g_strdup_printf("/a/%s/interrupt", escaped);
+    g_autoptr(HtmxButton) stop = clawt_web_post_button("Stop", action,
+                                                       "danger", NULL);
+
+    htmx_element_set_attribute(HTMX_ELEMENT(stop), "type", "button");
+    htmx_element_add_class(HTMX_ELEMENT(stop), "stop-turn");
+    htmx_element_set_attribute(HTMX_ELEMENT(stop), "title",
+                               "Stop what this agent is doing now. Kills the "
+                               "CLI running the turn and everything it "
+                               "started; the agent stays up.");
+
+    return HTMX_ELEMENT(g_steal_pointer(&stop));
+}
+
+static HtmxElement *
+composer(const gchar *agent_id, gboolean busy)
 {
     g_autoptr(HtmxElement) foot = HTMX_ELEMENT(htmx_footer_new());
     g_autoptr(HtmxDiv) inner = htmx_div_new();
@@ -649,6 +680,9 @@ composer(const gchar *agent_id)
                                "Message, or /help for commands");
     htmx_element_set_attribute(HTMX_ELEMENT(area), "autofocus", "autofocus");
     htmx_node_add_child(HTMX_NODE(inner), HTMX_NODE(area));
+
+    if (busy)
+        clawt_web_add(inner, stop_turn_button(agent_id));
 
     {
         g_autoptr(HtmxButton) send = clawt_web_button("Send", "primary");
@@ -764,8 +798,25 @@ clawt_web_chat_body_full(ClawtWebApp *app, const gchar *agent_id,
      * different one was on screen. Said rather than left blank -- an
      * absent composer reads as the page having failed to render.
      */
-    if (peer == NULL)
-        clawt_web_add(main_el, composer(agent_id));
+    if (peer == NULL) {
+        /*
+         * Whether it is mid-turn, so Stop is drawn only when there is
+         * something to stop -- and only for a runtime that can be
+         * interrupted. An embedded agent takes its turn inside the
+         * daemon, where the only process to signal is the daemon
+         * itself, so it declares no `interrupt` and must not be offered
+         * a button that would refuse.
+         */
+        g_autoptr(JsonNode) known = clawt_web_find_agent(app, agent_id);
+        JsonObject *info = clawt_web_member_object(clawt_web_root(known),
+                                                   "agent");
+        gboolean busy = info != NULL &&
+                        clawt_web_member_bool(info, "busy", FALSE) &&
+                        strstr(clawt_web_member(info, "caps", ""),
+                               "interrupt") != NULL;
+
+        clawt_web_add(main_el, composer(agent_id, busy));
+    }
     else
         clawt_web_add(main_el, clawt_web_text(
             "You are reading a conversation between two agents. Send to "
@@ -783,7 +834,7 @@ clawt_web_chat_body(ClawtWebApp *app, const gchar *agent_id)
 /* ── Slash commands ──────────────────────────────────────────────── */
 
 /*
- * The same eighteen the GTK composer answers, with the same names.
+ * The same nineteen the GTK composer answers, with the same names.
  *
  * They are handled here rather than sent to the agent for the reason they
  * are there: /reset and /stop are things to do *to* an agent, and a chat
@@ -805,6 +856,7 @@ static const struct {
     { "/start",   NULL,      "start this agent" },
     { "/stop",    NULL,      "stop this agent" },
     { "/restart", NULL,      "restart this agent" },
+    { "/interrupt", NULL,    "stop what it is doing now, without stopping it" },
     { "/attach",  NULL,      "send a file with the next message" },
     { "/compose", NULL,      "write the message in a full-page box" },
     { "/edit",    "[file]",  "open a workspace file to edit here" },
@@ -951,6 +1003,9 @@ run_command(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
     if (g_strcmp0(verb, "/restart") == 0)
         return simple_agent_action(app, request, agent_id, "agent.restart",
                                    "Restarting.");
+
+    if (g_strcmp0(verb, "/interrupt") == 0)
+        return clawt_web_chat_interrupt(app, request, agent_id);
 
     if (g_strcmp0(verb, "/reset") == 0)
         return simple_agent_action(app, request, agent_id, "agent.reset",
@@ -1478,10 +1533,63 @@ on_attachment(HtmxRequest *request, GHashTable *params, gpointer user_data)
     return response;
 }
 
+/*
+ * Kills the CLI carrying out this agent's turn, and leaves the agent up.
+ *
+ * Deliberately not `agent.stop`, which takes the agent down along with
+ * its container or VM and needs a start afterwards. What somebody
+ * watching an agent go the wrong way wants is for the work to end and
+ * the conversation to stay where it is.
+ */
+HtmxResponse *
+clawt_web_chat_interrupt(ClawtWebApp *app, HtmxRequest *request,
+                         const gchar *agent_id)
+{
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *said = NULL;
+    gint64 killed;
+
+    clawt_web_payload_set(payload, "agent", agent_id);
+
+    reply = clawt_web_app_call(app, "agent.interrupt",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        return clawt_web_error_page(app, request, agent_id,
+                                    CLAWT_WEB_VIEW_CHAT,
+                                    clawt_web_app_last_error(app));
+
+    /*
+     * The count is the answer. "Stopped" over an agent that was between
+     * turns claims something happened that did not, and the next thing
+     * it says would then read as it ignoring the button.
+     */
+    killed = clawt_web_member_int(clawt_web_root(reply), "killed", 0);
+
+    said = (killed > 0)
+           ? g_strdup_printf("Stopped: %" G_GINT64_FORMAT
+                             " process(es) ended.", killed)
+           : g_strdup("It was between turns -- nothing was running to stop.");
+
+    return clawt_web_after_action(app, request, agent_id,
+                                  CLAWT_WEB_VIEW_CHAT, said);
+}
+
+static HtmxResponse *
+on_interrupt(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+
+    return clawt_web_chat_interrupt(app, request, agent_id);
+}
+
 void
 clawt_web_register_chat(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_post(router, "/a/:id/send", on_send, app);
+    htmx_router_post(router, "/a/:id/interrupt", on_interrupt, app);
     htmx_router_get(router, "/f/a/:id/transcript", on_transcript_fragment, app);
     htmx_router_get(router, "/f/attachment/:id", on_attachment, app);
     htmx_router_get(router, "/a/:id/export", on_export, app);

@@ -308,6 +308,24 @@ gchar *clawt_web_first_agent(ClawtWebApp *app);
 JsonNode *clawt_web_find_agent(ClawtWebApp *app, const gchar *agent_id);
 
 /**
+ * clawt_web_chat_interrupt:
+ * @app: the web app
+ * @request: the request being answered
+ * @agent_id: which agent
+ *
+ * Kills the CLI carrying out this agent's turn, and everything it
+ * spawned, leaving the agent itself up.
+ *
+ * Shared by the composer's Stop button and the `/interrupt` command, so
+ * the two cannot come to say different things about what happened.
+ *
+ * Returns: (transfer full): the chat page, with what happened on it
+ */
+HtmxResponse *clawt_web_chat_interrupt(ClawtWebApp *app,
+                                       HtmxRequest *request,
+                                       const gchar *agent_id);
+
+/**
  * clawt_web_warnings:
  * @parent: (transfer none): where to put them
  * @reply: (nullable): a reply that may carry a "warnings" array

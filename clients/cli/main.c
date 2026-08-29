@@ -598,6 +598,7 @@ static const struct {
     { "start", "<agent>", "start it" },
     { "stop", "<agent>", "stop it" },
     { "restart", "<agent>", "stop it and start it again" },
+    { "interrupt", "<agent>", "stop what it is doing now; leave it running" },
     { "reset", "<agent>", "clear its session, applying a new identity" },
     { "logs", "<agent>", "what it has written to its log" },
     { "set", "<agent> <key> <value>", "change one setting" },
@@ -1310,6 +1311,50 @@ cmd_agent(int argc, char *argv[])
                                files);
             }
         }
+
+        return EXIT_SUCCESS;
+    }
+
+    /*
+     * Ending the work without ending the agent.
+     *
+     * `stop` takes the agent down along with its container or VM and
+     * needs a `start` afterwards; this kills the AI CLI carrying out the
+     * turn and everything it spawned, and leaves the agent connected
+     * with its session and mailbox intact.
+     */
+    if (g_strcmp0(verb, "interrupt") == 0) {
+        gint64 killed;
+
+        if (target == NULL) {
+            g_printerr("Usage: clawtilla agent interrupt <agent>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "agent.interrupt",
+                     build_payload("agent", target, NULL));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        {
+            JsonObject *result = json_node_get_object(reply);
+
+            killed = json_object_has_member(result, "killed")
+                     ? json_object_get_int_member(result, "killed") : 0;
+        }
+
+        /*
+         * The count, because zero and several mean different things to
+         * whoever ran this: nothing was running, or that much was. A
+         * bare "interrupted" reads the same either way.
+         */
+        if (killed > 0)
+            g_print("%s: stopped, %" G_GINT64_FORMAT " process(es) ended\n",
+                    target, killed);
+        else
+            g_print("%s: between turns -- nothing was running to stop\n",
+                    target);
 
         return EXIT_SUCCESS;
     }
