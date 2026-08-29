@@ -44,6 +44,7 @@ typedef struct {
     GtkWidget   *worktree_row;
     GtkWidget   *enabled_row;
     GtkWidget   *catch_up_row;
+    GtkWidget   *jitter_row;
 
     GtkWidget   *schedule_row;
     GtkWidget   *at_row;
@@ -209,6 +210,11 @@ on_routine_saved(GtkButton *button, gpointer user_data)
     json_builder_add_boolean_value(
         builder, adw_switch_row_get_active(
                      ADW_SWITCH_ROW(dialog->catch_up_row)));
+    json_builder_set_member_name(builder, "jitter_seconds");
+    json_builder_add_int_value(
+        builder, g_ascii_strtoll(
+                     gtk_editable_get_text(GTK_EDITABLE(dialog->jitter_row)),
+                     NULL, 10));
     json_builder_end_object(builder);
 
     reply = clawt_window_request(dialog->window,
@@ -490,6 +496,25 @@ open_routine_editor(ClawtWindow *self, JsonObject *existing)
         json_object_get_boolean_member(existing, "catch_up"));
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(when),
                               dialog->catch_up_row);
+
+    /*
+     * Offered here because the option now does something.
+     *
+     * This dialog names its eleven keys by hand rather than walking the
+     * schema, which the web client does -- so implementing an option
+     * reaches that client for free and this one not at all, and the
+     * symptom is a setting somebody can only reach from a browser.
+     */
+    dialog->jitter_row = clawt_gtk_add_entry(
+        when, "Jitter (seconds)",
+        existing != NULL ? clawt_json_string(existing, "jitter_seconds", "0")
+                         : "0");
+    adw_action_row_set_subtitle(
+        ADW_ACTION_ROW(dialog->jitter_row),
+        "Hold each scheduled run back by up to this long, chosen at "
+        "random. Only worth setting when several routines share one "
+        "rate-limited service; `run now` and a catch-up start at once "
+        "either way.");
 
     g_signal_connect(dialog->schedule_row, "notify::selected",
                      G_CALLBACK(on_schedule_changed), dialog);
