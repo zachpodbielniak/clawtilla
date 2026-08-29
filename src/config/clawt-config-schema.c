@@ -433,8 +433,7 @@ static const ClawtSchemaEntry schema[] = {
   "the limit, never a truncated image, which would surface as a broken\n"
   "file a long way from the cause.", "0.2.0" },
 
-{ "defaults.skills", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_COMMENTED |
-  CLAWT_SCHEMA_FLAG_INERT,
+{ "defaults.skills", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_COMMENTED,
   NULL, NULL,
   "Skills every agent gets unless it says otherwise.\n"
   "\n"
@@ -443,7 +442,11 @@ static const ClawtSchemaEntry schema[] = {
   "be two behaviours, and the one nobody tested would be the one that\n"
   "ran.\n"
   "\n"
-  "Not implemented in this build. The skill library is not built yet, so no skill is scanned,\nassigned or linked into a workspace.", "0.2.0" },
+  "Names, not paths. A name that matches no skill is a warning rather\n"
+  "than an error -- a fleet is edited by hand -- but it is never\n"
+  "silent, because an agent quietly missing the procedure it was\n"
+  "configured with looks exactly like one that has it and ignored it.",
+  "0.2.0" },
 
 { "ai_assist", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "The model that helps design new agents.\n"
@@ -817,15 +820,17 @@ static const ClawtSchemaEntry schema[] = {
   "actually reads -- the paths differ per provider and are asked of the\n"
   "library rather than written down here.", "0.2.0" },
 
-{ "skills.enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_COMMENTED |
-  CLAWT_SCHEMA_FLAG_INERT,
+{ "skills.enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_COMMENTED,
   "true", NULL,
   "Whether skills are scanned and linked at all.\n"
   "\n"
-  "Not implemented in this build. The skill library is not built yet, so no skill is scanned,\nassigned or linked into a workspace.", "0.2.0" },
+  "Off means off rather than empty: nothing is scanned, no directory is\n"
+  "watched, and no link is written into any workspace. Existing links\n"
+  "clawtilla made are left where they are, so turning this off does not\n"
+  "quietly rewrite every agent -- turn it back on, or remove the\n"
+  "assignments, if that is what you meant.", "0.2.0" },
 
-{ "skills.dir", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_COMMENTED |
-  CLAWT_SCHEMA_FLAG_INERT,
+{ "skills.dir", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_COMMENTED,
   "~/.clawtilla/skills", NULL,
   "Where the fleet's skills live.\n"
   "\n"
@@ -834,7 +839,13 @@ static const ClawtSchemaEntry schema[] = {
   "must agree, because that name is the traversal gate: no dots, no\n"
   "slashes, and no way to call a skill `..`.\n"
   "\n"
-  "Not implemented in this build. The skill library is not built yet, so no skill is scanned,\nassigned or linked into a workspace.", "0.2.0" },
+  "A skill lives here once and is linked into whichever workspaces need\n"
+  "it, at whatever path that agent's own CLI reads -- which differs per\n"
+  "provider and is asked of the library rather than written down. The\n"
+  "directory is watched, so editing a SKILL.md takes effect without a\n"
+  "reload. It is not created for you: a read with a side effect is how a\n"
+  "typo in this path leaves an empty directory to puzzle over later.",
+  "0.2.0" },
 
 { "skills.teach_max_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_COMMENTED |
   CLAWT_SCHEMA_FLAG_INERT,
@@ -942,14 +953,14 @@ static const ClawtSchemaEntry schema[] = {
   "0.1.0" },
 
 /* ── integrations ────────────────────────────────────────────────── */
-{ "teams.skills", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_INERT,
+{ "teams.skills", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
   "Skills every agent on this team gets.\n"
   "\n"
   "Between the fleet default and the agent's own list, resolved by the\n"
-  "same function as both.\n"
-  "\n"
-  "Not implemented in this build. The skill library is not built yet, so no skill is scanned,\nassigned or linked into a workspace.", "0.2.0" },
+  "same function as both. The three are additive: a skill named in two\n"
+  "of them is one skill, and the most specific place it was asked for is\n"
+  "what gets reported.", "0.2.0" },
 
 { "integrations", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Named integrations, each handed to one agent, some agents or all of them.\n"
@@ -1685,7 +1696,7 @@ static const ClawtSchemaEntry schema[] = {
   "The picture reaches a client as bytes, never as a path, because a\n"
   "client may be running on another machine.", "0.1.0" },
 
-{ "agents.skills", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_INERT,
+{ "agents.skills", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
   "Skills this agent gets, on top of its team's and the fleet's.\n"
   "\n"
@@ -1694,7 +1705,9 @@ static const ClawtSchemaEntry schema[] = {
   "reads. A selector naming a skill that does not exist warns rather\n"
   "than silently reaching nobody.\n"
   "\n"
-  "Not implemented in this build. The skill library is not built yet, so no skill is scanned,\nassigned or linked into a workspace.", "0.2.0" },
+  "An imported skill arrives disabled and stays that way until somebody\n"
+  "has read it, so assigning one is not the same as the agent having it.\n"
+  "Both states are reported.", "0.2.0" },
 
 { "agents.workspace", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Workspace directory. Defaults to defaults.workspace_root/<id>.\n"

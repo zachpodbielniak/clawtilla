@@ -382,8 +382,10 @@ defaults:
   # be two behaviours, and the one nobody tested would be the one that
   # ran.
   #
-  # Not implemented in this build. The skill library is not built yet, so no skill is scanned,
-  # assigned or linked into a workspace.
+  # Names, not paths. A name that matches no skill is a warning rather
+  # than an error -- a fleet is edited by hand -- but it is never
+  # silent, because an agent quietly missing the procedure it was
+  # configured with looks exactly like one that has it and ignored it.
   skills: []
 
 # The model that helps design new agents.
@@ -714,8 +716,11 @@ skills:
 
   # Whether skills are scanned and linked at all.
   #
-  # Not implemented in this build. The skill library is not built yet, so no skill is scanned,
-  # assigned or linked into a workspace.
+  # Off means off rather than empty: nothing is scanned, no directory is
+  # watched, and no link is written into any workspace. Existing links
+  # clawtilla made are left where they are, so turning this off does not
+  # quietly rewrite every agent -- turn it back on, or remove the
+  # assignments, if that is what you meant.
   enabled: true
 
   # Where the fleet's skills live.
@@ -725,8 +730,12 @@ skills:
   # must agree, because that name is the traversal gate: no dots, no
   # slashes, and no way to call a skill `..`.
   #
-  # Not implemented in this build. The skill library is not built yet, so no skill is scanned,
-  # assigned or linked into a workspace.
+  # A skill lives here once and is linked into whichever workspaces need
+  # it, at whatever path that agent's own CLI reads -- which differs per
+  # provider and is asked of the library rather than written down. The
+  # directory is watched, so editing a SKILL.md takes effect without a
+  # reload. It is not created for you: a read with a side effect is how a
+  # typo in this path leaves an empty directory to puzzle over later.
   dir: "~/.clawtilla/skills"
 
   # How long a demonstration may record before it stops itself.
@@ -830,10 +839,9 @@ teams:
     # Skills every agent on this team gets.
     #
     # Between the fleet default and the agent's own list, resolved by the
-    # same function as both.
-    #
-    # Not implemented in this build. The skill library is not built yet, so no skill is scanned,
-    # assigned or linked into a workspace.
+    # same function as both. The three are additive: a skill named in two
+    # of them is one skill, and the most specific place it was asked for is
+    # what gets reported.
     skills: []
 
 # Named integrations, each handed to one agent, some agents or all of them.
@@ -1508,8 +1516,9 @@ agents:
     # reads. A selector naming a skill that does not exist warns rather
     # than silently reaching nobody.
     #
-    # Not implemented in this build. The skill library is not built yet, so no skill is scanned,
-    # assigned or linked into a workspace.
+    # An imported skill arrives disabled and stays that way until somebody
+    # has read it, so assigning one is not the same as the agent having it.
+    # Both states are reported.
     skills: []
 
     # Workspace directory. Defaults to defaults.workspace_root/<id>.

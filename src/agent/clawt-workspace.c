@@ -866,6 +866,22 @@ static const gchar COMPUTER_BEGIN[] =
 static const gchar COMPUTER_END[] =
     "# END clawtilla computer";
 
+/*
+ * And the fourth: the procedures this agent has been given.
+ *
+ * A skill reaches an agent as a *link* in a directory its CLI happens to
+ * scan, which is the least discoverable way anything in this system
+ * arrives.  The harness lists names and descriptions somewhere in its
+ * own context and nothing tells the agent that the fleet chose these
+ * for it, or that reading one is expected before following it.  So the
+ * assignment is written where the agent will certainly read it, for
+ * exactly the reason the tool table is.
+ */
+static const gchar SKILLS_BEGIN[] =
+    "# BEGIN clawtilla skills -- rewritten on every start";
+static const gchar SKILLS_END[] =
+    "# END clawtilla skills";
+
 static gchar *
 computer_section(ClawtAgentConfig *agent)
 {
@@ -2288,6 +2304,34 @@ clawt_workspace_update_computer(ClawtAgentConfig *agent,
 
     return replace_region(agent, COMPUTER_BEGIN, COMPUTER_END, section,
                           error);
+}
+
+gboolean
+clawt_workspace_update_skills(ClawtAgentConfig *agent,
+                              const gchar      *described,
+                              GError          **error)
+{
+    g_autofree gchar *section = NULL;
+
+    g_return_val_if_fail(agent != NULL, FALSE);
+
+    if (described == NULL)
+        return TRUE;
+
+    /*
+     * Both markers are in the section, exactly as the computer region
+     * learned to do it.
+     *
+     * replace_region() swaps everything from the begin marker to the end
+     * marker inclusive, so a section that omitted them would *remove*
+     * them -- and the next start, finding no region, would append a
+     * second copy. The file then grows by one section per daemon start,
+     * which is only visible by reading TOOLS.org after several of them.
+     */
+    section = g_strdup_printf("%s\n\n%s\n%s\n",
+                              SKILLS_BEGIN, described, SKILLS_END);
+
+    return replace_region(agent, SKILLS_BEGIN, SKILLS_END, section, error);
 }
 
 /* ── Importing an existing workspace ─────────────────────────────── */

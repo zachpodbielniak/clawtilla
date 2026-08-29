@@ -1644,6 +1644,67 @@ clawt_config_set_team_string(ClawtConfig *self,
 }
 
 gboolean
+clawt_config_set_team_string_list(ClawtConfig        *self,
+                                  const gchar        *team_id,
+                                  const gchar        *key,
+                                  const gchar *const *values)
+{
+    YamlNode *entry;
+    g_autoptr(YamlNode) node = NULL;
+    gsize i;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    entry = team_node(self, team_id);
+
+    if (entry == NULL)
+        return FALSE;
+
+    if (values == NULL || values[0] == NULL) {
+        yaml_mapping_remove_member(yaml_node_get_mapping(entry), key);
+        return TRUE;
+    }
+
+    node = yaml_node_new_sequence(NULL);
+
+    for (i = 0; values[i] != NULL; i++)
+        yaml_sequence_add_string_element(yaml_node_get_sequence(node),
+                                         values[i]);
+
+    yaml_mapping_set_member(yaml_node_get_mapping(entry), key, node);
+
+    {
+        g_autofree gchar *schema_key = g_strdup_printf("teams.%s", key);
+
+        apply_schema_comment(
+            yaml_mapping_get_member(yaml_node_get_mapping(entry), key),
+            schema_key);
+    }
+
+    return TRUE;
+}
+
+GStrv
+clawt_config_get_team_string_list(ClawtConfig *self,
+                                  const gchar *team_id,
+                                  const gchar *key)
+{
+    YamlNode *entry;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+    g_return_val_if_fail(key != NULL, NULL);
+
+    entry = team_node(self, team_id);
+
+    if (entry == NULL)
+        return NULL;
+
+    return node_to_strv(
+        yaml_mapping_get_member(yaml_node_get_mapping(entry), key));
+}
+
+gboolean
 clawt_config_remove_team(ClawtConfig *self, const gchar *team_id)
 {
     YamlNode *teams_node;
@@ -2558,6 +2619,45 @@ clawt_config_set_string(ClawtConfig *self, const gchar *key,
 
     node = (value != NULL) ? yaml_node_new_string(value)
                            : yaml_node_new_null();
+
+    return set_scalar(self->root, key, node, key);
+}
+
+/*
+ * A top-level list key, such as `defaults.skills`.
+ *
+ * A setter has to dispatch on what the schema says a key is: writing a
+ * list through clawt_config_set_string() is accepted, echoed back,
+ * saved, and then read as the default, because node_to_strv() refuses a
+ * scalar it did not expect. `computer.host.deny_paths` denied nothing
+ * for exactly that reason, so a list key gets a setter that writes a
+ * sequence.
+ */
+gboolean
+clawt_config_set_string_list(ClawtConfig        *self,
+                             const gchar        *key,
+                             const gchar *const *values)
+{
+    g_autoptr(YamlNode) node = NULL;
+    gsize i;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    if (values == NULL || values[0] == NULL) {
+        node = yaml_node_new_null();
+    } else {
+        /*
+         * NULL rather than a fresh sequence: yaml_node_new_sequence()
+         * takes its argument (transfer none) and refs it, so one made
+         * here leaks this function's reference on every call.
+         */
+        node = yaml_node_new_sequence(NULL);
+
+        for (i = 0; values[i] != NULL; i++)
+            yaml_sequence_add_string_element(yaml_node_get_sequence(node),
+                                             values[i]);
+    }
 
     return set_scalar(self->root, key, node, key);
 }

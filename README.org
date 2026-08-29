@@ -138,6 +138,7 @@ All under [[file:docs/][docs/]], in org-mode:
 | [[file:docs/integrations.org][integrations.org]] | Matrix, mail, MCP servers, notifications; scoping them |
 | [[file:docs/connectors.org][connectors.org]] | connected accounts: the credential stays here, the tools go to the agents |
 | [[file:docs/routines.org][routines.org]] | standing work on a schedule, presets and cron |
+| [[file:docs/skills.org][skills.org]] | reusable procedures, where each CLI reads them, and why an import arrives switched off |
 | [[file:docs/automation.org][automation.org]] | clawtilla as a podomation module: react and act |
 | [[file:docs/plugins.org][plugins.org]] | the plugin ABI and a worked example |
 | [[file:docs/ipc-protocol.org][ipc-protocol.org]] | the client wire format |

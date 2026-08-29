@@ -413,6 +413,7 @@ main(int argc, char *argv[])
     clawt_web_register_computer(router, app);
     clawt_web_register_work(router, app);
     clawt_web_register_triggers(router, app);
+    clawt_web_register_skills(router, app);
     clawt_web_register_settings(router, app);
     clawt_web_register_events(router, app);
     clawt_web_register_alerts(router, app);

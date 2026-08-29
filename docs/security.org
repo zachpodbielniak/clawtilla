@@ -624,6 +624,97 @@ not to contain an agent that is trying to get around them.  What actually
 contains an agent is its computer and its confinement: see *Host control*
 above and [[file:computers.org][computers.org]].
 
+** Skills
+
+A skill's text reaches a model's context with the agent's own authority.
+A great deal of it arrives from somewhere else, and a registry audit
+found confirmed exfiltration payloads in between 2% and 13% of public
+skills -- almost always in a sibling script rather than in the markdown.
+Four things follow.
+
+*** An imported skill lands disabled
+
+Nothing an import brings in reaches any prompt until a person has read
+it and said so.  A skill somebody *wrote* in the library is enabled,
+because writing it was the review; that is the only difference between
+the two paths and it is what the whole posture turns on.
+
+The order the two files are written in matters for the same reason.
+clawtilla's record of a skill goes down *before* the ~SKILL.md~ it
+describes, so a crash between them leaves a directory with a record and
+no skill -- which is not a skill and is skipped.  The other order would
+leave a ~SKILL.md~ with no record, which reads as "somebody wrote this
+here by hand": enabled.
+
+*** Markdown only
+
+Sibling scripts are not copied on import.  They are recorded and
+*shown*, because a skill whose steps say "run scripts/setup.sh" fails
+confusingly rather than obviously when the script is silently absent.
+
+It is an allowlist rather than a denylist of dangerous extensions: the
+audit found payloads in ~.py~, ~.sh~, ~.js~ and a ~Makefile~, and any
+list of what to refuse is a list somebody adds a new extension to.
+
+*** Provenance is pinned, and checked
+
+The source and a SHA-256 of the rendered ~SKILL.md~ are recorded at
+import and compared on every read.  An edit after review is then
+detectable rather than merely deniable.  It is a warning, not a refusal:
+the ordinary reason for it is that somebody edited the skill on purpose.
+
+*** The scan warns and never rejects
+
+The reviewer decides.  Every pattern it looks for has an entirely
+legitimate use -- a long base64 string is how one skill ships a lookup
+table and how another ships a payload, and nothing in the text
+distinguishes them.  A checker that refused would be wrong often enough
+to be turned off, and a checker that is turned off catches nothing.
+
+Three checks earn their place, because each is a thing a person cannot
+see by reading the file: a long base64-looking blob, a download piped
+straight into a shell, and **invisible Unicode** -- zero-width
+characters and bidirectional overrides, which hide text from the
+reviewer while the model reads it exactly as written.  The last is the
+sharpest and is why the scan exists rather than being left to "read the
+file".
+
+The scan runs over the whole rendered file, front matter included: a
+zero-width character in a ~description~ is in every agent's context on
+every turn without the skill ever being opened.
+
+*** The name is the traversal gate
+
+A skill's name is joined onto a directory on every path in the
+subsystem, so the check is the function rather than a line at whichever
+entry point somebody remembered.  Lowercase letters, digits and single
+interior hyphens; no dots, no slashes, and therefore no ~..~.
+
+A name arriving from a client is **percent-decoded before it is
+validated**, and the decoded form is what comes back.  The allowlist
+refuses a ~%~ too, so a single encoded traversal is caught either way
+round; the order is what makes the refusal name ~../~, and what stops a
+still-encoded name reaching something downstream that unescapes it
+again.
+
+*** Expanding a `/command` never runs anything
+
+ai-glib's command layer will execute a body's backticked commands when
+the file declares ~shell: true~, and clawtilla pins that policy *off*.
+That closes two things at once: a subprocess started from an IPC handler
+on the daemon's own main context, and a file dropped into a skills
+directory deciding to run code on the daemon's *host* -- which is not a
+permission anybody granted by assigning a skill.
+
+*** What it does not protect against
+
+A skill you enabled.  The scan reports; enabling is the decision, and
+after it the text is in the prompt with everything the agent can reach.
+An agent with a computer and an enabled skill telling it to exfiltrate
+something will do so, and nothing here stops it -- which is why
+enabling is a person's act and why the body is shown in full on the
+page where that act happens.
+
 ** The tailnet listener
 
 ~daemon.tailscale~ is *on by default*, and it is the one place clawtilla

@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-27 Thu]
+#+updated: [2026-08-29 Fri]
 #+version: 0.1.0
 
 * Troubleshooting
@@ -1965,7 +1965,59 @@ written as a scalar denies nothing.
 clawtilla config render <id> | grep -A2 skills
 #+end_src
 
-Skills come from =<workspace>/skills=.  A build before that fix took them
-from the state directory, which is the same place only for agents that
-never set ~workspace~ -- so an agent given one pointed at a directory
-nothing creates.
+That ~skills:~ is libreclaw's own, and it comes from =<workspace>/skills=.
+A build before that fix took it from the state directory, which is the
+same place only for agents that never set ~workspace~ -- so an agent
+given one pointed at a directory nothing creates.
+
+It is a *different* mechanism from clawtilla's skill library; for that,
+see below.
+
+** An agent does not have a skill it was assigned
+
+Three things, in this order:
+
+#+begin_src bash
+clawtilla skill list                       # is it enabled?
+clawtilla skill show <name>                # and does it parse?
+ls -l ~/.clawtilla/agents/<id>/.claude/skills
+#+end_src
+
+*It is probably disabled.*  An imported skill arrives switched off and
+stays that way until somebody has read it, which is the point.
+~clawtilla skill list~ says so in its ~ON~ column.
+
+*Or the assignment reaches nobody.*  A name in ~skills:~ that matches no
+skill is a warning rather than an error -- a half-built fleet is
+ordinary -- but it is never silent: the daemon logs it and the Skills
+page shows it.
+
+*Or the link is somewhere else.*  The path is per provider and is asked
+of the library rather than written down: the ~ls~ above is right for
+Claude Code, and [[file:skills.org][skills.org]] has the table for the
+rest.  grok reads ~.grok/skills~; antigravity gets ~.agents/skills.json~
+and no symlink at all.
+
+** A skill is in the directory and appears in no listing
+
+It failed to parse, and ~clawtilla skill list~ prints a line per
+unreadable directory on stderr.  The usual causes, in order of how often
+they happen: the front matter's ~name~ does not match the directory; the
+directory name has a capital letter or an underscore; the closing ~---~
+is missing.
+
+A skill that will not parse is otherwise invisible, and assigning it
+reports that no skill of that name exists -- which sends somebody to
+look at the assignment rather than at the file.
+
+** The link is there and the harness ignores it
+
+Check whether it is dangling: ~ls -l~ shows a broken symlink *as a
+symlink*, and every harness enumerates it and skips it in silence.  That
+is the same failure shape as the GNOME extensions directory: everything
+looks right and nothing loads.
+
+~clawtilla skill reload~ repairs or removes it.  The library normally
+follows its directory with a file monitor, so this is rarely needed --
+but a filesystem with no inotify (a network share, some bind mounts)
+silently has no watch at all.

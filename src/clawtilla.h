@@ -112,6 +112,13 @@
 #include "integration/clawt-matrix.h"
 #include "integration/clawt-notify.h"
 
+#include "skill/clawt-skill.h"
+#include "skill/clawt-skill-scan.h"
+#include "skill/clawt-skill-library.h"
+#include "skill/clawt-skill-binding.h"
+#include "skill/clawt-skill-provision.h"
+#include "skill/clawt-skill-commands.h"
+
 #include "link/clawt-link.h"
 #include "link/clawt-link-server.h"
 

@@ -1081,6 +1081,30 @@ const gchar *clawt_memory_scope_nth_nick(guint n);
 const gchar *clawt_memory_scope_nth_label(guint n);
 
 /**
+ * ClawtSkillSource:
+ * @CLAWT_SKILL_SOURCE_USER: written here, by a person, in the library
+ * @CLAWT_SKILL_SOURCE_IMPORTED: copied in from somewhere else
+ * @CLAWT_SKILL_SOURCE_TAUGHT: synthesized from a recorded demonstration
+ *
+ * Where a skill's text came from, which is the first thing a reviewer
+ * needs to know about it.
+ *
+ * Deliberately *not* offered as a choice, and so deliberately without a
+ * `_count()`/`_nth()` family: nobody picks this, it is recorded by
+ * whichever path created the skill.  A person selecting "imported" for a
+ * file they wrote themselves would be making the provenance record lie,
+ * and the provenance record is what the security posture rests on.
+ */
+typedef enum {
+    CLAWT_SKILL_SOURCE_USER = 0,
+    CLAWT_SKILL_SOURCE_IMPORTED,
+    CLAWT_SKILL_SOURCE_TAUGHT
+} ClawtSkillSource;
+
+GType clawt_skill_source_get_type(void) G_GNUC_CONST;
+#define CLAWT_TYPE_SKILL_SOURCE (clawt_skill_source_get_type())
+
+/**
  * ClawtTriggerProvider:
  * @CLAWT_TRIGGER_PROVIDER_GENERIC: a bearer token and nothing forge-shaped
  * @CLAWT_TRIGGER_PROVIDER_FORGEJO: Forgejo

@@ -194,6 +194,9 @@ on_save_agent(GtkButton *button, gpointer user_data)
     ok &= clawt_gtk_apply_setting(self, "description",
                                   gtk_editable_get_text(
                             GTK_EDITABLE(self->description_row)));
+    ok &= clawt_gtk_apply_setting(self, "skills",
+                                  gtk_editable_get_text(
+                            GTK_EDITABLE(self->skills_row)));
 
     if (clawt_gtk_chooser_provider_id(&self->inspector_models) != NULL)
         ok &= clawt_gtk_apply_setting(self, "model.provider",
@@ -1950,6 +1953,27 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
         "Description", clawt_json_string(agent, "description", ""));
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
                               self->description_row);
+
+    /*
+     * Which skills this agent is assigned, on top of its team's and the
+     * fleet's.
+     *
+     * Names, comma-separated, exactly as the web client's generic field
+     * takes them -- the daemon dispatches on the schema type, so both
+     * clients write a YAML sequence rather than a scalar. A name that
+     * matches nothing is a warning on the Skills page rather than a
+     * refusal here: a fleet is edited by hand and half-built states are
+     * ordinary.
+     */
+    self->skills_row = entry_row(
+        "Skills",
+        (payload != NULL && json_object_has_member(payload, "settings"))
+            ? clawt_json_string(
+                  json_object_get_object_member(payload, "settings"),
+                  "skills", "")
+            : "");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              self->skills_row);
 
     clawt_gtk_model_chooser_build(&self->inspector_models, self, group,
                                   clawt_json_string(agent, "provider", NULL),

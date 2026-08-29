@@ -1367,6 +1367,14 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
      */
     if (g_str_has_prefix(kind, "trigger."))
         clawt_gtk_refresh_triggers(self);
+     * A skill enabled, imported or removed changes both the page and
+     * what `/` offers, and the cached command list is the half that
+     * would otherwise stay right until the window was reopened.
+     */
+    if (g_str_has_prefix(kind, "skill.")) {
+        clawt_gtk_skill_commands_forget(self);
+        clawt_gtk_refresh_skills(self);
+    }
 }
 
 /* ── New agent ───────────────────────────────────────────────────── */
@@ -3210,6 +3218,7 @@ reload_after_connect(gpointer user_data)
     clawt_gtk_refresh_tasks(self);
     clawt_gtk_refresh_decisions(self);
     clawt_gtk_refresh_routines(self);
+    clawt_gtk_refresh_skills(self);
     clawt_gtk_load_history(self);
 
     return G_SOURCE_REMOVE;
@@ -4779,6 +4788,10 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
     adw_view_stack_add_titled_with_icon(self->pages, clawt_gtk_build_flow_page(self),
                                         "flow", "Flow",
                                         "system-users-symbolic");
+    adw_view_stack_add_titled_with_icon(self->pages,
+                                        clawt_gtk_build_skill_page(self),
+                                        "skills", "Skills",
+                                        "accessories-text-editor-symbolic");
 
     header = adw_header_bar_new();
     gtk_widget_set_name(header, "clawt-headerbar");

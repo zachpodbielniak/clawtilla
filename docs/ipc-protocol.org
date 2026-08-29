@@ -739,6 +739,62 @@ authentication failure and nothing else: a delivery turned away by the
 rate limit or the in-flight cap is in the receipts and publishes
 *nothing*, since an event per refusal is a way to make the daemon
 publish as fast as somebody can POST.
+*** skill.*
+
+~skill.list~ returns every skill in the library, each with its
+~description~, ~source~, ~enabled~, ~origin~, ~sha256~, the ~warnings~
+the scan produced and the ~skipped~ files an import left behind.  The
+warnings are in the *listing* rather than only in ~skill.show~, because
+the person reading it is deciding whether to enable something and a
+warning behind a second click is a warning that gets enabled around.
+
+An empty list has two causes and the reply says which: ~enabled~ is
+false when ~skills.enabled~ is off, and ~directory~ names where it did
+look.  ~problems~ carries a line per directory that looks like a skill
+and could not be read -- a skill that fails to parse is otherwise
+invisible, and assigning it reports that no skill of that name exists,
+which sends somebody to look at the assignment rather than at the file.
+
+~skill.show~ adds the ~body~.  ~skill.create~ takes ~name~,
+~description~ and an optional ~body~ and lands *enabled*, because
+somebody sat there and wrote it.  ~skill.import~ takes a local ~source~
+directory and an optional ~origin~, and lands **disabled**: nothing an
+import brings in reaches any prompt until a person has read it.  It
+copies markdown only and reports what it left behind.
+
+~skill.enable~ takes ~name~ and ~enabled~; ~skill.remove~ takes ~name~.
+Both re-render every agent's workspace, so the reply carries ~refused~
+the way ~agent.set~ does.
+
+~skill.assign~ and ~skill.unassign~ take ~name~ plus *exactly one* of
+~agent~, ~team~ or ~fleet~, and answer with ~changed~ -- false when the
+skill was already there, so a client can say "it already had that"
+rather than claiming to have done something.
+
+~skill.reload~ rescans.  The library follows its directory with a
+~GFileMonitor~, so this is rarely needed -- but a filesystem with no
+inotify silently has no watch at all, and without this the only remedy
+would be restarting the daemon.
+
+~skill.commands~ takes an ~agent~ and returns the ~/name~ commands that
+agent's workspace offers: ~name~, ~description~, ~argument_hint~ and the
+~origin~ harness.  ~skill.expand~ takes ~agent~, ~name~ and optional
+~arguments~ and returns the ~prompt~ to send.
+
+Expansion is **daemon-side on purpose**.  Both graphical clients send
+byte-identical text for the same ~/name args~ because there is one
+implementation of the argument substitution rather than two that agree
+until somebody types a ~$~.  Nothing in that path can start a process:
+the command set's shell policy is pinned off, so a skill file declaring
+~shell: true~ cannot run code on the daemon's host, and no ~skill.*~
+frame waits on anything.
+
+A skill name arriving on any of these frames is **percent-decoded before
+it is validated**, because an encoded traversal has to be judged by what
+it decodes to: ~%2e%2e%2f~ contains no dot and no slash and is ~../~ the
+moment it is unescaped.
+
+~skill.changed~ is published as an event.
 
 *** connector.begin, then connector.await
 
@@ -918,6 +974,7 @@ Every kind published, by subject:
 | an agent | ~decision.asked~ |
 | a routine | ~routine.ran~, ~routine.changed~ |
 | a trigger | ~trigger.fired~, ~trigger.changed~, ~trigger.refused~, ~trigger.verified~ |
+| a skill | ~skill.changed~ |
 | an integration | ~integration.changed~ |
 | a cloud image | ~image.progress~ (~done~, ~total~), ~image.finished~ (~path~ or ~error~) |
 | an agent | ~computer.exec~ |

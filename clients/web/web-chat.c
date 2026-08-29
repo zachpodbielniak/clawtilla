@@ -651,6 +651,7 @@ composer(ClawtWebApp *app, const gchar *agent_id, gboolean busy)
     htmx_element_set_attribute(HTMX_ELEMENT(area), "placeholder",
                                "Message, or /help for commands");
     htmx_element_set_attribute(HTMX_ELEMENT(area), "autofocus", "autofocus");
+    htmx_element_set_id(HTMX_ELEMENT(area), "composer-body");
 
     /*
      * What was left here last time, and a post that keeps it up to date.
@@ -670,6 +671,32 @@ composer(ClawtWebApp *app, const gchar *agent_id, gboolean busy)
     htmx_element_set_attribute(HTMX_ELEMENT(area), "hx-swap", "none");
 
     htmx_node_add_child(HTMX_NODE(inner), HTMX_NODE(area));
+
+    /*
+     * The `/` completions, empty until somebody types one.
+     *
+     * Not fetched at page load: this client must work on a tailnet with
+     * nothing to fetch from, and the list is per-agent and changes while
+     * the page is open -- a list rendered at load would be stale exactly
+     * when it mattered. htmx asks on the first `/`, once.
+     */
+    {
+        g_autoptr(HtmxDiv) popover = htmx_div_new();
+        g_autofree gchar *commands =
+            g_strdup_printf("/a/%s/commands", escaped);
+
+        htmx_element_add_class(HTMX_ELEMENT(popover), "slash-popover");
+        htmx_element_set_id(HTMX_ELEMENT(popover), "slash-popover");
+        htmx_element_set_attribute(HTMX_ELEMENT(popover), "hx-get", commands);
+        htmx_element_set_attribute(HTMX_ELEMENT(popover), "hx-trigger",
+                                   "clawtilla:slash");
+        htmx_element_set_attribute(HTMX_ELEMENT(popover), "hx-target",
+                                   "this");
+        htmx_element_set_attribute(HTMX_ELEMENT(popover), "hx-swap",
+                                   "innerHTML");
+
+        htmx_node_add_child(HTMX_NODE(inner), HTMX_NODE(popover));
+    }
 
     if (busy)
         clawt_web_add(inner, stop_turn_button(agent_id));

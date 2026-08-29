@@ -51,6 +51,12 @@
 #      This layer is honest about its limit: it catches one half being
 #      removed or never written, and it cannot catch a feature nobody
 #      declared.  Layers 3 and 4 need no declaration; this one does.
+#
+# What layer 2 cannot see, stated rather than implied: it compares
+# `"/name"` *literals*, so a command whose name comes from a skill the
+# agent happens to have is invisible to it.  Neither client contains
+# those names.  They are declared as affordances instead -- which is
+# weaker, and is the honest amount of checking available.
 
 set -euo pipefail
 
@@ -191,6 +197,22 @@ declare -A AFFORDANCES=(
     ["trigger verification capture"]="on_trigger_capture|on_trigger_capture"
     ["composer drafts"]="clawt_gtk_persist_draft|draft_key_for"
     ["steer a busy agent"]="\"steered\"|\"steered\""
+    #
+    # A skill's `/name` is dynamic, so layer 2 cannot see it.
+    #
+    # That layer compares `"/name"` string literals, which is exactly
+    # right for the built-in commands and useless here: these come from
+    # whatever skills the selected agent has been assigned, and neither
+    # client contains their names at all.  Declared here instead, with
+    # the limitation stated rather than left for somebody to discover
+    # when the check reports OK through a client that lost the feature
+    # entirely.
+    #
+    ["skill commands in the composer"]="clawt_gtk_skill_commands|slash-popover"
+    ["skill command expansion"]="clawt_gtk_skill_expand|skill.expand"
+    ["skills library"]="clawt_gtk_refresh_skills|clawt_web_skills_body"
+    ["skill provenance"]="Provenance|sha256"
+    ["skill scan warnings"]="Not copied|Not copied"
 )
 
 usage () {
