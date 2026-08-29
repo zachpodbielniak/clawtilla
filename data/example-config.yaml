@@ -174,9 +174,6 @@ daemon:
   # The receiver is its own server on its own port and serves only
   # /health and the secret /hooks/... paths -- never the IPC surface --
   # so putting it behind a tunnel exposes nothing else.
-  #
-  # Not implemented in this build. The trigger receiver is not built yet, so nothing listens and
-  # nothing is delivered.
   webhook_enabled: false
 
   # Port the trigger receiver listens on.
@@ -185,9 +182,6 @@ daemon:
   # loopback alone when there is not -- the same rule the web client
   # follows, and for the same reason: a listener is never widened
   # because an address was missing.
-  #
-  # Not implemented in this build. The trigger receiver is not built yet, so nothing listens and
-  # nothing is delivered.
   webhook_port: 8788
 
 # What a new agent gets when its own block does not say.
@@ -1334,9 +1328,10 @@ routines:
     # for 09:00 should run at 09:00. Worth setting only when several
     # routines share one rate-limited service.
     #
-    # Not implemented in this build. The runner never reads it, so a routine
-    # fires at its scheduled second whatever this says -- which is the
-    # default behaviour, and wrong for the one case the option exists for.
+    # Only a scheduled run is delayed. `clawtilla routine run` starts at
+    # once, because somebody waiting at a terminal is not load to spread;
+    # so does a catch-up, because a run that was already missed does not
+    # need to be later still.
     jitter_seconds: 0
 
 # Work started by something happening elsewhere.
@@ -1356,9 +1351,6 @@ triggers:
   - id: null
 
     # What this trigger is for, in a line.
-    #
-    # Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and
-    # acted on by nothing.
     description: null
 
     # Which agent runs when it fires.
@@ -1366,9 +1358,6 @@ triggers:
     agent: null
 
     # Where the run reports, if not the agent's own conversation.
-    #
-    # Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and
-    # acted on by nothing.
     room: null
 
     # Who is calling: forgejo, gitea, github, gitlab or generic.
@@ -1383,9 +1372,6 @@ triggers:
     # Gitea-shaped headers for compatibility. Sniffing is a fallback for
     # when nobody said, and it can never widen what a configured trigger
     # accepts.
-    #
-    # Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and
-    # acted on by nothing.
     # Values: generic, forgejo, gitea, github, gitlab
     provider: "generic"
 
@@ -1394,9 +1380,6 @@ triggers:
     # Shown once, when it is created or rotated, and never again -- not in
     # a listing, a log line, an event or a transcript. Rotating it stops
     # the old one working immediately.
-    #
-    # Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and
-    # acted on by nothing.
     secret: null
 
     # Which event names are acted on. Empty means all of them.
@@ -1404,27 +1387,15 @@ triggers:
     # An event outside the list is answered normally and recorded as
     # ignored, because a caller that gets an error for a delivery you
     # simply did not want will keep retrying it.
-    #
-    # Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and
-    # acted on by nothing.
     events: []
 
     # Only act when the delivery names this repository.
-    #
-    # Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and
-    # acted on by nothing.
     repo: null
 
     # Only act when the delivery names this branch.
-    #
-    # Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and
-    # acted on by nothing.
     branch: null
 
     # For `provider: generic`, the header carrying the event name.
-    #
-    # Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and
-    # acted on by nothing.
     header: null
 
     # What the agent is asked to do, with the event fenced beneath it.
@@ -1444,27 +1415,15 @@ triggers:
     # A new trigger starts unverified: the first authenticated delivery is
     # captured and shown to you rather than run, so you can see what the
     # caller actually sends before an agent acts on it.
-    #
-    # Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and
-    # acted on by nothing.
     enabled: true
 
     # Where the run should work, if somewhere particular.
-    #
-    # Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and
-    # acted on by nothing.
     directory: null
 
     # Ask the agent to work in a git worktree of its own.
-    #
-    # Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and
-    # acted on by nothing.
     worktree: false
 
     # Give the run a conversation of its own rather than the agent's.
-    #
-    # Not implemented in this build. Triggers are not built yet, so this entry is parsed, kept, and
-    # acted on by nothing.
     isolate: false
 
 # The fleet.

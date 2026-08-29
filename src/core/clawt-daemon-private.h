@@ -23,6 +23,8 @@
 #include "integration/clawt-notify.h"
 #include "plugin/clawt-automation.h"
 #include "task/clawt-routine-runner.h"
+#include "trigger/clawt-trigger-store.h"
+#include "trigger/clawt-webhook-ingress.h"
 #include "usage/clawt-usage.h"
 
 G_BEGIN_DECLS
@@ -143,6 +145,17 @@ struct _ClawtDaemon {
 
     /* Standing work, and when it is next due. */
     ClawtRoutineRunner *routines;
+
+    /*
+     * Work started by something happening elsewhere.
+     *
+     * The store is built whether or not the receiver is: it holds each
+     * trigger's endpoint and its receipts, and `clawtilla trigger list`
+     * has to be able to print an address before anybody turns the
+     * listener on. The ingress is NULL unless daemon.webhook_enabled.
+     */
+    ClawtTriggerStore   *trigger_store;
+    ClawtWebhookIngress *ingress;
 
     /* Pods that watch the fleet and act on it. */
     ClawtAutomation *automation;
@@ -498,6 +511,26 @@ clawt_daemon_warm_model_cache(ClawtDaemon *self);
  * A family that does not recognise @kind leaves @handled alone.
  */
 typedef JsonNode *(*ClawtDaemonFamilyFunc)(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
+
+/*
+ * The trigger receiver's own lifecycle.
+ *
+ * In daemon-trigger.c rather than clawt-daemon.c so that everything
+ * about triggers -- the store, the listener, the delivery path and the
+ * verbs -- is in one file, and clawt_daemon_start() gains two lines
+ * rather than a subsystem.
+ */
+void clawt_daemon_triggers_start(ClawtDaemon *self);
+void clawt_daemon_triggers_stop(ClawtDaemon *self);
+
+JsonNode *
+clawt_daemon_handle_trigger(
     ClawtDaemon  *self,
     const gchar  *kind,
     JsonNode     *request,

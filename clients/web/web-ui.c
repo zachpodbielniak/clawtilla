@@ -26,6 +26,7 @@ static const struct {
     { "mailbox",  "Mailbox" },
     { "computer", "Computer" },
     { "routines", "Routines" },
+    { "triggers", "Triggers" },
     { "tasks",    "Tasks" },
     { "flow",     "Flow" }
 };

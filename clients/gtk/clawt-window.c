@@ -1278,6 +1278,14 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
      */
     if (g_str_has_prefix(kind, "routine."))
         clawt_gtk_refresh_routines(self);
+
+    /*
+     * One prefix match covers trigger.fired, .changed, .refused and
+     * .verified -- and the last two are the ones somebody is waiting on
+     * while they point a forge at a new endpoint.
+     */
+    if (g_str_has_prefix(kind, "trigger."))
+        clawt_gtk_refresh_triggers(self);
 }
 
 /* ── New agent ───────────────────────────────────────────────────── */
@@ -4675,6 +4683,10 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
                                         clawt_gtk_build_routine_page(self),
                                         "routines", "Routines",
                                         "alarm-symbolic");
+    adw_view_stack_add_titled_with_icon(self->pages,
+                                        clawt_gtk_build_trigger_page(self),
+                                        "triggers", "Triggers",
+                                        "network-transmit-receive-symbolic");
     adw_view_stack_add_titled_with_icon(self->pages, clawt_gtk_build_task_page(self),
                                         "tasks", "Tasks",
                                         "view-list-symbolic");

@@ -268,6 +268,49 @@ GSource *clawt_timeout_add_seconds(guint       interval,
                                    GSourceFunc function,
                                    gpointer    data);
 
+/**
+ * clawt_timeout_add_seconds_full:
+ * @interval: seconds between calls
+ * @function: (scope notified): what to call
+ * @data: data for @function
+ * @notify: (nullable): called when the source is destroyed
+ *
+ * As clawt_timeout_add_seconds(), for a timer whose data has to be freed.
+ *
+ * A one-shot timer that returns %G_SOURCE_REMOVE cannot free its own
+ * data on every path -- the source is also destroyed when whoever armed
+ * it gives up first, and that path never reaches the callback.  Handing
+ * the free to the source is the only spelling that covers both.
+ *
+ * Returns: (transfer full): the source; destroy it to cancel
+ */
+GSource *clawt_timeout_add_seconds_full(guint          interval,
+                                        GSourceFunc    function,
+                                        gpointer       data,
+                                        GDestroyNotify notify);
+
+/**
+ * clawt_secure_equals:
+ * @a: (nullable): one value
+ * @b: (nullable): the other
+ *
+ * Compares two secrets in time that does not depend on their contents.
+ *
+ * `strcmp()` stops at the first byte that differs, so the time it takes
+ * says how much of the secret the caller guessed right -- and a webhook
+ * endpoint can be called as often as somebody likes, which is exactly
+ * the setting where that leak is worth an attacker's while. GLib has no
+ * such helper, so this is it.
+ *
+ * There is no early return, the length difference is folded into the
+ * same accumulator as the bytes, and %NULL is never equal to anything
+ * including %NULL: a missing secret compared against a missing header
+ * must not authenticate a delivery.
+ *
+ * Returns: %TRUE if @a and @b are the same string
+ */
+gboolean clawt_secure_equals(const gchar *a, const gchar *b);
+
 gchar *clawt_redact_secrets(const gchar *text);
 
 /**

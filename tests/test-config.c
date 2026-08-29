@@ -539,19 +539,60 @@ warned_about(ClawtConfig *config, const gchar *needle)
 /*
  * An option this build does not implement says so when somebody sets it.
  *
- * Both of these are parsed, stored and read by nothing: the routine's
- * jitter never reaches the runner, and the container's network reaches
- * the container object and stops. The failure is not that they are
- * unimplemented, it is that setting one looks exactly like setting one
- * that works.
+ * Both of these are parsed, stored and read by nothing: the MEMORY.md
+ * line budget never reaches libreclaw, and the container's network
+ * reaches the container object and stops. The failure is not that they
+ * are unimplemented, it is that setting one looks exactly like setting
+ * one that works.
  *
- * `rooms.max_hops` used to be the third, and is now enforced -- so it
- * has moved to the case below. Clearing the flag when an option is
- * implemented is the half of the job that gets forgotten, which is
- * exactly why the warning is asserted on from both directions.
+ * `rooms.max_hops` used to be the third and `routines.jitter_seconds`
+ * the fourth; both are enforced now, so both have moved to the cases
+ * below. Clearing the flag when an option is implemented is the half of
+ * the job that gets forgotten, which is exactly why the warning is
+ * asserted on from both directions.
  */
 static void
 test_an_unimplemented_option_says_so(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = NULL;
+
+    config = clawt_config_load_from_string(
+        "agents:\n"
+        "  - id: chief\n"
+        "    memory:\n"
+        "      max_lines: 40\n"
+        "    computer:\n"
+        "      type: container\n"
+        "      container:\n"
+        "        network: host\n", &error);
+
+    g_assert_no_error(error);
+    g_assert_nonnull(config);
+
+    /* Named with the element it was set on, not just the key. */
+    g_assert_true(warned_about(config, "agents.memory.max_lines"));
+    g_assert_true(warned_about(config, "chief"));
+    g_assert_true(warned_about(config, "agents.computer.container.network"));
+
+    /* And it is still a working config, not a refusal. */
+    g_assert_false(clawt_agent_config_is_shadow(
+        clawt_config_get_agent(config, "chief")));
+}
+
+/*
+ * And the jitter, which is now read by the runner, says nothing.
+ *
+ * The other direction of the same rule. `routines.jitter_seconds` was
+ * accepted, saved and read by nothing for two releases, and the symptom
+ * was that it looked exactly like a very small random offset -- setting
+ * it to 300 and watching a routine fire at 09:00 is what a working
+ * jitter would also look like on any given morning. Now that
+ * clawt_routine_runner_tick() holds a due routine back, the loader must
+ * stop telling people it does nothing.
+ */
+static void
+test_an_implemented_jitter_is_quiet(void)
 {
     g_autoptr(GError) error = NULL;
     g_autoptr(ClawtConfig) config = NULL;
@@ -563,23 +604,12 @@ test_an_unimplemented_option_says_so(void)
         "    instructions: say hello\n"
         "    jitter_seconds: 30\n"
         "agents:\n"
-        "  - id: chief\n"
-        "    computer:\n"
-        "      type: container\n"
-        "      container:\n"
-        "        network: host\n", &error);
+        "  - id: chief\n", &error);
 
     g_assert_no_error(error);
     g_assert_nonnull(config);
 
-    /* Named with the element it was set on, not just the key. */
-    g_assert_true(warned_about(config, "routines.jitter_seconds"));
-    g_assert_true(warned_about(config, "morning"));
-    g_assert_true(warned_about(config, "agents.computer.container.network"));
-
-    /* And it is still a working config, not a refusal. */
-    g_assert_false(clawt_agent_config_is_shadow(
-        clawt_config_get_agent(config, "chief")));
+    g_assert_false(warned_about(config, "routines.jitter_seconds"));
 }
 
 /*
@@ -1148,6 +1178,8 @@ main(int argc, char *argv[])
                     test_unknown_computer_type_names_every_type);
     g_test_add_func("/config/unimplemented-option-says-so",
                     test_an_unimplemented_option_says_so);
+    g_test_add_func("/config/implemented-jitter-is-quiet",
+                    test_an_implemented_jitter_is_quiet);
     g_test_add_func("/config/implemented-room-limit-is-quiet",
                     test_an_implemented_room_limit_is_quiet);
     g_test_add_func("/config/ordinary-config-is-quiet",

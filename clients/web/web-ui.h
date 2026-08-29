@@ -30,10 +30,11 @@ G_BEGIN_DECLS
  * @CLAWT_WEB_VIEW_MAILBOX: the queue and its dead letters
  * @CLAWT_WEB_VIEW_COMPUTER: exec console, mounts, exchange
  * @CLAWT_WEB_VIEW_ROUTINES: scheduled work
+ * @CLAWT_WEB_VIEW_TRIGGERS: work started by an event elsewhere
  * @CLAWT_WEB_VIEW_TASKS: delegated work
  * @CLAWT_WEB_VIEW_FLOW: what the agents are saying to each other
  *
- * The seven pages, in the order the GTK client's view switcher has them.
+ * The eight pages, in the order the GTK client's view switcher has them.
  * Kept as one enum so the nav cannot list a view no handler serves.
  */
 typedef enum {
@@ -42,6 +43,7 @@ typedef enum {
     CLAWT_WEB_VIEW_MAILBOX,
     CLAWT_WEB_VIEW_COMPUTER,
     CLAWT_WEB_VIEW_ROUTINES,
+    CLAWT_WEB_VIEW_TRIGGERS,
     CLAWT_WEB_VIEW_TASKS,
     CLAWT_WEB_VIEW_FLOW,
     CLAWT_WEB_N_VIEWS

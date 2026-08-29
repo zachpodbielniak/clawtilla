@@ -249,19 +249,28 @@ clawt_room_manager_direct_id(const gchar *a, const gchar *b)
     return g_strdup_printf("dm:%s:%s", b, a);
 }
 
-ClawtRoom *
-clawt_room_manager_get_routine(ClawtRoomManager *self,
-                               const gchar      *routine_id,
-                               const gchar      *agent_id)
+/*
+ * A room the daemon owns, named `<kind>:<id>`.
+ *
+ * One function for routines and triggers because they want exactly the
+ * same thing and a second copy would drift -- and the way it would drift
+ * is a trigger and a routine of the same name sharing a room, which
+ * reads as one of them answering the other's work.
+ *
+ * The sender is the kind, not `user`: it is the other half of
+ * libreclaw's session key, so a distinct room reached from the
+ * operator's own sender would still land the run in their session.
+ */
+static ClawtRoom *
+get_owned_room(ClawtRoomManager *self,
+               const gchar      *kind,
+               const gchar      *owner_id,
+               const gchar      *agent_id)
 {
     g_autofree gchar *room_id = NULL;
     ClawtRoom *room;
 
-    g_return_val_if_fail(CLAWT_IS_ROOM_MANAGER(self), NULL);
-    g_return_val_if_fail(routine_id != NULL, NULL);
-    g_return_val_if_fail(agent_id != NULL, NULL);
-
-    room_id = g_strdup_printf("routine:%s", routine_id);
+    room_id = g_strdup_printf("%s:%s", kind, owner_id);
     room = g_hash_table_lookup(self->rooms, room_id);
 
     if (room != NULL)
@@ -269,15 +278,34 @@ clawt_room_manager_get_routine(ClawtRoomManager *self,
 
     room = clawt_room_new(room_id, NULL);
 
-    /*
-     * `routine` rather than `user`: the sender is the other half of
-     * libreclaw's session key, and a distinct room reached from the
-     * operator's own sender would still put the run in their session.
-     */
-    clawt_room_add_member(room, "routine");
+    clawt_room_add_member(room, kind);
     clawt_room_add_member(room, agent_id);
 
     return insert_room(self, room);
+}
+
+ClawtRoom *
+clawt_room_manager_get_routine(ClawtRoomManager *self,
+                               const gchar      *routine_id,
+                               const gchar      *agent_id)
+{
+    g_return_val_if_fail(CLAWT_IS_ROOM_MANAGER(self), NULL);
+    g_return_val_if_fail(routine_id != NULL, NULL);
+    g_return_val_if_fail(agent_id != NULL, NULL);
+
+    return get_owned_room(self, "routine", routine_id, agent_id);
+}
+
+ClawtRoom *
+clawt_room_manager_get_trigger(ClawtRoomManager *self,
+                               const gchar      *trigger_id,
+                               const gchar      *agent_id)
+{
+    g_return_val_if_fail(CLAWT_IS_ROOM_MANAGER(self), NULL);
+    g_return_val_if_fail(trigger_id != NULL, NULL);
+    g_return_val_if_fail(agent_id != NULL, NULL);
+
+    return get_owned_room(self, "trigger", trigger_id, agent_id);
 }
 
 ClawtRoom *

@@ -129,6 +129,11 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/task/clawt-task.h \
 	$(SRCDIR)/task/clawt-task-manager.h \
 	$(SRCDIR)/task/clawt-routine-runner.h \
+	$(SRCDIR)/trigger/clawt-trigger-event.h \
+	$(SRCDIR)/trigger/clawt-trigger-provider.h \
+	$(SRCDIR)/trigger/clawt-trigger.h \
+	$(SRCDIR)/trigger/clawt-trigger-store.h \
+	$(SRCDIR)/trigger/clawt-webhook-ingress.h \
 	$(SRCDIR)/plugin/clawt-param-info.h \
 	$(SRCDIR)/plugin/clawt-plugin.h \
 	$(SRCDIR)/plugin/clawt-plugin-manager.h \
@@ -170,6 +175,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-connector.c \
 	$(SRCDIR)/core/daemon-integration.c \
 	$(SRCDIR)/core/daemon-routine.c \
+	$(SRCDIR)/core/daemon-trigger.c \
 	$(SRCDIR)/core/daemon-config.c \
 	$(SRCDIR)/core/clawt-event-bus.c \
 	$(SRCDIR)/core/clawt-event-log.c \
@@ -234,6 +240,11 @@ LIB_SOURCES = \
 	$(SRCDIR)/task/clawt-task.c \
 	$(SRCDIR)/task/clawt-task-manager.c \
 	$(SRCDIR)/task/clawt-routine-runner.c \
+	$(SRCDIR)/trigger/clawt-trigger-event.c \
+	$(SRCDIR)/trigger/clawt-trigger-provider.c \
+	$(SRCDIR)/trigger/clawt-trigger.c \
+	$(SRCDIR)/trigger/clawt-trigger-store.c \
+	$(SRCDIR)/trigger/clawt-webhook-ingress.c \
 	$(SRCDIR)/plugin/clawt-param-info.c \
 	$(SRCDIR)/plugin/clawt-plugin.c \
 	$(SRCDIR)/plugin/clawt-plugin-manager.c \

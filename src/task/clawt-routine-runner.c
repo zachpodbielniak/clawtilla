@@ -17,18 +17,60 @@
 /* Cron's resolution, so anything finer is work to reach the same answer. */
 #define TICK_SECONDS (60)
 
+/*
+ * The longest jitter that is still a jitter.
+ *
+ * An hour, so a typo of 86400 delays a routine rather than pushing it
+ * past its own next slot -- at which point the run that eventually fires
+ * is for a time nobody can point at, and the routine looks skipped.
+ * Clamped rather than refused because the value is spreading load, not
+ * naming a moment.
+ */
+#define MAX_JITTER_SECONDS (3600)
+
 typedef struct {
     gint64         last_run;     /* Unix time */
     ClawtRunState  state;
     gchar         *detail;
     gchar         *task_id;
+
+    /*
+     * Armed when a due routine is waiting out its jitter.
+     *
+     * Held here rather than in a list of its own because the tick runs
+     * once a minute and a jitter longer than that would otherwise find
+     * the same routine due again and arm a second timer -- and then a
+     * third -- so `jitter_seconds: 300` would fire five runs instead of
+     * delaying one.
+     */
+    GSource       *jitter;
 } RunRecord;
+
+/*
+ * Cancels a pending jitter, wherever the reason came from.
+ *
+ * One spelling because there are four: the delay elapsing, a run
+ * starting some other way, the runner stopping, and the record going
+ * away.  A source left attached on any of them fires against a runner
+ * that has moved on.
+ */
+static void
+clear_jitter(RunRecord *record)
+{
+    if (record == NULL || record->jitter == NULL)
+        return;
+
+    g_source_destroy(record->jitter);
+    g_clear_pointer(&record->jitter, g_source_unref);
+}
 
 static void
 run_record_free(RunRecord *self)
 {
     if (self == NULL)
         return;
+
+    clear_jitter(self);
 
     g_free(self->detail);
     g_free(self->task_id);
@@ -418,6 +460,15 @@ start_run(ClawtRoutineRunner *self, ClawtRoutine *routine, GError **error)
     const gchar *id = clawt_routine_get_id(routine);
 
     record = record_for(self, id);
+
+    /*
+     * Any run at all cancels a jitter that was still waiting.  Here
+     * rather than in run_now(), because it is true of every path: the
+     * routine has run, so the delayed copy of the same run is a second
+     * one nobody asked for.
+     */
+    clear_jitter(record);
+
     record->last_run = g_get_real_time() / G_USEC_PER_SEC;
     g_clear_pointer(&record->detail, g_free);
     g_clear_pointer(&record->task_id, g_free);
@@ -490,20 +541,109 @@ clawt_routine_runner_run_now(ClawtRoutineRunner  *self,
 }
 
 /*
- * One tick.
+ * What a pending jitter carries to its callback.
  *
- * Due is "the last fire time at or before now is after the last run we
- * recorded", which is what makes a tick that arrives late still fire --
- * a machine that was busy for ninety seconds has not missed a minute.
+ * The id and not the #ClawtRoutine: the config is reloaded whenever
+ * anybody saves, which frees every routine handle it owned, so a pointer
+ * held across a delay is a pointer to freed memory.  The runner itself
+ * is not reffed -- it owns the source, so the source cannot outlive it.
+ */
+typedef struct {
+    ClawtRoutineRunner *runner;
+    gchar              *id;
+} JitterArm;
+
+static void
+jitter_arm_free(gpointer data)
+{
+    JitterArm *self = data;
+
+    g_free(self->id);
+    g_free(self);
+}
+
+/*
+ * A routine whose jitter has run out.
+ *
+ * It re-reads the routine rather than holding the pointer it was armed
+ * with, because the config can be reloaded while a jitter is waiting --
+ * `routine.update` saves and reloads, which frees every #ClawtRoutine
+ * the old config owned.  Looking the id up again is what makes a
+ * five-minute jitter survive somebody editing the fleet inside it.
  */
 static gboolean
-on_tick(gpointer user_data)
+on_jitter_elapsed(gpointer user_data)
 {
-    ClawtRoutineRunner *self = user_data;
-    g_autoptr(GDateTime) now = g_date_time_new_now_local();
+    JitterArm *arm = user_data;
+    ClawtRoutineRunner *self = arm->runner;
+    ClawtRoutine *routine = clawt_config_get_routine(self->config, arm->id);
+    RunRecord *record = g_hash_table_lookup(self->records, arm->id);
+    g_autoptr(GError) error = NULL;
+
+    /*
+     * Disarmed first.  start_run() can fail and warn, and leaving the
+     * source on the record would make the next tick believe a jitter was
+     * still pending and never arm another one.
+     */
+    if (record != NULL)
+        g_clear_pointer(&record->jitter, g_source_unref);
+
+    /*
+     * Removed while it waited, or turned off.  Neither is an error: a
+     * jitter is a delay somebody asked for, not a promise to run
+     * whatever happens in the meantime.
+     */
+    if (routine == NULL || !clawt_routine_get_boolean(routine, "enabled"))
+        return G_SOURCE_REMOVE;
+
+    if (start_run(self, routine, &error) == NULL)
+        g_warning("routine '%s': %s", arm->id,
+                  error != NULL ? error->message : "it did not start");
+
+    return G_SOURCE_REMOVE;
+}
+
+/*
+ * Holds a due routine back for a random slice of its jitter.
+ *
+ * g_random_int_range() rather than /dev/urandom: this value spreads load
+ * across a rate-limited service, and nothing about the fleet's security
+ * depends on somebody being unable to predict when a routine fires.  The
+ * mailbox's retry backoff makes the same choice for the same reason.
+ *
+ * The source is attached through clawt_timeout_add_seconds(), which uses
+ * the thread-default context.  g_timeout_add_seconds() would attach to
+ * the global default, so in an embedded daemon every jittered routine
+ * would be armed and never fire -- worse than not implementing jitter at
+ * all, since the routine would simply stop running.
+ */
+static void
+arm_jitter(ClawtRoutineRunner *self, const gchar *id, guint jitter_seconds)
+{
+    RunRecord *record = record_for(self, id);
+    JitterArm *arm = g_new0(JitterArm, 1);
+    guint delay = (guint)g_random_int_range(0, (gint)jitter_seconds + 1);
+
+    arm->runner = self;
+    arm->id = g_strdup(id);
+
+    record->jitter = clawt_timeout_add_seconds_full(delay, on_jitter_elapsed,
+                                                    arm, jitter_arm_free);
+
+    g_debug("routine '%s' is due; holding it %u second%s for jitter", id,
+            delay, delay == 1 ? "" : "s");
+}
+
+void
+clawt_routine_runner_tick(ClawtRoutineRunner *self)
+{
+    g_autoptr(GDateTime) now = NULL;
     GPtrArray *routines;
     guint i;
 
+    g_return_if_fail(CLAWT_IS_ROUTINE_RUNNER(self));
+
+    now = g_date_time_new_now_local();
     routines = clawt_config_get_routines(self->config);
 
     for (i = 0; routines != NULL && i < routines->len; i++) {
@@ -513,6 +653,7 @@ on_tick(gpointer user_data)
         g_autoptr(GDateTime) due = NULL;
         g_autoptr(GError) error = NULL;
         RunRecord *record;
+        gint64 jitter;
         const gchar *id = clawt_routine_get_id(routine);
 
         if (!clawt_routine_get_boolean(routine, "enabled"))
@@ -524,6 +665,17 @@ on_tick(gpointer user_data)
             continue;
 
         record = g_hash_table_lookup(self->records, id);
+
+        /*
+         * Already waiting out its jitter.  Without this the tick a
+         * minute later would find it due all over again -- `last_run` is
+         * stamped by start_run(), which has not happened yet -- and arm
+         * a second delayed run, so a five-minute jitter would fire five
+         * times rather than once.
+         */
+        if (record != NULL && record->jitter != NULL)
+            continue;
+
         since = (record != NULL && record->last_run > 0)
             ? g_date_time_new_from_unix_local(record->last_run)
             : g_date_time_add_minutes(now, -1);
@@ -533,10 +685,30 @@ on_tick(gpointer user_data)
         if (due == NULL || g_date_time_compare(due, now) > 0)
             continue;
 
+        jitter = clawt_routine_get_int(routine, "jitter_seconds");
+
+        if (jitter > 0) {
+            arm_jitter(self, id, (guint)MIN(jitter, MAX_JITTER_SECONDS));
+            continue;
+        }
+
         if (start_run(self, routine, &error) == NULL)
             g_warning("routine '%s': %s", id,
                       error != NULL ? error->message : "it did not start");
     }
+}
+
+/*
+ * One tick.
+ *
+ * Due is "the last fire time at or before now is after the last run we
+ * recorded", which is what makes a tick that arrives late still fire --
+ * a machine that was busy for ninety seconds has not missed a minute.
+ */
+static gboolean
+on_tick(gpointer user_data)
+{
+    clawt_routine_runner_tick(user_data);
 
     return G_SOURCE_CONTINUE;
 }
@@ -564,7 +736,21 @@ clawt_routine_runner_start(ClawtRoutineRunner *self, GMainContext *context)
 void
 clawt_routine_runner_stop(ClawtRoutineRunner *self)
 {
+    GHashTableIter iter;
+    gpointer value;
+
     g_return_if_fail(CLAWT_IS_ROUTINE_RUNNER(self));
+
+    /*
+     * The jitters go too, and before the early return -- a stopped
+     * runner that still holds an armed timer starts a routine after
+     * somebody asked it not to, which is the shape of "a stop that only
+     * sends a signal is not a stop".
+     */
+    g_hash_table_iter_init(&iter, self->records);
+
+    while (g_hash_table_iter_next(&iter, NULL, &value))
+        clear_jitter(value);
 
     if (self->tick == NULL)
         return;
