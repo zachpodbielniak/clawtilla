@@ -628,6 +628,19 @@ clawt_gtk_row_opens_something(GtkWidget *row);
 void
 clawt_gtk_select_agent(ClawtWindow *self, const gchar *agent_id);
 
+/*
+ * Composer text that has not been sent, in the client's own config
+ * beside connections.yaml.  A half-typed message belongs to the person
+ * rather than to the fleet, and a laptop reaching a workstation may have
+ * no fleet at all -- so it never goes near clawtilla.yaml.
+ */
+void
+clawt_gtk_persist_draft(ClawtWindow *self, const gchar *agent_id,
+                        const gchar *text);
+
+gchar *
+clawt_gtk_stored_draft(ClawtWindow *self, const gchar *agent_id);
+
 void
 clawt_gtk_set_row_text(GtkWidget *row, const gchar *title, const gchar *subtitle);
 

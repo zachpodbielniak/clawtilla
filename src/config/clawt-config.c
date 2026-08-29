@@ -1745,6 +1745,44 @@ clawt_config_get_rooms(ClawtConfig *self)
                 ? (guint)yaml_node_get_int(node) : 0;
         }
 
+        {
+            YamlNode *node = node_at_path(entry, "turn_timeout_seconds",
+                                          FALSE);
+            gint64 seconds;
+
+            /*
+             * The schema default when the room says nothing, the same way
+             * require_mention above resolves -- a room that declares
+             * nothing must behave as the documented default rather than
+             * as its opposite, and 0 here means "no bound at all".
+             */
+            if (node != NULL) {
+                seconds = yaml_node_get_int(node);
+            } else {
+                const gchar *fallback =
+                    schema_default_for("rooms.turn_timeout_seconds");
+
+                seconds = (fallback != NULL)
+                    ? g_ascii_strtoll(fallback, NULL, 10) : 0;
+            }
+
+            /*
+             * Floored rather than refused.  A minute is the shortest turn
+             * worth bounding -- below it an agent that pauses to think is
+             * indistinguishable from one that has stopped -- and a config
+             * this daemon refuses to load is a worse answer than one it
+             * corrects and says so.
+             */
+            if (seconds > 0 && seconds < 60) {
+                g_warning("rooms[%u]: turn_timeout_seconds of %" G_GINT64_FORMAT
+                          " is below the floor of 60; using 60", i, seconds);
+                seconds = 60;
+            }
+
+            spec->turn_timeout_seconds =
+                (seconds > 0) ? (guint)seconds : 0;
+        }
+
         g_ptr_array_add(out, spec);
     }
 

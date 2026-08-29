@@ -41,6 +41,34 @@ clawt_daemon_handle_room(
             return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
                                        "target and body are both required");
 
+        /*
+         * A correction typed at an agent that is already working is held
+         * rather than routed, and does not enter the transcript yet.
+         *
+         * Appending it now would make the queued line the active leaf, so
+         * the rest of the turn already in flight would hang off a line
+         * the model was never shown -- and the transcript would read as
+         * though the agent had answered something nobody had said.
+         *
+         * The reply says so, because a message that vanishes from the
+         * composer and does not appear in the conversation reads exactly
+         * like a message that was lost.
+         */
+        if (clawt_daemon_turn_steer(self, from != NULL ? from : "user",
+                                    target, body)) {
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "queued");
+            json_builder_add_int_value(builder, 0);
+            json_builder_set_member_name(builder, "steered");
+            json_builder_add_boolean_value(builder, TRUE);
+            json_builder_set_member_name(builder, "target_state");
+            json_builder_add_string_value(builder, "running");
+            json_builder_end_object(builder);
+
+            return clawt_ipc_response_new(request,
+                                          json_builder_get_root(builder));
+        }
+
         queued = clawt_mailbox_router_send_to(self->router,
                                               from != NULL ? from : "user",
                                               target, body, NULL, 0, &error);
@@ -51,6 +79,8 @@ clawt_daemon_handle_room(
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "queued");
         json_builder_add_int_value(builder, queued);
+        json_builder_set_member_name(builder, "steered");
+        json_builder_add_boolean_value(builder, FALSE);
 
         /*
          * Whether anything is going to read it.  A mailbox accepts a

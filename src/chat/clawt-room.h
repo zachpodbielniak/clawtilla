@@ -135,4 +135,23 @@ guint clawt_room_get_max_hops(ClawtRoom *self);
 
 void clawt_room_set_max_hops(ClawtRoom *self, guint max_hops);
 
+/**
+ * clawt_room_get_turn_timeout:
+ * @self: a #ClawtRoom
+ *
+ * How long one member may hold this room's turn, counted in work rather
+ * than in wall time -- the clock holds while the turn is parked on an
+ * open decision.
+ *
+ * Returns: the budget in seconds, or 0 for no bound
+ */
+guint clawt_room_get_turn_timeout(ClawtRoom *self);
+
+/**
+ * clawt_room_set_turn_timeout:
+ * @self: a #ClawtRoom
+ * @seconds: the budget, or 0 for no bound
+ */
+void clawt_room_set_turn_timeout(ClawtRoom *self, guint seconds);
+
 G_END_DECLS

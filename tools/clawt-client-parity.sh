@@ -189,6 +189,8 @@ declare -A AFFORDANCES=(
     ["picture editor"]="build_avatar_group|on_avatar_set"
     ["trigger secret shown once"]="secret_shown_once|secret_shown_once"
     ["trigger verification capture"]="on_trigger_capture|on_trigger_capture"
+    ["composer drafts"]="clawt_gtk_persist_draft|draft_key_for"
+    ["steer a busy agent"]="\"steered\"|\"steered\""
 )
 
 usage () {

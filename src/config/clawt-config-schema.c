@@ -640,8 +640,7 @@ static const ClawtSchemaEntry schema[] = {
 
 /* ── memories ────────────────────────────────────────────────────── */
 { "orchestration.repeat_thresholds", CLAWT_SCHEMA_STRING_LIST,
-  CLAWT_SCHEMA_FLAG_COMMENTED |
-  CLAWT_SCHEMA_FLAG_INERT, "5,10,20", NULL,
+  CLAWT_SCHEMA_FLAG_COMMENTED, "5,10,20", NULL,
   "Repeat counts worth reporting when an agent keeps making the same\n"
   "call.\n"
   "\n"
@@ -649,21 +648,22 @@ static const ClawtSchemaEntry schema[] = {
   "call reports and the sixth does not. Reporting every repeat past a\n"
   "floor turns a signal into noise, and noise is what gets skipped.\n"
   "\n"
-  "Not implemented in this build. Repeat detection is not built yet, so a repeated call is counted\nby nobody and this never fires.",
-  "0.2.0" },
+  "This one observes rather than intervenes. clawtilla does not own the\n"
+  "model's own tool-call loop, so it cannot steer a turn that is already\n"
+  "running: it counts the calls it serves, writes a note into the\n"
+  "thread, and at the highest threshold interrupts the turn.\n"
+  "\n"
+  "An empty list turns the counting off.", "0.2.0" },
 
 { "orchestration.repeat_max_keys", CLAWT_SCHEMA_INT,
-  CLAWT_SCHEMA_FLAG_COMMENTED |
-  CLAWT_SCHEMA_FLAG_INERT, "256", NULL,
+  CLAWT_SCHEMA_FLAG_COMMENTED, "256", NULL,
   "How many distinct calls one turn remembers while watching for\n"
   "repeats.\n"
   "\n"
   "Bounded on purpose: an unlimited set of unique arguments lets one\n"
   "pathological turn grow the daemon for as long as it runs. The least\n"
   "recently seen call is dropped first, and a dropped one starts\n"
-  "counting again from one.\n"
-  "\n"
-  "Not implemented in this build. Repeat detection is not built yet, so a repeated call is counted\nby nobody and this never fires.", "0.2.0" },
+  "counting again from one.", "0.2.0" },
 
 { "orchestration.handoff_max_per_turn", CLAWT_SCHEMA_INT,
   CLAWT_SCHEMA_FLAG_COMMENTED |
@@ -895,7 +895,7 @@ static const ClawtSchemaEntry schema[] = {
 
 /* ── teams ───────────────────────────────────────────────────────── */
 { "rooms.turn_timeout_seconds", CLAWT_SCHEMA_INT,
-  CLAWT_SCHEMA_FLAG_INERT, "300", NULL,
+  CLAWT_SCHEMA_FLAG_NONE, "300", NULL,
   "How long one member may hold a room's turn before it is yielded.\n"
   "\n"
   "Counted in work, not wall time: the clock holds while the turn is\n"
@@ -906,7 +906,7 @@ static const ClawtSchemaEntry schema[] = {
   "Different from the runtime's turn timeout: that one catches a wedged\n"
   "worker, this one catches a wedged conversation.\n"
   "\n"
-  "Not implemented in this build. Room turns are not bounded yet, so a member that stops\nresponding holds its turn until the conversation is\ninterrupted by hand.", "0.2.0" },
+  "Anything below 60 is raised to 60, and 0 turns it off.", "0.2.0" },
 
 { "teams", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Teams, so a fleet larger than a handful has a shape.\n"
@@ -1826,7 +1826,7 @@ static const ClawtSchemaEntry schema[] = {
   "restarted again. 0 means never give up.", "0.1.0" },
 
 { "agents.runtime.turn_timeout_seconds", CLAWT_SCHEMA_INT,
-  CLAWT_SCHEMA_FLAG_INERT, "1200", NULL,
+  CLAWT_SCHEMA_FLAG_NONE, "1200", NULL,
   "How long a turn may go without producing anything before it is\n"
   "cancelled. 0 disables it.\n"
   "\n"
@@ -1835,7 +1835,11 @@ static const ClawtSchemaEntry schema[] = {
   "all for this long is wedged. A turn parked on a decision is exempt,\n"
   "because waiting for a person is not a stall.\n"
   "\n"
-  "Not implemented in this build. Not passed to the runtime yet, so a turn is bounded by\nlibreclaw's own default rather than by this.", "0.2.0" },
+  "Watched in two places, on purpose. The daemon watches activity and\n"
+  "publishes turn.timed_out; the same number is rendered into the\n"
+  "agent's own session.watchdog_timeout_seconds, so a turn wedged\n"
+  "somewhere the daemon cannot see is still unwound from inside.",
+  "0.2.0" },
 
 /* ── agents.computer ─────────────────────────────────────────────── */
 { "agents.computer", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,

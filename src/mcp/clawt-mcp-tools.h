@@ -243,6 +243,42 @@ void clawt_mcp_tools_set_event_bus(ClawtMcpTools *self,
                                    ClawtEventBus *bus);
 
 /**
+ * ClawtMcpToolObserverFunc:
+ * @agent_id: which agent made the call
+ * @tool: the tool it called
+ * @args: (nullable): its arguments, serialised
+ * @user_data: what was passed to clawt_mcp_tools_set_observer()
+ *
+ * One tool call, before it is dispatched.
+ */
+typedef void (*ClawtMcpToolObserverFunc)(const gchar *agent_id,
+                                         const gchar *tool,
+                                         const gchar *args,
+                                         gpointer     user_data);
+
+/**
+ * clawt_mcp_tools_set_observer:
+ * @self: a #ClawtMcpTools
+ * @func: (nullable) (scope notified) (closure user_data): what to tell about
+ *   each call, or %NULL for nothing
+ * @user_data: passed to @func
+ * @notify: (nullable): frees @user_data
+ *
+ * Tells the daemon about every tool call as it arrives, which is what
+ * feeds the repeat counter and the turn watchdog's idea of activity.
+ *
+ * Told **before** dispatch and before the permission check, because a
+ * refused call is still a call: an agent that has been told twenty times
+ * it may not use a tool is looping exactly as hard as one that is being
+ * served, and counting only the successes would hide the case that
+ * matters most.
+ */
+void clawt_mcp_tools_set_observer(ClawtMcpTools            *self,
+                                  ClawtMcpToolObserverFunc  func,
+                                  gpointer                  user_data,
+                                  GDestroyNotify            notify);
+
+/**
  * clawt_mcp_tools_set_room_manager:
  * @self: a #ClawtMcpTools
  * @rooms: (transfer none) (nullable): the fleet's rooms

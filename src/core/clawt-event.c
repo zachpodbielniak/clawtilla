@@ -255,6 +255,33 @@ clawt_alert_tier_for_event(ClawtEvent *event)
         return CLAWT_ALERT_ERROR;
 
     /*
+     * A turn or an exchange that clawtilla ended.  Errors rather than
+     * notices: work was stopped, and somebody has to decide whether to
+     * restart it -- an exchange stays ended until a person says
+     * something in the room.
+     */
+    if (g_strcmp0(kind, "turn.timed_out") == 0 ||
+        g_strcmp0(kind, "exchange.stalled") == 0)
+        return CLAWT_ALERT_ERROR;
+
+    /*
+     * A repeated tool call is a warning about a turn that is still
+     * running.  Nothing has been stopped, so it is not an error; but it
+     * arrived on its own while nobody was looking at that agent, which
+     * is what makes it a notice rather than a toast.
+     */
+    if (g_strcmp0(kind, "turn.repeating") == 0)
+        return CLAWT_ALERT_NOTICE;
+
+    /*
+     * A steer is what the person just did, so a client showing it in the
+     * conversation has already answered the question.  Listing it would
+     * be telling somebody about their own keystroke.
+     */
+    if (g_strcmp0(kind, "message.steered") == 0)
+        return CLAWT_ALERT_SKIP;
+
+    /*
      * A download that *succeeded* is routine; only the failure arrived on
      * its own with nobody watching.
      */

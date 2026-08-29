@@ -123,6 +123,23 @@ gboolean clawt_task_manager_complete(ClawtTaskManager *self,
  *
  * Returns: %TRUE if the task existed and had not already ended
  */
+/**
+ * clawt_task_manager_stall:
+ * @self: a #ClawtTaskManager
+ * @task_id: a task id
+ * @reason: which limit ended it, in words somebody can act on
+ *
+ * Ends a task that a loop limit stopped. Distinct from
+ * clawt_task_manager_fail() on purpose: stalled work can be picked up
+ * and finished, failed work has to be diagnosed first, and a reader who
+ * cannot tell them apart goes looking for the wrong thing.
+ *
+ * Returns: %TRUE if the task existed and had not already ended
+ */
+gboolean clawt_task_manager_stall(ClawtTaskManager *self,
+                                  const gchar      *task_id,
+                                  const gchar      *reason);
+
 gboolean clawt_task_manager_fail(ClawtTaskManager *self,
                                  const gchar      *task_id,
                                  const gchar      *reason);

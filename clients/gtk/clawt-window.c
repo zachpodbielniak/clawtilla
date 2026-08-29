@@ -282,6 +282,56 @@ clawt_gtk_refresh_selected(ClawtWindow *self)
     } while (clawt_gtk_refresh_repeat(self, CLAWT_REFRESH_SELECTED));
 }
 
+/*
+ * Writes one composer's contents to the client's own config, so a
+ * half-typed message survives the client being closed.
+ *
+ * Keyed through clawt_draft_key(), which puts the connection profile in
+ * front of the agent id: this client switches daemons at runtime, and
+ * two fleets can each hold an agent called `chief`.
+ *
+ * Errors are dropped rather than reported.  A draft is a convenience,
+ * and a dialog about a config file somebody has never heard of, raised
+ * while they are clicking between agents, is worse than losing the text.
+ */
+void
+clawt_gtk_persist_draft(ClawtWindow *self, const gchar *agent_id,
+                        const gchar *text)
+{
+    g_autofree gchar *key = NULL;
+
+    if (agent_id == NULL)
+        return;
+
+    key = clawt_draft_key(
+        self->active_connection != NULL
+            ? clawt_connection_get_name(self->active_connection) : NULL,
+        agent_id);
+
+    clawt_draft_store_set(NULL, key, text, NULL);
+}
+
+/*
+ * And what was left there last time.
+ *
+ * Returns: (transfer full) (nullable): the held text
+ */
+gchar *
+clawt_gtk_stored_draft(ClawtWindow *self, const gchar *agent_id)
+{
+    g_autofree gchar *key = NULL;
+
+    if (agent_id == NULL)
+        return NULL;
+
+    key = clawt_draft_key(
+        self->active_connection != NULL
+            ? clawt_connection_get_name(self->active_connection) : NULL,
+        agent_id);
+
+    return clawt_draft_store_get(NULL, key);
+}
+
 void
 clawt_gtk_select_agent(ClawtWindow *self, const gchar *agent_id)
 {
@@ -302,6 +352,8 @@ clawt_gtk_select_agent(ClawtWindow *self, const gchar *agent_id)
     /* Keep what was being written to the agent we are leaving. */
     if (self->selected_agent != NULL) {
         g_autofree gchar *draft = clawt_gtk_entry_text(self);
+
+        clawt_gtk_persist_draft(self, self->selected_agent, draft);
 
         if (draft != NULL && draft[0] != '\0')
             g_hash_table_insert(self->drafts,
@@ -341,7 +393,23 @@ clawt_gtk_select_agent(ClawtWindow *self, const gchar *agent_id)
     self->selected_color = g_strdup(clawt_gtk_agent_row_data(self, agent_id,
                                                              "agent-color"));
 
-    clawt_gtk_entry_set_text(self, g_hash_table_lookup(self->drafts, agent_id));
+    {
+        const gchar *held = g_hash_table_lookup(self->drafts, agent_id);
+        g_autofree gchar *stored = NULL;
+
+        /*
+         * Memory first, then the file.  Within one run the table is
+         * authoritative -- it is what a draft cleared by sending was
+         * removed from -- and the file is what makes the first visit
+         * after a restart find the text still there.
+         */
+        if (held == NULL) {
+            stored = clawt_gtk_stored_draft(self, agent_id);
+            held = stored;
+        }
+
+        clawt_gtk_entry_set_text(self, held);
+    }
 
     adw_window_title_set_title(
         ADW_WINDOW_TITLE(g_object_get_data(G_OBJECT(self), "title")),
@@ -5040,6 +5108,18 @@ static void
 clawt_window_dispose(GObject *object)
 {
     ClawtWindow *self = CLAWT_WINDOW(object);
+
+    /*
+     * The composer that is open right now.  Leaving an agent saves its
+     * draft; closing the window on one is the other half, and without it
+     * the message you were part-way through when you quit is the only
+     * one that does not come back.
+     */
+    if (self->selected_agent != NULL && self->drafts != NULL) {
+        g_autofree gchar *draft = clawt_gtk_entry_text(self);
+
+        clawt_gtk_persist_draft(self, self->selected_agent, draft);
+    }
 
     if (self->client != NULL)
         g_signal_handlers_disconnect_by_data(self->client, self);

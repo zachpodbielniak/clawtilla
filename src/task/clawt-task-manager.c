@@ -224,6 +224,33 @@ clawt_task_manager_fail(ClawtTaskManager *self,
     return TRUE;
 }
 
+/*
+ * A task the loop guard ended.
+ *
+ * Its own verb rather than clawt_task_manager_fail(), because "the two
+ * agents went in circles and clawtilla stopped them" and "the work broke"
+ * need different answers from whoever reads the receipt: the first is
+ * work somebody can pick up and finish, the second needs diagnosing.
+ * Recording a stall as a failure sends the reader hunting a bug that is
+ * not there.
+ */
+gboolean
+clawt_task_manager_stall(ClawtTaskManager *self,
+                         const gchar      *task_id,
+                         const gchar      *reason)
+{
+    ClawtTask *task = clawt_task_manager_get(self, task_id);
+
+    if (task == NULL || clawt_task_is_finished(task))
+        return FALSE;
+
+    clawt_task_set_reason(task, reason);
+    clawt_task_set_state(task, CLAWT_TASK_STALLED);
+    emit_changed(self, task);
+
+    return TRUE;
+}
+
 guint
 clawt_task_manager_cancel(ClawtTaskManager *self,
                           const gchar      *task_id,

@@ -491,9 +491,35 @@ clawt_task_state_get_type(void)
             { CLAWT_TASK_COMPLETED, "CLAWT_TASK_COMPLETED", "completed" },
             { CLAWT_TASK_FAILED, "CLAWT_TASK_FAILED", "failed" },
             { CLAWT_TASK_CANCELLED, "CLAWT_TASK_CANCELLED", "cancelled" },
+            { CLAWT_TASK_STALLED, "CLAWT_TASK_STALLED", "stalled" },
             { 0, NULL, NULL }
         };
         GType g_define_type_id = g_enum_register_static("ClawtTaskState", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
+/* Register ClawtStallReason as a GLib enum type */
+GType
+clawt_stall_reason_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_STALL_NONE, "CLAWT_STALL_NONE", "none" },
+            { CLAWT_STALL_REPEATED_MESSAGE, "CLAWT_STALL_REPEATED_MESSAGE",
+              "repeated-message" },
+            { CLAWT_STALL_TURN_TIMEOUT, "CLAWT_STALL_TURN_TIMEOUT",
+              "turn-timeout" },
+            { CLAWT_STALL_ROOM_TIMEOUT, "CLAWT_STALL_ROOM_TIMEOUT",
+              "room-timeout" },
+            { CLAWT_STALL_REPEATED_TOOL_CALL,
+              "CLAWT_STALL_REPEATED_TOOL_CALL", "repeated-tool-call" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtStallReason", values);
         g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
     }
     return g_define_type_id__volatile;

@@ -64,6 +64,10 @@
 #include "chat/clawt-markdown.h"
 #include "chat/clawt-export.h"
 #include "chat/clawt-loop-guard.h"
+#include "chat/clawt-repeat-watch.h"
+#include "chat/clawt-turn-watch.h"
+#include "chat/clawt-steer-queue.h"
+#include "chat/clawt-draft-store.h"
 #include "chat/clawt-room.h"
 #include "chat/clawt-room-manager.h"
 

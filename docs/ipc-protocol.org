@@ -912,7 +912,7 @@ Every kind published, by subject:
 |---------+-------|
 | the daemon | ~daemon.started~, ~daemon.stopped~, ~daemon.reloaded~, ~config.changed~ |
 | an agent | ~agent.created~, ~agent.removed~, ~agent.changed~, ~agent.started~, ~agent.stopped~, ~agent.interrupted~, ~agent.state~, ~agent.connected~, ~agent.disconnected~, ~agent.typing~, ~agent.identity~ |
-| a room | ~message~, ~message.refused~, ~room.created~, ~room.changed~ |
+| a room | ~message~, ~message.refused~, ~exchange.stalled~, ~room.created~, ~room.changed~ |
 | an agent's mailbox | ~mailbox.queued~, ~mailbox.delivered~ |
 | a team | ~team.changed~ |
 | an agent | ~decision.asked~ |
@@ -921,6 +921,7 @@ Every kind published, by subject:
 | an integration | ~integration.changed~ |
 | a cloud image | ~image.progress~ (~done~, ~total~), ~image.finished~ (~path~ or ~error~) |
 | an agent | ~computer.exec~ |
+| an agent | ~turn.timed_out~, ~turn.repeating~, ~message.steered~ |
 
 ~agent.state~ is published for *every* state and carries the state's nick
 plus a ~detail~ saying why.  ~agent.started~ and ~agent.stopped~ are
@@ -984,6 +985,38 @@ Deduplicate on ~id~.
 subject the room, with ~from~, ~to~ and ~reason~.  A refusal on the link
 path went only to the log before this, so from outside the two agents
 just stopped talking and nothing said why.
+
+~exchange.stalled~ is published when the daemon *ends* an exchange rather
+than refusing one more message, subject the room, with ~reason~ (a
+#ClawtStallReason nickname) and ~detail~ (what was going round).  A
+stalled room refuses everything an agent sends into it, without a turn,
+until a person says something there.
+
+The difference from ~message.refused~ is the whole point: a refusal
+arrives after the sender has already written the message, so a pair that
+will not stop is billed for every refusal.  A client should draw a
+stalled room as needing attention rather than as one more rejection.
+
+~turn.timed_out~ is published when a turn is stopped for producing
+nothing within ~agents.runtime.turn_timeout_seconds~, or when a member
+spends a room's whole ~rooms.turn_timeout_seconds~.  Subject the agent,
+with ~reason~ and ~detail~ carrying the sentence written into the thread.
+
+~turn.repeating~ is published when one turn makes the same tool call a
+number of times that lands on ~orchestration.repeat_thresholds~.  Subject
+the agent, ~detail~ the repeated call.  It is a notice rather than an
+error, because at every threshold but the last **nothing has been
+stopped** -- clawtilla does not own the model's own tool-call loop and
+cannot steer a turn that is already running.  At the last threshold the
+turn is interrupted and a ~turn.timed_out~ follows.
+
+~message.steered~ is published when a message to a busy agent is held
+rather than routed, subject the agent, with ~room~ and ~held~ (how many
+are waiting).  There is no ~message~ event for it yet and nothing in the
+transcript: appending it now would make the queued line the active leaf,
+so the rest of the turn in flight would hang off a line the model was
+never shown.  The ~message~ event arrives when the turn settles and the
+held text is delivered.
 
 ~room.history~ entries carry ~depth~ -- how far agent-to-agent that
 message had travelled -- which is what lets a client show a chain

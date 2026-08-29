@@ -118,6 +118,34 @@ gint clawt_mailbox_router_send_to(ClawtMailboxRouter  *self,
  *
  * Returns: how many mailboxes it was queued into, or -1 on refusal
  */
+/**
+ * clawt_mailbox_router_note:
+ * @self: a #ClawtMailboxRouter
+ * @target: an agent id, or a room id
+ * @body: what to say
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Writes a line into a conversation and delivers it to **nobody**.
+ *
+ * The daemon has things to say that belong in the transcript and must
+ * not cost a turn: that a wedged turn was stopped, that an exchange was
+ * ended because it was going in circles. Sending those as ordinary
+ * messages would hand the agent a fresh turn -- which for a turn that
+ * was just interrupted is the opposite of what was wanted, and for a
+ * stalled exchange is the loop starting again.
+ *
+ * It appends to the room and publishes the same `message` event every
+ * other line does, so both clients draw it without knowing it is
+ * special, and the sender is `clawtilla` so a reader can see who is
+ * speaking.
+ *
+ * Returns: %TRUE if the note was written
+ */
+gboolean clawt_mailbox_router_note(ClawtMailboxRouter  *self,
+                                   const gchar         *target,
+                                   const gchar         *body,
+                                   GError             **error);
+
 gint clawt_mailbox_router_send_to_full(ClawtMailboxRouter  *self,
                                        const gchar         *from,
                                        const gchar         *target,
