@@ -1009,6 +1009,16 @@ versions apart.
   that a layout decision is not hierarchy.
 - The `GtkSettings:gtk-application-prefer-dark-theme` warning comes from the
   user's `settings.ini`, not from clawtilla.
+- **A coloured caption at badge size loses its horizontal strokes.** At
+  `.caption`, the crossbar of a `T` and the bars of an `F` cover under a whole
+  pixel; grayscale antialiasing draws them at partial alpha, and in a pale
+  accent colour on a dark row there is no luminance left to spend, so the
+  stroke reads as *missing* rather than thin. `HOST` and `CHIEF` did. Whether
+  it is visible is a question about the monitor, so it appears on one machine
+  and not the next with byte-identical software -- and asking the software what
+  it drew will not show it. Render at 1x and magnify with a *point* filter.
+  `.clawt-badge` is bold for this reason; `.clawt-unread-badge` and the web
+  client's `.badge` already were.
 - Emit **no CSS rule at all** for an appearance field somebody left empty.
   "Follow the desktop" and naming the desktop's current font look identical and
   diverge for ever. Clearing a font must reach NULL, not `""` -- an empty

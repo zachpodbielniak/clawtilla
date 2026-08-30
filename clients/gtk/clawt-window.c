@@ -198,6 +198,13 @@ clawt_gtk_badge(const gchar *text, const gchar *css_class, const gchar *tooltip)
     GtkWidget *label = gtk_label_new(text);
 
     gtk_widget_add_css_class(label, "caption");
+    /*
+     * `clawt-badge` is what makes it bold, and the rule's own comment
+     * says why that is not a style choice: at this size the horizontal
+     * stems of a T or an F cover less than a pixel and fade out of a
+     * coloured caption entirely.
+     */
+    gtk_widget_add_css_class(label, "clawt-badge");
     gtk_widget_add_css_class(label, css_class);
     gtk_widget_set_tooltip_text(label, tooltip);
 

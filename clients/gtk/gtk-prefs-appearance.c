@@ -59,6 +59,32 @@ static gchar          *appearance_code_font = NULL;
  */
 static const gchar CLAWT_STRUCTURE_CSS[] =
     /*
+     * A coloured caption badge -- HOST, CHIEF, a task's state.
+     *
+     * Bold, and the reason is the horizontal strokes.  At caption size
+     * the stems of a `T` crossbar or an `F` bar cover well under a whole
+     * pixel, so grayscale antialiasing draws them at partial alpha; in a
+     * light accent colour on a dark row there is very little luminance
+     * left to spend, and the stroke reads as *missing* rather than as
+     * thin.  Rendered and compared at 1x: `HOST` loses the top of its T
+     * and `CHIEF` loses the bars of its F, which is exactly how it was
+     * reported.  Bold carries those stems past a whole pixel.
+     *
+     * Why it shows up on one machine and not the next with identical
+     * software: the pixels are the same, and whether a half-covered pale
+     * red pixel is visible is a question about the monitor.  So this is
+     * not reproducible by asking the software what it drew -- only by
+     * looking at it.
+     *
+     * The two neighbours already knew.  `.clawt-unread-badge` below is
+     * bold, and the web client's badge has been `font-weight: 600` since
+     * it was written; the plain coloured caption is the one that was
+     * left at book weight.
+     */
+    ".clawt-badge {\n"
+    "  font-weight: bold;\n"
+    "}\n"
+    /*
      * The unread pill.  Filled, because everything else in that row is a
      * coloured caption: filled means for you, text means about the
      * agent.
