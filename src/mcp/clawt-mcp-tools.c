@@ -196,7 +196,10 @@ static const ClawtParamInfo room_history_params[] = {
 };
 
 static const ClawtParamInfo computer_exec_params[] = {
-    { "command",     "string", "The command to run.", TRUE },
+    { "command",     "string",
+      "The program and its arguments. Not run through a shell -- use "
+      "bash -c \"...\" for anything with a pipe, a redirection, a ; or "
+      "a $variable in it.", TRUE },
     { "working_dir", "string", "Where to run it.", FALSE },
     { "timeout",     "integer",
       "Seconds before giving up. Defaults to 120. Always set one for "
@@ -547,7 +550,11 @@ static const ToolDefinition tools[] = {
          NEEDS_RECALL, recall_params),
 
     TOOL("clawtilla_computer_exec",
-         "Run a command on your computer.",
+         "Run one program on your computer. This is not a shell: the "
+         "command line is split into arguments and the program is run "
+         "directly, so pipes, redirections, ;, &&, $(...) and $VAR are "
+         "literal text rather than syntax. Wrap anything that needs them "
+         "in bash -c \"...\".",
          NEEDS_COMPUTER, computer_exec_params),
 
     TOOL("clawtilla_computer_state",
@@ -3395,6 +3402,17 @@ exec_call_prepare(ClawtMcpTools *self, const gchar *agent_id,
         *refusal = g_strdup("You have no computer to run commands on.");
         return NULL;
     }
+
+    /*
+     * Before the parse, because the parse is what destroys the evidence:
+     * g_shell_parse_argv() removes the quotes, and after that a `|` an
+     * agent meant literally and a `|` it expected a shell to honour are
+     * the same argv.
+     */
+    *refusal = clawt_command_shell_syntax_refusal(command);
+
+    if (*refusal != NULL)
+        return NULL;
 
     if (!g_shell_parse_argv(command, NULL, &argv, &error)) {
         *refusal = g_strdup_printf("That command could not be parsed: %s",

@@ -6162,6 +6162,69 @@ test_an_operator_exec_is_recorded_once_when_it_ends(void)
 }
 
 /*
+ * The IPC verb refuses a command line that needs a shell, and only when
+ * the caller sent a string.
+ *
+ * A rule enforced at one call site is a rule about that call site.  The
+ * agent-facing tool and this verb both lex a command line and spawn it
+ * directly, so both had the same silent failure -- exit 0, the rest of
+ * the line echoed back, nothing logged.
+ *
+ * An `argv` caller is deliberately exempt: the CLI already has the
+ * arguments separated by the shell that split them, so it means every
+ * one of them literally, and `find . -exec rm {} ';'` is a legitimate
+ * argv.  Refusing that would break a client for saying exactly what it
+ * meant.
+ */
+static void
+test_the_exec_verb_refuses_a_shell_line(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GSocketConnection) connection = NULL;
+    g_autofree gchar *refused = NULL;
+    g_autofree gchar *accepted = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: worker\n"
+                  "    computer:\n"
+                  "      type: host\n"
+                  "      host:\n"
+                  "        confirm_host_control: true\n");
+
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    attach_a_host_computer(&fixture, "worker", fixture.dir);
+    connection = dial_the_daemon(&fixture);
+
+    send_a_frame(connection, "computer.exec", "op-shell",
+                 "{\"agent\": \"worker\", "
+                 "\"command\": \"echo one; echo two\", \"timeout\": 30}");
+
+    refused = read_a_frame(&fixture, connection, 30);
+    g_assert_nonnull(strstr(refused, "\"ok\":false"));
+    g_assert_nonnull(strstr(refused, "bash -c"));
+
+    /*
+     * And the same operators, sent as an argv, are the caller's own
+     * words and run.
+     */
+    send_a_frame(connection, "computer.exec", "op-argv",
+                 "{\"agent\": \"worker\", "
+                 "\"argv\": [\"/bin/echo\", \"one;\", \"two\"], "
+                 "\"timeout\": 30}");
+
+    accepted = read_a_frame(&fixture, connection, 30);
+    g_assert_nonnull(strstr(accepted, "\"ok\":true"));
+
+    g_io_stream_close(G_IO_STREAM(connection), NULL, NULL);
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * A command that could not be run at all is still recorded.
  *
  * A trail holding only the successes answers the wrong question: the
@@ -8434,6 +8497,8 @@ main(int argc, char *argv[])
                     test_a_turn_ending_does_not_close_a_task_with_children);
     g_test_add_func("/daemon/task/running-when-its-turn-starts",
                     test_a_task_starts_running_when_its_turn_does);
+    g_test_add_func("/daemon/computer-exec/a-shell-line-is-refused",
+                    test_the_exec_verb_refuses_a_shell_line);
 
     status = g_test_run();
 

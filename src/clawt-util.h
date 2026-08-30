@@ -518,4 +518,34 @@ GArray *clawt_process_descendants(GPid root);
  */
 gboolean clawt_process_is_descendant_of(GPid pid, GPid root);
 
+/**
+ * clawt_command_shell_syntax_refusal:
+ * @command: (nullable): a command line as somebody wrote it
+ *
+ * Whether @command is relying on a shell that will not be there.
+ *
+ * A command line handed to clawtilla_computer_exec goes through
+ * g_shell_parse_argv() and is then spawned directly.  That is shell
+ * lexing without shell semantics: quotes and word splitting are applied,
+ * and `;`, `&&`, `|`, redirections, backquotes, `$(...)` and `$VAR` all
+ * survive into argv as ordinary text.  Nothing errors -- the program
+ * runs, exits 0 and prints the rest of the line back -- so an agent
+ * reads it as a command that ran and behaved oddly rather than as a
+ * command that was never a command.
+ *
+ * Read from the raw string, before the quotes are gone: after lexing,
+ * `grep 'a|b' f` and `a | b` are the same argv, and quoting is the only
+ * thing that says which one somebody meant.  Globs are deliberately not
+ * flagged, because an unquoted `*.log` reaches the program unchanged and
+ * that is sometimes the point.
+ *
+ * There is no shell because confinement inspects the translated argv.
+ * The refusal therefore names `bash -c`, which is inspected the same way
+ * rather than being a way around it.
+ *
+ * Returns: (transfer full) (nullable): a refusal naming the construct
+ *   and the way to run it, or %NULL if the command is a plain argv
+ */
+gchar *clawt_command_shell_syntax_refusal(const gchar *command);
+
 G_END_DECLS

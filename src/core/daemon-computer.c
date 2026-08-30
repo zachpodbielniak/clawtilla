@@ -84,6 +84,23 @@ clawt_daemon_handle_computer(
         if (argv != NULL && argv[0] == NULL)
             g_clear_pointer(&argv, g_strfreev);
 
+        /*
+         * Only the string form is checked.  A caller that already has
+         * the arguments separated means every one of them literally --
+         * `find . -exec rm {} ;` is a legitimate argv -- and refusing it
+         * would break the CLI for saying exactly what it meant.  The
+         * string form is the one a model writes, and the one that has no
+         * shell behind it.
+         */
+        if (argv == NULL && command != NULL) {
+            g_autofree gchar *refusal =
+                clawt_command_shell_syntax_refusal(command);
+
+            if (refusal != NULL)
+                return clawt_ipc_error_new(
+                    request, CLAWT_ERROR_INVALID_ARGUMENT, refusal);
+        }
+
         if (argv == NULL &&
             (command == NULL || !g_shell_parse_argv(command, NULL, &argv,
                                                     &error)))

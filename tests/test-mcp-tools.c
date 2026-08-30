@@ -2315,6 +2315,144 @@ test_an_inferred_result_is_labelled(void)
     fixture_teardown(&fixture);
 }
 
+/* ── Commands that need a shell ──────────────────────────────────── */
+
+/*
+ * A command line that needs a shell is refused, and never half-run.
+ *
+ * g_shell_parse_argv() lexes without any shell semantics, so `;`, `&&`,
+ * `|`, redirections and `$(...)` all reached argv as literal text and
+ * the program ran anyway: exit 0, the rest of the line echoed back, and
+ * nothing logged.  From the agent's side that reads as a command that
+ * ran and behaved oddly, which is the most expensive kind of wrong.
+ */
+static void
+test_a_command_needing_a_shell_is_refused(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(JsonNode) response = NULL;
+    ClawtAgent *agent;
+    gboolean is_error = FALSE;
+    const gchar *text;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+
+    agent = clawt_agent_manager_get(fixture.agents, "chief");
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_NONE, fixture.dir);
+    computer = clawt_host_computer_new("chief", sandbox);
+    clawt_computer_start(computer, NULL);
+    clawt_agent_set_computer(agent, computer);
+
+    response = call_tool(&fixture, "chief", "clawtilla_computer_exec",
+                         "{\"command\":\"echo one; echo two\","
+                         "\"timeout\":10}");
+    text = response_text(response, &is_error);
+
+    g_assert_true(is_error);
+    g_assert_nonnull(strstr(text, "bash -c"));
+
+    /*
+     * And nothing ran.  The refusal is before the parse, so there is no
+     * audit entry either -- a command that was refused did not happen,
+     * and a trail saying otherwise answers the wrong question.
+     */
+    g_assert_nonnull(strstr(text, ";"));
+    g_assert_null(recorded_exec(&fixture));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * The route it recommends works, so the refusal has something to
+ * recommend.  bash -c is inspected the same way anything else is --
+ * clawt_sandbox_check_argv() re-parses the nested command line -- so
+ * this is a supported route rather than a way around confinement.
+ */
+static void
+test_the_shell_it_recommends_actually_runs(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(JsonNode) response = NULL;
+    ClawtAgent *agent;
+    gboolean is_error = TRUE;
+    const gchar *text;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+
+    agent = clawt_agent_manager_get(fixture.agents, "chief");
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_NONE, fixture.dir);
+    computer = clawt_host_computer_new("chief", sandbox);
+    clawt_computer_start(computer, NULL);
+    clawt_agent_set_computer(agent, computer);
+
+    response = call_tool(&fixture, "chief", "clawtilla_computer_exec",
+                         "{\"command\":\"bash -c 'echo one; echo two'\","
+                         "\"timeout\":10}");
+    text = response_text(response, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_nonnull(strstr(text, "one"));
+    g_assert_nonnull(strstr(text, "two"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And the tool says so before anybody tries it.
+ *
+ * A tool's description is part of its behaviour.  An agent reads the
+ * description once and writes shell lines for the rest of its life, so
+ * a refusal that only arrives at call time costs a turn every time.
+ */
+static void
+test_the_exec_tool_says_it_is_not_a_shell(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(JsonNode) listing = NULL;
+    ClawtAgent *agent;
+    JsonArray *tools;
+    gboolean checked = FALSE;
+    guint i;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+
+    agent = clawt_agent_manager_get(fixture.agents, "chief");
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_NONE, fixture.dir);
+    computer = clawt_host_computer_new("chief", sandbox);
+    clawt_computer_start(computer, NULL);
+    clawt_agent_set_computer(agent, computer);
+
+    listing = clawt_mcp_tools_list(fixture.tools, "chief");
+    tools = json_object_get_array_member(json_node_get_object(listing),
+                                         "tools");
+
+    for (i = 0; i < json_array_get_length(tools); i++) {
+        JsonObject *tool = json_array_get_object_element(tools, i);
+
+        if (g_strcmp0(json_object_get_string_member(tool, "name"),
+                      "clawtilla_computer_exec") != 0)
+            continue;
+
+        g_assert_nonnull(strstr(json_object_get_string_member(tool,
+                                                              "description"),
+                                "not a shell"));
+        g_assert_nonnull(strstr(json_object_get_string_member(tool,
+                                                              "description"),
+                                "bash -c"));
+        checked = TRUE;
+    }
+
+    g_assert_true(checked);
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -2416,6 +2554,12 @@ main(int argc, char *argv[])
                     test_progress_on_a_finished_task_is_refused);
     g_test_add_func("/mcp/task-result/an-inferred-result-is-labelled",
                     test_an_inferred_result_is_labelled);
+    g_test_add_func("/mcp/computer-exec/a-shell-line-is-refused",
+                    test_a_command_needing_a_shell_is_refused);
+    g_test_add_func("/mcp/computer-exec/the-recommended-shell-runs",
+                    test_the_shell_it_recommends_actually_runs);
+    g_test_add_func("/mcp/computer-exec/the-tool-says-it-is-not-a-shell",
+                    test_the_exec_tool_says_it_is_not_a_shell);
 
     return g_test_run();
 }

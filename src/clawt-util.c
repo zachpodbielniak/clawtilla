@@ -1105,3 +1105,125 @@ clawt_process_descendants(GPid root)
 
     return ordered;
 }
+
+/*
+ * The shell construct a command is relying on and will not get.
+ *
+ * Both routes to clawtilla_computer_exec hand a command line to
+ * g_shell_parse_argv() and then spawn the result directly.  That applies
+ * shell *lexing* -- quote removal and word splitting -- and no shell
+ * *semantics*, so `;`, `&&`, `|`, redirections, backquotes, `$(...)` and
+ * `$VAR` all survive as ordinary characters in argv and are handed to
+ * the program as literal text.
+ *
+ * The failure is the bad kind.  Nothing errors: the command runs, exits
+ * 0, and prints the rest of the line back.  `echo "whoami=$(whoami)"; for
+ * p in ...; do ...; done` came back with the loop printed verbatim and
+ * $(whoami) unexpanded, which from the agent's side reads as a command
+ * that ran and produced strange output rather than as a command that was
+ * never a command.  Confinement is why there is no shell -- the sandbox
+ * inspects the translated argv -- so the answer is to say so, loudly,
+ * rather than to wrap it.
+ *
+ * Scanned on the raw string rather than on the parsed argv, because
+ * after lexing the quotes are gone and `grep 'a|b' f` is
+ * indistinguishable from `a | b`.  Quoting is exactly what separates a
+ * character somebody meant literally from one they expected a shell to
+ * act on, so it has to be read before it is discarded.
+ *
+ * Globs are deliberately *not* flagged.  An unquoted `*.log` reaches the
+ * program unchanged, which is sometimes what the program wanted; a
+ * refusal there would break commands that work today.
+ */
+gchar *
+clawt_command_shell_syntax_refusal(const gchar *command)
+{
+    const gchar *found = NULL;
+    const gchar *p;
+    gchar quote = '\0';
+
+    if (command == NULL)
+        return NULL;
+
+    for (p = command; *p != '\0' && found == NULL; p++) {
+        if (quote == '\'') {
+            /* Single quotes protect everything, including a backslash. */
+            if (*p == '\'')
+                quote = '\0';
+            continue;
+        }
+
+        if (*p == '\\') {
+            /* An escaped character is literal wherever it appears. */
+            if (p[1] != '\0')
+                p++;
+            continue;
+        }
+
+        if (quote == '"') {
+            if (*p == '"')
+                quote = '\0';
+            else if (*p == '`')
+                found = "a `backquoted command`";
+            else if (*p == '$' && p[1] == '(')
+                found = "a $(...) command substitution";
+            else if (*p == '$' && (p[1] == '{' || g_ascii_isalpha(p[1]) ||
+                                   p[1] == '_'))
+                found = "a $VAR reference";
+
+            continue;
+        }
+
+        switch (*p) {
+        case '\'':
+        case '"':
+            quote = *p;
+            break;
+        case ';':
+            found = "a ; between commands";
+            break;
+        case '|':
+            found = "a pipe";
+            break;
+        case '&':
+            found = "an & or &&";
+            break;
+        case '<':
+        case '>':
+            found = "a redirection";
+            break;
+        case '\n':
+            found = "a line break between commands";
+            break;
+        case '`':
+            found = "a `backquoted command`";
+            break;
+        case '$':
+            if (p[1] == '(')
+                found = "a $(...) command substitution";
+            else if (p[1] == '{' || g_ascii_isalpha(p[1]) || p[1] == '_')
+                found = "a $VAR reference";
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (found == NULL)
+        return NULL;
+
+    /*
+     * The remedy is named because a refusal an agent cannot act on is a
+     * refusal it will retry in the same shape.  bash -c keeps the
+     * sandbox honest: clawt_sandbox_check_argv() re-parses the nested
+     * command line and inspects that too, so this is a supported route
+     * rather than a way around confinement.
+     */
+    return g_strdup_printf(
+        "That command contains %s, and this does not run commands through "
+        "a shell -- it splits the line into arguments and runs the program "
+        "directly. Pipes, redirections, ;, &&, backquotes, $(...) and "
+        "$VAR would all arrive as literal text and the command would "
+        "appear to succeed while doing nothing you asked for. Run it as: "
+        "bash -c \"<the whole command line>\"", found);
+}

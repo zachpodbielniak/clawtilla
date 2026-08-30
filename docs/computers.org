@@ -33,11 +33,14 @@ produces a failure that looks like something else.
 
 Every argument is quoted and passed through as it stands, so ~>~, ~|~,
 ~&&~, ~;~, ~*~ and ~$VAR~ arrive at the command as literal text.  The
-failure is the bad kind: ~echo hi > /dev/console~ *exits 0*, prints
-~hi > /dev/console~ to stdout, and reports success having done nothing.
-Wrap it in ~bash -c~ when you want shell behaviour.  Worked through at
-[[*Running things in one][Running things in one]], with the case where it
-bites hardest.
+failure used to be the bad kind: ~echo hi > /dev/console~ *exited 0*,
+printed ~hi > /dev/console~ to stdout, and reported success having done
+nothing.
+
+A command line that is relying on a shell is now **refused** rather than
+half-run, naming the construct it found and ~bash -c~ as the way to run
+it.  Worked through at [[*Running things in one][Running things in one]],
+with the case where it bites hardest.
 
 *** Output is truncated at 256 KiB
 
@@ -871,15 +874,54 @@ refused.
 
 ~clawtilla_computer_exec~ takes a *command and its arguments*, not a
 shell line.  Every argument is quoted and passed through as it stands, so
-~>~, ~|~, ~&&~, ~;~, ~*~ and ~$VAR~ arrive at the command as literal text
--- the command runs, reports success, and does nothing you were looking
-for.  This is the same for every backend.
+~>~, ~|~, ~&&~, ~;~, ~*~ and ~$VAR~ would arrive at the command as
+literal text.  This is the same for every backend.
 
 Wrap it in a shell when you want shell behaviour:
 
 #+begin_src bash
 clawtilla computer exec researcher -- bash -c 'echo hi > /tmp/note'
 #+end_src
+
+**** A command line that needs a shell is refused
+
+~clawt_command_shell_syntax_refusal()~ reads the command *before* it is
+lexed and refuses one that is relying on a shell, naming the construct
+and the remedy:
+
+#+begin_example
+That command contains a ; between commands, and this does not run
+commands through a shell -- it splits the line into arguments and runs
+the program directly. [...] Run it as: bash -c "<the whole command line>"
+#+end_example
+
+It has to read the raw string, because ~g_shell_parse_argv()~ removes the
+quotes and after that ~grep 'a|b' f~ and ~a | b~ are the same argv --
+quoting is the only thing that says which one somebody meant.  So a
+single-quoted operator is left alone, and an operator inside double
+quotes that a real shell would still act on (~$(...)~, ~$VAR~,
+backquotes) is refused, because a real shell would have acted on it.
+
+Refused: ~;~, ~|~, ~&&~, ~&~, ~<~, ~>~, a line break, backquotes,
+~$(...)~, ~${VAR}~ and ~$VAR~, each only when it is unquoted.
+
+*Not* refused: globs.  An unquoted ~*.log~ reaches the program unchanged
+and that is sometimes exactly what the program wanted, so a refusal there
+would break commands that work today.  A bare trailing ~$~ is left alone
+for the same reason -- it is a regex anchor far more often than an
+expansion.
+
+There is no shell because confinement inspects the *translated* argv, and
+~bash -c~ is inspected the same way: ~clawt_sandbox_check_argv()~
+re-parses the nested command line.  Wrapping the command transparently
+would have defeated that, which is why the answer is a refusal rather
+than a convenience.
+
+The same check runs on the ~computer.exec~ IPC verb when a client sends a
+command *string*.  It does not run when a client sends an ~argv~: the CLI
+already has the arguments separated by the shell that split them, so it
+means every one of them literally, and ~find . -exec rm {} ';'~ is a
+legitimate argv.
 
 *Writing to a VM's screen* is the case where this bites hardest, because
 the naive form looks like it worked.  ~/dev/console~ is the serial

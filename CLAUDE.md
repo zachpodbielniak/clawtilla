@@ -533,9 +533,17 @@ shell argument -- `clawt_computer_describe_mounts()` states both, from one
 function.
 
 `computer_exec` takes a **command, not a shell line**: both backends
-`g_shell_quote()` each argument, so `>`, `|`, `&&`, `;`, `*` and `$VAR` arrive
-as literal text. The failure is the bad kind -- `echo hi > /dev/console` exits
-0 and prints `hi > /dev/console` to stdout.
+`g_shell_quote()` each argument, so `>`, `|`, `&&`, `;`, `*` and `$VAR` would
+arrive as literal text. The failure was the bad kind -- `echo hi >
+/dev/console` exited 0 and printed `hi > /dev/console` to stdout -- so
+`clawt_command_shell_syntax_refusal()` now refuses such a line, naming the
+construct and `bash -c`. It reads the **raw string**, before
+`g_shell_parse_argv()` removes the quotes: after lexing, `grep 'a|b' f` and
+`a | b` are the same argv and quoting is the only thing that said which was
+meant. Globs are deliberately not refused -- an unquoted `*.log` reaches the
+program unchanged, which is sometimes the point. The check runs on the tool
+and on `computer.exec`'s **string** form only; a client that sends an `argv`
+already means every word literally.
 
 ### Lifecycle
 
@@ -1276,6 +1284,8 @@ versions apart.
   and neither reports that it did
 - Never take the end of a turn as the end of the work without asking the task
   whether anything it handed on is still running
+- Never lex a command line into an argv and spawn it without saying that the
+  shell operators in it did nothing
 - Never add a mount to a computer without going through
   `clawt_computer_add_mount()` -- it is where the backend fills in the type,
   and a VM mount left untyped gets a `<filesystem>` device with no fstab entry

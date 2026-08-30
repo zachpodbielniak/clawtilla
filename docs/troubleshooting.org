@@ -1847,6 +1847,32 @@ turn state is set when the daemon sees a typing indicator.  An agent with
 no room never raises one, so it delegates without a parent -- give it a
 room rather than expecting the tree to appear.
 
+** A command ran, exited 0, and printed the rest of itself
+
+#+begin_example
+whoami=$(whoami) pwd=$(pwd); for p in /mnt/clawtilla/workspace; do ls $p; done
+#+end_example
+
+~clawtilla_computer_exec~ runs a program, not a shell line.  It used to
+lex the command and spawn it anyway, so every operator in it became
+literal text and the call succeeded having done nothing asked for.
+
+It is now refused, naming the construct and the remedy.  Run it as:
+
+#+begin_src bash
+clawtilla computer exec <agent> -- bash -c 'the whole command line'
+#+end_src
+
+A running agent keeps the old tool description until it restarts, so it
+will keep writing shell lines and getting the refusal until then:
+
+#+begin_src bash
+clawtilla agent restart <agent>
+#+end_src
+
+If a command you *want* is refused, quote the operator -- ~grep 'a|b' f~
+is accepted, ~grep a|b f~ is not, and the second was never going to work.
+
 ** gowl is unreachable
 
 - gowl must be built with ~MCP=1~ and have ~modules.mcp.enabled: true~
