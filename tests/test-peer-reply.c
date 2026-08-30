@@ -426,13 +426,23 @@ test_a_deliberate_message_earns_one_answer(void)
 }
 
 /*
- * A question is not silenced by an acknowledgement queued behind it.
+ * A question and an acknowledgement behind it get a turn each.
  *
- * A drain hands over everything waiting and the agent answers all of it
- * in one turn, so the decision cannot come from the last item alone: a
- * peer that asks something and then sends a bare "thanks, got it" would
- * have the second close a turn the first opened, and the question would
- * go unanswered with nobody able to see why.
+ * This asserted that the *drain* left the agent free to answer, on the
+ * premise that a drain hands over everything waiting and the agent
+ * answers all of it in one turn -- so a bare "thanks, got it" queued
+ * behind a question would close the turn the question opened and the
+ * question would go unanswered.
+ *
+ * libreclaw does not work that way. LcSession keeps its own GQueue and
+ * drain_next_message() pops one entry per turn, so two messages are two
+ * turns. The premise was never true, and the accumulation it justified
+ * was itself the bug: the acknowledgement's own turn inherited the
+ * question's answer and replied to an acknowledgement, which is the
+ * politeness loop the flag exists to end.
+ *
+ * So the question is still answered -- that half was always the point --
+ * and now the acknowledgement is not.
  */
 static void
 test_a_question_survives_an_acknowledgement_behind_it(void)
@@ -470,7 +480,126 @@ test_a_question_survives_an_acknowledgement_behind_it(void)
     give_agent_a_link(&fixture, beta);
     clawt_mailbox_router_drain(fixture.router, "beta");
 
+    /* The question's turn answers it. */
+    clawt_agent_begin_turn(beta);
     g_assert_true(clawt_agent_get_turn_replies(beta));
+    g_assert_cmpstr(clawt_agent_get_turn_origin(beta), ==, "alpha");
+
+    /* The acknowledgement's turn has nowhere to send anything. */
+    clawt_agent_begin_turn(beta);
+    g_assert_false(clawt_agent_get_turn_replies(beta));
+    g_assert_cmpstr(clawt_agent_get_turn_origin(beta), ==, "alpha");
+
+    /* And nothing is left behind: a third turn is a fresh chain. */
+    clawt_agent_begin_turn(beta);
+    g_assert_true(clawt_agent_get_turn_replies(beta));
+    g_assert_null(clawt_agent_get_turn_origin(beta));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Every message in a burst describes its own turn.
+ *
+ * A peer that sends several messages while the agent is busy has them
+ * all delivered at once -- delivery acknowledges at the socket, so the
+ * mailbox empties long before the turns run -- and libreclaw then runs a
+ * turn each.  clawtilla armed the whole burst with one boolean saying "a
+ * delivery set the next turn up", which the first turn spent, so turns
+ * two onwards looked like turns nothing had delivered into: depth back
+ * to zero, so max_hops could not be reached; free to reply, so a closed
+ * exchange was answered; and no origin, so clawtilla_message_user's
+ * guard did not fire and a peer's business landed in the operator's
+ * chat.  One question produced three messages there.
+ *
+ * Four, at four different depths, because the failure is invisible at
+ * one and ambiguous at two.
+ */
+static void
+test_every_message_in_a_burst_gets_its_own_turn(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgent *beta;
+    g_autoptr(GError) error = NULL;
+    gint depth;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: beta\n");
+
+    beta = clawt_agent_manager_get(fixture.agents, "beta");
+
+    for (depth = 1; depth <= 4; depth++) {
+        g_assert_cmpint(
+            clawt_mailbox_router_send_to(fixture.router, "alpha", "beta",
+                                         "another one", NULL, depth,
+                                         &error), >, 0);
+        g_assert_no_error(error);
+    }
+
+    give_agent_a_link(&fixture, beta);
+    clawt_mailbox_router_drain(fixture.router, "beta");
+
+    for (depth = 1; depth <= 4; depth++) {
+        clawt_agent_begin_turn(beta);
+
+        g_assert_cmpint(clawt_agent_get_hop_depth(beta), ==, depth);
+        g_assert_cmpstr(clawt_agent_get_turn_origin(beta), ==, "alpha");
+        g_assert_true(clawt_agent_get_turn_replies(beta));
+    }
+
+    /* Four deliveries, four turns, and the fifth is nobody's. */
+    clawt_agent_begin_turn(beta);
+    g_assert_cmpint(clawt_agent_get_hop_depth(beta), ==, 0);
+    g_assert_null(clawt_agent_get_turn_origin(beta));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A burst too big to remember folds rather than forgets.
+ *
+ * The queue is fed by whatever a peer sends and drained by turns that
+ * each cost a model call, so it has to be bounded.  Dropping the oldest
+ * entry outright would lose whatever it said, and the field that matters
+ * is the one that closes an exchange: an agent that never learns it has
+ * been answered answers back.  So the oldest is merged into the one
+ * behind it, keeping the more restrictive answer.
+ */
+static void
+test_an_overlong_burst_folds_the_oldest_in(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgent *beta;
+    GLogLevelFlags fatal;
+    guint i;
+
+    fixture_setup(&fixture, "agents:\n  - id: beta\n");
+
+    beta = clawt_agent_manager_get(fixture.agents, "beta");
+
+    /* A closed exchange first, then far more than fit behind it. */
+    clawt_agent_deliver_turn(beta, 3, FALSE, "alpha");
+
+    /*
+     * Each fold warns, which is the point of it -- an agent this far
+     * behind is worth saying so about.  Swallowed rather than avoided,
+     * and restored immediately: left at 0 it would make every later test
+     * in this binary ignore a real warning.
+     */
+    fatal = g_log_set_always_fatal(G_LOG_LEVEL_ERROR);
+
+    for (i = 0; i < 200; i++)
+        clawt_agent_deliver_turn(beta, 1, TRUE, "alpha");
+
+    g_log_set_always_fatal(fatal);
+
+    /*
+     * The close survived the fold: the first turn out is still one whose
+     * closing text goes nowhere, and it still carries the deeper hop
+     * count.  Dropping instead of merging would answer it.
+     */
+    clawt_agent_begin_turn(beta);
+    g_assert_false(clawt_agent_get_turn_replies(beta));
+    g_assert_cmpint(clawt_agent_get_hop_depth(beta), ==, 3);
 
     fixture_teardown(&fixture);
 }
@@ -561,6 +690,10 @@ main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
+    g_test_add_func("/peer-reply/burst-gets-a-turn-each",
+                    test_every_message_in_a_burst_gets_its_own_turn);
+    g_test_add_func("/peer-reply/overlong-burst-folds",
+                    test_an_overlong_burst_folds_the_oldest_in);
     g_test_add_func("/peer-reply/message-default",
                     test_a_message_invites_a_reply_by_default);
     g_test_add_func("/peer-reply/item-default",

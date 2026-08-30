@@ -35,12 +35,68 @@ struct _ClawtAgent {
 
     ClawtAgentState state;
     ClawtAgentCaps  caps;
+
+    /*
+     * What this turn is answering, and what is waiting behind it.
+     *
+     * The three live fields describe the turn that is running.  The
+     * queue holds one entry per delivery that has not started its turn
+     * yet, because libreclaw runs exactly one turn per message --
+     * LcSession keeps its own GQueue and drain_next_message() pops a
+     * single entry -- so a drain that hands over five messages produces
+     * five turns, not one.
+     *
+     * This was a single gboolean saying "a delivery set the next turn
+     * up", spent by the first clawt_agent_begin_turn() after it.  With
+     * five deliveries and five turns, turns two through five were
+     * therefore treated as turns nothing delivered into: the depth went
+     * back to zero, so max_hops could not be reached; turn_replies went
+     * back to TRUE, so an acknowledgement carrying invites_reply: 0 was
+     * answered anyway; and turn_origin was cleared, which silently
+     * disabled clawtilla_message_user()'s guard, so a peer-started turn
+     * pushed its findings straight into the operator's chat.  One
+     * operator question produced three messages, two of them from
+     * somebody else's conversation.
+     */
     gint            hop_depth;
-    gboolean        turn_was_delivered;
     gboolean        turn_replies;
     gchar          *turn_origin;
+    GQueue         *pending_turns;
+
     gchar          *status_detail;
 };
+
+/*
+ * One delivery's worth of turn state, waiting for the turn it set up.
+ *
+ * A scalar cannot describe N messages, and there are N: this is the
+ * whole reason the queue exists rather than a counter.  A counter would
+ * keep the *last* delivery's origin for all of them, which for a burst
+ * of [peer, operator] names the wrong one on both turns.
+ */
+typedef struct {
+    gint      depth;
+    gboolean  replies;
+    gchar    *origin;
+} TurnSetup;
+
+static void
+turn_setup_free(gpointer data)
+{
+    TurnSetup *setup = data;
+
+    g_free(setup->origin);
+    g_free(setup);
+}
+
+static void
+queue_of_turns_free(GQueue *queue)
+{
+    g_queue_free_full(queue, turn_setup_free);
+}
+
+/* How far behind an agent may fall; see trim_pending_turns(). */
+#define CLAWT_AGENT_MAX_PENDING_TURNS (64)
 
 G_DEFINE_FINAL_TYPE(ClawtAgent, clawt_agent, G_TYPE_OBJECT)
 
@@ -383,18 +439,134 @@ clawt_agent_get_hop_depth(ClawtAgent *self)
     return self->hop_depth;
 }
 
+/*
+ * Folds the oldest waiting delivery into the one behind it.
+ *
+ * The queue is fed by whatever a peer sends and drained by turns that
+ * each cost a model call, so the producer can outrun the consumer
+ * indefinitely.  Merged rather than dropped: dropping loses a close
+ * signal, and an agent that never learns an exchange is closed answers
+ * it, which is the loop this whole mechanism exists to end.  The merge
+ * keeps the deeper hop count and the more restrictive reply flag, so
+ * overflow errs towards stopping an exchange rather than continuing one.
+ */
+static void
+trim_pending_turns(ClawtAgent *self)
+{
+    TurnSetup *oldest;
+    TurnSetup *next;
+
+    if (g_queue_get_length(self->pending_turns) <=
+        CLAWT_AGENT_MAX_PENDING_TURNS)
+        return;
+
+    oldest = g_queue_pop_head(self->pending_turns);
+    next = g_queue_peek_head(self->pending_turns);
+
+    if (oldest != NULL && next != NULL) {
+        if (oldest->depth > next->depth)
+            next->depth = oldest->depth;
+
+        next->replies = next->replies && oldest->replies;
+
+        if (next->origin == NULL)
+            next->origin = g_strdup(oldest->origin);
+    }
+
+    g_warning("agent %s: more than %d messages are waiting for a turn; the "
+              "oldest has been folded into the one behind it",
+              clawt_agent_get_id(self), CLAWT_AGENT_MAX_PENDING_TURNS);
+
+    turn_setup_free(oldest);
+}
+
+/*
+ * The entry the delivery being described is filling in.
+ *
+ * The three setters are called one after another for a single item, so
+ * they all write the same tail entry; a setter reached with an empty
+ * queue starts one.  That is what makes each of them arm the queue on
+ * its own -- clawt_agent_set_turn_origin() did not arm the old boolean,
+ * which meant a caller that set only the origin had it discarded by the
+ * next clawt_agent_begin_turn(), silently, on the path about to read it.
+ *
+ * Seeded from the live fields rather than from the defaults, so a
+ * partially-described delivery inherits the running turn's answer
+ * instead of a fresh-chain one.  A missing field must not be the
+ * permissive value by accident.
+ */
+static TurnSetup *
+pending_turn(ClawtAgent *self)
+{
+    TurnSetup *setup = g_queue_peek_tail(self->pending_turns);
+
+    if (setup != NULL)
+        return setup;
+
+    setup = g_new0(TurnSetup, 1);
+    setup->depth = self->hop_depth;
+    setup->replies = self->turn_replies;
+    setup->origin = g_strdup(self->turn_origin);
+
+    g_queue_push_tail(self->pending_turns, setup);
+
+    return setup;
+}
+
+void
+clawt_agent_deliver_turn(ClawtAgent  *self,
+                         gint         depth,
+                         gboolean     replies,
+                         const gchar *from)
+{
+    TurnSetup *setup;
+
+    g_return_if_fail(CLAWT_IS_AGENT(self));
+
+    /*
+     * A whole delivery at once, which is what makes it one entry.
+     *
+     * The three setters below amend the entry at the tail, so a caller
+     * describing one delivery a field at a time gets one entry -- and a
+     * caller describing three deliveries that way would get one entry
+     * for all three, with no way to tell where one ended.  There is no
+     * end-of-delivery edge to find; there is only this call.
+     */
+    setup = g_new0(TurnSetup, 1);
+    setup->depth = depth;
+    setup->replies = replies;
+    setup->origin = g_strdup(from);
+
+    g_queue_push_tail(self->pending_turns, setup);
+    trim_pending_turns(self);
+
+    /*
+     * And the live fields, so anything reading between the delivery and
+     * the turn it set up -- a client drawing the fleet, a test asserting
+     * on the drain -- sees what was just handed over rather than the
+     * previous turn's answer.
+     */
+    self->hop_depth = depth;
+    self->turn_replies = replies;
+    g_free(self->turn_origin);
+    self->turn_origin = g_strdup(from);
+}
+
 void
 clawt_agent_set_hop_depth(ClawtAgent *self, gint depth)
 {
     g_return_if_fail(CLAWT_IS_AGENT(self));
 
-    self->hop_depth = depth;
-
     /*
-     * Set for a turn that has not started yet.  clawt_agent_begin_turn()
-     * spends it; a turn that begins without one starts from zero.
+     * Written to the live field as well as to the entry.
+     *
+     * Everything that reads the depth between a delivery and the turn it
+     * set up -- a client showing the fleet, a test asserting on the
+     * drain -- is asking about what was just delivered, and would get
+     * the previous turn's number from the field alone.
      */
-    self->turn_was_delivered = TRUE;
+    self->hop_depth = depth;
+    pending_turn(self)->depth = depth;
 }
 
 gboolean
@@ -411,28 +583,22 @@ clawt_agent_set_turn_replies(ClawtAgent *self, gboolean replies)
     g_return_if_fail(CLAWT_IS_AGENT(self));
 
     self->turn_replies = replies;
-
-    /*
-     * And this counts as the delivery, exactly as the hop depth does.
-     *
-     * One flag says a turn was set up by a delivery, and every field
-     * that describes such a turn has to arm it -- otherwise a caller
-     * that sets this one and not the depth has its value thrown away by
-     * the next clawt_agent_begin_turn(), silently, on the path where the
-     * turn is about to read it.  The router sets all three together, so
-     * this is about the setter being safe on its own rather than about
-     * any caller it has today.
-     */
-    self->turn_was_delivered = TRUE;
+    pending_turn(self)->replies = replies;
 }
 
 void
 clawt_agent_set_turn_origin(ClawtAgent *self, const gchar *from)
 {
+    TurnSetup *setup;
+
     g_return_if_fail(CLAWT_IS_AGENT(self));
 
     g_free(self->turn_origin);
     self->turn_origin = g_strdup(from);
+
+    setup = pending_turn(self);
+    g_free(setup->origin);
+    setup->origin = g_strdup(from);
 }
 
 const gchar *
@@ -465,25 +631,45 @@ clawt_agent_begin_turn(ClawtAgent *self)
      * max_hops was measuring the last message of a turn rather than the
      * conversation.
      */
-    if (!self->turn_was_delivered) {
-        self->hop_depth = 0;
+    {
+        TurnSetup *setup = g_queue_pop_head(self->pending_turns);
 
-        /*
-         * And who asked, which is the same question one field along: a
-         * turn nothing delivered into was not started by anybody the
-         * daemon can name.
-         */
-        g_clear_pointer(&self->turn_origin, g_free);
+        if (setup != NULL) {
+            /*
+             * This turn is answering that delivery, and only that one.
+             *
+             * Popped rather than peeked, and one rather than all: a
+             * message is a turn.  Draining the whole queue here is what
+             * the single boolean effectively did, and it is why a burst
+             * of five peer messages produced one turn that knew where it
+             * came from and four that did not.
+             */
+            self->hop_depth = setup->depth;
+            self->turn_replies = setup->replies;
 
-        /*
-         * And a turn nobody handed anything to answers normally.  An
-         * operator typing, a cron routine, a webhook: each is a fresh
-         * request, and the agent's reply is the whole point of it.
-         */
-        self->turn_replies = TRUE;
+            g_free(self->turn_origin);
+            self->turn_origin = g_steal_pointer(&setup->origin);
+
+            turn_setup_free(setup);
+        } else {
+            self->hop_depth = 0;
+
+            /*
+             * And who asked, which is the same question one field along:
+             * a turn nothing delivered into was not started by anybody
+             * the daemon can name.
+             */
+            g_clear_pointer(&self->turn_origin, g_free);
+
+            /*
+             * And a turn nobody handed anything to answers normally.  An
+             * operator typing, a cron routine, a webhook: each is a
+             * fresh request, and the agent's reply is the whole point of
+             * it.
+             */
+            self->turn_replies = TRUE;
+        }
     }
-
-    self->turn_was_delivered = FALSE;
 }
 
 void
@@ -813,6 +999,7 @@ clawt_agent_dispose(GObject *object)
 
     g_clear_object(&self->runtime);
     g_clear_pointer(&self->turn_origin, g_free);
+    g_clear_pointer(&self->pending_turns, queue_of_turns_free);
     g_clear_object(&self->computer);
     g_clear_object(&self->desktop);
     g_clear_object(&self->link);
@@ -879,6 +1066,7 @@ clawt_agent_init(ClawtAgent *self)
 {
     self->state = CLAWT_AGENT_STATE_STOPPED;
     self->caps = CLAWT_AGENT_CAPS_NONE;
+    self->pending_turns = g_queue_new();
 
     /*
      * Named, because g_object_new() zeroes and FALSE here would mean an

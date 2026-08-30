@@ -263,6 +263,14 @@ happened at least three times. They generalise; the API notes below do not.
   `DISPLAY=:0 firefox`, `tesseract -- tsv` for click coordinates, `echo >
   /dev/console`: each was discovered by an agent burning a session, and each
   was a missing feature or a missing sentence in a workspace file.
+- **A scalar cannot describe N things, and a flag is a count of one.** The
+  turn state -- depth, origin, whether the closing text is sent -- was one set
+  of fields plus a boolean saying "a delivery set the next turn up", spent by
+  the first turn after it. A peer sending five messages produced five turns,
+  one described and four looking like turns nothing delivered into: `max_hops`
+  unreachable, closed exchanges answered, and `clawtilla_message_user`'s guard
+  silently off. Every symptom reported separately; one cause. Count the
+  producers before choosing the shape of the state.
 - **Saying ok about the wrong thing is worse than saying nothing**, because it
   sends the reader to investigate a different layer.
 - **Verify by running it, and check what the harness holds constant.** A
@@ -405,6 +413,13 @@ critical fired.
   `session.persist_dir`, so the database is `<state_dir>/sessions/libreclaw.db`.
   `clawt_usage_database_path()` is the one spelling, used by the renderer,
   `/reset` and the usage reader.
+- **It runs one turn per message and never merges them.** `LcSession` holds
+  its own `GQueue` and `drain_next_message()` pops a single entry, so a drain
+  that hands over five messages is five turns. Anything clawtilla records about
+  "the turn" is really about *a message*, and there are as many of those as
+  were delivered. Assuming the agent answers a whole drain in one turn is what
+  made the turn state a scalar, and it was written into a test as the
+  intention.
 - `lc_router_resolve_session_key()` keys on channel, room and sender and
   **deliberately excludes the thread**. So a routine cannot have a session of
   its own: it lands in the operator's room, sender and queue. Point routines at
@@ -1227,6 +1242,8 @@ versions apart.
   capture it where the source is attached, not where the work succeeded
 - Never let a client record that it is subscribed only when the subscribe
   succeeded
+- Never describe N deliveries with one set of fields. libreclaw runs a turn per
+  message, so a per-turn decision needs a per-message record
 - Never add a mount to a computer without going through
   `clawt_computer_add_mount()` -- it is where the backend fills in the type,
   and a VM mount left untyped gets a `<filesystem>` device with no fstab entry

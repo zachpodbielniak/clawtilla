@@ -285,17 +285,31 @@ gint clawt_agent_get_hop_depth(ClawtAgent *self);
 void clawt_agent_set_hop_depth(ClawtAgent *self, gint depth);
 
 /**
- * clawt_agent_begin_turn:
+ * clawt_agent_deliver_turn:
  * @self: a #ClawtAgent
+ * @depth: how far the message being delivered had already travelled
+ * @replies: %TRUE if the turn's closing text should be delivered
+ * @from: (nullable): who the message came from
  *
- * Tells the agent a turn is starting, so it knows which chain it is on.
+ * Records one delivery, and the turn it will set up.
  *
- * A depth set by a delivery is kept for the whole turn -- every message
- * the agent sends counts from the same place, because a turn is not one
- * message. A turn that no delivery preceded starts from zero rather than
- * inheriting the last one, which is what stops an agent that answers
- * Matrix between two peer messages from running out of hops.
+ * The router calls this once per message it hands over.  One call is one
+ * entry, and clawt_agent_begin_turn() takes one entry per turn, because
+ * libreclaw runs one turn per message: a drain that hands over five
+ * messages produces five turns and each has to know what it is
+ * answering.
+ *
+ * Distinct from the three setters below, which amend the delivery
+ * already at the tail rather than starting another.  Those exist for a
+ * caller describing a single delivery a field at a time; describing
+ * several that way would produce one entry for all of them, since there
+ * is no end-of-delivery edge for them to find.
  */
+void clawt_agent_deliver_turn(ClawtAgent  *self,
+                              gint         depth,
+                              gboolean     replies,
+                              const gchar *from);
+
 /**
  * clawt_agent_set_turn_origin:
  * @self: a #ClawtAgent
@@ -306,7 +320,9 @@ void clawt_agent_set_hop_depth(ClawtAgent *self, gint depth);
  * Set at delivery beside the hop depth, and spent by the same
  * clawt_agent_begin_turn() -- the two answer the same question one field
  * apart, and setting them together is what keeps them from disagreeing
- * about which turn they describe.
+ * about which turn they describe.  They land in one queued entry per
+ * delivery, so a burst describes each of its turns rather than only the
+ * first.
  *
  * Distinct from clawt_agent_get_activity_peer(), which is kept after the
  * turn ends so a stopped agent can still say who its last one was for.
@@ -332,7 +348,9 @@ const gchar *clawt_agent_get_turn_origin(ClawtAgent *self);
  *
  * Set at delivery beside the hop depth and the turn origin, from
  * clawt_mailbox_item_get_invites_reply(), and spent by the same
- * clawt_agent_begin_turn().
+ * clawt_agent_begin_turn().  Per delivery, not per drain: libreclaw runs
+ * one turn per message, so an acknowledgement queued behind a question
+ * gets its own turn and its own answer to this.
  *
  * A turn cannot decline to produce text: an AI CLI answers whatever it
  * is handed, so "reply only if you have something to say" was advice no
@@ -353,6 +371,28 @@ void clawt_agent_set_turn_replies(ClawtAgent *self, gboolean replies);
  */
 gboolean clawt_agent_get_turn_replies(ClawtAgent *self);
 
+/**
+ * clawt_agent_begin_turn:
+ * @self: a #ClawtAgent
+ *
+ * Tells the agent a turn is starting, so it knows which chain it is on.
+ *
+ * Takes the oldest delivery that has not had a turn yet and makes it
+ * this turn's: the depth, who asked, and whether the closing text is a
+ * message.  One entry, because libreclaw runs one turn per message --
+ * LcSession queues them and pops a single entry per turn -- so a drain
+ * that hands over five messages produces five turns and each has to know
+ * what it is answering.  Taking them all at once, which is what a single
+ * "a delivery set this up" flag amounted to, left four turns looking
+ * like turns nothing delivered into: depth zero, no origin, and free to
+ * reply.
+ *
+ * A depth set by a delivery is kept for the whole turn -- every message
+ * the agent sends counts from the same place, because a turn is not one
+ * message.  A turn that no delivery preceded starts from zero rather
+ * than inheriting the last one, which is what stops an agent that
+ * answers Matrix between two peer messages from running out of hops.
+ */
 void clawt_agent_begin_turn(ClawtAgent *self);
 
 /**

@@ -674,6 +674,47 @@ beside the hop depth and dropped by the same turn boundary: a turn no
 delivery preceded (Matrix, a webhook, the person typing into libreclaw)
 has no origin the daemon can name, so the tool works as it always did.
 
+***** A message is a turn, and a burst is that many turns
+
+Delivery acknowledges at the socket, so an agent's mailbox is empty
+while it is running and a peer that sends five messages has all five
+handed over long before any of them is answered.  libreclaw then runs
+*five turns*: ~LcSession~ keeps its own queue and takes one message off
+it per turn.  It never merges them.
+
+That matters because everything above --- the hop depth, whether the
+closing text is delivered, and who is waiting for it --- describes a
+message, and there are five of them.  clawtilla used to describe them
+with one set of fields plus a flag saying "a delivery set the next turn
+up", which the first turn spent.  Turns two through five then looked
+exactly like turns nothing had delivered into:
+
+- the depth went back to zero, so ~max_hops~ could not be reached;
+- the closing text became deliverable, so an acknowledgement carrying
+  ~invites_reply: false~ was answered anyway;
+- and the origin was gone, so the refusal above did not fire.
+
+On a live fleet one operator question produced three messages in their
+chat: the answer, and two reports written for another agent, pushed into
+a conversation that agent was not part of.  Both tool calls returned
+success.  Nothing said the guard had been skipped, because from inside
+the turn nothing had been --- there was simply no peer on record.
+
+So the daemon keeps one queued description per delivery and
+~clawt_agent_begin_turn()~ takes exactly one of them.  The queue is
+bounded; past the bound the oldest is *folded into* the one behind it
+rather than dropped, keeping the deeper hop count and the more
+restrictive reply flag.  Dropping would lose a close signal, and an
+agent that never learns it has been answered answers back --- which is
+the loop the flag exists to end.
+
+The same correction applies one layer down.  The reply flag used to be
+accumulated across a drain, so that a bare "thanks, got it" queued
+behind a question could not close the turn the question opened.  With
+one turn per message the question gets its own turn and its own answer,
+and the accumulation only made the acknowledgement's turn reply to an
+acknowledgement.
+
 *** Sending a file
 
 ~clawtilla_message_user~ takes an optional ~attachments~ array: paths the

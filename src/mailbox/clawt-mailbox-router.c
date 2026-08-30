@@ -395,18 +395,6 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
     ClawtLink *link;
     guint delivered = 0;
 
-    /*
-     * Whether anything in this drain leaves the agent free to answer.
-     *
-     * Accumulated rather than taken from the last item, because a drain
-     * hands over everything queued and the agent answers all of it in
-     * one turn.  A peer that asks a question and then sends a bare
-     * acknowledgement would otherwise have the acknowledgement decide,
-     * and the question would go unanswered -- and of the two ways to be
-     * wrong here, an unnecessary round trip is the cheap one.
-     */
-    gboolean turn_replies = FALSE;
-
     g_return_val_if_fail(CLAWT_IS_MAILBOX_ROUTER(self), 0);
 
     if (agent_id == NULL)
@@ -541,34 +529,34 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
         }
 
         /*
-         * The agent is told how far this message has come, so anything it
-         * sends in response counts as one hop further.  Without it every
-         * outbound message looked like the first and max_hops could never
-         * be reached.
-         */
-        clawt_agent_set_hop_depth(agent, clawt_mailbox_item_get_depth(item));
-
-        /*
-         * And whether the text it ends the turn with is a message.
+         * One delivery, one entry, one turn.
          *
-         * Only a peer can close an exchange.  An operator, a routine or
-         * anything else outside the fleet always gets an answer: their
-         * message is a request, and the reply to it is the point.
+         * The depth, so anything the agent sends in response counts as a
+         * hop further -- without it every outbound message looked like
+         * the first and max_hops could never be reached.  Whether the
+         * text it ends the turn with is a message: only a peer can close
+         * an exchange, so an operator, a routine or anything else
+         * outside the fleet always gets an answer.  And who is asking,
+         * so the answer travels back up the chain it came down rather
+         * than over their head into the operator's chat, which is what
+         * clawtilla_message_user() would do.
          *
-         * Set inside the loop rather than after it, so an agent that
-         * starts its turn on the first delivery is already holding the
-         * right answer.
+         * All three in one call, because they describe one message and
+         * the agent runs one turn per message: LcSession queues them and
+         * drain_next_message() pops a single entry per turn.  Set as
+         * three separate fields on the agent, a burst of five collapsed
+         * into one description and four turns ran with none.
+         *
+         * The reply flag is per item rather than accumulated across the
+         * drain, for the same reason.  It was accumulated, on the
+         * reasoning that the agent answers the whole drain in one turn
+         * -- so an acknowledgement queued behind a question must not
+         * decide for both.  It does not; each gets its own turn, and
+         * accumulating made the acknowledgement's turn reply, which is
+         * the loop the flag exists to end.
          */
-        turn_replies = turn_replies || !peer || invites;
-        clawt_agent_set_turn_replies(agent, turn_replies);
-
-        /*
-         * And who is asking. A turn started by a peer is answered by
-         * replying to that peer -- the answer travels back up the chain
-         * it came down -- rather than by going over their head to the
-         * operator, which is what clawtilla_message_user() would do.
-         */
-        clawt_agent_set_turn_origin(agent, from);
+        clawt_agent_deliver_turn(agent, clawt_mailbox_item_get_depth(item),
+                                 !peer || invites, from);
 
         /*
          * And who this turn is for.  Delivery is the only moment that

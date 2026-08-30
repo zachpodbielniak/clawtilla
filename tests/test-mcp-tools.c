@@ -1849,6 +1849,92 @@ test_message_user_is_refused_during_a_peers_turn(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * And it is still refused on the peer's *second* message.
+ *
+ * The one above delivers once and begins one turn, which is the only
+ * shape that ever passed through here -- and the guard held for it
+ * throughout. What it cannot see is a peer that sends several messages
+ * while the agent is busy: libreclaw queues them and runs a turn each,
+ * and clawtilla armed the whole burst with a single "a delivery set the
+ * next turn up" flag that the first turn spent. Turns two onwards read
+ * as turns nothing delivered into, so the origin was gone and the guard
+ * did not fire.
+ *
+ * On a real fleet that was three messages in the operator's chat from
+ * one question: the answer, and two reports written for another agent
+ * and pushed into a conversation they were not part of. Both tool calls
+ * returned success, so nothing anywhere said the guard had been skipped.
+ *
+ * Three deliveries and three turns, because two cannot tell "the flag is
+ * spent" from "the queue is one deep".
+ */
+static void
+test_message_user_is_refused_on_a_peers_later_messages(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgent *worker;
+    guint turn;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n  - id: worker\n");
+
+    worker = clawt_agent_manager_get(fixture.agents, "worker");
+    g_assert_nonnull(worker);
+
+    /*
+     * Three messages from the same peer, all delivered before the agent
+     * gets round to any of them.  That is what a busy agent looks like:
+     * delivery acknowledges at the socket, so the mailbox empties while
+     * the turns are still to come.
+     */
+    for (turn = 0; turn < 3; turn++)
+        clawt_agent_deliver_turn(worker, 1, TRUE, "chief");
+
+    for (turn = 0; turn < 3; turn++) {
+        g_autoptr(JsonNode) refused = NULL;
+        const gchar *text;
+        gboolean is_error = FALSE;
+
+        clawt_agent_begin_turn(worker);
+
+        g_assert_cmpstr(clawt_agent_get_turn_origin(worker), ==, "chief");
+        g_assert_cmpint(clawt_agent_get_hop_depth(worker), ==, 1);
+
+        refused = call_tool(&fixture, "worker", "clawtilla_message_user",
+                            "{\"body\": \"An update for you.\"}");
+        text = response_text(refused, &is_error);
+
+        g_assert_true(is_error);
+        g_assert_nonnull(strstr(text, "chief"));
+
+        /* And nothing reached the operator on any of the three. */
+        g_assert_null(fixture.last_target);
+    }
+
+    /*
+     * The fourth turn had no delivery behind it, so it is the operator's
+     * and the tool works.  Without this the test passes against a build
+     * that simply never clears the origin, which would cut every agent
+     * off from the person running the fleet.
+     */
+    {
+        g_autoptr(JsonNode) allowed = NULL;
+        gboolean is_error = TRUE;
+
+        clawt_agent_begin_turn(worker);
+        g_assert_null(clawt_agent_get_turn_origin(worker));
+
+        allowed = call_tool(&fixture, "worker", "clawtilla_message_user",
+                            "{\"body\": \"Here is what you asked for.\"}");
+        response_text(allowed, &is_error);
+
+        g_assert_false(is_error);
+        g_assert_nonnull(fixture.last_target);
+    }
+
+    fixture_teardown(&fixture);
+}
+
 
 int
 main(int argc, char *argv[])
@@ -1931,6 +2017,8 @@ main(int argc, char *argv[])
                     test_a_refused_exec_is_audited_too);
     g_test_add_func("/mcp/message-user/refused-during-a-peers-turn",
                     test_message_user_is_refused_during_a_peers_turn);
+    g_test_add_func("/mcp/message-user/refused-on-later-messages",
+                    test_message_user_is_refused_on_a_peers_later_messages);
     g_test_add_func("/mcp/failing-command", test_failing_command_reports_why);
 
     return g_test_run();

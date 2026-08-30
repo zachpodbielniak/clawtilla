@@ -2087,3 +2087,34 @@ If the device count is *two* rather than five, the domain predates the
 exchange as well and the same rebuild covers both.  clawtilla warns per
 missing share by name at provisioning time; ~journalctl --user -u
 clawtillad~ has them.
+
+** One question produced several messages in the operator's chat
+
+Some of them were written for another agent.
+
+An agent whose turn was started by a peer is refused
+~clawtilla_message_user~, so that work handed down a chain comes back up
+the same one.  That guard reads the origin of the *current turn*, and
+the origin used to survive only the first turn after a delivery.  A peer
+that sent several messages while the agent was busy therefore got one
+turn that knew where it came from and several that did not, and those
+pushed their findings straight into the operator's room.  Both calls
+returned success.
+
+The same lapse let those turns reply to messages that had closed their
+exchange, and reset the hop depth so ~max_hops~ could not fire.  All
+three are the same defect; see
+[[file:orchestration.org::#*A message is a turn, and a burst is that many
+turns][A message is a turn]].
+
+Fixed.  If something like it recurs, the thing to look at is whether a
+turn ran with no delivery on record:
+
+#+begin_src bash
+journalctl --user -u clawtillad | grep 'waiting for a turn'
+#+end_src
+
+That warning means an agent is more than sixty-four messages behind, and
+the oldest descriptions are being folded together.  It is a symptom of
+an agent that cannot keep up rather than of the queue, but a folded
+description is a less precise one.
