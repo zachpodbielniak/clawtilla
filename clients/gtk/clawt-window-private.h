@@ -647,6 +647,12 @@ clawt_gtk_answer_of(GtkWidget *row);
 GtkWidget *
 clawt_gtk_badge(const gchar *text, const gchar *css_class, const gchar *tooltip);
 
+/*
+ * The libadwaita style class for a tone from clawt_task_state_tone().
+ */
+const gchar *
+clawt_gtk_tone_class(const gchar *tone);
+
 gchar *
 clawt_gtk_chooser_model(ModelChooser *chooser);
 

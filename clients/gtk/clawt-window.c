@@ -181,6 +181,31 @@ clawt_gtk_badge(const gchar *text, const gchar *css_class, const gchar *tooltip)
     return label;
 }
 
+const gchar *
+clawt_gtk_tone_class(const gchar *tone)
+{
+    /*
+     * Presentation, so it lives here: the *decision* about what a state
+     * means is clawt_task_state_tone()'s, in the library, where both
+     * clients read it and a test can cover it without a window. This end
+     * only says what libadwaita calls each tone.
+     *
+     * An unknown tone is dim rather than an assertion. It can only come
+     * from a library newer than this build, and a badge in the default
+     * grey is a better answer there than a critical.
+     */
+    if (g_strcmp0(tone, "good") == 0)
+        return "success";
+    if (g_strcmp0(tone, "warn") == 0)
+        return "warning";
+    if (g_strcmp0(tone, "bad") == 0)
+        return "error";
+    if (g_strcmp0(tone, "info") == 0)
+        return "accent";
+
+    return "dim-label";
+}
+
 void
 clawt_gtk_clear_list(GtkListBox *list)
 {

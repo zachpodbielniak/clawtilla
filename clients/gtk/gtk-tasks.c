@@ -64,13 +64,30 @@ refresh_tasks_once(ClawtWindow *self)
                                 clawt_json_string(task, "assignee", "?"));
 
         clawt_gtk_set_row_text(row, title, clawt_json_string(task, "prompt", ""));
-        adw_action_row_add_suffix(
-            ADW_ACTION_ROW(row),
-            clawt_gtk_badge(clawt_json_string(task, "state", "?"), "dim-label",
-                            clawt_json_string(task, "reason", "")));
 
         {
             const gchar *state = clawt_json_string(task, "state", "");
+            gint value = 0;
+            const gchar *tone = "neutral";
+
+            /*
+             * Coloured by the same rule the web client uses.  Every task
+             * badge here was "dim-label" whatever the state, so a failed
+             * task and a pending one were the same grey -- the web client
+             * at least tried, and got it wrong; this one did not try.
+             *
+             * A state this build does not know stays neutral rather than
+             * refusing: a client one version behind should still draw the
+             * row.
+             */
+            if (clawt_enum_from_nick(CLAWT_TYPE_TASK_STATE, state, &value))
+                tone = clawt_task_state_tone((ClawtTaskState)value);
+
+            adw_action_row_add_suffix(
+                ADW_ACTION_ROW(row),
+                clawt_gtk_badge(clawt_json_string(task, "state", "?"),
+                                clawt_gtk_tone_class(tone),
+                                clawt_json_string(task, "reason", "")));
 
             if (g_strcmp0(state, "running") == 0 ||
                 g_strcmp0(state, "pending") == 0) {

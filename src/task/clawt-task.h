@@ -151,6 +151,37 @@ void clawt_task_set_depth(ClawtTask *self, gint depth);
  */
 gboolean clawt_task_is_finished(ClawtTask *self);
 
+/**
+ * clawt_task_state_tone:
+ * @state: a #ClawtTaskState
+ *
+ * How a badge for @state should read: one of "neutral", "good", "warn",
+ * "bad" or "info".
+ *
+ * Here rather than in a client because both of them draw this badge, and
+ * a rule two clients apply separately is a rule they will eventually
+ * disagree about. They already did, in the worst way available: the web
+ * client compared the state against "done" and "complete", neither of
+ * which is a #ClawtTaskState nickname, so a finished task fell through to
+ * "neutral" and had never once been drawn green -- and a colour that is
+ * merely wrong looks like somebody's design choice, so nothing reported
+ * it. The GTK client did not colour the badge at all.
+ *
+ * The switch names every value and has no `default:`, so a state added to
+ * the enum draws a -Wswitch warning here rather than being one more thing
+ * quietly drawn grey -- and tests/test-task.c walks the enum, so it fails
+ * outright. `stalled` was added under the old code and got neither, which
+ * is why a stalled task looked exactly like a pending one.
+ *
+ * "bad" covers cancelled as well as failed. A cancellation is deliberate
+ * and not an error, which is an argument for warn -- but the reader of a
+ * task list is asking which tasks produced their result, and neither of
+ * these did. Kept together for that reason rather than by accident.
+ *
+ * Returns: (transfer none): the tone
+ */
+const gchar *clawt_task_state_tone(ClawtTaskState state);
+
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtTask, clawt_task_free)
 
 G_END_DECLS

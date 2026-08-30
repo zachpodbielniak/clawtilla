@@ -84,11 +84,20 @@ clawtilla task show task-01m0k5…
 clawtilla task cancel task-01m0k5…
 #+end_src
 
-States: ~pending~ → ~running~ → ~completed~ / ~failed~ / ~cancelled~.
-There is no ~orphaned~ state: stopping an agent moves its tasks to
-~failed~ with the reason "the agent handling this stopped before
+States: ~pending~ → ~running~ → ~completed~ / ~failed~ / ~cancelled~ /
+~stalled~.  There is no ~orphaned~ state: stopping an agent moves its
+tasks to ~failed~ with the reason "the agent handling this stopped before
 finishing", rather than leaving them assigned to nobody and looking like
 work in progress for ever.
+
+Both clients colour the badge from ~clawt_task_state_tone()~ ---
+~completed~ green, ~failed~ and ~cancelled~ red, ~stalled~ amber,
+~running~ blue, ~pending~ grey.  It is in the library rather than in each
+client because the two got it wrong in different ways: the web client
+compared the state against ~done~ and ~complete~, neither of which is a
+state, so a finished task was never once drawn green; the GTK client drew
+every badge the same grey whatever the state.  A colour that is merely
+wrong reads as somebody's design choice, so neither was reported.
 
 Two things about the list are worth knowing before reading it:
 

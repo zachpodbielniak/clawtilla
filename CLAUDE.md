@@ -1066,7 +1066,17 @@ versions apart.
   `clawt_alert_tier_for_event()`, `clawt_chat_run_is_start()`,
   `clawt_chat_day_label()`, `clawt_chat_time_label()`,
   `clawt_chat_conversation_peer()`, `clawt_transcript_is_at_bottom()`,
-  `clawt_mount_sort_scope()`, `clawt_ipc_reply_refusal_text()`.
+  `clawt_mount_sort_scope()`, `clawt_ipc_reply_refusal_text()`,
+  `clawt_task_state_tone()`.
+- **A colour decided by comparing against a spelled-out nickname is a
+  colour nobody checks.** `task_tone()` compared a `ClawtTaskState` against
+  `"done"` and `"complete"` -- neither is a nickname the enum produces --
+  so a completed task fell through to neutral and had never been drawn
+  green, while the GTK client drew every task badge the same grey. A wrong
+  colour looks like a design choice, so it reports itself to nobody.
+  Resolve the nick to the enum and `switch` with **no `default:`**, and
+  walk the enum in the test: `-Wswitch` names an unclassified state, and
+  the test fails on a tone the stylesheet does not paint.
 - Two row builders for one kind of content drift; fix it by **deleting** one.
 - A timestamp rendered on the server is wrong before it arrives -- nothing
   re-renders an unchanged message, so a page left open says "2m ago" for an

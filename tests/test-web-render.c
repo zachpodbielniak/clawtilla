@@ -1308,6 +1308,40 @@ test_the_connection_banner_is_drawn_when_there_is_something_to_say(void)
     g_assert_null(strstr(noisy, "<older>"));
 }
 
+/*
+ * Every tone the library can hand a badge has a rule in the stylesheet.
+ *
+ * clawt_task_state_tone() answers with a tone and tests/test-task.c pins
+ * that it is one of five; nothing there says the five are *painted*.
+ * clawt_web_badge() builds the class by concatenation -- "badge-" plus
+ * whatever it was given -- so a tone with no rule is a class the sheet
+ * has never heard of, and the badge draws as unstyled text. That is the
+ * same failure the task badge already had once: visibly wrong, silently
+ * produced, and indistinguishable from a design decision.
+ *
+ * Driven from CLAWT_TYPE_TASK_STATE rather than from a list of tones, so
+ * a state added later reaches this check with no edit here.
+ */
+static void
+test_every_task_tone_is_painted(void)
+{
+    g_autoptr(GEnumClass) states = g_type_class_ref(CLAWT_TYPE_TASK_STATE);
+    const gchar *css = clawt_web_stylesheet();
+    guint i;
+
+    g_assert_cmpuint(states->n_values, >, 0);
+
+    for (i = 0; i < states->n_values; i++) {
+        const gchar *tone = clawt_task_state_tone(states->values[i].value);
+        g_autofree gchar *rule = g_strdup_printf(".badge-%s{", tone);
+
+        if (strstr(css, rule) == NULL)
+            g_error("state '%s' has tone '%s', and the stylesheet has no "
+                    "%s rule for it", states->values[i].value_nick, tone,
+                    rule);
+    }
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1396,6 +1430,8 @@ main(int argc, char *argv[])
     g_test_add_func("/web/every-text-colour-clears-aa",
                     test_every_text_colour_clears_aa);
 
+    g_test_add_func("/web/every-task-tone-is-painted",
+                    test_every_task_tone_is_painted);
     g_test_add_func("/web/the-two-clients-stay-level",
                     test_the_two_clients_stay_level);
 

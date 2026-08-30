@@ -171,17 +171,28 @@ clawt_web_routines_body(ClawtWebApp *app, const gchar *agent_id)
 
 /* ── Tasks ───────────────────────────────────────────────────────── */
 
+/*
+ * The tone comes from the library, and the nickname is turned into the
+ * enum rather than compared against.
+ *
+ * This used to be three string comparisons written from memory, two of
+ * which -- "done" and "complete" -- are not #ClawtTaskState nicknames at
+ * all. So a finished task fell through to "neutral" and had never been
+ * drawn green; nothing reported it because a badge in the wrong colour
+ * reads as a decision somebody made.
+ *
+ * A state the daemon sends that this build does not know is neutral, not
+ * a refusal: a client one version behind should draw the row.
+ */
 static const gchar *
 task_tone(const gchar *state)
 {
-    if (g_strcmp0(state, "done") == 0 || g_strcmp0(state, "complete") == 0)
-        return "good";
-    if (g_strcmp0(state, "failed") == 0 || g_strcmp0(state, "cancelled") == 0)
-        return "bad";
-    if (g_strcmp0(state, "running") == 0)
-        return "info";
+    gint value = 0;
 
-    return "neutral";
+    if (!clawt_enum_from_nick(CLAWT_TYPE_TASK_STATE, state, &value))
+        return "neutral";
+
+    return clawt_task_state_tone((ClawtTaskState)value);
 }
 
 HtmxElement *

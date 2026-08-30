@@ -286,3 +286,41 @@ clawt_task_is_finished(ClawtTask *self)
            self->state == CLAWT_TASK_CANCELLED ||
            self->state == CLAWT_TASK_STALLED;
 }
+
+const gchar *
+clawt_task_state_tone(ClawtTaskState state)
+{
+    /*
+     * No `default:`, deliberately. -Wswitch then names a state nobody
+     * classified -- a warning rather than an error, since this tree does
+     * not build with -Werror, so the zero-warning rule is what makes it
+     * stop somebody; tests/test-task.c is what actually goes red.
+     *
+     * Worth the belt and the braces, because the string comparison this
+     * replaces named two nicknames the enum has never had, and both
+     * clients rendered the result without complaint.
+     */
+    switch (state) {
+    case CLAWT_TASK_COMPLETED:
+        return "good";
+
+    case CLAWT_TASK_FAILED:
+    case CLAWT_TASK_CANCELLED:
+        return "bad";
+
+    case CLAWT_TASK_STALLED:
+        return "warn";
+
+    case CLAWT_TASK_RUNNING:
+        return "info";
+
+    case CLAWT_TASK_PENDING:
+        return "neutral";
+    }
+
+    /*
+     * Only reachable from an integer cast to the type, which is a
+     * programming error rather than a state.
+     */
+    g_return_val_if_reached("neutral");
+}
