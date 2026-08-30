@@ -917,6 +917,15 @@ versions apart.
   not handed a system prompt when it resumes. A tool list is read at session
   start, so `tools.*` needs only a restart. `agent.set` reports
   `restart_required` and the clients give different advice for each.
+- **Every region clawtilla owns in a persona is refreshed on agent start**, by
+  `refresh_agent_regions()` -- one function, because the list of them at each
+  call site had already drifted: a start refreshed the integrations and
+  computer regions and left the tools, the skills and the operator profile to
+  `clawt_daemon_render_all_agents_into()`, which a *daemon* start runs and an
+  agent one does not. The tools marker said "rewritten on every start"
+  throughout, so `agent restart` looked like the way to hand an agent a
+  corrected file and was not. Each region compares before it writes, so
+  repeating it on both paths costs a read.
 - An agent believes its own `TOOLS.org` over `tools/list`, so the daemon writes
   a managed region from `clawt_mcp_tools_describe_for_agent()`, through the
   same permission gate. **That region must be the only list of tools in the

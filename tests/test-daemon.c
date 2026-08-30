@@ -4742,6 +4742,78 @@ test_a_keepalive_does_not_extend_the_turn_budget(void)
 }
 
 /*
+ * Starting an agent brings every region clawtilla owns up to date.
+ *
+ * The marker says "rewritten on every start" and that was true of a
+ * *daemon* start.  An agent start refreshed the integrations paragraph
+ * and the computer paragraph and left the tools, the skills and the
+ * operator profile as whatever was last written -- so `clawtilla agent
+ * restart`, which is what anybody reaches for when an agent is working
+ * from something stale, did not fix the file it was reached for.
+ *
+ * Asserted through clawt_daemon_start_agent() rather than by calling the
+ * refresh, because the whole defect was that the refresh existed and
+ * this path did not call it.  The start itself is expected to fail --
+ * there is no CLI to spawn in a hermetic run -- and that is the point:
+ * the persona is brought up to date before anything tries to read it,
+ * so even a start that goes no further leaves the file correct.
+ */
+static void
+test_starting_an_agent_refreshes_its_regions(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *config;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *before = NULL;
+    g_autofree gchar *stale = NULL;
+    g_autofree gchar *after = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: scribe\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    config = clawt_agent_get_config(
+        clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                "scribe"));
+    g_assert_nonnull(config);
+
+    path = clawt_workspace_file_path(config, "TOOLS.org");
+    g_assert_nonnull(path);
+    g_assert_true(g_file_get_contents(path, &before, NULL, NULL));
+
+    /* The daemon start wrote it, so there is something to make stale. */
+    g_assert_nonnull(strstr(before, "clawtilla_list_agents"));
+
+    /*
+     * What an older clawtilla left behind: the markers, and between them
+     * a listing that no longer resembles the live one.
+     */
+    {
+        const gchar *begin = strstr(before, "# BEGIN clawtilla tools");
+        g_autofree gchar *head = g_strndup(before, begin - before);
+
+        stale = g_strconcat(head,
+                            "# BEGIN clawtilla tools -- rewritten on every "
+                            "start\n\n| Tool | What it does |\n"
+                            "|------+--------------|\n"
+                            "| ~clawtilla_from_another_era~ | nothing |\n\n"
+                            "# END clawtilla tools\n", NULL);
+    }
+
+    g_assert_true(g_file_set_contents(path, stale, -1, NULL));
+
+    /* It cannot actually spawn here; the regions are written regardless. */
+    clawt_daemon_start_agent(fixture.daemon, "scribe", &error);
+
+    g_assert_true(g_file_get_contents(path, &after, NULL, NULL));
+
+    g_assert_null(strstr(after, "clawtilla_from_another_era"));
+    g_assert_nonnull(strstr(after, "clawtilla_list_agents"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * A fan-out holds its parent open, through the daemon rather than only
  * in the task manager.
  *
@@ -8843,6 +8915,8 @@ main(int argc, char *argv[])
     g_test_add_func("/daemon/start-agent-with-no-id",
                     test_starting_an_agent_with_no_id_is_an_error);
 
+    g_test_add_func("/daemon/start/refreshes-the-owned-regions",
+                    test_starting_an_agent_refreshes_its_regions);
     g_test_add_func("/daemon/typing/a-keepalive-is-not-a-new-turn",
                     test_a_keepalive_is_not_a_new_turn);
     g_test_add_func("/daemon/typing/each-room-has-its-own-turn",

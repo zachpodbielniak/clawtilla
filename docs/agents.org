@@ -1224,6 +1224,18 @@ listed ~clawtilla_task_progress~.  The template now carries the markers,
 right after the introduction, and the narrative below them says when to
 reach for what rather than what exists.
 
+*Every one of them is brought up to date when the agent starts*, by
+~refresh_agent_regions()~, and again on a daemon start, a reload, and
+each verb that changes a fleet.  That was not true for a long time: an
+agent start refreshed the integrations paragraph and the computer
+paragraph, and the tools, the skills and the operator profile waited for
+~clawt_daemon_render_all_agents_into()~ -- which a *daemon* start runs
+and an agent one does not.  So ~clawtilla agent restart~, the thing
+anybody reaches for when an agent is working from something stale, was
+not what fixed it; only ~clawtilla daemon restart~ was, and nothing said
+so.  The regions are compared with what is on disk and written only if
+they differ, so the ordinary start writes nothing.
+
 A workspace scaffolded before that keeps its tables: the file belongs to
 whoever edits it and clawtilla rewrites only what is between its
 markers.  The generated section therefore opens by saying it is written

@@ -2377,6 +2377,127 @@ clawt_daemon_reload_skills(ClawtDaemon *self)
         clawt_mcp_tools_set_skill_library(self->mcp_tools, self->skills);
 }
 
+    /*
+ * Every region clawtilla owns in one agent's persona, brought up to date.
+ *
+ * One function, because the alternative was a list of them at each call
+ * site and that list had already drifted: starting an agent refreshed
+ * the integrations region and the computer region and left the tools,
+ * the skills and the operator profile as they were.  The tool region's
+ * own marker says "rewritten on every start" -- true of a *daemon*
+ * start, false of an agent one, so `clawtilla agent restart` looked like
+ * the way to hand an agent a corrected file and was not.
+ *
+ * Each of these validates before it writes: replace_region() builds what
+ * the region should say and compares it with what is on disk, so a start
+ * that changes nothing writes nothing.  Calling it from both paths is
+ * therefore a read on the common one, and the markers stop being a
+ * promise about which entry point somebody happened to use.
+ *
+ * A warning per region rather than a failure.  A stale paragraph in a
+ * prompt is worse than a fresh one and better than an agent that will
+ * not start.
+ */
+static void
+refresh_agent_regions(ClawtDaemon      *self,
+                      const gchar      *agent_id,
+                      ClawtAgentConfig *config)
+{
+    g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+    if (agent_id == NULL || config == NULL)
+        return;
+
+    /*
+     * ...and the tools it actually has, from the live gate.
+     *
+     * Written here rather than in the renderer because this is the
+     * only place that knows both the agent's capabilities and its
+     * permissions. Without it TOOLS.org carries whatever table was
+     * scaffolded, and a tool granted afterwards never appears --
+     * which a chief-of-staff read as not having it, on the day it
+     * was given the tool to create agents.
+     */
+    if (self->mcp_tools != NULL) {
+        g_autofree gchar *listing =
+            clawt_mcp_tools_describe_for_agent(self->mcp_tools,
+                                               agent_id);
+        g_autoptr(GError) tools_error = NULL;
+
+        if (listing != NULL &&
+            !clawt_workspace_update_tool_list(config, listing,
+                                              &tools_error))
+            g_warning("agent %s: %s", agent_id,
+                      tools_error->message);
+    }
+
+    /*
+     * ...and the skills, linked where this agent's own CLI looks.
+     *
+     * Here rather than in the renderer for the same reason the tool
+     * list is: the renderer writes a config file, and this writes
+     * into a workspace against a library only the daemon holds.
+     * Both halves go together -- a link with no paragraph in
+     * TOOLS.org is a procedure the agent has and does not know it
+     * has, and this project has already paid for that once with a
+     * tool table written at scaffold time and never again.
+     */
+    if (self->skills != NULL) {
+        g_autoptr(GPtrArray) skill_warnings = NULL;
+        g_autoptr(GPtrArray) bindings = NULL;
+        g_autoptr(GError) skill_error = NULL;
+        guint w;
+
+        if (!clawt_skill_provision(self->config, config, self->skills,
+                                   &skill_warnings, &skill_error))
+            g_warning("agent %s: %s", agent_id,
+                      skill_error->message);
+
+        for (w = 0; skill_warnings != NULL && w < skill_warnings->len;
+             w++)
+            g_warning("skills: %s", (const gchar *)
+                      g_ptr_array_index(skill_warnings, w));
+
+        bindings = clawt_skill_resolve_for_agent(self->config, config,
+                                                 self->skills);
+
+        {
+            g_autofree gchar *described =
+                clawt_skill_provision_describe(bindings);
+            g_autoptr(GError) region_error = NULL;
+
+            if (!clawt_workspace_update_skills(config, described,
+                                               &region_error))
+                g_warning("agent %s: %s", agent_id,
+                          region_error->message);
+        }
+    }
+
+    /*
+     * ...and what the fleet knows about the person it works for.
+     *
+     * Here rather than at agent creation, so an agent made on day
+     * one and an agent made on day ninety are told the same thing.
+     * `memories.operator_profile` off writes NULL, which removes the
+     * region: a setting somebody turned off must leave nothing
+     * behind in a prompt that is already written.
+     */
+    if (self->operator_profile != NULL) {
+        g_autofree gchar *profile = NULL;
+        g_autoptr(GError) profile_error = NULL;
+
+        if (clawt_config_get_boolean(self->config,
+                                     "memories.operator_profile"))
+            profile = clawt_operator_profile_render(
+                self->operator_profile, 0);
+
+        if (!clawt_workspace_update_operator_profile(config, profile,
+                                                     &profile_error))
+            g_warning("agent %s: %s", agent_id,
+                      profile_error->message);
+    }
+}
+
 void
 clawt_daemon_render_all_agents_into(ClawtDaemon *self, GPtrArray *refusals)
 {
@@ -2406,94 +2527,8 @@ clawt_daemon_render_all_agents_into(ClawtDaemon *self, GPtrArray *refusals)
             }
         }
 
-        /*
-         * ...and the tools it actually has, from the live gate.
-         *
-         * Written here rather than in the renderer because this is the
-         * only place that knows both the agent's capabilities and its
-         * permissions. Without it TOOLS.org carries whatever table was
-         * scaffolded, and a tool granted afterwards never appears --
-         * which a chief-of-staff read as not having it, on the day it
-         * was given the tool to create agents.
-         */
-        if (self->mcp_tools != NULL) {
-            g_autofree gchar *listing =
-                clawt_mcp_tools_describe_for_agent(self->mcp_tools,
-                                                   clawt_agent_get_id(agent));
-            g_autoptr(GError) tools_error = NULL;
-
-            if (listing != NULL &&
-                !clawt_workspace_update_tool_list(config, listing,
-                                                  &tools_error))
-                g_warning("agent %s: %s", clawt_agent_get_id(agent),
-                          tools_error->message);
-        }
-
-        /*
-         * ...and the skills, linked where this agent's own CLI looks.
-         *
-         * Here rather than in the renderer for the same reason the tool
-         * list is: the renderer writes a config file, and this writes
-         * into a workspace against a library only the daemon holds.
-         * Both halves go together -- a link with no paragraph in
-         * TOOLS.org is a procedure the agent has and does not know it
-         * has, and this project has already paid for that once with a
-         * tool table written at scaffold time and never again.
-         */
-        if (self->skills != NULL) {
-            g_autoptr(GPtrArray) skill_warnings = NULL;
-            g_autoptr(GPtrArray) bindings = NULL;
-            g_autoptr(GError) skill_error = NULL;
-            guint w;
-
-            if (!clawt_skill_provision(self->config, config, self->skills,
-                                       &skill_warnings, &skill_error))
-                g_warning("agent %s: %s", clawt_agent_get_id(agent),
-                          skill_error->message);
-
-            for (w = 0; skill_warnings != NULL && w < skill_warnings->len;
-                 w++)
-                g_warning("skills: %s", (const gchar *)
-                          g_ptr_array_index(skill_warnings, w));
-
-            bindings = clawt_skill_resolve_for_agent(self->config, config,
-                                                     self->skills);
-
-            {
-                g_autofree gchar *described =
-                    clawt_skill_provision_describe(bindings);
-                g_autoptr(GError) region_error = NULL;
-
-                if (!clawt_workspace_update_skills(config, described,
-                                                   &region_error))
-                    g_warning("agent %s: %s", clawt_agent_get_id(agent),
-                              region_error->message);
-            }
-        }
-
-        /*
-         * ...and what the fleet knows about the person it works for.
-         *
-         * Here rather than at agent creation, so an agent made on day
-         * one and an agent made on day ninety are told the same thing.
-         * `memories.operator_profile` off writes NULL, which removes the
-         * region: a setting somebody turned off must leave nothing
-         * behind in a prompt that is already written.
-         */
-        if (self->operator_profile != NULL) {
-            g_autofree gchar *profile = NULL;
-            g_autoptr(GError) profile_error = NULL;
-
-            if (clawt_config_get_boolean(self->config,
-                                         "memories.operator_profile"))
-                profile = clawt_operator_profile_render(
-                    self->operator_profile, 0);
-
-            if (!clawt_workspace_update_operator_profile(config, profile,
-                                                         &profile_error))
-                g_warning("agent %s: %s", clawt_agent_get_id(agent),
-                          profile_error->message);
-        }
+        refresh_agent_regions(self, clawt_agent_get_id(agent),
+                              config);
     }
 }
 
@@ -2603,6 +2638,25 @@ start_agent_prepare(ClawtDaemon    *self,
                                         self->link_socket, &config_path,
                                         error))
         return FALSE;
+
+    /*
+     * And every region clawtilla owns in the persona, before the process
+     * that will read it exists.
+     *
+     * clawt_config_write_agent_files() above covers the scaffold, the
+     * .mcp.json and the integrations paragraph; the tools, the skills
+     * and the operator profile were left to
+     * clawt_daemon_render_all_agents_into(), which runs on a daemon
+     * start, a reload and the verbs that change a fleet -- and not on
+     * this path.  So `clawtilla agent restart` did not hand an agent a
+     * corrected TOOLS.org, which is the one thing everybody reaches for
+     * when an agent is working from something stale.  The region's own
+     * marker said "rewritten on every start" throughout.
+     *
+     * Cheap to repeat: each region is compared with what is on disk and
+     * written only if it differs, so the common start writes nothing.
+     */
+    refresh_agent_regions(self, agent_id, config);
 
     /*
      * How large the persona has become, said out loud before anything
