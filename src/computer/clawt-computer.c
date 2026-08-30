@@ -548,10 +548,38 @@ clawt_computer_describe_mounts(ClawtComputer *self, GString *out)
 void
 clawt_computer_add_mount(ClawtComputer *self, ClawtMount *mount)
 {
+    ClawtMount *copy;
+
     g_return_if_fail(CLAWT_IS_COMPUTER(self));
     g_return_if_fail(mount != NULL);
 
-    g_ptr_array_add(PRIV(self)->mounts, clawt_mount_copy(mount));
+    copy = clawt_mount_copy(mount);
+
+    /*
+     * A mount the config did not type is typed by the backend it is
+     * being added to -- here, because this is the one door every mount
+     * comes through.
+     *
+     * It was done in clawt_computer_factory_create() instead, which
+     * types the ones built from the agent's config and cannot see the
+     * ones the daemon adds afterwards. The exchange is added there, so
+     * its three mounts stayed CLAWT_MOUNT_BIND -- the default -- on a
+     * VM. The domain XML does not filter on the type and emitted a
+     * <filesystem> for each, so the guest had five virtiofs devices;
+     * the seed's render_mounts() does filter, so the guest's fstab had
+     * two entries. Every VM agent in a fleet therefore had a working
+     * exchange device it never mounted, and /mnt/clawtilla/exchange was
+     * simply absent -- which is the return path every qa persona tells
+     * an agent to hand screenshots back through.
+     *
+     * Both halves were correct in isolation and had tests. What nobody
+     * had was the wire between the mount list and the type.
+     */
+    if (clawt_mount_get_mount_type(copy) == CLAWT_MOUNT_BIND &&
+        clawt_computer_get_computer_type(self) == CLAWT_COMPUTER_VM)
+        clawt_mount_set_mount_type(copy, CLAWT_MOUNT_VIRTIOFS);
+
+    g_ptr_array_add(PRIV(self)->mounts, copy);
 }
 
 GPtrArray *

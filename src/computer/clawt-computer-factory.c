@@ -70,21 +70,19 @@ apply_mounts(ClawtComputer    *computer,
         mounts = g_ptr_array_ref(own);
     }
 
-    for (i = 0; mounts != NULL && i < mounts->len; i++) {
-        ClawtMount *mount = g_ptr_array_index(mounts, i);
-
-        /*
-         * The mount type is filled in from the backend when the config did
-         * not say, so a user writing source/target/mode gets a bind mount in
-         * a container and a virtiofs share in a VM without having to know
-         * that those are the right spellings.
-         */
-        if (clawt_mount_get_mount_type(mount) == CLAWT_MOUNT_BIND &&
-            type == CLAWT_COMPUTER_VM)
-            clawt_mount_set_mount_type(mount, CLAWT_MOUNT_VIRTIOFS);
-
-        clawt_computer_add_mount(computer, mount);
-    }
+    /*
+     * The mount type is filled in from the backend when the config did
+     * not say, so a user writing source/target/mode gets a bind mount in
+     * a container and a virtiofs share in a VM without having to know
+     * that those are the right spellings.
+     *
+     * Done by clawt_computer_add_mount() rather than here. It was here,
+     * and so applied to exactly the mounts this function builds: the
+     * exchange, which the daemon adds later, kept the default type and
+     * reached a VM guest as a device with no fstab entry.
+     */
+    for (i = 0; mounts != NULL && i < mounts->len; i++)
+        clawt_computer_add_mount(computer, g_ptr_array_index(mounts, i));
 
     /*
      * And the agent's own workspace, unless it asked not to have it.
@@ -122,9 +120,6 @@ apply_mounts(ClawtComputer    *computer,
             clawt_mount_set_mode(mount, CLAWT_MOUNT_MODE_RW);
             clawt_mount_set_create(mount, TRUE);
             clawt_mount_set_relabel(mount, CLAWT_RELABEL_SHARED);
-
-            if (type == CLAWT_COMPUTER_VM)
-                clawt_mount_set_mount_type(mount, CLAWT_MOUNT_VIRTIOFS);
 
             clawt_computer_add_mount(computer, mount);
             clawt_mount_free(mount);

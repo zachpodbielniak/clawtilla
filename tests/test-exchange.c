@@ -169,6 +169,145 @@ test_preparing_creates_the_directories(void)
     clawt_test_remove_tree(root);
 }
 
+/*
+ * The exchange reaches a VM guest's fstab, not only its device list.
+ *
+ * The mount type is what decides this and nothing was setting it. The
+ * agent's own mounts were typed by clawt_computer_factory_create(); the
+ * exchange is added by the daemon afterwards and kept the default,
+ * CLAWT_MOUNT_BIND. The domain XML does not filter on the type, so the
+ * guest was given a <filesystem> per exchange mount; the seed's
+ * render_mounts() does filter, so none of them appeared in `mounts:`.
+ * Five virtiofs devices, two fstab entries, and /mnt/clawtilla/exchange
+ * simply absent inside every VM in the fleet -- which is the path every
+ * qa persona tells an agent to hand its screenshots back through.
+ *
+ * Asserted through the seed rather than on the type alone, because the
+ * type is only interesting for what it makes the renderer do: a test
+ * that sets the type by hand and checks the block -- which is what
+ * tests/test-cloud-init.c does -- passes throughout this bug.
+ */
+static void
+test_the_exchange_reaches_a_guests_fstab(void)
+{
+    g_autofree gchar *root = g_build_filename(
+        g_get_tmp_dir(), "clawt-exchange-vm", NULL);
+    g_autoptr(ClawtExchange) exchange = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(GPtrArray) mounts = NULL;
+    g_autofree gchar *seed = NULL;
+    const gchar *block;
+    GPtrArray *applied;
+    guint i;
+
+    clawt_test_remove_tree(root);
+
+    exchange = clawt_exchange_new(root, 0);
+    mounts = clawt_exchange_get_mounts(exchange, "scribe");
+
+    /* The whole exchange read-only, shared/, and the agent's own. */
+    g_assert_cmpuint(mounts->len, ==, 3);
+
+    /*
+     * Added exactly as clawt_daemon_apply_computer() adds them, which is
+     * the call site that had no type.
+     */
+    computer = clawt_vm_computer_new("scribe", CLAWT_VM_BACKEND_QEMU, NULL);
+
+    for (i = 0; i < mounts->len; i++)
+        clawt_computer_add_mount(computer, g_ptr_array_index(mounts, i));
+
+    applied = clawt_computer_get_mounts(computer);
+    g_assert_cmpuint(applied->len, ==, 3);
+
+    for (i = 0; i < applied->len; i++)
+        g_assert_cmpint(
+            clawt_mount_get_mount_type(g_ptr_array_index(applied, i)),
+            ==, CLAWT_MOUNT_VIRTIOFS);
+
+    seed = clawt_cloud_init_build_user_data_full("root", "ssh-ed25519 AAAA",
+                                                 "clawt-scribe", NULL,
+                                                 applied);
+
+    block = strstr(seed, "mounts:");
+    g_assert_nonnull(block);
+    g_assert_nonnull(strstr(block, "\"/mnt/clawtilla/exchange\""));
+    g_assert_nonnull(strstr(block, "\"/mnt/clawtilla/exchange/shared\""));
+    g_assert_nonnull(strstr(block, "\"/mnt/clawtilla/exchange/scribe\""));
+
+    clawt_test_remove_tree(root);
+}
+
+/*
+ * And a container's mounts are still bind mounts.
+ *
+ * The promotion is per backend, so the interesting half is the one that
+ * must *not* happen: a virtiofs tag handed to podman is not a share, it
+ * is a source path that does not exist.
+ */
+static void
+test_a_container_keeps_bind_mounts(void)
+{
+    g_autofree gchar *root = g_build_filename(
+        g_get_tmp_dir(), "clawt-exchange-ctr", NULL);
+    g_autoptr(ClawtExchange) exchange = NULL;
+    g_autoptr(ClawtPodBridge) bridge = clawt_pod_bridge_new(NULL);
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(GPtrArray) mounts = NULL;
+    GPtrArray *applied;
+    guint i;
+
+    clawt_test_remove_tree(root);
+
+    exchange = clawt_exchange_new(root, 0);
+    mounts = clawt_exchange_get_mounts(exchange, "scribe");
+
+    computer = clawt_container_computer_new("scribe", bridge,
+                                            "fedora:latest");
+
+    for (i = 0; i < mounts->len; i++)
+        clawt_computer_add_mount(computer, g_ptr_array_index(mounts, i));
+
+    applied = clawt_computer_get_mounts(computer);
+
+    for (i = 0; i < applied->len; i++)
+        g_assert_cmpint(
+            clawt_mount_get_mount_type(g_ptr_array_index(applied, i)),
+            ==, CLAWT_MOUNT_BIND);
+
+    clawt_test_remove_tree(root);
+}
+
+/*
+ * A type the config named survives being added.
+ *
+ * The promotion fills in a blank; it must not overwrite an answer. The
+ * only spelling that reaches a VM is virtiofs, so a bind mount written
+ * out by hand on a VM is a mistake -- but it is the operator's mistake
+ * to see, and quietly rewriting it would hide the one case where the
+ * validation message is the useful output.
+ */
+static void
+test_an_explicit_type_is_not_rewritten(void)
+{
+    g_autoptr(ClawtPodBridge) bridge = clawt_pod_bridge_new(NULL);
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(ClawtMount) mount = clawt_mount_new("/host/notes", "/notes");
+    GPtrArray *applied;
+
+    clawt_mount_set_mount_type(mount, CLAWT_MOUNT_VIRTIOFS);
+
+    computer = clawt_container_computer_new("scribe", bridge,
+                                            "fedora:latest");
+    clawt_computer_add_mount(computer, mount);
+
+    applied = clawt_computer_get_mounts(computer);
+    g_assert_cmpuint(applied->len, ==, 1);
+    g_assert_cmpint(
+        clawt_mount_get_mount_type(g_ptr_array_index(applied, 0)),
+        ==, CLAWT_MOUNT_VIRTIOFS);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -182,6 +321,12 @@ main(int argc, char *argv[])
                     test_an_exchange_under_the_cap_is_untouched);
     g_test_add_func("/exchange/preparing-creates-directories",
                     test_preparing_creates_the_directories);
+    g_test_add_func("/exchange/reaches-a-guests-fstab",
+                    test_the_exchange_reaches_a_guests_fstab);
+    g_test_add_func("/exchange/a-container-keeps-bind-mounts",
+                    test_a_container_keeps_bind_mounts);
+    g_test_add_func("/exchange/an-explicit-type-is-kept",
+                    test_an_explicit_type_is_not_rewritten);
 
     return g_test_run();
 }

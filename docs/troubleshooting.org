@@ -2053,3 +2053,37 @@ looks right and nothing loads.
 follows its directory with a file monitor, so this is rarely needed --
 but a filesystem with no inotify (a network share, some bind mounts)
 silently has no watch at all.
+
+** /mnt/clawtilla/exchange is missing inside a VM
+
+The guest has the device and no fstab entry.  Check both from the host:
+
+#+begin_src bash
+virsh --connect qemu:///session dumpxml clawt-<agent> | grep -c filesystem
+#+end_src
+
+and inside the guest:
+
+#+begin_src bash
+clawtilla computer exec <agent> -- cat /etc/fstab
+#+end_src
+
+A count of five devices against two fstab lines is the signature.  It
+was a bug in the mount type, fixed by
+[[file:computers.org::#vm-mount-type][filling it in where every mount is
+added]] rather than where an agent's own mounts are built --- the
+exchange is added by the daemon afterwards, so it kept the default and
+the seed's renderer, which filters on the type, skipped it.
+
+An existing guest still needs rebuilding, because a running domain keeps
+the devices it was defined with and its fstab was written by cloud-init
+at first boot:
+
+#+begin_src bash
+clawtilla agent stop <agent> && clawtilla computer rebuild <agent>
+#+end_src
+
+If the device count is *two* rather than five, the domain predates the
+exchange as well and the same rebuild covers both.  clawtilla warns per
+missing share by name at provisioning time; ~journalctl --user -u
+clawtillad~ has them.

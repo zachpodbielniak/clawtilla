@@ -980,6 +980,9 @@ Adding one to a VM that already exists needs the computer rebuilt, like
 everything else in that seed.
 
 *** A share added after the VM was built
+:PROPERTIES:
+:CUSTOM_ID: stale-shares
+:END:
 
 A running libvirt domain keeps the devices it was defined with.
 clawtilla deliberately leaves a live guest's definition alone --
@@ -1986,6 +1989,39 @@ clawtilla writes the fstab entries into the cloud-init seed, parent
 before child -- the exchange nests, and a child mounted first vanishes
 under its parent -- with ~nofail~, so a share whose backing daemon did
 not start cannot stop the guest booting.
+
+*** A device without an fstab entry is a share that is simply not there
+:PROPERTIES:
+:CUSTOM_ID: vm-mount-type
+:END:
+
+The two halves are written from the same mount list and read it
+differently.  The domain XML emits a ~<filesystem>~ for every mount it is
+given; the seed emits an fstab line only for the ones whose type is
+~virtiofs~.  A mount that reaches a VM with the default type therefore
+gets a device and no entry, and the guest has a share it never mounts.
+
+The type is filled in from the backend when the configuration did not
+name one, and that happens in ~clawt_computer_add_mount()~ -- the one
+door every mount comes through.  It used to happen in
+~clawt_computer_factory_create()~ instead, which builds the mounts from
+an agent's own configuration and cannot see the ones the daemon adds
+afterwards.  The exchange is one of those.  So every VM agent in a fleet
+carried five virtiofs devices and two fstab entries, and
+~/mnt/clawtilla/exchange~ was absent inside the guest --- which is the
+return path an agent is told to hand screenshots and files back through.
+
+Both halves were correct in isolation and both had tests.  The test for
+the seed builds its mounts with the type set by hand, so it passed
+throughout.  What nobody had was a test of the wire between the mount
+list and the type, which is now in ~tests/test-exchange.c~ and asserts
+through the rendered seed rather than on the type.
+
+A guest built before the mount existed still has to be rebuilt: a
+running domain keeps the devices it was defined with, and the fstab is
+written by cloud-init at first boot.  clawtilla says so per share, by
+name, and names the command --- see
+[[#stale-shares][the warning below]] if it is not obvious which.
 
 A share is addressed by *tag*, not by path.  clawtilla derives one from
 the target -- readable, and short enough for qemu, which refuses a tag

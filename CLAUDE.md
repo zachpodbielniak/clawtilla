@@ -1227,6 +1227,9 @@ versions apart.
   capture it where the source is attached, not where the work succeeded
 - Never let a client record that it is subscribed only when the subscribe
   succeeded
+- Never add a mount to a computer without going through
+  `clawt_computer_add_mount()` -- it is where the backend fills in the type,
+  and a VM mount left untyped gets a `<filesystem>` device with no fstab entry
 - Never let a limit be a float -- a threshold has to have exactly one value
 - Never write a test that can hang where it could fail
 - Never toast a condition the banner is already holding open
