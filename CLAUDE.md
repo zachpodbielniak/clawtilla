@@ -820,11 +820,17 @@ versions apart.
   `clawt_time_ago_label()` takes. Handing it `clawt_task_get_created_at()` raw
   renders `20694d ago` (the epoch) on every row, and a test asserting only on
   the *shape* of a listing passes throughout. Assert on the value.
-- `clawtilla_delegate` does not mark a task running -- only the operator and
-  routine paths do -- so agent-delegated work reads `pending` for its whole
-  life and then goes straight to `completed`. A chief reading that as "never
-  picked up" re-delegates and makes two of everything, so
-  `clawtilla_task_list` says so in its own output rather than only in the docs.
+- **A delegated task's parent comes from the delegating agent's turn.**
+  `clawtilla_delegate` passed NULL for its whole life, so every agent-created
+  task was a root: `clawt_task_manager_create()`'s depth limit compared 0
+  against the ceiling however long the chain was, and
+  `clawtilla_task_cancel` -- whose description promises "and everything it
+  spawned" -- matched on `parent_id` and found none. Two features, both
+  correct, both reaching nobody, and the docs recorded the second as intended
+  behaviour. `clawt_agent_get_turn_task_id()` is the wire, per delivery beside
+  the hop depth. Validate the id against the manager before using it: the turn
+  state is only as fresh as the last `clawt_agent_begin_turn()`, which needs a
+  typing indicator, which needs a room.
 - A thread carries more than the answer: progress notes, guardian refusals,
   restart notices. Act only on a message arriving after the typing indicator
   drops. A task that ends late is a delay; one that ends early is a lie.
@@ -1244,6 +1250,9 @@ versions apart.
   succeeded
 - Never describe N deliveries with one set of fields. libreclaw runs a turn per
   message, so a per-turn decision needs a per-message record
+- Never create a task without a parent from a path that has one. A flat tree
+  makes the depth limit measure nothing and the cancel cascade reach nothing,
+  and neither reports that it did
 - Never add a mount to a computer without going through
   `clawt_computer_add_mount()` -- it is where the backend fills in the type,
   and a VM mount left untyped gets a `<filesystem>` device with no fstab entry

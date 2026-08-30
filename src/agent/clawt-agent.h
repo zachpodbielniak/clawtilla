@@ -290,6 +290,7 @@ void clawt_agent_set_hop_depth(ClawtAgent *self, gint depth);
  * @depth: how far the message being delivered had already travelled
  * @replies: %TRUE if the turn's closing text should be delivered
  * @from: (nullable): who the message came from
+ * @task_id: (nullable): the task the message belongs to, if any
  *
  * Records one delivery, and the turn it will set up.
  *
@@ -299,7 +300,7 @@ void clawt_agent_set_hop_depth(ClawtAgent *self, gint depth);
  * messages produces five turns and each has to know what it is
  * answering.
  *
- * Distinct from the three setters below, which amend the delivery
+ * Distinct from the four setters below, which amend the delivery
  * already at the tail rather than starting another.  Those exist for a
  * caller describing a single delivery a field at a time; describing
  * several that way would produce one entry for all of them, since there
@@ -308,7 +309,8 @@ void clawt_agent_set_hop_depth(ClawtAgent *self, gint depth);
 void clawt_agent_deliver_turn(ClawtAgent  *self,
                               gint         depth,
                               gboolean     replies,
-                              const gchar *from);
+                              const gchar *from,
+                              const gchar *task_id);
 
 /**
  * clawt_agent_set_turn_origin:
@@ -338,6 +340,38 @@ void clawt_agent_set_turn_origin(ClawtAgent *self, const gchar *from);
  *   when nothing the daemon can see did
  */
 const gchar *clawt_agent_get_turn_origin(ClawtAgent *self);
+
+/**
+ * clawt_agent_set_turn_task_id:
+ * @self: a #ClawtAgent
+ * @task_id: (nullable): the task the message being delivered belongs to
+ *
+ * Records which delegated task the turn about to run is working on.
+ *
+ * Set at delivery beside the hop depth and the turn origin, from
+ * clawt_mailbox_item_get_task_id(), and spent by the same
+ * clawt_agent_begin_turn().
+ *
+ * This is what makes the task tree a tree.  clawtilla_delegate passes it
+ * as the parent of whatever the agent hands on, so a chief's task that
+ * reaches a worker that fans out to two specialists is three levels
+ * deep and records itself that way.  Before it existed every
+ * agent-delegated task was created parentless: clawt_task_manager_create()
+ * therefore measured depth 0 for all of them and its limit could not
+ * trip however long the chain got, and clawt_task_manager_cancel() --
+ * whose tool says it cancels "everything it spawned" -- found no
+ * children to cascade to.  Both were correct code reaching nobody.
+ */
+void clawt_agent_set_turn_task_id(ClawtAgent *self, const gchar *task_id);
+
+/**
+ * clawt_agent_get_turn_task_id:
+ * @self: a #ClawtAgent
+ *
+ * Returns: (transfer none) (nullable): the task this turn is working on,
+ *   or %NULL when the turn was not started by a task delivery
+ */
+const gchar *clawt_agent_get_turn_task_id(ClawtAgent *self);
 
 /**
  * clawt_agent_set_turn_replies:

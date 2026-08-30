@@ -6202,6 +6202,12 @@ clawt_daemon_add_task_object(JsonBuilder *builder, ClawtTask *task)
         json_builder_add_string_value(builder, clawt_task_get_reason(task));
     }
 
+    if (clawt_task_get_parent_id(task) != NULL) {
+        json_builder_set_member_name(builder, "parent");
+        json_builder_add_string_value(builder,
+                                      clawt_task_get_parent_id(task));
+    }
+
     json_builder_set_member_name(builder, "depth");
     json_builder_add_int_value(builder, clawt_task_get_depth(task));
 

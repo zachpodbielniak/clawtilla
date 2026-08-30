@@ -554,9 +554,15 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
          * decide for both.  It does not; each gets its own turn, and
          * accumulating made the acknowledgement's turn reply, which is
          * the loop the flag exists to end.
+         *
+         * And the task, which is what anything the agent delegates from
+         * this turn is parented on.  Per item for the same reason as the
+         * rest: a drain of [task delivery, ordinary message] must not
+         * hang the ordinary message's turn off the task.
          */
         clawt_agent_deliver_turn(agent, clawt_mailbox_item_get_depth(item),
-                                 !peer || invites, from);
+                                 !peer || invites, from,
+                                 clawt_mailbox_item_get_task_id(item));
 
         /*
          * And who this turn is for.  Delivery is the only moment that

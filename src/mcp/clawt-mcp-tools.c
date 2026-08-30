@@ -895,6 +895,46 @@ outbound_depth(ClawtMcpTools *self, const gchar *agent_id)
     return (agent != NULL) ? clawt_agent_get_hop_depth(agent) + 1 : 1;
 }
 
+/*
+ * The task this agent's turn is working on, if it is working on one.
+ *
+ * Whatever it delegates from here belongs under that task, which is what
+ * makes a fan-out a tree: clawt_task_manager_create() measures depth
+ * from the parent and clawt_task_manager_cancel() cascades down it.
+ * This passed NULL for its whole life, so every agent-delegated task was
+ * a root -- the depth limit compared 0 against the ceiling however deep
+ * the real chain was, and cancelling a task with children cancelled the
+ * task alone while its children carried on reporting into it.  Both were
+ * written, tested and correct; neither had a wire.
+ *
+ * Checked against the manager rather than trusted, because the turn
+ * state is only as fresh as the last clawt_agent_begin_turn() -- an
+ * agent that never raises a typing indicator does not get one, and a
+ * finished or forgotten id would otherwise parent new work onto
+ * somebody's closed job.  Unknown means no parent, which is what the
+ * behaviour was everywhere until now.
+ */
+static const gchar *
+delegating_from_task(ClawtMcpTools *self, const gchar *agent_id)
+{
+    ClawtAgent *agent = (self->agents != NULL)
+                        ? clawt_agent_manager_get(self->agents, agent_id)
+                        : NULL;
+    const gchar *task_id = (agent != NULL)
+                           ? clawt_agent_get_turn_task_id(agent) : NULL;
+    ClawtTask *task;
+
+    if (task_id == NULL || self->tasks == NULL)
+        return NULL;
+
+    task = clawt_task_manager_get(self->tasks, task_id);
+
+    if (task == NULL || clawt_task_is_finished(task))
+        return NULL;
+
+    return task_id;
+}
+
 /* ── Permissions ─────────────────────────────────────────────────── */
 
 static const ToolDefinition *
@@ -2647,7 +2687,8 @@ tool_delegate(ClawtMcpTools *self,
     }
 
     task = clawt_task_manager_create(self->tasks, agent_id, assignee, work,
-                                     NULL, &error);
+                                     delegating_from_task(self, agent_id),
+                                     &error);
     if (task == NULL) {
         *is_error = TRUE;
         return g_strdup(error->message);

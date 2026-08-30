@@ -99,8 +99,6 @@ state, so a finished task was never once drawn green; the GTK client drew
 every badge the same grey whatever the state.  A colour that is merely
 wrong reads as somebody's design choice, so neither was reported.
 
-Two things about the list are worth knowing before reading it:
-
 *~running~ is only reached on the paths a person starts.* A task
 delegated by an *agent* stays ~pending~ until it completes, because the
 agent-facing ~clawtilla_delegate~ does not mark it started -- only the
@@ -108,13 +106,39 @@ IPC/CLI delegate and a routine run do.  So a chief polling
 ~clawtilla_task_status~ on work it handed out sees ~pending~ for the
 whole run, which is not a stall.
 
-*Cancelling does not cascade.* The cascade exists and walks a task's
-parent, and every path that creates a task passes no parent -- so no task
-in the fleet has one and nothing has ever cascaded.  Cancel the subtasks
-individually.
-
 Tasks are held in memory only.  A daemon restart loses the list; what the
 work produced is in the room transcript and the event log.
+
+**** A task knows what it came out of
+
+Every task records a ~parent_id~ and a depth.  A chief's task that
+reaches a lead who fans out to two specialists is three levels deep and
+says so, which is what makes two other things work at all:
+
+- ~orchestration.max_hops~ bounds the *chain of delegations* as well as
+  the chain of messages.  ~clawt_task_manager_create()~ measures depth
+  from the parent and refuses past the ceiling, with a sentence that says
+  to do the work rather than hand it on again.
+- ~clawtilla_task_cancel~ takes the whole subtree, which is what its own
+  description promises.
+
+Neither worked before, and neither said so.  ~clawtilla_delegate~ passed
+no parent, so every task an agent created was a root: the depth limit
+compared 0 against the ceiling however long the real chain was, and the
+cancel walk -- which matches on ~parent_id~ -- found no children and
+cancelled exactly one task while the fan-out under it carried on
+reporting into something nobody was waiting for.  Both were correct code
+that nothing had wired up, and this page recorded the second as intended
+behaviour.
+
+The parent comes from the delegating agent's own turn:
+~clawt_agent_get_turn_task_id()~ says which task the running turn is
+answering, set per delivery beside the hop depth and the turn origin.
+Per delivery, because libreclaw runs one turn per message -- a burst of
+[task delivery, ordinary message] must not hang the second turn's work
+off the first turn's task.  It is checked against the task manager rather
+than trusted: a finished or forgotten id parents nothing, since a closed
+task acquiring children is a tree nobody can read.
 
 *** Seeing all of it at once
 

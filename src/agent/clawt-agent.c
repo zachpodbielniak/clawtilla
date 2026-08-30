@@ -39,7 +39,7 @@ struct _ClawtAgent {
     /*
      * What this turn is answering, and what is waiting behind it.
      *
-     * The three live fields describe the turn that is running.  The
+     * The four live fields describe the turn that is running.  The
      * queue holds one entry per delivery that has not started its turn
      * yet, because libreclaw runs exactly one turn per message --
      * LcSession keeps its own GQueue and drain_next_message() pops a
@@ -57,10 +57,21 @@ struct _ClawtAgent {
      * pushed its findings straight into the operator's chat.  One
      * operator question produced three messages, two of them from
      * somebody else's conversation.
+     *
+     * turn_task_id came last and for a different symptom: it is the task
+     * the delivery belonged to, and it is what clawtilla_delegate uses
+     * as the parent of anything the agent hands on from here.  Without
+     * it every agent-delegated task was created with parent NULL, so the
+     * whole tree was flat -- clawt_task_manager_create()'s depth limit
+     * measured zero for every one of them and clawt_task_manager_cancel()
+     * found no children to cascade to.  It belongs beside the other
+     * three because it is the same kind of fact: true of one delivery,
+     * and there are as many of those as were delivered.
      */
     gint            hop_depth;
     gboolean        turn_replies;
     gchar          *turn_origin;
+    gchar          *turn_task_id;
     GQueue         *pending_turns;
 
     gchar          *status_detail;
@@ -78,7 +89,9 @@ typedef struct {
     gint      depth;
     gboolean  replies;
     gchar    *origin;
+    gchar    *task_id;
 } TurnSetup;
+
 
 static void
 turn_setup_free(gpointer data)
@@ -86,6 +99,7 @@ turn_setup_free(gpointer data)
     TurnSetup *setup = data;
 
     g_free(setup->origin);
+    g_free(setup->task_id);
     g_free(setup);
 }
 
@@ -449,6 +463,15 @@ clawt_agent_get_hop_depth(ClawtAgent *self)
  * it, which is the loop this whole mechanism exists to end.  The merge
  * keeps the deeper hop count and the more restrictive reply flag, so
  * overflow errs towards stopping an exchange rather than continuing one.
+ *
+ * The task id is the exception: it is *not* carried across, because it
+ * names one particular piece of work rather than describing a
+ * disposition.  Inheriting it would attribute a later, unrelated message
+ * to somebody else's task, and the daemon completes a task from the
+ * message that ends its turn -- so the wrong task would be marked done
+ * by a message that was never about it.  Dropping it instead leaves the
+ * delegator waiting a little longer, and a task that ends late is a
+ * delay where one that ends early is a lie.
  */
 static void
 trim_pending_turns(ClawtAgent *self)
@@ -507,6 +530,7 @@ pending_turn(ClawtAgent *self)
     setup->depth = self->hop_depth;
     setup->replies = self->turn_replies;
     setup->origin = g_strdup(self->turn_origin);
+    setup->task_id = g_strdup(self->turn_task_id);
 
     g_queue_push_tail(self->pending_turns, setup);
 
@@ -517,7 +541,8 @@ void
 clawt_agent_deliver_turn(ClawtAgent  *self,
                          gint         depth,
                          gboolean     replies,
-                         const gchar *from)
+                         const gchar *from,
+                         const gchar *task_id)
 {
     TurnSetup *setup;
 
@@ -526,7 +551,7 @@ clawt_agent_deliver_turn(ClawtAgent  *self,
     /*
      * A whole delivery at once, which is what makes it one entry.
      *
-     * The three setters below amend the entry at the tail, so a caller
+     * The four setters below amend the entry at the tail, so a caller
      * describing one delivery a field at a time gets one entry -- and a
      * caller describing three deliveries that way would get one entry
      * for all three, with no way to tell where one ended.  There is no
@@ -536,6 +561,7 @@ clawt_agent_deliver_turn(ClawtAgent  *self,
     setup->depth = depth;
     setup->replies = replies;
     setup->origin = g_strdup(from);
+    setup->task_id = g_strdup(task_id);
 
     g_queue_push_tail(self->pending_turns, setup);
     trim_pending_turns(self);
@@ -550,6 +576,8 @@ clawt_agent_deliver_turn(ClawtAgent  *self,
     self->turn_replies = replies;
     g_free(self->turn_origin);
     self->turn_origin = g_strdup(from);
+    g_free(self->turn_task_id);
+    self->turn_task_id = g_strdup(task_id);
 }
 
 void
@@ -610,6 +638,29 @@ clawt_agent_get_turn_origin(ClawtAgent *self)
 }
 
 void
+clawt_agent_set_turn_task_id(ClawtAgent *self, const gchar *task_id)
+{
+    TurnSetup *setup;
+
+    g_return_if_fail(CLAWT_IS_AGENT(self));
+
+    g_free(self->turn_task_id);
+    self->turn_task_id = g_strdup(task_id);
+
+    setup = pending_turn(self);
+    g_free(setup->task_id);
+    setup->task_id = g_strdup(task_id);
+}
+
+const gchar *
+clawt_agent_get_turn_task_id(ClawtAgent *self)
+{
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), NULL);
+
+    return self->turn_task_id;
+}
+
+void
 clawt_agent_begin_turn(ClawtAgent *self)
 {
     g_return_if_fail(CLAWT_IS_AGENT(self));
@@ -650,6 +701,9 @@ clawt_agent_begin_turn(ClawtAgent *self)
             g_free(self->turn_origin);
             self->turn_origin = g_steal_pointer(&setup->origin);
 
+            g_free(self->turn_task_id);
+            self->turn_task_id = g_steal_pointer(&setup->task_id);
+
             turn_setup_free(setup);
         } else {
             self->hop_depth = 0;
@@ -660,6 +714,14 @@ clawt_agent_begin_turn(ClawtAgent *self)
              * the daemon can name.
              */
             g_clear_pointer(&self->turn_origin, g_free);
+
+            /*
+             * And which task, for the same reason and with more at
+             * stake: whatever this turn delegates is parented on it, so
+             * a stale id left over from the last delivery would hang new
+             * work off a task that has nothing to do with it.
+             */
+            g_clear_pointer(&self->turn_task_id, g_free);
 
             /*
              * And a turn nobody handed anything to answers normally.  An
@@ -999,6 +1061,7 @@ clawt_agent_dispose(GObject *object)
 
     g_clear_object(&self->runtime);
     g_clear_pointer(&self->turn_origin, g_free);
+    g_clear_pointer(&self->turn_task_id, g_free);
     g_clear_pointer(&self->pending_turns, queue_of_turns_free);
     g_clear_object(&self->computer);
     g_clear_object(&self->desktop);

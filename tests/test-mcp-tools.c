@@ -1888,7 +1888,7 @@ test_message_user_is_refused_on_a_peers_later_messages(void)
      * the turns are still to come.
      */
     for (turn = 0; turn < 3; turn++)
-        clawt_agent_deliver_turn(worker, 1, TRUE, "chief");
+        clawt_agent_deliver_turn(worker, 1, TRUE, "chief", NULL);
 
     for (turn = 0; turn < 3; turn++) {
         g_autoptr(JsonNode) refused = NULL;
@@ -1935,6 +1935,152 @@ test_message_user_is_refused_on_a_peers_later_messages(void)
     fixture_teardown(&fixture);
 }
 
+
+
+/* ── The task tree ───────────────────────────────────────────────── */
+
+/*
+ * Work an agent hands on belongs under the work it was given.
+ *
+ * clawtilla_delegate passed NULL as the parent for its whole life, so
+ * every task an agent created was a root.  Two documented features were
+ * inert because of it and neither reported anything: the depth limit
+ * measured 0 however long the real chain was, and
+ * clawtilla_task_cancel's promise of "and everything it spawned" found
+ * no children to cascade to.
+ */
+static void
+test_delegating_from_a_task_records_the_parent(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    g_autoptr(GPtrArray) children = NULL;
+    ClawtAgent *lead;
+    ClawtTask *root;
+    gboolean is_error = TRUE;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: lead\n    chief_of_staff: true\n"
+        "  - id: worker\n");
+
+    root = clawt_task_manager_create(fixture.tasks, "user", "lead",
+                                     "verify the guests", NULL, NULL);
+    g_assert_nonnull(root);
+
+    lead = clawt_agent_manager_get(fixture.agents, "lead");
+    clawt_agent_deliver_turn(lead, 1, TRUE, "user",
+                             clawt_task_get_id(root));
+    clawt_agent_begin_turn(lead);
+
+    response = call_tool(&fixture, "lead", "clawtilla_delegate",
+                         "{\"agent_id\":\"worker\","
+                         "\"task\":\"do the same on yours\"}");
+    response_text(response, &is_error);
+    g_assert_false(is_error);
+
+    children = clawt_task_manager_list(fixture.tasks, "worker", TRUE);
+    g_assert_cmpuint(children->len, ==, 1);
+
+    {
+        ClawtTask *child = g_ptr_array_index(children, 0);
+
+        g_assert_cmpstr(clawt_task_get_parent_id(child), ==,
+                        clawt_task_get_id(root));
+        g_assert_cmpint(clawt_task_get_depth(child), ==, 1);
+    }
+
+    /* And the cascade the tool promises now reaches it. */
+    g_assert_cmpuint(clawt_task_manager_cancel(fixture.tasks,
+                                               clawt_task_get_id(root),
+                                               "changed my mind"), ==, 2);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A turn nothing delegated into starts a root, as it always did.
+ *
+ * An operator typing, a routine, a webhook: none of them is a task, and
+ * parenting their work onto whatever the agent last happened to handle
+ * would be worse than no parent at all.
+ */
+static void
+test_delegating_outside_a_task_starts_a_root(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    g_autoptr(GPtrArray) children = NULL;
+    ClawtAgent *lead;
+    gboolean is_error = TRUE;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: lead\n    chief_of_staff: true\n"
+        "  - id: worker\n");
+
+    lead = clawt_agent_manager_get(fixture.agents, "lead");
+    clawt_agent_begin_turn(lead);
+
+    response = call_tool(&fixture, "lead", "clawtilla_delegate",
+                         "{\"agent_id\":\"worker\",\"task\":\"a fresh job\"}");
+    response_text(response, &is_error);
+    g_assert_false(is_error);
+
+    children = clawt_task_manager_list(fixture.tasks, "worker", TRUE);
+    g_assert_cmpuint(children->len, ==, 1);
+    g_assert_null(clawt_task_get_parent_id(
+                      g_ptr_array_index(children, 0)));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A turn state that has gone stale does not parent new work onto a
+ * closed job.
+ *
+ * clawt_agent_begin_turn() only runs when the agent raises a typing
+ * indicator, which needs a room -- so the id an agent is carrying is
+ * only as fresh as its last one.  Checked against the manager rather
+ * than trusted, because a finished task acquiring children is a tree
+ * nobody can read.
+ */
+static void
+test_a_finished_parent_is_not_used(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    g_autoptr(GPtrArray) children = NULL;
+    ClawtAgent *lead;
+    ClawtTask *root;
+    gboolean is_error = TRUE;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: lead\n    chief_of_staff: true\n"
+        "  - id: worker\n");
+
+    root = clawt_task_manager_create(fixture.tasks, "user", "lead",
+                                     "an old job", NULL, NULL);
+
+    lead = clawt_agent_manager_get(fixture.agents, "lead");
+    clawt_agent_deliver_turn(lead, 1, TRUE, "user",
+                             clawt_task_get_id(root));
+    clawt_agent_begin_turn(lead);
+
+    g_assert_true(clawt_task_manager_complete(fixture.tasks,
+                                              clawt_task_get_id(root),
+                                              "done ages ago"));
+
+    response = call_tool(&fixture, "lead", "clawtilla_delegate",
+                         "{\"agent_id\":\"worker\",\"task\":\"something new\"}");
+    response_text(response, &is_error);
+    g_assert_false(is_error);
+
+    children = clawt_task_manager_list(fixture.tasks, "worker", TRUE);
+    g_assert_cmpuint(children->len, ==, 1);
+    g_assert_null(clawt_task_get_parent_id(
+                      g_ptr_array_index(children, 0)));
+
+    fixture_teardown(&fixture);
+}
 
 int
 main(int argc, char *argv[])
@@ -2020,6 +2166,13 @@ main(int argc, char *argv[])
     g_test_add_func("/mcp/message-user/refused-on-later-messages",
                     test_message_user_is_refused_on_a_peers_later_messages);
     g_test_add_func("/mcp/failing-command", test_failing_command_reports_why);
+
+    g_test_add_func("/mcp/delegate/records-the-parent-task",
+                    test_delegating_from_a_task_records_the_parent);
+    g_test_add_func("/mcp/delegate/outside-a-task-starts-a-root",
+                    test_delegating_outside_a_task_starts_a_root);
+    g_test_add_func("/mcp/delegate/a-finished-parent-is-not-used",
+                    test_a_finished_parent_is_not_used);
 
     return g_test_run();
 }

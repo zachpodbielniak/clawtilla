@@ -153,6 +153,124 @@ test_every_nick_resolves_back(void)
     }
 }
 
+
+/*
+ * A chain of delegations is a chain in the record too.
+ *
+ * clawtilla_delegate passed NULL as the parent for its whole life, so
+ * every task an agent created was a root: this measured 0 for all of
+ * them and clawt_task_manager_create()'s own comment -- "a task spawning
+ * a task spawning a task is three levels deep" -- described the case it
+ * was failing to catch.
+ */
+static void
+test_a_delegation_chain_records_its_depth(void)
+{
+    g_autoptr(ClawtTaskManager) tasks = clawt_task_manager_new();
+    ClawtTask *root;
+    ClawtTask *child;
+    ClawtTask *grandchild;
+
+    root = clawt_task_manager_create(tasks, "chief", "lead", "survey it",
+                                     NULL, NULL);
+    g_assert_nonnull(root);
+    g_assert_cmpint(clawt_task_get_depth(root), ==, 0);
+
+    child = clawt_task_manager_create(tasks, "lead", "worker", "one half",
+                                      clawt_task_get_id(root), NULL);
+    g_assert_nonnull(child);
+    g_assert_cmpint(clawt_task_get_depth(child), ==, 1);
+    g_assert_cmpstr(clawt_task_get_parent_id(child), ==,
+                    clawt_task_get_id(root));
+
+    grandchild = clawt_task_manager_create(tasks, "worker", "specialist",
+                                           "the awkward bit",
+                                           clawt_task_get_id(child), NULL);
+    g_assert_nonnull(grandchild);
+    g_assert_cmpint(clawt_task_get_depth(grandchild), ==, 2);
+}
+
+/*
+ * And the limit that depth exists for can actually be reached.
+ *
+ * A limit needs a test that reaches it: this one could not fire at all
+ * while every task was a root, so the guard was live code that nothing
+ * could trip.
+ */
+static void
+test_the_depth_limit_stops_a_chain(void)
+{
+    g_autoptr(ClawtTaskManager) tasks = clawt_task_manager_new();
+    g_autoptr(GError) error = NULL;
+    ClawtTask *root;
+    ClawtTask *child;
+    ClawtTask *refused;
+
+    clawt_task_manager_set_max_depth(tasks, 2);
+
+    root = clawt_task_manager_create(tasks, "chief", "lead", "survey it",
+                                     NULL, NULL);
+    g_assert_nonnull(root);
+
+    child = clawt_task_manager_create(tasks, "lead", "worker", "one half",
+                                      clawt_task_get_id(root), NULL);
+    g_assert_nonnull(child);
+
+    refused = clawt_task_manager_create(tasks, "worker", "specialist",
+                                        "deeper still",
+                                        clawt_task_get_id(child), &error);
+
+    g_assert_null(refused);
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT);
+
+    /* A sentence an agent can act on, not a code. */
+    g_assert_nonnull(strstr(error->message, "yourself"));
+}
+
+/*
+ * Cancelling a task takes its whole subtree with it.
+ *
+ * clawtilla_task_cancel promises "and everything it spawned" and the
+ * walk that delivers it matches on parent_id, so with every task a root
+ * it cancelled exactly one thing while the fan-out carried on reporting
+ * into a task nobody was waiting for.
+ */
+static void
+test_cancelling_reaches_the_whole_subtree(void)
+{
+    g_autoptr(ClawtTaskManager) tasks = clawt_task_manager_new();
+    ClawtTask *root;
+    ClawtTask *child;
+    ClawtTask *sibling;
+    ClawtTask *grandchild;
+    ClawtTask *unrelated;
+
+    root = clawt_task_manager_create(tasks, "chief", "lead", "survey it",
+                                     NULL, NULL);
+    child = clawt_task_manager_create(tasks, "lead", "kudu", "half of it",
+                                      clawt_task_get_id(root), NULL);
+    sibling = clawt_task_manager_create(tasks, "lead", "mamba", "the rest",
+                                        clawt_task_get_id(root), NULL);
+    grandchild = clawt_task_manager_create(tasks, "kudu", "oryx", "a detail",
+                                           clawt_task_get_id(child), NULL);
+    unrelated = clawt_task_manager_create(tasks, "chief", "scribe",
+                                          "something else", NULL, NULL);
+
+    g_assert_cmpuint(clawt_task_manager_cancel(tasks,
+                                               clawt_task_get_id(root),
+                                               "operator changed their mind"),
+                     ==, 4);
+
+    g_assert_cmpint(clawt_task_get_state(root), ==, CLAWT_TASK_CANCELLED);
+    g_assert_cmpint(clawt_task_get_state(child), ==, CLAWT_TASK_CANCELLED);
+    g_assert_cmpint(clawt_task_get_state(sibling), ==, CLAWT_TASK_CANCELLED);
+    g_assert_cmpint(clawt_task_get_state(grandchild), ==,
+                    CLAWT_TASK_CANCELLED);
+
+    /* And nothing outside the subtree. */
+    g_assert_cmpint(clawt_task_get_state(unrelated), ==, CLAWT_TASK_PENDING);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -166,6 +284,12 @@ main(int argc, char *argv[])
                     test_finished_never_reads_as_pending);
     g_test_add_func("/task/every-nick-resolves-back",
                     test_every_nick_resolves_back);
+    g_test_add_func("/task/a-delegation-chain-records-its-depth",
+                    test_a_delegation_chain_records_its_depth);
+    g_test_add_func("/task/the-depth-limit-stops-a-chain",
+                    test_the_depth_limit_stops_a_chain);
+    g_test_add_func("/task/cancelling-reaches-the-whole-subtree",
+                    test_cancelling_reaches_the_whole_subtree);
 
     return g_test_run();
 }

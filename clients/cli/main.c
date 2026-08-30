@@ -3326,6 +3326,11 @@ cmd_task(int argc, char *argv[])
             g_print("reason:   %s\n",
                     json_object_get_string_member(task, "reason"));
 
+        if (json_object_has_member(task, "parent"))
+            g_print("under:    %s\n",
+                    json_object_get_string_member(task, "parent"));
+
+
         return EXIT_SUCCESS;
     }
 

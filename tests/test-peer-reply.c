@@ -577,7 +577,7 @@ test_an_overlong_burst_folds_the_oldest_in(void)
     beta = clawt_agent_manager_get(fixture.agents, "beta");
 
     /* A closed exchange first, then far more than fit behind it. */
-    clawt_agent_deliver_turn(beta, 3, FALSE, "alpha");
+    clawt_agent_deliver_turn(beta, 3, FALSE, "alpha", NULL);
 
     /*
      * Each fold warns, which is the point of it -- an agent this far
@@ -588,7 +588,7 @@ test_an_overlong_burst_folds_the_oldest_in(void)
     fatal = g_log_set_always_fatal(G_LOG_LEVEL_ERROR);
 
     for (i = 0; i < 200; i++)
-        clawt_agent_deliver_turn(beta, 1, TRUE, "alpha");
+        clawt_agent_deliver_turn(beta, 1, TRUE, "alpha", NULL);
 
     g_log_set_always_fatal(fatal);
 
@@ -685,6 +685,112 @@ test_a_turn_with_no_delivery_answers(void)
     fixture_teardown(&fixture);
 }
 
+
+/*
+ * Each turn knows which task it is answering, and only that one.
+ *
+ * This is what makes clawtilla_delegate able to record a parent: the
+ * tool asks the agent what its running turn is for.  A burst of
+ * [task delivery, ordinary message] must not hang the ordinary
+ * message's turn off the task, or work the agent delegates from an
+ * unrelated turn is parented onto somebody's job -- and the daemon
+ * completes a task from the message that ends its turn, so the wrong
+ * task would then be marked done by a message that was never about it.
+ */
+static void
+test_each_turn_carries_its_own_task(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgent *beta;
+    g_autoptr(GError) error = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: beta\n");
+
+    beta = clawt_agent_manager_get(fixture.agents, "beta");
+
+    g_assert_cmpint(clawt_mailbox_router_send_to(fixture.router, "alpha",
+                                                 "beta", "do the survey",
+                                                 "task-one", 1, &error),
+                    >, 0);
+    g_assert_no_error(error);
+
+    g_assert_cmpint(clawt_mailbox_router_send_to(fixture.router, "alpha",
+                                                 "beta", "and by the way",
+                                                 NULL, 1, &error), >, 0);
+    g_assert_no_error(error);
+
+    g_assert_cmpint(clawt_mailbox_router_send_to(fixture.router, "alpha",
+                                                 "beta", "this one too",
+                                                 "task-two", 1, &error),
+                    >, 0);
+    g_assert_no_error(error);
+
+    give_agent_a_link(&fixture, beta);
+    clawt_mailbox_router_drain(fixture.router, "beta");
+
+    clawt_agent_begin_turn(beta);
+    g_assert_cmpstr(clawt_agent_get_turn_task_id(beta), ==, "task-one");
+
+    /*
+     * The middle one is nobody's task.  Carried over, it would parent
+     * anything this turn delegates onto task-one -- and it is the field
+     * a scalar gets wrong first, because the last delivery wins.
+     */
+    clawt_agent_begin_turn(beta);
+    g_assert_null(clawt_agent_get_turn_task_id(beta));
+
+    clawt_agent_begin_turn(beta);
+    g_assert_cmpstr(clawt_agent_get_turn_task_id(beta), ==, "task-two");
+
+    /* And a turn nothing delivered into is not working on anything. */
+    clawt_agent_begin_turn(beta);
+    g_assert_null(clawt_agent_get_turn_task_id(beta));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A fold does not hand one delivery's task to another.
+ *
+ * Everything else in a folded entry is merged towards the more
+ * restrictive answer, because those fields describe a disposition.  A
+ * task id names one particular piece of work, so inheriting it would
+ * attribute a later message to somebody else's task -- and a task that
+ * ends early is a lie where one that ends late is only a delay.
+ */
+static void
+test_a_fold_does_not_inherit_a_task(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgent *beta;
+    GLogLevelFlags fatal;
+    guint i;
+
+    fixture_setup(&fixture, "agents:\n  - id: beta\n");
+
+    beta = clawt_agent_manager_get(fixture.agents, "beta");
+
+    clawt_agent_deliver_turn(beta, 3, FALSE, "alpha", "task-one");
+
+    fatal = g_log_set_always_fatal(G_LOG_LEVEL_ERROR);
+
+    for (i = 0; i < 200; i++)
+        clawt_agent_deliver_turn(beta, 1, TRUE, "alpha", NULL);
+
+    g_log_set_always_fatal(fatal);
+
+    /*
+     * The close and the depth survived the fold, as they must; the task
+     * did not, which is equally deliberate.
+     */
+    clawt_agent_begin_turn(beta);
+    g_assert_false(clawt_agent_get_turn_replies(beta));
+    g_assert_cmpint(clawt_agent_get_hop_depth(beta), ==, 3);
+    g_assert_null(clawt_agent_get_turn_task_id(beta));
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -712,6 +818,11 @@ main(int argc, char **argv)
                     test_an_operator_always_gets_an_answer);
     g_test_add_func("/peer-reply/a-fresh-turn-answers",
                     test_a_turn_with_no_delivery_answers);
+
+    g_test_add_func("/peer-reply/each-turn-carries-its-own-task",
+                    test_each_turn_carries_its_own_task);
+    g_test_add_func("/peer-reply/a-fold-does-not-inherit-a-task",
+                    test_a_fold_does_not_inherit_a_task);
 
     return g_test_run();
 }
