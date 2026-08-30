@@ -15,6 +15,38 @@
 #include "core/clawt-daemon.h"
 #include "core/clawt-daemon-private.h"
 
+/*
+ * Says that a decision is no longer waiting.
+ *
+ * The counterpart of `decision.asked`, and it was missing.  Answering
+ * published nothing, so every client's badge went stale the moment
+ * *anything else* settled one: a second window, the CLI, or the venture
+ * bridge answering on the operator's behalf.  Nothing warned, because a
+ * count that is merely too high looks exactly like an inbox somebody
+ * has not got to yet.
+ *
+ * The agent is the subject, matching `decision.asked`, and @how says
+ * which of the two ways it ended -- a client that only wants to
+ * decrement a counter can ignore it, and one drawing a line in a list
+ * cannot.
+ */
+static void
+publish_decision_settled(ClawtDaemon *self, ClawtDecision *decision,
+                         const gchar *how)
+{
+    g_autoptr(ClawtEvent) event = NULL;
+
+    if (self->bus == NULL || decision == NULL)
+        return;
+
+    event = clawt_event_new("decision.settled",
+                            clawt_decision_get_agent(decision));
+    clawt_event_set_detail(event, "decision", clawt_decision_get_id(decision));
+    clawt_event_set_detail(event, "how", how);
+
+    clawt_event_bus_publish(self->bus, event);
+}
+
 JsonNode *
 clawt_daemon_handle_misc(
     ClawtDaemon  *self,
@@ -157,6 +189,8 @@ clawt_daemon_handle_misc(
          */
         clawt_daemon_venture_answer(self, settled);
 
+        publish_decision_settled(self, settled, "answered");
+
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "decision");
         clawt_daemon_add_decision_object(builder, settled,
@@ -190,9 +224,11 @@ clawt_daemon_handle_misc(
             return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
                                        dismiss_error->message);
 
-        if (dismissed != NULL)
+        if (dismissed != NULL) {
             clawt_daemon_turn_release(self,
                                       clawt_decision_get_agent(dismissed));
+            publish_decision_settled(self, dismissed, "dismissed");
+        }
 
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "dismissed");

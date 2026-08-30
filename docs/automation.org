@@ -147,6 +147,7 @@ was renamed, and nothing would have told anybody it was load-bearing.
 The published-but-not-forwarded kinds are ~config.changed~,
 ~room.created~, ~room.changed~, ~team.changed~, ~message.refused~,
 ~mailbox.queued~, ~mailbox.delivered~, ~decision.asked~,
+~decision.settled~,
 ~computer.exec~, ~image.progress~ and ~image.finished~ -- so a mailbox
 filling up, or the loop guard refusing a message, is not something a pod
 can currently bind to.

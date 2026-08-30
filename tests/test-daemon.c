@@ -4967,6 +4967,160 @@ test_a_decision_round_trips_through_the_daemon(void)
 }
 
 
+
+/*
+ * Settling a decision says so, and says which way.
+ *
+ * `decision.asked` was published and nothing was published when one was
+ * answered or dismissed, so a client's count only ever went up: a
+ * second window, the CLI, or the venture bridge answering on the
+ * operator's behalf left every other client drawing a badge for an
+ * inbox that was already empty.  Nothing warned, because a count that
+ * is merely too high looks exactly like work somebody has not got to.
+ *
+ * Asserted on the bus rather than on a client, because that is where
+ * the gap was -- the GTK client already refreshes on any `decision.`
+ * event and was correct the moment one arrived.
+ */
+typedef struct {
+    guint  asked;
+    guint  settled;
+    gchar *how;
+    gchar *subject;
+} DecisionTrail;
+
+static void
+on_decision_bus_event(ClawtEventBus *bus, ClawtEvent *event, gpointer data)
+{
+    DecisionTrail *trail = data;
+    const gchar *kind = clawt_event_get_kind(event);
+
+    (void)bus;
+
+    if (g_strcmp0(kind, "decision.asked") == 0)
+        trail->asked++;
+
+    if (g_strcmp0(kind, "decision.settled") == 0) {
+        trail->settled++;
+        g_free(trail->how);
+        g_free(trail->subject);
+        trail->how = g_strdup(clawt_event_get_detail(event, "how"));
+        trail->subject = g_strdup(clawt_event_get_subject(event));
+    }
+}
+
+static gchar *
+post_a_decision(Fixture *fixture, const gchar *agent, const gchar *question)
+{
+    g_autoptr(ClawtDecision) decision = clawt_decision_new(NULL, agent,
+                                                           question);
+    ClawtDecisionStore *store = clawt_daemon_get_decisions(fixture->daemon);
+    g_autoptr(GError) error = NULL;
+    gchar *id;
+
+    g_assert_nonnull(store);
+    id = clawt_decision_store_post(store, decision, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(id);
+
+    return id;
+}
+
+static void
+test_answering_a_decision_says_so(void)
+{
+    Fixture fixture;
+    DecisionTrail trail = { 0, 0, NULL, NULL };
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *id = NULL;
+    g_autofree gchar *body = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n    enabled: true\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    g_signal_connect(clawt_daemon_get_event_bus(fixture.daemon), "event",
+                     G_CALLBACK(on_decision_bus_event), &trail);
+
+    id = post_a_decision(&fixture, "chief", "Take the outage now?");
+
+    body = g_strdup_printf("{\"decision\": \"%s\","
+                           " \"answer\": \"neither, do X\"}", id);
+
+    {
+        g_autoptr(JsonNode) reply = request(&fixture, "decision.answer", body);
+
+        g_assert_nonnull(reply);
+        g_assert_false(clawt_ipc_frame_is_error(reply));
+    }
+
+    g_assert_cmpuint(trail.settled, ==, 1);
+    g_assert_cmpstr(trail.how, ==, "answered");
+
+    /*
+     * The agent, matching `decision.asked` -- a client that groups
+     * events by who they are about must be able to file both the same
+     * way, and a subject of NULL would put the settlement on the fleet.
+     */
+    g_assert_cmpstr(trail.subject, ==, "chief");
+
+    /* And a second answer, which is refused, publishes nothing more. */
+    {
+        g_autoptr(JsonNode) again = request(&fixture, "decision.answer", body);
+
+        g_assert_true(clawt_ipc_frame_is_error(again));
+    }
+
+    g_assert_cmpuint(trail.settled, ==, 1);
+
+    g_free(trail.how);
+    g_free(trail.subject);
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And dismissing one says so too, differently.
+ *
+ * Two ways to leave the inbox and a client redrawing a list needs to
+ * tell them apart; one that only wants to decrement a counter can
+ * ignore `how`.
+ */
+static void
+test_dismissing_a_decision_says_so(void)
+{
+    Fixture fixture;
+    DecisionTrail trail = { 0, 0, NULL, NULL };
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *id = NULL;
+    g_autofree gchar *body = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n    enabled: true\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    g_signal_connect(clawt_daemon_get_event_bus(fixture.daemon), "event",
+                     G_CALLBACK(on_decision_bus_event), &trail);
+
+    id = post_a_decision(&fixture, "chief", "Ship it?");
+    body = g_strdup_printf("{\"decision\": \"%s\"}", id);
+
+    {
+        g_autoptr(JsonNode) reply = request(&fixture, "decision.dismiss",
+                                            body);
+
+        g_assert_nonnull(reply);
+        g_assert_false(clawt_ipc_frame_is_error(reply));
+    }
+
+    g_assert_cmpuint(trail.settled, ==, 1);
+    g_assert_cmpstr(trail.how, ==, "dismissed");
+    g_assert_cmpstr(trail.subject, ==, "chief");
+
+    g_free(trail.how);
+    g_free(trail.subject);
+    fixture_teardown(&fixture);
+}
+
 /* ── Autostart ───────────────────────────────────────────────────── */
 
 /*
@@ -8078,6 +8232,10 @@ main(int argc, char *argv[])
                     test_exec_without_an_argv_falls_back);
     g_test_add_func("/daemon/decision-round-trip",
                     test_a_decision_round_trips_through_the_daemon);
+    g_test_add_func("/daemon/answering-a-decision-says-so",
+                    test_answering_a_decision_says_so);
+    g_test_add_func("/daemon/dismissing-a-decision-says-so",
+                    test_dismissing_a_decision_says_so);
     g_test_add_func("/daemon/autostart-does-not-run-inside-start",
                     test_autostart_does_not_run_inside_start);
     g_test_add_func("/daemon/start-returns-with-a-mute-podman-socket",

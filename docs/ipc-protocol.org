@@ -1159,7 +1159,7 @@ Every kind published, by subject:
 | a room | ~message~, ~message.refused~, ~exchange.stalled~, ~room.created~, ~room.changed~ |
 | an agent's mailbox | ~mailbox.queued~, ~mailbox.delivered~ |
 | a team | ~team.changed~ |
-| an agent | ~decision.asked~ |
+| an agent | ~decision.asked~, ~decision.settled~ (~decision~, ~how~: ~answered~ or ~dismissed~) |
 | a routine | ~routine.ran~, ~routine.changed~ |
 | a trigger | ~trigger.fired~, ~trigger.changed~, ~trigger.refused~, ~trigger.verified~ |
 | a skill | ~skill.changed~ |
@@ -1169,6 +1169,15 @@ Every kind published, by subject:
 | an agent | ~computer.exec~ |
 | an agent | ~turn.timed_out~, ~turn.repeating~, ~message.steered~ |
 | a task | ~handoff.queued~, ~handoff.settled~ |
+
+~decision.settled~ exists because ~decision.asked~ on its own could only
+make a client's count go *up*.  Answering published nothing, so a second
+window, the CLI, or the venture bridge answering on the operator's
+behalf left every other client drawing a badge for an inbox that was
+already empty -- and a count that is merely too high reads as work
+somebody has not got to yet, so nothing looked wrong.  The subject is
+the agent, matching ~decision.asked~, so a client filing events by who
+they are about can file both the same way.
 
 ~agent.state~ is published for *every* state and carries the state's nick
 plus a ~detail~ saying why.  ~agent.started~ and ~agent.stopped~ are
