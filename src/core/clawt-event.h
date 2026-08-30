@@ -161,6 +161,52 @@ typedef enum {
 ClawtAlertTier clawt_alert_tier_for_event(ClawtEvent *event);
 
 /**
+ * CLAWT_TOAST_REPEAT_SECONDS:
+ *
+ * How long an identical toast is treated as already said.
+ *
+ * Matched to how long libadwaita leaves an ordinary toast on screen, so
+ * what this suppresses is only ever a copy of something the reader can
+ * still see.
+ */
+#define CLAWT_TOAST_REPEAT_SECONDS 5
+
+/**
+ * clawt_toast_should_show:
+ * @previous: (nullable): the last toast text, or %NULL if none
+ * @previous_at_us: when that one was shown, from a monotonic clock
+ * @text: (nullable): what is about to be said
+ * @now_us: now, from the same clock
+ *
+ * Whether a toast is worth adding, or is a copy of one still on screen.
+ *
+ * A toast answers a question somebody is holding right now. A *polled*
+ * request that keeps failing answers nothing and says the same sentence
+ * once per refresh -- the screen panel did exactly that, raising "there
+ * is no frame yet" over and over while a VM booted, above a panel
+ * already saying so in place. The per-call fix was to stop calling that
+ * a failure; this is the shape underneath, and it is here because the
+ * next polled request to fail would otherwise do it again.
+ *
+ * Suppressed only while the first is plausibly still visible. A repeat
+ * after that is news: something is still wrong, nobody is looking at the
+ * old toast, and hiding it for ever would be worse than saying it twice.
+ *
+ * A monotonic clock, not a wall clock -- both ends of the comparison are
+ * local, and a wall clock stepped backwards by an NTP correction would
+ * silence every toast until it caught up.
+ *
+ * Empty text is never worth showing: a toast with nothing in it is a bar
+ * that appears, covers a control and says nothing.
+ *
+ * Returns: %TRUE if it should be shown
+ */
+gboolean clawt_toast_should_show(const gchar *previous,
+                                 gint64       previous_at_us,
+                                 const gchar *text,
+                                 gint64       now_us);
+
+/**
  * clawt_alert_arrives_read:
  * @surface_showing: whether the alerts surface is in front of the reader
  * @tier: the alert's tier

@@ -689,6 +689,96 @@ test_a_future_timestamp_reads_as_just_now(void)
     g_assert_cmpstr(got, ==, "just now");
 }
 
+/* ── Not saying the same thing twice ─────────────────────────────── */
+
+#define TOAST_WINDOW \
+    ((gint64)CLAWT_TOAST_REPEAT_SECONDS * G_USEC_PER_SEC)
+
+/*
+ * An identical toast raised while the first is still up is one toast.
+ *
+ * The failure it exists for: every failed request raises a toast, and a
+ * *polled* request that keeps failing raises one per refresh. The screen
+ * panel did -- "there is no frame yet", once a second, for as long as a
+ * VM took to boot -- stacking bars over the controls while the panel
+ * underneath said the same thing in place.
+ *
+ * Written as a pure function so the rule is checked without a window;
+ * the toast overlay it guards cannot be exercised without one, which is
+ * how it went unnoticed.
+ */
+static void
+test_a_repeated_toast_is_said_once(void)
+{
+    const gint64 shown = G_GINT64_CONSTANT(10) * G_USEC_PER_SEC;
+
+    /* Nothing said yet. */
+    g_assert_true(clawt_toast_should_show(NULL, 0, "no frame yet", shown));
+
+    /* The same sentence, immediately: still on screen, so not again. */
+    g_assert_false(clawt_toast_should_show("no frame yet", shown,
+                                           "no frame yet", shown + 1));
+
+    /* A different sentence is always news, however fast it follows. */
+    g_assert_true(clawt_toast_should_show("no frame yet", shown,
+                                          "the agent stopped", shown + 1));
+
+    /*
+     * And after the first has gone it is news again. Suppressing for
+     * ever would hide a condition that is still true from somebody who
+     * has looked away and back.
+     */
+    g_assert_true(clawt_toast_should_show("no frame yet", shown,
+                                          "no frame yet",
+                                          shown + TOAST_WINDOW + 1));
+}
+
+/*
+ * The boundary, named rather than approached.
+ *
+ * Exactly one window later is still suppressed and one microsecond past
+ * it is not, so the constant means a definite thing.
+ */
+static void
+test_the_toast_window_has_an_edge(void)
+{
+    const gint64 shown = G_GINT64_CONSTANT(10) * G_USEC_PER_SEC;
+
+    g_assert_false(clawt_toast_should_show("same", shown, "same",
+                                           shown + TOAST_WINDOW));
+    g_assert_true(clawt_toast_should_show("same", shown, "same",
+                                          shown + TOAST_WINDOW + 1));
+}
+
+/*
+ * A clock that went backwards does not resurrect a toast.
+ *
+ * The GTK client reads g_get_monotonic_time(), which does not step --
+ * but the rule is total over its arguments rather than trusting its one
+ * caller, since the argument that reaches it is somebody else's problem
+ * the moment a second caller exists.
+ */
+static void
+test_a_backwards_clock_does_not_repeat_a_toast(void)
+{
+    const gint64 shown = G_GINT64_CONSTANT(100) * G_USEC_PER_SEC;
+
+    g_assert_false(clawt_toast_should_show("same", shown, "same",
+                                           shown - TOAST_WINDOW));
+}
+
+/*
+ * A toast with nothing in it is a bar that covers a control and says
+ * nothing, so it is never worth showing whatever came before it.
+ */
+static void
+test_an_empty_toast_is_never_shown(void)
+{
+    g_assert_false(clawt_toast_should_show(NULL, 0, NULL, 1));
+    g_assert_false(clawt_toast_should_show(NULL, 0, "", 1));
+    g_assert_false(clawt_toast_should_show("something", 1, "", 2));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -765,6 +855,14 @@ g_test_add_func("/client-rules/tier/unknown",
 
     g_test_add_func("/client-rules/age/boundaries",
                     test_relative_ages_read_the_way_they_are_written);
+    g_test_add_func("/client-rules/toast/repeated-is-said-once",
+                    test_a_repeated_toast_is_said_once);
+    g_test_add_func("/client-rules/toast/window-has-an-edge",
+                    test_the_toast_window_has_an_edge);
+    g_test_add_func("/client-rules/toast/backwards-clock",
+                    test_a_backwards_clock_does_not_repeat_a_toast);
+    g_test_add_func("/client-rules/toast/empty-is-never-shown",
+                    test_an_empty_toast_is_never_shown);
     g_test_add_func("/client-rules/age/backwards-clock",
                     test_a_future_timestamp_reads_as_just_now);
 

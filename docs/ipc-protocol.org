@@ -699,6 +699,20 @@ grabbed for ever.
 ~attachment.get~ already records: a client may be on another machine, so
 a filename would work on this host and show nothing anywhere else.
 
+*A screen with nothing captured yet answers rather than failing*: the
+reply is ~pending: true~ with ~watchers~, ~stamp: 0~, ~stale: false~ and
+no ~base64~.  That is the ordinary state of a screen for the first second
+of watching it, and for as long as a VM takes to boot or to be rebuilt.
+It used to be a ~NOT_FOUND~ error, and both clients poll this verb --- the
+GTK client toasts every failed request, so a booting VM raised one toast
+per refresh, saying what the panel underneath was already showing in
+place.  ~pending~ is a stated absence rather than an implied one, so a
+client can tell "there is no picture" from "this build does not send
+one"; ~watchers~ distinguishes the two reasons there is no frame, and
+only one of them is something a person can act on.
+
+A frame whose file has since gone *is* an error, and stays one.
+
 ~computer.takeover~ (~agent~, ~holder~) and ~computer.release~ (~agent~)
 are how a *person* takes the screen, and only a person: while it is held
 the agent's actions on that screen are refused rather than queued, since

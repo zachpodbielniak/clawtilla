@@ -2899,6 +2899,66 @@ test_a_pod_naming_a_level_that_is_not_one_writes_nothing(void)
 }
 
 /*
+ * A screen with nothing captured yet answers, rather than failing.
+ *
+ * `computer.frame` returned CLAWT_ERROR_NOT_FOUND for the ordinary state
+ * of a screen nobody has captured from yet -- which is every screen for
+ * the first second of watching, and for as long as a VM takes to boot or
+ * be rebuilt. Both clients poll this, and the GTK client toasts every
+ * failed request, so that was one toast per refresh saying what the
+ * panel underneath already said in place.
+ *
+ * Asserted on the *frame kind* rather than on the message: what was
+ * wrong was the channel, not the wording, and a test phrased in terms of
+ * the sentence would pass against a version that still called it an
+ * error and merely said it more nicely.
+ */
+static void
+test_a_screen_with_no_frame_yet_is_not_an_error(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) reply = NULL;
+    JsonObject *payload;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    reply = request(&fixture, "computer.frame", "{\"agent\": \"alpha\"}");
+
+    g_assert_false(clawt_ipc_frame_is_error(reply));
+
+    payload = clawt_ipc_frame_get_payload(reply);
+    g_assert_nonnull(payload);
+
+    /*
+     * A stated absence rather than an implied one. A client has to be
+     * able to tell "there is no picture" from "this build does not send
+     * one", which an absent member cannot say.
+     */
+    g_assert_true(json_object_has_member(payload, "pending"));
+    g_assert_true(json_object_get_boolean_member(payload, "pending"));
+
+    /* And no picture, so nothing decodes an empty string as an image. */
+    g_assert_false(json_object_has_member(payload, "base64"));
+
+    /*
+     * Nobody is watching, which is one of the two reasons there is no
+     * frame and the one a person can act on.
+     */
+    g_assert_cmpint(json_object_get_int_member(payload, "watchers"), ==, 0);
+
+    /*
+     * Not stale either: a frame that has never been taken has no age,
+     * and a client labelling one would draw "55 years ago" over an empty
+     * panel.
+     */
+    g_assert_false(json_object_get_boolean_member(payload, "stale"));
+    g_assert_cmpint(json_object_get_int_member(payload, "stamp"), ==, 0);
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * A message the router routed can be recalled through the daemon.
  *
  * The index, the router and the IPC verb each work on their own; what
@@ -7988,6 +8048,8 @@ main(int argc, char *argv[])
                     test_urgent_overtakes_an_earlier_ordinary_message);
     g_test_add_func("/daemon/priority/a-pod-can-send-at-a-band",
                     test_a_pod_can_send_at_a_band);
+    g_test_add_func("/daemon/screen/no-frame-yet-is-not-an-error",
+                    test_a_screen_with_no_frame_yet_is_not_an_error);
     g_test_add_func("/daemon/memory/a-pod-remembers-in-its-category",
                     test_a_pod_remembers_in_the_category_it_named);
     g_test_add_func("/daemon/memory/a-pod-remembers-every-field",

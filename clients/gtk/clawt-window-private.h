@@ -200,6 +200,15 @@ struct _ClawtWindow {
 
     AdwToastOverlay   *toasts;
     AdwToastOverlay   *page_toasts;
+
+    /*
+     * The last toast, so an identical one arriving while it is still on
+     * screen is not stacked behind it.  Judged by
+     * clawt_toast_should_show(); monotonic, because a wall clock stepped
+     * backwards would silence every toast until it caught up.
+     */
+    gchar             *last_toast;
+    gint64             last_toast_at;
     AdwOverlaySplitView *split;
 
     /*

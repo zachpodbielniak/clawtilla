@@ -331,6 +331,31 @@ clawt_alert_tier_for_event(ClawtEvent *event)
 }
 
 gboolean
+clawt_toast_should_show(const gchar *previous, gint64 previous_at_us,
+                        const gchar *text, gint64 now_us)
+{
+    if (text == NULL || *text == '\0')
+        return FALSE;
+
+    /* Nothing said yet, or something else said last. */
+    if (previous == NULL || previous_at_us <= 0 ||
+        g_strcmp0(previous, text) != 0)
+        return TRUE;
+
+    /*
+     * A clock that went backwards is not evidence the toast has gone.
+     * Treated as "just now" rather than as a long time ago, because
+     * being wrong in that direction shows one copy too few and the other
+     * shows the stack this exists to prevent.
+     */
+    if (now_us < previous_at_us)
+        return FALSE;
+
+    return (now_us - previous_at_us) >
+           ((gint64)CLAWT_TOAST_REPEAT_SECONDS * G_USEC_PER_SEC);
+}
+
+gboolean
 clawt_alert_arrives_read(
     gboolean        surface_showing,
     ClawtAlertTier  tier

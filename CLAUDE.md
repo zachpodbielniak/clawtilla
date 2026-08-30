@@ -1087,6 +1087,13 @@ versions apart.
   window is *in* until something changes is a **banner**, and one that arrived
   on its own goes in the alerts panel. Two of 89 toast call sites were
   notifications.
+- **A polled request that fails is a toast per refresh.**
+  `clawt_window_request()` toasts every failure, so a handler that reports an
+  ordinary condition as an error stacks one bar per tick over the controls
+  underneath -- `computer.frame` answered `NOT_FOUND` while a VM booted, once
+  a second, above a panel already saying "No frame yet." Fix it where the
+  condition is called a failure; `clawt_toast_should_show()` is the backstop
+  for the next one, at the single choke point rather than at the 87 call sites.
 - A client that loses its daemon must still be able to reach another one. The
   window opens whether or not the first connect succeeds -- a failed local
   daemon must not stand between somebody and the rest.

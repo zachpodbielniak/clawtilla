@@ -87,6 +87,29 @@ clawt_window_toast(ClawtWindow *self, const gchar *text)
     if (where == NULL)
         return;
 
+    /*
+     * The same sentence twice while the first is still up is one
+     * sentence.  A polled request that keeps failing raises a toast per
+     * refresh -- the screen panel did, once a second for as long as a VM
+     * took to boot -- and a stack of identical bars covers the controls
+     * underneath while telling nobody anything the first did not.
+     *
+     * Checked here rather than at the 87 call sites, because which of
+     * them will be reached in a loop next is not knowable from any one
+     * of them.
+     */
+    {
+        gint64 now = g_get_monotonic_time();
+
+        if (!clawt_toast_should_show(self->last_toast, self->last_toast_at,
+                                     text, now))
+            return;
+
+        g_free(self->last_toast);
+        self->last_toast = g_strdup(text);
+        self->last_toast_at = now;
+    }
+
     adw_toast_overlay_add_toast(where, adw_toast_new(text));
 }
 
@@ -5265,6 +5288,7 @@ clawt_window_finalize(GObject *object)
 
     g_free(self->selected_agent);
     g_free(self->inspector_computer);
+    g_free(self->last_toast);
     g_clear_pointer(&self->settings_bars, g_hash_table_unref);
     g_clear_pointer(&self->settings_catalog, json_node_unref);
 

@@ -451,11 +451,43 @@ clawt_daemon_handle_screen(
         if (clawt_ipc_payload_boolean(payload, "refresh", FALSE))
             clawt_observer_refresh(self->observer, agent_id);
 
-        if (path == NULL)
-            return clawt_ipc_error_new(
-                request, CLAWT_ERROR_NOT_FOUND,
-                "there is no frame yet: nothing has been captured since "
-                "somebody started watching this screen");
+        /*
+         * Not an error.  Nothing has been captured yet, which is the
+         * ordinary state of a screen for the first second of watching it
+         * -- and for as long as a VM takes to boot, or to be rebuilt.
+         *
+         * It was a CLAWT_ERROR_NOT_FOUND, and both clients poll this: the
+         * GTK client toasts every failed request, so a screen with no
+         * frame yet raised one toast per refresh, over and over, saying
+         * something the panel underneath it was already showing as "No
+         * frame yet."  A condition the window is *in* is not an answer to
+         * anything somebody just did -- the same distinction
+         * clawt_window_request() already makes for "not connected", and
+         * the same one the alerts panel is built on.
+         *
+         * `pending` rather than an absent member so a client can tell
+         * "there is no picture" from "this build does not send one", and
+         * `watchers` because the two reasons there is no frame want
+         * different answers from a person: nobody is watching, or the
+         * first capture has not landed.
+         */
+        if (path == NULL) {
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "pending");
+            json_builder_add_boolean_value(builder, TRUE);
+            json_builder_set_member_name(builder, "watchers");
+            json_builder_add_int_value(
+                builder,
+                clawt_observer_subscribers(self->observer, agent_id));
+            json_builder_set_member_name(builder, "stamp");
+            json_builder_add_int_value(builder, 0);
+            json_builder_set_member_name(builder, "stale");
+            json_builder_add_boolean_value(builder, FALSE);
+            json_builder_end_object(builder);
+
+            return clawt_ipc_response_new(request,
+                                          json_builder_get_root(builder));
+        }
 
         if (!g_file_get_contents(path, &contents, &length, NULL))
             return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
