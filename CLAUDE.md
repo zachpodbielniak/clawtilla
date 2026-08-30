@@ -643,6 +643,21 @@ Other VM facts:
   `tesseract <file> - tsv` gives a bounding box per word; the packages are per
   family and language data is always separate. Not on Enterprise Linux -- it is
   in EPEL, which a cloud image does not enable.
+- **A share is not a road out of the guest's session.** An unprivileged
+  libvirt session maps the guest's *root* to the host user, so the desktop
+  account -- which GDM forces to be somebody else -- cannot enter a 0700
+  workspace to write, and what it does write lands 0600 under a subuid the
+  host cannot read. `docs/computers.org#vm-share-ownership` said exactly
+  that, and the live screen was routed through the share anyway: every grab
+  came back `Permission denied` on `frame.png.tmp-*`, which reads as the
+  compositor being broken. Bytes leave a guest session over the login that
+  owns them.
+- **cloud-init reads its seed once, so deleting a rule from the seed reaches
+  new guests only.** A tmpfiles rule is worse than most, because its whole
+  purpose is to be reapplied at every boot. clawtilla wrote that file and
+  named it after itself, so clawtilla takes it back -- the `.mcp.json`
+  discipline, applied inside a guest. Telling somebody to rebuild a VM to
+  undo a link we put there is not a remedy.
 - `clawtilla-desktop-run` starts a GUI application inside the session
   (`systemd-run --user` as the session's account). Without it an agent works
   out `DISPLAY=:0 firefox`, which succeeds onto Xwayland instead of the Wayland
@@ -1166,6 +1181,9 @@ versions apart.
 - Never write a distribution's package names, service units or binary locations
   straight into the cloud-init seed; everything but the package manager is per
   family
+- Never route what a guest's graphical session writes through the workspace
+  share -- the account that writes it and the account that owns the share
+  are never the same one
 - Never let a libvirt domain name no emulator, no CPU and no video device --
   libvirt fills each in with something wrong
 - Never write a config key whose documentation names an event the code does not

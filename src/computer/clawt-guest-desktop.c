@@ -466,6 +466,32 @@ clawt_guest_desktop_set_mcp_repo(ClawtGuestDesktop *self, const gchar *repo)
     self->mcp_repo = g_strdup(repo);
 }
 
+gchar *
+clawt_guest_desktop_frame_dir_script(const gchar *session_user)
+{
+    g_autofree gchar *quoted = NULL;
+
+    if (session_user == NULL || *session_user == '\0')
+        return NULL;
+
+    quoted = g_shell_quote(session_user);
+
+    /*
+     * `rm -f` on the link rather than on whatever is there: a guest that
+     * was never linked has a real directory with a frame in it, and
+     * deleting that would throw away the picture somebody is watching.
+     *
+     * `install -d` last, and unconditional, because it is also the
+     * repair for a directory some other account created first -- which
+     * is the same failure by a different route.
+     */
+    return g_strdup_printf(
+        "rm -f %s; [ -L %s ] && rm -f %s; install -d -o %s -m 0700 %s",
+        CLAWT_GUEST_DESKTOP_TMPFILES_CONF,
+        CLAWT_GUEST_SCREENSHOT_DIR, CLAWT_GUEST_SCREENSHOT_DIR,
+        quoted, CLAWT_GUEST_SCREENSHOT_DIR);
+}
+
 const gchar *
 clawt_guest_desktop_get_session_user(ClawtGuestDesktop *self)
 {
@@ -832,39 +858,6 @@ render_install_script(ClawtGuestDesktop *self, GString *out)
 }
 
 /*
- * Where the extension's screenshots land.
- *
- * gnome-desktop-mcp writes them to CLAWT_GUEST_SCREENSHOT_DIR in the guest and
- * returns the path.  An agent's own `read` runs on the *host*, so that
- * path names a file it cannot open -- and the agent has no way to tell
- * that from a screenshot that failed.  One spent a session reasoning
- * from window titles instead of looking at the screen, and reported the
- * capture as broken; the capture was perfect and unreachable.
- *
- * A symlink into the workspace share rather than a change upstream: the
- * directory is compiled into the extension, and this is the same file
- * either way.  tmpfiles rather than the installer, because /tmp is
- * usually a tmpfs and the link has to be there again after a reboot.
- */
-static void
-render_screenshot_share(ClawtGuestDesktop *self, GString *out)
-{
-    if (!self->install_mcp)
-        return;
-
-    append_file(out, "/etc/tmpfiles.d/clawtilla-desktop.conf", "0644",
-        "# Written by clawtilla.\n"
-        "#\n"
-        "# The agent reads these with tools that run on the host, so they\n"
-        "# have to land in something the host shares with this guest.\n"
-        "# 0777 because the uid the session runs as and the uid that owns\n"
-        "# the workspace on the host are not the same question.\n"
-        "d " CLAWT_WORKSPACE_MOUNT_POINT "/screenshots 0777 - - -\n"
-        "L+ " CLAWT_GUEST_SCREENSHOT_DIR " - - - - "
-        CLAWT_WORKSPACE_MOUNT_POINT "/screenshots\n");
-}
-
-/*
  * The two scripts the guest ends up running: one to reach the MCP server
  * with the right bus in the environment, one to switch automation on once
  * the session exists.
@@ -889,7 +882,6 @@ render_scripts(ClawtGuestDesktop *self, GString *out)
         "exec " CHECKOUT_DIR "/venv/bin/gnome-desktop-mcp \"$@\"\n");
 
     render_run_script(self, out);
-    render_screenshot_share(self, out);
 
     if (!self->install_mcp)
         return;

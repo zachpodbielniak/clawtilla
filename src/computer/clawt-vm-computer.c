@@ -60,6 +60,14 @@ struct _ClawtVmComputer {
     GStrv  packages;
 
     /*
+     * Whether the directory the compositor publishes frames into has
+     * been made to belong to the account the compositor runs as, for
+     * this boot of this guest.  Cleared when the machine starts, because
+     * /tmp does not survive a reboot and neither does the answer.
+     */
+    gboolean frames_prepared;
+
+    /*
      * The graphical session to build inside the guest, or NULL for a
      * headless VM -- which is every VM unless the agent was granted a
      * desktop.
@@ -1496,6 +1504,9 @@ ensure_ssh_route(ClawtVmComputer *self, GError **error)
     g_free(self->ssh_host);
     self->ssh_host = g_strdup("127.0.0.1");
 
+    /* A new boot is a new /tmp. */
+    self->frames_prepared = FALSE;
+
     return TRUE;
 }
 
@@ -2253,43 +2264,79 @@ clawt_vm_computer_session_run(ClawtVmComputer *self, GStrv tail,
 }
 
 /*
- * The path on *this* machine for a file the guest named.
+ * Makes the directory the compositor publishes frames into belong to the
+ * account the compositor runs as.
  *
- * The extension writes its frames to /tmp/gnome-mcp, which the guest's
- * tmpfiles rule makes a symlink into the workspace share -- so the same
- * bytes are already here, and reading them costs nothing more.  Without
- * this the frame would have to come back over the SSH channel as base64,
- * which is the transfer the whole hash-and-skip design exists to avoid.
+ * The frames used to be routed through the workspace share: a tmpfiles
+ * rule linked the extension's own directory into it, so that the same
+ * bytes were already on this machine and nothing had to be transferred.
+ * It could not work, and the reason is written down two files away.  An
+ * unprivileged libvirt session maps the *guest's root* to the host user,
+ * and every other guest id into that user's subuid range -- so the
+ * graphical session, which GDM will not let be root, is on the wrong
+ * side of a share in both directions at once.  It could not enter the
+ * workspace directory to write a frame (0700, and root's), and the one
+ * frame that ever did land was written 0600 under a subuid this machine
+ * cannot read.  The symptom was the guest refusing every grab with
+ * `Permission denied` on a temporary file, which reads as the
+ * compositor being broken.
+ *
+ * So the link is gone, the frames stay in the guest's own /tmp, and they
+ * come back over the channel that asked for them.  A guest built before
+ * that change still has the rule, and cloud-init reads its seed once --
+ * so the rule and the link it recreates every boot are removed here.
+ * clawtilla wrote that file, named it after itself, and no longer wants
+ * it, which makes taking it back the same thing it already does with
+ * `.mcp.json` entries for a revoked integration.
+ *
+ * Once per boot, on the capture thread: it is an SSH round trip, and the
+ * daemon's main context is not where those happen.
  */
-static gchar *
-vm_guest_path_on_host(ClawtVmComputer *self, const gchar *guest_path)
+static void
+vm_prepare_frame_dir(ClawtVmComputer *self)
 {
-    GPtrArray *mounts;
-    const gchar *tail;
-    guint i;
+    const gchar *argv[] = { "sh", "-c", NULL, NULL };
+    g_auto(GStrv) ssh_argv = NULL;
+    g_autoptr(GSubprocess) process = NULL;
+    g_autofree gchar *script = NULL;
+    g_autoptr(GError) error = NULL;
 
-    if (guest_path == NULL ||
-        !g_str_has_prefix(guest_path, CLAWT_GUEST_SCREENSHOT_DIR "/"))
-        return NULL;
+    if (self->frames_prepared || self->desktop == NULL)
+        return;
 
-    tail = guest_path + strlen(CLAWT_GUEST_SCREENSHOT_DIR "/");
-    mounts = clawt_computer_get_mounts(CLAWT_COMPUTER(self));
+    /*
+     * Marked done whatever happens.  A guest that never had the rule
+     * needs nothing, and one that refuses would refuse again once a
+     * second for as long as somebody watched -- the frame call itself
+     * reports what is wrong with the frame.
+     */
+    self->frames_prepared = TRUE;
 
-    for (i = 0; mounts != NULL && i < mounts->len; i++) {
-        ClawtMount *mount = g_ptr_array_index(mounts, i);
+    script = clawt_guest_desktop_frame_dir_script(
+        clawt_guest_desktop_get_session_user(self->desktop));
 
-        if (g_strcmp0(clawt_mount_get_target(mount),
-                      CLAWT_WORKSPACE_MOUNT_POINT) != 0)
-            continue;
+    if (script == NULL)
+        return;
 
-        if (clawt_mount_get_source(mount) == NULL)
-            continue;
+    argv[2] = script;
+    ssh_argv = clawt_vm_computer_build_ssh_argv(self, argv, NULL, 10);
 
-        return g_build_filename(clawt_mount_get_source(mount),
-                                "screenshots", tail, NULL);
+    if (ssh_argv == NULL)
+        return;
+
+    process = g_subprocess_newv((const gchar * const *)ssh_argv,
+                                G_SUBPROCESS_FLAGS_STDOUT_SILENCE |
+                                G_SUBPROCESS_FLAGS_STDERR_PIPE, &error);
+
+    if (process == NULL) {
+        g_warning("clawtilla: could not prepare %s in %s: %s",
+                  CLAWT_GUEST_SCREENSHOT_DIR, self->domain, error->message);
+        return;
     }
 
-    return NULL;
+    if (!g_subprocess_wait_check(process, NULL, &error))
+        g_warning("clawtilla: could not prepare %s in %s: %s",
+                  CLAWT_GUEST_SCREENSHOT_DIR, self->domain, error->message);
 }
 
 static gboolean
@@ -2333,17 +2380,19 @@ vm_observe_frame(ClawtObservable  *observable,
 {
     ClawtVmComputer *self = CLAWT_VM_COMPUTER(observable);
     g_auto(GStrv) tail = NULL;
+    g_auto(GStrv) read_argv = NULL;
     g_autofree gchar *reply = NULL;
-    g_autofree gchar *host_path = NULL;
-    g_autofree gchar *contents = NULL;
+    g_autofree gchar *encoded = NULL;
+    g_autoptr(GBytes) bytes = NULL;
     ClawtScreenFrameInfo info = { 0 };
-    gsize length = 0;
 
     if (stamp_out != NULL)
         *stamp_out = 0;
 
     if (hash_out != NULL)
         *hash_out = NULL;
+
+    vm_prepare_frame_dir(self);
 
     tail = clawt_screen_gnome_frame_argv(CLAWT_SCREEN_FRAME_WIDTH, FALSE);
     reply = vm_session_run(self, tail, error);
@@ -2373,20 +2422,33 @@ vm_observe_frame(ClawtObservable  *observable,
         return NULL;
     }
 
-    host_path = vm_guest_path_on_host(self, info.path);
+    /*
+     * Read as the account that took it.  The frame is in the guest's own
+     * /tmp, written 0600 by the session, and this is the one login that
+     * can open it -- ssh_user is root, which could, but root is not the
+     * account the compositor answers for and the two logins are not
+     * interchangeable anywhere else in this file either.
+     */
+    read_argv = clawt_screen_read_file_argv(info.path);
 
-    if (host_path == NULL) {
-        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
-                    "the guest wrote its frame to %s, which is not inside "
-                    "the workspace share -- so this machine cannot read it. "
-                    "Rebuild the computer: the symlink that puts it there "
-                    "is written by cloud-init at the guest's first boot.",
-                    info.path != NULL ? info.path : "nowhere it named");
+    if (read_argv == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                            "the guest reported a frame without saying "
+                            "where it wrote it");
         clawt_screen_frame_info_clear(&info);
         return NULL;
     }
 
-    if (!g_file_get_contents(host_path, &contents, &length, error)) {
+    encoded = vm_session_run(self, read_argv, error);
+
+    if (encoded == NULL) {
+        clawt_screen_frame_info_clear(&info);
+        return NULL;
+    }
+
+    bytes = clawt_screen_decode_frame(encoded, error);
+
+    if (bytes == NULL) {
         clawt_screen_frame_info_clear(&info);
         return NULL;
     }
@@ -2396,7 +2458,7 @@ vm_observe_frame(ClawtObservable  *observable,
 
     clawt_screen_frame_info_clear(&info);
 
-    return g_bytes_new_take(g_steal_pointer(&contents), length);
+    return g_steal_pointer(&bytes);
 }
 
 static gboolean

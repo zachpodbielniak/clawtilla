@@ -856,44 +856,109 @@ test_the_launcher_does_not_depend_on_the_mcp_install(void)
 
 
 /*
- * The screenshots have to land somewhere the agent can open.
+ * The seed does not link the frame directory into the workspace share.
  *
- * gnome-desktop-mcp writes them into the guest and returns that path,
- * and an agent's own `read` runs on the host -- so the file was captured
- * perfectly and was unreachable, which looks exactly like a capture that
- * failed. One agent spent a session reasoning from window titles rather
- * than looking at the screen, and reported the capture as broken.
+ * It used to, and this test used to assert that it did -- which is how a
+ * defect gets written down as the intention.  The account the graphical
+ * session runs as is not the account that owns the share, in either
+ * direction: an unprivileged libvirt session maps the guest's *root* to
+ * the host user and every other guest id into that user's subuid range,
+ * and GDM will not log root in.  So the session could not enter the
+ * workspace directory to write a frame, and the one frame that ever did
+ * land was 0600 under a subuid the host cannot read.  Every grab came
+ * back as `Permission denied` on a temporary file, which reads as the
+ * compositor being broken.
+ *
+ * Asserted on the absence rather than deleted, because the rule looks
+ * obviously right: the frames really are in the guest and the agent
+ * really does read on the host.  It is the ownership that makes it
+ * impossible, and that is not visible from the rendering.
  */
 static void
-test_screenshots_land_in_the_workspace_share(void)
+test_the_seed_does_not_link_frames_into_the_share(void)
 {
     g_autofree gchar *data = render_for(CLAWT_GUEST_FLAVOUR_FEDORA);
 
-    g_assert_nonnull(strstr(data, "/etc/tmpfiles.d/clawtilla-desktop.conf"));
-    g_assert_nonnull(strstr(data,
-        "L+ /tmp/gnome-mcp - - - - " CLAWT_WORKSPACE_MOUNT_POINT
-        "/screenshots"));
-
-    /*
-     * tmpfiles rather than the installer, because /tmp is usually a
-     * tmpfs: the link has to be made again on every boot.
-     */
-    g_assert_nonnull(strstr(data,
+    g_assert_null(strstr(data, CLAWT_GUEST_DESKTOP_TMPFILES_CONF));
+    g_assert_null(strstr(data, "L+ " CLAWT_GUEST_SCREENSHOT_DIR));
+    g_assert_null(strstr(data,
         "d " CLAWT_WORKSPACE_MOUNT_POINT "/screenshots"));
 }
 
-/* No automation installed means no screenshots to redirect. */
+/*
+ * And a guest already built has the rule taken back.
+ *
+ * cloud-init reads its seed once, so dropping the rule reaches new
+ * guests only.  Every guest already made recreates the link at each
+ * boot -- tmpfiles is what put it there, precisely so that it would
+ * survive a reboot -- and would go on refusing every frame for ever.
+ *
+ * All three steps are asserted: the rule, so the next boot is clean; the
+ * link, so this boot is; and the directory, so the compositor has
+ * somewhere of its own to publish into.
+ */
 static void
-test_no_screenshot_share_without_the_mcp_install(void)
+test_a_guest_already_built_has_the_link_taken_back(void)
 {
-    g_autoptr(ClawtGuestDesktop) desktop = clawt_guest_desktop_new("clawt");
-    g_autofree gchar *data = NULL;
+    g_autofree gchar *script = clawt_guest_desktop_frame_dir_script("clawt");
 
-    clawt_guest_desktop_set_install_mcp(desktop, FALSE);
-    data = clawt_cloud_init_build_user_data("root", NULL, "clawt-vm",
-                                            desktop);
+    g_assert_nonnull(script);
+    g_assert_nonnull(strstr(script,
+        "rm -f " CLAWT_GUEST_DESKTOP_TMPFILES_CONF));
+    g_assert_nonnull(strstr(script,
+        "[ -L " CLAWT_GUEST_SCREENSHOT_DIR " ] && rm -f "
+        CLAWT_GUEST_SCREENSHOT_DIR));
+    g_assert_nonnull(strstr(script,
+        "install -d -o 'clawt' -m 0700 " CLAWT_GUEST_SCREENSHOT_DIR));
+}
 
-    g_assert_null(strstr(data, "tmpfiles.d"));
+/*
+ * The link goes; whatever is standing there does not.
+ *
+ * A guest that never had the rule has a real directory at that path with
+ * the frame somebody is watching inside it.  `rm -rf` would take the
+ * picture away to fix a link that was never there.
+ */
+static void
+test_taking_the_link_back_does_not_delete_a_directory(void)
+{
+    const gchar *removal;
+    g_autofree gchar *script = clawt_guest_desktop_frame_dir_script("clawt");
+
+    g_assert_null(strstr(script, "rm -rf"));
+
+    /*
+     * Every removal of that path is behind the symlink test.  Asserted
+     * by walking them rather than by matching the one that is there: a
+     * second, unguarded `rm` added later is exactly the mistake, and a
+     * test that finds the guarded one first would not see it.
+     */
+    for (removal = strstr(script, "rm -f " CLAWT_GUEST_SCREENSHOT_DIR);
+         removal != NULL;
+         removal = strstr(removal + 1, "rm -f " CLAWT_GUEST_SCREENSHOT_DIR)) {
+        g_assert_true(removal - script >=
+                      (gssize)strlen("[ -L " CLAWT_GUEST_SCREENSHOT_DIR
+                                     " ] && "));
+        g_assert_cmpint(strncmp(removal - strlen("[ -L "
+                                                 CLAWT_GUEST_SCREENSHOT_DIR
+                                                 " ] && "),
+                                "[ -L " CLAWT_GUEST_SCREENSHOT_DIR " ] && ",
+                                strlen("[ -L " CLAWT_GUEST_SCREENSHOT_DIR
+                                       " ] && ")), ==, 0);
+    }
+}
+
+/* An account name is data, and it reaches a shell. */
+static void
+test_the_session_account_is_quoted_into_the_script(void)
+{
+    g_autofree gchar *script =
+        clawt_guest_desktop_frame_dir_script("clawt; rm -rf /");
+
+    g_assert_nonnull(strstr(script, "'clawt; rm -rf /'"));
+    g_assert_null(strstr(script, " clawt; rm -rf /"));
+    g_assert_null(clawt_guest_desktop_frame_dir_script(NULL));
+    g_assert_null(clawt_guest_desktop_frame_dir_script(""));
 }
 
 
@@ -1343,10 +1408,14 @@ main(int argc, char *argv[])
                     test_every_family_that_can_read_the_screen_does);
     g_test_add_func("/guest-desktop/ocr/enterprise-avoids-epel",
                     test_enterprise_does_not_ask_for_a_package_from_epel);
-    g_test_add_func("/guest-desktop/screenshots/land-in-the-workspace",
-                    test_screenshots_land_in_the_workspace_share);
-    g_test_add_func("/guest-desktop/screenshots/none-without-the-install",
-                    test_no_screenshot_share_without_the_mcp_install);
+    g_test_add_func("/guest-desktop/frames/seed-does-not-link-the-share",
+                    test_the_seed_does_not_link_frames_into_the_share);
+    g_test_add_func("/guest-desktop/frames/old-guest-gets-the-link-back",
+                    test_a_guest_already_built_has_the_link_taken_back);
+    g_test_add_func("/guest-desktop/frames/a-directory-is-left-alone",
+                    test_taking_the_link_back_does_not_delete_a_directory);
+    g_test_add_func("/guest-desktop/frames/the-account-is-quoted",
+                    test_the_session_account_is_quoted_into_the_script);
     g_test_add_func("/guest-desktop/run/starts-in-the-session",
                     test_the_guest_can_start_an_app_in_its_session);
     g_test_add_func("/guest-desktop/run/says-when-there-is-no-session",

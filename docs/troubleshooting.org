@@ -1667,6 +1667,38 @@ time would name a port nothing listens on.  That is why the entry names
 the clawtilla CLI rather than ~ssh~ directly, and why editing it by hand
 to a literal ssh command breaks on the next provision.
 
+** The Screen tab says "Permission denied" on a file called frame.png.tmp
+
+The whole message is the guest's own:
+
+#+begin_example
+No frame yet. the guest's desktop refused: Error:
+  GDBus.Error:org.freedesktop.DBus.Error.Failed: ScreenshotFailed:
+  Error opening file "/tmp/gnome-mcp/frame.png.tmp-...": Permission denied
+#+end_example
+
+It reads as the compositor being broken and it is a share being the
+wrong road.  A tmpfiles rule clawtilla used to write linked
+=/tmp/gnome-mcp= into the workspace share, and the account the graphical
+session runs as cannot enter that directory --- it is 0700 and, through
+an unprivileged libvirt session's id mapping, root's.  Nor could the
+host read a frame that landed, since the session's files arrive owned by
+a subuid at 0600.  See [[file:computers.org::#vm-share-ownership][share ownership]].
+
+clawtilla removes the rule and the link the first time it takes a frame
+from a guest that still has them, so the fix is to look again.  If it
+persists, the removal is what failed: it runs as ~computer.vm.ssh_user~,
+which has to be root to write in =/etc=.
+
+#+begin_src bash
+clawtilla computer exec <agent> -- ls -ld /tmp/gnome-mcp
+clawtilla computer exec <agent> -- cat /etc/tmpfiles.d/clawtilla-desktop.conf
+#+end_src
+
+A directory owned by the session account is right.  A symlink, or a
+directory owned by anyone else, is the fault --- and a rebuild is not
+needed for either.
+
 ** A permission was granted and the agent says it does not have it
 
 The agent is right about its session and wrong about the fleet.  An AI CLI

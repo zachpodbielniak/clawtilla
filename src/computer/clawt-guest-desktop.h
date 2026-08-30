@@ -89,14 +89,36 @@ G_BEGIN_DECLS
  * Where gnome-desktop-mcp writes its screenshots inside the guest.
  *
  * Compiled into the extension, so it is a fact about that program
- * rather than a choice made here -- but it is a fact two places in
- * clawtilla need: the tmpfiles rule that links it into the workspace
- * share, and the frame reader that turns a path the guest named into
- * one this machine can open.  Two spellings of it would agree until
+ * rather than a choice made here.  Two spellings of it would agree until
  * upstream moved the directory, and then the reader would go looking in
  * a place nothing writes to and report every frame as missing.
+ *
+ * It stays inside the guest, and the bytes come out over SSH.  This was
+ * once a symlink into the workspace share, so that a frame would already
+ * be on the host and cost nothing to read; that cannot work, and the
+ * reason is the one `docs/computers.org#vm-share-ownership` already
+ * gives.  An unprivileged libvirt session maps the guest's *root* to the
+ * host user and every other guest id into that user's subuid range, so
+ * the graphical session -- which GDM will not let be root -- is on the
+ * wrong side of a share in both directions: it cannot enter the
+ * workspace directory to write a frame, and a frame it did write is
+ * owned by a subuid this machine cannot read.  Do not link it back.
  */
 #define CLAWT_GUEST_SCREENSHOT_DIR "/tmp/gnome-mcp"
+
+/**
+ * CLAWT_GUEST_DESKTOP_TMPFILES_CONF:
+ *
+ * A tmpfiles rule clawtilla used to write, and now removes.
+ *
+ * It linked %CLAWT_GUEST_SCREENSHOT_DIR into the workspace share, which
+ * put every frame somewhere the graphical session could not write.
+ * cloud-init reads its seed once, so dropping the rule from the seed
+ * reaches new guests only; every guest already built keeps recreating
+ * the link at each boot until this file goes.
+ */
+#define CLAWT_GUEST_DESKTOP_TMPFILES_CONF \
+    "/etc/tmpfiles.d/clawtilla-desktop.conf"
 
 #define CLAWT_TYPE_GUEST_DESKTOP (clawt_guest_desktop_get_type())
 
@@ -175,6 +197,27 @@ void clawt_guest_desktop_set_mcp_repo(ClawtGuestDesktop *self,
                                       const gchar       *repo);
 
 const gchar *clawt_guest_desktop_get_session_user(ClawtGuestDesktop *self);
+
+/**
+ * clawt_guest_desktop_frame_dir_script:
+ * @session_user: the account the graphical session runs as
+ *
+ * The shell that makes %CLAWT_GUEST_SCREENSHOT_DIR belong to
+ * @session_user, run in the guest as the login commands use.
+ *
+ * Three things, and each is needed on its own: the stale tmpfiles rule
+ * goes, so the link is not recreated at the next boot; the link itself
+ * goes, so this boot is fixed too; and the directory is created owned by
+ * the session, so the compositor -- which makes it 0700 and its own if
+ * it gets there first -- can publish into it whoever got there first.
+ *
+ * A pure function so that what would run can be asserted on: it is one
+ * line of shell reached only by a guest nobody is looking at, and a typo
+ * in it fails silently, since removing a file that is not there succeeds.
+ *
+ * Returns: (transfer full) (nullable): the script
+ */
+gchar *clawt_guest_desktop_frame_dir_script(const gchar *session_user);
 gboolean     clawt_guest_desktop_get_install_mcp(ClawtGuestDesktop *self);
 
 /**

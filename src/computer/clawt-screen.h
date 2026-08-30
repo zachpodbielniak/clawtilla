@@ -111,6 +111,45 @@ void clawt_screen_frame_info_clear(ClawtScreenFrameInfo *self);
 GStrv clawt_screen_gnome_frame_argv(guint max_width, gboolean include_cursor);
 
 /**
+ * clawt_screen_read_file_argv:
+ * @path: the file to read, spelled the way the *screen's* machine
+ *   spells it
+ *
+ * The command that brings a frame's bytes back from another machine.
+ *
+ * A frame written inside a guest cannot be read off a shared directory
+ * on the host: the account the graphical session runs as is not the
+ * account that owns the share, in either direction.  So the bytes come
+ * back over the same channel the frame was asked for, as the account
+ * that wrote them.
+ *
+ * base64 rather than the raw file, because the transport is a shell
+ * command whose stdout is read as text.
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the argv, or %NULL
+ *   for a path that is empty
+ */
+GStrv clawt_screen_read_file_argv(const gchar *path);
+
+/**
+ * clawt_screen_decode_frame:
+ * @encoded: (nullable): what clawt_screen_read_file_argv()'s command
+ *   printed
+ * @error: return location for a #GError
+ *
+ * Turns that back into an image, refusing anything that is not one.
+ *
+ * The check is not ceremony.  Everything that can go wrong on the way --
+ * a guest with no `base64`, a login shell that printed a banner, a read
+ * that was cut short -- produces bytes rather than a failure, and bytes
+ * that are not a PNG reach a client as an image that will not draw.  A
+ * broken picture says nothing about which of those happened.
+ *
+ * Returns: (transfer full) (nullable): the decoded image
+ */
+GBytes *clawt_screen_decode_frame(const gchar *encoded, GError **error);
+
+/**
  * clawt_screen_gnome_monitors_argv:
  *
  * The `gdbus` command that lists the monitors.

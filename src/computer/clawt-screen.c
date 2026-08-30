@@ -67,6 +67,75 @@ clawt_screen_gnome_frame_argv(guint max_width, gboolean include_cursor)
 }
 
 GStrv
+clawt_screen_read_file_argv(const gchar *path)
+{
+    GPtrArray *argv;
+
+    if (path == NULL || *path == '\0')
+        return NULL;
+
+    argv = g_ptr_array_new_with_free_func(g_free);
+
+    g_ptr_array_add(argv, g_strdup("base64"));
+
+    /*
+     * One line, because the reply is read as a single string and
+     * base64's default is to wrap at 76 columns.  Wrapped output decodes
+     * to the same bytes, so this is about the reply being one token
+     * rather than about correctness.
+     */
+    g_ptr_array_add(argv, g_strdup("-w"));
+    g_ptr_array_add(argv, g_strdup("0"));
+
+    /*
+     * A path is data, and base64 takes options.  Without the separator a
+     * frame written to a name beginning with a hyphen is an unknown
+     * option rather than a file.
+     */
+    g_ptr_array_add(argv, g_strdup("--"));
+    g_ptr_array_add(argv, g_strdup(path));
+    g_ptr_array_add(argv, NULL);
+
+    return (GStrv)g_ptr_array_free(argv, FALSE);
+}
+
+GBytes *
+clawt_screen_decode_frame(const gchar *encoded, GError **error)
+{
+    static const guchar signature[] =
+        { 0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a };
+    g_autofree guchar *decoded = NULL;
+    gsize length = 0;
+
+    if (encoded == NULL || *encoded == '\0') {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_COMPUTER_EXEC,
+                            "the screen's machine sent no bytes back for a "
+                            "frame it said it had written");
+        return NULL;
+    }
+
+    decoded = g_base64_decode(encoded, &length);
+
+    if (length < sizeof(signature) ||
+        memcmp(decoded, signature, sizeof(signature)) != 0) {
+        /*
+         * Named as what it is rather than as a decode failure: g_base64
+         * skips whatever is not in its alphabet, so an error message or
+         * a login banner on that stdout decodes cleanly into rubbish.
+         */
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_COMPUTER_EXEC,
+                    "what came back for the frame is not a PNG (%"
+                    G_GSIZE_FORMAT " bytes). Check that the screen's "
+                    "machine has base64 and that its shell prints nothing "
+                    "of its own on a non-interactive login.",
+                    length);
+        return NULL;
+    }
+
+    return g_bytes_new_take(g_steal_pointer(&decoded), length);
+}
+
+GStrv
 clawt_screen_gnome_monitors_argv(void)
 {
     GPtrArray *argv = g_ptr_array_new_with_free_func(g_free);

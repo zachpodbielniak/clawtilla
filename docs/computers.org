@@ -1049,6 +1049,24 @@ That account is an ordinary guest user, so it cannot write to a share
 either: anything the session produces for you travels by a path root
 writes.
 
+The live screen was built the other way round once, and could not work.
+A tmpfiles rule linked the compositor's frame directory into the
+workspace share, so that a frame would already be on the host and cost
+nothing to read.  The graphical session is on the wrong side of that
+share in *both* directions at once: it could not enter the workspace
+directory --- 0700, and root's --- to write a frame at all, and the one
+frame that did land was written =0600= under a subuid the host user
+cannot open.  Every grab came back as
+
+#+begin_example
+ScreenshotFailed: Error opening file "/tmp/gnome-mcp/frame.png.tmp-...":
+  Permission denied
+#+end_example
+
+which reads as the compositor being broken rather than as a share being
+the wrong road.  The frames stay in the guest now and the bytes come out
+over SSH; see [[#computer-screen][the frame section]].
+
 A ~qemu:///system~ connection does not have this shape, since there is
 no user namespace in the way.  ~computer.vm.uri~ is where that is set,
 and it needs a privileged libvirt you can reach.
@@ -2553,6 +2571,9 @@ For the host backends, gowl needs to be built with ~MCP=1~ and have
 ~gnome-desktop-mcp~ on ~PATH~.
 
 ** Watching a screen, and taking it
+:PROPERTIES:
+:CUSTOM_ID: computer-screen
+:END:
 
 Two different jobs, and clawtilla offers both rather than making one
 pretend to be the other.
@@ -2659,12 +2680,20 @@ The frame never includes the cursor.  Compositing the pointer into the
 image means two frames of a perfectly still screen differ whenever the
 mouse has moved a pixel, and the hash would then change on every grab.
 
-*The guest's path is not this machine's path.*  The extension writes to
-=/tmp/gnome-mcp=, which the guest's tmpfiles rule links into the
-workspace share -- so the same bytes are already on the host and reading
-them costs nothing more.  A guest whose seed predates that link reports
-its frame in a place this machine cannot open, and the remedy is
-~computer.rebuild~: the link is written by cloud-init at first boot.
+*A frame comes back the way it was asked for.*  The extension writes to
+=/tmp/gnome-mcp= inside the guest, and clawtilla reads it over the same
+SSH session that asked for it, as the account the screen belongs to.  It
+does not travel through the workspace share, and it cannot: the
+graphical session and the host user are on opposite sides of that share
+in both directions, which is set out under
+[[#vm-share-ownership][share ownership]].
+
+A guest built before that changed still has the tmpfiles rule that made
+the link, and cloud-init reads its seed once --- so clawtilla removes the
+rule, and the link it recreates at every boot, the first time it takes a
+frame from that guest.  There is nothing to rebuild.  The directory is
+then made over to the account the compositor runs as, which is also the
+repair for one some other account created first.
 
 *** A click on a picture is not a click on the screen
 

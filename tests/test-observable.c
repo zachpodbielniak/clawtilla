@@ -1201,6 +1201,90 @@ test_the_frame_request_leaves_the_cursor_out(void)
 }
 
 /*
+ * A frame comes back over the channel that asked for it, in one line.
+ *
+ * It cannot come off a shared directory.  The account the graphical
+ * session runs as is not the account that owns a share, in either
+ * direction, so a frame written by the session is unreadable on the host
+ * and a directory owned by the host is unwritable by the session -- the
+ * failure that made every grab in a desktop VM report `Permission
+ * denied` on a temporary file.
+ *
+ * `-w 0` is about the reply being one token rather than about
+ * correctness: wrapped base64 decodes to the same bytes.
+ */
+static void
+test_a_frame_is_read_back_as_one_line_of_base64(void)
+{
+    g_auto(GStrv) argv = clawt_screen_read_file_argv("/tmp/gnome-mcp/frame.png");
+
+    g_assert_cmpstr(argv[0], ==, "base64");
+    g_assert_cmpstr(argv[1], ==, "-w");
+    g_assert_cmpstr(argv[2], ==, "0");
+
+    /*
+     * The separator, and it is not decoration: a frame written to a name
+     * beginning with a hyphen is an unknown option rather than a file,
+     * and base64 would then read its stdin and hang.
+     */
+    g_assert_cmpstr(argv[3], ==, "--");
+    g_assert_cmpstr(argv[4], ==, "/tmp/gnome-mcp/frame.png");
+    g_assert_null(argv[5]);
+
+    g_assert_null(clawt_screen_read_file_argv(NULL));
+    g_assert_null(clawt_screen_read_file_argv(""));
+}
+
+/*
+ * What is not a PNG is refused, and says so.
+ *
+ * Everything that goes wrong on the way back produces bytes rather than
+ * a failure: a guest with no `base64`, a login shell that prints a
+ * banner, a read cut short.  g_base64_decode() skips whatever is not in
+ * its alphabet, so all of them decode cleanly into rubbish, and rubbish
+ * reaches a client as a picture that will not draw -- which says nothing
+ * about which of them happened.
+ */
+static void
+test_what_comes_back_for_a_frame_has_to_be_a_png(void)
+{
+    static const guchar png[] = {
+        0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 'I', 'H', 'D', 'R'
+    };
+    g_autofree gchar *encoded = g_base64_encode(png, sizeof(png));
+    g_autofree gchar *banner = g_base64_encode((const guchar *)"Last login: x",
+                                               13);
+    g_autofree gchar *with_newline = NULL;
+    g_autoptr(GBytes) bytes = NULL;
+    g_autoptr(GError) error = NULL;
+
+    bytes = clawt_screen_decode_frame(encoded, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(bytes);
+    g_assert_cmpuint(g_bytes_get_size(bytes), ==, sizeof(png));
+
+    /* A trailing newline is what a command substitution leaves. */
+    g_clear_pointer(&bytes, g_bytes_unref);
+    with_newline = g_strconcat(encoded, "\n", NULL);
+    bytes = clawt_screen_decode_frame(with_newline, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(bytes);
+
+    g_clear_pointer(&bytes, g_bytes_unref);
+    g_assert_null(clawt_screen_decode_frame(banner, &error));
+    g_assert_nonnull(error);
+    g_assert_nonnull(strstr(error->message, "base64"));
+    g_clear_error(&error);
+
+    g_assert_null(clawt_screen_decode_frame("", &error));
+    g_assert_nonnull(error);
+    g_clear_error(&error);
+
+    g_assert_null(clawt_screen_decode_frame(NULL, &error));
+    g_assert_nonnull(error);
+}
+
+/*
  * A guest command finds the session bus, and every word of it is quoted.
  *
  * ssh arrives with no DBUS_SESSION_BUS_ADDRESS, so a bare gdbus over it
@@ -1403,6 +1487,10 @@ main(int argc, char *argv[])
                     test_an_error_from_gdbus_is_not_read_as_a_frame);
     g_test_add_func("/screen/frame-request-omits-the-cursor",
                     test_the_frame_request_leaves_the_cursor_out);
+    g_test_add_func("/screen/frame-read-back-in-one-line",
+                    test_a_frame_is_read_back_as_one_line_of_base64);
+    g_test_add_func("/screen/frame-bytes-must-be-a-png",
+                    test_what_comes_back_for_a_frame_has_to_be_a_png);
     g_test_add_func("/screen/guest-command-quotes-everything",
                     test_a_guest_command_carries_its_own_bus_and_quotes_everything);
     g_test_add_func("/screen/scroll-uses-the-c-locale",
