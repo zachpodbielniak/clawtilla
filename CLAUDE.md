@@ -828,6 +828,23 @@ versions apart.
   `clawt_time_ago_label()` takes. Handing it `clawt_task_get_created_at()` raw
   renders `20694d ago` (the epoch) on every row, and a test asserting only on
   the *shape* of a listing passes throughout. Assert on the value.
+- **An agent runs a turn per room, so its turn state is per room.** `LcSession`'s
+  `processing` is per session and a session is keyed on room, so one agent
+  talking to three peers has three turns that can each be running. As scalars
+  on the agent they shared one description and each was judged by whichever
+  room wrote last -- and the reply flag is wrong both ways: a real answer
+  swallowed because *another* room's turn was closed (silent), or a sign-off
+  delivered because another's was not. Deliveries are tagged with their room
+  and a turn takes the oldest entry for its own; arrival order and turn-start
+  order are independent, so a queue drained in arrival order hands one room's
+  turn another's message. The room round-trips -- router → `clawt_link_deliver()`
+  → libreclaw echoes it on both the typing frame and the reply -- which is what
+  makes this possible at all. A tool call still carries no room (both entry
+  points are agent-scoped and `.mcp.json` is per workspace), so the agent-wide
+  getters fold across the running turns and each picks the *safe* direction:
+  deepest depth, a task id only when they agree, any peer origin. And a turn's
+  description outlives its turn, because the indicator drops before the answer
+  is posted.
 - **A typing indicator is a level, not an edge, and it is per room while the
   turn state is per agent.** libreclaw holds it up for a whole turn and
   re-sends it every 25 seconds (`TYPING_REFRESH_MS`), and an agent in three
@@ -1294,6 +1311,8 @@ versions apart.
   succeeded
 - Never describe N deliveries with one set of fields. libreclaw runs a turn per
   message, so a per-turn decision needs a per-message record
+- Never judge a message by the agent's turn state when the caller knows which
+  room it is for -- an agent can be mid-turn in several at once
 - Never create a task without a parent from a path that has one. A flat tree
   makes the depth limit measure nothing and the cancel cascade reach nothing,
   and neither reports that it did

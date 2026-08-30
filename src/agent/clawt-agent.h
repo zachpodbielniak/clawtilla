@@ -287,6 +287,7 @@ void clawt_agent_set_hop_depth(ClawtAgent *self, gint depth);
 /**
  * clawt_agent_deliver_turn:
  * @self: a #ClawtAgent
+ * @room_id: (nullable): the room the message was delivered into
  * @depth: how far the message being delivered had already travelled
  * @replies: %TRUE if the turn's closing text should be delivered
  * @from: (nullable): who the message came from
@@ -300,6 +301,13 @@ void clawt_agent_set_hop_depth(ClawtAgent *self, gint depth);
  * messages produces five turns and each has to know what it is
  * answering.
  *
+ * Tagged with the room, because an agent runs a turn per *session* and a
+ * session is a room -- so it can have several running at once.  The turn
+ * that starts in a room takes the oldest delivery waiting for that room;
+ * without the tag, a burst across two rooms was drained in arrival order
+ * and each turn was described by the other room's message.  A delivery
+ * with no room named may be taken by any room's next turn.
+ *
  * Distinct from the four setters below, which amend the delivery
  * already at the tail rather than starting another.  Those exist for a
  * caller describing a single delivery a field at a time; describing
@@ -307,6 +315,7 @@ void clawt_agent_set_hop_depth(ClawtAgent *self, gint depth);
  * is no end-of-delivery edge for them to find.
  */
 void clawt_agent_deliver_turn(ClawtAgent  *self,
+                              const gchar *room_id,
                               gint         depth,
                               gboolean     replies,
                               const gchar *from,
@@ -472,10 +481,17 @@ void clawt_agent_clear_typing(ClawtAgent *self);
 /**
  * clawt_agent_begin_turn:
  * @self: a #ClawtAgent
+ * @room_id: (nullable): the room whose turn is starting
  *
- * Tells the agent a turn is starting, so it knows which chain it is on.
+ * Tells the agent a turn is starting in @room_id, so it knows which
+ * chain it is on.
  *
- * Takes the oldest delivery that has not had a turn yet and makes it
+ * Called by clawt_agent_note_typing() on a room's rising edge, which is
+ * the only thing in production that knows a turn began.  A room already
+ * typing is a keepalive and starts nothing.
+ *
+ * Takes the oldest delivery for that room that has not had a turn yet,
+ * or an untagged one, and makes it
  * this turn's: the depth, who asked, and whether the closing text is a
  * message.  One entry, because libreclaw runs one turn per message --
  * LcSession queues them and pops a single entry per turn -- so a drain
@@ -491,7 +507,46 @@ void clawt_agent_clear_typing(ClawtAgent *self);
  * than inheriting the last one, which is what stops an agent that
  * answers Matrix between two peer messages from running out of hops.
  */
-void clawt_agent_begin_turn(ClawtAgent *self);
+void clawt_agent_begin_turn(ClawtAgent *self, const gchar *room_id);
+
+/**
+ * clawt_agent_get_hop_depth_in:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): the room being asked about
+ *
+ * Returns: the depth of the turn in @room_id, or the agent-wide answer
+ *   when nothing is known about that room
+ */
+gint clawt_agent_get_hop_depth_in(ClawtAgent *self, const gchar *room_id);
+
+/**
+ * clawt_agent_get_turn_replies_in:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): the room being asked about
+ *
+ * Whether the text a turn in @room_id ends with is a message to send.
+ *
+ * This is the one that decides routing, and it takes a room because the
+ * caller has one: an agent can be mid-turn in several rooms at once, and
+ * judging a message in one of them by another's flag either swallows a
+ * real answer somebody is waiting for or delivers a sign-off that costs
+ * the recipient a whole model turn.
+ *
+ * Returns: %TRUE if the daemon should route what that turn says
+ */
+gboolean clawt_agent_get_turn_replies_in(ClawtAgent  *self,
+                                         const gchar *room_id);
+
+/**
+ * clawt_agent_get_turn_task_id_in:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): the room being asked about
+ *
+ * Returns: (transfer none) (nullable): the task the turn in @room_id is
+ *   working on
+ */
+const gchar *clawt_agent_get_turn_task_id_in(ClawtAgent  *self,
+                                             const gchar *room_id);
 
 /**
  * clawt_agent_start:

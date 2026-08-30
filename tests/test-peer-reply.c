@@ -449,6 +449,7 @@ test_a_question_survives_an_acknowledgement_behind_it(void)
 {
     Fixture fixture = { 0 };
     ClawtAgent *beta;
+    g_autofree gchar *room = NULL;
     g_autoptr(GError) error = NULL;
 
     fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: beta\n");
@@ -480,18 +481,20 @@ test_a_question_survives_an_acknowledgement_behind_it(void)
     give_agent_a_link(&fixture, beta);
     clawt_mailbox_router_drain(fixture.router, "beta");
 
+    room = clawt_room_manager_direct_id("alpha", "beta");
+
     /* The question's turn answers it. */
-    clawt_agent_begin_turn(beta);
+    clawt_agent_begin_turn(beta, room);
     g_assert_true(clawt_agent_get_turn_replies(beta));
     g_assert_cmpstr(clawt_agent_get_turn_origin(beta), ==, "alpha");
 
     /* The acknowledgement's turn has nowhere to send anything. */
-    clawt_agent_begin_turn(beta);
+    clawt_agent_begin_turn(beta, room);
     g_assert_false(clawt_agent_get_turn_replies(beta));
     g_assert_cmpstr(clawt_agent_get_turn_origin(beta), ==, "alpha");
 
     /* And nothing is left behind: a third turn is a fresh chain. */
-    clawt_agent_begin_turn(beta);
+    clawt_agent_begin_turn(beta, room);
     g_assert_true(clawt_agent_get_turn_replies(beta));
     g_assert_null(clawt_agent_get_turn_origin(beta));
 
@@ -538,18 +541,27 @@ test_every_message_in_a_burst_gets_its_own_turn(void)
     give_agent_a_link(&fixture, beta);
     clawt_mailbox_router_drain(fixture.router, "beta");
 
-    for (depth = 1; depth <= 4; depth++) {
-        clawt_agent_begin_turn(beta);
+    /*
+     * In the room they were delivered into, because a turn belongs to
+     * one: an agent runs a turn per session and a session is a room.
+     */
+    {
+        g_autofree gchar *room = clawt_room_manager_direct_id("alpha",
+                                                              "beta");
 
-        g_assert_cmpint(clawt_agent_get_hop_depth(beta), ==, depth);
-        g_assert_cmpstr(clawt_agent_get_turn_origin(beta), ==, "alpha");
-        g_assert_true(clawt_agent_get_turn_replies(beta));
+        for (depth = 1; depth <= 4; depth++) {
+            clawt_agent_begin_turn(beta, room);
+
+            g_assert_cmpint(clawt_agent_get_hop_depth(beta), ==, depth);
+            g_assert_cmpstr(clawt_agent_get_turn_origin(beta), ==, "alpha");
+            g_assert_true(clawt_agent_get_turn_replies(beta));
+        }
+
+        /* Four deliveries, four turns, and the fifth is nobody's. */
+        clawt_agent_begin_turn(beta, room);
+        g_assert_cmpint(clawt_agent_get_hop_depth(beta), ==, 0);
+        g_assert_null(clawt_agent_get_turn_origin(beta));
     }
-
-    /* Four deliveries, four turns, and the fifth is nobody's. */
-    clawt_agent_begin_turn(beta);
-    g_assert_cmpint(clawt_agent_get_hop_depth(beta), ==, 0);
-    g_assert_null(clawt_agent_get_turn_origin(beta));
 
     fixture_teardown(&fixture);
 }
@@ -577,7 +589,7 @@ test_an_overlong_burst_folds_the_oldest_in(void)
     beta = clawt_agent_manager_get(fixture.agents, "beta");
 
     /* A closed exchange first, then far more than fit behind it. */
-    clawt_agent_deliver_turn(beta, 3, FALSE, "alpha", NULL);
+    clawt_agent_deliver_turn(beta, NULL, 3, FALSE, "alpha", NULL);
 
     /*
      * Each fold warns, which is the point of it -- an agent this far
@@ -588,7 +600,7 @@ test_an_overlong_burst_folds_the_oldest_in(void)
     fatal = g_log_set_always_fatal(G_LOG_LEVEL_ERROR);
 
     for (i = 0; i < 200; i++)
-        clawt_agent_deliver_turn(beta, 1, TRUE, "alpha", NULL);
+        clawt_agent_deliver_turn(beta, NULL, 1, TRUE, "alpha", NULL);
 
     g_log_set_always_fatal(fatal);
 
@@ -597,7 +609,7 @@ test_an_overlong_burst_folds_the_oldest_in(void)
      * closing text goes nowhere, and it still carries the deeper hop
      * count.  Dropping instead of merging would answer it.
      */
-    clawt_agent_begin_turn(beta);
+    clawt_agent_begin_turn(beta, NULL);
     g_assert_false(clawt_agent_get_turn_replies(beta));
     g_assert_cmpint(clawt_agent_get_hop_depth(beta), ==, 3);
 
@@ -675,11 +687,11 @@ test_a_turn_with_no_delivery_answers(void)
     /* A delivery closes the turn it set up... */
     clawt_agent_set_turn_replies(beta, FALSE);
 
-    clawt_agent_begin_turn(beta);
+    clawt_agent_begin_turn(beta, NULL);
     g_assert_false(clawt_agent_get_turn_replies(beta));
 
     /* ...and only that one. The next turn nothing preceded answers. */
-    clawt_agent_begin_turn(beta);
+    clawt_agent_begin_turn(beta, NULL);
     g_assert_true(clawt_agent_get_turn_replies(beta));
 
     fixture_teardown(&fixture);
@@ -702,6 +714,7 @@ test_each_turn_carries_its_own_task(void)
 {
     Fixture fixture = { 0 };
     ClawtAgent *beta;
+    g_autofree gchar *room = NULL;
     g_autoptr(GError) error = NULL;
 
     fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: beta\n");
@@ -728,7 +741,9 @@ test_each_turn_carries_its_own_task(void)
     give_agent_a_link(&fixture, beta);
     clawt_mailbox_router_drain(fixture.router, "beta");
 
-    clawt_agent_begin_turn(beta);
+    room = clawt_room_manager_direct_id("alpha", "beta");
+
+    clawt_agent_begin_turn(beta, room);
     g_assert_cmpstr(clawt_agent_get_turn_task_id(beta), ==, "task-one");
 
     /*
@@ -736,14 +751,14 @@ test_each_turn_carries_its_own_task(void)
      * anything this turn delegates onto task-one -- and it is the field
      * a scalar gets wrong first, because the last delivery wins.
      */
-    clawt_agent_begin_turn(beta);
+    clawt_agent_begin_turn(beta, room);
     g_assert_null(clawt_agent_get_turn_task_id(beta));
 
-    clawt_agent_begin_turn(beta);
+    clawt_agent_begin_turn(beta, room);
     g_assert_cmpstr(clawt_agent_get_turn_task_id(beta), ==, "task-two");
 
     /* And a turn nothing delivered into is not working on anything. */
-    clawt_agent_begin_turn(beta);
+    clawt_agent_begin_turn(beta, room);
     g_assert_null(clawt_agent_get_turn_task_id(beta));
 
     fixture_teardown(&fixture);
@@ -770,12 +785,12 @@ test_a_fold_does_not_inherit_a_task(void)
 
     beta = clawt_agent_manager_get(fixture.agents, "beta");
 
-    clawt_agent_deliver_turn(beta, 3, FALSE, "alpha", "task-one");
+    clawt_agent_deliver_turn(beta, NULL, 3, FALSE, "alpha", "task-one");
 
     fatal = g_log_set_always_fatal(G_LOG_LEVEL_ERROR);
 
     for (i = 0; i < 200; i++)
-        clawt_agent_deliver_turn(beta, 1, TRUE, "alpha", NULL);
+        clawt_agent_deliver_turn(beta, NULL, 1, TRUE, "alpha", NULL);
 
     g_log_set_always_fatal(fatal);
 
@@ -783,7 +798,7 @@ test_a_fold_does_not_inherit_a_task(void)
      * The close and the depth survived the fold, as they must; the task
      * did not, which is equally deliberate.
      */
-    clawt_agent_begin_turn(beta);
+    clawt_agent_begin_turn(beta, NULL);
     g_assert_false(clawt_agent_get_turn_replies(beta));
     g_assert_cmpint(clawt_agent_get_hop_depth(beta), ==, 3);
     g_assert_null(clawt_agent_get_turn_task_id(beta));

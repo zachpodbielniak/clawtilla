@@ -68,33 +68,35 @@ struct _ClawtAgent {
      * three because it is the same kind of fact: true of one delivery,
      * and there are as many of those as were delivered.
      */
-    gint            hop_depth;
-    gboolean        turn_replies;
-    gchar          *turn_origin;
-    gchar          *turn_task_id;
-    GQueue         *pending_turns;
-
     /*
-     * The rooms this agent is currently typing in.
+     * One turn per room, because an agent runs one.
      *
-     * A set rather than a counter, and a set rather than a boolean,
-     * because the frames that feed it are neither reliable nor unique.
-     * libreclaw raises typing for the whole of a turn and re-sends the
-     * same TRUE every 25 seconds so Matrix does not drop the indicator,
-     * and an agent in three rooms sends three independent streams of
-     * them.  A counter drifts on a repeated TRUE or an unmatched FALSE;
-     * a set is idempotent in both directions and self-corrects.
+     * libreclaw keys a session on channel, room and sender and runs a
+     * turn per message in it, and `processing` is per session -- so an
+     * agent talking to three peers has three sessions that can each be
+     * mid-turn at once.  A live fleet showed exactly that: one agent
+     * with three rooms' typing frames overlapping and three separate
+     * falses, one per room.
      *
-     * What it answers is the only question the turn state has: is this
-     * frame the start of a turn, or is it noise inside one that is
-     * already running.  Read from the frame alone, every keepalive was
-     * a turn start -- which reset the depth to zero, turned the
-     * closed-exchange flag back on, cleared the origin (disabling
-     * clawtilla_message_user's guard outright) and dropped the task a
-     * delegation would be parented on.  On a live fleet that was 11,869
-     * typing=true frames against 549 turns.
+     * These fields were scalars on the agent, so those three turns
+     * shared one description and each was judged by whichever room
+     * wrote last.  The severe one is the reply flag: a real answer
+     * swallowed because *another* room's turn was a closed exchange is
+     * silent data loss, and a sign-off delivered because another
+     * room's was not costs the recipient a whole model turn.
+     *
+     * `turns` holds the latest turn in each room and outlives it, since
+     * the answer is posted after the indicator drops.  `typing_rooms`
+     * is which of them are running, which is what the edge and `busy`
+     * are read from.  `last_room` is for a caller that cannot name one:
+     * a tool call arrives on a per-agent MCP link with no room on it,
+     * so the getters fold across the running turns and each picks the
+     * safe direction rather than a plausible one.
      */
-    GHashTable     *typing_rooms;
+    GHashTable     *turns;         /* room -> TurnSetup (owned) */
+    GHashTable     *typing_rooms;  /* room -> NULL: the ones running */
+    gchar          *last_room;
+    GQueue         *pending;       /* TurnSetup (owned), tagged by room */
 
     gchar          *status_detail;
 };
@@ -108,6 +110,7 @@ struct _ClawtAgent {
  * of [peer, operator] names the wrong one on both turns.
  */
 typedef struct {
+    gchar    *room;      /* NULL: any room's next turn may take it */
     gint      depth;
     gboolean  replies;
     gchar    *origin;
@@ -120,6 +123,7 @@ turn_setup_free(gpointer data)
 {
     TurnSetup *setup = data;
 
+    g_free(setup->room);
     g_free(setup->origin);
     g_free(setup->task_id);
     g_free(setup);
@@ -133,6 +137,59 @@ queue_of_turns_free(GQueue *queue)
 
 /* How far behind an agent may fall; see trim_pending_turns(). */
 #define CLAWT_AGENT_MAX_PENDING_TURNS (64)
+
+/* How many rooms' turns are remembered; see trim_turn_history(). */
+#define CLAWT_AGENT_MAX_TURN_ROOMS (64)
+
+/*
+ * The key a room is filed under.
+ *
+ * A frame that names no room still has to pair with its own FALSE, and
+ * every unnamed frame is the same conversation as far as this can tell.
+ * Keyed rather than ignored, because ignoring it would leave an agent
+ * that only ever sends unnamed frames with an empty set -- so every one
+ * of them would read as a rising edge, which is the bug this exists to
+ * stop.
+ */
+#define CLAWT_AGENT_UNNAMED_ROOM "\x01unnamed"
+
+static const gchar *
+room_key(const gchar *room_id)
+{
+    return (room_id != NULL) ? room_id : CLAWT_AGENT_UNNAMED_ROOM;
+}
+
+/*
+ * Forgets the room whose turn ran longest ago.
+ *
+ * The table is keyed by room and an agent can be moved between rooms
+ * for as long as it lives, so without a bound it grows for the life of
+ * the daemon.  Never a room that is currently typing: that entry is a
+ * running turn, and dropping it would leave the answer with nothing to
+ * be judged by.
+ */
+static void
+trim_turn_history(ClawtAgent *self)
+{
+    GHashTableIter iter;
+    gpointer key;
+
+    if (g_hash_table_size(self->turns) <= CLAWT_AGENT_MAX_TURN_ROOMS)
+        return;
+
+    g_hash_table_iter_init(&iter, self->turns);
+
+    while (g_hash_table_iter_next(&iter, &key, NULL)) {
+        if (g_hash_table_contains(self->typing_rooms, key))
+            continue;
+
+        if (g_strcmp0(key, self->last_room) == 0)
+            continue;
+
+        g_hash_table_iter_remove(&iter);
+        return;
+    }
+}
 
 G_DEFINE_FINAL_TYPE(ClawtAgent, clawt_agent, G_TYPE_OBJECT)
 
@@ -476,12 +533,104 @@ on_runtime_exited(ClawtAgentRuntime *runtime,
         set_state(self, CLAWT_AGENT_STATE_ERROR, detail);
 }
 
+/*
+ * The turn running in one room, or the last one that ran there.
+ *
+ * Kept after the turn ends rather than removed, because the daemon reads
+ * it *after* the indicator drops: libreclaw lowers typing in
+ * on_process_message_finish() and posts the answer afterwards, so a
+ * table that forgot a room on the falling edge would have nothing to
+ * judge that answer by.  Replaced on the room's next rising edge.
+ */
+static TurnSetup *
+turn_in(ClawtAgent *self, const gchar *room_id)
+{
+    return g_hash_table_lookup(self->turns, room_key(room_id));
+}
+
+/* The rooms whose turns are running right now. */
+static gboolean
+room_is_live(ClawtAgent *self, const gchar *room_id)
+{
+    return g_hash_table_contains(self->typing_rooms, room_key(room_id));
+}
+
+/*
+ * The turn a caller that cannot name a room is asking about.
+ *
+ * A tool call arrives on a per-agent MCP link and carries no room, so
+ * "which turn is this" has no answer when several are running.  The
+ * folds below each pick the safe direction rather than a plausible one;
+ * this picks the turn to fall back to when nothing is running at all,
+ * which is the ordinary case for a test that set a field and read it.
+ */
+static TurnSetup *
+latest_turn(ClawtAgent *self)
+{
+    if (self->last_room != NULL)
+        return g_hash_table_lookup(self->turns, self->last_room);
+
+    return NULL;
+}
+
 gint
 clawt_agent_get_hop_depth(ClawtAgent *self)
 {
+    GHashTableIter iter;
+    gpointer key;
+    gpointer value;
+    gint deepest = -1;
+
     g_return_val_if_fail(CLAWT_IS_AGENT(self), 0);
 
-    return self->hop_depth;
+    /*
+     * The deepest of the turns actually running, not the most recent.
+     *
+     * A caller with no room to name gets the answer that errs towards
+     * refusing: `orchestration.max_hops` firing one hop early on an
+     * agent that is mid-conversation in two rooms costs a delegation,
+     * where firing late costs the runaway this whole area exists to
+     * stop.
+     */
+    g_hash_table_iter_init(&iter, self->turns);
+
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        TurnSetup *setup = value;
+
+        if (!g_hash_table_contains(self->typing_rooms, key))
+            continue;
+
+        if (setup->depth > deepest)
+            deepest = setup->depth;
+    }
+
+    if (deepest >= 0)
+        return deepest;
+
+    {
+        TurnSetup *setup = latest_turn(self);
+
+        if (setup != NULL)
+            return setup->depth;
+    }
+
+    {
+        TurnSetup *next = g_queue_peek_head(self->pending);
+
+        return (next != NULL) ? next->depth : 0;
+    }
+}
+
+gint
+clawt_agent_get_hop_depth_in(ClawtAgent *self, const gchar *room_id)
+{
+    TurnSetup *setup;
+
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), 0);
+
+    setup = turn_in(self, room_id);
+
+    return (setup != NULL) ? setup->depth : clawt_agent_get_hop_depth(self);
 }
 
 /*
@@ -495,27 +644,41 @@ clawt_agent_get_hop_depth(ClawtAgent *self)
  * keeps the deeper hop count and the more restrictive reply flag, so
  * overflow errs towards stopping an exchange rather than continuing one.
  *
- * The task id is the exception: it is *not* carried across, because it
- * names one particular piece of work rather than describing a
- * disposition.  Inheriting it would attribute a later, unrelated message
- * to somebody else's task, and the daemon completes a task from the
- * message that ends its turn -- so the wrong task would be marked done
- * by a message that was never about it.  Dropping it instead leaves the
- * delegator waiting a little longer, and a task that ends late is a
- * delay where one that ends early is a lie.
+ * Into the next entry for the *same room* where there is one, since that
+ * is the turn the close signal is about.  Failing that, into whatever is
+ * behind it -- still better than dropping the flag.
+ *
+ * The task id is the exception and is never carried across.  It names
+ * one particular piece of work rather than describing a disposition, so
+ * inheriting it would attribute a later message to somebody else's task
+ * -- and the daemon completes a task from the message that ends its
+ * turn, so the wrong task would be marked done by a message that was
+ * never about it.  A task that ends late is a delay; one that ends early
+ * is a lie.
  */
 static void
 trim_pending_turns(ClawtAgent *self)
 {
     TurnSetup *oldest;
-    TurnSetup *next;
+    TurnSetup *next = NULL;
+    guint i;
 
-    if (g_queue_get_length(self->pending_turns) <=
-        CLAWT_AGENT_MAX_PENDING_TURNS)
+    if (g_queue_get_length(self->pending) <= CLAWT_AGENT_MAX_PENDING_TURNS)
         return;
 
-    oldest = g_queue_pop_head(self->pending_turns);
-    next = g_queue_peek_head(self->pending_turns);
+    oldest = g_queue_pop_head(self->pending);
+
+    for (i = 0; i < g_queue_get_length(self->pending); i++) {
+        TurnSetup *candidate = g_queue_peek_nth(self->pending, i);
+
+        if (g_strcmp0(candidate->room, oldest->room) == 0) {
+            next = candidate;
+            break;
+        }
+    }
+
+    if (next == NULL)
+        next = g_queue_peek_head(self->pending);
 
     if (oldest != NULL && next != NULL) {
         if (oldest->depth > next->depth)
@@ -537,39 +700,37 @@ trim_pending_turns(ClawtAgent *self)
 /*
  * The entry the delivery being described is filling in.
  *
- * The three setters are called one after another for a single item, so
+ * The four setters are called one after another for a single item, so
  * they all write the same tail entry; a setter reached with an empty
  * queue starts one.  That is what makes each of them arm the queue on
  * its own -- clawt_agent_set_turn_origin() did not arm the old boolean,
  * which meant a caller that set only the origin had it discarded by the
  * next clawt_agent_begin_turn(), silently, on the path about to read it.
  *
- * Seeded from the live fields rather than from the defaults, so a
- * partially-described delivery inherits the running turn's answer
- * instead of a fresh-chain one.  A missing field must not be the
- * permissive value by accident.
+ * An entry made this way carries no room, so the next turn in *any* room
+ * takes it.  That is what a caller who never named one is asking for,
+ * and in production nothing is in that position: the router always has
+ * the room, because it is the thing that chose it.
  */
 static TurnSetup *
 pending_turn(ClawtAgent *self)
 {
-    TurnSetup *setup = g_queue_peek_tail(self->pending_turns);
+    TurnSetup *setup = g_queue_peek_tail(self->pending);
 
     if (setup != NULL)
         return setup;
 
     setup = g_new0(TurnSetup, 1);
-    setup->depth = self->hop_depth;
-    setup->replies = self->turn_replies;
-    setup->origin = g_strdup(self->turn_origin);
-    setup->task_id = g_strdup(self->turn_task_id);
+    setup->replies = TRUE;
 
-    g_queue_push_tail(self->pending_turns, setup);
+    g_queue_push_tail(self->pending, setup);
 
     return setup;
 }
 
 void
 clawt_agent_deliver_turn(ClawtAgent  *self,
+                         const gchar *room_id,
                          gint         depth,
                          gboolean     replies,
                          const gchar *from,
@@ -582,33 +743,27 @@ clawt_agent_deliver_turn(ClawtAgent  *self,
     /*
      * A whole delivery at once, which is what makes it one entry.
      *
-     * The four setters below amend the entry at the tail, so a caller
+     * The setters below amend the entry at the tail, so a caller
      * describing one delivery a field at a time gets one entry -- and a
      * caller describing three deliveries that way would get one entry
      * for all three, with no way to tell where one ended.  There is no
      * end-of-delivery edge to find; there is only this call.
+     *
+     * Tagged with the room, so the turn that takes it is the turn in
+     * that room.  Untagged, a burst across two rooms was drained in
+     * arrival order by whichever room happened to start a turn first,
+     * and an agent answering two peers at once described each turn with
+     * the other one's message.
      */
     setup = g_new0(TurnSetup, 1);
+    setup->room = g_strdup(room_id);
     setup->depth = depth;
     setup->replies = replies;
     setup->origin = g_strdup(from);
     setup->task_id = g_strdup(task_id);
 
-    g_queue_push_tail(self->pending_turns, setup);
+    g_queue_push_tail(self->pending, setup);
     trim_pending_turns(self);
-
-    /*
-     * And the live fields, so anything reading between the delivery and
-     * the turn it set up -- a client drawing the fleet, a test asserting
-     * on the drain -- sees what was just handed over rather than the
-     * previous turn's answer.
-     */
-    self->hop_depth = depth;
-    self->turn_replies = replies;
-    g_free(self->turn_origin);
-    self->turn_origin = g_strdup(from);
-    g_free(self->turn_task_id);
-    self->turn_task_id = g_strdup(task_id);
 }
 
 void
@@ -616,24 +771,46 @@ clawt_agent_set_hop_depth(ClawtAgent *self, gint depth)
 {
     g_return_if_fail(CLAWT_IS_AGENT(self));
 
-    /*
-     * Written to the live field as well as to the entry.
-     *
-     * Everything that reads the depth between a delivery and the turn it
-     * set up -- a client showing the fleet, a test asserting on the
-     * drain -- is asking about what was just delivered, and would get
-     * the previous turn's number from the field alone.
-     */
-    self->hop_depth = depth;
     pending_turn(self)->depth = depth;
 }
 
 gboolean
 clawt_agent_get_turn_replies(ClawtAgent *self)
 {
+    TurnSetup *setup;
+
     g_return_val_if_fail(CLAWT_IS_AGENT(self), TRUE);
 
-    return self->turn_replies;
+    /*
+     * The most recent turn, not a fold.
+     *
+     * There is no safe direction here: answering FALSE across the board
+     * swallows a real reply that another room is waiting for, and TRUE
+     * routes a sign-off nobody asked for.  What decides routing is
+     * clawt_agent_get_turn_replies_in(), which has the room -- this is
+     * for a reader with none, and it says so.
+     */
+    setup = latest_turn(self);
+
+    if (setup != NULL)
+        return setup->replies;
+
+    setup = g_queue_peek_head(self->pending);
+
+    return (setup != NULL) ? setup->replies : TRUE;
+}
+
+gboolean
+clawt_agent_get_turn_replies_in(ClawtAgent *self, const gchar *room_id)
+{
+    TurnSetup *setup;
+
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), TRUE);
+
+    setup = turn_in(self, room_id);
+
+    return (setup != NULL) ? setup->replies
+                           : clawt_agent_get_turn_replies(self);
 }
 
 void
@@ -641,7 +818,6 @@ clawt_agent_set_turn_replies(ClawtAgent *self, gboolean replies)
 {
     g_return_if_fail(CLAWT_IS_AGENT(self));
 
-    self->turn_replies = replies;
     pending_turn(self)->replies = replies;
 }
 
@@ -652,9 +828,6 @@ clawt_agent_set_turn_origin(ClawtAgent *self, const gchar *from)
 
     g_return_if_fail(CLAWT_IS_AGENT(self));
 
-    g_free(self->turn_origin);
-    self->turn_origin = g_strdup(from);
-
     setup = pending_turn(self);
     g_free(setup->origin);
     setup->origin = g_strdup(from);
@@ -663,9 +836,46 @@ clawt_agent_set_turn_origin(ClawtAgent *self, const gchar *from)
 const gchar *
 clawt_agent_get_turn_origin(ClawtAgent *self)
 {
+    GHashTableIter iter;
+    gpointer key;
+    gpointer value;
+    TurnSetup *setup;
+
     g_return_val_if_fail(CLAWT_IS_AGENT(self), NULL);
 
-    return self->turn_origin;
+    /*
+     * Any peer origin among the turns running, preferring the most
+     * recent.
+     *
+     * This is read by clawtilla_message_user's guard, and the question
+     * it is really asking is "did a peer start what I am doing" -- to
+     * which, with two turns running and one of them a peer's, the answer
+     * is yes.  The name may then be the wrong peer, which is why the
+     * refusal is worth keeping short of certainty: refusing is right,
+     * and the agent can reach anybody with clawtilla_message_agent.
+     */
+    setup = latest_turn(self);
+
+    if (setup != NULL && setup->origin != NULL &&
+        room_is_live(self, setup->room))
+        return setup->origin;
+
+    g_hash_table_iter_init(&iter, self->turns);
+
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        TurnSetup *other = value;
+
+        if (other->origin != NULL &&
+            g_hash_table_contains(self->typing_rooms, key))
+            return other->origin;
+    }
+
+    if (setup != NULL)
+        return setup->origin;
+
+    setup = g_queue_peek_head(self->pending);
+
+    return (setup != NULL) ? setup->origin : NULL;
 }
 
 void
@@ -675,9 +885,6 @@ clawt_agent_set_turn_task_id(ClawtAgent *self, const gchar *task_id)
 
     g_return_if_fail(CLAWT_IS_AGENT(self));
 
-    g_free(self->turn_task_id);
-    self->turn_task_id = g_strdup(task_id);
-
     setup = pending_turn(self);
     g_free(setup->task_id);
     setup->task_id = g_strdup(task_id);
@@ -686,49 +893,106 @@ clawt_agent_set_turn_task_id(ClawtAgent *self, const gchar *task_id)
 const gchar *
 clawt_agent_get_turn_task_id(ClawtAgent *self)
 {
+    GHashTableIter iter;
+    gpointer key;
+    gpointer value;
+    const gchar *found = NULL;
+    guint live = 0;
+
     g_return_val_if_fail(CLAWT_IS_AGENT(self), NULL);
 
-    return self->turn_task_id;
+    /*
+     * Only when the turns running agree, and otherwise nothing.
+     *
+     * This becomes the parent of whatever the agent delegates, and a
+     * wrong parent is worse than no parent: it hangs work under somebody
+     * else's job, where the depth limit measures from the wrong place
+     * and clawt_task_manager_cancel() reaches into a tree it does not
+     * belong to.  No parent is what the behaviour was before any of this
+     * existed, so ambiguity costs nothing that was not already absent.
+     */
+    g_hash_table_iter_init(&iter, self->turns);
+
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        TurnSetup *setup = value;
+
+        if (!g_hash_table_contains(self->typing_rooms, key))
+            continue;
+
+        live++;
+
+        if (setup->task_id == NULL)
+            continue;
+
+        if (found != NULL && g_strcmp0(found, setup->task_id) != 0)
+            return NULL;
+
+        found = setup->task_id;
+    }
+
+    if (live > 0)
+        return found;
+
+    {
+        TurnSetup *setup = latest_turn(self);
+
+        if (setup != NULL)
+            return setup->task_id;
+
+        setup = g_queue_peek_head(self->pending);
+
+        return (setup != NULL) ? setup->task_id : NULL;
+    }
 }
 
-/*
- * The room a typing frame with no room of its own belongs to.
- *
- * A frame that names no room still has to pair with its own FALSE, and
- * every unnamed frame is the same conversation as far as this can tell.
- * Keyed rather than ignored, because ignoring it would leave an agent
- * that only ever sends unnamed frames with an empty set -- so every one
- * of them would read as a rising edge, which is the bug.
- */
-#define CLAWT_AGENT_UNNAMED_ROOM "\x01unnamed"
+const gchar *
+clawt_agent_get_turn_task_id_in(ClawtAgent *self, const gchar *room_id)
+{
+    TurnSetup *setup;
+
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), NULL);
+
+    setup = turn_in(self, room_id);
+
+    return (setup != NULL) ? setup->task_id
+                           : clawt_agent_get_turn_task_id(self);
+}
 
 gboolean
 clawt_agent_note_typing(ClawtAgent  *self,
                         const gchar *room_id,
                         gboolean     typing)
 {
-    const gchar *key = (room_id != NULL) ? room_id
-                                         : CLAWT_AGENT_UNNAMED_ROOM;
+    const gchar *key = room_key(room_id);
     gboolean was_typing;
 
     g_return_val_if_fail(CLAWT_IS_AGENT(self), FALSE);
 
     was_typing = g_hash_table_size(self->typing_rooms) > 0;
 
-    if (typing)
-        g_hash_table_add(self->typing_rooms, g_strdup(key));
-    else
+    if (typing) {
+        /*
+         * A room already typing is a keepalive, not a turn.  This is the
+         * whole of the frame-versus-edge fix: libreclaw re-sends the
+         * same TRUE every 25 seconds, and taking each one as a turn
+         * start reset the depth, re-opened closed exchanges, switched
+         * off clawtilla_message_user's guard and dropped the task a
+         * delegation would be parented on.
+         */
+        if (!g_hash_table_contains(self->typing_rooms, key)) {
+            g_hash_table_add(self->typing_rooms, g_strdup(key));
+            clawt_agent_begin_turn(self, room_id);
+        }
+    } else {
+        /*
+         * The turn's description stays in the table.  libreclaw lowers
+         * the indicator *before* it posts the answer, so the daemon
+         * reads this after the falling edge; a table that forgot the
+         * room here would have nothing to judge that answer by.
+         */
         g_hash_table_remove(self->typing_rooms, key);
+    }
 
-    /*
-     * The edge is about the *agent*, not the room, because the turn
-     * state it gates is per-agent.  A second room opening while the
-     * first is still going is therefore not a turn start: its turn
-     * inherits the running description rather than resetting it, which
-     * errs towards closing an exchange rather than continuing one.  Real
-     * per-room turn state needs a room on a tool call, and a tool call
-     * arrives on a per-agent link that has none.
-     */
     return was_typing != (g_hash_table_size(self->typing_rooms) > 0);
 }
 
@@ -749,77 +1013,61 @@ clawt_agent_clear_typing(ClawtAgent *self)
 }
 
 void
-clawt_agent_begin_turn(ClawtAgent *self)
+clawt_agent_begin_turn(ClawtAgent *self, const gchar *room_id)
 {
+    const gchar *key;
+    TurnSetup *setup = NULL;
+    guint i;
+
     g_return_if_fail(CLAWT_IS_AGENT(self));
+
+    key = room_key(room_id);
+
+    /*
+     * The oldest delivery waiting for *this* room, or an untagged one.
+     *
+     * Per room, because an agent runs a turn per session and a session
+     * is a room: a burst of [room A, room B] drained in arrival order
+     * described each turn with the other room's message.  An untagged
+     * entry is one whose caller never named a room, and any room may
+     * take it -- nothing in production is in that position, since the
+     * router chose the room in the first place.
+     */
+    for (i = 0; i < g_queue_get_length(self->pending); i++) {
+        TurnSetup *candidate = g_queue_peek_nth(self->pending, i);
+
+        if (candidate->room == NULL ||
+            g_strcmp0(room_key(candidate->room), key) == 0) {
+            setup = candidate;
+            g_queue_remove(self->pending, candidate);
+            break;
+        }
+    }
 
     /*
      * A turn nothing delivered into starts a fresh chain.
      *
      * The depth answers "how far had the message I am handling come",
-     * which is true of a *turn* rather than of an agent -- so a turn that
-     * began somewhere the daemon never sees (Matrix, webhook, local,
-     * cmacs) must not inherit whatever the last peer delivery left, or
-     * an agent eventually cannot delegate at all.
-     *
-     * Dropped here rather than after the agent's first outbound message,
-     * which is where it was. A turn is not one message: a chief-of-staff
-     * answers its operator *and* hands work to a peer, and clearing on
-     * the first of those started the second at depth 1. Two agents
-     * signing off at each other could then do it for ever, because
-     * max_hops was measuring the last message of a turn rather than the
-     * conversation.
+     * which is true of a *turn* rather than of an agent -- so a turn
+     * that began somewhere the daemon never sees (Matrix, a webhook,
+     * local, cmacs) must not inherit whatever the last peer delivery
+     * left, or an agent eventually cannot delegate at all.  Its origin
+     * is nobody the daemon can name, and its closing text is the whole
+     * point of it, so it answers normally.
      */
-    {
-        TurnSetup *setup = g_queue_pop_head(self->pending_turns);
-
-        if (setup != NULL) {
-            /*
-             * This turn is answering that delivery, and only that one.
-             *
-             * Popped rather than peeked, and one rather than all: a
-             * message is a turn.  Draining the whole queue here is what
-             * the single boolean effectively did, and it is why a burst
-             * of five peer messages produced one turn that knew where it
-             * came from and four that did not.
-             */
-            self->hop_depth = setup->depth;
-            self->turn_replies = setup->replies;
-
-            g_free(self->turn_origin);
-            self->turn_origin = g_steal_pointer(&setup->origin);
-
-            g_free(self->turn_task_id);
-            self->turn_task_id = g_steal_pointer(&setup->task_id);
-
-            turn_setup_free(setup);
-        } else {
-            self->hop_depth = 0;
-
-            /*
-             * And who asked, which is the same question one field along:
-             * a turn nothing delivered into was not started by anybody
-             * the daemon can name.
-             */
-            g_clear_pointer(&self->turn_origin, g_free);
-
-            /*
-             * And which task, for the same reason and with more at
-             * stake: whatever this turn delegates is parented on it, so
-             * a stale id left over from the last delivery would hang new
-             * work off a task that has nothing to do with it.
-             */
-            g_clear_pointer(&self->turn_task_id, g_free);
-
-            /*
-             * And a turn nobody handed anything to answers normally.  An
-             * operator typing, a cron routine, a webhook: each is a
-             * fresh request, and the agent's reply is the whole point of
-             * it.
-             */
-            self->turn_replies = TRUE;
-        }
+    if (setup == NULL) {
+        setup = g_new0(TurnSetup, 1);
+        setup->replies = TRUE;
     }
+
+    g_free(setup->room);
+    setup->room = g_strdup(key);
+
+    g_hash_table_replace(self->turns, g_strdup(key), setup);
+    trim_turn_history(self);
+
+    g_free(self->last_room);
+    self->last_room = g_strdup(key);
 }
 
 void
@@ -1148,10 +1396,10 @@ clawt_agent_dispose(GObject *object)
                                              self);
 
     g_clear_object(&self->runtime);
-    g_clear_pointer(&self->turn_origin, g_free);
-    g_clear_pointer(&self->turn_task_id, g_free);
-    g_clear_pointer(&self->pending_turns, queue_of_turns_free);
+    g_clear_pointer(&self->pending, queue_of_turns_free);
+    g_clear_pointer(&self->turns, g_hash_table_unref);
     g_clear_pointer(&self->typing_rooms, g_hash_table_unref);
+    g_clear_pointer(&self->last_room, g_free);
     g_clear_object(&self->computer);
     g_clear_object(&self->desktop);
     g_clear_object(&self->link);
@@ -1218,13 +1466,9 @@ clawt_agent_init(ClawtAgent *self)
 {
     self->state = CLAWT_AGENT_STATE_STOPPED;
     self->caps = CLAWT_AGENT_CAPS_NONE;
-    self->pending_turns = g_queue_new();
+    self->pending = g_queue_new();
+    self->turns = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                        g_free, turn_setup_free);
     self->typing_rooms = g_hash_table_new_full(g_str_hash, g_str_equal,
                                                g_free, NULL);
-
-    /*
-     * Named, because g_object_new() zeroes and FALSE here would mean an
-     * agent that had never been delivered to could not answer anybody.
-     */
-    self->turn_replies = TRUE;
 }

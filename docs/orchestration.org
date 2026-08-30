@@ -1346,20 +1346,64 @@ rather than a counter, because the frames are neither unique nor
 guaranteed to pair: a repeated ~true~ or an unmatched ~false~ drifts a
 counter and is idempotent against a set.
 
-Two consequences worth stating plainly:
+**Whatever settles a turn must clear the set.**  An interrupt and the
+grace timer both end turns the runtime will never send a ~false~ for, so
+~clawt_daemon_turn_settle()~ clears it.  Without that the next real frame
+is not a rising edge, the turn state is not refreshed, and the new turn
+runs holding the abandoned one's depth, origin and task -- the same wrong
+answer, reached from the other side.
 
-- **Whatever settles a turn must clear the set.** An interrupt and the
-  grace timer both end turns the runtime will never send a ~false~ for,
-  so ~clawt_daemon_turn_settle()~ clears it. Without that the next real
-  frame is not a rising edge, the turn state is not refreshed, and the
-  new turn runs holding the abandoned one's depth, origin and task --
-  the same wrong answer, reached from the other side.
-- **This is not per-room turn state.** A second room opening while the
-  first is still running is deliberately not a turn start; its turn
-  inherits the running description rather than resetting it, which errs
-  towards closing an exchange rather than continuing one. Real per-room
-  state needs a room on a tool call, and a tool call arrives on a
-  per-agent MCP link that carries none.
+*** One turn per room, because an agent runs one
+
+An agent can be mid-turn in several rooms at once.  ~LcSession~'s
+~processing~ flag is per session and ~lc_router_resolve_session_key()~
+keys a session on channel, room and sender, so an agent talking to three
+peers has three sessions that can each be running.  The same fleet showed
+it: one agent with three rooms' typing frames overlapping and three
+separate ~false~ frames, one per room.
+
+Every field above was a scalar on the agent, so those three turns shared
+one description and each was judged by whichever room wrote last.  The
+reply flag is the severe one, and it is wrong in *both* directions:
+
+- a real answer **swallowed** because another room's turn was a closed
+  exchange -- silent, and the peer waits for ever;
+- a sign-off **delivered** because another room's was not, costing the
+  recipient a whole model turn.
+
+So the turn is filed under its room.  ~clawt_agent_deliver_turn()~ tags
+each delivery with the room it was delivered into, and a turn starting in
+a room takes the oldest entry waiting for *that* room.  Arrival order and
+turn-start order are independent -- libreclaw picks up each session on
+its own -- so a queue drained in arrival order handed one room's turn
+another room's message.
+
+This works because the room round-trips.  The router puts
+~clawt_room_get_id(room)~ on the mailbox item, ~clawt_link_deliver()~
+sends it as ~room_id~, and libreclaw's clawtilla channel echoes the same
+string back on both the typing frame and the reply -- so the room on a
+frame is the room clawtilla delivered into.
+
+**A tool call still carries no room.**  Both entry points are
+agent-scoped: ~on_agent_mcp_request()~ over the agent's bridge link, and
+the ~tool.call~ verb that ~clawtilla-mcp-server~ uses.  ~.mcp.json~ is
+written per workspace and a workspace is per agent, so there is nowhere
+to put one.  The agent-wide getters therefore *fold* across the running
+turns, and each picks the safe direction rather than a plausible one:
+
+| Field | Folded as | Because |
+|-------+-----------+---------|
+| ~hop_depth~ | the **deepest** running turn | ~max_hops~ firing a hop early costs a delegation; firing late costs the runaway |
+| ~turn_task_id~ | only when the running turns **agree**, else none | a wrong parent hangs work under somebody else's job, where the depth limit measures from the wrong place and cancellation reaches into a tree it does not belong to. No parent is what the behaviour was before any of this existed |
+| ~turn_origin~ | any peer origin among them | the guard is really asking "did a peer start what I am doing", and with one peer turn running the answer is yes. The name may be the wrong peer, which is why the refusal points at ~clawtilla_message_agent~ rather than claiming certainty |
+| ~turn_replies~ | the most recent | there is no safe direction, so nothing pretends otherwise -- routing is decided by ~clawt_agent_get_turn_replies_in()~, which has the room |
+
+A turn's description **outlives the turn**.  libreclaw lowers the
+indicator in ~on_process_message_finish()~ and posts the answer
+afterwards, so a table that forgot the room on the falling edge would
+have nothing left to judge that answer by.  The entry is replaced on that
+room's next rising edge, and the table is bounded so an agent moved
+between rooms for months does not grow one.
 
 *** The turn watchdog
 

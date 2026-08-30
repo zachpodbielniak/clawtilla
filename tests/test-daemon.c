@@ -4439,7 +4439,7 @@ test_a_keepalive_is_not_a_new_turn(void)
     beta = clawt_agent_manager_get(agents, "beta");
 
     /* A peer's reply: three hops in, and it closes the exchange. */
-    clawt_agent_deliver_turn(beta, 3, FALSE, "alpha", "task-xyz");
+    clawt_agent_deliver_turn(beta, NULL, 3, FALSE, "alpha", "task-xyz");
 
     g_signal_emit_by_name(links, "typing", "beta", "alpha", TRUE);
 
@@ -4477,21 +4477,121 @@ test_a_keepalive_is_not_a_new_turn(void)
 }
 
 /*
- * And neither is a second room opening while the first is still going.
+ * Each room's turn is its own, and one is not judged by another's flags.
  *
- * The turn fields are per-agent and typing frames are per-room, so one
- * agent talking to three peers is three streams writing the same fields.
- * Each TRUE from a room that was not yet typing looked like a turn start
- * to an agent already mid-turn in another.
+ * An agent runs a turn per session and a session is a room, so it can
+ * have several going at once -- a live fleet had one agent with three
+ * rooms' typing frames overlapping and three separate falses.  These
+ * fields were scalars on the agent, so those turns shared one
+ * description and each was judged by whichever room wrote last.
  *
- * The second room's turn inherits the first's description rather than
- * resetting it.  That is deliberate and it is not per-room state: a tool
- * call arrives on a per-agent link with no room on it, so there is
- * nowhere to put one.  Inheriting errs towards closing an exchange,
- * which is the safe direction.
+ * The reply flag is the severe one and both directions are wrong: a real
+ * answer swallowed because *another* room's turn was a closed exchange
+ * is silent data loss, and a sign-off delivered because another room's
+ * was not costs the recipient a whole model turn.  This asserts both, in
+ * the mailboxes rather than on the flags, because that is where the
+ * money goes.
+ *
+ * max_hops is disabled so a pass cannot come from the hop limit refusing
+ * one of the two messages for its own reasons.
  */
 static void
-test_a_second_room_does_not_restart_the_turn(void)
+test_each_room_has_its_own_turn(void)
+{
+    Fixture fixture = { 0 };
+    ClawtLinkServer *links;
+    ClawtAgentManager *agents;
+    ClawtAgent *alpha;
+    ClawtAgent *gamma;
+    ClawtAgent *beta;
+
+    fixture_setup(&fixture,
+                  "orchestration:\n"
+                  "  max_hops: 0\n"
+                  "agents:\n  - id: alpha\n  - id: gamma\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    links = clawt_daemon_get_link_server(fixture.daemon);
+    agents = clawt_daemon_get_agents(fixture.daemon);
+    alpha = clawt_agent_manager_get(agents, "alpha");
+    gamma = clawt_agent_manager_get(agents, "gamma");
+    beta = clawt_agent_manager_get(agents, "beta");
+
+    /*
+     * Two conversations at once: alpha's is a peer's reply three hops in
+     * that closes the exchange, gamma's is a fresh question one hop in
+     * that is waiting for an answer.
+     */
+    clawt_agent_deliver_turn(beta, "alpha", 3, FALSE, "alpha", "task-one");
+    clawt_agent_deliver_turn(beta, "gamma", 1, TRUE, "gamma", "task-two");
+
+    /*
+     * gamma's turn starts first, though alpha's message arrived first.
+     *
+     * Deliberately the opposite order, because arrival order and
+     * turn-start order are independent -- libreclaw picks up each
+     * session on its own -- and a queue drained in arrival order hands
+     * gamma's turn alpha's message.  With the two orders agreeing, a
+     * build that ignored the room entirely still passes.
+     */
+    g_signal_emit_by_name(links, "typing", "beta", "gamma", TRUE);
+    g_signal_emit_by_name(links, "typing", "beta", "alpha", TRUE);
+
+    g_assert_cmpuint(clawt_agent_get_typing_rooms(beta), ==, 2);
+
+    /* Each room kept its own description, rather than the last writer's. */
+    g_assert_cmpint(clawt_agent_get_hop_depth_in(beta, "alpha"), ==, 3);
+    g_assert_cmpint(clawt_agent_get_hop_depth_in(beta, "gamma"), ==, 1);
+    g_assert_false(clawt_agent_get_turn_replies_in(beta, "alpha"));
+    g_assert_true(clawt_agent_get_turn_replies_in(beta, "gamma"));
+    g_assert_cmpstr(clawt_agent_get_turn_task_id_in(beta, "alpha"), ==,
+                    "task-one");
+    g_assert_cmpstr(clawt_agent_get_turn_task_id_in(beta, "gamma"), ==,
+                    "task-two");
+
+    /*
+     * A tool call names no room, so the agent-wide answers fold across
+     * both.  The depth errs towards refusing, and the task is withheld
+     * because a wrong parent is worse than no parent.
+     */
+    g_assert_cmpint(clawt_agent_get_hop_depth(beta), ==, 3);
+    g_assert_null(clawt_agent_get_turn_task_id(beta));
+
+    /* alpha's turn ends: its sign-off goes nowhere, as it always should. */
+    g_signal_emit_by_name(links, "typing", "beta", "alpha", FALSE);
+    g_signal_emit_by_name(links, "message", "beta", "alpha",
+                          "Acknowledged, nothing to send. Ending turn.",
+                          NULL);
+
+    g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(alpha)),
+                     ==, 0);
+
+    /*
+     * And gamma's answer is delivered.  This is the half that used to be
+     * lost in silence: judged by alpha's closed exchange, a real answer
+     * somebody was waiting for was dropped and nothing said so.
+     */
+    g_signal_emit_by_name(links, "typing", "beta", "gamma", FALSE);
+    g_signal_emit_by_name(links, "message", "beta", "gamma",
+                          "Here is the answer you asked for.", NULL);
+
+    g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(gamma)),
+                     ==, 1);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And one room going quiet does not end the agent's turn, or make it
+ * look idle.
+ *
+ * clawt_daemon_turn_settle() takes no room, so a FALSE from either used
+ * to settle the agent -- and `busy` came from the frame, so an agent
+ * still mid-turn in one room reported itself idle, which is what stops a
+ * message arriving mid-turn from being taken as a task's result.
+ */
+static void
+test_one_room_going_quiet_does_not_end_the_agents_turn(void)
 {
     Fixture fixture = { 0 };
     ClawtLinkServer *links;
@@ -4505,33 +4605,22 @@ test_a_second_room_does_not_restart_the_turn(void)
     beta = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
                                    "beta");
 
-    clawt_agent_deliver_turn(beta, 3, FALSE, "alpha", "task-xyz");
+    clawt_agent_deliver_turn(beta, "alpha", 3, FALSE, "alpha", NULL);
 
     g_signal_emit_by_name(links, "typing", "beta", "alpha", TRUE);
     g_signal_emit_by_name(links, "typing", "beta", "gamma", TRUE);
-
-    g_assert_cmpint(clawt_agent_get_hop_depth(beta), ==, 3);
-    g_assert_false(clawt_agent_get_turn_replies(beta));
-    g_assert_cmpstr(clawt_agent_get_turn_origin(beta), ==, "alpha");
-    g_assert_cmpuint(clawt_agent_get_typing_rooms(beta), ==, 2);
-
-    /*
-     * One of them going quiet does not make the agent idle, and does not
-     * end its turn.  clawt_daemon_turn_settle() takes no room, so a
-     * FALSE from either used to settle the agent -- and the next frame
-     * from the room still working then read as a fresh turn.
-     */
     g_signal_emit_by_name(links, "typing", "beta", "alpha", FALSE);
 
     g_assert_true(clawt_agent_get_busy(beta));
     g_assert_cmpuint(clawt_agent_get_typing_rooms(beta), ==, 1);
 
-    g_signal_emit_by_name(links, "typing", "beta", "gamma", TRUE);
+    /*
+     * And alpha's turn is still there to judge the answer by: libreclaw
+     * lowers the indicator before it posts, so a table that forgot the
+     * room on the falling edge would have nothing left to read.
+     */
+    g_assert_false(clawt_agent_get_turn_replies_in(beta, "alpha"));
 
-    g_assert_cmpint(clawt_agent_get_hop_depth(beta), ==, 3);
-    g_assert_false(clawt_agent_get_turn_replies(beta));
-
-    /* And the last one going quiet does end it. */
     g_signal_emit_by_name(links, "typing", "beta", "gamma", FALSE);
 
     g_assert_false(clawt_agent_get_busy(beta));
@@ -4565,7 +4654,7 @@ test_a_turn_settled_elsewhere_starts_the_next_one_fresh(void)
     beta = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
                                    "beta");
 
-    clawt_agent_deliver_turn(beta, 3, FALSE, "alpha", "task-xyz");
+    clawt_agent_deliver_turn(beta, NULL, 3, FALSE, "alpha", "task-xyz");
     g_signal_emit_by_name(links, "typing", "beta", "alpha", TRUE);
     g_assert_cmpint(clawt_agent_get_hop_depth(beta), ==, 3);
 
@@ -4694,7 +4783,7 @@ test_a_turn_ending_does_not_close_a_task_with_children(void)
     clawt_agent_deliver_turn(
         clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
                                 "oryx"),
-        1, TRUE, "user", parent_id);
+        "dm:user:oryx", 1, TRUE, "user", parent_id);
 
     g_signal_emit_by_name(links, "typing", "oryx", "dm:user:oryx", TRUE);
     g_signal_emit_by_name(links, "typing", "oryx", "dm:user:oryx", FALSE);
@@ -4719,7 +4808,7 @@ test_a_turn_ending_does_not_close_a_task_with_children(void)
     clawt_agent_deliver_turn(
         clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
                                 "oryx"),
-        1, TRUE, "user", parent_id);
+        "dm:user:oryx", 1, TRUE, "user", parent_id);
 
     g_signal_emit_by_name(links, "typing", "oryx", "dm:user:oryx", TRUE);
     g_signal_emit_by_name(links, "typing", "oryx", "dm:user:oryx", FALSE);
@@ -4766,7 +4855,7 @@ test_a_task_starts_running_when_its_turn_does(void)
 
     worker = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
                                      "worker");
-    clawt_agent_deliver_turn(worker, 1, TRUE, "chief",
+    clawt_agent_deliver_turn(worker, NULL, 1, TRUE, "chief",
                              clawt_task_get_id(task));
 
     /* Queued, and still nobody has looked at it. */
@@ -8755,8 +8844,10 @@ main(int argc, char *argv[])
 
     g_test_add_func("/daemon/typing/a-keepalive-is-not-a-new-turn",
                     test_a_keepalive_is_not_a_new_turn);
-    g_test_add_func("/daemon/typing/a-second-room-does-not-restart-it",
-                    test_a_second_room_does_not_restart_the_turn);
+    g_test_add_func("/daemon/typing/each-room-has-its-own-turn",
+                    test_each_room_has_its_own_turn);
+    g_test_add_func("/daemon/typing/one-quiet-room-does-not-end-the-turn",
+                    test_one_room_going_quiet_does_not_end_the_agents_turn);
     g_test_add_func("/daemon/typing/settled-elsewhere-starts-fresh",
                     test_a_turn_settled_elsewhere_starts_the_next_one_fresh);
     g_test_add_func("/daemon/typing/a-keepalive-does-not-extend-the-budget",

@@ -559,8 +559,15 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
          * this turn is parented on.  Per item for the same reason as the
          * rest: a drain of [task delivery, ordinary message] must not
          * hang the ordinary message's turn off the task.
+         *
+         * And the room, so the turn that takes this entry is the turn in
+         * that room.  An agent runs a turn per session and a session is
+         * a room, so it can have several going at once; without the room
+         * a burst across two of them was drained in arrival order and
+         * each turn was described by the other room's message.
          */
-        clawt_agent_deliver_turn(agent, clawt_mailbox_item_get_depth(item),
+        clawt_agent_deliver_turn(agent, clawt_mailbox_item_get_room(item),
+                                 clawt_mailbox_item_get_depth(item),
                                  !peer || invites, from,
                                  clawt_mailbox_item_get_task_id(item));
 

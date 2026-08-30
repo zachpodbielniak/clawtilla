@@ -1814,7 +1814,7 @@ test_message_user_is_refused_during_a_peers_turn(void)
     /* The delivery that started this turn came from another agent. */
     clawt_agent_set_hop_depth(worker, 1);
     clawt_agent_set_turn_origin(worker, "chief");
-    clawt_agent_begin_turn(worker);
+    clawt_agent_begin_turn(worker, NULL);
 
     refused = call_tool(&fixture, "worker", "clawtilla_message_user",
                         "{\"body\": \"Done, boss.\"}");
@@ -1836,7 +1836,7 @@ test_message_user_is_refused_during_a_peers_turn(void)
      */
     clawt_agent_set_hop_depth(worker, 0);
     clawt_agent_set_turn_origin(worker, "user");
-    clawt_agent_begin_turn(worker);
+    clawt_agent_begin_turn(worker, NULL);
 
     is_error = TRUE;
     allowed = call_tool(&fixture, "worker", "clawtilla_message_user",
@@ -1888,14 +1888,14 @@ test_message_user_is_refused_on_a_peers_later_messages(void)
      * the turns are still to come.
      */
     for (turn = 0; turn < 3; turn++)
-        clawt_agent_deliver_turn(worker, 1, TRUE, "chief", NULL);
+        clawt_agent_deliver_turn(worker, NULL, 1, TRUE, "chief", NULL);
 
     for (turn = 0; turn < 3; turn++) {
         g_autoptr(JsonNode) refused = NULL;
         const gchar *text;
         gboolean is_error = FALSE;
 
-        clawt_agent_begin_turn(worker);
+        clawt_agent_begin_turn(worker, NULL);
 
         g_assert_cmpstr(clawt_agent_get_turn_origin(worker), ==, "chief");
         g_assert_cmpint(clawt_agent_get_hop_depth(worker), ==, 1);
@@ -1921,7 +1921,7 @@ test_message_user_is_refused_on_a_peers_later_messages(void)
         g_autoptr(JsonNode) allowed = NULL;
         gboolean is_error = TRUE;
 
-        clawt_agent_begin_turn(worker);
+        clawt_agent_begin_turn(worker, NULL);
         g_assert_null(clawt_agent_get_turn_origin(worker));
 
         allowed = call_tool(&fixture, "worker", "clawtilla_message_user",
@@ -1968,9 +1968,9 @@ test_delegating_from_a_task_records_the_parent(void)
     g_assert_nonnull(root);
 
     lead = clawt_agent_manager_get(fixture.agents, "lead");
-    clawt_agent_deliver_turn(lead, 1, TRUE, "user",
+    clawt_agent_deliver_turn(lead, NULL, 1, TRUE, "user",
                              clawt_task_get_id(root));
-    clawt_agent_begin_turn(lead);
+    clawt_agent_begin_turn(lead, NULL);
 
     response = call_tool(&fixture, "lead", "clawtilla_delegate",
                          "{\"agent_id\":\"worker\","
@@ -2018,7 +2018,7 @@ test_delegating_outside_a_task_starts_a_root(void)
         "  - id: worker\n");
 
     lead = clawt_agent_manager_get(fixture.agents, "lead");
-    clawt_agent_begin_turn(lead);
+    clawt_agent_begin_turn(lead, NULL);
 
     response = call_tool(&fixture, "lead", "clawtilla_delegate",
                          "{\"agent_id\":\"worker\",\"task\":\"a fresh job\"}");
@@ -2061,9 +2061,9 @@ test_a_finished_parent_is_not_used(void)
                                      "an old job", NULL, NULL);
 
     lead = clawt_agent_manager_get(fixture.agents, "lead");
-    clawt_agent_deliver_turn(lead, 1, TRUE, "user",
+    clawt_agent_deliver_turn(lead, NULL, 1, TRUE, "user",
                              clawt_task_get_id(root));
-    clawt_agent_begin_turn(lead);
+    clawt_agent_begin_turn(lead, NULL);
 
     g_assert_true(clawt_task_manager_complete(fixture.tasks,
                                               clawt_task_get_id(root),

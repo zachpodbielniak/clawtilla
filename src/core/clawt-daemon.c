@@ -1335,7 +1335,8 @@ on_link_typing(ClawtLinkServer *server,
     agent = clawt_agent_manager_get(self->agents, agent_id);
 
     /*
-     * Whether this frame changed anything, before anything acts on it.
+     * Which begins this room's turn if the room was not already typing,
+     * and reports whether the *agent* went from idle to busy or back.
      *
      * The indicator is a level and not an edge.  libreclaw holds it up
      * for the whole of a turn and refreshes it every 25 seconds, and an
@@ -1343,6 +1344,9 @@ on_link_typing(ClawtLinkServer *server,
      * frame on its own says "a turn is running somewhere", never "a turn
      * is starting here".  Reading it as the latter is what reset the
      * turn state mid-turn every 25 seconds.
+     *
+     * The room's edge starts a turn; the agent's edge is what the
+     * watchdogs below take, because they hold one number per agent.
      */
     if (agent != NULL)
         edge = clawt_agent_note_typing(agent, room_id, typing);
@@ -1367,9 +1371,7 @@ on_link_typing(ClawtLinkServer *server,
      * message being answered had come. Every message this turn sends
      * counts from there.
      */
-    if (agent != NULL && typing && edge) {
-        clawt_agent_begin_turn(agent);
-
+    if (agent != NULL && typing) {
         /*
          * And if that turn is a delegated task, it is now running.
          *
@@ -1387,8 +1389,9 @@ on_link_typing(ClawtLinkServer *server,
          * routine paths that start theirs at delivery are unaffected.
          */
         if (self->tasks != NULL)
-            clawt_task_manager_start(self->tasks,
-                                     clawt_agent_get_turn_task_id(agent));
+            clawt_task_manager_start(
+                self->tasks,
+                clawt_agent_get_turn_task_id_in(agent, room_id));
     }
 
     /*
@@ -1555,7 +1558,8 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
 
         clawt_message_set_depth(
             message,
-            (sender != NULL) ? clawt_agent_get_hop_depth(sender) + 1 : 1);
+            (sender != NULL)
+                ? clawt_agent_get_hop_depth_in(sender, room_id) + 1 : 1);
 
         /*
          * And it is *not* cleared here.
@@ -1672,7 +1676,19 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
     if (thread_id == NULL && !is_operator_room(destination)) {
         ClawtAgent *replier = clawt_agent_manager_get(self->agents, agent_id);
 
-        if (replier != NULL && !clawt_agent_get_turn_replies(replier)) {
+        /*
+         * By the room this reply is for, not by the agent.
+         *
+         * An agent can be mid-turn in several rooms at once, and these
+         * two are the opposite mistakes: judging room B's answer by room
+         * A's closed exchange swallows something a peer is waiting for,
+         * and judging it the other way delivers a sign-off that costs
+         * the recipient a whole model turn.  room_id is what libreclaw
+         * echoed back from the delivery, so it is the same string the
+         * turn was filed under.
+         */
+        if (replier != NULL &&
+            !clawt_agent_get_turn_replies_in(replier, room_id)) {
             g_info("daemon: %s ended a closed exchange, so its reply to %s "
                    "was not sent", agent_id, destination);
             return;
