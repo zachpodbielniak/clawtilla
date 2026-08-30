@@ -172,7 +172,7 @@ call_list_agents(Fixture *fixture, const gchar *agent_id)
         "\"params\":{\"name\":\"clawtilla_list_agents\",\"arguments\":{}}}",
         -1, NULL));
 
-    response = clawt_mcp_tools_call(fixture->tools, agent_id,
+    response = clawt_mcp_tools_call(fixture->tools, agent_id, NULL,
                                     json_parser_get_root(parser));
     g_assert_nonnull(response);
 

@@ -437,6 +437,8 @@ JsonNode *clawt_mcp_tools_list(ClawtMcpTools *self, const gchar *agent_id);
  * clawt_mcp_tools_call:
  * @self: a #ClawtMcpTools
  * @agent_id: the agent calling
+ * @room_id: (nullable): which of the agent's conversations this call
+ *   belongs to, or %NULL when the caller cannot say
  * @request: (transfer none): an MCP JSON-RPC request
  *
  * Handles one tool call.
@@ -445,6 +447,7 @@ JsonNode *clawt_mcp_tools_list(ClawtMcpTools *self, const gchar *agent_id);
  */
 JsonNode *clawt_mcp_tools_call(ClawtMcpTools *self,
                                const gchar   *agent_id,
+                               const gchar   *room_id,
                                JsonNode      *request);
 
 /**
@@ -487,6 +490,7 @@ gboolean clawt_mcp_tools_call_defers(ClawtMcpTools *self,
  */
 void clawt_mcp_tools_call_async(ClawtMcpTools       *self,
                                 const gchar         *agent_id,
+                                const gchar         *room_id,
                                 JsonNode            *request,
                                 GAsyncReadyCallback  callback,
                                 gpointer             user_data);

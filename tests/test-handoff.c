@@ -517,7 +517,7 @@ call_tool(Fixture *fixture, const gchar *agent_id, const gchar *tool_name,
     g_assert_true(json_parser_load_from_data(parser, request, -1, NULL));
 
     response = clawt_mcp_tools_call(
-        clawt_daemon_get_mcp_tools(fixture->daemon), agent_id,
+        clawt_daemon_get_mcp_tools(fixture->daemon), agent_id, NULL,
         json_parser_get_root(parser));
 
     g_assert_nonnull(response);

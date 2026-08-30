@@ -1384,12 +1384,29 @@ sends it as ~room_id~, and libreclaw's clawtilla channel echoes the same
 string back on both the typing frame and the reply -- so the room on a
 frame is the room clawtilla delivered into.
 
-**A tool call still carries no room.**  Both entry points are
-agent-scoped: ~on_agent_mcp_request()~ over the agent's bridge link, and
-the ~tool.call~ verb that ~clawtilla-mcp-server~ uses.  ~.mcp.json~ is
-written per workspace and a workspace is per agent, so there is nowhere
-to put one.  The agent-wide getters therefore *fold* across the running
-turns, and each picks the safe direction rather than a plausible one:
+**A tool call is told which room it is part of.**  Nothing about the
+*transport* carries one -- ~.mcp.json~ is written per workspace and a
+workspace is per agent -- so it is carried alongside, from two sources
+that ~call_room()~ resolves in this order:
+
+1. **The runtime.**  libreclaw sets ~CLAWTILLA_ROOM_ID~ on the CLI client
+   for the session, in ~lc_session_process_message_async()~.  ai-glib
+   applies a client's environment at spawn and ~ai_cli_client_chat_sync()~
+   spawns per turn, so it is refreshed before each one.  The CLI passes it
+   to the ~clawtilla-mcp-server~ it starts from ~.mcp.json~, which puts it
+   in the ~tool.rpc~ frame beside the agent and the token.  One room per
+   session, and nothing the model touches.
+2. **The agent.**  A peer delivery's preamble names the room and asks for
+   it back as ~turn_room~ -- named that, not ~room_id~, because several
+   tools already take a room to act *on* and the two are different
+   questions.  Believed only while the agent has a turn running there: a
+   turn's description outlives its turn, so a *finished* room would still
+   answer, and naming an old shallow conversation would buy a lower hop
+   depth in the one the agent is really in.
+
+Neither being available is not a failure.  With no room the agent-wide
+getters *fold* across the running turns, each picking the safe direction
+rather than a plausible one:
 
 | Field | Folded as | Because |
 |-------+-----------+---------|
@@ -1397,6 +1414,14 @@ turns, and each picks the safe direction rather than a plausible one:
 | ~turn_task_id~ | only when the running turns **agree**, else none | a wrong parent hangs work under somebody else's job, where the depth limit measures from the wrong place and cancellation reaches into a tree it does not belong to. No parent is what the behaviour was before any of this existed |
 | ~turn_origin~ | any peer origin among them | the guard is really asking "did a peer start what I am doing", and with one peer turn running the answer is yes. The name may be the wrong peer, which is why the refusal points at ~clawtilla_message_agent~ rather than claiming certainty |
 | ~turn_replies~ | the most recent | there is no safe direction, so nothing pretends otherwise -- routing is decided by ~clawt_agent_get_turn_replies_in()~, which has the room |
+
+The fold is still what answers on the agent's bridge link, which is per
+agent rather than per session -- and that is not the production route,
+because ai-glib's CLI clients drop a tool list handed to them and
+~.mcp.json~ is how an agent gets tools at all.  Peer deliveries are also
+the only ones whose preamble names the room: an operator's chat is the
+common case, and a routing footer on every message in it is noise the
+environment already makes unnecessary.
 
 A turn's description **outlives the turn**.  libreclaw lowers the
 indicator in ~on_process_message_finish()~ and posts the answer

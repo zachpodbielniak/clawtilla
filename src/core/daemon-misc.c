@@ -562,6 +562,13 @@ clawt_daemon_handle_misc(
         /*
          * The orchestration tools, reachable over IPC.
          *
+         * `room` says which of the agent's conversations the call
+         * belongs to.  clawtilla-mcp-server reads it from the
+         * environment libreclaw set on the CLI that spawned it -- one
+         * room per session -- so it is the runtime's answer rather than
+         * the model's.  Absent from an older runtime, and the tools fold
+         * across the agent's running turns instead.
+         *
          * They were served only over the agent's link, as mcp.request
          * frames -- which assumed something on the agent side would
          * relay them into its AI session. Nothing did, and nothing
@@ -605,13 +612,17 @@ clawt_daemon_handle_misc(
                                            "answered later");
 
             clawt_mcp_tools_call_async(
-                self->mcp_tools, agent_id, rpc,
+                self->mcp_tools, agent_id,
+                clawt_ipc_payload_string(payload, "room"), rpc,
                 clawt_daemon_on_tool_rpc_finished, pending);
 
             return NULL;
         }
 
-        rpc_response = clawt_mcp_tools_call(self->mcp_tools, agent_id, rpc);
+        rpc_response = clawt_mcp_tools_call(self->mcp_tools, agent_id,
+                                            clawt_ipc_payload_string(payload,
+                                                                     "room"),
+                                            rpc);
 
         if (rpc_response == NULL)
             return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,

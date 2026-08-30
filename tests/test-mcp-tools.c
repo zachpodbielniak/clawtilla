@@ -31,6 +31,7 @@ typedef struct {
     gchar             *last_target;
     gchar             *last_body;
     ClawtPriority      last_priority;
+    gint               last_depth;
     gboolean           deliver_fails;
 } Fixture;
 
@@ -57,6 +58,7 @@ fake_deliver(const gchar   *from_agent,
     fixture->last_target = g_strdup(target);
     fixture->last_body = g_strdup(body);
     fixture->last_priority = priority;
+    fixture->last_depth = depth;
 
     return TRUE;
 }
@@ -122,9 +124,14 @@ fixture_teardown(Fixture *fixture)
     g_clear_pointer(&fixture->dir, g_free);
 }
 
+/*
+ * As call_tool(), naming which of the agent's conversations the call is
+ * part of -- which is what clawtilla-mcp-server passes from the
+ * environment libreclaw set on the CLI it was spawned by.
+ */
 static JsonNode *
-call_tool(Fixture *fixture, const gchar *agent_id, const gchar *tool_name,
-          const gchar *arguments_json)
+call_tool_in(Fixture *fixture, const gchar *agent_id, const gchar *room_id,
+             const gchar *tool_name, const gchar *arguments_json)
 {
     g_autoptr(JsonParser) parser = json_parser_new();
     g_autofree gchar *request = NULL;
@@ -137,8 +144,15 @@ call_tool(Fixture *fixture, const gchar *agent_id, const gchar *tool_name,
 
     g_assert_true(json_parser_load_from_data(parser, request, -1, &error));
 
-    return clawt_mcp_tools_call(fixture->tools, agent_id,
+    return clawt_mcp_tools_call(fixture->tools, agent_id, room_id,
                                 json_parser_get_root(parser));
+}
+
+static JsonNode *
+call_tool(Fixture *fixture, const gchar *agent_id, const gchar *tool_name,
+          const gchar *arguments_json)
+{
+    return call_tool_in(fixture, agent_id, NULL, tool_name, arguments_json);
 }
 
 static const gchar *
@@ -1052,7 +1066,7 @@ test_an_async_exec_answers_on_the_named_context(void)
      */
     g_assert_null(g_main_context_get_thread_default());
 
-    clawt_mcp_tools_call_async(fixture.tools, "chief",
+    clawt_mcp_tools_call_async(fixture.tools, "chief", NULL,
                                json_parser_get_root(parser),
                                on_async_exec_done, &probe);
 
@@ -1937,6 +1951,192 @@ test_message_user_is_refused_on_a_peers_later_messages(void)
 
 
 
+/* ── Which conversation a tool call belongs to ───────────────────── */
+
+/*
+ * A tool call answered for the conversation it is actually part of.
+ *
+ * An agent runs a turn per room and can have several going, so the hop
+ * depth, the turn origin and the task new work is parented on all depend
+ * on which one.  The call itself arrives on a per-agent link with no room
+ * on it, so libreclaw puts the session's room in the environment of the
+ * CLI that spawns clawtilla-mcp-server and the server passes it here.
+ *
+ * Without it every answer is a fold across every turn the agent has
+ * running -- safe, and wrong whenever it matters.
+ */
+static void
+test_the_runtimes_room_picks_the_turn(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) shallow = NULL;
+    g_autoptr(JsonNode) deep = NULL;
+    ClawtAgent *lead;
+    ClawtTask *one;
+    ClawtTask *two;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: lead\n    chief_of_staff: true\n"
+        "  - id: worker\n");
+
+    lead = clawt_agent_manager_get(fixture.agents, "lead");
+
+    one = clawt_task_manager_create(fixture.tasks, "user", "lead",
+                                    "the first job", NULL, NULL);
+    two = clawt_task_manager_create(fixture.tasks, "user", "lead",
+                                    "the second job", NULL, NULL);
+
+    /* Two conversations, at different depths, on different tasks. */
+    clawt_agent_deliver_turn(lead, "room-a", 1, TRUE, "user",
+                             clawt_task_get_id(one));
+    clawt_agent_deliver_turn(lead, "room-b", 5, TRUE, "user",
+                             clawt_task_get_id(two));
+    clawt_agent_note_typing(lead, "room-a", TRUE);
+    clawt_agent_note_typing(lead, "room-b", TRUE);
+
+    /* Delegating from room-a parents on room-a's task, not room-b's. */
+    shallow = call_tool_in(&fixture, "lead", "room-a", "clawtilla_delegate",
+                           "{\"agent_id\":\"worker\",\"task\":\"a piece\"}");
+    response_text(shallow, NULL);
+
+    /* And from room-b, on room-b's. */
+    deep = call_tool_in(&fixture, "lead", "room-b", "clawtilla_delegate",
+                        "{\"agent_id\":\"worker\",\"task\":\"another\"}");
+    response_text(deep, NULL);
+
+    {
+        g_autoptr(GPtrArray) children =
+            clawt_task_manager_list(fixture.tasks, "worker", TRUE);
+        gboolean saw_one = FALSE;
+        gboolean saw_two = FALSE;
+        guint i;
+
+        g_assert_cmpuint(children->len, ==, 2);
+
+        for (i = 0; i < children->len; i++) {
+            const gchar *parent =
+                clawt_task_get_parent_id(g_ptr_array_index(children, i));
+
+            if (g_strcmp0(parent, clawt_task_get_id(one)) == 0)
+                saw_one = TRUE;
+            if (g_strcmp0(parent, clawt_task_get_id(two)) == 0)
+                saw_two = TRUE;
+        }
+
+        /*
+         * One under each.  Folded across both turns the tasks disagree,
+         * so the answer would have been no parent at all -- twice.
+         */
+        g_assert_true(saw_one);
+        g_assert_true(saw_two);
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * An agent's own claim is believed only where it still has a turn.
+ *
+ * The runtime's answer is authoritative; this is the fallback for the
+ * paths that do not carry it -- the agent repeating what its delivery
+ * preamble told it.  A claim is worth what it can be checked against,
+ * and here there is something to check: a turn's description outlives
+ * the turn, deliberately, so that a reply posted after the indicator
+ * drops can still be judged.  An agent naming a room whose turn has
+ * *ended* would therefore be answered from it -- and naming an old,
+ * shallow conversation buys a lower hop depth in the one it is really
+ * in.
+ */
+static void
+test_an_agents_claimed_room_is_checked(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    ClawtAgent *chief;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: worker\n");
+
+    chief = clawt_agent_manager_get(fixture.agents, "chief");
+
+    /* A shallow conversation that has finished. */
+    clawt_agent_deliver_turn(chief, "room-shallow", 1, TRUE, "user", NULL);
+    clawt_agent_note_typing(chief, "room-shallow", TRUE);
+    clawt_agent_note_typing(chief, "room-shallow", FALSE);
+
+    /* And a deep one that has not. */
+    clawt_agent_deliver_turn(chief, "room-deep", 7, TRUE, "peer", NULL);
+    clawt_agent_note_typing(chief, "room-deep", TRUE);
+
+    response = call_tool_in(&fixture, "chief", NULL,
+                            "clawtilla_message_agent",
+                            "{\"agent_id\":\"worker\",\"body\":\"hello\","
+                            "\"turn_room\":\"room-shallow\"}");
+    response_text(response, NULL);
+
+    /*
+     * Answered from the turn it is actually in.  Believed, the finished
+     * room would have stamped this message at depth 2 instead of 8 --
+     * `orchestration.max_hops` measures the wrong conversation and a
+     * chain that should have been cut carries on.
+     */
+    g_assert_cmpint(fixture.last_depth, ==, 8);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And the runtime wins when the two disagree.
+ *
+ * The environment is set by libreclaw per session; the argument is the
+ * model repeating something back.  Where both are present there is no
+ * reason to prefer the one that can be got wrong.
+ */
+static void
+test_the_runtime_outranks_the_agents_claim(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    ClawtAgent *lead;
+    ClawtTask *one;
+    ClawtTask *two;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: lead\n    chief_of_staff: true\n"
+        "  - id: worker\n");
+
+    lead = clawt_agent_manager_get(fixture.agents, "lead");
+    one = clawt_task_manager_create(fixture.tasks, "user", "lead", "first",
+                                    NULL, NULL);
+    two = clawt_task_manager_create(fixture.tasks, "user", "lead", "second",
+                                    NULL, NULL);
+
+    clawt_agent_deliver_turn(lead, "room-a", 1, TRUE, "user",
+                             clawt_task_get_id(one));
+    clawt_agent_deliver_turn(lead, "room-b", 1, TRUE, "user",
+                             clawt_task_get_id(two));
+    clawt_agent_note_typing(lead, "room-a", TRUE);
+    clawt_agent_note_typing(lead, "room-b", TRUE);
+
+    response = call_tool_in(&fixture, "lead", "room-a", "clawtilla_delegate",
+                            "{\"agent_id\":\"worker\",\"task\":\"a piece\","
+                            "\"turn_room\":\"room-b\"}");
+    response_text(response, NULL);
+
+    {
+        g_autoptr(GPtrArray) children =
+            clawt_task_manager_list(fixture.tasks, "worker", TRUE);
+
+        g_assert_cmpuint(children->len, ==, 1);
+        g_assert_cmpstr(
+            clawt_task_get_parent_id(g_ptr_array_index(children, 0)),
+            ==, clawt_task_get_id(one));
+    }
+
+    fixture_teardown(&fixture);
+}
+
 /* ── The task tree ───────────────────────────────────────────────── */
 
 /*
@@ -2538,6 +2738,12 @@ main(int argc, char *argv[])
                     test_message_user_is_refused_on_a_peers_later_messages);
     g_test_add_func("/mcp/failing-command", test_failing_command_reports_why);
 
+    g_test_add_func("/mcp/turn-room/the-runtimes-room-picks-the-turn",
+                    test_the_runtimes_room_picks_the_turn);
+    g_test_add_func("/mcp/turn-room/an-agents-claim-is-checked",
+                    test_an_agents_claimed_room_is_checked);
+    g_test_add_func("/mcp/turn-room/the-runtime-outranks-the-claim",
+                    test_the_runtime_outranks_the_agents_claim);
     g_test_add_func("/mcp/delegate/records-the-parent-task",
                     test_delegating_from_a_task_records_the_parent);
     g_test_add_func("/mcp/delegate/outside-a-task-starts-a-root",

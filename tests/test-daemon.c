@@ -2476,7 +2476,8 @@ test_the_daemon_gives_the_tools_its_event_bus(void)
         "\"timeout\":10}}}", -1, NULL));
 
     response = clawt_mcp_tools_call(clawt_daemon_get_mcp_tools(fixture.daemon),
-                                    "chief", json_parser_get_root(parser));
+                                    "chief", NULL,
+                                    json_parser_get_root(parser));
     g_assert_nonnull(response);
 
     events = clawt_event_bus_replay(clawt_daemon_get_event_bus(fixture.daemon),

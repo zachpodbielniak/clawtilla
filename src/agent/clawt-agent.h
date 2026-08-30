@@ -538,6 +538,33 @@ gboolean clawt_agent_get_turn_replies_in(ClawtAgent  *self,
                                          const gchar *room_id);
 
 /**
+ * clawt_agent_get_turn_origin_in:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): the room being asked about
+ *
+ * Returns: (transfer none) (nullable): who started the turn in @room_id
+ */
+const gchar *clawt_agent_get_turn_origin_in(ClawtAgent  *self,
+                                            const gchar *room_id);
+
+/**
+ * clawt_agent_is_typing_in:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): the room being asked about
+ *
+ * Whether a turn is running in @room_id right now.
+ *
+ * For checking a room somebody *told* us about.  A tool call may carry
+ * the room its agent believes it is in, and a claim is worth only as
+ * much as it can be checked against: an agent with no turn running in
+ * the room it names is either mistaken or trying its luck, and either
+ * way the answer is to fall back rather than to believe it.
+ *
+ * Returns: %TRUE if that room has a turn running
+ */
+gboolean clawt_agent_is_typing_in(ClawtAgent *self, const gchar *room_id);
+
+/**
  * clawt_agent_get_turn_task_id_in:
  * @self: a #ClawtAgent
  * @room_id: (nullable): the room being asked about

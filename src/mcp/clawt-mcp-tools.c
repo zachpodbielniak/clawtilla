@@ -74,7 +74,12 @@ static const ClawtParamInfo message_agent_params[] = {
     { "body",     "string", "What to say.", TRUE },
     { "priority", "string",
       "low, normal, high or urgent. Urgent jumps the queue, so reserve it "
-      "for things that genuinely cannot wait.", FALSE }
+      "for things that genuinely cannot wait.", FALSE },
+    { "turn_room", "string",
+      "Which of your conversations this call is part of, from the "
+      "[clawtilla] line on the message you are handling. Only "
+      "needed when you are working in more than one at once; it is "
+      "not where the tool acts.", FALSE }
 };
 
 /*
@@ -111,7 +116,12 @@ static const ClawtParamInfo ask_decision_params[] = {
 
 static const ClawtParamInfo post_room_params[] = {
     { "room_id", "string", "Which room.", TRUE },
-    { "body",    "string", "What to say.", TRUE }
+    { "body",    "string", "What to say.", TRUE },
+    { "turn_room", "string",
+      "Which of your conversations this call is part of, from the "
+      "[clawtilla] line on the message you are handling. Only "
+      "needed when you are working in more than one at once; it is "
+      "not where the tool acts.", FALSE }
 };
 
 static const ClawtParamInfo ask_agent_params[] = {
@@ -124,7 +134,12 @@ static const ClawtParamInfo delegate_params[] = {
     { "task",     "string", "What they should do. Be specific: they cannot "
                             "see this conversation.", TRUE },
     { "reason",   "string", "Why this agent. Recorded for the audit trail.",
-      FALSE }
+      FALSE },
+    { "turn_room", "string",
+      "Which of your conversations this call is part of, from the "
+      "[clawtilla] line on the message you are handling. Only "
+      "needed when you are working in more than one at once; it is "
+      "not where the tool acts.", FALSE }
 };
 
 /*
@@ -141,7 +156,12 @@ static const ClawtParamInfo handoff_params[] = {
     { "reason",   "string",
       "Why they should have it, and where you got to. They see this, and "
       "it is the only context they get -- they cannot see this "
-      "conversation.", TRUE }
+      "conversation.", TRUE },
+    { "turn_room", "string",
+      "Which of your conversations this call is part of, from the "
+      "[clawtilla] line on the message you are handling. Only "
+      "needed when you are working in more than one at once; it is "
+      "not where the tool acts.", FALSE }
 };
 
 static const ClawtParamInfo task_id_params[] = {
@@ -178,7 +198,12 @@ static const ClawtParamInfo mailbox_id_params[] = {
 
 static const ClawtParamInfo mailbox_reply_params[] = {
     { "message_id", "string", "The message being replied to.", TRUE },
-    { "body",       "string", "The reply.", TRUE }
+    { "body",       "string", "The reply.", TRUE },
+    { "turn_room", "string",
+      "Which of your conversations this call is part of, from the "
+      "[clawtilla] line on the message you are handling. Only "
+      "needed when you are working in more than one at once; it is "
+      "not where the tool acts.", FALSE }
 };
 
 static const ClawtParamInfo create_room_params[] = {
@@ -214,7 +239,12 @@ static const ClawtParamInfo message_user_params[] = {
       "afterwards. Images are shown inline in the operator's client; "
       "anything else arrives as a file they can save. Use it for what "
       "you produced rather than what you are describing -- a screenshot, "
-      "a rendered diagram, an exported log.", FALSE }
+      "a rendered diagram, an exported log.", FALSE },
+    { "turn_room", "string",
+      "Which of your conversations this call is part of, from the "
+      "[clawtilla] line on the message you are handling. Only "
+      "needed when you are working in more than one at once; it is "
+      "not where the tool acts.", FALSE }
 };
 
 static const ClawtParamInfo memory_add_params[] = {
@@ -913,13 +943,71 @@ find_provider(ClawtMcpTools *self, const gchar *tool_name)
  * long still looked like twenty separate first messages.
  */
 static gint
-outbound_depth(ClawtMcpTools *self, const gchar *agent_id)
+outbound_depth(ClawtMcpTools *self, const gchar *agent_id,
+               const gchar *turn_room)
 {
     ClawtAgent *agent = (self->agents != NULL)
                         ? clawt_agent_manager_get(self->agents, agent_id)
                         : NULL;
 
-    return (agent != NULL) ? clawt_agent_get_hop_depth(agent) + 1 : 1;
+    return (agent != NULL)
+           ? clawt_agent_get_hop_depth_in(agent, turn_room) + 1 : 1;
+}
+
+static const gchar *argument_string(JsonObject *arguments,
+                                   const gchar *name);
+
+/*
+ * Which of the agent's conversations this call belongs to.
+ *
+ * An agent runs a turn per room and can have several going, so every
+ * answer built from turn state -- the hop depth, who asked, the task new
+ * work is parented on -- has to know which one.  Named `turn_room`
+ * throughout rather than `room_id`, because several tools already take a
+ * room to act *on* and the two are not the same question.
+ *
+ * Two sources, in this order:
+ *
+ *   1. @from_runtime: libreclaw puts the session's room in the
+ *      environment of the CLI that spawns clawtilla-mcp-server, one room
+ *      per session, refreshed before each turn.  Nothing the model
+ *      touches.
+ *   2. `turn_room` in the call's own arguments: the agent repeating what
+ *      its delivery preamble told it.  Believed only while it has a turn
+ *      running there -- a claim is worth what it can be checked against,
+ *      and an agent naming a room it is not in is either mistaken or
+ *      trying its luck, since a shallower room would buy it a lower hop
+ *      depth.
+ *
+ * Neither being available is not a failure.  Falling through to %NULL
+ * makes the getters fold across every turn the agent has running, which
+ * is a worse answer but a safe one, and is what every call did before
+ * either source existed.
+ */
+static const gchar *
+call_room(ClawtMcpTools *self, const gchar *agent_id,
+          const gchar *from_runtime, JsonObject *arguments)
+{
+    ClawtAgent *agent;
+    const gchar *claimed;
+
+    if (from_runtime != NULL)
+        return from_runtime;
+
+    claimed = argument_string(arguments, "turn_room");
+
+    if (claimed == NULL || self->agents == NULL)
+        return NULL;
+
+    agent = clawt_agent_manager_get(self->agents, agent_id);
+
+    if (agent == NULL || !clawt_agent_is_typing_in(agent, claimed)) {
+        g_info("mcp: %s named room '%s' and has no turn running there; "
+               "answering from every turn it does have", agent_id, claimed);
+        return NULL;
+    }
+
+    return claimed;
 }
 
 /*
@@ -942,13 +1030,15 @@ outbound_depth(ClawtMcpTools *self, const gchar *agent_id)
  * behaviour was everywhere until now.
  */
 static const gchar *
-delegating_from_task(ClawtMcpTools *self, const gchar *agent_id)
+delegating_from_task(ClawtMcpTools *self, const gchar *agent_id,
+                     const gchar *turn_room)
 {
     ClawtAgent *agent = (self->agents != NULL)
                         ? clawt_agent_manager_get(self->agents, agent_id)
                         : NULL;
-    const gchar *task_id = (agent != NULL)
-                           ? clawt_agent_get_turn_task_id(agent) : NULL;
+    const gchar *task_id =
+        (agent != NULL)
+        ? clawt_agent_get_turn_task_id_in(agent, turn_room) : NULL;
     ClawtTask *task;
 
     if (task_id == NULL || self->tasks == NULL)
@@ -2598,6 +2688,7 @@ priority_from_arguments(JsonObject     *arguments,
 static gchar *
 tool_message_agent(ClawtMcpTools *self,
                    const gchar   *agent_id,
+                   const gchar   *turn_room,
                    JsonObject    *arguments,
                    gboolean      *is_error)
 {
@@ -2637,7 +2728,7 @@ tool_message_agent(ClawtMcpTools *self,
     }
 
     if (!self->deliver(agent_id, target, body, NULL,
-                       outbound_depth(self, agent_id), priority,
+                       outbound_depth(self, agent_id, turn_room), priority,
                        self->deliver_data, &error)) {
         *is_error = TRUE;
         return g_strdup(error->message);
@@ -2666,6 +2757,7 @@ tool_message_agent(ClawtMcpTools *self,
 static gchar *
 tool_delegate(ClawtMcpTools *self,
               const gchar   *agent_id,
+              const gchar   *turn_room,
               JsonObject    *arguments,
               gboolean      *is_error)
 {
@@ -2714,7 +2806,7 @@ tool_delegate(ClawtMcpTools *self,
     }
 
     task = clawt_task_manager_create(self->tasks, agent_id, assignee, work,
-                                     delegating_from_task(self, agent_id),
+                                     delegating_from_task(self, agent_id, turn_room),
                                      &error);
     if (task == NULL) {
         *is_error = TRUE;
@@ -2724,7 +2816,7 @@ tool_delegate(ClawtMcpTools *self,
     clawt_task_set_reason(task, reason);
 
     if (!self->deliver(agent_id, assignee, work, clawt_task_get_id(task),
-                       outbound_depth(self, agent_id), CLAWT_PRIORITY_NORMAL,
+                       outbound_depth(self, agent_id, turn_room), CLAWT_PRIORITY_NORMAL,
                        self->deliver_data, &error)) {
         /*
          * The task is failed rather than left pending.  A task nobody was
@@ -2760,6 +2852,7 @@ tool_delegate(ClawtMcpTools *self,
 static gchar *
 tool_handoff(ClawtMcpTools *self,
              const gchar   *agent_id,
+             const gchar   *turn_room,
              JsonObject    *arguments,
              gboolean      *is_error)
 {
@@ -2867,7 +2960,7 @@ tool_handoff(ClawtMcpTools *self,
      */
     if (self->guard != NULL) {
         guint limit = clawt_loop_guard_get_max_hops(self->guard);
-        gint depth = outbound_depth(self, agent_id);
+        gint depth = outbound_depth(self, agent_id, turn_room);
 
         if (limit > 0 && depth > (gint)limit) {
             *is_error = TRUE;
@@ -3758,6 +3851,7 @@ tool_mailbox_list(ClawtMcpTools *self, const gchar *agent_id,
  */
 static gchar *
 tool_message_user(ClawtMcpTools *self, const gchar *agent_id,
+                  const gchar *turn_room,
                   JsonObject *arguments, gboolean *is_error)
 {
     const gchar *body = argument_string(arguments, "body");
@@ -3798,7 +3892,7 @@ tool_message_user(ClawtMcpTools *self, const gchar *agent_id,
                          ? clawt_agent_manager_get(self->agents, agent_id)
                          : NULL;
         const gchar *asked_by = (me != NULL)
-                                ? clawt_agent_get_turn_origin(me) : NULL;
+                                ? clawt_agent_get_turn_origin_in(me, turn_room) : NULL;
 
         if (asked_by != NULL && self->agents != NULL &&
             clawt_agent_manager_get(self->agents, asked_by) != NULL) {
@@ -3881,7 +3975,7 @@ tool_message_user(ClawtMcpTools *self, const gchar *agent_id,
                                          "user");
 
     if (!self->deliver(agent_id, clawt_room_get_id(room), body, NULL,
-                       outbound_depth(self, agent_id), CLAWT_PRIORITY_NORMAL,
+                       outbound_depth(self, agent_id, turn_room), CLAWT_PRIORITY_NORMAL,
                        self->deliver_data, &error)) {
         *is_error = TRUE;
         return g_strdup_printf("Could not reach your operator: %s",
@@ -4367,6 +4461,7 @@ room_for(ClawtMcpTools *self, const gchar *room_id, const gchar *caller)
 
 static gchar *
 tool_post_room(ClawtMcpTools *self, const gchar *agent_id,
+               const gchar *turn_room,
                JsonObject *arguments, gboolean *is_error)
 {
     const gchar *room_id = argument_string(arguments, "room_id");
@@ -4389,7 +4484,7 @@ tool_post_room(ClawtMcpTools *self, const gchar *agent_id,
     }
 
     if (!self->deliver(agent_id, room_id, body, NULL,
-                       outbound_depth(self, agent_id), CLAWT_PRIORITY_NORMAL,
+                       outbound_depth(self, agent_id, turn_room), CLAWT_PRIORITY_NORMAL,
                        self->deliver_data, &error)) {
         *is_error = TRUE;
         return g_strdup(error->message);
@@ -4550,6 +4645,7 @@ tool_mailbox_ack(ClawtMcpTools *self, const gchar *agent_id,
 
 static gchar *
 tool_mailbox_reply(ClawtMcpTools *self, const gchar *agent_id,
+                   const gchar *turn_room,
                    JsonObject *arguments, gboolean *is_error)
 {
     ClawtMailbox *mailbox = mailbox_of(self, agent_id);
@@ -4583,7 +4679,7 @@ tool_mailbox_reply(ClawtMcpTools *self, const gchar *agent_id,
 
     if (!self->deliver(agent_id, clawt_mailbox_item_get_from(item), body,
                        clawt_mailbox_item_get_task_id(item),
-                       outbound_depth(self, agent_id), CLAWT_PRIORITY_NORMAL,
+                       outbound_depth(self, agent_id, turn_room), CLAWT_PRIORITY_NORMAL,
                        self->deliver_data, &error)) {
         *is_error = TRUE;
         return g_strdup(error->message);
@@ -4697,6 +4793,7 @@ on_exec_call_finished(GObject *source, GAsyncResult *result,
 void
 clawt_mcp_tools_call_async(ClawtMcpTools       *self,
                            const gchar         *agent_id,
+                           const gchar         *room_id,
                            JsonNode            *request,
                            GAsyncReadyCallback  callback,
                            gpointer             user_data)
@@ -4712,6 +4809,15 @@ clawt_mcp_tools_call_async(ClawtMcpTools       *self,
 
     g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
     g_return_if_fail(request != NULL && JSON_NODE_HOLDS_OBJECT(request));
+
+    /*
+     * Taken and not used.  clawt_mcp_tools_call_defers() answers TRUE for
+     * clawtilla_computer_exec alone, and running a command on a computer
+     * does not read the turn state.  It is on the signature so that a
+     * deferred tool added later is handed the room rather than having to
+     * discover that this path silently dropped it.
+     */
+    (void)room_id;
 
     /*
      * g_task_new() captures g_main_context_ref_thread_default(), which
@@ -4805,8 +4911,10 @@ clawt_mcp_tools_call_finish(ClawtMcpTools *self, GAsyncResult *result)
 JsonNode *
 clawt_mcp_tools_call(ClawtMcpTools *self,
                      const gchar   *agent_id,
+                     const gchar   *room_id,
                      JsonNode      *request)
 {
+    const gchar *turn_room = NULL;
     JsonObject *root;
     JsonObject *params = NULL;
     JsonObject *arguments = NULL;
@@ -4868,6 +4976,13 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
     if (tool_name == NULL)
         return make_response(request_id, "No tool was named.", TRUE);
 
+    /*
+     * Resolved once, here, rather than in each tool that needs it: they
+     * would each have to be handed both sources and would each get to
+     * disagree about which wins.
+     */
+    turn_room = call_room(self, agent_id, room_id, arguments);
+
     observe_call(self, agent_id, tool_name, arguments);
 
     if (!clawt_mcp_tools_is_permitted(self, agent_id, tool_name)) {
@@ -4891,7 +5006,7 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
         text = tool_get_agent(self, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_message_agent") == 0 ||
              g_strcmp0(tool_name, "clawtilla_ask_agent") == 0)
-        text = tool_message_agent(self, agent_id, arguments, &is_error);
+        text = tool_message_agent(self, agent_id, turn_room, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_ask_decision") == 0)
         text = tool_ask_decision(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_fleet_cost") == 0)
@@ -4899,9 +5014,9 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
     else if (g_strcmp0(tool_name, "clawtilla_list_teams") == 0)
         text = tool_list_teams(self, agent_id);
     else if (g_strcmp0(tool_name, "clawtilla_delegate") == 0)
-        text = tool_delegate(self, agent_id, arguments, &is_error);
+        text = tool_delegate(self, agent_id, turn_room, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_handoff") == 0)
-        text = tool_handoff(self, agent_id, arguments, &is_error);
+        text = tool_handoff(self, agent_id, turn_room, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_trigger_list") == 0)
         text = tool_trigger_list(self, agent_id);
     else if (g_strcmp0(tool_name, "clawtilla_task_list") == 0)
@@ -4962,7 +5077,7 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
                                    "finished.", task_id);
         }
     } else if (g_strcmp0(tool_name, "clawtilla_message_user") == 0)
-        text = tool_message_user(self, agent_id, arguments, &is_error);
+        text = tool_message_user(self, agent_id, turn_room, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_memory_add") == 0)
         text = tool_memory_add(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_memory_search") == 0)
@@ -4994,9 +5109,9 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
     else if (g_strcmp0(tool_name, "clawtilla_mailbox_ack") == 0)
         text = tool_mailbox_ack(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_mailbox_reply") == 0)
-        text = tool_mailbox_reply(self, agent_id, arguments, &is_error);
+        text = tool_mailbox_reply(self, agent_id, turn_room, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_post_room") == 0)
-        text = tool_post_room(self, agent_id, arguments, &is_error);
+        text = tool_post_room(self, agent_id, turn_room, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_create_room") == 0)
         text = tool_create_room(self, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_room_history") == 0)

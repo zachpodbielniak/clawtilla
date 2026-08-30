@@ -228,8 +228,17 @@ on_agent_mcp_request(ClawtLink *link, JsonNode *request, gpointer user_data)
 {
     ClawtDaemon *self = user_data;
 
+    /*
+     * No room: this path forwards an MCP request over the agent's bridge
+     * link, which is per agent rather than per session.  The production
+     * route is the MCP server named in .mcp.json -- ai-glib's CLI clients
+     * drop a tool list handed to them -- and that one carries the room
+     * from the environment libreclaw set on the CLI.  Here the tools fold
+     * across the agent's running turns instead.
+     */
     return clawt_mcp_tools_call(self->mcp_tools,
-                                clawt_link_get_agent_id(link), request);
+                                clawt_link_get_agent_id(link), NULL,
+                                request);
 }
 
 static void

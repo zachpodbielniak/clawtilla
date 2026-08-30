@@ -842,7 +842,14 @@ versions apart.
   makes this possible at all. A tool call still carries no room (both entry
   points are agent-scoped and `.mcp.json` is per workspace), so the agent-wide
   getters fold across the running turns and each picks the *safe* direction:
-  deepest depth, a task id only when they agree, any peer origin. And a turn's
+  deepest depth, a task id only when they agree, any peer origin. The fold is
+  the *fallback*, not the answer: libreclaw sets `CLAWTILLA_ROOM_ID` on the
+  session's CLI client, ai-glib applies a client's environment at spawn and
+  the CLI spawns per turn, so `clawtilla-mcp-server` inherits it and puts it
+  in the `tool.rpc` frame. A peer delivery's preamble also names the room and
+  asks for it back as `turn_room` -- believed only while the agent has a turn
+  running there, because a turn's description outlives its turn and a
+  *finished* room would otherwise answer, buying a lower hop depth. And a turn's
   description outlives its turn, because the indicator drops before the answer
   is posted.
 - **A typing indicator is a level, not an edge, and it is per room while the

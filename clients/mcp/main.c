@@ -195,6 +195,7 @@ typedef struct {
     ClawtClient *client;
     gchar       *agent;
     gchar       *token;
+    const gchar *room;   /* which conversation, from the environment */
 } Bridge;
 
 /*
@@ -215,6 +216,26 @@ forward(Bridge *bridge, JsonNode *request, JsonNode *id)
     json_builder_begin_object(builder);
     json_builder_set_member_name(builder, "agent");
     json_builder_add_string_value(builder, bridge->agent);
+
+    /*
+     * Which of the agent's conversations this call belongs to.
+     *
+     * An agent runs a turn per room and this server is named once per
+     * *workspace*, so the connection cannot say on its own -- and the
+     * daemon was left resolving an agent's hop depth, its turn origin
+     * and the task new work is parented on by folding across every turn
+     * it had running.
+     *
+     * libreclaw puts it in the environment of the CLI that spawns this,
+     * one room per session, refreshed before each turn.  Absent means an
+     * older runtime or a path that does not set it, and the daemon falls
+     * back to the fold: this is the answer when there is one, never a
+     * guess dressed as one.
+     */
+    if (bridge->room != NULL) {
+        json_builder_set_member_name(builder, "room");
+        json_builder_add_string_value(builder, bridge->room);
+    }
 
     if (bridge->token != NULL) {
         json_builder_set_member_name(builder, "token");
@@ -429,6 +450,21 @@ main(int argc, char *argv[])
 
     bridge.client = client;
     bridge.agent = opt_agent;
+
+    /*
+     * Read once, not per call: this process serves one CLI, that CLI is
+     * one libreclaw session, and a session is one room.  Read per call it
+     * would still be the same string, and a getenv() in the hot path
+     * would suggest it might not be.
+     *
+     * Empty is the same as absent -- an environment variable set to
+     * nothing is how a shell wrapper clears one, and a room named "" is
+     * a room nothing was ever delivered into.
+     */
+    bridge.room = g_getenv("CLAWTILLA_ROOM_ID");
+
+    if (bridge.room != NULL && *bridge.room == '\0')
+        bridge.room = NULL;
 
     raw_in = g_unix_input_stream_new(STDIN_FILENO, FALSE);
     in = g_data_input_stream_new(raw_in);

@@ -507,6 +507,36 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
                 "they may answer once.\n\n%s",
                 from, from, clawt_mailbox_item_get_body(item));
 
+        /*
+         * And which conversation it is, named so the agent can say so.
+         *
+         * An agent can be mid-turn in several rooms at once, and a tool
+         * call arrives at the daemon on a per-agent link with no room on
+         * it.  libreclaw puts the session's room in the CLI's
+         * environment, which is the answer when it is there; this is the
+         * agent's own copy, for the paths where it is not, and for the
+         * ordinary case of an agent needing to say which conversation it
+         * is talking about.
+         *
+         * Appended rather than prepended: the message is what the agent
+         * is being asked to act on, and a routing detail above it is
+         * read as part of the request.
+         */
+        if (peer && body != NULL) {
+            g_autofree gchar *addressed = g_steal_pointer(&body);
+
+            body = g_strdup_printf(
+                "%s\n\n[clawtilla] This conversation is room '%s'. If you "
+                "call a clawtilla tool while handling this, pass "
+                "turn_room: \"%s\" so it is answered for this "
+                "conversation and not another one you are also in. It is "
+                "not where the tool acts -- clawtilla_post_room still "
+                "takes its own room_id -- it is which of your "
+                "conversations you are in.",
+                addressed, clawt_mailbox_item_get_room(item),
+                clawt_mailbox_item_get_room(item));
+        }
+
         if (!clawt_link_deliver(link,
                                 clawt_mailbox_item_get_room(item),
                                 from,

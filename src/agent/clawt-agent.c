@@ -958,6 +958,27 @@ clawt_agent_get_turn_task_id_in(ClawtAgent *self, const gchar *room_id)
                            : clawt_agent_get_turn_task_id(self);
 }
 
+const gchar *
+clawt_agent_get_turn_origin_in(ClawtAgent *self, const gchar *room_id)
+{
+    TurnSetup *setup;
+
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), NULL);
+
+    setup = turn_in(self, room_id);
+
+    return (setup != NULL) ? setup->origin
+                           : clawt_agent_get_turn_origin(self);
+}
+
+gboolean
+clawt_agent_is_typing_in(ClawtAgent *self, const gchar *room_id)
+{
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), FALSE);
+
+    return room_is_live(self, room_id);
+}
+
 gboolean
 clawt_agent_note_typing(ClawtAgent  *self,
                         const gchar *room_id,
