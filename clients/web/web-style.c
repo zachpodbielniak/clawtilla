@@ -309,8 +309,14 @@ clawt_web_stylesheet(void)
      * URL somebody can paste -- which is the whole reason the sub-view
      * is in the path rather than in a cookie.
      */
-    ".computer-subnav{display:flex;gap:4px;flex-wrap:wrap;"
+    ".subnav{display:flex;gap:4px;flex-wrap:wrap;"
       "margin:0 0 12px;border-bottom:1px solid var(--line)}"
+    /*
+     * The section's row sits in the content column rather than inside a
+     * padded view, so it brings the topbar's own inset with it and no
+     * bottom margin -- the page under it supplies that.
+     */
+    ".section-subnav{margin:0;padding:0 24px;background:var(--surface)}"
     ".subnav-tab{padding:6px 12px;border-radius:6px 6px 0 0;"
       "text-decoration:none;color:var(--ink-2);font-size:.9rem}"
     ".subnav-tab[aria-current=page]{color:var(--ink);"

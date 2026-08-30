@@ -235,11 +235,11 @@ on_item_action(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (reply == NULL)
         return clawt_web_error_page(action->app, request, agent_id,
-                                    CLAWT_WEB_VIEW_MAILBOX,
+                                    CLAWT_PAGE_MAILBOX,
                                     clawt_web_app_last_error(action->app));
 
     return clawt_web_after_action(action->app, request, agent_id,
-                                  CLAWT_WEB_VIEW_MAILBOX, action->done);
+                                  CLAWT_PAGE_MAILBOX, action->done);
 }
 
 /*
@@ -265,7 +265,7 @@ on_purge(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_MAILBOX,
+                                    CLAWT_PAGE_MAILBOX,
                                     clawt_web_app_last_error(app));
 
     said = g_strdup_printf("Purged %" G_GINT64_FORMAT " expired item(s).",
@@ -273,7 +273,7 @@ on_purge(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                                 "purged", 0));
 
     return clawt_web_after_action(app, request, agent_id,
-                                  CLAWT_WEB_VIEW_MAILBOX, said);
+                                  CLAWT_PAGE_MAILBOX, said);
 }
 
 static ItemAction *

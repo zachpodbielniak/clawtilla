@@ -618,7 +618,7 @@ add_subnav(HtmxElement *parent, const gchar *agent_id, ClawtComputerView on,
     g_autofree gchar *escaped = g_uri_escape_string(agent_id, NULL, FALSE);
     guint i;
 
-    htmx_element_add_class(HTMX_ELEMENT(nav), "computer-subnav");
+    htmx_element_add_class(HTMX_ELEMENT(nav), "subnav");
 
     for (i = 0; i < clawt_computer_view_count(); i++) {
         ClawtComputerView view = clawt_computer_view_nth(i);
@@ -845,7 +845,7 @@ on_exec(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (command == NULL || *command == '\0')
         return clawt_web_after_action(app, request, agent_id,
-                                      CLAWT_WEB_VIEW_COMPUTER, NULL);
+                                      CLAWT_PAGE_COMPUTER, NULL);
 
     payload = clawt_web_payload_new();
     clawt_web_payload_set(payload, "agent", agent_id);
@@ -856,7 +856,7 @@ on_exec(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_COMPUTER,
+                                    CLAWT_PAGE_COMPUTER,
                                     clawt_web_app_last_error(app));
 
     /*
@@ -875,7 +875,7 @@ on_exec(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
 
-    html = clawt_web_page(app, agent_id, CLAWT_WEB_VIEW_COMPUTER, view, request);
+    html = clawt_web_page(app, agent_id, CLAWT_PAGE_COMPUTER, view, request);
 
     return clawt_web_html_response(html);
 }
@@ -895,11 +895,11 @@ on_rebuild(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_COMPUTER,
+                                    CLAWT_PAGE_COMPUTER,
                                     clawt_web_app_last_error(app));
 
     return clawt_web_after_action(app, request, agent_id,
-                                  CLAWT_WEB_VIEW_COMPUTER,
+                                  CLAWT_PAGE_COMPUTER,
                                   "Rebuilt. Start the agent to bring it up.");
 }
 
@@ -916,7 +916,7 @@ on_mount_add(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (target == NULL || *target == '\0')
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_COMPUTER,
+                                    CLAWT_PAGE_COMPUTER,
                                     "A mount needs a target path inside the "
                                     "computer.");
 
@@ -938,11 +938,11 @@ on_mount_add(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_COMPUTER,
+                                    CLAWT_PAGE_COMPUTER,
                                     clawt_web_app_last_error(app));
 
     return clawt_web_after_action(
-        app, request, agent_id, CLAWT_WEB_VIEW_COMPUTER,
+        app, request, agent_id, CLAWT_PAGE_COMPUTER,
         "Added. Restart the agent for it to appear inside the computer.");
 }
 
@@ -963,11 +963,11 @@ on_mount_remove(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_COMPUTER,
+                                    CLAWT_PAGE_COMPUTER,
                                     clawt_web_app_last_error(app));
 
     return clawt_web_after_action(app, request, agent_id,
-                                  CLAWT_WEB_VIEW_COMPUTER, "Mount removed.");
+                                  CLAWT_PAGE_COMPUTER, "Mount removed.");
 }
 
 /*
@@ -1007,7 +1007,7 @@ on_computer_power(HtmxRequest *request, GHashTable *params,
         kind = "computer.restart";
     else
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_COMPUTER,
+                                    CLAWT_PAGE_COMPUTER,
                                     "That is not a power verb.");
 
     clawt_web_payload_set(payload, "agent", agent_id);
@@ -1026,7 +1026,7 @@ on_computer_power(HtmxRequest *request, GHashTable *params,
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_COMPUTER,
+                                    CLAWT_PAGE_COMPUTER,
                                     clawt_web_app_last_error(app));
 
     outcome = clawt_web_member(clawt_web_root(reply), "state", "?");
@@ -1036,7 +1036,7 @@ on_computer_power(HtmxRequest *request, GHashTable *params,
                                                  outcome);
 
         return clawt_web_after_action(app, request, agent_id,
-                                      CLAWT_WEB_VIEW_COMPUTER, said);
+                                      CLAWT_PAGE_COMPUTER, said);
     }
 }
 
@@ -1059,7 +1059,7 @@ on_computer_tab(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     view = clawt_web_computer_view_body(
         app, agent_id, clawt_computer_view_from_nick(tab));
-    html = clawt_web_page(app, agent_id, CLAWT_WEB_VIEW_COMPUTER, view,
+    html = clawt_web_page(app, agent_id, CLAWT_PAGE_COMPUTER, view,
                           request);
 
     return clawt_web_html_response(html);
@@ -1166,11 +1166,11 @@ on_screen_unwatch(HtmxRequest *request, GHashTable *params,
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_COMPUTER,
+                                    CLAWT_PAGE_COMPUTER,
                                     clawt_web_app_last_error(app));
 
     return clawt_web_after_action(
-        app, request, agent_id, CLAWT_WEB_VIEW_COMPUTER,
+        app, request, agent_id, CLAWT_PAGE_COMPUTER,
         "Stopped watching. Nothing is being captured for this browser.");
 }
 
@@ -1191,11 +1191,11 @@ on_screen_take(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_COMPUTER,
+                                    CLAWT_PAGE_COMPUTER,
                                     clawt_web_app_last_error(app));
 
     return clawt_web_after_action(
-        app, request, agent_id, CLAWT_WEB_VIEW_COMPUTER,
+        app, request, agent_id, CLAWT_PAGE_COMPUTER,
         "You have the screen. The agent's own clicks are refused until "
         "you give it back, and the hold lapses on its own if you forget.");
 }
@@ -1217,11 +1217,11 @@ on_screen_release(HtmxRequest *request, GHashTable *params,
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_COMPUTER,
+                                    CLAWT_PAGE_COMPUTER,
                                     clawt_web_app_last_error(app));
 
     return clawt_web_after_action(app, request, agent_id,
-                                  CLAWT_WEB_VIEW_COMPUTER,
+                                  CLAWT_PAGE_COMPUTER,
                                   "The agent has the screen back.");
 }
 
@@ -1259,7 +1259,7 @@ on_screen_input(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                   g_ascii_strtoll(y, NULL, 10));
     } else {
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_COMPUTER,
+                                    CLAWT_PAGE_COMPUTER,
                                     "Nothing to send: fill in text, a key, "
                                     "or a pair of coordinates.");
     }
@@ -1270,11 +1270,11 @@ on_screen_input(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_COMPUTER,
+                                    CLAWT_PAGE_COMPUTER,
                                     clawt_web_app_last_error(app));
 
     return clawt_web_after_action(app, request, agent_id,
-                                  CLAWT_WEB_VIEW_COMPUTER, "Sent.");
+                                  CLAWT_PAGE_COMPUTER, "Sent.");
 }
 
 /*

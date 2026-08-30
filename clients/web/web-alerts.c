@@ -270,7 +270,7 @@ on_alerts(HtmxRequest *request, GHashTable *params, gpointer user_data)
                        (agent != NULL && *agent != '\0') ? agent : NULL);
     clawt_web_app_alerts_mark_read(app);
 
-    html = clawt_web_page(app, NULL, CLAWT_WEB_VIEW_CHAT, body, request);
+    html = clawt_web_page(app, NULL, CLAWT_PAGE_CHAT, body, request);
 
     return clawt_web_html_response(html);
 }

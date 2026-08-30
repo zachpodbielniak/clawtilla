@@ -86,6 +86,26 @@ struct _ClawtWebApp {
      * copy and `event.list` reads it for anything older.
      */
     GPtrArray   *alerts;
+
+    /*
+     * How many decisions are open, and whether that number is still
+     * true.
+     *
+     * Not maintained by counting `decision.asked` against
+     * `decision.settled`: a replay that fell off the ring would leave
+     * the tally permanently wrong with nothing to say so, and a count
+     * that is merely too high reads as an inbox nobody has got to.
+     * Instead any `decision.` event marks it unknown, and the next
+     * render asks -- so the daemon is the only thing that ever decides
+     * the number, and it is asked once per change rather than once per
+     * page.
+     *
+     * Asked from the getter, during a render, and never from the event
+     * handler: a request issued from there would run while a page
+     * render is blocked inside its own request on the same context.
+     */
+    guint        open_decisions;
+    gboolean     decisions_known;
     guint        next_alert_id;
 
     /*
@@ -320,6 +340,42 @@ clawt_web_app_unread(ClawtWebApp *self, const gchar *agent_id)
 }
 
 guint
+clawt_web_app_open_decisions(ClawtWebApp *self)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    JsonArray *items;
+
+    g_return_val_if_fail(CLAWT_IS_WEB_APP(self), 0);
+
+    if (self->decisions_known)
+        return self->open_decisions;
+
+    {
+        ClawtWebPayload *query = clawt_web_payload_new();
+
+        clawt_web_payload_set_bool(query, "open", TRUE);
+        reply = clawt_web_app_call(self, "decision.list",
+                                   clawt_web_payload_take(query));
+    }
+
+    /*
+     * A daemon that did not answer leaves the count unknown rather than
+     * zero, so the next render asks again.  Storing zero would draw a
+     * clear inbox for as long as the connection is down, which is the
+     * one direction this number must never be wrong in.
+     */
+    if (reply == NULL)
+        return 0;
+
+    items = clawt_web_member_array(clawt_web_root(reply), "decisions");
+
+    self->open_decisions = (items != NULL) ? json_array_get_length(items) : 0;
+    self->decisions_known = TRUE;
+
+    return self->open_decisions;
+}
+
+guint
 clawt_web_app_unread_total(ClawtWebApp *self)
 {
     GHashTableIter iter;
@@ -522,6 +578,13 @@ clawt_web_app_switch(ClawtWebApp *self, ClawtConnection *connection,
     clawt_web_app_set_connection(self, connection);
 
     /*
+     * The decision inbox belongs to the daemon, so the count from the
+     * previous one says nothing about this one.  Marked unknown rather
+     * than zeroed: zero is a claim, and the first render will ask.
+     */
+    self->decisions_known = FALSE;
+
+    /*
      * The version belongs to the daemon, not to this process, so it is
      * asked again.  A banner kept from the machine somebody just
      * switched away from is worse than no banner.
@@ -641,6 +704,18 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
     }
 
     /*
+     * One was filed, answered or dismissed -- by this browser, another
+     * one, the CLI, or the venture bridge answering on the operator's
+     * behalf.  Whichever it was, the count on the Work tab is no longer
+     * known to be right.
+     *
+     * Marked rather than adjusted, and nothing is asked from in here:
+     * see the field's own note.
+     */
+    if (kind != NULL && g_str_has_prefix(kind, "decision."))
+        self->decisions_known = FALSE;
+
+    /*
      * Two of the daemon's kinds are notifications; the rest is the
      * routine stream, kept quietly.  `image.progress` is excluded -- a
      * download emits one per percent and would fill the list with one
@@ -757,6 +832,16 @@ on_resync(ClawtClient *client, gpointer user_data)
     (void)client;
 
     g_hash_table_remove_all(self->unread);
+
+    /*
+     * And the decision count is asked again rather than kept.
+     *
+     * A resync means the replay had a hole, so a `decision.settled`
+     * this client needed may be in it -- and a cached count that missed
+     * one is wrong in the direction that reads as work waiting.
+     */
+    self->decisions_known = FALSE;
+
     tell_every_page(self, "resync");
 }
 

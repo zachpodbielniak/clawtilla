@@ -33,7 +33,7 @@
  * be exercised without one; nothing here asserts on the frame.
  */
 HtmxElement *
-clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtWebView view)
+clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view)
 {
     (void)app;
     (void)selected;
@@ -43,7 +43,7 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtWebView view)
 }
 
 HtmxElement *
-clawt_web_topbar(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view)
+clawt_web_topbar(ClawtWebApp *app, const gchar *agent_id, ClawtPage view)
 {
     (void)app;
     (void)agent_id;
@@ -352,37 +352,133 @@ static void
 test_agent_urls_escape_the_id(void)
 {
     g_autofree gchar *url = clawt_web_agent_url("odd id?x=1",
-                                                CLAWT_WEB_VIEW_MAILBOX);
+                                                CLAWT_PAGE_MAILBOX);
 
     g_assert_null(strchr(url, '?'));
     g_assert_null(strchr(url, ' '));
     g_assert_true(g_str_has_suffix(url, "/mailbox"));
 }
 
+/*
+ * The nicknames and their round trip now belong to the library, and are
+ * covered by tests/test-sections.c.  What is this client's own is the
+ * row of page tabs it draws under the topbar for whichever section is
+ * open.
+ */
+
+/*
+ * Every page of the open section gets a tab, and only that section's.
+ *
+ * The topbar above it shows six section tabs; without this row the five
+ * pages that are not a section's first would have no link anywhere in
+ * the client -- reachable only by typing the URL, which is the failure
+ * this whole change is meant to prevent rather than move.
+ */
 static void
-test_every_view_has_a_slug_and_a_title(void)
+test_the_subnav_lists_the_open_sections_pages(void)
 {
+    g_autoptr(HtmxElement) nav =
+        clawt_web_section_subnav("scribe", CLAWT_PAGE_DECISIONS);
+    g_autofree gchar *html = NULL;
     guint i;
 
-    for (i = 0; i < CLAWT_WEB_N_VIEWS; i++) {
-        const gchar *slug = clawt_web_view_slug((ClawtWebView)i);
+    g_assert_nonnull(nav);
+    html = htmx_element_render(nav);
 
-        g_assert_nonnull(slug);
-        g_assert_cmpuint(strlen(slug), >, 0);
-        g_assert_nonnull(clawt_web_view_title((ClawtWebView)i));
+    for (i = 0; i < clawt_section_page_count(CLAWT_SECTION_WORK); i++) {
+        ClawtPage page = clawt_section_page_nth(CLAWT_SECTION_WORK, i);
+        g_autofree gchar *href =
+            g_strdup_printf("href=\"/a/scribe/%s\"", clawt_page_nick(page));
 
-        /* A slug has to survive the round trip, or a tab leads elsewhere. */
-        g_assert_cmpint(clawt_web_view_from_slug(slug), ==, (gint)i);
+        g_assert_nonnull(strstr(html, href));
+        g_assert_nonnull(strstr(html, clawt_page_label(page)));
     }
+
+    /* And nothing from another section. */
+    g_assert_null(strstr(html, "/a/scribe/skills"));
+    g_assert_null(strstr(html, "/a/scribe/mailbox"));
 }
 
+/*
+ * The tab for the page being read says so.
+ *
+ * Without it every tab in the row looks the same, and the row stops
+ * being able to answer "where am I" -- which is most of what it is for
+ * when the section tab above only says "Work".
+ */
 static void
-test_an_unknown_view_falls_back_to_chat(void)
+test_the_subnav_marks_the_page_being_read(void)
 {
-    g_assert_cmpint(clawt_web_view_from_slug("nonsense"), ==,
-                    CLAWT_WEB_VIEW_CHAT);
-    g_assert_cmpint(clawt_web_view_from_slug(NULL), ==,
-                    CLAWT_WEB_VIEW_CHAT);
+    g_autoptr(HtmxElement) nav =
+        clawt_web_section_subnav("scribe", CLAWT_PAGE_FLOW);
+    g_autofree gchar *html = htmx_element_render(nav);
+    g_auto(GStrv) tags = NULL;
+    guint marked = 0;
+    guint i;
+
+    g_assert_nonnull(nav);
+
+    /*
+     * Split into tags rather than matched as one string.  The attribute
+     * order is htmx-glib's to choose, so an assertion spelling
+     * `href="..." aria-current` tests that library's rendering and not
+     * this row -- and would pass or fail for reasons nothing here
+     * controls.
+     *
+     * Counted as well as located: two marked tabs and none marked are
+     * different bugs, and looking only for the right one catches the
+     * second.
+     */
+    tags = g_strsplit(html, "<a ", -1);
+
+    for (i = 0; tags[i] != NULL; i++) {
+        if (strstr(tags[i], "aria-current") == NULL)
+            continue;
+
+        marked++;
+        g_assert_nonnull(strstr(tags[i], "/a/scribe/flow"));
+    }
+
+    g_assert_cmpuint(marked, ==, 1);
+}
+
+/*
+ * And no row at all for a section that is one page.
+ *
+ * Chat and Computer are each a single page, so a row would hold one tab
+ * -- a control that does nothing, costing a strip of the window to say
+ * so on the two pages somebody spends the most time on.
+ */
+static void
+test_a_single_page_section_draws_no_subnav(void)
+{
+    g_assert_cmpuint(clawt_section_page_count(CLAWT_SECTION_CHAT), ==, 1);
+
+    g_assert_null(clawt_web_section_subnav("scribe", CLAWT_PAGE_CHAT));
+    g_assert_null(clawt_web_section_subnav("scribe", CLAWT_PAGE_COMPUTER));
+
+    /* Nor with no agent selected, where the links would have no target. */
+    g_assert_null(clawt_web_section_subnav(NULL, CLAWT_PAGE_DECISIONS));
+}
+
+/*
+ * The id is escaped here too.
+ *
+ * The topbar's links go through clawt_web_agent_url() and are covered
+ * above; this row builds its own and would have been the one place a
+ * "?" in an agent id still took the rest of the path into the query
+ * string.
+ */
+static void
+test_the_subnav_escapes_the_agent_id(void)
+{
+    g_autoptr(HtmxElement) nav =
+        clawt_web_section_subnav("odd id?x=1", CLAWT_PAGE_TASKS);
+    g_autofree gchar *html = htmx_element_render(nav);
+
+    g_assert_nonnull(nav);
+    g_assert_null(strstr(html, "?x=1"));
+    g_assert_nonnull(strstr(html, "/a/odd%20id%3Fx%3D1/tasks"));
 }
 
 /* ── The stylesheet ──────────────────────────────────────────────── */
@@ -1237,7 +1333,7 @@ test_the_page_emits_the_drawer_toggle(void)
     const gchar *toggle;
     const gchar *sidebar;
 
-    html = clawt_web_page(NULL, "alpha", CLAWT_WEB_VIEW_CHAT,
+    html = clawt_web_page(NULL, "alpha", CLAWT_PAGE_CHAT,
                           HTMX_ELEMENT(g_object_ref(body)), NULL);
 
     g_assert_nonnull(html);
@@ -1285,7 +1381,7 @@ test_the_connection_banner_is_drawn_when_there_is_something_to_say(void)
     g_autofree gchar *noisy = NULL;
 
     the_connection_notice = NULL;
-    quiet = clawt_web_page(NULL, "chief", CLAWT_WEB_VIEW_CHAT, NULL, NULL);
+    quiet = clawt_web_page(NULL, "chief", CLAWT_PAGE_CHAT, NULL, NULL);
 
     g_assert_nonnull(quiet);
 
@@ -1299,7 +1395,7 @@ test_the_connection_banner_is_drawn_when_there_is_something_to_say(void)
     g_assert_null(strstr(quiet, "class=\"clawt-connection-banner\""));
 
     the_connection_notice = "This daemon is <older> & this client is not.";
-    noisy = clawt_web_page(NULL, "chief", CLAWT_WEB_VIEW_CHAT, NULL, NULL);
+    noisy = clawt_web_page(NULL, "chief", CLAWT_PAGE_CHAT, NULL, NULL);
     the_connection_notice = NULL;
 
     g_assert_nonnull(noisy);
@@ -1380,10 +1476,14 @@ main(int argc, char *argv[])
 
     g_test_add_func("/web/agent-urls-escape-the-id",
                     test_agent_urls_escape_the_id);
-    g_test_add_func("/web/every-view-has-a-slug-and-a-title",
-                    test_every_view_has_a_slug_and_a_title);
-    g_test_add_func("/web/an-unknown-view-falls-back-to-chat",
-                    test_an_unknown_view_falls_back_to_chat);
+    g_test_add_func("/web/the-subnav-lists-the-open-sections-pages",
+                    test_the_subnav_lists_the_open_sections_pages);
+    g_test_add_func("/web/the-subnav-marks-the-page-being-read",
+                    test_the_subnav_marks_the_page_being_read);
+    g_test_add_func("/web/a-single-page-section-draws-no-subnav",
+                    test_a_single_page_section_draws_no_subnav);
+    g_test_add_func("/web/the-subnav-escapes-the-agent-id",
+                    test_the_subnav_escapes_the_agent_id);
 
     g_test_add_func("/web/the-app-is-measured-in-dvh",
                     test_the_app_is_measured_in_dynamic_viewport_height);

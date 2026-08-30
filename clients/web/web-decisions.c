@@ -301,6 +301,21 @@ decisions_body(ClawtWebApp *app, gboolean all)
     return HTMX_ELEMENT(g_steal_pointer(&view));
 }
 
+/*
+ * The inbox is every agent's, so the agent whose tabs somebody came in
+ * through does not narrow it.  Taken and ignored to keep one shape for
+ * clawt_web_view_body()'s dispatch -- the page says so itself, in the
+ * card's own wording, rather than leaving a reader to wonder whose
+ * decisions these are.
+ */
+HtmxElement *
+clawt_web_decisions_body(ClawtWebApp *app, const gchar *agent_id)
+{
+    (void)agent_id;
+
+    return decisions_body(app, FALSE);
+}
+
 static HtmxResponse *
 on_decisions(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
@@ -312,7 +327,8 @@ on_decisions(HtmxRequest *request, GHashTable *params, gpointer user_data)
     (void)params;
 
     body = decisions_body(app, all != NULL && *all != '\0');
-    html = clawt_web_page(app, NULL, CLAWT_WEB_VIEW_CHAT, body, request);
+    html = clawt_web_page(app, NULL, CLAWT_PAGE_DECISIONS, body,
+                          request);
 
     return clawt_web_html_response(html);
 }

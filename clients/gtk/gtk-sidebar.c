@@ -86,7 +86,7 @@ clawt_gtk_update_unread_tab(ClawtWindow *self)
     guint total = 0;
     gboolean hide;
 
-    if (self->chat_page == NULL || self->unread == NULL)
+    if (self->unread == NULL)
         return;
 
     g_hash_table_iter_init(&iter, self->unread);
@@ -94,15 +94,12 @@ clawt_gtk_update_unread_tab(ClawtWindow *self)
     while (g_hash_table_iter_next(&iter, NULL, &value))
         total += GPOINTER_TO_UINT(value);
 
-    hide = g_strcmp0(adw_view_stack_get_visible_child_name(self->pages),
-                     "chat") == 0 &&
+    hide = clawt_gtk_current_page(self) == CLAWT_PAGE_CHAT &&
            self->split != NULL &&
            !adw_overlay_split_view_get_collapsed(self->split);
 
-    adw_view_stack_page_set_badge_number(self->chat_page,
-                                         hide ? 0 : total);
-    adw_view_stack_page_set_needs_attention(self->chat_page,
-                                            !hide && total > 0);
+    clawt_gtk_set_page_badge(self, CLAWT_PAGE_CHAT, hide ? 0 : total,
+                             !hide && total > 0);
 }
 
 /*

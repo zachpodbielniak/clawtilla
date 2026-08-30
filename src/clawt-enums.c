@@ -1409,3 +1409,251 @@ clawt_trigger_provider_nth_label(guint n)
 
     return trigger_providers[n].label;
 }
+
+/* ── The pages, and the groups they are drawn in ─────────────────── */
+
+/*
+ * The six groups, in the order the switcher shows them.
+ *
+ * Chat first because it is what the window opens on.  Agent and Computer
+ * next, being about the one agent selected in the sidebar; then
+ * Automation and Work, which are about what it is doing; then Library,
+ * which is about the fleet and is the one somebody reaches for least
+ * often.
+ */
+static const struct {
+    ClawtSection  section;
+    const gchar  *nick;
+    const gchar  *label;
+} clawt_section_order[] = {
+    { CLAWT_SECTION_CHAT,       "chat",       "Chat" },
+    { CLAWT_SECTION_AGENT,      "agent",      "Agent" },
+    { CLAWT_SECTION_COMPUTER,   "computer",   "Computer" },
+    { CLAWT_SECTION_AUTOMATION, "automation", "Automation" },
+    { CLAWT_SECTION_WORK,       "work",       "Work" },
+    { CLAWT_SECTION_LIBRARY,    "library",    "Library" }
+};
+
+/*
+ * Every page, grouped.
+ *
+ * Ordered by section and then within it, which is what lets
+ * clawt_section_page_nth() walk a run of this table rather than filter
+ * it -- and what makes a page that has been moved to another section a
+ * visible edit here rather than a silent reordering somewhere else.
+ *
+ * The nickname is the URL and the widget name at once.  Both clients
+ * already had these spellings; they are unchanged so that a link
+ * somebody bookmarked still lands where it did.
+ *
+ * There is deliberately no icon column.  The web client draws none and
+ * the GTK client picks one from a `switch` with no `default:`, so a
+ * section added here fails to compile there until somebody chooses --
+ * which is better than a GNOME icon name sitting in a library that must
+ * never link GTK.
+ */
+static const struct {
+    ClawtPage     page;
+    ClawtSection  section;
+    const gchar  *nick;
+    const gchar  *label;
+} clawt_page_order[] = {
+    { CLAWT_PAGE_CHAT,      CLAWT_SECTION_CHAT,       "chat",      "Chat" },
+    { CLAWT_PAGE_AGENT,     CLAWT_SECTION_AGENT,      "agent",     "Overview" },
+    { CLAWT_PAGE_MAILBOX,   CLAWT_SECTION_AGENT,      "mailbox",   "Mailbox" },
+    { CLAWT_PAGE_COMPUTER,  CLAWT_SECTION_COMPUTER,   "computer",  "Computer" },
+    { CLAWT_PAGE_ROUTINES,  CLAWT_SECTION_AUTOMATION, "routines",  "Routines" },
+    { CLAWT_PAGE_TRIGGERS,  CLAWT_SECTION_AUTOMATION, "triggers",  "Triggers" },
+    { CLAWT_PAGE_TASKS,     CLAWT_SECTION_WORK,       "tasks",     "Tasks" },
+    { CLAWT_PAGE_DECISIONS, CLAWT_SECTION_WORK,       "decisions", "Decisions" },
+    { CLAWT_PAGE_FLOW,      CLAWT_SECTION_WORK,       "flow",      "Flow" },
+    { CLAWT_PAGE_SKILLS,    CLAWT_SECTION_LIBRARY,    "skills",    "Skills" },
+    { CLAWT_PAGE_MEMORY,    CLAWT_SECTION_LIBRARY,    "memory",    "Memory" }
+};
+
+guint
+clawt_section_count(void)
+{
+    return G_N_ELEMENTS(clawt_section_order);
+}
+
+ClawtSection
+clawt_section_nth(guint n)
+{
+    if (n >= G_N_ELEMENTS(clawt_section_order))
+        return CLAWT_SECTION_CHAT;
+
+    return clawt_section_order[n].section;
+}
+
+const gchar *
+clawt_section_nth_nick(guint n)
+{
+    if (n >= G_N_ELEMENTS(clawt_section_order))
+        return clawt_section_order[0].nick;
+
+    return clawt_section_order[n].nick;
+}
+
+const gchar *
+clawt_section_nth_label(guint n)
+{
+    if (n >= G_N_ELEMENTS(clawt_section_order))
+        return clawt_section_order[0].label;
+
+    return clawt_section_order[n].label;
+}
+
+static gssize
+clawt_section_index(ClawtSection section)
+{
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(clawt_section_order); i++) {
+        if (clawt_section_order[i].section == section)
+            return (gssize)i;
+    }
+
+    return -1;
+}
+
+const gchar *
+clawt_section_nick(ClawtSection section)
+{
+    gssize i = clawt_section_index(section);
+
+    return (i < 0) ? clawt_section_order[0].nick
+                   : clawt_section_order[i].nick;
+}
+
+const gchar *
+clawt_section_label(ClawtSection section)
+{
+    gssize i = clawt_section_index(section);
+
+    return (i < 0) ? clawt_section_order[0].label
+                   : clawt_section_order[i].label;
+}
+
+ClawtSection
+clawt_section_from_nick(const gchar *nick)
+{
+    gsize i;
+
+    if (nick == NULL)
+        return CLAWT_SECTION_CHAT;
+
+    for (i = 0; i < G_N_ELEMENTS(clawt_section_order); i++) {
+        if (g_strcmp0(nick, clawt_section_order[i].nick) == 0)
+            return clawt_section_order[i].section;
+    }
+
+    return CLAWT_SECTION_CHAT;
+}
+
+guint
+clawt_section_page_count(ClawtSection section)
+{
+    guint count = 0;
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(clawt_page_order); i++) {
+        if (clawt_page_order[i].section == section)
+            count++;
+    }
+
+    return count;
+}
+
+ClawtPage
+clawt_section_page_nth(ClawtSection section, guint n)
+{
+    guint seen = 0;
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(clawt_page_order); i++) {
+        if (clawt_page_order[i].section != section)
+            continue;
+
+        if (seen == n)
+            return clawt_page_order[i].page;
+
+        seen++;
+    }
+
+    return CLAWT_PAGE_CHAT;
+}
+
+ClawtPage
+clawt_section_default_page(ClawtSection section)
+{
+    return clawt_section_page_nth(section, 0);
+}
+
+guint
+clawt_page_count(void)
+{
+    return G_N_ELEMENTS(clawt_page_order);
+}
+
+/*
+ * Found by walking rather than by indexing with the enumeration value.
+ *
+ * The two agree -- tests/test-sections.c asserts it, which is what lets
+ * a client size an array by clawt_page_count() and index it by the value
+ * it is holding -- but a lookup that assumes it would answer for the
+ * wrong page the first time somebody reorders the table, and answer
+ * confidently.
+ */
+static gssize
+clawt_page_index(ClawtPage page)
+{
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(clawt_page_order); i++) {
+        if (clawt_page_order[i].page == page)
+            return (gssize)i;
+    }
+
+    return -1;
+}
+
+const gchar *
+clawt_page_nick(ClawtPage page)
+{
+    gssize i = clawt_page_index(page);
+
+    return (i < 0) ? clawt_page_order[0].nick : clawt_page_order[i].nick;
+}
+
+const gchar *
+clawt_page_label(ClawtPage page)
+{
+    gssize i = clawt_page_index(page);
+
+    return (i < 0) ? clawt_page_order[0].label : clawt_page_order[i].label;
+}
+
+ClawtSection
+clawt_page_section(ClawtPage page)
+{
+    gssize i = clawt_page_index(page);
+
+    return (i < 0) ? CLAWT_SECTION_CHAT : clawt_page_order[i].section;
+}
+
+ClawtPage
+clawt_page_from_nick(const gchar *nick)
+{
+    gsize i;
+
+    if (nick == NULL)
+        return CLAWT_PAGE_CHAT;
+
+    for (i = 0; i < G_N_ELEMENTS(clawt_page_order); i++) {
+        if (g_strcmp0(nick, clawt_page_order[i].nick) == 0)
+            return clawt_page_order[i].page;
+    }
+
+    return CLAWT_PAGE_CHAT;
+}

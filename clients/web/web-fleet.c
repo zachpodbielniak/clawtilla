@@ -131,7 +131,7 @@ clawt_web_find_agent(ClawtWebApp *app, const gchar *agent_id)
 /* ── The sidebar ─────────────────────────────────────────────────── */
 
 static HtmxElement *
-agent_row(JsonObject *agent, const gchar *selected, ClawtWebView view,
+agent_row(JsonObject *agent, const gchar *selected, ClawtPage view,
           guint unread)
 {
     const gchar *id = clawt_web_member(agent, "id", "?");
@@ -439,7 +439,7 @@ team_picker(JsonArray *teams, JsonObject *agent)
 }
 
 HtmxElement *
-clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtWebView view)
+clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view)
 {
     g_autoptr(HtmxElement) aside = HTMX_ELEMENT(htmx_aside_new());
     g_autoptr(HtmxDiv) head = htmx_div_new();
@@ -691,8 +691,26 @@ add_lifecycle_buttons(HtmxElement *parent, const gchar *agent_id,
     }
 }
 
+/*
+ * The pill a section tab carries.
+ *
+ * One builder for both, because two would be two spellings of the same
+ * class and the second would be the one that stopped matching the
+ * stylesheet.
+ */
+static void
+add_tab_badge(HtmxElement *tab, guint count)
+{
+    g_autoptr(HtmxSpan) pill = htmx_span_new();
+    g_autofree gchar *text = g_strdup_printf("%u", count);
+
+    htmx_element_add_class(HTMX_ELEMENT(pill), "unread-badge");
+    htmx_node_set_text_content(HTMX_NODE(pill), text);
+    htmx_node_add_child(HTMX_NODE(tab), HTMX_NODE(pill));
+}
+
 HtmxElement *
-clawt_web_topbar(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view)
+clawt_web_topbar(ClawtWebApp *app, const gchar *agent_id, ClawtPage view)
 {
     g_autoptr(HtmxElement) bar = HTMX_ELEMENT(htmx_header_new());
     g_autoptr(HtmxHeading) title = htmx_heading_new(2);
@@ -740,16 +758,27 @@ clawt_web_topbar(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view)
 
     htmx_element_add_class(tabs, "tabs");
 
-    for (i = 0; i < CLAWT_WEB_N_VIEWS; i++) {
-        g_autofree gchar *url = clawt_web_agent_url(agent_id,
-                                                    (ClawtWebView)i);
+    /*
+     * Six section tabs, not eleven page tabs.
+     *
+     * Walked out of clawt_section_count() rather than listed, so the
+     * browser cannot come to file a page under a different heading than
+     * the window does -- and so a page added to the library appears in
+     * both or in neither.  The row of pages inside a section is drawn by
+     * clawt_web_section_subnav(), under the bar rather than in it.
+     */
+    for (i = 0; i < clawt_section_count(); i++) {
+        ClawtSection section = clawt_section_nth(i);
+        g_autofree gchar *url =
+            clawt_web_agent_url(agent_id,
+                                clawt_section_default_page(section));
         g_autoptr(HtmxA) tab = htmx_a_new_with_href(url);
 
         htmx_element_add_class(HTMX_ELEMENT(tab), "tab");
         htmx_node_set_text_content(HTMX_NODE(tab),
-                                   clawt_web_view_title((ClawtWebView)i));
+                                   clawt_section_nth_label(i));
 
-        if ((ClawtWebView)i == view)
+        if (section == clawt_page_section(view))
             htmx_element_set_attribute(HTMX_ELEMENT(tab), "aria-current",
                                        "page");
 
@@ -759,18 +788,32 @@ clawt_web_topbar(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view)
          * agent, which is strictly more information, and a badge on the
          * page you are looking at is noise.
          */
-        if ((ClawtWebView)i == CLAWT_WEB_VIEW_CHAT &&
-            view != CLAWT_WEB_VIEW_CHAT) {
+        if (section == CLAWT_SECTION_CHAT && view != CLAWT_PAGE_CHAT) {
             guint total = clawt_web_app_unread_total(app);
 
-            if (total > 0) {
-                g_autoptr(HtmxSpan) pill = htmx_span_new();
-                g_autofree gchar *text = g_strdup_printf("%u", total);
+            if (total > 0)
+                add_tab_badge(HTMX_ELEMENT(tab), total);
+        }
 
-                htmx_element_add_class(HTMX_ELEMENT(pill), "unread-badge");
-                htmx_node_set_text_content(HTMX_NODE(pill), text);
-                htmx_node_add_child(HTMX_NODE(tab), HTMX_NODE(pill));
-            }
+        /*
+         * And how many decisions are waiting, on the section that holds
+         * them.
+         *
+         * A badge on the page itself would be invisible until somebody
+         * opened Work, which for this number defeats the point of having
+         * one: an agent waiting on a person has to be visible without
+         * anybody thinking to look.  The GTK client sums its section's
+         * pages for the same reason.
+         *
+         * Drawn while Work is open too, unlike the unread total: the
+         * sidebar does not say how many decisions there are, so nothing
+         * else on screen carries it.
+         */
+        if (section == CLAWT_SECTION_WORK) {
+            guint waiting = clawt_web_app_open_decisions(app);
+
+            if (waiting > 0)
+                add_tab_badge(HTMX_ELEMENT(tab), waiting);
         }
 
         htmx_node_add_child(HTMX_NODE(tabs), HTMX_NODE(tab));
@@ -790,41 +833,48 @@ clawt_web_topbar(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view)
 }
 
 /* ── Dispatch ────────────────────────────────────────────────────── */
-
 HtmxElement *
-clawt_web_view_body(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view)
+clawt_web_view_body(ClawtWebApp *app, const gchar *agent_id, ClawtPage view)
 {
+    /*
+     * No `default:`, so -Wswitch names a page added to the library that
+     * this client does not draw.  It used to fall through to the chat
+     * page, which meant a tab the GTK client had and this one did not
+     * answered 200 with somebody else's conversation.
+     */
     switch (view) {
-    case CLAWT_WEB_VIEW_CHAT:
+    case CLAWT_PAGE_CHAT:
         return clawt_web_chat_body(app, agent_id);
-    case CLAWT_WEB_VIEW_AGENT:
+    case CLAWT_PAGE_AGENT:
         return clawt_web_agent_body(app, agent_id);
-    case CLAWT_WEB_VIEW_MAILBOX:
+    case CLAWT_PAGE_MAILBOX:
         return clawt_web_mailbox_body(app, agent_id);
-    case CLAWT_WEB_VIEW_COMPUTER:
+    case CLAWT_PAGE_COMPUTER:
         return clawt_web_computer_body(app, agent_id);
-    case CLAWT_WEB_VIEW_ROUTINES:
+    case CLAWT_PAGE_ROUTINES:
         return clawt_web_routines_body(app, agent_id);
-    case CLAWT_WEB_VIEW_TRIGGERS:
+    case CLAWT_PAGE_TRIGGERS:
         return clawt_web_triggers_body(app, agent_id);
-    case CLAWT_WEB_VIEW_TASKS:
+    case CLAWT_PAGE_TASKS:
         return clawt_web_tasks_body(app, agent_id);
-    case CLAWT_WEB_VIEW_FLOW:
+    case CLAWT_PAGE_DECISIONS:
+        return clawt_web_decisions_body(app, agent_id);
+    case CLAWT_PAGE_FLOW:
         return clawt_web_flow_body(app, agent_id);
-    case CLAWT_WEB_VIEW_SKILLS:
+    case CLAWT_PAGE_SKILLS:
         return clawt_web_skills_body(app, agent_id);
-    default:
-        break;
+    case CLAWT_PAGE_MEMORY:
+        return clawt_web_memory_body(app, agent_id);
     }
 
-    return clawt_web_chat_body(app, agent_id);
+    g_return_val_if_reached(clawt_web_chat_body(app, agent_id));
 }
 
 /* ── Responses after an action ───────────────────────────────────── */
 
 static HtmxResponse *
 page_with_banner(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
-                 ClawtWebView view, const gchar *text, const gchar *tone)
+                 ClawtPage view, const gchar *text, const gchar *tone)
 {
     /*
      * Copied before anything else happens.
@@ -865,7 +915,7 @@ page_with_banner(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
 
 HtmxResponse *
 clawt_web_after_action(ClawtWebApp *app, HtmxRequest *request,
-                       const gchar *agent_id, ClawtWebView view,
+                       const gchar *agent_id, ClawtPage view,
                        const gchar *toast)
 {
     /*
@@ -898,7 +948,7 @@ clawt_web_after_action(ClawtWebApp *app, HtmxRequest *request,
 
 HtmxResponse *
 clawt_web_error_page(ClawtWebApp *app, HtmxRequest *request,
-                     const gchar *agent_id, ClawtWebView view,
+                     const gchar *agent_id, ClawtPage view,
                      const gchar *message)
 {
     return page_with_banner(app, request, agent_id, view, message, "bad");
@@ -916,7 +966,7 @@ on_index(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (first != NULL) {
         g_autofree gchar *url = clawt_web_agent_url(first,
-                                                    CLAWT_WEB_VIEW_CHAT);
+                                                    CLAWT_PAGE_CHAT);
 
         return clawt_web_redirect(request, url);
     }
@@ -954,7 +1004,7 @@ on_index(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
         htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
 
-        html = clawt_web_page(app, NULL, CLAWT_WEB_VIEW_CHAT,
+        html = clawt_web_page(app, NULL, CLAWT_PAGE_CHAT,
                               HTMX_ELEMENT(view), request);
 
         return clawt_web_html_response(html);
@@ -967,11 +1017,11 @@ on_agent_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
     ClawtWebApp *app = user_data;
     g_autofree gchar *agent_id = clawt_web_param(params, "id");
     g_autofree gchar *slug = clawt_web_param(params, "view");
-    ClawtWebView view = clawt_web_view_from_slug(slug);
+    ClawtPage view = clawt_page_from_nick(slug);
     g_autoptr(HtmxElement) body = NULL;
     g_autofree gchar *html = NULL;
 
-    if (view == CLAWT_WEB_VIEW_CHAT) {
+    if (view == CLAWT_PAGE_CHAT) {
         /*
          * `with` names one of this agent's peer conversations. Read here
          * rather than in a route of its own, because this handler
@@ -998,7 +1048,7 @@ on_agent_root(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
     g_autofree gchar *agent_id = clawt_web_param(params, "id");
     g_autofree gchar *url = clawt_web_agent_url(agent_id,
-                                                CLAWT_WEB_VIEW_CHAT);
+                                                CLAWT_PAGE_CHAT);
 
     (void)user_data;
 
@@ -1017,7 +1067,7 @@ on_sidebar_fragment(HtmxRequest *request, GHashTable *params,
     (void)params;
 
     sidebar = clawt_web_sidebar(app, selected,
-                                clawt_web_view_from_slug(slug));
+                                clawt_page_from_nick(slug));
 
     return clawt_web_fragment_response(sidebar);
 }
@@ -1050,11 +1100,11 @@ on_lifecycle(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (reply == NULL)
         return clawt_web_error_page(action->app, request, agent_id,
-                                    CLAWT_WEB_VIEW_CHAT,
+                                    CLAWT_PAGE_CHAT,
                                     clawt_web_app_last_error(action->app));
 
     return clawt_web_after_action(action->app, request, agent_id,
-                                  CLAWT_WEB_VIEW_CHAT, action->done);
+                                  CLAWT_PAGE_CHAT, action->done);
 }
 
 static LifecycleAction *
@@ -1374,7 +1424,7 @@ on_create_agent(HtmxRequest *request, GHashTable *params, gpointer user_data)
     if (id == NULL || *id == '\0') {
         g_autofree gchar *first = clawt_web_first_agent(app);
 
-        return clawt_web_error_page(app, request, first, CLAWT_WEB_VIEW_CHAT,
+        return clawt_web_error_page(app, request, first, CLAWT_PAGE_CHAT,
                                     "An agent needs an id.");
     }
 
@@ -1419,7 +1469,7 @@ on_create_agent(HtmxRequest *request, GHashTable *params, gpointer user_data)
         g_autofree gchar *failure = g_strdup(clawt_web_app_last_error(app));
         g_autofree gchar *first = clawt_web_first_agent(app);
 
-        return clawt_web_error_page(app, request, first, CLAWT_WEB_VIEW_CHAT,
+        return clawt_web_error_page(app, request, first, CLAWT_PAGE_CHAT,
                                     failure);
     }
 
@@ -1435,12 +1485,12 @@ on_create_agent(HtmxRequest *request, GHashTable *params, gpointer user_data)
             "Created, but it did not start: %s",
             clawt_web_member(root, "start_error", ""));
 
-        return clawt_web_error_page(app, request, id, CLAWT_WEB_VIEW_CHAT,
+        return clawt_web_error_page(app, request, id, CLAWT_PAGE_CHAT,
                                     said);
     }
 
     {
-        g_autofree gchar *url = clawt_web_agent_url(id, CLAWT_WEB_VIEW_CHAT);
+        g_autofree gchar *url = clawt_web_agent_url(id, CLAWT_PAGE_CHAT);
 
         return clawt_web_redirect(request, url);
     }
@@ -1476,7 +1526,7 @@ on_design(HtmxRequest *request, GHashTable *params, gpointer user_data)
         g_autofree gchar *failure = g_strdup(clawt_web_app_last_error(app));
         g_autofree gchar *first = clawt_web_first_agent(app);
 
-        return clawt_web_error_page(app, request, first, CLAWT_WEB_VIEW_CHAT,
+        return clawt_web_error_page(app, request, first, CLAWT_PAGE_CHAT,
                                     failure);
     }
 
@@ -1572,7 +1622,7 @@ on_design_commit(HtmxRequest *request, GHashTable *params, gpointer user_data)
         g_autofree gchar *failure = g_strdup(clawt_web_app_last_error(app));
         g_autofree gchar *first = clawt_web_first_agent(app);
 
-        return clawt_web_error_page(app, request, first, CLAWT_WEB_VIEW_CHAT,
+        return clawt_web_error_page(app, request, first, CLAWT_PAGE_CHAT,
                                     failure);
     }
 
@@ -1586,7 +1636,7 @@ on_design_commit(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     {
         g_autofree gchar *url = clawt_web_agent_url(created,
-                                                    CLAWT_WEB_VIEW_CHAT);
+                                                    CLAWT_PAGE_CHAT);
 
         return clawt_web_redirect(request, url);
     }
@@ -1750,12 +1800,12 @@ on_import(HtmxRequest *request, GHashTable *params, gpointer user_data)
         g_autofree gchar *failure = g_strdup(clawt_web_app_last_error(app));
         g_autofree gchar *first = clawt_web_first_agent(app);
 
-        return clawt_web_error_page(app, request, first, CLAWT_WEB_VIEW_CHAT,
+        return clawt_web_error_page(app, request, first, CLAWT_PAGE_CHAT,
                                     failure);
     }
 
     {
-        g_autofree gchar *url = clawt_web_agent_url(id, CLAWT_WEB_VIEW_CHAT);
+        g_autofree gchar *url = clawt_web_agent_url(id, CLAWT_PAGE_CHAT);
 
         return clawt_web_redirect(request, url);
     }

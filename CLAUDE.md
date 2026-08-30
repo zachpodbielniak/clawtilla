@@ -730,6 +730,13 @@ versions apart.
   re-read rather than carry a hole.
 - Replayed events are not counted as unread -- they keep their timestamps, so
   one comparison against the connect time settles it.
+- **An event that fires only on arrival cannot maintain a count.**
+  `decision.asked` was published and settling one published nothing, so every
+  client's badge could only go up: a second window, the CLI or the venture
+  bridge answering left the others drawing an inbox that was already empty --
+  and a count that is merely too high reads as work nobody has got to, so
+  nothing looked wrong. Publish both ends, or do not let a client cache the
+  number.
 - An event that cannot say **where** it happened is not enough. `message` is
   published from `clawt_mailbox_router_send()`, the only place that knows the
   room; anything published before routing is guessing.
@@ -1067,10 +1074,16 @@ versions apart.
   literals. Its affordance layer reads a corpus with `web-style.c` **excluded**,
   because a class name in the stylesheet is not a capability. Layers 5 needs
   declaring by hand, and cannot catch a feature nobody declared.
-- Comments are text too, so a grep-based check strips `/* */` before matching;
-  and `cmd | grep -q` under `pipefail` fails on success (SIGPIPE, 141). Write
-  to a file and grep the file. A parity check that has never been shown to fail
-  is a parity check that reports OK.
+- Comments are text too, so a grep-based check strips `/* */` before matching
+  -- in **every** layer, not the one where somebody noticed. Layers 4 and 5 did
+  and layer 3 did not, so a comment reading "walked out of
+  `clawt_section_count()`" reported the enumeration as walked with the loop
+  under it deleted, and `clawt_page_count()`'s comment explaining that it
+  deliberately has *no* `_nth()` twin made the pair look present -- a real
+  failure announced about an API that does not exist. And `cmd | grep -q` under
+  `pipefail` fails on success (SIGPIPE, 141). Write to a file and grep the
+  file. A parity check that has never been shown to fail is a parity check that
+  reports OK.
 - A rule both clients apply belongs in the **library**, where it is testable
   without a window or a browser: `clawt_unread_should_count()`,
   `clawt_alert_tier_for_event()`, `clawt_chat_run_is_start()`,
@@ -1088,6 +1101,15 @@ versions apart.
   walk the enum in the test: `-Wswitch` names an unclassified state, and
   the test fails on a tone the stylesheet does not paint.
 - Two row builders for one kind of content drift; fix it by **deleting** one.
+- **A switcher does not tell you it ran out of room.** `AdwViewSwitcher` at
+  `POLICY_WIDE` neither ellipsises nor overflows: it is clipped, silently, so
+  eleven tabs meant the pages somebody could reach depended on the monitor --
+  and on the machine it was written on they all fit. Pages are grouped into
+  `ClawtSection` (six), each section drawing its own row when it holds more
+  than one, walked from the library by both clients. A section's tab carries
+  the **sum** of its pages' badges, or a count one level down is invisible
+  until somebody opens the section -- which for Decisions defeats the point of
+  having one.
 - A timestamp rendered on the server is wrong before it arrives -- nothing
   re-renders an unchanged message, so a page left open says "2m ago" for an
   hour. The chat stamps the clock (24-hour: a 12-hour locale does not fit the

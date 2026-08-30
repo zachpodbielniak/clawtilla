@@ -562,10 +562,10 @@ routines_page(ClawtWebApp *app, HtmxRequest *request, const gchar *toast,
 
     if (failed)
         return clawt_web_error_page(app, request, first,
-                                    CLAWT_WEB_VIEW_ROUTINES, toast);
+                                    CLAWT_PAGE_ROUTINES, toast);
 
     return clawt_web_after_action(app, request, first,
-                                  CLAWT_WEB_VIEW_ROUTINES, toast);
+                                  CLAWT_PAGE_ROUTINES, toast);
 }
 
 static HtmxResponse *
@@ -649,10 +649,10 @@ on_task_cancel(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, first,
-                                    CLAWT_WEB_VIEW_TASKS,
+                                    CLAWT_PAGE_TASKS,
                                     clawt_web_app_last_error(app));
 
-    return clawt_web_after_action(app, request, first, CLAWT_WEB_VIEW_TASKS,
+    return clawt_web_after_action(app, request, first, CLAWT_PAGE_TASKS,
                                   "Cancelled.");
 }
 

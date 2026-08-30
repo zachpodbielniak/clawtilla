@@ -1425,4 +1425,228 @@ const gchar *clawt_trigger_provider_nth_nick(guint n);
  */
 const gchar *clawt_trigger_provider_nth_label(guint n);
 
+/**
+ * ClawtSection:
+ * @CLAWT_SECTION_CHAT: the transcript and composer
+ * @CLAWT_SECTION_AGENT: what this agent is, and what is queued for it
+ * @CLAWT_SECTION_COMPUTER: the machine it acts on
+ * @CLAWT_SECTION_AUTOMATION: work that starts without a person
+ * @CLAWT_SECTION_WORK: work in flight, and what it is waiting on
+ * @CLAWT_SECTION_LIBRARY: what the fleet knows how to do, and remembers
+ *
+ * The six groups the pages are drawn in.
+ *
+ * There are eleven pages and a header bar is not eleven buttons wide:
+ * below about 1500 logical pixels the GTK client's switcher was simply
+ * clipped, with no ellipsis and nothing in the log -- so the pages a
+ * person could reach depended on the monitor.  Grouping them costs one
+ * click and makes the row six wide.
+ *
+ * In the library rather than in each client for the same reason
+ * #ClawtComputerView is: both clients draw this row, and a grouping
+ * spelled out twice is a grouping that drifts -- which here would mean a
+ * page filed under Work in the window and under Library in a browser,
+ * with nothing to say so.  `make parity` checks that both walk it.
+ */
+typedef enum {
+    CLAWT_SECTION_CHAT = 0,
+    CLAWT_SECTION_AGENT,
+    CLAWT_SECTION_COMPUTER,
+    CLAWT_SECTION_AUTOMATION,
+    CLAWT_SECTION_WORK,
+    CLAWT_SECTION_LIBRARY
+} ClawtSection;
+
+/**
+ * ClawtPage:
+ * @CLAWT_PAGE_CHAT: the transcript and composer
+ * @CLAWT_PAGE_AGENT: the inspector
+ * @CLAWT_PAGE_MAILBOX: the queue and its dead letters
+ * @CLAWT_PAGE_COMPUTER: shell, screen, mounts, exchange
+ * @CLAWT_PAGE_ROUTINES: work on a schedule
+ * @CLAWT_PAGE_TRIGGERS: work started by an event elsewhere
+ * @CLAWT_PAGE_TASKS: delegated work
+ * @CLAWT_PAGE_DECISIONS: what is waiting on a person
+ * @CLAWT_PAGE_FLOW: what the agents are saying to each other
+ * @CLAWT_PAGE_SKILLS: the fleet's procedures, and who carries them
+ * @CLAWT_PAGE_MEMORY: recall, and the operator profile
+ *
+ * Every page either client can show, in the order they are drawn.
+ *
+ * A page belongs to exactly one #ClawtSection, and the sections are
+ * contiguous in this order -- so the group a page is in can be read off
+ * the table rather than decided by whoever draws it.
+ */
+typedef enum {
+    CLAWT_PAGE_CHAT = 0,
+    CLAWT_PAGE_AGENT,
+    CLAWT_PAGE_MAILBOX,
+    CLAWT_PAGE_COMPUTER,
+    CLAWT_PAGE_ROUTINES,
+    CLAWT_PAGE_TRIGGERS,
+    CLAWT_PAGE_TASKS,
+    CLAWT_PAGE_DECISIONS,
+    CLAWT_PAGE_FLOW,
+    CLAWT_PAGE_SKILLS,
+    CLAWT_PAGE_MEMORY
+} ClawtPage;
+
+/**
+ * clawt_section_count:
+ *
+ * Returns: how many groups the pages are drawn in
+ */
+guint clawt_section_count(void);
+
+/**
+ * clawt_section_nth:
+ * @n: an index below clawt_section_count()
+ *
+ * The @n'th section is the one whose enumeration value is @n: the table
+ * is in enumeration order, and tests/test-sections.c pins that, so a
+ * client may index an array of its own by the value it holds.
+ *
+ * Returns: the section at @n
+ */
+ClawtSection clawt_section_nth(guint n);
+
+/**
+ * clawt_section_nth_nick:
+ * @n: an index below clawt_section_count()
+ *
+ * Returns: (transfer none): the nickname
+ */
+const gchar *clawt_section_nth_nick(guint n);
+
+/**
+ * clawt_section_nth_label:
+ * @n: an index below clawt_section_count()
+ *
+ * Returns: (transfer none): what to put on the tab
+ */
+const gchar *clawt_section_nth_label(guint n);
+
+/**
+ * clawt_section_nick:
+ * @section: a #ClawtSection
+ *
+ * The spelling used as a widget name, so a client need not know that
+ * the table is in enumeration order to look one up.
+ *
+ * Returns: (transfer none): the nickname
+ */
+const gchar *clawt_section_nick(ClawtSection section);
+
+/**
+ * clawt_section_label:
+ * @section: a #ClawtSection
+ *
+ * Returns: (transfer none): what to put on the tab
+ */
+const gchar *clawt_section_label(ClawtSection section);
+
+/**
+ * clawt_section_from_nick:
+ * @nick: (nullable): a section's nickname
+ *
+ * An unknown name is %CLAWT_SECTION_CHAT rather than an error, matching
+ * clawt_page_from_nick(): this arrives from a widget name or a saved
+ * setting, and the conversation is where somebody wants to land.
+ *
+ * Returns: the section
+ */
+ClawtSection clawt_section_from_nick(const gchar *nick);
+
+/**
+ * clawt_section_page_count:
+ * @section: a #ClawtSection
+ *
+ * How many pages @section holds.  One means the section *is* the page
+ * and no second row of tabs should be drawn for it -- ask this rather
+ * than listing which sections have children, which is the list that
+ * would go stale when a page moves.
+ *
+ * Returns: the count, or 0 for a section that is not one
+ */
+guint clawt_section_page_count(ClawtSection section);
+
+/**
+ * clawt_section_page_nth:
+ * @section: a #ClawtSection
+ * @n: an index below clawt_section_page_count()
+ *
+ * Returns: the @n'th page of @section
+ */
+ClawtPage clawt_section_page_nth(ClawtSection section, guint n);
+
+/**
+ * clawt_section_default_page:
+ * @section: a #ClawtSection
+ *
+ * What a click on @section's own tab should land on: its first page.
+ *
+ * Returns: the page
+ */
+ClawtPage clawt_section_default_page(ClawtSection section);
+
+/**
+ * clawt_page_count:
+ *
+ * How many pages there are, across every section.
+ *
+ * Deliberately without a `clawt_page_nth()` beside it, which would make
+ * this a *choice* enumeration -- and it is not one.  Nothing offers a
+ * person a flat list of eleven pages; a page is reached through its
+ * section, so what a client walks is clawt_section_count() and then
+ * clawt_section_page_count().  This is here so a client can size an
+ * array that it indexes by the #ClawtPage it is holding, which
+ * tests/test-sections.c pins by asserting every value is below it.
+ *
+ * Returns: how many pages there are, across every section
+ */
+guint clawt_page_count(void);
+
+/**
+ * clawt_page_nick:
+ * @page: a #ClawtPage
+ *
+ * The spelling that appears in a URL and as a widget name, so a link to
+ * a page survives being pasted to somebody else.
+ *
+ * Returns: (transfer none): the nickname
+ */
+const gchar *clawt_page_nick(ClawtPage page);
+
+/**
+ * clawt_page_label:
+ * @page: a #ClawtPage
+ *
+ * What to put on the tab.  Not always the section's own label: the
+ * inspector is "Agent" as a group and "Overview" as one page of it,
+ * because "Agent > Agent" reads as a mistake.
+ *
+ * Returns: (transfer none): the label
+ */
+const gchar *clawt_page_label(ClawtPage page);
+
+/**
+ * clawt_page_section:
+ * @page: a #ClawtPage
+ *
+ * Returns: the section @page is drawn under
+ */
+ClawtSection clawt_page_section(ClawtPage page);
+
+/**
+ * clawt_page_from_nick:
+ * @nick: (nullable): a spelling from a URL or a widget name
+ *
+ * An unknown name is %CLAWT_PAGE_CHAT rather than an error: this arrives
+ * from a path somebody typed, and the conversation is the page every
+ * agent has.
+ *
+ * Returns: the page
+ */
+ClawtPage clawt_page_from_nick(const gchar *nick);
+
 G_END_DECLS

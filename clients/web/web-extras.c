@@ -252,13 +252,13 @@ on_reorder(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (index < 0)
         return clawt_web_after_action(app, request, agent_id,
-                                      CLAWT_WEB_VIEW_CHAT, NULL);
+                                      CLAWT_PAGE_CHAT, NULL);
 
     swap_with = (g_strcmp0(direction, "up") == 0) ? index - 1 : index + 1;
 
     if (swap_with < 0 || swap_with >= (gint)ids->len)
         return clawt_web_after_action(app, request, agent_id,
-                                      CLAWT_WEB_VIEW_CHAT,
+                                      CLAWT_PAGE_CHAT,
                                       "Already at the end.");
 
     {
@@ -279,11 +279,11 @@ on_reorder(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_CHAT,
+                                    CLAWT_PAGE_CHAT,
                                     clawt_web_app_last_error(app));
 
     return clawt_web_after_action(app, request, agent_id,
-                                  CLAWT_WEB_VIEW_CHAT, NULL);
+                                  CLAWT_PAGE_CHAT, NULL);
 }
 
 /*
@@ -316,7 +316,7 @@ on_set_team(HtmxRequest *request, GHashTable *params, gpointer user_data)
      */
     if (team == NULL)
         return clawt_web_after_action(app, request, agent_id,
-                                      CLAWT_WEB_VIEW_CHAT, NULL);
+                                      CLAWT_PAGE_CHAT, NULL);
 
     clawt_web_payload_set(payload, "agent", agent_id);
     clawt_web_payload_set(payload, "key", "team");
@@ -330,7 +330,7 @@ on_set_team(HtmxRequest *request, GHashTable *params, gpointer user_data)
         g_autofree gchar *why = g_strdup(clawt_web_app_last_error(app));
 
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_CHAT, why);
+                                    CLAWT_PAGE_CHAT, why);
     }
 
     /*
@@ -361,7 +361,7 @@ on_set_team(HtmxRequest *request, GHashTable *params, gpointer user_data)
     }
 
     return clawt_web_after_action(app, request, agent_id,
-                                  CLAWT_WEB_VIEW_CHAT, said);
+                                  CLAWT_PAGE_CHAT, said);
 }
 
 /* ── Attachments ─────────────────────────────────────────────────── */
@@ -403,7 +403,7 @@ on_attach(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (files == NULL || files->len == 0)
         return clawt_web_error_page(
-            app, request, agent_id, CLAWT_WEB_VIEW_CHAT,
+            app, request, agent_id, CLAWT_PAGE_CHAT,
             error != NULL ? error->message : "Choose a file first.");
 
     file = g_ptr_array_index(files, 0);
@@ -416,14 +416,14 @@ on_attach(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
         if (bytes == NULL)
             return clawt_web_error_page(app, request, agent_id,
-                                        CLAWT_WEB_VIEW_CHAT,
+                                        CLAWT_PAGE_CHAT,
                                         "That file is empty.");
 
         data = g_bytes_get_data(bytes, &size);
 
         if (data == NULL || size == 0)
             return clawt_web_error_page(app, request, agent_id,
-                                        CLAWT_WEB_VIEW_CHAT,
+                                        CLAWT_PAGE_CHAT,
                                         "That file is empty.");
 
         encoded = g_base64_encode(data, size);
@@ -438,7 +438,7 @@ on_attach(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_CHAT,
+                                    CLAWT_PAGE_CHAT,
                                     clawt_web_app_last_error(app));
 
     root = clawt_web_root(reply);
@@ -451,7 +451,7 @@ on_attach(HtmxRequest *request, GHashTable *params, gpointer user_data)
         clawt_web_member(root, "guest_path", ""));
 
     return clawt_web_after_action(app, request, agent_id,
-                                  CLAWT_WEB_VIEW_CHAT, said);
+                                  CLAWT_PAGE_CHAT, said);
 }
 
 static HtmxResponse *
@@ -471,11 +471,11 @@ on_attach_remove(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_CHAT,
+                                    CLAWT_PAGE_CHAT,
                                     clawt_web_app_last_error(app));
 
     return clawt_web_after_action(app, request, agent_id,
-                                  CLAWT_WEB_VIEW_CHAT, "Attachment removed.");
+                                  CLAWT_PAGE_CHAT, "Attachment removed.");
 }
 
 /* ── The integration editor ──────────────────────────────────────── */
@@ -703,7 +703,7 @@ on_file_editor(HtmxRequest *request, GHashTable *params, gpointer user_data)
         clawt_web_add_files_card(app, HTMX_ELEMENT(pad), agent_id);
         htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
 
-        html = clawt_web_page(app, agent_id, CLAWT_WEB_VIEW_AGENT, view,
+        html = clawt_web_page(app, agent_id, CLAWT_PAGE_AGENT, view,
                               request);
 
         return clawt_web_html_response(html);
@@ -717,7 +717,7 @@ on_file_editor(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_AGENT,
+                                    CLAWT_PAGE_AGENT,
                                     clawt_web_app_last_error(app));
 
     root = clawt_web_root(reply);
@@ -753,7 +753,7 @@ on_file_editor(HtmxRequest *request, GHashTable *params, gpointer user_data)
             g_autoptr(HtmxDiv) row = htmx_div_new();
             g_autoptr(HtmxButton) save = clawt_web_button("Save", "primary");
             g_autofree gchar *back = clawt_web_agent_url(
-                agent_id, CLAWT_WEB_VIEW_AGENT);
+                agent_id, CLAWT_PAGE_AGENT);
             g_autoptr(HtmxA) cancel = htmx_a_new_with_href(back);
 
             htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
@@ -773,7 +773,7 @@ on_file_editor(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
 
-    html = clawt_web_page(app, agent_id, CLAWT_WEB_VIEW_AGENT, view, request);
+    html = clawt_web_page(app, agent_id, CLAWT_PAGE_AGENT, view, request);
 
     return clawt_web_html_response(html);
 }
@@ -799,7 +799,7 @@ on_file_save(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_AGENT,
+                                    CLAWT_PAGE_AGENT,
                                     clawt_web_app_last_error(app));
 
     said = g_strdup_printf(
@@ -808,7 +808,7 @@ on_file_save(HtmxRequest *request, GHashTable *params, gpointer user_data)
         name != NULL ? name : "the file");
 
     return clawt_web_after_action(app, request, agent_id,
-                                  CLAWT_WEB_VIEW_AGENT, said);
+                                  CLAWT_PAGE_AGENT, said);
 }
 
 /* ── The fleet at a glance ───────────────────────────────────────── */
@@ -860,7 +860,7 @@ on_fleet(HtmxRequest *request, GHashTable *params, gpointer user_data)
         g_autoptr(HtmxTr) tr = htmx_tr_new();
         g_autoptr(HtmxTd) name_cell = htmx_td_new();
         g_autofree gchar *url = clawt_web_agent_url(id,
-                                                    CLAWT_WEB_VIEW_CHAT);
+                                                    CLAWT_PAGE_CHAT);
         g_autofree gchar *depth = g_strdup_printf(
             "%" G_GINT64_FORMAT,
             clawt_web_member_int(agent, "mailbox_depth", 0));
@@ -928,7 +928,7 @@ on_files_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
     clawt_web_add_files_card(app, HTMX_ELEMENT(pad), agent_id);
     htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
 
-    html = clawt_web_page(app, agent_id, CLAWT_WEB_VIEW_AGENT, view, request);
+    html = clawt_web_page(app, agent_id, CLAWT_PAGE_AGENT, view, request);
 
     return clawt_web_html_response(html);
 }
@@ -959,7 +959,7 @@ on_memories(HtmxRequest *request, GHashTable *params, gpointer user_data)
     clawt_web_add_memory_card(app, HTMX_ELEMENT(pad), agent_id, query);
     htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
 
-    html = clawt_web_page(app, agent_id, CLAWT_WEB_VIEW_AGENT, view, request);
+    html = clawt_web_page(app, agent_id, CLAWT_PAGE_AGENT, view, request);
 
     return clawt_web_html_response(html);
 }

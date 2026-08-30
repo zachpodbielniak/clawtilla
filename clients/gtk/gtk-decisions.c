@@ -268,11 +268,7 @@ refresh_decisions_once(ClawtWindow *self)
      * opens: an agent waiting on a person has to be visible without
      * anybody thinking to look.
      */
-    if (self->decision_page != NULL) {
-        adw_view_stack_page_set_badge_number(self->decision_page, open);
-        adw_view_stack_page_set_needs_attention(self->decision_page,
-                                                open > 0);
-    }
+    clawt_gtk_set_page_badge(self, CLAWT_PAGE_DECISIONS, open, open > 0);
 }
 
 void

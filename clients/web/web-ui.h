@@ -23,37 +23,17 @@ G_BEGIN_DECLS
 
 /* ── Views ───────────────────────────────────────────────────────── */
 
-/**
- * ClawtWebView:
- * @CLAWT_WEB_VIEW_CHAT: the transcript and composer
- * @CLAWT_WEB_VIEW_AGENT: the inspector
- * @CLAWT_WEB_VIEW_MAILBOX: the queue and its dead letters
- * @CLAWT_WEB_VIEW_COMPUTER: exec console, mounts, exchange
- * @CLAWT_WEB_VIEW_ROUTINES: scheduled work
- * @CLAWT_WEB_VIEW_TRIGGERS: work started by an event elsewhere
- * @CLAWT_WEB_VIEW_TASKS: delegated work
- * @CLAWT_WEB_VIEW_FLOW: what the agents are saying to each other
- * @CLAWT_WEB_VIEW_SKILLS: the fleet's procedures, and what they carry
+/*
+ * Which page this client is showing is a #ClawtPage from the library,
+ * and the groups it draws them in are #ClawtSection.
  *
- * The eight pages, in the order the GTK client's view switcher has them.
- * Kept as one enum so the nav cannot list a view no handler serves.
+ * There was an enum of nine here with its own slug table, and it had
+ * already drifted: the GTK client had eleven pages, its doc comment said
+ * eight, and no check could see any of it because each client's list was
+ * its own.  The list belongs where both clients read it -- which is the
+ * same rule the colour palettes and the computer sub-views already
+ * follow, and what `make parity` layer 3 enforces.
  */
-typedef enum {
-    CLAWT_WEB_VIEW_CHAT,
-    CLAWT_WEB_VIEW_AGENT,
-    CLAWT_WEB_VIEW_MAILBOX,
-    CLAWT_WEB_VIEW_COMPUTER,
-    CLAWT_WEB_VIEW_ROUTINES,
-    CLAWT_WEB_VIEW_TRIGGERS,
-    CLAWT_WEB_VIEW_TASKS,
-    CLAWT_WEB_VIEW_FLOW,
-    CLAWT_WEB_VIEW_SKILLS,
-    CLAWT_WEB_N_VIEWS
-} ClawtWebView;
-
-const gchar *clawt_web_view_slug(ClawtWebView view);
-const gchar *clawt_web_view_title(ClawtWebView view);
-ClawtWebView clawt_web_view_from_slug(const gchar *slug);
 
 /* ── The document ────────────────────────────────────────────────── */
 
@@ -72,7 +52,7 @@ ClawtWebView clawt_web_view_from_slug(const gchar *slug);
  */
 gchar *clawt_web_page(ClawtWebApp  *app,
                       const gchar  *agent_id,
-                      ClawtWebView  view,
+                      ClawtPage  view,
                       HtmxElement  *body,
                       HtmxRequest  *request);
 
@@ -131,7 +111,7 @@ HtmxResponse *clawt_web_redirect(HtmxRequest *request,
  *
  * Returns: (transfer full): the path for that agent and view
  */
-gchar *clawt_web_agent_url(const gchar *agent_id, ClawtWebView view);
+gchar *clawt_web_agent_url(const gchar *agent_id, ClawtPage view);
 
 /* ── Pieces ──────────────────────────────────────────────────────── */
 

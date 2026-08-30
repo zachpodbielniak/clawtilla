@@ -910,11 +910,11 @@ simple_agent_action(ClawtWebApp *app, HtmxRequest *request,
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_CHAT,
+                                    CLAWT_PAGE_CHAT,
                                     clawt_web_app_last_error(app));
 
     return clawt_web_after_action(app, request, agent_id,
-                                  CLAWT_WEB_VIEW_CHAT, done);
+                                  CLAWT_PAGE_CHAT, done);
 }
 
 /*
@@ -1034,14 +1034,14 @@ run_command(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
 
     if (g_strcmp0(verb, "/flow") == 0) {
         g_autofree gchar *url = clawt_web_agent_url(agent_id,
-                                                    CLAWT_WEB_VIEW_FLOW);
+                                                    CLAWT_PAGE_FLOW);
 
         return clawt_web_redirect(request, url);
     }
 
     if (g_strcmp0(verb, "/tasks") == 0) {
         g_autofree gchar *url = clawt_web_agent_url(agent_id,
-                                                    CLAWT_WEB_VIEW_TASKS);
+                                                    CLAWT_PAGE_TASKS);
 
         return clawt_web_redirect(request, url);
     }
@@ -1100,7 +1100,7 @@ run_command(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
 
     if (g_strcmp0(verb, "/attach") == 0)
         return clawt_web_after_action(
-            app, request, agent_id, CLAWT_WEB_VIEW_CHAT,
+            app, request, agent_id, CLAWT_PAGE_CHAT,
             "Use the file picker under the message box. The file goes to "
             "the agent's workspace and is named to it -- both paths, "
             "because its own tools run on the host and only "
@@ -1164,7 +1164,7 @@ run_command(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
 
         if (last == NULL)
             return clawt_web_error_page(app, request, agent_id,
-                                        CLAWT_WEB_VIEW_CHAT,
+                                        CLAWT_PAGE_CHAT,
                                         "You have not said anything to "
                                         "this agent yet.");
 
@@ -1198,7 +1198,7 @@ run_command(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
 
         {
             g_autofree gchar *back = clawt_web_agent_url(agent_id,
-                                                         CLAWT_WEB_VIEW_CHAT);
+                                                         CLAWT_PAGE_CHAT);
             g_autoptr(HtmxA) link = htmx_a_new_with_href(back);
 
             htmx_element_add_class(HTMX_ELEMENT(link), "btn");
@@ -1209,7 +1209,7 @@ run_command(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
         htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(card));
         htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
 
-        html = clawt_web_page(app, agent_id, CLAWT_WEB_VIEW_CHAT, view,
+        html = clawt_web_page(app, agent_id, CLAWT_PAGE_CHAT, view,
                               request);
 
         return clawt_web_html_response(html);
@@ -1220,7 +1220,7 @@ run_command(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
             "No such command: %s. Try /help.", verb);
 
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_CHAT, unknown);
+                                    CLAWT_PAGE_CHAT, unknown);
     }
 }
 
@@ -1248,7 +1248,7 @@ on_export(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (document == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_CHAT,
+                                    CLAWT_PAGE_CHAT,
                                     error != NULL ? error->message
                                                   : "nothing to export");
 
@@ -1297,7 +1297,7 @@ on_copy(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (document == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_CHAT,
+                                    CLAWT_PAGE_CHAT,
                                     error != NULL ? error->message
                                                   : "nothing to copy");
 
@@ -1342,7 +1342,7 @@ on_copy(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
         {
             g_autofree gchar *back = clawt_web_agent_url(
-                agent_id, CLAWT_WEB_VIEW_CHAT);
+                agent_id, CLAWT_PAGE_CHAT);
             g_autoptr(HtmxA) link = htmx_a_new_with_href(back);
 
             htmx_element_add_class(HTMX_ELEMENT(link), "btn");
@@ -1356,7 +1356,7 @@ on_copy(HtmxRequest *request, GHashTable *params, gpointer user_data)
     htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(card));
     htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
 
-    html = clawt_web_page(app, agent_id, CLAWT_WEB_VIEW_CHAT, view, request);
+    html = clawt_web_page(app, agent_id, CLAWT_PAGE_CHAT, view, request);
 
     return clawt_web_html_response(html);
 }
@@ -1391,7 +1391,7 @@ on_compose(HtmxRequest *request, GHashTable *params, gpointer user_data)
         g_autoptr(HtmxDiv) row = htmx_div_new();
         g_autoptr(HtmxButton) send = clawt_web_button("Send", "primary");
         g_autofree gchar *back = clawt_web_agent_url(agent_id,
-                                                     CLAWT_WEB_VIEW_CHAT);
+                                                     CLAWT_PAGE_CHAT);
         g_autoptr(HtmxA) cancel = htmx_a_new_with_href(back);
 
         htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
@@ -1409,7 +1409,7 @@ on_compose(HtmxRequest *request, GHashTable *params, gpointer user_data)
     htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(card));
     htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
 
-    html = clawt_web_page(app, agent_id, CLAWT_WEB_VIEW_CHAT, view, request);
+    html = clawt_web_page(app, agent_id, CLAWT_PAGE_CHAT, view, request);
 
     return clawt_web_html_response(html);
 }
@@ -1432,7 +1432,7 @@ clawt_web_send_message(ClawtWebApp *app, HtmxRequest *request,
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_CHAT,
+                                    CLAWT_PAGE_CHAT,
                                     clawt_web_app_last_error(app));
 
     {
@@ -1455,11 +1455,11 @@ clawt_web_send_message(ClawtWebApp *app, HtmxRequest *request,
             agent_id);
 
         return clawt_web_after_action(app, request, agent_id,
-                                      CLAWT_WEB_VIEW_CHAT, note);
+                                      CLAWT_PAGE_CHAT, note);
     }
 
     return clawt_web_after_action(app, request, agent_id,
-                                  CLAWT_WEB_VIEW_CHAT, NULL);
+                                  CLAWT_PAGE_CHAT, NULL);
 }
 
 static HtmxResponse *
@@ -1472,14 +1472,14 @@ on_send(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (body == NULL)
         return clawt_web_after_action(app, request, agent_id,
-                                      CLAWT_WEB_VIEW_CHAT, NULL);
+                                      CLAWT_PAGE_CHAT, NULL);
 
     trimmed = g_strdup(body);
     g_strstrip(trimmed);
 
     if (*trimmed == '\0')
         return clawt_web_after_action(app, request, agent_id,
-                                      CLAWT_WEB_VIEW_CHAT, NULL);
+                                      CLAWT_PAGE_CHAT, NULL);
 
     if (trimmed[0] == '/')
         return run_command(app, request, agent_id, trimmed);
@@ -1613,7 +1613,7 @@ clawt_web_chat_interrupt(ClawtWebApp *app, HtmxRequest *request,
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_CHAT,
+                                    CLAWT_PAGE_CHAT,
                                     clawt_web_app_last_error(app));
 
     /*
@@ -1629,7 +1629,7 @@ clawt_web_chat_interrupt(ClawtWebApp *app, HtmxRequest *request,
            : g_strdup("It was between turns -- nothing was running to stop.");
 
     return clawt_web_after_action(app, request, agent_id,
-                                  CLAWT_WEB_VIEW_CHAT, said);
+                                  CLAWT_PAGE_CHAT, said);
 }
 
 static HtmxResponse *

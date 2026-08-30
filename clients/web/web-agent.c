@@ -848,7 +848,7 @@ on_save(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (error != NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_AGENT, error->message);
+                                    CLAWT_PAGE_AGENT, error->message);
 
     if (changed == 0)
         said = g_strdup("Nothing changed.");
@@ -868,7 +868,7 @@ on_save(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                changed == 1 ? "" : "s");
 
     return clawt_web_after_action(app, request, agent_id,
-                                  CLAWT_WEB_VIEW_AGENT, said);
+                                  CLAWT_PAGE_AGENT, said);
 }
 
 static HtmxResponse *
@@ -891,7 +891,7 @@ on_remove(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_AGENT,
+                                    CLAWT_PAGE_AGENT,
                                     clawt_web_app_last_error(app));
 
     return clawt_web_redirect(request, "/");
@@ -914,7 +914,7 @@ on_reset(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_AGENT,
+                                    CLAWT_PAGE_AGENT,
                                     clawt_web_app_last_error(app));
 
     root = clawt_web_root(reply);
@@ -925,7 +925,7 @@ on_reset(HtmxRequest *request, GHashTable *params, gpointer user_data)
         clawt_web_member_int(root, "sessions_cleared", 0) == 1 ? "" : "s");
 
     return clawt_web_after_action(app, request, agent_id,
-                                  CLAWT_WEB_VIEW_AGENT, said);
+                                  CLAWT_PAGE_AGENT, said);
 }
 
 /*
@@ -1023,7 +1023,7 @@ on_avatar_set(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (files == NULL || files->len == 0)
         return clawt_web_error_page(
-            app, request, agent_id, CLAWT_WEB_VIEW_AGENT,
+            app, request, agent_id, CLAWT_PAGE_AGENT,
             error != NULL ? error->message : "Choose a file first.");
 
     file = g_ptr_array_index(files, 0);
@@ -1035,14 +1035,14 @@ on_avatar_set(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
         if (bytes == NULL)
             return clawt_web_error_page(app, request, agent_id,
-                                        CLAWT_WEB_VIEW_AGENT,
+                                        CLAWT_PAGE_AGENT,
                                         "That file is empty.");
 
         data = g_bytes_get_data(bytes, &size);
 
         if (data == NULL || size == 0)
             return clawt_web_error_page(app, request, agent_id,
-                                        CLAWT_WEB_VIEW_AGENT,
+                                        CLAWT_PAGE_AGENT,
                                         "That file is empty.");
 
         encoded = g_base64_encode(data, size);
@@ -1057,11 +1057,11 @@ on_avatar_set(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_AGENT,
+                                    CLAWT_PAGE_AGENT,
                                     clawt_web_app_last_error(app));
 
     return clawt_web_after_action(app, request, agent_id,
-                                  CLAWT_WEB_VIEW_AGENT,
+                                  CLAWT_PAGE_AGENT,
                                   "Profile picture updated.");
 }
 
@@ -1083,11 +1083,11 @@ on_avatar_clear(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (reply == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_AGENT,
+                                    CLAWT_PAGE_AGENT,
                                     clawt_web_app_last_error(app));
 
     return clawt_web_after_action(app, request, agent_id,
-                                  CLAWT_WEB_VIEW_AGENT,
+                                  CLAWT_PAGE_AGENT,
                                   "Profile picture removed.");
 }
 

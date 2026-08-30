@@ -487,7 +487,7 @@ on_expand(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (name == NULL || *name == '\0')
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_CHAT,
+                                    CLAWT_PAGE_CHAT,
                                     "no command was named");
 
     clawt_web_payload_set(payload, "agent", agent_id);
@@ -503,14 +503,14 @@ on_expand(HtmxRequest *request, GHashTable *params, gpointer user_data)
             g_strdup(clawt_web_app_last_error(app));
 
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_CHAT, message);
+                                    CLAWT_PAGE_CHAT, message);
     }
 
     prompt = clawt_web_member(clawt_web_root(reply), "prompt", NULL);
 
     if (prompt == NULL)
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_CHAT,
+                                    CLAWT_PAGE_CHAT,
                                     "that command expanded to nothing");
 
     send = clawt_web_payload_new();
@@ -525,11 +525,11 @@ on_expand(HtmxRequest *request, GHashTable *params, gpointer user_data)
             g_strdup(clawt_web_app_last_error(app));
 
         return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_WEB_VIEW_CHAT, message);
+                                    CLAWT_PAGE_CHAT, message);
     }
 
     return clawt_web_after_action(app, request, agent_id,
-                                  CLAWT_WEB_VIEW_CHAT, NULL);
+                                  CLAWT_PAGE_CHAT, NULL);
 }
 
 /* ── Actions ─────────────────────────────────────────────────────── */
@@ -563,11 +563,11 @@ on_enable(HtmxRequest *request, GHashTable *params, gpointer user_data)
             g_strdup(clawt_web_app_last_error(action->app));
 
         return clawt_web_error_page(action->app, request, NULL,
-                                    CLAWT_WEB_VIEW_SKILLS, message);
+                                    CLAWT_PAGE_SKILLS, message);
     }
 
     return clawt_web_after_action(action->app, request, NULL,
-                                  CLAWT_WEB_VIEW_SKILLS,
+                                  CLAWT_PAGE_SKILLS,
                                   action->enable ? "Enabled." : "Disabled.");
 }
 
@@ -589,10 +589,10 @@ on_remove(HtmxRequest *request, GHashTable *params, gpointer user_data)
         g_autofree gchar *message = g_strdup(clawt_web_app_last_error(app));
 
         return clawt_web_error_page(app, request, NULL,
-                                    CLAWT_WEB_VIEW_SKILLS, message);
+                                    CLAWT_PAGE_SKILLS, message);
     }
 
-    return clawt_web_after_action(app, request, NULL, CLAWT_WEB_VIEW_SKILLS,
+    return clawt_web_after_action(app, request, NULL, CLAWT_PAGE_SKILLS,
                                   "Removed.");
 }
 
@@ -610,10 +610,10 @@ on_reload(HtmxRequest *request, GHashTable *params, gpointer user_data)
         g_autofree gchar *message = g_strdup(clawt_web_app_last_error(app));
 
         return clawt_web_error_page(app, request, NULL,
-                                    CLAWT_WEB_VIEW_SKILLS, message);
+                                    CLAWT_PAGE_SKILLS, message);
     }
 
-    return clawt_web_after_action(app, request, NULL, CLAWT_WEB_VIEW_SKILLS,
+    return clawt_web_after_action(app, request, NULL, CLAWT_PAGE_SKILLS,
                                   "Rescanned.");
 }
 
@@ -640,11 +640,11 @@ on_import(HtmxRequest *request, GHashTable *params, gpointer user_data)
         g_autofree gchar *message = g_strdup(clawt_web_app_last_error(app));
 
         return clawt_web_error_page(app, request, NULL,
-                                    CLAWT_WEB_VIEW_SKILLS, message);
+                                    CLAWT_PAGE_SKILLS, message);
     }
 
     return clawt_web_after_action(
-        app, request, NULL, CLAWT_WEB_VIEW_SKILLS,
+        app, request, NULL, CLAWT_PAGE_SKILLS,
         "Imported, disabled. Read it, then enable it.");
 }
 
@@ -673,10 +673,10 @@ on_new(HtmxRequest *request, GHashTable *params, gpointer user_data)
         g_autofree gchar *message = g_strdup(clawt_web_app_last_error(app));
 
         return clawt_web_error_page(app, request, NULL,
-                                    CLAWT_WEB_VIEW_SKILLS, message);
+                                    CLAWT_PAGE_SKILLS, message);
     }
 
-    return clawt_web_after_action(app, request, NULL, CLAWT_WEB_VIEW_SKILLS,
+    return clawt_web_after_action(app, request, NULL, CLAWT_PAGE_SKILLS,
                                   "Written.");
 }
 
@@ -719,11 +719,11 @@ on_teach_action(HtmxRequest *request, GHashTable *params, gpointer user_data)
             g_strdup(clawt_web_app_last_error(action->app));
 
         return clawt_web_error_page(action->app, request, NULL,
-                                    CLAWT_WEB_VIEW_SKILLS, message);
+                                    CLAWT_PAGE_SKILLS, message);
     }
 
     return clawt_web_after_action(action->app, request, NULL,
-                                  CLAWT_WEB_VIEW_SKILLS, action->done);
+                                  CLAWT_PAGE_SKILLS, action->done);
 }
 
 /*
@@ -755,7 +755,7 @@ on_teach_steps(HtmxRequest *request, GHashTable *params, gpointer user_data)
         g_autofree gchar *message = g_strdup(clawt_web_app_last_error(app));
 
         return clawt_web_error_page(app, request, NULL,
-                                    CLAWT_WEB_VIEW_SKILLS, message);
+                                    CLAWT_PAGE_SKILLS, message);
     }
 
     trace = clawt_web_root(reply);
@@ -774,7 +774,7 @@ on_teach_steps(HtmxRequest *request, GHashTable *params, gpointer user_data)
     }
 
     return clawt_web_after_action(
-        app, request, NULL, CLAWT_WEB_VIEW_SKILLS,
+        app, request, NULL, CLAWT_PAGE_SKILLS,
         (text->len > 0) ? text->str : "Nothing was captured.");
 }
 
@@ -802,11 +802,11 @@ on_teach_start(HtmxRequest *request, GHashTable *params, gpointer user_data)
         g_autofree gchar *message = g_strdup(clawt_web_app_last_error(app));
 
         return clawt_web_error_page(app, request, NULL,
-                                    CLAWT_WEB_VIEW_SKILLS, message);
+                                    CLAWT_PAGE_SKILLS, message);
     }
 
     return clawt_web_after_action(
-        app, request, NULL, CLAWT_WEB_VIEW_SKILLS,
+        app, request, NULL, CLAWT_PAGE_SKILLS,
         "Recording. Read the trace before you turn it into a skill.");
 }
 

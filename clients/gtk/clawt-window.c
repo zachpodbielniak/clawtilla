@@ -67,7 +67,6 @@ void
 clawt_window_toast(ClawtWindow *self, const gchar *text)
 {
     AdwToastOverlay *where;
-    const gchar *page;
 
     g_return_if_fail(CLAWT_IS_WINDOW(self));
 
@@ -77,10 +76,7 @@ clawt_window_toast(ClawtWindow *self, const gchar *text)
      * not cover: everything else it hides can be scrolled back to, while
      * the composer holds text that has not been sent anywhere yet.
      */
-    page = self->pages != NULL
-               ? adw_view_stack_get_visible_child_name(self->pages) : NULL;
-
-    where = (page != NULL && g_strcmp0(page, "chat") == 0 &&
+    where = (clawt_gtk_current_page(self) == CLAWT_PAGE_CHAT &&
              self->toasts != NULL)
                 ? self->toasts : self->page_toasts;
 
@@ -4501,9 +4497,7 @@ on_settings_closed(AdwDialog *dialog, gpointer user_data)
 static void
 on_page_shown(ClawtWindow *self)
 {
-    const gchar *name = adw_view_stack_get_visible_child_name(self->pages);
-
-    if (g_strcmp0(name, "memory") != 0)
+    if (clawt_gtk_current_page(self) != CLAWT_PAGE_MEMORY)
         return;
 
     clawt_gtk_refresh_operator(self);
@@ -4656,6 +4650,258 @@ on_settings_activate(GSimpleAction *action, GVariant *parameter,
 }
 
 /* ── Construction ────────────────────────────────────────────────── */
+
+/*
+ * Which builder fills a page.
+ *
+ * A `switch` with no `default:`, so -Wswitch names a page added to the
+ * library that nothing here draws.  The permissive alternative is a
+ * stack with a hole in it: a tab that opens onto an empty box, which
+ * reads as a page that failed to load rather than as one nobody wrote.
+ */
+static GtkWidget *
+build_page(ClawtWindow *self, ClawtPage page)
+{
+    switch (page) {
+    case CLAWT_PAGE_CHAT:      return clawt_gtk_build_chat_page(self);
+    case CLAWT_PAGE_AGENT:     return clawt_gtk_build_inspector_page(self);
+    case CLAWT_PAGE_MAILBOX:   return clawt_gtk_build_mailbox_page(self);
+    case CLAWT_PAGE_COMPUTER:  return clawt_gtk_build_computer_page(self);
+    case CLAWT_PAGE_ROUTINES:  return clawt_gtk_build_routine_page(self);
+    case CLAWT_PAGE_TRIGGERS:  return clawt_gtk_build_trigger_page(self);
+    case CLAWT_PAGE_TASKS:     return clawt_gtk_build_task_page(self);
+    case CLAWT_PAGE_DECISIONS: return clawt_gtk_build_decision_page(self);
+    case CLAWT_PAGE_FLOW:      return clawt_gtk_build_flow_page(self);
+    case CLAWT_PAGE_SKILLS:    return clawt_gtk_build_skill_page(self);
+    case CLAWT_PAGE_MEMORY:    return clawt_gtk_build_recall_page(self);
+    }
+
+    g_return_val_if_reached(NULL);
+}
+
+/*
+ * The icon on a section's tab.
+ *
+ * Here rather than as a column in the library's table: an icon name is
+ * GNOME's vocabulary, libclawt must never link GTK, and the web client
+ * draws no icons at all, so a column would be a GTK string carried by
+ * everything that links the library and read by one caller.  A `switch`
+ * with no `default:` gives the same guarantee a column would -- a
+ * section added to the table does not build here until somebody has
+ * chosen an icon for it.
+ */
+static const gchar *
+section_icon(ClawtSection section)
+{
+    switch (section) {
+    case CLAWT_SECTION_CHAT:       return "user-available-symbolic";
+    case CLAWT_SECTION_AGENT:      return "emblem-system-symbolic";
+    case CLAWT_SECTION_COMPUTER:   return "utilities-terminal-symbolic";
+    case CLAWT_SECTION_AUTOMATION: return "alarm-symbolic";
+    case CLAWT_SECTION_WORK:       return "view-list-symbolic";
+    case CLAWT_SECTION_LIBRARY:    return "accessories-text-editor-symbolic";
+    }
+
+    g_return_val_if_reached("application-x-executable-symbolic");
+}
+
+/*
+ * The switcher, two deep.
+ *
+ * Eleven tabs did not fit a header bar: below about 1500 logical pixels
+ * an AdwViewSwitcher pinned to POLICY_WIDE is simply clipped -- no
+ * ellipsis, no overflow menu, nothing in the log -- so which pages a
+ * person could reach depended on the monitor, and on the machine where
+ * it was written they all fit.
+ *
+ * Grouped into six, walked from clawt_section_count() rather than
+ * listed, so the browser and the window cannot come to disagree about
+ * which group a page is in.
+ */
+static void
+build_page_stack(ClawtWindow *self)
+{
+    guint n_sections = clawt_section_count();
+    guint n_pages = clawt_page_count();
+    guint i;
+
+    self->pages = ADW_VIEW_STACK(adw_view_stack_new());
+
+    self->section_stacks = g_new0(AdwViewStack *, n_sections);
+    self->section_tabs = g_new0(AdwViewStackPage *, n_sections);
+    self->page_tabs = g_new0(AdwViewStackPage *, n_pages);
+    self->page_badges = g_new0(guint, n_pages);
+    self->page_attention = g_new0(gboolean, n_pages);
+
+    for (i = 0; i < n_sections; i++) {
+        ClawtSection section = clawt_section_nth(i);
+        guint n_children = clawt_section_page_count(section);
+        GtkWidget *child;
+
+        if (n_children == 1) {
+            /*
+             * A section that is one page holds it directly.  A switcher
+             * over a stack of one draws a row with a single tab in it,
+             * which reads as a control that does nothing -- and costs a
+             * click and a strip of vertical space to say so.
+             */
+            child = build_page(self, clawt_section_page_nth(section, 0));
+        } else {
+            GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+            GtkWidget *stack = adw_view_stack_new();
+            GtkWidget *switcher = adw_view_switcher_new();
+            guint j;
+
+            for (j = 0; j < n_children; j++) {
+                ClawtPage page = clawt_section_page_nth(section, j);
+
+                self->page_tabs[page] = adw_view_stack_add_titled(
+                    ADW_VIEW_STACK(stack), build_page(self, page),
+                    clawt_page_nick(page), clawt_page_label(page));
+            }
+
+            adw_view_switcher_set_stack(ADW_VIEW_SWITCHER(switcher),
+                                        ADW_VIEW_STACK(stack));
+            adw_view_switcher_set_policy(ADW_VIEW_SWITCHER(switcher),
+                                         ADW_VIEW_SWITCHER_POLICY_WIDE);
+            gtk_widget_set_halign(switcher, GTK_ALIGN_CENTER);
+            gtk_widget_set_margin_top(switcher, 6);
+            gtk_widget_add_css_class(switcher, "clawt-section-switcher");
+            gtk_widget_set_vexpand(stack, TRUE);
+
+            gtk_box_append(GTK_BOX(box), switcher);
+            gtk_box_append(GTK_BOX(box), stack);
+
+            self->section_stacks[section] = ADW_VIEW_STACK(stack);
+            child = box;
+        }
+
+        self->section_tabs[section] = adw_view_stack_add_titled_with_icon(
+            self->pages, child, clawt_section_nth_nick(i),
+            clawt_section_nth_label(i), section_icon(section));
+    }
+}
+
+void
+clawt_gtk_show_page(ClawtWindow *self, ClawtPage page)
+{
+    ClawtSection section;
+
+    g_return_if_fail(CLAWT_IS_WINDOW(self));
+
+    if (self->pages == NULL)
+        return;
+
+    section = clawt_page_section(page);
+
+    /*
+     * The inner stack first.  Selecting the section emits
+     * notify::visible-child-name on `pages`, and both handlers that
+     * fires ask which page is now up -- so the inner answer has to
+     * already be this one, or opening Library from a menu refreshes
+     * Skills and leaves Memory blank.
+     */
+    if (self->section_stacks[section] != NULL)
+        adw_view_stack_set_visible_child_name(self->section_stacks[section],
+                                              clawt_page_nick(page));
+
+    adw_view_stack_set_visible_child_name(self->pages,
+                                          clawt_section_nick(section));
+}
+
+ClawtPage
+clawt_gtk_current_page(ClawtWindow *self)
+{
+    ClawtSection section;
+    const gchar *name;
+
+    g_return_val_if_fail(CLAWT_IS_WINDOW(self), CLAWT_PAGE_CHAT);
+
+    if (self->pages == NULL || self->section_stacks == NULL)
+        return CLAWT_PAGE_CHAT;
+
+    section = clawt_section_from_nick(
+        adw_view_stack_get_visible_child_name(self->pages));
+
+    if (self->section_stacks[section] == NULL)
+        return clawt_section_default_page(section);
+
+    name = adw_view_stack_get_visible_child_name(
+        self->section_stacks[section]);
+
+    /*
+     * NULL is not "the first page" by accident: a stack answers NULL
+     * only before it has a visible child, and clawt_page_from_nick()
+     * would turn that into Chat -- a page in a different section, which
+     * is a wrong answer rather than an approximate one.
+     */
+    if (name == NULL)
+        return clawt_section_default_page(section);
+
+    return clawt_page_from_nick(name);
+}
+
+void
+clawt_gtk_set_page_badge(ClawtWindow *self, ClawtPage page, guint count,
+                         gboolean attention)
+{
+    ClawtSection section;
+    guint total = 0;
+    gboolean urgent = FALSE;
+    guint n;
+    guint i;
+
+    g_return_if_fail(CLAWT_IS_WINDOW(self));
+
+    if (self->page_badges == NULL || self->section_tabs == NULL)
+        return;
+
+    /*
+     * These arrays are sized by clawt_page_count() and indexed by the
+     * value, so a page added to the enumeration and left out of the
+     * library's table would write past the end.
+     *
+     * The compiler catches that first -- build_page() here and
+     * clawt_web_view_body() in the other client are both a `switch` with
+     * no `default:`, so a new value is two -Wswitch warnings, and the
+     * zero-warning rule is what stops somebody.  This is the backstop
+     * for the case where it did not, because a silent out-of-bounds
+     * write is a much worse way to find out than a blank tab.
+     */
+    if ((guint)page >= clawt_page_count())
+        return;
+
+    self->page_badges[page] = count;
+    self->page_attention[page] = attention;
+
+    if (self->page_tabs[page] != NULL) {
+        adw_view_stack_page_set_badge_number(self->page_tabs[page], count);
+        adw_view_stack_page_set_needs_attention(self->page_tabs[page],
+                                                attention);
+    }
+
+    /*
+     * And the section's own tab carries the sum, because a badge one
+     * level down is invisible until somebody opens the section -- which
+     * for Decisions would defeat the point of having one.
+     */
+    section = clawt_page_section(page);
+    n = clawt_section_page_count(section);
+
+    for (i = 0; i < n; i++) {
+        ClawtPage sibling = clawt_section_page_nth(section, i);
+
+        total += self->page_badges[sibling];
+        urgent = urgent || self->page_attention[sibling];
+    }
+
+    if (self->section_tabs[section] != NULL) {
+        adw_view_stack_page_set_badge_number(self->section_tabs[section],
+                                             total);
+        adw_view_stack_page_set_needs_attention(self->section_tabs[section],
+                                                urgent);
+    }
+}
 
 ClawtWindow *
 clawt_window_new(AdwApplication *app, ClawtClient *client,
@@ -4832,56 +5078,7 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
     gtk_widget_set_name(sidebar_box, "clawt-sidebar");
 
     /* ── Content ── */
-    self->pages = ADW_VIEW_STACK(adw_view_stack_new());
-
-    /*
-     * The chat page is kept, not discarded, because the total unread is
-     * drawn on it -- adw_view_stack_add_titled_with_icon() returns the
-     * page and every other call here throws it away.
-     */
-    self->chat_page =
-        adw_view_stack_add_titled_with_icon(self->pages,
-                                            clawt_gtk_build_chat_page(self),
-                                            "chat", "Chat",
-                                            "user-available-symbolic");
-    adw_view_stack_add_titled_with_icon(self->pages,
-                                        clawt_gtk_build_inspector_page(self),
-                                        "agent", "Agent",
-                                        "emblem-system-symbolic");
-    adw_view_stack_add_titled_with_icon(self->pages, clawt_gtk_build_mailbox_page(self),
-                                        "mailbox", "Mailbox",
-                                        "mail-unread-symbolic");
-    adw_view_stack_add_titled_with_icon(self->pages,
-                                        clawt_gtk_build_computer_page(self),
-                                        "computer", "Computer",
-                                        "utilities-terminal-symbolic");
-    adw_view_stack_add_titled_with_icon(self->pages,
-                                        clawt_gtk_build_routine_page(self),
-                                        "routines", "Routines",
-                                        "alarm-symbolic");
-    adw_view_stack_add_titled_with_icon(self->pages,
-                                        clawt_gtk_build_trigger_page(self),
-                                        "triggers", "Triggers",
-                                        "network-transmit-receive-symbolic");
-    adw_view_stack_add_titled_with_icon(self->pages, clawt_gtk_build_task_page(self),
-                                        "tasks", "Tasks",
-                                        "view-list-symbolic");
-    self->decision_page =
-        adw_view_stack_add_titled_with_icon(self->pages,
-                                            clawt_gtk_build_decision_page(self),
-                                            "decisions", "Decisions",
-                                            "dialog-question-symbolic");
-    adw_view_stack_add_titled_with_icon(self->pages, clawt_gtk_build_flow_page(self),
-                                        "flow", "Flow",
-                                        "system-users-symbolic");
-    adw_view_stack_add_titled_with_icon(self->pages,
-                                        clawt_gtk_build_skill_page(self),
-                                        "skills", "Skills",
-                                        "accessories-text-editor-symbolic");
-    adw_view_stack_add_titled_with_icon(self->pages,
-                                        clawt_gtk_build_recall_page(self),
-                                        "memory", "Memory",
-                                        "document-open-recent-symbolic");
+    build_page_stack(self);
 
     header = adw_header_bar_new();
     gtk_widget_set_name(header, "clawt-headerbar");
@@ -5110,6 +5307,34 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
      */
     g_signal_connect_swapped(self->pages, "notify::visible-child-name",
                              G_CALLBACK(on_page_shown), self);
+
+    /*
+     * And on every section's own stack, because a move inside a section
+     * never reaches `pages`.
+     *
+     * Skills and Memory share the Library section, so switching between
+     * them changes which page is up while the top-level child name does
+     * not move at all -- without this the memory page is filled once, on
+     * whichever entry to Library happened to come from a menu, and never
+     * again.
+     */
+    {
+        guint i;
+
+        for (i = 0; i < clawt_section_count(); i++) {
+            AdwViewStack *inner = self->section_stacks[clawt_section_nth(i)];
+
+            if (inner == NULL)
+                continue;
+
+            g_signal_connect_swapped(inner, "notify::visible-child-name",
+                                     G_CALLBACK(clawt_gtk_update_unread_tab),
+                                     self);
+            g_signal_connect_swapped(inner, "notify::visible-child-name",
+                                     G_CALLBACK(on_page_shown), self);
+        }
+    }
+
     g_signal_connect_swapped(self->split, "notify::collapsed",
                              G_CALLBACK(clawt_gtk_update_unread_tab), self);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sidebar_button), TRUE);
@@ -5304,6 +5529,17 @@ clawt_window_finalize(GObject *object)
      * were added to, which GTK has already taken apart.
      */
     g_clear_pointer(&self->schema_rows, g_ptr_array_unref);
+
+    /*
+     * The same rule for the switcher's bookkeeping: these hold borrowed
+     * AdwViewStackPage and AdwViewStack pointers owned by the stacks
+     * they were added to.  Only the arrays are ours.
+     */
+    g_clear_pointer(&self->section_stacks, g_free);
+    g_clear_pointer(&self->section_tabs, g_free);
+    g_clear_pointer(&self->page_tabs, g_free);
+    g_clear_pointer(&self->page_badges, g_free);
+    g_clear_pointer(&self->page_attention, g_free);
 
     G_OBJECT_CLASS(clawt_window_parent_class)->finalize(object);
 }

@@ -373,10 +373,10 @@ triggers_page(ClawtWebApp *app, HtmxRequest *request, const gchar *toast,
 
     if (failed)
         return clawt_web_error_page(app, request, first,
-                                    CLAWT_WEB_VIEW_TRIGGERS, toast);
+                                    CLAWT_PAGE_TRIGGERS, toast);
 
     return clawt_web_after_action(app, request, first,
-                                  CLAWT_WEB_VIEW_TRIGGERS, toast);
+                                  CLAWT_PAGE_TRIGGERS, toast);
 }
 
 /*

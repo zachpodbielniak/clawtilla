@@ -252,6 +252,24 @@ guint clawt_web_app_unread(ClawtWebApp *self, const gchar *agent_id);
 guint clawt_web_app_unread_total(ClawtWebApp *self);
 
 /**
+ * clawt_web_app_open_decisions:
+ * @self: a #ClawtWebApp
+ *
+ * How many decisions are waiting on a person, across the whole fleet.
+ *
+ * The number the Work tab's badge carries.  Cached and invalidated by
+ * any `decision.` event rather than counted from the stream, so a replay
+ * that fell off the ring cannot leave it permanently wrong -- and asked
+ * from a render rather than from the event handler.
+ *
+ * A daemon that did not answer gives 0 and leaves the count unknown, so
+ * the next render asks again.
+ *
+ * Returns: the count
+ */
+guint clawt_web_app_open_decisions(ClawtWebApp *self);
+
+/**
  * clawt_web_app_note_fleet:
  * @self: a #ClawtWebApp
  * @agents: (nullable): the `agents` array from an `agent.list` reply

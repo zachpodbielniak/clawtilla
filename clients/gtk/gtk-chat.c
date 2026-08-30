@@ -2714,12 +2714,12 @@ run_slash_command(ClawtWindow *self, const gchar *text, gchar **expanded)
     }
 
     if (g_strcmp0(name, "/flow") == 0) {
-        adw_view_stack_set_visible_child_name(self->pages, "flow");
+        clawt_gtk_show_page(self, CLAWT_PAGE_FLOW);
         return TRUE;
     }
 
     if (g_strcmp0(name, "/tasks") == 0) {
-        adw_view_stack_set_visible_child_name(self->pages, "tasks");
+        clawt_gtk_show_page(self, CLAWT_PAGE_TASKS);
         return TRUE;
     }
 
@@ -2928,7 +2928,7 @@ run_slash_command(ClawtWindow *self, const gchar *text, gchar **expanded)
             gtk_editable_set_text(GTK_EDITABLE(self->recall_entry),
                                   rest != NULL ? rest : "");
 
-        adw_view_stack_set_visible_child_name(self->pages, "memory");
+        clawt_gtk_show_page(self, CLAWT_PAGE_MEMORY);
         clawt_gtk_refresh_recall(self);
         return TRUE;
     }

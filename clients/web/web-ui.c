@@ -15,56 +15,6 @@
 
 const gchar *clawt_web_stylesheet(void);
 
-/* ── Views ───────────────────────────────────────────────────────── */
-
-static const struct {
-    const gchar *slug;
-    const gchar *title;
-} views[CLAWT_WEB_N_VIEWS] = {
-    { "chat",     "Chat" },
-    { "agent",    "Agent" },
-    { "mailbox",  "Mailbox" },
-    { "computer", "Computer" },
-    { "routines", "Routines" },
-    { "triggers", "Triggers" },
-    { "tasks",    "Tasks" },
-    { "flow",     "Flow" },
-    { "skills",   "Skills" }
-};
-
-const gchar *
-clawt_web_view_slug(ClawtWebView view)
-{
-    if (view >= CLAWT_WEB_N_VIEWS)
-        return views[CLAWT_WEB_VIEW_CHAT].slug;
-
-    return views[view].slug;
-}
-
-const gchar *
-clawt_web_view_title(ClawtWebView view)
-{
-    if (view >= CLAWT_WEB_N_VIEWS)
-        return views[CLAWT_WEB_VIEW_CHAT].title;
-
-    return views[view].title;
-}
-
-ClawtWebView
-clawt_web_view_from_slug(const gchar *slug)
-{
-    guint i;
-
-    if (slug != NULL) {
-        for (i = 0; i < CLAWT_WEB_N_VIEWS; i++) {
-            if (g_strcmp0(slug, views[i].slug) == 0)
-                return (ClawtWebView)i;
-        }
-    }
-
-    return CLAWT_WEB_VIEW_CHAT;
-}
-
 /* ── Small helpers ───────────────────────────────────────────────── */
 
 void
@@ -78,7 +28,7 @@ clawt_web_add(gpointer parent, gpointer child)
 }
 
 gchar *
-clawt_web_agent_url(const gchar *agent_id, ClawtWebView view)
+clawt_web_agent_url(const gchar *agent_id, ClawtPage view)
 {
     g_autofree gchar *escaped = NULL;
 
@@ -93,7 +43,45 @@ clawt_web_agent_url(const gchar *agent_id, ClawtWebView view)
      */
     escaped = g_uri_escape_string(agent_id, NULL, FALSE);
 
-    return g_strdup_printf("/a/%s/%s", escaped, clawt_web_view_slug(view));
+    return g_strdup_printf("/a/%s/%s", escaped, clawt_page_nick(view));
+}
+
+HtmxElement *
+clawt_web_section_subnav(const gchar *agent_id, ClawtPage view)
+{
+    ClawtSection section = clawt_page_section(view);
+    guint n = clawt_section_page_count(section);
+    g_autoptr(HtmxDiv) nav = NULL;
+    guint i;
+
+    /*
+     * Nothing at all for a section that is one page.  A row holding a
+     * single tab reads as a control that does nothing, and it would cost
+     * every page in Chat and Computer a strip of the window to say so.
+     */
+    if (agent_id == NULL || n < 2)
+        return NULL;
+
+    nav = htmx_div_new();
+    htmx_element_add_class(HTMX_ELEMENT(nav), "subnav");
+    htmx_element_add_class(HTMX_ELEMENT(nav), "section-subnav");
+
+    for (i = 0; i < n; i++) {
+        ClawtPage page = clawt_section_page_nth(section, i);
+        g_autofree gchar *url = clawt_web_agent_url(agent_id, page);
+        g_autoptr(HtmxA) tab = htmx_a_new_with_href(url);
+
+        htmx_element_add_class(HTMX_ELEMENT(tab), "subnav-tab");
+        htmx_node_set_text_content(HTMX_NODE(tab), clawt_page_label(page));
+
+        if (page == view)
+            htmx_element_set_attribute(HTMX_ELEMENT(tab), "aria-current",
+                                       "page");
+
+        htmx_node_add_child(HTMX_NODE(nav), HTMX_NODE(tab));
+    }
+
+    return HTMX_ELEMENT(g_steal_pointer(&nav));
 }
 
 gchar *
@@ -1103,7 +1091,7 @@ close_document(HtmxBuilder *builder)
 }
 
 gchar *
-clawt_web_page(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view,
+clawt_web_page(ClawtWebApp *app, const gchar *agent_id, ClawtPage view,
                HtmxElement *body, HtmxRequest *request)
 {
     g_autoptr(ClawtWebLook) look = clawt_web_look_from_request(request);
@@ -1114,7 +1102,7 @@ clawt_web_page(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view,
 
     title = (agent_id != NULL)
             ? g_strdup_printf("%s · %s · clawtilla", agent_id,
-                              clawt_web_view_title(view))
+                              clawt_page_label(view))
             : g_strdup("clawtilla");
 
     /*
@@ -1123,7 +1111,7 @@ clawt_web_page(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view,
      * selected room.  Set before the sidebar is built, because the
      * sidebar is what draws the counts.
      */
-    clawt_web_app_set_viewing(app, (view == CLAWT_WEB_VIEW_CHAT)
+    clawt_web_app_set_viewing(app, (view == CLAWT_PAGE_CHAT)
                                        ? agent_id : NULL);
 
     open_document(builder, title, look);
@@ -1160,6 +1148,21 @@ clawt_web_page(ClawtWebApp *app, const gchar *agent_id, ClawtWebView view,
 
     htmx_element_add_class(HTMX_ELEMENT(content), "content");
     clawt_web_add(content, clawt_web_topbar(app, agent_id, view));
+
+    /*
+     * And the section's own page tabs directly under it.
+     *
+     * In the shell rather than in each body: the Computer page already
+     * builds a row of its own for its four sub-views, and a second
+     * implementation of the same row is the pair that drifts.  NULL for
+     * a section that is a single page.
+     */
+    {
+        HtmxElement *subnav = clawt_web_section_subnav(agent_id, view);
+
+        if (subnav != NULL)
+            clawt_web_add(content, subnav);
+    }
 
     /*
      * Under the topbar and over the page, which is where a person looks

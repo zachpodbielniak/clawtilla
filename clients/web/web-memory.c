@@ -276,6 +276,24 @@ add_operator_card(ClawtWebApp *app, HtmxElement *parent)
 
 /* ── Routes ──────────────────────────────────────────────────────── */
 
+/*
+ * Recall searches every room and the operator profile is the same for
+ * all of them, so this does not narrow to @agent_id either.  Taken for
+ * the same reason clawt_web_decisions_body() takes it.
+ */
+HtmxElement *
+clawt_web_memory_body(ClawtWebApp *app, const gchar *agent_id)
+{
+    g_autoptr(HtmxDiv) view = htmx_div_new();
+
+    (void)agent_id;
+
+    add_recall_card(app, HTMX_ELEMENT(view), NULL);
+    add_operator_card(app, HTMX_ELEMENT(view));
+
+    return HTMX_ELEMENT(g_steal_pointer(&view));
+}
+
 static HtmxResponse *
 on_memory(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
@@ -289,7 +307,7 @@ on_memory(HtmxRequest *request, GHashTable *params, gpointer user_data)
     add_recall_card(app, HTMX_ELEMENT(view), query);
     add_operator_card(app, HTMX_ELEMENT(view));
 
-    html = clawt_web_page(app, NULL, CLAWT_WEB_VIEW_CHAT,
+    html = clawt_web_page(app, NULL, CLAWT_PAGE_MEMORY,
                           HTMX_ELEMENT(view), request);
 
     return clawt_web_html_response(html);

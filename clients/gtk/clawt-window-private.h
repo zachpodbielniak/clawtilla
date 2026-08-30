@@ -227,7 +227,38 @@ struct _ClawtWindow {
     gboolean           alerts_open;
     gboolean           sidebar_transient;
     GtkListBox        *sidebar;
+
+    /*
+     * The switcher, two deep.
+     *
+     * `pages` holds one child per #ClawtSection and is what the header
+     * bar's switcher drives.  A section with more than one page holds an
+     * #AdwViewSwitcher of its own over `section_stacks[section]`; a
+     * section that is a single page holds that page directly and has no
+     * inner stack, so there is no row of one tab.
+     *
+     * The arrays are sized by clawt_section_count() and
+     * clawt_page_count() and indexed by the enumeration value, which
+     * tests/test-sections.c pins to the table's order.  Sized rather
+     * than fixed because a page added to the library must not need a
+     * number changed here to be reachable.
+     */
     AdwViewStack      *pages;
+    AdwViewStack     **section_stacks;
+    AdwViewStackPage **section_tabs;
+    AdwViewStackPage **page_tabs;
+
+    /*
+     * What each page's tab is claiming, kept so a section's own tab can
+     * be the sum of its children.
+     *
+     * A badge on a page nested one level down is invisible until
+     * somebody opens the section, which for Decisions would defeat the
+     * point of having one -- an agent waiting on a person has to be
+     * visible without anybody thinking to look.
+     */
+    guint             *page_badges;
+    gboolean          *page_attention;
 
     /*
      * Settings, while it is open.
@@ -373,7 +404,6 @@ struct _ClawtWindow {
      * you, and one surface meaning both is one badge nobody can act on.
      */
     GtkListBox        *decision_list;
-    AdwViewStackPage  *decision_page;
 
     /*
      * The memory page: what the fleet said, and what it believes about
@@ -475,7 +505,6 @@ struct _ClawtWindow {
      */
     GHashTable        *unread;
     GHashTable        *dm_rooms;
-    AdwViewStackPage  *chat_page;
 
     /*
      * When this window last connected, in microseconds.
@@ -1061,6 +1090,46 @@ clawt_gtk_team_index_of(GStrv ids, const gchar *current);
 
 void
 clawt_gtk_update_unread_tab(ClawtWindow *self);
+
+/* ── Defined in clawt-window.c: moving between pages ─────────────── */
+
+/**
+ * clawt_gtk_show_page:
+ * @self: a #ClawtWindow
+ * @page: where to go
+ *
+ * Opens @page, selecting the section it lives under first.
+ *
+ * Every jump goes through this rather than naming a stack child, because
+ * a page is two names now -- its section's and its own -- and the four
+ * call sites that used to name one would each have to know which.
+ */
+void
+clawt_gtk_show_page(ClawtWindow *self, ClawtPage page);
+
+/**
+ * clawt_gtk_current_page:
+ * @self: a #ClawtWindow
+ *
+ * Returns: the page on screen, or %CLAWT_PAGE_CHAT before the window is
+ *   built
+ */
+ClawtPage
+clawt_gtk_current_page(ClawtWindow *self);
+
+/**
+ * clawt_gtk_set_page_badge:
+ * @self: a #ClawtWindow
+ * @page: which page the number is about
+ * @count: the number, or 0 for none
+ * @attention: whether it should be drawn as urgent
+ *
+ * Puts a number on @page's tab and on its section's, the latter being
+ * the sum over the section's pages.
+ */
+void
+clawt_gtk_set_page_badge(ClawtWindow *self, ClawtPage page, guint count,
+                         gboolean attention);
 
 /* ── Defined in gtk-tasks.c: the tasks page ──────────────────────── */
 

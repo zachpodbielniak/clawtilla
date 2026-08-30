@@ -7,7 +7,7 @@
  * This file is part of clawtilla.
  *
  * One clawt_web_register_* per module, called from main().  A module that
- * is not registered serves nothing, and a view listed in ClawtWebView
+ * is not registered serves nothing, and a view listed in ClawtPage
  * that no module renders is a tab leading to an empty page -- so the enum
  * and these functions are meant to be read together.
  */
@@ -38,7 +38,7 @@ G_BEGIN_DECLS
  */
 HtmxElement *clawt_web_sidebar(ClawtWebApp  *app,
                                const gchar  *selected,
-                               ClawtWebView  view);
+                               ClawtPage  view);
 
 /**
  * clawt_web_topbar:
@@ -50,7 +50,7 @@ HtmxElement *clawt_web_sidebar(ClawtWebApp  *app,
  */
 HtmxElement *clawt_web_topbar(ClawtWebApp  *app,
                               const gchar  *agent_id,
-                              ClawtWebView  view);
+                              ClawtPage  view);
 
 /* ── Views ───────────────────────────────────────────────────────── */
 
@@ -70,7 +70,7 @@ HtmxElement *clawt_web_topbar(ClawtWebApp  *app,
  */
 HtmxElement *clawt_web_view_body(ClawtWebApp  *app,
                                  const gchar  *agent_id,
-                                 ClawtWebView  view);
+                                 ClawtPage  view);
 
 HtmxElement *clawt_web_chat_body(ClawtWebApp *app, const gchar *agent_id);
 
@@ -127,6 +127,21 @@ HtmxElement *clawt_web_triggers_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_skills_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_tasks_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_flow_body(ClawtWebApp *app, const gchar *agent_id);
+HtmxElement *clawt_web_decisions_body(ClawtWebApp *app,
+                                      const gchar *agent_id);
+HtmxElement *clawt_web_memory_body(ClawtWebApp *app, const gchar *agent_id);
+
+/**
+ * clawt_web_section_subnav:
+ * @agent_id: (nullable): the selected agent
+ * @view: the page being shown
+ *
+ * The row of page tabs under the topbar for @view's section.
+ *
+ * Returns: (transfer full) (nullable): the row, or %NULL when the
+ *   section holds a single page and there is nothing to choose between
+ */
+HtmxElement *clawt_web_section_subnav(const gchar *agent_id, ClawtPage view);
 
 /* ── Routes ──────────────────────────────────────────────────────── */
 
@@ -325,7 +340,7 @@ gboolean clawt_web_form_had(HtmxRequest *request, const gchar *name);
 HtmxResponse *clawt_web_after_action(ClawtWebApp  *app,
                                      HtmxRequest  *request,
                                      const gchar  *agent_id,
-                                     ClawtWebView  view,
+                                     ClawtPage  view,
                                      const gchar  *toast);
 
 /**
@@ -347,7 +362,7 @@ HtmxResponse *clawt_web_after_action(ClawtWebApp  *app,
 HtmxResponse *clawt_web_error_page(ClawtWebApp  *app,
                                    HtmxRequest  *request,
                                    const gchar  *agent_id,
-                                   ClawtWebView  view,
+                                   ClawtPage  view,
                                    const gchar  *message);
 
 /**

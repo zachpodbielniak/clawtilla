@@ -135,7 +135,7 @@ clawt_gtk_on_flow_task_clicked(GtkButton *button, gpointer user_data)
      * The task board is where the rest of the story is -- who asked for
      * it, what state it is in, what it returned.
      */
-    adw_view_stack_set_visible_child_name(self->pages, "tasks");
+    clawt_gtk_show_page(self, CLAWT_PAGE_TASKS);
 }
 
 /*

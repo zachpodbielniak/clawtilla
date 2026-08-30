@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-27 Thu]
+#+updated: [2026-08-30 Sun]
 #+version: 0.2.0
 
 * Clients
@@ -310,6 +310,71 @@ clawtilla-gtk [--socket PATH]
 GTK4 and libadwaita.  Agents are presented as chats: a sidebar of who is
 here, a transcript in the middle, and everything else about an agent
 behind a tab rather than a settings dialog somewhere else.
+
+*** Six sections, not eleven tabs
+
+There are eleven pages and a header bar is not eleven buttons wide.  An
+=AdwViewSwitcher= pinned to =ADW_VIEW_SWITCHER_POLICY_WIDE= does not
+ellipsise, does not grow an overflow menu and logs nothing when it runs
+out of room -- it is simply clipped.  So below roughly 1500 logical
+pixels the pages a person could reach depended on the monitor, and on a
+wide enough screen there was nothing to see.
+
+The eleven are grouped into six, and a section holding more than one
+page draws its own row of tabs underneath -- the same shape the Computer
+page already had for its four halves.
+
+| Section | Pages |
+|---------+-------|
+| Chat | the transcript and composer |
+| Agent | Overview, Mailbox |
+| Computer | one page, which draws its own Shell / Screen / Mounts / Exchange row |
+| Automation | Routines, Triggers |
+| Work | Tasks, Decisions, Flow |
+| Library | Skills, Memory |
+
+The grouping is ~ClawtSection~ in the library, walked out of
+~clawt_section_count()~ and ~clawt_section_page_count()~ rather than
+listed in either client -- for the reason the Computer sub-views already
+are, and with the same check behind it.  A grouping spelled out twice is
+one that drifts, and the drift here would be a page filed under Work in
+this window and under Library in a browser, with nothing to say so.
+
+**A section that holds one page draws no second row.**  A switcher over
+a stack of one is a control that does nothing, and it would cost Chat
+and Computer -- the two pages somebody spends the most time on -- a
+strip of the window to say so.
+
+**A section's tab carries the sum of its pages' badges.**  A number one
+level down is invisible until somebody opens the section, which for
+Decisions would defeat the point of having one: an agent waiting on a
+person has to be visible without anybody thinking to look.  The GTK
+client keeps each page's number and recomputes the section's in
+~clawt_gtk_set_page_badge()~, so a second badged page needs no second
+implementation; the web client draws the same count on Work from
+~clawt_web_app_open_decisions()~.
+
+That count needed a daemon change to be possible at all.  ~decision.asked~
+was published and *nothing* was published when one was answered or
+dismissed, so a client's tally could only ever go up: a second window,
+the CLI, or the venture bridge answering on the operator's behalf left
+every other client drawing a badge for an inbox that was already empty.
+~decision.settled~ closes it, and the GTK client -- which already
+refreshes on any ~decision.~ event -- became correct the moment it
+started arriving.
+
+There is deliberately no icon column in the library's table.  The web
+client draws no icons at all, and libclawt must never link GTK, so a
+column would be a GNOME string carried by everything that links the
+library and read by one caller.  The GTK client picks one from a
+~switch~ with no ~default:~ instead, which gives the same guarantee: a
+section added to the table does not build until somebody has chosen an
+icon for it.
+
+Nothing moved in the URL.  Each page keeps the nickname it had, so
+=/a/<id>/tasks= is still =/a/<id>/tasks= and a bookmark still lands
+where it did; the section is which tab is drawn as current, not part of
+the path.
 
 *** A VM agent's hardware
 
@@ -2334,11 +2399,15 @@ clawtilla-web [--port 8790] [--bind ADDR] [--no-tailscale] [--socket PATH]
               [--profile NAME | --host HOST [--daemon-port N] [--token T]]
 #+end_src
 
-Everything ~clawtilla-gtk~ does, served over HTTP.  The same seven views
--- chat, agent, mailbox, computer, routines, tasks, flow -- the same
-nineteen slash commands, and seven settings pages behind them, driven by
-the same ~ClawtClient~ over the same socket.  See
+Everything ~clawtilla-gtk~ does, served over HTTP: the same pages in the
+same six sections, the same slash commands, and the same settings pages
+behind them, driven by the same ~ClawtClient~ over the same socket.  See
 [[file:web-client.org][web-client.org]] for the whole of it.
+
+The list of pages is not written out here, and was wrong when it was --
+it said seven while there were nine, and there was nothing to notice.
+It lives in ~ClawtSection~ and ~ClawtPage~, which both clients walk; see
+[[*Six sections, not eleven tabs][Six sections, not eleven tabs]].
 
 It is a separate binary rather than a mode of the daemon, deliberately.
 The page can start, stop, reconfigure and delete every agent on the

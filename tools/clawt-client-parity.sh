@@ -73,11 +73,13 @@ gtk_code=""
 web_code=""
 gtk_render=""
 web_render=""
+api_text=""
 
 cleanup () {
     rm -f "${gtk}" "${web}" "${only_gtk}" "${only_web}" \
           "${gtk_cmds}" "${web_cmds}" "${only_gtk_cmds}" \
-          "${gtk_code}" "${web_code}" "${gtk_render}" "${web_render}"
+          "${gtk_code}" "${web_code}" "${gtk_render}" "${web_render}" \
+          "${api_text}"
 }
 
 trap cleanup EXIT
@@ -180,6 +182,15 @@ declare -A AFFORDANCES=(
     ["palettes from disk"]="clawt_appearance_scheme_count|clawt_appearance_scheme_count"
     ["message boundary in a run"]="CHAT_MESSAGE_SPACING|msg-time"
     ["decision inbox"]="build_decision_page|decision-row"
+    #
+    # The count on the top-level tab, which is a different thing from
+    # the page: the GTK client sums a section's pages onto its own tab
+    # and the web client draws a pill on Work.  Neither touches a shared
+    # symbol, so layers 3 and 4 cannot see it -- and the web half did
+    # not exist until the daemon started saying when a decision was
+    # settled, without which a count could only ever go up.
+    #
+    ["decision count on a tab"]="clawt_gtk_set_page_badge|clawt_web_app_open_decisions"
     ["connection reachability"]="clawt_connection_probe|clawt_connection_probe"
     ["identity size"]="clawt-identity-size|clawt-identity-size"
     ["connection banner"]="connection_banner|clawt-connection-banner"
@@ -324,6 +335,31 @@ client_commands () {
 }
 
 #
+# The public headers with the comments taken out.
+#
+# For the same reason the client sources are read that way, one layer
+# down -- and it came true here too.  clawt_page_count()'s own doc
+# comment explains that there is deliberately no clawt_page_nth() beside
+# it, and naming the function it does not have was enough to make this
+# read the pair as present: the family was then reported as walked by
+# one client and not the other, which is a real failure mode being
+# announced about an API that does not exist.
+#
+# Built once and reused, since enumerations() consults it twice per
+# family.
+#
+public_api () {
+    if [[ -z "${api_text}" ]]
+    then
+        api_text="$(mktemp)"
+        strip_comments < <(cat "${ROOT}"/src/*.h "${ROOT}"/src/*/*.h) \
+            > "${api_text}"
+    fi
+
+    echo "${api_text}"
+}
+
+#
 # The choice enumerations the public API offers.
 #
 # A `_count()` with a matching `_nth()` is the library saying "here is a
@@ -331,10 +367,13 @@ client_commands () {
 # added later is compared from the moment it exists.
 #
 enumerations () {
+    local api
     local family
 
+    api="$(public_api)"
+
     for family in $(grep -ohE '\bclawt_[a-z0-9_]+_count[[:space:]]*\(' \
-                        "${ROOT}"/src/*.h "${ROOT}"/src/*/*.h \
+                        "${api}" \
                     | tr -d ' (' | sed 's/_count$//' | sort -u)
     do
         #
@@ -343,8 +382,7 @@ enumerations () {
         # happened, and have no _nth() beside them precisely because
         # there is nothing to offer.
         #
-        if grep -qhE "\b${family}_nth[[:space:]]*\(" \
-               "${ROOT}"/src/*.h "${ROOT}"/src/*/*.h
+        if grep -qhE "\b${family}_nth[[:space:]]*\(" "${api}"
         then
             echo "${family}"
         fi
@@ -354,16 +392,26 @@ enumerations () {
 #
 # Whether a client walks a given enumeration.
 #
+# Takes the client's comment-stripped code rather than its directory,
+# for the third time in this file and the same reason each time: prose
+# that *names* a function is not a call to it.  The topbar's comment
+# says it is "walked out of clawt_section_count()", and with the raw
+# sources that sentence alone was enough to report the enumeration as
+# walked -- deleting the loop under it changed nothing.
+#
+# The two other layers already read stripped code; this one did not, so
+# the rule was about those call sites rather than about the check.
+#
 walks_enumeration () {
     if [[ $# -ne 2 ]]
     then
         # shellcheck disable=SC2016
         echo '`walks_enumeration()` requires 2 positional arguments' >&2
-        echo 'walks_enumeration <directory> <family>' >&2
+        echo 'walks_enumeration <code-file> <family>' >&2
         exit 1
     fi
 
-    grep -qhE "\b${2}_(count|nth)[[:space:]]*\(" "${1}"/*.c
+    grep -qE "\b${2}_(count|nth)[[:space:]]*\(" "${1}"
 }
 
 #
@@ -582,8 +630,8 @@ $(wc -l < "${web_cmds}") in web"
         for shown in $(enumerations)
         do
             local who=""
-            walks_enumeration "${GTK_DIR}" "${shown}" && who="gtk"
-            walks_enumeration "${WEB_DIR}" "${shown}" && who="${who:+${who}+}web"
+            walks_enumeration "${gtk_code}" "${shown}" && who="gtk"
+            walks_enumeration "${web_code}" "${shown}" && who="${who:+${who}+}web"
             printf '  %-38s %s\n' "${shown}()" "${who:-nobody}"
         done
         echo
@@ -645,8 +693,8 @@ $(wc -l < "${web_cmds}") in web"
         in_gtk=0
         in_web=0
 
-        walks_enumeration "${GTK_DIR}" "${family}" && in_gtk=1
-        walks_enumeration "${WEB_DIR}" "${family}" && in_web=1
+        walks_enumeration "${gtk_code}" "${family}" && in_gtk=1
+        walks_enumeration "${web_code}" "${family}" && in_web=1
 
         [[ "${in_gtk}" -eq "${in_web}" ]] && continue
 
