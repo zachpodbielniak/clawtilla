@@ -104,6 +104,29 @@ GPtrArray *clawt_task_manager_list_involving(ClawtTaskManager *self,
                                              gboolean          include_finished);
 
 /**
+ * clawt_task_manager_list_descendants:
+ * @self: a #ClawtTaskManager
+ * @agent_id: the agent whose fan-out is wanted
+ * @include_finished: whether to include tasks that have ended
+ *
+ * Every task somewhere below a task @agent_id delegated, newest first.
+ *
+ * Deliberately excludes what @agent_id is itself a party to --
+ * clawt_task_manager_list_involving() answers that, and a task returned
+ * by both would be drawn twice under headings that mean different
+ * things.  Together they are the whole tree an agent can account for.
+ *
+ * Without this a delegator could see one level and no further: a chief
+ * that gave a lead a job could not list what the lead gave anybody, so a
+ * fan-out was unobservable from the one place watching it.
+ *
+ * Returns: (transfer container) (element-type ClawtTask): matching tasks
+ */
+GPtrArray *clawt_task_manager_list_descendants(ClawtTaskManager *self,
+                                               const gchar      *agent_id,
+                                               gboolean          include_finished);
+
+/**
  * clawt_task_manager_count_unfinished_children:
  * @self: a #ClawtTaskManager
  * @task_id: (nullable): a task id

@@ -848,6 +848,13 @@ versions apart.
 - A thread carries more than the answer: progress notes, guardian refusals,
   restart notices. Act only on a message arriving after the typing indicator
   drops. A task that ends late is a delay; one that ends early is a lie.
+- **A filter's description is a claim about scope, and a wrong one is answered
+  confidently.** `clawtilla_task_list`'s `agent_id` filtered the caller's own
+  tasks by counterparty while documenting itself as "tasks involving this
+  agent", so asking about a worker two levels down returned "No tasks
+  involving kudu" with kudu's task running -- and then blamed a daemon restart,
+  which is a plausible wrong cause and sends the reader to a different layer.
+  Say what a listing looked at *and* what it did not.
 - Team permissions are two gates: the *tool* is offered only to an agent that
   can assign to somebody, and the *target* is checked at call time. A refusal
   about assigning must say that talking is still allowed, or an agent reads it

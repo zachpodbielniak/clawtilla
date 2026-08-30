@@ -160,8 +160,10 @@ static const ClawtParamInfo task_progress_params[] = {
 };
 
 static const ClawtParamInfo task_list_params[] = {
-    { "agent_id", "string", "Only tasks involving this agent. Defaults to "
-                            "all of yours.", FALSE },
+    { "agent_id", "string",
+      "Only tasks with this agent on the other side of them -- yours to "
+      "them, or theirs to you -- plus anything below them in a chain you "
+      "started. Defaults to everything you can see.", FALSE },
     { "include_finished", "boolean", "Include tasks that have ended. "
                                      "Defaults to false.", FALSE }
 };
@@ -429,12 +431,14 @@ static const ToolDefinition tools[] = {
          NEEDS_NOTHING, no_params),
 
     TOOL("clawtilla_task_list",
-         "Every task you delegated and every task delegated to you, with "
-         "what each one is doing right now. Use this rather than "
-         "clawtilla_task_status per task -- it is one call, and it does "
-         "not need you to have kept the ids. This is how you answer "
-         "\"what is everyone working on\": clawtilla_list_agents tells you "
-         "who is running, which is not the same as what they are running.",
+         "Every task you delegated, every task delegated to you, and "
+         "everything those turned into further down -- what each one is "
+         "doing right now. Use this rather than clawtilla_task_status per "
+         "task: it is one call, it does not need you to have kept the "
+         "ids, and it is the only way to see what somebody you delegated "
+         "to handed on in turn. This is how you answer \"what is everyone "
+         "working on\": clawtilla_list_agents tells you who is running, "
+         "which is not the same as what they are running.",
          NEEDS_NOTHING, task_list_params),
 
     TOOL("clawtilla_task_status",
@@ -2956,11 +2960,14 @@ tool_task_list(ClawtMcpTools *self, const gchar *agent_id,
                                                  "include_finished", FALSE);
     gint64 now = g_get_real_time();
     g_autoptr(GPtrArray) tasks = NULL;
+    g_autoptr(GPtrArray) onward = NULL;
     g_autoptr(GString) delegated = g_string_new(NULL);
     g_autoptr(GString) assigned = g_string_new(NULL);
+    g_autoptr(GString) below = g_string_new(NULL);
     guint delegated_n = 0;
     guint delegated_pending = 0;
     guint assigned_n = 0;
+    guint below_n = 0;
     guint i;
 
     if (self->tasks == NULL)
@@ -2968,6 +2975,8 @@ tool_task_list(ClawtMcpTools *self, const gchar *agent_id,
 
     tasks = clawt_task_manager_list_involving(self->tasks, agent_id,
                                               include_finished);
+    onward = clawt_task_manager_list_descendants(self->tasks, agent_id,
+                                                 include_finished);
 
     for (i = 0; i < tasks->len; i++) {
         ClawtTask *task = g_ptr_array_index(tasks, i);
@@ -2992,7 +3001,31 @@ tool_task_list(ClawtMcpTools *self, const gchar *agent_id,
         }
     }
 
-    if (delegated_n == 0 && assigned_n == 0) {
+    /*
+     * And what those turned into.  A chief that gives a lead a job and
+     * then cannot see what the lead gave anybody has no way to tell a
+     * fan-out that is running from one that evaporated -- so it either
+     * waits on nothing or delegates the work a second time.  Both sides
+     * are named here because neither is the caller.
+     */
+    for (i = 0; i < onward->len; i++) {
+        ClawtTask *task = g_ptr_array_index(onward, i);
+        g_autofree gchar *pair = NULL;
+
+        if (peer != NULL &&
+            g_strcmp0(clawt_task_get_origin(task), peer) != 0 &&
+            g_strcmp0(clawt_task_get_assignee(task), peer) != 0)
+            continue;
+
+        pair = g_strdup_printf("%s -> %s",
+                               clawt_task_get_origin(task),
+                               clawt_task_get_assignee(task));
+
+        append_task_line(below, task, pair, now);
+        below_n++;
+    }
+
+    if (delegated_n == 0 && assigned_n == 0 && below_n == 0) {
         /*
          * An empty list here is not "nothing was delegated" -- tasks are
          * held in memory, so a daemon restart clears them, and saying so
@@ -3000,13 +3033,21 @@ tool_task_list(ClawtMcpTools *self, const gchar *agent_id,
          * gap.  The same shape as clawtilla_mailbox_list being empty for
          * a running agent.
          */
+        if (peer != NULL)
+            return g_strdup_printf(
+                "No %stasks between you and %s, and nothing below one of "
+                "yours that %s is on either side of. This does not cover "
+                "tasks %s has with somebody else in a chain you did not "
+                "start. Tasks are also held in memory, so any from before "
+                "the daemon last restarted are gone -- what happened is in "
+                "the event log, not here.",
+                include_finished ? "" : "live ", peer, peer, peer);
+
         return g_strdup_printf(
-            "No %stasks%s%s. Tasks are held in memory, so any from before "
+            "No %stasks. Tasks are held in memory, so any from before "
             "the daemon last restarted are gone -- what happened is in the "
             "event log, not here.",
-            include_finished ? "" : "live ",
-            peer != NULL ? " involving " : "",
-            peer != NULL ? peer : "");
+            include_finished ? "" : "live ");
     }
 
     {
@@ -3020,6 +3061,12 @@ tool_task_list(ClawtMcpTools *self, const gchar *agent_id,
             g_string_append_printf(out, "%sAssigned to you (%u):\n%s",
                                    delegated_n > 0 ? "\n" : "",
                                    assigned_n, assigned->str);
+
+        if (below_n > 0)
+            g_string_append_printf(
+                out, "%sHanded on further, under work you started (%u):\n%s",
+                (delegated_n > 0 || assigned_n > 0) ? "\n" : "",
+                below_n, below->str);
 
         /*
          * The state column used to mislead and the paragraph here

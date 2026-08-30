@@ -2083,6 +2083,89 @@ test_a_finished_parent_is_not_used(void)
 }
 
 /*
+ * A delegator can list what its work turned into.
+ *
+ * clawtilla_task_list answered from the caller's own tasks alone, so a
+ * chief could see the job it gave a lead and nothing the lead gave
+ * anybody -- and the `agent_id` argument, documented as "tasks involving
+ * this agent", actually filtered the caller's own tasks by counterparty.
+ * Asking about a worker two levels down therefore reported "No tasks
+ * involving kudu" while kudu's task was running, and blamed a daemon
+ * restart for it.
+ */
+static void
+test_task_list_shows_the_fan_out(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    g_autoptr(JsonNode) filtered = NULL;
+    ClawtTask *root;
+    ClawtTask *child;
+    const gchar *text;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: oryx\n  - id: kudu\n");
+
+    root = clawt_task_manager_create(fixture.tasks, "chief", "oryx",
+                                     "verify the guests", NULL, NULL);
+    child = clawt_task_manager_create(fixture.tasks, "oryx", "kudu",
+                                      "yours too",
+                                      clawt_task_get_id(root), NULL);
+
+    response = call_tool(&fixture, "chief", "clawtilla_task_list", "{}");
+    text = response_text(response, NULL);
+
+    g_assert_nonnull(strstr(text, clawt_task_get_id(root)));
+    g_assert_nonnull(strstr(text, "Handed on further"));
+    g_assert_nonnull(strstr(text, clawt_task_get_id(child)));
+
+    /* Both sides are named, since neither of them is the caller. */
+    g_assert_nonnull(strstr(text, "oryx -> kudu"));
+
+    /*
+     * And asking about the agent two levels down finds it, which is the
+     * question that used to come back empty.
+     */
+    filtered = call_tool(&fixture, "chief", "clawtilla_task_list",
+                         "{\"agent_id\":\"kudu\"}");
+    text = response_text(filtered, NULL);
+
+    g_assert_nonnull(strstr(text, clawt_task_get_id(child)));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And when it really is empty, it says what it did and did not look at.
+ *
+ * "No tasks involving kudu" was false in two ways at once: the filter
+ * meant "between you and kudu", and the sentence went on to blame a
+ * daemon restart -- a plausible wrong cause for a task that was running
+ * the whole time.
+ */
+static void
+test_an_empty_filtered_listing_says_what_it_covered(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    const gchar *text;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: kudu\n");
+
+    response = call_tool(&fixture, "chief", "clawtilla_task_list",
+                         "{\"agent_id\":\"kudu\"}");
+    text = response_text(response, NULL);
+
+    g_assert_nonnull(strstr(text, "between you and kudu"));
+    g_assert_nonnull(strstr(text, "somebody else"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * An assignee can end a turn without ending the task.
  *
  * The daemon completes a task from the message that ends its assignee's
@@ -2323,6 +2406,10 @@ main(int argc, char *argv[])
                     test_delegating_outside_a_task_starts_a_root);
     g_test_add_func("/mcp/delegate/a-finished-parent-is-not-used",
                     test_a_finished_parent_is_not_used);
+    g_test_add_func("/mcp/task-list/shows-the-fan-out",
+                    test_task_list_shows_the_fan_out);
+    g_test_add_func("/mcp/task-list/empty-says-what-it-covered",
+                    test_an_empty_filtered_listing_says_what_it_covered);
     g_test_add_func("/mcp/task-progress/keeps-a-task-open",
                     test_reporting_progress_keeps_a_task_open);
     g_test_add_func("/mcp/task-progress/refused-once-finished",

@@ -214,42 +214,52 @@ is *running*, which is not the same question as what they are running.
 
 #+begin_example
 Delegated by you (3):
-  tsk_01JQ...  oryx    pending    4m ago   Validate the Fedora 44 image boots to a desktop
-  tsk_01JQ...  kudu    pending    6m ago   Check the Ubuntu LTS guest reaches a login prompt
+  tsk_01JQ...  oryx    running    4m ago   Validate the Fedora 44 image boots to a desktop
+  tsk_01JQ...  kudu    running    6m ago   Check the Ubuntu LTS guest reaches a login prompt
   tsk_01JQ...  mamba   failed     2h ago   Boot the Arch cloudimg and report the console
 
 Assigned to you (1):
-  tsk_01JQ...  from operator  pending  12m ago  Report on the qa team's progress
+  tsk_01JQ...  from operator  running  12m ago  Report on the qa team's progress
 
-`pending` is normal for work you delegated: it becomes `completed`
-without ever reading `running`. It does not mean nobody picked it up, so
-do not delegate it again -- the age is the thing to watch.
+Handed on further, under work you started (2):
+  tsk_01JQ...  oryx -> kudu   running  3m ago   Run the same mount checks on yours
+  tsk_01JQ...  oryx -> mamba  pending  3m ago   Run the same mount checks on yours
 
 Finished tasks are omitted; pass include_finished to see them.
 #+end_example
 
-Both directions, because "my tasks" means both to whoever is asking, and
-because an agent that delegated everything is the assignee of none of it
--- the assignee filter that already existed answered the delegating agent
-with an empty list, which is the case the tool is for.
+Three sections, and they are three different claims.
 
-It is scoped to the caller: a task between two other agents does not
-appear.  That is what lets it need no permission, rather than being a
-window onto the whole fleet's work.
+*Delegated by you* and *Assigned to you* are what the caller is a party
+to.  Both directions, because "my tasks" means both to whoever is asking,
+and because an agent that delegated everything is the assignee of none of
+it -- the assignee filter that already existed answered the delegating
+agent with an empty list, which is the case the tool is for.
 
-Two parameters, both optional: ~agent_id~ narrows it to the tasks you
-share with one peer, and ~include_finished~ adds the ones that have
-ended.
+*Handed on further* is everything below a task the caller started, with
+both sides named because neither of them is the caller.  Without it a
+delegator could see one level and no further: a chief that gave a lead a
+job could not list what the lead gave anybody, so a fan-out was
+unobservable from the one place that was watching it.  Combined with a
+parent that closed early, nothing distinguished finished from evaporated
+from still-running.
 
-**** The note about ~pending~ is part of the tool
+A task in a chain the caller did not start still does not appear.  That
+is what lets the tool need no permission, rather than being a window onto
+the whole fleet's work.
 
-It says, in the output and every time any delegated task is pending, that
-the assignee has not started a turn on it yet -- usually because it is
-stopped or busy -- and that the age is the thing to watch.  That is
-deliberate: the agent reading the column has not necessarily read this
-page, and the mistake it prevents -- re-delegating work that was never
-stalled -- makes two of everything and costs real money.  A tool's
-description and its output are part of its behaviour.
+**** ~agent_id~ narrows, it does not search the fleet
+
+~agent_id~ means *this agent on the other side of something of mine* --
+your task to them, theirs to you, or one of them on either side of
+something below a chain you started.  It is not "every task involving this
+agent", and the parameter used to say that it was, which produced a
+confident wrong answer: asking about a worker two levels down came back
+"No tasks involving kudu" while kudu's task was running, and then blamed a
+daemon restart for it.  A plausible wrong cause is worse than no cause,
+because it sends the reader to a different layer.
+
+The empty case now says what it looked at and what it did not.
 
 **** An empty list is not "nothing happened"
 
@@ -342,11 +352,10 @@ What happens:
    one piece of work out, ~clawtilla_task_list~ answers for all of them
    at once and does not need the ids kept.
 
-Step 6 is where the state names bite.  A task an *agent* delegated reads
-~pending~ for its whole life and then goes straight to ~completed~ --
-~running~ is only set on the paths a person or a routine starts.  A chief
-that treats ~pending~ as "not picked up yet" and re-delegates has made
-two of everything.
+Step 6 is where a fan-out shows up.  If the researcher hands part of the
+job to a specialist, that task is parented on the chief's, so the chief
+sees it under *Handed on further* and its own task cannot report
+~completed~ while the specialist is still going.
 
 At every step:
 
@@ -377,7 +386,7 @@ Served over each agent's link as an MCP endpoint.
 | ~clawtilla_ask_agent~ | ask a question; the answer arrives in your mailbox |
 | ~clawtilla_delegate~ | hand over work, get a task id |
 | ~clawtilla_handoff~ | give a task you own to somebody else, and stop owning it |
-| ~clawtilla_task_list~ | everything you delegated and were delegated, in one call |
+| ~clawtilla_task_list~ | everything you delegated, were delegated, and what those turned into |
 | ~clawtilla_task_status~ / ~clawtilla_task_result~ / ~clawtilla_task_cancel~ | follow it |
 | ~clawtilla_task_complete~ | report your own assigned task done |
 | ~clawtilla_task_progress~ | say it is still going, so ending your turn does not close it |

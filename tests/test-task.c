@@ -402,6 +402,78 @@ test_an_inferred_result_says_so(void)
     g_assert_false(clawt_task_get_result_inferred(reported));
 }
 
+/*
+ * A delegator can see the whole tree under the work it handed out.
+ *
+ * clawt_task_manager_list_involving() stops one level down, so a chief
+ * that gave a lead a job could not list what the lead gave anybody: the
+ * parent read `completed`, the children were invisible, and nothing
+ * distinguished finished from evaporated from still-running.
+ */
+static void
+test_a_delegator_sees_what_its_work_turned_into(void)
+{
+    g_autoptr(ClawtTaskManager) tasks = clawt_task_manager_new();
+    g_autoptr(GPtrArray) below = NULL;
+    g_autoptr(GPtrArray) leads = NULL;
+    ClawtTask *root;
+    ClawtTask *child;
+    ClawtTask *grandchild;
+
+    root = clawt_task_manager_create(tasks, "chief", "oryx", "verify it",
+                                     NULL, NULL);
+    child = clawt_task_manager_create(tasks, "oryx", "kudu", "here too",
+                                      clawt_task_get_id(root), NULL);
+    grandchild = clawt_task_manager_create(tasks, "kudu", "mamba",
+                                           "and here",
+                                           clawt_task_get_id(child), NULL);
+
+    /* Somebody else's chain entirely. */
+    clawt_task_manager_create(tasks, "scribe", "mamba", "unrelated",
+                              NULL, NULL);
+
+    below = clawt_task_manager_list_descendants(tasks, "chief", FALSE);
+
+    g_assert_cmpuint(below->len, ==, 2);
+    g_assert_true(g_ptr_array_find(below, child, NULL));
+    g_assert_true(g_ptr_array_find(below, grandchild, NULL));
+
+    /*
+     * And not the chief's own task, which belongs to the other listing.
+     * Returned by both, it would be drawn twice under two headings that
+     * mean different things.
+     */
+    g_assert_false(g_ptr_array_find(below, root, NULL));
+
+    /* The lead sees its own fan-out and nothing above it. */
+    leads = clawt_task_manager_list_descendants(tasks, "oryx", FALSE);
+    g_assert_cmpuint(leads->len, ==, 1);
+    g_assert_true(g_ptr_array_find(leads, grandchild, NULL));
+}
+
+/*
+ * A parent id naming a task that is not there stops the walk rather
+ * than the daemon.  Tasks are in memory and a restart clears them, so a
+ * dangling parent is an ordinary state and not a corruption.
+ */
+static void
+test_a_missing_parent_ends_the_walk(void)
+{
+    g_autoptr(ClawtTaskManager) tasks = clawt_task_manager_new();
+    g_autoptr(GPtrArray) below = NULL;
+    ClawtTask *orphan;
+
+    orphan = clawt_task_manager_create(tasks, "kudu", "mamba", "a detail",
+                                       NULL, NULL);
+    clawt_task_set_parent_id(orphan, "task-that-went-away");
+
+    below = clawt_task_manager_list_descendants(tasks, "chief", FALSE);
+
+    g_assert_cmpuint(below->len, ==, 0);
+    g_assert_cmpuint(clawt_task_manager_count_unfinished_children(
+                         tasks, "task-that-went-away"), ==, 1);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -427,6 +499,10 @@ main(int argc, char *argv[])
                     test_a_progress_note_holds_the_task_open_for_one_turn);
     g_test_add_func("/task/an-inferred-result-says-so",
                     test_an_inferred_result_says_so);
+    g_test_add_func("/task/a-delegator-sees-the-fan-out",
+                    test_a_delegator_sees_what_its_work_turned_into);
+    g_test_add_func("/task/a-missing-parent-ends-the-walk",
+                    test_a_missing_parent_ends_the_walk);
 
     return g_test_run();
 }

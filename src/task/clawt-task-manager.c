@@ -243,6 +243,96 @@ clawt_task_manager_count_unfinished_children(ClawtTaskManager *self,
 }
 
 /*
+ * Whether anything above @task was delegated by @agent_id.
+ *
+ * Bounded rather than trusted to terminate.  A parent always exists
+ * before its child, so the chain cannot loop -- but a walk that hangs
+ * the daemon is a worse answer than one that gives up, and this runs on
+ * the main context while a client blocks.
+ */
+static gboolean
+has_ancestor_from(ClawtTaskManager *self,
+                  ClawtTask        *task,
+                  const gchar      *agent_id)
+{
+    const gchar *walk = clawt_task_get_parent_id(task);
+    guint steps;
+
+    for (steps = 0; walk != NULL && steps < 1024; steps++) {
+        ClawtTask *parent = g_hash_table_lookup(self->tasks, walk);
+
+        if (parent == NULL)
+            return FALSE;
+
+        if (g_strcmp0(clawt_task_get_origin(parent), agent_id) == 0)
+            return TRUE;
+
+        walk = clawt_task_get_parent_id(parent);
+    }
+
+    if (walk != NULL)
+        g_warning("task %s: parent chain is longer than 1024 tasks; giving "
+                  "up walking it", clawt_task_get_id(task));
+
+    return FALSE;
+}
+
+/*
+ * The fan-out below the tasks this agent handed out.
+ *
+ * clawt_task_manager_list_involving() answers "what am I a party to",
+ * which for a chief-of-staff stops one level down: it sees the task it
+ * gave a lead and nothing the lead gave anybody.  So a fan-out was
+ * invisible from the only place anybody was watching -- the parent read
+ * `completed`, the children could not be listed at all, and nothing
+ * distinguished finished from never-started.
+ *
+ * Kept separate from _list_involving() rather than folded into it,
+ * because they are different claims: one is work this agent is doing or
+ * waiting on, the other is work its work turned into.  A caller that
+ * merged them would report somebody else's task as its own.
+ */
+GPtrArray *
+clawt_task_manager_list_descendants(ClawtTaskManager *self,
+                                    const gchar      *agent_id,
+                                    gboolean          include_finished)
+{
+    GPtrArray *out;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), NULL);
+    g_return_val_if_fail(agent_id != NULL, NULL);
+
+    out = g_ptr_array_new();
+
+    for (i = self->order->len; i > 0; i--) {
+        const gchar *task_id = g_ptr_array_index(self->order, i - 1);
+        ClawtTask *task = g_hash_table_lookup(self->tasks, task_id);
+
+        if (task == NULL)
+            continue;
+
+        if (!include_finished && clawt_task_is_finished(task))
+            continue;
+
+        /*
+         * What the agent is itself a party to belongs to the other
+         * listing.  Returning it here as well would have a chief seeing
+         * its own delegation twice under two headings that mean
+         * different things.
+         */
+        if (g_strcmp0(clawt_task_get_origin(task), agent_id) == 0 ||
+            g_strcmp0(clawt_task_get_assignee(task), agent_id) == 0)
+            continue;
+
+        if (has_ancestor_from(self, task, agent_id))
+            g_ptr_array_add(out, task);
+    }
+
+    return out;
+}
+
+/*
  * The assignee saying its turn is over and the work is not.
  *
  * Also marks the task running, because it is proof somebody picked it
