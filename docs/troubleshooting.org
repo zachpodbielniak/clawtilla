@@ -1774,6 +1774,52 @@ clawtilla agent restart <agent>
 Nothing is lost by the note going: the same turn already raises the
 typing indicator, which both clients draw as a live activity line.
 
+** A task says completed and the assignee said it was not finished
+
+#+begin_example
+completed: Mine is done. Delegated identical checks to kudu and mamba;
+both tasks are pending. No reply to the chief yet since this needs to be
+one consolidated message, not a partial one.
+#+end_example
+
+A different bug from the one above and with the opposite cause: the
+agent was *not* mid-turn.  It finished its share, handed the rest on,
+scheduled a wakeup and ended its turn -- and the daemon took the last
+thing it wrote as the task's result, because an AI CLI cannot end a turn
+without writing something.
+
+That punished exactly the assignee doing the right thing.  Narrating
+kept a task alive; reporting once at the end closed it early.
+
+Fixed in ~clawt_task_manager_complete_on_turn_end()~, and no restart is
+needed for the part that matters: a task whose children are still running
+cannot be completed by a turn ending.  For the case with no children --
+the assignee is waiting on something outside the fleet -- it calls
+~clawtilla_task_progress~, which needs the tool list to be re-read:
+
+#+begin_src bash
+clawtilla agent restart <agent>
+#+end_src
+
+If you are reading a task that closed this way *before* the fix, the
+result text is still the truth -- it is what the assignee wrote.  Check
+whether the work actually landed before acting on it.
+
+** A task reads completed and it is not clear anybody said so
+
+~clawtilla_task_status~ and ~clawtilla_task_result~ now say which it is:
+
+#+begin_example
+(Nobody reported this task complete. That is the last thing oryx wrote
+before its turn ended, and clawtilla recorded the task as finished on the
+strength of it.)
+#+end_example
+
+That is an inference, not a report.  It is right most of the time -- work,
+answer, done -- and it is worth a look before acting on it, which is the
+whole reason the sentence is there.  A task somebody finished through
+~clawtilla_task_complete~ carries no such line.
+
 ** gowl is unreachable
 
 - gowl must be built with ~MCP=1~ and have ~modules.mcp.enabled: true~

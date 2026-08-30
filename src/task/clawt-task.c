@@ -22,6 +22,7 @@ struct _ClawtTask {
     gchar *parent_id;
     gchar *reason;
     gchar *session_key;
+    gchar *progress_note;
 
     /*
      * Everyone who has owned it, oldest first, with the current
@@ -30,6 +31,26 @@ struct _ClawtTask {
      * have overwritten the record of the first.
      */
     GPtrArray *owners;
+
+    /*
+     * Two facts about how a task ends, kept apart because they answer
+     * different questions.
+     *
+     * holds_completion is the assignee saying "my turn is over and the
+     * work is not", set by clawt_task_manager_note_progress() and spent
+     * by the next clawt_task_manager_complete_on_turn_end().  One-shot,
+     * because a hold that persisted would mean the task could never
+     * finish by inference again -- and the assignee is the one who knows,
+     * so it says so each turn it is still going.
+     *
+     * result_inferred records that nothing ever called
+     * clawtilla_task_complete: the result is whatever the assignee
+     * happened to write as its turn ended.  A delegator cannot otherwise
+     * tell "they said it was done" from "they stopped talking", and the
+     * two need different follow-ups.
+     */
+    gboolean holds_completion;
+    gboolean result_inferred;
 
     ClawtTaskState state;
     gint           depth;
@@ -115,6 +136,7 @@ clawt_task_copy(ClawtTask *self)
     copy->parent_id = g_strdup(self->parent_id);
     copy->reason = g_strdup(self->reason);
     copy->session_key = g_strdup(self->session_key);
+    copy->progress_note = g_strdup(self->progress_note);
 
     /*
      * Deep, because g_ptr_array_copy() carries the source's element-free
@@ -130,6 +152,8 @@ clawt_task_copy(ClawtTask *self)
                             g_strdup(g_ptr_array_index(self->owners, i)));
     }
 
+    copy->holds_completion = self->holds_completion;
+    copy->result_inferred = self->result_inferred;
     copy->state = self->state;
     copy->depth = self->depth;
     copy->created_at = self->created_at;
@@ -156,6 +180,7 @@ clawt_task_free(ClawtTask *self)
     g_free(self->parent_id);
     g_free(self->reason);
     g_free(self->session_key);
+    g_free(self->progress_note);
     g_clear_pointer(&self->owners, g_ptr_array_unref);
     g_free(self);
 }
@@ -177,6 +202,7 @@ GETTER(room, room)
 GETTER(parent_id, parent_id)
 GETTER(reason, reason)
 GETTER(session_key, session_key)
+GETTER(progress_note, progress_note)
 
 #undef GETTER
 
@@ -194,8 +220,46 @@ SETTER(room, room)
 SETTER(parent_id, parent_id)
 SETTER(reason, reason)
 SETTER(result, result)
+SETTER(progress_note, progress_note)
 
 #undef SETTER
+
+void
+clawt_task_hold_completion(ClawtTask *self)
+{
+    g_return_if_fail(self != NULL);
+
+    self->holds_completion = TRUE;
+}
+
+gboolean
+clawt_task_take_completion_hold(ClawtTask *self)
+{
+    gboolean held;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    held = self->holds_completion;
+    self->holds_completion = FALSE;
+
+    return held;
+}
+
+gboolean
+clawt_task_get_result_inferred(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    return self->result_inferred;
+}
+
+void
+clawt_task_set_result_inferred(ClawtTask *self, gboolean inferred)
+{
+    g_return_if_fail(self != NULL);
+
+    self->result_inferred = inferred;
+}
 
 ClawtTaskState
 clawt_task_get_state(ClawtTask *self)

@@ -87,6 +87,7 @@ const gchar   *clawt_task_get_room(ClawtTask *self);
 const gchar   *clawt_task_get_parent_id(ClawtTask *self);
 const gchar   *clawt_task_get_reason(ClawtTask *self);
 const gchar   *clawt_task_get_session_key(ClawtTask *self);
+const gchar   *clawt_task_get_progress_note(ClawtTask *self);
 ClawtTaskState clawt_task_get_state(ClawtTask *self);
 gint           clawt_task_get_depth(ClawtTask *self);
 gint64         clawt_task_get_created_at(ClawtTask *self);
@@ -140,8 +141,68 @@ void clawt_task_set_room(ClawtTask *self, const gchar *room);
 void clawt_task_set_parent_id(ClawtTask *self, const gchar *parent_id);
 void clawt_task_set_reason(ClawtTask *self, const gchar *reason);
 void clawt_task_set_result(ClawtTask *self, const gchar *result);
+void clawt_task_set_progress_note(ClawtTask *self, const gchar *note);
 void clawt_task_set_state(ClawtTask *self, ClawtTaskState state);
 void clawt_task_set_depth(ClawtTask *self, gint depth);
+
+/**
+ * clawt_task_hold_completion:
+ * @self: a #ClawtTask
+ *
+ * Records that the assignee ended a turn with the work unfinished.
+ *
+ * The daemon completes a task from the message that ends its assignee's
+ * turn, because an AI CLI has no other way of saying "done".  That is an
+ * inference, and it is wrong for the assignee that does the sensible
+ * thing: finish part of the job, hand the rest on, and report once at
+ * the end rather than narrating.  Such a turn ends with a status note
+ * and the task closed under it -- so the delegator stopped polling and
+ * the real answer arrived against a task nothing was waiting on.  The
+ * lifecycle rewarded chatter, which is the opposite of what the rest of
+ * the guidance asks for.
+ *
+ * This is how an assignee declines that inference for one turn.
+ * Ordinary code goes through clawt_task_manager_note_progress().
+ */
+void clawt_task_hold_completion(ClawtTask *self);
+
+/**
+ * clawt_task_take_completion_hold:
+ * @self: a #ClawtTask
+ *
+ * Reads the hold and clears it, in one step.
+ *
+ * One-shot on purpose: a hold that outlived the turn it was set in would
+ * mean the task could never finish by inference again, and the assignee
+ * is the one that knows -- so it says so on each turn the work is still
+ * running.  Taking and clearing together is what stops two readers from
+ * both deciding they are the one that consumed it.
+ *
+ * Returns: %TRUE if a hold was set, in which case it is now cleared
+ */
+gboolean clawt_task_take_completion_hold(ClawtTask *self);
+
+/**
+ * clawt_task_get_result_inferred:
+ * @self: a #ClawtTask
+ *
+ * Whether the result was taken from the end of a turn rather than
+ * reported through clawtilla_task_complete.
+ *
+ * "They said it was done" and "they stopped talking" are different
+ * facts, and a delegator that cannot tell them apart either re-delegates
+ * work that is finished or waits on work that is not.
+ *
+ * Returns: %TRUE if nothing reported this task complete
+ */
+gboolean clawt_task_get_result_inferred(ClawtTask *self);
+
+/**
+ * clawt_task_set_result_inferred:
+ * @self: a #ClawtTask
+ * @inferred: %TRUE if the result came from the end of a turn
+ */
+void clawt_task_set_result_inferred(ClawtTask *self, gboolean inferred);
 
 /**
  * clawt_task_is_finished:

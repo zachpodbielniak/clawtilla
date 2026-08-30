@@ -2082,6 +2082,156 @@ test_a_finished_parent_is_not_used(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * An assignee can end a turn without ending the task.
+ *
+ * The daemon completes a task from the message that ends its assignee's
+ * turn, because an AI CLI cannot end one without writing something.
+ * That punished the assignee doing the right thing: finish your share,
+ * hand the rest on, report once at the end.  Such a turn ended with a
+ * status note and the task closed under it -- with a result that said,
+ * in so many words, that the report had not been sent yet.
+ */
+static void
+test_reporting_progress_keeps_a_task_open(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    g_autoptr(JsonNode) status = NULL;
+    g_autofree gchar *arguments = NULL;
+    g_autofree gchar *held = NULL;
+    ClawtTask *task;
+    gboolean is_error = TRUE;
+    const gchar *text;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n"
+                            "    chief_of_staff: true\n  - id: oryx\n");
+
+    task = clawt_task_manager_create(fixture.tasks, "chief", "oryx",
+                                     "verify the guests", NULL, NULL);
+
+    arguments = g_strdup_printf(
+        "{\"task_id\":\"%s\",\"note\":\"mine is clean; waiting on the "
+        "others\"}", clawt_task_get_id(task));
+
+    response = call_tool(&fixture, "oryx", "clawtilla_task_progress",
+                         arguments);
+    text = response_text(response, &is_error);
+
+    g_assert_false(is_error);
+
+    /*
+     * It says what it bought.  An agent that cannot tell whether the
+     * call worked goes back to narrating in order to stay alive, which
+     * is the behaviour this exists to make unnecessary.
+     */
+    g_assert_nonnull(strstr(text, "stays open"));
+
+    /* Picked up, so nobody re-delegates it. */
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_RUNNING);
+
+    /* And the turn ending no longer closes it. */
+    g_assert_false(clawt_task_manager_complete_on_turn_end(
+                       fixture.tasks, clawt_task_get_id(task),
+                       "I will check back shortly", &held));
+    g_assert_nonnull(held);
+    g_assert_false(clawt_task_is_finished(task));
+
+    /*
+     * The delegator can read the note without waiting for a result --
+     * and it is the note the assignee wrote for the purpose, not the
+     * sentence its AI CLI happened to end the turn on.  Both are true
+     * of the same moment and only one of them was chosen to be read.
+     */
+    {
+        g_autofree gchar *id_arg = g_strdup_printf(
+            "{\"task_id\":\"%s\"}", clawt_task_get_id(task));
+
+        status = call_tool(&fixture, "chief", "clawtilla_task_status",
+                           id_arg);
+        text = response_text(status, NULL);
+
+        g_assert_nonnull(strstr(text, "waiting on the others"));
+        g_assert_null(strstr(text, "check back shortly"));
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Progress on a task that has already ended is refused rather than
+ * silently accepted, so an assignee does not believe it has kept alive
+ * something that was cancelled out from under it.
+ */
+static void
+test_progress_on_a_finished_task_is_refused(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    g_autofree gchar *arguments = NULL;
+    ClawtTask *task;
+    gboolean is_error = FALSE;
+    const gchar *text;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n"
+                            "    chief_of_staff: true\n  - id: oryx\n");
+
+    task = clawt_task_manager_create(fixture.tasks, "chief", "oryx",
+                                     "verify the guests", NULL, NULL);
+    clawt_task_manager_cancel(fixture.tasks, clawt_task_get_id(task),
+                              "no longer needed");
+
+    arguments = g_strdup_printf("{\"task_id\":\"%s\",\"note\":\"still on it\"}",
+                                clawt_task_get_id(task));
+
+    response = call_tool(&fixture, "oryx", "clawtilla_task_progress",
+                         arguments);
+    text = response_text(response, &is_error);
+
+    g_assert_true(is_error);
+    g_assert_nonnull(strstr(text, "already"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A result nobody reported says so when it is read.
+ *
+ * "They said it was done" and "they stopped talking and this is the last
+ * thing they wrote" are different facts, and a delegator that cannot
+ * tell them apart either waits on finished work or redoes it.
+ */
+static void
+test_an_inferred_result_is_labelled(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    g_autofree gchar *arguments = NULL;
+    ClawtTask *task;
+    const gchar *text;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n"
+                            "    chief_of_staff: true\n  - id: oryx\n");
+
+    task = clawt_task_manager_create(fixture.tasks, "chief", "oryx",
+                                     "verify the guests", NULL, NULL);
+    arguments = g_strdup_printf("{\"task_id\":\"%s\"}",
+                                clawt_task_get_id(task));
+
+    g_assert_true(clawt_task_manager_complete_on_turn_end(
+                      fixture.tasks, clawt_task_get_id(task),
+                      "looks fine to me", NULL));
+
+    response = call_tool(&fixture, "chief", "clawtilla_task_result",
+                         arguments);
+    text = response_text(response, NULL);
+
+    g_assert_nonnull(strstr(text, "looks fine to me"));
+    g_assert_nonnull(strstr(text, "Nobody reported this task complete"));
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -2173,6 +2323,12 @@ main(int argc, char *argv[])
                     test_delegating_outside_a_task_starts_a_root);
     g_test_add_func("/mcp/delegate/a-finished-parent-is-not-used",
                     test_a_finished_parent_is_not_used);
+    g_test_add_func("/mcp/task-progress/keeps-a-task-open",
+                    test_reporting_progress_keeps_a_task_open);
+    g_test_add_func("/mcp/task-progress/refused-once-finished",
+                    test_progress_on_a_finished_task_is_refused);
+    g_test_add_func("/mcp/task-result/an-inferred-result-is-labelled",
+                    test_an_inferred_result_is_labelled);
 
     return g_test_run();
 }

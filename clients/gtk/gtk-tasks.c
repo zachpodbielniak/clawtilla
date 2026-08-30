@@ -89,6 +89,23 @@ refresh_tasks_once(ClawtWindow *self)
                                 clawt_gtk_tone_class(tone),
                                 clawt_json_string(task, "reason", "")));
 
+            /*
+             * The subtitle carries the freshest thing anybody knows: the
+             * assignee's own progress note while the work runs, and the
+             * caveat once it has ended without anybody saying so.  A row
+             * that reads `completed` and nothing else cannot distinguish
+             * a reported result from a turn that simply stopped.
+             */
+            if (clawt_json_string(task, "progress_note", NULL) != NULL)
+                adw_action_row_set_subtitle(
+                    ADW_ACTION_ROW(row),
+                    clawt_json_string(task, "progress_note", ""));
+            else if (clawt_json_boolean(task, "result_inferred", FALSE))
+                adw_action_row_set_subtitle(
+                    ADW_ACTION_ROW(row),
+                    "nobody reported this finished -- it is the last thing "
+                    "the assignee wrote");
+
             if (g_strcmp0(state, "running") == 0 ||
                 g_strcmp0(state, "pending") == 0) {
                 GtkWidget *cancel = gtk_button_new_with_label("Cancel");

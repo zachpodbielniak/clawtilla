@@ -831,6 +831,20 @@ versions apart.
   the hop depth. Validate the id against the manager before using it: the turn
   state is only as fresh as the last `clawt_agent_begin_turn()`, which needs a
   typing indicator, which needs a room.
+- **A turn ending is not the work finishing.** An AI CLI cannot end a turn
+  without writing something, so the last thing an assignee wrote is taken as
+  its task's result. That is right for work-answer-done and wrong for every
+  assignee that batches -- finish your share, hand the rest on, report once --
+  which is what the rest of the guidance asks for. The lifecycle rewarded
+  chatter. Three vetoes, all in `clawt_task_manager_complete_on_turn_end()`
+  rather than at the call site: still busy, `clawtilla_task_progress` called
+  this turn, or children of its own still running. A task that does end this
+  way is marked inferred and says so when read, because "they said it was
+  done" and "they stopped talking" need different follow-ups.
+- **`running` means the assignee started a turn on it**, set at
+  `clawt_agent_begin_turn()`. Creating a task says work was handed out and
+  delivering it says a mailbox took it; neither says anybody looked, because a
+  stopped agent has a full mailbox and does nothing.
 - A thread carries more than the answer: progress notes, guardian refusals,
   restart notices. Act only on a message arriving after the typing indicator
   drops. A task that ends late is a delay; one that ends early is a lie.
@@ -1253,6 +1267,8 @@ versions apart.
 - Never create a task without a parent from a path that has one. A flat tree
   makes the depth limit measure nothing and the cancel cascade reach nothing,
   and neither reports that it did
+- Never take the end of a turn as the end of the work without asking the task
+  whether anything it handed on is still running
 - Never add a mount to a computer without going through
   `clawt_computer_add_mount()` -- it is where the backend fills in the type,
   and a VM mount left untyped gets a `<filesystem>` device with no fstab entry

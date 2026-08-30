@@ -3326,10 +3326,24 @@ cmd_task(int argc, char *argv[])
             g_print("reason:   %s\n",
                     json_object_get_string_member(task, "reason"));
 
+        if (json_object_has_member(task, "progress_note"))
+            g_print("latest:   %s\n",
+                    json_object_get_string_member(task, "progress_note"));
+
         if (json_object_has_member(task, "parent"))
             g_print("under:    %s\n",
                     json_object_get_string_member(task, "parent"));
 
+        /*
+         * The caveat goes last, where somebody reading a result has just
+         * read it.  "They reported this" and "they stopped talking and
+         * this is the last thing they wrote" need different follow-ups,
+         * and a state name alone cannot tell them apart.
+         */
+        if (json_object_has_member(task, "result_inferred"))
+            g_print("note:     nobody reported this finished; the result "
+                    "is the last thing %s wrote before its turn ended\n",
+                    member_or(task, "assignee", "the assignee"));
 
         return EXIT_SUCCESS;
     }

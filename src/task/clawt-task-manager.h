@@ -104,6 +104,82 @@ GPtrArray *clawt_task_manager_list_involving(ClawtTaskManager *self,
                                              gboolean          include_finished);
 
 /**
+ * clawt_task_manager_count_unfinished_children:
+ * @self: a #ClawtTaskManager
+ * @task_id: (nullable): a task id
+ *
+ * How many tasks @task_id handed on have not ended.
+ *
+ * Direct children only, which is enough by induction: a task cannot end
+ * by inference while a child of its own is running, so an unfinished
+ * grandchild keeps its parent unfinished and this sees the parent.
+ *
+ * Returns: the number of unfinished children, or 0 for an unknown task
+ */
+guint clawt_task_manager_count_unfinished_children(ClawtTaskManager *self,
+                                                   const gchar      *task_id);
+
+/**
+ * clawt_task_manager_note_progress:
+ * @self: a #ClawtTaskManager
+ * @task_id: a task id
+ * @note: (nullable): what the assignee wants the delegator to know
+ *
+ * Records progress without ending the task, and holds off the
+ * turn-end inference for one turn.
+ *
+ * Also moves a pending task to running, because a progress note is proof
+ * somebody picked it up.  clawtilla_delegate does not mark a task
+ * running -- only the operator and routine paths do -- so an
+ * agent-delegated task otherwise reads `pending` for its whole life, and
+ * a delegator taking that at face value delegates it a second time.
+ *
+ * Returns: %TRUE if the task existed and had not ended
+ */
+gboolean clawt_task_manager_note_progress(ClawtTaskManager *self,
+                                          const gchar      *task_id,
+                                          const gchar      *note);
+
+/**
+ * clawt_task_manager_complete_on_turn_end:
+ * @self: a #ClawtTaskManager
+ * @task_id: a task id
+ * @result: what the assignee's turn ended with
+ * @held_reason: (out) (optional) (transfer full): why it was not
+ *   completed, when it was not
+ *
+ * Completes a task because its assignee's turn ended -- unless something
+ * says the work is still going.
+ *
+ * An AI CLI cannot end a turn without writing something, so the last
+ * thing it wrote is the only evidence there is.  That inference is right
+ * for work-answer-done and wrong for every assignee that finishes part
+ * of a job, hands the rest on and reports once at the end -- which is
+ * the behaviour the rest of the guidance asks for.  Such a turn closed
+ * the task under itself: the delegator stopped polling and the real
+ * answer arrived against a task nothing was waiting on.
+ *
+ * Two things veto it, checked here rather than at the call site so there
+ * is one answer: the assignee said so through clawtilla_task_progress,
+ * and the task has children of its own still running.  Only the second
+ * records @result as the task's progress note -- a task held open by its
+ * own fan-out has no deliberate note, so the end of the turn is the
+ * freshest thing there is.  The first already has one the assignee chose
+ * for the purpose, and overwriting it with whatever an AI CLI wrote to
+ * end its turn is a strictly worse answer for whoever reads it.
+ *
+ * The second veto could not fire at all until clawtilla_delegate began
+ * recording a parent -- every agent-delegated task was a root, so a
+ * fan-out had no children to find.
+ *
+ * Returns: %TRUE if the task was completed
+ */
+gboolean clawt_task_manager_complete_on_turn_end(ClawtTaskManager  *self,
+                                                 const gchar       *task_id,
+                                                 const gchar       *result,
+                                                 gchar            **held_reason);
+
+/**
  * clawt_task_manager_complete:
  * @self: a #ClawtTaskManager
  * @task_id: a task id

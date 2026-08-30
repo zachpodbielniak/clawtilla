@@ -1346,8 +1346,29 @@ on_link_typing(ClawtLinkServer *server,
      * message being answered had come. Every message this turn sends
      * counts from there.
      */
-    if (agent != NULL && typing)
+    if (agent != NULL && typing) {
         clawt_agent_begin_turn(agent);
+
+        /*
+         * And if that turn is a delegated task, it is now running.
+         *
+         * This is the only moment anybody actually knows: creating a
+         * task says work was handed out, and delivering it says the
+         * message reached a mailbox, but neither says the assignee
+         * looked at it -- an agent that is stopped has a full mailbox
+         * and does nothing.  clawtilla_delegate therefore left every
+         * task it created reading `pending` from creation until it went
+         * straight to `completed`, and a delegator reading that as
+         * "nobody picked it up" delegates the work again.  The tool
+         * output had to carry a paragraph apologising for the column.
+         *
+         * A no-op for a task already running, so the operator and
+         * routine paths that start theirs at delivery are unaffected.
+         */
+        if (self->tasks != NULL)
+            clawt_task_manager_start(self->tasks,
+                                     clawt_agent_get_turn_task_id(agent));
+    }
 
     /*
      * And the budgets that end a turn nothing else would.  Both edges of
@@ -1557,15 +1578,40 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
      * skipped without one -- is busy=FALSE throughout and completes as
      * it always did, which is the safe way round: a task that ends late
      * is a delay, one that ends early is a lie.
+     *
+     * The turn boundary is still not work completion, and the busy flag
+     * only closed the mid-turn half of that.  An assignee that finishes
+     * its share, hands the rest on and ends its turn with a status note
+     * is not busy, so the task completed carrying text that said in so
+     * many words that the report had not been sent yet.  The rest of
+     * that rule is in clawt_task_manager_complete_on_turn_end().
      */
     if (thread_id != NULL) {
         ClawtAgent *replier = clawt_agent_manager_get(self->agents, agent_id);
 
-        if (replier != NULL && clawt_agent_get_busy(replier))
+        if (replier != NULL && clawt_agent_get_busy(replier)) {
             g_info("daemon: %s is still working, so this is not the answer "
                    "to %s", agent_id, thread_id);
-        else
-            clawt_task_manager_complete(self->tasks, thread_id, body);
+        } else {
+            g_autofree gchar *held = NULL;
+
+            /*
+             * Through the manager rather than straight to
+             * clawt_task_manager_complete(), because the busy flag is
+             * only one of three things that make this the wrong answer
+             * and it is the only one the daemon can see.  The other two
+             * are facts about the task -- the assignee asked for the
+             * task to be held open, or it has work of its own still
+             * running -- so they live where the task does, and there is
+             * one rule instead of one per caller who noticed.
+             */
+            if (!clawt_task_manager_complete_on_turn_end(self->tasks,
+                                                         thread_id, body,
+                                                         &held) &&
+                held != NULL)
+                g_info("daemon: %s ended its turn but %s is still open: %s",
+                       agent_id, thread_id, held);
+        }
     }
 
     /*
@@ -6200,6 +6246,28 @@ clawt_daemon_add_task_object(JsonBuilder *builder, ClawtTask *task)
     if (clawt_task_get_reason(task) != NULL) {
         json_builder_set_member_name(builder, "reason");
         json_builder_add_string_value(builder, clawt_task_get_reason(task));
+    }
+
+    /*
+     * The latest word from the assignee on a task that has not ended.
+     * A person looking at a task that has been running an hour is asking
+     * the same question a delegating agent asks, and the answer was only
+     * reachable through the agent-facing tools.
+     */
+    if (clawt_task_get_progress_note(task) != NULL) {
+        json_builder_set_member_name(builder, "progress_note");
+        json_builder_add_string_value(builder,
+                                      clawt_task_get_progress_note(task));
+    }
+
+    /*
+     * And whether anybody actually reported it finished.  Emitted only
+     * when true, so it reads as a caveat on the tasks that have one
+     * rather than as a column that is usually "no".
+     */
+    if (clawt_task_get_result_inferred(task)) {
+        json_builder_set_member_name(builder, "result_inferred");
+        json_builder_add_boolean_value(builder, TRUE);
     }
 
     if (clawt_task_get_parent_id(task) != NULL) {

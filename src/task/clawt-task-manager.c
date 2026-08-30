@@ -207,6 +207,163 @@ clawt_task_manager_complete(ClawtTaskManager *self,
     return TRUE;
 }
 
+/*
+ * How many tasks this one handed on that have not ended.
+ *
+ * Direct children only, and that is enough by induction: a child cannot
+ * finish while a child of its own is running, so an unfinished
+ * grandchild keeps its parent unfinished and this sees the parent.  The
+ * one gap is a branch that was cancelled or failed out from under a
+ * still-running grandchild, and cancellation already cascades.
+ */
+guint
+clawt_task_manager_count_unfinished_children(ClawtTaskManager *self,
+                                             const gchar      *task_id)
+{
+    guint unfinished = 0;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), 0);
+
+    if (task_id == NULL)
+        return 0;
+
+    for (i = 0; i < self->order->len; i++) {
+        const gchar *child_id = g_ptr_array_index(self->order, i);
+        ClawtTask *child = g_hash_table_lookup(self->tasks, child_id);
+
+        if (child == NULL || clawt_task_is_finished(child))
+            continue;
+
+        if (g_strcmp0(clawt_task_get_parent_id(child), task_id) == 0)
+            unfinished++;
+    }
+
+    return unfinished;
+}
+
+/*
+ * The assignee saying its turn is over and the work is not.
+ *
+ * Also marks the task running, because it is proof somebody picked it
+ * up: clawtilla_delegate does not, so an agent-delegated task otherwise
+ * reads `pending` for its whole life and a delegator that takes that
+ * literally delegates it again.
+ */
+gboolean
+clawt_task_manager_note_progress(ClawtTaskManager *self,
+                                 const gchar      *task_id,
+                                 const gchar      *note)
+{
+    ClawtTask *task = clawt_task_manager_get(self, task_id);
+
+    if (task == NULL || clawt_task_is_finished(task))
+        return FALSE;
+
+    clawt_task_set_progress_note(task, note);
+    clawt_task_hold_completion(task);
+
+    if (clawt_task_get_state(task) == CLAWT_TASK_PENDING)
+        clawt_task_set_state(task, CLAWT_TASK_RUNNING);
+
+    emit_changed(self, task);
+
+    return TRUE;
+}
+
+/*
+ * Completing a task because its assignee's turn ended.
+ *
+ * An inference, not a report: an AI CLI cannot end a turn without
+ * writing something, so the last thing it wrote is all there is to go
+ * on.  It is right for the ordinary case -- work, answer, done -- and
+ * wrong for every assignee that batches, which is the behaviour the rest
+ * of the guidance asks for.  So the two ways it can be wrong are checked
+ * here, once, rather than at whichever call site last noticed:
+ *
+ *   - the assignee said so, through clawtilla_task_progress;
+ *   - the task has work outstanding that it handed on itself.
+ *
+ * The second could not fire at all until clawtilla_delegate started
+ * recording a parent: every agent-delegated task was a root, so a fan-out
+ * had no children to find and the parent closed over the top of them.
+ *
+ * A task that does end this way is marked as having been inferred, so
+ * clawtilla_task_result can say which of "they said it was done" and
+ * "they stopped talking" it is looking at.
+ */
+gboolean
+clawt_task_manager_complete_on_turn_end(ClawtTaskManager  *self,
+                                        const gchar       *task_id,
+                                        const gchar       *result,
+                                        gchar            **held_reason)
+{
+    ClawtTask *task;
+    guint unfinished;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), FALSE);
+
+    if (held_reason != NULL)
+        *held_reason = NULL;
+
+    task = clawt_task_manager_get(self, task_id);
+
+    if (task == NULL || clawt_task_is_finished(task))
+        return FALSE;
+
+    if (clawt_task_take_completion_hold(task)) {
+        if (held_reason != NULL)
+            *held_reason = g_strdup("its assignee reported progress rather "
+                                    "than a result");
+
+        /*
+         * The note is deliberately *not* overwritten here.  The assignee
+         * has just chosen words for this exact purpose through
+         * clawtilla_task_progress; @result is whatever an AI CLI wrote
+         * to end its turn, which is often "I will check back shortly".
+         * Replacing the first with the second is a strictly worse answer
+         * for the delegator reading it.
+         */
+        emit_changed(self, task);
+
+        return FALSE;
+    }
+
+    unfinished = clawt_task_manager_count_unfinished_children(self, task_id);
+
+    if (unfinished > 0) {
+        if (held_reason != NULL)
+            *held_reason = g_strdup_printf(
+                "%u task%s it handed on %s still running", unfinished,
+                unfinished == 1 ? "" : "s", unfinished == 1 ? "is" : "are");
+
+        /*
+         * And here it is recorded, because nothing else did: a task held
+         * open by its own fan-out has no deliberate note, so the end of
+         * the turn is the freshest thing anybody knows about it.
+         */
+        clawt_task_set_progress_note(task, result);
+        emit_changed(self, task);
+
+        return FALSE;
+    }
+
+    /*
+     * Marked before the completion, not after: clawt_task_manager_complete()
+     * emits ::task-changed, and a client that reads the task from that
+     * signal would otherwise see the flag still clear on the one
+     * notification that tells it the task ended.
+     */
+    clawt_task_set_result_inferred(task, TRUE);
+
+    if (!clawt_task_manager_complete(self, task_id, result)) {
+        clawt_task_set_result_inferred(task, FALSE);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
 gboolean
 clawt_task_manager_fail(ClawtTaskManager *self,
                         const gchar      *task_id,

@@ -4392,6 +4392,134 @@ test_a_progress_note_does_not_finish_a_task(void)
 }
 
 /*
+ * A fan-out holds its parent open, through the daemon rather than only
+ * in the task manager.
+ *
+ * This is the wire the manager rule needed.  The busy flag closed the
+ * mid-turn half of "the turn boundary is not work completion" and left
+ * the rest: an assignee that does its share, hands the remainder on and
+ * ends its turn is not busy, so the task completed carrying a status
+ * note.  On a real fleet the stored result said, in so many words, that
+ * the report had not been sent yet -- and the delegator, holding a
+ * terminal state, stopped looking.
+ */
+static void
+test_a_turn_ending_does_not_close_a_task_with_children(void)
+{
+    Fixture fixture = { 0 };
+    ClawtLinkServer *links;
+    ClawtTaskManager *tasks;
+    ClawtTask *parent;
+    ClawtTask *child;
+    g_autoptr(GError) error = NULL;
+    const gchar *parent_id;
+
+    fixture_setup(&fixture, "agents:\n  - id: oryx\n  - id: kudu\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    links = clawt_daemon_get_link_server(fixture.daemon);
+    tasks = clawt_daemon_get_tasks(fixture.daemon);
+
+    parent = clawt_task_manager_create(tasks, "user", "oryx",
+                                       "verify all three guests", NULL,
+                                       &error);
+    g_assert_nonnull(parent);
+    parent_id = clawt_task_get_id(parent);
+
+    child = clawt_task_manager_create(tasks, "oryx", "kudu",
+                                      "yours as well", parent_id, &error);
+    g_assert_nonnull(child);
+
+    /* oryx works, then ends its turn with a status note. */
+    clawt_agent_deliver_turn(
+        clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                "oryx"),
+        1, TRUE, "user", parent_id);
+
+    g_signal_emit_by_name(links, "typing", "oryx", "dm:user:oryx", TRUE);
+    g_signal_emit_by_name(links, "typing", "oryx", "dm:user:oryx", FALSE);
+    g_signal_emit_by_name(links, "message", "oryx", "dm:user:oryx",
+                          "Mine is clean. Delegated the same checks to "
+                          "kudu; no consolidated report yet.", parent_id);
+
+    /*
+     * Still open, and the note is there to read.  The assignee said the
+     * report had not been sent; the lifecycle used to disagree.
+     */
+    g_assert_cmpint(clawt_task_get_state(parent), ==, CLAWT_TASK_RUNNING);
+    g_assert_null(clawt_task_get_result(parent));
+    g_assert_nonnull(strstr(clawt_task_get_progress_note(parent),
+                            "no consolidated report yet"));
+
+    /* kudu finishes, and oryx's next turn ending does close it. */
+    g_assert_true(clawt_task_manager_complete(tasks,
+                                              clawt_task_get_id(child),
+                                              "clean here too"));
+
+    clawt_agent_deliver_turn(
+        clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                "oryx"),
+        1, TRUE, "user", parent_id);
+
+    g_signal_emit_by_name(links, "typing", "oryx", "dm:user:oryx", TRUE);
+    g_signal_emit_by_name(links, "typing", "oryx", "dm:user:oryx", FALSE);
+    g_signal_emit_by_name(links, "message", "oryx", "dm:user:oryx",
+                          "All three verified.", parent_id);
+
+    g_assert_cmpint(clawt_task_get_state(parent), ==, CLAWT_TASK_COMPLETED);
+    g_assert_cmpstr(clawt_task_get_result(parent), ==, "All three verified.");
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And a task becomes running when its assignee actually starts a turn on
+ * it, which is the first moment anybody knows.
+ *
+ * clawtilla_delegate marked nothing running, so agent-delegated work read
+ * `pending` from creation to `completed` and clawtilla_task_list carried
+ * a paragraph apologising for the column.  Creating a task says work was
+ * handed out and delivering it says a mailbox took it; neither says the
+ * assignee looked, because a stopped agent has a full mailbox and does
+ * nothing.
+ */
+static void
+test_a_task_starts_running_when_its_turn_does(void)
+{
+    Fixture fixture = { 0 };
+    ClawtLinkServer *links;
+    ClawtTaskManager *tasks;
+    ClawtAgent *worker;
+    ClawtTask *task;
+    g_autoptr(GError) error = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: worker\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    links = clawt_daemon_get_link_server(fixture.daemon);
+    tasks = clawt_daemon_get_tasks(fixture.daemon);
+
+    task = clawt_task_manager_create(tasks, "chief", "worker", "a job",
+                                     NULL, &error);
+    g_assert_nonnull(task);
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_PENDING);
+
+    worker = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                     "worker");
+    clawt_agent_deliver_turn(worker, 1, TRUE, "chief",
+                             clawt_task_get_id(task));
+
+    /* Queued, and still nobody has looked at it. */
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_PENDING);
+
+    g_signal_emit_by_name(links, "typing", "worker", "dm:chief:worker", TRUE);
+
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_RUNNING);
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * An agent that never raises the indicator still finishes its tasks.
  *
  * The indicator needs a room and is skipped without one, so busy stays
@@ -8301,6 +8429,11 @@ main(int argc, char *argv[])
 
     g_test_add_func("/daemon/start-agent-with-no-id",
                     test_starting_an_agent_with_no_id_is_an_error);
+
+    g_test_add_func("/daemon/task/children-hold-the-parent-open",
+                    test_a_turn_ending_does_not_close_a_task_with_children);
+    g_test_add_func("/daemon/task/running-when-its-turn-starts",
+                    test_a_task_starts_running_when_its_turn_does);
 
     status = g_test_run();
 

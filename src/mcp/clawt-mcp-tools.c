@@ -153,6 +153,12 @@ static const ClawtParamInfo task_result_params[] = {
     { "result",  "string", "What it produced.", TRUE }
 };
 
+static const ClawtParamInfo task_progress_params[] = {
+    { "task_id", "string", "The task you are still working on.", TRUE },
+    { "note",    "string",
+      "Where the work has got to, for whoever delegated it.", TRUE }
+};
+
 static const ClawtParamInfo task_list_params[] = {
     { "agent_id", "string", "Only tasks involving this agent. Defaults to "
                             "all of yours.", FALSE },
@@ -448,6 +454,16 @@ static const ToolDefinition tools[] = {
          "this rather than only replying, or whoever delegated it is still "
          "waiting.",
          NEEDS_NOTHING, task_result_params),
+
+    TOOL("clawtilla_task_progress",
+         "Say that a task assigned to you is still going, and where it has "
+         "got to. Ending a turn is otherwise taken as finishing the work, "
+         "because an AI CLI cannot end one without writing something -- so "
+         "call this whenever you are stopping for now and coming back: you "
+         "have handed part of it on, or scheduled a wakeup, or are waiting "
+         "on somebody. It records the note, keeps the task open for one "
+         "more turn, and marks it running so nobody re-delegates it.",
+         NEEDS_NOTHING, task_progress_params),
 
     TOOL("clawtilla_mailbox_list",
          "List the messages waiting for you.",
@@ -3006,21 +3022,20 @@ tool_task_list(ClawtMcpTools *self, const gchar *agent_id,
                                    assigned_n, assigned->str);
 
         /*
-         * The state column is about to mislead, so it is explained
-         * where it is read rather than in a doc the agent has not got.
-         * clawtilla_delegate does not mark a task running -- only the
-         * operator and routine paths do -- so work an agent handed out
-         * reads `pending` for its whole life and then goes straight to
-         * `completed`.  A chief reading that as "never picked up" and
-         * delegating again makes two of everything, which is the one
-         * mistake this tool exists to prevent.
+         * The state column used to mislead and the paragraph here
+         * apologised for it: clawtilla_delegate marked nothing running,
+         * so delegated work read `pending` from creation to
+         * `completed` and a chief reading that as "never picked up"
+         * delegated it again.  A task now becomes running when its
+         * assignee's turn actually starts, which is the first moment
+         * anybody knows -- so `pending` means what it says and the
+         * remaining advice is about how long it has said it.
          */
         if (delegated_pending > 0)
             g_string_append(out,
-                "\n`pending` is normal for work you delegated: it becomes "
-                "`completed` without ever reading `running`. It does not "
-                "mean nobody picked it up, so do not delegate it again -- "
-                "the age is the thing to watch.\n");
+                "\n`pending` means the assignee has not started a turn on "
+                "it yet -- usually because it is stopped or busy. A recent "
+                "one is normal; do not delegate it again. Watch the age.\n");
 
         if (!include_finished)
             g_string_append(out, "\nFinished tasks are omitted; pass "
@@ -3136,6 +3151,40 @@ tool_task_status(ClawtMcpTools *self, JsonObject *arguments,
                            clawt_task_get_reason(task) != NULL
                                ? clawt_task_get_reason(task) : "");
 
+    /*
+     * What it is waiting on, when it is waiting on something it started.
+     * A task held open by its own fan-out looks identical to one whose
+     * assignee has gone quiet, and the two need opposite responses.
+     */
+    if (!clawt_task_is_finished(task)) {
+        guint children = clawt_task_manager_count_unfinished_children(
+            self->tasks, task_id);
+
+        if (children > 0)
+            g_string_append_printf(out, "\n%u task%s handed on from this "
+                                        "one %s still running, so it will "
+                                        "not finish yet.",
+                                   children, children == 1 ? "" : "s",
+                                   children == 1 ? "is" : "are");
+    }
+
+    if (clawt_task_get_progress_note(task) != NULL)
+        g_string_append_printf(out, "\nLatest from %s: %s",
+                               clawt_task_get_assignee(task),
+                               clawt_task_get_progress_note(task));
+
+    /*
+     * And whether anybody actually said it was done.  "They reported a
+     * result" and "they stopped talking and this is the last thing they
+     * wrote" are different facts: the first is an answer, the second is
+     * worth a look before it is acted on.
+     */
+    if (clawt_task_get_result_inferred(task))
+        g_string_append(out, "\nThis was recorded as finished because the "
+                             "assignee's turn ended, not by "
+                             "clawtilla_task_complete -- the result is "
+                             "whatever they last wrote.");
+
     append_handoff_history(self, out, task_id);
 
     return g_strdup(out->str);
@@ -3161,11 +3210,21 @@ tool_task_result(ClawtMcpTools *self, JsonObject *arguments,
         return g_strdup_printf("There is no task %s.", task_id);
     }
 
-    if (!clawt_task_is_finished(task))
+    if (!clawt_task_is_finished(task)) {
+        if (clawt_task_get_progress_note(task) != NULL)
+            return g_strdup_printf(
+                "Task %s is still %s; there is no result yet. The latest "
+                "from %s is: %s", task_id,
+                clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE,
+                                   clawt_task_get_state(task)),
+                clawt_task_get_assignee(task),
+                clawt_task_get_progress_note(task));
+
         return g_strdup_printf("Task %s is still %s; there is no result yet.",
                                task_id,
                                clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE,
                                    clawt_task_get_state(task)));
+    }
 
     if (clawt_task_get_result(task) == NULL)
         return g_strdup_printf("Task %s ended as %s with no result: %s",
@@ -3175,6 +3234,13 @@ tool_task_result(ClawtMcpTools *self, JsonObject *arguments,
                                clawt_task_get_reason(task) != NULL
                                    ? clawt_task_get_reason(task)
                                    : "no reason given");
+
+    if (clawt_task_get_result_inferred(task))
+        return g_strdup_printf(
+            "%s\n\n(Nobody reported this task complete. That is the last "
+            "thing %s wrote before its turn ended, and clawtilla recorded "
+            "the task as finished on the strength of it.)",
+            clawt_task_get_result(task), clawt_task_get_assignee(task));
 
     return g_strdup(clawt_task_get_result(task));
 }
@@ -4802,6 +4868,33 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
             is_error = TRUE;
             text = g_strdup_printf("Task %s could not be completed; it may "
                                    "have already finished.", task_id);
+        }
+    } else if (g_strcmp0(tool_name, "clawtilla_task_progress") == 0) {
+        const gchar *task_id = argument_string(arguments, "task_id");
+        const gchar *note = argument_string(arguments, "note");
+
+        if (task_id == NULL || note == NULL) {
+            is_error = TRUE;
+            text = g_strdup("task_id and note are both required.");
+        } else if (self->tasks != NULL &&
+                   clawt_task_manager_note_progress(self->tasks, task_id,
+                                                    note)) {
+            /*
+             * Says what it bought, because the whole point is that
+             * ending a turn silently would have closed the task -- an
+             * agent that cannot tell whether the call worked calls it
+             * again, or worse, goes back to narrating to stay alive.
+             */
+            text = g_strdup_printf(
+                "Noted against %s, which stays open past the end of this "
+                "turn. Do this again next time you stop with work "
+                "outstanding, or clawtilla_task_complete when it is done.",
+                task_id);
+        } else {
+            is_error = TRUE;
+            text = g_strdup_printf("There is no open task %s to report "
+                                   "progress on; it may have already "
+                                   "finished.", task_id);
         }
     } else if (g_strcmp0(tool_name, "clawtilla_message_user") == 0)
         text = tool_message_user(self, agent_id, arguments, &is_error);

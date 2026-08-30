@@ -271,6 +271,137 @@ test_cancelling_reaches_the_whole_subtree(void)
     g_assert_cmpint(clawt_task_get_state(unrelated), ==, CLAWT_TASK_PENDING);
 }
 
+/*
+ * A task is not finished because its assignee stopped talking.
+ *
+ * The daemon completes a task from the message that ends its assignee's
+ * turn, since an AI CLI cannot end one without writing something.  An
+ * assignee that finishes its share, hands the rest on and reports once
+ * at the end is not busy when its turn ends -- so the task closed
+ * carrying a status note that said in so many words that the report had
+ * not been sent yet, and the delegator stopped polling.
+ */
+static void
+test_a_task_with_children_running_does_not_auto_complete(void)
+{
+    g_autoptr(ClawtTaskManager) tasks = clawt_task_manager_new();
+    ClawtTask *root;
+    ClawtTask *child;
+    g_autofree gchar *held = NULL;
+    g_autofree gchar *held_again = NULL;
+
+    root = clawt_task_manager_create(tasks, "chief", "oryx", "verify it",
+                                     NULL, NULL);
+    child = clawt_task_manager_create(tasks, "oryx", "kudu", "the same, here",
+                                      clawt_task_get_id(root), NULL);
+
+    g_assert_cmpuint(clawt_task_manager_count_unfinished_children(
+                         tasks, clawt_task_get_id(root)), ==, 1);
+
+    g_assert_false(clawt_task_manager_complete_on_turn_end(
+                       tasks, clawt_task_get_id(root),
+                       "mine is done, kudu is still going", &held));
+
+    g_assert_nonnull(held);
+    g_assert_nonnull(strstr(held, "still running"));
+    g_assert_false(clawt_task_is_finished(root));
+
+    /*
+     * And what it said is kept, because it is still the freshest thing
+     * anybody knows about that task.
+     */
+    g_assert_cmpstr(clawt_task_get_progress_note(root), ==,
+                    "mine is done, kudu is still going");
+
+    /* Once the child ends, the same turn ending does complete it. */
+    g_assert_true(clawt_task_manager_complete(tasks,
+                                              clawt_task_get_id(child),
+                                              "clean here"));
+
+    g_assert_true(clawt_task_manager_complete_on_turn_end(
+                      tasks, clawt_task_get_id(root),
+                      "all three verified", &held_again));
+
+    g_assert_null(held_again);
+    g_assert_cmpint(clawt_task_get_state(root), ==, CLAWT_TASK_COMPLETED);
+    g_assert_cmpstr(clawt_task_get_result(root), ==, "all three verified");
+}
+
+/*
+ * And an assignee can say so itself, for the turn where it has no
+ * children to point at -- it scheduled a wakeup, or is waiting on
+ * somebody outside the fleet.
+ */
+static void
+test_a_progress_note_holds_the_task_open_for_one_turn(void)
+{
+    g_autoptr(ClawtTaskManager) tasks = clawt_task_manager_new();
+    ClawtTask *task;
+    g_autofree gchar *held = NULL;
+    g_autofree gchar *held_again = NULL;
+
+    task = clawt_task_manager_create(tasks, "chief", "oryx", "verify it",
+                                     NULL, NULL);
+
+    g_assert_true(clawt_task_manager_note_progress(
+                      tasks, clawt_task_get_id(task),
+                      "waiting on the guest to finish booting"));
+
+    /*
+     * Picked up, and said so: clawtilla_delegate marked nothing running,
+     * so a delegator reading `pending` concluded nobody had started and
+     * delegated it again.
+     */
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_RUNNING);
+    g_assert_cmpstr(clawt_task_get_progress_note(task), ==,
+                    "waiting on the guest to finish booting");
+
+    g_assert_false(clawt_task_manager_complete_on_turn_end(
+                       tasks, clawt_task_get_id(task),
+                       "back shortly", &held));
+    g_assert_nonnull(held);
+    g_assert_false(clawt_task_is_finished(task));
+
+    /*
+     * One turn, not for ever.  A hold that outlived its turn would mean
+     * a task could never finish by inference again, and the next turn
+     * ending is exactly when the work usually is done.
+     */
+    g_assert_true(clawt_task_manager_complete_on_turn_end(
+                      tasks, clawt_task_get_id(task),
+                      "all three verified", &held_again));
+    g_assert_null(held_again);
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_COMPLETED);
+}
+
+/*
+ * "They reported a result" and "they stopped talking" are different
+ * facts, and a delegator that cannot tell them apart either waits on
+ * finished work or re-runs work that is done.
+ */
+static void
+test_an_inferred_result_says_so(void)
+{
+    g_autoptr(ClawtTaskManager) tasks = clawt_task_manager_new();
+    ClawtTask *inferred;
+    ClawtTask *reported;
+
+    inferred = clawt_task_manager_create(tasks, "chief", "oryx", "one",
+                                         NULL, NULL);
+    reported = clawt_task_manager_create(tasks, "chief", "kudu", "two",
+                                         NULL, NULL);
+
+    g_assert_true(clawt_task_manager_complete_on_turn_end(
+                      tasks, clawt_task_get_id(inferred), "seems fine",
+                      NULL));
+    g_assert_true(clawt_task_get_result_inferred(inferred));
+
+    g_assert_true(clawt_task_manager_complete(tasks,
+                                              clawt_task_get_id(reported),
+                                              "verified, all clean"));
+    g_assert_false(clawt_task_get_result_inferred(reported));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -290,6 +421,12 @@ main(int argc, char *argv[])
                     test_the_depth_limit_stops_a_chain);
     g_test_add_func("/task/cancelling-reaches-the-whole-subtree",
                     test_cancelling_reaches_the_whole_subtree);
+    g_test_add_func("/task/children-running-blocks-auto-complete",
+                    test_a_task_with_children_running_does_not_auto_complete);
+    g_test_add_func("/task/a-progress-note-holds-it-open",
+                    test_a_progress_note_holds_the_task_open_for_one_turn);
+    g_test_add_func("/task/an-inferred-result-says-so",
+                    test_an_inferred_result_says_so);
 
     return g_test_run();
 }

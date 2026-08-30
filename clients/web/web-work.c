@@ -290,6 +290,20 @@ clawt_web_tasks_body(ClawtWebApp *app, const gchar *agent_id)
                 clawt_web_add(row, clawt_web_notice(
                     clawt_web_member(task, "reason", ""), "bad"));
 
+            /*
+             * The freshest thing anybody knows, and the caveat when
+             * nothing knows anything: a row reading `completed` and no
+             * more cannot tell a reported result from a turn that simply
+             * stopped, and the two need different follow-ups.
+             */
+            if (clawt_web_member(task, "progress_note", NULL) != NULL)
+                clawt_web_add(row, clawt_web_notice(
+                    clawt_web_member(task, "progress_note", ""), "info"));
+            else if (clawt_web_member(task, "result_inferred", NULL) != NULL)
+                clawt_web_add(row, clawt_web_notice(
+                    "Nobody reported this finished -- it is the last thing "
+                    "the assignee wrote.", "warn"));
+
             if (g_strcmp0(state, "running") == 0 ||
                 g_strcmp0(state, "pending") == 0) {
                 g_autoptr(HtmxDiv) actions = htmx_div_new();

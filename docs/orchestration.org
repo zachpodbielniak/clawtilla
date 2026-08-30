@@ -99,12 +99,17 @@ state, so a finished task was never once drawn green; the GTK client drew
 every badge the same grey whatever the state.  A colour that is merely
 wrong reads as somebody's design choice, so neither was reported.
 
-*~running~ is only reached on the paths a person starts.* A task
-delegated by an *agent* stays ~pending~ until it completes, because the
-agent-facing ~clawtilla_delegate~ does not mark it started -- only the
-IPC/CLI delegate and a routine run do.  So a chief polling
-~clawtilla_task_status~ on work it handed out sees ~pending~ for the
-whole run, which is not a stall.
+*~running~ means the assignee has started a turn on it.*  Not that the
+task was created, and not that the message reached a mailbox -- a stopped
+agent has a full mailbox and does nothing.  The moment is
+~clawt_agent_begin_turn()~, which is the first point at which anybody
+knows, and every path reaches it the same way.
+
+That was not always true.  ~clawtilla_delegate~ marked nothing started,
+so work an agent handed out read ~pending~ from creation until it went
+straight to ~completed~, and ~clawtilla_task_list~ carried a paragraph
+apologising for the column.  A chief reading ~pending~ as "nobody picked
+it up" delegates the work a second time, and then there are two of it.
 
 Tasks are held in memory only.  A daemon restart loses the list; what the
 work produced is in the room transcript and the event log.
@@ -139,6 +144,62 @@ Per delivery, because libreclaw runs one turn per message -- a burst of
 off the first turn's task.  It is checked against the task manager rather
 than trusted: a finished or forgotten id parents nothing, since a closed
 task acquiring children is a tree nobody can read.
+
+**** A turn ending is not the work finishing
+
+An AI CLI cannot end a turn without writing something, so the daemon
+takes the last thing an assignee wrote in a task's thread as that task's
+result.  That inference is right for the ordinary shape -- do the work,
+answer, done -- and wrong for the assignee that does the sensible thing:
+finish its own share, hand the rest on, schedule a wakeup, and report
+once at the end rather than narrating.
+
+Such a turn ends with a status note and the task used to close under it.
+On a real fleet the stored result said, in so many words, that the
+consolidated report had not been sent yet; the delegator, holding a
+terminal state, stopped polling, and the real answer arrived against a
+task nothing was waiting on.  The lifecycle rewarded chatter, which is
+the opposite of what the rest of this page asks for.
+
+Three things now veto that completion, and they are checked in
+~clawt_task_manager_complete_on_turn_end()~ rather than at the call site,
+so there is one rule instead of one per caller who noticed:
+
+| Veto | Why |
+|------+-----|
+| the assignee is still marked busy | libreclaw drops its typing indicator before posting the answer, so anything arriving while it is up is by construction not the answer |
+| the assignee called ~clawtilla_task_progress~ this turn | it said the work is not finished, which is the only thing that actually knows |
+| the task has children of its own still running | it cannot be finished while the work it handed on is not |
+
+The third could not fire at all until delegation started recording a
+parent.  It is the one that would have held the reported case open.
+
+A task that *does* end this way is marked as inferred, and
+~clawtilla_task_status~ and ~clawtilla_task_result~ say so when they are
+read: "nobody reported this task complete; that is the last thing they
+wrote before the turn ended".  "They said it was done" and "they stopped
+talking" are different facts, and a delegator that cannot tell them apart
+either waits on finished work or does it again.
+
+**** Reporting progress without finishing
+
+#+begin_example
+clawtilla_task_progress(task_id, note)
+#+end_example
+
+For an assignee that is stopping for now and coming back.  It records the
+note, holds the task open past the end of this turn, and marks it
+~running~.
+
+The hold is *one turn*.  A hold that outlived its turn would mean the
+task could never finish by inference again, and the next turn ending is
+usually exactly when the work is done -- so an assignee still going says
+so each time.  The note it carries is the one the assignee chose for the
+purpose: a vetoed turn-end does not overwrite it with whatever the AI CLI
+wrote to close the turn, which is often "I will check back shortly".
+
+The delegator reads it through ~clawtilla_task_status~, without waiting
+for a result.
 
 *** Seeing all of it at once
 
@@ -182,12 +243,13 @@ ended.
 
 **** The note about ~pending~ is part of the tool
 
-It repeats the warning above, in the output, every time any delegated
-task is pending.  That is deliberate: the state column is misleading
-exactly here, the agent reading it has not necessarily read this page,
-and the mistake it prevents -- re-delegating work that was never stalled
--- makes two of everything and costs real money.  A tool's description
-and its output are part of its behaviour.
+It says, in the output and every time any delegated task is pending, that
+the assignee has not started a turn on it yet -- usually because it is
+stopped or busy -- and that the age is the thing to watch.  That is
+deliberate: the agent reading the column has not necessarily read this
+page, and the mistake it prevents -- re-delegating work that was never
+stalled -- makes two of everything and costs real money.  A tool's
+description and its output are part of its behaviour.
 
 **** An empty list is not "nothing happened"
 
@@ -272,7 +334,9 @@ What happens:
 5. The researcher works, then calls ~clawtilla_task_complete~ with its
    result -- or simply replies, in which case the daemon completes the
    task from the reply, because an agent that only replied would
-   otherwise leave the chief waiting for ever.
+   otherwise leave the chief waiting for ever.  If it is *not* done --
+   it has handed part of the work on, or scheduled a wakeup -- it calls
+   ~clawtilla_task_progress~ instead, and the task stays open.
 6. The chief polls ~clawtilla_task_status~, gets the result with
    ~clawtilla_task_result~, and delegates the write-up.  With more than
    one piece of work out, ~clawtilla_task_list~ answers for all of them
@@ -294,10 +358,12 @@ clawtilla cost                     # what it has cost so far
 #+end_src
 
 A reply that carries a task id completes it *only* on the last message of
-the turn, while the agent is no longer busy.  That is what stops
-libreclaw's own progress notes -- "Still working... (5m elapsed)" -- from
-completing a task seconds after it started and reporting the note as the
-result.
+the turn, while the agent is no longer busy, with nothing it handed on
+still running, and with no progress note held against it this turn.  The
+busy check is what stops libreclaw's own progress notes -- "Still
+working... (5m elapsed)" -- from completing a task seconds after it
+started and reporting the note as the result; the other two stop a turn
+that ended for other reasons from doing the same thing more quietly.
 
 ** The tools agents get
 
@@ -314,6 +380,7 @@ Served over each agent's link as an MCP endpoint.
 | ~clawtilla_task_list~ | everything you delegated and were delegated, in one call |
 | ~clawtilla_task_status~ / ~clawtilla_task_result~ / ~clawtilla_task_cancel~ | follow it |
 | ~clawtilla_task_complete~ | report your own assigned task done |
+| ~clawtilla_task_progress~ | say it is still going, so ending your turn does not close it |
 | ~clawtilla_post_room~, ~clawtilla_create_room~, ~clawtilla_room_history~ | rooms |
 | ~clawtilla_mailbox_list~ / ~clawtilla_mailbox_read~ / ~clawtilla_mailbox_ack~ / ~clawtilla_mailbox_reply~ | your own mail |
 | ~clawtilla_computer_exec~, ~clawtilla_computer_state~ | your computer |
