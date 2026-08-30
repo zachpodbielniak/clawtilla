@@ -2713,6 +2713,192 @@ test_a_pod_remembers_in_the_category_it_named(void)
 }
 
 /*
+ * Counts warnings that name the level a pod got wrong.
+ *
+ * A counter of its own rather than a parameterised matcher: what each of
+ * these looks for is the point of the assertion, and one shared helper
+ * taking a needle reads as though the two tests were checking the same
+ * thing.
+ */
+static void
+count_importance_warnings(const gchar *domain, GLogLevelFlags level,
+                          const gchar *message, gpointer user_data)
+{
+    guint *seen = user_data;
+
+    (void)domain;
+    (void)level;
+
+    if (message != NULL && strstr(message, "is not an importance") != NULL)
+        (*seen)++;
+}
+
+/*
+ * And it files the other four fields too.
+ *
+ * `memory_add` declared `agent`, `content` and `category` while
+ * clawtilla_memory_add offered an agent five -- so an automation could
+ * say what kind of thing it had noticed and not how much it mattered,
+ * and everything a pod recorded landed at `normal` with no summary and
+ * no tags.  The two write into one listing, sorted and searched by the
+ * same columns, so the narrower one was the one that was wrong.
+ *
+ * Driven through a real `.pod` file for the same reason the category
+ * test is: what is asserted is the wiring between a declared parameter
+ * and the row on disk, and the handler is static.
+ */
+static void
+test_a_pod_remembers_every_field_it_named(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentManager *agents;
+    ClawtMemoryStore *store;
+    ClawtMemory *memory;
+    g_autofree gchar *pods = NULL;
+    g_autofree gchar *pod_file = NULL;
+    g_autoptr(GPtrArray) found = NULL;
+    g_autoptr(GError) error = NULL;
+    gint64 deadline;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n");
+
+    pods = g_build_filename(fixture.dir, "pods", NULL);
+    g_assert_cmpint(g_mkdir_with_parents(pods, 0700), ==, 0);
+
+    pod_file = g_build_filename(pods, "learn.pod", NULL);
+    g_file_set_contents(
+        pod_file,
+        "pod fleet = clawtilla->new();\n"
+        "fleet->on_daemon_started => clawtilla->memory_add("
+        "agent: \"alpha\", content: \"the disk filled at 03:00\", "
+        "category: \"learning\", summary: \"disk filled overnight\", "
+        "importance: \"critical\", tags: \"disk,ops\");\n", -1, &error);
+    g_assert_no_error(error);
+
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    agents = clawt_daemon_get_agents(fixture.daemon);
+    store = clawt_agent_get_memory(clawt_agent_manager_get(agents, "alpha"));
+    g_assert_nonnull(store);
+
+    deadline = g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
+
+    while (clawt_memory_store_count(store, TRUE) == 0 &&
+           g_get_monotonic_time() < deadline)
+        g_main_context_iteration(fixture.context, FALSE);
+
+    found = clawt_memory_store_list(store, NULL, FALSE, 0, &error);
+    g_assert_no_error(error);
+    g_assert_cmpuint(found->len, ==, 1);
+
+    memory = g_ptr_array_index(found, 0);
+    g_assert_cmpstr(memory->content, ==, "the disk filled at 03:00");
+    g_assert_cmpstr(memory->category, ==, "learning");
+    g_assert_cmpstr(memory->summary, ==, "disk filled overnight");
+    g_assert_cmpstr(memory->importance, ==, "critical");
+    g_assert_cmpstr(memory->tags, ==, "disk,ops");
+
+    /*
+     * And stamped as the pod rather than as alpha, which is what
+     * clawtilla_memory_add records.  An automation filing something out
+     * of an event payload is the case clawt_memory_provenance_rule()
+     * exists for: with no source it reads back a month later as
+     * something the agent worked out itself.
+     */
+    g_assert_cmpstr(memory->source, ==, "pod");
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A level the pod got wrong is refused, and nothing is written.
+ *
+ * `importance` is a plain TEXT column and the store binds what it is
+ * given, so "urgent" -- a priority band, and the near-miss somebody
+ * actually writes -- would be stored and would then sort as none of the
+ * four levels.  A pod runs unattended, so that is wrong on every run of
+ * the rule rather than once.
+ *
+ * Two bindings, not one.  Asserting only that nothing was written is an
+ * assertion a pod that never ran at all would pass, which is the shape
+ * this tree has been caught by before; the valid one landing is what
+ * says the engine reached the action.
+ */
+static void
+test_a_pod_naming_a_level_that_is_not_one_writes_nothing(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentManager *agents;
+    ClawtMemoryStore *store;
+    g_autofree gchar *pods = NULL;
+    g_autofree gchar *pod_file = NULL;
+    g_autoptr(GPtrArray) found = NULL;
+    g_autoptr(GError) error = NULL;
+    GLogLevelFlags was_fatal;
+    guint handler;
+    guint warned = 0;
+    gint64 deadline;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n");
+
+    pods = g_build_filename(fixture.dir, "pods", NULL);
+    g_assert_cmpint(g_mkdir_with_parents(pods, 0700), ==, 0);
+
+    pod_file = g_build_filename(pods, "learn.pod", NULL);
+    g_file_set_contents(
+        pod_file,
+        "pod fleet = clawtilla->new();\n"
+        "fleet->on_daemon_started => clawtilla->memory_add("
+        "agent: \"alpha\", content: \"this one is fine\", "
+        "category: \"fact\");\n"
+        "fleet->on_daemon_started => clawtilla->memory_add("
+        "agent: \"alpha\", content: \"this one is not\", "
+        "importance: \"urgent\");\n", -1, &error);
+    g_assert_no_error(error);
+
+    /*
+     * GTest makes a warning fatal and the refusal is reported as one, so
+     * it is counted rather than left to kill the run.  Counted rather
+     * than swallowed: a refusal that reached nobody and a refusal that
+     * never happened both leave the store with one row in it.
+     */
+    was_fatal = g_log_set_always_fatal(G_LOG_FATAL_MASK);
+    handler = g_log_set_handler("Clawtilla",
+                                G_LOG_LEVEL_WARNING | G_LOG_FLAG_FATAL |
+                                G_LOG_FLAG_RECURSION,
+                                count_importance_warnings, &warned);
+
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    agents = clawt_daemon_get_agents(fixture.daemon);
+    store = clawt_agent_get_memory(clawt_agent_manager_get(agents, "alpha"));
+    g_assert_nonnull(store);
+
+    /*
+     * Both halves waited for, so neither ordering of the two bindings
+     * ends the loop with the other still to be dispatched.
+     */
+    deadline = g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
+
+    while ((clawt_memory_store_count(store, TRUE) == 0 || warned == 0) &&
+           g_get_monotonic_time() < deadline)
+        g_main_context_iteration(fixture.context, FALSE);
+
+    g_assert_cmpuint(warned, >=, 1);
+
+    found = clawt_memory_store_list(store, NULL, FALSE, 0, &error);
+    g_assert_no_error(error);
+    g_assert_cmpuint(found->len, ==, 1);
+    g_assert_cmpstr(((ClawtMemory *)g_ptr_array_index(found, 0))->content,
+                    ==, "this one is fine");
+
+    g_log_remove_handler("Clawtilla", handler);
+    g_log_set_always_fatal(was_fatal);
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * A message the router routed can be recalled through the daemon.
  *
  * The index, the router and the IPC verb each work on their own; what
@@ -7804,6 +7990,10 @@ main(int argc, char *argv[])
                     test_a_pod_can_send_at_a_band);
     g_test_add_func("/daemon/memory/a-pod-remembers-in-its-category",
                     test_a_pod_remembers_in_the_category_it_named);
+    g_test_add_func("/daemon/memory/a-pod-remembers-every-field",
+                    test_a_pod_remembers_every_field_it_named);
+    g_test_add_func("/daemon/memory/a-pod-level-that-is-not-one",
+                    test_a_pod_naming_a_level_that_is_not_one_writes_nothing);
     g_test_add_func("/daemon/memory/a-routed-message-can-be-recalled",
                     test_a_routed_message_can_be_recalled);
     g_test_add_func("/daemon/memory/operator-profile-reaches-agents",

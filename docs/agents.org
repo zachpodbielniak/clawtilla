@@ -447,6 +447,16 @@ without it.
 
 They are not offered at all when ~memories.enabled~ is off, rather than
 offered and failing -- an agent that can see a tool will try it.
+
+~clawtilla_memory_add~'s ~importance~ is one of ~low~, ~normal~, ~high~ or
+~critical~, and anything else is refused with a sentence naming the four
+rather than written through.  The column is plain text, so a level the
+store does not know would be saved and would then sort as none of them in
+every listing ordered by importance -- and a refusal costs the agent one
+turn, which is an answer it can act on.  The same judgement runs behind a
+pod's ~memory_add~, so an automation and an agent cannot come to mean
+different things by ~critical~.  ~category~ is not judged that way: its
+list is a shared vocabulary and not a constraint.
 ~clawtilla_recall~ has a switch of its own, ~memories.recall~, and needs
 both it and a running daemon.
 

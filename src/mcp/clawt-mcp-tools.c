@@ -3856,7 +3856,8 @@ tool_memory_add(ClawtMcpTools *self, const gchar *agent_id,
     g_autoptr(ClawtMemory) memory = NULL;
     g_autofree gchar *id = NULL;
     const gchar *category = argument_string(arguments, "category");
-    const gchar *importance = argument_string(arguments, "importance");
+    g_autofree gchar *importance = NULL;
+    g_autofree gchar *refusal = NULL;
 
     if (store == NULL) {
         *is_error = TRUE;
@@ -3873,9 +3874,28 @@ tool_memory_add(ClawtMcpTools *self, const gchar *agent_id,
         memory->category = g_strdup(category);
     }
 
-    if (importance != NULL && importance[0] != '\0') {
+    /*
+     * Judged in clawt_memory_importance_from_nick(), which is also what a
+     * pod's `memory_add` calls, so the two cannot come to differ on what
+     * "critical" means or on what happens to "urgent".
+     *
+     * A level this does not know is a refusal rather than a value written
+     * through.  The column is plain text, so `urgent` would be stored and
+     * would then sort as nothing in every listing that orders by
+     * importance -- and the sentence names the four, which is an answer
+     * the caller can act on in the next turn.  Nothing has been written at
+     * this point.
+     */
+    if (!clawt_memory_importance_from_nick(
+            argument_string(arguments, "importance"), &importance,
+            &refusal)) {
+        *is_error = TRUE;
+        return g_steal_pointer(&refusal);
+    }
+
+    if (importance != NULL) {
         g_free(memory->importance);
-        memory->importance = g_strdup(importance);
+        memory->importance = g_steal_pointer(&importance);
     }
 
     /*

@@ -156,10 +156,22 @@ static const PodHandlerParamInfo routine_params[] = {
     { "routine", "string", "Which routine", TRUE }
 };
 
+/*
+ * The same five fields `clawtilla_memory_add` offers an agent, because a
+ * memory an automation files and a memory an agent writes end up in one
+ * listing and are sorted and searched by the same columns.  Declaring
+ * three of them left a pod able to say what kind of thing it had noticed
+ * and not how much it mattered, so everything a pod recorded arrived at
+ * `normal` -- which is the level a listing sorted by importance shows
+ * nothing at.
+ */
 static const PodHandlerParamInfo memory_params[] = {
     { "agent", "string", "Whose memory", TRUE },
     { "content", "string", "What to remember", TRUE },
-    { "category", "string", "general, decision, fact, learning, ...", FALSE }
+    { "category", "string", "general, decision, fact, learning, ...", FALSE },
+    { "summary", "string", "One line, for listings", FALSE },
+    { "importance", "string", "low, normal, high or critical", FALSE },
+    { "tags", "string", "Comma-separated, for narrowing a search", FALSE }
 };
 
 static const PodHandlerParamInfo room_params[] = {

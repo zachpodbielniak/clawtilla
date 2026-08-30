@@ -125,6 +125,50 @@ const gchar * const *clawt_memory_categories(gsize *n_categories);
 const gchar * const *clawt_memory_importances(gsize *n_levels);
 
 /**
+ * clawt_memory_importance_from_nick:
+ * @nick: (nullable): the level somebody named, or %NULL if they named none
+ * @out_importance: (out) (transfer full) (nullable): return location for the
+ *   canonical spelling, or %NULL when @nick named none
+ * @out_refusal: (out) (optional) (nullable): return location for what to tell
+ *   them when @nick is not a level
+ *
+ * Turns the importance somebody wrote into one of the levels, or refuses.
+ *
+ * Every surface that lets somebody name a level goes through this -- the
+ * `importance` argument of `clawtilla_memory_add` and the `importance`
+ * parameter of a pod's `memory_add` -- so an agent and an automation
+ * cannot come to mean different things by "critical".
+ *
+ * Naming none leaves @out_importance %NULL, which means "whatever
+ * clawt_memory_new() chose": somebody who did not ask for a level did not
+ * ask for anything.
+ *
+ * An unrecognised level is a **refusal**, never a fallback, and that is
+ * the decision here.  The column is plain text and the store binds
+ * whatever it is handed, so a mistyped `criticl` is written, sorts as
+ * nothing, and is invisible from both ends -- and a pod runs unattended,
+ * so it would be wrong on every run of that rule rather than once.  The
+ * same answer, for the same reason, as clawt_message_priority_from_nick().
+ *
+ * Case is not part of it, matching clawt_enum_from_nick(): these are
+ * typed by hand into a `.pod` file or written by a model.  What comes
+ * back is always the canonical lowercase spelling.
+ *
+ * The levels come from clawt_memory_importances() rather than from a list
+ * written out here, so the refusal cannot name a set that has stopped
+ * being true.
+ *
+ * There is deliberately no twin for the category: clawt_memory_categories()
+ * is a shared vocabulary and not a constraint, and refusing an unlisted one
+ * would make it one.
+ *
+ * Returns: %TRUE if @nick names a level, or names none
+ */
+gboolean clawt_memory_importance_from_nick(const gchar  *nick,
+                                           gchar       **out_importance,
+                                           gchar       **out_refusal);
+
+/**
  * clawt_memory_provenance_rule:
  *
  * The one sentence every agent is told about what may be remembered.

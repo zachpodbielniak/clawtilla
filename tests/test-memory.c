@@ -354,6 +354,114 @@ test_empty_content_is_refused(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * The level somebody names is judged, not written through.
+ *
+ * `importance` is a plain TEXT column and the store binds whatever it is
+ * handed, so a mistyped level is stored and then sorts as none of the
+ * four -- invisible from the writing end and from the reading end.  A
+ * pod is the case that matters: it runs unattended, so a level nobody
+ * noticed was wrong is wrong on every run of that rule.
+ */
+static void
+test_an_importance_is_judged_not_written_through(void)
+{
+    g_autofree gchar *level = NULL;
+    g_autofree gchar *refusal = NULL;
+
+    /* Naming none asks for nothing: the constructor's choice stands. */
+    g_assert_true(clawt_memory_importance_from_nick(NULL, &level, &refusal));
+    g_assert_null(level);
+    g_assert_null(refusal);
+
+    g_assert_true(clawt_memory_importance_from_nick("", &level, &refusal));
+    g_assert_null(level);
+
+    g_assert_true(clawt_memory_importance_from_nick("critical", &level,
+                                                    &refusal));
+    g_assert_cmpstr(level, ==, "critical");
+    g_clear_pointer(&level, g_free);
+
+    /*
+     * Lenient on input and strict on output, the policy
+     * clawt_enum_from_nick() states: these are typed by hand into a
+     * `.pod` file, and what comes back is the spelling that sorts.
+     */
+    g_assert_true(clawt_memory_importance_from_nick("HIGH", &level,
+                                                    &refusal));
+    g_assert_cmpstr(level, ==, "high");
+    g_clear_pointer(&level, g_free);
+
+    /*
+     * And the one this exists for.  "urgent" is a priority band, not an
+     * importance, which is exactly the kind of near-miss somebody writes.
+     */
+    g_assert_false(clawt_memory_importance_from_nick("urgent", &level,
+                                                     &refusal));
+    g_assert_null(level);
+    g_assert_nonnull(refusal);
+    g_assert_nonnull(strstr(refusal, "urgent"));
+
+    /*
+     * The refusal names every level, walked from the library's own list
+     * rather than spelled out here -- a hand-written copy is how a
+     * refusal ends up naming a set that has stopped being true.
+     */
+    {
+        const gchar * const *levels;
+        gsize n = 0;
+        gsize i;
+
+        levels = clawt_memory_importances(&n);
+        g_assert_cmpuint(n, >, 0);
+
+        for (i = 0; i < n; i++) {
+            g_assert_nonnull(strstr(refusal, levels[i]));
+
+            /* And each one is accepted, so the sentence is not a lie. */
+            {
+                g_autofree gchar *accepted = NULL;
+
+                g_assert_true(clawt_memory_importance_from_nick(
+                                  levels[i], &accepted, NULL));
+                g_assert_cmpstr(accepted, ==, levels[i]);
+            }
+        }
+    }
+}
+
+/*
+ * The category is deliberately *not* judged the same way.
+ *
+ * clawt_memory_categories() says of itself that it is a shared
+ * vocabulary and not a constraint, so a category outside it has to
+ * survive being written -- refusing one would quietly turn the
+ * suggestion into a rule and lose whatever the writer meant by it.
+ */
+static void
+test_a_category_outside_the_vocabulary_is_kept(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtMemoryStore) store = NULL;
+    g_autoptr(ClawtMemory) memory = clawt_memory_new("the fan is loud");
+    g_autoptr(GPtrArray) found = NULL;
+    g_autofree gchar *id = NULL;
+
+    fixture_setup(&fixture);
+    store = store_for(&fixture, "alpha");
+
+    g_free(memory->category);
+    memory->category = g_strdup("hardware");
+
+    id = clawt_memory_store_add(store, memory, NULL);
+    g_assert_nonnull(id);
+
+    found = clawt_memory_store_list(store, "hardware", FALSE, 0, NULL);
+    g_assert_cmpuint(found->len, ==, 1);
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -373,6 +481,10 @@ main(int argc, char *argv[])
     g_test_add_func("/memory/survives-reopening",
                     test_memories_survive_reopening);
     g_test_add_func("/memory/empty-refused", test_empty_content_is_refused);
+    g_test_add_func("/memory/importance-judged",
+                    test_an_importance_is_judged_not_written_through);
+    g_test_add_func("/memory/category-outside-vocabulary-kept",
+                    test_a_category_outside_the_vocabulary_is_kept);
 
     return g_test_run();
 }

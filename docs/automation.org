@@ -178,16 +178,17 @@ never ran.
 | ~computer_exec~ | ~agent~, ~command~, ~timeout~ -- *refused*, see below |
 | ~notify~ | ~title~, ~body~, ~agent~ |
 | ~run_routine~ | ~routine~ |
-| ~memory_add~ | ~agent~, ~content~, ~category~ |
+| ~memory_add~ | ~agent~, ~content~, ~category~, ~summary~, ~importance~, ~tags~ |
 
 ~message_agent~ takes ~priority~ -- ~low~, ~normal~, ~high~ or ~urgent~
 -- and an unrecognised one is refused before anything is queued rather
 than quietly becoming ~low~, which is the band ~drop-oldest~ sheds
 first.  Absent means ~normal~.
 
-Only ~priority~, ~body~ on ~notify~, ~agent~ on ~notify~, ~category~ and
-~timeout~ are optional; everything else is required.  ~message_agent~,
-~post_room~, ~delegate~, ~notify~ and ~memory_add~ refuse a missing one
+Only ~priority~, ~body~ on ~notify~, ~agent~ on ~notify~, ~timeout~ and
+~memory_add~'s four classification fields -- ~category~, ~summary~,
+~importance~ and ~tags~ -- are optional; everything else is required.
+~message_agent~, ~post_room~, ~delegate~, ~notify~ and ~memory_add~ refuse a missing one
 with a warning naming what they needed.  ~start_agent~, ~stop_agent~ and
 ~restart_agent~ refuse a missing ~agent~ naming the action, like the
 rest.  They did not for a long time: they warned ~Clawtilla:
@@ -212,11 +213,31 @@ fleet->on_daemon_started =>
 A third field, ~detail~, is declared in the return metadata and is not
 set by anything today.
 
-~message_agent~ accepts ~priority~ and does nothing with it: the message
-is queued at the ordinary priority whatever is passed.  It is declared
-rather than removed because the mailbox has the notion and the action
-will grow into it; treat a value there as documentation of intent rather
-than as a setting.
+~memory_add~ takes the same five fields ~clawtilla_memory_add~ offers an
+agent, because both write into one listing that is sorted and searched by
+the same columns.  It took three for a long time, so an automation could
+say what *kind* of thing it had noticed and not how much it mattered, and
+everything a pod recorded arrived at ~normal~ with no summary and no tags.
+
+~importance~ -- ~low~, ~normal~, ~high~ or ~critical~ -- is judged the way
+~priority~ is, and an unrecognised one is refused before anything is
+written.  The column is plain text, so a mistyped level would be stored
+and would then sort as none of the four, invisible from both ends; a pod
+runs unattended, so it would be wrong on every run of that rule.  Absent
+means ~normal~.
+
+~category~ is deliberately *not* judged that way.  The list in the
+description is a shared vocabulary rather than a constraint -- filtering
+is worth doing precisely because most memories use the common names --
+and refusing an unlisted one would quietly turn the suggestion into a
+rule.
+
+A memory a pod files records its ~source~ as ~pod~, where one an agent
+writes through ~clawtilla_memory_add~ records the agent's own id.  The
+distinction is the point: an automation files what an event payload said,
+and a row with no source reads back a month later as something the agent
+worked out itself.  There is no pod name to give -- the action is handed
+its parameters and nothing about the rule that fired.
 
 *** computer_exec is declared and refused
 
@@ -303,11 +324,15 @@ pod fleet = clawtilla->new();
 fleet->on_agent_state where event->state == "error" =>
     clawtilla->memory_add(agent: "{event->agent}",
                           content: "Fell over: {event->detail}",
-                          category: "learning");
+                          category: "learning",
+                          summary: "crashed once",
+                          importance: "high",
+                          tags: "crash,ops");
 #+end_src
 
 This one fails, loudly and per event, for an agent with
 ~memories.enabled~ off -- the refusal names the agent and the setting.
+It fails the same way for an ~importance~ that is not one of the four.
 
 *** Run a routine on a schedule podomation owns
 

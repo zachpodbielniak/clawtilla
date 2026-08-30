@@ -792,6 +792,10 @@ pod_action(const gchar *action, GHashTable *params, GHashTable **out_result,
         {
             g_autoptr(ClawtMemory) memory = clawt_memory_new(content);
             const gchar *category = g_hash_table_lookup(params, "category");
+            const gchar *summary = g_hash_table_lookup(params, "summary");
+            const gchar *tags = g_hash_table_lookup(params, "tags");
+            g_autofree gchar *importance = NULL;
+            g_autofree gchar *refusal = NULL;
             g_autofree gchar *id = NULL;
 
             /*
@@ -805,11 +809,64 @@ pod_action(const gchar *action, GHashTable *params, GHashTable **out_result,
              * that was running it, and the fleet came back without the
              * memory, without the pod's remaining actions, and with
              * nothing in the log naming the line.
+             *
+             * Not judged against clawt_memory_categories(): that list is
+             * a shared vocabulary and says of itself that it is not a
+             * constraint, so refusing an unlisted one here would quietly
+             * make it one.
              */
             if (category != NULL && category[0] != '\0') {
                 g_free(memory->category);
                 memory->category = g_strdup(category);
             }
+
+            /*
+             * The level *is* judged, by the same function
+             * clawtilla_memory_add calls -- so a pod and an agent cannot
+             * come to mean different things by "critical", and neither can
+             * be the one that is wrong because it gets less use.
+             *
+             * Refused before anything is written rather than defaulted.
+             * The column is plain text and the store binds what it is
+             * handed, so a mistyped level is stored, sorts as nothing, and
+             * is invisible from both ends -- and a pod runs unattended, so
+             * it would be wrong on every run of that rule.  This is the
+             * decision `priority` on message_agent above already takes.
+             */
+            if (!clawt_memory_importance_from_nick(
+                    g_hash_table_lookup(params, "importance"),
+                    &importance, &refusal)) {
+                g_set_error_literal(error, CLAWT_ERROR,
+                                    CLAWT_ERROR_INVALID_ARGUMENT, refusal);
+                return FALSE;
+            }
+
+            if (importance != NULL) {
+                g_free(memory->importance);
+                memory->importance = g_steal_pointer(&importance);
+            }
+
+            if (summary != NULL && summary[0] != '\0')
+                memory->summary = g_strdup(summary);
+
+            if (tags != NULL && tags[0] != '\0')
+                memory->tags = g_strdup(tags);
+
+            /*
+             * Stamped as the pod, not as the agent whose store it landed
+             * in -- which is what clawtilla_memory_add records, because
+             * there the agent really did write it.
+             *
+             * An automation files a memory out of an event payload, and
+             * clawt_memory_provenance_rule() is the whole reason that
+             * distinction is kept: a row with no source reads back in a
+             * later session as something the agent worked out itself.
+             * There is no pod name to give -- the action callback is
+             * handed the action and its parameters and nothing about the
+             * rule that fired -- so this says the category of writer it
+             * can honestly say.
+             */
+            memory->source = g_strdup("pod");
 
             id = clawt_memory_store_add(store, memory, error);
 

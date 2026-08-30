@@ -104,6 +104,77 @@ clawt_memory_importances(gsize *n_levels)
 }
 
 /*
+ * "low, normal, high and critical".
+ *
+ * Walked rather than written out, so a level added to `importances`
+ * cannot leave a refusal naming three of four -- and a sentence rather
+ * than a comma-separated list, because this is read by somebody whose
+ * pod has just been refused.
+ */
+static gchar *
+importance_list(void)
+{
+    const gchar * const *levels;
+    gsize n = 0;
+    GString *out;
+    gsize i;
+
+    levels = clawt_memory_importances(&n);
+    out = g_string_new(NULL);
+
+    for (i = 0; i < n; i++) {
+        if (i > 0)
+            g_string_append(out, (i + 1 == n) ? " and " : ", ");
+
+        g_string_append(out, levels[i]);
+    }
+
+    return g_string_free(out, FALSE);
+}
+
+gboolean
+clawt_memory_importance_from_nick(const gchar  *nick,
+                                  gchar       **out_importance,
+                                  gchar       **out_refusal)
+{
+    const gchar * const *levels;
+    gsize n = 0;
+    gsize i;
+
+    g_return_val_if_fail(out_importance != NULL, FALSE);
+
+    *out_importance = NULL;
+
+    if (nick == NULL || *nick == '\0')
+        return TRUE;
+
+    levels = clawt_memory_importances(&n);
+
+    /*
+     * The canonical spelling is handed back rather than the caller's,
+     * so `Critical` out of a pod is stored as `critical` and sorts with
+     * the rest of them.
+     */
+    for (i = 0; i < n; i++) {
+        if (g_ascii_strcasecmp(nick, levels[i]) == 0) {
+            *out_importance = g_strdup(levels[i]);
+            return TRUE;
+        }
+    }
+
+    if (out_refusal != NULL) {
+        g_autofree gchar *named = importance_list();
+
+        *out_refusal = g_strdup_printf(
+            "'%s' is not an importance. It is one of %s -- leave it out "
+            "for normal. Nothing was remembered, so send it again with a "
+            "level from that list.", nick, named);
+    }
+
+    return FALSE;
+}
+
+/*
  * The provenance rule, written once.
  *
  * It reads as one sentence because it has to survive being pasted into a
