@@ -1304,6 +1304,63 @@ An hourly status line is not caught at all, and what protects it is the
 *window*: the previous one fell out of ~orchestration.cycle_seconds~
 fifty-five minutes ago.
 
+*** A typing frame is a level, not an edge
+
+Everything below this heading, and every field
+[[*A task knows what it came out of][the turn state]] holds, depends on
+the daemon knowing when a turn *starts*.  The only signal it has is
+libreclaw's typing indicator, and that indicator is not an edge:
+
+- it is raised for the whole of a turn, from pickup to reply;
+- it is **re-sent every 25 seconds** (~TYPING_REFRESH_MS~) so that Matrix
+  does not drop it;
+- it is per *room*, and one agent talking to three peers raises three of
+  them independently, while the turn state it gates is per *agent*.
+
+Read as a turn start, each of those restarted the turn.  Every 25 seconds
+of a running turn:
+
+| Field | Went to | So |
+|-------+---------+----|
+| ~hop_depth~ | 0 | ~orchestration.max_hops~ could never climb; raising it could not help |
+| ~turn_replies~ | %TRUE | a sign-off was routed, and cost the other agent a whole model turn |
+| ~turn_origin~ | %NULL | ~clawtilla_message_user~'s guard was not misled, it was *off* |
+| ~turn_task_id~ | %NULL | a delegation after the first 25 seconds was created parentless |
+
+And ~clawt_turn_watch_begin()~ installs a *fresh* deadline, so the same
+frame moved the watchdog's deadline every 25 seconds:
+~agents.runtime.turn_timeout_seconds~ and ~rooms.turn_timeout_seconds~
+could not be reached by any turn that ran longer than the refresh
+interval -- which is every turn they were written for.  A keepalive is a
+timer firing, not a sign of life; ~clawt_daemon_turn_activity()~ is what
+an agent doing something actually calls.
+
+A live fleet produced **11,869 ~typing=true~ frames against 549 turns**,
+with 22% of its peer messages being sign-offs that had been delivered.
+
+~clawt_agent_note_typing()~ answers the question the frame cannot: it
+holds the set of rooms an agent is currently typing in and reports
+whether this frame changed whether the agent is in a turn at all.  A turn
+begins on empty → non-empty and settles on non-empty → empty.  A set
+rather than a counter, because the frames are neither unique nor
+guaranteed to pair: a repeated ~true~ or an unmatched ~false~ drifts a
+counter and is idempotent against a set.
+
+Two consequences worth stating plainly:
+
+- **Whatever settles a turn must clear the set.** An interrupt and the
+  grace timer both end turns the runtime will never send a ~false~ for,
+  so ~clawt_daemon_turn_settle()~ clears it. Without that the next real
+  frame is not a rising edge, the turn state is not refreshed, and the
+  new turn runs holding the abandoned one's depth, origin and task --
+  the same wrong answer, reached from the other side.
+- **This is not per-room turn state.** A second room opening while the
+  first is still running is deliberately not a turn start; its turn
+  inherits the running description rather than resetting it, which errs
+  towards closing an exchange rather than continuing one. Real per-room
+  state needs a room on a tool call, and a tool call arrives on a
+  per-agent MCP link that carries none.
+
 *** The turn watchdog
 
 ~agents.runtime.turn_timeout_seconds~ (default 1200) bounds a turn that

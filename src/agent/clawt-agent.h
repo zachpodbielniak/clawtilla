@@ -406,6 +406,70 @@ void clawt_agent_set_turn_replies(ClawtAgent *self, gboolean replies);
 gboolean clawt_agent_get_turn_replies(ClawtAgent *self);
 
 /**
+ * clawt_agent_note_typing:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): the room the frame came from
+ * @typing: what the frame said
+ *
+ * Records one typing frame and says whether it changed anything.
+ *
+ * The runtime's typing indicator is a *level*, not an edge: libreclaw
+ * raises it for the whole of a turn, from pickup to reply, and re-sends
+ * the same %TRUE every 25 seconds so that Matrix does not drop it.  An
+ * agent talking in three rooms sends three independent streams of them.
+ *
+ * Treating each %TRUE as the start of a turn is what
+ * clawt_agent_begin_turn() must not do, because a turn that runs longer
+ * than the refresh interval then restarts several times: the hop depth
+ * goes back to zero, so `orchestration.max_hops` cannot climb; the
+ * closed-exchange flag goes back to %TRUE, so a sign-off is routed and
+ * costs the other agent a whole turn; the origin is cleared, which does
+ * not merely mislead clawtilla_message_user's guard but switches it off;
+ * and the task a delegation would be parented on is dropped.  A live
+ * fleet produced 11,869 of these frames against 549 turns.
+ *
+ * Held as a set of rooms rather than a counter or a flag.  The frames
+ * are neither unique nor guaranteed to pair, so a counter drifts on a
+ * repeated %TRUE or an unmatched %FALSE, where a set is idempotent both
+ * ways.
+ *
+ * The edge is about the agent, not the room, because the state it gates
+ * is per-agent.  A second room opening while the first is still running
+ * is deliberately not a turn start: that turn inherits the running
+ * description instead of resetting it, which errs towards closing an
+ * exchange rather than continuing one.  Per-room turn state would need a
+ * room on a tool call, and a tool call arrives on a per-agent link that
+ * carries none.
+ *
+ * Returns: %TRUE if this frame started the agent's first turn or ended
+ *   its last
+ */
+gboolean clawt_agent_note_typing(ClawtAgent  *self,
+                                 const gchar *room_id,
+                                 gboolean     typing);
+
+/**
+ * clawt_agent_get_typing_rooms:
+ * @self: a #ClawtAgent
+ *
+ * Returns: how many rooms this agent is currently typing in
+ */
+guint clawt_agent_get_typing_rooms(ClawtAgent *self);
+
+/**
+ * clawt_agent_clear_typing:
+ * @self: a #ClawtAgent
+ *
+ * Forgets every room this agent was typing in.
+ *
+ * For whoever ends a turn that the runtime will never close itself --
+ * an interrupt, the grace timer, a process that exited mid-turn.  The
+ * set has to follow, or the next real frame is not a rising edge and the
+ * new turn runs with the abandoned one's description.
+ */
+void clawt_agent_clear_typing(ClawtAgent *self);
+
+/**
  * clawt_agent_begin_turn:
  * @self: a #ClawtAgent
  *

@@ -20,6 +20,13 @@
 
 #include "clawt-test-util.h"
 
+/*
+ * For clawt_daemon_turn_settle() and the daemon's own turn watch:
+ * core/clawt-daemon-private.h *is* the interface of daemon-turn.c,
+ * and the typing edge is exactly the wire between the two.
+ */
+#include "core/clawt-daemon-private.h"
+
 typedef struct {
     gchar        *dir;
     gchar        *config_path;
@@ -4392,6 +4399,259 @@ test_a_progress_note_does_not_finish_a_task(void)
 }
 
 /*
+ * A typing frame is a level, not an edge.
+ *
+ * libreclaw holds the indicator up for the whole of a turn and re-sends
+ * the same TRUE every 25 seconds so Matrix does not drop it.  Read as a
+ * turn start, each of those restarted the turn: the depth went back to
+ * zero so `orchestration.max_hops` could not climb, the closed-exchange
+ * flag went back to TRUE so a sign-off was routed and cost the other
+ * agent a whole turn, the origin was cleared -- which does not mislead
+ * clawtilla_message_user's guard so much as switch it off -- and the
+ * task a delegation would be parented on was dropped.
+ *
+ * A live fleet produced 11,869 typing=true frames against 549 turns, and
+ * 22% of its peer messages were sign-offs that had been delivered.
+ *
+ * Driven through on_link_typing() rather than by calling
+ * clawt_agent_begin_turn() twice, which is what the suite already did:
+ * that is the API for two *turns*, and a test written against it cannot
+ * tell this build from the broken one.
+ */
+static void
+test_a_keepalive_is_not_a_new_turn(void)
+{
+    Fixture fixture = { 0 };
+    ClawtLinkServer *links;
+    ClawtAgentManager *agents;
+    ClawtAgent *alpha;
+    ClawtAgent *beta;
+
+    fixture_setup(&fixture,
+                  "orchestration:\n"
+                  "  max_hops: 0\n"
+                  "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    links = clawt_daemon_get_link_server(fixture.daemon);
+    agents = clawt_daemon_get_agents(fixture.daemon);
+    alpha = clawt_agent_manager_get(agents, "alpha");
+    beta = clawt_agent_manager_get(agents, "beta");
+
+    /* A peer's reply: three hops in, and it closes the exchange. */
+    clawt_agent_deliver_turn(beta, 3, FALSE, "alpha", "task-xyz");
+
+    g_signal_emit_by_name(links, "typing", "beta", "alpha", TRUE);
+
+    g_assert_cmpint(clawt_agent_get_hop_depth(beta), ==, 3);
+    g_assert_false(clawt_agent_get_turn_replies(beta));
+    g_assert_cmpstr(clawt_agent_get_turn_origin(beta), ==, "alpha");
+    g_assert_cmpstr(clawt_agent_get_turn_task_id(beta), ==, "task-xyz");
+
+    /* Twenty-five seconds later, the same turn, the same indicator. */
+    g_signal_emit_by_name(links, "typing", "beta", "alpha", TRUE);
+
+    g_assert_cmpint(clawt_agent_get_hop_depth(beta), ==, 3);
+    g_assert_false(clawt_agent_get_turn_replies(beta));
+    g_assert_cmpstr(clawt_agent_get_turn_origin(beta), ==, "alpha");
+    g_assert_cmpstr(clawt_agent_get_turn_task_id(beta), ==, "task-xyz");
+
+    /*
+     * And the sign-off the turn ends with still goes nowhere.  This is
+     * the assertion that costs money when it fails: "Acknowledged, no
+     * reply needed or sent -- ending turn." routed to a peer is a whole
+     * model turn spent on somebody saying they have nothing to say.
+     *
+     * max_hops is 0 here on purpose, so a pass cannot come from the hop
+     * limit stopping it instead.
+     */
+    g_signal_emit_by_name(links, "typing", "beta", "alpha", FALSE);
+    g_signal_emit_by_name(links, "message", "beta", "alpha",
+                          "Acknowledged, nothing to send. Ending turn.",
+                          NULL);
+
+    g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(alpha)),
+                     ==, 0);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And neither is a second room opening while the first is still going.
+ *
+ * The turn fields are per-agent and typing frames are per-room, so one
+ * agent talking to three peers is three streams writing the same fields.
+ * Each TRUE from a room that was not yet typing looked like a turn start
+ * to an agent already mid-turn in another.
+ *
+ * The second room's turn inherits the first's description rather than
+ * resetting it.  That is deliberate and it is not per-room state: a tool
+ * call arrives on a per-agent link with no room on it, so there is
+ * nowhere to put one.  Inheriting errs towards closing an exchange,
+ * which is the safe direction.
+ */
+static void
+test_a_second_room_does_not_restart_the_turn(void)
+{
+    Fixture fixture = { 0 };
+    ClawtLinkServer *links;
+    ClawtAgent *beta;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: gamma\n"
+                            "  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    links = clawt_daemon_get_link_server(fixture.daemon);
+    beta = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                   "beta");
+
+    clawt_agent_deliver_turn(beta, 3, FALSE, "alpha", "task-xyz");
+
+    g_signal_emit_by_name(links, "typing", "beta", "alpha", TRUE);
+    g_signal_emit_by_name(links, "typing", "beta", "gamma", TRUE);
+
+    g_assert_cmpint(clawt_agent_get_hop_depth(beta), ==, 3);
+    g_assert_false(clawt_agent_get_turn_replies(beta));
+    g_assert_cmpstr(clawt_agent_get_turn_origin(beta), ==, "alpha");
+    g_assert_cmpuint(clawt_agent_get_typing_rooms(beta), ==, 2);
+
+    /*
+     * One of them going quiet does not make the agent idle, and does not
+     * end its turn.  clawt_daemon_turn_settle() takes no room, so a
+     * FALSE from either used to settle the agent -- and the next frame
+     * from the room still working then read as a fresh turn.
+     */
+    g_signal_emit_by_name(links, "typing", "beta", "alpha", FALSE);
+
+    g_assert_true(clawt_agent_get_busy(beta));
+    g_assert_cmpuint(clawt_agent_get_typing_rooms(beta), ==, 1);
+
+    g_signal_emit_by_name(links, "typing", "beta", "gamma", TRUE);
+
+    g_assert_cmpint(clawt_agent_get_hop_depth(beta), ==, 3);
+    g_assert_false(clawt_agent_get_turn_replies(beta));
+
+    /* And the last one going quiet does end it. */
+    g_signal_emit_by_name(links, "typing", "beta", "gamma", FALSE);
+
+    g_assert_false(clawt_agent_get_busy(beta));
+    g_assert_cmpuint(clawt_agent_get_typing_rooms(beta), ==, 0);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A turn ended by something other than the runtime still starts the next
+ * one fresh.
+ *
+ * The edge is the fix and it is also the hazard: an interrupt and the
+ * grace timer both end turns the runtime will never send a FALSE for, so
+ * a set left standing would mean the next real frame is not a rising
+ * edge, clawt_agent_begin_turn() is skipped, and the new turn runs
+ * holding the abandoned turn's depth, origin and task.  Same wrong
+ * answer as the bug, reached from the other side.
+ */
+static void
+test_a_turn_settled_elsewhere_starts_the_next_one_fresh(void)
+{
+    Fixture fixture = { 0 };
+    ClawtLinkServer *links;
+    ClawtAgent *beta;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    links = clawt_daemon_get_link_server(fixture.daemon);
+    beta = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                   "beta");
+
+    clawt_agent_deliver_turn(beta, 3, FALSE, "alpha", "task-xyz");
+    g_signal_emit_by_name(links, "typing", "beta", "alpha", TRUE);
+    g_assert_cmpint(clawt_agent_get_hop_depth(beta), ==, 3);
+
+    /* Whatever settles it -- an interrupt here -- goes through this. */
+    clawt_daemon_turn_settle(fixture.daemon, "beta");
+    g_assert_cmpuint(clawt_agent_get_typing_rooms(beta), ==, 0);
+
+    /* The next frame is a rising edge again, and nothing delivered. */
+    g_signal_emit_by_name(links, "typing", "beta", "alpha", TRUE);
+
+    g_assert_cmpint(clawt_agent_get_hop_depth(beta), ==, 0);
+    g_assert_null(clawt_agent_get_turn_origin(beta));
+    g_assert_true(clawt_agent_get_turn_replies(beta));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * The turn watchdog can actually be reached.
+ *
+ * clawt_turn_watch_begin() installs a *fresh* deadline, and it was
+ * called on every typing frame -- so a refresh every 25 seconds moved
+ * the deadline every 25 seconds, and `runtime.turn_timeout_seconds`
+ * could not fire for any turn running longer than the refresh interval,
+ * which is every turn it was written for.  A keepalive is a timer
+ * firing, not a sign of life; clawt_daemon_turn_activity() is what an
+ * agent doing something actually calls.
+ *
+ * On a fake clock, because a budget measured in minutes cannot be
+ * reached by waiting and a test that sleeps for it is a test that hangs.
+ */
+static gint64 daemon_fake_now;
+
+static gint64
+daemon_fake_clock(gpointer user_data)
+{
+    (void)user_data;
+
+    return daemon_fake_now;
+}
+
+static void
+test_a_keepalive_does_not_extend_the_turn_budget(void)
+{
+    Fixture fixture = { 0 };
+    ClawtLinkServer *links;
+    ClawtTurnWatch *watch;
+    gint64 left;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: beta\n"
+                  "    runtime:\n"
+                  "      turn_timeout_seconds: 600\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    links = clawt_daemon_get_link_server(fixture.daemon);
+    watch = fixture.daemon->turn_watch;
+    g_assert_nonnull(watch);
+
+    daemon_fake_now = 1000 * G_USEC_PER_SEC;
+    clawt_turn_watch_set_clock(watch, daemon_fake_clock, NULL, NULL);
+
+    /* The turn starts, with the whole budget in front of it. */
+    g_signal_emit_by_name(links, "typing", "beta", "alpha", TRUE);
+    g_assert_true(clawt_turn_watch_is_watching(watch, "beta"));
+
+    left = clawt_turn_watch_remaining(watch, "beta");
+    g_assert_cmpint(left, ==, 600 * G_USEC_PER_SEC);
+
+    /* Five wedged minutes later, libreclaw refreshes the indicator. */
+    daemon_fake_now += 300 * G_USEC_PER_SEC;
+    g_signal_emit_by_name(links, "typing", "beta", "alpha", TRUE);
+
+    /*
+     * Five minutes gone, five left.  A frame that began the turn again
+     * would read 600 here, and this turn would never expire however long
+     * it stayed wedged.
+     */
+    left = clawt_turn_watch_remaining(watch, "beta");
+    g_assert_cmpint(left, ==, 300 * G_USEC_PER_SEC);
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * A fan-out holds its parent open, through the daemon rather than only
  * in the task manager.
  *
@@ -8493,6 +8753,14 @@ main(int argc, char *argv[])
     g_test_add_func("/daemon/start-agent-with-no-id",
                     test_starting_an_agent_with_no_id_is_an_error);
 
+    g_test_add_func("/daemon/typing/a-keepalive-is-not-a-new-turn",
+                    test_a_keepalive_is_not_a_new_turn);
+    g_test_add_func("/daemon/typing/a-second-room-does-not-restart-it",
+                    test_a_second_room_does_not_restart_the_turn);
+    g_test_add_func("/daemon/typing/settled-elsewhere-starts-fresh",
+                    test_a_turn_settled_elsewhere_starts_the_next_one_fresh);
+    g_test_add_func("/daemon/typing/a-keepalive-does-not-extend-the-budget",
+                    test_a_keepalive_does_not_extend_the_turn_budget);
     g_test_add_func("/daemon/task/children-hold-the-parent-open",
                     test_a_turn_ending_does_not_close_a_task_with_children);
     g_test_add_func("/daemon/task/running-when-its-turn-starts",

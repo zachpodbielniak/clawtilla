@@ -1325,28 +1325,49 @@ on_link_typing(ClawtLinkServer *server,
     ClawtDaemon *self = user_data;
     ClawtAgent *agent;
     ClawtEvent *event;
+    gboolean edge = FALSE;
 
     (void)server;
 
     if (agent_id == NULL)
         return;
 
+    agent = clawt_agent_manager_get(self->agents, agent_id);
+
+    /*
+     * Whether this frame changed anything, before anything acts on it.
+     *
+     * The indicator is a level and not an edge.  libreclaw holds it up
+     * for the whole of a turn and refreshes it every 25 seconds, and an
+     * agent in three rooms raises three of them independently -- so the
+     * frame on its own says "a turn is running somewhere", never "a turn
+     * is starting here".  Reading it as the latter is what reset the
+     * turn state mid-turn every 25 seconds.
+     */
+    if (agent != NULL)
+        edge = clawt_agent_note_typing(agent, room_id, typing);
+
     /*
      * Recorded on the agent as well as published, so a client that
      * connects while a turn is already running is not left thinking
      * the agent is idle until the next transition.
+     *
+     * From the set rather than from the frame: a FALSE from one room
+     * while another is still going does not make the agent idle, and
+     * busy is what stops a message arriving mid-turn from being taken
+     * as a task's result.
      */
-    agent = clawt_agent_manager_get(self->agents, agent_id);
-
     if (agent != NULL)
-        clawt_agent_set_activity(agent, typing, NULL);
+        clawt_agent_set_activity(agent,
+                                 clawt_agent_get_typing_rooms(agent) > 0,
+                                 NULL);
 
     /*
      * A turn is starting, which is the moment that decides how far the
      * message being answered had come. Every message this turn sends
      * counts from there.
      */
-    if (agent != NULL && typing) {
+    if (agent != NULL && typing && edge) {
         clawt_agent_begin_turn(agent);
 
         /*
@@ -1375,10 +1396,24 @@ on_link_typing(ClawtLinkServer *server,
      * the same frame: this is the only place the daemon is told a turn
      * began or ended, so it is the only place either can be started or
      * stopped from.
+     *
+     * On the edge, not on the frame, and the begin half is why the
+     * watchdog was never seen to fire.  clawt_turn_watch_begin()
+     * installs a *fresh* deadline, so a refresh every 25 seconds moved
+     * it every 25 seconds: `runtime.turn_timeout_seconds` and
+     * `rooms.turn_timeout_seconds` could not be reached by any turn
+     * that ran longer than the refresh interval, which is every turn
+     * they were written for.  A keepalive is a timer firing, not a sign
+     * of life -- clawt_daemon_turn_activity() is what an agent doing
+     * something actually calls.
+     *
+     * And the settle half: this takes no room, so a FALSE from one room
+     * ended the watch while another was still mid-turn, and the next
+     * frame from that one looked like a fresh turn.
      */
-    if (typing)
+    if (typing && edge)
         clawt_daemon_turn_begin(self, agent_id, room_id);
-    else
+    else if (!typing && edge)
         clawt_daemon_turn_settle(self, agent_id);
 
     /*

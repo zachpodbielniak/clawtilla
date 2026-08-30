@@ -74,6 +74,28 @@ struct _ClawtAgent {
     gchar          *turn_task_id;
     GQueue         *pending_turns;
 
+    /*
+     * The rooms this agent is currently typing in.
+     *
+     * A set rather than a counter, and a set rather than a boolean,
+     * because the frames that feed it are neither reliable nor unique.
+     * libreclaw raises typing for the whole of a turn and re-sends the
+     * same TRUE every 25 seconds so Matrix does not drop the indicator,
+     * and an agent in three rooms sends three independent streams of
+     * them.  A counter drifts on a repeated TRUE or an unmatched FALSE;
+     * a set is idempotent in both directions and self-corrects.
+     *
+     * What it answers is the only question the turn state has: is this
+     * frame the start of a turn, or is it noise inside one that is
+     * already running.  Read from the frame alone, every keepalive was
+     * a turn start -- which reset the depth to zero, turned the
+     * closed-exchange flag back on, cleared the origin (disabling
+     * clawtilla_message_user's guard outright) and dropped the task a
+     * delegation would be parented on.  On a live fleet that was 11,869
+     * typing=true frames against 549 turns.
+     */
+    GHashTable     *typing_rooms;
+
     gchar          *status_detail;
 };
 
@@ -439,6 +461,15 @@ on_runtime_exited(ClawtAgentRuntime *runtime,
      */
     g_clear_object(&self->link);
 
+    /*
+     * And with it every typing frame it had raised.  A runtime that
+     * exits mid-turn sends no FALSE, so the set would keep a room for
+     * ever -- and the restarted agent's first frame would not read as a
+     * turn start, leaving its first turn describing whatever the dead
+     * one had been answering.
+     */
+    clawt_agent_clear_typing(self);
+
     if (self->state == CLAWT_AGENT_STATE_STOPPING || clean)
         set_state(self, CLAWT_AGENT_STATE_STOPPED, detail);
     else
@@ -658,6 +689,63 @@ clawt_agent_get_turn_task_id(ClawtAgent *self)
     g_return_val_if_fail(CLAWT_IS_AGENT(self), NULL);
 
     return self->turn_task_id;
+}
+
+/*
+ * The room a typing frame with no room of its own belongs to.
+ *
+ * A frame that names no room still has to pair with its own FALSE, and
+ * every unnamed frame is the same conversation as far as this can tell.
+ * Keyed rather than ignored, because ignoring it would leave an agent
+ * that only ever sends unnamed frames with an empty set -- so every one
+ * of them would read as a rising edge, which is the bug.
+ */
+#define CLAWT_AGENT_UNNAMED_ROOM "\x01unnamed"
+
+gboolean
+clawt_agent_note_typing(ClawtAgent  *self,
+                        const gchar *room_id,
+                        gboolean     typing)
+{
+    const gchar *key = (room_id != NULL) ? room_id
+                                         : CLAWT_AGENT_UNNAMED_ROOM;
+    gboolean was_typing;
+
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), FALSE);
+
+    was_typing = g_hash_table_size(self->typing_rooms) > 0;
+
+    if (typing)
+        g_hash_table_add(self->typing_rooms, g_strdup(key));
+    else
+        g_hash_table_remove(self->typing_rooms, key);
+
+    /*
+     * The edge is about the *agent*, not the room, because the turn
+     * state it gates is per-agent.  A second room opening while the
+     * first is still going is therefore not a turn start: its turn
+     * inherits the running description rather than resetting it, which
+     * errs towards closing an exchange rather than continuing one.  Real
+     * per-room turn state needs a room on a tool call, and a tool call
+     * arrives on a per-agent link that has none.
+     */
+    return was_typing != (g_hash_table_size(self->typing_rooms) > 0);
+}
+
+guint
+clawt_agent_get_typing_rooms(ClawtAgent *self)
+{
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), 0);
+
+    return g_hash_table_size(self->typing_rooms);
+}
+
+void
+clawt_agent_clear_typing(ClawtAgent *self)
+{
+    g_return_if_fail(CLAWT_IS_AGENT(self));
+
+    g_hash_table_remove_all(self->typing_rooms);
 }
 
 void
@@ -1063,6 +1151,7 @@ clawt_agent_dispose(GObject *object)
     g_clear_pointer(&self->turn_origin, g_free);
     g_clear_pointer(&self->turn_task_id, g_free);
     g_clear_pointer(&self->pending_turns, queue_of_turns_free);
+    g_clear_pointer(&self->typing_rooms, g_hash_table_unref);
     g_clear_object(&self->computer);
     g_clear_object(&self->desktop);
     g_clear_object(&self->link);
@@ -1130,6 +1219,8 @@ clawt_agent_init(ClawtAgent *self)
     self->state = CLAWT_AGENT_STATE_STOPPED;
     self->caps = CLAWT_AGENT_CAPS_NONE;
     self->pending_turns = g_queue_new();
+    self->typing_rooms = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                               g_free, NULL);
 
     /*
      * Named, because g_object_new() zeroes and FALSE here would mean an

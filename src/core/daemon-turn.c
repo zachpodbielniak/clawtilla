@@ -671,6 +671,26 @@ clawt_daemon_turn_settle(ClawtDaemon *self, const gchar *agent_id)
 
     cancel_grace(self, agent_id);
 
+    /*
+     * Whatever the runtime still believes it is typing, it is not in a
+     * turn now.
+     *
+     * Three things settle a turn and only one of them is the runtime's
+     * own FALSE; an interrupt and the grace timer both end turns the
+     * runtime will never close itself.  Leaving the set standing after
+     * one of those would mean the agent's next real frame is not a
+     * rising edge, so clawt_agent_begin_turn() would be skipped and the
+     * new turn would run holding the abandoned turn's depth, origin and
+     * task -- the same wrong answer as before, arrived at from the
+     * other direction.
+     */
+    if (self->agents != NULL) {
+        ClawtAgent *agent = clawt_agent_manager_get(self->agents, agent_id);
+
+        if (agent != NULL)
+            clawt_agent_clear_typing(agent);
+    }
+
     if (self->turn_watch != NULL)
         clawt_turn_watch_end(self->turn_watch, agent_id);
 

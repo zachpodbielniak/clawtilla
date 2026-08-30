@@ -1873,6 +1873,42 @@ clawtilla agent restart <agent>
 If a command you *want* is refused, quote the operator -- ~grep 'a|b' f~
 is accepted, ~grep a|b f~ is not, and the second was never going to work.
 
+** Two agents keep answering each other and max_hops never fires
+
+Symptoms, all at once: the depth column on a busy room is almost all
+~1~, sign-off text ("Ending turn", "Nothing to act on") is being
+*delivered* and answered, ~orchestration.max_hops~ has no effect however
+high it is set, and the turn watchdog never fires.
+
+That is one cause, not four.  The daemon took every ~typing=true~ frame
+as the start of a turn, and libreclaw re-sends that frame every 25
+seconds inside a single turn -- so a turn longer than that restarted
+several times, each restart putting the hop depth back to zero, the
+closed-exchange flag back to on, and the watchdog's deadline back to
+full.  See [[file:orchestration.org::*A typing frame is a level, not an
+edge][A typing frame is a level, not an edge]].
+
+Check whether you are looking at this:
+
+#+begin_src bash
+grep -c '"typing".*true'  ~/.clawtilla/events/$(date +%F).ndjson
+grep -c '"typing".*false' ~/.clawtilla/events/$(date +%F).ndjson
+#+end_src
+
+Roughly equal counts are healthy.  Twenty times as many ~true~ as
+~false~ is this bug.
+
+Fixed by acting on the edge rather than the frame.  Nothing to
+reconfigure; the daemon has to be the one carrying the fix:
+
+#+begin_src bash
+clawtilla daemon restart
+#+end_src
+
+Raising ~orchestration.max_hops~ was never going to help and lowering it
+will not either -- the depth it compares against was being reset, not
+exceeded.
+
 ** gowl is unreachable
 
 - gowl must be built with ~MCP=1~ and have ~modules.mcp.enabled: true~

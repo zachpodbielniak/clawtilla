@@ -828,6 +828,21 @@ versions apart.
   `clawt_time_ago_label()` takes. Handing it `clawt_task_get_created_at()` raw
   renders `20694d ago` (the epoch) on every row, and a test asserting only on
   the *shape* of a listing passes throughout. Assert on the value.
+- **A typing indicator is a level, not an edge, and it is per room while the
+  turn state is per agent.** libreclaw holds it up for a whole turn and
+  re-sends it every 25 seconds (`TYPING_REFRESH_MS`), and an agent in three
+  rooms raises three streams of it. Acting on the frame restarted the turn
+  every 25 seconds: depth back to 0 so `max_hops` could not climb, the
+  closed-exchange flag back to TRUE so sign-offs were delivered and answered,
+  the origin cleared so `clawtilla_message_user`'s guard was *off*, the task
+  dropped so a late delegation was parentless -- and
+  `clawt_turn_watch_begin()` installs a fresh deadline, so the watchdog and
+  the room timeout could not be reached by any turn worth watching. 11,869
+  frames against 549 turns on a live fleet. `clawt_agent_note_typing()` keeps
+  the set of rooms and reports the edge; a set, not a counter, because the
+  frames neither are unique nor pair reliably. Whatever else settles a turn
+  must clear the set, or the next frame is not a rising edge and the new turn
+  runs with the abandoned one's state.
 - **A delegated task's parent comes from the delegating agent's turn.**
   `clawtilla_delegate` passed NULL for its whole life, so every agent-created
   task was a root: `clawt_task_manager_create()`'s depth limit compared 0
@@ -1284,6 +1299,10 @@ versions apart.
   and neither reports that it did
 - Never take the end of a turn as the end of the work without asking the task
   whether anything it handed on is still running
+- Never treat a repeated signal as an edge. A typing frame, a keepalive and a
+  refresh all arrive again while nothing has changed; derive the edge from
+  state you keep, and clear that state wherever the thing it describes can
+  end another way
 - Never lex a command line into an argv and spawn it without saying that the
   shell operators in it did nothing
 - Never add a mount to a computer without going through
