@@ -431,7 +431,15 @@ test_writes_the_org_files(void)
      */
     tools = read_agent_file(created, "TOOLS.org");
     g_assert_nonnull(tools);
-    g_assert_nonnull(strstr(tools, "clawtilla_ask_agent"));
+
+    /*
+     * Asserted on something the scaffold owns.  It used to check for a
+     * tool name, which came from a hand-written table the scaffold no
+     * longer writes: the tools an agent has are listed by the daemon
+     * from the live list, into the marked region, and a second copy
+     * written once at creation could only drift from it.
+     */
+    g_assert_nonnull(strstr(tools, "# BEGIN clawtilla tools"));
 }
 
 /*

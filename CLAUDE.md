@@ -919,7 +919,16 @@ versions apart.
   `restart_required` and the clients give different advice for each.
 - An agent believes its own `TOOLS.org` over `tools/list`, so the daemon writes
   a managed region from `clawt_mcp_tools_describe_for_agent()`, through the
-  same permission gate.
+  same permission gate. **That region must be the only list of tools in the
+  file.** The scaffold also tabulated them, and the region was added above
+  those tables rather than instead of them -- with no marker in the template
+  it appended at the *end*, so the stale copy was read first. Both drifted
+  again within the year. Anything the scaffold says about tools is now advice
+  on when to reach for one, never an enumeration, and
+  `tests/test-workspace.c` fails on a `| ~clawtilla_*~` table row appearing in
+  a scaffolded file. A workspace made before that keeps its tables, so the
+  generated section opens by saying it is the authoritative one -- the only
+  fix that reaches a fleet already on disk.
 - An agent's persona grows until it cannot start: `MAX_ARG_STRLEN` is 131072
   bytes for a **single** argv word, whatever `ARG_MAX` says.
   `clawt_workspace_measure_identity()` warns before anything fails, and the

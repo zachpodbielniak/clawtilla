@@ -90,7 +90,7 @@ is content, the markdown file is the loader.
 
 They are generated from the agent's own configuration, not left as
 placeholders: ~IDENTITY.org~ carries its id, name, role and model, and
-~TOOLS.org~ names the orchestration tools it has, the mailbox semantics
+~TOOLS.org~ carries the live list of tools it has, the mailbox semantics
 it works under, the exchange directory, and *which computer it has and
 what that means*.  An agent that has to discover it has no computer
 spends its first turns running commands that are refused.
@@ -1212,7 +1212,24 @@ which overstates what the code does.)
 
 ~TOOLS.org~ carries a marked region, ~# BEGIN clawtilla tools~,
 regenerated on every start from the same gate that answers ~tools/list~.
-It is one of *four* regions clawtilla owns in that one file.  The others
+It is one of *four* regions clawtilla owns in that one file.
+
+*It is the only list of tools in the file.*  The scaffold used to
+tabulate them as well -- three tables, written once when the workspace
+was made -- and this region was added above them rather than instead of
+them.  With no marker in the template it was appended at the *end*, so
+an agent read a stale table first and the live list last.  Both tables
+then drifted again: neither listed ~clawtilla_task_list~, and neither
+listed ~clawtilla_task_progress~.  The template now carries the markers,
+right after the introduction, and the narrative below them says when to
+reach for what rather than what exists.
+
+A workspace scaffolded before that keeps its tables: the file belongs to
+whoever edits it and clawtilla rewrites only what is between its
+markers.  The generated section therefore opens by saying it is written
+from the live list and is the whole of what the agent has -- one
+sentence that reaches those agents on their next start, which changing
+the template cannot.  The others
 are ~# BEGIN clawtilla integrations~, ~# BEGIN clawtilla computer~ and
 ~# BEGIN clawtilla skills~ -- the computer one rewritten on every start
 with the agent's mounts and the host-path-left-of-~=~ rule, because an

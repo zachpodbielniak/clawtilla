@@ -184,6 +184,146 @@ test_scaffold_never_overwrites(void)
 }
 
 /*
+ * The scaffold does not write a second list of the tools.
+ *
+ * TOOLS.org has a region clawtilla rewrites from the live tool list on
+ * every start, and it used to be *added* to a file that already had
+ * hand-written tables of the same tools -- appended at the end, since the
+ * template carried no marker, so the stale copy came first.  Both drifted
+ * again within the year: neither listed clawtilla_task_list, and neither
+ * listed clawtilla_task_progress, so an agent reading its own file
+ * concluded correctly from what it could see that it did not have them.
+ *
+ * Asserted on the table-row spelling, `| ~name~`, rather than on the
+ * name alone: naming a tool in the prose that explains when to use it is
+ * the point of the file, and only a *tabulation* of them is a second
+ * list that has to track the enumeration.
+ */
+static void
+test_the_scaffold_lists_no_tools_of_its_own(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *tools = NULL;
+    static const gchar * const named[] = {
+        "| ~clawtilla_delegate~", "| ~clawtilla_task_status~",
+        "| ~clawtilla_task_complete~", "| ~clawtilla_list_agents~",
+        "| ~clawtilla_message_agent~", "| ~clawtilla_mailbox_list~",
+        "| ~clawtilla_computer_exec~", NULL
+    };
+    guint i;
+
+    fixture_setup(&fixture, "agents:\n  - id: scribe\n");
+    agent = first_agent(&fixture);
+
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+    g_assert_no_error(error);
+
+    tools = read_workspace_file(agent, "TOOLS.org");
+    g_assert_nonnull(tools);
+
+    for (i = 0; named[i] != NULL; i++) {
+        if (strstr(tools, named[i]) != NULL)
+            g_error("the scaffolded TOOLS.org tabulates %s itself; the "
+                    "live region is what lists tools, and a second list "
+                    "drifts from it", named[i]);
+    }
+
+    /*
+     * And it carries the markers, so the live list lands where the
+     * narrative introduces it.  Without them replace_region() appends --
+     * correctly, since a file a person edits has no position clawtilla
+     * can claim to know -- and the list then arrives after every word
+     * written about it.
+     */
+    g_assert_nonnull(strstr(tools, "# BEGIN clawtilla tools"));
+    g_assert_nonnull(strstr(tools, "# END clawtilla tools"));
+    g_assert_true(strstr(tools, "# BEGIN clawtilla tools") <
+                  strstr(tools, "* Talking to other agents"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * What an assignee is told about ending a turn without finishing.
+ *
+ * The daemon takes the last thing written in a task's thread as its
+ * result, so an assignee that hands part of the work on and reports once
+ * at the end had the task closed under it.  The remedy is a tool, and a
+ * tool an agent is not told about is a tool it will not call.
+ */
+static void
+test_the_scaffold_explains_not_finishing(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *tools = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: scribe\n");
+    agent = first_agent(&fixture);
+
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+    g_assert_no_error(error);
+
+    tools = read_workspace_file(agent, "TOOLS.org");
+    g_assert_nonnull(tools);
+
+    g_assert_nonnull(strstr(tools, "clawtilla_task_progress"));
+
+    /*
+     * And it no longer promises a task its own session.  That was never
+     * true -- lc_router_resolve_session_key() excludes the thread, so a
+     * task lands in the sender's existing conversation -- and docs and
+     * clawt-task.h both say so while this file told every agent
+     * otherwise.
+     */
+    g_assert_null(strstr(tools, "gets its own session"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And that a command needing a shell is refused rather than mangled.
+ *
+ * The scaffold described the old behaviour: silently turned into an
+ * argument, exit 0, nothing done.  An agent holding that model does not
+ * recognise the refusal when it arrives.
+ */
+static void
+test_the_scaffold_describes_the_exec_refusal(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentConfig *agent;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *tools = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: scribe\n"
+                  "    computer:\n"
+                  "      type: host\n"
+                  "      host:\n"
+                  "        confirm_host_control: true\n");
+    agent = first_agent(&fixture);
+
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+    g_assert_no_error(error);
+
+    tools = read_workspace_file(agent, "TOOLS.org");
+    g_assert_nonnull(tools);
+
+    g_assert_nonnull(strstr(tools, "refused"));
+    g_assert_nonnull(strstr(tools, "bash -c"));
+
+    /* And not the model it replaced. */
+    g_assert_null(strstr(tools, "appears to run, reports success"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * The scaffolded files must not promise a tool does something it does
  * not do.
  *
@@ -273,10 +413,20 @@ test_scaffold_describes_this_agent(void)
     tools = read_workspace_file(agent, "TOOLS.org");
     g_assert_nonnull(tools);
 
-    /* The orchestration tools it actually has, named. */
-    g_assert_nonnull(strstr(tools, "clawtilla_ask_agent"));
+    /*
+     * It teaches the tools it has advice about, and points at the region
+     * that lists them.
+     *
+     * This used to assert that the scaffold *enumerated* the
+     * orchestration tools, which is the behaviour that had to go: a list
+     * written once when the workspace was made cannot track a tool added
+     * later, and this file's own comment records an agent concluding it
+     * could not create agents on the day that tool was granted to it.
+     * The enumeration is written by the daemon from the live list, so a
+     * scaffold-only test is not where it can be checked.
+     */
     g_assert_nonnull(strstr(tools, "clawtilla_delegate"));
-    g_assert_nonnull(strstr(tools, "clawtilla_mailbox_ack"));
+    g_assert_nonnull(strstr(tools, "# BEGIN clawtilla tools"));
 
     /* And its own computer, described rather than left to discovery. */
     g_assert_nonnull(strstr(tools, "container of your own"));
@@ -2667,6 +2817,13 @@ main(int argc, char *argv[])
                     test_a_failed_clone_reports_what_git_said);
     g_test_add_func("/import/submodule-decision-follows-the-repository",
                     test_the_submodule_decision_follows_the_repository);
+
+    g_test_add_func("/workspace/scaffold-lists-no-tools-of-its-own",
+                    test_the_scaffold_lists_no_tools_of_its_own);
+    g_test_add_func("/workspace/scaffold-explains-not-finishing",
+                    test_the_scaffold_explains_not_finishing);
+    g_test_add_func("/workspace/scaffold-describes-the-exec-refusal",
+                    test_the_scaffold_describes_the_exec_refusal);
 
     return g_test_run();
 }

@@ -1672,7 +1672,29 @@ clawt_mcp_tools_describe_for_agent(ClawtMcpTools *self, const gchar *agent_id)
         clawt_mcp_tools_is_permitted(self, agent_id, "clawtilla_handoff"))
         append_roster(self, out, agent_id);
 
-    g_string_append(out, "* The tools clawtilla is giving you\n\n");
+    /*
+     * Says it is the list, because for a while it was not the only one.
+     *
+     * TOOLS.org was scaffolded with hand-written tables of the
+     * orchestration tools, and this region was added above them rather
+     * than instead of them -- appended at the end of the file, since the
+     * template carried no marker for it.  So an agent read a stale table
+     * first and the live list last.  Both tables drifted again within
+     * the year: neither listed clawtilla_task_list, and neither listed
+     * clawtilla_task_progress.
+     *
+     * The template no longer writes them, but a workspace scaffolded
+     * before that keeps its copy -- the file belongs to whoever edits it
+     * and clawtilla rewrites only what is between its markers.  One
+     * sentence here reaches those agents on their next start, which
+     * changing the template cannot.
+     */
+    g_string_append(out,
+        "* The tools clawtilla is giving you\n\n"
+        "This section is written from the live list every time you start,\n"
+        "and it is the whole of what you have. Any other table of tools in\n"
+        "this file was written once when the workspace was made: believe\n"
+        "this one.\n\n");
 
     for (i = 0; i < G_N_ELEMENTS(tools); i++) {
         if (!clawt_mcp_tools_is_permitted(self, agent_id,
