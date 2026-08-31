@@ -122,6 +122,32 @@ const gchar *clawt_link_server_get_socket_path(ClawtLinkServer *self);
 guint clawt_link_server_count_links(ClawtLinkServer *self);
 
 /**
+ * ClawtLinkServerClockFunc:
+ * @user_data: what was passed to clawt_link_server_set_clock()
+ *
+ * Where the contest window's seconds come from.
+ *
+ * Returns: a monotonic time in seconds
+ */
+typedef gint64 (*ClawtLinkServerClockFunc)(gpointer user_data);
+
+/**
+ * clawt_link_server_set_clock:
+ * @self: a #ClawtLinkServer
+ * @clock: (nullable) (scope notified) (closure user_data): where the time
+ *   comes from, or %NULL for the monotonic clock
+ * @user_data: passed to @clock
+ * @notify: (nullable): frees @user_data
+ *
+ * For tests. The contest window is a minute, which cannot be reached by
+ * waiting, and a test that sleeps for it is a test that hangs.
+ */
+void clawt_link_server_set_clock(ClawtLinkServer          *self,
+                                 ClawtLinkServerClockFunc  clock,
+                                 gpointer                  user_data,
+                                 GDestroyNotify            notify);
+
+/**
  * clawt_link_server_count_evictions:
  * @self: a #ClawtLinkServer
  * @agent_id: the agent to ask about
@@ -132,7 +158,10 @@ guint clawt_link_server_count_links(ClawtLinkServer *self);
  * One is an ordinary reconnect.  A run of them is two processes serving
  * one agent id and taking the link from each other, which delivers that
  * agent's messages to whichever happens to hold it at the time.  The
- * count is reset when the agent's link closes without being displaced.
+ * count is reset when the agent's link closes without being displaced,
+ * and reads as zero once the contest window has passed -- a contest ends
+ * by nothing further happening, so a count that only fell on a new
+ * connection would outlive the thing it describes.
  *
  * Returns: the eviction count currently held against @agent_id
  */
@@ -147,6 +176,10 @@ guint clawt_link_server_count_evictions(ClawtLinkServer *self,
  * Whether @agent_id has been displaced often enough, and fast enough, to
  * be treated as contested rather than reconnecting.  While it is, further
  * connections claiming that id are refused instead of taking the link.
+ *
+ * It stops being true once the contest window has passed without another
+ * displacement, which is how a contest ends: the second process goes and
+ * nothing further arrives to say so.
  *
  * Returns: %TRUE when the id is fenced
  */

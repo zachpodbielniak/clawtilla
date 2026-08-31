@@ -220,6 +220,20 @@ capture_contest_warning(const gchar *domain, GLogLevelFlags level,
         g_test_fail_printf("unexpected warning: %s", message);
 }
 
+/*
+ * The contest window is a minute.  A test cannot wait for it and must
+ * not sleep for it, so it supplies the seconds itself.
+ */
+static gint64 fake_seconds = 1000;
+
+static gint64
+fake_clock(gpointer user_data)
+{
+    (void)user_data;
+
+    return fake_seconds;
+}
+
 static void
 on_link_contested(ClawtLinkServer *server, const gchar *agent_id,
                   gpointer user_data)
@@ -692,6 +706,118 @@ test_an_ordinary_reconnect_is_not_contested(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * A contest ends by nothing happening, and the fence has to end with it.
+ *
+ * The losing process goes away and simply stops connecting: no further
+ * hello arrives, so nothing runs to lower a count that only fell when
+ * one did.  clawt_link_server_is_contested() answered from the raw
+ * record and therefore said TRUE for ever -- an agent healthy for hours
+ * still reading as contested to anything that asked, which is a report
+ * of a second process that is not there and sends whoever reads it
+ * looking for one.
+ *
+ * Both halves are asserted, because they can fail apart.  The getter
+ * going quiet is not the same as the fence lifting: a build where the
+ * window is applied only when reading would report the agent healthy
+ * and go on refusing its connections, which is the worse of the two and
+ * the one an operator could not diagnose.  So the last rival must be
+ * welcomed, not merely uncounted.
+ */
+static void
+test_a_contest_that_has_ended_is_no_longer_reported(void)
+{
+    Fixture fixture = { 0 };
+    Capture capture = { 0 };
+    Contest contest = { 0 };
+    Client incumbent = { 0 };
+    Client rival[CONTEST_ROUNDS] = { { 0 } };
+    Client returning = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonObject) welcome = NULL;
+    g_autoptr(JsonObject) answer = NULL;
+    g_autofree gchar *kind = NULL;
+    guint round;
+    GLogLevelFlags previous_fatal;
+    guint warning_handler;
+
+    saw_contest_warning = FALSE;
+    fake_seconds = 1000;
+    previous_fatal = g_log_set_always_fatal(G_LOG_LEVEL_ERROR);
+    warning_handler = g_log_set_handler("Clawtilla", G_LOG_LEVEL_WARNING,
+                                        capture_contest_warning, NULL);
+
+    fixture_setup(&fixture);
+    clawt_link_server_set_clock(fixture.server, fake_clock, NULL, NULL);
+    g_signal_connect(fixture.server, "link-added",
+                     G_CALLBACK(on_link_added), &capture);
+    g_signal_connect(fixture.server, "link-contested",
+                     G_CALLBACK(on_link_contested), &contest);
+    g_assert_true(clawt_link_server_start(fixture.server, &error));
+
+    g_assert_true(client_connect(&incumbent, fixture.socket_path));
+    client_send(&incumbent,
+        "{\"v\":1,\"kind\":\"control.hello\",\"payload\":{\"agent_id\":\"chief\"}}");
+    g_assert_true(pump_until(have_added, &capture, 2000));
+    welcome = client_read(&incumbent, NULL);
+    g_assert_nonnull(welcome);
+
+    /* Fought over, at one instant as far as the clock is concerned. */
+    for (round = 0; round < CONTEST_ROUNDS; round++) {
+        g_autoptr(JsonObject) ignored = NULL;
+
+        g_assert_true(client_connect(&rival[round], fixture.socket_path));
+        client_send(&rival[round],
+            "{\"v\":1,\"kind\":\"control.hello\","
+            "\"payload\":{\"agent_id\":\"chief\"}}");
+        ignored = client_read(&rival[round], NULL);
+        g_assert_nonnull(ignored);
+    }
+
+    g_assert_true(saw_contest_warning);
+    g_assert_true(clawt_link_server_is_contested(fixture.server, "chief"));
+    g_assert_cmpuint(clawt_link_server_count_evictions(fixture.server,
+                                                       "chief"), >, 0);
+
+    /* The rival gives up and nothing more arrives; the window passes. */
+    fake_seconds += 61;
+
+    g_assert_false(clawt_link_server_is_contested(fixture.server, "chief"));
+    g_assert_cmpuint(clawt_link_server_count_evictions(fixture.server,
+                                                       "chief"), ==, 0);
+
+    /*
+     * And the fence really did lift, rather than the reading alone going
+     * quiet: the agent reconnects the way it always could have.
+     */
+    g_clear_pointer(&capture.added, g_free);
+    g_assert_true(client_connect(&returning, fixture.socket_path));
+    client_send(&returning,
+        "{\"v\":1,\"kind\":\"control.hello\","
+        "\"payload\":{\"agent_id\":\"chief\"}}");
+    g_assert_true(pump_until(have_added, &capture, 2000));
+    answer = client_read(&returning, &kind);
+    g_assert_nonnull(answer);
+    g_assert_cmpstr(kind, ==, "control.welcome");
+
+    /* Counting restarted rather than resuming where it left off. */
+    g_assert_cmpuint(clawt_link_server_count_evictions(fixture.server,
+                                                       "chief"), ==, 1);
+    g_assert_false(clawt_link_server_is_contested(fixture.server, "chief"));
+
+    client_close(&incumbent);
+    for (round = 0; round < CONTEST_ROUNDS; round++)
+        client_close(&rival[round]);
+    client_close(&returning);
+
+    g_free(contest.agent_id);
+    capture_clear(&capture);
+    fixture_teardown(&fixture);
+
+    g_log_remove_handler("Clawtilla", warning_handler);
+    g_log_set_always_fatal(previous_fatal);
+}
+
 /* A second hello on a live link would let a connection change identity
  * mid-stream, delivering one agent's queued messages to another. */
 static void
@@ -976,6 +1102,8 @@ main(int argc, char *argv[])
                     test_a_contested_id_is_fenced_rather_than_flapped);
     g_test_add_func("/link/ordinary-reconnect-is-not-contested",
                     test_an_ordinary_reconnect_is_not_contested);
+    g_test_add_func("/link/ended-contest-is-not-reported",
+                    test_a_contest_that_has_ended_is_no_longer_reported);
     g_test_add_func("/link/malformed-frames", test_malformed_frames_do_not_drop_the_link);
     g_test_add_func("/link/disconnect", test_disconnect_removes_the_link);
     g_test_add_func("/link/deliver", test_deliver_reaches_the_agent);

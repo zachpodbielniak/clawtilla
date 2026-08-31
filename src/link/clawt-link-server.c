@@ -89,6 +89,16 @@ struct _ClawtLinkServer {
     gpointer          auth_data;
     GDestroyNotify    auth_destroy;
 
+    /*
+     * Where the contest window's seconds come from.  NULL is the real
+     * monotonic clock; a test supplies its own, because a window
+     * measured in minutes cannot be reached by waiting and a test that
+     * sleeps for it is a test that hangs.
+     */
+    ClawtLinkServerClockFunc clock;
+    gpointer                 clock_data;
+    GDestroyNotify           clock_notify;
+
     GSource *keepalive_source;
 };
 
@@ -135,11 +145,49 @@ on_link_typing(ClawtLink   *link,
  * Returns: %TRUE to let the replacement proceed, %FALSE when the id is
  * contested and must be fenced instead.
  */
+static gint64
+monotonic_seconds(ClawtLinkServer *self)
+{
+    if (self->clock != NULL)
+        return self->clock(self->clock_data);
+
+    return g_get_monotonic_time() / G_USEC_PER_SEC;
+}
+
+/*
+ * The record standing against @agent_id right now, or %NULL once its
+ * window has passed.
+ *
+ * The window is applied here rather than only where evictions are
+ * counted, because a contest ends by nothing happening: the losing
+ * process goes away and no further hello arrives to reset anything.  A
+ * record left at its final count then answered
+ * clawt_link_server_is_contested() with TRUE for ever -- so an agent
+ * that had been healthy for hours still read as contested to anything
+ * that asked, while the fence itself had long since stopped refusing
+ * anyone.  A stale yes is worse than no answer here: it describes a
+ * second process that is not there, and sends whoever reads it looking
+ * for one.
+ */
+static Eviction *
+live_eviction(ClawtLinkServer *self, const gchar *agent_id)
+{
+    Eviction *record = g_hash_table_lookup(self->evictions, agent_id);
+
+    if (record == NULL)
+        return NULL;
+
+    if (monotonic_seconds(self) - record->opened > CONTEST_WINDOW_SECONDS)
+        return NULL;
+
+    return record;
+}
+
 static gboolean
 note_eviction(ClawtLinkServer *self, const gchar *agent_id)
 {
     Eviction *record;
-    gint64    now = g_get_monotonic_time() / G_USEC_PER_SEC;
+    gint64    now = monotonic_seconds(self);
 
     record = g_hash_table_lookup(self->evictions, agent_id);
 
@@ -162,10 +210,22 @@ note_eviction(ClawtLinkServer *self, const gchar *agent_id)
         return TRUE;
 
     /*
-     * Said once per contest rather than per connection.  The incident
-     * this comes from flapped every five seconds for forty-five minutes;
-     * a line per eviction would have buried the fact in its own volume,
-     * and a line per contest is the thing an operator needs.
+     * Once per window, not once per connection and not once ever.
+     *
+     * The incident this comes from flapped every five seconds for
+     * forty-five minutes: a line per eviction would have buried the
+     * fact in its own volume, and a single line at the start would have
+     * scrolled away long before anybody looked.  Once per window is
+     * about forty-five lines for that incident, and it keeps saying so
+     * while it is still true -- which matters, because a contest is not
+     * over until somebody ends the second process.
+     *
+     * It also means the fence is a rate limit rather than a ban.  A
+     * rival that never gives up is let in twice per window and refused
+     * for the rest of it, so delivery goes from alternating every few
+     * seconds to twice a minute.  Deliberate: an incumbent whose process
+     * has died in a way that never closed the socket must not be able to
+     * lock its own replacement out for ever.
      */
     if (!record->announced) {
         record->announced = TRUE;
@@ -545,6 +605,22 @@ clawt_link_server_stop(ClawtLinkServer *self)
         g_unlink(self->socket_path);
 }
 
+void
+clawt_link_server_set_clock(ClawtLinkServer          *self,
+                            ClawtLinkServerClockFunc  clock,
+                            gpointer                  user_data,
+                            GDestroyNotify            notify)
+{
+    g_return_if_fail(CLAWT_IS_LINK_SERVER(self));
+
+    if (self->clock_notify != NULL && self->clock_data != NULL)
+        self->clock_notify(self->clock_data);
+
+    self->clock        = clock;
+    self->clock_data   = user_data;
+    self->clock_notify = notify;
+}
+
 guint
 clawt_link_server_count_evictions(ClawtLinkServer *self,
                                   const gchar     *agent_id)
@@ -554,7 +630,7 @@ clawt_link_server_count_evictions(ClawtLinkServer *self,
     g_return_val_if_fail(CLAWT_IS_LINK_SERVER(self), 0);
     g_return_val_if_fail(agent_id != NULL, 0);
 
-    record = g_hash_table_lookup(self->evictions, agent_id);
+    record = live_eviction(self, agent_id);
 
     return (record != NULL) ? record->count : 0;
 }
@@ -567,7 +643,7 @@ clawt_link_server_is_contested(ClawtLinkServer *self, const gchar *agent_id)
     g_return_val_if_fail(CLAWT_IS_LINK_SERVER(self), FALSE);
     g_return_val_if_fail(agent_id != NULL, FALSE);
 
-    record = g_hash_table_lookup(self->evictions, agent_id);
+    record = live_eviction(self, agent_id);
 
     return record != NULL && record->count >= CONTEST_EVICTIONS;
 }
@@ -607,6 +683,13 @@ clawt_link_server_dispose(GObject *object)
         self->auth_destroy = NULL;
         self->auth_data = NULL;
     }
+
+    if (self->clock_notify != NULL && self->clock_data != NULL)
+        self->clock_notify(self->clock_data);
+
+    self->clock        = NULL;
+    self->clock_data   = NULL;
+    self->clock_notify = NULL;
 
     g_clear_pointer(&self->links, g_hash_table_unref);
     g_clear_pointer(&self->evictions, g_hash_table_unref);
@@ -673,6 +756,11 @@ clawt_link_server_class_init(ClawtLinkServerClass *klass)
      * @room_id: (nullable): the room the agent is composing in
      * @typing: %TRUE while a turn is in flight
      */
+    signals[SIGNAL_TYPING] =
+        g_signal_new("typing", CLAWT_TYPE_LINK_SERVER, G_SIGNAL_RUN_LAST,
+                     0, NULL, NULL, NULL, G_TYPE_NONE, 3,
+                     G_TYPE_STRING, G_TYPE_STRING, G_TYPE_BOOLEAN);
+
     /**
      * ClawtLinkServer::link-contested:
      * @self: the server
@@ -683,19 +771,20 @@ clawt_link_server_class_init(ClawtLinkServerClass *klass)
      * rather than one reconnecting.  While contested the id is fenced:
      * further connections are refused and the incumbent keeps the link.
      *
-     * The daemon turns this into agent state, because every other
-     * surface reports such an agent as healthy -- it has a link, it is
-     * running, and its messages go to whichever process last won.
+     * The daemon publishes it as an ~agent.contested~ event rather than
+     * moving the agent to ERROR: on the link that survived the fence the
+     * agent answers normally, and marking it broken would stop delivery
+     * to something that is working.  What is broken is a second process
+     * outside it.
+     *
+     * It has to arrive on its own, because every other surface reports
+     * such an agent as healthy -- it has a link, it is running, and its
+     * messages go to whichever process last won.
      */
     signals[SIGNAL_LINK_CONTESTED] =
         g_signal_new("link-contested", CLAWT_TYPE_LINK_SERVER,
                      G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
                      G_TYPE_NONE, 1, G_TYPE_STRING);
-
-    signals[SIGNAL_TYPING] =
-        g_signal_new("typing", CLAWT_TYPE_LINK_SERVER, G_SIGNAL_RUN_LAST,
-                     0, NULL, NULL, NULL, G_TYPE_NONE, 3,
-                     G_TYPE_STRING, G_TYPE_STRING, G_TYPE_BOOLEAN);
 }
 
 static void
