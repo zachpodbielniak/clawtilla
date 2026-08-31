@@ -567,6 +567,16 @@ already means every word literally.
   libvirt domain and a qcow2 belong to something else and can be deleted
   without telling us -- ask the hypervisor; provisioning is idempotent.
 - `podman` 404 for a container that is not there is **stopped**, not a failure.
+- A `relabel` is work podman does at every start: it walks every file under
+  the source with `lsetxattr`, and rootless podman cannot relabel files it
+  does not own -- so a mount of a system path fails the whole start as a
+  libpod 500 naming a syscall and a container id.
+  `clawt_mount_list_check_relabel()` refuses it up front on the container
+  and distrobox backends, naming the mount and `relabel: none`. It reads
+  only the source's own owner; a foreign-owned file deeper in an owned tree
+  is still podman's to report. And `relabel: none` on SELinux means visible
+  but unreadable inside -- for system content, mount a copy the daemon's
+  user owns, or use the agent's host-side tools.
 
 ### VMs -- what a guest needs before it is reachable
 

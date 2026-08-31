@@ -277,6 +277,16 @@ distrobox_provision(ClawtComputer *computer, GError **error)
     g_autofree gchar *volumes = NULL;
     gboolean exists = FALSE;
 
+    /*
+     * Before the exists shortcut, not after: a box that already exists
+     * still re-applies its :z options at every podman start, so a
+     * relabel podman cannot perform wedges an existing box exactly as
+     * hard as a new one.
+     */
+    if (!clawt_mount_list_check_relabel(clawt_computer_get_mounts(computer),
+                                        error))
+        return FALSE;
+
     if (!clawt_pod_bridge_load_module_for(self->bridge, "distrobox", NULL,
                                           error))
         return FALSE;

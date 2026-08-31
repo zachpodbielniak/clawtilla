@@ -1670,6 +1670,33 @@ rewrites the host directory's labels exclusively for one container, so
 pointing it at a directory something else also uses will break that other
 user.
 
+**** A relabel of files you do not own cannot work
+
+A relabel is not an option podman stores, it is work podman *does*: at
+every container start it walks every file under the source and rewrites
+its label with =lsetxattr=, and an unprivileged daemon cannot relabel a
+file it does not own.  So a mount of a system directory --
+=/var/lib/systemd/coredump= was the one that found this -- fails the
+whole start with a libpod HTTP 500 whose message names a syscall and a
+container id, not the mount.  The daemon now refuses such a mount before
+podman is asked, naming the source and the remedy
+(=clawt_mount_list_check_relabel()=, on the container and distrobox
+backends -- a VM's virtiofs shares carry no labels to rewrite).
+
+The check reads the owner of the source itself, so a foreign-owned file
+deeper inside a directory you do own still fails at podman with podman's
+own message -- the walk is the only thing that finds it.
+
+Two things worth knowing before reaching for such a mount at all.  With
+~relabel: none~ the container starts, but on an SELinux host the mounted
+content keeps its system label and reads inside the container are denied
+-- visible and unreadable, the exact failure relabelling exists to
+prevent.  And the agent's own =read=, =write= and =bash= tools run *on
+the host* as the daemon's user, so everything that user may read is
+already reachable without any mount; a mount only matters for commands
+run inside the machine.  For genuinely system-owned content, copy what
+the agent needs into a directory the daemon's user owns and mount that.
+
 *** How each backend applies them
 
 | Backend | What a mount becomes |

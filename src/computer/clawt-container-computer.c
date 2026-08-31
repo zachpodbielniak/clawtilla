@@ -274,6 +274,15 @@ container_provision(ClawtComputer *computer, GError **error)
     g_autofree gchar *mounts_json = NULL;
     const gchar *identifier;
 
+    /*
+     * Before the bridge is even loaded: a relabel podman cannot apply
+     * fails at *start*, as an HTTP 500 naming a syscall and a container
+     * id, so the one chance to name the mount and the remedy is here.
+     */
+    if (!clawt_mount_list_check_relabel(clawt_computer_get_mounts(computer),
+                                        error))
+        return FALSE;
+
     if (!clawt_pod_bridge_load_module_for(self->bridge, "container",
                                           self->connection, error))
         return FALSE;

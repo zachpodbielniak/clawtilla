@@ -11,6 +11,9 @@
 #include "computer/clawt-mount.h"
 
 #include <string.h>
+#include <unistd.h>
+
+#include <glib/gstdio.h>
 
 struct _ClawtMount {
     gint            ref_count;
@@ -255,6 +258,73 @@ clawt_mount_resolved_source(ClawtMount *self)
         free(real);
         return owned;
     }
+}
+
+gchar *
+clawt_mount_relabel_refusal(ClawtMount *self)
+{
+    g_autofree gchar *source = NULL;
+    GStatBuf st;
+
+    g_return_val_if_fail(self != NULL, NULL);
+
+    if (self->relabel == CLAWT_RELABEL_NONE)
+        return NULL;
+
+    source = clawt_mount_resolved_source(self);
+    if (source == NULL)
+        return NULL;
+
+    /*
+     * A source that is not there yet is not this check's business: with
+     * `create` the daemon makes it, owned by this uid, so the relabel
+     * will work -- and without, the start fails on the missing path,
+     * which is the message that names the actual problem.
+     */
+    if (g_stat(source, &st) != 0)
+        return NULL;
+
+    /*
+     * Root can relabel whatever the policy allows, so the failure this
+     * refusal exists to name cannot happen.  Whether relabelling a
+     * system path as root is *wise* is the admin's own call.
+     */
+    if (geteuid() == 0)
+        return NULL;
+
+    if (st.st_uid == geteuid())
+        return NULL;
+
+    return g_strdup_printf(
+        "mount %s: 'relabel: %s' makes podman relabel every file under "
+        "the source at start, and this daemon (uid %lu) cannot relabel "
+        "files owned by uid %lu -- podman would refuse the whole start "
+        "with a bare 'operation not permitted'. Set 'relabel: none' on "
+        "this mount, or point it at a copy this user owns. Note the "
+        "agent's own read and bash tools already run on the host as this "
+        "user, so a mount is only needed for commands run inside",
+        source,
+        clawt_enum_to_nick(CLAWT_TYPE_RELABEL, self->relabel),
+        (gulong)geteuid(), (gulong)st.st_uid);
+}
+
+gboolean
+clawt_mount_list_check_relabel(GPtrArray *mounts, GError **error)
+{
+    guint i;
+
+    for (i = 0; mounts != NULL && i < mounts->len; i++) {
+        g_autofree gchar *refusal = clawt_mount_relabel_refusal(
+            g_ptr_array_index(mounts, i));
+
+        if (refusal != NULL) {
+            g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_MOUNT,
+                                refusal);
+            return FALSE;
+        }
+    }
+
+    return TRUE;
 }
 
 /*

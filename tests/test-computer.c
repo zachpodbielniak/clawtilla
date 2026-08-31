@@ -5007,6 +5007,98 @@ test_exec_async_reports_a_confinement_refusal(void)
     clawt_test_remove_tree(dir);
 }
 
+/*
+ * A relabel of files this user does not own is refused before podman is
+ * asked.
+ *
+ * podman applies a mount's :z at container *start* by walking every file
+ * under the source with lsetxattr, and an unprivileged daemon gets EPERM
+ * on the first file it does not own.  The failure arrived as a libpod
+ * HTTP 500 naming a syscall and a container id -- a crash-analysis agent
+ * given /var/lib/systemd/coredump never started, and the client's toast
+ * truncated the message exactly where the reason began.  The refusal has
+ * to name the mount and the remedy, and has to happen up front.
+ */
+static void
+test_a_relabel_of_anothers_files_is_refused_up_front(void)
+{
+    g_autofree gchar *own_dir = g_dir_make_tmp("clawt-relabel-XXXXXX", NULL);
+    g_autoptr(GPtrArray) mounts =
+        g_ptr_array_new_with_free_func((GDestroyNotify)clawt_mount_free);
+    ClawtMount *foreign;
+    ClawtMount *owned;
+    g_autofree gchar *refusal = NULL;
+    g_autoptr(GError) error = NULL;
+
+    if (geteuid() == 0) {
+        /*
+         * Root can relabel anything, so the refusal deliberately never
+         * fires -- there is no failure to predict.
+         */
+        g_test_skip("running as root: every relabel is permitted");
+        clawt_test_remove_tree(own_dir);
+        return;
+    }
+
+    /*
+     * The root directory is the one path that always exists and is never
+     * ours, which makes it the hermetic stand-in for a system mount.
+     */
+    foreign = clawt_mount_new("/", "/data/system");
+    clawt_mount_set_relabel(foreign, CLAWT_RELABEL_SHARED);
+
+    refusal = clawt_mount_relabel_refusal(foreign);
+    g_assert_nonnull(refusal);
+    g_assert_nonnull(strstr(refusal, "mount /:"));
+    g_assert_nonnull(strstr(refusal, "relabel: none"));
+
+    /* Without the relabel there is nothing podman will walk. */
+    clawt_mount_set_relabel(foreign, CLAWT_RELABEL_NONE);
+    g_free(refusal);
+    refusal = clawt_mount_relabel_refusal(foreign);
+    g_assert_null(refusal);
+    clawt_mount_set_relabel(foreign, CLAWT_RELABEL_PRIVATE);
+
+    /* A source this user owns is exactly what :z is for. */
+    owned = clawt_mount_new(own_dir, "/data/mine");
+    clawt_mount_set_relabel(owned, CLAWT_RELABEL_SHARED);
+    refusal = clawt_mount_relabel_refusal(owned);
+    g_assert_null(refusal);
+
+    /*
+     * A source that does not exist yet is not this check's business --
+     * `create` makes it owned by this uid, and without `create` the
+     * start fails on the missing path with the message that names it.
+     */
+    {
+        ClawtMount *absent = clawt_mount_new("/no/such/path/anywhere",
+                                             "/data/gone");
+
+        clawt_mount_set_relabel(absent, CLAWT_RELABEL_SHARED);
+        refusal = clawt_mount_relabel_refusal(absent);
+        g_assert_null(refusal);
+        clawt_mount_free(absent);
+    }
+
+    /*
+     * The list walk is the form both container backends call: one bad
+     * mount among good ones fails, naming the bad one's source.
+     */
+    g_ptr_array_add(mounts, owned);
+    g_ptr_array_add(mounts, foreign);
+
+    g_assert_false(clawt_mount_list_check_relabel(mounts, &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_MOUNT);
+    g_assert_nonnull(strstr(error->message, "relabel: none"));
+    g_clear_error(&error);
+
+    g_ptr_array_remove(mounts, foreign);
+    g_assert_true(clawt_mount_list_check_relabel(mounts, &error));
+    g_assert_no_error(error);
+
+    clawt_test_remove_tree(own_dir);
+}
+
 
 int
 main(int argc, char *argv[])
@@ -5024,6 +5116,8 @@ main(int argc, char *argv[])
     g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/computer/null/refuses", test_null_computer_refuses_clearly);
+    g_test_add_func("/computer/mounts/relabel-of-anothers-files-refused",
+                    test_a_relabel_of_anothers_files_is_refused_up_front);
 
     g_test_add_func("/computer/host/runs", test_host_runs_a_command);
     g_test_add_func("/computer/host/failure", test_host_reports_a_failing_command);

@@ -139,6 +139,46 @@ gchar *clawt_mount_tag(const gchar *target);
 gchar *clawt_mount_resolved_source(ClawtMount *self);
 
 /**
+ * clawt_mount_relabel_refusal:
+ * @self: a #ClawtMount
+ *
+ * Says why this mount's SELinux relabel cannot work, or agrees that it
+ * can.
+ *
+ * A `relabel` makes podman walk every file under the source at container
+ * start, and an unprivileged daemon cannot change the label of a file it
+ * does not own.  So a mount of a system directory fails the whole start
+ * with libpod's bare `lsetxattr ... operation not permitted` -- an HTTP
+ * 500 that names a container id and a syscall, not the mount or the fix.
+ * A crash-analysis agent given `/var/lib/systemd/coredump` never started,
+ * and the toast cut the message exactly where the reason began.
+ *
+ * Checked here, before anything is provisioned, so the refusal can name
+ * the mount and the one-line remedy.  It looks at the owner of the source
+ * itself: a foreign-owned file deeper inside an otherwise-owned tree is
+ * still podman's to report, because only the walk finds it.
+ *
+ * Returns: (transfer full) (nullable): the refusal, or %NULL when the
+ * relabel can proceed or there is nothing to check
+ */
+gchar *clawt_mount_relabel_refusal(ClawtMount *self);
+
+/**
+ * clawt_mount_list_check_relabel:
+ * @mounts: (element-type ClawtMount) (nullable): the mounts a computer
+ *   is about to be provisioned with
+ * @error: return location for a #GError
+ *
+ * clawt_mount_relabel_refusal() over a whole mount list, stopping at the
+ * first refusal.  One implementation, because the container and distrobox
+ * backends both apply relabel options and two copies of this walk would
+ * differ exactly once.
+ *
+ * Returns: %TRUE when every relabel can proceed
+ */
+gboolean clawt_mount_list_check_relabel(GPtrArray *mounts, GError **error);
+
+/**
  * clawt_mount_get_scope:
  * @self: a #ClawtMount
  *
