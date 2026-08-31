@@ -104,18 +104,25 @@ contradicting itself is sibling contexts that have never met.
   parallel -- and libreclaw serialises the queue, so nothing is lost,
   only later.
 
+The default is role-dependent: an agent marked ~chief_of_staff~ -- on
+the agent or through ~orchestration.chief_of_staff~ -- or given
+~team_role: lead~ defaults to ~agent~ mode, because an orchestrator's
+job assumes the shape.  Workers keep ~sender-room~: their conversations
+really are independent (a task from the chief, a question from a lead),
+and parallel turns are worth more there than a shared memory.  An
+explicit value always wins in either direction, and toggling a role
+never writes the key -- it moves the /default/, so dropping the role
+restores the ordinary one.
+
 #+begin_src yaml
 agents:
   - id: chief-of-staff
+    chief_of_staff: true        # session.routing_mode now defaults to agent
+  - id: contrarian-chief
     chief_of_staff: true
     session:
-      routing_mode: agent
-#+end_src
-
-Give ~agent~ mode to orchestrators and keep the default for workers: a
-worker's conversations really are independent (a task from the chief, a
-question from a lead), and parallel turns are worth more there than a
-shared memory.  Replies are unaffected by the mode -- libreclaw
+      routing_mode: sender-room # an explicit value beats the role default
+#+end_src  Replies are unaffected by the mode -- libreclaw
 addresses each reply from the message it answers, so a shared session
 still answers into the right room.
 

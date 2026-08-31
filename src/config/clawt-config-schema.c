@@ -1849,7 +1849,14 @@ static const ClawtSchemaEntry schema[] = {
   "conversation starts a fresh context once when it is switched.\n"
   "\n"
   "The values are libreclaw's own (its session.routing_mode); the\n"
-  "daemon renders this straight through.", "0.2.0" },
+  "daemon renders this straight through.\n"
+  "\n"
+  "The default is role-dependent: an agent marked chief_of_staff --\n"
+  "on the agent or through orchestration.chief_of_staff -- or given\n"
+  "team_role: lead defaults to agent mode, because an orchestrator's\n"
+  "job assumes the shape. An explicit value here always wins, and\n"
+  "dropping the role restores the ordinary default; toggling a role\n"
+  "never writes this key on your behalf.", "0.2.0" },
 
 { "agents.runtime", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "How this agent's libreclaw instance is hosted.", "0.1.0" },

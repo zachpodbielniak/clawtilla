@@ -935,6 +935,72 @@ test_routing_mode_survives_the_render_parse_round_trip(void)
 }
 
 /*
+ * An orchestrator's routing defaults to agent mode.
+ *
+ * The role is the reason the mode exists: a chief of staff or a team
+ * lead carries one operator's intent across conversations, and the
+ * partitioned default is the wrong shape for that job.  The role moves
+ * the *default* -- an explicit value always wins, in either direction,
+ * and toggling the role writes nothing -- and the fleet-level spelling
+ * of the chief role counts, because naming the chief in
+ * orchestration.chief_of_staff is documented as equivalent to marking
+ * the agent.
+ */
+static void
+test_an_orchestrators_routing_defaults_to_agent(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+        "orchestration:\n"
+        "  chief_of_staff: named\n"
+        "agents:\n"
+        "  - id: chief\n"
+        "    chief_of_staff: true\n"
+        "  - id: lead\n"
+        "    team_role: lead\n"
+        "  - id: worker\n"
+        "  - id: contrarian\n"
+        "    chief_of_staff: true\n"
+        "    session:\n"
+        "      routing_mode: sender-room\n"
+        "  - id: named\n", &error);
+    GPtrArray *agents;
+    g_autofree gchar *rendered = NULL;
+
+    g_assert_no_error(error);
+    agents = clawt_config_get_agents(config);
+    g_assert_cmpuint(agents->len, ==, 5);
+
+    g_assert_cmpstr(
+        clawt_agent_config_get_string(g_ptr_array_index(agents, 0),
+                                      "session.routing_mode"),
+        ==, "agent");
+    g_assert_cmpstr(
+        clawt_agent_config_get_string(g_ptr_array_index(agents, 1),
+                                      "session.routing_mode"),
+        ==, "agent");
+    g_assert_cmpstr(
+        clawt_agent_config_get_string(g_ptr_array_index(agents, 2),
+                                      "session.routing_mode"),
+        ==, "sender-room");
+    g_assert_cmpstr(
+        clawt_agent_config_get_string(g_ptr_array_index(agents, 3),
+                                      "session.routing_mode"),
+        ==, "sender-room");
+    g_assert_cmpstr(
+        clawt_agent_config_get_string(g_ptr_array_index(agents, 4),
+                                      "session.routing_mode"),
+        ==, "agent");
+
+    /* And the default reaches the rendered config.yaml, not only the
+     * getter -- the render is what libreclaw actually reads. */
+    rendered = clawt_config_render_agent(
+        config, g_ptr_array_index(agents, 0),
+        "/tmp/s.sock", "/tmp/state", NULL);
+    g_assert_nonnull(strstr(rendered, "routing_mode: \"agent\""));
+}
+
+/*
  * An agent with a computer gets a standing per-turn directive naming it.
  *
  * An agent runs as a libreclaw process on the host, so its own bash,
@@ -1323,6 +1389,9 @@ main(int argc, char *argv[])
     g_test_add_func(
         "/config/routing-mode-survives-the-render-parse-round-trip",
         test_routing_mode_survives_the_render_parse_round_trip);
+    g_test_add_func(
+        "/config/an-orchestrators-routing-defaults-to-agent",
+        test_an_orchestrators_routing_defaults_to_agent);
 
     return g_test_run();
 }

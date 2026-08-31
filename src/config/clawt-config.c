@@ -509,6 +509,61 @@ agent_schema_default(const gchar *key)
     return (entry != NULL) ? entry->default_value : NULL;
 }
 
+/*
+ * The one key whose default depends on who the agent is.
+ *
+ * An orchestrator's job is carrying one operator's intent across
+ * conversations, and the partitioned default is the wrong shape for
+ * that job: the chief of staff this surfaced on was three context
+ * windows that had never met, and a team lead is the same role one
+ * level down.  So marking an agent chief_of_staff -- on the agent or
+ * through orchestration.chief_of_staff -- or giving it team_role:
+ * lead, flips this key's *default* to agent mode.  A default rather
+ * than a write, deliberately: an explicit session.routing_mode always
+ * wins, dropping the role restores the ordinary default, and nothing
+ * mutates a second key behind the operator's back when a role is
+ * toggled.
+ *
+ * The nick comes off libreclaw's own enum rather than a literal here,
+ * because a literal that drifted from the enum would render a value
+ * libreclaw warns about and silently reverts -- to precisely the
+ * partitioning the role was supposed to leave.  The relationship
+ * between the keys is stated in the schema's doc for
+ * agents.session.routing_mode; this is the code for it, in the one
+ * resolver every reader of the key goes through.
+ */
+static const gchar *
+routing_mode_role_default(ClawtAgentConfig *self)
+{
+    GEnumClass *cls;
+    const gchar *nick;
+    gboolean orchestrator;
+
+    orchestrator =
+        clawt_agent_config_get_boolean(self, "chief_of_staff") ||
+        (ClawtTeamRole)clawt_agent_config_get_enum(self, "team_role") ==
+            CLAWT_TEAM_LEAD;
+
+    /* The fleet-level spelling of the same role. */
+    if (!orchestrator && self->config != NULL) {
+        const gchar *named = clawt_config_get_string(
+            self->config, "orchestration.chief_of_staff");
+
+        orchestrator = named != NULL &&
+            g_strcmp0(named, lookup_string(self->node, "id")) == 0;
+    }
+
+    if (!orchestrator)
+        return NULL;
+
+    cls = g_type_class_ref(LC_TYPE_ROUTING_MODE);
+    nick = g_enum_get_value(cls, LC_ROUTING_MODE_AGENT)->value_nick;
+    g_type_class_unref(cls);
+
+    /* The GEnumValue table is static storage; the nick outlives the ref. */
+    return nick;
+}
+
 const gchar *
 clawt_agent_config_get_string(ClawtAgentConfig *self, const gchar *key)
 {
@@ -533,6 +588,14 @@ clawt_agent_config_get_string(ClawtAgentConfig *self, const gchar *key)
 
     if (fleet_key != NULL) {
         value = clawt_config_get_string(self->config, fleet_key);
+
+        if (value != NULL)
+            return value;
+    }
+
+    /* Role-dependent default -- see routing_mode_role_default(). */
+    if (g_strcmp0(key, "session.routing_mode") == 0) {
+        value = routing_mode_role_default(self);
 
         if (value != NULL)
             return value;
