@@ -204,6 +204,45 @@ test_nick_list_names_every_value(void)
 }
 
 /**
+ * test_relabel_walk_matches_the_registered_type:
+ *
+ * The offering list and the parser are two tables, and they have to be
+ * the same one.
+ *
+ * Both clients now build their SELinux-relabel control by walking
+ * clawt_relabel_count() / clawt_relabel_nth_nick(), and the daemon
+ * parses what comes back with clawt_enum_from_nick() against the
+ * registered GEnum.  A nick in the walk that the GType does not know
+ * would be a value a client offers, somebody picks, and the daemon
+ * refuses as invalid -- and a value in the GType that the walk omits is
+ * a setting the YAML has and no client can reach, which is the state
+ * this walk was added to end.
+ */
+static void
+test_relabel_walk_matches_the_registered_type(void)
+{
+    g_autoptr(GEnumClass) klass = g_type_class_ref(CLAWT_TYPE_RELABEL);
+    guint i;
+
+    g_assert_cmpuint(clawt_relabel_count(), ==, klass->n_values);
+
+    for (i = 0; i < clawt_relabel_count(); i++) {
+        const gchar *nick = clawt_relabel_nth_nick(i);
+        gint parsed = -1;
+
+        g_assert_nonnull(nick);
+        g_assert_nonnull(clawt_relabel_nth_label(i));
+
+        /* The nick the clients offer parses back to the value it names. */
+        g_assert_true(clawt_enum_from_nick(CLAWT_TYPE_RELABEL, nick,
+                                           &parsed));
+        g_assert_cmpint(parsed, ==, (gint)clawt_relabel_nth(i));
+        g_assert_cmpstr(clawt_enum_to_nick(CLAWT_TYPE_RELABEL,
+                                           clawt_relabel_nth(i)), ==, nick);
+    }
+}
+
+/**
  * test_agent_state_shadow_is_registered:
  *
  * SHADOW carries the forward-compatibility behaviour, so it being absent
@@ -268,6 +307,8 @@ main(int argc, char *argv[])
                     test_no_capability_is_permanently_false);
     g_test_add_func("/enums/nick-list-names-every-value",
                     test_nick_list_names_every_value);
+    g_test_add_func("/enums/relabel-walk-matches-the-type",
+                    test_relabel_walk_matches_the_registered_type);
     g_test_add_func("/enums/shadow-registered", test_agent_state_shadow_is_registered);
     g_test_add_func("/error/codes-have-names", test_error_codes_have_names);
     g_test_add_func("/error/quark-stable", test_error_quark_is_stable);

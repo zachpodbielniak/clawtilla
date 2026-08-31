@@ -428,6 +428,37 @@ typedef enum {
 } ClawtRelabel;
 
 /**
+ * clawt_relabel_count:
+ *
+ * Returns: how many relabel settings there are
+ */
+guint clawt_relabel_count(void);
+
+/**
+ * clawt_relabel_nth:
+ * @n: an index below clawt_relabel_count()
+ *
+ * Returns: the setting at @n, least invasive first
+ */
+ClawtRelabel clawt_relabel_nth(guint n);
+
+/**
+ * clawt_relabel_nth_nick:
+ * @n: an index below clawt_relabel_count()
+ *
+ * Returns: (transfer none): the spelling used in clawtilla.yaml
+ */
+const gchar *clawt_relabel_nth_nick(guint n);
+
+/**
+ * clawt_relabel_nth_label:
+ * @n: an index below clawt_relabel_count()
+ *
+ * Returns: (transfer none): the wording for a person
+ */
+const gchar *clawt_relabel_nth_label(guint n);
+
+/**
  * ClawtMailboxState:
  * @CLAWT_MAILBOX_PENDING: waiting to be delivered
  * @CLAWT_MAILBOX_LEASED: handed to an agent, awaiting acknowledgement

@@ -2215,6 +2215,32 @@ clawt_daemon_mount_from_payload(ClawtConfig  *config,
         clawt_mount_set_relabel(mount, CLAWT_RELABEL_SHARED);
     }
 
+    /*
+     * And refused here if podman could never apply it.
+     *
+     * The check existed and ran at *start*, which is where the failure
+     * is -- so adding a shared folder on a root-owned source was
+     * accepted, saved, echoed back with "takes effect when the agent
+     * next starts", and then the agent never started again.  The daemon
+     * had everything it needed to say so at the moment somebody typed
+     * it, and said it three steps later instead.
+     *
+     * On the parser rather than on either handler, because both
+     * agent.mount.add and defaults.mount.add come through here and a
+     * rule enforced at one call site is a rule about that call site.
+     * Absent means shared, so this reaches a client that never sent the
+     * field -- which is every client that could not spell it.
+     */
+    {
+        g_autofree gchar *refusal = clawt_mount_relabel_refusal(mount);
+
+        if (refusal != NULL) {
+            g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_MOUNT,
+                                refusal);
+            return NULL;
+        }
+    }
+
     if (size != NULL)
         clawt_mount_set_size(mount, size);
 
@@ -3083,9 +3109,34 @@ start_agent_prepare(ClawtDaemon    *self,
         }
     }
 
-    /* The computer first: an agent that starts before its computer is
-     * ready spends its first turns discovering it cannot reach it. */
-    if (clawt_agent_get_computer(agent) == NULL) {
+    /*
+     * The computer first: an agent that starts before its computer is
+     * ready spends its first turns discovering it cannot reach it.
+     *
+     * Rebuilt when the configuration it was derived from has moved on,
+     * not only when there is none.  A computer is built here once and
+     * kept on the ClawtAgent, which outlives every reload -- so an
+     * operator who removed an unusable mount, saved, reloaded and
+     * watched `agent mount list` report the corrected list still got
+     * the old list's refusal at every start, because the refusal came
+     * from an object built before the edit.  The remedy was restarting
+     * the daemon, which costs every other agent its turn, and nothing
+     * said so.
+     *
+     * Not while the machine is up, though.  Starting a computer
+     * provisions it, and provisioning a container removes the one
+     * holding its name and creates it again -- so rebuilding under a
+     * running machine would turn `agent restart` after any `agent set`
+     * into "destroy whatever the agent installed in there".  A machine
+     * that is running is one whose mounts were accepted when it was
+     * created; the case this exists for is the one that never came up.
+     * Changing the devices of a machine that is already running is what
+     * computer.rebuild is for, and both mount handlers already say so.
+     */
+    if (clawt_agent_get_computer(agent) == NULL ||
+        (clawt_agent_computer_is_stale(agent) &&
+         clawt_computer_get_state(clawt_agent_get_computer(agent)) !=
+             CLAWT_COMPUTER_STATE_RUNNING)) {
         g_autoptr(ClawtComputer) computer = NULL;
         g_autoptr(GPtrArray) defaults =
             clawt_config_get_default_mounts(self->config);

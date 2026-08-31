@@ -3772,6 +3772,239 @@ test_rebuild_drops_the_agents_held_computer(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * Removing the last mount leaves the key absent, not an empty list.
+ *
+ * `mounts: []` and no `mounts:` key mean the same thing to every reader
+ * -- both reach mounts_from_node() as a zero-length list and the fleet's
+ * defaults are merged in either way -- but they do not read the same to
+ * a person, and clawtilla.yaml is a file people edit.  Somebody who
+ * removed their only shared folder through the CLI found `mounts: []`
+ * where the key had been, read it as the agent now declaring that it
+ * has none, and hand-edited the file to reach a state the client could
+ * not express.
+ *
+ * Asserted on the file the daemon wrote, because that is the thing that
+ * was read wrongly.
+ */
+static void
+test_removing_the_last_mount_removes_the_key(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) added = NULL;
+    g_autoptr(JsonNode) removed = NULL;
+    g_autofree gchar *with = NULL;
+    g_autofree gchar *without = NULL;
+    g_autoptr(GError) error = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    computer: {type: container}\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    /*
+     * A directory of its own, under the fixture but not the fixture
+     * itself: a source that does not exist is refused before any of
+     * this is reached, and the state dir may not be mounted anywhere.
+     * One this user owns is also what makes the default relabel
+     * applicable.
+     */
+    {
+        g_autofree gchar *source = g_build_filename(fixture.dir, "shared",
+                                                     NULL);
+        g_autofree gchar *payload = NULL;
+
+        g_assert_cmpint(g_mkdir_with_parents(source, 0700), ==, 0);
+
+        payload = g_strdup_printf(
+            "{\"agent\":\"chief\",\"source\":\"%s\","
+            "\"target\":\"/work/data\"}", source);
+
+        added = request(&fixture, "agent.mount.add", payload);
+    }
+
+    g_assert_false(clawt_ipc_frame_is_error(added));
+
+    g_file_get_contents(fixture.config_path, &with, NULL, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(with, "/work/data"));
+
+    removed = request(&fixture, "agent.mount.remove",
+                      "{\"agent\":\"chief\",\"target\":\"/work/data\"}");
+    g_assert_false(clawt_ipc_frame_is_error(removed));
+
+    g_file_get_contents(fixture.config_path, &without, NULL, &error);
+    g_assert_no_error(error);
+    g_assert_null(strstr(without, "/work/data"));
+    g_assert_null(strstr(without, "mounts: []"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A mount the daemon will refuse at start is refused when it is added.
+ *
+ * The refusal existed and ran at *start*, which is where the failure
+ * is -- so `agent mount add` on a root-owned folder was accepted,
+ * saved, re-rendered across the fleet and answered with "takes effect
+ * when the agent next starts", for a change the daemon could already
+ * prove would never start.  Adding it was also the only way to reach
+ * the state, since `relabel` defaults to shared and no client could
+ * spell anything else.
+ *
+ * Both add verbs, because both go through one parser and a rule
+ * enforced at one call site is a rule about that call site.  And the
+ * mount must not be saved: an accepted-then-refused entry leaves a
+ * fleet file the operator did not write.
+ */
+static void
+test_an_unapplicable_relabel_is_refused_when_it_is_added(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) refused = NULL;
+    g_autoptr(JsonNode) allowed = NULL;
+    g_autoptr(JsonNode) fleet = NULL;
+    g_autoptr(JsonNode) listed = NULL;
+
+    if (geteuid() == 0) {
+        g_test_skip("running as root: every relabel is permitted");
+        return;
+    }
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    computer: {type: container}\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    /* No relabel named at all: absent means shared, so this is the case. */
+    refused = request(&fixture, "agent.mount.add",
+                      "{\"agent\":\"chief\",\"source\":\"/usr\","
+                      "\"target\":\"/work/usr\"}");
+    g_assert_true(clawt_ipc_frame_is_error(refused));
+
+    /* The fleet's own verb answers the same way. */
+    fleet = request(&fixture, "defaults.mount.add",
+                    "{\"source\":\"/usr\",\"target\":\"/work/usr\"}");
+    g_assert_true(clawt_ipc_frame_is_error(fleet));
+
+    /* And the remedy the refusal names is one a client can now send. */
+    allowed = request(&fixture, "agent.mount.add",
+                      "{\"agent\":\"chief\",\"source\":\"/usr\","
+                      "\"target\":\"/work/usr\",\"relabel\":\"none\"}");
+    g_assert_false(clawt_ipc_frame_is_error(allowed));
+
+    /*
+     * Exactly one mount, so the refused pair left nothing behind.
+     */
+    listed = request(&fixture, "agent.mount.list", "{\"agent\":\"chief\"}");
+    g_assert_false(clawt_ipc_frame_is_error(listed));
+
+    {
+        JsonArray *mounts = json_object_get_array_member(
+            clawt_ipc_frame_get_payload(listed), "mounts");
+
+        g_assert_cmpuint(json_array_get_length(mounts), ==, 1);
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A corrected config reaches the next start, without restarting the
+ * daemon.
+ *
+ * The computer is built at the agent's first start and was then kept for
+ * the life of the ClawtAgent, which outlives every reload.  So an
+ * operator who removed a mount podman could never apply, saved, ran
+ * `config reload` and watched `agent mount list` report the corrected
+ * list still got the old mount's refusal at every start -- from an
+ * object built before the edit.  `agent restart` did not help and
+ * neither did writing `computer.type`; only restarting the daemon did,
+ * which costs every other agent its turn, and nothing said so.
+ *
+ * Both halves refuse, on purpose.  The relabel check runs before the
+ * pod bridge is loaded, so neither start reaches podman -- and asserting
+ * that the *second* refusal names the second config's mount is what
+ * distinguishes a rebuilt computer from a reused one.  A test that
+ * asserted the second start merely failed differently would pass
+ * against the bug.
+ */
+static void
+test_a_reloaded_mount_list_reaches_the_next_start(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgent *agent;
+    g_autoptr(GError) first = NULL;
+    g_autoptr(GError) second = NULL;
+    g_autoptr(JsonNode) reloaded = NULL;
+
+    /*
+     * Root can relabel anything the policy allows, so the refusal these
+     * two starts depend on never fires there.
+     */
+    if (geteuid() == 0) {
+        g_test_skip("running as root: every relabel is permitted");
+        return;
+    }
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    computer:\n"
+                  "      type: container\n"
+                  "      mounts:\n"
+                  "        - source: \"/usr\"\n"
+                  "          target: \"/work/usr\"\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    agent = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                    "chief");
+    g_assert_nonnull(agent);
+
+    g_assert_false(clawt_daemon_start_agent(fixture.daemon, "chief", &first));
+    g_assert_nonnull(first);
+    g_assert_nonnull(strstr(first->message, "mount /usr:"));
+
+    /* Kept, so `computer status` can answer while the agent is stopped. */
+    g_assert_nonnull(clawt_agent_get_computer(agent));
+    g_assert_false(clawt_agent_computer_is_stale(agent));
+
+    fixture_write_config(&fixture,
+                         "agents:\n"
+                         "  - id: chief\n"
+                         "    computer:\n"
+                         "      type: container\n"
+                         "      mounts:\n"
+                         "        - source: \"/etc\"\n"
+                         "          target: \"/work/etc\"\n");
+
+    reloaded = request(&fixture, "control.reload", NULL);
+    g_assert_false(clawt_ipc_frame_is_error(reloaded));
+
+    /*
+     * The agent object survives a reload -- creating or editing one must
+     * not disturb the rest of the fleet -- so it is the same pointer
+     * holding a computer built from a config that is gone.
+     */
+    agent = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                    "chief");
+    g_assert_nonnull(agent);
+    g_assert_true(clawt_agent_computer_is_stale(agent));
+
+    g_assert_false(clawt_daemon_start_agent(fixture.daemon, "chief",
+                                            &second));
+    g_assert_nonnull(second);
+    g_assert_nonnull(strstr(second->message, "mount /etc:"));
+    g_assert_null(strstr(second->message, "mount /usr:"));
+
+    /* And what it holds now was built from the config it was handed. */
+    g_assert_false(clawt_agent_computer_is_stale(agent));
+
+    fixture_teardown(&fixture);
+}
+
 
 
 /*
@@ -9745,6 +9978,12 @@ main(int argc, char *argv[])
                     test_the_notice_steers_a_mid_chain_settle_into_the_parent);
     g_test_add_func("/daemon/computer/rebuild-drops-the-held-computer",
                     test_rebuild_drops_the_agents_held_computer);
+    g_test_add_func("/daemon/computer/a-reload-reaches-the-next-start",
+                    test_a_reloaded_mount_list_reaches_the_next_start);
+    g_test_add_func("/daemon/mount/an-unapplicable-relabel-is-refused-on-add",
+                    test_an_unapplicable_relabel_is_refused_when_it_is_added);
+    g_test_add_func("/daemon/mount/removing-the-last-one-removes-the-key",
+                    test_removing_the_last_mount_removes_the_key);
     g_test_add_func("/daemon/task/running-when-its-turn-starts",
                     test_a_task_starts_running_when_its_turn_does);
     g_test_add_func("/daemon/computer-exec/a-shell-line-is-refused",

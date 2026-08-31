@@ -544,6 +544,59 @@ clawt_relabel_get_type(void)
     return g_define_type_id__volatile;
 }
 
+/*
+ * The relabel settings, in the order a person is offered them.
+ *
+ * Walked by both clients rather than spelled out in each.  The web
+ * client had its own copy of these three nicks and the GTK client had
+ * no control at all, so the one setting that decides whether podman
+ * will start a container was reachable from one client, from the YAML,
+ * and from nowhere else.
+ *
+ * Least invasive first: `private` rewrites the host directory's labels
+ * and breaks whatever else was using it, so it is not the one to land
+ * on by accident.
+ */
+static const struct {
+    ClawtRelabel  relabel;
+    const gchar  *nick;
+    const gchar  *label;
+} relabels[] = {
+    { CLAWT_RELABEL_NONE,    "none",    "Leave labels alone" },
+    { CLAWT_RELABEL_SHARED,  "shared",  "Relabel, shareable (:z)" },
+    { CLAWT_RELABEL_PRIVATE, "private", "Relabel, this container only (:Z)" }
+};
+
+guint
+clawt_relabel_count(void)
+{
+    return G_N_ELEMENTS(relabels);
+}
+
+ClawtRelabel
+clawt_relabel_nth(guint n)
+{
+    g_return_val_if_fail(n < G_N_ELEMENTS(relabels), CLAWT_RELABEL_NONE);
+
+    return relabels[n].relabel;
+}
+
+const gchar *
+clawt_relabel_nth_nick(guint n)
+{
+    g_return_val_if_fail(n < G_N_ELEMENTS(relabels), "none");
+
+    return relabels[n].nick;
+}
+
+const gchar *
+clawt_relabel_nth_label(guint n)
+{
+    g_return_val_if_fail(n < G_N_ELEMENTS(relabels), "Leave labels alone");
+
+    return relabels[n].label;
+}
+
 /* Register ClawtMailboxState as a GLib enum type */
 GType
 clawt_mailbox_state_get_type(void)

@@ -2152,6 +2152,79 @@ readlink /proc/$(pgrep -x clawtillad)/exe
 ~(deleted)~ after the path means the binary was replaced underneath it,
 which is exactly the case that looks like a fix not working.
 
+*** Rebuilding used to be able to kill a running daemon
+
+Replacing a binary is safe: the linker writes a new inode, so a running
+process keeps the one it started with.  Replacing a *loadable module*
+was not.  libreclaw copied podomation's =.so= files into its build tree
+with ~cp~, which opens the destination with ~O_TRUNC~ -- and truncating
+a file something has mapped unmaps those pages from every mapping of it,
+COW pages included.  A daemon with the container module loaded therefore
+faulted the new file's text back in at the old addresses over a
+=.got.plt= that had lost its relocations, and died on the next lazily
+bound call with a program counter of a few hundred bytes.
+
+It presents as a fault deep inside the module, nine seconds after an
+unrelated rebuild, with a backtrace of two frames.  The copy is a
+~cp~-then-~mv~ now, so the new file gets its own inode and a running
+process keeps the old one intact until it exits.  Nothing needs doing
+beyond having built after that change.
+
+** A shared folder was accepted and now the agent will not start
+:PROPERTIES:
+:CUSTOM_ID: mount-accepted-then-refused
+:END:
+
+Not any more, but a fleet configured before this could still hold one.
+
+~relabel~ is ~shared~ unless somebody says otherwise, and a shared
+relabel is podman walking every file under the source with =lsetxattr=
+at *every* start.  On a source the daemon's user does not own that
+cannot work, so the container never comes up and the agent sits in
+~error~ with a message naming the mount.
+
+#+begin_src bash
+clawtilla agent show <agent>            # the reason, in full
+clawtilla agent mount rm <agent> <target-inside>
+#+end_src
+
+Or keep it and turn the relabel off:
+
+#+begin_src bash
+clawtilla agent mount add <agent> <source> <inside> ro --relabel none
+#+end_src
+
+Read "A relabel of files you do not own cannot work" in
+=docs/computers.org= first, though: with ~relabel: none~ on an SELinux
+host the content is visible inside and unreadable, and the agent's own
+=read= and =bash= tools already run on the host as the daemon's user, so
+a mount is only needed for commands run *inside* the machine.  Most
+mounts of system directories are not needed at all.
+
+** The config is corrected, reloaded, and the agent still refuses
+
+An agent's computer is built from its configuration at the agent's first
+start and kept afterwards, so that ~computer status~ can answer while
+the agent is stopped.  It used to be kept for the life of the daemon:
+correcting clawtilla.yaml, saving, running ~config reload~ and watching
+~agent mount list~ report the corrected list changed nothing, because
+the refusal came from an object built before the edit.  ~agent restart~
+did not help either, and the only remedy was restarting the daemon --
+which costs every other agent its turn.
+
+A reload now marks that object stale and the next start rebuilds it.  A
+machine that is already *running* is left alone, because starting a
+computer provisions it and provisioning a container replaces it: use
+~computer rebuild~ to change the devices of a machine that is up.
+
+#+begin_src bash
+clawtilla config reload
+clawtilla agent start <agent>
+#+end_src
+
+If a start still reports something the config no longer says, the daemon
+predates this change; restart it once.
+
 ** Getting more detail
 
 #+begin_src bash

@@ -277,6 +277,22 @@ happened at least three times. They generalise; the API notes below do not.
   before/after that loads the same stylesheet in both arms is not a before.
   A synthetic driver removes the platform when the platform is what you are
   testing.
+- **A symbol resolved against a rebuilt binary is not evidence.** gdb names a
+  frame from whatever file is at that path *now*, and it does not have to be
+  the file the process mapped -- one crash was symbolised from a copy at a
+  different path, of a build made nine seconds before the fault, in which the
+  function had moved 0x20. Rebuild the revision the process actually ran and
+  check the address still lands where the trace claims, before diagnosing
+  anything from it. Here it did, and the fault address turned out to be the
+  answer on its own: an absolute PC equal to a PLT stub's second instruction
+  is a GOT slot read without its load bias, which is a mapping that lost its
+  relocations, not a logic bug.
+- **A tool that reads back what a client just wrote is not a second opinion
+  when both read the same field.** `podman inspect` reports a mount's `:z`
+  while the container is `created` and reports nothing once it has started,
+  so comparing a wedged container with running ones manufactures a
+  regression in the code that renders them. Twice now. State-match the
+  probe: create, inspect, start, inspect the same container.
 
 ### Verifying a fix, without fooling yourself
 
@@ -577,6 +593,19 @@ already means every word literally.
   is still podman's to report. And `relabel: none` on SELinux means visible
   but unreadable inside -- for system content, mount a copy the daemon's
   user owns, or use the agent's host-side tools.
+  It also runs in `clawt_daemon_mount_from_payload()`, so **both** add verbs
+  refuse it rather than saving it and reporting "takes effect at the next
+  start" for something that will never start.
+- **A computer is derived from the config, so it goes stale like one.** It is
+  built at the agent's first start and kept afterwards -- and it was kept for
+  the life of the daemon, so a corrected `clawtilla.yaml`, a `config reload`
+  and an `agent mount list` all agreeing meant nothing: every later start
+  reused the object built before the edit and reproduced its refusal.
+  `agent restart` did not help; only restarting the daemon did.
+  `clawt_agent_revalidate()` marks it stale and the next start rebuilds it --
+  but **not while the machine is running**, because starting a computer
+  provisions it and provisioning a container replaces it, which would turn a
+  restart after any `agent set` into destroying whatever the agent installed.
 
 ### VMs -- what a guest needs before it is reachable
 
@@ -1386,6 +1415,13 @@ versions apart.
 - Never write a module handler that reads only one argument marshalling
 - Never sleep uninterruptibly on a thread something has to join
 - Never let a client decide whether a name is a team
+- Never accept a value the same daemon can already prove it will refuse
+  later. Refuse it where it arrives, and make sure some client can spell the
+  remedy the refusal names
+- Never overwrite a loadable module in place. `cp` opens with `O_TRUNC`, and
+  truncating a mapped file unmaps its pages from every mapping -- COW pages
+  included -- so a running process faults new text back in over an
+  unrelocated GOT and dies. Copy to a temporary name and `mv` it into place
 - Never let a selector that matches nothing stay silent when the entry it is on
   then reaches nobody
 - Never push to master without approval

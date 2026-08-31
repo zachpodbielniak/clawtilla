@@ -371,6 +371,46 @@ build_payload(const gchar *first_key, ...)
     return json_builder_get_root(builder);
 }
 
+/*
+ * The relabel settings, walked from the library rather than listed here.
+ *
+ * A hand-written copy in a client is how the web client's list and the
+ * schema's came to be two lists; parity layer 3 checks the enumeration
+ * is used, and it can only check what nobody spelled out.
+ */
+static gboolean
+relabel_is_known(const gchar *nick)
+{
+    guint i;
+
+    for (i = 0; i < clawt_relabel_count(); i++) {
+        if (g_strcmp0(clawt_relabel_nth_nick(i), nick) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+static void
+print_relabel_help(void)
+{
+    guint i;
+
+    g_printerr("  --relabel is one of:\n");
+
+    for (i = 0; i < clawt_relabel_count(); i++)
+        g_printerr("    %-8s %s\n", clawt_relabel_nth_nick(i),
+                   clawt_relabel_nth_label(i));
+
+    g_printerr("  Unset means '%s'. On SELinux a relabel is work podman "
+               "does at every\n"
+               "  start, walking the whole source -- so it cannot be asked "
+               "for on a folder\n"
+               "  this user does not own, and that is refused rather than "
+               "saved.\n",
+               clawt_enum_to_nick(CLAWT_TYPE_RELABEL, CLAWT_RELABEL_SHARED));
+}
+
 static JsonNode *
 call(ClawtClient *client, const gchar *kind, JsonNode *payload)
 {
@@ -1455,10 +1495,11 @@ cmd_agent(int argc, char *argv[])
         if (action == NULL || who == NULL) {
             g_printerr("Usage: clawtilla agent mount list <agent>\n");
             g_printerr("       clawtilla agent mount add <agent> "
-                       "<source> <target> [ro|rw]\n");
+                       "<source> <target> [ro|rw] [--relabel WHICH]\n");
             g_printerr("       clawtilla agent mount rm <agent> <target>\n");
             g_printerr("  e.g. clawtilla agent mount add researcher "
                        "~/src /work rw\n");
+            print_relabel_help();
             return EXIT_FAILURE;
         }
 
@@ -1517,17 +1558,47 @@ cmd_agent(int argc, char *argv[])
         }
 
         if (g_strcmp0(action, "add") == 0) {
+            const gchar *mode = "ro";
+            const gchar *relabel = NULL;
+            gint arg;
+
             if (argc < 7) {
                 g_printerr("Usage: clawtilla agent mount add <agent> "
-                           "<source> <target> [ro|rw]\n");
+                           "<source> <target> [ro|rw] [--relabel WHICH]\n");
+                print_relabel_help();
                 return EXIT_FAILURE;
+            }
+
+            /*
+             * --relabel, because the daemon's default is `shared` and a
+             * shared relabel is podman walking every file under the
+             * source with lsetxattr at every start.  On a source this
+             * user does not own that cannot work, and until this flag
+             * existed the CLI could add such a mount and could not
+             * spell the fix its own refusal recommends.
+             */
+            for (arg = 7; arg < argc; arg++) {
+                if (g_strcmp0(argv[arg], "--relabel") == 0 &&
+                    arg + 1 < argc) {
+                    relabel = argv[++arg];
+
+                    if (!relabel_is_known(relabel)) {
+                        g_printerr("clawtilla: unknown relabel '%s'\n",
+                                   relabel);
+                        print_relabel_help();
+                        return EXIT_FAILURE;
+                    }
+                } else if (argv[arg][0] != '-') {
+                    mode = argv[arg];
+                }
             }
 
             reply = call(client, "agent.mount.add",
                          build_payload("agent", who,
                                        "source", argv[5],
                                        "target", argv[6],
-                                       "mode", (argc > 7) ? argv[7] : "ro",
+                                       "mode", mode,
+                                       "relabel", relabel,
                                        NULL));
             if (reply == NULL)
                 return EXIT_FAILURE;
@@ -2389,10 +2460,17 @@ print_folders_usage(gboolean asked_for)
         "\n"
         "  list                        what every agent gets\n"
         "  add <path> [inside] [--ro] [--team T] [--agent A]\n"
+        "                              [--relabel WHICH]\n"
         "  rm <inside>                 stop sharing one\n"
         "\n"
         "Without --team or --agent a folder goes to every agent that has a\n"
         "computer, including ones you make later. Either flag may repeat.\n"
+        "\n"
+        "--relabel decides what podman does to SELinux labels under the "
+        "source at\n"
+        "every start. Unset means shared, which relabels; a folder this "
+        "user does\n"
+        "not own cannot be relabelled and is refused rather than saved.\n"
         "\n"
         "Container, distrobox and VM agents get these. A host agent does "
         "not:\n"
@@ -2442,13 +2520,15 @@ cmd_folders(int argc, char *argv[])
         const gchar *source = (argc > 3) ? argv[3] : NULL;
         const gchar *target = NULL;
         const gchar *mode = "rw";
+        const gchar *relabel = NULL;
         g_autoptr(GPtrArray) teams = g_ptr_array_new();
         g_autoptr(GPtrArray) agents = g_ptr_array_new();
         gint arg;
 
         if (source == NULL) {
             g_printerr("Usage: clawtilla folders add <path> [inside] "
-                       "[--ro]\n");
+                       "[--ro] [--relabel WHICH]\n");
+            print_relabel_help();
             return EXIT_FAILURE;
         }
 
@@ -2457,6 +2537,16 @@ cmd_folders(int argc, char *argv[])
                 mode = "ro";
             else if (g_strcmp0(argv[arg], "--rw") == 0)
                 mode = "rw";
+            else if (g_strcmp0(argv[arg], "--relabel") == 0 &&
+                     arg + 1 < argc) {
+                relabel = argv[++arg];
+
+                if (!relabel_is_known(relabel)) {
+                    g_printerr("clawtilla: unknown relabel '%s'\n", relabel);
+                    print_relabel_help();
+                    return EXIT_FAILURE;
+                }
+            }
             else if (g_strcmp0(argv[arg], "--team") == 0 && arg + 1 < argc)
                 g_ptr_array_add(teams, argv[++arg]);
             else if (g_strcmp0(argv[arg], "--agent") == 0 && arg + 1 < argc)
@@ -2482,6 +2572,11 @@ cmd_folders(int argc, char *argv[])
                                           target != NULL ? target : source);
             json_builder_set_member_name(builder, "mode");
             json_builder_add_string_value(builder, mode);
+
+            if (relabel != NULL) {
+                json_builder_set_member_name(builder, "relabel");
+                json_builder_add_string_value(builder, relabel);
+            }
 
             /*
              * The lists go on the frame and the *daemon* decides the

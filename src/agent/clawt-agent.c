@@ -31,6 +31,23 @@ struct _ClawtAgent {
     ClawtAgentRuntime *runtime;
     ClawtComputer     *computer;
     ClawtDesktop      *desktop;
+
+    /*
+     * Whether @computer still describes the configuration in hand.
+     *
+     * The computer is derived from the config and built once, at the
+     * agent's first start -- and it was kept for the life of the
+     * ClawtAgent, which outlives every reload.  So a mount corrected in
+     * clawtilla.yaml, saved, reloaded and confirmed by `agent mount
+     * list` was still refused at start by the object built from the
+     * config before the correction, and the only way out was restarting
+     * the daemon, which costs every other agent its turn.
+     *
+     * A flag rather than comparing config pointers, because `agent set`
+     * edits the very object the agent is already holding: the pointer is
+     * unchanged and the contents are not.
+     */
+    gboolean           computer_stale;
     ClawtLink         *link;
 
     ClawtAgentState state;
@@ -1191,6 +1208,18 @@ clawt_agent_revalidate(ClawtAgent *self)
     if (self->config == NULL)
         return;
 
+    /*
+     * The computer belongs to the configuration too.
+     *
+     * Marked rather than dropped, and marked whatever the agent's state
+     * is: a running agent keeps working with the machine it already
+     * has -- a config change is documented as applying at the next
+     * start -- and the flag is what makes that next start honour it.
+     * Dropping the object here instead would take the computer away
+     * from an agent mid-turn.
+     */
+    self->computer_stale = TRUE;
+
     if (self->state == CLAWT_AGENT_STATE_SHADOW &&
         !clawt_agent_config_is_shadow(self->config))
         set_state(self, CLAWT_AGENT_STATE_STOPPED, NULL);
@@ -1241,7 +1270,18 @@ clawt_agent_set_computer(ClawtAgent *self, ClawtComputer *computer)
     if (computer != NULL)
         self->computer = g_object_ref(computer);
 
+    /* Whatever it was built from is what the agent has now. */
+    self->computer_stale = FALSE;
+
     recompute_caps(self);
+}
+
+gboolean
+clawt_agent_computer_is_stale(ClawtAgent *self)
+{
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), FALSE);
+
+    return self->computer_stale;
 }
 
 ClawtComputer *

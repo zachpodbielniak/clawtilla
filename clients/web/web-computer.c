@@ -192,13 +192,25 @@ add_mounts(ClawtWebApp *app, HtmxElement *parent, const gchar *agent_id)
         static const gchar *const types[] = {
             "bind", "virtiofs", "tmpfs", "volume", NULL
         };
-        static const gchar *const relabels[] = {
-            "none", "shared", "private", NULL
-        };
+        g_autoptr(GPtrArray) relabels = g_ptr_array_new();
         g_autofree gchar *escaped = g_uri_escape_string(agent_id, NULL, FALSE);
         g_autofree gchar *action = g_strdup_printf("/a/%s/mount/add", escaped);
         g_autoptr(HtmxForm) form = clawt_web_form(action);
         g_autoptr(HtmxDiv) grid = htmx_div_new();
+        guint r;
+
+        /*
+         * Walked from the library rather than listed here.  This was
+         * three nicks written out, and the default offered was `none`
+         * while the daemon's default -- what the YAML and every other
+         * client get -- is `shared`: the same form filled in the same
+         * way produced different mounts depending on which client typed
+         * it.
+         */
+        for (r = 0; r < clawt_relabel_count(); r++)
+            g_ptr_array_add(relabels, (gpointer)clawt_relabel_nth_nick(r));
+
+        g_ptr_array_add(relabels, NULL);
 
         clawt_web_add(body, clawt_web_section_title("Add a mount"));
 
@@ -212,7 +224,9 @@ add_mounts(ClawtWebApp *app, HtmxElement *parent, const gchar *agent_id)
         clawt_web_add(grid, clawt_web_select_field("Type", "type", types,
                                                    NULL, "bind"));
         clawt_web_add(grid, clawt_web_select_field(
-            "SELinux relabel", "relabel", relabels, NULL, "none"));
+            "SELinux relabel", "relabel",
+            (const gchar *const *)relabels->pdata, NULL,
+            clawt_enum_to_nick(CLAWT_TYPE_RELABEL, CLAWT_RELABEL_SHARED)));
         clawt_web_add(grid, clawt_web_field("Size (tmpfs only)", "size", NULL,
                                             "512M"));
         htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(grid));

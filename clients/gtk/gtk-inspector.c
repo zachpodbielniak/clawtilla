@@ -855,11 +855,31 @@ on_add_mount(GtkButton *button, gpointer user_data)
 
     mode = adw_combo_row_get_selected(ADW_COMBO_ROW(self->mount_mode_row));
 
-    reply = clawt_window_request(
-        self, "agent.mount.add",
-        clawt_build_payload("agent", self->selected_agent,
-                            "source", source, "target", target,
-                            "mode", modes[MIN(mode, 1)], NULL));
+    /*
+     * Relabel goes on the frame too.
+     *
+     * Absent means `shared` at the daemon, and shared is podman
+     * relabelling every file under the source at every start -- which
+     * on a folder this user does not own is refused, and the refusal
+     * names a setting this window could not reach.  A control that
+     * cannot spell the remedy its own error recommends is the control
+     * that caused the error.
+     */
+    {
+        guint relabel = adw_combo_row_get_selected(
+            ADW_COMBO_ROW(self->mount_relabel_row));
+
+        reply = clawt_window_request(
+            self, "agent.mount.add",
+            clawt_build_payload("agent", self->selected_agent,
+                                "source", source, "target", target,
+                                "mode", modes[MIN(mode, 1)],
+                                "relabel",
+                                clawt_relabel_nth_nick(
+                                    MIN(relabel,
+                                        clawt_relabel_count() - 1)),
+                                NULL));
+    }
 
     if (reply == NULL)
         return;
@@ -910,6 +930,7 @@ build_mounts(ClawtWindow *self, const gchar *computer_type)
     self->mount_source_row = NULL;
     self->mount_target_row = NULL;
     self->mount_mode_row = NULL;
+    self->mount_relabel_row = NULL;
 
     if (!clawt_computer_type_takes_mounts(
             clawt_gtk_computer_type_from_nick(computer_type)))
@@ -923,9 +944,8 @@ build_mounts(ClawtWindow *self, const gchar *computer_type)
         g_strcmp0(computer_type, "vm") == 0
             ? "Passed into the VM over virtiofs. Changes apply when it "
               "next starts."
-            : "Bind-mounted into the container, SELinux-relabelled so "
-              "they are actually readable. Changes apply when it next "
-              "starts.");
+            : "Bind-mounted into the container. Changes apply when it "
+              "next starts.");
 
     reply = clawt_window_request(
         self, "agent.mount.list",
@@ -970,6 +990,33 @@ build_mounts(ClawtWindow *self, const gchar *computer_type)
     self->mount_mode_row = combo_row("Access", modes, "ro");
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
                               self->mount_mode_row);
+
+    /*
+     * Walked from the library, never listed here.  The web client had
+     * its own copy of these nicks and this window had no control at
+     * all, so the setting that decides whether podman will start the
+     * container was reachable from one client and the YAML only.
+     */
+    {
+        g_autoptr(GPtrArray) relabels = g_ptr_array_new();
+        guint r;
+
+        for (r = 0; r < clawt_relabel_count(); r++)
+            g_ptr_array_add(relabels,
+                            (gpointer)clawt_relabel_nth_nick(r));
+
+        g_ptr_array_add(relabels, NULL);
+
+        self->mount_relabel_row = combo_row(
+            "SELinux relabel", (const gchar *const *)relabels->pdata,
+            clawt_enum_to_nick(CLAWT_TYPE_RELABEL, CLAWT_RELABEL_SHARED));
+        adw_action_row_set_subtitle(
+            ADW_ACTION_ROW(self->mount_relabel_row),
+            "Relabelling walks every file under the folder at each "
+            "start. Pick none for a folder you do not own.");
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                  self->mount_relabel_row);
+    }
 
     add = gtk_button_new_with_label("Share this folder");
     gtk_widget_set_margin_top(add, 6);

@@ -381,6 +381,7 @@ struct _ClawtWindow {
     GtkWidget         *mount_source_row;
     GtkWidget         *mount_target_row;
     GtkWidget         *mount_mode_row;
+    GtkWidget         *mount_relabel_row;
 
     /* Mailbox */
     GtkListBox        *mailbox_list;

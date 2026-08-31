@@ -1120,6 +1120,90 @@ test_mounts_can_be_added_and_removed(void)
 }
 
 /*
+ * An agent that declares no mounts still gets the fleet's.
+ *
+ * Pinned from both spellings: no `mounts` key at all, and an explicit
+ * empty list.  Removing an agent's only mount used to leave `mounts:
+ * []` behind, and an empty list looks like an override -- somebody read
+ * it as one, concluded the fleet default had been suppressed, and went
+ * looking for a bug in the merge.  There is none: both spellings reach
+ * mounts_from_node() as a zero-length list and the factory merges the
+ * defaults either way.  This says so, so that stays true.
+ */
+static void
+test_an_empty_mount_list_still_inherits_the_defaults(void)
+{
+    /*
+     * A VM rather than a container, only because the container branch
+     * of the factory refuses without podomation's module and `make
+     * test` must not need one.  Both take mounts through the same
+     * apply_mounts().
+     */
+    static const gchar *const yamls[] = {
+        "defaults:\n"
+        "  mounts:\n"
+        "    - source: \"/srv/shared\"\n"
+        "      target: \"/data/shared\"\n"
+        "agents:\n"
+        "  - id: boxed\n"
+        "    computer: {type: vm}\n",
+
+        "defaults:\n"
+        "  mounts:\n"
+        "    - source: \"/srv/shared\"\n"
+        "      target: \"/data/shared\"\n"
+        "agents:\n"
+        "  - id: boxed\n"
+        "    computer:\n"
+        "      type: vm\n"
+        "      mounts: []\n"
+    };
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(yamls); i++) {
+        g_autoptr(GError) error = NULL;
+        g_autoptr(ClawtConfig) config =
+            clawt_config_load_from_string(yamls[i], &error);
+        g_autoptr(GPtrArray) defaults = NULL;
+        g_autoptr(ClawtComputer) computer = NULL;
+        GPtrArray *mounts;
+        ClawtAgentConfig *agent;
+        guint m;
+        gboolean found = FALSE;
+
+        g_assert_no_error(error);
+
+        agent = clawt_config_get_agent(config, "boxed");
+        g_assert_nonnull(agent);
+
+        /* Its own list is empty under both spellings. */
+        {
+            g_autoptr(GPtrArray) own = clawt_agent_config_get_mounts(agent);
+
+            g_assert_cmpuint(own->len, ==, 0);
+        }
+
+        defaults = clawt_config_get_default_mounts(config);
+        g_assert_cmpuint(defaults->len, ==, 1);
+
+        computer = clawt_computer_factory_create(agent, defaults, NULL,
+                                                  &error);
+        g_assert_no_error(error);
+
+        mounts = clawt_computer_get_mounts(computer);
+
+        for (m = 0; mounts != NULL && m < mounts->len; m++) {
+            if (g_strcmp0(clawt_mount_get_target(
+                              g_ptr_array_index(mounts, m)),
+                          "/data/shared") == 0)
+                found = TRUE;
+        }
+
+        g_assert_true(found);
+    }
+}
+
+/*
  * A mount with no relabel is shared, not none.
  *
  * A schema default only applies to a scalar at a dotted path; nothing
@@ -1326,6 +1410,8 @@ main(int argc, char *argv[])
     g_test_add_func("/config/teams/ordered", test_teams_come_back_in_order);
     g_test_add_func("/config/mounts-writable",
                     test_mounts_can_be_added_and_removed);
+    g_test_add_func("/config/mounts/empty-list-still-inherits",
+                    test_an_empty_mount_list_still_inherits_the_defaults);
     g_test_add_func("/config/mount-relabel-default",
                     test_a_mount_without_relabel_is_shared);
     g_test_add_func("/config/computer-directive",

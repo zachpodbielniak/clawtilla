@@ -1079,6 +1079,45 @@ remove_mount_from_node(YamlNode    *root,
                       target) == 0) {
             /* void upstream: it either removes or warns. */
             yaml_sequence_remove_element(sequence, i);
+
+            /*
+             * And the key itself once the last one goes.
+             *
+             * `mounts: []` and no `mounts:` key mean the same thing to
+             * every reader here -- mounts_from_node() answers with an
+             * empty list either way, and the factory merges the fleet's
+             * defaults in regardless -- but they do not read the same
+             * to a person, and the file is one people edit.  Somebody
+             * removing their only shared folder and finding `mounts:
+             * []` where the key used to be read it as "this agent now
+             * declares that it has none", spent an evening on a
+             * disappearance that had not happened, and hand-edited the
+             * file to get back a state the CLI had no way to express.
+             *
+             * So the client can express it: removing the last mount
+             * leaves the key absent, which is what it was before the
+             * first one was added.
+             */
+            if (yaml_sequence_get_length(sequence) == 0) {
+                g_autofree gchar *parent_path = NULL;
+                const gchar *leaf = strrchr(path, '.');
+                YamlNode *parent;
+
+                if (leaf != NULL) {
+                    parent_path = g_strndup(path, (gsize)(leaf - path));
+                    parent = node_at_path(root, parent_path, FALSE);
+                    leaf++;
+                } else {
+                    parent = root;
+                    leaf = path;
+                }
+
+                if (parent != NULL &&
+                    yaml_node_get_node_type(parent) == YAML_NODE_MAPPING)
+                    yaml_mapping_remove_member(yaml_node_get_mapping(parent),
+                                                leaf);
+            }
+
             return TRUE;
         }
     }

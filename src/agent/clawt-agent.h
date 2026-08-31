@@ -203,6 +203,29 @@ void clawt_agent_set_computer(ClawtAgent    *self,
 ClawtComputer *clawt_agent_get_computer(ClawtAgent *self);
 
 /**
+ * clawt_agent_computer_is_stale:
+ * @self: a #ClawtAgent
+ *
+ * Whether the computer the agent is holding was built from a
+ * configuration that has since been replaced or edited.
+ *
+ * A computer is derived entirely from the agent's configuration and is
+ * built at its first start.  Nothing rebuilt it afterwards, so a mount
+ * corrected in clawtilla.yaml and reloaded was still refused at every
+ * later start by the object built before the correction -- with `agent
+ * mount list` reporting the corrected list, since that reads the
+ * config.  Only restarting the daemon cleared it.
+ *
+ * Set whenever the configuration is replaced or revalidated, whatever
+ * the agent's state, and cleared by clawt_agent_set_computer().  A
+ * running agent keeps the machine it has; the flag is what makes its
+ * next start build a new one.
+ *
+ * Returns: %TRUE when the next start must rebuild the computer
+ */
+gboolean clawt_agent_computer_is_stale(ClawtAgent *self);
+
+/**
  * clawt_agent_set_desktop:
  * @self: a #ClawtAgent
  * @desktop: (nullable) (transfer none): the desktop it may drive
