@@ -48,6 +48,12 @@ struct _ClawtProcessRuntime {
      * grace period and then SIGKILLed a child that had already gone.
      */
     GMainContext     *context;
+
+    /*
+     * Exits seen for a child this runtime had already let go of.  See
+     * on_process_exited(); it is a diagnostic, not a control.
+     */
+    guint superseded_exits;
 };
 
 /*
@@ -160,10 +166,54 @@ on_process_exited(GObject *source, GAsyncResult *result, gpointer user_data)
     g_autofree gchar *detail = NULL;
     gboolean clean;
 
+    /*
+     * Reaped first, and unconditionally.  Whoever this child was, the
+     * kernel is holding an entry for it until somebody collects the
+     * status, and returning early below must not leave a zombie.
+     */
+    g_subprocess_wait_finish(process, result, &error);
+
+    /*
+     * And it is only *our* exit if it is the child we are still holding.
+     *
+     * One runtime object serves an agent for its whole life and replaces
+     * its child underneath itself: process_runtime_start() clears
+     * `process` and spawns another, and dispose() drops it while the
+     * wait started for it is still outstanding.  So this callback can
+     * arrive for a child that stopped being the current one some time
+     * ago -- and it took `source` on trust, set `running` and `exited`
+     * from it, and reported the exit as though the live child had died.
+     *
+     * clawt_agent's handler for that signal clears the link and moves
+     * the agent to STOPPED.  The result was an agent that was running,
+     * connected and idle while every surface said "stopped - exited with
+     * status 0": it answered nothing, and work delegated to it failed
+     * with "the agent handling this stopped before finishing" while ps
+     * showed its process perfectly healthy.
+     *
+     * The way there in production is a child that will not die promptly.
+     * process_runtime_stop() waits KILL_REAP_TICKS for the kill to be
+     * observed, warns that the child is "probably in uninterruptible
+     * sleep", and returns with `running` cleared -- leaving this wait
+     * outstanding while the next start() installs a replacement.  When
+     * the kernel finally lets the old one go, this runs.
+     *
+     * Counted rather than only dropped, because an exit arriving for a
+     * child nobody is waiting on is worth being able to see: it is the
+     * signature of the stop path giving up, and there was no way to
+     * observe it from outside while it was corrupting an agent's state.
+     */
+    if (process != self->process) {
+        self->superseded_exits++;
+
+        g_debug("agent runtime: ignoring the exit of a child this runtime "
+                "no longer holds (%u so far)", self->superseded_exits);
+
+        return;
+    }
+
     self->running = FALSE;
     self->exited = TRUE;
-
-    g_subprocess_wait_finish(process, result, &error);
 
     clean = g_subprocess_get_successful(process);
 
@@ -363,6 +413,14 @@ process_runtime_start(ClawtAgentRuntime *runtime, GError **error)
                             g_object_ref(self));
 
     return TRUE;
+}
+
+guint
+clawt_process_runtime_get_superseded_exits(ClawtProcessRuntime *self)
+{
+    g_return_val_if_fail(CLAWT_IS_PROCESS_RUNTIME(self), 0);
+
+    return self->superseded_exits;
 }
 
 static void
