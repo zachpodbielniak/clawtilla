@@ -60,6 +60,29 @@ typedef struct {
 } ImageChooser;
 
 /*
+ * "Is the reader at the live edge", for a transcript that grows.
+ *
+ * The chat had this and the Flow tab did not, and the difference was
+ * not cosmetic: Flow rebuilt its whole transcript on every fleet event
+ * and left the new box at offset zero, so any message anywhere in the
+ * fleet threw the reader to the top of a two-hundred-message
+ * conversation.  One implementation now, held once per transcript,
+ * because a second copy of this is what the two row builders already
+ * drifted into.
+ *
+ * `armed` is what the chat draws about not following -- the pill and
+ * the rule -- and is NULL for a view that draws neither.  Nothing here
+ * owns anything: both pointers are to objects that outlive the struct,
+ * which is embedded in #ClawtWindow.
+ */
+typedef struct {
+    ClawtWindow       *window;
+    GtkScrolledWindow *scroll;
+    gboolean           following;
+    void             (*armed)(ClawtWindow *self);
+} ClawtGtkFollow;
+
+/*
  * Every view that rebuilds a list from a daemon reply needs one of these.
  *
  * clawt_window_request() iterates the main context while it waits, and the
@@ -294,6 +317,7 @@ struct _ClawtWindow {
     /* Chat */
     GtkBox            *transcript;
     GtkScrolledWindow *transcript_scroll;
+    ClawtGtkFollow     chat_follow;
 
     /*
      * The two halves of "something arrived while you were reading".
@@ -588,6 +612,20 @@ struct _ClawtWindow {
     GtkWidget         *flow_subtitle;
     GtkWidget         *flow_include_user;
     gchar             *flow_room;
+    ClawtGtkFollow     flow_follow;
+
+    /*
+     * Which messages of the open conversation are already drawn.
+     *
+     * Flow used to empty its transcript and redraw all two hundred
+     * messages every time the fleet said anything, which is what put
+     * the reader back at the top: a box that has just been refilled is
+     * a box at offset zero.  Refreshing appends what is new instead,
+     * keyed on the message id the daemon already sends, so the widgets
+     * the reader is looking at are the same widgets afterwards and
+     * nothing has to put the scroll position back.
+     */
+    GHashTable        *flow_shown;          /* gchar* id -> itself */
 
     /*
      * Which messages the transcript already has, by id.
@@ -638,8 +676,6 @@ struct _ClawtWindow {
      */
     GtkWidget         *skill_box;
     JsonNode          *slash_commands;
-
-    gboolean           following;
 };
 
 /*
@@ -815,6 +851,22 @@ clawt_gtk_set_activity(ClawtWindow *self, const gchar *text);
 
 void
 clawt_gtk_set_following(ClawtWindow *self, gboolean following);
+
+/* gtk-follow.c */
+void
+clawt_gtk_follow_attach(ClawtGtkFollow    *follow,
+                        ClawtWindow       *window,
+                        GtkScrolledWindow *scroll,
+                        void             (*armed)(ClawtWindow *self));
+
+void
+clawt_gtk_follow_set(ClawtGtkFollow *follow, gboolean following);
+
+gboolean
+clawt_gtk_follow_active(const ClawtGtkFollow *follow);
+
+void
+clawt_gtk_follow_queue(ClawtGtkFollow *follow);
 
 void
 clawt_gtk_sync_stop_turn(ClawtWindow *self, gboolean busy);

@@ -1476,6 +1476,44 @@ and ~upper~ stops with it while messages are appended perfectly well to
 the widget tree.  It resolves on the next frame; there is nothing for the
 client to do about it, because there is nobody looking.
 
+All of that lives in ~ClawtGtkFollow~ (=clients/gtk/gtk-follow.c=), one
+per transcript, because the Flow tab needs exactly the same behaviour
+and had none of it.  A view that draws something about *not* following
+--- the chat's pill and rule --- hands the follower an ~armed~ hook,
+which runs on the way back to the edge; the Flow tab passes NULL,
+because a peer conversation is not where a message is waiting for an
+answer.
+
+**** A refresh appends; it does not redraw
+:PROPERTIES:
+:CUSTOM_ID: flow-refresh-appends
+:END:
+
+The Flow tab's transcript used to be emptied and rebuilt from all two
+hundred messages every time the fleet said anything, because
+~refresh_flow_once()~ re-selects the row that is open and that emits
+~::row-selected~ again.  A box that has just been refilled is a box at
+offset zero, so any message anywhere in the fleet threw the reader back
+to the oldest message of whatever they were reading --- and the
+conversation opened there in the first place.  Nothing logged it and
+nothing looked broken; it read as a page that would not stay put.
+
+So opening a room draws it and refreshing one appends to it, keyed on
+the message id ~room.history~ already sends.  The widgets the reader is
+looking at are then the same widgets afterwards, which means there is no
+scroll offset to save and restore: what is left is the ordinary rule
+above --- stay at the bottom if that is where you were, and do not move
+at all if it is not.
+
+Two details that are bugs if they are missed.  Which room is open is
+read *after* the history call returns, not before it, because
+~clawt_window_request()~ iterates the main context and a nested refresh
+may have opened another room while this one was waiting --- comparing
+against what was open before would append one conversation into
+another's transcript.  And a message with no id is drawn only on the
+pass that draws everything, since appending it on a refresh would append
+it again on the next one.
+
 **** Day dividers
 
 "Today", "Yesterday", or "Wednesday 25 August", between two rules,
@@ -1976,9 +2014,16 @@ said it and when.  A message that belongs to a delegated task carries a
 that makes this a flow rather than a list of remarks.  The chip opens
 the task board, where the rest of the story is.
 
-The conversation you are reading stays open across a refresh.  Messages
-arrive continuously, and a list that reselected its first row every time
-anything anywhere spoke would take you off what you were reading.
+The conversation you are reading stays open across a refresh, at the
+message you were reading.  Messages arrive continuously, and a list that
+reselected its first row every time anything anywhere spoke would take
+you off what you were reading.
+
+It opens at the *newest* message rather than the oldest, and a refresh
+appends what is new instead of redrawing the room, so an arrival
+anywhere in the fleet does not move the view at all unless you were
+already at the bottom --- the same rule the chat transcript follows, and
+now the same code.  See [[#flow-refresh-appends][A refresh appends; it does not redraw]].
 
 Every control's sensitivity is bound to ~ClawtAgentCaps~, and a disabled
 control says why in its tooltip.  A greyed-out button with no

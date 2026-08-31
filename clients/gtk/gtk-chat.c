@@ -1821,125 +1821,34 @@ clawt_gtk_append_message(ClawtWindow *self, const gchar *sender, const gchar *bo
 }
 
 /*
- * Schedules a scroll that cannot outlive the window.
- *
- * A plain g_idle_add(self) runs after the window has been destroyed if
- * the user closes it in the same turn a message arrives, and the
- * callback then reads freed memory.  Holding a reference for the life of
- * the idle costs nothing and removes the race.
+ * Both live in gtk-follow.c now, because the Flow tab needs exactly the
+ * same behaviour and had none of it -- see ClawtGtkFollow.  This stays
+ * as the chat's own spelling so its call sites read as before.
  */
-static gboolean scroll_to_bottom(gpointer user_data);
-
 void
 clawt_gtk_queue_scroll(ClawtWindow *self)
 {
-    g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, scroll_to_bottom,
-                    g_object_ref(self), g_object_unref);
+    clawt_gtk_follow_queue(&self->chat_follow);
 }
 
 /*
- * Scrolls to the bottom, but only when the reader was already there.
- *
- * Yanking somebody down mid-read because a message arrived is the single
- * most annoying thing a chat window can do.
- */
-static gboolean
-scroll_to_bottom(gpointer user_data)
-{
-    ClawtWindow *self = user_data;
-    GtkAdjustment *adjustment;
-
-    if (!self->following || self->transcript_scroll == NULL)
-        return G_SOURCE_REMOVE;
-
-    adjustment = gtk_scrolled_window_get_vadjustment(self->transcript_scroll);
-    gtk_adjustment_set_value(adjustment,
-                             gtk_adjustment_get_upper(adjustment) -
-                             gtk_adjustment_get_page_size(adjustment));
-
-    return G_SOURCE_REMOVE;
-}
-
-/*
- * Notices that the transcript has grown, and asks for a scroll.
- *
- * It asks rather than scrolls, and that distinction is the whole point.
- * These two notifies are emitted by GtkViewport from inside its own
- * size-allocate, at the moment it reconfigures the adjustment for a
- * layout it has already positioned its child for. Writing `value` here
- * moves the number and does not move the picture: the viewport has
- * finished placing the child for this pass, and the allocation the
- * write asks for is folded into the pass that is already running rather
- * than starting another one. Nothing queues a further one, so the
- * displayed offset stays where it was while the adjustment reports the
- * new bottom.
- *
- * That mismatch is stable, not transient -- measured at 68px, exactly
- * one message, and still there ten seconds later. It is also invisible
- * to every correction in this file, because all of them test the
- * adjustment and the adjustment is already right. `scroll_to_bottom()`
- * in particular finds value == bottom and returns without doing
- * anything, so the one write that would have happened outside a layout
- * pass is the one this handler suppresses.
- *
- * Queueing instead puts the write in an idle, after the pass has
- * finished. It is then a real value change, the viewport allocates
- * again, and the newest message is on screen. `queue_scroll()` already
- * holds a reference for the life of the idle and `scroll_to_bottom()`
- * already re-reads `upper` and re-checks `following`, so deferring
- * costs nothing but the hop.
- *
- * page-size as well as upper, because typing grows the composer and
- * shrinks the transcript above it, which moves the bottom without adding
- * anything.
- */
-static void
-on_transcript_grew(GObject *object, GParamSpec *pspec, gpointer user_data)
-{
-    ClawtWindow *self = user_data;
-    GtkAdjustment *adjustment = GTK_ADJUSTMENT(object);
-    gdouble bottom;
-
-    (void)pspec;
-
-    if (!self->following)
-        return;
-
-    bottom = gtk_adjustment_get_upper(adjustment) -
-             gtk_adjustment_get_page_size(adjustment);
-
-    /*
-     * Only when it is not already there. This runs on every layout
-     * pass, and a queued idle that would find nothing to do is worth
-     * not queueing.
-     */
-    if (gtk_adjustment_get_value(adjustment) < bottom)
-        clawt_gtk_queue_scroll(self);
-}
-
-/*
- * The only place `following` changes, and the reason the two unread
- * affordances cannot disagree.
+ * What the chat draws about not following, cleared on the way back.
  *
  * `following` false means the reader is deliberately somewhere above the
- * live edge, and the client already refuses to move the view for them --
- * see scroll_to_bottom().  That refusal is right; saying nothing about
- * it was not.  Two things say it: a pill floating over the transcript,
- * and a rule drawn in the transcript at the point reading stopped.
+ * live edge, and the client already refuses to move the view for them.
+ * That refusal is right; saying nothing about it was not.  Two things
+ * say it: a pill floating over the transcript, and a rule drawn in the
+ * transcript at the point reading stopped.
  *
  * Both are cleared by the same false -> true edge, so every path that
  * already re-arms following clears them with no new cases: reaching the
  * bottom by hand, sending a message, switching agent, /clear, and the
- * pill's own click.
+ * pill's own click.  Handed to the follower as its `armed` hook, so
+ * there is still exactly one place this happens.
  */
-void
-clawt_gtk_set_following(ClawtWindow *self, gboolean following)
+static void
+chat_armed(ClawtWindow *self)
 {
-    self->following = following;
-
-    if (!following)
-        return;
-
     if (self->unread_marker != NULL) {
         gtk_box_remove(self->transcript, self->unread_marker);
         self->unread_marker = NULL;
@@ -1957,6 +1866,12 @@ clawt_gtk_set_following(ClawtWindow *self, gboolean following)
          */
         gtk_widget_set_can_target(GTK_WIDGET(self->jump_revealer), FALSE);
     }
+}
+
+void
+clawt_gtk_set_following(ClawtWindow *self, gboolean following)
+{
+    clawt_gtk_follow_set(&self->chat_follow, following);
 }
 
 /*
@@ -2017,7 +1932,8 @@ unread_marker_new(void)
 void
 clawt_gtk_note_arrival(ClawtWindow *self)
 {
-    if (self->following || self->unread_marker != NULL)
+    if (clawt_gtk_follow_active(&self->chat_follow) ||
+        self->unread_marker != NULL)
         return;
 
     self->unread_marker = unread_marker_new();
@@ -2060,27 +1976,10 @@ on_jump_to_latest(GtkButton *button, gpointer user_data)
      * scroll through several screens of text disorients rather than
      * orients.  set_following() removes the marker, which shrinks the
      * content, so the scroll is queued rather than computed here --
-     * on_transcript_grew() lands it on the real bottom afterwards.
+     * the follower lands it on the real bottom afterwards.
      */
     clawt_gtk_set_following(self, TRUE);
     clawt_gtk_queue_scroll(self);
-}
-
-static void
-on_scrolled(GtkAdjustment *adjustment, gpointer user_data)
-{
-    ClawtWindow *self = user_data;
-
-    /*
-     * The predicate is clawt_transcript_is_at_bottom(), in libclawt, so
-     * the tolerance can be exercised on both sides and at its boundary
-     * without a window -- which is the one part of the follow machinery
-     * a test could not otherwise reach.
-     */
-    clawt_gtk_set_following(self, clawt_transcript_is_at_bottom(
-                            gtk_adjustment_get_value(adjustment),
-                            gtk_adjustment_get_upper(adjustment),
-                            gtk_adjustment_get_page_size(adjustment)));
 }
 
 /*
@@ -2584,8 +2483,8 @@ append_local(ClawtWindow *self, const gchar *text)
     /*
      * Follow again, because the operator asked for this.
      *
-     * scroll_to_bottom() and on_transcript_grew() both refuse to move
-     * the view while `following` is false, which is right for a message
+     * The follower refuses to move the view while `following` is
+     * false, which is right for a message
      * arriving on its own and wrong for output the operator just asked
      * to see.  on_send() re-arms following at its end, but it returns
      * early when the text was a slash command -- so with the view
@@ -3590,21 +3489,11 @@ clawt_gtk_build_chat_page(ClawtWindow *self)
     gtk_widget_set_name(scroll, "clawt-transcript");
 
     /*
-     * Following is maintained from three places: the reader scrolling
-     * (below), and the content growing (either of these two), because
-     * "am I at the bottom" changes for both reasons.
+     * Following, and the pill and rule the chat draws when it is off.
+     * The Flow tab attaches the same follower to its own transcript.
      */
-    g_signal_connect(gtk_scrolled_window_get_vadjustment(
-                         GTK_SCROLLED_WINDOW(scroll)),
-                     "notify::upper", G_CALLBACK(on_transcript_grew), self);
-    g_signal_connect(gtk_scrolled_window_get_vadjustment(
-                         GTK_SCROLLED_WINDOW(scroll)),
-                     "notify::page-size",
-                     G_CALLBACK(on_transcript_grew), self);
-
-    g_signal_connect(gtk_scrolled_window_get_vadjustment(
-                         GTK_SCROLLED_WINDOW(scroll)),
-                     "value-changed", G_CALLBACK(on_scrolled), self);
+    clawt_gtk_follow_attach(&self->chat_follow, self,
+                            GTK_SCROLLED_WINDOW(scroll), chat_armed);
 
     /*
      * The activity line.  A chat window that shows nothing between the

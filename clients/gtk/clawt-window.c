@@ -3427,6 +3427,7 @@ forget_daemon_state(ClawtWindow *self)
     g_clear_pointer(&self->flow_room, g_free);
 
     g_hash_table_remove_all(self->shown);
+    g_hash_table_remove_all(self->flow_shown);
     g_hash_table_remove_all(self->drafts);
     g_hash_table_remove_all(self->unread);
     g_hash_table_remove_all(self->dm_rooms);
@@ -5502,6 +5503,7 @@ clawt_window_dispose(GObject *object)
     g_clear_pointer(&self->flow_run_day, g_free);
     g_clear_pointer(&self->selected_color, g_free);
     g_clear_pointer(&self->shown, g_hash_table_unref);
+    g_clear_pointer(&self->flow_shown, g_hash_table_unref);
     g_clear_pointer(&self->drafts, g_hash_table_unref);
     g_clear_pointer(&self->unread, g_hash_table_unref);
     g_clear_pointer(&self->dm_rooms, g_hash_table_unref);
@@ -5562,6 +5564,15 @@ clawt_window_init(ClawtWindow *self)
     self->schema_rows = g_ptr_array_new_with_free_func(clawt_gtk_schema_row_free);
     self->shown = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                         NULL);
+
+    /*
+     * Flow keeps its own, and it is emptied when the conversation
+     * changes rather than when the daemon does: it is about which
+     * messages of the open room are already drawn, and the room is
+     * whichever one the reader clicked last.
+     */
+    self->flow_shown = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                             g_free, NULL);
     self->drafts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                          g_free);
     self->unread = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,

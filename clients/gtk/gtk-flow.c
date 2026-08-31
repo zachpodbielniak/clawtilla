@@ -139,25 +139,44 @@ clawt_gtk_on_flow_task_clicked(GtkButton *button, gpointer user_data)
 }
 
 /*
- * Loads one conversation into the right-hand pane.
+ * Loads one conversation into the right-hand pane, or brings it up to
+ * date.
+ *
+ * Both, from one function, because a refresh arrives here through
+ * exactly the same call as a click: refresh_flow_once() rebuilds the
+ * conversation list on every fleet event and re-selects the row that
+ * was open, which emits ::row-selected again.  This used to empty the
+ * transcript and redraw all two hundred messages each time, and a box
+ * that has just been refilled is a box at offset zero -- so any message
+ * anywhere in the fleet threw the reader back to the oldest message of
+ * whatever they were reading.  Nothing logged it and nothing looked
+ * broken; it read as a page that would not stay put.
+ *
+ * So the room being opened is redrawn and the room already open is
+ * appended to, keyed on the message id the daemon already sends.  The
+ * widgets the reader is looking at are then the same widgets
+ * afterwards, which means there is no scroll position to put back --
+ * only the ordinary "stay at the bottom if that is where you were",
+ * which is the chat's follower and now Flow's too.
  */
 static void
 show_flow_room(ClawtWindow *self, const gchar *room_id, const gchar *label)
 {
     g_autoptr(JsonNode) reply = NULL;
     JsonArray *messages;
+    gboolean opening;
+    guint drawn = 0;
     guint i;
 
     /*
-     * The request first, and only then the clear.
+     * The request first, and only then anything that touches the view.
      *
      * clawt_window_request() iterates the main context while it waits,
-     * so an event arriving mid-flight re-enters this function: the inner
-     * call emptied the box and filled it, the outer one carried on
-     * appending from where it was, and the conversation appeared twice.
-     * Emptying after the answer is back means a nested call finishes
-     * completely and the outer one then replaces its work rather than
-     * adding to it.
+     * so an event arriving mid-flight re-enters this function.  Which
+     * room is open is therefore read *after* the answer is back: a
+     * nested call may have opened another one while this call was
+     * waiting, and comparing against what was open before would have
+     * this one appending its messages into somebody else's transcript.
      */
     reply = clawt_window_request(
         self, "room.history",
@@ -166,10 +185,24 @@ show_flow_room(ClawtWindow *self, const gchar *room_id, const gchar *label)
     if (reply == NULL)
         return;
 
-    clawt_gtk_clear_box(self->flow_transcript);
+    opening = g_strcmp0(room_id, self->flow_room) != 0;
 
-    g_free(self->flow_room);
-    self->flow_room = g_strdup(room_id);
+    if (opening) {
+        clawt_gtk_clear_box(self->flow_transcript);
+        g_hash_table_remove_all(self->flow_shown);
+
+        g_free(self->flow_room);
+        self->flow_room = g_strdup(room_id);
+
+        /*
+         * A conversation opens at its newest message.  Set before
+         * anything is appended, so the growth the appends cause is what
+         * the follower lands on.
+         */
+        g_clear_pointer(&self->flow_run_sender, g_free);
+        g_clear_pointer(&self->flow_run_day, g_free);
+        clawt_gtk_follow_set(&self->flow_follow, TRUE);
+    }
 
     gtk_label_set_text(GTK_LABEL(self->flow_title),
                        label != NULL ? label : room_id);
@@ -198,15 +231,28 @@ show_flow_room(ClawtWindow *self, const gchar *room_id, const gchar *label)
      * one agent's configured image, because a room here has several
      * participants -- which is what the NULLs in the view say.
      */
-    g_clear_pointer(&self->flow_run_sender, g_free);
-    g_clear_pointer(&self->flow_run_day, g_free);
-
     for (i = 0; i < json_array_get_length(messages); i++) {
         JsonObject *message = json_array_get_object_element(messages, i);
         const gchar *sender = clawt_json_string(message, "sender", "?");
+        const gchar *id = clawt_json_string(message, "id", NULL);
         TranscriptView view = { self->flow_transcript,
                                 &self->flow_run_sender,
                                 &self->flow_run_day, NULL, FALSE, NULL };
+
+        /*
+         * A message with no id can only be drawn on the pass that
+         * redraws everything: appending it on a refresh would append it
+         * again on the next one.  Every daemon sends one, so this is
+         * about one that stops rather than one that does.
+         */
+        if (id == NULL) {
+            if (!opening)
+                continue;
+        } else if (!g_hash_table_add(self->flow_shown, g_strdup(id))) {
+            continue;
+        }
+
+        drawn++;
 
         clawt_gtk_append_message_to(self, &view, sender,
                                     clawt_json_string(message, "body", ""),
@@ -217,6 +263,16 @@ show_flow_room(ClawtWindow *self, const gchar *room_id, const gchar *label)
     }
 
     gtk_stack_set_visible_child_name(GTK_STACK(self->flow_stack), "room");
+
+    /*
+     * Only when something was actually drawn.  A refresh that found
+     * nothing new must not move the view at all -- that is the whole
+     * point -- and one that appended a message moves it only if the
+     * reader was already at the bottom, which is the follower's rule
+     * and not this function's.
+     */
+    if (drawn > 0)
+        clawt_gtk_follow_queue(&self->flow_follow);
 }
 
 static void
@@ -448,6 +504,16 @@ clawt_gtk_build_flow_page(ClawtWindow *self)
         gtk_scrolled_window_set_child(self->flow_scroll, clamp);
         clawt_gtk_follow_viewport_width(self, GTK_WIDGET(self->flow_scroll));
     }
+
+    /*
+     * The same follower the chat uses, with no `armed` hook: this pane
+     * has no jump pill and no unread rule, because it is not where a
+     * message is waiting for an answer.  What it does need is the other
+     * half -- open at the newest message, and stay there while the
+     * reader is there.
+     */
+    clawt_gtk_follow_attach(&self->flow_follow, self, self->flow_scroll,
+                            NULL);
 
     gtk_widget_set_margin_bottom(GTK_WIDGET(self->flow_transcript), 18);
     gtk_widget_set_vexpand(GTK_WIDGET(self->flow_scroll), TRUE);
