@@ -167,9 +167,17 @@ on_process_exited(GObject *source, GAsyncResult *result, gpointer user_data)
     gboolean clean;
 
     /*
-     * Reaped first, and unconditionally.  Whoever this child was, the
-     * kernel is holding an entry for it until somebody collects the
-     * status, and returning early below must not leave a zombie.
+     * Finished first, and for whichever child this turns out to be: an
+     * async operation is completed by its own callback, not only on the
+     * paths that turn out to be interesting.
+     *
+     * It reads like zombie avoidance and is not.  A GSubprocess reaps
+     * through its own child watch whether or not anything ever waits on
+     * it -- checked by letting one exit with no wait outstanding at all
+     * and finding no entry left in /proc -- so the early return below
+     * strands no process.  Ordering this first is about the operation,
+     * not about the child, and a later edit that moves it on the belief
+     * that a zombie depends on it will be reasoning from the wrong fact.
      */
     g_subprocess_wait_finish(process, result, &error);
 
