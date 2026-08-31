@@ -67,6 +67,20 @@ left to process exit, because an embedded host stops and starts the
 daemon inside one process and the second start has to be able to take it
 back.
 
+The rest of the lifecycle follows the same contract.  ~stop()~ quiesces
+every *initiator* -- the servers, the autostart, the maintenance sweep,
+the routine tick, the pods, the webhook ingress and the venture poll --
+so a stopped daemon answers nothing and starts nothing, however long it
+stays in the process.  What a start built is then *released* by the next
+~start()~ or by disposal, through one function, ~release_components()~.
+That list is hand-maintained and it drifted the way hand-maintained
+lists here do: four members were cleared only in finalize, which runs
+once, so an embedded host leaked a generation of them per restart -- and
+the routine tick kept firing into the stopped fleet.
+~tests/test-release-drift.sh~ now compares what the start-side functions
+assign against what the release side names, so the next member added to
+one and not the other fails the suite with its name.
+
 *** Why a lock rather than a probe
 
 The socket was guarded before this, by connecting to it and unlinking it

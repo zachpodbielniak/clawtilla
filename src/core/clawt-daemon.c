@@ -3414,6 +3414,7 @@ clawt_daemon_quit_idle(gpointer user_data)
  */
 
 static void autostart_cancel(ClawtDaemon *self);
+static void sweep_cancel(ClawtDaemon *self);
 static void
 release_components(ClawtDaemon *self)
 {
@@ -3427,6 +3428,7 @@ release_components(ClawtDaemon *self)
     }
 
     autostart_cancel(self);
+    sweep_cancel(self);
 
     /*
      * Recordings before anything else.
@@ -3446,6 +3448,28 @@ release_components(ClawtDaemon *self)
      */
     clawt_daemon_triggers_stop(self);
     clawt_daemon_venture_stop(self);
+
+    /*
+     * The routine tick and the pods for the same reason -- both start
+     * work of their own accord.  These two, the notifier and the skill
+     * library were cleared only in finalize, which runs once: an
+     * embedded host that stopped and started the daemon in one process
+     * leaked a generation of each per restart, and the ASAN gate found
+     * them one member at a time -- first the automation, then behind it
+     * the runner.  tools/clawt-release-drift.sh now compares what
+     * start() assigns against what this function releases, so the next
+     * member added to one and not the other fails the suite instead of
+     * waiting for a sanitizer run.
+     */
+    if (self->routines != NULL)
+        clawt_routine_runner_stop(self->routines);
+
+    g_clear_object(&self->routines);
+
+    if (self->automation != NULL)
+        clawt_automation_stop(self->automation);
+
+    g_clear_object(&self->automation);
 
     g_clear_object(&self->plugins);
 
@@ -3479,10 +3503,18 @@ release_components(ClawtDaemon *self)
     g_clear_object(&self->takeover);
 
     g_clear_object(&self->mcp_tools);
+
+    /*
+     * After the tools, which hold a pointer to it -- the order
+     * clawt_daemon_reload_skills() protects on every other path.
+     */
+    g_clear_object(&self->skills);
+
     g_clear_object(&self->ipc_server);
     g_clear_object(&self->link_server);
     g_clear_object(&self->pod_bridge);
     g_clear_object(&self->router);
+    g_clear_object(&self->notifier);
     g_clear_object(&self->guard);
     g_clear_object(&self->usage);
     g_clear_object(&self->tasks);
@@ -4577,6 +4609,31 @@ ensure_tcp_token(ClawtDaemon *self, GError **error)
 
 
 /*
+ * The maintenance sweep, wherever the daemon is being taken down.
+ *
+ * One spelling for stop() and release_components(): it lived only in
+ * stop(), so a start that failed partway -- after the sweep was armed,
+ * before `running` was raised -- left the source ticking, and the retry
+ * armed a second one beside it.
+ */
+static void
+sweep_cancel(ClawtDaemon *self)
+{
+    GSource *source;
+
+    if (self->sweep_source_id == 0)
+        return;
+
+    source = g_main_context_find_source_by_id(self->main_context,
+                                              self->sweep_source_id);
+
+    if (source != NULL)
+        g_source_destroy(source);
+
+    self->sweep_source_id = 0;
+}
+
+/*
  * Everything the fleet has left to bring up, and nothing else.
  */
 static void
@@ -5478,15 +5535,31 @@ clawt_daemon_stop(ClawtDaemon *self)
      */
     autostart_cancel(self);
 
-    if (self->sweep_source_id != 0) {
-        GSource *source = g_main_context_find_source_by_id(
-            self->main_context, self->sweep_source_id);
+    /*
+     * The other initiators with it.  Everything here can start new work
+     * on its own -- a routine tick, a pod acting on an event, a webhook
+     * delivery, a venture poll -- and stop() used to quiesce none of
+     * them, so a stopped daemon kept ticking its routines and listening
+     * for webhooks for as long as it stayed in the process.  The
+     * standalone daemon exits right after and never noticed; the
+     * embedded one is exactly the caller stop() exists for.
+     *
+     * The runner and the automation are stopped here and *released* in
+     * release_components(), like the servers.  The trigger and venture
+     * helpers release as they stop -- they were written for
+     * release_components() and are safe to repeat, so one spelling
+     * serves both callers.
+     */
+    if (self->routines != NULL)
+        clawt_routine_runner_stop(self->routines);
 
-        if (source != NULL)
-            g_source_destroy(source);
+    if (self->automation != NULL)
+        clawt_automation_stop(self->automation);
 
-        self->sweep_source_id = 0;
-    }
+    clawt_daemon_triggers_stop(self);
+    clawt_daemon_venture_stop(self);
+
+    sweep_cancel(self);
 
     /*
      * Before the fleet is stopped, because a grace timer left armed past
