@@ -121,4 +121,36 @@ const gchar *clawt_link_server_get_socket_path(ClawtLinkServer *self);
  */
 guint clawt_link_server_count_links(ClawtLinkServer *self);
 
+/**
+ * clawt_link_server_count_evictions:
+ * @self: a #ClawtLinkServer
+ * @agent_id: the agent to ask about
+ *
+ * How many times a live link for @agent_id has been displaced by a newer
+ * connection claiming the same id, within the contest window.
+ *
+ * One is an ordinary reconnect.  A run of them is two processes serving
+ * one agent id and taking the link from each other, which delivers that
+ * agent's messages to whichever happens to hold it at the time.  The
+ * count is reset when the agent's link closes without being displaced.
+ *
+ * Returns: the eviction count currently held against @agent_id
+ */
+guint clawt_link_server_count_evictions(ClawtLinkServer *self,
+                                        const gchar     *agent_id);
+
+/**
+ * clawt_link_server_is_contested:
+ * @self: a #ClawtLinkServer
+ * @agent_id: the agent to ask about
+ *
+ * Whether @agent_id has been displaced often enough, and fast enough, to
+ * be treated as contested rather than reconnecting.  While it is, further
+ * connections claiming that id are refused instead of taking the link.
+ *
+ * Returns: %TRUE when the id is fenced
+ */
+gboolean clawt_link_server_is_contested(ClawtLinkServer *self,
+                                        const gchar     *agent_id);
+
 G_END_DECLS

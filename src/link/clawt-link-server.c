@@ -27,11 +27,38 @@ void clawt_link_accept_identity(ClawtLink *self, const gchar *agent_id);
 #define KEEPALIVE_INTERVAL_SECONDS 30
 #define KEEPALIVE_DEADLINE_SECONDS 120
 
+/*
+ * Where a reconnect stops being a reconnect.
+ *
+ * One connection displacing another is ordinary: an agent whose socket
+ * dropped comes back, and its previous link may not have finished closing
+ * yet.  A run of them in quick succession is not -- it is two live
+ * processes serving one agent id, each taking the link from the other, so
+ * that agent's messages go to whichever won most recently.
+ *
+ * Three inside a minute, because a genuine reconnect does not repeat: the
+ * agent that came back has the link and keeps it.  The window matters as
+ * much as the count -- an agent restarted three times over an afternoon
+ * is healthy and must not be fenced for it.
+ */
+#define CONTEST_EVICTIONS      3
+#define CONTEST_WINDOW_SECONDS 60
+
+/*
+ * What is remembered per agent id while it is being fought over.
+ */
+typedef struct {
+    guint    count;      /* displacements inside the current window */
+    gint64   opened;     /* monotonic seconds the window started */
+    gboolean announced;  /* ::link-contested has been emitted for it */
+} Eviction;
+
 enum {
     SIGNAL_LINK_ADDED,
     SIGNAL_LINK_REMOVED,
     SIGNAL_MESSAGE,
     SIGNAL_TYPING,
+    SIGNAL_LINK_CONTESTED,
     N_SIGNALS
 };
 
@@ -44,6 +71,18 @@ struct _ClawtLinkServer {
     GSocketService *service;
 
     GHashTable     *links;      /* agent_id -> ClawtLink (owned) */
+    GHashTable     *evictions;  /* agent_id -> Eviction (owned) */
+
+    /*
+     * The agent whose link is being replaced right now, if any.
+     *
+     * Closing the incumbent runs on_link_closed() synchronously, and that
+     * is where an agent's eviction record is forgotten -- correctly, when
+     * the agent has actually gone away.  Without this the record would be
+     * cleared by the very replacement that just added to it, and a
+     * contest could never reach its threshold.
+     */
+    const gchar    *replacing;
     GPtrArray      *pending;    /* ClawtLink*, not yet identified */
 
     ClawtLinkAuthFunc auth_func;
@@ -89,6 +128,75 @@ on_link_typing(ClawtLink   *link,
                   clawt_link_get_agent_id(link), room_id, typing);
 }
 
+/*
+ * Records that a live link for @agent_id is about to be displaced, and
+ * answers whether the newcomer may have it.
+ *
+ * Returns: %TRUE to let the replacement proceed, %FALSE when the id is
+ * contested and must be fenced instead.
+ */
+static gboolean
+note_eviction(ClawtLinkServer *self, const gchar *agent_id)
+{
+    Eviction *record;
+    gint64    now = g_get_monotonic_time() / G_USEC_PER_SEC;
+
+    record = g_hash_table_lookup(self->evictions, agent_id);
+
+    if (record == NULL) {
+        record = g_new0(Eviction, 1);
+        record->opened = now;
+        g_hash_table_insert(self->evictions, g_strdup(agent_id), record);
+    }
+
+    /* A quiet minute ends the contest and starts the counting again. */
+    if (now - record->opened > CONTEST_WINDOW_SECONDS) {
+        record->count     = 0;
+        record->opened    = now;
+        record->announced = FALSE;
+    }
+
+    record->count++;
+
+    if (record->count < CONTEST_EVICTIONS)
+        return TRUE;
+
+    /*
+     * Said once per contest rather than per connection.  The incident
+     * this comes from flapped every five seconds for forty-five minutes;
+     * a line per eviction would have buried the fact in its own volume,
+     * and a line per contest is the thing an operator needs.
+     */
+    if (!record->announced) {
+        record->announced = TRUE;
+
+        g_warning("link server: '%s' has had its link taken %u times in "
+                  "under %d seconds. That is two processes serving one "
+                  "agent id, not one reconnecting, so further connections "
+                  "claiming it are being refused and the current link is "
+                  "being kept. Check for a second process against that "
+                  "agent's config.yaml",
+                  agent_id, record->count, CONTEST_WINDOW_SECONDS);
+
+        g_signal_emit(self, signals[SIGNAL_LINK_CONTESTED], 0, agent_id);
+    }
+
+    return FALSE;
+}
+
+static void
+forget_evictions(ClawtLinkServer *self, const gchar *agent_id)
+{
+    /*
+     * Not while the record is being added to by a replacement in
+     * progress -- see ClawtLinkServer.replacing.
+     */
+    if (self->replacing != NULL && g_strcmp0(self->replacing, agent_id) == 0)
+        return;
+
+    g_hash_table_remove(self->evictions, agent_id);
+}
+
 static void
 on_link_closed(ClawtLink *link, gpointer user_data)
 {
@@ -109,6 +217,7 @@ on_link_closed(ClawtLink *link, gpointer user_data)
     if (g_hash_table_lookup(self->links, agent_id) == link) {
         g_object_ref(link);
         g_hash_table_remove(self->links, agent_id);
+        forget_evictions(self, agent_id);
         g_signal_emit(self, signals[SIGNAL_LINK_REMOVED], 0, agent_id);
         g_object_unref(link);
     }
@@ -137,12 +246,44 @@ on_link_hello(ClawtLink   *link,
      * A reconnect replaces the old link.  Keeping both would mean messages
      * going to whichever the table happened to hold, and the stale one
      * never noticing it had been superseded.
+     *
+     * Which is exactly what happened anyway when the displacement was
+     * unconditional: two libreclaw processes on one agent's config each
+     * took the link from the other roughly every five seconds for
+     * forty-five minutes, delivery alternated between them, and the only
+     * trace was a g_info per swap.  `agent list` read running and linked
+     * throughout, because both halves of the flap are individually
+     * normal.
+     *
+     * A single hello cannot tell the two apart -- same id, same token,
+     * live incumbent -- so the pattern is what decides.  Below the
+     * threshold this stays a reconnect and behaves as it always did.
      */
     existing = g_hash_table_lookup(self->links, agent_id);
     if (existing != NULL && existing != link) {
-        g_info("link server: '%s' reconnected; closing the previous link",
-               agent_id);
+        if (!note_eviction(self, agent_id)) {
+            clawt_link_send_error(link, 409,
+                                  "that agent already has a live link; "
+                                  "another process is serving it");
+            clawt_link_close(link, "the agent id is contested");
+            return;
+        }
+
+        /*
+         * Still info, and deliberately: one reconnect is ordinary and
+         * this line is correct about it.  What was missing is not a
+         * louder version of this -- it is the line above, said once when
+         * the reconnects stop looking like reconnects.
+         */
+        g_info("link server: '%s' reconnected; closing the previous link "
+               "(%u in the last %d seconds)",
+               agent_id,
+               clawt_link_server_count_evictions(self, agent_id),
+               CONTEST_WINDOW_SECONDS);
+
+        self->replacing = agent_id;
         clawt_link_close(existing, "replaced by a newer connection");
+        self->replacing = NULL;
     }
 
     clawt_link_accept_identity(link, agent_id);
@@ -404,6 +545,33 @@ clawt_link_server_stop(ClawtLinkServer *self)
         g_unlink(self->socket_path);
 }
 
+guint
+clawt_link_server_count_evictions(ClawtLinkServer *self,
+                                  const gchar     *agent_id)
+{
+    Eviction *record;
+
+    g_return_val_if_fail(CLAWT_IS_LINK_SERVER(self), 0);
+    g_return_val_if_fail(agent_id != NULL, 0);
+
+    record = g_hash_table_lookup(self->evictions, agent_id);
+
+    return (record != NULL) ? record->count : 0;
+}
+
+gboolean
+clawt_link_server_is_contested(ClawtLinkServer *self, const gchar *agent_id)
+{
+    Eviction *record;
+
+    g_return_val_if_fail(CLAWT_IS_LINK_SERVER(self), FALSE);
+    g_return_val_if_fail(agent_id != NULL, FALSE);
+
+    record = g_hash_table_lookup(self->evictions, agent_id);
+
+    return record != NULL && record->count >= CONTEST_EVICTIONS;
+}
+
 ClawtLink *
 clawt_link_server_get_link(ClawtLinkServer *self, const gchar *agent_id)
 {
@@ -441,6 +609,7 @@ clawt_link_server_dispose(GObject *object)
     }
 
     g_clear_pointer(&self->links, g_hash_table_unref);
+    g_clear_pointer(&self->evictions, g_hash_table_unref);
     g_clear_pointer(&self->pending, g_ptr_array_unref);
 
     G_OBJECT_CLASS(clawt_link_server_parent_class)->dispose(object);
@@ -504,6 +673,25 @@ clawt_link_server_class_init(ClawtLinkServerClass *klass)
      * @room_id: (nullable): the room the agent is composing in
      * @typing: %TRUE while a turn is in flight
      */
+    /**
+     * ClawtLinkServer::link-contested:
+     * @self: the server
+     * @agent_id: the agent whose link is being fought over
+     *
+     * Emitted once when connections claiming @agent_id have displaced
+     * each other often enough, and fast enough, to be two live processes
+     * rather than one reconnecting.  While contested the id is fenced:
+     * further connections are refused and the incumbent keeps the link.
+     *
+     * The daemon turns this into agent state, because every other
+     * surface reports such an agent as healthy -- it has a link, it is
+     * running, and its messages go to whichever process last won.
+     */
+    signals[SIGNAL_LINK_CONTESTED] =
+        g_signal_new("link-contested", CLAWT_TYPE_LINK_SERVER,
+                     G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
+                     G_TYPE_NONE, 1, G_TYPE_STRING);
+
     signals[SIGNAL_TYPING] =
         g_signal_new("typing", CLAWT_TYPE_LINK_SERVER, G_SIGNAL_RUN_LAST,
                      0, NULL, NULL, NULL, G_TYPE_NONE, 3,
@@ -515,5 +703,7 @@ clawt_link_server_init(ClawtLinkServer *self)
 {
     self->links = g_hash_table_new_full(g_str_hash, g_str_equal,
                                         g_free, g_object_unref);
+    self->evictions = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                            g_free, g_free);
     self->pending = g_ptr_array_new_with_free_func(g_object_unref);
 }

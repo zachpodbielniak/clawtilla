@@ -189,6 +189,48 @@ client_read(Client *client, gchar **out_kind)
 }
 
 
+/*
+ * How many rivals the contest test sends.  Comfortably past the
+ * threshold, so the test does not encode the exact number the server
+ * picked -- it asserts the behaviour on either side of it instead.
+ */
+#define CONTEST_ROUNDS 6
+
+typedef struct {
+    gchar *agent_id;
+    guint  count;
+} Contest;
+
+/*
+ * The contest is announced with g_warning, and g_test_init() makes
+ * warnings fatal.  The test wants that line -- asserting the level is
+ * half the point, since the defect is that this ran for forty-five
+ * minutes with nothing above g_info -- so it catches the warning instead
+ * of dying on it, and puts the fatal mask back afterwards.
+ */
+static gboolean saw_contest_warning = FALSE;
+
+static void
+capture_contest_warning(const gchar *domain, GLogLevelFlags level,
+                        const gchar *message, gpointer user_data)
+{
+    if (strstr(message, "has had its link taken") != NULL)
+        saw_contest_warning = TRUE;
+    else
+        g_test_fail_printf("unexpected warning: %s", message);
+}
+
+static void
+on_link_contested(ClawtLinkServer *server, const gchar *agent_id,
+                  gpointer user_data)
+{
+    Contest *contest = user_data;
+
+    g_free(contest->agent_id);
+    contest->agent_id = g_strdup(agent_id);
+    contest->count++;
+}
+
 /* ── Tests ───────────────────────────────────────────────────────── */
 
 static void
@@ -475,6 +517,181 @@ test_reconnect_replaces_the_previous_link(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * Two live processes serving one agent id, which is what a restart that
+ * did not stop the old child leaves behind.
+ *
+ * Each one's hello took the link from the other, so delivery for that
+ * agent became a coin flip between them and the daemon reported it
+ * healthy throughout -- it has a link, it is running.  Observed on this
+ * fleet flapping every five seconds for forty-five minutes with nothing
+ * above g_info to say so.
+ *
+ * The contest has to be recognised from the pattern rather than from the
+ * peer, because the honest reconnect below is indistinguishable at a
+ * single hello: same id, same token, live incumbent.  What separates
+ * them is that a reconnect happens once and a contest does not stop.
+ */
+static void
+test_a_contested_id_is_fenced_rather_than_flapped(void)
+{
+    Fixture fixture = { 0 };
+    Capture capture = { 0 };
+    Contest contest = { 0 };
+    Client incumbent = { 0 };
+    Client rival[CONTEST_ROUNDS] = { { 0 } };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonObject) welcome = NULL;
+    guint round;
+    ClawtLink *held;
+    GLogLevelFlags previous_fatal;
+    guint warning_handler;
+
+    saw_contest_warning = FALSE;
+    previous_fatal = g_log_set_always_fatal(G_LOG_LEVEL_ERROR);
+    warning_handler = g_log_set_handler("Clawtilla", G_LOG_LEVEL_WARNING,
+                                        capture_contest_warning, NULL);
+
+    fixture_setup(&fixture);
+    g_signal_connect(fixture.server, "link-added",
+                     G_CALLBACK(on_link_added), &capture);
+    g_signal_connect(fixture.server, "link-contested",
+                     G_CALLBACK(on_link_contested), &contest);
+    g_assert_true(clawt_link_server_start(fixture.server, &error));
+
+    g_assert_true(client_connect(&incumbent, fixture.socket_path));
+    client_send(&incumbent,
+        "{\"v\":1,\"kind\":\"control.hello\",\"payload\":{\"agent_id\":\"chief\"}}");
+    g_assert_true(pump_until(have_added, &capture, 2000));
+    welcome = client_read(&incumbent, NULL);
+    g_assert_nonnull(welcome);
+
+    /* Nothing contested yet: one connection, no evictions. */
+    g_assert_cmpuint(clawt_link_server_count_evictions(fixture.server,
+                                                       "chief"), ==, 0);
+    g_assert_false(clawt_link_server_is_contested(fixture.server, "chief"));
+
+    /*
+     * Rivals arrive one after another, exactly as the second libreclaw
+     * did.  Each is a fresh connection claiming an id that already has a
+     * live link.
+     */
+    for (round = 0; round < CONTEST_ROUNDS; round++) {
+        g_autofree gchar *kind = NULL;
+        g_autoptr(JsonObject) answer = NULL;
+
+        g_assert_true(client_connect(&rival[round], fixture.socket_path));
+        client_send(&rival[round],
+            "{\"v\":1,\"kind\":\"control.hello\","
+            "\"payload\":{\"agent_id\":\"chief\"}}");
+
+        answer = client_read(&rival[round], &kind);
+        g_assert_nonnull(answer);
+
+        if (clawt_link_server_is_contested(fixture.server, "chief")) {
+            /*
+             * Fenced: the rival is told no, rather than being handed an
+             * agent that somebody else is already serving.
+             */
+            g_assert_cmpstr(kind, ==, "control.error");
+        } else {
+            g_assert_cmpstr(kind, ==, "control.welcome");
+        }
+    }
+
+    /*
+     * The contest was noticed, said so once, and said it at a level an
+     * operator sees.  The last part is the whole point of the defect:
+     * this ran for forty-five minutes with nothing above g_info.
+     */
+    g_assert_true(saw_contest_warning);
+    g_assert_true(clawt_link_server_is_contested(fixture.server, "chief"));
+    g_assert_cmpstr(contest.agent_id, ==, "chief");
+    g_assert_cmpuint(contest.count, ==, 1);
+
+    /*
+     * And the flapping stopped: exactly one link is held for that agent,
+     * it is open, and the last rival did not get it.
+     */
+    g_assert_cmpuint(clawt_link_server_count_links(fixture.server), ==, 1);
+    held = clawt_link_server_get_link(fixture.server, "chief");
+    g_assert_nonnull(held);
+    g_assert_true(clawt_link_is_open(held));
+
+    client_close(&incumbent);
+    for (round = 0; round < CONTEST_ROUNDS; round++)
+        client_close(&rival[round]);
+
+    g_free(contest.agent_id);
+    capture_clear(&capture);
+    fixture_teardown(&fixture);
+
+    g_log_remove_handler("Clawtilla", warning_handler);
+    g_log_set_always_fatal(previous_fatal);
+}
+
+/*
+ * The control, and the reason the fence counts rather than refuses on
+ * sight: one agent genuinely reconnecting must still be able to.
+ *
+ * Refusing every connection that finds a live incumbent would strand an
+ * agent whose previous socket has not finished closing -- the failure
+ * on_link_closed() is already written to avoid.  So a single replacement
+ * has to stay ordinary, uncontested and unfenced.
+ */
+static void
+test_an_ordinary_reconnect_is_not_contested(void)
+{
+    Fixture fixture = { 0 };
+    Capture capture = { 0 };
+    Contest contest = { 0 };
+    Client first = { 0 };
+    Client second = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonObject) welcome_one = NULL;
+    g_autoptr(JsonObject) welcome_two = NULL;
+    g_autofree gchar *kind = NULL;
+
+    fixture_setup(&fixture);
+    g_signal_connect(fixture.server, "link-added",
+                     G_CALLBACK(on_link_added), &capture);
+    g_signal_connect(fixture.server, "link-contested",
+                     G_CALLBACK(on_link_contested), &contest);
+    g_assert_true(clawt_link_server_start(fixture.server, &error));
+
+    g_assert_true(client_connect(&first, fixture.socket_path));
+    client_send(&first,
+        "{\"v\":1,\"kind\":\"control.hello\",\"payload\":{\"agent_id\":\"chief\"}}");
+    g_assert_true(pump_until(have_added, &capture, 2000));
+    welcome_one = client_read(&first, NULL);
+    g_clear_pointer(&capture.added, g_free);
+
+    g_assert_true(client_connect(&second, fixture.socket_path));
+    client_send(&second,
+        "{\"v\":1,\"kind\":\"control.hello\",\"payload\":{\"agent_id\":\"chief\"}}");
+    g_assert_true(pump_until(have_added, &capture, 2000));
+    welcome_two = client_read(&second, &kind);
+
+    /* It was welcomed, not refused, and it holds the link. */
+    g_assert_cmpstr(kind, ==, "control.welcome");
+    g_assert_cmpuint(clawt_link_server_count_links(fixture.server), ==, 1);
+    g_assert_true(clawt_link_is_open(
+        clawt_link_server_get_link(fixture.server, "chief")));
+
+    /* One displacement is recorded, and one is not a contest. */
+    g_assert_cmpuint(clawt_link_server_count_evictions(fixture.server,
+                                                       "chief"), ==, 1);
+    g_assert_false(clawt_link_server_is_contested(fixture.server, "chief"));
+    g_assert_null(contest.agent_id);
+    g_assert_cmpuint(contest.count, ==, 0);
+
+    client_close(&first);
+    client_close(&second);
+    g_free(contest.agent_id);
+    capture_clear(&capture);
+    fixture_teardown(&fixture);
+}
+
 /* A second hello on a live link would let a connection change identity
  * mid-stream, delivering one agent's queued messages to another. */
 static void
@@ -755,6 +972,10 @@ main(int argc, char *argv[])
     g_test_add_func("/link/message-before-hello", test_message_before_hello_is_refused);
     g_test_add_func("/link/reconnect-replaces", test_reconnect_replaces_the_previous_link);
     g_test_add_func("/link/second-hello", test_second_hello_is_refused);
+    g_test_add_func("/link/contested-id-is-fenced",
+                    test_a_contested_id_is_fenced_rather_than_flapped);
+    g_test_add_func("/link/ordinary-reconnect-is-not-contested",
+                    test_an_ordinary_reconnect_is_not_contested);
     g_test_add_func("/link/malformed-frames", test_malformed_frames_do_not_drop_the_link);
     g_test_add_func("/link/disconnect", test_disconnect_removes_the_link);
     g_test_add_func("/link/deliver", test_deliver_reaches_the_agent);
