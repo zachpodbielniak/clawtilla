@@ -1155,7 +1155,7 @@ Every kind published, by subject:
 | Subject | Kinds |
 |---------+-------|
 | the daemon | ~daemon.started~, ~daemon.stopped~, ~daemon.reloaded~, ~config.changed~ |
-| an agent | ~agent.created~, ~agent.removed~, ~agent.changed~, ~agent.started~, ~agent.stopped~, ~agent.interrupted~, ~agent.state~, ~agent.connected~, ~agent.disconnected~, ~agent.typing~, ~agent.identity~ |
+| an agent | ~agent.created~, ~agent.removed~, ~agent.changed~, ~agent.started~, ~agent.stopped~, ~agent.interrupted~, ~agent.state~, ~agent.connected~, ~agent.disconnected~, ~agent.typing~, ~agent.identity~, ~agent.contested~ (~evictions~) |
 | a room | ~message~, ~message.refused~, ~exchange.stalled~, ~room.created~, ~room.changed~ |
 | an agent's mailbox | ~mailbox.queued~, ~mailbox.delivered~ |
 | a team | ~team.changed~ |
@@ -1265,6 +1265,33 @@ error, because at every threshold but the last **nothing has been
 stopped** -- clawtilla does not own the model's own tool-call loop and
 cannot steer a turn that is already running.  At the last threshold the
 turn is interrupted and a ~turn.timed_out~ follows.
+
+~agent.contested~ is published when connections claiming one agent id
+have taken the link from each other often enough, and fast enough, to be
+two live processes rather than one reconnecting.  Subject the agent, with
+~evictions~ carrying how many displacements stand against it.  The link
+server fences the id at that point: the incumbent keeps the link and
+further connections claiming it are refused, whether or not anybody is
+listening to this.
+
+The fence is a rate limit rather than a ban, so a rival that never gives
+up still takes the link twice per window -- delivery goes from
+alternating every few seconds to twice a minute, and the event repeats
+once per window while it lasts.  That is deliberate: an incumbent whose
+process died without closing its socket must not be able to lock out its
+own replacement.  It bounds the damage; ending it is still a person's
+job.
+
+It is published rather than moving the agent to ~error~, because the
+agent is not the broken part.  On the link that survived the fence it
+answers normally, and marking it broken would stop the daemon routing to
+something that works; what has to end is a second process outside it.
+
+Clients draw it as an error for a reason that inverts the usual one:
+**nothing else about such an agent looks wrong.**  It is running, it has
+a link, and its mailbox items read delivered -- so there is no panel
+somebody would come across this in, and a routine tier would file the one
+event that says so where nobody looks.
 
 ~handoff.queued~ is published when an agent asks to give a task away,
 subject the *task*, with ~handoff~ (the transfer's own id), ~from~, ~to~

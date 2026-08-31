@@ -272,6 +272,39 @@ on_link_added(ClawtLinkServer *server, const gchar *agent_id,
     clawt_mailbox_router_drain(self->router, agent_id);
 }
 
+/*
+ * Two live processes are serving one agent id, and the link server has
+ * stopped letting them take it from each other.
+ *
+ * Published rather than turned into agent state, because the agent is
+ * not broken: on the link that survived the fence it answers normally,
+ * and marking it ERROR would stop the daemon routing to an agent that
+ * is working.  What is wrong is outside the agent -- a second process
+ * against the same config.yaml, which only a person can go and end.
+ *
+ * It has to arrive on its own, because nothing else about this looks
+ * wrong.  `agent list` reads running, the link reads up, and mailbox
+ * items read delivered; the whole defect is that a fleet in this state
+ * reports itself healthy while an agent's messages go to whichever
+ * process last won the link.
+ */
+static void
+on_link_contested(ClawtLinkServer *server, const gchar *agent_id,
+                  gpointer user_data)
+{
+    ClawtDaemon *self = user_data;
+    g_autoptr(ClawtEvent) event = NULL;
+
+    (void)server;
+
+    event = clawt_event_new("agent.contested", agent_id);
+    clawt_event_set_detail_int(
+        event, "evictions",
+        clawt_link_server_count_evictions(self->link_server, agent_id));
+
+    clawt_event_bus_publish(self->bus, event);
+}
+
 static void
 on_link_removed(ClawtLinkServer *server, const gchar *agent_id,
                 gpointer user_data)
@@ -5146,6 +5179,8 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
                      G_CALLBACK(on_link_message), self);
     g_signal_connect(self->link_server, "typing",
                      G_CALLBACK(on_link_typing), self);
+    g_signal_connect(self->link_server, "link-contested",
+                     G_CALLBACK(on_link_contested), self);
 
     if (!clawt_link_server_start(self->link_server, error)) {
         if (self->main_context != NULL)

@@ -265,6 +265,17 @@ clawt_alert_tier_for_event(ClawtEvent *event)
         return CLAWT_ALERT_ERROR;
 
     /*
+     * Two processes serving one agent id.  An error rather than a
+     * notice, and the reason is the opposite of the usual one: nothing
+     * about this agent looks wrong.  It is running, it has a link and
+     * it answers, so there is no other surface where somebody would
+     * come across it -- this line is the only one, and a person has to
+     * go and end the second process.
+     */
+    if (g_strcmp0(kind, "agent.contested") == 0)
+        return CLAWT_ALERT_ERROR;
+
+    /*
      * A repeated tool call is a warning about a turn that is still
      * running.  Nothing has been stopped, so it is not an error; but it
      * arrived on its own while nobody was looking at that agent, which

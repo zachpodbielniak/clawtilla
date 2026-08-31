@@ -2012,6 +2012,68 @@ with no timer on it is one nobody will ever notice the death of.
 A unix client is not affected and never was: a local peer that goes away
 closes its socket, and the reader is told on the next turn of the loop.
 
+** Two processes are serving one agent, and nothing looks wrong
+
+The symptom is delivery becoming a coin flip: the agent answers a peer
+within seconds and never sees six messages from its operator.  Every
+surface disagrees that anything is happening -- ~agent list~ reads
+~running~, the link reads up, and the mailbox items read delivered,
+because each of those is individually true of *both* processes.
+
+It happens when a restart did not actually stop the old child: both dial
+~agents.sock~ claiming the same id with the same token, and each hello
+takes the link from the other.  A single hello cannot be told from an
+honest reconnect -- same id, same token, live incumbent -- so what
+separates them is the pattern.  A reconnect happens once.  A contest does
+not stop.
+
+Past three displacements inside a minute the id is **fenced**: the
+incumbent keeps the link, newcomers are refused with 409, and the daemon
+publishes ~agent.contested~, which both clients draw as an error.
+
+The fence bounds the damage rather than ending it.  A rival that keeps
+retrying is still let in twice a window -- delivery goes from alternating
+every few seconds to twice a minute, and the event repeats while it
+lasts.  It is a rate limit on purpose, so that an incumbent whose process
+died without closing its socket cannot lock out its own replacement.  The
+cause is a second process, and only a person can end it:
+
+#+begin_src bash
+ps -eo pid,ppid,lstart,args | grep '[a]gents/<agent-id>/config.yaml'
+#+end_src
+
+More than one row is the whole diagnosis.  Stop the agent, confirm the
+row is gone, and start it again; if a process survives the stop it is in
+uninterruptible sleep and needs the machine looked at rather than another
+restart.
+
+The fence lifts on its own after a quiet minute, so an agent restarted a
+few times over an afternoon is never fenced for it.
+
+** An agent reads stopped and its process is running
+
+~agent list~ says ~stopped -- exited with status 0~, delegated work fails
+with "the agent handling this stopped before finishing", and ~ps~ shows
+the agent's libreclaw perfectly healthy.
+
+One runtime object serves an agent for its whole life and replaces its
+child underneath itself, so a wait started for one child can complete
+after another has taken its place.  The exit belonged to a process that
+had stopped being the agent's some time earlier; reporting it cleared the
+link and moved a live, connected, idle agent to ~STOPPED~.
+
+Exits are now ignored unless they are for the child the runtime is still
+holding.  Reaching this state at all means a stop gave up on a child the
+kernel would not reap, which is logged when it happens:
+
+#+begin_src bash
+journalctl --user -u clawtillad | grep 'has not been reaped'
+#+end_src
+
+That line, an agent that will not stop promptly, and the entry above are
+the same incident at three stages: a child that outlives its stop is what
+leaves two processes on one config in the first place.
+
 ** A fix built and tested, and the running daemon still misbehaves
 
 ~make test~ builds the library, the test binaries and the plugins.  It

@@ -3168,6 +3168,67 @@ test_a_finished_turn_clears_the_depth(void)
 }
 
 /*
+ * The link server noticing a contested id has to reach somebody.
+ *
+ * The fence stops the flapping, which is the repair; it does not tell
+ * anyone it happened.  Nothing else will either -- an agent in this
+ * state is running, has a link, and answers on whichever connection
+ * last won it, so `agent list` and every panel read healthy while its
+ * messages go to one of two processes at random.  A signal the daemon
+ * did not connect would have left the whole fix silent, which is the
+ * condition the original incident was found in.
+ *
+ * Driven through the signal rather than by racing two real connections
+ * against the fence: what is under test is the daemon's half -- that it
+ * listens, and publishes what it hears.
+ */
+static void
+test_a_contested_link_is_published(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GPtrArray) events = NULL;
+    gboolean found = FALSE;
+    guint i;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    g_signal_emit_by_name(clawt_daemon_get_link_server(fixture.daemon),
+                          "link-contested", "alpha");
+
+    events = clawt_event_bus_replay(clawt_daemon_get_event_bus(fixture.daemon),
+                                    0, NULL);
+
+    for (i = 0; events != NULL && i < events->len; i++) {
+        ClawtEvent *event = g_ptr_array_index(events, i);
+
+        if (g_strcmp0(clawt_event_get_kind(event), "agent.contested") != 0)
+            continue;
+
+        g_assert_cmpstr(clawt_event_get_subject(event), ==, "alpha");
+        found = TRUE;
+    }
+
+    g_assert_true(found);
+
+    /*
+     * And it is loud.  The tier is the library's answer, shared by both
+     * clients -- a routine one would file this where nobody looks, which
+     * for the one event that no other surface duplicates is the same as
+     * not publishing it.
+     */
+    for (i = 0; events != NULL && i < events->len; i++) {
+        ClawtEvent *event = g_ptr_array_index(events, i);
+
+        if (g_strcmp0(clawt_event_get_kind(event), "agent.contested") == 0)
+            g_assert_cmpint(clawt_alert_tier_for_event(event), ==,
+                            CLAWT_ALERT_ERROR);
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * A turn that did not come through the router starts a fresh chain.
  *
  * Matrix, webhook, local and cmacs belong to libreclaw; the daemon never
@@ -8917,6 +8978,8 @@ main(int argc, char *argv[])
 
     g_test_add_func("/daemon/start/refreshes-the-owned-regions",
                     test_starting_an_agent_refreshes_its_regions);
+    g_test_add_func("/daemon/link/contested-is-published",
+                    test_a_contested_link_is_published);
     g_test_add_func("/daemon/typing/a-keepalive-is-not-a-new-turn",
                     test_a_keepalive_is_not_a_new_turn);
     g_test_add_func("/daemon/typing/each-room-has-its-own-turn",

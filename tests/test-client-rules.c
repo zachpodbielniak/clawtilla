@@ -191,6 +191,22 @@ test_the_two_loud_kinds(void)
 }
 
 /*
+ * Two processes serving one agent id is loud, and it is the one case
+ * where nothing else would ever say so.
+ *
+ * Every other surface reports such an agent as healthy -- running, with
+ * a link, answering on whichever connection last won it -- so there is
+ * no view somebody would stumble across this in.  A notice would put it
+ * in a list nobody has a reason to open.
+ */
+static void
+test_a_contested_agent_is_loud(void)
+{
+    g_assert_cmpint(tier_of("agent.contested", "evictions", "3"), ==,
+                    CLAWT_ALERT_ERROR);
+}
+
+/*
  * A download that *succeeded* is routine.  Only the failure arrived on
  * its own with nobody watching, so classifying on the kind alone would
  * put every completed download in the loud list.
@@ -819,6 +835,8 @@ main(int argc, char *argv[])
     g_test_add_func("/client-rules/tier/loud", test_the_two_loud_kinds);
     g_test_add_func("/client-rules/tier/download-ok",
                     test_a_successful_download_is_routine);
+    g_test_add_func("/client-rules/tier/contested",
+                    test_a_contested_agent_is_loud);
     g_test_add_func("/client-rules/tier/bad-state",
                     test_a_bad_agent_state_is_a_notice);
     g_test_add_func("/client-rules/tier/skipped",
