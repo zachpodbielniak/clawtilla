@@ -1518,6 +1518,19 @@ is not a rising edge, the turn state is not refreshed, and the new turn
 runs holding the abandoned one's depth, origin and task -- the same wrong
 answer, reached from the other side.
 
+libreclaw's half of the same contract: the indicator rises when a
+message's turn *starts*, not when the message arrives.  It used to rise
+at arrival, which was the same moment for every room-keyed routing mode
+-- a session's queue held one conversation -- and stopped being one
+under ~session.routing_mode: agent~, where one session drains every
+room's messages in series.  Raised at arrival, a message queued behind
+another room's turn announced a turn that had not begun, its 25-second
+refresh kept re-raising it across other rooms' turns, and every edge the
+daemon derived from that stream armed turn state for the wrong turn.
+The session now announces the drain itself (~LcSession::turn-started~),
+so the frames the daemon reads correspond to turns however the messages
+queued.
+
 *** One turn per room, because an agent runs one
 
 An agent can be mid-turn in several rooms at once.  ~LcSession~'s
