@@ -1786,14 +1786,42 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
 
     /*
      * An agent that replies without naming a room is answering whoever
-     * last wrote to it, which for a delegated task is the agent that
-     * delegated.  Without this fallback a reply would have nowhere to go
-     * and be dropped, which reads as the agent ignoring the request.
+     * it last ran a turn for, and the turn state records exactly that.
+     * Without a fallback the reply would have nowhere to go and be
+     * dropped, which reads as the agent ignoring the request.
+     *
+     * This used to route at the chief of staff -- a proxy for "the
+     * delegator" from before the turn state existed -- and the proxy
+     * broke on the chief itself: the chief's own roomless reply
+     * resolved to a direct room of the chief with the chief, which has
+     * one member, so record_in_room() published it and the delivery
+     * loop, which skips the sender, queued it for nobody.  Recorded,
+     * eventless for every client, and read by no one is worse than
+     * dropped, because it looks routed.
      */
     if (destination == NULL) {
-        ClawtAgent *chief = clawt_agent_manager_get_chief_of_staff(self->agents);
+        ClawtAgent *replier = clawt_agent_manager_get(self->agents, agent_id);
 
-        destination = (chief != NULL) ? clawt_agent_get_id(chief) : NULL;
+        if (replier != NULL)
+            destination = clawt_agent_get_last_turn_room(replier);
+    }
+
+    /*
+     * No turn on record either -- a reply across a daemon restart, or
+     * an agent whose first frame is roomless.  The operator's room with
+     * this agent is the one destination that always exists and is
+     * always read, which beats guessing at a peer and beats a silent
+     * drop.
+     */
+    if (destination == NULL) {
+        ClawtRoom *operator_room = clawt_room_manager_get_direct(
+            self->rooms, agent_id, "user");
+
+        g_warning("Agent '%s' replied without naming a room and has no "
+                  "turn on record; routing the reply to its operator "
+                  "conversation", agent_id);
+
+        destination = clawt_room_get_id(operator_room);
     }
 
     if (destination == NULL)

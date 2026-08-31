@@ -3168,6 +3168,84 @@ test_a_finished_turn_clears_the_depth(void)
 }
 
 /*
+ * A reply that names no room follows the agent's last turn.
+ *
+ * The old fallback routed a roomless reply at the chief of staff -- a
+ * proxy for "the delegator" from before the daemon kept turn state.
+ * The proxy broke worst on the chief itself: its own roomless reply
+ * resolved to a direct room of the chief with the chief, one member,
+ * and clawt_mailbox_router_send() skips the sender, so the text was
+ * recorded and queued for nobody, which looks routed.  The turn state
+ * knows the actual answer -- the room of the agent's most recent
+ * turn -- and an agent with no turn on record falls back to its
+ * operator conversation, the one destination that always exists and
+ * is always read.
+ */
+static void
+test_a_roomless_reply_follows_the_last_turn(void)
+{
+    Fixture fixture = { 0 };
+    ClawtRoomManager *rooms;
+    ClawtRoom *peer_room;
+    ClawtRoom *operator_room;
+    g_autoptr(GPtrArray) peer_history = NULL;
+    g_autoptr(GPtrArray) operator_history = NULL;
+    ClawtMessage *landed;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: gamma\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    rooms = clawt_daemon_get_rooms(fixture.daemon);
+
+    /*
+     * alpha ran its last turn in a room with beta, and the reply frame
+     * carries no room.  It must land in that room -- not at a chief.
+     */
+    peer_room = clawt_room_manager_get_direct(rooms, "alpha", "beta");
+    g_signal_emit_by_name(clawt_daemon_get_link_server(fixture.daemon),
+                          "typing", "alpha",
+                          clawt_room_get_id(peer_room), TRUE);
+    g_signal_emit_by_name(clawt_daemon_get_link_server(fixture.daemon),
+                          "typing", "alpha",
+                          clawt_room_get_id(peer_room), FALSE);
+    g_signal_emit_by_name(clawt_daemon_get_link_server(fixture.daemon),
+                          "message", "alpha", NULL, "Done.", NULL);
+
+    peer_history = clawt_room_get_history(peer_room, 0);
+    g_assert_cmpuint(peer_history->len, ==, 1);
+    landed = g_ptr_array_index(peer_history, 0);
+    g_assert_cmpstr(clawt_message_get_body(landed), ==, "Done.");
+
+    /*
+     * gamma has never run a turn.  Its roomless reply lands in the
+     * operator conversation -- visible -- rather than at a chief or on
+     * the floor, and the daemon says why with a warning.
+     */
+    {
+        GLogLevelFlags was_fatal = g_log_set_always_fatal(G_LOG_FATAL_MASK);
+        guint handler = g_log_set_handler("Clawtilla",
+                                          G_LOG_LEVEL_WARNING |
+                                          G_LOG_FLAG_FATAL |
+                                          G_LOG_FLAG_RECURSION,
+                                          swallow_warnings, NULL);
+
+        g_signal_emit_by_name(clawt_daemon_get_link_server(fixture.daemon),
+                              "message", "gamma", NULL, "Hello?", NULL);
+
+        g_log_remove_handler("Clawtilla", handler);
+        g_log_set_always_fatal(was_fatal);
+    }
+
+    operator_room = clawt_room_manager_get_direct(rooms, "gamma", "user");
+    operator_history = clawt_room_get_history(operator_room, 0);
+    g_assert_cmpuint(operator_history->len, ==, 1);
+    landed = g_ptr_array_index(operator_history, 0);
+    g_assert_cmpstr(clawt_message_get_body(landed), ==, "Hello?");
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * The link server noticing a contested id has to reach somebody.
  *
  * The fence stops the flapping, which is the repair; it does not tell
@@ -9541,6 +9619,8 @@ main(int argc, char *argv[])
                     test_the_limit_still_fires_across_turns);
     g_test_add_func("/daemon/hop-depth/cleared-when-a-turn-ends",
                     test_a_finished_turn_clears_the_depth);
+    g_test_add_func("/daemon/link/a-roomless-reply-follows-the-last-turn",
+                    test_a_roomless_reply_follows_the_last_turn);
     g_test_add_func("/daemon/hop-depth/channel-turn-starts-fresh",
                     test_a_channel_turn_starts_from_zero);
     g_test_add_func("/daemon/attachment-cannot-escape",

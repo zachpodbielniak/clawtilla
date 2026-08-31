@@ -594,6 +594,25 @@ const gchar *clawt_agent_get_turn_task_id_in(ClawtAgent  *self,
                                              const gchar *room_id);
 
 /**
+ * clawt_agent_get_last_turn_room:
+ * @self: a #ClawtAgent
+ *
+ * The room the agent's most recent turn began in, or %NULL when no
+ * named room has had one.
+ *
+ * This is the daemon's own record of "whoever the agent last ran a
+ * turn for", which is what a reply frame that names no room is
+ * answering.  The old fallback for such a frame -- route it at the
+ * chief of staff -- was a proxy for the same idea, and it broke on the
+ * chief itself: a chief's roomless reply resolved to a direct room
+ * between the chief and the chief, one member, zero deliverable
+ * recipients, recorded and published and read by nobody.
+ *
+ * Returns: (transfer none) (nullable): the room id
+ */
+const gchar *clawt_agent_get_last_turn_room(ClawtAgent *self);
+
+/**
  * clawt_agent_start:
  * @self: a #ClawtAgent
  * @error: (out) (optional): return location for a #GError

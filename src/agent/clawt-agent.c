@@ -573,6 +573,22 @@ latest_turn(ClawtAgent *self)
     return NULL;
 }
 
+const gchar *
+clawt_agent_get_last_turn_room(ClawtAgent *self)
+{
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), NULL);
+
+    /*
+     * The unnamed sentinel is a bookkeeping key, not a room anybody can
+     * route to; a caller asking "which room" must hear "none" for it.
+     */
+    if (self->last_room == NULL ||
+        g_strcmp0(self->last_room, CLAWT_AGENT_UNNAMED_ROOM) == 0)
+        return NULL;
+
+    return self->last_room;
+}
+
 gint
 clawt_agent_get_hop_depth(ClawtAgent *self)
 {
