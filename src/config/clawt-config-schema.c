@@ -1824,6 +1824,33 @@ static const ClawtSchemaEntry schema[] = {
   "config.yaml, so an unavailable primary model fails the turn rather\n"
   "than falling back to anything.", "0.1.0" },
 
+{ "agents.session", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "How this agent's conversations map to AI sessions.", "0.2.0" },
+
+{ "agents.session.routing_mode", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "sender-room", lc_routing_mode_get_type,
+  "How many context windows this agent is.\n"
+  "\n"
+  "sender-room, the default, gives every (room, sender) pair a session\n"
+  "of its own: the conversation with the operator, the conversation\n"
+  "with each peer, each a separate AI context that shares nothing with\n"
+  "the others. room drops the sender, so everybody in one room shares\n"
+  "a session. agent is one session for everything -- every room, every\n"
+  "sender, one conversation.\n"
+  "\n"
+  "The default suits an agent that serves several people and should\n"
+  "keep them apart. It is the wrong shape for an orchestrator: a chief\n"
+  "of staff told \"only use oryx\" in the operator's room has never\n"
+  "heard that constraint when a peer's reply wakes the sibling session,\n"
+  "and what looks like one agent contradicting itself is three contexts\n"
+  "that have never met. Give such an agent agent mode. The cost is\n"
+  "concurrency -- one session runs one turn at a time, so three busy\n"
+  "rooms take turns -- and the mode changes every session key, so each\n"
+  "conversation starts a fresh context once when it is switched.\n"
+  "\n"
+  "The values are libreclaw's own (its session.routing_mode); the\n"
+  "daemon renders this straight through.", "0.2.0" },
+
 { "agents.runtime", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "How this agent's libreclaw instance is hosted.", "0.1.0" },
 

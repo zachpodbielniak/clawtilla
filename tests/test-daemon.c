@@ -4724,6 +4724,126 @@ test_a_settled_task_notifies_its_delegator(void)
                                 "All five guests answer."));
         g_assert_nonnull(strstr(clawt_mailbox_item_get_body(item),
                                 "reported it done itself"));
+
+        /*
+         * No conversation was recorded on the task -- created straight
+         * through the manager, as before the field was wired -- so the
+         * notice falls back to the delegator-assignee room.  Pinned so
+         * the fallback stays a fallback rather than quietly becoming
+         * unreachable.
+         */
+        g_assert_cmpstr(clawt_mailbox_item_get_room(item), ==,
+                        "dm:alpha:beta");
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * The settle notice returns to the conversation that delegated.
+ *
+ * clawtilla_delegate records the calling turn's room on the task, and
+ * "You will be notified here" is a promise about that conversation.
+ * The notice used to go to the delegator-assignee room instead, sent
+ * as "clawtilla" -- and libreclaw keys sessions on (room, sender), so
+ * it matched no session either way and woke a fresh 24-line context
+ * per (room, system) pair.  The room is half the fix (the other half
+ * is the session_peer hint on the frame); this pins the half the
+ * daemon owns.
+ */
+static void
+test_the_settle_notice_returns_to_the_delegating_conversation(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentManager *agents;
+    ClawtTaskManager *tasks;
+    ClawtRoomManager *rooms;
+    ClawtTask *task;
+    ClawtAgent *alpha;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    agents = clawt_daemon_get_agents(fixture.daemon);
+    tasks = clawt_daemon_get_tasks(fixture.daemon);
+    rooms = clawt_daemon_get_rooms(fixture.daemon);
+    alpha = clawt_agent_manager_get(agents, "alpha");
+
+    /* The conversation the delegation was made in. */
+    g_assert_nonnull(clawt_room_manager_get_direct(rooms, "alpha", "user"));
+
+    task = clawt_task_manager_create(tasks, "alpha", "beta",
+                                     "verify the guests", NULL, NULL);
+    g_assert_nonnull(task);
+
+    /* What clawtilla_delegate records from the calling turn. */
+    clawt_task_set_room(task, "dm:alpha:user");
+
+    g_assert_true(clawt_task_manager_complete(tasks,
+                                              clawt_task_get_id(task),
+                                              "All five guests answer."));
+
+    {
+        g_autoptr(GPtrArray) items =
+            clawt_mailbox_list(clawt_agent_get_mailbox(alpha), NULL);
+        ClawtMailboxItem *item;
+
+        g_assert_cmpuint(items->len, ==, 1);
+        item = g_ptr_array_index(items, 0);
+
+        g_assert_cmpstr(clawt_mailbox_item_get_room(item), ==,
+                        "dm:alpha:user");
+        g_assert_cmpstr(clawt_mailbox_item_get_from(item), ==, "clawtilla");
+
+        /* The notice's own routing instruction names the same room. */
+        g_assert_nonnull(strstr(clawt_mailbox_item_get_body(item),
+                                "This conversation is room 'dm:alpha:user'"));
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A recorded room that no longer resolves falls back rather than
+ * silencing the notice.  Task state is in memory and rooms are not,
+ * so the two can genuinely disagree after a partial restart -- and a
+ * delegator not told at all is the original bug wearing a new hat.
+ */
+static void
+test_a_stale_delegating_room_falls_back_to_the_pair(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentManager *agents;
+    ClawtTaskManager *tasks;
+    ClawtTask *task;
+    ClawtAgent *alpha;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    agents = clawt_daemon_get_agents(fixture.daemon);
+    tasks = clawt_daemon_get_tasks(fixture.daemon);
+    alpha = clawt_agent_manager_get(agents, "alpha");
+
+    task = clawt_task_manager_create(tasks, "alpha", "beta",
+                                     "verify the guests", NULL, NULL);
+    g_assert_nonnull(task);
+
+    /* Recorded, but nothing ever made this room. */
+    clawt_task_set_room(task, "dm:alpha:vanished");
+
+    g_assert_true(clawt_task_manager_complete(tasks,
+                                              clawt_task_get_id(task),
+                                              "done"));
+
+    {
+        g_autoptr(GPtrArray) items =
+            clawt_mailbox_list(clawt_agent_get_mailbox(alpha), NULL);
+
+        g_assert_cmpuint(items->len, ==, 1);
+        g_assert_cmpstr(
+            clawt_mailbox_item_get_room(g_ptr_array_index(items, 0)), ==,
+            "dm:alpha:beta");
     }
 
     fixture_teardown(&fixture);
@@ -9529,6 +9649,12 @@ main(int argc, char *argv[])
                     test_a_thread_naming_no_task_still_routes);
     g_test_add_func("/daemon/task/a-settled-task-notifies-its-delegator",
                     test_a_settled_task_notifies_its_delegator);
+    g_test_add_func(
+        "/daemon/the-settle-notice-returns-to-the-delegating-conversation",
+        test_the_settle_notice_returns_to_the_delegating_conversation);
+    g_test_add_func(
+        "/daemon/a-stale-delegating-room-falls-back-to-the-pair",
+        test_a_stale_delegating_room_falls_back_to_the_pair);
     g_test_add_func("/daemon/task/a-progress-note-wakes-nobody",
                     test_a_progress_note_wakes_nobody);
     g_test_add_func("/daemon/task/a-cancel-notice-skips-the-canceller",

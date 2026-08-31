@@ -175,7 +175,22 @@ gboolean clawt_task_transfer_owner(ClawtTask *self, const gchar *new_owner);
 /**
  * clawt_task_set_room:
  * @self: a #ClawtTask
- * @room: (nullable): the room this task belongs to
+ * @room: (nullable): the room the delegating turn was running in
+ *
+ * Which conversation this task came out of.  clawtilla_delegate sets
+ * it from the calling turn's room, and the settle notice returns
+ * there: "You will be notified here" is a promise about a
+ * conversation, and for an agent whose sessions are partitioned per
+ * room, delivering the notice anywhere else wakes a context that
+ * never heard the delegation.  The field sat here unset and unread
+ * for its whole life while the notice went to the room the *assignee*
+ * shares -- a decision whose recorded reason ("so the delegator's
+ * session has the conversation behind it") described room-keyed
+ * sessions the router does not run.
+ *
+ * %NULL when the delegating turn had no room on it (a tool call with
+ * no turn_room); the notice then falls back to the delegator-assignee
+ * room.
  *
  * The setters below all take %NULL to clear the field.  They exist for
  * the manager and for reading a task back off the wire; ordinary code

@@ -1023,6 +1023,28 @@ clawt_config_render_agent(ClawtConfig       *config,
         append_key_value(out, 2, "persist_dir", sessions);
 
         /*
+         * How many context windows the agent is, rendered from
+         * `agents.session.routing_mode`.
+         *
+         * libreclaw has read `session.routing_mode` for as long as it
+         * has had a router, and clawtilla had never written it -- so
+         * the partitioning was unconfigurable from the fleet, and the
+         * one agent whose job is carrying an operator's intent across
+         * conversations could not be made one conversation.  Written
+         * even at the default, for the same reason as the watchdog
+         * below: a config that states the value is a config somebody
+         * can read the answer out of.
+         *
+         * The value is a nickname straight off libreclaw's own enum
+         * (the schema's enum_type *is* lc_routing_mode_get_type), so
+         * the two ends cannot drift apart -- a mode added there shows
+         * up here with no list to update.
+         */
+        append_key_value(out, 2, "routing_mode",
+                         clawt_agent_config_get_string(
+                             agent, "session.routing_mode"));
+
+        /*
          * The turn watchdog, rendered from
          * `agents.runtime.turn_timeout_seconds`.
          *

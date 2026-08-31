@@ -1648,6 +1648,33 @@ agents:
       # than falling back to anything.
       fallbacks: []
 
+    # How this agent's conversations map to AI sessions.
+    session:
+
+      # How many context windows this agent is.
+      #
+      # sender-room, the default, gives every (room, sender) pair a session
+      # of its own: the conversation with the operator, the conversation
+      # with each peer, each a separate AI context that shares nothing with
+      # the others. room drops the sender, so everybody in one room shares
+      # a session. agent is one session for everything -- every room, every
+      # sender, one conversation.
+      #
+      # The default suits an agent that serves several people and should
+      # keep them apart. It is the wrong shape for an orchestrator: a chief
+      # of staff told "only use oryx" in the operator's room has never
+      # heard that constraint when a peer's reply wakes the sibling session,
+      # and what looks like one agent contradicting itself is three contexts
+      # that have never met. Give such an agent agent mode. The cost is
+      # concurrency -- one session runs one turn at a time, so three busy
+      # rooms take turns -- and the mode changes every session key, so each
+      # conversation starts a fresh context once when it is switched.
+      #
+      # The values are libreclaw's own (its session.routing_mode); the
+      # daemon renders this straight through.
+      # Values: sender-room, room, agent
+      routing_mode: "sender-room"
+
     # How this agent's libreclaw instance is hosted.
     runtime:
 

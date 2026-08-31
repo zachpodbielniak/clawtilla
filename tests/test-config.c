@@ -845,6 +845,96 @@ test_validate_rejects_impossible_values(void)
 }
 
 /*
+ * The routing mode reaches the agent's own config.yaml, and libreclaw
+ * understands every value clawtilla can render.
+ *
+ * libreclaw has read session.routing_mode for as long as it has had a
+ * router, and clawtilla had never written it -- so an agent's session
+ * partitioning was unconfigurable from the fleet, and the chief of
+ * staff this surfaced on was three context windows that had never met.
+ * The schema's value list is lc_routing_mode_get_type() itself, so the
+ * two ends cannot disagree about what exists; what can still break is
+ * the *spelling* -- clawtilla renders enum nicknames and libreclaw's
+ * parser historically accepted an underscore form -- so the walk below
+ * renders every nickname and hands the result to libreclaw's own
+ * parser.  A value that renders but does not parse is a mode a fleet
+ * can name and silently not get: libreclaw warns and reverts to
+ * sender_room, which is precisely the partitioning the operator was
+ * trying to leave.
+ */
+static void
+test_routing_mode_survives_the_render_parse_round_trip(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-cfg-XXXXXX", NULL);
+    GEnumClass *cls = g_type_class_ref(LC_TYPE_ROUTING_MODE);
+    guint i;
+
+    /* Unset, the default is stated rather than omitted. */
+    {
+        g_autoptr(GError) error = NULL;
+        g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+            "agents:\n  - id: plain\n", &error);
+        GPtrArray *agents;
+        g_autofree gchar *rendered = NULL;
+
+        g_assert_no_error(error);
+        agents = clawt_config_get_agents(config);
+
+        rendered = clawt_config_render_agent(
+            config, g_ptr_array_index(agents, 0),
+            "/tmp/s.sock", "/tmp/state", NULL);
+
+        g_assert_nonnull(strstr(rendered,
+                                "routing_mode: \"sender-room\""));
+    }
+
+    for (i = 0; i < cls->n_values; i++) {
+        const GEnumValue *value = &cls->values[i];
+        g_autoptr(GError) error = NULL;
+        g_autoptr(ClawtConfig) config = NULL;
+        g_autoptr(LcConfig) parsed = lc_config_new();
+        GPtrArray *agents;
+        g_autofree gchar *yaml = NULL;
+        g_autofree gchar *rendered = NULL;
+        g_autofree gchar *needle = NULL;
+        g_autofree gchar *path = NULL;
+
+        yaml = g_strdup_printf("agents:\n"
+                               "  - id: modal\n"
+                               "    session:\n"
+                               "      routing_mode: %s\n",
+                               value->value_nick);
+
+        config = clawt_config_load_from_string(yaml, &error);
+        g_assert_no_error(error);
+        agents = clawt_config_get_agents(config);
+
+        rendered = clawt_config_render_agent(
+            config, g_ptr_array_index(agents, 0),
+            "/tmp/s.sock", "/tmp/state", NULL);
+
+        needle = g_strdup_printf("routing_mode: \"%s\"",
+                                 value->value_nick);
+        g_assert_nonnull(strstr(rendered, needle));
+
+        /* And libreclaw's own parser reads the mode back out. */
+        path = g_strdup_printf("%s/rendered-%s.yaml", dir,
+                               value->value_nick);
+        g_assert_true(g_file_set_contents(path, rendered, -1, &error));
+        g_assert_no_error(error);
+
+        g_assert_true(lc_config_load_from_path(parsed, path, &error));
+        g_assert_no_error(error);
+
+        g_assert_cmpint(lc_config_get_routing_mode(parsed), ==,
+                        value->value);
+    }
+
+    g_type_class_unref(cls);
+    clawt_test_remove_tree(dir);
+}
+
+/*
  * An agent with a computer gets a standing per-turn directive naming it.
  *
  * An agent runs as a libreclaw process on the host, so its own bash,
@@ -1230,6 +1320,9 @@ main(int argc, char *argv[])
     g_test_add_func("/config/file/missing-loads-defaults",
                     test_missing_file_loads_as_defaults);
     g_test_add_func("/config/validate-rejects", test_validate_rejects_impossible_values);
+    g_test_add_func(
+        "/config/routing-mode-survives-the-render-parse-round-trip",
+        test_routing_mode_survives_the_render_parse_round_trip);
 
     return g_test_run();
 }

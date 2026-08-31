@@ -115,9 +115,18 @@ gboolean clawt_link_is_open(ClawtLink *self);
  * @sender_name: (nullable): their display name
  * @body: the message
  * @thread_id: (nullable): thread to reply into
+ * @session_peer: (nullable): the counterparty whose conversation this
+ *   message belongs to, when that is not @sender_id
  * @error: (out) (optional): return location for a #GError
  *
  * Delivers a message to the agent.
+ *
+ * @session_peer rides the frame for libreclaw's router, which keys
+ * sessions on (room, sender): a system notice sent as "clawtilla" into
+ * a direct room matched no existing session and allocated a fresh one
+ * holding nothing but the notice.  With the peer named, the notice
+ * resumes the conversation it is about.  The sender is untouched --
+ * transcripts and guards still see who wrote it.
  *
  * Returns: %TRUE if it reached the socket
  */
@@ -127,6 +136,7 @@ gboolean clawt_link_deliver(ClawtLink    *self,
                             const gchar  *sender_name,
                             const gchar  *body,
                             const gchar  *thread_id,
+                            const gchar  *session_peer,
                             GError      **error);
 
 /**

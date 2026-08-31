@@ -964,7 +964,7 @@ test_deliver_reaches_the_agent(void)
     g_assert_true(clawt_link_deliver(
         clawt_link_server_get_link(fixture.server, "chief"),
         "standup", "researcher", "Researcher", "summary attached", NULL,
-        &error));
+        NULL, &error));
     g_assert_no_error(error);
 
     delivered = client_read(&client, &kind);
@@ -975,6 +975,81 @@ test_deliver_reaches_the_agent(void)
                     ==, "summary attached");
     g_assert_cmpstr(json_object_get_string_member(payload, "sender"),
                     ==, "researcher");
+
+    /*
+     * No hint was given, so no member appears: the frame only carries
+     * session_peer when it differs from the sender, and a member that
+     * is always present stops reading as the exception it marks.
+     */
+    g_assert_false(json_object_has_member(payload, "session_peer"));
+
+    client_close(&client);
+    capture_clear(&capture);
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A delivery that names the conversation carries it on the frame.
+ *
+ * The whole reason the member exists: a settle notice is *from*
+ * "clawtilla" but *about* the conversation with a peer or the
+ * operator, and libreclaw keys sessions on (room, sender) -- keyed on
+ * its literal sender, the notice matched nothing and libreclaw
+ * allocated a 24-line context per (room, system) pair that then
+ * messaged the operator knowing nothing.  The sender must stay who
+ * wrote it; only the routing hint changes.
+ */
+static void
+test_deliver_carries_the_session_peer(void)
+{
+    Fixture fixture = { 0 };
+    Capture capture = { 0 };
+    Client client = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonObject) welcome = NULL;
+    g_autoptr(JsonObject) delivered = NULL;
+    g_autofree gchar *kind = NULL;
+    JsonObject *payload;
+
+    fixture_setup(&fixture);
+    g_signal_connect(fixture.server, "link-added",
+                     G_CALLBACK(on_link_added), &capture);
+    g_assert_true(clawt_link_server_start(fixture.server, &error));
+
+    g_assert_true(client_connect(&client, fixture.socket_path));
+    client_send(&client,
+        "{\"v\":1,\"kind\":\"control.hello\",\"payload\":{\"agent_id\":\"chief\"}}");
+    g_assert_true(pump_until(have_added, &capture, 2000));
+    welcome = client_read(&client, NULL);
+
+    g_assert_true(clawt_link_deliver(
+        clawt_link_server_get_link(fixture.server, "chief"),
+        "dm:chief:user", "clawtilla", NULL,
+        "[clawtilla] Task task-1 is finished.", "task-1",
+        "user", &error));
+    g_assert_no_error(error);
+
+    delivered = client_read(&client, &kind);
+    g_assert_cmpstr(kind, ==, "chat.message_in");
+
+    payload = json_object_get_object_member(delivered, "payload");
+    g_assert_cmpstr(json_object_get_string_member(payload, "sender"),
+                    ==, "clawtilla");
+    g_assert_cmpstr(json_object_get_string_member(payload, "session_peer"),
+                    ==, "user");
+
+    /* Equal to the sender it would be noise; the link drops it. */
+    g_assert_true(clawt_link_deliver(
+        clawt_link_server_get_link(fixture.server, "chief"),
+        "dm:chief:user", "user", NULL, "hello", NULL,
+        "user", &error));
+    g_assert_no_error(error);
+
+    g_clear_pointer(&delivered, json_object_unref);
+    g_clear_pointer(&kind, g_free);
+    delivered = client_read(&client, &kind);
+    payload = json_object_get_object_member(delivered, "payload");
+    g_assert_false(json_object_has_member(payload, "session_peer"));
 
     client_close(&client);
     capture_clear(&capture);
@@ -1107,6 +1182,8 @@ main(int argc, char *argv[])
     g_test_add_func("/link/malformed-frames", test_malformed_frames_do_not_drop_the_link);
     g_test_add_func("/link/disconnect", test_disconnect_removes_the_link);
     g_test_add_func("/link/deliver", test_deliver_reaches_the_agent);
+    g_test_add_func("/link/deliver-carries-the-session-peer",
+                    test_deliver_carries_the_session_peer);
     g_test_add_func("/link/real-channel", test_real_channel_talks_to_the_server);
 
     return g_test_run();

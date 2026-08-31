@@ -73,6 +73,70 @@ ever had was missing from a listing after a restart until the same two
 agents happened to speak again -- the transcripts were there, nothing
 had asked for them.
 
+** Sessions: how many conversations an agent is
+
+An agent is not automatically one conversation.  libreclaw allocates
+one AI session -- one context window -- per session /key/, and the key
+is built from the channel, the room and the sender
+(~lc_router_resolve_session_key()~).  Under the default mode an agent
+talking to its operator and to two peers is *three* separate contexts
+that share nothing: the same name, the same tools, the same workspace,
+and no memory in common.  A constraint given in one -- "only use oryx"
+-- has never been heard by the others, and what reads as one agent
+contradicting itself is sibling contexts that have never met.
+
+~session.routing_mode~ on the agent chooses the shape:
+
+- ~sender-room~ (the default) :: one session per (room, sender) pair.
+  Right for an agent serving several people who should be kept apart;
+  it is libreclaw's chat-bot heritage.  In clawtilla, where a direct
+  room has exactly one counterparty, it means one context per
+  counterparty.
+- ~room~ :: one session per room; everybody in a shared room lands in
+  the same context.  Direct messages still fall back to per-sender.
+- ~agent~ :: one session for everything.  Every room and every sender
+  -- the operator, every peer, every notice -- is a single
+  conversation, which is the shape an orchestrator's job assumes: a
+  chief of staff exists to carry one operator's intent into
+  conversations with subordinates, and it cannot carry what a sibling
+  context was told.  The cost is concurrency -- one session runs one
+  turn at a time, so three busy rooms take turns instead of running in
+  parallel -- and libreclaw serialises the queue, so nothing is lost,
+  only later.
+
+#+begin_src yaml
+agents:
+  - id: chief-of-staff
+    chief_of_staff: true
+    session:
+      routing_mode: agent
+#+end_src
+
+Give ~agent~ mode to orchestrators and keep the default for workers: a
+worker's conversations really are independent (a task from the chief, a
+question from a lead), and parallel turns are worth more there than a
+shared memory.  Replies are unaffected by the mode -- libreclaw
+addresses each reply from the message it answers, so a shared session
+still answers into the right room.
+
+Two things follow from the key that are worth knowing before they are
+surprising:
+
+- *Changing the mode re-keys every session.*  Existing sessions are
+  left behind (archived by libreclaw, not deleted), and each
+  conversation starts a fresh context once.  For a fleet mid-incident
+  that is usually the point; do it knowingly.
+- *Constraints travel in text, not in the agent.*  Under the
+  partitioned modes, anything an assignee or a sibling context must
+  honour has to ride in the delegation text or the message itself --
+  the task prompt is the only thing guaranteed to arrive.  This is
+  true between /agents/ in every mode, since two agents never share a
+  session at all.
+
+The system's own notices are keyed into the conversation they are
+about, whichever mode is set -- see the settle notice below for the
+mechanism (~session_peer~).
+
 ** Tasks
 
 A task is a delegated unit of work with an origin, an assignee, a prompt,
@@ -195,8 +259,14 @@ nobody standing outside it.
 
 When a task reaches a terminal state -- completed, failed, stalled or
 cancelled -- clawtilla itself tells the delegator, with a notice into
-the room the delegation lives in.  The assignee does not send it and
-cannot suppress it: it finishes, and the daemon carries the result up.
+the room the delegation was /made/ in: ~clawtilla_delegate~ records the
+calling turn's room on the task, and the notice returns there, which is
+what makes "You will be notified here" a promise about a conversation
+rather than about an agent.  A task with no room recorded -- created
+from a turn with no room on it, or from before a daemon restart cleared
+the manager -- falls back to the delegator-assignee room.  The assignee
+does not send the notice and cannot suppress it: it finishes, and the
+daemon carries the result up.
 
 This closed a real incident.  A chief-of-staff delegated a smoke test,
 told its operator "I'll relay it when it lands", and ended its turn; the
@@ -226,6 +296,18 @@ The notice is:
   bounded by what produces them; measured, the budget check would
   swallow the notice that a task spent its budget and the stall check
   would swallow the notice that an exchange was ended.
+- *keyed into the conversation it is about.*  libreclaw allocates AI
+  sessions per (room, sender), and a notice's sender is ~clawtilla~ --
+  keyed literally, it matched no session the delegator had, so
+  libreclaw allocated a fresh context per (room, system) pair whose
+  entire knowledge was the notice itself, and the relay it wrote was
+  written by an agent that had never heard the delegation.  The frame
+  therefore carries a ~session_peer~ naming the room's counterparty,
+  which stands in for the sender in libreclaw's session key and
+  nothing else: the notice resumes the conversation that delegated,
+  with the delegation behind it.  Derived at the drain from the room's
+  own membership, so every system-sender delivery into a direct room
+  is covered, not only this one.
 - *honest about how it ended.*  An inferred completion says the result
   was not written as a report and may be an interim note; an explicit
   one says the assignee reported it done; a failure, a stall and a

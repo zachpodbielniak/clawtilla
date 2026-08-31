@@ -603,6 +603,106 @@ test_delegate_creates_a_task(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * A delegation remembers which conversation asked for it.
+ *
+ * Under per-room sessions "the delegator" is one agent but several
+ * contexts, and everything the listings said -- "delegated by you",
+ * the reason line -- was true of the agent and silent about the
+ * conversation.  A chief read a sibling context's delegation as its
+ * own and blamed a blameless peer for it, twice.  The room is the
+ * conversation's name: recorded at delegate time from the calling
+ * turn, shown wherever the task is, and carried to the settle notice
+ * so "you will be notified here" means here.
+ */
+static void
+test_a_delegation_remembers_which_conversation_asked(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    g_autoptr(JsonNode) status = NULL;
+    g_autoptr(JsonNode) listing = NULL;
+    g_autoptr(GPtrArray) tasks = NULL;
+    ClawtTask *task;
+    gboolean is_error = FALSE;
+    const gchar *text;
+    g_autofree gchar *status_args = NULL;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: researcher\n");
+
+    response = call_tool_in(&fixture, "chief", "dm:chief:user",
+                            "clawtilla_delegate",
+                            "{\"agent_id\":\"researcher\","
+                            "\"task\":\"summarise the week\"}");
+    text = response_text(response, &is_error);
+    g_assert_false(is_error);
+
+    tasks = clawt_task_manager_list(fixture.tasks, "researcher", TRUE);
+    g_assert_cmpuint(tasks->len, ==, 1);
+    task = g_ptr_array_index(tasks, 0);
+
+    g_assert_cmpstr(clawt_task_get_room(task), ==, "dm:chief:user");
+
+    /* The status line names it. */
+    status_args = g_strdup_printf("{\"task_id\":\"%s\"}",
+                                  clawt_task_get_id(task));
+    status = call_tool(&fixture, "chief", "clawtilla_task_status",
+                       status_args);
+    text = response_text(status, &is_error);
+    g_assert_false(is_error);
+    g_assert_nonnull(strstr(text, "delegated from dm:chief:user"));
+
+    /* And the list says which of your conversations it came out of. */
+    listing = call_tool(&fixture, "chief", "clawtilla_task_list", "{}");
+    text = response_text(listing, &is_error);
+    g_assert_false(is_error);
+    g_assert_nonnull(strstr(text,
+        "researcher (from your conversation in dm:chief:user)"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And one from a turn with no room reads as it always did.  A tool
+ * call can arrive with no turn_room (the fold across running turns
+ * answers), and a task from before the field existed has none --
+ * neither may render a "(from your conversation in (null))".
+ */
+static void
+test_a_delegation_with_no_conversation_reads_as_before(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    g_autoptr(JsonNode) listing = NULL;
+    g_autoptr(GPtrArray) tasks = NULL;
+    gboolean is_error = FALSE;
+    const gchar *text;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: researcher\n");
+
+    response = call_tool(&fixture, "chief", "clawtilla_delegate",
+                         "{\"agent_id\":\"researcher\","
+                         "\"task\":\"summarise the week\"}");
+    text = response_text(response, &is_error);
+    g_assert_false(is_error);
+
+    tasks = clawt_task_manager_list(fixture.tasks, "researcher", TRUE);
+    g_assert_cmpuint(tasks->len, ==, 1);
+    g_assert_null(clawt_task_get_room(g_ptr_array_index(tasks, 0)));
+
+    listing = call_tool(&fixture, "chief", "clawtilla_task_list", "{}");
+    text = response_text(listing, &is_error);
+    g_assert_false(is_error);
+    g_assert_null(strstr(text, "from your conversation"));
+    g_assert_nonnull(strstr(text, "researcher"));
+
+    fixture_teardown(&fixture);
+}
+
 /* Delegating to somebody who is not there points at the tool that lists
  * who is. */
 static void
@@ -2836,6 +2936,12 @@ main(int argc, char *argv[])
     g_test_add_func("/mcp/delegate", test_delegate_creates_a_task);
     g_test_add_func("/mcp/delegate-unknown",
                     test_delegate_to_unknown_agent_suggests_listing);
+    g_test_add_func(
+        "/mcp-tools/a-delegation-remembers-which-conversation-asked",
+        test_a_delegation_remembers_which_conversation_asked);
+    g_test_add_func(
+        "/mcp-tools/a-delegation-with-no-conversation-reads-as-before",
+        test_a_delegation_with_no_conversation_reads_as_before);
     g_test_add_func("/mcp/undeliverable-delegation",
                     test_undeliverable_delegation_fails_its_task);
 

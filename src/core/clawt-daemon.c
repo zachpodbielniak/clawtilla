@@ -1266,13 +1266,26 @@ settle_notice_target(ClawtDaemon *self, ClawtTask *task, gint state)
  * operator the polling mechanism: the result existed, was correct, and
  * was invisible until somebody asked.
  *
- * Into the room the delegation lives in, so the transcript shows the
- * settle where a person would look for it, and so the delegator's
- * session has the conversation behind it.  Origin "clawtilla" is what
- * lets the delegator relay: clawtilla_message_user's guard refuses
- * turns a *peer* started, and this turn is started by nobody's ask.
- * The depth is zero because a notice is not a hop -- a guard that
- * refused it for the chain's depth would hide the chain's own ending.
+ * Into the room the delegation was *made* in -- the calling turn's
+ * room, recorded on the task -- so the notice lands in the
+ * conversation that is waiting for it and "You will be notified here"
+ * is true about the here where it was said.  This block used to pick
+ * the delegator-assignee room instead, reasoning "so the delegator's
+ * session has the conversation behind it" -- which describes
+ * room-keyed sessions while the router keys on (room, sender): sent
+ * as "clawtilla" into that room, the notice matched no session at all
+ * and libreclaw allocated a fresh one per (room, system) pair.  The
+ * chief this was built for was three context windows, and the notice
+ * woke a fourth, 24 lines long, which then messaged the operator with
+ * none of the conversation behind it.  That room remains the
+ * fallback for a task with no room recorded (created before a restart
+ * cleared the manager, or from a turn with no room on it).
+ *
+ * Origin "clawtilla" is what lets the delegator relay:
+ * clawtilla_message_user's guard refuses turns a *peer* started, and
+ * this turn is started by nobody's ask.  The depth is zero because a
+ * notice is not a hop -- a guard that refused it for the chain's
+ * depth would hide the chain's own ending.
  */
 static void
 send_settle_notice(ClawtDaemon *self, ClawtTask *task, gint state)
@@ -1291,9 +1304,16 @@ send_settle_notice(ClawtDaemon *self, ClawtTask *task, gint state)
     if (target == NULL || self->router == NULL || self->rooms == NULL)
         return;
 
-    room = clawt_room_manager_get_direct(self->rooms,
-                                         clawt_task_get_origin(task),
-                                         assignee_id);
+    room = NULL;
+
+    if (clawt_task_get_room(task) != NULL)
+        room = clawt_room_manager_get(self->rooms,
+                                      clawt_task_get_room(task));
+
+    if (room == NULL)
+        room = clawt_room_manager_get_direct(self->rooms,
+                                             clawt_task_get_origin(task),
+                                             assignee_id);
     if (room == NULL)
         return;
 
@@ -6083,7 +6103,16 @@ clawt_daemon_setting_needs_a_new_session(const gchar *key)
     static const gchar *const session_scoped[] = {
         /* Both gate NEEDS_ASSIGNMENT, which decides the tool list. */
         "chief_of_staff",
-        "team_role"
+        "team_role",
+
+        /*
+         * Read by libreclaw's router at process start and skipped by
+         * its hot reload, so a change lands in config.yaml and reaches
+         * nothing until the agent restarts -- and the restart is the
+         * moment the re-keying happens, so "needs a new session" is
+         * literally what a mode change means.
+         */
+        "session.routing_mode"
     };
     gsize i;
 

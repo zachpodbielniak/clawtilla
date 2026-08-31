@@ -580,25 +580,64 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
                 clawt_mailbox_item_get_room(item));
         }
 
-        if (!clawt_link_deliver(link,
-                                clawt_mailbox_item_get_room(item),
-                                from,
-                                NULL,
-                                (body != NULL)
-                                    ? body
-                                    : clawt_mailbox_item_get_body(item),
-                                clawt_mailbox_item_get_task_id(item),
-                                &error)) {
-            /*
-             * Put back and the drain stops here.  Continuing past a failed
-             * delivery would hand the agent its messages out of order once
-             * the link came back, which is worse than a pause.
-             */
-            clawt_mailbox_nack(mailbox, clawt_mailbox_item_get_id(item),
-                               error != NULL ? error->message
-                                             : "delivery failed",
-                               NULL);
-            break;
+        /*
+         * Which conversation the delivery belongs to, derived from the
+         * room rather than stored: a delivery into a direct room is
+         * part of that room's conversation, whoever wrote it.  For a
+         * peer or the operator the peer *is* the sender and the hint
+         * changes nothing (the link omits it).  It exists for the
+         * senders that are nobody's counterparty -- "clawtilla" above
+         * all: libreclaw keys sessions on (room, sender), so a settle
+         * notice keyed on the system's own name matched no session and
+         * allocated a fresh context per (room, system) pair, which
+         * then acted on the notice knowing nothing else.  Computed
+         * here, at the one place that builds the frame, so the next
+         * system-sender message kind is covered without knowing it
+         * needed to be.  A group room has no single counterparty and
+         * gets no hint.
+         */
+        {
+            const gchar *session_peer = NULL;
+            ClawtRoom *item_room = clawt_room_manager_get(
+                self->rooms, clawt_mailbox_item_get_room(item));
+
+            if (item_room != NULL) {
+                GPtrArray *members = clawt_room_get_members(item_room);
+                g_autofree GStrv ids = NULL;
+                guint mi;
+
+                ids = g_new0(gchar *, members->len + 1);
+
+                for (mi = 0; mi < members->len; mi++)
+                    ids[mi] = (gchar *)g_ptr_array_index(members, mi);
+
+                session_peer = clawt_chat_conversation_peer(
+                    (const gchar *const *)ids, agent_id);
+            }
+
+            if (!clawt_link_deliver(link,
+                                    clawt_mailbox_item_get_room(item),
+                                    from,
+                                    NULL,
+                                    (body != NULL)
+                                        ? body
+                                        : clawt_mailbox_item_get_body(item),
+                                    clawt_mailbox_item_get_task_id(item),
+                                    session_peer,
+                                    &error)) {
+                /*
+                 * Put back and the drain stops here.  Continuing past a
+                 * failed delivery would hand the agent its messages out
+                 * of order once the link came back, which is worse than
+                 * a pause.
+                 */
+                clawt_mailbox_nack(mailbox,
+                                   clawt_mailbox_item_get_id(item),
+                                   error != NULL ? error->message
+                                                 : "delivery failed",
+                                   NULL);
+                break;
+            }
         }
 
         /*

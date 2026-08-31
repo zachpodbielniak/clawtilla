@@ -402,9 +402,11 @@ static const ToolDefinition tools[] = {
          "Hand a piece of work to another agent and get a task id back. "
          "They work on it independently; check on it with "
          "clawtilla_task_status. Use this rather than asking, when the "
-         "work will take a while. You can assign within your own team; "
-         "for anything belonging to another team, send it to the chief of "
-         "staff rather than to that team directly.",
+         "work will take a while. The assignee shares none of your "
+         "context, so put every constraint and scope limit into the task "
+         "text itself. You can assign within your own team; for anything "
+         "belonging to another team, send it to the chief of staff rather "
+         "than to that team directly.",
          NEEDS_ASSIGNMENT, delegate_params),
 
     HOP_TOOL("clawtilla_handoff",
@@ -2838,6 +2840,16 @@ tool_delegate(ClawtMcpTools *self,
     clawt_task_set_reason(task, reason);
 
     /*
+     * Which conversation asked for this.  The settle notice goes back
+     * there -- that is what "You will be notified here" below promises
+     * -- and the listings can then say which of the delegator's
+     * conversations a task came out of, which for a partitioned agent
+     * is the difference between "you delegated this" and knowing which
+     * you.
+     */
+    clawt_task_set_room(task, turn_room);
+
+    /*
      * The delivered text carries the contract; the task's own prompt
      * stays the bare work.  In the body rather than the drain preamble,
      * because the router cannot tell an assignment from any other
@@ -3126,7 +3138,27 @@ tool_task_list(ClawtMcpTools *self, const gchar *agent_id,
             continue;
 
         if (mine) {
-            append_task_line(delegated, task, other, now);
+            /*
+             * And out of which of your conversations.  "Delegated by
+             * you" is true of every sibling context an agent runs --
+             * one per room under sender-room routing -- so a chief
+             * reading the bare list attributed a sibling's delegation
+             * to whatever it remembered doing, and a blameless peer
+             * was called out twice for work another conversation
+             * asked for.  The room is the conversation's name; a task
+             * from before the field existed has none and reads as
+             * before.
+             */
+            if (clawt_task_get_room(task) != NULL) {
+                g_autofree gchar *where = g_strdup_printf(
+                    "%s (from your conversation in %s)", other,
+                    clawt_task_get_room(task));
+
+                append_task_line(delegated, task, where, now);
+            } else {
+                append_task_line(delegated, task, other, now);
+            }
+
             delegated_n++;
 
             if (clawt_task_get_state(task) == CLAWT_TASK_PENDING)
@@ -3342,6 +3374,15 @@ tool_task_status(ClawtMcpTools *self, JsonObject *arguments,
                            clawt_task_get_assignee(task),
                            clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE,
                                               clawt_task_get_state(task)));
+
+    /*
+     * And which of the delegator's conversations asked for it -- under
+     * per-room sessions "the delegator" is one agent but several
+     * contexts, and this is the only line that says which one.
+     */
+    if (clawt_task_get_room(task) != NULL)
+        g_string_append_printf(out, " - delegated from %s",
+                               clawt_task_get_room(task));
 
     if (clawt_task_get_reason(task) != NULL)
         g_string_append_printf(out, " - %s's reason: %s",

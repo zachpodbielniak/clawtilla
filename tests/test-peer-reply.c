@@ -502,6 +502,81 @@ test_a_question_survives_an_acknowledgement_behind_it(void)
 }
 
 /*
+ * A system notice joins the room's conversation, on the frame.
+ *
+ * libreclaw keys a session on (room, sender), so a notice delivered as
+ * "clawtilla" into a direct room matched no session the agent had and
+ * allocated a fresh one -- a context holding nothing but the notice,
+ * which then messaged the operator knowing nothing.  The drain is the
+ * one place that builds the frame, so it derives the conversation from
+ * the room's own membership: a delivery into a direct room belongs to
+ * that room's conversation, whoever wrote it.  The peer's own messages
+ * carry no hint -- for them the sender already is the conversation --
+ * so the member reads as the exception it marks.
+ */
+static void
+test_a_system_notice_joins_the_rooms_conversation(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgent *alpha;
+    ClawtRoom *room;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *operator_frame = NULL;
+    g_autofree gchar *notice_frame = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n");
+
+    alpha = clawt_agent_manager_get(fixture.agents, "alpha");
+
+    /* The operator's conversation with alpha, members and all. */
+    room = clawt_room_manager_get_direct(fixture.rooms, "alpha", "user");
+    g_assert_nonnull(room);
+
+    /* An ordinary operator message first: no hint expected. */
+    {
+        g_autoptr(ClawtMessage) message =
+            clawt_message_new(clawt_room_get_id(room), "user",
+                              "how is the verification going?");
+
+        g_assert_cmpint(clawt_mailbox_router_send(fixture.router, message,
+                                                  &error), >, 0);
+        g_assert_no_error(error);
+    }
+
+    give_agent_a_link(&fixture, alpha);
+    clawt_mailbox_router_drain(fixture.router, "alpha");
+
+    operator_frame = read_delivered(&fixture);
+    g_assert_nonnull(operator_frame);
+    g_assert_nonnull(strstr(operator_frame, "\"sender\":\"user\""));
+    g_assert_null(strstr(operator_frame, "session_peer"));
+
+    /* The system's notice into the same room: hinted to "user". */
+    {
+        g_autoptr(ClawtMessage) notice =
+            clawt_message_new(clawt_room_get_id(room), CLAWT_SYSTEM_SENDER,
+                              "[clawtilla] Task task-1 is finished.");
+
+        clawt_message_set_invites_reply(notice, FALSE);
+        clawt_message_set_only_for(notice, "alpha");
+
+        g_assert_cmpint(clawt_mailbox_router_send(fixture.router, notice,
+                                                  &error), >, 0);
+        g_assert_no_error(error);
+    }
+
+    clawt_mailbox_router_drain(fixture.router, "alpha");
+
+    notice_frame = read_delivered(&fixture);
+    g_assert_nonnull(notice_frame);
+    g_assert_nonnull(strstr(notice_frame, "\"sender\":\"clawtilla\""));
+    g_assert_nonnull(strstr(notice_frame,
+                            "\"session_peer\":\"user\""));
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * Every message in a burst describes its own turn.
  *
  * A peer that sends several messages while the agent is busy has them
@@ -827,6 +902,9 @@ main(int argc, char **argv)
                     test_a_peers_reply_closes_the_turn);
     g_test_add_func("/peer-reply/one-answer-per-message",
                     test_a_deliberate_message_earns_one_answer);
+    g_test_add_func(
+        "/peer-reply/a-system-notice-joins-the-rooms-conversation",
+        test_a_system_notice_joins_the_rooms_conversation);
     g_test_add_func("/peer-reply/a-question-outranks-an-acknowledgement",
                     test_a_question_survives_an_acknowledgement_behind_it);
     g_test_add_func("/peer-reply/an-operator-always-gets-an-answer",

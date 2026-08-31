@@ -466,6 +466,7 @@ clawt_link_deliver(ClawtLink    *self,
                    const gchar  *sender_name,
                    const gchar  *body,
                    const gchar  *thread_id,
+                   const gchar  *session_peer,
                    GError      **error)
 {
     g_autoptr(JsonObject) payload = json_object_new();
@@ -483,6 +484,14 @@ clawt_link_deliver(ClawtLink    *self,
         json_object_set_string_member(payload, "sender_name", sender_name);
     if (thread_id != NULL)
         json_object_set_string_member(payload, "thread_id", thread_id);
+
+    /*
+     * Omitted when it matches the sender: the common case needs no
+     * hint, and a frame member that is always present stops reading as
+     * the exception it marks.
+     */
+    if (session_peer != NULL && g_strcmp0(session_peer, sender_id) != 0)
+        json_object_set_string_member(payload, "session_peer", session_peer);
 
     return send_frame(self, LC_BRIDGE_FRAME_CHAT_MESSAGE_IN, NULL, payload,
                       error);
