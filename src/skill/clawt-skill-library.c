@@ -1058,6 +1058,7 @@ clawt_skill_library_class_init(ClawtSkillLibraryClass *klass)
 
     /**
      * ClawtSkillLibrary::skill-added:
+     * @self: the library
      * @name: the skill's name
      */
     signals[SIGNAL_SKILL_ADDED] = g_signal_new(
@@ -1066,6 +1067,7 @@ clawt_skill_library_class_init(ClawtSkillLibraryClass *klass)
 
     /**
      * ClawtSkillLibrary::skill-removed:
+     * @self: the library
      * @name: the skill's name
      */
     signals[SIGNAL_SKILL_REMOVED] = g_signal_new(

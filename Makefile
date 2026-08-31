@@ -700,6 +700,14 @@ $(GIR_FILE): $(LIB_SHARED) $(PUBLIC_HEADERS) | $(OUTDIR)
 	@# -s option and dies with "no such option: -s", which names nothing
 	@# that appears anywhere in this rule.  LIBRECLAW_CFLAGS is safe here
 	@# precisely because it is nothing but include paths.
+	@#
+	@# --warn-error because --warn-all on its own only prints.  Four
+	@# scanner warnings accumulated behind it -- a doc line beginning
+	@# "type:" read as an annotation, two signal blocks missing the
+	@# instance argument, and two records with no stated way to copy or
+	@# free them -- none of which failed anything, in headers nobody had
+	@# reason to reopen.  A warning nothing acts on is a warning that
+	@# grows.
 	$(GIR_SAN_PRELOAD) $(GIR_SCANNER) \
 		--namespace=$(GIR_NAMESPACE) \
 		--nsversion=$(GIR_VERSION) \
@@ -717,7 +725,7 @@ $(GIR_FILE): $(LIB_SHARED) $(PUBLIC_HEADERS) | $(OUTDIR)
 		-I$(SRCDIR) -I$(OUTDIR) \
 		$(LIBRECLAW_CFLAGS) \
 		-DCLAWT_COMPILATION \
-		--warn-all \
+		--warn-all --warn-error \
 		--output=$@ \
 		$(PUBLIC_HEADERS) $(LIB_SOURCES)
 

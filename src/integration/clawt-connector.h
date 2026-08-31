@@ -41,7 +41,7 @@
 G_BEGIN_DECLS
 
 /**
- * ClawtConnectorInfo:
+ * ClawtConnectorInfo: (copy-func clawt_connector_info_copy) (free-func clawt_connector_info_free)
  * @id: the `provider:` value, stable and lowercase
  * @name: what to call it on screen
  * @summary: one line about what connecting it gets you

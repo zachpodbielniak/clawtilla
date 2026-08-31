@@ -108,7 +108,7 @@ ClawtAgentCaps clawt_agent_runtime_get_caps(ClawtAgentRuntime *self);
  * the agent down and needs a start afterwards.
  *
  * A runtime that has no such tree refuses and says so, naming its own
- * type: an embedded agent runs its turn inside the daemon, where there
+ * type. An embedded agent runs its turn inside the daemon, where there
  * is no process to signal that is not the daemon itself. Answering %TRUE
  * from a runtime that killed nothing would report a stopped turn that is
  * still running, which is worse than refusing.

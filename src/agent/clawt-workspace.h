@@ -569,7 +569,7 @@ typedef struct {
 void clawt_identity_size_free(ClawtIdentitySize *self);
 
 /**
- * clawt_workspace_measure_identity:
+ * clawt_workspace_measure_identity: (skip)
  * @agent: the agent's configuration
  *
  * How large this agent's system prompt will be, and which files make it
