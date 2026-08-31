@@ -607,6 +607,20 @@ clawt_connection_probe(ClawtConnection *self)
 
     status = probe_on_this_context(self);
 
+    /*
+     * Drained before it is dropped.  Disconnecting only *closes* the
+     * stream: the reader parked in read_line_async() still holds its
+     * references -- the input stream, its buffer, the client -- and
+     * releases them when its callback is dispatched, which takes one
+     * more turn of this context.  Skipping that stranded the whole
+     * reader on a context nobody would ever iterate again: one leaked
+     * client per probe, and the connection menu probes on hover.  The
+     * dispatched callback finds the input already cleared and stops, so
+     * this settles rather than spinning.
+     */
+    while (g_main_context_iteration(context, FALSE))
+        ;
+
     g_main_context_pop_thread_default(context);
 
     return status;
