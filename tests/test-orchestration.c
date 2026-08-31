@@ -575,7 +575,7 @@ test_finished_task_stays_finished(void)
                                      NULL, NULL);
     task_id = clawt_task_get_id(task);
 
-    clawt_task_manager_cancel(manager, task_id, "changed my mind");
+    clawt_task_manager_cancel(manager, task_id, "changed my mind", "chief");
     g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_CANCELLED);
 
     g_assert_false(clawt_task_manager_complete(manager, task_id, "too late"));
@@ -607,7 +607,7 @@ test_cancel_reaches_child_tasks(void)
 
     cancelled = clawt_task_manager_cancel(manager,
                                           clawt_task_get_id(parent),
-                                          "no longer needed");
+                                          "no longer needed", "chief");
 
     g_assert_cmpuint(cancelled, ==, 3);
     g_assert_cmpint(clawt_task_get_state(child), ==, CLAWT_TASK_CANCELLED);

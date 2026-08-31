@@ -82,92 +82,52 @@ publish(ClawtMailboxRouter *self, const gchar *kind, const gchar *subject,
     clawt_event_bus_publish(self->bus, event);
 }
 
-gint
-clawt_mailbox_router_send(ClawtMailboxRouter  *self,
-                          ClawtMessage        *message,
-                          GError             **error)
+/*
+ * The room a message is bound for, resolved the one way.
+ *
+ * An agent id resolves to the direct room between sender and recipient,
+ * which is what makes a reply land in the same conversation rather than
+ * starting a parallel one.  send() and record() share this because two
+ * resolvers would be two answers about where a message went.
+ */
+static ClawtRoom *
+resolve_room(ClawtMailboxRouter  *self,
+             ClawtMessage        *message,
+             GError             **error)
 {
-    GPtrArray *members;  /* unowned: the room keeps its member list */
+    const gchar *destination = clawt_message_get_room_id(message);
+    const gchar *sender = clawt_message_get_sender_id(message);
     ClawtRoom *room;
-    const gchar *destination;
-    const gchar *sender;
-    guint queued = 0;
-    guint i;
-
-    g_return_val_if_fail(CLAWT_IS_MAILBOX_ROUTER(self), -1);
-    g_return_val_if_fail(message != NULL, -1);
-
-    destination = clawt_message_get_room_id(message);
-    sender = clawt_message_get_sender_id(message);
 
     if (destination == NULL) {
         g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
                             "the message has no destination");
-        return -1;
+        return NULL;
     }
 
     room = clawt_room_manager_get(self->rooms, destination);
 
-    if (room == NULL) {
-        /*
-         * Not a room, so it must be an agent -- and a message to an agent
-         * is a message in the direct room between the two, which is what
-         * makes a reply land in the same conversation rather than starting
-         * a parallel one.
-         */
-        if (clawt_agent_manager_get(self->agents, destination) == NULL) {
-            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
-                        "there is no agent or room called '%s'", destination);
-            return -1;
-        }
+    if (room != NULL)
+        return room;
 
-        room = clawt_room_manager_get_direct(self->rooms, sender,
-                                             destination);
+    if (clawt_agent_manager_get(self->agents, destination) == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "there is no agent or room called '%s'", destination);
+        return NULL;
     }
 
-    /*
-     * Checked before anything is written.  A runaway fan-out has to be
-     * stopped at the source: by delivery time the messages already exist,
-     * and refusing then means cleaning up rather than preventing.
-     */
-    if (self->guard != NULL) {
-        g_autoptr(GError) refusal = NULL;
+    return clawt_room_manager_get_direct(self->rooms, sender, destination);
+}
 
-        /*
-         * With the destination room's own hop limit, which is why the
-         * guard is consulted here rather than by the sender: this is the
-         * first point that knows which room the message landed in, and
-         * `rooms.max_hops` is a property of that room.
-         *
-         * It had been parsed onto the #ClawtRoom and read by nothing, so
-         * a room declaring a limit was counted against the fleet's.  0
-         * means the room said nothing and the fleet's applies.
-         */
-        if (!clawt_loop_guard_check_in_room(self->guard, message,
-                                            clawt_room_get_max_hops(room),
-                                            &refusal)) {
-            /*
-             * Announced, not only returned.  A refusal on the link path
-             * had nowhere to go but the log: the two agents simply
-             * stopped, and whoever was watching saw a conversation trail
-             * off with no indication that anything had stepped in.
-             */
-            if (self->bus != NULL) {
-                g_autoptr(ClawtEvent) event = NULL;
-
-                event = clawt_event_new("message.refused",
-                                        clawt_room_get_id(room));
-                clawt_event_set_detail(event, "from", sender);
-                clawt_event_set_detail(event, "to", destination);
-                clawt_event_set_detail(event, "reason", refusal->message);
-                clawt_event_bus_publish(self->bus, event);
-            }
-
-            g_propagate_error(error, g_steal_pointer(&refusal));
-            return -1;
-        }
-    }
-
+/*
+ * A message into the record: the room, the transcript index and the
+ * event bus -- and nothing else.  This is the half of routing that says
+ * what happened; send() adds the half that makes something happen.
+ */
+static void
+record_in_room(ClawtMailboxRouter *self, ClawtRoom *room,
+               ClawtMessage *message)
+{
     clawt_room_append(room, message, NULL);
 
     /*
@@ -203,9 +163,12 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
 
         event = clawt_event_new("message", clawt_room_get_id(room));
         clawt_event_set_detail(event, "id", clawt_message_get_id(message));
-        clawt_event_set_detail(event, "from", sender);
-        clawt_event_set_detail(event, "to", destination);
-        clawt_event_set_detail(event, "body", clawt_message_get_body(message));
+        clawt_event_set_detail(event, "from",
+                               clawt_message_get_sender_id(message));
+        clawt_event_set_detail(event, "to",
+                               clawt_message_get_room_id(message));
+        clawt_event_set_detail(event, "body",
+                               clawt_message_get_body(message));
 
         if (clawt_message_get_task_id(message) != NULL)
             clawt_event_set_detail(event, "task",
@@ -213,6 +176,94 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
 
         clawt_event_bus_publish(self->bus, event);
     }
+}
+
+gboolean
+clawt_mailbox_router_record(ClawtMailboxRouter  *self,
+                            ClawtMessage        *message,
+                            GError             **error)
+{
+    ClawtRoom *room;
+
+    g_return_val_if_fail(CLAWT_IS_MAILBOX_ROUTER(self), FALSE);
+    g_return_val_if_fail(message != NULL, FALSE);
+
+    room = resolve_room(self, message, error);
+
+    if (room == NULL)
+        return FALSE;
+
+    record_in_room(self, room, message);
+
+    return TRUE;
+}
+
+gint
+clawt_mailbox_router_send(ClawtMailboxRouter  *self,
+                          ClawtMessage        *message,
+                          GError             **error)
+{
+    GPtrArray *members;  /* unowned: the room keeps its member list */
+    ClawtRoom *room;
+    const gchar *sender;
+    guint queued = 0;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_MAILBOX_ROUTER(self), -1);
+    g_return_val_if_fail(message != NULL, -1);
+
+    sender = clawt_message_get_sender_id(message);
+
+    room = resolve_room(self, message, error);
+
+    if (room == NULL)
+        return -1;
+
+    /*
+     * Checked before anything is written.  A runaway fan-out has to be
+     * stopped at the source: by delivery time the messages already exist,
+     * and refusing then means cleaning up rather than preventing.
+     */
+    if (self->guard != NULL) {
+        g_autoptr(GError) refusal = NULL;
+
+        /*
+         * With the destination room's own hop limit, which is why the
+         * guard is consulted here rather than by the sender: this is the
+         * first point that knows which room the message landed in, and
+         * `rooms.max_hops` is a property of that room.
+         *
+         * It had been parsed onto the #ClawtRoom and read by nothing, so
+         * a room declaring a limit was counted against the fleet's.  0
+         * means the room said nothing and the fleet's applies.
+         */
+        if (!clawt_loop_guard_check_in_room(self->guard, message,
+                                            clawt_room_get_max_hops(room),
+                                            &refusal)) {
+            /*
+             * Announced, not only returned.  A refusal on the link path
+             * had nowhere to go but the log: the two agents simply
+             * stopped, and whoever was watching saw a conversation trail
+             * off with no indication that anything had stepped in.
+             */
+            if (self->bus != NULL) {
+                g_autoptr(ClawtEvent) event = NULL;
+
+                event = clawt_event_new("message.refused",
+                                        clawt_room_get_id(room));
+                clawt_event_set_detail(event, "from", sender);
+                clawt_event_set_detail(event, "to",
+                                       clawt_message_get_room_id(message));
+                clawt_event_set_detail(event, "reason", refusal->message);
+                clawt_event_bus_publish(self->bus, event);
+            }
+
+            g_propagate_error(error, g_steal_pointer(&refusal));
+            return -1;
+        }
+    }
+
+    record_in_room(self, room, message);
 
     members = clawt_room_get_members(room);
 
@@ -324,26 +375,16 @@ clawt_mailbox_router_note(ClawtMailboxRouter  *self,
         room = clawt_room_manager_get_direct(self->rooms, "user", target);
     }
 
-    message = clawt_message_new(clawt_room_get_id(room), "clawtilla", body);
-
-    clawt_room_append(room, message, NULL);
+    message = clawt_message_new(clawt_room_get_id(room),
+                                CLAWT_SYSTEM_SENDER, body);
 
     /*
-     * Published from here, like every other message, because this is the
-     * only place that knows which room it ended up in.  Deliberately no
-     * mailbox post and no drain: a note is for the people reading, and
-     * the agent has just been interrupted or cut off.
+     * Recorded, not sent: no mailbox post and no drain, because a note
+     * is for the people reading and the agent has just been interrupted
+     * or cut off.  Through record_in_room() so a note is also indexed --
+     * it was not, so "why did this stop" could never be recalled.
      */
-    if (self->bus != NULL) {
-        g_autoptr(ClawtEvent) event = NULL;
-
-        event = clawt_event_new("message", clawt_room_get_id(room));
-        clawt_event_set_detail(event, "id", clawt_message_get_id(message));
-        clawt_event_set_detail(event, "from", "clawtilla");
-        clawt_event_set_detail(event, "to", target);
-        clawt_event_set_detail(event, "body", body);
-        clawt_event_bus_publish(self->bus, event);
-    }
+    record_in_room(self, room, message);
 
     return TRUE;
 }
@@ -440,6 +481,7 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
         g_autofree gchar *body = NULL;
         const gchar *from;
         gboolean peer;
+        gboolean system;
         gboolean invites;
 
         item = clawt_mailbox_lease(mailbox, 0);
@@ -462,6 +504,7 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
         from = clawt_mailbox_item_get_from(item);
         peer = from != NULL &&
                clawt_agent_manager_get(self->agents, from) != NULL;
+        system = g_strcmp0(from, CLAWT_SYSTEM_SENDER) == 0;
         invites = clawt_mailbox_item_get_invites_reply(item);
 
         /*
@@ -596,9 +639,21 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
          * a burst across two of them was drained in arrival order and
          * each turn was described by the other room's message.
          */
+        /*
+         * The system's own messages are the third case, beside "a peer
+         * chose to send this" and "a peer is answering": a notice.  The
+         * system never wants an answer and there is nowhere for one to
+         * go, so the turn it starts is a closed exchange whoever wrote
+         * more recently -- and the notice's own text says so, because a
+         * rule the agent cannot see is a rule it will violate.  The
+         * origin stays "clawtilla", which is not an agent, so
+         * clawtilla_message_user's back-up-the-chain guard does not
+         * fire: relaying a settled task's result to the operator is
+         * precisely what a notice's turn is for.
+         */
         clawt_agent_deliver_turn(agent, clawt_mailbox_item_get_room(item),
                                  clawt_mailbox_item_get_depth(item),
-                                 !peer || invites, from,
+                                 system ? FALSE : (!peer || invites), from,
                                  clawt_mailbox_item_get_task_id(item));
 
         /*

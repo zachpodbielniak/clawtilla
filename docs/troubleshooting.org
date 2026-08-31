@@ -2341,6 +2341,25 @@ the oldest descriptions are being folded together.  It is a symptom of
 an agent that cannot keep up rather than of the queue, but a folded
 description is a less precise one.
 
+** A delegated task finished and its delegator never mentioned it
+
+It cannot happen silently any more, so if it looks like it did, read the
+mailbox rather than the room.
+
+A task reaching any terminal state -- completed, failed, stalled,
+cancelled over the delegator's head -- makes the daemon deliver a settle
+notice into the delegator's mailbox, carrying the result or the reason.
+The notice is from ~clawtilla~, closes its own exchange, and steers: a
+root task's notice says to relay with ~clawtilla_message_user~, a
+mid-chain one names the parent task to fold into.  If the delegator is
+stopped, the notice waits in the durable mailbox and starts a turn at
+the next start.
+
+What still ends without one: a task whose delegator is the operator or
+a routine (the task events and the clients are their surfacing), a
+cancellation by the delegator itself, and anything on a daemon built
+before notices existed.
+
 ** Clicks in a guest desktop do nothing while the pointer visibly moves
 
 The pointer sits on the target, hover states and tooltips fire, the

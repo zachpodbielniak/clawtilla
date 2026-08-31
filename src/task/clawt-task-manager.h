@@ -254,18 +254,22 @@ gboolean clawt_task_manager_fail(ClawtTaskManager *self,
  * @self: a #ClawtTaskManager
  * @task_id: a task id
  * @reason: (nullable): why
+ * @who: (nullable): who is cancelling -- an agent id, or "user"
  *
  * Cancels a task and everything it spawned.
  *
  * Cancelling only the parent would leave its children running and reporting
  * into a task nobody is waiting for -- which is exactly the runaway
- * cancellation is meant to stop.
+ * cancellation is meant to stop.  @who is recorded on every task in the
+ * cascade, so the settle notice can tell a delegator being informed
+ * from a delegator being told what it just did itself.
  *
  * Returns: how many tasks were cancelled
  */
 guint clawt_task_manager_cancel(ClawtTaskManager *self,
                                 const gchar      *task_id,
-                                const gchar      *reason);
+                                const gchar      *reason,
+                                const gchar      *who);
 
 /**
  * clawt_task_manager_start:

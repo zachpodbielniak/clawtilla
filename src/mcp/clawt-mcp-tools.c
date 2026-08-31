@@ -2837,23 +2837,39 @@ tool_delegate(ClawtMcpTools *self,
 
     clawt_task_set_reason(task, reason);
 
-    if (!self->deliver(agent_id, assignee, work, clawt_task_get_id(task),
-                       outbound_depth(self, agent_id, turn_room), CLAWT_PRIORITY_NORMAL,
-                       self->deliver_data, &error)) {
-        /*
-         * The task is failed rather than left pending.  A task nobody was
-         * ever told about would sit in the list for ever looking like work
-         * in progress.
-         */
-        clawt_task_manager_fail(self->tasks, clawt_task_get_id(task),
-                                error->message);
-        *is_error = TRUE;
-        return g_strdup(error->message);
+    /*
+     * The delivered text carries the contract; the task's own prompt
+     * stays the bare work.  In the body rather than the drain preamble,
+     * because the router cannot tell an assignment from any other
+     * task-threaded message -- only this call site knows the recipient
+     * is the assignee.
+     */
+    {
+        g_autofree gchar *guidance =
+            clawt_task_assignment_guidance(clawt_task_get_id(task));
+        g_autofree gchar *delivered = g_strconcat(work, guidance, NULL);
+
+        if (!self->deliver(agent_id, assignee, delivered,
+                           clawt_task_get_id(task),
+                           outbound_depth(self, agent_id, turn_room),
+                           CLAWT_PRIORITY_NORMAL,
+                           self->deliver_data, &error)) {
+            /*
+             * The task is failed rather than left pending.  A task nobody
+             * was ever told about would sit in the list for ever looking
+             * like work in progress.
+             */
+            clawt_task_manager_fail(self->tasks, clawt_task_get_id(task),
+                                    error->message);
+            *is_error = TRUE;
+            return g_strdup(error->message);
+        }
     }
 
     return g_strdup_printf(
-        "Delegated to %s as task %s. Check on it with "
-        "clawtilla_task_status.", assignee, clawt_task_get_id(task));
+        "Delegated to %s as task %s. You will be notified here when it "
+        "settles -- no need to poll clawtilla_task_status or ask them how "
+        "it is going.", assignee, clawt_task_get_id(task));
 }
 
 /*
@@ -3311,14 +3327,28 @@ tool_task_status(ClawtMcpTools *self, JsonObject *arguments,
         return g_strdup(out->str);
     }
 
-    g_string_append_printf(out, "Task %s (%s): %s%s%s",
+    /*
+     * The reason is attributed to its author.  It is written by whoever
+     * delegated, and rendered bare it reads as the assignee's own
+     * framing: a chief re-reading a fan-out it had ordered took the
+     * justification string for the lead's initiative, and only the
+     * delegated-by field said otherwise.  "they nearly misattributed it"
+     * is a bug report about this line, not about the reader.
+     */
+    g_string_append_printf(out, "Task %s (%s -> %s): %s",
                            task_id,
+                           clawt_task_get_origin(task) != NULL
+                               ? clawt_task_get_origin(task) : "?",
                            clawt_task_get_assignee(task),
                            clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE,
-                                              clawt_task_get_state(task)),
-                           clawt_task_get_reason(task) != NULL ? " - " : "",
-                           clawt_task_get_reason(task) != NULL
-                               ? clawt_task_get_reason(task) : "");
+                                              clawt_task_get_state(task)));
+
+    if (clawt_task_get_reason(task) != NULL)
+        g_string_append_printf(out, " - %s's reason: %s",
+                               clawt_task_get_origin(task) != NULL
+                                   ? clawt_task_get_origin(task)
+                                   : "the delegator",
+                               clawt_task_get_reason(task));
 
     /*
      * What it is waiting on, when it is waiting on something it started.
@@ -5049,23 +5079,85 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
         text = tool_task_result(self, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_task_cancel") == 0) {
         const gchar *task_id = argument_string(arguments, "task_id");
-        guint cancelled = (task_id != NULL && self->tasks != NULL)
-                          ? clawt_task_manager_cancel(self->tasks, task_id,
-                                                      "cancelled by the "
-                                                      "delegating agent")
-                          : 0;
+        ClawtTask *task = (self->tasks != NULL)
+                          ? clawt_task_manager_get(self->tasks, task_id)
+                          : NULL;
 
-        text = g_strdup_printf("Cancelled %u task(s).", cancelled);
+        /*
+         * Yours to cancel: you handed it out, or you are doing it.  The
+         * tool's description has always said "a task you delegated" and
+         * nothing checked, so any agent holding an id could end anyone's
+         * work -- and with settle notices, could make the daemon tell a
+         * delegator its task ended when neither of them ended it.
+         */
+        if (task != NULL &&
+            g_strcmp0(clawt_task_get_origin(task), agent_id) != 0 &&
+            g_strcmp0(clawt_task_get_assignee(task), agent_id) != 0) {
+            is_error = TRUE;
+            text = g_strdup_printf(
+                "Task %s is not yours to cancel -- %s is doing it for %s. "
+                "Say something to one of them instead.", task_id,
+                clawt_task_get_assignee(task) != NULL
+                    ? clawt_task_get_assignee(task) : "somebody",
+                clawt_task_get_origin(task) != NULL
+                    ? clawt_task_get_origin(task) : "somebody");
+        } else {
+            guint cancelled = (task_id != NULL && self->tasks != NULL)
+                              ? clawt_task_manager_cancel(
+                                    self->tasks, task_id,
+                                    "cancelled by the delegating agent",
+                                    agent_id)
+                              : 0;
+
+            text = g_strdup_printf("Cancelled %u task(s).", cancelled);
+        }
     } else if (g_strcmp0(tool_name, "clawtilla_task_complete") == 0) {
         const gchar *task_id = argument_string(arguments, "task_id");
         const gchar *result = argument_string(arguments, "result");
+        ClawtTask *task = (self->tasks != NULL)
+                          ? clawt_task_manager_get(self->tasks, task_id)
+                          : NULL;
 
         if (task_id == NULL || result == NULL) {
             is_error = TRUE;
             text = g_strdup("task_id and result are both required.");
+        } else if (task != NULL &&
+                   g_strcmp0(clawt_task_get_assignee(task),
+                             agent_id) != 0) {
+            /*
+             * Only the assignee's word ends the work, the same rule the
+             * turn-end inference already applies.  A delegator "completing"
+             * its own task recorded whatever it typed as the result of work
+             * somebody else was still doing -- and the settle notice would
+             * then deliver that fabrication back to its author as news.
+             */
+            is_error = TRUE;
+            text = g_strdup_printf(
+                "Task %s is %s's to finish, not yours. If you no longer "
+                "want it done, clawtilla_task_cancel is the honest verb.",
+                task_id,
+                clawt_task_get_assignee(task) != NULL
+                    ? clawt_task_get_assignee(task) : "its assignee");
         } else if (self->tasks != NULL &&
                    clawt_task_manager_complete(self->tasks, task_id, result)) {
-            text = g_strdup_printf("Task %s marked complete.", task_id);
+            /*
+             * The settle notice this just fired is the delegation's
+             * answer, so the invite of the turn making this call is
+             * spent: whatever this agent writes to end the turn is a
+             * sign-off, not the result, and routing it would wake the
+             * delegator twice for one settle.
+             */
+            ClawtAgent *me = (self->agents != NULL)
+                             ? clawt_agent_manager_get(self->agents, agent_id)
+                             : NULL;
+
+            if (me != NULL)
+                clawt_agent_close_turn_exchange(me, turn_room);
+
+            text = g_strdup_printf(
+                "Task %s marked complete. The delegator has been notified "
+                "with your result -- no need to message them about it.",
+                task_id);
         } else {
             is_error = TRUE;
             text = g_strdup_printf("Task %s could not be completed; it may "

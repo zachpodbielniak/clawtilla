@@ -336,15 +336,25 @@ run_one(ClawtDaemon *self, ClawtHandoff *handoff)
         return FALSE;
     }
 
-    body = g_strdup_printf(
-        "[clawtilla] %s has handed you task %s. It is yours now -- they are "
-        "no longer working on it.\n\nWhy you: %s\n\nWhat the task is:\n%s\n\n"
-        "Report it finished with clawtilla_task_complete when it is done.",
-        from, task_id,
-        clawt_handoff_get_reason(handoff) != NULL
-            ? clawt_handoff_get_reason(handoff) : "not said",
-        clawt_task_get_prompt(task) != NULL
-            ? clawt_task_get_prompt(task) : "(nothing recorded)");
+    /*
+     * The same closing contract a delegation carries, from the same
+     * function -- handed-off work settles the same way, and two texts
+     * describing how a task ends would drift into two lifecycles.
+     */
+    {
+        g_autofree gchar *guidance = clawt_task_assignment_guidance(task_id);
+
+        body = g_strdup_printf(
+            "[clawtilla] %s has handed you task %s. It is yours now -- "
+            "they are no longer working on it.\n\nWhy you: %s\n\n"
+            "What the task is:\n%s%s",
+            from, task_id,
+            clawt_handoff_get_reason(handoff) != NULL
+                ? clawt_handoff_get_reason(handoff) : "not said",
+            clawt_task_get_prompt(task) != NULL
+                ? clawt_task_get_prompt(task) : "(nothing recorded)",
+            guidance);
+    }
 
     if (self->router == NULL ||
         clawt_mailbox_router_send_to(self->router, from, to, body, task_id,

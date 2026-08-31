@@ -814,6 +814,30 @@ clawt_agent_get_turn_replies_in(ClawtAgent *self, const gchar *room_id)
 }
 
 void
+clawt_agent_close_turn_exchange(ClawtAgent *self, const gchar *room_id)
+{
+    TurnSetup *setup;
+
+    g_return_if_fail(CLAWT_IS_AGENT(self));
+
+    if (room_id == NULL)
+        return;
+
+    /*
+     * Only the entry that exists.  The pending queue is deliberately
+     * left alone: those describe deliveries not yet taken, each with an
+     * invite of its own, and spending a *future* turn's invite would
+     * swallow the answer to a question the delegator has yet to ask.
+     * The entry in the table dies at the room's next rising edge, which
+     * is what scopes this to the turn that settled the task.
+     */
+    setup = turn_in(self, room_id);
+
+    if (setup != NULL)
+        setup->replies = FALSE;
+}
+
+void
 clawt_agent_set_turn_replies(ClawtAgent *self, gboolean replies)
 {
     g_return_if_fail(CLAWT_IS_AGENT(self));

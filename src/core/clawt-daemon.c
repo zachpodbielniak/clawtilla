@@ -1229,6 +1229,208 @@ summarise_finished_work(ClawtDaemon *self, ClawtTask *task)
         g_strdup(clawt_task_get_id(task)));
 }
 
+/*
+ * Who a settling task's notice is for, or NULL for no notice.
+ *
+ * The delegator, when the delegator is an agent that still exists and
+ * is not also the assignee.  Tasks the operator or a routine created
+ * have no agent waiting on a mailbox -- the task events and the clients
+ * are their surfacing -- and a cancellation is not news to whoever
+ * performed it.
+ */
+static ClawtAgent *
+settle_notice_target(ClawtDaemon *self, ClawtTask *task, gint state)
+{
+    const gchar *origin = clawt_task_get_origin(task);
+
+    if (origin == NULL ||
+        g_strcmp0(origin, clawt_task_get_assignee(task)) == 0)
+        return NULL;
+
+    if (state == CLAWT_TASK_CANCELLED &&
+        g_strcmp0(clawt_task_get_cancelled_by(task), origin) == 0)
+        return NULL;
+
+    return clawt_agent_manager_get(self->agents, origin);
+}
+
+/*
+ * Tells a delegator its task has settled.
+ *
+ * This is what makes a delegated task report itself: the assignee just
+ * finishes, and clawtilla carries the result up.  Nothing here is the
+ * assignee's message -- the notice is composed by the daemon, signed by
+ * the system, delivered with the exchange closed, and addressed to the
+ * delegator alone.  The chief-of-staff this was built for said "I'll
+ * relay it when it lands" and then ended its turn, which made its
+ * operator the polling mechanism: the result existed, was correct, and
+ * was invisible until somebody asked.
+ *
+ * Into the room the delegation lives in, so the transcript shows the
+ * settle where a person would look for it, and so the delegator's
+ * session has the conversation behind it.  Origin "clawtilla" is what
+ * lets the delegator relay: clawtilla_message_user's guard refuses
+ * turns a *peer* started, and this turn is started by nobody's ask.
+ * The depth is zero because a notice is not a hop -- a guard that
+ * refused it for the chain's depth would hide the chain's own ending.
+ */
+static void
+send_settle_notice(ClawtDaemon *self, ClawtTask *task, gint state)
+{
+    ClawtAgent *target = settle_notice_target(self, task, state);
+    ClawtAgent *assignee;
+    ClawtRoom *room;
+    g_autoptr(ClawtMessage) message = NULL;
+    g_autoptr(GString) body = NULL;
+    g_autofree gchar *clipped = NULL;
+    g_autoptr(GError) error = NULL;
+    const gchar *assignee_id = clawt_task_get_assignee(task);
+    const gchar *task_id = clawt_task_get_id(task);
+    ClawtTask *parent;
+
+    if (target == NULL || self->router == NULL || self->rooms == NULL)
+        return;
+
+    room = clawt_room_manager_get_direct(self->rooms,
+                                         clawt_task_get_origin(task),
+                                         assignee_id);
+    if (room == NULL)
+        return;
+
+    body = g_string_new("[clawtilla] ");
+
+    clipped = clawt_utf8_truncate(clawt_task_get_prompt(task), 200, FALSE);
+
+    /*
+     * Every terminal state spelled out, no default: -Wswitch is what
+     * catches the next state being added and reported as nothing.
+     */
+    switch ((ClawtTaskState)state) {
+    case CLAWT_TASK_PENDING:
+    case CLAWT_TASK_RUNNING:
+        return;
+
+    case CLAWT_TASK_COMPLETED:
+        g_string_append_printf(body,
+            "Task %s is finished. You delegated it to '%s': \"%s\"\n\n",
+            task_id, assignee_id, clipped != NULL ? clipped : "");
+
+        if (clawt_task_get_result(task) != NULL)
+            g_string_append_printf(body, "The result:\n%s\n\n",
+                                   clawt_task_get_result(task));
+
+        /*
+         * "They said so" and "they stopped talking" need different
+         * follow-ups, so the notice says which this is rather than
+         * leaving the delegator to relay an interim note as an answer.
+         */
+        if (clawt_task_get_result_inferred(task))
+            g_string_append(body,
+                "The result was not written as a report: the assignee's "
+                "turn ended and its last words became it. If they read "
+                "like an interim note rather than an answer, the work may "
+                "not be finished -- check before passing them on.\n\n");
+        else
+            g_string_append(body,
+                "The assignee reported it done itself.\n\n");
+        break;
+
+    case CLAWT_TASK_FAILED:
+        g_string_append_printf(body,
+            "Task %s failed. You delegated it to '%s': \"%s\"\n\n"
+            "Why: %s\n\nThis needs diagnosing or re-delegating; nobody is "
+            "working on it any more.\n\n",
+            task_id, assignee_id, clipped != NULL ? clipped : "",
+            clawt_task_get_reason(task) != NULL
+                ? clawt_task_get_reason(task) : "no reason was recorded");
+        break;
+
+    case CLAWT_TASK_STALLED:
+        g_string_append_printf(body,
+            "Task %s was stopped by clawtilla. You delegated it to '%s': "
+            "\"%s\"\n\nWhy: %s\n\nStalled work can be picked up again -- "
+            "re-delegate it with what you now know, or do it yourself.\n\n",
+            task_id, assignee_id, clipped != NULL ? clipped : "",
+            clawt_task_get_reason(task) != NULL
+                ? clawt_task_get_reason(task) : "it stopped making "
+                                                "progress");
+        break;
+
+    case CLAWT_TASK_CANCELLED:
+        g_string_append_printf(body,
+            "Task %s was cancelled by %s. You delegated it to '%s': "
+            "\"%s\"\n\nWhy: %s\n\nStop waiting on it.\n\n",
+            task_id,
+            clawt_task_get_cancelled_by(task) != NULL
+                ? clawt_task_get_cancelled_by(task) : "somebody",
+            assignee_id, clipped != NULL ? clipped : "",
+            clawt_task_get_reason(task) != NULL
+                ? clawt_task_get_reason(task) : "no reason was recorded");
+        break;
+    }
+
+    /*
+     * Which way the report goes next.  The daemon knows whether this
+     * task is itself part of a larger one, and the wrong steer is what
+     * sent every agent in a chain into the operator's chat once before.
+     */
+    parent = clawt_task_manager_get(self->tasks,
+                                    clawt_task_get_parent_id(task));
+
+    if (parent != NULL && !clawt_task_is_finished(parent))
+        g_string_append_printf(body,
+            "This work belongs to your own task %s for '%s'. Fold the "
+            "outcome in: clawtilla_task_progress to keep yours open, or "
+            "clawtilla_task_complete when yours is now done. '%s' is who "
+            "is waiting -- do not route this to your operator.",
+            clawt_task_get_id(parent),
+            clawt_task_get_origin(parent) != NULL
+                ? clawt_task_get_origin(parent) : "somebody",
+            clawt_task_get_origin(parent) != NULL
+                ? clawt_task_get_origin(parent) : "they");
+    else
+        g_string_append(body,
+            "If your operator asked for this, pass the outcome on now "
+            "with clawtilla_message_user. If nobody is waiting, end your "
+            "turn.");
+
+    g_string_append_printf(body,
+        "\n\n[clawtilla] This conversation is room '%s'; pass turn_room: "
+        "\"%s\" on any clawtilla tool you call while handling it. This "
+        "notice closes the exchange -- nothing you write at the end of "
+        "this turn is sent anywhere. If '%s' needs to hear from you, "
+        "clawtilla_message_agent starts a fresh exchange.",
+        clawt_room_get_id(room), clawt_room_get_id(room), assignee_id);
+
+    message = clawt_message_new(clawt_room_get_id(room),
+                                CLAWT_SYSTEM_SENDER, body->str);
+    clawt_message_set_task_id(message, task_id);
+    clawt_message_set_depth(message, 0);
+    clawt_message_set_invites_reply(message, FALSE);
+    clawt_message_set_only_for(message, clawt_task_get_origin(task));
+
+    if (clawt_mailbox_router_send(self->router, message, &error) < 0) {
+        g_warning("daemon: task %s settled and its delegator %s could not "
+                  "be told: %s", task_id, clawt_task_get_origin(task),
+                  error->message);
+        return;
+    }
+
+    /*
+     * The notice is the delegation's answer, so the invite of whatever
+     * turn the assignee has running in this room is spent: its sign-off
+     * is no longer the result.  Here as well as at the settle sites,
+     * because a task can settle from paths that never see the turn --
+     * a cancel, an orphaning -- and an unspent invite there routes one
+     * sign-off nobody needs.
+     */
+    assignee = clawt_agent_manager_get(self->agents, assignee_id);
+
+    if (assignee != NULL)
+        clawt_agent_close_turn_exchange(assignee,
+                                        clawt_room_get_id(room));
+}
+
 static void
 on_task_changed(ClawtTaskManager *manager,
                 const gchar      *task_id,
@@ -1268,6 +1470,16 @@ on_task_changed(ClawtTaskManager *manager,
 
         clawt_event_bus_publish(self->bus, event);
     }
+
+    /*
+     * Every terminal transition tells the delegator, not only the happy
+     * one.  A failure is the notice most worth having -- "the agent
+     * handling this stopped" is exactly what a delegator cannot learn
+     * by waiting -- and a settle is one-shot, so this cannot repeat:
+     * every terminal setter refuses a task that is already finished.
+     */
+    if (task != NULL && clawt_task_is_finished(task))
+        send_settle_notice(self, task, state);
 
     if (state != CLAWT_TASK_COMPLETED)
         return;
@@ -1671,8 +1883,37 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
         ClawtAgent *replier = clawt_agent_manager_get(self->agents, agent_id);
 
         if (replier != NULL && clawt_agent_get_busy(replier)) {
+            ClawtTask *task = clawt_task_manager_get(self->tasks, thread_id);
+
             g_info("daemon: %s is still working, so this is not the answer "
                    "to %s", agent_id, thread_id);
+
+            /*
+             * An assignee's mid-turn words go on the record and no
+             * further.  libreclaw posts a progress note into the thread
+             * every few minutes, and routing each one started a model
+             * turn on the delegator -- a twenty-minute task cost four
+             * turns of reading "Still working...", which is the interim
+             * chatter the assignment guidance tells agents not to send
+             * and the daemon was sending for them.  The room and the
+             * recall index keep the note for anybody who looks; the
+             * settle notice carries the conclusion.  Never for the
+             * operator's own room: a person watching a long task wants
+             * the heartbeat, and reading it costs them nothing.
+             */
+            if (task != NULL &&
+                g_strcmp0(clawt_task_get_assignee(task), agent_id) == 0 &&
+                !is_operator_room(destination)) {
+                g_autoptr(GError) record_error = NULL;
+
+                if (!clawt_mailbox_router_record(self->router, message,
+                                                 &record_error))
+                    g_warning("daemon: %s's progress note was not "
+                              "recorded: %s", agent_id,
+                              record_error->message);
+
+                return;
+            }
         } else {
             g_autofree gchar *held = NULL;
 
@@ -1687,13 +1928,52 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
              * running -- so they live where the task does, and there is
              * one rule instead of one per caller who noticed.
              */
-            if (!clawt_task_manager_complete_on_turn_end(self->tasks,
-                                                         thread_id,
-                                                         agent_id, body,
-                                                         &held) &&
-                held != NULL)
+            if (clawt_task_manager_complete_on_turn_end(self->tasks,
+                                                        thread_id,
+                                                        agent_id, body,
+                                                        &held)) {
+                ClawtTask *task = clawt_task_manager_get(self->tasks,
+                                                         thread_id);
+
+                /*
+                 * The settle notice has just gone out -- the manager's
+                 * signal is synchronous -- and it is the delegation's
+                 * answer, so this turn's invite is spent.  Keyed on the
+                 * room libreclaw echoed, which is the exact string the
+                 * turn is filed under; the notice path also spends the
+                 * canonical room's invite, and on the paths that never
+                 * pass through here -- a cancel, an orphaning -- it is
+                 * the only one that does.
+                 */
+                if (replier != NULL)
+                    clawt_agent_close_turn_exchange(replier, room_id);
+
+                /*
+                 * A settle with no notice -- a routine's task, a
+                 * trigger's -- has no other copy of the result headed
+                 * anywhere, so the reply itself stays on the record.
+                 * With a notice, the notice quotes the result into the
+                 * same room, and recording the raw reply as well would
+                 * show it twice.  Operator rooms fall through to
+                 * ordinary routing either way.
+                 */
+                if (task != NULL && !is_operator_room(destination) &&
+                    settle_notice_target(self, task,
+                                         clawt_task_get_state(task))
+                        == NULL) {
+                    g_autoptr(GError) record_error = NULL;
+
+                    if (!clawt_mailbox_router_record(self->router, message,
+                                                     &record_error))
+                        g_warning("daemon: %s's result was not recorded: "
+                                  "%s", agent_id, record_error->message);
+
+                    return;
+                }
+            } else if (held != NULL) {
                 g_info("daemon: %s ended its turn but %s is still open: %s",
                        agent_id, thread_id, held);
+            }
         }
     }
 
@@ -1709,16 +1989,13 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
      * agent would be answering a message that was itself only an answer.
      *
      * A task delivery always invites its result -- but the result is
-     * the *assignee's* to send, so being in the task's thread is not by
-     * itself a pass.  It used to be: anything carrying a task id was
-     * routed, and everyone in a thread carries one.  The delegator's
-     * turn, started by the assignee's reply, ended with an
-     * acknowledgement; the acknowledgement woke the assignee; and the
-     * daemon itself kept two agents talking whose preambles both said
-     * the exchange was closed.  Three consecutive turns of a live
-     * thread were "nothing to send" in three phrasings, one model call
-     * each, and the loop ended only because the chief moved on to
-     * different work.
+     * the *assignee's* to send, and only while the task is open.  The
+     * moment it settles, the settle notice is what carries the result
+     * to the delegator, and everything the assignee writes after that
+     * in the thread is a sign-off: the completion block above spends
+     * the turn's invite when it settles the task, so a settling reply
+     * falls through to the closed-exchange rule below rather than
+     * arriving twice -- once as itself and once quoted in the notice.
      *
      * An id naming no task still routes.  Tasks live in memory, so
      * after a daemon restart the choice is between a swallowed result
@@ -1738,7 +2015,8 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
 
             carries_the_result =
                 (task == NULL) ||
-                g_strcmp0(clawt_task_get_assignee(task), agent_id) == 0;
+                (g_strcmp0(clawt_task_get_assignee(task), agent_id) == 0 &&
+                 !clawt_task_is_finished(task));
         }
 
         /*

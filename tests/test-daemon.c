@@ -4631,6 +4631,318 @@ test_an_assignees_report_crosses_a_closed_exchange(void)
     g_assert_cmpstr(clawt_task_get_result(task), ==,
                     "Verification complete: all mounts present.");
 
+    /*
+     * What crosses is clawtilla's settle notice, not beta's raw reply:
+     * signed by the system, carrying the result, inviting nothing, and
+     * saying the result was inferred -- "they stopped talking" and
+     * "they said so" need different follow-ups from the reader.
+     */
+    {
+        g_autoptr(GPtrArray) items =
+            clawt_mailbox_list(clawt_agent_get_mailbox(alpha), NULL);
+        ClawtMailboxItem *item;
+
+        g_assert_cmpuint(items->len, ==, 1);
+        item = g_ptr_array_index(items, 0);
+
+        g_assert_cmpstr(clawt_mailbox_item_get_from(item), ==, "clawtilla");
+        g_assert_false(clawt_mailbox_item_get_invites_reply(item));
+        g_assert_nonnull(strstr(clawt_mailbox_item_get_body(item),
+                                "Verification complete: all mounts "
+                                "present."));
+        g_assert_nonnull(strstr(clawt_mailbox_item_get_body(item),
+                                "was not written as a report"));
+        g_assert_cmpstr(clawt_mailbox_item_get_task_id(item), ==,
+                        clawt_task_get_id(task));
+    }
+
+    /*
+     * And beta -- whose turn just ended the task -- was not woken to be
+     * told so.  The notice lands in the shared room's transcript, but
+     * only the delegator's mailbox takes it.
+     */
+    g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(beta)),
+                     ==, 0);
+
+    /*
+     * beta's next sign-off in the settled thread wakes nobody either:
+     * the settle spent the delegation's invite, so the text an AI CLI
+     * cannot help writing goes nowhere instead of arriving as a second
+     * delivery for one settle.
+     */
+    g_signal_emit_by_name(links, "message", "beta", "alpha",
+                          "Task complete, signing off.",
+                          clawt_task_get_id(task));
+    g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(alpha)),
+                     ==, 1);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * An explicit completion notifies the delegator the same way.
+ *
+ * The chief-of-staff this exists for said "I'll relay it when it lands"
+ * and ended its turn, which made its operator the polling mechanism:
+ * the result existed, was correct, and was invisible until somebody
+ * asked.  A delegated task now reports itself, whichever way it ends.
+ */
+static void
+test_a_settled_task_notifies_its_delegator(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentManager *agents;
+    ClawtTaskManager *tasks;
+    ClawtTask *task;
+    ClawtAgent *alpha;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    agents = clawt_daemon_get_agents(fixture.daemon);
+    tasks = clawt_daemon_get_tasks(fixture.daemon);
+    alpha = clawt_agent_manager_get(agents, "alpha");
+
+    task = clawt_task_manager_create(tasks, "alpha", "beta",
+                                     "verify the guests", NULL, NULL);
+    g_assert_nonnull(task);
+
+    g_assert_true(clawt_task_manager_complete(tasks,
+                                              clawt_task_get_id(task),
+                                              "All five guests answer."));
+
+    {
+        g_autoptr(GPtrArray) items =
+            clawt_mailbox_list(clawt_agent_get_mailbox(alpha), NULL);
+        ClawtMailboxItem *item;
+
+        g_assert_cmpuint(items->len, ==, 1);
+        item = g_ptr_array_index(items, 0);
+
+        g_assert_cmpstr(clawt_mailbox_item_get_from(item), ==, "clawtilla");
+        g_assert_nonnull(strstr(clawt_mailbox_item_get_body(item),
+                                "All five guests answer."));
+        g_assert_nonnull(strstr(clawt_mailbox_item_get_body(item),
+                                "reported it done itself"));
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A mid-turn progress note goes on the record and wakes nobody.
+ *
+ * libreclaw posts one into the thread every few minutes, and routing
+ * each one started a model turn on the delegator: a twenty-minute task
+ * cost four turns of reading "Still working..." -- the interim chatter
+ * the assignment guidance tells agents not to send, sent for them by
+ * the daemon.  The room keeps the note for anybody who looks.
+ */
+static void
+test_a_progress_note_wakes_nobody(void)
+{
+    Fixture fixture = { 0 };
+    ClawtLinkServer *links;
+    ClawtAgentManager *agents;
+    ClawtTaskManager *tasks;
+    ClawtRoomManager *rooms;
+    ClawtTask *task;
+    ClawtAgent *alpha;
+    ClawtRoom *room;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    links = clawt_daemon_get_link_server(fixture.daemon);
+    agents = clawt_daemon_get_agents(fixture.daemon);
+    tasks = clawt_daemon_get_tasks(fixture.daemon);
+    rooms = clawt_daemon_get_rooms(fixture.daemon);
+    alpha = clawt_agent_manager_get(agents, "alpha");
+
+    task = clawt_task_manager_create(tasks, "alpha", "beta",
+                                     "verify the guests", NULL, NULL);
+    g_assert_nonnull(task);
+
+    /* Mid-turn: the indicator is up, so this is not the answer. */
+    g_signal_emit_by_name(links, "typing", "beta", "alpha", TRUE);
+    g_signal_emit_by_name(links, "message", "beta", "alpha",
+                          "\xe2\x8f\xb3 Still working... (5m elapsed)",
+                          clawt_task_get_id(task));
+
+    g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(alpha)),
+                     ==, 0);
+    g_assert_false(clawt_task_is_finished(task));
+
+    /* On the record, in the pair's own room, as beta's words. */
+    room = clawt_room_manager_get_direct(rooms, "beta", "alpha");
+    g_assert_nonnull(room);
+
+    {
+        g_autoptr(GPtrArray) history = clawt_room_get_history(room, 10);
+        gboolean found = FALSE;
+        guint i;
+
+        for (i = 0; i < history->len; i++) {
+            ClawtMessage *entry = g_ptr_array_index(history, i);
+
+            if (strstr(clawt_message_get_body(entry), "Still working"))
+                found = TRUE;
+        }
+
+        g_assert_true(found);
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A cancellation over the delegator's head is news; its own is not.
+ *
+ * "Every one of these closed on turn-end... the sub-tasks were spawned,
+ * ran, and closed without any of it surfacing to you until you asked"
+ * -- and a cancel was the quietest ending of all.  The canceller is
+ * recorded precisely so the notice can tell the two apart.
+ */
+static void
+test_a_cancel_notice_skips_whoever_cancelled(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentManager *agents;
+    ClawtTaskManager *tasks;
+    ClawtTask *task;
+    ClawtAgent *alpha;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    agents = clawt_daemon_get_agents(fixture.daemon);
+    tasks = clawt_daemon_get_tasks(fixture.daemon);
+    alpha = clawt_agent_manager_get(agents, "alpha");
+
+    /* The operator kills it: alpha must stop waiting, so alpha is told. */
+    task = clawt_task_manager_create(tasks, "alpha", "beta",
+                                     "verify the guests", NULL, NULL);
+    g_assert_cmpuint(clawt_task_manager_cancel(tasks,
+                                               clawt_task_get_id(task),
+                                               "the plan changed", "user"),
+                     ==, 1);
+
+    {
+        g_autoptr(GPtrArray) items =
+            clawt_mailbox_list(clawt_agent_get_mailbox(alpha), NULL);
+
+        g_assert_cmpuint(items->len, ==, 1);
+        g_assert_nonnull(strstr(
+            clawt_mailbox_item_get_body(g_ptr_array_index(items, 0)),
+            "cancelled by user"));
+    }
+
+    /* alpha kills its own: telling it so would be a wasted turn. */
+    task = clawt_task_manager_create(tasks, "alpha", "beta",
+                                     "verify them again", NULL, NULL);
+    g_assert_cmpuint(clawt_task_manager_cancel(tasks,
+                                               clawt_task_get_id(task),
+                                               "never mind", "alpha"),
+                     ==, 1);
+
+    g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(alpha)),
+                     ==, 1);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * An assignee that stops mid-task fails the task, and the failure is
+ * the notice most worth having: "the agent handling this stopped" is
+ * the one ending a delegator cannot learn by waiting.
+ */
+static void
+test_an_orphaned_task_reports_its_failure(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentManager *agents;
+    ClawtTaskManager *tasks;
+    ClawtTask *task;
+    ClawtAgent *alpha;
+
+    fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    agents = clawt_daemon_get_agents(fixture.daemon);
+    tasks = clawt_daemon_get_tasks(fixture.daemon);
+    alpha = clawt_agent_manager_get(agents, "alpha");
+
+    task = clawt_task_manager_create(tasks, "alpha", "beta",
+                                     "verify the guests", NULL, NULL);
+    g_assert_nonnull(task);
+
+    g_assert_cmpuint(clawt_task_manager_orphan_agent_tasks(tasks, "beta"),
+                     ==, 1);
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_FAILED);
+
+    {
+        g_autoptr(GPtrArray) items =
+            clawt_mailbox_list(clawt_agent_get_mailbox(alpha), NULL);
+
+        g_assert_cmpuint(items->len, ==, 1);
+        g_assert_nonnull(strstr(
+            clawt_mailbox_item_get_body(g_ptr_array_index(items, 0)),
+            "failed"));
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A mid-chain settle steers the report up the chain, not into the
+ * operator's chat.
+ *
+ * The wrong steer here is what once sent every agent in a chain into
+ * the operator's conversation -- so the notice for a task that is part
+ * of a larger one names the parent and the folding tools, and only a
+ * root task's notice suggests clawtilla_message_user.
+ */
+static void
+test_the_notice_steers_a_mid_chain_settle_into_the_parent(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgentManager *agents;
+    ClawtTaskManager *tasks;
+    ClawtTask *parent;
+    ClawtTask *child;
+    ClawtAgent *beta;
+
+    fixture_setup(&fixture,
+                  "agents:\n  - id: alpha\n  - id: beta\n  - id: gamma\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    agents = clawt_daemon_get_agents(fixture.daemon);
+    tasks = clawt_daemon_get_tasks(fixture.daemon);
+    beta = clawt_agent_manager_get(agents, "beta");
+
+    parent = clawt_task_manager_create(tasks, "alpha", "beta",
+                                       "check every guest", NULL, NULL);
+    child = clawt_task_manager_create(tasks, "beta", "gamma",
+                                      "check the arch guest",
+                                      clawt_task_get_id(parent), NULL);
+
+    g_assert_true(clawt_task_manager_complete(tasks,
+                                              clawt_task_get_id(child),
+                                              "The arch guest answers."));
+
+    {
+        g_autoptr(GPtrArray) items =
+            clawt_mailbox_list(clawt_agent_get_mailbox(beta), NULL);
+        const gchar *body;
+
+        g_assert_cmpuint(items->len, ==, 1);
+        body = clawt_mailbox_item_get_body(g_ptr_array_index(items, 0));
+
+        g_assert_nonnull(strstr(body, clawt_task_get_id(parent)));
+        g_assert_nonnull(strstr(body, "clawtilla_task_progress"));
+        g_assert_null(strstr(body, "clawtilla_message_user"));
+    }
+
     fixture_teardown(&fixture);
 }
 
@@ -9215,6 +9527,16 @@ main(int argc, char *argv[])
                     test_an_assignees_report_crosses_a_closed_exchange);
     g_test_add_func("/daemon/task/an-unknown-thread-still-routes",
                     test_a_thread_naming_no_task_still_routes);
+    g_test_add_func("/daemon/task/a-settled-task-notifies-its-delegator",
+                    test_a_settled_task_notifies_its_delegator);
+    g_test_add_func("/daemon/task/a-progress-note-wakes-nobody",
+                    test_a_progress_note_wakes_nobody);
+    g_test_add_func("/daemon/task/a-cancel-notice-skips-the-canceller",
+                    test_a_cancel_notice_skips_whoever_cancelled);
+    g_test_add_func("/daemon/task/an-orphaned-task-reports-its-failure",
+                    test_an_orphaned_task_reports_its_failure);
+    g_test_add_func("/daemon/task/a-mid-chain-settle-steers-to-the-parent",
+                    test_the_notice_steers_a_mid_chain_settle_into_the_parent);
     g_test_add_func("/daemon/computer/rebuild-drops-the-held-computer",
                     test_rebuild_drops_the_agents_held_computer);
     g_test_add_func("/daemon/task/running-when-its-turn-starts",

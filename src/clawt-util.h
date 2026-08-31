@@ -415,6 +415,22 @@ gchar *clawt_utf8_truncate(const gchar *text,
 gboolean clawt_is_valid_id(const gchar *id);
 
 /**
+ * clawt_agent_id_is_reserved:
+ * @id: (nullable): a candidate agent id
+ *
+ * Whether @id is a sender name the routing rules key on -- "user",
+ * "clawtilla", "routine" or "trigger".  A well-formed id can still be
+ * one of these, and an agent that claimed one would inherit its
+ * routing treatment wholesale: an agent called "clawtilla" would have
+ * every message pass the loop guard unmeasured and close every
+ * exchange it spoke into.  Checked beside clawt_is_valid_id() at the
+ * two places an agent id enters the system.
+ *
+ * Returns: %TRUE if @id may not name an agent
+ */
+gboolean clawt_agent_id_is_reserved(const gchar *id);
+
+/**
  * clawt_color_ink:
  * @hex: (nullable): a colour written as `#rgb` or `#rrggbb`
  *

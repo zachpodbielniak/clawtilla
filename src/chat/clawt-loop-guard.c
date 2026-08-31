@@ -666,6 +666,22 @@ clawt_loop_guard_check_in_room(ClawtLoopGuard  *self,
     g_return_val_if_fail(message != NULL, FALSE);
 
     /*
+     * The system's own messages pass unmeasured.  Every limit below is
+     * about agent behaviour, and each one refuses a settle notice for
+     * the wrong reason: the budget check would swallow the notice that
+     * a task spent its budget, the stall check would swallow the notice
+     * that an exchange was ended, and the rate window would count a
+     * cancel cascade's notices against a sender that is not an agent.
+     * They are bounded by what produces them -- one per task settle,
+     * and a settle is one-shot -- not by this arithmetic.  Skipping the
+     * stall check also means a notice does not *clear* a stall the way
+     * a person speaking does: the room stays ended for the peers it was
+     * ended against.
+     */
+    if (clawt_message_is_from_system(message))
+        return TRUE;
+
+    /*
      * Ordered cheapest first, and the ones with no side effects before the
      * ones that record.  A message refused on hops must not have consumed
      * part of its sender's rate allowance.

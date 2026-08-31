@@ -195,6 +195,20 @@ clawt_room_message_is_for(ClawtRoom    *self,
     if (!clawt_room_has_member(self, agent_id))
         return FALSE;
 
+    /*
+     * An addressed message reaches its addressee and nobody else --
+     * stronger than a mention, which only ever widens.  A settle notice
+     * is the case that needs it: the room holds the delegator and the
+     * assignee, the transcript should show the notice once, and only
+     * the delegator's mailbox should take it.
+     */
+    {
+        const gchar *only_for = clawt_message_get_only_for(message);
+
+        if (only_for != NULL)
+            return g_strcmp0(only_for, agent_id) == 0;
+    }
+
     if (!self->require_mention)
         return TRUE;
 

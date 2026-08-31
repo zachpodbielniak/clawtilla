@@ -88,10 +88,54 @@ const gchar   *clawt_task_get_parent_id(ClawtTask *self);
 const gchar   *clawt_task_get_reason(ClawtTask *self);
 const gchar   *clawt_task_get_session_key(ClawtTask *self);
 const gchar   *clawt_task_get_progress_note(ClawtTask *self);
+
+/**
+ * clawt_task_get_cancelled_by:
+ * @self: a #ClawtTask
+ *
+ * Who cancelled it, or %NULL for a task that ended some other way.
+ * Recorded so the settle notice knows when to stay quiet: telling a
+ * delegator that the task it just cancelled is cancelled costs a model
+ * turn to read a fact it already knows, while a cancellation by the
+ * operator or a cascade from above is exactly what it is waiting to
+ * hear.
+ *
+ * Returns: (transfer none) (nullable): the canceller
+ */
+const gchar   *clawt_task_get_cancelled_by(ClawtTask *self);
+
+/**
+ * clawt_task_set_cancelled_by:
+ * @self: a #ClawtTask
+ * @value: (nullable): who cancelled it
+ *
+ * Set by clawt_task_manager_cancel() before the state changes, so a
+ * ::task-changed handler reading the task sees it on the one emission
+ * that says the task ended.
+ */
+void           clawt_task_set_cancelled_by(ClawtTask *self,
+                                           const gchar *value);
 ClawtTaskState clawt_task_get_state(ClawtTask *self);
 gint           clawt_task_get_depth(ClawtTask *self);
 gint64         clawt_task_get_created_at(ClawtTask *self);
 gint64         clawt_task_get_finished_at(ClawtTask *self);
+
+/**
+ * clawt_task_assignment_guidance:
+ * @task_id: the task being delivered
+ *
+ * The paragraph appended to a delivered assignment -- delegation and
+ * handoff alike -- telling the assignee how this ends: finishing the
+ * turn is finishing the work, the delegator is notified by clawtilla
+ * itself, progress goes through clawtilla_task_progress, and status
+ * messages are not to be sent.  One spelling, because the contract in
+ * two texts drifts into two contracts; and it names the tools, because
+ * "report when done" has already been satisfied by an assignee ending
+ * its turn into a void.
+ *
+ * Returns: (transfer full): the guidance, starting with a blank line
+ */
+gchar *clawt_task_assignment_guidance(const gchar *task_id);
 
 /**
  * clawt_task_get_owner_history:

@@ -93,6 +93,27 @@ gint clawt_mailbox_router_send(ClawtMailboxRouter  *self,
                                GError             **error);
 
 /**
+ * clawt_mailbox_router_record:
+ * @self: a #ClawtMailboxRouter
+ * @message: (transfer none): the message; its room id names the destination
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Puts @message on the record -- the room's transcript, the recall
+ * index, and one `message` event -- without queueing it into any
+ * mailbox and without starting any turn.  What an assignee's session
+ * says mid-turn in a task's thread goes through here: a progress note
+ * every few minutes is worth seeing in the room and worth finding
+ * later, and it is not worth a model turn from the delegator each time,
+ * which is what routing it cost -- four wasted turns over one
+ * twenty-minute task.
+ *
+ * Returns: %TRUE if the message was recorded
+ */
+gboolean clawt_mailbox_router_record(ClawtMailboxRouter  *self,
+                                     ClawtMessage        *message,
+                                     GError             **error);
+
+/**
  * clawt_mailbox_router_send_to:
  * @self: a #ClawtMailboxRouter
  * @from: the sending agent, or "user" for a person

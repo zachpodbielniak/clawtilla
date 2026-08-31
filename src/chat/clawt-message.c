@@ -20,6 +20,7 @@ struct _ClawtMessage {
     gchar *body;
     gchar *task_id;
     gchar *parent_id;
+    gchar *only_for;
 
     gint64        timestamp;
     gint          depth;
@@ -93,6 +94,7 @@ clawt_message_copy(ClawtMessage *self)
     copy->body = g_strdup(self->body);
     copy->task_id = g_strdup(self->task_id);
     copy->parent_id = g_strdup(self->parent_id);
+    copy->only_for = g_strdup(self->only_for);
     copy->timestamp = self->timestamp;
     copy->depth = self->depth;
     copy->priority = self->priority;
@@ -117,6 +119,7 @@ clawt_message_free(ClawtMessage *self)
     g_free(self->body);
     g_free(self->task_id);
     g_free(self->parent_id);
+    g_free(self->only_for);
     g_free(self);
 }
 
@@ -152,8 +155,24 @@ SETTER(id, id)
 SETTER(sender_name, sender_name)
 SETTER(task_id, task_id)
 SETTER(parent_id, parent_id)
+SETTER(only_for, only_for)
 
 #undef SETTER
+
+const gchar *
+clawt_message_get_only_for(ClawtMessage *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+    return self->only_for;
+}
+
+gboolean
+clawt_message_is_from_system(ClawtMessage *self)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    return g_strcmp0(self->sender_id, CLAWT_SYSTEM_SENDER) == 0;
+}
 
 gint64
 clawt_message_get_timestamp(ClawtMessage *self)

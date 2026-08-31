@@ -20,6 +20,19 @@
 
 G_BEGIN_DECLS
 
+/**
+ * CLAWT_SYSTEM_SENDER:
+ *
+ * The sender id of clawtilla's own messages -- a task settling, an
+ * exchange being ended, an interrupt being noted.  A message from this
+ * sender never invites a reply and closes the exchange it lands in: the
+ * system is a notifier, and there is nowhere for an answer to go.  The
+ * name is reserved -- clawt_agent_id_is_reserved() refuses it as an
+ * agent id -- because the routing rules that key on it must never be
+ * claimable by configuration.
+ */
+#define CLAWT_SYSTEM_SENDER "clawtilla"
+
 #define CLAWT_TYPE_MESSAGE (clawt_message_get_type())
 
 GType clawt_message_get_type(void) G_GNUC_CONST;
@@ -120,6 +133,45 @@ void clawt_message_set_task_id(ClawtMessage *self, const gchar *task_id);
 void clawt_message_set_parent_id(ClawtMessage *self, const gchar *parent_id);
 void clawt_message_set_timestamp(ClawtMessage *self, gint64 timestamp);
 void clawt_message_set_depth(ClawtMessage *self, gint depth);
+
+/**
+ * clawt_message_get_only_for:
+ * @self: a #ClawtMessage
+ *
+ * The one member this message is addressed to, or %NULL for everyone in
+ * the room.  A settle notice lands in the room the delegation lived in
+ * -- the transcript is the record -- but only its delegator's mailbox
+ * takes it: delivering "your task ended" to the agent whose turn just
+ * ended it would cost a model turn to read a fact it already knows.
+ *
+ * Returns: (transfer none) (nullable): the addressee
+ */
+const gchar *clawt_message_get_only_for(ClawtMessage *self);
+
+/**
+ * clawt_message_set_only_for:
+ * @self: a #ClawtMessage
+ * @agent_id: (nullable): the one member whose mailbox may take this
+ *
+ * In-memory only, deliberately: delivery happens in the same breath as
+ * routing, and by the time a mailbox holds the item the addressing has
+ * already been decided.
+ */
+void clawt_message_set_only_for(ClawtMessage *self, const gchar *agent_id);
+
+/**
+ * clawt_message_is_from_system:
+ * @self: a #ClawtMessage
+ *
+ * Whether clawtilla itself wrote this -- see %CLAWT_SYSTEM_SENDER.  The
+ * loop guard passes such a message unmeasured (it is bounded by what
+ * produces it, not by hop or budget arithmetic, and a settle notice
+ * refused for a spent task budget would hide the very fact that the
+ * task ended), and the router delivers it with the exchange closed.
+ *
+ * Returns: %TRUE when the sender is clawtilla itself
+ */
+gboolean clawt_message_is_from_system(ClawtMessage *self);
 
 /**
  * clawt_message_get_invites_reply:

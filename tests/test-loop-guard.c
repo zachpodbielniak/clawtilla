@@ -128,6 +128,36 @@ test_a_stalled_room_refuses_without_advice_to_retry(void)
 }
 
 /*
+ * The system's own notice passes a stalled room, and the stall stays.
+ *
+ * When the guard ends an exchange the daemon stalls the task behind it,
+ * and the stall's notice has to reach the delegator through the very
+ * room the guard just closed -- refused, the ending would be the one
+ * thing nobody could be told about.  It passes without *clearing* the
+ * stall: the refusal's text promises the room stays ended until a
+ * person speaks, and a notice is not a person.
+ */
+static void
+test_a_system_notice_passes_a_stalled_room(void)
+{
+    g_autoptr(ClawtLoopGuard) guard = guard_with_peers();
+    g_autoptr(ClawtMessage) first = note("alice", "room", "same");
+    g_autoptr(ClawtMessage) second = note("alice", "room", "same");
+    g_autoptr(ClawtMessage) notice =
+        note("clawtilla", "room", "[clawtilla] Task ta-1 was stopped.");
+    g_autoptr(ClawtMessage) after = note("bob", "room", "so, anyway");
+
+    g_assert_true(clawt_loop_guard_check(guard, first, NULL));
+    g_assert_false(clawt_loop_guard_check(guard, second, NULL));
+
+    g_assert_true(clawt_loop_guard_check(guard, notice, NULL));
+
+    g_assert_cmpint(clawt_loop_guard_get_stall_reason(guard, "room"), ==,
+                    CLAWT_STALL_REPEATED_MESSAGE);
+    g_assert_false(clawt_loop_guard_check(guard, after, NULL));
+}
+
+/*
  * A person saying something restarts it.
  *
  * Without this a stalled room is dead for the life of the daemon, and
@@ -455,6 +485,8 @@ main(int argc, char **argv)
                     test_an_alternating_pair_is_stopped_within_a_bound);
     g_test_add_func("/loop-guard/a-stalled-room-does-not-advise-a-retry",
                     test_a_stalled_room_refuses_without_advice_to_retry);
+    g_test_add_func("/loop-guard/a-system-notice-passes-a-stalled-room",
+                    test_a_system_notice_passes_a_stalled_room);
     g_test_add_func("/loop-guard/a-person-reopens-a-stalled-exchange",
                     test_a_person_reopens_a_stalled_exchange);
     g_test_add_func("/loop-guard/a-person-repeating-does-not-stall",

@@ -185,6 +185,64 @@ wrote before the turn ended".  "They said it was done" and "they stopped
 talking" are different facts, and a delegator that cannot tell them apart
 either waits on finished work or does it again.
 
+~clawtilla_task_complete~ is the assignee's verb and nobody else's --
+the same whose-turn rule, applied to the explicit tool.  A delegator
+that no longer wants the work has ~clawtilla_task_cancel~, which is also
+scoped: a task can be cancelled by its delegator or its assignee, and by
+nobody standing outside it.
+
+**** A settled task reports itself
+
+When a task reaches a terminal state -- completed, failed, stalled or
+cancelled -- clawtilla itself tells the delegator, with a notice into
+the room the delegation lives in.  The assignee does not send it and
+cannot suppress it: it finishes, and the daemon carries the result up.
+
+This closed a real incident.  A chief-of-staff delegated a smoke test,
+told its operator "I'll relay it when it lands", and ended its turn; the
+result landed, correct and complete, and sat unread until the operator
+asked -- the operator was the polling mechanism.  The assignee had even
+been told "send me ONE message at the end", and satisfied that by ending
+its turn, which under the old lifecycle reached nobody.
+
+The notice is:
+
+- *from ~clawtilla~*, not from the assignee.  The reserved system sender
+  is what lets the delegator act on it: ~clawtilla_message_user~ refuses
+  turns a /peer/ started, and a notice's turn is started by nobody's
+  ask, so a chief can relay a finished task's result to the person
+  waiting on it.
+- *addressed to the delegator alone.*  It appears once in the shared
+  room's transcript, and only the delegator's mailbox takes it -- waking
+  the assignee to say "the task you just finished is finished" would
+  cost a model turn to read a fact it already knows.
+- *a closed exchange.*  Nothing the delegator writes at the end of the
+  notice's turn is routed anywhere, and the notice says so in its own
+  text.  Acting on it means tools: ~clawtilla_message_user~ for a root
+  task, ~clawtilla_task_progress~ or ~clawtilla_task_complete~ on the
+  parent for a mid-chain one -- and the notice says which of the two it
+  is, because the daemon knows whether the settled task has a parent.
+- *unmeasured by the loop guard.*  A settle is one-shot, so notices are
+  bounded by what produces them; measured, the budget check would
+  swallow the notice that a task spent its budget and the stall check
+  would swallow the notice that an exchange was ended.
+- *honest about how it ended.*  An inferred completion says the result
+  was not written as a report and may be an interim note; an explicit
+  one says the assignee reported it done; a failure, a stall and a
+  cancellation each say so, with the reason.  A cancellation names its
+  canceller -- and is not sent at all to a delegator about its own
+  cancel.
+
+The settle also spends the delegation's invite: the assignee's sign-off
+after the notice -- the text an AI CLI cannot help writing -- goes
+nowhere, so one settle is one delivery.  And the assignee's /mid-turn/
+thread messages, the "Still working..." notes libreclaw posts every few
+minutes, are recorded in the room and the recall index without waking
+the delegator at all.  Interim progress is read, through
+~clawtilla_task_status~ or the room, never delivered; the conclusion is
+delivered.  A delegator polls nothing and an assignee narrates to
+nobody, which is the turn economy the rest of this page asks for.
+
 **** Reporting progress without finishing
 
 #+begin_example

@@ -740,6 +740,37 @@ clawt_is_valid_id(const gchar *id)
 }
 
 gboolean
+clawt_agent_id_is_reserved(const gchar *id)
+{
+    /*
+     * The sender names the routing rules key on.  "user" is how
+     * is_operator_room() recognises the operator's own conversations;
+     * "clawtilla" is how the system signs a settle notice, which the
+     * drain then delivers with the exchange closed and the loop guard
+     * passes unmeasured; "routine" and "trigger" are what automated
+     * work sends as.  An agent claiming any of them would inherit that
+     * treatment wholesale -- an agent called "clawtilla" whose every
+     * message bypassed the loop guard is the sharpest of the four.
+     * Walked as a list here and nowhere else, so the next reserved
+     * sender is added in one place.
+     */
+    static const gchar *reserved[] = {
+        "user", "clawtilla", "routine", "trigger", NULL
+    };
+    guint i;
+
+    if (id == NULL)
+        return FALSE;
+
+    for (i = 0; reserved[i] != NULL; i++) {
+        if (g_strcmp0(id, reserved[i]) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+gboolean
 clawt_copy_tree(const gchar *source, const gchar *target, gboolean keep_git,
                 guint *copied, GError **error)
 {

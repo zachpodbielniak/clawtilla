@@ -521,7 +521,8 @@ clawt_task_manager_stall(ClawtTaskManager *self,
 guint
 clawt_task_manager_cancel(ClawtTaskManager *self,
                           const gchar      *task_id,
-                          const gchar      *reason)
+                          const gchar      *reason,
+                          const gchar      *who)
 {
     ClawtTask *task;
     guint cancelled = 0;
@@ -535,6 +536,14 @@ clawt_task_manager_cancel(ClawtTaskManager *self,
 
     if (!clawt_task_is_finished(task)) {
         clawt_task_set_reason(task, reason);
+
+        /*
+         * Before the state, so the ::task-changed handler that turns a
+         * terminal transition into a settle notice can already see who
+         * did it -- a delegator is not told about its own cancel, and
+         * the state emission is the one moment that decision is made.
+         */
+        clawt_task_set_cancelled_by(task, who);
         clawt_task_set_state(task, CLAWT_TASK_CANCELLED);
         emit_changed(self, task);
         cancelled++;
@@ -555,7 +564,14 @@ clawt_task_manager_cancel(ClawtTaskManager *self,
         if (g_strcmp0(clawt_task_get_parent_id(child), task_id) != 0)
             continue;
 
-        cancelled += clawt_task_manager_cancel(self, child_id, reason);
+        /*
+         * The original canceller, all the way down.  A cascade-cancelled
+         * child's delegator is usually somewhere inside the chain being
+         * cancelled -- and it is exactly the party that must stop
+         * waiting, so the notice logic needs to see that somebody
+         * *else* ended this one.
+         */
+        cancelled += clawt_task_manager_cancel(self, child_id, reason, who);
     }
 
     return cancelled;

@@ -275,6 +275,21 @@ agent_validate(ClawtAgentConfig *self)
     }
 
     /*
+     * A well-formed id can still be a name the routing keys on.  An
+     * agent called "clawtilla" would sign its messages as the system --
+     * every one passing the loop guard unmeasured and closing the
+     * exchange it lands in -- and one called "user" would read as the
+     * operator.  Shadowed, not fatal: the other nine agents still start.
+     */
+    if (clawt_agent_id_is_reserved(self->id)) {
+        agent_mark_shadow(self,
+                          "agent id '%s' is reserved: it is a sender name "
+                          "clawtilla's own routing keys on. Pick another.",
+                          self->id);
+        return;
+    }
+
+    /*
      * The two persona forms are documented as alternatives and were never
      * checked, so both were rendered: an agent got its identity files AND
      * an inline prompt, with nothing saying only one was meant to apply.
@@ -2756,6 +2771,13 @@ clawt_config_add_agent(ClawtConfig *self, const gchar *id, GError **error)
                     "lowercase letters, digits, '-' and '_', and must not "
                     "start with punctuation",
                     id != NULL ? id : "");
+        return NULL;
+    }
+
+    if (clawt_agent_id_is_reserved(id)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "'%s' is reserved: it is a sender name clawtilla's own "
+                    "routing keys on. Pick another id.", id);
         return NULL;
     }
 

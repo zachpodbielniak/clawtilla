@@ -23,6 +23,7 @@ struct _ClawtTask {
     gchar *reason;
     gchar *session_key;
     gchar *progress_note;
+    gchar *cancelled_by;
 
     /*
      * Everyone who has owned it, oldest first, with the current
@@ -137,6 +138,7 @@ clawt_task_copy(ClawtTask *self)
     copy->reason = g_strdup(self->reason);
     copy->session_key = g_strdup(self->session_key);
     copy->progress_note = g_strdup(self->progress_note);
+    copy->cancelled_by = g_strdup(self->cancelled_by);
 
     /*
      * Deep, because g_ptr_array_copy() carries the source's element-free
@@ -181,6 +183,7 @@ clawt_task_free(ClawtTask *self)
     g_free(self->reason);
     g_free(self->session_key);
     g_free(self->progress_note);
+    g_free(self->cancelled_by);
     g_clear_pointer(&self->owners, g_ptr_array_unref);
     g_free(self);
 }
@@ -203,6 +206,7 @@ GETTER(parent_id, parent_id)
 GETTER(reason, reason)
 GETTER(session_key, session_key)
 GETTER(progress_note, progress_note)
+GETTER(cancelled_by, cancelled_by)
 
 #undef GETTER
 
@@ -221,8 +225,33 @@ SETTER(parent_id, parent_id)
 SETTER(reason, reason)
 SETTER(result, result)
 SETTER(progress_note, progress_note)
+SETTER(cancelled_by, cancelled_by)
 
 #undef SETTER
+
+gchar *
+clawt_task_assignment_guidance(const gchar *task_id)
+{
+    g_return_val_if_fail(task_id != NULL, NULL);
+
+    /*
+     * One spelling, because delegation and handoff both deliver work
+     * and the two texts had every chance to drift into two contracts.
+     * It names the tools rather than describing behaviours -- the
+     * chief-of-staff that inspired it told its assignee "send me ONE
+     * message at the end", and the assignee satisfied that by ending
+     * its turn, which under the old lifecycle reached nobody.
+     */
+    return g_strdup_printf(
+        "\n\n[clawtilla] This is task %s. When the work is done, just "
+        "finish your turn -- your final message becomes the result and "
+        "the delegator is notified automatically -- or call "
+        "clawtilla_task_complete to say so explicitly. If you are "
+        "stopping with work still open, call clawtilla_task_progress. "
+        "Do not send status updates as messages: progress goes on the "
+        "task, where it can be read without costing anybody a turn.",
+        task_id);
+}
 
 void
 clawt_task_hold_completion(ClawtTask *self)

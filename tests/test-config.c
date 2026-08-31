@@ -341,6 +341,37 @@ test_invalid_agent_ids_are_refused(void)
 }
 
 /*
+ * A well-formed id can still be a name the routing keys on.
+ *
+ * An agent called "clawtilla" would sign every message as the system --
+ * passing the loop guard unmeasured and closing each exchange it lands
+ * in -- and one called "user" would read as the operator to
+ * is_operator_room().  These are reserved at the door, where the other
+ * shape rules already live.
+ */
+static void
+test_reserved_sender_names_are_not_agent_ids(void)
+{
+    static const gchar *reserved[] = {
+        "user", "clawtilla", "routine", "trigger", NULL
+    };
+    g_autoptr(ClawtConfig) config = clawt_config_new();
+    gsize i;
+
+    for (i = 0; reserved[i] != NULL; i++) {
+        g_autoptr(GError) error = NULL;
+
+        g_assert_true(clawt_agent_id_is_reserved(reserved[i]));
+        g_assert_null(clawt_config_add_agent(config, reserved[i], &error));
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT);
+        g_assert_nonnull(strstr(error->message, "reserved"));
+    }
+
+    g_assert_false(clawt_agent_id_is_reserved("oryx"));
+    g_assert_false(clawt_agent_id_is_reserved(NULL));
+}
+
+/*
  * Forward compatibility: a config naming something this build has never
  * heard of disables that agent, not the daemon.
  */
@@ -1166,6 +1197,8 @@ main(int argc, char *argv[])
                     test_duplicate_agent_id_is_refused);
     g_test_add_func("/config/agents/invalid-ids",
                     test_invalid_agent_ids_are_refused);
+    g_test_add_func("/config/agents/reserved-sender-names",
+                    test_reserved_sender_names_are_not_agent_ids);
     g_test_add_func("/config/agents/unknown-computer-shadow",
                     test_unknown_computer_type_becomes_shadow);
     g_test_add_func("/config/agents/two-chiefs",

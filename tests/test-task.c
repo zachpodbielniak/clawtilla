@@ -258,7 +258,8 @@ test_cancelling_reaches_the_whole_subtree(void)
 
     g_assert_cmpuint(clawt_task_manager_cancel(tasks,
                                                clawt_task_get_id(root),
-                                               "operator changed their mind"),
+                                               "operator changed their mind",
+                                               "user"),
                      ==, 4);
 
     g_assert_cmpint(clawt_task_get_state(root), ==, CLAWT_TASK_CANCELLED);

@@ -534,6 +534,24 @@ gint clawt_agent_get_hop_depth_in(ClawtAgent *self, const gchar *room_id);
  *
  * Returns: %TRUE if the daemon should route what that turn says
  */
+/**
+ * clawt_agent_close_turn_exchange:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): the room whose running turn is spoken for
+ *
+ * Spends the invite of the turn currently recorded for @room_id, so the
+ * text that ends it is not routed.  Called when a task settles: the
+ * settle notice *is* the answer the delegation invited, and the
+ * assignee's sign-off after it is what an AI CLI writes because it
+ * cannot end a turn without writing something.  Scoped to the turn that
+ * exists now -- the entry is replaced at the room's next rising edge --
+ * so an answer to a question asked *after* the settle keeps its own
+ * invite.  A %NULL room is a no-op: with no room there is no way to
+ * know which turn settled it, and the safe direction is one routed
+ * sign-off, which the recipient's own closed exchange then ends.
+ */
+void clawt_agent_close_turn_exchange(ClawtAgent *self, const gchar *room_id);
+
 gboolean clawt_agent_get_turn_replies_in(ClawtAgent  *self,
                                          const gchar *room_id);
 

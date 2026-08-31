@@ -77,8 +77,15 @@ clawt_daemon_handle_task(
             return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
                                        "which task?");
 
+        /*
+         * "user", because the clients are the operator's hands.  The
+         * delegating agent is then told its task was cancelled over its
+         * head -- which is the notice it is waiting on, where its own
+         * cancel would be a notice about what it just did.
+         */
         cancelled = clawt_task_manager_cancel(self->tasks, task_id,
-                                              "cancelled from a client");
+                                              "cancelled from a client",
+                                              "user");
 
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "cancelled");

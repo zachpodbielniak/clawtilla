@@ -1864,6 +1864,135 @@ test_message_user_is_refused_during_a_peers_turn(void)
 }
 
 /*
+ * A settle notice's turn may reach the operator.
+ *
+ * The notice is what carries a finished task's result to its delegator,
+ * and relaying that result is exactly what the delegator's turn is for
+ * -- so the origin is "clawtilla", which is nobody's ask, and the
+ * back-up-the-chain guard must let it through.  Refusing here would
+ * recreate the incident this feature closes: the result sitting in the
+ * chief's context with no sanctioned way to the person waiting on it.
+ */
+static void
+test_a_settle_notice_turn_may_reach_the_operator(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) allowed = NULL;
+    ClawtAgent *worker;
+    gboolean is_error = TRUE;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n  - id: worker\n");
+
+    worker = clawt_agent_manager_get(fixture.agents, "worker");
+    g_assert_nonnull(worker);
+
+    /* The delivery that started this turn was the system's notice. */
+    clawt_agent_set_hop_depth(worker, 0);
+    clawt_agent_set_turn_origin(worker, "clawtilla");
+    clawt_agent_begin_turn(worker, NULL);
+
+    allowed = call_tool(&fixture, "worker", "clawtilla_message_user",
+                        "{\"body\": \"The guest check finished: all "
+                        "five answer.\"}");
+    response_text(allowed, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_nonnull(fixture.last_target);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Only the assignee's word finishes a task -- the same rule the
+ * turn-end inference applies, now applied to the explicit tool.
+ *
+ * A delegator "completing" its own task recorded whatever it typed as
+ * the result of work somebody else was still doing, and the settle
+ * notice would then deliver that fabrication back to its author as
+ * news.
+ */
+static void
+test_only_the_assignee_completes_a_task(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) refused = NULL;
+    g_autoptr(JsonNode) accepted = NULL;
+    g_autofree gchar *arguments = NULL;
+    ClawtTask *task;
+    const gchar *text;
+    gboolean is_error = FALSE;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n  - id: oryx\n");
+
+    task = clawt_task_manager_create(fixture.tasks, "chief", "oryx",
+                                     "verify the guests", NULL, NULL);
+    g_assert_nonnull(task);
+
+    arguments = g_strdup_printf(
+        "{\"task_id\":\"%s\",\"result\":\"looks done to me\"}",
+        clawt_task_get_id(task));
+
+    refused = call_tool(&fixture, "chief", "clawtilla_task_complete",
+                        arguments);
+    text = response_text(refused, &is_error);
+
+    g_assert_true(is_error);
+    g_assert_nonnull(strstr(text, "oryx"));
+    g_assert_nonnull(strstr(text, "clawtilla_task_cancel"));
+    g_assert_false(clawt_task_is_finished(task));
+
+    is_error = TRUE;
+    accepted = call_tool(&fixture, "oryx", "clawtilla_task_complete",
+                         arguments);
+    text = response_text(accepted, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_true(clawt_task_is_finished(task));
+    g_assert_nonnull(strstr(text, "notified"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And a task is not any bystander's to cancel.
+ *
+ * The description always said "a task you delegated"; nothing checked,
+ * so any agent holding an id could end anyone's work -- and, with
+ * settle notices, make the daemon announce an ending neither party
+ * asked for.
+ */
+static void
+test_a_bystander_cannot_cancel_a_task(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) refused = NULL;
+    g_autofree gchar *arguments = NULL;
+    ClawtTask *task;
+    const gchar *text;
+    gboolean is_error = FALSE;
+
+    fixture_setup(&fixture,
+                  "agents:\n  - id: chief\n  - id: oryx\n  - id: kudu\n");
+
+    task = clawt_task_manager_create(fixture.tasks, "chief", "oryx",
+                                     "verify the guests", NULL, NULL);
+    g_assert_nonnull(task);
+
+    arguments = g_strdup_printf("{\"task_id\":\"%s\"}",
+                                clawt_task_get_id(task));
+
+    refused = call_tool(&fixture, "kudu", "clawtilla_task_cancel",
+                        arguments);
+    text = response_text(refused, &is_error);
+
+    g_assert_true(is_error);
+    g_assert_nonnull(strstr(text, "not yours to cancel"));
+    g_assert_false(clawt_task_is_finished(task));
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * And it is still refused on the peer's *second* message.
  *
  * The one above delivers once and begins one turn, which is the only
@@ -2192,7 +2321,8 @@ test_delegating_from_a_task_records_the_parent(void)
     /* And the cascade the tool promises now reaches it. */
     g_assert_cmpuint(clawt_task_manager_cancel(fixture.tasks,
                                                clawt_task_get_id(root),
-                                               "changed my mind"), ==, 2);
+                                               "changed my mind",
+                                               "chief"), ==, 2);
 
     fixture_teardown(&fixture);
 }
@@ -2462,7 +2592,7 @@ test_progress_on_a_finished_task_is_refused(void)
     task = clawt_task_manager_create(fixture.tasks, "chief", "oryx",
                                      "verify the guests", NULL, NULL);
     clawt_task_manager_cancel(fixture.tasks, clawt_task_get_id(task),
-                              "no longer needed");
+                              "no longer needed", "chief");
 
     arguments = g_strdup_printf("{\"task_id\":\"%s\",\"note\":\"still on it\"}",
                                 clawt_task_get_id(task));
@@ -2736,6 +2866,12 @@ main(int argc, char *argv[])
                     test_message_user_is_refused_during_a_peers_turn);
     g_test_add_func("/mcp/message-user/refused-on-later-messages",
                     test_message_user_is_refused_on_a_peers_later_messages);
+    g_test_add_func("/mcp/message-user/a-notice-turn-may-reach-them",
+                    test_a_settle_notice_turn_may_reach_the_operator);
+    g_test_add_func("/mcp/task/only-the-assignee-completes",
+                    test_only_the_assignee_completes_a_task);
+    g_test_add_func("/mcp/task/a-bystander-cannot-cancel",
+                    test_a_bystander_cannot_cancel_a_task);
     g_test_add_func("/mcp/failing-command", test_failing_command_reports_why);
 
     g_test_add_func("/mcp/turn-room/the-runtimes-room-picks-the-turn",
