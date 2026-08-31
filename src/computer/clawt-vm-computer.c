@@ -88,6 +88,15 @@ struct _ClawtVmComputer {
      */
     guint    forward_port;
 
+    /*
+     * TRUE when the config named the route (computer.vm.ssh_host), so
+     * the recorded ssh-port file -- possibly left over from an era when
+     * clawtilla owned the forwarding -- must never divert a dial.  When
+     * this is FALSE the file is the record and ssh_port is a cache of
+     * it, re-read before every dial by refresh_forwarded_port().
+     */
+    gboolean route_pinned;
+
     gboolean snapshot_on_start;
     gboolean cloud_init;
 
@@ -103,6 +112,7 @@ G_DEFINE_FINAL_TYPE_WITH_CODE(
 
 static gboolean libvirt_has_domain(ClawtVmComputer *self);
 static gchar   *libvirt_domain_xml(ClawtVmComputer *self);
+static void     refresh_forwarded_port(ClawtVmComputer *self);
 static GStrv    build_ssh_argv_as(ClawtVmComputer *self,
                                   const gchar     *login,
                                   const gchar     *command,
@@ -335,6 +345,16 @@ clawt_vm_computer_set_ssh(ClawtVmComputer *self,
     if (host != NULL) {
         g_free(self->ssh_host);
         self->ssh_host = g_strdup(host);
+
+        /*
+         * An address in the config is the user's own route to the
+         * guest, so the recorded forward -- if one was ever written --
+         * stops being the record.  Only the host pins: the schema says
+         * ssh_port is ignored while clawtilla forwards a port of its
+         * own choosing, and every agent gets the default 22 through
+         * this same call.
+         */
+        self->route_pinned = TRUE;
     }
 
     if (port > 0)
@@ -389,6 +409,14 @@ guint
 clawt_vm_computer_get_ssh_port(ClawtVmComputer *self)
 {
     g_return_val_if_fail(CLAWT_IS_VM_COMPUTER(self), 0);
+
+    /*
+     * Re-read here as well as before a dial, so whatever reports the
+     * port -- computer.status, a client's inspector -- names the one
+     * that will actually be dialled rather than the one this object
+     * happened to learn first.
+     */
+    refresh_forwarded_port(self);
 
     return self->ssh_port;
 }
@@ -1397,11 +1425,18 @@ ensure_overlay(ClawtVmComputer *self, GError **error)
 }
 
 /*
- * Picks the host port that reaches the guest's SSH, once, and remembers it.
+ * Picks the host port that reaches the guest's SSH, once, and records it.
  *
  * It has to survive a restart: a libvirt domain is defined with the port
  * written into its XML, so choosing a fresh one next time would leave the
  * daemon dialling a port nothing is listening on.
+ *
+ * The file is the record and self->ssh_port is a cache of it.  A rebuild
+ * tears the file down with the domain and records a fresh port through
+ * whatever object ran the provisioning -- the handler builds its own --
+ * so an object that learned the port earlier is holding the number of a
+ * machine that no longer exists.  The dial path re-reads the record
+ * (refresh_forwarded_port()) rather than trusting any object's memory.
  */
 static gboolean
 ensure_ssh_forward(ClawtVmComputer *self, GError **error)
@@ -2602,6 +2637,56 @@ vm_observable_init(ClawtObservableInterface *iface)
 }
 
 /*
+ * Re-reads the recorded forward, so the next dial lands where the record
+ * points.
+ *
+ * computer.rebuild destroys the guest and provisions a fresh one with a
+ * fresh port, and it does that through an object of its own -- so the
+ * object an agent's next start reuses still holds the port of a machine
+ * that no longer exists.  On a live fleet the ssh-port file, the passt
+ * command line and the domain XML all said 44187 while the daemon
+ * dialled 38887: every layer reported healthy, and no command could
+ * reach a guest that was up the whole time.
+ *
+ * A record that is missing or unreadable changes nothing.  The dial
+ * against whatever the object last knew fails loudly on its own, and
+ * inventing a port here would be worse -- ensure_ssh_forward() writes
+ * the file precisely when it is the one choosing.
+ */
+static void
+refresh_forwarded_port(ClawtVmComputer *self)
+{
+    g_autofree gchar *state_dir = NULL;
+    g_autofree gchar *port_path = NULL;
+    g_autofree gchar *recorded = NULL;
+    guint64 parsed;
+
+    /* The config named the route; the file is not the record here. */
+    if (self->route_pinned)
+        return;
+
+    state_dir = vm_state_dir(self);
+    port_path = g_build_filename(state_dir, "ssh-port", NULL);
+
+    if (!g_file_get_contents(port_path, &recorded, NULL, NULL) ||
+        !g_ascii_string_to_unsigned(g_strstrip(recorded), 10, 1, 65535,
+                                    &parsed, NULL))
+        return;
+
+    if ((guint)parsed == self->ssh_port)
+        return;
+
+    if (self->forward_port > 0)
+        g_message("vm %s: the recorded ssh port moved from %u to %u -- the "
+                  "machine was rebuilt underneath this daemon -- so that is "
+                  "the one dialled", self->domain, self->ssh_port,
+                  (guint)parsed);
+
+    self->ssh_port = (guint)parsed;
+    self->forward_port = (guint)parsed;
+}
+
+/*
  * Assembles the ssh command line.
  *
  * Shared by every caller because everything except the login, the
@@ -2618,6 +2703,8 @@ build_ssh_argv_as(ClawtVmComputer *self,
     g_autofree gchar *state_dir = NULL;
     g_autofree gchar *known_hosts = NULL;
     GPtrArray *ssh_argv;
+
+    refresh_forwarded_port(self);
 
     state_dir = vm_state_dir(self);
     known_hosts = g_build_filename(state_dir, "known_hosts", NULL);

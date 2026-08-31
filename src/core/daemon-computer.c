@@ -311,9 +311,9 @@ clawt_daemon_handle_computer(
                                        "rebuild");
 
         /*
-         * Built from the config rather than taken from the agent: a
-         * stopped agent has no computer object, and stopped is the only
-         * state this is allowed in.
+         * Built from the config rather than taken from the agent, so
+         * the teardown and provisioning run against what the config
+         * says now rather than what an earlier start remembered.
          */
         {
             g_autoptr(GPtrArray) defaults =
@@ -337,6 +337,25 @@ clawt_daemon_handle_computer(
             g_message("agent %s: nothing to tear down before rebuilding "
                       "(%s)", agent_id, removed);
         }
+
+        /*
+         * The agent's own record of the machine goes with the machine.
+         *
+         * This handler was written on the belief that a stopped agent
+         * holds no computer object, and that was false: stopping keeps
+         * the object so `computer status` can still answer, and the
+         * next start reuses whatever the agent holds.  So the rebuild
+         * recorded a fresh SSH port through its own object and the
+         * reused one dialled the old port for as long as the daemon
+         * lived -- with the ssh-port file, the passt command line and
+         * the domain XML all agreeing on the new one.  Dropped as soon
+         * as the teardown has run, whatever provisioning goes on to
+         * decide: either way the machine that object described is gone,
+         * and the next start builds one from the config the way a first
+         * start does.
+         */
+        if (agent != NULL)
+            clawt_agent_set_computer(agent, NULL);
 
         if (!clawt_computer_provision(built, &error))
             return clawt_ipc_error_new(request, error->code, error->message);

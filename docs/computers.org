@@ -842,10 +842,20 @@ and a guest agent would be one more thing to install inside every image.
 
 Leave ~ssh_host~ unset and clawtilla arranges the route itself: it picks
 a free port on 127.0.0.1, forwards it to the guest's port 22, and
-remembers the choice in ~$XDG_DATA_HOME/clawtilla/vms/<agent>/ssh-port~.
-It has to be remembered -- a libvirt domain is defined with the port
+records the choice in ~$XDG_DATA_HOME/clawtilla/vms/<agent>/ssh-port~.
+It has to be recorded -- a libvirt domain is defined with the port
 written into its XML, so choosing a new one on the next start would
 leave the daemon dialling a port nothing is listening on.
+
+That file is the record, and it is re-read before every dial.
+~computer.rebuild~ destroys the guest, deletes the file, and records a
+fresh port for the new machine; anything the running daemon remembered
+about the old one is a cache of a machine that no longer exists.  Before
+the re-read, a rebuild under a long-lived daemon left every layer
+agreeing on the new port -- the file, the passt command line, the domain
+XML -- while the daemon dialled the old one, which looks exactly like a
+guest that failed to boot.  When the port moves, the log says so:
+"the recorded ssh port moved from X to Y".
 
 The two backends forward differently:
 
@@ -1271,7 +1281,7 @@ Everything for one guest, under
 | ~seed.iso~ | the cloud-init seed, labelled ~cidata~ |
 | ~cloud-init/~ | the ~user-data~ and ~meta-data~ inside it |
 | ~id_ed25519~ | the generated key, when ~ssh_key~ is unset |
-| ~ssh-port~ | the forwarded port, remembered across restarts |
+| ~ssh-port~ | the forwarded port: kept across restarts, re-read before every dial |
 | ~known_hosts~ | this agent's guests, kept out of yours |
 
 Deleting the directory starts the guest over from the base image.

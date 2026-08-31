@@ -444,6 +444,69 @@ test_which_types_have_a_machine(void)
 }
 
 /*
+ * The recorded forward is re-read before it is dialled.
+ *
+ * computer.rebuild tears the guest down and provisions a fresh one with
+ * a fresh port -- and the handler does that through an object of its
+ * own, while the object the agent's next start reuses keeps the number
+ * it learned first.  On a live fleet the ssh-port file, the passt
+ * command line and the domain XML all said 44187 while the daemon
+ * dialled 38887: every layer reported healthy, and no command could
+ * reach a guest that was up the whole time.  The file is the record;
+ * whatever an object remembers is a cache of it.
+ */
+static void
+test_a_rebuilt_vms_recorded_port_reaches_the_dialler(void)
+{
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(ClawtComputer) pinned = NULL;
+    g_autofree gchar *dir = NULL;
+    g_autofree gchar *port_path = NULL;
+
+    computer = clawt_vm_computer_new("port-check", CLAWT_VM_BACKEND_LIBVIRT,
+                                     NULL);
+
+    dir = g_build_filename(g_get_user_data_dir(), "clawtilla", "vms",
+                           "port-check", NULL);
+    g_assert_cmpint(g_mkdir_with_parents(dir, 0700), ==, 0);
+    port_path = g_build_filename(dir, "ssh-port", NULL);
+
+    /* What the first provision recorded. */
+    g_assert_true(g_file_set_contents(port_path, "38887\n", -1, NULL));
+    g_assert_cmpuint(
+        clawt_vm_computer_get_ssh_port(CLAWT_VM_COMPUTER(computer)),
+        ==, 38887);
+
+    /* The rebuild, underneath a live object. */
+    g_assert_true(g_file_set_contents(port_path, "44187\n", -1, NULL));
+    g_assert_cmpuint(
+        clawt_vm_computer_get_ssh_port(CLAWT_VM_COMPUTER(computer)),
+        ==, 44187);
+
+    /* A record that stops parsing does not take the port with it. */
+    g_assert_true(g_file_set_contents(port_path, "not-a-port\n", -1, NULL));
+    g_assert_cmpuint(
+        clawt_vm_computer_get_ssh_port(CLAWT_VM_COMPUTER(computer)),
+        ==, 44187);
+
+    /*
+     * An address from the config is the user's own route, and a stale
+     * record from an era when clawtilla owned the forwarding must not
+     * divert it.
+     */
+    pinned = clawt_vm_computer_new("port-check", CLAWT_VM_BACKEND_LIBVIRT,
+                                   NULL);
+    clawt_vm_computer_set_ssh(CLAWT_VM_COMPUTER(pinned), NULL, NULL,
+                              "10.0.0.5", 2222);
+    g_assert_true(g_file_set_contents(port_path, "38887\n", -1, NULL));
+    g_assert_cmpuint(
+        clawt_vm_computer_get_ssh_port(CLAWT_VM_COMPUTER(pinned)),
+        ==, 2222);
+
+    clawt_test_remove_tree(dir);
+}
+
+/*
  * A stop that reports success and leaves the machine running is the same
  * lie teardown used to tell, and it became worth preventing the moment a
  * person could press Stop from a menu.
@@ -5058,6 +5121,8 @@ main(int argc, char *argv[])
     g_test_add_func("/computer/vm/no-shared-memory-without-mounts",
                     test_vm_domain_xml_omits_shared_memory_without_mounts);
     g_test_add_func("/computer/vm/qemu-argv", test_vm_qemu_argv);
+    g_test_add_func("/computer/vm/recorded-port-reaches-the-dialler",
+                    test_a_rebuilt_vms_recorded_port_reaches_the_dialler);
     g_test_add_func("/computer/vm/seed-cdrom",
                     test_vm_domain_xml_attaches_the_seed);
     g_test_add_func("/computer/vm/passt-port-forward",

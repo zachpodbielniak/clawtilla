@@ -1231,6 +1231,31 @@ Check what it is trying:
 cat ~/.local/share/clawtilla/vms/<agent>/ssh-port
 #+end_src
 
+** A rebuilt VM is up, every file names one port, and the daemon dials another
+
+The guest boots, ~virsh~ shows it running, the ~ssh-port~ file, the
+passt command line and the domain XML all agree -- and every command
+times out, which reads as a guest with no network rather than as a
+daemon dialling the wrong door.
+
+That was a rebuild under a long-lived daemon.  ~computer.rebuild~
+records a fresh port for the new machine, and daemons from before the
+record was re-read per dial kept dialling the port the *old* machine
+had, for as long as they lived.  The current daemon re-reads
+~vms/<agent>/ssh-port~ before every dial and logs the move:
+
+#+begin_example
+vm oryx: the recorded ssh port moved from 38887 to 44187 -- the machine
+was rebuilt underneath this daemon -- so that is the one dialled
+#+end_example
+
+Seeing the stale-dial symptom on a build that predates that line has one
+remedy: restart ~clawtillad~.  Confirm which port is actually live with:
+
+#+begin_src bash
+ss -ltnp | grep "$(cat ~/.local/share/clawtilla/vms/<agent>/ssh-port)"
+#+end_src
+
 ** The console says "Display output is not active" and ssh is reset
 
 #+begin_example

@@ -3643,6 +3643,60 @@ test_rebuild_refuses_what_it_must(void)
 }
 
 /*
+ * Rebuilding destroys the machine, so it also drops the agent's record
+ * of it.
+ *
+ * The handler builds a fresh computer from the config on the belief
+ * that a stopped agent holds none.  It holds the one its last start
+ * built -- kept so `computer status` can answer while it is stopped --
+ * and the next start reuses whatever it holds.  So a rebuild recorded a
+ * fresh SSH port through its own object, and the reused one dialled the
+ * old port for the rest of the daemon's life, while the ssh-port file,
+ * the passt command line and the domain XML all agreed on the new one.
+ */
+static void
+test_rebuild_drops_the_agents_held_computer(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgent *agent;
+    g_autoptr(JsonNode) reply = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    computer:\n"
+                  "      type: host\n"
+                  "      host:\n"
+                  "        confirm_host_control: true\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    agent = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                    "chief");
+    g_assert_nonnull(agent);
+
+    /* What the last start left behind. */
+    {
+        g_autoptr(ClawtSandbox) sandbox =
+            clawt_sandbox_new(CLAWT_CONFINE_WORKSPACE, fixture.dir);
+        g_autoptr(ClawtComputer) held =
+            clawt_host_computer_new("chief", sandbox);
+
+        clawt_agent_set_computer(agent, held);
+    }
+
+    g_assert_nonnull(clawt_agent_get_computer(agent));
+
+    reply = request(&fixture, "computer.rebuild", "{\"agent\":\"chief\"}");
+    g_assert_false(clawt_ipc_frame_is_error(reply));
+
+    g_assert_null(clawt_agent_get_computer(agent));
+
+    fixture_teardown(&fixture);
+}
+
+
+
+/*
  * Creating an agent starts it.
  *
  * A computer is built at *start*, never at create -- so a VM agent
@@ -9161,6 +9215,8 @@ main(int argc, char *argv[])
                     test_an_assignees_report_crosses_a_closed_exchange);
     g_test_add_func("/daemon/task/an-unknown-thread-still-routes",
                     test_a_thread_naming_no_task_still_routes);
+    g_test_add_func("/daemon/computer/rebuild-drops-the-held-computer",
+                    test_rebuild_drops_the_agents_held_computer);
     g_test_add_func("/daemon/task/running-when-its-turn-starts",
                     test_a_task_starts_running_when_its_turn_does);
     g_test_add_func("/daemon/computer-exec/a-shell-line-is-refused",
