@@ -492,6 +492,152 @@ clawt_guest_desktop_frame_dir_script(const gchar *session_user)
         quoted, CLAWT_GUEST_SCREENSHOT_DIR);
 }
 
+gchar *
+clawt_guest_desktop_update_script(void)
+{
+    /*
+     * No flavour anywhere in it, deliberately: the checkout path, the
+     * extension uuid and the venv are the same on every family, which
+     * is what lets one script serve the seed and the over-SSH push
+     * alike.  Nothing from configuration reaches this text either --
+     * a repository URL in here would be a format string from a config
+     * file one refactor away from printf.
+     */
+    return g_strdup(
+        "#!/bin/bash\n"
+        "# Written by clawtilla.\n"
+        "#\n"
+        "# The guest's half of the desktop -- the GNOME Shell extension\n"
+        "# and the MCP server -- is cloned at first boot, and cloud-init\n"
+        "# acts at first boot only.  So a guest ran whatever the\n"
+        "# repository held the day its overlay was built, for ever: a\n"
+        "# fixed extension never reached a guest that already existed,\n"
+        "# and the fix that found this was to mouse input, which failed\n"
+        "# in silence.  This runs before the display manager at every\n"
+        "# boot, so a session never starts on code older than the\n"
+        "# repository it came from.\n"
+        "#\n"
+        "# Touch /opt/gnome-desktop-mcp/.clawtilla-hold to pin the\n"
+        "# checkout; a held guest is reported, never moved.\n"
+        "set -uo pipefail\n"
+        "\n"
+        "checkout='/opt/gnome-desktop-mcp'\n"
+        "status='" CLAWT_GUEST_DESKTOP_UPDATE_STATUS_FILE "'\n"
+        "uuid='" EXTENSION_UUID "'\n"
+        "\n"
+        "mkdir -p \"$(dirname \"$status\")\"\n"
+        "\n"
+        "# Whatever happens, the boot goes on: every early return is a\n"
+        "# note in the status file and exit 0, because a forge that is\n"
+        "# down must cost seconds, not a login screen.\n"
+        "note () {\n"
+        "    printf '%s\\n' \"$1\" > \"$status\"\n"
+        "    exit 0\n"
+        "}\n"
+        "\n"
+        "[ -d \"$checkout/.git\" ] \\\n"
+        "    || note 'no checkout: the desktop was never installed here'\n"
+        "\n"
+        "[ -e \"$checkout/.clawtilla-hold\" ] \\\n"
+        "    && note \"held at $(git -C \"$checkout\" rev-parse HEAD)\"\n"
+        "\n"
+        "before=\"$(git -C \"$checkout\" rev-parse HEAD)\" \\\n"
+        "    || note 'the checkout is unreadable'\n"
+        "\n"
+        "timeout 30 git -C \"$checkout\" fetch --depth 1 origin \\\n"
+        "    || note \"offline: still at $before\"\n"
+        "\n"
+        "git -C \"$checkout\" reset --hard origin/HEAD >/dev/null \\\n"
+        "    || note \"could not move to origin/HEAD: still at $before\"\n"
+        "\n"
+        "after=\"$(git -C \"$checkout\" rev-parse HEAD)\"\n"
+        "\n"
+        "[ \"$before\" = \"$after\" ] && note \"current at $after\"\n"
+        "\n"
+        "# The parts of the install that depend on the checkout's\n"
+        "# contents.  The running session keeps the code it started\n"
+        "# with; the session this boot is about to start -- the display\n"
+        "# manager this unit orders before -- gets the new one.\n"
+        "glib-compile-schemas \"$checkout/extension/$uuid/schemas\" \\\n"
+        "    || note \"updated to $after, but its schemas did not compile\"\n"
+        "\n"
+        "\"$checkout/venv/bin/pip\" install --quiet \"$checkout/mcp-server\" \\\n"
+        "    || note \"updated to $after, but the server did not reinstall\"\n"
+        "\n"
+        "note \"updated $before -> $after\"\n");
+}
+
+gchar *
+clawt_guest_desktop_update_unit(void)
+{
+    return g_strdup(
+        "# Written by clawtilla.\n"
+        "#\n"
+        "# Before the display manager, so the session that starts runs\n"
+        "# the code the update just fetched.  display-manager.service is\n"
+        "# the alias every display manager provides, which is what keeps\n"
+        "# this file identical across the guest families -- naming gdm\n"
+        "# here would be writing a distribution's unit name into the\n"
+        "# seed, which is the cloud-init mistake this tree has already\n"
+        "# paid for.\n"
+        "[Unit]\n"
+        "Description=Bring clawtilla's guest desktop tooling up to date\n"
+        "ConditionPathExists=/opt/gnome-desktop-mcp/.git\n"
+        "Wants=network-online.target\n"
+        "After=network-online.target\n"
+        "Before=display-manager.service\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        "ExecStart=" CLAWT_GUEST_DESKTOP_UPDATE_SCRIPT "\n"
+        "TimeoutStartSec=180\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n");
+}
+
+gchar *
+clawt_guest_desktop_maintain_script(void)
+{
+    g_autofree gchar *script = clawt_guest_desktop_update_script();
+    g_autofree gchar *unit = clawt_guest_desktop_update_unit();
+
+    /*
+     * Quoted heredocs, so nothing in either body is expanded in
+     * transit; neither body can contain the marker, because both are
+     * built two functions up and neither writes it.
+     */
+    return g_strdup_printf(
+        "#!/bin/bash\n"
+        "# Written by clawtilla, over SSH: a guest built before the\n"
+        "# update unit existed has no way to receive it -- cloud-init\n"
+        "# reads its seed once -- so it is delivered the way the frame\n"
+        "# directory rule was taken back.  Safe every boot: it rewrites\n"
+        "# two files clawtilla owns and enables a unit that may already\n"
+        "# be enabled.\n"
+        "set -uo pipefail\n"
+        "\n"
+        "install -d -m 0755 /usr/local/bin /etc/systemd/system\n"
+        "\n"
+        "cat > " CLAWT_GUEST_DESKTOP_UPDATE_SCRIPT " <<'CLAWT_FILE_EOF'\n"
+        "%s"
+        "CLAWT_FILE_EOF\n"
+        "chmod 0755 " CLAWT_GUEST_DESKTOP_UPDATE_SCRIPT "\n"
+        "\n"
+        "cat > " CLAWT_GUEST_DESKTOP_UPDATE_UNIT " <<'CLAWT_FILE_EOF'\n"
+        "%s"
+        "CLAWT_FILE_EOF\n"
+        "\n"
+        "systemctl daemon-reload\n"
+        "systemctl enable clawtilla-desktop-update.service >/dev/null 2>&1\n"
+        "\n"
+        "# Bring the checkout current now, in the background.  The\n"
+        "# running session keeps the code it started with; the next\n"
+        "# boot's session runs what this fetches.\n"
+        "systemctl start --no-block clawtilla-desktop-update.service\n",
+        script, unit);
+}
+
 const gchar *
 clawt_guest_desktop_get_session_user(ClawtGuestDesktop *self)
 {
@@ -852,6 +998,11 @@ render_install_script(ClawtGuestDesktop *self, GString *out)
         ", so nothing will start a session and"
         " there is no desktop to drive.'\n"
         "\n"
+        "systemctl enable clawtilla-desktop-update.service \\\n"
+        "    >/dev/null 2>&1 \\\n"
+        "    || echo 'clawtilla: the update unit did not enable; this"
+        " guest will stay on the desktop code it was built with' >&2\n"
+        "\n"
         "printf 'ok\\n' > \"$status\"\n");
 
     append_file(out, CLAWT_GUEST_DESKTOP_INSTALL_SCRIPT, "0755", body->str);
@@ -887,6 +1038,19 @@ render_scripts(ClawtGuestDesktop *self, GString *out)
         return;
 
     render_install_script(self, out);
+
+    /*
+     * The updater and the unit that runs it before every session.
+     * Seeded here for new guests; clawt_guest_desktop_maintain_script()
+     * carries the same two bodies into guests that predate them.
+     */
+    {
+        g_autofree gchar *update = clawt_guest_desktop_update_script();
+        g_autofree gchar *unit = clawt_guest_desktop_update_unit();
+
+        append_file(out, CLAWT_GUEST_DESKTOP_UPDATE_SCRIPT, "0755", update);
+        append_file(out, CLAWT_GUEST_DESKTOP_UPDATE_UNIT, "0644", unit);
+    }
 
     append_file(out, ENABLE_SCRIPT, "0755",
         "#!/bin/bash\n"

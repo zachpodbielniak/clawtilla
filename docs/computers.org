@@ -2471,6 +2471,43 @@ extensions when the session starts, so one that arrives afterwards is not
 picked up until the session restarts -- on Wayland that means logging out
 and back in, which for an autologin guest is a reboot.
 
+**** The guest half stays current
+
+The clone happens at first boot, and for a long time that was the last
+time anything looked at it: every guest ran whatever the repository held
+the day its overlay was built, for ever.  The gap surfaced as a mouse
+bug -- an extension fix to input injection was pushed upstream and no
+existing guest could receive it short of a full rebuild, so
+~mouse_click~ silently did nothing fleet-wide while ~mouse_move~ and the
+keyboard worked.
+
+Every desktop guest now carries a systemd unit,
+~clawtilla-desktop-update.service~, that runs
+=/usr/local/bin/clawtilla-desktop-update= at each boot *before the
+display manager*: it fast-forwards the checkout to the repository's
+head, recompiles the extension's schemas, reinstalls the server half,
+and only then lets the session start -- so the session that logs in is
+running current code.  It orders on ~display-manager.service~, the alias
+every display manager provides, which is what keeps the unit identical
+across the guest families.
+
+It never fails a boot.  A forge that is unreachable costs a bounded
+fetch timeout and a line in
+=/var/lib/clawtilla/desktop-update.status= -- ~updated~, ~current~,
+~offline~, or ~held~ -- and the guest starts on the code it already has.
+Deliberately pinning a guest is a file: touch
+=/opt/gnome-desktop-mcp/.clawtilla-hold= and the updater reports the
+hold instead of moving anything.
+
+A guest built before the unit existed cannot receive it from its seed --
+cloud-init reads the seed once -- so the daemon delivers it over SSH at
+the first desktop use of each boot, the same way the frame-directory
+rule was taken back: both files are written, the unit is enabled, and
+one update is started in the background.  The running session keeps the
+code it started with; the next boot runs what was fetched.  Getting an
+already-running stale guest onto current code is therefore one reboot
+after the daemon has touched it once.
+
 **** Starting an application in the guest
 
 ~clawtilla_computer_exec~ is an SSH connection.  It has no session

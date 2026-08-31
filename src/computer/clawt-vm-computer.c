@@ -68,6 +68,14 @@ struct _ClawtVmComputer {
     gboolean frames_prepared;
 
     /*
+     * Whether this boot has been offered the desktop update unit.
+     * cloud-init reads its seed once, so a guest built before the unit
+     * existed can only receive it over SSH -- once per boot is enough,
+     * and the unit itself does the per-boot work from then on.
+     */
+    gboolean desktop_maintained;
+
+    /*
      * The graphical session to build inside the guest, or NULL for a
      * headless VM -- which is every VM unless the agent was granted a
      * desktop.
@@ -1539,8 +1547,10 @@ ensure_ssh_route(ClawtVmComputer *self, GError **error)
     g_free(self->ssh_host);
     self->ssh_host = g_strdup("127.0.0.1");
 
-    /* A new boot is a new /tmp. */
+    /* A new boot is a new /tmp, and a fresh chance to deliver the
+     * update unit to a guest that predates it. */
     self->frames_prepared = FALSE;
+    self->desktop_maintained = FALSE;
 
     return TRUE;
 }
@@ -2374,6 +2384,60 @@ vm_prepare_frame_dir(ClawtVmComputer *self)
                   CLAWT_GUEST_SCREENSHOT_DIR, self->domain, error->message);
 }
 
+/*
+ * Delivers the update unit into a guest that predates it.
+ *
+ * cloud-init reads its seed once, so a guest built before
+ * clawtilla-desktop-update.service existed can never receive it from
+ * the seed -- and the guest that most needs it is exactly the old one.
+ * Pushed over SSH at the first desktop use of each boot, the same way
+ * the frame directory rule was taken back: clawtilla installed the
+ * checkout, so keeping it current is clawtilla's.
+ *
+ * Once per boot, on the caller's worker thread -- both call sites are
+ * SSH round trips already, and the daemon's main context is not where
+ * those happen.  Marked done whatever happens: a push that failed has
+ * said why, and retrying once a second for as long as somebody watches
+ * a screen helps nobody.
+ */
+static void
+vm_maintain_desktop(ClawtVmComputer *self)
+{
+    const gchar *argv[] = { "sh", "-c", NULL, NULL };
+    g_auto(GStrv) ssh_argv = NULL;
+    g_autoptr(GSubprocess) process = NULL;
+    g_autofree gchar *script = NULL;
+    g_autoptr(GError) error = NULL;
+
+    if (self->desktop_maintained || self->desktop == NULL)
+        return;
+
+    self->desktop_maintained = TRUE;
+
+    script = clawt_guest_desktop_maintain_script();
+
+    argv[2] = script;
+    ssh_argv = clawt_vm_computer_build_ssh_argv(self, argv, NULL, 30);
+
+    if (ssh_argv == NULL)
+        return;
+
+    process = g_subprocess_newv((const gchar * const *)ssh_argv,
+                                G_SUBPROCESS_FLAGS_STDOUT_SILENCE |
+                                G_SUBPROCESS_FLAGS_STDERR_PIPE, &error);
+
+    if (process == NULL) {
+        g_warning("clawtilla: could not deliver the desktop update unit "
+                  "to %s: %s", self->domain, error->message);
+        return;
+    }
+
+    if (!g_subprocess_wait_check(process, NULL, &error))
+        g_warning("clawtilla: could not deliver the desktop update unit "
+                  "to %s: %s -- it stays on the desktop code it was built "
+                  "with", self->domain, error->message);
+}
+
 static gboolean
 vm_observe_start(ClawtObservable *observable, guint fps, GError **error)
 {
@@ -2428,6 +2492,7 @@ vm_observe_frame(ClawtObservable  *observable,
         *hash_out = NULL;
 
     vm_prepare_frame_dir(self);
+    vm_maintain_desktop(self);
 
     tail = clawt_screen_gnome_frame_argv(CLAWT_SCREEN_FRAME_WIDTH, FALSE);
     reply = vm_session_run(self, tail, error);
@@ -2910,6 +2975,14 @@ vm_exec(ClawtComputer        *computer,
     g_auto(GStrv) ssh_argv = NULL;
     ClawtExecResult *result;
     gboolean truncated = FALSE;
+
+    /*
+     * Here as well as on the observe path, because an agent that only
+     * ever runs commands in its guest -- never watching the screen from
+     * a client -- still deserves a desktop that stays current.  The
+     * guard inside makes the second site free.
+     */
+    vm_maintain_desktop(self);
 
     ssh_argv = clawt_vm_computer_build_ssh_argv(self, argv, working_dir,
                                                 timeout_seconds);

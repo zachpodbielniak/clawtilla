@@ -120,6 +120,44 @@ G_BEGIN_DECLS
 #define CLAWT_GUEST_DESKTOP_TMPFILES_CONF \
     "/etc/tmpfiles.d/clawtilla-desktop.conf"
 
+/**
+ * CLAWT_GUEST_DESKTOP_UPDATE_SCRIPT:
+ *
+ * Brings the guest's checkout of gnome-desktop-mcp forward to the
+ * repository's head.
+ *
+ * The checkout is cloned at first boot and cloud-init acts at first
+ * boot only, so without this a guest ran whatever the repository held
+ * the day its overlay was built, for ever.  The fix that found it was
+ * to mouse input: press and release events were being lost by an
+ * extension bug fixed upstream days earlier, and no built guest could
+ * ever receive the fix short of a full rebuild.
+ */
+#define CLAWT_GUEST_DESKTOP_UPDATE_SCRIPT \
+    "/usr/local/bin/clawtilla-desktop-update"
+
+/**
+ * CLAWT_GUEST_DESKTOP_UPDATE_STATUS_FILE:
+ *
+ * One line saying what the last update run did: `updated`, `current`,
+ * `held`, or why it could not move.  Separate from
+ * %CLAWT_GUEST_DESKTOP_STATUS_FILE because "the desktop installed" and
+ * "the desktop is current" are different claims with different
+ * remedies.
+ */
+#define CLAWT_GUEST_DESKTOP_UPDATE_STATUS_FILE \
+    "/var/lib/clawtilla/desktop-update.status"
+
+/**
+ * CLAWT_GUEST_DESKTOP_UPDATE_UNIT:
+ *
+ * The systemd unit that runs the update before the display manager, so
+ * a session never starts on desktop code older than the repository it
+ * was installed from.
+ */
+#define CLAWT_GUEST_DESKTOP_UPDATE_UNIT \
+    "/etc/systemd/system/clawtilla-desktop-update.service"
+
 #define CLAWT_TYPE_GUEST_DESKTOP (clawt_guest_desktop_get_type())
 
 GType clawt_guest_desktop_get_type(void) G_GNUC_CONST;
@@ -218,6 +256,48 @@ const gchar *clawt_guest_desktop_get_session_user(ClawtGuestDesktop *self);
  * Returns: (transfer full) (nullable): the script
  */
 gchar *clawt_guest_desktop_frame_dir_script(const gchar *session_user);
+
+/**
+ * clawt_guest_desktop_update_script:
+ *
+ * The script at %CLAWT_GUEST_DESKTOP_UPDATE_SCRIPT: fast-forwards the
+ * guest's gnome-desktop-mcp checkout to the repository's head and
+ * redoes the parts of the install that depend on its contents.  It
+ * never fails the boot -- a forge that is down costs seconds and a
+ * line in %CLAWT_GUEST_DESKTOP_UPDATE_STATUS_FILE, not a login screen.
+ * A `.clawtilla-hold` file in the checkout pins it.
+ *
+ * Returns: (transfer full): the script body
+ */
+gchar *clawt_guest_desktop_update_script(void);
+
+/**
+ * clawt_guest_desktop_update_unit:
+ *
+ * The unit at %CLAWT_GUEST_DESKTOP_UPDATE_UNIT.  It orders before
+ * `display-manager.service` -- the alias every display manager
+ * provides, which is what keeps this file identical across the guest
+ * families -- so the session that starts is the one the update just
+ * refreshed.
+ *
+ * Returns: (transfer full): the unit body
+ */
+gchar *clawt_guest_desktop_update_unit(void);
+
+/**
+ * clawt_guest_desktop_maintain_script:
+ *
+ * A script run over SSH that installs the update script and its unit
+ * into a guest that predates them.  cloud-init reads its seed once, so
+ * a guest built before the unit existed has no other way to receive it
+ * -- the same route the frame directory rule was taken back by.  Built
+ * from clawt_guest_desktop_update_script() and
+ * clawt_guest_desktop_update_unit() so the pushed copy and the seeded
+ * copy cannot drift.
+ *
+ * Returns: (transfer full): the script body
+ */
+gchar *clawt_guest_desktop_maintain_script(void);
 gboolean     clawt_guest_desktop_get_install_mcp(ClawtGuestDesktop *self);
 
 /**

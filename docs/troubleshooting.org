@@ -2340,3 +2340,32 @@ That warning means an agent is more than sixty-four messages behind, and
 the oldest descriptions are being folded together.  It is a symptom of
 an agent that cannot keep up rather than of the queue, but a folded
 description is a less precise one.
+
+** Clicks in a guest desktop do nothing while the pointer visibly moves
+
+The pointer sits on the target, hover states and tooltips fire, the
+keyboard types -- and ~mouse_click~, ~mouse_down~/~mouse_up~ and
+~mouse_drag~ land nothing, on web content and window chrome alike.
+Every call returns success.
+
+That is a guest running gnome-desktop-mcp from before 2026-08-23.  Its
+~input.js~ created a virtual input device *per call* and let the GJS
+garbage collector finalise it while the events were still queued in
+mutter's input thread: button events lost the race, motion mostly
+survived it, and how often a single click died depended on host load --
+so the same code clicked fine on one machine and never on another.  A
+release arriving on a fresh device also logs
+~Received multiple virtual 0x110 button releases (ignoring)~ in the
+guest's journal, which is the fingerprint.
+
+The fix (one device for the extension's lifetime, one monotonic clock)
+has been upstream since 80a8786; what kept it from fleets is that a
+guest clones the repository once, at first boot.  See
+[[file:computers.org::*The guest half stays current][The guest half
+stays current]]: a daemon with the update unit heals the guest at first
+desktop use, and one reboot later the session runs current code.  To
+check what a guest is on:
+
+#+begin_src bash
+clawtilla computer exec <agent-id> -- cat /var/lib/clawtilla/desktop-update.status
+#+end_src

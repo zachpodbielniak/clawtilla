@@ -913,6 +913,143 @@ test_a_guest_already_built_has_the_link_taken_back(void)
 }
 
 /*
+ * The seed carries the updater, and the installer switches it on.
+ *
+ * The checkout is cloned at first boot and cloud-init acts at first
+ * boot only, so without this every guest ran whatever the repository
+ * held the day its overlay was built, for ever.  The mouse-input fix
+ * that found the gap was pushed upstream days before the incident and
+ * had reached nobody.
+ */
+static void
+test_the_seed_carries_the_update_unit(void)
+{
+    g_autofree gchar *data = render_for(CLAWT_GUEST_FLAVOUR_FEDORA);
+
+    g_assert_nonnull(strstr(data, CLAWT_GUEST_DESKTOP_UPDATE_SCRIPT));
+    g_assert_nonnull(strstr(data, CLAWT_GUEST_DESKTOP_UPDATE_UNIT));
+    g_assert_nonnull(strstr(data, "Before=display-manager.service"));
+    g_assert_nonnull(strstr(data,
+        "systemctl enable clawtilla-desktop-update.service"));
+}
+
+/*
+ * The update never fails the boot.
+ *
+ * It runs before the display manager, so a forge that is down must cost
+ * seconds and a status line -- not a login screen.  Every early return
+ * goes through note(), which records why and exits 0; the fetch is
+ * bounded; and a deliberately held checkout is reported, never moved.
+ */
+static void
+test_the_update_never_fails_the_boot(void)
+{
+    g_autofree gchar *script = clawt_guest_desktop_update_script();
+
+    g_assert_nonnull(strstr(script, "note () {"));
+    g_assert_nonnull(strstr(script, "    exit 0"));
+    g_assert_nonnull(strstr(script, "timeout 30 git"));
+    g_assert_nonnull(strstr(script, "fetch --depth 1 origin"));
+    g_assert_nonnull(strstr(script, ".clawtilla-hold"));
+    g_assert_nonnull(strstr(script,
+        CLAWT_GUEST_DESKTOP_UPDATE_STATUS_FILE));
+
+    /*
+     * Its own status file, never the installer's.  "The desktop
+     * installed" and "the desktop is current" are different claims, and
+     * a reader diagnosing one must not be shown the other.
+     */
+    g_assert_null(strstr(script, CLAWT_GUEST_DESKTOP_STATUS_FILE));
+}
+
+/*
+ * The unit is the same file on every family.
+ *
+ * display-manager.service is the alias every display manager provides;
+ * naming gdm's own unit here would be writing a distribution's spelling
+ * into the seed, which is the cloud-init mistake this tree has already
+ * paid for three times.
+ */
+static void
+test_the_update_unit_is_family_free(void)
+{
+    g_autofree gchar *unit = clawt_guest_desktop_update_unit();
+
+    g_assert_nonnull(strstr(unit, "Before=display-manager.service"));
+    g_assert_nonnull(strstr(unit,
+        "ConditionPathExists=/opt/gnome-desktop-mcp/.git"));
+    g_assert_nonnull(strstr(unit,
+        "ExecStart=" CLAWT_GUEST_DESKTOP_UPDATE_SCRIPT));
+    g_assert_null(strstr(unit, "gdm.service"));
+    g_assert_null(strstr(unit, "gdm3"));
+}
+
+/*
+ * A guest built before the unit existed is handed it over SSH, and the
+ * pushed copy is byte-identical to the seeded one -- built from the
+ * same two functions, so the two routes cannot drift.
+ */
+static void
+test_an_old_guest_is_handed_the_updater(void)
+{
+    g_autofree gchar *maintain = clawt_guest_desktop_maintain_script();
+    g_autofree gchar *script = clawt_guest_desktop_update_script();
+    g_autofree gchar *unit = clawt_guest_desktop_update_unit();
+
+    g_assert_nonnull(strstr(maintain, script));
+    g_assert_nonnull(strstr(maintain, unit));
+    g_assert_nonnull(strstr(maintain, "systemctl daemon-reload"));
+    g_assert_nonnull(strstr(maintain,
+        "systemctl enable clawtilla-desktop-update.service"));
+    g_assert_nonnull(strstr(maintain,
+        "systemctl start --no-block clawtilla-desktop-update.service"));
+}
+
+/*
+ * Both generated scripts actually parse.
+ *
+ * They are built as C string literals, where a lost backslash or an
+ * unbalanced quote is invisible until a guest runs the result -- at
+ * first boot, before the display manager, in a log nobody reads.
+ */
+static void
+test_the_update_scripts_parse(void)
+{
+    g_autofree gchar *script = clawt_guest_desktop_update_script();
+    g_autofree gchar *maintain = clawt_guest_desktop_maintain_script();
+    g_autofree gchar *dir = NULL;
+    g_autoptr(GError) error = NULL;
+    const gchar *bodies[2];
+    guint i;
+
+    bodies[0] = script;
+    bodies[1] = maintain;
+
+    dir = g_dir_make_tmp("clawt-update-XXXXXX", &error);
+    g_assert_no_error(error);
+
+    for (i = 0; i < G_N_ELEMENTS(bodies); i++) {
+        g_autofree gchar *path = g_strdup_printf("%s/s%u.sh", dir, i);
+        const gchar *argv[] = { "bash", "-n", NULL, NULL };
+        gint status = -1;
+
+        g_assert_true(g_file_set_contents(path, bodies[i], -1, &error));
+        g_assert_no_error(error);
+
+        argv[2] = path;
+        g_assert_true(g_spawn_sync(NULL, (gchar **)argv, NULL,
+                                   G_SPAWN_SEARCH_PATH |
+                                   G_SPAWN_STDERR_TO_DEV_NULL, NULL, NULL,
+                                   NULL, NULL, &status, &error));
+        g_assert_no_error(error);
+        g_assert_true(g_spawn_check_wait_status(status, &error));
+        g_assert_no_error(error);
+    }
+
+    clawt_test_remove_tree(dir);
+}
+
+/*
  * The link goes; whatever is standing there does not.
  *
  * A guest that never had the rule has a real directory at that path with
@@ -1414,6 +1551,16 @@ main(int argc, char *argv[])
                     test_a_guest_already_built_has_the_link_taken_back);
     g_test_add_func("/guest-desktop/frames/a-directory-is-left-alone",
                     test_taking_the_link_back_does_not_delete_a_directory);
+    g_test_add_func("/guest-desktop/update/seed-carries-the-unit",
+                    test_the_seed_carries_the_update_unit);
+    g_test_add_func("/guest-desktop/update/never-fails-the-boot",
+                    test_the_update_never_fails_the_boot);
+    g_test_add_func("/guest-desktop/update/unit-is-family-free",
+                    test_the_update_unit_is_family_free);
+    g_test_add_func("/guest-desktop/update/old-guest-is-handed-it",
+                    test_an_old_guest_is_handed_the_updater);
+    g_test_add_func("/guest-desktop/update/scripts-parse",
+                    test_the_update_scripts_parse);
     g_test_add_func("/guest-desktop/frames/the-account-is-quoted",
                     test_the_session_account_is_quoted_into_the_script);
     g_test_add_func("/guest-desktop/run/starts-in-the-session",
