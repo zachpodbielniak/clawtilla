@@ -1333,8 +1333,14 @@ test_the_page_emits_the_drawer_toggle(void)
     const gchar *toggle;
     const gchar *sidebar;
 
+    /*
+     * Borrowed, not handed over: clawt_web_page() is (transfer none),
+     * so the g_object_ref() this used to wrap the body in was a
+     * reference nobody ever dropped -- the one leak in an otherwise
+     * clean binary, and it sat in the test rather than the page.
+     */
     html = clawt_web_page(NULL, "alpha", CLAWT_PAGE_CHAT,
-                          HTMX_ELEMENT(g_object_ref(body)), NULL);
+                          HTMX_ELEMENT(body), NULL);
 
     g_assert_nonnull(html);
 

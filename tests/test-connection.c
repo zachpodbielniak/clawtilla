@@ -683,6 +683,17 @@ run_fake_daemon(gpointer data)
     g_socket_service_start(fake->service);
     g_main_loop_run(fake->loop);
     g_socket_service_stop(fake->service);
+
+    /*
+     * Iterated once more after the stop -- the same rule the daemon's
+     * own socket tests follow.  Stopping only asks the pending accept
+     * to wind down; its task and sources are released from a dispatch
+     * that needs one more turn of this context, and every fake that
+     * skipped it left its accept machinery standing at exit.
+     */
+    while (g_main_context_iteration(fake->context, FALSE))
+        ;
+
     g_main_context_pop_thread_default(fake->context);
 
     return NULL;
@@ -779,6 +790,26 @@ typedef struct {
     guint    disconnected;
     gboolean retry_arranged;   /* as seen from inside ::disconnected */
 } ResyncWatch;
+
+/*
+ * Disconnect, then let the reader let go.
+ *
+ * Disconnecting only *closes* the stream: the read parked in
+ * read_line_async() still holds its references -- the input stream, its
+ * buffer, the client -- and releases them from its callback, which takes
+ * one more turn of the context the client was connected on.  A test that
+ * skips the turn strands the reader, and the whole apparatus reports as
+ * leaked at exit -- the same rule the socket-service tests follow after
+ * stopping a listener.  @context NULL means the default context.
+ */
+static void
+disconnect_and_drain(ClawtClient *client, GMainContext *context)
+{
+    clawt_client_disconnect(client);
+
+    while (g_main_context_iteration(context, FALSE))
+        ;
+}
 
 static void
 note_resync(ClawtClient *client, gpointer data)
@@ -914,7 +945,7 @@ test_a_client_reconnects_on_its_own_context(void)
     g_assert_true(clawt_client_is_connected(client));
     g_assert_false(clawt_client_is_reconnecting(client));
 
-    clawt_client_disconnect(client);
+    disconnect_and_drain(client, NULL);
     fake_daemon_stop(fake);
     clawt_test_remove_tree(dir);
 }
@@ -1015,7 +1046,7 @@ test_a_reconnect_that_cannot_resume_says_so(void)
     g_assert_cmpuint(watch.connected, ==, 1);
     g_assert_cmpuint(watch.resync, ==, 1);
 
-    clawt_client_disconnect(client);
+    disconnect_and_drain(client, NULL);
     fake_daemon_stop(fake);
     clawt_test_remove_tree(dir);
 }
@@ -1089,7 +1120,7 @@ test_auto_reconnect_can_be_turned_off_mid_flight(void)
 
     g_assert_false(clawt_client_is_reconnecting(client));
 
-    clawt_client_disconnect(client);
+    disconnect_and_drain(client, NULL);
     clawt_test_remove_tree(dir);
 }
 
@@ -1351,7 +1382,7 @@ test_a_client_that_never_connected_still_gets_there(void)
      */
     g_assert_cmpint(g_atomic_int_get(&fake->subscribes), >=, 1);
 
-    clawt_client_disconnect(client);
+    disconnect_and_drain(client, context);
     fake_daemon_stop(fake);
     g_main_context_pop_thread_default(context);
     clawt_test_remove_tree(dir);
@@ -1441,7 +1472,7 @@ test_start_reconnecting_does_not_stack(void)
     g_assert_cmpint(g_atomic_int_get(&fake->connections), ==, 1);
     g_assert_cmpint(g_atomic_int_get(&fake->subscribes), ==, 1);
 
-    clawt_client_disconnect(client);
+    disconnect_and_drain(client, context);
     fake_daemon_stop(fake);
     g_main_context_pop_thread_default(context);
     clawt_test_remove_tree(dir);
@@ -1468,7 +1499,7 @@ test_a_connected_client_is_not_retried(void)
     clawt_client_start_reconnecting(client);
     g_assert_false(clawt_client_is_reconnecting(client));
 
-    clawt_client_disconnect(client);
+    disconnect_and_drain(client, context);
     fake_daemon_stop(fake);
     g_main_context_pop_thread_default(context);
     clawt_test_remove_tree(dir);
@@ -1525,7 +1556,7 @@ test_a_reply_with_no_payload_is_an_empty_object(void)
      */
     g_assert_null(clawt_ipc_reply_refusal_text(reply, NULL));
 
-    clawt_client_disconnect(client);
+    disconnect_and_drain(client, context);
     fake_daemon_stop(fake);
     g_main_context_pop_thread_default(context);
     clawt_test_remove_tree(dir);
