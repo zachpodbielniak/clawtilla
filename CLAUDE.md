@@ -427,6 +427,12 @@ critical fired.
 - It writes one `token_usage` row per AI turn. Read it through
   `lc_database_*`, never by opening its schema. A missing database is zero, not
   an error -- and must not be opened, since opening creates it.
+- **Typing rises on `LcSession::turn-started` (the drain), never at enqueue.**
+  Under agent mode one session queues several rooms, and anything armed at
+  arrival describes turns that have not begun -- the daemon's per-room turn
+  state arms on exactly that edge. Any new per-turn side effect in lc-app
+  hangs off that signal; `CLAWTILLA_ROOM_ID` and the typing indicator both
+  made this mistake at enqueue before being moved.
 - Cost comes from the provider (`ai_response_set_cost_micros()`), not the rate
   card: a CLI bills cache reads and writes, which never appear in
   `input_tokens`. `-1` means unknown, never free.
@@ -781,6 +787,13 @@ versions apart.
 - A refresh that iterates the main context can re-enter, because events are
   delivered from an idle. Every view that rebuilds a list goes through
   `refresh_enter()` / `refresh_repeat()`.
+- **A synchronous request iterates the main context too**, so a click can start
+  a newer request inside an older one's wait, and the older reply resumes
+  *last*. State a reply writes back must be guarded: take the answer first,
+  then compare a generation before touching the view — `show_flow_room()` and
+  `clawt_gtk_load_history()` both do. The chat once came back filtered on
+  another agent's room from exactly this, silently, until the client
+  restarted — with the unread badge counting the messages the pane refused.
 - An IPv6 address has no last colon to split on. Use the bracket form; accept a
   bare IPv6 address with no port because it parses whole. Names are refused
   rather than resolved, and port 0 is refused.
