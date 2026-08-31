@@ -501,6 +501,30 @@ struct _ClawtWindow {
     gchar             *selected_room;
 
     /*
+     * Which call to clawt_gtk_load_history() owns the view.
+     *
+     * The history request iterates the main context while it waits, so a
+     * click can start a newer load inside an older one's wait.  The older
+     * call's answer must then be discarded whole: writing any of it back
+     * -- the room most of all -- filters the transcript on a conversation
+     * the window is no longer showing.  Clicking a freshly created agent
+     * and then back to the chief did exactly that: the chief's chat sat
+     * on the new agent's room, every later message failed the room match,
+     * and each counted as unread instead of appearing.
+     */
+    guint              history_generation;
+
+    /*
+     * How many history loads are waiting on the daemon right now.
+     *
+     * The recovery paths (a message that belongs on screen but fails the
+     * room match, a re-click on the selected agent) re-run the load; this
+     * is what stops them re-running it from inside its own wait, where
+     * every event the iteration dispatches would nest another request.
+     */
+    guint              history_inflight;
+
+    /*
      * Which of the selected agent's conversations is on screen: NULL for
      * the operator's own, or a peer's id for one between two agents that
      * the operator can read but is not in.

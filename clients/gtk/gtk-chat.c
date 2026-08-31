@@ -3081,21 +3081,45 @@ clawt_gtk_load_history(ClawtWindow *self)
 {
     g_autoptr(JsonNode) reply = NULL;
     JsonArray *messages;
+    guint generation;
     guint i;
 
-    clawt_gtk_reset_transcript(self);
-    clawt_gtk_set_activity(self, NULL);
-    g_clear_pointer(&self->selected_room, g_free);
-    g_hash_table_remove_all(self->shown);
-
-    if (self->selected_agent == NULL)
+    /*
+     * No conversation at all -- the agent was removed, or nothing has
+     * been selected yet.  A blank pane is the honest rendering, and
+     * there is no answer to wait for.
+     */
+    if (self->selected_agent == NULL) {
+        clawt_gtk_reset_transcript(self);
+        clawt_gtk_set_activity(self, NULL);
+        g_clear_pointer(&self->selected_room, g_free);
+        g_hash_table_remove_all(self->shown);
         return;
+    }
+
+    /*
+     * The request first, and the view only after the answer is back --
+     * the shape show_flow_room() already has, for the same reason:
+     * clawt_window_request() iterates the main context while it waits,
+     * so a click can re-enter this function inside the wait.  This used
+     * to clear selected_room up front and restore it from the reply,
+     * which meant the *outer* of two nested loads resumed last and wrote
+     * its stale room over the inner's -- clicking a freshly created
+     * agent and then back to the chief left the chief's chat filtered on
+     * the new agent's empty room, silently, until the client restarted.
+     *
+     * The generation says which call owns the view: anyone who finds a
+     * newer one when their answer arrives was superseded and must not
+     * touch anything, the room most of all.
+     */
+    generation = ++self->history_generation;
 
     /*
      * The operator's own conversation, or one between this agent and a
      * peer. The daemon resolves either from a member and a viewer, so
      * neither client has to know how a direct room is named.
      */
+    self->history_inflight++;
     reply = clawt_window_request(
         self, "room.history",
         (self->selected_conversation != NULL)
@@ -3103,7 +3127,22 @@ clawt_gtk_load_history(ClawtWindow *self)
                               "as", self->selected_agent, NULL)
         : clawt_build_payload("room", self->selected_agent, "as", "user",
                               NULL));
+    self->history_inflight--;
 
+    if (generation != self->history_generation)
+        return;
+
+    clawt_gtk_reset_transcript(self);
+    clawt_gtk_set_activity(self, NULL);
+    g_clear_pointer(&self->selected_room, g_free);
+    g_hash_table_remove_all(self->shown);
+
+    /*
+     * A failed load leaves the pane blank and the room unset rather
+     * than keeping the old conversation under a new heading.  Unset is
+     * recoverable: the next message that belongs here, or a re-click on
+     * the agent, runs this again.
+     */
     if (reply == NULL)
         return;
 
@@ -3129,6 +3168,15 @@ clawt_gtk_load_history(ClawtWindow *self)
                                  g_strcmp0(sender, "user") == 0,
                                  clawt_json_int(message, "ts", 0));
     }
+
+    /*
+     * Everything just drawn is read.  A message that arrived during the
+     * wait was counted as unread -- the room match ran against the old
+     * room -- and it is on screen now, so the pill it raised would be
+     * a count of nothing.
+     */
+    if (g_hash_table_remove(self->unread, self->selected_agent))
+        clawt_gtk_update_unread_tab(self);
 
     clawt_gtk_set_following(self, TRUE);
     clawt_gtk_queue_scroll(self);

@@ -2037,6 +2037,36 @@ with no timer on it is one nobody will ever notice the death of.
 A unix client is not affected and never was: a local peer that goes away
 closes its socket, and the reader is told on the next turn of the loop.
 
+** One chat froze while everything else keeps moving
+:PROPERTIES:
+:CUSTOM_ID: chat-filtered-on-the-wrong-room
+:END:
+
+Different from the entry above: the connection is fine.  One agent's
+chat stops at some message and never grows --- including the messages
+*you* send, which are drawn from the daemon's echo --- while the same
+conversation in Work → Flow shows everything, and the Chat tab's unread
+badge counts the replies the pane is not showing.
+
+The transcript is filtered on the wrong room.  The GTK client appends an
+incoming message only when the event's room matches the one its last
+history load resolved, and that load iterates the main context while it
+waits --- so clicking another agent and back before the first answer
+arrived let the *stale* answer resume last and write its room over the
+current one.  The incident: clicking a freshly created agent and
+straight back to the chief left the chief's chat filtered on the new
+agent's empty room.  From then on every message failed the match, and
+the unread rule --- which counts anything not for the room on screen ---
+counted each one, which is why the badge climbed while the pane froze.
+
+Fixed three ways at once: a superseded history load discards its answer
+whole, a message that belongs to the conversation on screen but fails
+the room match triggers a reload (the daemon's agent listing says which
+room is whose conversation, so the client can tell), and re-clicking the
+selected agent retries a load that failed outright.  On a client built
+before the fix, clicking any other agent and back reloads the history
+and clears the state; restarting the client does too.
+
 ** Two processes are serving one agent, and nothing looks wrong
 
 The symptom is delivery becoming a coin flip: the agent answers a peer

@@ -396,9 +396,20 @@ clawt_gtk_select_agent(ClawtWindow *self, const gchar *agent_id)
      * Reloading there would drop the transcript each time an event
      * arrived, and load_history() iterates the main context, so it would
      * re-enter this function while the first call was still running.
+     *
+     * One exception: a transcript with no room lost its history load (a
+     * failure, or a superseded call), and a re-click is the gesture a
+     * person actually tries against a stuck view.  Retrying here is safe
+     * where a blanket reload is not, because it stops the moment a load
+     * succeeds, and the inflight guard keeps the sidebar-rebuild path
+     * from nesting a second request inside the first one's wait.
      */
-    if (g_strcmp0(agent_id, self->selected_agent) == 0)
+    if (g_strcmp0(agent_id, self->selected_agent) == 0) {
+        if (self->selected_agent != NULL && self->selected_room == NULL &&
+            self->history_inflight == 0)
+            clawt_gtk_load_history(self);
         return;
+    }
 
     /* Keep what was being written to the agent we are leaving. */
     if (self->selected_agent != NULL) {
@@ -1226,6 +1237,29 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
                 clawt_gtk_set_activity(self, NULL);
 
             clawt_gtk_queue_scroll(self);
+        } else if (self->history_inflight == 0 &&
+                   self->selected_conversation == NULL &&
+                   self->selected_agent != NULL &&
+                   clawt_event_get_subject(event) != NULL &&
+                   g_strcmp0(clawt_event_get_subject(event),
+                             self->selected_room) != 0 &&
+                   g_strcmp0(g_hash_table_lookup(
+                                 self->dm_rooms,
+                                 clawt_event_get_subject(event)),
+                             self->selected_agent) == 0) {
+            /*
+             * The daemon says this room is the selected agent's own
+             * conversation -- the one on screen -- and the transcript's
+             * room disagrees.  That is the transcript being wrong, not
+             * the message: a failed or superseded history load leaves
+             * selected_room unset or stale, and nothing else corrects
+             * it.  Reloading resolves the room afresh and the history
+             * it returns already contains this message, so nothing is
+             * lost and the replay below deduplicates.  Ordered before
+             * note_unread so a message now on screen is not also
+             * counted as waiting.
+             */
+            clawt_gtk_load_history(self);
         }
 
         /*
