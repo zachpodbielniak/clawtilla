@@ -2415,7 +2415,7 @@ test_reporting_progress_keeps_a_task_open(void)
 
     /* And the turn ending no longer closes it. */
     g_assert_false(clawt_task_manager_complete_on_turn_end(
-                       fixture.tasks, clawt_task_get_id(task),
+                       fixture.tasks, clawt_task_get_id(task), "oryx",
                        "I will check back shortly", &held));
     g_assert_nonnull(held);
     g_assert_false(clawt_task_is_finished(task));
@@ -2502,7 +2502,7 @@ test_an_inferred_result_is_labelled(void)
                                 clawt_task_get_id(task));
 
     g_assert_true(clawt_task_manager_complete_on_turn_end(
-                      fixture.tasks, clawt_task_get_id(task),
+                      fixture.tasks, clawt_task_get_id(task), "oryx",
                       "looks fine to me", NULL));
 
     response = call_tool(&fixture, "chief", "clawtilla_task_result",

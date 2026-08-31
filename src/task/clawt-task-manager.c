@@ -385,6 +385,7 @@ clawt_task_manager_note_progress(ClawtTaskManager *self,
 gboolean
 clawt_task_manager_complete_on_turn_end(ClawtTaskManager  *self,
                                         const gchar       *task_id,
+                                        const gchar       *who,
                                         const gchar       *result,
                                         gchar            **held_reason)
 {
@@ -392,6 +393,7 @@ clawt_task_manager_complete_on_turn_end(ClawtTaskManager  *self,
     guint unfinished;
 
     g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), FALSE);
+    g_return_val_if_fail(who != NULL, FALSE);
 
     if (held_reason != NULL)
         *held_reason = NULL;
@@ -400,6 +402,24 @@ clawt_task_manager_complete_on_turn_end(ClawtTaskManager  *self,
 
     if (task == NULL || clawt_task_is_finished(task))
         return FALSE;
+
+    /*
+     * Only the assignee's turn says anything about the work.  Everyone
+     * in a task's thread ends turns there -- a delegator acknowledging a
+     * progress note ends one -- and completing on whichever turn ended
+     * next recorded "Thanks, carry on" as the result of work that was
+     * still running.  Before the hold check, because the hold check
+     * *consumes* the hold: a delegator's turn ending in the thread must
+     * not spend what the assignee armed against its own next one.
+     */
+    if (g_strcmp0(clawt_task_get_assignee(task), who) != 0) {
+        if (held_reason != NULL)
+            *held_reason = g_strdup_printf(
+                "the turn was %s's, and only its assignee %s can end it",
+                who, clawt_task_get_assignee(task));
+
+        return FALSE;
+    }
 
     if (clawt_task_take_completion_hold(task)) {
         if (held_reason != NULL)

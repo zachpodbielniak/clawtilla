@@ -299,7 +299,7 @@ test_a_task_with_children_running_does_not_auto_complete(void)
                          tasks, clawt_task_get_id(root)), ==, 1);
 
     g_assert_false(clawt_task_manager_complete_on_turn_end(
-                       tasks, clawt_task_get_id(root),
+                       tasks, clawt_task_get_id(root), "oryx",
                        "mine is done, kudu is still going", &held));
 
     g_assert_nonnull(held);
@@ -319,7 +319,7 @@ test_a_task_with_children_running_does_not_auto_complete(void)
                                               "clean here"));
 
     g_assert_true(clawt_task_manager_complete_on_turn_end(
-                      tasks, clawt_task_get_id(root),
+                      tasks, clawt_task_get_id(root), "oryx",
                       "all three verified", &held_again));
 
     g_assert_null(held_again);
@@ -357,7 +357,7 @@ test_a_progress_note_holds_the_task_open_for_one_turn(void)
                     "waiting on the guest to finish booting");
 
     g_assert_false(clawt_task_manager_complete_on_turn_end(
-                       tasks, clawt_task_get_id(task),
+                       tasks, clawt_task_get_id(task), "oryx",
                        "back shortly", &held));
     g_assert_nonnull(held);
     g_assert_false(clawt_task_is_finished(task));
@@ -368,7 +368,7 @@ test_a_progress_note_holds_the_task_open_for_one_turn(void)
      * ending is exactly when the work usually is done.
      */
     g_assert_true(clawt_task_manager_complete_on_turn_end(
-                      tasks, clawt_task_get_id(task),
+                      tasks, clawt_task_get_id(task), "oryx",
                       "all three verified", &held_again));
     g_assert_null(held_again);
     g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_COMPLETED);
@@ -392,14 +392,65 @@ test_an_inferred_result_says_so(void)
                                          NULL, NULL);
 
     g_assert_true(clawt_task_manager_complete_on_turn_end(
-                      tasks, clawt_task_get_id(inferred), "seems fine",
-                      NULL));
+                      tasks, clawt_task_get_id(inferred), "oryx",
+                      "seems fine", NULL));
     g_assert_true(clawt_task_get_result_inferred(inferred));
 
     g_assert_true(clawt_task_manager_complete(tasks,
                                               clawt_task_get_id(reported),
                                               "verified, all clean"));
     g_assert_false(clawt_task_get_result_inferred(reported));
+}
+
+/*
+ * A thread is not only the assignee's, and a turn ending in it is only
+ * evidence about the work when it is the assignee's own.
+ *
+ * The delegator ends turns in the thread too -- reading a progress note
+ * is a turn -- and completing on whichever turn ended next recorded
+ * "Thanks, carry on" as the result of work that was still running.
+ * Worse, the progress hold consumes itself when checked: the
+ * delegator's turn spent the hold the assignee had armed, so the
+ * assignee's next status note completed the task it had just, in so
+ * many words, asked to keep open.
+ */
+static void
+test_only_the_assignees_turn_ends_a_task(void)
+{
+    g_autoptr(ClawtTaskManager) tasks = clawt_task_manager_new();
+    ClawtTask *task;
+    g_autofree gchar *reason = NULL;
+    g_autofree gchar *held = NULL;
+
+    task = clawt_task_manager_create(tasks, "chief", "oryx", "verify it",
+                                     NULL, NULL);
+
+    g_assert_true(clawt_task_manager_note_progress(
+                      tasks, clawt_task_get_id(task),
+                      "fedora is clean; two guests to go"));
+
+    /* The delegator read the note, and its turn ended. */
+    g_assert_false(clawt_task_manager_complete_on_turn_end(
+                       tasks, clawt_task_get_id(task), "chief",
+                       "Thanks -- carry on.", &reason));
+    g_assert_nonnull(reason);
+    g_assert_nonnull(strstr(reason, "oryx"));
+    g_assert_false(clawt_task_is_finished(task));
+    g_assert_null(clawt_task_get_result(task));
+
+    /* And it did not spend the hold the assignee armed. */
+    g_assert_false(clawt_task_manager_complete_on_turn_end(
+                       tasks, clawt_task_get_id(task), "oryx",
+                       "back shortly", &held));
+    g_assert_nonnull(held);
+    g_assert_nonnull(strstr(held, "progress"));
+    g_assert_false(clawt_task_is_finished(task));
+
+    /* The assignee's own next turn end completes it, as ever. */
+    g_assert_true(clawt_task_manager_complete_on_turn_end(
+                      tasks, clawt_task_get_id(task), "oryx",
+                      "all three verified", NULL));
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_COMPLETED);
 }
 
 /*
@@ -497,6 +548,8 @@ main(int argc, char *argv[])
                     test_a_task_with_children_running_does_not_auto_complete);
     g_test_add_func("/task/a-progress-note-holds-it-open",
                     test_a_progress_note_holds_the_task_open_for_one_turn);
+    g_test_add_func("/task/only-the-assignee-ends-it",
+                    test_only_the_assignees_turn_ends_a_task);
     g_test_add_func("/task/an-inferred-result-says-so",
                     test_an_inferred_result_says_so);
     g_test_add_func("/task/a-delegator-sees-the-fan-out",

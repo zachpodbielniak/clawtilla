@@ -167,38 +167,44 @@ gboolean clawt_task_manager_note_progress(ClawtTaskManager *self,
  * clawt_task_manager_complete_on_turn_end:
  * @self: a #ClawtTaskManager
  * @task_id: a task id
- * @result: what the assignee's turn ended with
+ * @who: the agent whose turn ended
+ * @result: what that turn ended with
  * @held_reason: (out) (optional) (transfer full): why it was not
  *   completed, when it was not
  *
  * Completes a task because its assignee's turn ended -- unless something
- * says the work is still going.
+ * says the work is still going.  An AI CLI cannot end a turn without
+ * writing something, so the last thing the assignee wrote is the only
+ * evidence there is; right for work-answer-done, and wrong for the
+ * assignee that hands part of the job on and reports once at the end --
+ * such a turn closed the task under itself, the delegator stopped
+ * polling, and the real answer arrived against a task nothing was
+ * waiting on.
  *
- * An AI CLI cannot end a turn without writing something, so the last
- * thing it wrote is the only evidence there is.  That inference is right
- * for work-answer-done and wrong for every assignee that finishes part
- * of a job, hands the rest on and reports once at the end -- which is
- * the behaviour the rest of the guidance asks for.  Such a turn closed
- * the task under itself: the delegator stopped polling and the real
- * answer arrived against a task nothing was waiting on.
+ * Only the assignee's turn is evidence at all, which is why the caller
+ * says whose it was.  Everyone in a task's thread ends turns there --
+ * the delegator's, started by a progress note, ends with an
+ * acknowledgement -- and completing on any of them recorded "Thanks,
+ * carry on" as the result of running work.  Anyone else's turn end
+ * leaves the task as it was, with @held_reason naming whose could end
+ * it -- and it is checked before the hold below, which is consumed by
+ * being checked: another agent's turn must not spend it.
  *
- * Two things veto it, checked here rather than at the call site so there
- * is one answer: the assignee said so through clawtilla_task_progress,
- * and the task has children of its own still running.  Only the second
- * records @result as the task's progress note -- a task held open by its
- * own fan-out has no deliberate note, so the end of the turn is the
- * freshest thing there is.  The first already has one the assignee chose
- * for the purpose, and overwriting it with whatever an AI CLI wrote to
- * end its turn is a strictly worse answer for whoever reads it.
- *
- * The second veto could not fire at all until clawtilla_delegate began
- * recording a parent -- every agent-delegated task was a root, so a
- * fan-out had no children to find.
+ * Two things then veto it for the assignee itself, here rather than at
+ * the call site so there is one answer: it said so through
+ * clawtilla_task_progress, and the task has children of its own still
+ * running.  Only the second records @result as the task's progress note
+ * -- a task held open by its own fan-out has no deliberate note, while
+ * the first already carries one chosen for the purpose, and overwriting
+ * that with whatever an AI CLI wrote to end its turn is a strictly
+ * worse answer.  The child veto could not fire at all until
+ * clawtilla_delegate began recording a parent.
  *
  * Returns: %TRUE if the task was completed
  */
 gboolean clawt_task_manager_complete_on_turn_end(ClawtTaskManager  *self,
                                                  const gchar       *task_id,
+                                                 const gchar       *who,
                                                  const gchar       *result,
                                                  gchar            **held_reason);
 

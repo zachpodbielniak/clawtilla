@@ -161,17 +161,21 @@ terminal state, stopped polling, and the real answer arrived against a
 task nothing was waiting on.  The lifecycle rewarded chatter, which is
 the opposite of what the rest of this page asks for.
 
-Three things now veto that completion, and they are checked in
+Four things now veto that completion, and they are checked in
 ~clawt_task_manager_complete_on_turn_end()~ rather than at the call site,
 so there is one rule instead of one per caller who noticed:
 
 | Veto | Why |
 |------+-----|
+| the turn was not the assignee's | everyone in a task's thread ends turns there, and the delegator's "thanks, carry on" was being recorded as the result of work that was still running |
 | the assignee is still marked busy | libreclaw drops its typing indicator before posting the answer, so anything arriving while it is up is by construction not the answer |
 | the assignee called ~clawtilla_task_progress~ this turn | it said the work is not finished, which is the only thing that actually knows |
 | the task has children of its own still running | it cannot be finished while the work it handed on is not |
 
-The third could not fire at all until delegation started recording a
+The first is checked before the progress hold, because the hold is
+consumed by being checked: a delegator's turn ending in the thread must
+not spend the hold the assignee armed against its own next one.  The
+last could not fire at all until delegation started recording a
 parent.  It is the one that would have held the reported case open.
 
 A task that *does* end this way is marked as inferred, and
@@ -695,7 +699,7 @@ reply carries ~false~:
 |-------------------------------------+-------------------------|
 | a person, a routine, a webhook      | is delivered            |
 | ~clawtilla_message_agent~ from a peer | is delivered, and ends it |
-| ~clawtilla_delegate~ (a task)         | is the result, delivered |
+| ~clawtilla_delegate~ (a task)         | the *assignee's* is the result, delivered |
 | another agent's reply               | is not sent anywhere    |
 
 A message somebody chose to send earns exactly one answer, and the
@@ -703,6 +707,20 @@ exchange settles there. Anything past that has to be another deliberate
 ~clawtilla_message_agent~ call, which is the difference between a
 conversation and a loop --- and still counts against ~max_hops~, which
 stays as the backstop for chains built out of deliberate calls.
+
+The task row is about the assignee, not the thread.  Everyone in a
+task's thread ends turns there --- the delegator's turn, started by a
+progress note, ends with an acknowledgement --- and the exception used
+to wave through anything carrying a task id: that acknowledgement was
+routed, woke the assignee, and the daemon itself kept two agents talking
+whose preambles both said the exchange was closed.  Three consecutive
+turns of a live thread were "nothing to send" in three phrasings, one
+model call each.  A threaded closing text is delivered when it is the
+assignee's, because their report must arrive whatever the room's flag
+says, and judged like any other reply when it is not.  An id naming no
+task routes --- tasks live in memory, so after a daemon restart the
+choice is between a swallowed result and one delivered acknowledgement,
+and the acknowledgement is the cheap mistake.
 
 The agent is told which of the two it is holding, because the rule is
 useless as a secret: an agent whose closing text goes nowhere has to

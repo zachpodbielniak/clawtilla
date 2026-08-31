@@ -1679,15 +1679,17 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
             /*
              * Through the manager rather than straight to
              * clawt_task_manager_complete(), because the busy flag is
-             * only one of three things that make this the wrong answer
-             * and it is the only one the daemon can see.  The other two
-             * are facts about the task -- the assignee asked for the
-             * task to be held open, or it has work of its own still
+             * only one of the things that make this the wrong answer
+             * and it is the only one the daemon can see.  The others
+             * are facts about the task and its thread -- whose turn
+             * this even was, whether the assignee asked for the task to
+             * be held open, whether it has work of its own still
              * running -- so they live where the task does, and there is
              * one rule instead of one per caller who noticed.
              */
             if (!clawt_task_manager_complete_on_turn_end(self->tasks,
-                                                         thread_id, body,
+                                                         thread_id,
+                                                         agent_id, body,
                                                          &held) &&
                 held != NULL)
                 g_info("daemon: %s ended its turn but %s is still open: %s",
@@ -1706,17 +1708,38 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
      * would restart the exchange the preamble just closed -- and the
      * agent would be answering a message that was itself only an answer.
      *
-     * Checked with a task id in hand, because a task delivery always
-     * invites its result: suppressing one would leave the delegator
-     * waiting on work that is finished. A turn that has both is a turn
-     * the flag was never set on.
+     * A task delivery always invites its result -- but the result is
+     * the *assignee's* to send, so being in the task's thread is not by
+     * itself a pass.  It used to be: anything carrying a task id was
+     * routed, and everyone in a thread carries one.  The delegator's
+     * turn, started by the assignee's reply, ended with an
+     * acknowledgement; the acknowledgement woke the assignee; and the
+     * daemon itself kept two agents talking whose preambles both said
+     * the exchange was closed.  Three consecutive turns of a live
+     * thread were "nothing to send" in three phrasings, one model call
+     * each, and the loop ended only because the chief moved on to
+     * different work.
+     *
+     * An id naming no task still routes.  Tasks live in memory, so
+     * after a daemon restart the choice is between a swallowed result
+     * -- silent, and the work is lost -- and one delivered
+     * acknowledgement, which costs a turn.  The cheap mistake wins.
      *
      * And never for the operator's own room, whatever else is true. A
      * person waiting on an answer must not be met with silence because
      * of a rule about how agents talk among themselves.
      */
-    if (thread_id == NULL && !is_operator_room(destination)) {
+    if (!is_operator_room(destination)) {
         ClawtAgent *replier = clawt_agent_manager_get(self->agents, agent_id);
+        gboolean carries_the_result = FALSE;
+
+        if (thread_id != NULL) {
+            ClawtTask *task = clawt_task_manager_get(self->tasks, thread_id);
+
+            carries_the_result =
+                (task == NULL) ||
+                g_strcmp0(clawt_task_get_assignee(task), agent_id) == 0;
+        }
 
         /*
          * By the room this reply is for, not by the agent.
@@ -1729,7 +1752,7 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
          * echoed back from the delivery, so it is the same string the
          * turn was filed under.
          */
-        if (replier != NULL &&
+        if (!carries_the_result && replier != NULL &&
             !clawt_agent_get_turn_replies_in(replier, room_id)) {
             g_info("daemon: %s ended a closed exchange, so its reply to %s "
                    "was not sent", agent_id, destination);

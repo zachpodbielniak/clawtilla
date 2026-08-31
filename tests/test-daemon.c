@@ -3642,8 +3642,6 @@ test_rebuild_refuses_what_it_must(void)
     fixture_teardown(&fixture);
 }
 
-
-
 /*
  * Creating an agent starts it.
  *
@@ -4456,6 +4454,171 @@ test_a_progress_note_does_not_finish_a_task(void)
     g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_COMPLETED);
     g_assert_cmpstr(clawt_task_get_result(task), ==,
                     "Brief written to notes/brief.org.");
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A delegator's sign-off in a task's thread goes nowhere, and decides
+ * nothing.
+ *
+ * The result exception used to be about the thread rather than about
+ * who was in it, so the delegator's "no action needed", written at the
+ * end of a turn the assignee's own reply started, was routed straight
+ * back -- and woke the assignee, whose sign-off woke the delegator.
+ * Three consecutive turns of a live thread were "nothing to send" in
+ * three phrasings, one model call each, with both preambles saying the
+ * exchange was closed; the loop ended only because the chief moved on
+ * to different work.  The same turn end was also completing the task
+ * with the delegator's words as its result.
+ *
+ * max_hops is 0 so a pass cannot come from the hop limit refusing the
+ * message for its own reasons.  Both the mailbox and the task are
+ * asserted, because both were being written.
+ */
+static void
+test_a_delegators_threaded_sign_off_goes_nowhere(void)
+{
+    Fixture fixture = { 0 };
+    ClawtLinkServer *links;
+    ClawtAgentManager *agents;
+    ClawtTaskManager *tasks;
+    ClawtTask *task;
+    ClawtAgent *alpha;
+    ClawtAgent *beta;
+
+    fixture_setup(&fixture,
+                  "orchestration:\n"
+                  "  max_hops: 0\n"
+                  "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    links = clawt_daemon_get_link_server(fixture.daemon);
+    agents = clawt_daemon_get_agents(fixture.daemon);
+    tasks = clawt_daemon_get_tasks(fixture.daemon);
+    alpha = clawt_agent_manager_get(agents, "alpha");
+    beta = clawt_agent_manager_get(agents, "beta");
+
+    task = clawt_task_manager_create(tasks, "alpha", "beta",
+                                     "verify the guests", NULL, NULL);
+    g_assert_nonnull(task);
+
+    /* beta's progress note started this turn of alpha's, and closed it. */
+    clawt_agent_deliver_turn(alpha, "beta", 2, FALSE, "beta",
+                             clawt_task_get_id(task));
+
+    g_signal_emit_by_name(links, "typing", "alpha", "beta", TRUE);
+    g_signal_emit_by_name(links, "typing", "alpha", "beta", FALSE);
+    g_signal_emit_by_name(links, "message", "alpha", "beta",
+                          "No action needed -- that was a no-op "
+                          "confirmation.", clawt_task_get_id(task));
+
+    /* Nothing woke beta, and nothing decided beta's task. */
+    g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(beta)),
+                     ==, 0);
+    g_assert_false(clawt_task_is_finished(task));
+    g_assert_null(clawt_task_get_result(task));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And the assignee's report crosses a closed exchange, because it is
+ * what the thread exists to carry.
+ *
+ * The delegator's extra context arrived carrying invites_reply: false
+ * -- deliberately, it wanted no acknowledgement -- and the assignee
+ * finished the work on that turn.  Judged by the room's flag alone the
+ * report would be swallowed and the task completed in silence, leaving
+ * the delegator reading `completed` off a task whose result it never
+ * received.
+ */
+static void
+test_an_assignees_report_crosses_a_closed_exchange(void)
+{
+    Fixture fixture = { 0 };
+    ClawtLinkServer *links;
+    ClawtAgentManager *agents;
+    ClawtTaskManager *tasks;
+    ClawtTask *task;
+    ClawtAgent *alpha;
+    ClawtAgent *beta;
+
+    fixture_setup(&fixture,
+                  "orchestration:\n"
+                  "  max_hops: 0\n"
+                  "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    links = clawt_daemon_get_link_server(fixture.daemon);
+    agents = clawt_daemon_get_agents(fixture.daemon);
+    tasks = clawt_daemon_get_tasks(fixture.daemon);
+    alpha = clawt_agent_manager_get(agents, "alpha");
+    beta = clawt_agent_manager_get(agents, "beta");
+
+    task = clawt_task_manager_create(tasks, "alpha", "beta",
+                                     "verify the guests", NULL, NULL);
+    g_assert_nonnull(task);
+
+    /* alpha's no-reply-needed context started beta's turn. */
+    clawt_agent_deliver_turn(beta, "alpha", 2, FALSE, "alpha",
+                             clawt_task_get_id(task));
+
+    g_signal_emit_by_name(links, "typing", "beta", "alpha", TRUE);
+    g_signal_emit_by_name(links, "typing", "beta", "alpha", FALSE);
+    g_signal_emit_by_name(links, "message", "beta", "alpha",
+                          "Verification complete: all mounts present.",
+                          clawt_task_get_id(task));
+
+    g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(alpha)),
+                     ==, 1);
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_COMPLETED);
+    g_assert_true(clawt_task_get_result_inferred(task));
+    g_assert_cmpstr(clawt_task_get_result(task), ==,
+                    "Verification complete: all mounts present.");
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A thread naming no task still routes.
+ *
+ * Tasks live in memory, so after a daemon restart every thread id names
+ * nothing.  Between a swallowed result -- silent, and the work is lost
+ * -- and one delivered acknowledgement, the acknowledgement is the
+ * cheap mistake.
+ */
+static void
+test_a_thread_naming_no_task_still_routes(void)
+{
+    Fixture fixture = { 0 };
+    ClawtLinkServer *links;
+    ClawtAgentManager *agents;
+    ClawtAgent *alpha;
+    ClawtAgent *beta;
+
+    fixture_setup(&fixture,
+                  "orchestration:\n"
+                  "  max_hops: 0\n"
+                  "agents:\n  - id: alpha\n  - id: beta\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    links = clawt_daemon_get_link_server(fixture.daemon);
+    agents = clawt_daemon_get_agents(fixture.daemon);
+    alpha = clawt_agent_manager_get(agents, "alpha");
+    beta = clawt_agent_manager_get(agents, "beta");
+
+    clawt_agent_deliver_turn(alpha, "beta", 2, FALSE, "beta",
+                             "task-from-before-the-restart");
+
+    g_signal_emit_by_name(links, "typing", "alpha", "beta", TRUE);
+    g_signal_emit_by_name(links, "typing", "alpha", "beta", FALSE);
+    g_signal_emit_by_name(links, "message", "alpha", "beta",
+                          "The guest check is done; results attached.",
+                          "task-from-before-the-restart");
+
+    g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(beta)),
+                     ==, 1);
 
     fixture_teardown(&fixture);
 }
@@ -8992,6 +9155,12 @@ main(int argc, char *argv[])
                     test_a_keepalive_does_not_extend_the_turn_budget);
     g_test_add_func("/daemon/task/children-hold-the-parent-open",
                     test_a_turn_ending_does_not_close_a_task_with_children);
+    g_test_add_func("/daemon/task/a-delegators-sign-off-goes-nowhere",
+                    test_a_delegators_threaded_sign_off_goes_nowhere);
+    g_test_add_func("/daemon/task/a-report-crosses-a-closed-exchange",
+                    test_an_assignees_report_crosses_a_closed_exchange);
+    g_test_add_func("/daemon/task/an-unknown-thread-still-routes",
+                    test_a_thread_naming_no_task_still_routes);
     g_test_add_func("/daemon/task/running-when-its-turn-starts",
                     test_a_task_starts_running_when_its_turn_does);
     g_test_add_func("/daemon/computer-exec/a-shell-line-is-refused",
