@@ -1165,6 +1165,62 @@ emit_empty_headers_before(ClawtWindow *self, JsonArray *teams,
     }
 }
 
+/*
+ * Takes the keyboard focus off the rows a refresh is about to destroy.
+ *
+ * A GtkScrolledWindow scrolls whatever holds the focus into view, and
+ * the sidebar is rebuilt from nothing on every daemon event.  Destroying
+ * the focused row hands the focus to the list, whose own origin is the
+ * first agent, and the fleet jumps to the top -- so somebody reading the
+ * bottom of a long sidebar was pulled back to the start every time
+ * anything in the fleet spoke.  Parking the focus on the scroller
+ * instead moves nothing, because the scroller is not inside the area it
+ * scrolls.
+ *
+ * Returns: (transfer full) (nullable): the agent whose new row should be
+ *   given the focus back, or %NULL to leave it parked.  Only a row that
+ *   is on screen right now earns that, because grabbing the focus
+ *   scrolls the row into view and a refresh must not move the view.
+ */
+static gchar *
+park_sidebar_focus(ClawtWindow *self)
+{
+    GtkRoot *root = gtk_widget_get_root(GTK_WIDGET(self->sidebar));
+    GtkWidget *focus = root != NULL ? gtk_root_get_focus(root) : NULL;
+    GtkWidget *row;
+    graphene_rect_t bounds;
+    const gchar *id;
+
+    if (self->sidebar_scroll == NULL || focus == NULL ||
+        !gtk_widget_is_ancestor(focus, GTK_WIDGET(self->sidebar)))
+        return NULL;
+
+    /*
+     * The focus is on the row itself in practice, but a focusable widget
+     * inside one would be a child of it -- so walk up rather than assume.
+     */
+    for (row = focus; row != NULL && !GTK_IS_LIST_BOX_ROW(row);
+         row = gtk_widget_get_parent(row))
+        ;
+
+    id = row != NULL ? g_object_get_data(G_OBJECT(row), "agent-id") : NULL;
+
+    /*
+     * Read before the focus moves, because the answer is about where the
+     * row is on screen and the grab below can scroll.
+     */
+    if (id != NULL &&
+        (!gtk_widget_compute_bounds(row, self->sidebar_scroll, &bounds) ||
+         bounds.origin.y + bounds.size.height <= 0.0f ||
+         bounds.origin.y >=
+             (gfloat)gtk_widget_get_height(self->sidebar_scroll)))
+        id = NULL;
+
+    gtk_widget_grab_focus(self->sidebar_scroll);
+
+    return g_strdup(id);
+}
+
 static void
 refresh_agents_once(ClawtWindow *self)
 {
@@ -1172,6 +1228,7 @@ refresh_agents_once(ClawtWindow *self)
     JsonArray *agents;
     g_autoptr(JsonNode) team_reply = NULL;
     g_autofree gchar *shown_team = NULL;
+    g_autofree gchar *refocus = NULL;
     JsonArray *teams = NULL;
     g_autoptr(GHashTable) emitted = g_hash_table_new_full(g_str_hash,
                                                           g_str_equal,
@@ -1206,6 +1263,12 @@ refresh_agents_once(ClawtWindow *self)
         g_clear_pointer(&self->teams_seen, json_node_unref);
         self->teams_seen = json_node_ref(team_reply);
     }
+
+    /*
+     * Before anything is torn down, because it is about the row that has
+     * the focus now.
+     */
+    refocus = park_sidebar_focus(self);
 
     clawt_gtk_clear_list(self->sidebar);
 
@@ -1284,6 +1347,16 @@ refresh_agents_once(ClawtWindow *self)
          * row that is not in the list yet does not have one.
          */
         make_row_draggable(self, row);
+
+        /*
+         * The focus back onto the agent that had it, now that its row is
+         * a different object.  park_sidebar_focus() has already decided
+         * this is safe -- the row it names was on screen a moment ago,
+         * so the scroll this grab asks for finds it already in view.
+         */
+        if (refocus != NULL &&
+            g_strcmp0(clawt_json_string(agent, "id", ""), refocus) == 0)
+            gtk_widget_grab_focus(row);
 
         /*
          * Keep the current selection across a refresh, and make the very
@@ -1718,6 +1791,8 @@ popup_agent_menu(ClawtWindow *self, gdouble x, gdouble y)
     g_autofree gchar *computer_type = NULL;
     const gchar *agent_id;
     GdkRectangle rect;
+    graphene_point_t clicked;
+    graphene_point_t at;
     gboolean machine;
 
     if (row == NULL || self->agent_menu == NULL)
@@ -1751,8 +1826,23 @@ popup_agent_menu(ClawtWindow *self, gdouble x, gdouble y)
     fill_team_menu(self, team);
     fill_computer_menu(self, machine, computer_type);
 
-    rect.x = (gint)x;
-    rect.y = (gint)y;
+    /*
+     * The gesture reports where in the *list* the click landed and the
+     * menu hangs off the scroller around it, so the point has to cross
+     * that boundary -- the two differ by however far the fleet is
+     * scrolled, which is precisely the case this menu is used in.
+     */
+    clicked.x = (gfloat)x;
+    clicked.y = (gfloat)y;
+    at = clicked;
+
+    if (self->sidebar_scroll != NULL &&
+        !gtk_widget_compute_point(GTK_WIDGET(self->sidebar),
+                                  self->sidebar_scroll, &clicked, &at))
+        at = clicked;
+
+    rect.x = (gint)at.x;
+    rect.y = (gint)at.y;
     rect.width = 1;
     rect.height = 1;
 
@@ -1792,6 +1882,14 @@ clawt_gtk_build_agent_menu(ClawtWindow *self)
     GtkGesture *click;
     GtkGesture *press;
     guint i;
+
+    /*
+     * Loudly, rather than falling back to the list: parenting the menu
+     * there is the defect this arrangement exists to prevent, and a
+     * quiet fallback would put it back the first time somebody moved
+     * this call above the scroller's construction.
+     */
+    g_return_if_fail(self->sidebar_scroll != NULL);
 
     self->agent_actions = g_simple_action_group_new();
 
@@ -1875,7 +1973,23 @@ clawt_gtk_build_agent_menu(ClawtWindow *self)
     self->agent_menu = gtk_popover_menu_new_from_model(G_MENU_MODEL(menu));
     gtk_popover_set_has_arrow(GTK_POPOVER(self->agent_menu), FALSE);
     gtk_widget_set_halign(self->agent_menu, GTK_ALIGN_START);
-    gtk_widget_set_parent(self->agent_menu, GTK_WIDGET(self->sidebar));
+
+    /*
+     * Parented to the scroller, not to the list it scrolls.
+     *
+     * A popover takes the keyboard focus when it opens and hands it back
+     * to its parent when it closes, and a GtkScrolledWindow scrolls
+     * whatever holds the focus into view.  The list's own origin is the
+     * fleet's first agent, so with the menu parented there every
+     * right-click scrolled the sidebar to the top before the menu was
+     * even read -- measured at 600px to 0 in one frame, on a list of
+     * sixty rows.  The scroller is outside the scrolling area, so
+     * focusing it moves nothing.
+     *
+     * A row would be the natural parent and cannot be one: a refresh
+     * rebuilds the sidebar while the menu is open and frees it.
+     */
+    gtk_widget_set_parent(self->agent_menu, self->sidebar_scroll);
 
     click = gtk_gesture_click_new();
     gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click),

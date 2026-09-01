@@ -252,6 +252,22 @@ struct _ClawtWindow {
     GtkListBox        *sidebar;
 
     /*
+     * The scroller the sidebar lives in, kept because two things have to
+     * address it rather than the list inside it.
+     *
+     * A GtkScrolledWindow scrolls whatever takes the keyboard focus into
+     * view, and the *list* is a focusable widget whose top is y=0 -- so
+     * anything that focuses the list as a whole scrolls the fleet back
+     * to its first agent.  The context menu did exactly that by being
+     * parented to the list, and a rebuild did it by letting the focus
+     * land on a row after destroying the one that had it.  Both now go
+     * through this widget: the menu hangs off the scroller, which is
+     * outside the scrolling area, and a rebuild parks the focus here
+     * while the rows underneath it are replaced.
+     */
+    GtkWidget         *sidebar_scroll;
+
+    /*
      * The switcher, two deep.
      *
      * `pages` holds one child per #ClawtSection and is what the header

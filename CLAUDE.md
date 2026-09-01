@@ -1123,6 +1123,20 @@ versions apart.
   Unparent it from `::destroy` (dispose), never a `g_object_set_data_full()`
   notify, which runs after `gtk_widget_finalize()` has already complained.
   Hold such a pointer with `g_object_add_weak_pointer()`.
+- **A `GtkScrolledWindow` scrolls whatever takes the keyboard focus into view,
+  and a list is a focusable widget whose origin is its first row.** So anything
+  that hands the focus to the *list* -- rather than to a row -- scrolls to the
+  top, and both ways of doing that were in the sidebar. A popover parented to
+  the list gives the focus back to its parent when it closes, so every
+  right-click sent the fleet to the top as the menu shut; and a rebuild that
+  destroys the focused row hands the focus to the list on the way to
+  re-selecting, so an event arriving while somebody read the bottom of a long
+  sidebar pulled them back. Neither logs anything and both look like a list
+  that lost its place. Parent such a popover to the **scroller**, which is
+  outside the area it scrolls, and translate the gesture's coordinates with
+  `gtk_widget_compute_point()`; park the focus there across a rebuild and give
+  it back only to a row that was on screen, because a grab scrolls its row into
+  view and a refresh must not move the view.
 - `GtkPopoverMenu` follows a submenu model filled **after** it was built, which
   is what lets a menu be refilled per right-click. A stateful `GSimpleAction`
   with a string parameter renders its items as radios and hands the action the

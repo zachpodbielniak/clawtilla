@@ -5003,12 +5003,18 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
     gtk_widget_add_css_class(GTK_WIDGET(self->sidebar), "navigation-sidebar");
     g_signal_connect(self->sidebar, "row-selected",
                      G_CALLBACK(clawt_gtk_on_row_selected), self);
-    clawt_gtk_build_agent_menu(self);
 
     sidebar_scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(sidebar_scroll),
                                   GTK_WIDGET(self->sidebar));
     gtk_widget_set_vexpand(sidebar_scroll, TRUE);
+    self->sidebar_scroll = sidebar_scroll;
+
+    /*
+     * After the scroller exists, because the menu is parented to it
+     * rather than to the list -- see clawt_gtk_build_agent_menu().
+     */
+    clawt_gtk_build_agent_menu(self);
 
     sidebar_header = adw_header_bar_new();
     adw_header_bar_set_title_widget(ADW_HEADER_BAR(sidebar_header),
