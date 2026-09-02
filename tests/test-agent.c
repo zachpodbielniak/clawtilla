@@ -1565,6 +1565,13 @@ test_the_log_signal_is_redacted(void)
     g_assert_nonnull(log);
     g_assert_null(strstr(log[0] != NULL ? log[0] : "", SECRET_VALUE));
 
+    /*
+     * on_runtime_note_line() keeps the last line it was handed, so the
+     * last one is still held here -- a leak ASan reports, and one that
+     * would hide a real one next time.
+     */
+    g_clear_pointer(&capture.last_line, g_free);
+
     fixture_teardown(&fixture);
 }
 

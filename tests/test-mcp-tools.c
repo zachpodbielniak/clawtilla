@@ -3163,6 +3163,8 @@ test_a_stranger_cannot_read_a_task(void)
     Fixture fixture = { 0 };
     g_autoptr(JsonNode) status = NULL;
     g_autoptr(JsonNode) result = NULL;
+    /* call_tool() borrows its arguments; an inline g_strdup_printf leaks. */
+    g_autofree gchar *args = NULL;
     ClawtTask *task;
     gboolean is_error = FALSE;
 
@@ -3175,17 +3177,16 @@ test_a_stranger_cannot_read_a_task(void)
                                      NULL);
     g_assert_nonnull(task);
 
-    status = call_tool(&fixture, "stranger", "clawtilla_task_status",
-                       g_strdup_printf("{\"task_id\":\"%s\"}",
-                                       clawt_task_get_id(task)));
+    args = g_strdup_printf("{\"task_id\":\"%s\"}",
+                           clawt_task_get_id(task));
+
+    status = call_tool(&fixture, "stranger", "clawtilla_task_status", args);
 
     g_assert_nonnull(strstr(response_text(status, &is_error),
                             "not yours to read"));
     g_assert_true(is_error);
 
-    result = call_tool(&fixture, "stranger", "clawtilla_task_result",
-                       g_strdup_printf("{\"task_id\":\"%s\"}",
-                                       clawt_task_get_id(task)));
+    result = call_tool(&fixture, "stranger", "clawtilla_task_result", args);
 
     g_assert_true(is_error);
     g_assert_nonnull(strstr(response_text(result, &is_error),
@@ -3201,6 +3202,8 @@ test_the_two_parties_can_read_their_own_task(void)
     Fixture fixture = { 0 };
     g_autoptr(JsonNode) as_origin = NULL;
     g_autoptr(JsonNode) as_assignee = NULL;
+    /* call_tool() borrows its arguments; an inline g_strdup_printf leaks. */
+    g_autofree gchar *args = NULL;
     ClawtTask *task;
     gboolean is_error = TRUE;
 
@@ -3210,16 +3213,16 @@ test_the_two_parties_can_read_their_own_task(void)
                                      "check the invoice figures", NULL,
                                      NULL);
 
-    as_origin = call_tool(&fixture, "chief", "clawtilla_task_status",
-                          g_strdup_printf("{\"task_id\":\"%s\"}",
-                                          clawt_task_get_id(task)));
+    args = g_strdup_printf("{\"task_id\":\"%s\"}",
+                           clawt_task_get_id(task));
+
+    as_origin = call_tool(&fixture, "chief", "clawtilla_task_status", args);
     response_text(as_origin, &is_error);
     g_assert_false(is_error);
 
     is_error = TRUE;
     as_assignee = call_tool(&fixture, "worker", "clawtilla_task_status",
-                            g_strdup_printf("{\"task_id\":\"%s\"}",
-                                            clawt_task_get_id(task)));
+                            args);
     response_text(as_assignee, &is_error);
     g_assert_false(is_error);
 
@@ -3241,6 +3244,9 @@ test_only_the_assignee_reports_progress(void)
     Fixture fixture = { 0 };
     g_autoptr(JsonNode) as_origin = NULL;
     g_autoptr(JsonNode) as_assignee = NULL;
+    /* call_tool() borrows its arguments; an inline g_strdup_printf leaks. */
+    g_autofree gchar *from_origin = NULL;
+    g_autofree gchar *from_assignee = NULL;
     ClawtTask *task;
     gboolean is_error = FALSE;
 
@@ -3250,10 +3256,12 @@ test_only_the_assignee_reports_progress(void)
                                      "check the invoice figures", NULL,
                                      NULL);
 
+    from_origin = g_strdup_printf("{\"task_id\":\"%s\","
+                                  "\"note\":\"all fine\"}",
+                                  clawt_task_get_id(task));
+
     as_origin = call_tool(&fixture, "chief", "clawtilla_task_progress",
-                          g_strdup_printf("{\"task_id\":\"%s\","
-                                          "\"note\":\"all fine\"}",
-                                          clawt_task_get_id(task)));
+                          from_origin);
 
     g_assert_nonnull(strstr(response_text(as_origin, &is_error),
                             "to report on"));
@@ -3261,10 +3269,12 @@ test_only_the_assignee_reports_progress(void)
     g_assert_null(clawt_task_get_progress_note(task));
 
     is_error = TRUE;
+    from_assignee = g_strdup_printf("{\"task_id\":\"%s\","
+                                    "\"note\":\"halfway\"}",
+                                    clawt_task_get_id(task));
+
     as_assignee = call_tool(&fixture, "worker", "clawtilla_task_progress",
-                            g_strdup_printf("{\"task_id\":\"%s\","
-                                            "\"note\":\"halfway\"}",
-                                            clawt_task_get_id(task)));
+                            from_assignee);
 
     response_text(as_assignee, &is_error);
     g_assert_false(is_error);
