@@ -614,12 +614,19 @@ typedef enum {
  * @CLAWT_LOG_ERROR: only failures
  * @CLAWT_LOG_WARNING: failures and things that look wrong
  * @CLAWT_LOG_INFO: the default: lifecycle and routing decisions
- * @CLAWT_LOG_DEBUG: every frame on every link
+ * @CLAWT_LOG_DEBUG: everything, including GLib's own debug messages
  *
  * How much the daemon says.
  *
- * %CLAWT_LOG_DEBUG is what you want when an agent will not connect, and
- * noise the rest of the time -- it logs the contents of every link frame.
+ * Everything at or above the level is written and nothing below.
+ * %CLAWT_LOG_ERROR keeps failures, which includes a critical: GLib's own
+ * G_LOG_LEVEL_ERROR is the *fatal* one, so bounding there would keep
+ * only what is printed on the way to a crash.
+ *
+ * These said `every frame on every link` until 0.2.0, and there is no
+ * such logging -- nor was the key read at all.  Both halves are fixed;
+ * the sentence is recorded here because a doc comment describing a
+ * feature that does not exist is how it stayed wrong for a year.
  */
 typedef enum {
     CLAWT_LOG_ERROR = 0,

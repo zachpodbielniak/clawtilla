@@ -218,6 +218,82 @@ on_reload_signal(gpointer user_data)
     return G_SOURCE_CONTINUE;
 }
 
+/* ── Logging ─────────────────────────────────────────────────────── */
+
+static ClawtLogLevel log_ceiling = CLAWT_LOG_INFO;
+
+/*
+ * Everything at or above the configured level, and nothing below.
+ *
+ * GLib's own default already drops G_LOG_LEVEL_DEBUG unless
+ * G_MESSAGES_DEBUG names the domain, so `debug` here is what turns ours
+ * on -- and the three levels below it are what `warning` and `error`
+ * turn off, which the default cannot do at all.
+ */
+static GLogWriterOutput
+daemon_log_writer(GLogLevelFlags log_level, const GLogField *fields,
+                  gsize n_fields, gpointer user_data)
+{
+    (void)user_data;
+
+    /*
+     * The comparison itself is clawt_log_level_permits(), in the
+     * library, because it is a rule rather than a decision about this
+     * binary -- and because a bitmask whose lower values are the more
+     * severe ones is easy to invert and impossible to notice inverted.
+     */
+    if (!clawt_log_level_permits(log_ceiling, log_level))
+        return G_LOG_WRITER_HANDLED;
+
+    return g_log_writer_default(log_level, fields, n_fields, NULL);
+}
+
+/*
+ * Reads daemon.log_level and installs the writer above.
+ *
+ * Loaded separately from clawt_daemon_new()'s own load, because the
+ * level has to be in force before the daemon starts saying anything --
+ * including whatever it says about the configuration itself.
+ */
+static void
+install_log_writer(const gchar *config_path)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    const gchar *level;
+
+    config = clawt_config_load(config_path, NULL);
+
+    if (config == NULL)
+        return;
+
+    level = clawt_config_get_string(config, "daemon.log_level");
+
+    /*
+     * Resolved through the enum the schema already names, rather than a
+     * chain of g_strcmp0() against spelled-out nicks: a hand-written
+     * copy of an option's values is the one thing this codebase has
+     * watched drift every time.
+     *
+     * A value the type does not have keeps the documented default
+     * rather than becoming 0, which here is `error` -- a real member,
+     * so a typo would otherwise have quietened the daemon to almost
+     * nothing while looking like a working configuration.
+     *
+     * It says nothing when that happens, because the loader has already
+     * said it better: it names the key, the bad value, the default it
+     * fell back to *and* the list of what would have worked.  A second
+     * warning about one typo reads as two problems.
+     */
+    if (level != NULL) {
+        gint resolved = 0;
+
+        if (clawt_enum_from_nick(CLAWT_TYPE_LOG_LEVEL, level, &resolved))
+            log_ceiling = (ClawtLogLevel)resolved;
+    }
+
+    g_log_set_writer_func(daemon_log_writer, NULL, NULL);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -251,6 +327,22 @@ main(int argc, char *argv[])
                    "other\n");
         return EXIT_FAILURE;
     }
+
+    /*
+     * `daemon.log_level`, which nothing read.
+     *
+     * The key was parsed, saved, echoed back and used by no code at all:
+     * setting it to `debug` changed nothing, and there was no warning
+     * because it is not flagged inert either.  An operator whose agent
+     * will not connect turns it up, restarts, and gets exactly the same
+     * output.
+     *
+     * The writer is installed here rather than in the library because it
+     * is process-global: a host that embeds ClawtDaemon owns its own
+     * logging and would not thank us for replacing it, which is the same
+     * reason signal handling lives in this file.
+     */
+    install_log_writer(opt_config_path);
 
     daemon = clawt_daemon_new(opt_config_path, NULL);
 

@@ -94,8 +94,18 @@ static const ClawtSchemaEntry schema[] = {
   "info", clawt_log_level_get_type,
   "How much the daemon says: error, warning, info, debug.\n"
   "\n"
-  "debug logs every frame on every link, which is what you want when an\n"
-  "agent will not connect and noise the rest of the time.", "0.1.0" },
+  "Everything at or above the level reaches the log and nothing below.\n"
+  "GLib already drops debug messages unless G_MESSAGES_DEBUG names the\n"
+  "domain, so debug is what turns clawtilla\'s own on; warning and error\n"
+  "are what quieten a daemon that is working.\n"
+  "\n"
+  "Read by clawtillad only. A host embedding ClawtDaemon owns its own\n"
+  "logging, for the same reason it owns its own signal handling.\n"
+  "\n"
+  "It said `debug logs every frame on every link` until 0.2.0, and did\n"
+  "not: nothing read this key at all, and there is no per-frame logging\n"
+  "to enable. Turning it up changed nothing and warned about nothing,\n"
+  "because it is not flagged inert either.", "0.1.0" },
 
 { "daemon.tcp_enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_COMMENTED,
   "false", NULL,

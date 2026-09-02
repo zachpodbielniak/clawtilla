@@ -74,8 +74,18 @@ daemon:
 
   # How much the daemon says: error, warning, info, debug.
   #
-  # debug logs every frame on every link, which is what you want when an
-  # agent will not connect and noise the rest of the time.
+  # Everything at or above the level reaches the log and nothing below.
+  # GLib already drops debug messages unless G_MESSAGES_DEBUG names the
+  # domain, so debug is what turns clawtilla's own on; warning and error
+  # are what quieten a daemon that is working.
+  #
+  # Read by clawtillad only. A host embedding ClawtDaemon owns its own
+  # logging, for the same reason it owns its own signal handling.
+  #
+  # It said `debug logs every frame on every link` until 0.2.0, and did
+  # not: nothing read this key at all, and there is no per-frame logging
+  # to enable. Turning it up changed nothing and warned about nothing,
+  # because it is not flagged inert either.
   log_level: "info"
 
   # # Also listen on TCP, so clients on other machines can connect.

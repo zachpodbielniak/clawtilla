@@ -15,6 +15,8 @@
 
 #include <glib.h>
 
+#include "clawt-enums.h"
+
 G_BEGIN_DECLS
 
 /**
@@ -575,5 +577,28 @@ gboolean clawt_process_is_descendant_of(GPid pid, GPid root);
  *   and the way to run it, or %NULL if the command is a plain argv
  */
 gchar *clawt_command_shell_syntax_refusal(const gchar *command);
+
+/**
+ * clawt_log_level_permits:
+ * @ceiling: the configured %ClawtLogLevel
+ * @level: the level a message was logged at
+ *
+ * Whether a message at @level reaches a log configured for @ceiling.
+ *
+ * Lives here rather than in the daemon binary because a rule is easier
+ * to get right than to notice: %GLogLevelFlags is a bitmask whose
+ * *lower* numeric values are the more severe ones, so "at or above the
+ * ceiling" reads as a `<=` and inverting it silently swaps quiet and
+ * verbose.
+ *
+ * A level that is none of the four -- a custom level, or the structured
+ * records GLib emits for its own bookkeeping -- is permitted rather than
+ * swallowed.  A filter that hides what it does not recognise is how a
+ * log stops being a record.
+ *
+ * Returns: %TRUE if the message should be written
+ */
+gboolean clawt_log_level_permits(ClawtLogLevel  ceiling,
+                                 GLogLevelFlags level);
 
 G_END_DECLS

@@ -1301,3 +1301,59 @@ clawt_command_shell_syntax_refusal(const gchar *command)
         "appear to succeed while doing nothing you asked for. Run it as: "
         "bash -c \"<the whole command line>\"", found);
 }
+
+gboolean
+clawt_log_level_permits(ClawtLogLevel  ceiling,
+                        GLogLevelFlags level)
+{
+    GLogLevelFlags bound;
+
+    /*
+     * The ceiling as a GLib flag. Written as a switch with no default:
+     * -Wswitch names a ClawtLogLevel added later rather than letting it
+     * fall through to whatever the last case happened to leave behind.
+     */
+    switch (ceiling) {
+    case CLAWT_LOG_ERROR:
+        /*
+         * G_LOG_LEVEL_CRITICAL, not G_LOG_LEVEL_ERROR.
+         *
+         * GLib's G_LOG_LEVEL_ERROR is the *fatal* one -- it aborts the
+         * process -- and g_critical() is what an ordinary failure is
+         * logged at.  Bounding at ERROR would therefore mean `error`
+         * kept only the messages printed on the way to a crash and
+         * dropped every failure the daemon survived, which is the
+         * opposite of "only failures" and would be invisible: the
+         * setting would look like it was working.
+         */
+        bound = G_LOG_LEVEL_CRITICAL;
+        break;
+    case CLAWT_LOG_WARNING:
+        bound = G_LOG_LEVEL_WARNING;
+        break;
+    case CLAWT_LOG_INFO:
+        bound = G_LOG_LEVEL_INFO;
+        break;
+    case CLAWT_LOG_DEBUG:
+        bound = G_LOG_LEVEL_DEBUG;
+        break;
+    }
+
+    level &= G_LOG_LEVEL_MASK;
+
+    /*
+     * Anything that is not one of the four is passed through. Testing
+     * for membership rather than comparing straight away is what keeps
+     * a custom level from being judged against a scale it is not on.
+     */
+    if (level != G_LOG_LEVEL_ERROR &&
+        level != G_LOG_LEVEL_CRITICAL &&
+        level != G_LOG_LEVEL_WARNING &&
+        level != G_LOG_LEVEL_MESSAGE &&
+        level != G_LOG_LEVEL_INFO &&
+        level != G_LOG_LEVEL_DEBUG)
+        return TRUE;
+
+    /* Lower is more severe, so "at or above the ceiling" is a <=. */
+    return level <= bound;
+}
