@@ -83,41 +83,156 @@ test_http_providers_are_not_offered_as_agents(void)
 }
 
 /*
+ * Where a swallowed log message lands.
+ *
+ * lc_provider_type_normalize() states its valid set only by warning
+ * about a name outside it, so reading that set means reading the
+ * warning.
+ */
+static GString *warning_sink = NULL;
+
+static void
+collect_warning(const gchar *domain, GLogLevelFlags level,
+                const gchar *message, gpointer user_data)
+{
+    (void)domain;
+    (void)level;
+    (void)user_data;
+
+    if (warning_sink != NULL && message != NULL)
+        g_string_append(warning_sink, message);
+}
+
+/*
+ * Normalise @name and hand back whatever libreclaw said while doing it.
+ *
+ * The handler and the fatal mask are installed and taken away around
+ * this one call and nowhere wider, because a g_error() raised while our
+ * own handler is installed is swallowed by it: the test aborts with 134
+ * and prints nothing, which is a failing test that says nothing about
+ * why.  Every assertion belongs outside this function.
+ *
+ * @out_said is (transfer full) and is never %NULL, so "did it warn" is a
+ * length rather than a pointer test.
+ */
+static const gchar *
+normalize_quietly(const gchar *name, gchar **out_said)
+{
+    const gchar *canonical;
+    GLogFunc previous;
+    GLogLevelFlags fatal;
+
+    warning_sink = g_string_new(NULL);
+
+    previous = g_log_set_default_handler(collect_warning, NULL);
+    fatal = g_log_set_always_fatal(G_LOG_LEVEL_ERROR);
+
+    /* Static storage in libreclaw, so it outlives the sink. */
+    canonical = lc_provider_type_normalize(name, "model-catalog-test");
+
+    g_log_set_always_fatal(fatal);
+    g_log_set_default_handler(previous, NULL);
+
+    *out_said = g_string_free(warning_sink, FALSE);
+    warning_sink = NULL;
+
+    return canonical;
+}
+
+/*
  * Every provider libreclaw can run an agent on is offered.
  *
  * grok-build -- xAI's grok CLI in headless mode -- was missing for a
  * while, so it could not be chosen at all even though libreclaw has
- * always known how to drive it.
+ * always known how to drive it.  Then antigravity and cursor arrived and
+ * this test did not notice either, because it carried its own list of
+ * four names: the file whose whole job is refusing a second copy of a
+ * list had one, and a list nothing compares against is a list that has
+ * already drifted.
+ *
+ * libreclaw exports no enumeration of its backends -- no
+ * `lc_provider_type_count()`/`_nth()`, no GEnum, nothing on
+ * lc-client-factory either.  Its one machine-readable statement of the
+ * set is the "Valid: ..." tail of the warning
+ * lc_provider_type_normalize() emits for a name it does not know, and
+ * that is the same sentence an operator with a typo'd provider is shown.
+ * So the set is read from there rather than written down here again, and
+ * each name is put back through libreclaw's own normalize() to get the
+ * canonical spelling -- the message deliberately lists aliases
+ * (`claude-code-tmux`) beside canonical names.
+ *
+ * What this cannot see: a backend lc_client_factory_new() builds and the
+ * warning forgets to name.  That would be a defect in libreclaw's own
+ * message, worth failing over on its own, and this test would report
+ * nothing about it.
  */
 static void
 test_every_libreclaw_backend_is_offered(void)
 {
-    static const gchar *backends[] = {
-        "claude-code", "claude-tmux", "opencode", "grok-build"
-    };
-    const ClawtProviderInfo *catalog;
-    gsize n_providers = 0;
-    gsize i;
-    gsize j;
+    g_autofree gchar *said = NULL;
+    g_auto(GStrv) names = NULL;
+    g_autofree gchar *valid = NULL;
+    const gchar *at;
+    const gchar *end;
+    guint i;
+    guint checked = 0;
 
-    catalog = clawt_model_catalog_get(&n_providers);
+    (void)normalize_quietly("clawtilla-not-a-backend", &said);
 
-    for (i = 0; i < G_N_ELEMENTS(backends); i++) {
-        gboolean found = FALSE;
+    at = strstr(said, "Valid: ");
 
-        for (j = 0; j < n_providers; j++) {
-            if (g_strcmp0(catalog[j].id, backends[i]) != 0)
-                continue;
+    if (at == NULL)
+        g_error("libreclaw's unknown-provider warning no longer names its "
+                "valid set, so nothing here can enumerate the backends. "
+                "Give lc-provider-resolve.h a real enumeration and walk "
+                "that rather than restoring a list in this file. It said: "
+                "%s", said);
 
-            g_assert_true(catalog[j].agent);
-            found = TRUE;
-            break;
-        }
+    at += strlen("Valid: ");
+    end = strchr(at, '.');
+    valid = g_strndup(at, end != NULL ? (gsize)(end - at) : strlen(at));
 
-        if (!found)
-            g_error("no catalogue entry for libreclaw backend '%s'",
-                    backends[i]);
+    names = g_strsplit(valid, ",", -1);
+
+    for (i = 0; names[i] != NULL; i++) {
+        g_autofree gchar *again = NULL;
+        const gchar *canonical;
+        const ClawtProviderInfo *provider;
+        gchar *name = g_strstrip(names[i]);
+
+        if (*name == '\0')
+            continue;
+
+        canonical = normalize_quietly(name, &again);
+
+        /*
+         * A listed name normalize() does not accept means libreclaw's
+         * message and its code disagree about the set -- and every
+         * assertion below would then be about claude-code.
+         */
+        if (*again != '\0')
+            g_error("libreclaw's warning lists '%s' as valid and its own "
+                    "normalize() does not accept it", name);
+
+        provider = clawt_model_catalog_find_provider(canonical);
+
+        if (provider == NULL)
+            g_error("no catalogue entry for libreclaw backend '%s' "
+                    "(listed as '%s')", canonical, name);
+
+        if (!provider->agent)
+            g_error("catalogue entry '%s' is not offered as something an "
+                    "agent runs on, and libreclaw runs agents on it",
+                    canonical);
+
+        checked++;
     }
+
+    /*
+     * A parse that produced nothing looks exactly like a set that is
+     * entirely offered.
+     */
+    g_assert_cmpuint(checked, >, 0);
 }
 
 /*

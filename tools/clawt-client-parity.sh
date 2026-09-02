@@ -284,32 +284,45 @@ USAGE
 # Taken from the daemon rather than from a list here, so a kind added
 # there is compared from the moment it exists.
 #
+# Comments removed first, for the same reason the client sources are read
+# that way: this file is full of prose quoting the code it describes, and
+# a kind named only in a paragraph is a kind the daemon does not answer.
+#
 daemon_kinds () {
-    grep -oh 'kind, "[a-z_.]*"' "${DAEMON_SOURCES[@]}" \
+    strip_comments "${DAEMON_SOURCES[@]}" \
+        | grep -o 'kind, "[a-z_.]*"' \
         | sed 's/kind, "//; s/"//' \
         | sort -u
 }
 
 #
-# The frame kinds a directory of client sources mentions.
+# The frame kinds a client's code -- comments already removed -- mentions.
 #
 # Intersected with the daemon's own list, because a client is full of
 # dotted strings that are not frame kinds -- css classes, file names,
 # member names.
+#
+# It takes the stripped corpus rather than a directory because it used to
+# take a directory and grep the sources raw, while layers 3 to 5 all went
+# through strip_comments().  That is the rule this script states twice
+# and applied in three of five places, and the failure it produces is the
+# one already written down here: a comment explaining that something was
+# *removed* still contains its name, so the check reads the removed thing
+# as present and reports OK.  Nothing was being masked when this was
+# fixed -- every kind and command in a client comment was also in that
+# client's code -- which is exactly how long a latent one waits.
 #
 client_kinds () {
     if [[ $# -ne 1 ]]
     then
         # shellcheck disable=SC2016
         echo '`client_kinds()` requires 1 positional argument' >&2
-        echo 'client_kinds <directory>' >&2
+        echo 'client_kinds <stripped-source-file>' >&2
         exit 1
     fi
 
-    local dir="${1}"
-
     comm -12 \
-        <(grep -oh '"[a-z_]\+\.[a-z_.]\+"' "${dir}"/*.c \
+        <(grep -o '"[a-z_]\+\.[a-z_.]\+"' "${1}" \
             | tr -d '"' | sort -u) \
         <(daemon_kinds)
 }
@@ -319,17 +332,26 @@ client_kinds () {
 #
 # Both keep them in a table of "/name" literals, which is enough to
 # compare without either having to declare anything for this script's
-# benefit.
+# benefit.  Read from the stripped corpus, for the reason above: the GTK
+# client's own comments name commands, and a comment is not an answer.
 #
 client_commands () {
     if [[ $# -ne 1 ]]
     then
         # shellcheck disable=SC2016
         echo '`client_commands()` requires 1 positional argument' >&2
+        echo 'client_commands <stripped-source-file>' >&2
         exit 1
     fi
 
-    grep -ohE '"/[a-z][a-z-]*"' "${1}"/*.c \
+    #
+    # A client with no slash commands at all is an empty set, not a
+    # failure -- and under `set -o pipefail` grep's "no matches" exit
+    # would otherwise take the whole script down before it printed
+    # anything, which is a parity check that reports nothing and exits 1.
+    # Exit 1 is "found none"; exit 2 is a real error and still counts.
+    #
+    { grep -ohE '"/[a-z][a-z-]*"' "${1}" || [[ $? -eq 1 ]]; } \
         | tr -d '"' \
         | sort -u
 }
@@ -602,14 +624,17 @@ main () {
     client_render_code "${GTK_DIR}" > "${gtk_render}"
     client_render_code "${WEB_DIR}" > "${web_render}"
 
-    client_kinds "${GTK_DIR}" > "${gtk}"
-    client_kinds "${WEB_DIR}" > "${web}"
+    #
+    # Every layer reads the same stripped corpus, built once above.
+    #
+    client_kinds "${gtk_code}" > "${gtk}"
+    client_kinds "${web_code}" > "${web}"
 
     comm -23 "${gtk}" "${web}" > "${only_gtk}"
     comm -13 "${gtk}" "${web}" > "${only_web}"
 
-    client_commands "${GTK_DIR}" > "${gtk_cmds}"
-    client_commands "${WEB_DIR}" > "${web_cmds}"
+    client_commands "${gtk_code}" > "${gtk_cmds}"
+    client_commands "${web_code}" > "${web_cmds}"
 
     comm -23 "${gtk_cmds}" "${web_cmds}" > "${only_gtk_cmds}"
 
