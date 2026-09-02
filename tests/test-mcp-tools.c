@@ -3413,6 +3413,156 @@ test_the_runtime_room_is_kept_when_no_turn_is_running(void)
     fixture_teardown(&fixture);
 }
 
+/* ── The one tool that must not be answered on the main context ──── */
+
+/*
+ * clawt_mcp_tools_call_defers() names the tool that waits, and
+ * clawt_mcp_tools_refusal() is how a caller that cannot wait answers it.
+ *
+ * The daemon's bridge-link handler runs on the main context and returns
+ * its answer synchronously, so a clawtilla_computer_exec arriving that
+ * way held every other agent's link, every IPC client, the event stream,
+ * the turn sweep and SIGTERM for the length of the command.  That is the
+ * list clawt_ipc_server_defer() exists to protect, and the tool.rpc
+ * handler asks this predicate before dispatching -- the link handler did
+ * not.
+ *
+ * Asserted on the predicate and the refusal rather than on
+ * clawt_mcp_tools_call(), which is deliberately left answering exec:
+ * it is documented as the form "for callers that have no way to wait",
+ * and a caller that can afford to block is entitled to it.  The rule is
+ * about the daemon's main context, not about that function.
+ */
+static void
+test_the_waiting_tool_is_named_and_refusable(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autoptr(JsonParser) other = json_parser_new();
+    g_autoptr(JsonNode) refusal = NULL;
+    ClawtAgent *agent;
+    gboolean is_error = FALSE;
+    const gchar *text;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+
+    agent = clawt_agent_manager_get(fixture.agents, "chief");
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_WORKSPACE, fixture.dir);
+    computer = clawt_host_computer_new("chief", sandbox);
+    clawt_computer_start(computer, NULL);
+    clawt_agent_set_computer(agent, computer);
+
+    g_assert_true(json_parser_load_from_data(
+        parser,
+        "{\"method\":\"tools/call\",\"id\":7,\"params\":{"
+        "\"name\":\"clawtilla_computer_exec\","
+        "\"arguments\":{\"command\":\"true\"}}}", -1, NULL));
+
+    g_assert_true(clawt_mcp_tools_call_defers(fixture.tools, "chief",
+                                              json_parser_get_root(parser)));
+
+    /* A tool that does not wait is not named, or everything would be. */
+    g_assert_true(json_parser_load_from_data(
+        other,
+        "{\"method\":\"tools/call\",\"id\":8,\"params\":{"
+        "\"name\":\"clawtilla_list_agents\",\"arguments\":{}}}", -1, NULL));
+
+    g_assert_false(clawt_mcp_tools_call_defers(fixture.tools, "chief",
+                                               json_parser_get_root(other)));
+
+    /*
+     * And the refusal is a real tool error carrying the request's id, so
+     * a peer correlates it rather than waiting for a reply that never
+     * comes.
+     */
+    refusal = clawt_mcp_tools_refusal(json_parser_get_root(parser),
+                                      "not here; use your .mcp.json");
+    g_assert_nonnull(refusal);
+
+    text = response_text(refusal, &is_error);
+    g_assert_true(is_error);
+    g_assert_nonnull(strstr(text, ".mcp.json"));
+
+    {
+        JsonObject *root = json_node_get_object(refusal);
+
+        g_assert_true(json_object_has_member(root, "id"));
+        g_assert_cmpint(json_object_get_int_member(root, "id"), ==, 7);
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * The model chooses the timeout, so it is bounded.
+ *
+ * It was read straight through and cast to guint, so a negative became
+ * roughly 4.3 billion seconds and any large value held a worker for as
+ * long as it asked.
+ */
+static void
+test_the_exec_timeout_is_bounded(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(JsonNode) response = NULL;
+    ClawtAgent *agent;
+    gboolean is_error = TRUE;
+    const gchar *text;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+
+    agent = clawt_agent_manager_get(fixture.agents, "chief");
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_WORKSPACE, fixture.dir);
+    computer = clawt_host_computer_new("chief", sandbox);
+    clawt_computer_start(computer, NULL);
+    clawt_agent_set_computer(agent, computer);
+
+    /*
+     * A negative timeout used to become an enormous unsigned one, and an
+     * absurd positive one was taken at its word.  The clamp is asserted
+     * through what the agent is *told*, because the command's own output
+     * is identical either way -- a test on the output alone passes
+     * against the unbounded cast, which is what the first version of
+     * this did.
+     */
+    response = call_tool(&fixture, "chief", "clawtilla_computer_exec",
+                         "{\"command\":\"echo bounded\",\"timeout\":-1}");
+    text = response_text(response, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_nonnull(strstr(text, "bounded"));
+    g_assert_nonnull(strstr(text, "timeout was capped"));
+
+    g_clear_pointer(&response, json_node_unref);
+    is_error = TRUE;
+
+    response = call_tool(&fixture, "chief", "clawtilla_computer_exec",
+                         "{\"command\":\"echo huge\",\"timeout\":999999}");
+    text = response_text(response, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_nonnull(strstr(text, "timeout was capped"));
+
+    /* And an ordinary timeout is not capped, or the note would be noise. */
+    g_clear_pointer(&response, json_node_unref);
+    is_error = TRUE;
+
+    response = call_tool(&fixture, "chief", "clawtilla_computer_exec",
+                         "{\"command\":\"echo plain\",\"timeout\":10}");
+    text = response_text(response, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_nonnull(strstr(text, "plain"));
+    g_assert_null(strstr(text, "timeout was capped"));
+
+    fixture_teardown(&fixture);
+}
+
+
 int
 main(int argc, char *argv[])
 {
@@ -3558,6 +3708,11 @@ main(int argc, char *argv[])
                     test_a_forged_runtime_room_buys_nothing);
     g_test_add_func("/mcp-tools/turn-room/records-the-room",
                     test_the_runtime_room_is_kept_when_no_turn_is_running);
+
+    g_test_add_func("/mcp-tools/waiting-tool-is-named-and-refusable",
+                    test_the_waiting_tool_is_named_and_refusable);
+    g_test_add_func("/mcp-tools/exec-timeout-is-bounded",
+                    test_the_exec_timeout_is_bounded);
 
     return g_test_run();
 }

@@ -469,6 +469,24 @@ JsonNode *clawt_mcp_tools_call(ClawtMcpTools *self,
  *
  * Returns: %TRUE if the call blocks
  */
+/**
+ * clawt_mcp_tools_refusal: (skip)
+ * @request: (nullable): the request being refused
+ * @text: what to tell the agent
+ *
+ * A tool-call response carrying @text as an error, correlated to
+ * @request.
+ *
+ * For a caller that has to refuse a call it cannot dispatch -- the
+ * daemon's bridge-link handler refuses the one tool that waits on a
+ * command, because it runs on the main context and returns its answer
+ * synchronously.  Built here so the refusal is the same shape as a
+ * tool's own error rather than a second spelling of one.
+ *
+ * Returns: (transfer full): the response
+ */
+JsonNode *clawt_mcp_tools_refusal(JsonNode *request, const gchar *text);
+
 gboolean clawt_mcp_tools_call_defers(ClawtMcpTools *self,
                                      const gchar   *agent_id,
                                      JsonNode      *request);

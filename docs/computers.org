@@ -114,6 +114,39 @@ main thread" would differ exactly once, on the case nobody looked at,
 and that is precisely what happened here the first time: the agent's path
 was moved and the operator's was left, which was the worse of the two.
 
+*And a third caller that was not either of them.*  The daemon also
+accepts an MCP request straight off an agent's bridge link, and that
+handler runs on the main context and returns its answer synchronously --
+so a command arriving that way held everything the two paths above were
+moved off it to protect, for as long as the command ran.  The
+synchronous form's own comment said "which is why the daemon's own
+~tool.rpc~ path does not use it", without noticing that something else
+did; the rule was asked at one call site rather than at the context it
+is about.
+
+That route now refuses this one tool and names the MCP server in the
+agent's ~.mcp.json~ instead, because ~ClawtLink~ correlates a reply to a
+request synchronously and there is nothing to answer into later.  It is
+not a loss: the MCP server is the production route for tool calls in any
+case, since ai-glib's CLI clients drop a tool list handed to them
+directly.
+
+*** The timeout is the model's, within a bound
+
+~clawtilla_computer_exec~ takes a ~timeout~ and the tool schema
+advertises 120 seconds.  The value is bounded at one hour: it used to be
+read straight through and cast to an unsigned int, so a negative became
+roughly 4.3 billion seconds and any large value held a worker for as
+long as it asked for.
+
+A capped value is reported in the result rather than applied in silence
+--- a command killed at a cap nobody mentioned reads as a command that
+failed on its own:
+
+#+begin_example
+[the timeout was capped at 3600 seconds]
+#+end_example
+
 The context the answer arrives on is *named* by the daemon rather than
 taken from whatever happened to be thread-default, because
 ~g_task_new()~ captures the thread-default of the calling thread and

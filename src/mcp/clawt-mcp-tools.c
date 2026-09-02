@@ -3646,6 +3646,7 @@ typedef struct {
     gchar          *command;
     gchar          *working_dir;
     guint           timeout;
+    gboolean         timeout_clamped;
     GStrv           argv;
     ClawtComputer  *computer;
     ClawtExecResult *result;
@@ -3667,6 +3668,14 @@ exec_call_free(ExecCall *call)
     g_free(call->agent_id);
     g_free(call);
 }
+
+/*
+ * The longest a single clawtilla_computer_exec may run.
+ *
+ * One hour, which is past anything a tool call waits for and short of
+ * the values an unbounded cast produced.
+ */
+#define EXEC_MAX_TIMEOUT_SECONDS (3600)
 
 /*
  * Everything that can be refused without waiting.
@@ -3721,7 +3730,26 @@ exec_call_prepare(ClawtMcpTools *self, const gchar *agent_id,
     call->agent_id = g_strdup(agent_id);
     call->command = g_strdup(command);
     call->working_dir = g_strdup(working_dir);
-    call->timeout = (guint)argument_int(arguments, "timeout", 120);
+    /*
+     * Bounded, because this number comes from the model.
+     *
+     * It was taken straight through and cast, so a negative became
+     * ~4.3 billion seconds and any large value held a worker for as long
+     * as it said.  A command that has produced nothing for an hour is
+     * not going to; whatever is waiting on it has given up long before.
+     */
+    {
+        gint64 asked = argument_int(arguments, "timeout", 120);
+
+        if (asked <= 0)
+            asked = 120;
+        else if (asked > EXEC_MAX_TIMEOUT_SECONDS)
+            asked = EXEC_MAX_TIMEOUT_SECONDS;
+
+        call->timeout = (guint)asked;
+        call->timeout_clamped =
+            (asked != argument_int(arguments, "timeout", 120));
+    }
     call->argv = g_steal_pointer(&argv);
 
     /*
@@ -3766,8 +3794,24 @@ exec_call_reply(ExecCall *call, gboolean *is_error)
     publish_exec(call->tools, call->agent_id, call->command,
                  clawt_exec_result_get_exit_status(call->result));
 
-    if (clawt_exec_result_succeeded(call->result))
+    /*
+     * A capped timeout is said out loud.
+     *
+     * The number comes from the model and is bounded at
+     * EXEC_MAX_TIMEOUT_SECONDS -- it used to be cast straight to guint,
+     * so a negative became roughly 4.3 billion seconds.  Clamping in
+     * silence would leave a command killed at the cap with nothing
+     * saying why, which reads as the command having failed on its own.
+     */
+    if (clawt_exec_result_succeeded(call->result)) {
+        if (call->timeout_clamped)
+            return g_strdup_printf(
+                "[the timeout was capped at %u seconds]\n%s",
+                call->timeout,
+                clawt_exec_result_get_stdout(call->result));
+
         return g_strdup(clawt_exec_result_get_stdout(call->result));
+    }
 
     /*
      * Exit status and stderr together.  A failing command whose reply is
@@ -4925,6 +4969,23 @@ tool_mailbox_reply(ClawtMcpTools *self, const gchar *agent_id,
  * daemon keeps, so the two cannot drift: a tool that starts blocking
  * declares it here, beside the tool.
  */
+JsonNode *
+clawt_mcp_tools_refusal(JsonNode *request, const gchar *text)
+{
+    JsonNode *id = NULL;
+
+    g_return_val_if_fail(text != NULL, NULL);
+
+    if (request != NULL && JSON_NODE_HOLDS_OBJECT(request)) {
+        JsonObject *root = json_node_get_object(request);
+
+        if (root != NULL && json_object_has_member(root, "id"))
+            id = json_object_get_member(root, "id");
+    }
+
+    return make_response(id, text, TRUE);
+}
+
 gboolean
 clawt_mcp_tools_call_defers(ClawtMcpTools *self,
                             const gchar   *agent_id,
@@ -5150,6 +5211,7 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
 
     if (!JSON_NODE_HOLDS_OBJECT(request))
         return make_response(NULL, "Malformed request.", TRUE);
+
 
     root = json_node_get_object(request);
 
