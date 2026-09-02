@@ -161,6 +161,42 @@ clawt_integration_binding_is_shared(ClawtIntegrationBinding *self);
 const gchar *clawt_integration_binding_get_string(ClawtIntegrationBinding *self,
                                                   const gchar             *key);
 
+/**
+ * clawt_integration_binding_key_is_credential:
+ * @self: a #ClawtIntegrationBinding
+ * @key: a key name
+ *
+ * Whether @key is one of the secrets this integration type cannot work
+ * without.
+ *
+ * Asked rather than assumed, so the renderer refuses a missing
+ * credential from the type table that already declares it instead of
+ * from a second list of its own. An absent optional key is silence; an
+ * absent credential is an agent whose config names a file nobody wrote.
+ *
+ * Returns: %TRUE if @key is a credential key for this type
+ */
+gboolean
+clawt_integration_binding_key_is_credential(ClawtIntegrationBinding *self,
+                                            const gchar             *key);
+
+/**
+ * clawt_integration_binding_describe_key:
+ * @self: a #ClawtIntegrationBinding
+ * @key: a key name
+ *
+ * How @key should be spelled when telling somebody to go and set it.
+ *
+ * An inline block and a named instance are different places in the
+ * file, and a message naming the wrong one sends the reader to edit a
+ * block that is already correct.
+ *
+ * Returns: (transfer full): the key as a person would find it
+ */
+gchar *
+clawt_integration_binding_describe_key(ClawtIntegrationBinding *self,
+                                       const gchar             *key);
+
 gboolean clawt_integration_binding_get_boolean(ClawtIntegrationBinding *self,
                                                const gchar             *key);
 

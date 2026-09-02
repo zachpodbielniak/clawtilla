@@ -276,6 +276,16 @@ credentials:
 - the event log scrubs on write, not at display time: transcripts get
   replayed into every context rebuild, so redacting only when showing
   them leaves the leak permanent
+- an agent's log ring and its ~::log-line~ signal are redacted from the
+  same call, so what a client streams live and what it fetches as the
+  tail have had the same thing taken out of them
+- a credential the integration's own type table declares --- a Matrix
+  ~access_token~, an email ~password~ --- is *required* at the point the
+  credential file would be written, whether the integration is an inline
+  block or a named instance bound by scope.  A missing one used to be
+  accepted: the rendered config named a credential file that was never
+  created, and the agent started cleanly and never authenticated, which
+  looks exactly like an agent nobody is talking to
 
 ** Connectors
 

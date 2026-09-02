@@ -218,9 +218,32 @@ write_secret_file(ClawtConfig             *config,
      * success here produced an agent whose configuration named a
      * credential file that was never written -- it started cleanly and
      * then never authenticated.
+     *
+     * Which of the two it is comes from the integration's own type
+     * table, where the credential keys are already declared, rather
+     * than from a list kept here.  The declaration was checked in
+     * clawt_integration_validate(), and that walks only the
+     * integrations an agent enables in its own block -- so a named
+     * instance bound by scope arrived here unchecked and was rendered
+     * anyway.  Asking the table at the point the file would be written
+     * covers both shapes, because both reach this function.
      */
-    if (ref == NULL)
-        return TRUE;
+    if (ref == NULL) {
+        g_autofree gchar *where = NULL;
+
+        if (!clawt_integration_binding_key_is_credential(binding, key))
+            return TRUE;
+
+        where = clawt_integration_binding_describe_key(binding, key);
+
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                    "%s needs a secret reference such as {env: NAME}, "
+                    "{file: PATH} or {command: \"...\"}; without one the "
+                    "agent's config would name a credential file that is "
+                    "never written, and it would start and never "
+                    "authenticate", where);
+        return FALSE;
+    }
 
     timeout = (guint)clawt_config_get_int(config,
                                           "secrets.command_timeout_seconds");

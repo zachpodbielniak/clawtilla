@@ -446,6 +446,34 @@ describe_key(ClawtIntegrationBinding *self, const gchar *key)
 }
 
 gboolean
+clawt_integration_binding_key_is_credential(ClawtIntegrationBinding *self,
+                                            const gchar             *key)
+{
+    gsize i;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    for (i = 0; self->info->credential_keys != NULL &&
+                self->info->credential_keys[i] != NULL; i++) {
+        if (g_strcmp0(self->info->credential_keys[i], key) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+gchar *
+clawt_integration_binding_describe_key(ClawtIntegrationBinding *self,
+                                       const gchar             *key)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+    g_return_val_if_fail(key != NULL, NULL);
+
+    return describe_key(self, key);
+}
+
+gboolean
 clawt_integration_binding_validate(ClawtIntegrationBinding  *self,
                                    GError                  **error)
 {

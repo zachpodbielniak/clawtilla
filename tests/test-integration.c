@@ -999,6 +999,57 @@ test_a_notifier_tells_the_agent_what_it_means(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * A Matrix instance with no access_token is refused, rather than
+ * producing a config that names a credential file nobody wrote.
+ *
+ * write_secret_file() returns success when the reference is absent, and
+ * says above itself exactly what that costs: "The channel block is
+ * rendered pointing at this file regardless, so returning success here
+ * produced an agent whose configuration named a credential file that
+ * was never written -- it started cleanly and then never
+ * authenticated."  The comment describes the failure; the code
+ * performed it.
+ *
+ * The type table already knows access_token is a credential key --
+ * clawt_integration_binding_validate() checks exactly that list -- but
+ * the check runs from clawt_integration_validate(), which walks only
+ * the integrations an agent enables in its own block.  A named
+ * instance bound by scope reaches the renderer without passing it.
+ *
+ * Silence is the whole problem here: an agent that cannot authenticate
+ * looks like an agent nobody is talking to.
+ */
+static void
+test_a_matrix_instance_without_a_token_is_refused(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *config_path = NULL;
+    gboolean written;
+
+    fixture_setup(&fixture,
+        "integrations:\n"
+        "  - name: home\n"
+        "    type: matrix\n"
+        "    scope: all\n"
+        "    homeserver: https://matrix.example.org\n"
+        "    user_id: \"@agent:example.org\"\n"
+        "    rooms: [\"!ops:example.org\"]\n"
+        "agents:\n"
+        "  - id: researcher\n");
+
+    written = clawt_config_write_agent_files(
+        fixture.config, agent_named(&fixture, "researcher"),
+        "/run/agents.sock", &config_path, &error);
+
+    g_assert_false(written);
+    g_assert_nonnull(error);
+    g_assert_nonnull(strstr(error->message, "access_token"));
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1045,6 +1096,8 @@ main(int argc, char *argv[])
                     test_a_shared_channel_reaches_the_rendered_config);
     g_test_add_func("/integration/notify-in-tools-org",
                     test_a_notifier_tells_the_agent_what_it_means);
+    g_test_add_func("/integration/matrix-without-a-token-is-refused",
+                    test_a_matrix_instance_without_a_token_is_refused);
 
     return g_test_run();
 }
