@@ -464,6 +464,22 @@ critical fired.
 - `lc_app_new_embedded(config_path, main_context, shared_pod_engine)` is the
   supported in-process route. `lc_app_run()` on an embedded instance returns
   after setup.
+- **Its timers used to miss that context entirely.** `lc_app_start_embedded()`
+  pushes the caller's context and said the push made
+  `g_source_attach(src, NULL)` pick it up; it does not, and neither do
+  `g_timeout_add*()` or `g_idle_add()` -- a pushed thread-default reaches
+  `g_task_new()` and the `*_async()` family and nothing else. So under
+  `runtime.type: embedded` the matrix reconnect, the email poll, the session
+  reap, the cron minute tick, the delivery-queue retry, the clawtilla-channel
+  reconnect and three heartbeats never fired, silently. Fixed upstream with
+  `lc_timeout_add*()` / `lc_source_remove()` in `util/lc-source.h`, which read
+  the context where they attach; `tests/test-source-helpers.sh` fails the build
+  on a bare `g_timeout_add()`. Same shape as `clawt_timeout_add_seconds()` here,
+  and worth remembering when reading any dep's timer code.
+- **Anything unguessable comes from the kernel there too.** Its API server minted
+  bearer secrets with `g_uuid_string_random()` -- the global `GRand`, a Mersenne
+  Twister -- and echoed the same stream as `X-Request-Id` on the *401* path,
+  before authentication. `lc_secret_new_hex()` and `lc_secret_equals()` now.
 - `lc_app_new()` does **not** load the config despite its doc comment.
 - Several `LcApp`s in one process need: `port: 0` for dashboard/api/bridge/
   webhook then reading the real port back; distinct `session.persist_dir`,
