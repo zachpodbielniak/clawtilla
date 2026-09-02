@@ -312,6 +312,52 @@ happened at least three times. They generalise; the API notes below do not.
   so comparing a wedged container with running ones manufactures a
   regression in the code that renders them. Twice now. State-match the
   probe: create, inspect, start, inspect the same container.
+- **A wall built without the door the check says is there.** Three times now,
+  a permission was honoured by the *argument check* and by nothing that
+  builds the sandbox: `deny_paths` was inert under `confine: bwrap` while the
+  agent was told the path was off-limits, and then `mount_paths` was too --
+  bound nowhere, so `computer.exchange` (on by default) was absent from every
+  bwrap agent's namespace while `describe_mounts()` told it where to look.
+  The predicate and the builder are two answers to one question. When one
+  grants a path, grep the other for the path's spelling.
+- **A member name is not checked by anything.** A client reading `status`,
+  `type`, `scopes`, `exit_status`, `guest_path` or `result_inferred` off a
+  reply that sends `connected`, `provider`, `granted_scopes`, `exit`, `path`
+  and a JSON boolean gets its fallback, silently, on every call -- so a
+  working connector read "not authorised", a successful command drew a red
+  `failed`, and the caveat on an inferred task result was unreachable. The
+  producer is a `json_builder_set_member_name()` away; read it rather than
+  the name that sounds right. And a *typed* reader is half the check: reading
+  a JSON boolean with the string reader is the same bug with no misspelling
+  in it, and that one silently *wrote back* `enabled: false` on every routine
+  and trigger somebody opened and saved.
+- **A cast macro is a runtime check, so the compiler cannot help.**
+  `ADW_ACTION_ROW()` on an `AdwEntryRow` or an `AdwExpanderRow` compiles,
+  logs two criticals and does nothing; twenty-two had accumulated, including
+  every explanatory subtitle in three editors and both urgency badges on the
+  Decisions page. `gtk-decisions.c` even carried a comment saying
+  AdwExpanderRow is not an AdwActionRow, ten lines above two casts of it to
+  one. `make adw-row-cast` checks it now, per function, because `row` is
+  reused for both kinds within a file.
+- **A limit applied after the read is not a limit.**
+  `g_data_input_stream_read_line_async()` *grows its buffer* until it finds a
+  newline -- doubling past whatever `g_buffered_input_stream_set_buffer_size()`
+  was set to, which is verifiable in ten lines and was assumed rather than
+  checked. So the IPC server's frame cap was a check on memory it had already
+  committed, reachable pre-authentication from the tailnet the daemon binds
+  by default. Bound the accumulation, not the result.
+- **A guard threaded through every recursive call and never read.**
+  yaml-glib's `convert_yaml_node()` was handed an `anchors` table, passed it
+  down, destroyed it at the end, and never inserted into or looked up: a
+  27-byte self-referential document killed the process, and a 493-byte one
+  exhausted four gigabytes. Same shape as a factory nothing calls, except the
+  parameter list makes it look wired. Grep the *body* for the parameter.
+- **A test with one key cannot see a shared-scalar bug.** Every
+  `ClawtTurnWatch` test used one agent, and the budget was one field for the
+  whole table -- so an agent's own tool call re-armed its watchdog with
+  whichever agent began a turn last, and `turn_timeout_seconds: 0` on any
+  agent set every other running agent's deadline to now. Where the state is
+  keyed, the test needs two keys.
 
 ### Verifying a fix, without fooling yourself
 
@@ -1518,4 +1564,14 @@ versions apart.
   unrelocated GOT and dies. Copy to a temporary name and `mv` it into place
 - Never let a selector that matches nothing stay silent when the entry it is on
   then reaches nobody
+- Never cast a libadwaita row with `ADW_ACTION_ROW()` without knowing which
+  kind it is -- `AdwSwitchRow` and `AdwComboRow` are action rows,
+  `AdwEntryRow` and `AdwExpanderRow` are not, and the wrong half compiles.
+  `clawt_gtk_set_row_hint()` dispatches; `make adw-row-cast` catches the rest
+- Never read a member off a daemon reply without checking the
+  `json_builder_set_member_name()` that produces it, and never read a JSON
+  boolean with the string reader -- both fail to the fallback in silence
+- Never apply a size limit to something already read. Bound what accumulates
+- Never grant a path in a predicate without granting it in whatever builds
+  the sandbox
 - Never push to master without approval
