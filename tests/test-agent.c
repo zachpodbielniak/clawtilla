@@ -435,11 +435,27 @@ pump_until(gboolean (*predicate)(gpointer), gpointer data, guint max_ms)
 }
 
 typedef struct {
-    gboolean exited;
-    gboolean clean;
-    guint    exit_count;
-    guint    log_lines;
+    gboolean  exited;
+    gboolean  clean;
+    guint     exit_count;
+    guint     log_lines;
+    gchar    *last_line;
 } RuntimeCapture;
+
+/* A line that clawt_redact_secrets() has something to take out of. */
+#define SECRET_VALUE "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789"
+#define SECRET_LOOKING_LINE "starting with ANTHROPIC_API_KEY=" SECRET_VALUE
+
+static void
+on_runtime_note_line(ClawtAgentRuntime *runtime, const gchar *line,
+                     gpointer data)
+{
+    RuntimeCapture *capture = data;
+
+    capture->log_lines++;
+    g_free(capture->last_line);
+    capture->last_line = g_strdup(line);
+}
 
 static void
 on_runtime_log_line(ClawtAgentRuntime *runtime, const gchar *line,
@@ -1258,6 +1274,300 @@ test_ordinary_output_does_not_pause(void)
     fixture_teardown(&fixture);
 }
 
+/* ── An automatic restart, seen from the agent ───────────────── */
+
+typedef struct {
+    ClawtAgent      *agent;
+    guint            starts;
+    ClawtAgentState  state_at_restart;
+} RestartWatch;
+
+/*
+ * Records the agent's state at the instant the runtime comes up.
+ *
+ * Sampled here rather than polled, because the fake exits again a
+ * couple of seconds later and a poll would be racing that: what is
+ * under test is the state *at* the restart, and this is the only moment
+ * it can be read without a timing assumption.  The agent connected to
+ * ::started first, in clawt_agent_set_runtime(), so by the time this
+ * runs the agent has already had its say.
+ */
+static void
+on_started_note_state(ClawtAgentRuntime *runtime, gpointer data)
+{
+    RestartWatch *watch = data;
+
+    (void)runtime;
+
+    watch->starts++;
+
+    if (watch->starts >= 2)
+        watch->state_at_restart = clawt_agent_get_state(watch->agent);
+}
+
+static gboolean
+has_restarted(gpointer data)
+{
+    return ((RestartWatch *)data)->starts >= 2;
+}
+
+static gboolean
+agent_has_failed(gpointer data)
+{
+    return clawt_agent_get_state(CLAWT_AGENT(data)) ==
+           CLAWT_AGENT_STATE_ERROR;
+}
+
+/*
+ * An agent the runtime restarts by itself comes out of ERROR.
+ *
+ * The restart policy respawns libreclaw from inside #ClawtAgentRuntime,
+ * without going back through clawt_agent_start().  Nothing connected to
+ * ::started, so the only thing that could clear ERROR was
+ * clawt_agent_set_link(), which promotes STARTING and DEGRADED to
+ * RUNNING and leaves every other state alone.  A crashed-and-recovered
+ * agent therefore worked -- the router drains on the link, not on the
+ * state -- while `agent list`, the sidebar and the notifier all said
+ * `error`, giving as the reason a crash that had already been recovered
+ * from.
+ *
+ * And pressing Start did not help: clawt_agent_start() moves to
+ * STARTING and asks the runtime, which answers "the agent is already
+ * running", and the failed start writes that straight back in as a
+ * fresh error.  Stop-then-start was the only way out, and that costs
+ * the agent its session.
+ *
+ * The fake exits with the status it is given after staying up for a
+ * moment, so the restart is real rather than simulated.  There is no
+ * link server here, so what is asserted is that the state is no longer
+ * ERROR -- reaching RUNNING still waits for a link, as it should.
+ */
+static void
+test_an_automatic_restart_leaves_error_behind(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtAgent) agent = NULL;
+    g_autoptr(ClawtProcessRuntime) runtime = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *fake = fake_libreclaw_path();
+    g_autoptr(GHashTable) environment = NULL;
+    RestartWatch watch = { 0 };
+
+    if (!g_file_test(fake, G_FILE_TEST_IS_EXECUTABLE)) {
+        g_test_skip("the fake libreclaw fixture is not executable");
+        return;
+    }
+
+    fixture_setup(&fixture);
+    fixture.config = load_config(&fixture, "agents:\n  - id: chief\n");
+
+    agent = clawt_agent_new(clawt_config_get_agent(fixture.config, "chief"),
+                            NULL);
+
+    runtime = clawt_process_runtime_new(
+        clawt_config_get_agent(fixture.config, "chief"), "/dev/null");
+    clawt_process_runtime_set_binary(runtime, fake);
+
+    /*
+     * Up for two seconds, then a failure.  Long enough that the second
+     * child is still there while the assertions below run, so the
+     * "already running" refusal is reached rather than raced past.
+     */
+    environment = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                        g_free);
+    g_hash_table_insert(environment, g_strdup("FAKE_LIBRECLAW_SLEEP"),
+                        g_strdup("2"));
+    g_hash_table_insert(environment, g_strdup("FAKE_LIBRECLAW_EXIT_CODE"),
+                        g_strdup("1"));
+    clawt_process_runtime_set_environment(runtime, environment);
+
+    clawt_agent_runtime_set_restart_policy(CLAWT_AGENT_RUNTIME(runtime),
+                                           CLAWT_RESTART_ON_FAILURE, 1, 5);
+    clawt_agent_set_runtime(agent, CLAWT_AGENT_RUNTIME(runtime));
+
+    watch.agent = agent;
+    watch.state_at_restart = CLAWT_AGENT_STATE_SHADOW;
+    g_signal_connect(runtime, "started", G_CALLBACK(on_started_note_state),
+                     &watch);
+
+    g_assert_true(clawt_agent_start(agent, &error));
+    g_assert_no_error(error);
+    g_assert_cmpuint(watch.starts, ==, 1);
+
+    /* It fails, as it was told to. */
+    g_assert_true(pump_until(agent_has_failed, agent, 10000));
+
+    /* And the runtime brings it back on its own. */
+    g_assert_true(pump_until(has_restarted, &watch, 10000));
+
+    /*
+     * The state has to follow the process.  ERROR here is a fleet
+     * reporting a failure it has already recovered from.
+     */
+    g_assert_cmpint(watch.state_at_restart, !=, CLAWT_AGENT_STATE_ERROR);
+
+    /*
+     * And an operator pressing Start is not refused with "already
+     * running" -- the refusal that set ERROR all over again.
+     */
+    g_assert_true(clawt_agent_start(agent, &error));
+    g_assert_no_error(error);
+
+    clawt_agent_stop(agent);
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A dead process takes its undelivered turns with it.
+ *
+ * Deliveries are acknowledged at the socket, and libreclaw's own queue
+ * is in memory -- so a child that dies holding messages loses them, and
+ * nothing will ever start a turn for them.  Their #TurnSetup entries
+ * stayed on the queue, and the next turns in that room after the
+ * restart popped those instead of their own.
+ *
+ * on_runtime_exited() already clears the typing rooms, and says why in
+ * as many words: "the restarted agent's first frame would not read as a
+ * turn start, leaving its first turn describing whatever the dead one
+ * had been answering".  That is the same sentence about the pending
+ * queue and the turn table, which it did not clear -- the rule was
+ * applied to the field somebody had noticed rather than to all three
+ * that describe the process.
+ *
+ * The reply flag is the one that costs: a fresh question inherits a
+ * dead peer exchange's `replies: FALSE`, so the agent's answer is
+ * dropped by clawt_daemon_turn_settle() and the operator sees a turn
+ * that produced nothing.
+ */
+static void
+test_a_crash_forgets_the_turns_that_died_with_it(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtAgent) agent = NULL;
+    g_autoptr(ClawtProcessRuntime) runtime = NULL;
+
+    fixture_setup(&fixture);
+    fixture.config = load_config(&fixture, "agents:\n  - id: chief\n");
+
+    agent = clawt_agent_new(clawt_config_get_agent(fixture.config, "chief"),
+                            NULL);
+    runtime = clawt_process_runtime_new(
+        clawt_config_get_agent(fixture.config, "chief"), "/dev/null");
+    clawt_agent_set_runtime(agent, CLAWT_AGENT_RUNTIME(runtime));
+
+    /*
+     * A peer's closed exchange, delivered and never started: deep, not
+     * inviting a reply, carrying a task and an origin.
+     */
+    clawt_agent_deliver_turn(agent, "room-a", 5, FALSE, "peer", "task-1");
+
+    /* And a turn that ran, so the turn table has something in it too. */
+    clawt_agent_deliver_turn(agent, "room-b", 4, FALSE, "peer", "task-2");
+    clawt_agent_note_typing(agent, "room-b", TRUE);
+    clawt_agent_note_typing(agent, "room-b", FALSE);
+
+    clawt_agent_runtime_record_exit(CLAWT_AGENT_RUNTIME(runtime), FALSE,
+                                    "it crashed");
+
+    /*
+     * Now the operator writes to the same room.  This turn is theirs:
+     * depth 0, an answer expected, no task.
+     */
+    clawt_agent_deliver_turn(agent, "room-a", 0, TRUE, "user", NULL);
+    clawt_agent_note_typing(agent, "room-a", TRUE);
+
+    g_assert_true(clawt_agent_get_turn_replies_in(agent, "room-a"));
+    g_assert_cmpint(clawt_agent_get_hop_depth_in(agent, "room-a"), ==, 0);
+    g_assert_null(clawt_agent_get_turn_task_id_in(agent, "room-a"));
+    g_assert_cmpstr(clawt_agent_get_turn_origin_in(agent, "room-a"), ==,
+                    "user");
+
+    /*
+     * And the finished turn in the other room is gone rather than
+     * standing in for the agent's depth: clawt_agent_get_hop_depth()
+     * falls back to the last turn when none is running, and that fed
+     * the gate deciding which tools an agent is offered at all.
+     */
+    clawt_agent_note_typing(agent, "room-a", FALSE);
+    g_assert_cmpint(clawt_agent_get_hop_depth(agent), <=, 0);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * What the ::log-line signal carries is redacted too.
+ *
+ * The ring buffer was built from clawt_redact_secrets() and the signal
+ * emitted the raw line beside it, under a comment saying these lines
+ * "are shown in the clients and pasted into bug reports".  That was
+ * true of the buffer and false of the other way out of the same
+ * function, so the first client to stream an agent's log rather than
+ * ask for its tail would have handed out the key the buffer had been
+ * careful not to keep -- and nothing at the call site would have said
+ * which of the two it was reading.
+ *
+ * The fake writes the line, so what is asserted is what a consumer
+ * actually receives.
+ */
+static void
+test_the_log_signal_is_redacted(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtProcessRuntime) runtime = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *fake = fake_libreclaw_path();
+    g_autoptr(GHashTable) environment = NULL;
+    g_auto(GStrv) log = NULL;
+    RuntimeCapture capture = { 0 };
+    ClawtAgentConfig *agent_config;
+
+    if (!g_file_test(fake, G_FILE_TEST_IS_EXECUTABLE)) {
+        g_test_skip("the fake libreclaw fixture is not executable");
+        return;
+    }
+
+    fixture_setup(&fixture);
+    fixture.config = load_config(&fixture, "agents:\n  - id: chief\n");
+    agent_config = clawt_config_get_agent(fixture.config, "chief");
+
+    runtime = clawt_process_runtime_new(agent_config, "/dev/null");
+    clawt_process_runtime_set_binary(runtime, fake);
+    clawt_agent_runtime_set_restart_policy(CLAWT_AGENT_RUNTIME(runtime),
+                                           CLAWT_RESTART_NEVER, 1, 0);
+
+    environment = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                        g_free);
+    g_hash_table_insert(environment, g_strdup("FAKE_LIBRECLAW_OUTPUT"),
+                        g_strdup(SECRET_LOOKING_LINE));
+    clawt_process_runtime_set_environment(runtime, environment);
+
+    g_signal_connect(runtime, "log-line", G_CALLBACK(on_runtime_note_line),
+                     &capture);
+
+    clawt_agent_runtime_start(CLAWT_AGENT_RUNTIME(runtime), &error);
+    g_assert_no_error(error);
+
+    g_assert_true(pump_until(has_logged, &capture, 5000));
+
+    /*
+     * Whatever the redaction replaces it with, the secret itself must
+     * not be in what the signal handed over.
+     */
+    g_assert_nonnull(capture.last_line);
+    g_assert_null(strstr(capture.last_line, SECRET_VALUE));
+
+    /*
+     * And the tail agrees, so this is one rule rather than two -- a
+     * signal redacted differently from the buffer would be the same
+     * problem with an extra place to fix it.
+     */
+    log = clawt_agent_runtime_get_log_tail(CLAWT_AGENT_RUNTIME(runtime), 10);
+    g_assert_nonnull(log);
+    g_assert_null(strstr(log[0] != NULL ? log[0] : "", SECRET_VALUE));
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1311,6 +1621,13 @@ main(int argc, char *argv[])
 
     g_test_add_func("/agent/observe-only-desktop-says-so",
                     test_an_observe_only_desktop_says_so);
+
+    g_test_add_func("/agent/an-automatic-restart-leaves-error-behind",
+                    test_an_automatic_restart_leaves_error_behind);
+    g_test_add_func("/agent/a-crash-forgets-the-turns-that-died-with-it",
+                    test_a_crash_forgets_the_turns_that_died_with_it);
+    g_test_add_func("/agent/the-log-signal-is-redacted",
+                    test_the_log_signal_is_redacted);
 
     return g_test_run();
 }

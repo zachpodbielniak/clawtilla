@@ -327,12 +327,27 @@ clawt_agent_runtime_record_log_line(ClawtAgentRuntime *self,
             priv->paused_until = reset;
     }
 
-    g_queue_push_tail(priv->log_lines, clawt_redact_secrets(line));
+    {
+        gchar *redacted = clawt_redact_secrets(line);
 
-    while (g_queue_get_length(priv->log_lines) > LOG_RING_LINES)
-        g_free(g_queue_pop_head(priv->log_lines));
+        g_queue_push_tail(priv->log_lines, redacted);
 
-    g_signal_emit(self, signals[SIGNAL_LOG_LINE], 0, line);
+        /*
+         * The signal carries the redacted line too.
+         *
+         * The buffer was redacted and the signal was not, so the
+         * sentence above -- "shown in the clients and pasted into bug
+         * reports" -- was true of the buffer and false of the other way
+         * out of here.  Whoever streams the log next would have got the
+         * key the ring buffer was careful not to keep, and nothing
+         * about the call site would have said so.  Emitted before the
+         * ring is trimmed, so the string is certainly still ours.
+         */
+        g_signal_emit(self, signals[SIGNAL_LOG_LINE], 0, redacted);
+
+        while (g_queue_get_length(priv->log_lines) > LOG_RING_LINES)
+            g_free(g_queue_pop_head(priv->log_lines));
+    }
 }
 
 GStrv

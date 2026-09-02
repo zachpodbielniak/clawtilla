@@ -879,6 +879,17 @@ computer could not be provisioned this time.  The restart policy
 actually giving up sets no state at all; it stops trying and says so in
 the log, and the agent keeps whatever state its last exit left it in.
 
+An *automatic* restart, though, takes the agent back out of it: the
+child coming up moves it to STARTING, and its link arriving moves it to
+RUNNING as on any other start.  It did not use to.  The restart policy
+respawns from inside the runtime rather than through ~agent start~, and
+nothing was watching that, so a crashed-and-recovered agent worked --
+the router delivers on the link, not on the state -- while every surface
+reported the crash it had already recovered from.  Pressing Start made
+it worse: the runtime answered "the agent is already running" and the
+failed start wrote that in as a fresh error, so stop-then-start was the
+only way out, at the cost of the agent's session.
+
 A *clean* exit goes straight to STOPPED without passing through
 STOPPING.  STOPPING means somebody asked.
 

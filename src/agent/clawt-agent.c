@@ -521,6 +521,43 @@ clawt_agent_get_status_detail(ClawtAgent *self)
     return self->status_detail;
 }
 
+/*
+ * The runtime came up -- which is not always because we asked it to.
+ *
+ * The restart policy respawns the child from inside #ClawtAgentRuntime,
+ * so clawt_agent_start() is not on that path and nothing moved the
+ * agent out of the state its death put it in.  clawt_agent_set_link()
+ * only promotes STARTING and DEGRADED, so a crashed agent that the
+ * supervisor had already brought back stayed ERROR for ever: working,
+ * because the router drains on the link rather than the state, while
+ * every surface reported the crash it had recovered from.  Pressing
+ * Start then made it worse -- the runtime answers "the agent is already
+ * running" and the failed start writes that in as a fresh error.
+ *
+ * STARTING rather than RUNNING, because the process being up is not the
+ * same as being reachable: the link decides that, exactly as it does on
+ * the ordinary start path.
+ */
+static void
+on_runtime_started(ClawtAgentRuntime *runtime, gpointer user_data)
+{
+    ClawtAgent *self = user_data;
+
+    (void)runtime;
+
+    /*
+     * A shadow does not run, and a stop in progress is not undone by
+     * the child it is still waiting on.
+     */
+    if (self->state == CLAWT_AGENT_STATE_SHADOW ||
+        self->state == CLAWT_AGENT_STATE_STOPPING)
+        return;
+
+    if (self->state != CLAWT_AGENT_STATE_STARTING &&
+        self->state != CLAWT_AGENT_STATE_RUNNING)
+        set_state(self, CLAWT_AGENT_STATE_STARTING, NULL);
+}
+
 static void
 on_runtime_exited(ClawtAgentRuntime *runtime,
                   gboolean           clean,
@@ -536,13 +573,31 @@ on_runtime_exited(ClawtAgentRuntime *runtime,
     g_clear_object(&self->link);
 
     /*
-     * And with it every typing frame it had raised.  A runtime that
-     * exits mid-turn sends no FALSE, so the set would keep a room for
-     * ever -- and the restarted agent's first frame would not read as a
-     * turn start, leaving its first turn describing whatever the dead
-     * one had been answering.
+     * And with it every turn the dead process was described by.
+     *
+     * The typing set first: a runtime that exits mid-turn sends no
+     * FALSE, so the set would keep a room for ever -- and the restarted
+     * agent's first frame would not read as a turn start, leaving its
+     * first turn describing whatever the dead one had been answering.
+     *
+     * The same sentence is true of the other two, which is why they go
+     * with it.  Deliveries are acknowledged at the socket and
+     * libreclaw's queue is in memory, so messages handed over and not
+     * yet started died with the child; their pending entries would
+     * otherwise be popped by the *next* turns in those rooms, and a
+     * fresh question would inherit a lost peer exchange's depth, task,
+     * origin and -- worst, because it is silent -- its `replies: FALSE`,
+     * so the answer is dropped as a sign-off.  And `turns` holds
+     * finished turns to judge late answers by, but no answer is coming
+     * from a process that is gone; left there, the last one stands in
+     * for the agent's depth in clawt_agent_get_hop_depth(), which is
+     * what decides whether it is offered the tools that start a hop at
+     * all.
      */
     clawt_agent_clear_typing(self);
+    g_queue_clear_full(self->pending, (GDestroyNotify)turn_setup_free);
+    g_hash_table_remove_all(self->turns);
+    g_clear_pointer(&self->last_room, g_free);
 
     if (self->state == CLAWT_AGENT_STATE_STOPPING || clean)
         set_state(self, CLAWT_AGENT_STATE_STOPPED, detail);
@@ -1236,16 +1291,22 @@ clawt_agent_set_runtime(ClawtAgent *self, ClawtAgentRuntime *runtime)
 {
     g_return_if_fail(CLAWT_IS_AGENT(self));
 
-    if (self->runtime != NULL)
+    if (self->runtime != NULL) {
         g_signal_handlers_disconnect_by_func(self->runtime,
                                              G_CALLBACK(on_runtime_exited),
                                              self);
+        g_signal_handlers_disconnect_by_func(self->runtime,
+                                             G_CALLBACK(on_runtime_started),
+                                             self);
+    }
 
     g_clear_object(&self->runtime);
 
     if (runtime != NULL) {
         self->runtime = g_object_ref(runtime);
         g_signal_connect(runtime, "exited", G_CALLBACK(on_runtime_exited),
+                         self);
+        g_signal_connect(runtime, "started", G_CALLBACK(on_runtime_started),
                          self);
     }
 
