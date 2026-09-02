@@ -921,6 +921,21 @@ void clawt_daemon_turn_activity(ClawtDaemon *self, const gchar *agent_id);
 void clawt_daemon_turn_settle(ClawtDaemon *self, const gchar *agent_id);
 
 /*
+ * The room half of a turn beginning and ending.
+ *
+ * Separate from the agent half because they fire on different edges: an
+ * agent becomes busy once, when it was idle, while a room's turn starts
+ * every time that room's turn starts -- and an agent talking to three
+ * peers is mid-turn in three rooms at once.  Driven from the agent half
+ * alone, the second and later rooms were never registered at all, so
+ * `rooms.turn_timeout_seconds` could only reach whichever room an idle
+ * agent happened to enter first.
+ */
+void clawt_daemon_turn_begin_room(ClawtDaemon *self, const gchar *agent_id,
+                                  const gchar *room_id);
+void clawt_daemon_turn_settle_room(ClawtDaemon *self, const gchar *room_id);
+
+/*
  * A turn is waiting on a person, and is waiting no longer.
  *
  * Both budgets hold: stopping a turn under an unanswered question

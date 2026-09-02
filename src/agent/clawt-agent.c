@@ -1091,17 +1091,20 @@ clawt_agent_is_typing_in(ClawtAgent *self, const gchar *room_id)
     return room_is_live(self, room_id);
 }
 
-gboolean
+ClawtTypingEdge
 clawt_agent_note_typing(ClawtAgent  *self,
                         const gchar *room_id,
                         gboolean     typing)
 {
     const gchar *key = room_key(room_id);
     gboolean was_typing;
+    gboolean room_was_live;
+    ClawtTypingEdge edges = CLAWT_TYPING_EDGE_NONE;
 
-    g_return_val_if_fail(CLAWT_IS_AGENT(self), FALSE);
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), CLAWT_TYPING_EDGE_NONE);
 
     was_typing = g_hash_table_size(self->typing_rooms) > 0;
+    room_was_live = g_hash_table_contains(self->typing_rooms, key);
 
     if (typing) {
         /*
@@ -1126,7 +1129,23 @@ clawt_agent_note_typing(ClawtAgent  *self,
         g_hash_table_remove(self->typing_rooms, key);
     }
 
-    return was_typing != (g_hash_table_size(self->typing_rooms) > 0);
+    if (was_typing != (g_hash_table_size(self->typing_rooms) > 0))
+        edges |= CLAWT_TYPING_EDGE_AGENT;
+
+    /*
+     * The room's own edge, which the agent's does not imply.
+     *
+     * An agent already typing in one room and starting a second produces
+     * no agent edge -- correctly, since the per-agent turn state must
+     * not reset -- and used to produce nothing at all.  So the second
+     * room was never entered into the room watch and nothing recorded
+     * who was holding it: `rooms.turn_timeout_seconds` could only ever
+     * fire on whichever room an idle agent happened to enter first.
+     */
+    if (room_was_live != g_hash_table_contains(self->typing_rooms, key))
+        edges |= CLAWT_TYPING_EDGE_ROOM;
+
+    return edges;
 }
 
 guint

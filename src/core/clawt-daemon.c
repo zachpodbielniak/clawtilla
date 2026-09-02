@@ -236,6 +236,43 @@ on_agent_mcp_request(ClawtLink *link, JsonNode *request, gpointer user_data)
      * from the environment libreclaw set on the CLI.  Here the tools fold
      * across the agent's running turns instead.
      */
+    /*
+     * The one tool that must not be answered here.
+     *
+     * This handler runs on the daemon's main context and returns a
+     * JsonNode, so it has no way to wait -- and clawtilla_computer_exec
+     * waits on a command, for up to an hour.  Answering it from here
+     * held every other agent's link, every IPC client, the event stream,
+     * the turn sweep and SIGTERM for that whole time, which is exactly
+     * the list clawt_ipc_server_defer() and clawt_mcp_tools_call_async()
+     * were built to protect.  daemon-misc.c's tool.rpc handler asks
+     * clawt_mcp_tools_call_defers() before dispatching; this one did
+     * not, and the synchronous form's own comment says "which is why the
+     * daemon's own tool.rpc path does not use it" without noticing that
+     * something else did.
+     *
+     * Refused rather than deferred because ClawtLink correlates a reply
+     * to a request synchronously -- there is nothing here to answer into
+     * later.  The refusal names the route that works, which is the MCP
+     * server in the agent's .mcp.json, and that is the production route
+     * for tool calls in any case: ai-glib's CLI clients drop a tool list
+     * handed to them directly, which is why the server exists.
+     *
+     * clawt_mcp_tools_call() itself is left alone.  It is documented as
+     * the form "for callers that have no way to wait", and a caller that
+     * can afford to block is entitled to it; the rule being enforced
+     * here is about this main context, not about that function.
+     */
+    if (clawt_mcp_tools_call_defers(self->mcp_tools,
+                                    clawt_link_get_agent_id(link),
+                                    request))
+        return clawt_mcp_tools_refusal(
+            request,
+            "This tool waits on a command, and this connection has no way "
+            "to wait without holding the whole daemon. Call it through the "
+            "clawtilla MCP server named in your .mcp.json, which is where "
+            "the tools are served from.");
+
     return clawt_mcp_tools_call(self->mcp_tools,
                                 clawt_link_get_agent_id(link), NULL,
                                 request);
@@ -1599,7 +1636,7 @@ on_link_typing(ClawtLinkServer *server,
     ClawtDaemon *self = user_data;
     ClawtAgent *agent;
     ClawtEvent *event;
-    gboolean edge = FALSE;
+    ClawtTypingEdge edge = CLAWT_TYPING_EDGE_NONE;
 
     (void)server;
 
@@ -1688,10 +1725,24 @@ on_link_typing(ClawtLinkServer *server,
      * ended the watch while another was still mid-turn, and the next
      * frame from that one looked like a fresh turn.
      */
-    if (typing && edge)
+    if (typing && (edge & CLAWT_TYPING_EDGE_AGENT) != 0)
         clawt_daemon_turn_begin(self, agent_id, room_id);
-    else if (!typing && edge)
+    else if (!typing && (edge & CLAWT_TYPING_EDGE_AGENT) != 0)
         clawt_daemon_turn_settle(self, agent_id);
+
+    /*
+     * And the room half, on the room's own edge.
+     *
+     * These used to hang off the agent edge above, so a second room
+     * opening while the agent was already busy registered nothing: no
+     * budget, no holder, and `rooms.turn_timeout_seconds` unreachable
+     * for every room but the first.  The agent settle still releases
+     * every room the agent held, since a stopped agent holds none.
+     */
+    if (typing && (edge & CLAWT_TYPING_EDGE_ROOM) != 0)
+        clawt_daemon_turn_begin_room(self, agent_id, room_id);
+    else if (!typing && (edge & CLAWT_TYPING_EDGE_ROOM) != 0)
+        clawt_daemon_turn_settle_room(self, room_id);
 
     /*
      * And the moment that decides whether the last frame is worth

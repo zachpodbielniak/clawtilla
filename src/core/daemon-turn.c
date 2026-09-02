@@ -639,7 +639,15 @@ clawt_daemon_turn_begin(ClawtDaemon *self, const gchar *agent_id,
      * then keeps it: the watch used to hold one number for every agent,
      * and since several are routinely mid-turn together that number was
      * whichever agent started last.
+     *
+     * @room_id is taken for the caller's convenience and no longer used
+     * here: the room half is clawt_daemon_turn_begin_room(), because it
+     * fires on a different edge.  This one fires when an idle agent
+     * becomes busy; that one fires whenever a room's turn starts, which
+     * for an agent already talking to somebody else is not the same
+     * moment.
      */
+    (void)room_id;
     config = (self->config != NULL)
         ? clawt_config_get_agent(self->config, agent_id) : NULL;
 
@@ -648,23 +656,46 @@ clawt_daemon_turn_begin(ClawtDaemon *self, const gchar *agent_id,
                                     agent_turn_budget(self, agent_id));
 
     clawt_turn_watch_begin(self->turn_watch, agent_id);
+}
 
-    if (room_id == NULL || self->room_watch == NULL || self->rooms == NULL)
+void
+clawt_daemon_turn_begin_room(ClawtDaemon *self, const gchar *agent_id,
+                             const gchar *room_id)
+{
+    ClawtRoom *room;
+    guint budget;
+
+    g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+    if (agent_id == NULL || room_id == NULL ||
+        self->room_watch == NULL || self->rooms == NULL)
         return;
 
-    {
-        ClawtRoom *room = clawt_room_manager_get(self->rooms, room_id);
-        guint budget = (room != NULL) ? clawt_room_get_turn_timeout(room) : 0;
+    room = clawt_room_manager_get(self->rooms, room_id);
+    budget = (room != NULL) ? clawt_room_get_turn_timeout(room) : 0;
 
-        if (budget == 0)
-            return;
+    if (budget == 0)
+        return;
 
-        clawt_turn_watch_set_budget(self->room_watch, budget);
-        clawt_turn_watch_begin(self->room_watch, room_id);
+    clawt_turn_watch_set_budget(self->room_watch, budget);
+    clawt_turn_watch_begin(self->room_watch, room_id);
 
-        g_hash_table_insert(self->room_holder, g_strdup(room_id),
-                            g_strdup(agent_id));
-    }
+    g_hash_table_insert(self->room_holder, g_strdup(room_id),
+                        g_strdup(agent_id));
+}
+
+void
+clawt_daemon_turn_settle_room(ClawtDaemon *self, const gchar *room_id)
+{
+    g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+    if (room_id == NULL || self->room_watch == NULL)
+        return;
+
+    clawt_turn_watch_end(self->room_watch, room_id);
+
+    if (self->room_holder != NULL)
+        g_hash_table_remove(self->room_holder, room_id);
 }
 
 void
@@ -722,25 +753,40 @@ clawt_daemon_turn_settle(ClawtDaemon *self, const gchar *agent_id)
     if (self->repeats != NULL)
         clawt_repeat_watch_end_turn(self->repeats, agent_id);
 
-    /* Whichever room this agent was holding, it is not holding it now. */
+    /*
+     * Every room this agent was holding, not the first one found.
+     *
+     * An agent talking to three peers holds three rooms at once, so a
+     * loop that broke on the first match left the other two watched with
+     * a holder who had stopped -- and the next sweep would collect them
+     * and stall a room over a turn that had already ended.  The break
+     * was correct only while an agent could hold one room, which is what
+     * the room edge now makes possible to see.
+     */
     if (self->room_holder != NULL && self->room_watch != NULL) {
+        g_autoptr(GPtrArray) held = g_ptr_array_new_with_free_func(g_free);
         GHashTableIter iter;
         gpointer key;
         gpointer value;
-        g_autofree gchar *held_room = NULL;
+        guint i;
 
         g_hash_table_iter_init(&iter, self->room_holder);
 
         while (g_hash_table_iter_next(&iter, &key, &value)) {
-            if (g_strcmp0(value, agent_id) == 0) {
-                held_room = g_strdup(key);
-                break;
-            }
+            if (g_strcmp0(value, agent_id) == 0)
+                g_ptr_array_add(held, g_strdup(key));
         }
 
-        if (held_room != NULL) {
-            clawt_turn_watch_end(self->room_watch, held_room);
-            g_hash_table_remove(self->room_holder, held_room);
+        /*
+         * Collected first, then removed: g_hash_table_remove() during an
+         * iteration is undefined, and g_hash_table_iter_remove() would
+         * still leave the keys we are about to read freed underneath us.
+         */
+        for (i = 0; i < held->len; i++) {
+            const gchar *room = g_ptr_array_index(held, i);
+
+            clawt_turn_watch_end(self->room_watch, room);
+            g_hash_table_remove(self->room_holder, room);
         }
     }
 
@@ -805,11 +851,15 @@ clawt_daemon_turn_hold(ClawtDaemon *self, const gchar *agent_id)
 
         g_hash_table_iter_init(&iter, self->room_holder);
 
+        /*
+         * Every room the agent holds, not the first.  An agent parked on
+         * one decision is parked in all of them -- it is one process --
+         * so holding only one room's clock let the others run down while
+         * nothing was happening.
+         */
         while (g_hash_table_iter_next(&iter, &key, &value)) {
-            if (g_strcmp0(value, agent_id) == 0) {
+            if (g_strcmp0(value, agent_id) == 0)
                 clawt_turn_watch_hold(self->room_watch, key);
-                break;
-            }
         }
     }
 }
@@ -835,11 +885,15 @@ clawt_daemon_turn_release(ClawtDaemon *self, const gchar *agent_id)
 
         g_hash_table_iter_init(&iter, self->room_holder);
 
+        /*
+         * Every room the agent holds, not the first.  An agent parked on
+         * one decision is parked in all of them -- it is one process --
+         * so holding only one room's clock let the others run down while
+         * nothing was happening.
+         */
         while (g_hash_table_iter_next(&iter, &key, &value)) {
-            if (g_strcmp0(value, agent_id) == 0) {
+            if (g_strcmp0(value, agent_id) == 0)
                 clawt_turn_watch_release(self->room_watch, key);
-                break;
-            }
         }
     }
 }

@@ -438,6 +438,22 @@ void clawt_agent_set_turn_replies(ClawtAgent *self, gboolean replies);
 gboolean clawt_agent_get_turn_replies(ClawtAgent *self);
 
 /**
+ * ClawtTypingEdge:
+ * @CLAWT_TYPING_EDGE_NONE: the frame changed nothing
+ * @CLAWT_TYPING_EDGE_AGENT: the agent went from idle to busy, or back
+ * @CLAWT_TYPING_EDGE_ROOM: this room's turn began, or ended
+ *
+ * What one typing frame changed.  Flags rather than a single answer
+ * because an agent can be mid-turn in several rooms at once: a frame
+ * that starts a second room is a room edge and not an agent one.
+ */
+typedef enum {
+    CLAWT_TYPING_EDGE_NONE  = 0,
+    CLAWT_TYPING_EDGE_AGENT = 1 << 0,
+    CLAWT_TYPING_EDGE_ROOM  = 1 << 1
+} ClawtTypingEdge;
+
+/**
  * clawt_agent_note_typing:
  * @self: a #ClawtAgent
  * @room_id: (nullable): the room the frame came from
@@ -450,35 +466,31 @@ gboolean clawt_agent_get_turn_replies(ClawtAgent *self);
  * the same %TRUE every 25 seconds so that Matrix does not drop it.  An
  * agent talking in three rooms sends three independent streams of them.
  *
- * Treating each %TRUE as the start of a turn is what
- * clawt_agent_begin_turn() must not do, because a turn that runs longer
- * than the refresh interval then restarts several times: the hop depth
- * goes back to zero, so `orchestration.max_hops` cannot climb; the
- * closed-exchange flag goes back to %TRUE, so a sign-off is routed and
- * costs the other agent a whole turn; the origin is cleared, which does
- * not merely mislead clawtilla_message_user's guard but switches it off;
- * and the task a delegation would be parented on is dropped.  A live
- * fleet produced 11,869 of these frames against 549 turns.
+ * Treating each %TRUE as a turn start is what clawt_agent_begin_turn()
+ * must not do: a turn longer than the refresh interval then restarts
+ * repeatedly, resetting the hop depth so `orchestration.max_hops` cannot
+ * climb, re-opening a closed exchange, clearing the origin that gates
+ * clawtilla_message_user, and dropping the task a delegation would be
+ * parented on.  A live fleet produced 11,869 frames against 549 turns.
  *
- * Held as a set of rooms rather than a counter or a flag.  The frames
- * are neither unique nor guaranteed to pair, so a counter drifts on a
- * repeated %TRUE or an unmatched %FALSE, where a set is idempotent both
- * ways.
+ * Held as a set of rooms, not a counter: the frames are neither unique
+ * nor guaranteed to pair, so a counter drifts where a set is idempotent.
  *
- * The edge is about the agent, not the room, because the state it gates
- * is per-agent.  A second room opening while the first is still running
- * is deliberately not a turn start: that turn inherits the running
- * description instead of resetting it, which errs towards closing an
- * exchange rather than continuing one.  Per-room turn state would need a
- * room on a tool call, and a tool call arrives on a per-agent link that
- * carries none.
+ * %CLAWT_TYPING_EDGE_AGENT gates the per-agent turn state, and a second
+ * room opening while the first runs is deliberately not one -- that turn
+ * inherits the running description rather than resetting it, which it
+ * must, because a tool call arrives on a per-agent link carrying no
+ * room.  %CLAWT_TYPING_EDGE_ROOM gates what is per room:
+ * `rooms.turn_timeout_seconds` and who holds a room's turn.  Reporting
+ * only the agent edge left every room after an agent's first
+ * unregistered -- no budget, no holder -- so the room timeout reached
+ * whichever room an idle agent happened to enter first.
  *
- * Returns: %TRUE if this frame started the agent's first turn or ended
- *   its last
+ * Returns: which edges this frame produced
  */
-gboolean clawt_agent_note_typing(ClawtAgent  *self,
-                                 const gchar *room_id,
-                                 gboolean     typing);
+ClawtTypingEdge clawt_agent_note_typing(ClawtAgent  *self,
+                                        const gchar *room_id,
+                                        gboolean     typing);
 
 /**
  * clawt_agent_get_typing_rooms:

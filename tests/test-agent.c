@@ -1575,6 +1575,67 @@ test_the_log_signal_is_redacted(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * A second room starting is a room edge, even when it is not an agent
+ * edge.
+ *
+ * The two questions have different answers and only one was reported.
+ * The agent edge is deliberately silent here -- the per-agent turn
+ * state must not reset when a second room opens, since a tool call
+ * arrives on a per-agent link carrying no room -- but the room watch,
+ * and the record of who is holding a room's turn, are per room and had
+ * nothing to go on.  So `rooms.turn_timeout_seconds` could only fire on
+ * whichever room an idle agent happened to enter first, and on a fleet
+ * where agents talk to several peers at once that is most rooms never.
+ */
+static void
+test_a_second_room_is_a_room_edge_and_not_an_agent_one(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtAgentManager) manager = NULL;
+    ClawtAgent *agent;
+    ClawtTypingEdge edges;
+
+    fixture_setup(&fixture);
+    fixture.config = load_config(&fixture, "agents:\n  - id: chief\n");
+
+    manager = clawt_agent_manager_new(fixture.config);
+    clawt_agent_manager_load(manager, NULL);
+
+    agent = clawt_agent_manager_get(manager, "chief");
+    g_assert_nonnull(agent);
+
+    /* An idle agent entering its first room: both edges. */
+    edges = clawt_agent_note_typing(agent, "room-a", TRUE);
+    g_assert_true((edges & CLAWT_TYPING_EDGE_AGENT) != 0);
+    g_assert_true((edges & CLAWT_TYPING_EDGE_ROOM) != 0);
+
+    /* A second room, while the first is still running. */
+    edges = clawt_agent_note_typing(agent, "room-b", TRUE);
+    g_assert_false((edges & CLAWT_TYPING_EDGE_AGENT) != 0);
+    g_assert_true((edges & CLAWT_TYPING_EDGE_ROOM) != 0);
+
+    /* A keepalive for a room already running is neither. */
+    edges = clawt_agent_note_typing(agent, "room-b", TRUE);
+    g_assert_cmpint(edges, ==, CLAWT_TYPING_EDGE_NONE);
+
+    /* One room ending is a room edge; the agent is still busy. */
+    edges = clawt_agent_note_typing(agent, "room-b", FALSE);
+    g_assert_false((edges & CLAWT_TYPING_EDGE_AGENT) != 0);
+    g_assert_true((edges & CLAWT_TYPING_EDGE_ROOM) != 0);
+
+    /* And the last one ending is both. */
+    edges = clawt_agent_note_typing(agent, "room-a", FALSE);
+    g_assert_true((edges & CLAWT_TYPING_EDGE_AGENT) != 0);
+    g_assert_true((edges & CLAWT_TYPING_EDGE_ROOM) != 0);
+
+    /* A FALSE for a room that was not running changes nothing. */
+    edges = clawt_agent_note_typing(agent, "room-c", FALSE);
+    g_assert_cmpint(edges, ==, CLAWT_TYPING_EDGE_NONE);
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1635,6 +1696,9 @@ main(int argc, char *argv[])
                     test_a_crash_forgets_the_turns_that_died_with_it);
     g_test_add_func("/agent/the-log-signal-is-redacted",
                     test_the_log_signal_is_redacted);
+
+    g_test_add_func("/agent/a-second-room-is-a-room-edge",
+                    test_a_second_room_is_a_room_edge_and_not_an_agent_one);
 
     return g_test_run();
 }
