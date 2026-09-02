@@ -741,9 +741,19 @@ probe_directory(ClawtSshComputer *self, const gchar *path, GError **error)
     g_autofree gchar *errors = NULL;
     gint exit_status = 0;
 
+    /*
+     * The path is substituted once, into the `test`, and never into the
+     * message.  g_shell_quote() wraps it in single quotes, which the
+     * second substitution then dropped into a double-quoted `echo` --
+     * where a `"` inside the path closed the string and the rest of it
+     * was run by the remote shell.  clawt_ssh_classify_probe() matches
+     * on the phrase and not on the path, and the caller knows which
+     * directory it asked about, so the name was never doing any work
+     * there.  The sftp side of this file already refuses a `"` outright.
+     */
     line = g_strdup_printf(
-        "test -d %s || { echo \"no such file or directory: %s\" >&2; "
-        "exit 1; }", quoted, quoted);
+        "test -d %s || { echo \"no such file or directory\" >&2; "
+        "exit 1; }", quoted);
 
     if (!run_remote_line(self, line, PROBE_TIMEOUT_SECONDS, &exit_status,
                          NULL, &errors, error))

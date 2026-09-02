@@ -455,6 +455,42 @@ clawt_sandbox_check_argv(ClawtSandbox        *self,
     return TRUE;
 }
 
+/*
+ * Whether a denied path is inside anything the sandbox binds.
+ *
+ * Only those need an operation: bwrap starts from nothing, so a path
+ * outside every bind is already unreachable and covering it would mean
+ * creating the mount point that makes it exist.
+ */
+static gboolean
+bwrap_path_is_visible(ClawtSandbox *self, const gchar *path)
+{
+    guint i;
+
+    if (path == NULL || *path == '\0')
+        return FALSE;
+
+    /*
+     * /usr and /etc are bound read-only for every bwrap sandbox, so a
+     * denial naming something under them is a denial of something that
+     * is there.
+     */
+    if (clawt_path_is_within(path, "/usr") ||
+        clawt_path_is_within(path, "/etc"))
+        return TRUE;
+
+    if (self->root != NULL && clawt_path_is_within(path, self->root))
+        return TRUE;
+
+    for (i = 0; i < self->allow_paths->len; i++) {
+        if (clawt_path_is_within(path, g_ptr_array_index(self->allow_paths,
+                                                         i)))
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
 GStrv
 clawt_sandbox_wrap_argv(ClawtSandbox *self, const gchar * const *argv)
 {
@@ -523,6 +559,44 @@ clawt_sandbox_wrap_argv(ClawtSandbox *self, const gchar * const *argv)
         g_ptr_array_add(out, g_strdup(path));
     }
 
+    /*
+     * Denials last, because bwrap applies its operations in order and a
+     * deny is only ever about something an earlier bind brought in.
+     *
+     * They used to be emitted nowhere at all.  clawt_sandbox_check_argv()
+     * returns early for this mode -- rightly, since scanning arguments
+     * for paths is a guess and bwrap is a wall -- and the wall was built
+     * without the denials in it, so `deny_paths` was inert in the one
+     * mode documented as the strongest.  `allow_paths: [~]` with
+     * `deny_paths: [~/.ssh]` bound the whole home directory read-write
+     * and put nothing over the key, while clawt_sandbox_describe() told
+     * the agent ~/.ssh was off-limits and the schema told the operator
+     * the same.  The allowlist mode had honoured denials the whole time,
+     * which is what made the gap invisible: the two modes were tested
+     * with the same config and only one of them was lying.
+     *
+     * A directory is covered with an empty tmpfs and a file with
+     * /dev/null, because the mount has to be something: bwrap cannot
+     * unmount a subtree of a bind.  A denial naming a path that is not
+     * in the sandbox at all needs no operation -- it is already absent,
+     * which is the whole of what the denial asked for.
+     */
+    for (i = 0; i < self->deny_paths->len; i++) {
+        const gchar *path = g_ptr_array_index(self->deny_paths, i);
+
+        if (!bwrap_path_is_visible(self, path))
+            continue;
+
+        if (g_file_test(path, G_FILE_TEST_IS_DIR)) {
+            g_ptr_array_add(out, g_strdup("--tmpfs"));
+            g_ptr_array_add(out, g_strdup(path));
+        } else {
+            g_ptr_array_add(out, g_strdup("--ro-bind"));
+            g_ptr_array_add(out, g_strdup("/dev/null"));
+            g_ptr_array_add(out, g_strdup(path));
+        }
+    }
+
     if (!self->allow_network)
         g_ptr_array_add(out, g_strdup("--unshare-net"));
 
@@ -563,15 +637,15 @@ clawt_sandbox_describe(ClawtSandbox *self)
 
     case CLAWT_CONFINE_WORKSPACE:
         g_string_append_printf(out,
-            "You are running on the host, confined to %s. Commands naming "
-            "paths outside it will be refused.",
+            "Commands you run with clawtilla_computer_exec are confined to "
+            "%s; one naming a path outside it is refused.",
             self->root != NULL ? self->root : "your workspace");
         break;
 
     case CLAWT_CONFINE_ALLOWLIST:
         g_string_append_printf(out,
-            "You are running on the host, confined to %s",
-            self->root != NULL ? self->root : "your workspace");
+            "Commands you run with clawtilla_computer_exec are confined to "
+            "%s", self->root != NULL ? self->root : "your workspace");
 
         for (i = 0; i < self->allow_paths->len; i++)
             g_string_append_printf(out, ", %s",
@@ -579,13 +653,13 @@ clawt_sandbox_describe(ClawtSandbox *self)
                                    g_ptr_array_index(self->allow_paths, i));
 
         g_string_append(out,
-            ". Commands naming paths outside those will be refused.");
+            ". One naming a path outside those is refused.");
         break;
 
     case CLAWT_CONFINE_BWRAP:
         g_string_append_printf(out,
-            "You are running on the host inside a bubblewrap sandbox. "
-            "Writable: %s",
+            "Commands you run with clawtilla_computer_exec go through a "
+            "bubblewrap sandbox. Writable there: %s",
             self->root != NULL ? self->root : "your workspace");
 
         for (i = 0; i < self->allow_paths->len; i++)
@@ -594,7 +668,7 @@ clawt_sandbox_describe(ClawtSandbox *self)
                                    g_ptr_array_index(self->allow_paths, i));
 
         g_string_append(out, ". The rest of the filesystem is read-only or "
-                             "absent.");
+                             "absent inside it.");
         break;
 
     default:
@@ -638,6 +712,26 @@ clawt_sandbox_describe(ClawtSandbox *self)
     if (!self->allow_sudo)
         g_string_append(out, " You cannot use sudo or otherwise escalate "
                              "privilege.");
+
+    /*
+     * Every sentence above is about clawtilla_computer_exec, and it now
+     * says so -- it used to open "You are running on the host inside a
+     * bubblewrap sandbox", which is not true of the process reading it.
+     * The agent's libreclaw child is spawned unwrapped, so its own Bash,
+     * Read and Write reach the whole filesystem as the daemon's user
+     * whatever this mode says.  That is the architecture (an agent's own
+     * tools run on the host; only exec enters the computer), and the
+     * architecture being deliberate is exactly why the description had
+     * to stop implying otherwise: an agent told it is in a sandbox will
+     * believe a refusal it never got, and an operator reading the same
+     * words will believe deny_paths is protecting a key it is not.
+     */
+    if (self->mode != CLAWT_CONFINE_NONE)
+        g_string_append(out,
+            " This applies to clawtilla_computer_exec. Your own Bash, "
+            "Read and Write tools run on the host outside it, so treat "
+            "those paths as a rule you are asked to keep rather than one "
+            "that will stop you.");
 
     return g_string_free(out, FALSE);
 }

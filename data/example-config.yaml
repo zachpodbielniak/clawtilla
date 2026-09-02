@@ -1859,6 +1859,13 @@ agents:
         # stop a program that opens paths itself once it is running. Only bwrap
         # does, because only bwrap involves the kernel.
         #
+        # All of it applies to clawtilla_computer_exec. The agent's own bash,
+        # read and write tools are its CLI's, and that CLI is not wrapped: they
+        # reach the whole filesystem as the user running the daemon whatever
+        # this is set to. That is true of every computer type -- only exec
+        # enters the computer -- but host is the type where the setting reads
+        # like a boundary around the agent rather than around one tool.
+        #
         # If bwrap is asked for and not installed, the agent becomes a shadow with
         # that as its reason. It is never silently downgraded.
         # Values: none, workspace, allowlist, bwrap
@@ -1873,6 +1880,10 @@ agents:
         # Paths refused even when they fall inside an allowed one.
         #
         # Checked after allow_paths, so ~/.ssh stays out even when all of ~ is in.
+        # Under bwrap a denied directory is covered with an empty tmpfs and a
+        # denied file with /dev/null, so the kernel enforces it rather than the
+        # argument scan; a path outside every bind needs nothing, since bwrap
+        # starts from nothing.
         deny_paths: []
 
         # Whether the agent's commands can reach the network.

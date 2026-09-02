@@ -640,6 +640,19 @@ test_missing_is_told_apart_from_broken(void)
     g_assert_cmpint(clawt_ssh_classify_probe(1, "No Such Object"), ==,
                     CLAWT_SSH_PROBE_MISSING);
 
+    /*
+     * And without the path, which is how probe_directory() phrases it
+     * now.  It used to substitute the shell-quoted path a *second* time,
+     * into a double-quoted `echo` -- where g_shell_quote()'s single
+     * quotes protect nothing and a `"` in the path closed the string, so
+     * the rest of it ran on the far machine as the ssh account.  The
+     * name was never doing any work here: this function matches on the
+     * phrase, and the caller already knows which directory it asked
+     * about.
+     */
+    g_assert_cmpint(clawt_ssh_classify_probe(1, "no such file or directory"),
+                    ==, CLAWT_SSH_PROBE_MISSING);
+
     /* Present is present. */
     g_assert_cmpint(clawt_ssh_classify_probe(0, NULL), ==,
                     CLAWT_SSH_PROBE_PRESENT);

@@ -2054,6 +2054,13 @@ static const ClawtSchemaEntry schema[] = {
   "stop a program that opens paths itself once it is running. Only bwrap\n"
   "does, because only bwrap involves the kernel.\n"
   "\n"
+  "All of it applies to clawtilla_computer_exec. The agent's own bash,\n"
+  "read and write tools are its CLI's, and that CLI is not wrapped: they\n"
+  "reach the whole filesystem as the user running the daemon whatever\n"
+  "this is set to. That is true of every computer type -- only exec\n"
+  "enters the computer -- but host is the type where the setting reads\n"
+  "like a boundary around the agent rather than around one tool.\n"
+  "\n"
   "If bwrap is asked for and not installed, the agent becomes a shadow with\n"
   "that as its reason. It is never silently downgraded.", "0.1.0" },
 
@@ -2069,7 +2076,11 @@ static const ClawtSchemaEntry schema[] = {
   NULL, NULL,
   "Paths refused even when they fall inside an allowed one.\n"
   "\n"
-  "Checked after allow_paths, so ~/.ssh stays out even when all of ~ is in.", "0.1.0" },
+  "Checked after allow_paths, so ~/.ssh stays out even when all of ~ is in.\n"
+  "Under bwrap a denied directory is covered with an empty tmpfs and a\n"
+  "denied file with /dev/null, so the kernel enforces it rather than the\n"
+  "argument scan; a path outside every bind needs nothing, since bwrap\n"
+  "starts from nothing.", "0.1.0" },
 
 { "agents.computer.host.allow_network", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "true", NULL,

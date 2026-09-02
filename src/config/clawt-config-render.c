@@ -820,8 +820,10 @@ render_computer_directive(ClawtAgentConfig *for_agent)
          */
         return g_strdup(
             "[clawtilla] Your computer is the real machine clawtilla runs "
-            "on. Confinement is in force and will refuse paths outside "
-            "it. Every command affects a machine somebody uses.");
+            "on. Confinement applies to clawtilla_computer_exec and will "
+            "refuse paths outside it there; your own bash, read and write "
+            "tools run outside that check. Every command affects a "
+            "machine somebody uses.");
 
     case CLAWT_COMPUTER_DISTROBOX:
         /*

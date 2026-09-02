@@ -526,6 +526,130 @@ test_argument_checking_cannot_see_runtime_opens(void)
     paths_teardown(&paths);
 }
 
+/*
+ * A denial has to reach the kernel under bwrap, not just the argument
+ * scan that this mode skips.
+ *
+ * clawt_sandbox_check_argv() returns early for bwrap -- rightly, since
+ * scanning arguments is a guess and a namespace is a wall -- and the
+ * wall was built with no denials in it: allow_paths was bound
+ * read-write and deny_paths produced no operation at all.  So
+ * `allow_paths: [~]` with `deny_paths: [~/.ssh]` left the key present
+ * and writable, while clawt_sandbox_describe() told the agent it was
+ * off-limits and the schema told the operator the same.  The identical
+ * config under `allowlist` refused it, which is what kept this
+ * invisible.
+ */
+static void
+test_bwrap_denies_reach_the_sandbox(void)
+{
+    Paths paths = { 0 };
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_auto(GStrv) wrapped = NULL;
+    const gchar *argv[] = { "cat", NULL };
+    gboolean covered = FALSE;
+    gint allow_at = -1;
+    gint deny_at = -1;
+    guint i;
+
+    paths_setup(&paths);
+
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_BWRAP, paths.root);
+    clawt_sandbox_add_allow_path(sandbox, paths.outside);
+    clawt_sandbox_add_deny_path(sandbox, paths.secret_dir);
+
+    wrapped = clawt_sandbox_wrap_argv(sandbox, argv);
+
+    for (i = 0; wrapped[i] != NULL; i++) {
+        if (g_strcmp0(wrapped[i], "--bind") == 0 &&
+            g_strcmp0(wrapped[i + 1], paths.outside) == 0)
+            allow_at = (gint)i;
+
+        /*
+         * The secrets directory is inside root, which is bound, so it
+         * needs an operation of its own to be absent.  A directory is
+         * covered with an empty tmpfs.
+         */
+        if (g_strcmp0(wrapped[i], "--tmpfs") == 0 &&
+            g_strcmp0(wrapped[i + 1], paths.secret_dir) == 0) {
+            covered = TRUE;
+            deny_at = (gint)i;
+        }
+    }
+
+    g_assert_true(covered);
+
+    /*
+     * And after the binds, because bwrap applies its operations in
+     * order: a deny emitted first would be undone by the bind that
+     * brought the path in.
+     */
+    g_assert_cmpint(allow_at, >=, 0);
+    g_assert_cmpint(deny_at, >, allow_at);
+
+    paths_teardown(&paths);
+}
+
+/*
+ * A denial naming something no bind brings in needs no operation.
+ *
+ * bwrap starts from nothing, so the path is already absent -- and
+ * emitting a tmpfs for it would *create* the mount point, which is the
+ * opposite of what was asked for.
+ */
+static void
+test_bwrap_ignores_a_deny_it_never_bound(void)
+{
+    Paths paths = { 0 };
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_auto(GStrv) wrapped = NULL;
+    const gchar *argv[] = { "cat", NULL };
+    guint i;
+
+    paths_setup(&paths);
+
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_BWRAP, paths.root);
+    clawt_sandbox_add_deny_path(sandbox, paths.outside);
+
+    wrapped = clawt_sandbox_wrap_argv(sandbox, argv);
+
+    for (i = 0; wrapped[i] != NULL; i++)
+        g_assert_cmpstr(wrapped[i], !=, paths.outside);
+
+    paths_teardown(&paths);
+}
+
+/*
+ * The description says which tool the confinement applies to.
+ *
+ * It used to open "You are running on the host inside a bubblewrap
+ * sandbox", which is not true of the process reading it: an agent's own
+ * bash, read and write are its CLI's and that CLI is spawned unwrapped.
+ * An agent told it is in a sandbox believes a refusal it will never
+ * get, and an operator reading the same words believes deny_paths is
+ * protecting a key from a tool that never consults it.
+ */
+static void
+test_description_names_the_tool_it_applies_to(void)
+{
+    Paths paths = { 0 };
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_autofree gchar *description = NULL;
+
+    paths_setup(&paths);
+
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_BWRAP, paths.root);
+    description = clawt_sandbox_describe(sandbox);
+
+    g_assert_nonnull(strstr(description, "clawtilla_computer_exec"));
+    g_assert_nonnull(strstr(description, "outside"));
+
+    /* And does not claim the agent itself is in it. */
+    g_assert_null(strstr(description, "You are running on the host inside"));
+
+    paths_teardown(&paths);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -553,6 +677,11 @@ main(int argc, char *argv[])
     g_test_add_func("/sandbox/bwrap-availability", test_bwrap_availability_is_checked);
     g_test_add_func("/sandbox/bwrap-wrapping", test_bwrap_wrapping);
     g_test_add_func("/sandbox/no-wrap-otherwise", test_non_bwrap_modes_do_not_wrap);
+    g_test_add_func("/sandbox/bwrap-denies", test_bwrap_denies_reach_the_sandbox);
+    g_test_add_func("/sandbox/bwrap-deny-unbound",
+                    test_bwrap_ignores_a_deny_it_never_bound);
+    g_test_add_func("/sandbox/description-scope",
+                    test_description_names_the_tool_it_applies_to);
     g_test_add_func("/sandbox/description", test_description_states_the_limits);
     g_test_add_func("/sandbox/runtime-opens-not-seen",
                     test_argument_checking_cannot_see_runtime_opens);
