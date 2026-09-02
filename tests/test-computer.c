@@ -4670,6 +4670,84 @@ test_the_domain_and_the_seed_agree_on_the_tag(void)
     g_assert_null(strstr(xml, "<target dir='/mnt"));
 }
 
+/*
+ * The other half of the agreement above: a mount the seed will not write
+ * an fstab line for must not get a device either.
+ *
+ * render_mounts() has always filtered on CLAWT_MOUNT_VIRTIOFS and the
+ * domain XML filtered on nothing but a non-NULL source, so `type: 9p`
+ * produced a <filesystem><driver type='virtiofs'/> the guest had no way
+ * to mount -- the target simply absent, with nothing saying why, and
+ * cloud-init reads its seed once so the entry cannot be added later
+ * without a rebuild. `type: volume` was worse: <source dir='myvol'/>
+ * names a path that does not exist and the domain fails to start.
+ *
+ * Asserted as an agreement between the two producers rather than as the
+ * absence of one spelling, so a mount type added later has to be taught
+ * to both halves or this fails.
+ */
+static void
+test_a_mount_the_seed_skips_gets_no_device(void)
+{
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(ClawtMount) good = NULL;
+    g_autoptr(ClawtMount) bad = NULL;
+    g_autofree gchar *xml = NULL;
+    g_autofree gchar *seed = NULL;
+    g_autofree gchar *good_tag = NULL;
+    g_autofree gchar *bad_tag = NULL;
+    const gchar *good_target = "/mnt/clawtilla/exchange/chief";
+    const gchar *bad_target = "/mnt/legacy";
+    GLogLevelFlags fatal;
+    guint handler;
+
+    computer = clawt_vm_computer_new("chief", CLAWT_VM_BACKEND_LIBVIRT, NULL);
+
+    /*
+     * Added through clawt_computer_add_mount(), which is where the
+     * backend fills the type in: a BIND on a VM becomes VIRTIOFS there,
+     * and an explicitly-typed one is left as the operator asked.
+     */
+    good = clawt_mount_new("/host/exchange/chief", good_target);
+    clawt_computer_add_mount(computer, good);
+
+    bad = clawt_mount_new("/host/legacy", bad_target);
+    clawt_mount_set_mount_type(bad, CLAWT_MOUNT_9P);
+    clawt_computer_add_mount(computer, bad);
+
+    good_tag = clawt_mount_tag(good_target);
+    bad_tag = clawt_mount_tag(bad_target);
+    g_assert_cmpstr(good_tag, !=, bad_tag);
+
+    /*
+     * Skipping the mount is deliberately loud -- a device the operator
+     * asked for reaching nobody must not be silent -- so the warning is
+     * expected here rather than a failure.
+     */
+    handler = g_log_set_handler(NULL, G_LOG_LEVEL_MASK | G_LOG_FLAG_FATAL,
+                                swallow_warnings, NULL);
+    fatal = g_log_set_always_fatal(0);
+
+    xml = clawt_vm_computer_build_domain_xml(CLAWT_VM_COMPUTER(computer));
+    seed = clawt_cloud_init_build_user_data_full(
+        "root", NULL, NULL, NULL, clawt_computer_get_mounts(computer));
+
+    g_log_set_always_fatal(fatal);
+    g_log_remove_handler(NULL, handler);
+
+    /* The virtiofs one is in both, as the sibling test above asserts. */
+    g_assert_nonnull(strstr(xml, good_tag));
+    g_assert_nonnull(strstr(seed, good_tag));
+
+    /*
+     * And the 9p one is in neither. Before the fix it was in the XML
+     * alone -- which is the state that gives a guest a device nothing
+     * mounts.
+     */
+    g_assert_null(strstr(seed, bad_tag));
+    g_assert_null(strstr(xml, bad_tag));
+}
+
 
 /* ── The size of the screen ──────────────────────────────────────── */
 
@@ -5656,6 +5734,8 @@ main(int argc, char *argv[])
                     test_two_targets_do_not_share_a_tag);
     g_test_add_func("/computer/tag/domain-and-seed-agree",
                     test_the_domain_and_the_seed_agree_on_the_tag);
+    g_test_add_func("/computer/vm/a-mount-the-seed-skips-gets-no-device",
+                    test_a_mount_the_seed_skips_gets_no_device);
     g_test_add_func("/computer/mounts/workspace-is-shared",
                     test_a_computer_is_given_the_agents_workspace);
     g_test_add_func("/computer/mounts/vm-workspace-is-virtiofs",

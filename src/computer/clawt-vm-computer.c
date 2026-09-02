@@ -632,6 +632,36 @@ clawt_vm_computer_build_domain_xml(ClawtVmComputer *self)
         if (source == NULL)
             continue;
 
+        /*
+         * The same filter the seed applies, so the two cannot disagree
+         * about which mounts a guest has.
+         *
+         * render_mounts() emits an fstab line only for CLAWT_MOUNT_VIRTIOFS
+         * and this loop emitted a <filesystem> for every mount with a
+         * source, whatever its type.  So `type: 9p` or `type: volume` on
+         * a VM produced a virtiofs device the guest had no fstab entry
+         * for -- the target simply absent, with nothing saying why, and
+         * cloud-init reads its seed once so adding the entry later needs
+         * a rebuild.  `type: volume` was worse: <source dir='myvol'/>
+         * names a path that does not exist and virtiofsd fails the
+         * domain start.
+         *
+         * Refused rather than silently converted: the operator asked for
+         * a transport this backend does not implement, and quietly
+         * giving them a different one is how the exchange came to have
+         * five devices and two fstab entries.
+         */
+        if (clawt_mount_get_mount_type(mount) != CLAWT_MOUNT_VIRTIOFS) {
+            g_warning("vm %s: mount %s has type '%s', which a VM does not "
+                      "carry; it is not in the domain and not in the "
+                      "guest's fstab. Use the default (virtiofs).",
+                      clawt_computer_get_agent_id(CLAWT_COMPUTER(self)),
+                      clawt_mount_get_target(mount),
+                      clawt_enum_to_nick(CLAWT_TYPE_MOUNT_TYPE,
+                                         (gint)clawt_mount_get_mount_type(mount)));
+            continue;
+        }
+
         escaped_source = g_markup_escape_text(source, -1);
 
         /*

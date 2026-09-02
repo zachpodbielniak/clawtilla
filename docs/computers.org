@@ -1772,6 +1772,33 @@ computer:
 | ~required~ | fail rather than warn when the source is missing |
 | ~size~ | for ~tmpfs~ |
 
+*** A VM carries virtiofs mounts and nothing else
+    :PROPERTIES:
+    :CUSTOM_ID: vm-mount-types
+    :END:
+
+~clawt_computer_add_mount()~ rewrites the default ~bind~ to ~virtiofs~ on
+a VM, so a mount with no ~type:~ is carried and needs no thought.  An
+*explicit* ~type:~ of ~9p~, ~volume~ or ~tmpfs~ is not: the guest gets no
+device and no fstab entry, and a warning naming the mount says so at
+every start.
+
+It is refused rather than converted because the two halves that build a
+guest's shares have to agree.  The cloud-init seed writes an fstab line
+only for a virtiofs mount, and the domain XML used to emit a
+=<filesystem>= for every mount with a source -- so ~type: 9p~ produced a
+device the guest had no way to mount, with the target simply absent and
+nothing saying why.  cloud-init reads its seed once, so the missing entry
+could not be added afterwards without [[*What needs the machine rebuilt][a rebuild]].
+~type: volume~ was worse: the source is a volume name rather than a path,
+so =<source dir='myvol'/>= names nothing on disk and the domain fails to
+start.
+
+Quietly substituting virtiofs would be the same mistake in the other
+direction -- the operator asked for a transport, and giving them a
+different one is how the exchange came to have five devices and two fstab
+entries.
+
 *** SELinux relabelling
 
 On Fedora Silverblue and friends, an unlabelled bind mount is *visible*
