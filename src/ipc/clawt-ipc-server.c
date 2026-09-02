@@ -34,6 +34,16 @@
 #define MAX_PENDING_BYTES ((CLAWT_IPC_MAX_FRAME_BYTES * 2) + (1024 * 1024))
 
 /*
+ * How much is read from a socket at a time.
+ *
+ * A frame is assembled from as many of these as it takes, so this is a
+ * syscall-sizing decision and not a limit on anything: the limit is
+ * CLAWT_IPC_MAX_FRAME_BYTES, applied to the bytes held while looking
+ * for a newline.
+ */
+#define CLAWT_IPC_READ_CHUNK_BYTES (64 * 1024)
+
+/*
  * Reference counted, because a pending async read outlives the client it
  * belongs to.
  *
@@ -63,7 +73,7 @@ typedef struct {
     gint              ref_count;
     ClawtIpcServer   *server;      /* unowned */
     GSocketConnection *connection;
-    GDataInputStream *input;
+    GInputStream     *input;
     GOutputStream    *output;
     gboolean          subscribed;
     gboolean          authenticated;
@@ -71,6 +81,24 @@ typedef struct {
     GString          *pending;     /* queued outbound bytes, not yet sent */
     GBytes           *writing_bytes; /* the immutable buffer being written */
     gboolean          writing;
+
+    /*
+     * What has arrived and is not yet a whole frame, bounded by
+     * CLAWT_IPC_MAX_FRAME_BYTES.
+     *
+     * This used to be a GDataInputStream and its read_line_async(), and
+     * the size limit was applied to the line once it had been read.
+     * g_data_input_stream_read_line_async() grows its buffer until it
+     * finds a newline -- doubling, without bound, whatever
+     * g_buffered_input_stream_set_buffer_size() was set to -- so a peer
+     * that wrote bytes and never a newline made the daemon allocate all
+     * of them, and the refusal arrived only once it had.  Since
+     * `daemon.tailscale` defaults to true the daemon binds a tailnet
+     * address by default, and the token is checked on a *parsed frame*,
+     * which is behind the allocation: no credential was needed.
+     */
+    GString          *inbound;
+    guint8            chunk[CLAWT_IPC_READ_CHUNK_BYTES];
 } Client;
 
 struct _ClawtIpcServer {
@@ -279,6 +307,9 @@ client_free(gpointer data)
 
     if (client->pending != NULL)
         g_string_free(client->pending, TRUE);
+
+    if (client->inbound != NULL)
+        g_string_free(client->inbound, TRUE);
 
     g_clear_pointer(&client->writing_bytes, g_bytes_unref);
 
@@ -559,39 +590,23 @@ handle_builtin(ClawtIpcServer *self, Client *client, JsonNode *request,
     return NULL;
 }
 
-static void
-on_line_read(GObject *source, GAsyncResult *result, gpointer user_data)
+/*
+ * One complete frame.
+ *
+ * Returns: %FALSE when the client was closed and the caller must stop.
+ */
+static gboolean
+dispatch_line(Client *client, const gchar *line, gsize length)
 {
-    g_autoptr(Client) client = user_data;
     ClawtIpcServer *self = client->server;
-    g_autofree gchar *line = NULL;
     g_autoptr(GError) error = NULL;
     g_autoptr(JsonNode) request = NULL;
     JsonNode *reply = NULL;
-    gsize length = 0;
     gboolean handled = FALSE;
-
-    line = g_data_input_stream_read_line_finish(G_DATA_INPUT_STREAM(source),
-                                                result, &length, &error);
-
-    if (line == NULL) {
-        client_close(client);
-        return;
-    }
-
-    if (length > CLAWT_IPC_MAX_FRAME_BYTES) {
-        reply = clawt_ipc_error_new(NULL, CLAWT_ERROR_PROTOCOL,
-                                    "that frame is too large");
-        client_send(client, reply);
-        json_node_unref(reply);
-        client_close(client);
-        return;
-    }
 
     if (length == 0) {
         /* A blank line is a keepalive, not a malformed frame. */
-        read_next(client);
-        return;
+        return TRUE;
     }
 
     request = clawt_ipc_frame_from_line(line, &error);
@@ -607,8 +622,7 @@ on_line_read(GObject *source, GAsyncResult *result, gpointer user_data)
          * something malformed usually recovers, and dropping it turns a
          * message-level mistake into a session-level one.
          */
-        read_next(client);
-        return;
+        return TRUE;
     }
 
     /*
@@ -625,8 +639,7 @@ on_line_read(GObject *source, GAsyncResult *result, gpointer user_data)
             "say control.hello with a token before anything else");
         client_send(client, reply);
         json_node_unref(reply);
-        read_next(client);
-        return;
+        return TRUE;
     }
 
     reply = handle_builtin(self, client, request, &handled);
@@ -648,6 +661,89 @@ on_line_read(GObject *source, GAsyncResult *result, gpointer user_data)
         json_node_unref(reply);
     }
 
+    return !client->closing;
+}
+
+/*
+ * Every whole frame in what has arrived, and a refusal for one that
+ * cannot become whole.
+ *
+ * The limit is applied to the bytes held while looking for a newline --
+ * before the next read rather than after it -- which is the difference
+ * between refusing an over-long frame and buffering it first.
+ */
+static gboolean
+drain_inbound(Client *client)
+{
+    for (;;) {
+        gchar *newline;
+        gsize length;
+        g_autofree gchar *line = NULL;
+
+        newline = memchr(client->inbound->str, '\n', client->inbound->len);
+
+        if (newline == NULL) {
+            if (client->inbound->len > CLAWT_IPC_MAX_FRAME_BYTES) {
+                JsonNode *reply = clawt_ipc_error_new(
+                    NULL, CLAWT_ERROR_PROTOCOL, "that frame is too large");
+
+                client_send(client, reply);
+                json_node_unref(reply);
+                client_close(client);
+                return FALSE;
+            }
+
+            return TRUE;
+        }
+
+        length = (gsize)(newline - client->inbound->str);
+
+        /*
+         * A \r\n peer, which the old reader accepted through
+         * G_DATA_STREAM_NEWLINE_TYPE_ANY.  Dropping it here keeps that.
+         */
+        if (length > 0 && client->inbound->str[length - 1] == '\r')
+            length--;
+
+        line = g_strndup(client->inbound->str, length);
+        g_string_erase(client->inbound, 0,
+                       (gssize)(newline - client->inbound->str) + 1);
+
+        if (length > CLAWT_IPC_MAX_FRAME_BYTES) {
+            JsonNode *reply = clawt_ipc_error_new(
+                NULL, CLAWT_ERROR_PROTOCOL, "that frame is too large");
+
+            client_send(client, reply);
+            json_node_unref(reply);
+            client_close(client);
+            return FALSE;
+        }
+
+        if (!dispatch_line(client, line, length))
+            return FALSE;
+    }
+}
+
+static void
+on_bytes_read(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    g_autoptr(Client) client = user_data;
+    g_autoptr(GError) error = NULL;
+    gssize got;
+
+    got = g_input_stream_read_finish(G_INPUT_STREAM(source), result, &error);
+
+    if (got <= 0) {
+        client_close(client);
+        return;
+    }
+
+    g_string_append_len(client->inbound, (const gchar *)client->chunk,
+                        got);
+
+    if (!drain_inbound(client))
+        return;
+
     read_next(client);
 }
 
@@ -657,9 +753,9 @@ read_next(Client *client)
     if (client->closing)
         return;
 
-    g_data_input_stream_read_line_async(client->input, G_PRIORITY_DEFAULT,
-                                        NULL, on_line_read,
-                                        client_ref(client));
+    g_input_stream_read_async(client->input, client->chunk,
+                              sizeof client->chunk, G_PRIORITY_DEFAULT,
+                              NULL, on_bytes_read, client_ref(client));
 }
 
 static gboolean
@@ -677,12 +773,11 @@ on_incoming(GSocketService *service, GSocketConnection *connection,
     client->ref_count = 1;
     client->server = self;
     client->connection = g_object_ref(connection);
-    client->input = g_data_input_stream_new(
+    client->input = g_object_ref(
         g_io_stream_get_input_stream(G_IO_STREAM(connection)));
-    g_data_input_stream_set_newline_type(client->input,
-                                         G_DATA_STREAM_NEWLINE_TYPE_ANY);
     client->output = g_io_stream_get_output_stream(G_IO_STREAM(connection));
     client->pending = g_string_new(NULL);
+    client->inbound = g_string_new(NULL);
 
     /*
      * A unix client is already authenticated by the socket's permissions:
