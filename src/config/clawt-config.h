@@ -900,12 +900,40 @@ GStrv clawt_integration_config_get_agents(ClawtIntegrationConfig *self);
  * @self: a #ClawtIntegrationConfig
  * @agent_id: an agent id
  *
- * Whether this instance is handed to @agent_id.
+ * Whether this instance is handed to @agent_id, judged on `scope:` and
+ * `agents:` alone.
+ *
+ * This form cannot answer for a `teams:` entry, because it is not told
+ * which team the agent is on -- use clawt_integration_config_covers_agent()
+ * anywhere an agent's configuration is in hand, which is every caller in
+ * the daemon.  This one exists for the question asked about an agent
+ * that does not exist yet, which is the point of `scope: all`.
+ *
+ * It warns when the instance names teams, since the answer it is about
+ * to give is knowably incomplete: every production caller used to be
+ * this one, and every `teams:` entry reached nobody in silence.
  *
  * Returns: %TRUE if it is enabled and in scope for that agent
  */
 gboolean clawt_integration_config_covers(ClawtIntegrationConfig *self,
                                          const gchar            *agent_id);
+
+/**
+ * clawt_integration_config_covers_agent:
+ * @self: a #ClawtIntegrationConfig
+ * @agent: (nullable): the agent's configuration
+ *
+ * Whether this instance is handed to @agent, reading the agent's team
+ * from its own configuration so a `teams:` entry can match.
+ *
+ * The form to use whenever an agent's configuration is available: it
+ * cannot be called without the team, which is the whole of what went
+ * wrong with the id-only spelling.
+ *
+ * Returns: %TRUE if it is enabled and in scope for that agent
+ */
+gboolean clawt_integration_config_covers_agent(ClawtIntegrationConfig *self,
+                                               ClawtAgentConfig       *agent);
 
 /**
  * clawt_integration_config_covers_on_team:

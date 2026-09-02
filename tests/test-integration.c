@@ -109,6 +109,55 @@ test_scope_all_reaches_everyone(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * A `teams:` scope reaches the agents on that team.
+ *
+ * clawt_integration_resolve_for_agent() -- the one function everything
+ * downstream goes through -- asked clawt_integration_config_covers(),
+ * which forwards team = NULL, and clawt_scope_covers() returns FALSE for
+ * a NULL team *before* it looks at the teams list.  So every `teams:`
+ * entry matched nobody: the server never reached the agent's .mcp.json,
+ * and the daemon's own listing asked the same broken predicate, so both
+ * clients reported "not applied" as well.  A configured, documented
+ * scope that reaches nobody and says nothing.
+ *
+ * The variant that takes a team existed the whole time and had no
+ * callers at all.
+ */
+static void
+test_scope_teams_reaches_that_team(void)
+{
+    Fixture fixture = { 0 };
+    const gchar *yaml =
+        "integrations:\n"
+        "  - name: shared-tools\n"
+        "    type: mcp\n"
+        "    scope: selected\n"
+        "    teams: [ops]\n"
+        "    command: npx\n"
+        "teams:\n"
+        "  - id: ops\n"
+        "agents:\n"
+        "  - id: researcher\n"
+        "    team: ops\n"
+        "  - id: scribe\n";
+    g_autoptr(GPtrArray) covered = NULL;
+    g_autoptr(GPtrArray) uncovered = NULL;
+
+    fixture_setup(&fixture, yaml);
+
+    covered = clawt_integration_resolve_for_agent(
+        fixture.config, agent_named(&fixture, "researcher"));
+    g_assert_nonnull(clawt_integration_find_binding(covered, "mcp"));
+
+    /* And nobody else. */
+    uncovered = clawt_integration_resolve_for_agent(
+        fixture.config, agent_named(&fixture, "scribe"));
+    g_assert_null(clawt_integration_find_binding(uncovered, "mcp"));
+
+    fixture_teardown(&fixture);
+}
+
 static void
 test_scope_selected_reaches_only_those(void)
 {
@@ -1058,6 +1107,8 @@ main(int argc, char *argv[])
     g_test_add_func("/integration/scope-all", test_scope_all_reaches_everyone);
     g_test_add_func("/integration/scope-selected",
                     test_scope_selected_reaches_only_those);
+    g_test_add_func("/integration/scope-teams",
+                    test_scope_teams_reaches_that_team);
     g_test_add_func("/integration/scope-none",
                     test_scope_none_and_disabled_reach_nobody);
     g_test_add_func("/integration/scope-typo",

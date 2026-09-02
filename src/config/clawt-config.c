@@ -3528,7 +3528,39 @@ gboolean
 clawt_integration_config_covers(ClawtIntegrationConfig *self,
                                 const gchar            *agent_id)
 {
+    g_auto(GStrv) teams = NULL;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    /*
+     * A `teams:` entry cannot be judged without a team, and answering
+     * FALSE for it silently is what made every team-scoped integration
+     * reach nobody while reporting itself as configured.  Say so rather
+     * than answering confidently about a scope this form cannot see.
+     */
+    teams = node_to_strv(node_at_path(self->node, "teams", FALSE));
+
+    if (teams != NULL && teams[0] != NULL)
+        g_warning("integration '%s' is scoped by team; asking whether it "
+                  "covers '%s' without one cannot answer that",
+                  clawt_integration_config_get_name(self),
+                  agent_id != NULL ? agent_id : "(none)");
+
     return clawt_integration_config_covers_on_team(self, agent_id, NULL);
+}
+
+gboolean
+clawt_integration_config_covers_agent(ClawtIntegrationConfig *self,
+                                      ClawtAgentConfig       *agent)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    if (agent == NULL)
+        return FALSE;
+
+    return clawt_integration_config_covers_on_team(
+        self, clawt_agent_config_get_id(agent),
+        clawt_agent_config_get_string(agent, "team"));
 }
 
 /*

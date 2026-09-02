@@ -7235,8 +7235,7 @@ clawt_daemon_add_integration_object(JsonBuilder            *builder,
     for (i = 0; all != NULL && i < all->len; i++) {
         ClawtAgentConfig *agent = g_ptr_array_index(all, i);
 
-        if (clawt_integration_config_covers(instance,
-                                            clawt_agent_config_get_id(agent)))
+        if (clawt_integration_config_covers_agent(instance, agent))
             json_builder_add_string_value(builder,
                                           clawt_agent_config_get_id(agent));
     }
@@ -7244,9 +7243,17 @@ clawt_daemon_add_integration_object(JsonBuilder            *builder,
     json_builder_end_array(builder);
 
     if (agent_id != NULL) {
+        /*
+         * Through the agent's own configuration, so a `teams:` entry is
+         * judged with the team it needs.  Asked by agent id alone this
+         * reported every team-scoped instance as reaching nobody, and
+         * both clients drew that.
+         */
         json_builder_set_member_name(builder, "covers");
         json_builder_add_boolean_value(
-            builder, clawt_integration_config_covers(instance, agent_id));
+            builder,
+            clawt_integration_config_covers_agent(
+                instance, clawt_config_get_agent(config, agent_id)));
     }
 
     if (clawt_integration_config_is_shadow(instance)) {

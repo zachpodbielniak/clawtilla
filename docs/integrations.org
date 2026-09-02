@@ -72,11 +72,11 @@ Inline blocks resolve first, then named instances in file order.
 
 ** Scope: one bot, some bots, all bots
 
-| =scope=    | Who gets it                                          |
-|------------+------------------------------------------------------|
-| =all=      | every agent, including ones created later            |
-| =selected= | the ids in =agents:=                                 |
-| =none=     | nobody -- parked, with its settings and credentials  |
+| =scope=    | Who gets it                                             |
+|------------+---------------------------------------------------------|
+| =all=      | every agent, including ones created later               |
+| =selected= | the ids in =agents:=, and everyone on a team in =teams:= |
+| =none=     | nobody -- parked, with its settings and credentials     |
 
 =none= exists so an instance can be switched off without being deleted.
 Turning a Matrix account off for an afternoon should not mean retyping
@@ -86,6 +86,17 @@ config file.
 
 The =agents:= list is kept whatever the scope, so switching to =all= and
 back does not lose the selection.
+
+*=teams:= reached nobody until 0.1.0.*  Everything downstream goes
+through =clawt_integration_resolve_for_agent()=, which asked a predicate
+that takes an agent id and forwards a null team -- and the scope rule
+answers /no/ for a null team before it ever looks at the team list.  So
+a team-scoped instance was accepted, saved, listed, and applied to
+nobody; the daemon's own listing asked the same question, so both
+clients drew "not applied" and agreed with each other.  The variant that
+takes a team existed the whole time and had no callers at all.  It is
+now asked through the agent's own configuration, which cannot be called
+without the team.
 
 Omitting =scope:= means =selected=, not =all=.  So an instance with no
 scope and no =agents:= reaches nobody until somebody says who.

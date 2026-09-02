@@ -1312,8 +1312,7 @@ clawt_notifier_test_async(ClawtNotifier       *self,
         for (i = 0; agents != NULL && i < agents->len; i++) {
             ClawtAgentConfig *agent = g_ptr_array_index(agents, i);
 
-            if (clawt_integration_config_covers(
-                    instance, clawt_agent_config_get_id(agent)))
+            if (clawt_integration_config_covers_agent(instance, agent))
                 g_ptr_array_add(candidates, agent);
         }
     }

@@ -695,7 +695,7 @@ clawt_integration_resolve_for_agent(ClawtConfig      *config,
         const ClawtIntegrationInfo *info;
         ClawtIntegrationBinding *binding;
 
-        if (!clawt_integration_config_covers(instance, agent_id))
+        if (!clawt_integration_config_covers_agent(instance, agent))
             continue;
 
         info = clawt_integration_find(
