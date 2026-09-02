@@ -106,6 +106,24 @@ void clawt_turn_watch_set_budget(ClawtTurnWatch *self, guint seconds);
 guint clawt_turn_watch_get_budget(ClawtTurnWatch *self);
 
 /**
+ * clawt_turn_watch_get_budget_for:
+ * @self: a #ClawtTurnWatch
+ * @key: (nullable): the turn's key
+ *
+ * The budget @key is actually running on, which is the one it was given
+ * when its turn began -- not whatever clawt_turn_watch_set_budget() was
+ * last handed.  Several agents are mid-turn at once, so those are
+ * routinely different numbers, and a message that quotes the second one
+ * names another agent's setting.
+ *
+ * A key nobody is watching answers with the pending default, since zero
+ * is a real value meaning the watchdog is off.
+ *
+ * Returns: the budget in seconds
+ */
+guint clawt_turn_watch_get_budget_for(ClawtTurnWatch *self, const gchar *key);
+
+/**
  * clawt_turn_watch_set_clock:
  * @self: a #ClawtTurnWatch
  * @clock: (nullable) (scope notified) (closure user_data): where the time comes

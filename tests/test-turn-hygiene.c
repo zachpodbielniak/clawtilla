@@ -501,6 +501,126 @@ test_a_budget_of_zero_watches_nothing(void)
     g_assert_cmpuint(expired->len, ==, 0);
 }
 
+/*
+ * Two agents mid-turn at once, each with its own budget.
+ *
+ * The watch keys its entries by agent because several agents are
+ * routinely mid-turn together -- and then held the budget as one number
+ * for all of them, set by whichever agent began a turn most recently.
+ * An agent's own sign of life therefore re-armed its watchdog with
+ * somebody else's allowance, which is only invisible in a test that
+ * watches one key.
+ */
+static void
+test_two_agents_keep_their_own_budgets(void)
+{
+    g_autoptr(ClawtTurnWatch) watch = activity_watch(3600);
+
+    clawt_turn_watch_begin(watch, "alpha");
+
+    /* beta starts a turn on a much shorter allowance. */
+    clawt_turn_watch_set_budget(watch, 60);
+    clawt_turn_watch_begin(watch, "beta");
+
+    /* alpha does something, which must re-arm *alpha's* budget. */
+    clawt_turn_watch_note_activity(watch, "alpha");
+
+    g_assert_cmpint(clawt_turn_watch_remaining(watch, "alpha"), ==,
+                    (gint64)3600 * G_USEC_PER_SEC);
+    g_assert_cmpint(clawt_turn_watch_remaining(watch, "beta"), ==,
+                    (gint64)60 * G_USEC_PER_SEC);
+
+    /* Past beta's budget but nowhere near alpha's. */
+    advance(61);
+
+    {
+        g_autoptr(GPtrArray) expired = clawt_turn_watch_collect_expired(watch);
+
+        g_assert_cmpuint(expired->len, ==, 1);
+        g_assert_cmpstr(g_ptr_array_index(expired, 0), ==, "beta");
+    }
+}
+
+/*
+ * `turn_timeout_seconds: 0` is that agent's watchdog turned off, not
+ * everybody's turned to nothing.
+ *
+ * The disabling agent left the shared budget at zero, so the next sign
+ * of life from any *other* running agent set its deadline to now and the
+ * following sweep interrupted a turn that was working -- stalling its
+ * tasks and posting a notice into its room.
+ */
+static void
+test_one_agent_disabling_its_watchdog_leaves_the_others(void)
+{
+    g_autoptr(ClawtTurnWatch) watch = activity_watch(3600);
+
+    clawt_turn_watch_begin(watch, "alpha");
+
+    /* beta has runtime.turn_timeout_seconds: 0. */
+    clawt_turn_watch_set_budget(watch, 0);
+    clawt_turn_watch_begin(watch, "beta");
+
+    /* Correct: beta is not watched at all. */
+    g_assert_false(clawt_turn_watch_is_watching(watch, "beta"));
+
+    /* alpha calls one tool. */
+    clawt_turn_watch_note_activity(watch, "alpha");
+
+    g_assert_cmpint(clawt_turn_watch_remaining(watch, "alpha"), >, 0);
+
+    {
+        g_autoptr(GPtrArray) expired = clawt_turn_watch_collect_expired(watch);
+
+        g_assert_cmpuint(expired->len, ==, 0);
+    }
+}
+
+/*
+ * A held turn is credited its own budget too.
+ *
+ * clawt_turn_watch_note_activity() refreshes `remaining` for a parked
+ * turn from the same shared number, so an agent waiting on a decision
+ * came back with whichever budget was set last.
+ */
+static void
+test_a_held_turn_is_credited_its_own_budget(void)
+{
+    g_autoptr(ClawtTurnWatch) watch = activity_watch(3600);
+
+    clawt_turn_watch_begin(watch, "alpha");
+    clawt_turn_watch_hold(watch, "alpha");
+
+    clawt_turn_watch_set_budget(watch, 60);
+    clawt_turn_watch_begin(watch, "beta");
+
+    clawt_turn_watch_note_activity(watch, "alpha");
+
+    g_assert_cmpint(clawt_turn_watch_remaining(watch, "alpha"), ==,
+                    (gint64)3600 * G_USEC_PER_SEC);
+}
+
+/*
+ * And the number the agent is told is its own.
+ *
+ * The stop message is built from clawt_turn_watch_get_budget(), which
+ * had only the fleet-wide spelling -- so a stopped agent was handed
+ * another agent's figure and told it was `turn_timeout_seconds`.
+ */
+static void
+test_an_expired_turn_reports_its_own_budget(void)
+{
+    g_autoptr(ClawtTurnWatch) watch = activity_watch(3600);
+
+    clawt_turn_watch_begin(watch, "alpha");
+
+    clawt_turn_watch_set_budget(watch, 60);
+    clawt_turn_watch_begin(watch, "beta");
+
+    g_assert_cmpuint(clawt_turn_watch_get_budget_for(watch, "alpha"), ==, 3600);
+    g_assert_cmpuint(clawt_turn_watch_get_budget_for(watch, "beta"), ==, 60);
+}
+
 /* ── The steer queue ─────────────────────────────────────────────── */
 
 /*
@@ -1140,6 +1260,15 @@ main(int argc, char **argv)
                     test_an_expired_turn_is_reported_once);
     g_test_add_func("/turn-hygiene/a-budget-of-zero-watches-nothing",
                     test_a_budget_of_zero_watches_nothing);
+
+    g_test_add_func("/turn-hygiene/two-agents-keep-their-own-budgets",
+                    test_two_agents_keep_their_own_budgets);
+    g_test_add_func("/turn-hygiene/disabling-one-watchdog-leaves-the-others",
+                    test_one_agent_disabling_its_watchdog_leaves_the_others);
+    g_test_add_func("/turn-hygiene/a-held-turn-is-credited-its-own-budget",
+                    test_a_held_turn_is_credited_its_own_budget);
+    g_test_add_func("/turn-hygiene/an-expired-turn-reports-its-own-budget",
+                    test_an_expired_turn_reports_its_own_budget);
 
     g_test_add_func("/turn-hygiene/messages-in-one-thread-are-joined",
                     test_messages_in_one_thread_are_joined);

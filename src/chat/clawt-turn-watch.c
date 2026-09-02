@@ -22,6 +22,7 @@
 typedef struct {
     gint64   deadline;    /* monotonic usec, valid while holds == 0 */
     gint64   remaining;   /* usec, valid while holds > 0 */
+    guint    budget;      /* seconds, this entry's own allowance */
     guint    holds;
     gboolean expired;     /* latched, so a spent budget cannot be un-spent */
 } Watched;
@@ -49,10 +50,25 @@ now_usec(ClawtTurnWatch *self)
     return g_get_monotonic_time();
 }
 
+/*
+ * The budget of one watched turn.
+ *
+ * Per entry rather than per watch, because several agents are routinely
+ * mid-turn at once -- which is the whole reason the entries are keyed --
+ * and one number for all of them was set by whichever agent began a turn
+ * most recently.  An agent's own sign of life then re-armed its watchdog
+ * with somebody else's allowance, and an agent with the option turned
+ * off (`runtime.turn_timeout_seconds: 0`) left that number at zero, so
+ * the next tool call from any other running agent set its deadline to
+ * now and the following sweep interrupted a turn that was working.
+ *
+ * @self->budget_seconds survives as the allowance the *next*
+ * clawt_turn_watch_begin() will stamp onto its entry.
+ */
 static gint64
-budget_usec(ClawtTurnWatch *self)
+entry_budget_usec(Watched *entry)
 {
-    return (gint64)self->budget_seconds * G_USEC_PER_SEC;
+    return (gint64)entry->budget * G_USEC_PER_SEC;
 }
 
 /* How much is left, whether the turn is running or parked. */
@@ -110,6 +126,26 @@ clawt_turn_watch_get_budget(ClawtTurnWatch *self)
     return self->budget_seconds;
 }
 
+guint
+clawt_turn_watch_get_budget_for(ClawtTurnWatch *self, const gchar *key)
+{
+    Watched *entry;
+
+    g_return_val_if_fail(CLAWT_IS_TURN_WATCH(self), 0);
+
+    if (key == NULL)
+        return self->budget_seconds;
+
+    entry = g_hash_table_lookup(self->watched, key);
+
+    /*
+     * A key nobody is watching answers with what the next begin() would
+     * stamp, rather than zero: zero is a real, documented value meaning
+     * the watchdog is off, and a caller cannot tell the two apart.
+     */
+    return (entry != NULL) ? entry->budget : self->budget_seconds;
+}
+
 void
 clawt_turn_watch_set_clock(ClawtTurnWatch          *self,
                            ClawtTurnWatchClockFunc  clock,
@@ -146,7 +182,8 @@ clawt_turn_watch_begin(ClawtTurnWatch *self, const gchar *key)
     }
 
     entry = g_new0(Watched, 1);
-    entry->deadline = now_usec(self) + budget_usec(self);
+    entry->budget = self->budget_seconds;
+    entry->deadline = now_usec(self) + entry_budget_usec(entry);
 
     g_hash_table_insert(self->watched, g_strdup(key), entry);
 }
@@ -172,9 +209,9 @@ clawt_turn_watch_note_activity(ClawtTurnWatch *self, const gchar *key)
      * than whatever was left when the question was asked.
      */
     if (entry->holds > 0)
-        entry->remaining = budget_usec(self);
+        entry->remaining = entry_budget_usec(entry);
     else
-        entry->deadline = now_usec(self) + budget_usec(self);
+        entry->deadline = now_usec(self) + entry_budget_usec(entry);
 }
 
 void

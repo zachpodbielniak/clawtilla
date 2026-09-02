@@ -246,6 +246,34 @@ stop_expired_turn(ClawtDaemon      *self,
     clawt_daemon_turn_arm_grace(self, agent_id);
 }
 
+/*
+ * One agent's turn budget.
+ *
+ * Both the deadline and the message that reports it read this, because
+ * they had drifted: the deadline came from the agent's own config and
+ * the message from the watch's fleet-wide field, so a stopped agent was
+ * handed a figure belonging to whichever agent began a turn last and
+ * told it was `agents.runtime.turn_timeout_seconds`.
+ */
+static guint
+agent_turn_budget(ClawtDaemon *self, const gchar *agent_id)
+{
+    ClawtAgentConfig *config;
+
+    if (self->config == NULL || agent_id == NULL)
+        return 0;
+
+    config = clawt_config_get_agent(self->config, agent_id);
+
+    if (config == NULL)
+        return (guint)MAX(clawt_config_get_int(
+                              self->config,
+                              "agents.runtime.turn_timeout_seconds"), 0);
+
+    return (guint)MAX(clawt_agent_config_get_int(
+                          config, "runtime.turn_timeout_seconds"), 0);
+}
+
 static gboolean
 on_turn_sweep(gpointer data)
 {
@@ -269,7 +297,7 @@ on_turn_sweep(gpointer data)
             "counts activity rather than elapsed time -- a turn may run for "
             "an hour while it is doing things. Whatever was in flight is "
             "gone; say what you have rather than starting again.",
-            clawt_turn_watch_get_budget(self->turn_watch));
+            agent_turn_budget(self, agent_id));
 
         stop_expired_turn(self, agent_id, CLAWT_STALL_TURN_TIMEOUT, message);
     }
@@ -606,21 +634,18 @@ clawt_daemon_turn_begin(ClawtDaemon *self, const gchar *agent_id,
     cancel_grace(self, agent_id);
 
     /*
-     * The agent's own budget, not the fleet's.  The watch holds one
-     * number, so it is set from the agent that is about to take a turn --
-     * which is correct because one agent takes one turn at a time, and
-     * would be wrong the moment that stopped being true.
+     * The agent's own budget, not the fleet's.  set_budget() is the
+     * allowance the begin() below stamps onto this agent's entry, which
+     * then keeps it: the watch used to hold one number for every agent,
+     * and since several are routinely mid-turn together that number was
+     * whichever agent started last.
      */
     config = (self->config != NULL)
         ? clawt_config_get_agent(self->config, agent_id) : NULL;
 
-    if (config != NULL) {
-        gint64 budget = clawt_agent_config_get_int(
-            config, "runtime.turn_timeout_seconds");
-
+    if (config != NULL)
         clawt_turn_watch_set_budget(self->turn_watch,
-                                    (guint)MAX(budget, 0));
-    }
+                                    agent_turn_budget(self, agent_id));
 
     clawt_turn_watch_begin(self->turn_watch, agent_id);
 
