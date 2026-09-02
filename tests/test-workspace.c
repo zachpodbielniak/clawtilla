@@ -206,13 +206,8 @@ test_the_scaffold_lists_no_tools_of_its_own(void)
     ClawtAgentConfig *agent;
     g_autoptr(GError) error = NULL;
     g_autofree gchar *tools = NULL;
-    static const gchar * const named[] = {
-        "| ~clawtilla_delegate~", "| ~clawtilla_task_status~",
-        "| ~clawtilla_task_complete~", "| ~clawtilla_list_agents~",
-        "| ~clawtilla_message_agent~", "| ~clawtilla_mailbox_list~",
-        "| ~clawtilla_computer_exec~", NULL
-    };
-    guint i;
+    g_autoptr(GRegex) tabulated = NULL;
+    GMatchInfo *found = NULL;
 
     fixture_setup(&fixture, "agents:\n  - id: scribe\n");
     agent = first_agent(&fixture);
@@ -223,12 +218,30 @@ test_the_scaffold_lists_no_tools_of_its_own(void)
     tools = read_workspace_file(agent, "TOOLS.org");
     g_assert_nonnull(tools);
 
-    for (i = 0; named[i] != NULL; i++) {
-        if (strstr(tools, named[i]) != NULL)
-            g_error("the scaffolded TOOLS.org tabulates %s itself; the "
-                    "live region is what lists tools, and a second list "
-                    "drifts from it", named[i]);
+    /*
+     * Matched as a pattern, not against a list of names.
+     *
+     * The list was seven, written out here, and the scaffold tabulated
+     * six memory tools that were not among them -- so a second
+     * enumeration of the tools survived in the file, above the
+     * generated one, saying an agent had a store it may have been
+     * configured without.  A hand-written copy of what a check is
+     * looking for is the same mistake one layer up, and it drifted the
+     * same way.
+     */
+    tabulated = g_regex_new("\\|\\s*~clawtilla_[a-z_]+~", 0, 0, NULL);
+    g_assert_nonnull(tabulated);
+
+    if (g_regex_match(tabulated, tools, 0, &found)) {
+        g_autofree gchar *row = g_match_info_fetch(found, 0);
+
+        g_match_info_free(found);
+        g_error("the scaffolded TOOLS.org tabulates a tool itself (%s); "
+                "the live region is what lists tools, and a second list "
+                "drifts from it", row);
     }
+
+    g_match_info_free(found);
 
     /*
      * And it carries the markers, so the live list lands where the
