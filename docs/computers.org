@@ -50,12 +50,30 @@ silently shortened directory listing treats it as the whole thing and
 reaches a confident wrong conclusion, while one told it was cut short
 asks a narrower question instead.
 
+The figure is ~CLAWT_COMPUTER_MAX_OUTPUT_BYTES~, declared once beside
+~clawt_computer_truncate_output()~.  Each backend used to define its own
+copy and apply it by hand at each call, and two had come apart from this
+paragraph rather than from the number: ~distrobox~ capped neither
+stream, and ~vm~ capped stdout and passed stderr through whole -- so
+~find /~ in a box came back entire, through the daemon and into a
+model's context.
+
 *** ~timeout~ means the same thing on four backends of five
 
 ~host~, ~container~, ~distrobox~ and ~ssh~ all enforce it, and all mean
 the same thing by it: the command is given that many seconds and then
 abandoned, with ~CLAWT_ERROR_TIMEOUT~ and a message saying it may still
 be running.  A ~timeout~ of 0 means no deadline.
+
+"Abandoned" has to include abandoning the *read*.  A child's stdout and
+stderr are inherited by anything it starts, so on ~host~ a command like
+~some-server &~ leaves the pipes open after the child itself is gone --
+and killing the child releases nothing.  The deadline used to kill the
+child and then go on waiting for whatever still held the pipes, so how
+long ~clawtilla_computer_exec~ took was decided by the command rather
+than by the caller, which is the one thing a timeout exists to prevent.
+It now cancels the read as well, so the call returns on its own
+deadline.
 
 ~ssh~ is the one that tries hardest to make "abandoned" mean something:
 ~SIGTERM~ to its own client, then ~SIGKILL~ five seconds later.  It still
@@ -564,6 +582,14 @@ on every start.
 Bind mounts, rendered as distrobox =--volume= arguments with their mode
 and SELinux relabel intact.  A =tmpfs= mount is skipped, because
 distrobox has no way to ask for one.
+
+The options are *comma*-separated within one field --- =src:dst:ro,z=,
+never =src:dst:ro:z=.  podman's =--volume= is =src:dst[:options]= and it
+refuses a fourth colon-separated field outright, and distrobox passes
+the argument through unchanged.  This is not a corner: the exchange root
+is read-only *and* shared-relabelled and is added to every computer that
+shares host paths, so a distrobox agent with a default configuration
+rendered exactly that pair and the box could never be created.
 
 *** Requirements
 :PROPERTIES:
@@ -1256,9 +1282,19 @@ stopping, which is what makes snapshots and ~virsh~ useful against it.
 Removing the agent with ~--with-computer~ undefines it.  ~vm_virtmanager~
 did not expose ~undefine~ for a long time, which is why an older
 clawtilla left domains behind for somebody to find in virt-manager; it
-does now, and teardown takes the guest's disk with the domain.  Without
-~--with-computer~ the domain stays defined under ~clawt-<agent>~ and is
-yours to remove:
+does now, and teardown takes the guest's disk with the domain.
+
+Both that and stopping *refuse* when libvirt cannot be reached at all,
+rather than reading silence as "there is no such domain".  The probe
+answers no for five different reasons and only one of them is the
+domain being absent; the other four are a libvirtd that is not running,
+a module that will not load, a call that failed and a reply that did
+not parse.  Taking those for an answer meant deleting the disk of a
+guest nobody had checked was stopped, and reporting a guest that might
+have been running as cleanly stopped.  Start ~libvirtd~ and try again.
+
+Without ~--with-computer~ the domain stays defined under
+~clawt-<agent>~ and is yours to remove:
 
 #+begin_src bash
 virsh -c qemu:///session undefine clawt-<agent>
@@ -2218,6 +2254,14 @@ where a misjudged click lands somewhere recoverable.
 ~auto~ picks ~guest~ whenever the agent has a VM, and otherwise probes
 gowl and then GNOME.  An agent with a machine of its own should be
 driving that screen rather than yours.
+
+~guest~ named on a computer that has no guest --- a container, a host,
+an ssh machine --- gets *no desktop at all*, with a warning naming the
+agent and both settings.  It used to fall back to ~auto~, which meant
+probing the host: an agent configured to click inside its own VM was
+handed a keyboard, a pointer and a view of the operator's own session,
+which is the wrong way round to be wrong.  Set ~computer.type: vm~, or
+name a backend that means the host on purpose.
 
 *Tools arrive through the agent's ~.mcp.json~, not through its link.*  An
 AI CLI drops a tool list handed to it in-process -- see the note in

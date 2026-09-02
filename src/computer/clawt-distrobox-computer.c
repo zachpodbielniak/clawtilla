@@ -197,24 +197,44 @@ clawt_distrobox_computer_build_volume_args(GPtrArray *mounts)
         if (source == NULL || *source == '\0')
             continue;
 
+        /*
+         * Comma-separated, and the leading colon is added once at the
+         * end.  podman's --volume is `src:dst[:options]` with the
+         * options separated by commas, and a fourth colon-separated
+         * field is not a mount it renders differently -- it is refused:
+         * `/tmp:/x:ro:z` is "incorrect volume format, should be
+         * [host-dir:]ctr-dir[:option]".  distrobox hands --volume
+         * straight to podman, so a mount that was both read-only and
+         * relabelled failed the whole box.  The exchange root is
+         * exactly that pair, and the daemon adds it to every computer
+         * that shares host paths, so this was every distrobox agent
+         * with a default configuration.
+         */
         if (clawt_mount_get_mode(mount) == CLAWT_MOUNT_MODE_RO)
-            g_string_append(options, ":ro");
+            g_string_append(options, "ro");
 
         switch (clawt_mount_get_relabel(mount)) {
         case CLAWT_RELABEL_SHARED:
-            g_string_append(options, ":z");
+            if (options->len > 0)
+                g_string_append_c(options, ',');
+
+            g_string_append_c(options, 'z');
             break;
 
         case CLAWT_RELABEL_PRIVATE:
-            g_string_append(options, ":Z");
+            if (options->len > 0)
+                g_string_append_c(options, ',');
+
+            g_string_append_c(options, 'Z');
             break;
 
         default:
             break;
         }
 
-        spec = g_strdup_printf("%s:%s%s", source,
-                               clawt_mount_get_target(mount), options->str);
+        spec = g_strdup_printf("%s:%s%s%s", source,
+                               clawt_mount_get_target(mount),
+                               (options->len > 0) ? ":" : "", options->str);
 
         /*
          * Quoted, because the module splits this back into separate
@@ -531,10 +551,43 @@ distrobox_exec(ClawtComputer        *computer,
     output = g_hash_table_lookup(result, "stdout");
     code = g_hash_table_lookup(result, "exit_code");
 
-    exec_result = clawt_exec_result_new(
-        code != NULL ? (gint)g_ascii_strtoll(code, NULL, 10) : 0,
-        output,
-        (const gchar *)g_hash_table_lookup(result, "stderr"));
+    /*
+     * Bounded, both streams, like every other backend.
+     *
+     * This one returned whatever the module handed back, so `find /` in
+     * a box came back whole -- through the daemon, into a mailbox and
+     * into a model's context, while docs/computers.org said output is
+     * truncated at 256 KiB on all of them.  The container backend is
+     * the neighbour this is meant to match; it had the cap and this did
+     * not.
+     */
+    {
+        gboolean truncated = FALSE;
+        gboolean errors_truncated = FALSE;
+        g_autofree gchar *bounded =
+            clawt_computer_truncate_output(output, CLAWT_COMPUTER_MAX_OUTPUT_BYTES,
+                                           &truncated);
+        g_autofree gchar *bounded_errors =
+            clawt_computer_truncate_output(
+                g_hash_table_lookup(result, "stderr"), CLAWT_COMPUTER_MAX_OUTPUT_BYTES,
+                &errors_truncated);
+
+        /*
+         * A module that reports no exit code leaves us unable to tell a
+         * failure from a success, and calling it 0 is how a failing
+         * command looks fine -- the same reading the container backend
+         * refuses to make.
+         */
+        if (code == NULL)
+            g_warning("distrobox %s: the module reported no exit status; "
+                      "treating the command as failed", self->name);
+
+        exec_result = clawt_exec_result_new(
+            code != NULL ? (gint)g_ascii_strtoll(code, NULL, 10) : -1,
+            bounded, bounded_errors);
+        clawt_exec_result_set_truncated(exec_result,
+                                        truncated || errors_truncated);
+    }
 
     return exec_result;
 }

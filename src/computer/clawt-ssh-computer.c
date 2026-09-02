@@ -20,7 +20,6 @@
  * that runs `find /` produces a reply too large to send and too large to
  * reason about.
  */
-#define MAX_OUTPUT_BYTES (256 * 1024)
 
 /*
  * How long a SIGTERM is given before SIGKILL follows.
@@ -1220,10 +1219,10 @@ ssh_exec(ClawtComputer        *computer,
         return NULL;
 
     bounded_stdout = clawt_computer_truncate_output(stdout_text,
-                                                    MAX_OUTPUT_BYTES,
+                                                    CLAWT_COMPUTER_MAX_OUTPUT_BYTES,
                                                     &truncated);
     bounded_stderr = clawt_computer_truncate_output(stderr_text,
-                                                    MAX_OUTPUT_BYTES,
+                                                    CLAWT_COMPUTER_MAX_OUTPUT_BYTES,
                                                     &stderr_truncated);
 
     result = clawt_exec_result_new(exit_status, bounded_stdout,

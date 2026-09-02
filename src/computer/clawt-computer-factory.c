@@ -676,20 +676,32 @@ clawt_computer_factory_create_desktop(ClawtAgentConfig *agent_config)
     has_guest = (type == CLAWT_COMPUTER_VM);
 
     /*
-     * Asked for a guest desktop without a guest.  Refusing outright would
-     * take the agent down over a setting it can simply not have, so it
-     * falls back to probing the host -- loudly, because an agent quietly
-     * driving the user's screen when it was told to drive its own VM is
-     * the wrong way round to be wrong.
+     * Asked for a guest desktop without a guest: no desktop.
+     *
+     * This used to fall back to the host and keep `allow_input`, on the
+     * grounds that refusing would take the agent down over a setting it
+     * can simply not have.  It does not take the agent down -- a NULL
+     * desktop is what every agent with `desktop.enabled: false` already
+     * gets, so every caller handles it -- and what the fallback did
+     * instead was hand an agent told to click inside its own VM a
+     * keyboard and a pointer on the operator's session, plus a view of
+     * whatever was on it.  The comment here said as much and answered
+     * it with a warning, which is a bug report about the control rather
+     * than the control.
+     *
+     * Still loud, because the configuration is wrong and somebody has
+     * to fix it; what changes is that the agent is told what it has
+     * rather than handed somebody else's screen.
      */
     if (backend == CLAWT_DESKTOP_BACKEND_GUEST && !has_guest) {
         g_warning("agent %s: computer.desktop.backend is guest but "
                   "computer.type is %s, so there is no guest to drive. "
-                  "Falling back to the host's desktop -- set "
-                  "computer.type to vm, or name a different backend.",
+                  "It has been given no desktop at all rather than the "
+                  "host's -- set computer.type to vm, or name a "
+                  "different backend.",
                   clawt_agent_config_get_id(agent_config),
                   clawt_enum_to_nick(CLAWT_TYPE_COMPUTER_TYPE, type));
-        backend = CLAWT_DESKTOP_BACKEND_AUTO;
+        return NULL;
     }
 
     desktop = clawt_desktop_new(backend, socket_path);

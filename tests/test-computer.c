@@ -27,6 +27,24 @@ integration_enabled(void)
     return g_getenv("CLAWT_TEST_INTEGRATION") != NULL;
 }
 
+/*
+ * Drops a warning on the floor.
+ *
+ * For a test that provokes one deliberately and cares about what the
+ * code did rather than what it logged.  g_test_expect_message() is the
+ * wrong tool: it makes every *other* message fatal too, so the
+ * assertion becomes one about the order clawtilla happens to log in.
+ */
+static void
+swallow_warnings(const gchar *domain, GLogLevelFlags level,
+                 const gchar *message, gpointer user_data)
+{
+    (void)domain;
+    (void)level;
+    (void)message;
+    (void)user_data;
+}
+
 /* ── No computer ─────────────────────────────────────────────────── */
 
 /*
@@ -181,6 +199,62 @@ test_host_times_out_a_hanging_command(void)
                                  &error);
     g_assert_null(result);
     g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_TIMEOUT);
+
+    host_teardown(&fixture);
+}
+
+/*
+ * ...and the deadline is a deadline even when something else is holding
+ * the pipes.
+ *
+ * g_subprocess_communicate_utf8_async() finishes when the child has
+ * exited *and* its stdout and stderr have reached EOF.  A grandchild
+ * inherits those pipes, so `x &` in a shell line keeps them open after
+ * the child is gone -- and the timeout only called
+ * g_subprocess_force_exit() on a process that had already exited.
+ * `wait.timed_out` was set and the loop went on running until the
+ * grandchild finished, so the give-up time was decided by the command
+ * rather than by the caller: the very thing the timeout above exists to
+ * stop, arriving by a different route.
+ *
+ * `sleep 5 & exit 0` is the smallest shape of it and not a contrived
+ * one -- starting a server, a build or anything with `nohup` does the
+ * same.  What is asserted is that the call comes back near its own
+ * deadline rather than near the grandchild's, which is the property the
+ * timeout is for.
+ */
+static void
+test_host_times_out_when_a_grandchild_holds_the_pipes(void)
+{
+    HostFixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtExecResult) result = NULL;
+    const gchar *argv[] = { "sh", "-c", "sleep 5 & exit 0", NULL };
+    gint64 started;
+    gint64 took;
+
+    host_setup(&fixture);
+    clawt_computer_start(fixture.computer, &error);
+    g_assert_no_error(error);
+
+    started = g_get_monotonic_time();
+    result = clawt_computer_exec(fixture.computer, argv, NULL, 1, NULL,
+                                 &error);
+    took = g_get_monotonic_time() - started;
+
+    /*
+     * Generously under the grandchild's five seconds, so this is not
+     * measuring how fast the machine is -- only whether the wait ended
+     * on the deadline or on the sleep.
+     */
+    g_assert_cmpint(took, <, 3 * G_USEC_PER_SEC);
+
+    /*
+     * And it says what happened.  Something the caller did not wait for
+     * is still running, so this is a timeout rather than a success.
+     */
+    if (result == NULL)
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_TIMEOUT);
 
     host_teardown(&fixture);
 }
@@ -1887,6 +1961,116 @@ test_factory_desktop_is_optional(void)
             "    computer:\n"
             "      desktop:\n"
             "        enabled: true\n"
+            "        allow_input: true\n"));
+
+    g_assert_nonnull(desktop);
+    g_assert_true(clawt_desktop_tool_is_permitted(desktop, "send_key"));
+}
+
+/*
+ * Every backend bounds both streams, at the one figure the docs state.
+ *
+ * docs/computers.org says "Output is truncated at 256 KiB -- both
+ * stdout and stderr, each", and each backend had its own #define of
+ * that number, applied by hand at each call.  Two of them had drifted
+ * out of the claim rather than out of the value: distrobox capped
+ * neither stream, and the VM backend capped stdout and passed stderr
+ * through whole.  A `find /` in a box therefore came back entire,
+ * through the daemon and into a model's context.
+ *
+ * Asserted against the constant the header now declares, so the sources
+ * cannot disagree about the number; the streams themselves are covered
+ * by the backend tests that run a command.
+ */
+static void
+test_the_output_cap_is_one_number(void)
+{
+    g_autofree gchar *big = g_strnfill(CLAWT_COMPUTER_MAX_OUTPUT_BYTES + 4096,
+                                       'x');
+    g_autofree gchar *bounded = NULL;
+    gboolean truncated = FALSE;
+
+    bounded = clawt_computer_truncate_output(
+        big, CLAWT_COMPUTER_MAX_OUTPUT_BYTES, &truncated);
+
+    g_assert_true(truncated);
+    g_assert_cmpuint(strlen(bounded), <,
+                     (gsize)CLAWT_COMPUTER_MAX_OUTPUT_BYTES + 4096);
+
+    /* And it is the figure docs/computers.org names. */
+    g_assert_cmpint(CLAWT_COMPUTER_MAX_OUTPUT_BYTES, ==, 256 * 1024);
+}
+
+/*
+ * A guest desktop asked for on a computer with no guest gets no
+ * desktop, rather than the operator's own screen.
+ *
+ * The fallback turned `backend: guest` into AUTO and kept
+ * `allow_input`, so an agent configured to click inside its own VM was
+ * handed a keyboard and a pointer on the host's session -- and a view
+ * of it, which is somebody's actual screen.  The comment beside the
+ * fallback says an agent "quietly driving the user's screen when it was
+ * told to drive its own VM is the wrong way round to be wrong", and
+ * answers it with a g_warning: a line in the journal is a bug report
+ * about the control, not the control.
+ *
+ * No desktop is the honest answer.  It is already what an agent with
+ * `desktop.enabled: false` gets, so every caller handles it, and the
+ * agent is told what it has rather than handed something else.
+ */
+static void
+test_a_guest_desktop_without_a_guest_is_not_the_hosts(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtDesktop) desktop = NULL;
+    GLogLevelFlags fatal;
+    guint handler;
+
+    /*
+     * The refusal is deliberately loud, so the warning it logs is
+     * expected here rather than a failure.
+     */
+    handler = g_log_set_handler(NULL, G_LOG_LEVEL_MASK | G_LOG_FLAG_FATAL,
+                                swallow_warnings, NULL);
+    fatal = g_log_set_always_fatal(0);
+
+    desktop = clawt_computer_factory_create_desktop(
+        agent_from_yaml(&config,
+            "agents:\n"
+            "  - id: chief\n"
+            "    computer:\n"
+            "      type: container\n"
+            "      desktop:\n"
+            "        enabled: true\n"
+            "        backend: guest\n"
+            "        allow_input: true\n"));
+
+    g_log_set_always_fatal(fatal);
+    g_log_remove_handler(NULL, handler);
+
+    g_assert_null(desktop);
+}
+
+/*
+ * ...while a guest desktop on a VM is built as asked.  A refusal that
+ * also caught the configuration this feature exists for would look like
+ * the same fix and remove it.
+ */
+static void
+test_a_guest_desktop_on_a_vm_is_built(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtDesktop) desktop = NULL;
+
+    desktop = clawt_computer_factory_create_desktop(
+        agent_from_yaml(&config,
+            "agents:\n"
+            "  - id: chief\n"
+            "    computer:\n"
+            "      type: vm\n"
+            "      desktop:\n"
+            "        enabled: true\n"
+            "        backend: guest\n"
             "        allow_input: true\n"));
 
     g_assert_nonnull(desktop);
@@ -3643,12 +3827,122 @@ test_distrobox_volumes_keep_their_mode_and_label(void)
 }
 
 /*
+ * A mount that is both read-only and relabelled renders one option
+ * field, not two.
+ *
+ * podman's --volume takes `src:dst[:options]` with the options
+ * *comma*-separated, and refuses a fourth colon-separated field
+ * outright: `/tmp:/x:ro:z` is "incorrect volume format, should be
+ * [host-dir:]ctr-dir[:option]".  distrobox passes --volume through to
+ * podman verbatim, so the box is never created and the agent's start
+ * fails with podman's parser error rather than anything naming a mount.
+ *
+ * This is not a corner: clawt_exchange_get_mounts() makes the exchange
+ * root read-only *and* shared-relabelled, and the daemon adds it to
+ * every computer that shares host paths, with computer.exchange
+ * defaulting to true.  So it was every distrobox agent with a default
+ * configuration, from the first one.
+ *
+ * The test above pins :ro and :z on two separate mounts, which is how
+ * this survived: each option was right on its own and the pair had
+ * never been rendered together.
+ */
+static void
+test_distrobox_combines_volume_options_with_commas(void)
+{
+    g_autoptr(GPtrArray) mounts =
+        g_ptr_array_new_with_free_func((GDestroyNotify)clawt_mount_free);
+    g_autoptr(ClawtExchange) exchange = NULL;
+    g_autoptr(GPtrArray) from_exchange = NULL;
+    g_autofree gchar *args = NULL;
+    g_autofree gchar *exchange_args = NULL;
+    g_autofree gchar *root = NULL;
+    ClawtMount *both;
+    guint i;
+
+    both = clawt_mount_new("/etc/passwd", "/mnt/passwd");
+    clawt_mount_set_mode(both, CLAWT_MOUNT_MODE_RO);
+    clawt_mount_set_relabel(both, CLAWT_RELABEL_SHARED);
+    g_ptr_array_add(mounts, both);
+
+    args = clawt_distrobox_computer_build_volume_args(mounts);
+
+    g_assert_nonnull(strstr(args, "/etc/passwd:/mnt/passwd:ro,z"));
+    g_assert_null(strstr(args, ":ro:z"));
+
+    /*
+     * And the mounts the daemon actually adds, which is the pair that
+     * made this reach every default distrobox agent.  Asserted by
+     * counting fields rather than by matching a spelling, so a mount
+     * gaining a third option later is still checked.
+     */
+    root = g_dir_make_tmp("clawt-distrobox-exchange-XXXXXX", NULL);
+    exchange = clawt_exchange_new(root, 0);
+    from_exchange = clawt_exchange_get_mounts(exchange, "worker");
+    exchange_args = clawt_distrobox_computer_build_volume_args(from_exchange);
+
+    {
+        g_auto(GStrv) specs = g_strsplit(exchange_args, " ", -1);
+
+        g_assert_nonnull(specs[0]);
+
+        for (i = 0; specs[i] != NULL; i++) {
+            g_auto(GStrv) fields = g_strsplit(specs[i], ":", -1);
+
+            g_assert_cmpuint(g_strv_length(fields), <=, 3);
+        }
+    }
+
+    clawt_test_remove_tree(root);
+}
+
+/*
  * Tearing down a VM removes the guest's disk, not just its definition.
  *
  * Keeping it would leave an agent's whole machine behind under a name
  * nothing refers to, and a later agent with the same id would silently
  * adopt it -- which is the confusion teardown is called to end.
  */
+/*
+ * A VM with no image refuses to provision, and does so whether or not
+ * the caller wanted the reason.
+ *
+ * The refusal set the computer's state from (*error)->message without
+ * asking whether @error was NULL first -- the only one of the twenty-odd
+ * such reads in the computer backends that did not.  So the path that
+ * reports the single most likely misconfiguration, a VM with no
+ * computer.vm.image, segfaulted for any caller passing NULL, which is
+ * how every one of these backends is driven when the caller only wants
+ * to know whether it worked.
+ */
+static void
+test_a_vm_with_no_image_refuses_without_an_error_out(void)
+{
+    g_autoptr(ClawtComputer) vm = NULL;
+
+    vm = clawt_vm_computer_new("imageless", CLAWT_VM_BACKEND_QEMU, NULL);
+
+    g_assert_false(clawt_computer_provision(vm, NULL));
+    g_assert_cmpint(clawt_computer_get_state(vm), ==,
+                    CLAWT_COMPUTER_STATE_ERROR);
+
+    /*
+     * And with somewhere to put it, the reason still names the setting
+     * -- the guard must not have turned the message off for everybody.
+     */
+    {
+        g_autoptr(ClawtComputer) second = NULL;
+        g_autoptr(GError) error = NULL;
+
+        second = clawt_vm_computer_new("imageless-2", CLAWT_VM_BACKEND_QEMU,
+                                       NULL);
+
+        g_assert_false(clawt_computer_provision(second, &error));
+        g_assert_nonnull(error);
+        g_assert_nonnull(strstr(error->message, "computer.vm.image"));
+    }
+}
+
 static void
 test_vm_teardown_removes_the_disk(void)
 {
@@ -3680,6 +3974,94 @@ test_vm_teardown_removes_the_disk(void)
 
     /* And the directory itself, once there is nothing left in it. */
     g_assert_false(g_file_test(state_dir, G_FILE_TEST_EXISTS));
+}
+
+/*
+ * Teardown refuses when it could not ask libvirt, rather than deleting
+ * the disk on the strength of not knowing.
+ *
+ * libvirt_has_domain() answers FALSE for five different reasons and
+ * only one of them is "there is no such domain": no bridge, a module
+ * that will not load, a call that fails, a reply with no domains in it,
+ * and a reply that is not JSON.  The other four are "could not ask",
+ * and teardown read all five as "nothing to undefine", skipped the
+ * undefine, and went on to unlink overlay.qcow2 -- so a libvirtd that
+ * was not running turned `agent computer remove` into deleting the disk
+ * of a guest that may well have been up.
+ *
+ * That is the rule this project already wrote down after doing it once:
+ * unknown is not different, and never decide there is nothing there
+ * from state clawtilla holds.  The container backend distinguishes a
+ * 404 from every other failure; the VM backend did not.
+ *
+ * Hermetic because the bridge is pointed at a directory with no modules
+ * in it, so the module cannot load and nothing is asked of anything.
+ */
+static void
+test_vm_teardown_refuses_when_libvirt_cannot_be_asked(void)
+{
+    g_autoptr(ClawtComputer) vm = NULL;
+    g_autoptr(ClawtPodBridge) bridge = NULL;
+    g_autofree gchar *empty = NULL;
+    g_autofree gchar *state_dir = NULL;
+    g_autofree gchar *overlay = NULL;
+    g_autoptr(GError) error = NULL;
+
+    empty = g_dir_make_tmp("clawt-no-modules-XXXXXX", NULL);
+    bridge = clawt_pod_bridge_new(empty);
+
+    vm = clawt_vm_computer_new("unreachable", CLAWT_VM_BACKEND_LIBVIRT,
+                               bridge);
+
+    state_dir = g_build_filename(g_get_user_data_dir(), "clawtilla", "vms",
+                                 "unreachable", NULL);
+    g_assert_true(clawt_ensure_dir(state_dir, 0700, &error));
+    g_assert_no_error(error);
+
+    overlay = g_build_filename(state_dir, "overlay.qcow2", NULL);
+    g_assert_true(g_file_set_contents(overlay, "a guest's whole machine",
+                                      -1, NULL));
+
+    g_assert_false(clawt_computer_teardown(vm, &error));
+    g_assert_nonnull(error);
+
+    /* The disk is still there, which is the whole of the point. */
+    g_assert_true(g_file_test(overlay, G_FILE_TEST_EXISTS));
+
+    clawt_test_remove_tree(state_dir);
+    clawt_test_remove_tree(empty);
+}
+
+/*
+ * And stopping does not report a guest it could not reach as stopped.
+ *
+ * Same probe, same five answers: `state == NULL` was taken as "already
+ * down, or never defined", so a fleet whose libvirt connection had gone
+ * reported every VM agent's computer as cleanly stopped -- and a stop
+ * that says it worked is the one thing worse than a stop that fails,
+ * because the next start provisions on top of a guest that is running.
+ */
+static void
+test_vm_stop_refuses_when_libvirt_cannot_be_asked(void)
+{
+    g_autoptr(ClawtComputer) vm = NULL;
+    g_autoptr(ClawtPodBridge) bridge = NULL;
+    g_autofree gchar *empty = NULL;
+    g_autoptr(GError) error = NULL;
+
+    empty = g_dir_make_tmp("clawt-no-modules-XXXXXX", NULL);
+    bridge = clawt_pod_bridge_new(empty);
+
+    vm = clawt_vm_computer_new("unreachable-stop", CLAWT_VM_BACKEND_LIBVIRT,
+                               bridge);
+    clawt_computer_set_state(vm, CLAWT_COMPUTER_STATE_RUNNING, NULL);
+
+    g_assert_false(clawt_computer_stop(vm, &error));
+    g_assert_nonnull(error);
+    g_assert_cmpint(clawt_computer_get_state(vm), !=,
+                    CLAWT_COMPUTER_STATE_STOPPED);
+
+    clawt_test_remove_tree(empty);
 }
 
 /*
@@ -5354,6 +5736,22 @@ main(int argc, char *argv[])
                     test_a_distrobox_says_whose_home_it_has);
     g_test_add_func("/computer/distrobox/volumes-keep-mode-and-label",
                     test_distrobox_volumes_keep_their_mode_and_label);
+    g_test_add_func("/computer/distrobox/volume-options-are-comma-separated",
+                    test_distrobox_combines_volume_options_with_commas);
+    g_test_add_func("/computer/vm/no-image-refuses-without-an-error-out",
+                    test_a_vm_with_no_image_refuses_without_an_error_out);
+    g_test_add_func("/computer/host/timeout-when-a-grandchild-holds-the-pipes",
+                    test_host_times_out_when_a_grandchild_holds_the_pipes);
+    g_test_add_func("/computer/vm/teardown-refuses-when-libvirt-is-unreachable",
+                    test_vm_teardown_refuses_when_libvirt_cannot_be_asked);
+    g_test_add_func("/computer/vm/stop-refuses-when-libvirt-is-unreachable",
+                    test_vm_stop_refuses_when_libvirt_cannot_be_asked);
+    g_test_add_func("/computer/exec/the-output-cap-is-one-number",
+                    test_the_output_cap_is_one_number);
+    g_test_add_func("/computer/desktop/guest-without-a-guest-is-not-the-hosts",
+                    test_a_guest_desktop_without_a_guest_is_not_the_hosts);
+    g_test_add_func("/computer/desktop/guest-on-a-vm-is-built",
+                    test_a_guest_desktop_on_a_vm_is_built);
     g_test_add_func("/computer/exec-async-answers-on-the-named-context",
                     test_exec_async_answers_on_the_named_context);
     g_test_add_func("/computer/exec-async-returns-before-the-command-ends",

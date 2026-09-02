@@ -15,7 +15,6 @@
 #include <string.h>
 #include <glib/gstdio.h>
 
-#define MAX_OUTPUT_BYTES (256 * 1024)
 
 /*
  * How long a guest gets to act on a shutdown before it is powered off.
@@ -118,7 +117,8 @@ G_DEFINE_FINAL_TYPE_WITH_CODE(
     ClawtVmComputer, clawt_vm_computer, CLAWT_TYPE_COMPUTER,
     G_IMPLEMENT_INTERFACE(CLAWT_TYPE_OBSERVABLE, vm_observable_init))
 
-static gboolean libvirt_has_domain(ClawtVmComputer *self);
+static gboolean libvirt_has_domain(ClawtVmComputer *self,
+                                   gboolean        *out_known);
 static gchar   *libvirt_domain_xml(ClawtVmComputer *self);
 static void     refresh_forwarded_port(ClawtVmComputer *self);
 static GStrv    build_ssh_argv_as(ClawtVmComputer *self,
@@ -1062,7 +1062,7 @@ libvirt_domain_state(ClawtVmComputer *self)
         return NULL;
 
     /* Same reason: asking after a domain that is gone is loud. */
-    if (!libvirt_has_domain(self))
+    if (!libvirt_has_domain(self, NULL))
         return NULL;
 
     params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
@@ -1102,8 +1102,27 @@ libvirt_domain_state(ClawtVmComputer *self)
  *
  * Neither meant anything was wrong.
  */
+/*
+ * Whether libvirt has this domain -- and whether it was able to say.
+ *
+ * @out_known, when it is not %NULL, comes back %FALSE for every way of
+ * failing to ask: no bridge, a module that will not load, a call that
+ * fails, a reply with no domain list in it, or a reply that is not the
+ * JSON array it should be.  Only a list that was read and searched sets
+ * it %TRUE.
+ *
+ * It used to answer plain %FALSE for all five, and the callers spent
+ * that as "there is no such domain".  Teardown then skipped the
+ * undefine and unlinked overlay.qcow2, so a libvirtd that was merely
+ * unreachable turned removing a computer into deleting the disk of a
+ * guest that might have been running -- and stop reported such a guest
+ * as cleanly stopped.  Unknown is not different: this project deleted a
+ * running VM's disk once already by reading one as the other, and the
+ * container backend distinguishes a 404 from every other failure for
+ * exactly this reason.
+ */
 static gboolean
-libvirt_has_domain(ClawtVmComputer *self)
+libvirt_has_domain(ClawtVmComputer *self, gboolean *out_known)
 {
     g_autoptr(GHashTable) params = NULL;
     g_autoptr(GHashTable) result = NULL;
@@ -1111,6 +1130,9 @@ libvirt_has_domain(ClawtVmComputer *self)
     const gchar *domains;
     JsonArray *array;
     guint i;
+
+    if (out_known != NULL)
+        *out_known = FALSE;
 
     if (self->bridge == NULL ||
         !clawt_pod_bridge_load_module_for(self->bridge, "vm_virtmanager",
@@ -1140,6 +1162,10 @@ libvirt_has_domain(ClawtVmComputer *self)
     if (json_node_get_node_type(json_parser_get_root(parser)) !=
         JSON_NODE_ARRAY)
         return FALSE;
+
+    /* Asked, and answered: from here a FALSE means it is not there. */
+    if (out_known != NULL)
+        *out_known = TRUE;
 
     array = json_node_get_array(json_parser_get_root(parser));
 
@@ -1180,7 +1206,7 @@ libvirt_domain_xml(ClawtVmComputer *self)
      * or one that never existed -- is a normal thing to find, and is
      * answered by building it from scratch rather than by complaining.
      */
-    if (!libvirt_has_domain(self))
+    if (!libvirt_has_domain(self, NULL))
         return NULL;
 
     params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
@@ -1789,7 +1815,8 @@ vm_provision(ClawtComputer *computer, GError **error)
                             "fedora-44` fetches one, or pick one under "
                             "Settings in the GTK client.");
         clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ERROR,
-                                 (*error)->message);
+                                 (error != NULL && *error != NULL)
+                                 ? (*error)->message : NULL);
         return FALSE;
     }
 
@@ -1913,7 +1940,7 @@ static gboolean
 vm_guest_exists(ClawtVmComputer *self)
 {
     if (self->backend == CLAWT_VM_BACKEND_LIBVIRT)
-        return libvirt_has_domain(self);
+        return libvirt_has_domain(self, NULL);
 
     /*
      * For the qemu backend the overlay *is* the guest: there is no
@@ -2061,7 +2088,33 @@ vm_stop(ClawtComputer *computer, GError **error)
     clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_STOPPING, NULL);
 
     if (self->backend == CLAWT_VM_BACKEND_LIBVIRT) {
-        g_autofree gchar *state = libvirt_domain_state(self);
+        g_autofree gchar *state = NULL;
+        gboolean known = FALSE;
+
+        /*
+         * Whether libvirt could be reached at all, before its answer is
+         * read.  libvirt_domain_state() returns NULL both for a domain
+         * that is not defined and for every way of failing to ask, and
+         * taking the second as the first reported a guest that may well
+         * have been running as cleanly stopped -- after which the next
+         * start provisions over a live one.  A stop that fails is a
+         * thing an operator can act on; a stop that lies is not.
+         */
+        libvirt_has_domain(self, &known);
+
+        if (!known) {
+            clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ERROR,
+                                     "libvirt could not be reached");
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_COMPUTER_PROVISION,
+                        "libvirt could not be asked about the domain %s, so "
+                        "whether it is still running is unknown. Check that "
+                        "libvirtd is running and that %s is reachable.",
+                        self->domain,
+                        (self->uri != NULL) ? self->uri : "the session URI");
+            return FALSE;
+        }
+
+        state = libvirt_domain_state(self);
 
         /* Already down, or never defined: nothing to ask of libvirt. */
         if (state == NULL || g_strcmp0(state, "running") != 0) {
@@ -2881,13 +2934,36 @@ vm_teardown(ClawtComputer *computer, GError **error)
     g_clear_error(&local);
 
     if (self->backend == CLAWT_VM_BACKEND_LIBVIRT) {
+        gboolean known = FALSE;
+        gboolean present;
+
         /*
          * Asked only when there is something to ask about. libvirt logs
          * two alarming lines for a domain that is not there -- it tries
          * the name, then the same string as a UUID -- and this is the
          * ordinary path for an agent that was never started.
          */
-        if (libvirt_has_domain(self)) {
+        present = libvirt_has_domain(self, &known);
+
+        /*
+         * And a question that could not be put is not an answer of no.
+         * Below this point the overlay is unlinked, so believing an
+         * unreachable libvirt would delete the disk of a guest nobody
+         * checked was stopped -- the same reading of unknown as
+         * different that cost a running VM its disk once already.
+         */
+        if (!known) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_COMPUTER_PROVISION,
+                        "libvirt could not be asked whether the domain %s "
+                        "is still defined, and its disk is not removed on "
+                        "a guess. Check that libvirtd is running and that "
+                        "%s is reachable, then try again.",
+                        self->domain,
+                        (self->uri != NULL) ? self->uri : "the session URI");
+            return FALSE;
+        }
+
+        if (present) {
             if (!libvirt_call(self, "undefine", NULL, error)) {
                 g_prefix_error(error, "the libvirt domain %s could not be "
                                       "removed: ", self->domain);
@@ -3009,12 +3085,28 @@ vm_exec(ClawtComputer        *computer,
                                        &stdout_text, &stderr_text, error))
         return NULL;
 
-    bounded = clawt_computer_truncate_output(stdout_text, MAX_OUTPUT_BYTES,
-                                             &truncated);
+    bounded = clawt_computer_truncate_output(
+        stdout_text, CLAWT_COMPUTER_MAX_OUTPUT_BYTES, &truncated);
 
-    result = clawt_exec_result_new(g_subprocess_get_exit_status(process),
-                                   bounded, stderr_text);
-    clawt_exec_result_set_truncated(result, truncated);
+    /*
+     * stderr is bounded too.  It was passed through whole while stdout
+     * was capped, so a guest command that wrote its output to the wrong
+     * stream -- or simply wrote a great many warnings -- returned
+     * unbounded text through the daemon and into a model's context,
+     * past a cap the docs describe as covering both.
+     */
+    {
+        gboolean errors_truncated = FALSE;
+        g_autofree gchar *bounded_errors =
+            clawt_computer_truncate_output(
+                stderr_text, CLAWT_COMPUTER_MAX_OUTPUT_BYTES,
+                &errors_truncated);
+
+        result = clawt_exec_result_new(g_subprocess_get_exit_status(process),
+                                       bounded, bounded_errors);
+        clawt_exec_result_set_truncated(result,
+                                        truncated || errors_truncated);
+    }
 
     return result;
 }

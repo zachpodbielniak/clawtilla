@@ -409,6 +409,20 @@ void clawt_computer_bind_agent(ClawtComputer *self,
                                const gchar   *agent_id);
 
 /**
+ * CLAWT_COMPUTER_MAX_OUTPUT_BYTES:
+ *
+ * How much of a command's output any backend passes back, per stream.
+ *
+ * Named once, here, beside the function that applies it. Each backend
+ * used to define its own copy of the same number, and the copies are
+ * what a reader is really being told about: docs/computers.org states
+ * one figure for the whole of clawtilla, so a backend that had drifted
+ * -- or, as distrobox had, never applied it at all -- was documented as
+ * doing something it did not.
+ */
+#define CLAWT_COMPUTER_MAX_OUTPUT_BYTES (256 * 1024)
+
+/**
  * clawt_computer_truncate_output:
  * @text: (nullable): output to bound
  * @limit: maximum bytes

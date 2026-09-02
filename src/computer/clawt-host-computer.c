@@ -24,7 +24,6 @@
  * agent that runs `find /` produces a reply too large to send and too large
  * to reason about, and the turn is wasted either way.
  */
-#define MAX_OUTPUT_BYTES (256 * 1024)
 
 struct _ClawtHostComputer {
     ClawtComputer parent_instance;
@@ -601,12 +600,13 @@ host_stop(ClawtComputer *computer, GError **error)
 }
 
 typedef struct {
-    GSubprocess *process;
-    GMainLoop   *loop;
-    gboolean     timed_out;
-    gchar       *stdout_text;
-    gchar       *stderr_text;
-    GError      *error;
+    GSubprocess  *process;
+    GMainLoop    *loop;
+    GCancellable *give_up;
+    gboolean      timed_out;
+    gchar        *stdout_text;
+    gchar        *stderr_text;
+    GError       *error;
 } ExecWait;
 
 static gboolean
@@ -617,7 +617,36 @@ on_exec_timeout(gpointer user_data)
     wait->timed_out = TRUE;
     g_subprocess_force_exit(wait->process);
 
+    /*
+     * And stop waiting to be read, not just waiting to be exited.
+     *
+     * g_subprocess_communicate_utf8_async() finishes when the child has
+     * gone *and* stdout and stderr have reached EOF, and a grandchild
+     * inherits those pipes -- so killing the child releases nothing when
+     * the command was `x &`, or a build, or anything with `nohup`.  The
+     * flag above was set on time and the loop then ran until whatever
+     * held the pipes finished, which handed the give-up time back to
+     * the command: exactly what the timeout exists to take away from
+     * it.
+     */
+    g_cancellable_cancel(wait->give_up);
+
     return G_SOURCE_REMOVE;
+}
+
+/*
+ * Passes a caller's cancellation on to the one the wait is using.
+ *
+ * The communicate call can no longer be given the caller's cancellable
+ * directly -- it needs one this function can trip at the deadline -- so
+ * the caller's is chained onto it rather than dropped.
+ */
+static void
+on_caller_cancelled(GCancellable *caller, gpointer user_data)
+{
+    (void)caller;
+
+    g_cancellable_cancel(G_CANCELLABLE(user_data));
 }
 
 static void
@@ -768,6 +797,7 @@ host_exec(ClawtComputer        *computer,
     ClawtExecResult *result;
     ExecWait wait;
     GSource *timeout_source = NULL;
+    gulong cancelled_id = 0;
     gboolean truncated = FALSE;
     gboolean stderr_truncated = FALSE;
 
@@ -862,7 +892,14 @@ host_exec(ClawtComputer        *computer,
         g_source_attach(timeout_source, context);
     }
 
-    g_subprocess_communicate_utf8_async(wait.process, NULL, cancellable,
+    wait.give_up = g_cancellable_new();
+
+    if (cancellable != NULL)
+        cancelled_id = g_cancellable_connect(cancellable,
+                                             G_CALLBACK(on_caller_cancelled),
+                                             wait.give_up, NULL);
+
+    g_subprocess_communicate_utf8_async(wait.process, NULL, wait.give_up,
                                         on_exec_done, &wait);
     g_main_loop_run(loop);
 
@@ -871,17 +908,22 @@ host_exec(ClawtComputer        *computer,
         g_source_unref(timeout_source);
     }
 
+    if (cancelled_id != 0)
+        g_cancellable_disconnect(cancellable, cancelled_id);
+
+    g_clear_object(&wait.give_up);
+
     g_main_context_pop_thread_default(context);
 
-    if (wait.error != NULL) {
-        g_propagate_error(error, wait.error);
-        g_clear_object(&wait.process);
-        g_free(wait.stdout_text);
-        g_free(wait.stderr_text);
-        return NULL;
-    }
-
+    /*
+     * The deadline is reported before the error, because tripping the
+     * cancellable to enforce it *is* how the wait ended: reading the
+     * resulting G_IO_ERROR_CANCELLED first would tell the agent its
+     * command was cancelled by somebody, rather than that it ran out of
+     * time.
+     */
     if (wait.timed_out) {
+        g_clear_error(&wait.error);
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_TIMEOUT,
                     "'%s' did not finish within %u seconds and was stopped",
                     argv[0], timeout_seconds);
@@ -891,11 +933,19 @@ host_exec(ClawtComputer        *computer,
         return NULL;
     }
 
+    if (wait.error != NULL) {
+        g_propagate_error(error, wait.error);
+        g_clear_object(&wait.process);
+        g_free(wait.stdout_text);
+        g_free(wait.stderr_text);
+        return NULL;
+    }
+
     bounded_stdout = clawt_computer_truncate_output(wait.stdout_text,
-                                                    MAX_OUTPUT_BYTES,
+                                                    CLAWT_COMPUTER_MAX_OUTPUT_BYTES,
                                                     &truncated);
     bounded_stderr = clawt_computer_truncate_output(wait.stderr_text,
-                                                    MAX_OUTPUT_BYTES,
+                                                    CLAWT_COMPUTER_MAX_OUTPUT_BYTES,
                                                     &stderr_truncated);
 
     result = clawt_exec_result_new(g_subprocess_get_exit_status(wait.process),

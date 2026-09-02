@@ -14,7 +14,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#define MAX_OUTPUT_BYTES (256 * 1024)
 
 struct _ClawtContainerComputer {
     ClawtComputer parent_instance;
@@ -742,7 +741,7 @@ container_exec(ClawtComputer        *computer,
             exit_status = -1;
         }
     }
-    bounded = clawt_computer_truncate_output(output, MAX_OUTPUT_BYTES,
+    bounded = clawt_computer_truncate_output(output, CLAWT_COMPUTER_MAX_OUTPUT_BYTES,
                                              &truncated);
 
     /*
@@ -755,7 +754,7 @@ container_exec(ClawtComputer        *computer,
         const gchar *errors = g_hash_table_lookup(result, "stderr");
         gboolean errors_truncated = FALSE;
         g_autofree gchar *bounded_errors =
-            clawt_computer_truncate_output(errors, MAX_OUTPUT_BYTES,
+            clawt_computer_truncate_output(errors, CLAWT_COMPUTER_MAX_OUTPUT_BYTES,
                                            &errors_truncated);
 
         exec_result = clawt_exec_result_new(exit_status, bounded,
