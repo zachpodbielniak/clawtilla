@@ -249,26 +249,63 @@ clawt_event_log_read(ClawtEventLog *self, const gchar *subject, guint limit)
             g_ptr_array_add(files, g_strdup(name));
     }
 
-    /* Filenames are ISO dates, so sorting them sorts by time. */
+    /*
+     * Newest first, and stop once @limit is filled.
+     *
+     * Filenames are ISO dates, so sorting them sorts by time; this walks
+     * that order backwards.  It used to read every retained day, parse
+     * every line into a ClawtEvent, and only then throw all but the last
+     * @limit away -- on the daemon's main context, with the requesting
+     * client blocked and every agent waiting behind it.
+     *
+     * `daemon.event_log_days` defaults to 30, so a fleet publishing
+     * fifty thousand events a day meant one and a half million
+     * JsonParsers built and discarded to answer a request for two
+     * hundred.  A `subject` filter did not help: it was applied to each
+     * event *after* it had been parsed.
+     */
     g_ptr_array_sort_values(files, (GCompareFunc)g_strcmp0);
 
-    for (i = 0; i < files->len; i++) {
+    for (i = files->len; i > 0; i--) {
         g_autofree gchar *path = g_build_filename(
-            self->dir, g_ptr_array_index(files, i), NULL);
+            self->dir, g_ptr_array_index(files, i - 1), NULL);
         g_autofree gchar *contents = NULL;
         g_auto(GStrv) lines = NULL;
+        gsize count;
         gsize j;
+
+        if (limit > 0 && out->len >= limit)
+            break;
 
         if (!g_file_get_contents(path, &contents, NULL, NULL))
             continue;
 
         lines = g_strsplit(contents, "\n", -1);
 
-        for (j = 0; lines[j] != NULL; j++) {
+        for (count = 0; lines[count] != NULL; count++)
+            ;
+
+        /* Within a day, newest last -- so backwards again. */
+        for (j = count; j > 0; j--) {
+            const gchar *line = lines[j - 1];
             g_autoptr(JsonParser) parser = NULL;
             ClawtEvent *event;
 
-            if (lines[j][0] == '\0')
+            if (limit > 0 && out->len >= limit)
+                break;
+
+            if (line[0] == '\0')
+                continue;
+
+            /*
+             * A cheap look before an expensive one.  The subject is a
+             * JSON string member, so a line that does not contain it as
+             * a substring cannot match -- and the reverse is not true,
+             * which is why the parsed check below stays.  This is the
+             * difference between parsing every line of a month and
+             * parsing the ones that could possibly answer.
+             */
+            if (subject != NULL && strstr(line, subject) == NULL)
                 continue;
 
             parser = json_parser_new();
@@ -280,7 +317,7 @@ clawt_event_log_read(ClawtEventLog *self, const gchar *subject, guint limit)
              * file over it would throw away the history somebody is
              * trying to read.
              */
-            if (!json_parser_load_from_data(parser, lines[j], -1, NULL))
+            if (!json_parser_load_from_data(parser, line, -1, NULL))
                 continue;
 
             event = event_from_json(json_parser_get_root(parser));
@@ -297,8 +334,16 @@ clawt_event_log_read(ClawtEventLog *self, const gchar *subject, guint limit)
         }
     }
 
-    if (limit > 0 && out->len > limit)
-        g_ptr_array_remove_range(out, 0, out->len - limit);
+    /*
+     * Collected newest-first and handed back oldest-first, which is the
+     * order every caller renders.
+     */
+    for (i = 0; i < out->len / 2; i++) {
+        gpointer swap = g_ptr_array_index(out, i);
+
+        g_ptr_array_index(out, i) = g_ptr_array_index(out, out->len - 1 - i);
+        g_ptr_array_index(out, out->len - 1 - i) = swap;
+    }
 
     return out;
 }
