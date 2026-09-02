@@ -328,6 +328,86 @@ test_an_unindexable_message_is_not_a_failed_send(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * The index is redacted, because it is the copy that gets read back.
+ *
+ * clawt_room_append() scrubs a body before writing the JSONL transcript
+ * and says why: a transcript is replayed into every context rebuild, so
+ * a key that reached the file would be handed back to the model for
+ * ever.  The row written beside it kept the plaintext, and this is the
+ * store clawtilla_recall searches -- so the careful half wrote
+ * "[REDACTED]" to a file nothing greps while the other half served the
+ * key to any agent that asked, in any room it could see.  Redaction
+ * lives in the store now, so the daemon's start-time re-index is covered
+ * by the same change.
+ */
+static void
+test_a_secret_is_not_indexed(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GPtrArray) hits = NULL;
+    const gchar *key = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA";
+    guint i;
+
+    fixture_setup(&fixture);
+
+    said(&fixture, "ops", "alpha",
+         "here is the key you asked for: sk-ant-api03-"
+         "AAAAAAAAAAAAAAAAAAAAAAAA", 1000);
+    said(&fixture, "ops", "beta",
+         "Authorization: Bearer ghp_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+         2000);
+
+    /*
+     * Searched for by a word that survives, so the row is definitely
+     * there and it is the body being checked rather than the indexing.
+     */
+    hits = clawt_transcript_index_search(fixture.index, "key", NULL, NULL,
+                                         0, 10, NULL);
+
+    g_assert_nonnull(hits);
+    g_assert_cmpuint(hits->len, >, 0);
+
+    for (i = 0; i < hits->len; i++) {
+        ClawtTranscriptHit *hit = g_ptr_array_index(hits, i);
+
+        g_assert_null(strstr(hit->body, key));
+        g_assert_nonnull(strstr(hit->body, "[REDACTED]"));
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And the full-text side too, which is the one that would answer.
+ *
+ * Asserting only on the returned body would pass against an index that
+ * kept the key in messages_fts: the row would still be findable by the
+ * secret itself, which is exactly the query somebody hunting a leaked
+ * credential would run, and exactly the one an agent asked to "find the
+ * API key" would run too.
+ */
+static void
+test_a_secret_cannot_be_searched_for(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GPtrArray) hits = NULL;
+
+    fixture_setup(&fixture);
+
+    said(&fixture, "ops", "alpha",
+         "the token is glpat-cccccccccccccccccccc", 1000);
+
+    hits = clawt_transcript_index_search(fixture.index,
+                                         "glpat-cccccccccccccccccccc", NULL,
+                                         NULL, 0, 10, NULL);
+
+    g_assert_nonnull(hits);
+    g_assert_cmpuint(hits->len, ==, 0);
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -345,6 +425,10 @@ main(int argc, char *argv[])
                     test_narrowing_by_sender_and_age);
     g_test_add_func("/transcript/survives-reopening",
                     test_the_index_survives_being_reopened);
+    g_test_add_func("/transcript/secret-not-stored",
+                    test_a_secret_is_not_indexed);
+    g_test_add_func("/transcript/secret-not-searchable",
+                    test_a_secret_cannot_be_searched_for);
     g_test_add_func("/transcript/unindexable-is-not-a-failure",
                     test_an_unindexable_message_is_not_a_failed_send);
 

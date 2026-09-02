@@ -806,6 +806,16 @@ reply carries the reference back, never the value.
 ~per_agent~.  It returns ~user_id~, ~device_id~ and ~token_file~ -- the
 token itself stays in the daemon.
 
+~agent~ is checked before the sign-in is attempted: it has to be a
+well-formed id and it has to name an agent that exists.  It becomes part
+of the token's filename, and it was taken raw -- so a separator in it put
+a live access token outside the 0700 secrets directory and on top of
+whatever it named, and the resulting name was written back into
+~clawtilla.yaml~ as a ~{file: ...}~ reference, so the traversal outlived
+a restart.  The integration name is folded rather than refused, the way
+~clawt_connector_token_path()~ folds an instance name, because that one
+arrives from a file somebody edits by hand.
+
 *** routine.*
 
 ~routine.list~ returns every routine with its own fields plus three the

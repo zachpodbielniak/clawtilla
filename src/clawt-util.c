@@ -639,10 +639,13 @@ gchar *
 clawt_redact_secrets(const gchar *text)
 {
     /*
-     * Two shapes are matched.  Assignments name the thing being assigned,
+     * Three shapes are matched.  Assignments name the thing being assigned,
      * which is how a key usually appears in a log line or a command; the
      * standalone patterns catch tokens that were pasted on their own, where
-     * there is no key to go by and the shape is all there is.
+     * there is no key to go by and the shape is all there is; and the
+     * prefixed patterns catch the ones an HTTP header introduces, where
+     * the name and the value have nothing between them an assignment
+     * would recognise.
      */
     static const gchar *assignment_keys[] = {
         "api[_-]?key", "secret", "token", "password", "passwd",
@@ -653,9 +656,34 @@ clawt_redact_secrets(const gchar *text)
         "sk-ant-[A-Za-z0-9_-]{16,}",
         "sk-[A-Za-z0-9]{20,}",
         "gh[pousr]_[A-Za-z0-9]{20,}",
-        "xoxb-[A-Za-z0-9-]{10,}",
+        "github_pat_[A-Za-z0-9_]{20,}",
+        "gl(?:pat|rt|ptt|soat|feat|cbt|dr|ft|imt|oat|rt)-[A-Za-z0-9_-]{16,}",
+        "xox[abeoprs]-[A-Za-z0-9-]{10,}",
+        "xapp-[A-Za-z0-9-]{10,}",
+        "AIza[A-Za-z0-9_-]{30,}",
+        "AKIA[A-Z0-9]{16}",
         "syt_[A-Za-z0-9_]{10,}",
         "-----BEGIN[A-Z ]*PRIVATE KEY-----",
+        NULL
+    };
+    /*
+     * A credential does not always arrive in a "key = value" shape, and
+     * the assignment patterns cannot see the one it arrives in most
+     * often.  An HTTP header names the scheme and then the token with no
+     * separator between them: after "auth" comes "orization" rather than
+     * a colon, and after "bearer" comes a space.  So `Authorization:
+     * Bearer <token>` -- which is how every connector, the venture
+     * bridge and ntfy carry theirs, and what a libreclaw child writes
+     * when it logs a request -- went through untouched.
+     *
+     * These carry their own prefix group and go through the same
+     * "\1[REDACTED]" replacement, so the line stays readable: the header
+     * name and the scheme are what makes the log line worth keeping.
+     */
+    static const gchar *prefixed[] = {
+        "((?i:(?:proxy-)?authorization)\\s*:\\s*"
+        "(?i:bearer|basic|token|digest)?\\s*)([^\\s\"',;)}]{8,})",
+        "((?i:bearer)\\s+)([^\\s\"',;)}]{8,})",
         NULL
     };
     gchar *work;
@@ -676,6 +704,21 @@ clawt_redact_secrets(const gchar *text)
             assignment_keys[i]);
 
         regex = g_regex_new(pattern, 0, 0, NULL);
+        if (regex == NULL)
+            continue;
+
+        replaced = g_regex_replace(regex, work, -1, 0, "\\1[REDACTED]",
+                                   0, NULL);
+        if (replaced != NULL) {
+            g_free(work);
+            work = replaced;
+        }
+    }
+
+    for (i = 0; prefixed[i] != NULL; i++) {
+        g_autoptr(GRegex) regex = g_regex_new(prefixed[i], 0, 0, NULL);
+        gchar *replaced;
+
         if (regex == NULL)
             continue;
 

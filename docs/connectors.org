@@ -675,6 +675,16 @@ providers omit the field on a renewal, meaning "keep the one you have",
 and taking that literally costs an authorization nobody can see the
 reason for.
 
+"Empty" now means what it says.  The guard tested for a *missing* field,
+and a provider answering with ~"refresh_token": ""~ produced a non-NULL
+empty string that every ~!= NULL~ test downstream read as a value -- so
+the blank was stored over the good one and the guard written to prevent
+exactly that could not see it.  An empty member is treated as an absent
+one at the point the response is parsed, rather than at each of the
+places it is read, so no later test can be fooled the same way.  The
+symptom was a slow one: the current access token kept working for its
+hour, and every renewal after that failed.
+
 ** Revoking
 
 #+begin_src bash

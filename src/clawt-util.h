@@ -116,6 +116,11 @@ gboolean clawt_copy_tree(const gchar  *source,
  * Sortability is what makes a mailbox query cheap -- ordering by id is
  * ordering by arrival, with no separate index.
  *
+ * The randomness is `g_random_*`, which is a Mersenne Twister: an id is
+ * unique, not unguessable.  Never spend one as a capability -- use
+ * clawt_generate_token(), which reads /dev/urandom, for anything whose
+ * secrecy is what grants access.
+ *
  * Returns: (transfer full): a new identifier
  */
 gchar *clawt_generate_id(const gchar *prefix);
@@ -126,10 +131,17 @@ gchar *clawt_generate_id(const gchar *prefix);
  *
  * Replaces anything that looks like a credential with a placeholder.
  *
- * Applied when writing the event log and transcripts, not when displaying
- * them.  A transcript is replayed into every context rebuild, so a leaked
- * key in one is permanent; redacting at display time would leave the
- * original on disk forever.
+ * Applied when writing the event log, transcripts and the transcript
+ * index, not when displaying them.  A transcript is replayed into every
+ * context rebuild, so a leaked key in one is permanent; redacting at
+ * display time would leave the original on disk forever.
+ *
+ * Best effort, and deliberately so: it matches assignments, well-known
+ * token shapes, and the value after an `Authorization:` header or a bare
+ * `Bearer`.  An opaque OAuth access token pasted on its own has no shape
+ * to recognise and will not be caught, so this is a net over the places
+ * a credential is written by accident -- never a boundary a secret is
+ * allowed to be on the wrong side of.
  *
  * Returns: (transfer full): the redacted text
  */

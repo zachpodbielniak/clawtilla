@@ -187,6 +187,7 @@ static const gchar *
 object_string(JsonObject *object, const gchar *key)
 {
     JsonNode *node;
+    const gchar *value;
 
     if (!json_object_has_member(object, key))
         return NULL;
@@ -199,7 +200,18 @@ object_string(JsonObject *object, const gchar *key)
     if (json_node_get_value_type(node) != G_TYPE_STRING)
         return NULL;
 
-    return json_node_get_string(node);
+    value = json_node_get_string(node);
+
+    /*
+     * An empty member is an absent one.  A provider that answers a
+     * renewal with `"refresh_token": ""` produced a non-NULL empty
+     * string, which every `!= NULL` test downstream read as a value --
+     * so the blank was stored over a working refresh token and the
+     * guard written to prevent exactly that could not see it.  The
+     * access token was the only field that checked, and it checked
+     * here rather than everywhere it is read; so does this.
+     */
+    return (value != NULL && *value != '\0') ? value : NULL;
 }
 
 static gint64

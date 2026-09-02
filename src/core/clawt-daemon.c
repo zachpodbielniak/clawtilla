@@ -4641,7 +4641,7 @@ clawt_daemon_on_connector_refreshed(GObject *source, GAsyncResult *result,
      * has nothing to renew with -- so the person is asked to authorise
      * again for a reason they cannot see.
      */
-    if (token->refresh_token == NULL) {
+    if (token->refresh_token == NULL || *token->refresh_token == '\0') {
         g_autofree gchar *secrets_dir =
             clawt_config_get_path_value(job->daemon->config, "secrets.dir");
         g_autofree gchar *path =
@@ -7636,9 +7636,19 @@ clawt_daemon_on_matrix_login(GObject *source, GAsyncResult *result,
         return;
     }
 
+    /*
+     * Folded the way clawt_connector_token_path() folds an instance
+     * name, and for the same reason: an integration name reaches this
+     * from a config file somebody edits by hand, so it may hold a
+     * separator that would put a live access token outside the 0700
+     * secrets directory and on top of whatever it named.  The agent id
+     * is refused rather than folded, at the handler, because an id that
+     * is not an id names no agent either.
+     */
     file_name = (login->agent_id != NULL)
         ? g_strdup_printf("%s-%s-matrix-token", login->name, login->agent_id)
         : g_strdup_printf("%s-matrix-token", login->name);
+    g_strdelimit(file_name, "/\\ \t", '_');
     token_path = g_build_filename(secrets_dir, file_name, NULL);
 
     if (!clawt_write_file_atomic(token_path, session->access_token, -1, 0600,

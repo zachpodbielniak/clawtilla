@@ -481,7 +481,16 @@ handle_builtin(ClawtIpcServer *self, Client *client, JsonNode *request,
         if (self->tcp_token != NULL && !client->authenticated) {
             const gchar *token = clawt_ipc_payload_string(payload, "token");
 
-            if (g_strcmp0(token, self->tcp_token) != 0)
+            /*
+             * Compared in constant time, like every webhook secret in
+             * this tree.  g_strcmp0() stops at the first byte that
+             * differs, and this is the credential guarding the network
+             * listener -- the one that can start agents and run
+             * commands.  The link server's own comparison skips this and
+             * says why in as many words; that reason is about both ends
+             * being local and does not reach here.
+             */
+            if (!clawt_secure_equals(token, self->tcp_token))
                 return clawt_ipc_error_new(request, CLAWT_ERROR_AUTH,
                                            "that token was not accepted");
 

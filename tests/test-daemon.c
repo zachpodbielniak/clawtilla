@@ -9937,6 +9937,59 @@ test_teach_synthesize_answers_on_the_daemons_own_context(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * The agent id in a Matrix sign-in becomes part of a filename, so it is
+ * checked where it arrives.
+ *
+ * It was taken raw from the payload and interpolated into
+ * "<integration>-<agent>-matrix-token", which g_build_filename() then
+ * joined to the 0700 secrets directory -- so a separator in it put a
+ * live access token wherever it pointed, and the resulting name was
+ * written back into clawtilla.yaml as a `{file: ...}` reference, which
+ * meant the traversal outlived a restart.  clawt_connector_token_path()
+ * had already learned this about instance names and folds them; an agent
+ * id is refused instead, because one that is not an id names no agent
+ * either, and a per-agent override for an agent that does not exist
+ * reaches nobody.
+ *
+ * Refused before the sign-in is attempted, so this needs no network.
+ */
+static void
+test_a_matrix_login_checks_the_agent_id(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) traversal = NULL;
+    g_autoptr(JsonNode) unknown = NULL;
+
+    fixture_setup(&fixture,
+                  "integrations:\n"
+                  "  - name: house\n    type: matrix\n"
+                  "agents:\n  - id: chief\n");
+
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    traversal = request(&fixture, "integration.matrix_login",
+                        "{\"integration\":\"house\","
+                        "\"agent\":\"../../../../tmp/clawt-escape\","
+                        "\"homeserver\":\"https://example.org\","
+                        "\"user\":\"someone\","
+                        "\"password\":\"hunter2\"}");
+
+    g_assert_true(clawt_ipc_frame_is_error(traversal));
+
+    /* And an id that is well formed but names nobody. */
+    unknown = request(&fixture, "integration.matrix_login",
+                      "{\"integration\":\"house\","
+                      "\"agent\":\"ghost\","
+                      "\"homeserver\":\"https://example.org\","
+                      "\"user\":\"someone\","
+                      "\"password\":\"hunter2\"}");
+
+    g_assert_true(clawt_ipc_frame_is_error(unknown));
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -10266,6 +10319,8 @@ main(int argc, char *argv[])
                     test_control_shutdown_quits_a_daemon_on_its_own_context);
     g_test_add_func("/daemon/teach/synthesize-answers-on-the-daemons-own-context",
                     test_teach_synthesize_answers_on_the_daemons_own_context);
+    g_test_add_func("/daemon/matrix-login-checks-the-agent-id",
+                    test_a_matrix_login_checks_the_agent_id);
 
     status = g_test_run();
 

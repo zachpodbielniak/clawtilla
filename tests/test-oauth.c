@@ -631,6 +631,51 @@ test_a_token_is_renewed(void)
     fake_provider_free(fake);
 }
 
+/*
+ * An empty member is an absent one, all the way through.
+ *
+ * The guard that protects a working refresh token tests
+ * `refresh_token == NULL`, and a provider answering a renewal with
+ * `"refresh_token": ""` produced a non-NULL empty string -- so the
+ * blank was stored over the good one and the guard written to prevent
+ * exactly that could not see it.  The access token was the only field
+ * that checked for empty, and it checked at its own read rather than at
+ * the boundary; now the boundary does it, so no downstream `!= NULL`
+ * test can be fooled again.
+ *
+ * The symptom is a slow one: the current access token keeps working for
+ * its hour, and every renewal after that fails with the person asked to
+ * re-authorise for a reason nothing on screen can explain.
+ */
+static void
+test_an_empty_string_is_not_a_value(void)
+{
+    g_autoptr(ClawtOauthToken) token = NULL;
+
+    token = clawt_oauth_token_parse(
+        "{\"access_token\":\"a\",\"refresh_token\":\"\","
+        "\"scope\":\"\",\"token_type\":\"\"}", -1, 1000, NULL);
+
+    g_assert_nonnull(token);
+    g_assert_null(token->refresh_token);
+    g_assert_null(token->scopes);
+    g_assert_null(token->token_type);
+}
+
+/* And an empty access token is still refused outright, as it always was. */
+static void
+test_an_empty_access_token_is_refused(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtOauthToken) token = NULL;
+
+    token = clawt_oauth_token_parse("{\"access_token\":\"\"}", -1, 1000,
+                                    &error);
+
+    g_assert_null(token);
+    g_assert_nonnull(error);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -645,6 +690,10 @@ main(int argc, char *argv[])
                     test_a_numeric_field_may_arrive_as_a_string);
     g_test_add_func("/oauth/token-missing",
                     test_a_response_with_no_token_is_an_error);
+    g_test_add_func("/oauth/empty-is-absent",
+                    test_an_empty_string_is_not_a_value);
+    g_test_add_func("/oauth/empty-access-token",
+                    test_an_empty_access_token_is_refused);
     g_test_add_func("/oauth/token-round-trip",
                     test_a_token_survives_a_round_trip_through_a_file);
 

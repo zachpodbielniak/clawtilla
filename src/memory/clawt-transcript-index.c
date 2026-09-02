@@ -255,23 +255,36 @@ clawt_transcript_index_add(ClawtTranscriptIndex *self, const gchar *room_id,
                            ClawtMessage *message, GError **error)
 {
     sqlite3_stmt *stmt = NULL;
+    g_autofree gchar *body = NULL;
     const gchar *id;
-    const gchar *body;
+    const gchar *raw;
 
     g_return_val_if_fail(CLAWT_IS_TRANSCRIPT_INDEX(self), FALSE);
     g_return_val_if_fail(room_id != NULL, FALSE);
     g_return_val_if_fail(message != NULL, FALSE);
 
     id = clawt_message_get_id(message);
-    body = clawt_message_get_body(message);
+    raw = clawt_message_get_body(message);
 
     /*
      * A message with no id cannot be replaced on a re-index, and a
      * message with no body has nothing to find.  Neither is an error
      * worth failing a send over: this runs on the delivery path.
      */
-    if (id == NULL || *id == '\0' || body == NULL || *body == '\0')
+    if (id == NULL || *id == '\0' || raw == NULL || *raw == '\0')
         return TRUE;
+
+    /*
+     * Redacted here rather than by the caller, because there are two
+     * callers and one of them was already right: clawt_room_append()
+     * scrubs the body before writing the JSONL transcript, and said so.
+     * The row beside it kept the plaintext -- and this is the copy that
+     * gets searched, so clawtilla_recall handed a model the very key the
+     * file next to it had been careful not to keep.  The daemon's
+     * start-time re-index goes through here too, so the rule lives in
+     * the store and cannot be forgotten at a third call site.
+     */
+    body = clawt_redact_secrets(raw);
 
     if (sqlite3_prepare_v2(self->db,
                            "INSERT OR REPLACE INTO messages ("

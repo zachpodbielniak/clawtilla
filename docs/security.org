@@ -165,6 +165,17 @@ An agent reaches it only through ~clawtilla_recall~, which is filtered to
 the rooms that agent is a member of.  A client reaches it unfiltered,
 because a person can already open any transcript in the state directory.
 
+Bodies are redacted on the way in, in ~clawt_transcript_index_add()~.
+They were not: ~clawt_room_append()~ scrubbed a body before writing the
+JSONL transcript and said why -- a transcript is replayed into every
+context rebuild, so a key that reached the file is there for ever -- and
+the row written beside it kept the plaintext.  This is the copy that gets
+*searched*, so the careful half wrote ~[REDACTED]~ to a file nothing
+greps while the other half served the key to any agent that asked, in
+any room it could see.  Redaction lives in the store rather than at
+either call site, so the daemon's start-time re-index is covered by the
+same rule.
+
 *** The event log holds message bodies
 
 It is 0600 and secrets are scrubbed, but it is a plaintext record of
@@ -279,6 +290,17 @@ credentials:
 - an agent's log ring and its ~::log-line~ signal are redacted from the
   same call, so what a client streams live and what it fetches as the
   tail have had the same thing taken out of them
+- ~clawt_redact_secrets()~ matches three shapes: an assignment naming
+  what is being assigned, a well-known token prefix, and the value after
+  an ~Authorization:~ header or a bare ~Bearer~.  The third was missing,
+  and it is the shape a credential arrives in most often -- the
+  assignment patterns structurally could not see it, because after
+  "auth" comes "orization" rather than a separator and after "bearer"
+  comes a space.  It is *best effort and not a boundary*: an opaque OAuth
+  access token pasted on its own has no prefix, no key word and no header
+  to recognise, and will not be caught.  It is a net over the places a
+  credential is written by accident, never a reason to let one reach a
+  sink
 - a credential the integration's own type table declares --- a Matrix
   ~access_token~, an email ~password~ --- is *required* at the point the
   credential file would be written, whether the integration is an inline
@@ -595,9 +617,27 @@ Only ~bwrap~ involves the kernel, which is why it is also the only mode
 where ~allow_network: false~ means anything: cutting a process off the
 network needs a namespace, and there is no namespace in a string check.
 
+~deny_paths~ under ~bwrap~ are emitted as operations of their own, after
+the binds: an empty ~--tmpfs~ over a denied directory, ~/dev/null~ over a
+denied file.  They used to be emitted nowhere, so the mode with the
+strongest column in that table was the one where denials did nothing --
+and the identical config under ~allowlist~ refused the same path, which
+is what kept it hidden.
+
 If ~bwrap~ is requested and missing, the agent starts in ~SHADOW~ with
 the reason.  It never silently downgrades -- a confinement that quietly
 becomes no confinement is worse than none, because you stop checking.
+
+*None of the four constrains the agent's own tools.*  They constrain
+~clawtilla_computer_exec~.  An agent's Bash, Read and Write are its CLI's
+and the CLI is spawned unwrapped, so they reach the whole filesystem as
+the user running the daemon whatever ~confine~ says.  That is the same
+rule as everywhere else -- only exec enters the computer -- but on a
+~host~ computer the two look like one thing, and the description handed
+to the agent used to open "You are running on the host inside a
+bubblewrap sandbox", which was a sentence about a process that was not in
+one.  It now names the tool.  To confine the agent process itself,
+confine the daemon.
 
 *** Privilege escalation
 
@@ -873,6 +913,12 @@ Off by default.  When enabled:
 - a token is *required*; clawtilla refuses to start a TCP listener without
   one, because a unix socket is protected by file permissions and a TCP
   port is protected by nothing
+- that token is compared with ~clawt_secure_equals()~, in constant time,
+  like every webhook secret here.  ~g_strcmp0()~ stops at the first byte
+  that differs, and this is the credential guarding a network listener
+  that can start agents and run commands.  The agent link's own
+  comparison does not, and says why in as many words -- both ends of that
+  one are local, which is a reason that does not reach here
 - without a TLS certificate it warns that the token crosses the network
   in the clear
 - a client may accept an unvalidated certificate only by asking
@@ -889,6 +935,42 @@ exposing it anywhere.
 Everything it renders from the daemon is escaped: agent names,
 descriptions and message bodies are all written by people or models, and
 an unescaped ~<~ there is script injection into whoever opens the page.
+
+*** A write has to come from this page
+
+That trust boundary is *network reachability*, and it is a decision.  A
+cross-site form quietly turned it into a decision about every page the
+operator's browser happens to load: an ordinary urlencoded ~POST~ is a
+"simple request", so it needs no preflight, and the attacker never has to
+read the reply because the effect /is/ the side effect.  ~POST
+/a/<id>/exec~ runs a command inside an agent's computer;
+~POST /a/<id>/remove~ deletes the agent.  Neither needs the attacker to
+be on the tailnet.
+
+One middleware in front of every route refuses a non-~GET~ request whose
+~Sec-Fetch-Site~ is anything but ~same-origin~ or ~none~, falling back to
+matching ~Origin~ (then ~Referer~) against the ~Host~ header when the
+browser sends no ~Sec-Fetch-Site~.  A request carrying none of the three
+is allowed: that is ~curl~, not a browser, and a browser cannot be
+persuaded to omit them on a cross-origin write.  It is one gate rather
+than a check in each of the sixty handlers that change something,
+because a rule applied at sixty call sites is a rule about fifty-nine of
+them.
+
+*** An attachment is served inert
+
+Attachments are bytes an agent produced.  They go out with
+~X-Content-Type-Options: nosniff~ and a ~Content-Security-Policy:
+sandbox~, and anything that is not an image also gets
+~Content-Disposition: attachment~.
+
+The sandbox is there for SVG, which is the one entry on the image list
+that is also a *document*.  An ~<img src>~ never runs its script, but
+"open image in new tab" is a routine thing to do with a screenshot, and
+that makes it a top-level page in this origin -- an origin which, per
+the paragraph above, is a fleet with no login on it.  The sandbox gives
+it an opaque origin and no scripting while leaving it renderable, which
+serving it as a download would not.
 
 ** Plugins
 

@@ -348,6 +348,30 @@ clawt_daemon_handle_integration(
                                        "a homeserver, a user and a password "
                                        "are all needed");
 
+        /*
+         * The agent id becomes part of the token's filename, so it is
+         * checked here rather than folded there.  An id holding a
+         * separator would have put a live Matrix access token outside
+         * the 0700 secrets directory -- on top of whatever it named --
+         * and then written that path into clawtilla.yaml, so the
+         * traversal survived a restart.  clawt_connector_token_path()
+         * had already learned this about instance names.
+         *
+         * An id that names no agent is refused in the same breath: a
+         * per-agent override for an agent that does not exist reaches
+         * nobody, so writing its credential to disk is pure cost.
+         */
+        if (agent_id != NULL) {
+            if (!clawt_is_valid_id(agent_id))
+                return clawt_ipc_error_new(request,
+                                           CLAWT_ERROR_INVALID_ARGUMENT,
+                                           "that is not an agent id");
+
+            if (clawt_agent_manager_get(self->agents, agent_id) == NULL)
+                return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                           "there is no agent called that");
+        }
+
         login = g_new0(MatrixLogin, 1);
         login->daemon = self;
         login->pending = clawt_ipc_server_defer(self->ipc_server, request);
