@@ -265,6 +265,18 @@ HtmxDiv *clawt_web_textarea_field(const gchar *label,
                                   guint        rows);
 
 /**
+ * clawt_web_schema_flag:
+ * @object: (nullable): a reply object
+ * @key: the member to read
+ *
+ * Reads a schema BOOLEAN out of a daemon reply, accepting both a real
+ * JSON boolean and the stringified "true" that `agent.show` produces.
+ *
+ * Returns: %TRUE when @key is present and on
+ */
+gboolean clawt_web_schema_flag(JsonObject *object, const gchar *key);
+
+/**
  * clawt_web_switch_field:
  * @label: what to call it
  * @name: the form field name

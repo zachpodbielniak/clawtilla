@@ -198,7 +198,8 @@ add_trigger_form(HtmxElement *parent, JsonObject *existing)
 
         if (entry->type == CLAWT_SCHEMA_BOOLEAN) {
             clawt_web_add(form, clawt_web_switch_field(
-                leaf, leaf, entry->doc, g_strcmp0(value, "true") == 0));
+                leaf, leaf, entry->doc,
+                clawt_web_schema_flag(existing, leaf)));
             continue;
         }
 

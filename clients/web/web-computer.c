@@ -54,7 +54,14 @@ add_console(HtmxElement *parent, const gchar *agent_id,
     htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
 
     if (result != NULL) {
-        gint64 status = clawt_web_member_int(result, "exit_status", -1);
+        /*
+         * "exit", which is what computer.exec actually replies with.
+         * Reading "exit_status" took the -1 fallback on every call, so
+         * the panel drew a red `failed` badge and `exit -1` above
+         * perfectly good output -- and a command that really did fail
+         * was indistinguishable from one that worked.
+         */
+        gint64 status = clawt_web_member_int(result, "exit", -1);
         const gchar *out = clawt_web_member(result, "stdout", "");
         const gchar *err = clawt_web_member(result, "stderr", "");
         g_autoptr(HtmxDiv) head = htmx_div_new();

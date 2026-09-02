@@ -550,6 +550,48 @@ clawt_web_textarea_field(const gchar *label, const gchar *name,
     return (HtmxDiv *)g_steal_pointer(&field);
 }
 
+/*
+ * Whether a schema BOOLEAN is on in a reply the daemon just sent.
+ *
+ * Both spellings, because the daemon uses both and a reader that knows
+ * only one is wrong silently.  `routine.list` and `trigger.list` walk
+ * the schema and emit a real JSON boolean; `agent.show` stringifies its
+ * whole settings map, so the same field arrives there as "true".
+ *
+ * Both editors read this with clawt_web_member() -- the *string* reader,
+ * which returns its fallback for a node that is not a G_TYPE_STRING --
+ * and compared the result to "true".  So every switch on the routine and
+ * trigger editors rendered unticked however the routine was actually
+ * configured, and since clawt_web_switch_field() posts a `__present`
+ * marker whether or not the box is ticked, saving the form sent an
+ * explicit false.  Opening a live routine to fix a typo in its
+ * instructions and pressing Save turned it off, and the page it
+ * re-rendered agreed, so nothing looked wrong.
+ *
+ * Returns: %TRUE when @key is present and on
+ */
+gboolean
+clawt_web_schema_flag(JsonObject *object, const gchar *key)
+{
+    JsonNode *node;
+
+    if (object == NULL || key == NULL || !json_object_has_member(object, key))
+        return FALSE;
+
+    node = json_object_get_member(object, key);
+
+    if (!JSON_NODE_HOLDS_VALUE(node))
+        return FALSE;
+
+    if (json_node_get_value_type(node) == G_TYPE_BOOLEAN)
+        return json_node_get_boolean(node);
+
+    if (json_node_get_value_type(node) == G_TYPE_STRING)
+        return g_strcmp0(json_node_get_string(node), "true") == 0;
+
+    return FALSE;
+}
+
 HtmxDiv *
 clawt_web_switch_field(const gchar *label, const gchar *name,
                        const gchar *subtitle, gboolean on)

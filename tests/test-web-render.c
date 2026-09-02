@@ -1547,6 +1547,94 @@ test_a_write_with_no_host_is_refused(void)
                                                 NULL, NULL));
 }
 
+/*
+ * A schema BOOLEAN arrives from the daemon as a real JSON boolean, and a
+ * reader that only understands "true" reports every one of them as off.
+ *
+ * The routine and trigger editors both did, with clawt_web_member() --
+ * the string reader, which returns its fallback for a non-string node.
+ * Every switch rendered unticked, and because the switch posts a
+ * `__present` marker whether or not it is ticked, saving the form wrote
+ * an explicit false back.  Opening a live routine to fix a typo turned
+ * it off; the re-rendered page agreed, so it reported itself to nobody.
+ */
+static void
+test_a_json_boolean_reads_as_on(void)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(JsonNode) node = NULL;
+    JsonObject *object;
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "enabled");
+    json_builder_add_boolean_value(builder, TRUE);
+    json_builder_set_member_name(builder, "catch_up");
+    json_builder_add_boolean_value(builder, FALSE);
+    json_builder_end_object(builder);
+
+    node = json_builder_get_root(builder);
+    object = json_node_get_object(node);
+
+    /* This is the shape routine.list and trigger.list actually send. */
+    g_assert_true(clawt_web_schema_flag(object, "enabled"));
+    g_assert_false(clawt_web_schema_flag(object, "catch_up"));
+
+    /* And the string form agent.show sends, which must keep working. */
+    g_assert_false(clawt_web_schema_flag(object, "absent"));
+    g_assert_false(clawt_web_schema_flag(NULL, "enabled"));
+}
+
+static void
+test_a_stringified_boolean_still_reads_as_on(void)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(JsonNode) node = NULL;
+    JsonObject *object;
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "enabled");
+    json_builder_add_string_value(builder, "true");
+    json_builder_set_member_name(builder, "isolate");
+    json_builder_add_string_value(builder, "false");
+    json_builder_end_object(builder);
+
+    node = json_builder_get_root(builder);
+    object = json_node_get_object(node);
+
+    g_assert_true(clawt_web_schema_flag(object, "enabled"));
+    g_assert_false(clawt_web_schema_flag(object, "isolate"));
+}
+
+/*
+ * And the switch that reads it renders ticked, which is the half a
+ * browser sees.  Asserted on the rendered attribute rather than on the
+ * boolean, because the boolean was right in one of the two clients the
+ * whole time and the page was still wrong.
+ */
+static void
+test_an_enabled_routine_renders_a_ticked_switch(void)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(JsonNode) node = NULL;
+    JsonObject *object;
+    g_autoptr(HtmxDiv) field = NULL;
+    g_autofree gchar *html = NULL;
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "enabled");
+    json_builder_add_boolean_value(builder, TRUE);
+    json_builder_end_object(builder);
+
+    node = json_builder_get_root(builder);
+    object = json_node_get_object(node);
+
+    field = clawt_web_switch_field("enabled", "enabled", NULL,
+                                   clawt_web_schema_flag(object, "enabled"));
+    html = htmx_element_render(HTMX_ELEMENT(field));
+
+    g_assert_nonnull(strstr(html, "checked=\"checked\""));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1652,6 +1740,13 @@ main(int argc, char *argv[])
                     test_reads_and_non_browsers_are_left_alone);
     g_test_add_func("/web/cross-site-no-host",
                     test_a_write_with_no_host_is_refused);
+
+    g_test_add_func("/web-render/a-json-boolean-reads-as-on",
+                    test_a_json_boolean_reads_as_on);
+    g_test_add_func("/web-render/a-stringified-boolean-reads-as-on",
+                    test_a_stringified_boolean_still_reads_as_on);
+    g_test_add_func("/web-render/an-enabled-routine-renders-ticked",
+                    test_an_enabled_routine_renders_a_ticked_switch);
 
     return g_test_run();
 }

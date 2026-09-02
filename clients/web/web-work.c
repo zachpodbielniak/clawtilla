@@ -78,7 +78,8 @@ add_routine_form(HtmxElement *parent, JsonObject *existing)
 
         if (entry->type == CLAWT_SCHEMA_BOOLEAN) {
             clawt_web_add(form, clawt_web_switch_field(
-                leaf, leaf, entry->doc, g_strcmp0(value, "true") == 0));
+                leaf, leaf, entry->doc,
+                clawt_web_schema_flag(existing, leaf)));
             continue;
         }
 
@@ -299,7 +300,15 @@ clawt_web_tasks_body(ClawtWebApp *app, const gchar *agent_id)
             if (clawt_web_member(task, "progress_note", NULL) != NULL)
                 clawt_web_add(row, clawt_web_notice(
                     clawt_web_member(task, "progress_note", ""), "info"));
-            else if (clawt_web_member(task, "result_inferred", NULL) != NULL)
+            /*
+             * A JSON boolean, so the string reader always answered NULL
+             * and this branch was unreachable: a task that ended because
+             * the assignee stopped talking rather than because it
+             * reported was drawn as a plain `completed`, with the
+             * agent's last words presented as its result.  Both the GTK
+             * client and the CLI draw the caveat.
+             */
+            else if (clawt_web_schema_flag(task, "result_inferred"))
                 clawt_web_add(row, clawt_web_notice(
                     "Nobody reported this finished -- it is the last thing "
                     "the assignee wrote.", "warn"));

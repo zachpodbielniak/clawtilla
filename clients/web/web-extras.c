@@ -442,13 +442,28 @@ on_attach(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                     clawt_web_app_last_error(app));
 
     root = clawt_web_root(reply);
-    said = g_strdup_printf(
-        "Attached. On this machine: %s%s%s",
-        clawt_web_member(root, "host_path",
-                         clawt_web_member(root, "path", name)),
-        clawt_web_member(root, "guest_path", NULL) != NULL
-            ? "  ·  inside its computer: " : "",
-        clawt_web_member(root, "guest_path", ""));
+
+    {
+        /*
+         * `host_path` and `path`, which is what attachment.put sends.
+         * This asked for `guest_path`, a member that exists nowhere in
+         * the tree, so the guest spelling was never shown -- and for a
+         * container or VM agent that is the only path a command running
+         * inside the computer can open.  Handing over the host path
+         * alone sends the agent looking for a file that is not there,
+         * which is the failure the first image ever sent ran into.
+         */
+        const gchar *host = clawt_web_member(root, "host_path", NULL);
+        const gchar *guest = clawt_web_member(root, "path", NULL);
+        gboolean differs = host != NULL && guest != NULL &&
+                           g_strcmp0(host, guest) != 0;
+
+        said = g_strdup_printf(
+            "Attached. On this machine: %s%s%s",
+            host != NULL ? host : (guest != NULL ? guest : name),
+            differs ? "  \xc2\xb7  inside its computer: " : "",
+            differs ? guest : "");
+    }
 
     return clawt_web_after_action(app, request, agent_id,
                                   CLAWT_PAGE_CHAT, said);
@@ -522,7 +537,8 @@ add_integration_fields(HtmxElement *form, const gchar *type,
 
         if (entry->type == CLAWT_SCHEMA_BOOLEAN) {
             clawt_web_add(form, clawt_web_switch_field(
-                leaf, leaf, entry->doc, g_strcmp0(value, "true") == 0));
+                leaf, leaf, entry->doc,
+                clawt_web_schema_flag(values, leaf)));
             continue;
         }
 
