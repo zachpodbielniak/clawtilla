@@ -3145,6 +3145,264 @@ test_tool_descriptions_name_real_config_keys(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * A task somebody else handed out is not this agent's to read.
+ *
+ * clawtilla_task_cancel and clawtilla_task_complete each grew an inline
+ * origin/assignee test; the three verbs beside them -- status, result
+ * and progress -- were left with none, and all five are offered to every
+ * agent.  So any agent that had ever seen a task id in a listing or in a
+ * delivery preamble could read the assignee's verbatim final output and
+ * the delegator's private reason.  That is the shape a check takes when
+ * it is added where somebody noticed rather than where the rule is, so
+ * the rule now lives in one helper the five share.
+ */
+static void
+test_a_stranger_cannot_read_a_task(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) status = NULL;
+    g_autoptr(JsonNode) result = NULL;
+    ClawtTask *task;
+    gboolean is_error = FALSE;
+
+    fixture_setup(&fixture,
+                  "agents:\n  - id: chief\n  - id: worker\n"
+                  "  - id: stranger\n");
+
+    task = clawt_task_manager_create(fixture.tasks, "chief", "worker",
+                                     "check the invoice figures", NULL,
+                                     NULL);
+    g_assert_nonnull(task);
+
+    status = call_tool(&fixture, "stranger", "clawtilla_task_status",
+                       g_strdup_printf("{\"task_id\":\"%s\"}",
+                                       clawt_task_get_id(task)));
+
+    g_assert_nonnull(strstr(response_text(status, &is_error),
+                            "not yours to read"));
+    g_assert_true(is_error);
+
+    result = call_tool(&fixture, "stranger", "clawtilla_task_result",
+                       g_strdup_printf("{\"task_id\":\"%s\"}",
+                                       clawt_task_get_id(task)));
+
+    g_assert_true(is_error);
+    g_assert_nonnull(strstr(response_text(result, &is_error),
+                            "not yours to read"));
+
+    fixture_teardown(&fixture);
+}
+
+/* Both ends of it can, which is the point of the tool. */
+static void
+test_the_two_parties_can_read_their_own_task(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) as_origin = NULL;
+    g_autoptr(JsonNode) as_assignee = NULL;
+    ClawtTask *task;
+    gboolean is_error = TRUE;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n  - id: worker\n");
+
+    task = clawt_task_manager_create(fixture.tasks, "chief", "worker",
+                                     "check the invoice figures", NULL,
+                                     NULL);
+
+    as_origin = call_tool(&fixture, "chief", "clawtilla_task_status",
+                          g_strdup_printf("{\"task_id\":\"%s\"}",
+                                          clawt_task_get_id(task)));
+    response_text(as_origin, &is_error);
+    g_assert_false(is_error);
+
+    is_error = TRUE;
+    as_assignee = call_tool(&fixture, "worker", "clawtilla_task_status",
+                            g_strdup_printf("{\"task_id\":\"%s\"}",
+                                            clawt_task_get_id(task)));
+    response_text(as_assignee, &is_error);
+    g_assert_false(is_error);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Progress is the assignee's alone, because of what it is rendered as.
+ *
+ * A note is shown by clawtilla_task_status as "Latest from <assignee>",
+ * attributed to them and not to whoever wrote it -- and it holds the
+ * task open past the end of its assignee's turn, so a delegator waits on
+ * work that finished and reads somebody else's sentence as the worker's
+ * own words.
+ */
+static void
+test_only_the_assignee_reports_progress(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) as_origin = NULL;
+    g_autoptr(JsonNode) as_assignee = NULL;
+    ClawtTask *task;
+    gboolean is_error = FALSE;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n  - id: worker\n");
+
+    task = clawt_task_manager_create(fixture.tasks, "chief", "worker",
+                                     "check the invoice figures", NULL,
+                                     NULL);
+
+    as_origin = call_tool(&fixture, "chief", "clawtilla_task_progress",
+                          g_strdup_printf("{\"task_id\":\"%s\","
+                                          "\"note\":\"all fine\"}",
+                                          clawt_task_get_id(task)));
+
+    g_assert_nonnull(strstr(response_text(as_origin, &is_error),
+                            "to report on"));
+    g_assert_true(is_error);
+    g_assert_null(clawt_task_get_progress_note(task));
+
+    is_error = TRUE;
+    as_assignee = call_tool(&fixture, "worker", "clawtilla_task_progress",
+                            g_strdup_printf("{\"task_id\":\"%s\","
+                                            "\"note\":\"halfway\"}",
+                                            clawt_task_get_id(task)));
+
+    response_text(as_assignee, &is_error);
+    g_assert_false(is_error);
+    g_assert_cmpstr(clawt_task_get_progress_note(task), ==, "halfway");
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * clawtilla_message_agent takes an agent id, and a room id is not one.
+ *
+ * The argument went to the router unchecked and the router resolves a
+ * room id first, so naming "dm:<a>:<b>" here addressed that room -- and
+ * the direct-room naming is derivable from the pairs clawtilla_list_agents
+ * hands out.  clawtilla_post_room checks membership before it calls; this
+ * tool did not, so the check was walked around by spelling the room into
+ * the other tool.  The message landed in somebody else's private
+ * conversation, was appended to its transcript and published as an event
+ * both clients render in that chat.
+ */
+static void
+test_message_agent_will_not_address_a_room(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    gboolean is_error = FALSE;
+
+    fixture_setup(&fixture,
+                  "agents:\n  - id: chief\n  - id: oryx\n"
+                  "  - id: nosy\n");
+
+    response = call_tool(&fixture, "nosy", "clawtilla_message_agent",
+                         "{\"agent_id\":\"dm:oryx:user\","
+                         "\"body\":\"hello\"}");
+
+    g_assert_true(is_error == FALSE);
+    g_assert_nonnull(strstr(response_text(response, &is_error),
+                            "There is no agent called"));
+    g_assert_true(is_error);
+
+    /* And nothing was handed to the router at all. */
+    g_assert_null(fixture.last_target);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Naming an idle room buys nothing, which is why the room the *runtime*
+ * supplies needs no check.
+ *
+ * CLAWTILLA_ROOM_ID is an environment variable read by
+ * clawtilla-mcp-server, and an agent's own bash runs on the host -- so
+ * it can set that variable and run the same binary, or speak tool.rpc on
+ * the socket itself.  call_room() takes it as given anyway, and the
+ * reason is downstream: every per-room getter falls back to the
+ * agent-wide fold when the room it is handed has no turn, and the fold
+ * picks the safe direction.  That is a property of four functions in
+ * another file, so it is asserted here rather than assumed: if
+ * turn_in()'s fallback ever became "no turn means depth 0", the missing
+ * check would turn into a way past max_hops, and nothing at call_room()
+ * would say so.
+ */
+static void
+test_a_forged_runtime_room_buys_nothing(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    ClawtAgent *chief;
+    gboolean is_error = FALSE;
+
+    fixture_setup(&fixture,
+        "orchestration:\n  max_hops: 8\n"
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: researcher\n");
+
+    chief = clawt_agent_manager_get(fixture.agents, "chief");
+    g_assert_nonnull(chief);
+
+    /* A deep exchange is running in one room. */
+    clawt_agent_deliver_turn(chief, "dm:chief:researcher", 4, TRUE,
+                             "researcher", NULL);
+    clawt_agent_note_typing(chief, "dm:chief:researcher", TRUE);
+
+    g_assert_cmpint(clawt_agent_get_hop_depth_in(chief,
+                                                 "dm:chief:researcher"),
+                    ==, 4);
+
+    /* And the call names a different one, where nothing is running. */
+    response = call_tool_in(&fixture, "chief", "dm:chief:user",
+                            "clawtilla_message_agent",
+                            "{\"agent_id\":\"researcher\","
+                            "\"body\":\"and another thing\"}");
+
+    response_text(response, &is_error);
+    g_assert_false(is_error);
+
+    /*
+     * Delivered at the depth of the turn it really has, not at the 0 the
+     * unrunning room would have answered.  The fold is the fallback and
+     * it picks the deepest, which is the safe direction.
+     */
+    g_assert_cmpint(fixture.last_depth, ==, 5);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And the room is still recorded as the delegation's own, which is the
+ * one thing an unrunning room is right about and the reason checking it
+ * would cost more than it bought.
+ */
+static void
+test_the_runtime_room_is_kept_when_no_turn_is_running(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    g_autoptr(GPtrArray) tasks = NULL;
+    gboolean is_error = FALSE;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: researcher\n");
+
+    response = call_tool_in(&fixture, "chief", "dm:chief:user",
+                            "clawtilla_delegate",
+                            "{\"agent_id\":\"researcher\","
+                            "\"task\":\"summarise the week\"}");
+    response_text(response, &is_error);
+    g_assert_false(is_error);
+
+    tasks = clawt_task_manager_list(fixture.tasks, "researcher", TRUE);
+    g_assert_cmpuint(tasks->len, ==, 1);
+    g_assert_cmpstr(clawt_task_get_room(g_ptr_array_index(tasks, 0)), ==,
+                    "dm:chief:user");
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -3277,6 +3535,19 @@ main(int argc, char *argv[])
                     test_a_room_an_agent_is_not_in_is_not_postable);
     g_test_add_func("/mcp/descriptions-name-real-config-keys",
                     test_tool_descriptions_name_real_config_keys);
+
+    g_test_add_func("/mcp-tools/task/stranger-cannot-read",
+                    test_a_stranger_cannot_read_a_task);
+    g_test_add_func("/mcp-tools/task/parties-can-read",
+                    test_the_two_parties_can_read_their_own_task);
+    g_test_add_func("/mcp-tools/task/progress-is-the-assignees",
+                    test_only_the_assignee_reports_progress);
+    g_test_add_func("/mcp-tools/message-agent/not-a-room",
+                    test_message_agent_will_not_address_a_room);
+    g_test_add_func("/mcp-tools/turn-room/idle-room-buys-nothing",
+                    test_a_forged_runtime_room_buys_nothing);
+    g_test_add_func("/mcp-tools/turn-room/records-the-room",
+                    test_the_runtime_room_is_kept_when_no_turn_is_running);
 
     return g_test_run();
 }

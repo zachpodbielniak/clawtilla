@@ -972,14 +972,31 @@ static const gchar *argument_string(JsonObject *arguments,
  *
  *   1. @from_runtime: libreclaw puts the session's room in the
  *      environment of the CLI that spawns clawtilla-mcp-server, one room
- *      per session, refreshed before each turn.  Nothing the model
- *      touches.
+ *      per session, refreshed before each turn.  Taken as given.
  *   2. `turn_room` in the call's own arguments: the agent repeating what
  *      its delivery preamble told it.  Believed only while it has a turn
  *      running there -- a claim is worth what it can be checked against,
  *      and an agent naming a room it is not in is either mistaken or
  *      trying its luck, since a shallower room would buy it a lower hop
  *      depth.
+ *
+ * The first is not checked, and this is deliberate rather than an
+ * oversight -- it is worth saying which, because "nothing the model
+ * touches" is not the reason.  CLAWTILLA_ROOM_ID is an environment
+ * variable read by clawtilla-mcp-server, and an agent's own bash runs on
+ * the *host*: it can set that variable and run the same binary, or speak
+ * tool.rpc on the socket itself.  The reason the claim needs no check is
+ * downstream of here: every per-room getter --
+ * clawt_agent_get_hop_depth_in(), _get_turn_task_id_in(),
+ * _get_turn_origin_in(), _get_turn_replies_in() -- falls back to the
+ * agent-wide fold when the room it is given has no turn, and the fold
+ * picks the safe direction (deepest depth, any peer origin, a task id
+ * only when the running turns agree).  So naming an idle room answers
+ * exactly what naming nothing answers, and there is no shallower reading
+ * to buy.  Checking it anyway would cost the room *label* a delegation
+ * records, which is the one thing an unrunning room can still be right
+ * about.  tests/test-mcp-tools.c pins that property, because it is what
+ * makes the missing check safe rather than lucky.
  *
  * Neither being available is not a failure.  Falling through to %NULL
  * makes the getters fold across every turn the agent has running, which
@@ -2751,6 +2768,23 @@ tool_message_agent(ClawtMcpTools *self,
         return g_strdup("Messaging is not available.");
     }
 
+    /*
+     * The argument is an agent id, so it has to name an agent.  It was
+     * passed to the router unchecked, and the router resolves a room id
+     * first -- so a room id given here addressed that room instead, and
+     * clawtilla_post_room's membership check was walked around by
+     * spelling the room into the other tool.  clawtilla_delegate has
+     * always checked this; the router refuses it now as well, and this
+     * is the refusal an agent can act on.
+     */
+    if (clawt_agent_manager_get(self->agents, target) == NULL) {
+        *is_error = TRUE;
+        return g_strdup_printf("There is no agent called '%s'. Use "
+                               "clawtilla_list_agents to see who is here, "
+                               "or clawtilla_post_room to write to a room.",
+                               target);
+    }
+
     if (!self->deliver(agent_id, target, body, NULL,
                        outbound_depth(self, agent_id, turn_room), priority,
                        self->deliver_data, &error)) {
@@ -3317,9 +3351,65 @@ append_handoff_history(ClawtMcpTools *self, GString *out,
     }
 }
 
+/*
+ * Whether a task is this agent's business, and why not when it is not.
+ *
+ * Written once because it was written twice already: clawtilla_task_cancel
+ * and clawtilla_task_complete each grew their own inline origin/assignee
+ * test, and the three verbs beside them -- status, result and progress --
+ * were left with none, which is the shape a check acquires when it is
+ * added where somebody noticed rather than where the rule is.  All five
+ * are NEEDS_NOTHING, so any agent that has ever seen a task id in a
+ * listing or a delivery preamble could read another agent's verbatim
+ * result and its delegator's private reason, or write a progress note
+ * that is rendered as the *assignee's* own words and holds somebody
+ * else's task open past its turn.
+ *
+ * An unknown id is not refused here.  The caller already says "there is
+ * no such task", and answering a bad id with a permission refusal tells
+ * an agent that a task it invented exists.
+ *
+ * Returns: (transfer full) (nullable): the refusal, or %NULL when allowed
+ */
 static gchar *
-tool_task_status(ClawtMcpTools *self, JsonObject *arguments,
-                 gboolean *is_error)
+task_refusal_for(ClawtMcpTools *self, const gchar *task_id,
+                 const gchar *agent_id, gboolean assignee_only)
+{
+    ClawtTask *task = (self->tasks != NULL && task_id != NULL)
+                      ? clawt_task_manager_get(self->tasks, task_id)
+                      : NULL;
+    const gchar *assignee;
+    const gchar *origin;
+
+    if (task == NULL)
+        return NULL;
+
+    assignee = clawt_task_get_assignee(task);
+    origin = clawt_task_get_origin(task);
+
+    if (g_strcmp0(assignee, agent_id) == 0)
+        return NULL;
+
+    if (!assignee_only && g_strcmp0(origin, agent_id) == 0)
+        return NULL;
+
+    if (assignee_only)
+        return g_strdup_printf(
+            "Task %s is %s's to report on, not yours. Report progress on "
+            "your own tasks; if you need something from them, "
+            "clawtilla_message_agent reaches them.", task_id,
+            assignee != NULL ? assignee : "somebody");
+
+    return g_strdup_printf(
+        "Task %s is not yours to read -- %s is doing it for %s. Use "
+        "clawtilla_task_list to see the tasks you handed out or were "
+        "given.", task_id, assignee != NULL ? assignee : "somebody",
+        origin != NULL ? origin : "somebody");
+}
+
+static gchar *
+tool_task_status(ClawtMcpTools *self, const gchar *agent_id,
+                 JsonObject *arguments, gboolean *is_error)
 {
     const gchar *task_id = argument_string(arguments, "task_id");
     g_autoptr(GString) out = NULL;
@@ -3332,6 +3422,16 @@ tool_task_status(ClawtMcpTools *self, JsonObject *arguments,
 
     task = (self->tasks != NULL)
            ? clawt_task_manager_get(self->tasks, task_id) : NULL;
+
+    {
+        g_autofree gchar *refusal =
+            task_refusal_for(self, task_id, agent_id, FALSE);
+
+        if (refusal != NULL) {
+            *is_error = TRUE;
+            return g_steal_pointer(&refusal);
+        }
+    }
 
     out = g_string_new(NULL);
 
@@ -3431,8 +3531,8 @@ tool_task_status(ClawtMcpTools *self, JsonObject *arguments,
 }
 
 static gchar *
-tool_task_result(ClawtMcpTools *self, JsonObject *arguments,
-                 gboolean *is_error)
+tool_task_result(ClawtMcpTools *self, const gchar *agent_id,
+                 JsonObject *arguments, gboolean *is_error)
 {
     const gchar *task_id = argument_string(arguments, "task_id");
     ClawtTask *task;
@@ -3448,6 +3548,16 @@ tool_task_result(ClawtMcpTools *self, JsonObject *arguments,
     if (task == NULL) {
         *is_error = TRUE;
         return g_strdup_printf("There is no task %s.", task_id);
+    }
+
+    {
+        g_autofree gchar *refusal =
+            task_refusal_for(self, task_id, agent_id, FALSE);
+
+        if (refusal != NULL) {
+            *is_error = TRUE;
+            return g_steal_pointer(&refusal);
+        }
     }
 
     if (!clawt_task_is_finished(task)) {
@@ -5133,9 +5243,9 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
     else if (g_strcmp0(tool_name, "clawtilla_task_list") == 0)
         text = tool_task_list(self, agent_id, arguments);
     else if (g_strcmp0(tool_name, "clawtilla_task_status") == 0)
-        text = tool_task_status(self, arguments, &is_error);
+        text = tool_task_status(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_task_result") == 0)
-        text = tool_task_result(self, arguments, &is_error);
+        text = tool_task_result(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_task_cancel") == 0) {
         const gchar *task_id = argument_string(arguments, "task_id");
         ClawtTask *task = (self->tasks != NULL)
@@ -5226,9 +5336,15 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
         const gchar *task_id = argument_string(arguments, "task_id");
         const gchar *note = argument_string(arguments, "note");
 
+        g_autofree gchar *refusal =
+            task_refusal_for(self, task_id, agent_id, TRUE);
+
         if (task_id == NULL || note == NULL) {
             is_error = TRUE;
             text = g_strdup("task_id and note are both required.");
+        } else if (refusal != NULL) {
+            is_error = TRUE;
+            text = g_steal_pointer(&refusal);
         } else if (self->tasks != NULL &&
                    clawt_task_manager_note_progress(self->tasks, task_id,
                                                     note)) {

@@ -31,6 +31,7 @@
  * code so a client that already knows the protocol reports something
  * sensible rather than an unknown number.
  */
+#define JSONRPC_INVALID_REQUEST  (-32600)
 #define JSONRPC_METHOD_NOT_FOUND (-32601)
 
 typedef struct {
@@ -91,33 +92,60 @@ tool_is_permitted(GStrv permitted, const gchar *name)
 }
 
 /*
- * Parses one line, or %NULL when it is not an object.
+ * Parses one line into its top-level object, and says separately whether
+ * the line was a JSON-RPC batch.
  *
  * Anything unparseable is passed through rather than dropped.  This sits
  * in the middle of somebody else's protocol, and a message shape neither
  * end has told us about is far more likely to be a version of MCP newer
  * than this file than an attack -- and swallowing it would surface as the
  * client hanging on a reply that never comes.
+ *
+ * A batch is not that shape, and the difference is the whole point.  An
+ * array is valid JSON holding ordinary requests, so "we could not find an
+ * object" read it as an unknown dialect and let it through untouched --
+ * and this filter is the only place allow_input is enforced for a guest
+ * desktop and the only place a connector's `tools:` grant is enforced at
+ * all.  Two characters around a refused `tools/call` therefore permitted
+ * it.  The comment above said the fail-open was deliberate, and it was:
+ * it was written about forward compatibility, by somebody not thinking
+ * about a security boundary, which is exactly why it survived.
+ *
+ * Batching is reported rather than filtered element by element.  Neither
+ * the guest desktop nor any connector needs it, and a filter that has to
+ * be right about nested shapes is a filter that will be wrong about the
+ * next one.
  */
-static JsonNode *
-parse_object(const gchar *line, JsonObject **object)
+static void
+parse_object(const gchar *line, JsonObject **object, gboolean *out_batch)
 {
     g_autoptr(JsonParser) parser = json_parser_new();
     JsonNode *root;
 
     *object = NULL;
 
+    if (out_batch != NULL)
+        *out_batch = FALSE;
+
     if (!json_parser_load_from_data(parser, line, -1, NULL))
-        return NULL;
+        return;
 
     root = json_parser_get_root(parser);
 
-    if (root == NULL || !JSON_NODE_HOLDS_OBJECT(root))
-        return NULL;
+    if (root == NULL)
+        return;
+
+    if (JSON_NODE_HOLDS_ARRAY(root)) {
+        if (out_batch != NULL)
+            *out_batch = TRUE;
+
+        return;
+    }
+
+    if (!JSON_NODE_HOLDS_OBJECT(root))
+        return;
 
     *object = json_object_ref(json_node_get_object(root));
-
-    return NULL;
 }
 
 static gchar *
@@ -177,6 +205,33 @@ build_refusal(JsonObject *request, const gchar *tool, const gchar *hint)
     return render(reply);
 }
 
+/*
+ * A refusal for a batch, which has no single id to answer.
+ *
+ * JSON-RPC says a request whose id could not be determined is answered
+ * with a null id, and a client waiting on the ids inside the batch is
+ * better off seeing an error than seeing nothing.
+ */
+static gchar *
+build_batch_refusal(void)
+{
+    g_autoptr(JsonObject) reply = json_object_new();
+    JsonObject *error = json_object_new();
+
+    json_object_set_string_member(reply, "jsonrpc", "2.0");
+    json_object_set_null_member(reply, "id");
+
+    json_object_set_int_member(error, "code", JSONRPC_INVALID_REQUEST);
+    json_object_set_string_member(
+        error, "message",
+        "clawtilla does not relay batched requests: send one request per "
+        "line, so each can be checked against what this agent is permitted "
+        "to call.");
+    json_object_set_object_member(reply, "error", error);
+
+    return render(reply);
+}
+
 gchar *
 clawt_mcp_relay_call_name(const gchar *line)
 {
@@ -184,7 +239,7 @@ clawt_mcp_relay_call_name(const gchar *line)
     JsonObject *params;
     const gchar *tool;
 
-    parse_object(line, &object);
+    parse_object(line, &object, NULL);
 
     if (object == NULL)
         return NULL;
@@ -211,7 +266,7 @@ clawt_mcp_relay_build_refusal(const gchar *line, const gchar *message)
     g_autoptr(JsonObject) reply = NULL;
     JsonObject *error;
 
-    parse_object(line, &object);
+    parse_object(line, &object, NULL);
 
     /*
      * A notification -- no id -- expects no answer, so there is nothing
@@ -243,11 +298,19 @@ clawt_mcp_relay_filter_outbound(const gchar  *line,
     g_autoptr(JsonObject) object = NULL;
     JsonObject *params;
     const gchar *tool;
+    gboolean batch = FALSE;
 
     if (refusal != NULL)
         *refusal = NULL;
 
-    parse_object(line, &object);
+    parse_object(line, &object, &batch);
+
+    if (batch) {
+        if (refusal != NULL)
+            *refusal = build_batch_refusal();
+
+        return FALSE;
+    }
 
     if (object == NULL)
         return TRUE;
@@ -289,7 +352,13 @@ clawt_mcp_relay_filter_inbound(const gchar *line, GStrv permitted)
     guint length;
     gboolean removed_any = FALSE;
 
-    parse_object(line, &object);
+    /*
+     * A batch is passed through here, unlike outbound.  It is refused on
+     * the way out, so a batched reply can only re-advertise a tool the
+     * agent will still be refused when it calls it -- untidy, not a way
+     * past the gate.
+     */
+    parse_object(line, &object, NULL);
 
     if (object == NULL)
         return g_strdup(line);

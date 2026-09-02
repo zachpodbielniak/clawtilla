@@ -148,8 +148,55 @@ test_unparseable_input_is_passed_on(void)
 
     g_assert_true(clawt_desktop_relay_filter_outbound("not json at all",
                                                       permitted, NULL));
-    g_assert_true(clawt_desktop_relay_filter_outbound("[1, 2, 3]",
-                                                      permitted, NULL));
+}
+
+/*
+ * A batch is not an unknown dialect, and this test used to say it was.
+ *
+ * It asserted that "[1, 2, 3]" is passed through, under a comment about
+ * forward compatibility -- which is true of a shape that is not JSON and
+ * false of a JSON array, because an array is where JSON-RPC puts
+ * requests.  The filter looked for a top-level object, did not find one,
+ * and let the line go to the child verbatim; so wrapping a refused
+ * tools/call in two characters was the whole exploit, against the only
+ * place allow_input is enforced for a guest desktop and the only place a
+ * connector's tools: grant is enforced at all.
+ *
+ * The intention now is that a batch is refused whatever is in it, since
+ * neither user of this relay needs batching and a filter that has to be
+ * right about nested shapes will be wrong about one of them.
+ */
+static void
+test_a_batch_is_refused(void)
+{
+    g_auto(GStrv) permitted = observing_only();
+    g_autofree gchar *refusal = NULL;
+    g_autofree gchar *harmless = NULL;
+    const gchar *batched_click =
+        "[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+        "\"params\":{\"name\":\"click\",\"arguments\":{\"x\":1}}}]";
+
+    g_assert_false(clawt_desktop_relay_filter_outbound(batched_click,
+                                                       permitted, &refusal));
+
+    /*
+     * With an answer, so the agent is told rather than left waiting.  A
+     * batch has no single id to reply to, so JSON-RPC's null-id form is
+     * what it gets.
+     */
+    g_assert_nonnull(refusal);
+    g_assert_nonnull(strstr(refusal, "batched"));
+
+    /*
+     * Even a batch holding nothing objectionable: the point is that the
+     * filter cannot vouch for what is inside one.
+     */
+    g_assert_false(clawt_desktop_relay_filter_outbound(
+        "[{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}]",
+        permitted, &harmless));
+
+    g_assert_false(clawt_desktop_relay_filter_outbound("[1, 2, 3]",
+                                                       permitted, NULL));
 }
 
 /*
@@ -307,6 +354,7 @@ main(int argc, char *argv[])
                     test_other_methods_pass_untouched);
     g_test_add_func("/desktop-relay/outbound/unparseable",
                     test_unparseable_input_is_passed_on);
+    g_test_add_func("/desktop-relay/outbound/batch", test_a_batch_is_refused);
     g_test_add_func("/desktop-relay/outbound/fails-closed",
                     test_no_permitted_tools_refuses_everything);
     g_test_add_func("/desktop-relay/inbound/tools-list-filtered",

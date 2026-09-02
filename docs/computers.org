@@ -212,9 +212,43 @@ agent can write.  ~allow_network: false~ becomes ~--unshare-net~; ~/tmp~
 is private; ~--die-with-parent~ means the sandbox goes when the agent
 does.
 
+~deny_paths~ come last, after the binds, because bwrap applies its
+operations in order and a denial is only ever about something an earlier
+bind brought in.  A denied *directory* is covered with an empty
+~--tmpfs~ and a denied *file* with ~--ro-bind /dev/null~; a denial
+naming a path no bind brings in needs no operation, since the namespace
+starts from nothing and the path is already absent.
+
+Until 0.1.0 they were emitted nowhere at all.  The argument scan returns
+early for this mode -- rightly, since scanning arguments is a guess and a
+namespace is a wall -- and the wall was built without the denials in it,
+so ~deny_paths~ was inert in the one mode documented as the strongest.
+~allow_paths: ["~"]~ with ~deny_paths: ["~/.ssh"]~ bound the whole home
+directory read-write and put nothing over the key, while the agent's
+computer region told it ~~/.ssh~ was off-limits.  The identical config
+under ~allowlist~ refused it, which is what kept the gap invisible: both
+modes were tried with the same file and only one of them was lying.
+
 This is the only host mode where a program cannot reach outside by
 constructing a path at runtime, because the paths are genuinely not in
 its namespace.
+
+*It constrains ~clawtilla_computer_exec~, not the agent.*  This is worth
+saying plainly, because the setting reads like a boundary drawn around
+the agent and it is a boundary drawn around one tool.  An agent's own
+Bash, Read and Write belong to its CLI, and that CLI is spawned by
+~ClawtProcessRuntime~ unwrapped -- so they reach the whole filesystem as
+the user running the daemon whatever ~confine~ says.  That is the
+architecture everywhere else in this document (/an agent's own tools run
+on the host; only exec enters the computer/), and ~host~ is simply the
+type where the two look like the same thing.  The description an agent
+is given now says which tool the limits apply to, for the same reason
+this paragraph exists: an agent told it is in a sandbox will believe a
+refusal it never got.
+
+If you need the agent process itself confined, confine the daemon -- a
+systemd unit, or a container -- rather than reading ~confine~ as though
+it did that.
 
 *Mounts declared on the agent are the exception worth knowing.*  A mount
 declared under ~computer.mounts~ works, because the factory copies its
@@ -2750,6 +2784,18 @@ use from ~tools/list~, and answers a call to one of them with an error
 rather than forwarding it.  A tool that is advertised and then refused is
 worse than one that is absent -- the agent plans around it, calls it, and
 has to work out from an error that it never had it.
+
+*A batched request is refused outright.*  The filter looks for a
+top-level JSON object, and a JSON-RPC batch is an array -- so it used to
+find no object, conclude the line was a dialect it had not been told
+about, and pass it to the child verbatim.  That reasoning is right for a
+line that is not JSON at all and wrong for an array, because an array is
+where JSON-RPC puts requests: wrapping a refused ~tools/call~ in two
+characters walked past the only place ~allow_input~ is enforced for a
+guest desktop, and the only place a connector's ~tools:~ grant is
+enforced at all.  Neither user of this relay needs batching, and a filter
+that has to be right about nested shapes will be wrong about one of them,
+so a batch gets a JSON-RPC error with a null id and goes no further.
 
 ~clawtilla-desktop~ is one of the keys clawtilla owns in that file.  The
 ~clawtilla-~ prefix is reserved wholesale -- every connector and every

@@ -66,6 +66,19 @@ So a conversation between two agents is between those two agents, and
 does not appear in your own chat with either of them.  You read it on
 the GTK client's Flow tab, or with ~clawtilla room history dm:a:b~.
 
+*Naming one of these is not permission to be in it.*  The id is
+derivable -- the pairs are in ~clawtilla_list_agents~ and the sorting
+rule is above -- so both halves have to check membership rather than
+trust the name.  ~clawtilla_recall~ and ~clawtilla_post_room~ always did.
+~clawtilla_message_agent~ did not, and its argument goes to a resolver
+that tries a room id first, so spelling ~dm:oryx:user~ into the *agent*
+argument addressed the operator's private conversation with oryx:
+appended to its transcript, indexed, published as a message event both
+clients render in that chat, and queued into oryx's mailbox as though
+the operator had sent it.  The check now lives in the router's resolver,
+which the tool path and the link path both go through, and the tool
+additionally refuses an agent argument that names no agent.
+
 These rooms are made on demand and nothing in the config names them, so
 the daemon scans the transcript directory at start and re-creates the
 ones that have a file.  Without that, every conversation the fleet had
@@ -355,7 +368,17 @@ for a result.
 *** Seeing all of it at once
 
 ~clawtilla_task_status~ answers about *one* task, and only if the agent
-still has its id.  An agent that has handed out five pieces of work and
+still has its id -- and only if the task is that agent's own, as either
+its origin or its assignee.  All five task verbs check that now.  Cancel
+and complete each grew their own inline test and the three beside them
+were left with none, which is the shape a check takes when it is added
+where somebody noticed rather than where the rule is: any agent that had
+ever seen an id in a listing or a delivery preamble could read another
+agent's verbatim result and its delegator's private reason.
+~clawtilla_task_progress~ is stricter still and belongs to the assignee
+alone, because a note is rendered as /Latest from <assignee>/ -- somebody
+else's sentence attributed to them -- and it holds the task open past the
+end of their turn.  An agent that has handed out five pieces of work and
 wants to know how they are going had to have kept five ids and make five
 calls -- and a chief that had lost them, or had been restarted, could not
 ask at all.  ~clawtilla_list_agents~ was no help either: it reports who

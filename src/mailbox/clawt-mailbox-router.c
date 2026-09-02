@@ -107,8 +107,37 @@ resolve_room(ClawtMailboxRouter  *self,
 
     room = clawt_room_manager_get(self->rooms, destination);
 
-    if (room != NULL)
+    if (room != NULL) {
+        /*
+         * Naming a room is not permission to post in it.
+         *
+         * room_for() learned this on the read side and the write side
+         * kept resolving any id straight through: clawtilla_post_room
+         * checked membership before calling, and clawtilla_message_agent
+         * -- whose argument is an *agent* id -- did not check anything,
+         * so "dm:oryx:user" reached here as a destination and was
+         * accepted.  A message written by one agent then landed in the
+         * operator's private conversation with another, was appended to
+         * its transcript, published as a `message` event both clients
+         * render in that chat, and queued into the other agent's mailbox
+         * as though the operator had sent it.  The link path reaches the
+         * same resolver with a room id out of the agent's own frame, so
+         * the check belongs here rather than at either caller.
+         *
+         * Only a sender that is an agent is held to it.  The operator
+         * and CLAWT_SYSTEM_SENDER are not in the manager, and a daemon
+         * that cannot write into a room it is telling somebody about is
+         * a daemon that cannot deliver a task notice.
+         */
+        if (clawt_agent_manager_get(self->agents, sender) != NULL &&
+            !clawt_room_has_member(room, sender)) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED,
+                        "'%s' is not in room '%s'", sender, destination);
+            return NULL;
+        }
+
         return room;
+    }
 
     if (clawt_agent_manager_get(self->agents, destination) == NULL) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
