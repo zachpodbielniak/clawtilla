@@ -1444,6 +1444,109 @@ test_every_task_tone_is_painted(void)
     }
 }
 
+/*
+ * A write has to come from this page.
+ *
+ * The banner says there is no login: reaching a listed address is the
+ * whole of the permission, and that is a deliberate decision about the
+ * *network*.  A cross-site form quietly turns it into a decision about
+ * every page the operator's browser happens to load -- an ordinary
+ * urlencoded POST is a "simple request", so it needs no preflight and
+ * the attacker never has to read the reply, because the effect is the
+ * side effect.  `POST /a/<id>/exec` runs a command inside an agent's
+ * computer; `POST /a/<id>/remove` deletes the agent.
+ *
+ * Tested as a function over header values rather than through a server,
+ * because the cases that matter are the ones a browser sends and a test
+ * client cannot be made to send.
+ */
+static void
+test_a_cross_site_write_is_refused(void)
+{
+    /* The browser's own account, when it gives one. */
+    g_assert_true(clawt_web_write_is_cross_site(HTMX_METHOD_POST,
+                                                "cross-site", NULL, NULL,
+                                                "127.0.0.1:8790"));
+    g_assert_true(clawt_web_write_is_cross_site(HTMX_METHOD_POST,
+                                                "same-site", NULL, NULL,
+                                                "127.0.0.1:8790"));
+    g_assert_false(clawt_web_write_is_cross_site(HTMX_METHOD_POST,
+                                                 "same-origin", NULL, NULL,
+                                                 "127.0.0.1:8790"));
+
+    /*
+     * "none" is a request the person started themselves -- a typed
+     * address or a bookmark -- which no page can cause.
+     */
+    g_assert_false(clawt_web_write_is_cross_site(HTMX_METHOD_POST, "none",
+                                                 NULL, NULL,
+                                                 "127.0.0.1:8790"));
+}
+
+/* Origin, then Referer, for the browser that sends no Sec-Fetch-Site. */
+static void
+test_the_origin_is_compared_with_the_host(void)
+{
+    g_assert_true(clawt_web_write_is_cross_site(
+        HTMX_METHOD_POST, NULL, "https://evil.example", NULL,
+        "127.0.0.1:8790"));
+
+    g_assert_false(clawt_web_write_is_cross_site(
+        HTMX_METHOD_POST, NULL, "http://127.0.0.1:8790", NULL,
+        "127.0.0.1:8790"));
+
+    g_assert_true(clawt_web_write_is_cross_site(
+        HTMX_METHOD_POST, NULL, NULL, "https://evil.example/page",
+        "127.0.0.1:8790"));
+
+    g_assert_false(clawt_web_write_is_cross_site(
+        HTMX_METHOD_POST, NULL, NULL, "http://127.0.0.1:8790/a/x",
+        "127.0.0.1:8790"));
+
+    /*
+     * A different port on the same host is a different origin, which is
+     * the case a split on the last colon gets wrong and an IPv6 address
+     * gets wrong twice.
+     */
+    g_assert_true(clawt_web_write_is_cross_site(
+        HTMX_METHOD_POST, NULL, "http://127.0.0.1:9999", NULL,
+        "127.0.0.1:8790"));
+
+    g_assert_false(clawt_web_write_is_cross_site(
+        HTMX_METHOD_POST, NULL, "http://[::1]:8790", NULL, "[::1]:8790"));
+}
+
+/*
+ * A read is never refused, and neither is a client that is not a
+ * browser.  Every link anybody has sent anybody else is a GET, and curl
+ * cannot be talked into forging the three headers a browser attaches on
+ * its own.
+ */
+static void
+test_reads_and_non_browsers_are_left_alone(void)
+{
+    g_assert_false(clawt_web_write_is_cross_site(
+        HTMX_METHOD_GET, "cross-site", "https://evil.example", NULL,
+        "127.0.0.1:8790"));
+
+    g_assert_false(clawt_web_write_is_cross_site(HTMX_METHOD_POST, NULL,
+                                                 NULL, NULL,
+                                                 "127.0.0.1:8790"));
+}
+
+/*
+ * A write whose destination cannot be established is refused rather than
+ * guessed at.  HTTP/1.1 requires a Host, so there is no honest request
+ * this turns away.
+ */
+static void
+test_a_write_with_no_host_is_refused(void)
+{
+    g_assert_true(clawt_web_write_is_cross_site(HTMX_METHOD_POST, NULL,
+                                                "http://127.0.0.1:8790",
+                                                NULL, NULL));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1540,6 +1643,15 @@ main(int argc, char *argv[])
                     test_every_task_tone_is_painted);
     g_test_add_func("/web/the-two-clients-stay-level",
                     test_the_two_clients_stay_level);
+
+    g_test_add_func("/web/cross-site-write",
+                    test_a_cross_site_write_is_refused);
+    g_test_add_func("/web/cross-site-origin",
+                    test_the_origin_is_compared_with_the_host);
+    g_test_add_func("/web/cross-site-reads",
+                    test_reads_and_non_browsers_are_left_alone);
+    g_test_add_func("/web/cross-site-no-host",
+                    test_a_write_with_no_host_is_refused);
 
     return g_test_run();
 }

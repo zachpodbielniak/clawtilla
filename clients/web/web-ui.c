@@ -15,6 +15,96 @@
 
 const gchar *clawt_web_stylesheet(void);
 
+/* ── Where a write came from ────────────────────────────────── */
+
+/*
+ * "host:port", from a URL or from a Host header.
+ *
+ * Both are parsed the same way so the comparison is between two things of
+ * the same shape.  A bare `Host` is not a URL, so it is given a scheme to
+ * make one -- which also gets the bracket form of an IPv6 address right,
+ * where splitting on the last colon does not.
+ */
+static gchar *
+authority_of(const gchar *value, gboolean is_url)
+{
+    g_autofree gchar *url = NULL;
+    g_autofree gchar *host = NULL;
+    gint port = -1;
+
+    if (value == NULL || *value == '\0')
+        return NULL;
+
+    url = is_url ? g_strdup(value) : g_strconcat("http://", value, NULL);
+
+    if (!g_uri_split_network(url, G_URI_FLAGS_NONE, NULL, &host, &port, NULL))
+        return NULL;
+
+    if (host == NULL || *host == '\0')
+        return NULL;
+
+    if (port < 0)
+        return g_ascii_strdown(host, -1);
+
+    {
+        g_autofree gchar *lowered = g_ascii_strdown(host, -1);
+
+        return g_strdup_printf("%s:%d", lowered, port);
+    }
+}
+
+gboolean
+clawt_web_write_is_cross_site(HtmxMethod   method,
+                              const gchar *sec_fetch_site,
+                              const gchar *origin,
+                              const gchar *referer,
+                              const gchar *host)
+{
+    g_autofree gchar *mine = NULL;
+    g_autofree gchar *theirs = NULL;
+
+    /*
+     * A read changes nothing, and refusing one would break every link
+     * anybody has ever sent somebody else.
+     */
+    if (method == HTMX_METHOD_GET)
+        return FALSE;
+
+    /*
+     * The browser's own answer, when it gives one.  "none" is a request
+     * the person started themselves -- a typed address or a bookmark --
+     * which no page can cause.
+     */
+    if (sec_fetch_site != NULL && *sec_fetch_site != '\0')
+        return g_ascii_strcasecmp(sec_fetch_site, "same-origin") != 0 &&
+               g_ascii_strcasecmp(sec_fetch_site, "none") != 0;
+
+    mine = authority_of(host, FALSE);
+
+    /*
+     * Without a Host there is nothing to compare against, and a write
+     * whose destination cannot be established is refused rather than
+     * guessed at.  HTTP/1.1 requires the header.
+     */
+    if (mine == NULL)
+        return TRUE;
+
+    /*
+     * Origin is sent on every cross-origin write, including the form
+     * post that has no preflight; Referer is the fallback for the older
+     * browser that sends neither of the other two.
+     */
+    theirs = authority_of(origin, TRUE);
+
+    if (theirs == NULL)
+        theirs = authority_of(referer, TRUE);
+
+    if (theirs == NULL)
+        return FALSE;
+
+    return g_strcmp0(mine, theirs) != 0;
+}
+
 /* ── Small helpers ───────────────────────────────────────────────── */
 
 void

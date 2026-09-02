@@ -439,4 +439,39 @@ gchar *clawt_web_relative_time(gint64 timestamp);
  */
 gchar *clawt_web_one_line(const gchar *text, glong limit);
 
+/**
+ * clawt_web_write_is_cross_site:
+ * @method: the request's method
+ * @sec_fetch_site: (nullable): the `Sec-Fetch-Site` header
+ * @origin: (nullable): the `Origin` header
+ * @referer: (nullable): the `Referer` header
+ * @host: (nullable): the `Host` header
+ *
+ * Whether a state-changing request came from somewhere other than this
+ * page, and must therefore be refused.
+ *
+ * There is no login here, and that is a decision: anything that can
+ * reach a listed address can drive the fleet.  The trust boundary is
+ * *network reachability*, and a form on any page the operator happens to
+ * open quietly widens it to *anything their browser loads* -- a
+ * `POST /a/x/exec` needs no reply to be read and no route to the
+ * tailnet, only a tab.  So a browser's own account of where a write came
+ * from is required to say "here" before it is honoured.
+ *
+ * Takes the header values rather than the request, so the decision can
+ * be tested without standing up a server -- the shapes that matter are
+ * the ones a real browser sends and a test client cannot.
+ *
+ * A request carrying none of the three is allowed: that is `curl`, not a
+ * browser, and a browser cannot be persuaded to omit them on a
+ * cross-origin write.
+ *
+ * Returns: %TRUE when the request must be refused
+ */
+gboolean clawt_web_write_is_cross_site(HtmxMethod   method,
+                                       const gchar *sec_fetch_site,
+                                       const gchar *origin,
+                                       const gchar *referer,
+                                       const gchar *host);
+
 G_END_DECLS

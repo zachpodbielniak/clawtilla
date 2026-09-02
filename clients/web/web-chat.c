@@ -1573,6 +1573,24 @@ on_attachment(HtmxRequest *request, GHashTable *params, gpointer user_data)
                       : "application/octet-stream");
 
     /*
+     * An attachment is content this server did not write, so it is served
+     * with the browser told not to make anything of it.
+     *
+     * `nosniff` pins the type above.  The sandbox is for SVG, which is
+     * the one entry on the image list that is also a *document*: an
+     * `<img src>` never runs its script, but "open image in new tab" --
+     * a routine thing to do with a screenshot -- makes it a top-level
+     * page in this origin, and this origin is a fleet with no login on
+     * it.  An empty `sandbox` gives it an opaque origin and no scripting
+     * while leaving it renderable, which serving it as a download would
+     * not.
+     */
+    htmx_response_add_header(response, "X-Content-Type-Options", "nosniff");
+    htmx_response_add_header(response, "Content-Security-Policy",
+                             "sandbox; default-src 'none'; style-src "
+                             "'unsafe-inline'; img-src data:");
+
+    /*
      * Never inline for anything that is not an image.  A file an agent
      * produced is content this server did not write, and letting a
      * browser render it in this origin is how a transcript becomes a

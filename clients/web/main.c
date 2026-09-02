@@ -238,6 +238,59 @@ bind_addresses(HtmxServer *server, GPtrArray *out_where, GError **error)
 
 /* ── Entry ───────────────────────────────────────────────────────── */
 
+/*
+ * Refuses a write that came from another page.
+ *
+ * One gate, before the routes, rather than a check in each of the sixty
+ * handlers that change something -- the count is why: a rule applied at
+ * sixty call sites is a rule about fifty-nine of them, and the
+ * sixty-first is added by somebody who never read this file.
+ *
+ * The banner below says there is no login, and means it: reaching a
+ * listed address is the whole of the permission.  That is a decision
+ * about the network, and a cross-site form quietly turned it into a
+ * decision about every page the operator's browser loads -- a
+ * `POST /a/<id>/exec` runs a command in an agent's computer and needs
+ * no reply to be read, so nothing about it is visible to the person it
+ * happens to.
+ */
+static void
+same_origin_middleware(HtmxContext        *context,
+                       HtmxMiddlewareNext  next,
+                       gpointer            next_data,
+                       gpointer            user_data)
+{
+    HtmxRequest *request = htmx_context_get_request(context);
+    SoupServerMessage *message = (request != NULL)
+        ? htmx_request_get_message(request) : NULL;
+    SoupMessageHeaders *headers = (message != NULL)
+        ? soup_server_message_get_request_headers(message) : NULL;
+
+    (void)user_data;
+
+    if (headers != NULL &&
+        clawt_web_write_is_cross_site(
+            htmx_request_get_method(request),
+            soup_message_headers_get_one(headers, "Sec-Fetch-Site"),
+            soup_message_headers_get_one(headers, "Origin"),
+            soup_message_headers_get_one(headers, "Referer"),
+            soup_message_headers_get_one(headers, "Host"))) {
+        static const gchar refusal[] =
+            "This page does not accept requests from other sites.\n";
+        HtmxResponse *response = htmx_response_new();
+
+        htmx_response_set_status(response, SOUP_STATUS_FORBIDDEN);
+        htmx_response_add_header(response, "Content-Type",
+                                 "text/plain; charset=utf-8");
+        htmx_response_set_content(response, refusal);
+
+        htmx_context_set_response(context, response);
+        return;
+    }
+
+    next(context, next_data);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -400,6 +453,8 @@ main(int argc, char *argv[])
 
     server = htmx_server_new();
     router = htmx_server_get_router(server);
+
+    htmx_server_use(server, same_origin_middleware, NULL, NULL);
 
     static_dir = find_static_dir();
 
