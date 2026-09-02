@@ -391,6 +391,13 @@ Read the detail -- ~clawtilla agent show <agent>~ -- fix the cause, and
 start it again.  Unlike =shadow=, =error= is retryable: a runtime that
 was down, an image that was missing, a name that was taken.
 
+If the agent is *also* answering, its restart policy has already brought
+it back and the state is stale -- that was a bug, fixed: an automatic
+restart now moves the agent to STARTING and its link moves it to
+RUNNING.  On a build that still has it, ~agent stop~ then ~agent start~
+clears it; ~agent start~ alone is refused with "the agent is already
+running", which sets =error= again.
+
 =shadow= is the other one: the configuration could not be understood, and
 no amount of retrying will change that.
 
@@ -399,6 +406,13 @@ no amount of retrying will change that.
 An enabled integration is missing a required key.  It is refused rather
 than warned about, because an agent whose Matrix block is incomplete
 starts perfectly cleanly and then never receives anything.
+
+The same refusal now covers the *credentials* -- a Matrix
+~access_token~, an email ~password~ -- and covers them for a named
+instance bound by scope as well as for an inline block.  A missing one
+used to be accepted: the rendered ~config.yaml~ named a credential file
+that was never written, which is the same silent outcome by a longer
+route.
 
 *** "could not resolve <reference>"
 

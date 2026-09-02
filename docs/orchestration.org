@@ -1150,6 +1150,14 @@ client should.  The scaffolded ~TOOLS.org~ says all of this, and
 ~clawtilla_mailbox_list~ says it again in the empty case rather than
 answering a bare "your mailbox is empty".
 
+*Both it and ~clawtilla_post_room~ answer only for a room the caller is
+a member of.*  Naming a room is not permission to read it: the direct
+rooms are ~dm:<sorted>:<pair>~ and the pairs come from
+~clawtilla_list_agents~, so without the membership check any agent could
+have read the operator's private conversation with another --- or
+posted into it.  Membership is asked of the room manager, which is the
+same source ~clawtilla_recall~ has always filtered on.
+
 ** Loop safety
 
 Four limits, each answering a different failure.  The defaults:
@@ -1518,6 +1526,21 @@ is not a rising edge, the turn state is not refreshed, and the new turn
 runs holding the abandoned one's depth, origin and task -- the same wrong
 answer, reached from the other side.
 
+**A process ending clears all three.**  The typing set was the only one
+cleared when the runtime exited, and the sentence above is just as true
+of the other two.  Deliveries are acknowledged at the socket and
+libreclaw's queue is in memory, so messages handed to a child that then
+died are gone and no turn will ever start for them -- while their
+pending entries stayed, to be popped by the *next* turns in those rooms.
+A fresh question from the operator inherited a lost peer exchange's
+depth, task, origin and its ~replies: false~, so the agent's answer was
+dropped as a sign-off and the operator saw a turn that produced nothing.
+The finished-turn table goes too: it is kept so a late answer can be
+judged, and no answer is coming from a process that is gone, but left
+there its last entry stands in for the agent's depth in
+~clawt_agent_get_hop_depth()~ -- which is what decides whether the agent
+is offered the tools that start a hop at all.
+
 libreclaw's half of the same contract: the indicator rises when a
 message's turn *starts*, not when the message arrives.  It used to rise
 at arrival, which was the same moment for every room-keyed routing mode
@@ -1654,6 +1677,15 @@ worker, this one catches a wedged conversation.
 
 ~orchestration.repeat_thresholds~ (default ~5,10,20~) and
 ~orchestration.repeat_max_keys~ (default 256).
+
+That default is now reached.  It ships commented, so almost no fleet
+writes it out, and the fleet-level list getter was the one getter with
+no fall-back to the schema -- it answered NULL, which
+~clawt_daemon_turn_configure()~ passed straight to the watch at every
+daemon start, emptying the thresholds the watch had set for itself.
+Repeat detection was therefore off everywhere the key was not written by
+hand, while this page, the generated config and the options reference
+all said 5, 10 and 20.
 
 The key is the tool name and its arguments with runs of whitespace
 collapsed.  **A bare tool name is not a call worth counting** --- five

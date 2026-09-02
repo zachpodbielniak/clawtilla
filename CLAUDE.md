@@ -259,6 +259,25 @@ happened at least three times. They generalise; the API notes below do not.
 - **A warning about a mistake a control makes is a bug report about the
   control.** If the answer to a bug report is an instruction, ask whether the
   software should have needed to give it.
+- **A comment naming a failure is not a fix for it, and reads exactly like
+  one.** Three did, and each was the bug it described sitting directly above
+  the code that performed it: `write_secret_file()` says "returning success
+  here produced an agent whose configuration named a credential file that was
+  never written" and then `return TRUE`; the log ring says "redacted on the
+  way in, not on the way out" beside a `g_signal_emit` of the raw line; the
+  guest-desktop fallback says an agent driving the user's screen when it was
+  told to drive its own VM is "the wrong way round to be wrong" and then falls
+  back to the host with `allow_input` intact. All three survived review
+  because the sentence you read is the sentence you would have written about
+  the fix. Read the code under the paragraph, not the paragraph.
+- **A predicate with one FALSE and five reasons is not an answer.**
+  `libvirt_has_domain()` returned FALSE for no bridge, a module that would not
+  load, a failed call, a reply with no list and a reply that was not JSON --
+  and callers spent it as "there is no such domain", so an unreachable
+  libvirtd turned removing a computer into deleting a possibly-running guest's
+  disk and reported that guest as cleanly stopped. Same shape as `qemu-img`
+  and the 404: separate "it said no" from "it did not say", in the function,
+  and make the caller that destroys something ask for the second.
 - **A technique an agent explains back to you belongs in the software.**
   `DISPLAY=:0 firefox`, `tesseract -- tsv` for click coordinates, `echo >
   /dev/console`: each was discovered by an agent burning a session, and each
@@ -583,6 +602,24 @@ already means every word literally.
   libvirt domain and a qcow2 belong to something else and can be deleted
   without telling us -- ask the hypervisor; provisioning is idempotent.
 - `podman` 404 for a container that is not there is **stopped**, not a failure.
+- podman's `--volume` is `src:dst[:options]` with the options **comma**-
+  separated, and a fourth colon-separated field is refused outright rather
+  than misread. distrobox passes the argument through unchanged, so
+  `src:dst:ro:z` failed the whole box -- and the exchange root is read-only
+  *and* shared-relabelled on every computer that shares host paths, which made
+  it every distrobox agent with a default configuration. The test that should
+  have caught it asserted `:ro` and `:z` on two *separate* mounts.
+- A timeout that kills the child has not necessarily ended the wait.
+  `g_subprocess_communicate_*()` finishes when the child has exited **and**
+  stdout and stderr have hit EOF, and a grandchild inherits those pipes -- so
+  `x &` kept the host backend waiting for the grandchild after the deadline
+  had fired and the child was dead. Cancel the read as well as killing the
+  process.
+- `CLAWT_COMPUTER_MAX_OUTPUT_BYTES` is declared once beside
+  `clawt_computer_truncate_output()`. Four backends each had their own
+  `#define` and applied it by hand, and two had drifted from the *claim*
+  rather than the number: distrobox capped neither stream and vm capped only
+  stdout, while `docs/computers.org` said both on all of them.
 - A `relabel` is work podman does at every start: it walks every file under
   the source with `lsetxattr`, and rootless podman cannot relabel files it
   does not own -- so a mount of a system path fails the whole start as a
@@ -875,6 +912,29 @@ versions apart.
 - An agent's mailbox is empty while it is running -- delivery acknowledges at
   the socket. Anywhere an empty result could read as an answer, say why it is
   empty.
+- **State describing a process must be cleared when the process ends, all of
+  it.** `on_runtime_exited()` cleared the typing set and said why in as many
+  words -- and left the pending queue and the turn table, which the same
+  sentence is true of. Deliveries ack at the socket and libreclaw's queue is
+  in memory, so messages handed to a child that died are gone while their
+  `TurnSetup` entries stayed to be popped by the *next* turns in those rooms:
+  a fresh question inherited a lost peer exchange's `replies: FALSE` and the
+  answer was dropped as a sign-off. The finished-turn table goes too --
+  `clawt_agent_get_hop_depth()` falls back to it, and that gates which tools
+  the agent is offered at all.
+- **A restart nobody asked for still has to move the state.** The restart
+  policy respawns from inside `ClawtAgentRuntime`, not through
+  `clawt_agent_start()`, and nothing connected to `::started` -- so a
+  recovered agent stayed ERROR for ever while working, and `agent start` on it
+  was refused with "already running", which set ERROR again. Grep for who
+  connects to a signal before assuming the state machine is closed.
+- **Naming a room is not permission to read it.** `room_for()` resolved any id
+  straight through `clawt_room_manager_get()`, and direct rooms are
+  `dm:<sorted>:<pair>` with the pairs in `clawtilla_list_agents` -- so one
+  agent could read the operator's private conversation with another, or post
+  into it. `rooms_visible_to()` had answered the same question correctly for
+  recall the whole time, calling itself "the permission, and the whole of it".
+  Put the check in the resolver both tools share.
 - **A task stamps itself in seconds**; every other timestamp in the tree --
   events, alerts, messages -- is microseconds, which is what
   `clawt_time_ago_label()` takes. Handing it `clawt_task_get_created_at()` raw
@@ -1014,7 +1074,27 @@ versions apart.
   accepted, echoed, saved and read back as the default --
   `computer.host.deny_paths` denied nothing.
 - A schema default is not a default unless every getter reads it. List defaults
-  are comma-separated in the table; one spelling, both readers.
+  are comma-separated in the table; one spelling, both readers. This was fixed
+  once on the agent getter, which then said above itself that it "was the only
+  getter that did not" -- and the fleet one still was, so
+  `orchestration.repeat_thresholds` never reached
+  `clawt_daemon_turn_configure()` and repeat detection was off on every fleet
+  that had not written the key by hand. Fix the rule, not the getter somebody
+  noticed.
+- An enum value the type does not have must not become **0**. Zero is a real,
+  documented member of each of them -- `never`, `ro`, `none` -- so a typo
+  selected a different working behaviour that no message could describe.
+  Report it at load and fall back to the documented default.
+- A relation the schema documents but does not hold is worse than one it never
+  claimed. `agents.runtime.autostart` said "Defaults to defaults.autostart",
+  had no row in `agent_keys[]`, and the only working copy of the rule was in
+  `clawt_agent_manager_start_all()` -- which nothing calls.
+  `tests/test-config-schema.c` now reads "Defaults to X" out of every doc
+  string and requires the relation to exist.
+- A mount is written by `add_mount_to_node()` and read by
+  `mounts_from_node()`; whatever one understands, the other has to say.
+  `create` and `required` were read, arrived over IPC, and were never
+  written.
 - Two things called "memory": `agents.memory` is libreclaw's MEMORY.md budget,
   `memories.*` is the searchable per-agent store.
 - `make docs-check` scans `=key=` markup only. Agent-relative keys are written
