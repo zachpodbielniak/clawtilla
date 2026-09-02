@@ -833,3 +833,66 @@ clawt_connector_format_credential(const ClawtConnectorInfo *info,
 
     return g_string_free(out, FALSE);
 }
+
+ClawtConnectorState
+clawt_connector_state(gboolean connected, gint64 expires_at,
+                      gboolean renewable, gint64 now)
+{
+    if (!connected)
+        return CLAWT_CONNECTOR_UNAUTHORISED;
+
+    if (now <= 0)
+        now = g_get_real_time() / G_USEC_PER_SEC;
+
+    /*
+     * A token with no expiry does not expire.  Zero is the daemon's
+     * spelling of "it did not say", and reading it as an instant in 1970
+     * would report every such credential as long dead.
+     */
+    if (expires_at <= 0)
+        return CLAWT_CONNECTOR_READY;
+
+    /*
+     * And one that can renew itself is working, whatever its expiry
+     * says: the refresh happens on the next call.
+     */
+    if (renewable)
+        return CLAWT_CONNECTOR_READY;
+
+    return (expires_at <= now) ? CLAWT_CONNECTOR_EXPIRED
+                               : CLAWT_CONNECTOR_READY;
+}
+
+const gchar *
+clawt_connector_state_label(ClawtConnectorState state)
+{
+    switch (state) {
+    case CLAWT_CONNECTOR_UNAUTHORISED:
+        return "not authorised";
+
+    case CLAWT_CONNECTOR_READY:
+        return "authorised";
+
+    case CLAWT_CONNECTOR_EXPIRED:
+        return "expired -- authorise it again";
+    }
+
+    return "not authorised";
+}
+
+const gchar *
+clawt_connector_state_tone(ClawtConnectorState state)
+{
+    switch (state) {
+    case CLAWT_CONNECTOR_UNAUTHORISED:
+        return "neutral";
+
+    case CLAWT_CONNECTOR_READY:
+        return "good";
+
+    case CLAWT_CONNECTOR_EXPIRED:
+        return "warn";
+    }
+
+    return "neutral";
+}

@@ -1091,6 +1091,85 @@ test_the_gitlab_pack_puts_its_credential_in_a_header_not_argv(void)
     clawt_test_remove_tree(dir);
 }
 
+/* ── What a connector's credential is doing ──────────────────────── */
+
+/*
+ * Three states, and the web client had one.
+ *
+ * `connector.list` sends `connected`, `expires_at` (an int), `renewable`
+ * and `granted_scopes`.  The web page read `status` -- a member the
+ * daemon has never sent -- so its fallback, the literal "not
+ * authorised", was the status of every connector including one
+ * authorised a second ago.  It read `scopes` for `granted_scopes` and
+ * read the integer expiry with the string reader, so both of those rows
+ * were suppressed too.  The GTK client had the rule right the whole
+ * time, which is exactly why nobody found this: the two clients
+ * disagreed and only one of them was on screen.
+ */
+static void
+test_a_connector_has_three_states(void)
+{
+    const gint64 now = 1000000;
+
+    /* No token at all. */
+    g_assert_cmpint(clawt_connector_state(FALSE, 0, FALSE, now), ==,
+                    CLAWT_CONNECTOR_UNAUTHORISED);
+
+    /* A live token. */
+    g_assert_cmpint(clawt_connector_state(TRUE, now + 3600, FALSE, now), ==,
+                    CLAWT_CONNECTOR_READY);
+
+    /* Run out, and cannot renew itself. */
+    g_assert_cmpint(clawt_connector_state(TRUE, now - 1, FALSE, now), ==,
+                    CLAWT_CONNECTOR_EXPIRED);
+
+    /*
+     * Run out and holds a refresh token, which is a connector working
+     * normally.  Drawing this one as broken lights the list up every
+     * hour and teaches somebody to ignore the one that genuinely is.
+     */
+    g_assert_cmpint(clawt_connector_state(TRUE, now - 1, TRUE, now), ==,
+                    CLAWT_CONNECTOR_READY);
+
+    /*
+     * And zero is the daemon's spelling of "it did not say", not an
+     * instant in 1970 -- a token with no expiry does not expire.
+     */
+    g_assert_cmpint(clawt_connector_state(TRUE, 0, FALSE, now), ==,
+                    CLAWT_CONNECTOR_READY);
+}
+
+/*
+ * Every state has a label and a tone, walked from the enum rather than
+ * from a list somebody keeps: a state added to the enum has to be
+ * classified here, and -Wswitch catches it in the library.
+ */
+static void
+test_every_connector_state_has_a_label_and_a_tone(void)
+{
+    ClawtConnectorState states[] = { CLAWT_CONNECTOR_UNAUTHORISED,
+                                     CLAWT_CONNECTOR_READY,
+                                     CLAWT_CONNECTOR_EXPIRED };
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(states); i++) {
+        const gchar *label = clawt_connector_state_label(states[i]);
+        const gchar *tone = clawt_connector_state_tone(states[i]);
+
+        g_assert_nonnull(label);
+        g_assert_cmpuint(strlen(label), >, 0);
+
+        /* One of the tones both stylesheets actually paint. */
+        g_assert_true(g_strcmp0(tone, "neutral") == 0 ||
+                      g_strcmp0(tone, "good") == 0 ||
+                      g_strcmp0(tone, "warn") == 0);
+    }
+
+    /* And they are not all the same sentence. */
+    g_assert_cmpstr(clawt_connector_state_label(CLAWT_CONNECTOR_READY), !=,
+                    clawt_connector_state_label(CLAWT_CONNECTOR_EXPIRED));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1157,6 +1236,11 @@ main(int argc, char *argv[])
                     test_the_gitlab_pack_joins_every_field_onto_the_instance);
     g_test_add_func("/connector/shipped-gitlab-pack-credential-in-header",
                     test_the_gitlab_pack_puts_its_credential_in_a_header_not_argv);
+
+    g_test_add_func("/connector/three-states",
+                    test_a_connector_has_three_states);
+    g_test_add_func("/connector/every-state-has-a-label",
+                    test_every_connector_state_has_a_label_and_a_tone);
 
     return g_test_run();
 }

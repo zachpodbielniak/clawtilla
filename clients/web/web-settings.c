@@ -751,12 +751,23 @@ connectors_content(ClawtWebApp *app)
         JsonObject *connector = json_array_get_object_element(list, i);
         const gchar *name = clawt_web_member(connector, "name", "?");
         g_autofree gchar *escaped = g_uri_escape_string(name, NULL, FALSE);
+        /*
+         * The members connector.list actually sends.  This read `type`,
+         * `status` and `scopes` -- none of which it has ever sent -- so
+         * the subtitle was blank, the status was the literal fallback
+         * "not authorised" for every connector including a working one,
+         * and the granted scopes never appeared.
+         */
         g_autoptr(HtmxDiv) card = clawt_web_card(
-            name, clawt_web_member(connector, "type", NULL));
+            name, clawt_web_member(connector, "provider", NULL));
         HtmxElement *body = clawt_web_card_body(card);
         g_autoptr(HtmxDiv) row = htmx_div_new();
-        const gchar *status = clawt_web_member(connector, "status",
-                                               "not authorised");
+        gint64 expires = clawt_web_member_int(connector, "expires_at", 0);
+        const gchar *status = clawt_connector_state_label(
+            clawt_connector_state(
+                clawt_web_member_bool(connector, "connected", FALSE),
+                expires,
+                clawt_web_member_bool(connector, "renewable", FALSE), 0));
         g_autofree gchar *refresh = g_strdup_printf(
             "/settings/connectors/%s/refresh", escaped);
         g_autofree gchar *revoke = g_strdup_printf(
@@ -766,14 +777,20 @@ connectors_content(ClawtWebApp *app)
 
         clawt_web_add(body, clawt_web_row("Status", status));
 
-        if (clawt_web_member(connector, "expires_at", NULL) != NULL)
-            clawt_web_add(body, clawt_web_row(
-                "Expires", clawt_web_member(connector, "expires_at", "")));
+        if (expires > 0) {
+            g_autoptr(GDateTime) when =
+                g_date_time_new_from_unix_local(expires);
+            g_autofree gchar *text = (when != NULL)
+                ? g_date_time_format(when, "%Y-%m-%d %H:%M") : NULL;
 
-        if (clawt_web_member(connector, "scopes", NULL) != NULL)
+            clawt_web_add(body, clawt_web_row("Expires",
+                                              text != NULL ? text : ""));
+        }
+
+        if (clawt_web_member(connector, "granted_scopes", NULL) != NULL)
             clawt_web_add(body, clawt_web_row(
                 "Granted scopes",
-                clawt_web_member(connector, "scopes", "")));
+                clawt_web_member(connector, "granted_scopes", "")));
 
         htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
 

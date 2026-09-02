@@ -268,4 +268,76 @@ ClawtConnectorInfo *clawt_connector_info_copy(const ClawtConnectorInfo *src);
  */
 void clawt_connector_info_free(ClawtConnectorInfo *info);
 
+/**
+ * ClawtConnectorState:
+ * @CLAWT_CONNECTOR_UNAUTHORISED: no credential has been obtained
+ * @CLAWT_CONNECTOR_READY: a credential that works
+ * @CLAWT_CONNECTOR_EXPIRED: a credential that has run out and cannot
+ *   renew itself
+ *
+ * What a connector's credential is doing, as far as a person needs to
+ * know.  Three states rather than two: an expired credential that holds
+ * a refresh token is working normally, and drawing it as broken lights
+ * the list up every hour and teaches somebody to ignore the one that
+ * genuinely is.
+ */
+typedef enum {
+    CLAWT_CONNECTOR_UNAUTHORISED = 0,
+    CLAWT_CONNECTOR_READY,
+    CLAWT_CONNECTOR_EXPIRED
+} ClawtConnectorState;
+
+/**
+ * clawt_connector_state:
+ * @connected: whether a token was loaded
+ * @expires_at: the token's expiry as a unix time, or 0 when it has none
+ * @renewable: whether a refresh token came with it
+ * @now: the current unix time, or 0 to read the clock
+ *
+ * Which of the three states a connector is in.
+ *
+ * Here rather than in a client because both of them draw it, and a rule
+ * two clients apply separately is a rule they will disagree about.  They
+ * did: the GTK client had all three states, and the web client read a
+ * member called `status` that `connector.list` has never sent -- so its
+ * fallback, the literal "not authorised", was the status of every
+ * connector including a freshly authorised one.  It read `scopes` for a
+ * member called `granted_scopes` and read the integer `expires_at` with
+ * the string reader, so both of those rows were suppressed as well.  A
+ * working connector reported as broken, with the expiry the daemon went
+ * to the trouble of sending hidden.
+ *
+ * Returns: the state
+ */
+ClawtConnectorState clawt_connector_state(gboolean connected,
+                                          gint64   expires_at,
+                                          gboolean renewable,
+                                          gint64   now);
+
+/**
+ * clawt_connector_state_label:
+ * @state: a #ClawtConnectorState
+ *
+ * The sentence a client puts on screen for @state.
+ *
+ * The switch names every value and has no `default:`, so a state added
+ * to the enum draws a -Wswitch warning here rather than silently
+ * reading as one of the others.
+ *
+ * Returns: (transfer none): the label
+ */
+const gchar *clawt_connector_state_label(ClawtConnectorState state);
+
+/**
+ * clawt_connector_state_tone:
+ * @state: a #ClawtConnectorState
+ *
+ * How a badge for @state should read: "neutral", "good" or "warn".
+ * Spelled the way clawt_task_state_tone() is, so a client maps one
+ * vocabulary to its stylesheet rather than two.
+ *
+ * Returns: (transfer none): the tone
+ */
+const gchar *clawt_connector_state_tone(ClawtConnectorState state);
+
 G_END_DECLS

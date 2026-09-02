@@ -467,7 +467,13 @@ clawt_gtk_refresh_settings_connectors(ClawtWindow *self)
                                                         0);
             GtkWidget *row = adw_action_row_new();
             g_autofree gchar *subtitle = NULL;
-            const gchar *icon;
+            /*
+             * Seeded with the unauthorised icon so -Wmaybe-uninitialized
+             * has nothing to say, while the switch below keeps its
+             * missing `default:` -- which is what makes -Wswitch name a
+             * ClawtConnectorState nobody classified.
+             */
+            const gchar *icon = "channel-insecure-symbolic";
 
             if (account != NULL && *account != '\0')
                 subtitle = g_strdup_printf("%s -- %s", provider, account);
@@ -482,16 +488,29 @@ clawt_gtk_refresh_settings_connectors(ClawtWindow *self)
              * renew itself is working normally, and showing it as broken
              * would light up the list every hour and teach somebody to
              * ignore the one that genuinely is.
+             *
+             * Through the library, because the web client draws this too
+             * and had never once drawn it right -- it read a member the
+             * daemon does not send and reported every connector as
+             * unauthorised.  A rule two clients apply separately is a
+             * rule they disagree about.
              */
-            if (!connected)
+            switch (clawt_connector_state(
+                        connected, expires,
+                        json_object_get_boolean_member_with_default(
+                            entry, "renewable", FALSE), 0)) {
+            case CLAWT_CONNECTOR_UNAUTHORISED:
                 icon = "channel-insecure-symbolic";
-            else if (expires > 0 &&
-                     expires <= g_get_real_time() / G_USEC_PER_SEC &&
-                     !json_object_get_boolean_member_with_default(
-                         entry, "renewable", FALSE))
+                break;
+
+            case CLAWT_CONNECTOR_EXPIRED:
                 icon = "dialog-warning-symbolic";
-            else
+                break;
+
+            case CLAWT_CONNECTOR_READY:
                 icon = "emblem-ok-symbolic";
+                break;
+            }
 
             adw_action_row_add_suffix(ADW_ACTION_ROW(row),
                                       gtk_image_new_from_icon_name(icon));
