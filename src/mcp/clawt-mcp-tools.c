@@ -267,7 +267,7 @@ static const ClawtParamInfo memory_search_params[] = {
     { "limit",    "integer", "How many at most.", FALSE },
     { "agent",    "string",
       "Whose memories to search. Defaults to your own; another agent's "
-      "only if they have listed you in memory.readers.", FALSE }
+      "only if they have listed you in memories.readers.", FALSE }
 };
 
 static const ClawtParamInfo memory_list_params[] = {
@@ -4084,7 +4084,7 @@ tool_message_user(ClawtMcpTools *self, const gchar *agent_id,
  * Whose memories the caller may read.
  *
  * Its own always. Somebody else's only when that agent has named it in
- * memory.readers -- which is empty by default, so the answer is almost
+ * memories.readers -- which is empty by default, so the answer is almost
  * always "your own or nothing". Reading only: there is no path by which
  * one agent writes into another's memory, because a memory you did not
  * form is not a memory.
@@ -4529,8 +4529,26 @@ room_for(ClawtMcpTools *self, const gchar *room_id, const gchar *caller)
 
     room = clawt_room_manager_get(self->room_manager, room_id);
 
+    /*
+     * A member, or it is not this agent's room to read or write.
+     *
+     * The lookup used to be the whole of it, so naming a room was the
+     * only thing standing between an agent and any conversation in the
+     * fleet -- and naming one is no barrier at all: a direct room is
+     * `dm:<sorted>:<pair>`, the pairs come from clawtilla_list_agents,
+     * and the comment below spells the shape out.  So an agent could
+     * read the operator's private exchange with another agent, and post
+     * into it.
+     *
+     * rooms_visible_to() answers this same question for recall from
+     * clawt_room_manager_rooms_for() and calls itself "The permission,
+     * and the whole of it".  It was; it just was not asked here.  Both
+     * now go through clawt_room_has_member(), and the check sits in the
+     * resolver rather than in the two tools, so a third one asking
+     * room_for() cannot reintroduce it.
+     */
     if (room != NULL)
-        return room;
+        return clawt_room_has_member(room, caller) ? room : NULL;
 
     /*
      * Not a room, so try it as an agent: the conversation between two

@@ -2883,6 +2883,268 @@ test_the_exec_tool_says_it_is_not_a_shell(void)
     fixture_teardown(&fixture);
 }
 
+/* ── Rooms an agent is not in ────────────────────────────────────── */
+
+/*
+ * An agent cannot read a room it is not a member of.
+ *
+ * room_for() resolved a room id straight through
+ * clawt_room_manager_get() with no membership test, so
+ * clawtilla_room_history handed back any room in the fleet to anybody
+ * who could name it -- and naming one is not a barrier: the ids of the
+ * direct rooms are `dm:<sorted>:<pair>`, the pairs come from
+ * clawtilla_list_agents, and room_for()'s own comment spells the shape
+ * out.  So one agent could read the operator's private conversation
+ * with another.
+ *
+ * rooms_visible_to(), three hundred lines above, builds its list from
+ * clawt_room_manager_rooms_for() and says of it "The permission, and
+ * the whole of it" -- the same question, answered two ways, with only
+ * the recall path enforcing it.  The check belongs in room_for(), which
+ * is where both the reading tool and the posting tool ask.
+ */
+static void
+test_a_room_an_agent_is_not_in_is_not_readable(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    g_autoptr(JsonNode) own = NULL;
+    g_autoptr(ClawtMessage) message = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtRoom *private_room;
+    g_autofree gchar *private_id = NULL;
+    g_autofree gchar *arguments = NULL;
+    const gchar *text;
+    gboolean is_error = FALSE;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "  - id: scribe\n");
+
+    /*
+     * The operator's conversation with the chief.  scribe is not in it,
+     * and has no way to be told what is in it.
+     */
+    private_room = clawt_room_manager_get_direct(fixture.rooms, "chief",
+                                                 "user");
+    g_assert_nonnull(private_room);
+
+    private_id = g_strdup(clawt_room_get_id(private_room));
+
+    message = clawt_message_new(private_id, "user",
+                                "the vault code is 4815162342");
+    g_assert_true(clawt_room_append(private_room, message, &error));
+    g_assert_no_error(error);
+
+    arguments = g_strdup_printf("{\"room_id\": \"%s\"}", private_id);
+
+    response = call_tool(&fixture, "scribe", "clawtilla_room_history",
+                         arguments);
+    text = response_text(response, &is_error);
+
+    g_assert_true(is_error);
+    g_assert_null(strstr(text, "4815162342"));
+
+    /*
+     * And a member still reads it, so the check refuses the right
+     * agent rather than everybody -- a refusal that also stopped the
+     * chief would look like the same fix and break the feature.
+     */
+    own = call_tool(&fixture, "chief", "clawtilla_room_history", arguments);
+    text = response_text(own, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_nonnull(strstr(text, "4815162342"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Nor post into one.
+ *
+ * The same resolver, so the same hole: an agent could put words into a
+ * conversation it was never part of, which for the operator's own room
+ * means text that reads as though it came from someone they were
+ * talking to.
+ */
+static void
+test_a_room_an_agent_is_not_in_is_not_postable(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    ClawtRoom *private_room;
+    g_autofree gchar *private_id = NULL;
+    g_autofree gchar *arguments = NULL;
+    gboolean is_error = FALSE;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "  - id: scribe\n");
+
+    private_room = clawt_room_manager_get_direct(fixture.rooms, "chief",
+                                                 "user");
+    private_id = g_strdup(clawt_room_get_id(private_room));
+
+    arguments = g_strdup_printf(
+        "{\"room_id\": \"%s\", \"body\": \"ignore the chief\"}", private_id);
+
+    response = call_tool(&fixture, "scribe", "clawtilla_post_room",
+                         arguments);
+    response_text(response, &is_error);
+
+    g_assert_true(is_error);
+
+    /* And nothing was handed to the deliver hook. */
+    g_assert_null(fixture.last_body);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Collects every dotted lowercase word out of @text.
+ *
+ * The shape a configuration key has when it appears in prose:
+ * `memories.readers`, `orchestration.max_hops`.  Filenames are the one
+ * other thing written this way, and they are excluded by their
+ * extension rather than by being listed -- an extension is about how
+ * files are named and does not drift as the schema does.
+ */
+static void
+collect_dotted_words(const gchar *text, GHashTable *into)
+{
+    static const gchar *const extensions[] = {
+        "org", "md", "json", "yaml", "yml", "so", "sock", "sh", "c", "h",
+        NULL
+    };
+    g_autoptr(GRegex) dotted = NULL;
+    g_autoptr(GMatchInfo) found = NULL;
+
+    if (text == NULL)
+        return;
+
+    dotted = g_regex_new("\\b[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]+)+\\b",
+                         0, 0, NULL);
+    g_assert_nonnull(dotted);
+
+    g_regex_match(dotted, text, 0, &found);
+
+    while (g_match_info_matches(found)) {
+        g_autofree gchar *word = g_match_info_fetch(found, 0);
+        const gchar *last = strrchr(word, '.') + 1;
+        gboolean is_file = FALSE;
+        guint e;
+
+        for (e = 0; extensions[e] != NULL; e++) {
+            if (g_strcmp0(last, extensions[e]) == 0)
+                is_file = TRUE;
+        }
+
+        if (!is_file)
+            g_hash_table_add(into, g_steal_pointer(&word));
+
+        g_match_info_next(found, NULL);
+    }
+}
+
+/*
+ * A configuration key named in a tool's description exists.
+ *
+ * clawtilla_memory_search told every agent that another agent's
+ * memories are readable "only if they have listed you in
+ * memory.readers".  The key is memories.readers.  An agent reading that
+ * has no way to find out otherwise -- it is not going to grep the
+ * schema -- so it repeats the wrong name to the operator, who then
+ * writes a block that is silently ignored and reads as the permission
+ * not working.
+ *
+ * `make docs-check` makes exactly this check for docs/ and README.org,
+ * against =key= markup.  A tool description is documentation an agent
+ * reads instead of the docs, and it had no equivalent.
+ *
+ * Every listed tool and every one of its parameters, walked from
+ * tools/list rather than from anything written here, so a description
+ * added later is covered from the moment it exists.
+ */
+static void
+test_tool_descriptions_name_real_config_keys(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) listing = NULL;
+    g_autoptr(GHashTable) words =
+        g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    GHashTableIter iter;
+    gpointer word;
+    JsonArray *tools;
+    guint i;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    chief_of_staff: true\n"
+                  "    computer:\n"
+                  "      type: host\n"
+                  "      host:\n"
+                  "        confirm_host_control: true\n"
+                  "  - id: worker\n");
+
+    listing = clawt_mcp_tools_list(fixture.tools, "chief");
+    tools = json_object_get_array_member(json_node_get_object(listing),
+                                         "tools");
+    g_assert_cmpuint(json_array_get_length(tools), >, 0);
+
+    for (i = 0; i < json_array_get_length(tools); i++) {
+        JsonObject *tool = json_array_get_object_element(tools, i);
+        JsonObject *schema;
+        JsonObject *properties;
+
+        collect_dotted_words(
+            json_object_get_string_member(tool, "description"), words);
+
+        schema = json_object_get_object_member(tool, "inputSchema");
+
+        if (!json_object_has_member(schema, "properties"))
+            continue;
+
+        properties = json_object_get_object_member(schema, "properties");
+
+        {
+            g_autoptr(GList) names = json_object_get_members(properties);
+            GList *l;
+
+            for (l = names; l != NULL; l = l->next) {
+                JsonObject *param =
+                    json_object_get_object_member(properties, l->data);
+
+                if (param != NULL &&
+                    json_object_has_member(param, "description"))
+                    collect_dotted_words(
+                        json_object_get_string_member(param, "description"),
+                        words);
+            }
+        }
+    }
+
+    g_assert_cmpuint(g_hash_table_size(words), >, 0);
+
+    g_hash_table_iter_init(&iter, words);
+
+    while (g_hash_table_iter_next(&iter, &word, NULL)) {
+        const gchar *candidate = word;
+
+        if (clawt_config_schema_lookup(candidate) != NULL)
+            continue;
+
+        g_error("a tool description names '%s', which is not a "
+                "configuration key. Tool descriptions are the only "
+                "documentation an agent reads, so a key it cannot look "
+                "up is one it will repeat to the operator", candidate);
+    }
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -3008,6 +3270,13 @@ main(int argc, char *argv[])
                     test_the_shell_it_recommends_actually_runs);
     g_test_add_func("/mcp/computer-exec/the-tool-says-it-is-not-a-shell",
                     test_the_exec_tool_says_it_is_not_a_shell);
+
+    g_test_add_func("/mcp/rooms/history-refuses-a-room-you-are-not-in",
+                    test_a_room_an_agent_is_not_in_is_not_readable);
+    g_test_add_func("/mcp/rooms/post-refuses-a-room-you-are-not-in",
+                    test_a_room_an_agent_is_not_in_is_not_postable);
+    g_test_add_func("/mcp/descriptions-name-real-config-keys",
+                    test_tool_descriptions_name_real_config_keys);
 
     return g_test_run();
 }
