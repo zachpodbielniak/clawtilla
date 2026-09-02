@@ -649,9 +649,32 @@ clawt_agent_config_get_enum(ClawtAgentConfig *self, const gchar *key)
     if (nick != NULL && clawt_enum_from_nick(entry->enum_type(), nick, &value))
         return value;
 
+    /*
+     * The agents.* row's own default first, then the fleet key's.
+     *
+     * An inherited option -- computer.type, runtime.restart -- has no
+     * default on the agents.* row, because the answer lives in
+     * `defaults:`.  So a misspelt value on an agent fell past a NULL
+     * and returned 0, which is a real value of each of these types:
+     * `computer.type: cotainer` read as `none`, and the agent came up
+     * with no computer rather than with the fleet's.
+     */
     if (entry->default_value != NULL &&
         clawt_enum_from_nick(entry->enum_type(), entry->default_value, &value))
         return value;
+
+    {
+        const gchar *fleet_key =
+            clawt_config_schema_fleet_key_for(key);
+        const ClawtSchemaEntry *fleet = (fleet_key != NULL)
+                                        ? clawt_config_schema_lookup(fleet_key)
+                                        : NULL;
+
+        if (fleet != NULL && fleet->default_value != NULL &&
+            clawt_enum_from_nick(entry->enum_type(), fleet->default_value,
+                                 &value))
+            return value;
+    }
 
     return 0;
 }
@@ -977,6 +1000,30 @@ add_mount_to_node(YamlNode    *root,
             yaml_node_new_string(clawt_mount_get_size(mount));
 
         yaml_mapping_set_member(mapping, "size", value);
+    }
+
+    /*
+     * Only when they are not what an absent key already means, and
+     * always when they are not.
+     *
+     * Both are read back by mounts_from_node() and both arrive on the
+     * wire in clawt_daemon_mount_from_payload(), and neither was
+     * written -- so `agent mount add --create --required=false` was
+     * validated, saved and reported as added, and came back on the next
+     * reload as `create: false, required: true`, which is the opposite
+     * of both.  A mount is written here and read there; whatever one
+     * end understands, the other has to be able to say.
+     */
+    if (clawt_mount_get_create(mount)) {
+        g_autoptr(YamlNode) value = yaml_node_new_string("true");
+
+        yaml_mapping_set_member(mapping, "create", value);
+    }
+
+    if (!clawt_mount_get_required(mount)) {
+        g_autoptr(YamlNode) value = yaml_node_new_string("false");
+
+        yaml_mapping_set_member(mapping, "required", value);
     }
 
     /*
@@ -2474,9 +2521,42 @@ warn_unknown_keys(ClawtConfig *self,
             continue;
         }
 
-        if (entry->type == CLAWT_SCHEMA_SECTION)
+        if (entry->type == CLAWT_SCHEMA_SECTION) {
             warn_unknown_keys(self, yaml_mapping_get_member(mapping, key),
                               full);
+            continue;
+        }
+
+        /*
+         * A value an enum does not have is worth the same warning as a
+         * key it does not have, and for a stronger reason.
+         *
+         * An unknown key reaches nothing; a misspelt enum reaches
+         * clawt_config_get_enum(), which could not parse it and
+         * returned 0 -- and 0 is a real, documented value of every one
+         * of these types.  `restart: sometimes` was silently `never`,
+         * `overflow: reject` silently `block-sender`.  The getters now
+         * fall back to the documented default instead, and this is
+         * where somebody is told they typed it.
+         */
+        if (entry->type == CLAWT_SCHEMA_ENUM && entry->enum_type != NULL) {
+            const gchar *written = lookup_string(self->root, full);
+            gint parsed = 0;
+
+            if (written != NULL &&
+                !clawt_enum_from_nick(entry->enum_type(), written, &parsed)) {
+                g_autofree gchar *allowed =
+                    clawt_enum_nick_list(entry->enum_type());
+
+                g_ptr_array_add(self->warnings,
+                    g_strdup_printf("'%s' is not a value of '%s'; using the "
+                                    "default '%s'. It is one of: %s",
+                                    written, full,
+                                    (entry->default_value != NULL)
+                                    ? entry->default_value : "",
+                                    allowed));
+            }
+        }
     }
 
     g_list_free(members);
@@ -2707,15 +2787,63 @@ clawt_config_get_enum(ClawtConfig *self, const gchar *key)
     if (nick != NULL && clawt_enum_from_nick(entry->enum_type(), nick, &value))
         return value;
 
+    /*
+     * A value the enum does not have falls back to the documented
+     * default, exactly as an unset key does.
+     *
+     * Returning 0 was worse than returning nothing, because 0 is a real
+     * value of each of these types and a perfectly ordinary one to
+     * intend: a misspelt `restart` read as `never` and a misspelt
+     * `overflow` as `block-sender`, with nothing anywhere saying so.
+     * warn_unknown_keys() names it at load; this decides what the fleet
+     * runs on, and the answer people can look up is the one in the
+     * documentation.
+     */
+    if (entry->default_value != NULL &&
+        clawt_enum_from_nick(entry->enum_type(), entry->default_value, &value))
+        return value;
+
     return 0;
 }
 
 GStrv
 clawt_config_get_string_list(ClawtConfig *self, const gchar *key)
 {
+    GStrv written;
+    const gchar *fallback;
+
     g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
 
-    return node_to_strv(node_at_path(self->root, key, FALSE));
+    written = node_to_strv(node_at_path(self->root, key, FALSE));
+
+    if (written != NULL)
+        return written;
+
+    /*
+     * A list falls back to the schema's default like every other type.
+     *
+     * clawt_agent_config_get_string_list() says above itself that it
+     * "used not to, and it was the only getter that did not" -- and that
+     * had stopped being true, because the fix was applied to the getter
+     * somebody noticed rather than to the rule.  The fleet getter was
+     * the remaining one, and it fed the only fleet list that declares a
+     * default: orchestration.repeat_thresholds.  #ClawtRepeatWatch sets
+     * "5,10,20" in its own init, clawt_daemon_turn_configure() runs at
+     * every daemon start and passed NULL over it, and
+     * clawt_repeat_watch_set_thresholds(NULL) empties the array -- so no
+     * fleet that had not written the key by hand did any repeat
+     * detection at all, while the schema, the generated config and the
+     * docs all said 5, 10 and 20.
+     *
+     * Comma-separated in the table, which is the spelling the generator
+     * renders from: one default, both readers.
+     */
+    fallback = schema_default_for(key);
+
+    if (fallback == NULL)
+        return NULL;
+
+    return g_strsplit(fallback, ",", -1);
 }
 
 gboolean

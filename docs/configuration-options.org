@@ -400,10 +400,13 @@ Absolute path inside the computer. Must not overlap another mount.
 
 - Type :: enum
 - Values :: ro, rw
-- Default :: =rw=
+- Default :: =ro=
 - Since :: 0.1.0
 
-ro or rw.
+ro or rw. Read-only is the default for the same reason it is on an
+agent's own mounts, and more so: an entry here reaches the whole
+fleet, so a mount that says nothing is one every agent may read and
+none may rewrite.
 
 *** =defaults.mounts.type=
 

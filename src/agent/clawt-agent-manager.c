@@ -502,18 +502,23 @@ clawt_agent_manager_start_all(ClawtAgentManager *self)
         ClawtAgent *agent = g_ptr_array_index(self->agents, i);
         ClawtAgentConfig *config = clawt_agent_get_config(agent);
         g_autoptr(GError) error = NULL;
-        gboolean autostart;
 
         if (clawt_agent_get_state(agent) == CLAWT_AGENT_STATE_SHADOW)
             continue;
 
-        autostart = clawt_agent_config_has_key(config, "runtime.autostart")
-                    ? clawt_agent_config_get_boolean(config,
-                                                     "runtime.autostart")
-                    : clawt_config_get_boolean(self->config,
-                                               "defaults.autostart");
-
-        if (!autostart)
+        /*
+         * Straight through the getter, which is where the fallback to
+         * `defaults.autostart` lives now.
+         *
+         * It used to be spelled out here instead -- has_key, else the
+         * fleet value -- and that private copy was the only working
+         * version of a relation the schema documented and did not have.
+         * Nothing calls this function, so the daemon's own autostart
+         * path and the `autostart` it reports to clients both read the
+         * getter and both got FALSE.  One statement of the relation, in
+         * agent_keys[], and every reader gets the same answer.
+         */
+        if (!clawt_agent_config_get_boolean(config, "runtime.autostart"))
             continue;
 
         /*

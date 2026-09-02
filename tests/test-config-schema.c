@@ -687,6 +687,96 @@ test_inert_options_admit_it(void)
     g_assert_cmpuint(inert, >, 0);
 }
 
+/*
+ * A doc that says an option inherits from a fleet key must have the
+ * relation to go with it.
+ *
+ * "Defaults to defaults.autostart." was written on
+ * agents.runtime.autostart and there was no row for it in agent_keys[],
+ * so clawt_agent_config_get_string() found no fleet key to fall back
+ * to, the agents.* row has no default of its own, and every agent read
+ * as autostart: false whatever the fleet said.  The one place with the
+ * fallback written out by hand -- clawt_agent_manager_start_all() -- is
+ * called by nothing; the daemon's real autostart path and the listing
+ * it reports to clients both ask the getter.  So the section documented
+ * as making that decision made none.
+ *
+ * Derived from the documentation rather than listed here: a key named
+ * in a doc that is itself a schema key is a claim about inheritance,
+ * and this is that claim being checked.  Prose defaults -- "the id",
+ * "clawt-<agent-id>", "defaults.workspace_root/<id>" -- are not schema
+ * keys and are skipped by the lookup.
+ */
+static void
+test_a_documented_inheritance_has_a_relation(void)
+{
+    const ClawtSchemaEntry *entries;
+    gsize n_entries = 0;
+    gsize i;
+    guint checked = 0;
+
+    entries = clawt_config_schema_get(&n_entries);
+
+    for (i = 0; i < n_entries; i++) {
+        const gchar *doc = entries[i].doc;
+        const gchar *at;
+        const gchar *agent_name;
+        const gchar *fleet_key;
+        gsize length = 0;
+        g_autofree gchar *named = NULL;
+
+        if (doc == NULL)
+            continue;
+
+        at = strstr(doc, "Defaults to ");
+
+        if (at == NULL)
+            continue;
+
+        at += strlen("Defaults to ");
+
+        while (at[length] != '\0' && at[length] != '.' &&
+               !g_ascii_isspace(at[length]))
+            length++;
+
+        /* A dotted key: keep going while the dot has more key after it. */
+        while (at[length] == '.' && g_ascii_islower(at[length + 1])) {
+            length++;
+
+            while (at[length] != '\0' && at[length] != '.' &&
+                   !g_ascii_isspace(at[length]))
+                length++;
+        }
+
+        named = g_strndup(at, length);
+
+        if (clawt_config_schema_lookup(named) == NULL)
+            continue;   /* prose, not a key */
+
+        agent_name = clawt_config_schema_agent_name(&entries[i]);
+
+        if (agent_name == NULL)
+            g_error("schema key '%s' documents a default of '%s' but is "
+                    "not settable on an agent", entries[i].key, named);
+
+        fleet_key = clawt_config_schema_fleet_key_for(agent_name);
+
+        if (g_strcmp0(fleet_key, named) != 0)
+            g_error("schema key '%s' documents a default of '%s'; "
+                    "clawt_config_schema_fleet_key_for(\"%s\") answers "
+                    "'%s'", entries[i].key, named, agent_name,
+                    fleet_key != NULL ? fleet_key : "(nothing)");
+
+        checked++;
+    }
+
+    /*
+     * And the scan found some.  A parser that matched nothing would
+     * leave this green while checking no relation at all.
+     */
+    g_assert_cmpuint(checked, >, 0);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -728,6 +818,9 @@ main(int argc, char *argv[])
                     test_dangerous_options_are_flagged_in_output);
     g_test_add_func("/schema/inert-options-admit-it",
                     test_inert_options_admit_it);
+
+    g_test_add_func("/config-schema/a-documented-inheritance-has-a-relation",
+                    test_a_documented_inheritance_has_a_relation);
 
     return g_test_run();
 }

@@ -1390,6 +1390,366 @@ test_teams_come_back_in_order(void)
                     "mike");
 }
 
+/*
+ * Whether a schema key lives inside a list of mappings.
+ *
+ * The same derivation clawt-schema-render.c makes, and for the same
+ * reason: an `agents.*` or `integrations.*` key belongs to a block and
+ * is read by that block's own getter, not by the fleet one.  Derived
+ * from CLAWT_SCHEMA_LIST_OF rather than from a list of section names,
+ * so a seventh list added later is classified without editing this.
+ */
+static gboolean
+key_is_inside_a_list_of(const gchar *key)
+{
+    const gchar *dot = key;
+
+    while ((dot = strchr(dot, '.')) != NULL) {
+        g_autofree gchar *prefix = g_strndup(key, (gsize)(dot - key));
+        const ClawtSchemaEntry *parent = clawt_config_schema_lookup(prefix);
+
+        if (parent != NULL && parent->type == CLAWT_SCHEMA_LIST_OF)
+            return TRUE;
+
+        dot++;
+    }
+
+    return FALSE;
+}
+
+/*
+ * Every fleet-level list default is reachable through the fleet getter.
+ *
+ * clawt_config_get_string_list() was the one getter with no schema
+ * fallback, so a STRING_LIST default was rendered into
+ * data/default-config.yaml, written into docs/configuration-options.org
+ * and handed to nobody.  The one key that has a default,
+ * orchestration.repeat_thresholds, is read at every daemon start by
+ * clawt_daemon_turn_configure(), which passed the NULL straight to
+ * clawt_repeat_watch_set_thresholds() -- and that empties the array the
+ * watch had filled with the same "5,10,20" in its own init.  Repeat
+ * detection was therefore off on every fleet that had not written the
+ * key out by hand, which is every fleet using the generated config,
+ * since the key ships commented.
+ *
+ * Walked rather than named, and the expected value comes from the
+ * schema, so this covers the next list default rather than this one.
+ */
+static void
+test_every_fleet_list_default_is_reachable(void)
+{
+    g_autoptr(ClawtConfig) config = clawt_config_new();
+    const ClawtSchemaEntry *entries;
+    gsize n_entries = 0;
+    gsize i;
+    guint checked = 0;
+
+    entries = clawt_config_schema_get(&n_entries);
+
+    for (i = 0; i < n_entries; i++) {
+        g_auto(GStrv) got = NULL;
+        g_auto(GStrv) want = NULL;
+        guint n;
+
+        if (entries[i].type != CLAWT_SCHEMA_STRING_LIST)
+            continue;
+
+        if (entries[i].default_value == NULL)
+            continue;
+
+        if (key_is_inside_a_list_of(entries[i].key))
+            continue;
+
+        got = clawt_config_get_string_list(config, entries[i].key);
+        want = g_strsplit(entries[i].default_value, ",", -1);
+
+        if (got == NULL)
+            g_error("schema key '%s' declares the default '%s' and "
+                    "clawt_config_get_string_list() answers NULL",
+                    entries[i].key, entries[i].default_value);
+
+        g_assert_cmpuint(g_strv_length(got), ==, g_strv_length(want));
+
+        for (n = 0; want[n] != NULL; n++)
+            g_assert_cmpstr(got[n], ==, want[n]);
+
+        checked++;
+    }
+
+    /*
+     * And the walk actually reached something.  A filter that excluded
+     * every entry would leave this green with nothing tested, which is
+     * the shape of failure this test exists to catch.
+     */
+    g_assert_cmpuint(checked, >, 0);
+}
+
+/*
+ * A value written in the file still wins over the schema default.
+ *
+ * The fallback above is a fallback: a fleet that sets the key gets what
+ * it asked for rather than the schema's answer laid over the top.
+ */
+static void
+test_a_written_list_wins_over_the_schema_default(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_auto(GStrv) written = NULL;
+    g_autoptr(GError) error = NULL;
+
+    config = clawt_config_load_from_string(
+        "orchestration:\n"
+        "  repeat_thresholds: [7, 9]\n", &error);
+
+    g_assert_no_error(error);
+    g_assert_nonnull(config);
+
+    written = clawt_config_get_string_list(config,
+                                           "orchestration.repeat_thresholds");
+
+    g_assert_nonnull(written);
+    g_assert_cmpuint(g_strv_length(written), ==, 2);
+    g_assert_cmpstr(written[0], ==, "7");
+    g_assert_cmpstr(written[1], ==, "9");
+}
+
+/*
+ * defaults.autostart reaches an agent that says nothing about it.
+ *
+ * The whole point of the `defaults:` section is that an agent which is
+ * silent follows the fleet, and the schema says as much on
+ * agents.runtime.autostart -- "Defaults to defaults.autostart."  There
+ * was no relation behind that sentence, so the getter had nothing to
+ * fall back through and answered FALSE for every agent however the
+ * fleet was configured.  The daemon's autostart scheduling and the
+ * `autostart` field in the agent listing both ask this getter, so a
+ * fleet that asked for its agents to come up with the daemon got a
+ * fleet that did not, and a client that showed the setting showed
+ * `false` next to the `true` in the file.
+ */
+static void
+test_defaults_autostart_reaches_a_silent_agent(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *silent;
+    ClawtAgentConfig *explicit_off;
+
+    config = clawt_config_load_from_string(
+        "defaults:\n"
+        "  autostart: true\n"
+        "agents:\n"
+        "  - id: follower\n"
+        "  - id: refuser\n"
+        "    runtime:\n"
+        "      autostart: false\n", &error);
+
+    g_assert_no_error(error);
+    g_assert_nonnull(config);
+
+    silent = clawt_config_get_agent(config, "follower");
+    g_assert_nonnull(silent);
+    g_assert_true(clawt_agent_config_get_boolean(silent,
+                                                 "runtime.autostart"));
+
+    /* And an agent that said so still overrides the fleet. */
+    explicit_off = clawt_config_get_agent(config, "refuser");
+    g_assert_nonnull(explicit_off);
+    g_assert_false(clawt_agent_config_get_boolean(explicit_off,
+                                                  "runtime.autostart"));
+}
+
+/*
+ * A mount survives being written and read back, `create` and `required`
+ * included.
+ *
+ * add_mount_to_node() wrote source, target, mode, type, relabel, size,
+ * scope, agents and teams -- and not the two booleans, which
+ * mounts_from_node() reads and clawt_daemon_mount_from_payload() takes
+ * from the wire.  So `agent mount add --required=false --create` was
+ * accepted, validated, reported as added and saved without them: the
+ * next reload gave `required: true` and `create: false`, which are the
+ * opposite of both.  For `required` that is the difference between a
+ * laptop whose agent starts when a share is missing and one that
+ * refuses to, which is exactly the case the option's own documentation
+ * recommends it for.
+ *
+ * Round-tripped through the writer and the parser rather than asserting
+ * on the YAML, so the test is about the two agreeing rather than about
+ * a spelling.
+ */
+static void
+test_a_mount_round_trips_every_field(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtConfig) reloaded = NULL;
+    g_autoptr(ClawtMount) mount = NULL;
+    g_autoptr(GPtrArray) written = NULL;
+    g_autofree gchar *yaml = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent;
+    ClawtMount *back;
+
+    config = clawt_config_load_from_string("agents:\n  - id: worker\n",
+                                           &error);
+    g_assert_no_error(error);
+
+    agent = clawt_config_get_agent(config, "worker");
+    g_assert_nonnull(agent);
+
+    mount = clawt_mount_new("/srv/share", "/work/share");
+    clawt_mount_set_mode(mount, CLAWT_MOUNT_MODE_RW);
+    clawt_mount_set_create(mount, TRUE);
+    clawt_mount_set_required(mount, FALSE);
+
+    g_assert_true(clawt_agent_config_add_mount(agent, mount));
+
+    yaml = clawt_config_to_string(config);
+    g_assert_nonnull(yaml);
+
+    reloaded = clawt_config_load_from_string(yaml, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(reloaded);
+
+    written = clawt_agent_config_get_mounts(
+        clawt_config_get_agent(reloaded, "worker"));
+
+    g_assert_cmpuint(written->len, ==, 1);
+    back = g_ptr_array_index(written, 0);
+
+    g_assert_cmpstr(clawt_mount_get_target(back), ==, "/work/share");
+    g_assert_cmpint(clawt_mount_get_mode(back), ==, CLAWT_MOUNT_MODE_RW);
+    g_assert_true(clawt_mount_get_create(back));
+    g_assert_false(clawt_mount_get_required(back));
+}
+
+/*
+ * A mount that names no mode gets the mode the schema documents.
+ *
+ * The parser never consults a schema default for a mount -- the fields
+ * come from clawt_mount_new() -- so the table's word and the code's
+ * behaviour are two separate claims that nothing compared.  They had
+ * come apart: `defaults.mounts.mode` said `rw` while every mount
+ * without a mode was made read-only, which put "rw" into
+ * data/example-config.yaml and docs/configuration-options.org as the
+ * default for a list that reaches the whole fleet.  Wrong in the
+ * unsafe direction, and the fix is the table rather than the parser:
+ * a fleet-wide mount silently becoming writable is the failure the
+ * agent-level row's own documentation is about.
+ *
+ * Both lists are checked from their own schema rows, so the two cannot
+ * drift from the code or from each other unnoticed.
+ */
+static void
+test_a_mount_without_a_mode_matches_the_schema(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(GPtrArray) fleet = NULL;
+    g_autoptr(GPtrArray) own = NULL;
+    g_autoptr(GError) error = NULL;
+    const ClawtSchemaEntry *entry;
+    gint documented = 0;
+
+    config = clawt_config_load_from_string(
+        "defaults:\n"
+        "  mounts:\n"
+        "    - source: \"/tmp\"\n"
+        "      target: \"/work/fleet\"\n"
+        "agents:\n"
+        "  - id: worker\n"
+        "    computer:\n"
+        "      mounts:\n"
+        "        - source: \"/tmp\"\n"
+        "          target: \"/work/own\"\n", &error);
+
+    g_assert_no_error(error);
+    g_assert_nonnull(config);
+
+    entry = clawt_config_schema_lookup("defaults.mounts.mode");
+    g_assert_nonnull(entry);
+    g_assert_true(clawt_enum_from_nick(clawt_mount_mode_get_type(),
+                                       entry->default_value, &documented));
+
+    fleet = clawt_config_get_default_mounts(config);
+    g_assert_cmpuint(fleet->len, ==, 1);
+    g_assert_cmpint(clawt_mount_get_mode(g_ptr_array_index(fleet, 0)), ==,
+                    documented);
+
+    entry = clawt_config_schema_lookup("agents.computer.mounts.mode");
+    g_assert_nonnull(entry);
+    g_assert_true(clawt_enum_from_nick(clawt_mount_mode_get_type(),
+                                       entry->default_value, &documented));
+
+    own = clawt_agent_config_get_mounts(
+        clawt_config_get_agent(config, "worker"));
+    g_assert_cmpuint(own->len, ==, 1);
+    g_assert_cmpint(clawt_mount_get_mode(g_ptr_array_index(own, 0)), ==,
+                    documented);
+}
+
+/*
+ * A misspelt enum value falls back to the documented default, and says
+ * so, rather than becoming zero.
+ *
+ * clawt_config_get_enum() returned 0 when the written nick did not
+ * parse.  Zero is not "unset" for any of these types -- it is
+ * `never` for a restart policy, `ro` for a mount mode, `none` for a
+ * computer type -- so a typo silently selected a real, different,
+ * documented behaviour.  `restart: sometimes` meant an agent that
+ * would never be restarted, chosen by a fleet that had asked for the
+ * opposite, with nothing in the log and nothing in `agent show` to
+ * say which of the two had happened.
+ *
+ * The default is what the operator can look up, so that is what it
+ * runs on, and the load-time walk that already reports unknown keys
+ * reports the unknown value too.
+ */
+static void
+test_a_misspelt_enum_falls_back_and_is_reported(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(GError) error = NULL;
+    const ClawtSchemaEntry *entry;
+    GPtrArray *warnings;
+    gint documented = 0;
+    gboolean mentioned = FALSE;
+    guint i;
+
+    config = clawt_config_load_from_string(
+        "defaults:\n"
+        "  restart: sometimes\n"
+        "agents:\n"
+        "  - id: worker\n", &error);
+
+    g_assert_no_error(error);
+    g_assert_nonnull(config);
+
+    entry = clawt_config_schema_lookup("defaults.restart");
+    g_assert_nonnull(entry);
+    g_assert_true(clawt_enum_from_nick(entry->enum_type(),
+                                       entry->default_value, &documented));
+
+    g_assert_cmpint(clawt_config_get_enum(config, "defaults.restart"), ==,
+                    documented);
+
+    /*
+     * And it is not a silent substitution: a value nobody can look up
+     * has to be reported the way an unknown key is.
+     */
+    warnings = clawt_config_get_warnings(config);
+    g_assert_nonnull(warnings);
+
+    for (i = 0; i < warnings->len; i++) {
+        const gchar *said = g_ptr_array_index(warnings, i);
+
+        if (strstr(said, "sometimes") != NULL &&
+            strstr(said, "defaults.restart") != NULL)
+            mentioned = TRUE;
+    }
+
+    g_assert_true(mentioned);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1462,10 +1822,23 @@ main(int argc, char *argv[])
     g_test_add_func("/config/scalar-written-as-a-list-warns",
                     test_a_scalar_written_as_a_list_warns);
     g_test_add_func("/config/agents/mounts", test_mounts_are_parsed);
+    g_test_add_func("/config/agents/mount-round-trips-every-field",
+                    test_a_mount_round_trips_every_field);
+    g_test_add_func("/config/agents/mount-without-a-mode-matches-the-schema",
+                    test_a_mount_without_a_mode_matches_the_schema);
     g_test_add_func("/config/agents/overlapping-mounts",
                     test_overlapping_mount_targets_are_a_shadow);
     g_test_add_func("/config/agents/workspace-default",
                     test_agent_workspace_defaults_under_root);
+
+    g_test_add_func("/config/list-defaults/every-fleet-list-default-is-reachable",
+                    test_every_fleet_list_default_is_reachable);
+    g_test_add_func("/config/list-defaults/a-written-list-wins",
+                    test_a_written_list_wins_over_the_schema_default);
+    g_test_add_func("/config/defaults/autostart-reaches-a-silent-agent",
+                    test_defaults_autostart_reaches_a_silent_agent);
+    g_test_add_func("/config/enums/a-misspelt-value-falls-back-and-is-reported",
+                    test_a_misspelt_enum_falls_back_and_is_reported);
 
     g_test_add_func("/config/file/save-atomic",
                     test_save_writes_atomically_and_keeps_a_backup);

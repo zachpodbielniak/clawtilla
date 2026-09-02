@@ -794,14 +794,24 @@ It reports no line numbers.  A key is named by where it sits in the file
 -- ~unknown configuration key 'daemon.loglevel'~ -- which is what ~grep~
 needs, and is what survives a client rewriting the file underneath you.
 
-*What it does not check is a value.*  An enum nickname it does not
-recognise is not an error: it silently becomes the enum's first member.
-That is harmless for ~mailbox.overflow~, where the first member is also
-the default, and is not for ~restart~ -- a typo there means ~never~ while
-the default is ~on-failure~, so an agent stops coming back and nothing
-says why.  The agent-level exceptions are the two with a shadow check of
-their own, ~computer.type~ and ~computer.host.confine~.  An integer that
-is not a number reads as zero the same way.  The generated reference in
+*An enum value it does not recognise is reported and then ignored.*  The
+warning names the value, the key and the accepted set --- ~'sometimes'
+is not a value of 'defaults.restart'; using the default 'on-failure'. It
+is one of: never, on-failure and always~ --- and the option falls back
+to the default the documentation gives for it.
+
+It used to become the enum's *first member* instead, silently.  That is
+harmless for ~mailbox.overflow~, where the first member is also the
+default, and was not for ~restart~: a typo there meant ~never~ while the
+default is ~on-failure~, so an agent stopped coming back and nothing
+anywhere said why.  Zero is a real, documented value of every one of
+these types, which is what made it unreportable --- ~computer.type~ read
+as ~none~, ~mounts.mode~ as ~ro~.  The agent-level exceptions were the
+two with a shadow check of their own, ~computer.type~ and
+~computer.host.confine~.
+
+*An integer that is not a number still reads as zero*, and that one is
+not reported.  The generated reference in
 [[file:configuration-options.org][configuration-options.org]] lists the accepted values for every enum, and
 ~clawtilla config render <agent>~ shows what the settings that reach
 libreclaw actually produced -- neither of which ~validate~ will tell you.

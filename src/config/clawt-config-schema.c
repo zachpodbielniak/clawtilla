@@ -313,8 +313,11 @@ static const ClawtSchemaEntry schema[] = {
   "0.1.0" },
 
 { "defaults.mounts.mode", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
-  "rw", clawt_mount_mode_get_type,
-  "ro or rw.", "0.1.0" },
+  "ro", clawt_mount_mode_get_type,
+  "ro or rw. Read-only is the default for the same reason it is on an\n"
+  "agent's own mounts, and more so: an entry here reaches the whole\n"
+  "fleet, so a mount that says nothing is one every agent may read and\n"
+  "none may rewrite.", "0.1.0" },
 
 { "defaults.mounts.type", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   "bind", clawt_mount_type_get_type,
@@ -2948,6 +2951,7 @@ static const ClawtSchemaAgentKey agent_keys[] = {
     { "model.provider",             "defaults.provider" },
     { "model.model",                "defaults.model" },
     { "computer.type",              "defaults.computer" },
+    { "runtime.autostart",          "defaults.autostart" },
     { "runtime.restart",            "defaults.restart" },
     { "computer.container.image",   "defaults.container_image" }
 };

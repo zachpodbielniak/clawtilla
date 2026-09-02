@@ -270,9 +270,12 @@ defaults:
       # Required.
       target: null
 
-      # ro or rw.
+      # ro or rw. Read-only is the default for the same reason it is on an
+      # agent's own mounts, and more so: an entry here reaches the whole
+      # fleet, so a mount that says nothing is one every agent may read and
+      # none may rewrite.
       # Values: ro, rw
-      mode: "rw"
+      mode: "ro"
 
       # bind, volume, virtiofs, 9p or tmpfs. Chosen from the backend when
       # unset, so the same entry is a bind mount in a container and a

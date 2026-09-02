@@ -229,8 +229,9 @@ configuration file and no machine; a failure to start is reported and
 never undoes the creation.
 
 ~agent.mount.add~ (~agent~, ~source~, ~target~, ~mode~, ~type~,
-~relabel~, ~size~) validates before writing, so a mount that could never
-work is refused here rather than at the agent's next start -- by which
+~relabel~, ~size~, ~create~, ~required~) validates before writing, so a
+mount that could never work is refused here rather than at the agent's
+next start -- by which
 time the config has been saved and the failure mentions neither the path
 nor the reason. ~agent.mount.remove~ takes ~target~, which is what has
 to be unique.
