@@ -539,8 +539,8 @@ open_trigger_editor(ClawtWindow *self, JsonObject *existing)
         dialog->events_row = clawt_gtk_add_entry(listen, "Events",
                                                  events != NULL ? events
                                                                 : "");
-        adw_action_row_set_subtitle(
-            ADW_ACTION_ROW(dialog->events_row),
+        clawt_gtk_set_row_hint(
+            dialog->events_row,
             "Comma separated, such as push, pull_request. Empty means "
             "every event it is sent.");
     }
@@ -548,20 +548,20 @@ open_trigger_editor(ClawtWindow *self, JsonObject *existing)
     dialog->repo_row = clawt_gtk_add_entry(
         listen, "Repository",
         existing != NULL ? clawt_json_string(existing, "repo", "") : "");
-    adw_action_row_set_subtitle(ADW_ACTION_ROW(dialog->repo_row),
-                                "Such as zach/clawtilla. Empty means any.");
+    clawt_gtk_set_row_hint(dialog->repo_row,
+                           "Such as zach/clawtilla. Empty means any.");
 
     dialog->branch_row = clawt_gtk_add_entry(
         listen, "Branch",
         existing != NULL ? clawt_json_string(existing, "branch", "") : "");
-    adw_action_row_set_subtitle(ADW_ACTION_ROW(dialog->branch_row),
-                                "Such as master. Empty means any.");
+    clawt_gtk_set_row_hint(dialog->branch_row,
+                           "Such as master. Empty means any.");
 
     dialog->header_row = clawt_gtk_add_entry(
         listen, "Event header",
         existing != NULL ? clawt_json_string(existing, "header", "") : "");
-    adw_action_row_set_subtitle(
-        ADW_ACTION_ROW(dialog->header_row),
+    clawt_gtk_set_row_hint(
+        dialog->header_row,
         "Only for a generic sender: which header carries the event name.");
 
     /* ── Who runs it ── */
@@ -610,15 +610,15 @@ open_trigger_editor(ClawtWindow *self, JsonObject *existing)
     dialog->room_row = clawt_gtk_add_entry(
         where, "Room",
         existing != NULL ? clawt_json_string(existing, "room", "") : "");
-    adw_action_row_set_subtitle(
-        ADW_ACTION_ROW(dialog->room_row),
+    clawt_gtk_set_row_hint(
+        dialog->room_row,
         "Where the run reports. Empty means the agent's own conversation.");
 
     dialog->directory_row = clawt_gtk_add_entry(
         where, "Folder",
         existing != NULL ? clawt_json_string(existing, "directory", "") : "");
-    adw_action_row_set_subtitle(
-        ADW_ACTION_ROW(dialog->directory_row),
+    clawt_gtk_set_row_hint(
+        dialog->directory_row,
         "On the agent's computer. Empty means its workspace.");
 
     dialog->worktree_row = adw_switch_row_new();

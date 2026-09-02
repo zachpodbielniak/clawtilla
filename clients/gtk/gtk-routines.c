@@ -385,8 +385,8 @@ open_routine_editor(ClawtWindow *self, JsonObject *existing)
     dialog->directory_row = clawt_gtk_add_entry(
         where, "Folder",
         existing != NULL ? clawt_json_string(existing, "directory", "") : "");
-    adw_action_row_set_subtitle(
-        ADW_ACTION_ROW(dialog->directory_row),
+    clawt_gtk_set_row_hint(
+        dialog->directory_row,
         "On the agent's computer. Empty means its workspace.");
 
     dialog->worktree_row = adw_switch_row_new();
@@ -431,8 +431,8 @@ open_routine_editor(ClawtWindow *self, JsonObject *existing)
         when, "At",
         existing != NULL ? clawt_json_string(existing, "at", "09:00")
                          : "09:00");
-    adw_action_row_set_subtitle(ADW_ACTION_ROW(dialog->at_row),
-                                "Local time, such as 09:00");
+    clawt_gtk_set_row_hint(dialog->at_row,
+                           "Local time, such as 09:00");
 
     dialog->weekday_row = adw_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->weekday_row),
@@ -458,8 +458,8 @@ open_routine_editor(ClawtWindow *self, JsonObject *existing)
     dialog->cron_row = clawt_gtk_add_entry(
         when, "Cron expression",
         existing != NULL ? clawt_json_string(existing, "cron", "") : "");
-    adw_action_row_set_subtitle(
-        ADW_ACTION_ROW(dialog->cron_row),
+    clawt_gtk_set_row_hint(
+        dialog->cron_row,
         "Note: with both day fields set, it is day-of-month OR "
         "day-of-week.");
 
@@ -509,8 +509,8 @@ open_routine_editor(ClawtWindow *self, JsonObject *existing)
         when, "Jitter (seconds)",
         existing != NULL ? clawt_json_string(existing, "jitter_seconds", "0")
                          : "0");
-    adw_action_row_set_subtitle(
-        ADW_ACTION_ROW(dialog->jitter_row),
+    clawt_gtk_set_row_hint(
+        dialog->jitter_row,
         "Hold each scheduled run back by up to this long, chosen at "
         "random. Only worth setting when several routines share one "
         "rate-limited service; `run now` and a catch-up start at once "

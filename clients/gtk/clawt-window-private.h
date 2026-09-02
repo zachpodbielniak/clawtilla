@@ -763,6 +763,14 @@ GtkWidget *
 clawt_gtk_badge(const gchar *text, const gchar *css_class, const gchar *tooltip);
 
 /*
+ * A hint under a row, dispatching on what kind of row it is.  Casting
+ * an AdwEntryRow or an AdwExpanderRow to AdwActionRow compiles and does
+ * nothing, which is how twenty explanatory lines went missing.
+ */
+void
+clawt_gtk_set_row_hint(GtkWidget *row, const gchar *hint);
+
+/*
  * The libadwaita style class for a tone from clawt_task_state_tone().
  */
 const gchar *

@@ -907,8 +907,8 @@ build_notify_rows(IntegrationDialog *dialog, GtkWidget *group,
 
     dialog->url_row = clawt_gtk_add_entry(group, "URL",
                                           clawt_json_string(integration, "url", ""));
-    adw_action_row_set_subtitle(
-        ADW_ACTION_ROW(dialog->url_row),
+    clawt_gtk_set_row_hint(
+        dialog->url_row,
         "ntfy: the topic, https://ntfy.sh/your-topic. Gotify: the server.");
 
     dialog->homeserver_row = clawt_gtk_add_entry(
@@ -916,21 +916,21 @@ build_notify_rows(IntegrationDialog *dialog, GtkWidget *group,
         clawt_json_string(integration, "homeserver", ""));
     dialog->rooms_row = clawt_gtk_add_entry(group, "Room",
                                             clawt_json_string(integration, "room", ""));
-    adw_action_row_set_subtitle(ADW_ACTION_ROW(dialog->rooms_row),
-                                "Matrix only. A room with nobody else in it "
-                                "works well.");
+    clawt_gtk_set_row_hint(dialog->rooms_row,
+                           "Matrix only. A room with nobody else in it "
+                           "works well.");
 
     dialog->secret_row = clawt_gtk_add_entry(group, "Token",
                                              clawt_json_string(integration, "token",
                                                                ""));
-    adw_action_row_set_subtitle(ADW_ACTION_ROW(dialog->secret_row),
-                                "A reference: env:NAME, file:PATH or "
-                                "command:...");
+    clawt_gtk_set_row_hint(dialog->secret_row,
+                           "A reference: env:NAME, file:PATH or "
+                           "command:...");
 
     dialog->command_row = clawt_gtk_add_entry(
         group, "Command", clawt_json_string(integration, "command", ""));
-    adw_action_row_set_subtitle(
-        ADW_ACTION_ROW(dialog->command_row),
+    clawt_gtk_set_row_hint(
+        dialog->command_row,
         "Gets the title and the body as two arguments, or wherever you "
         "write {{title}} and {{body}}.");
 
@@ -956,15 +956,15 @@ build_notify_rows(IntegrationDialog *dialog, GtkWidget *group,
     dialog->notify_title_row = clawt_gtk_add_entry(
         group, "Say it is from",
         clawt_json_string(integration, "title", ""));
-    adw_action_row_set_subtitle(ADW_ACTION_ROW(dialog->notify_title_row),
-                                "Worth setting when several fleets notify "
-                                "the same phone");
+    clawt_gtk_set_row_hint(dialog->notify_title_row,
+                           "Worth setting when several fleets notify "
+                           "the same phone");
 
     dialog->quiet_row = clawt_gtk_add_entry(
         group, "Quiet hours",
         clawt_json_string(integration, "quiet_hours", ""));
-    adw_action_row_set_subtitle(
-        ADW_ACTION_ROW(dialog->quiet_row),
+    clawt_gtk_set_row_hint(
+        dialog->quiet_row,
         "Such as 23:00-07:00. Silences this one completely -- to be woken "
         "only for a broken agent, make a second notifier without it.");
 
@@ -1057,8 +1057,8 @@ open_integration_editor(ClawtWindow *self, const gchar *name,
     dialog->description_row = clawt_gtk_add_entry(
         group, "What it is for",
         clawt_json_string(integration, "description", ""));
-    adw_action_row_set_subtitle(ADW_ACTION_ROW(dialog->description_row),
-                                "Written into every agent's TOOLS.org");
+    clawt_gtk_set_row_hint(dialog->description_row,
+                           "Written into every agent's TOOLS.org");
 
     dialog->scope_row = adw_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->scope_row),
@@ -1096,14 +1096,14 @@ open_integration_editor(ClawtWindow *self, const gchar *name,
         dialog->secret_row = clawt_gtk_add_entry(
             group, "Password",
             clawt_json_string(integration, "password", ""));
-        adw_action_row_set_subtitle(ADW_ACTION_ROW(dialog->secret_row),
-                                    "A reference: env:NAME, file:PATH or "
-                                    "command:...");
+        clawt_gtk_set_row_hint(dialog->secret_row,
+                               "A reference: env:NAME, file:PATH or "
+                               "command:...");
     } else if (g_strcmp0(dialog->type_id, "webhook") == 0) {
         dialog->port_row = add_int_entry(group, "Port", integration, "port");
-        adw_action_row_set_subtitle(ADW_ACTION_ROW(dialog->port_row),
-                                    "Must differ per agent -- two cannot "
-                                    "bind the same one");
+        clawt_gtk_set_row_hint(dialog->port_row,
+                               "Must differ per agent -- two cannot "
+                               "bind the same one");
     } else if (g_strcmp0(dialog->type_id, "mcp") == 0) {
         g_autofree gchar *args = join_strings(integration, "args", ", ");
 
@@ -1112,8 +1112,8 @@ open_integration_editor(ClawtWindow *self, const gchar *name,
         dialog->args_row = clawt_gtk_add_entry(group, "Arguments", args);
         dialog->url_row = clawt_gtk_add_entry(
             group, "Or a URL", clawt_json_string(integration, "url", ""));
-        adw_action_row_set_subtitle(ADW_ACTION_ROW(dialog->url_row),
-                                    "One or the other, never both");
+        clawt_gtk_set_row_hint(dialog->url_row,
+                               "One or the other, never both");
     } else if (g_strcmp0(dialog->type_id, "notify") == 0) {
         build_notify_rows(dialog, group, integration);
     }

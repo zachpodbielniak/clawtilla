@@ -188,6 +188,47 @@ clawt_gtk_set_row_text(GtkWidget *row, const gchar *title, const gchar *subtitle
         adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
 }
 
+/*
+ * One explanatory line under a row, whichever kind of row it is.
+ *
+ * ADW_ACTION_ROW() is a runtime cast, so calling an AdwActionRow method
+ * on a row that is not one compiles, logs two criticals and sets
+ * nothing.  AdwSwitchRow and AdwComboRow derive from AdwActionRow;
+ * AdwEntryRow and AdwExpanderRow derive from AdwPreferencesRow and do
+ * not -- and the four are used side by side in the same dialogs.
+ *
+ * Twenty of these had accumulated across the integration, routine and
+ * trigger editors, each one a sentence that had never been on screen.
+ * The one that cost most said a credential field takes a *reference*
+ * (`env:NAME`, `file:PATH`) rather than a literal token, so an operator
+ * reading no hint pastes the token in plain text.
+ *
+ * An AdwEntryRow has no subtitle slot at all -- there is no
+ * adw_entry_row_set_subtitle() to reach for -- so its hint becomes a
+ * tooltip.  That is less than a subtitle and more than the nothing it
+ * was, and it is in one place, so a better slot changes one function.
+ */
+void
+clawt_gtk_set_row_hint(GtkWidget *row, const gchar *hint)
+{
+    g_return_if_fail(GTK_IS_WIDGET(row));
+
+    if (hint == NULL)
+        return;
+
+    if (ADW_IS_ACTION_ROW(row)) {
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(row), hint);
+        return;
+    }
+
+    if (ADW_IS_EXPANDER_ROW(row)) {
+        adw_expander_row_set_subtitle(ADW_EXPANDER_ROW(row), hint);
+        return;
+    }
+
+    gtk_widget_set_tooltip_text(row, hint);
+}
+
 GtkWidget *
 clawt_gtk_badge(const gchar *text, const gchar *css_class, const gchar *tooltip)
 {

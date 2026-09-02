@@ -622,6 +622,7 @@ config-files: $(GENCONFIG_BIN)
 	@echo "  $(DOCSDIR)/configuration-options.org"
 
 .PHONY: docs-check  ## Fail on undocumented public API or stale doc references
+.PHONY: adw-row-cast  ## Fail on a libadwaita row cast that does nothing
 .PHONY: parity  ## Fail when the GTK and web clients have drifted apart
 .PHONY: web-smoke  ## Ask a running clawtilla-web for every page it serves
 
@@ -647,9 +648,20 @@ web-smoke:
 parity:
 	@bash $(TOOLSDIR)/clawt-client-parity.sh
 
+#
+# ADW_ACTION_ROW() is a runtime cast, so an AdwEntryRow or an
+# AdwExpanderRow passed through it compiles, logs two criticals and sets
+# nothing.  Twenty-two of those had accumulated -- every explanatory
+# subtitle in three editors and both urgency badges on the Decisions
+# page -- and none of it is visible in a build.
+#
+adw-row-cast:
+	@bash $(TOOLSDIR)/clawt-adw-row-cast.sh
+
 docs-check: $(GENCONFIG_BIN)
 	@sh $(TOOLSDIR)/clawt-docs-check.sh
 	@bash $(TOOLSDIR)/clawt-client-parity.sh
+	@bash $(TOOLSDIR)/clawt-adw-row-cast.sh
 
 # ============================================================
 # pkg-config

@@ -172,14 +172,14 @@ refresh_decisions_once(ClawtWindow *self)
         }
 
         if (clawt_json_boolean(decision, "urgent", FALSE))
-            adw_action_row_add_suffix(
-                ADW_ACTION_ROW(row),
+            adw_expander_row_add_suffix(
+                ADW_EXPANDER_ROW(row),
                 clawt_gtk_badge("closing soon", "warning",
                                 "the default stops being cheap to undo within a day"));
 
         if (clawt_json_boolean(decision, "settled_by_default", FALSE))
-            adw_action_row_add_suffix(
-                ADW_ACTION_ROW(row),
+            adw_expander_row_add_suffix(
+                ADW_EXPANDER_ROW(row),
                 clawt_gtk_badge("already decided", "error",
                                 "the deadline passed; answering changes nothing"));
 
