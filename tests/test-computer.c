@@ -2263,12 +2263,128 @@ test_a_mount_is_a_grant_in_workspace_mode(void)
 
     g_assert_false(clawt_sandbox_path_is_allowed(sandbox, shared));
 
-    clawt_sandbox_add_mount_path(sandbox, shared);
+    clawt_sandbox_add_mount_path(sandbox, shared, TRUE);
 
     g_assert_true(clawt_sandbox_path_is_allowed(sandbox, shared));
 
     /* And nothing else was opened up by it. */
     g_assert_false(clawt_sandbox_path_is_allowed(sandbox, "/etc/shadow"));
+
+    clawt_test_remove_tree(dir);
+}
+
+/*
+ * And the bwrap wall has a door for it.
+ *
+ * clawt_sandbox_path_is_allowed() honours a mount in every mode -- its
+ * own comment says so, and declaring one is the operator's explicit
+ * grant.  clawt_sandbox_wrap_argv() emitted --bind only for the root and
+ * for `allow_paths`, so under `confine: bwrap` the argument check said
+ * the path was reachable, clawt_computer_describe_mounts() told the
+ * agent it was there, and the kernel sandbox did not contain it at all.
+ *
+ * The exchange directory is mounted by default on every host agent, so
+ * this was every bwrap-confined agent that had ever been handed a file:
+ * `ls /mnt/clawtilla/exchange/shared` came back "No such file or
+ * directory", which reads as the exchange being broken rather than as a
+ * mount that was never applied.
+ *
+ * The same shape as the deny_paths gap recorded in clawt-sandbox.c: the
+ * wall was built without the door the check says is there.  Asserted on
+ * the argv beside the path check, so the two answers cannot diverge
+ * again.
+ */
+static void
+test_a_mount_is_bound_into_a_bwrap_sandbox(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-bwrapmnt-XXXXXX", NULL);
+    g_autofree gchar *workspace = g_build_filename(dir, "work", NULL);
+    g_autofree gchar *shared = g_build_filename(dir, "shared", NULL);
+    g_autofree gchar *readonly = g_build_filename(dir, "ro", NULL);
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_auto(GStrv) wrapped = NULL;
+    const gchar *argv[] = { "ls", NULL };
+    gboolean bound_rw = FALSE;
+    gboolean bound_ro = FALSE;
+    gsize i;
+
+    g_mkdir_with_parents(workspace, 0700);
+    g_mkdir_with_parents(shared, 0700);
+    g_mkdir_with_parents(readonly, 0700);
+
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_BWRAP, workspace);
+    clawt_sandbox_add_mount_path(sandbox, shared, TRUE);
+    clawt_sandbox_add_mount_path(sandbox, readonly, FALSE);
+
+    /* The check has always said yes. */
+    g_assert_true(clawt_sandbox_path_is_allowed(sandbox, shared));
+    g_assert_true(clawt_sandbox_path_is_allowed(sandbox, readonly));
+
+    wrapped = clawt_sandbox_wrap_argv(sandbox,
+                                      (const gchar * const *)argv);
+    g_assert_nonnull(wrapped);
+
+    for (i = 0; wrapped[i] != NULL && wrapped[i + 1] != NULL; i++) {
+        if (g_strcmp0(wrapped[i], "--bind") == 0 &&
+            g_strcmp0(wrapped[i + 1], shared) == 0)
+            bound_rw = TRUE;
+
+        /* A read-only mount is bound read-only, not read-write. */
+        if (g_strcmp0(wrapped[i], "--ro-bind") == 0 &&
+            g_strcmp0(wrapped[i + 1], readonly) == 0)
+            bound_ro = TRUE;
+
+        if (g_strcmp0(wrapped[i], "--bind") == 0 &&
+            g_strcmp0(wrapped[i + 1], readonly) == 0)
+            g_error("a read-only mount was bound read-write");
+    }
+
+    g_assert_true(bound_rw);
+    g_assert_true(bound_ro);
+
+    clawt_test_remove_tree(dir);
+}
+
+/*
+ * A denial covering a mount is emitted too.
+ *
+ * bwrap_path_is_visible() decided whether a deny needed an operation and
+ * looked only at the root and `allow_paths`, so a `deny_paths` entry
+ * under a mounted directory was skipped as "already absent" -- while the
+ * mount, once bound, put it right there.
+ */
+static void
+test_a_denial_under_a_mount_is_emitted(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-bwrapdeny-XXXXXX", NULL);
+    g_autofree gchar *workspace = g_build_filename(dir, "work", NULL);
+    g_autofree gchar *shared = g_build_filename(dir, "shared", NULL);
+    g_autofree gchar *secret = g_build_filename(shared, "secret", NULL);
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_auto(GStrv) wrapped = NULL;
+    const gchar *argv[] = { "ls", NULL };
+    gboolean covered = FALSE;
+    gsize i;
+
+    g_mkdir_with_parents(workspace, 0700);
+    g_mkdir_with_parents(secret, 0700);
+
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_BWRAP, workspace);
+    clawt_sandbox_add_mount_path(sandbox, shared, TRUE);
+    clawt_sandbox_add_deny_path(sandbox, secret);
+
+    g_assert_false(clawt_sandbox_path_is_allowed(sandbox, secret));
+
+    wrapped = clawt_sandbox_wrap_argv(sandbox,
+                                      (const gchar * const *)argv);
+
+    for (i = 0; wrapped[i] != NULL && wrapped[i + 1] != NULL; i++) {
+        if (g_strcmp0(wrapped[i], "--tmpfs") == 0 &&
+            g_strcmp0(wrapped[i + 1], secret) == 0)
+            covered = TRUE;
+    }
+
+    g_assert_true(covered);
 
     clawt_test_remove_tree(dir);
 }
@@ -5679,6 +5795,10 @@ main(int argc, char *argv[])
                     test_host_reaches_a_mount_by_its_target);
     g_test_add_func("/computer/mount-is-a-grant",
                     test_a_mount_is_a_grant_in_workspace_mode);
+    g_test_add_func("/computer/mount-is-bound-into-bwrap",
+                    test_a_mount_is_bound_into_a_bwrap_sandbox);
+    g_test_add_func("/computer/denial-under-a-mount-is-emitted",
+                    test_a_denial_under_a_mount_is_emitted);
     g_test_add_func("/computer/mount-prefix-not-a-match",
                     test_a_mount_prefix_is_not_a_match);
     g_test_add_func("/computer/mounts/forbidden-source-refused-for-a-bind",

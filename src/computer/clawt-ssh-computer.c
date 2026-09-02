@@ -876,7 +876,9 @@ clawt_ssh_computer_apply_mounts(ClawtSshComputer *self)
         const gchar *target = clawt_mount_get_target(mount);
 
         if (target != NULL && *target != '\0')
-            clawt_sandbox_add_mount_path(self->sandbox, target);
+            clawt_sandbox_add_mount_path(
+                self->sandbox, target,
+                clawt_mount_get_mode(mount) == CLAWT_MOUNT_MODE_RW);
     }
 }
 

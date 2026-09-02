@@ -207,9 +207,11 @@ remembers to exclude it.
 
 ~/usr~ and ~/etc~ come in ~--ro-bind~.  ~root~ and every entry in
 ~allow_paths~ come in ~--bind~, which is *read-write* -- there is no
-read-only path grant under bwrap, so a path listed there is a path the
-agent can write.  ~allow_network: false~ becomes ~--unshare-net~; ~/tmp~
-is private; ~--die-with-parent~ means the sandbox goes when the agent
+read-only path grant in ~allow_paths~, so a path listed there is a path
+the agent can write.  A *mount* is different: it carries its own
+~mode:~, so ~mode: ro~ becomes ~--ro-bind~ and ~mode: rw~ becomes
+~--bind~.  ~allow_network: false~ becomes ~--unshare-net~; ~/tmp~ is
+private; ~--die-with-parent~ means the sandbox goes when the agent
 does.
 
 ~deny_paths~ come last, after the binds, because bwrap applies its
@@ -250,14 +252,22 @@ If you need the agent process itself confined, confine the daemon -- a
 systemd unit, or a container -- rather than reading ~confine~ as though
 it did that.
 
-*Mounts declared on the agent are the exception worth knowing.*  A mount
-declared under ~computer.mounts~ works, because the factory copies its
-source into ~allow_paths~.  The workspace and the three exchange
-directories are added later, by a different route, and the argv builder
-does not read that one -- so under ~confine: bwrap~ those paths pass the
-argument check and are then simply absent from the namespace.  A host
-agent that needs the exchange wants ~allowlist~, or the exchange root
-named in ~allow_paths~ explicitly.
+*Mounts are bound, at the mode they were declared with.*  Until 0.1.0
+they were not, and this is the same shape as the ~deny_paths~ gap above,
+one list along: ~clawt_sandbox_path_is_allowed()~ has always honoured a
+mount in every mode -- its own comment says so, and declaring one is the
+operator's explicit grant -- and the argv builder emitted ~--bind~ only
+for ~root~ and ~allow_paths~.  So the argument check passed the path,
+the agent's computer region told it the path was there, and the
+namespace did not contain it.
+
+~computer.exchange~ is on by default, so that was every ~bwrap~ agent
+that had ever been handed a file: ~ls /mnt/clawtilla/exchange/shared~
+came back /No such file or directory/, which reads as the exchange being
+broken rather than as a mount that was never applied.  A ~deny_paths~
+entry under a mounted directory was skipped for the same reason -- the
+visibility test looked at ~root~ and ~allow_paths~ and decided the path
+was already absent.
 
 *If ~bwrap~ is missing the agent starts in ~SHADOW~ and says so.*  It
 does not silently downgrade to unconfined -- a confinement that quietly

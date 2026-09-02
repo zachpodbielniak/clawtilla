@@ -99,6 +99,7 @@ void clawt_sandbox_add_allow_path(ClawtSandbox *self, const gchar *path);
  * clawt_sandbox_add_mount_path:
  * @self: a #ClawtSandbox
  * @path: a directory the agent's configuration mounts
+ * @writable: %TRUE for `mode: rw`, %FALSE for `mode: ro`
  *
  * Grants a path because the agent's configuration mounts it.
  *
@@ -109,8 +110,16 @@ void clawt_sandbox_add_allow_path(ClawtSandbox *self, const gchar *path);
  * the kernel makes it reachable -- a host agent that was refused the same
  * path would be behaving differently from the identical config on another
  * backend, which is the kind of inconsistency that costs an afternoon.
+ *
+ * Under `confine: bwrap` this also emits the bind, which it did not for
+ * a long time: the grant was honoured by the argument check and by
+ * nothing else, so the path was described to the agent and absent from
+ * the sandbox.  @writable decides `--bind` against `--ro-bind`, because
+ * a mount bound wider than it was declared is the direction that costs
+ * something.
  */
-void clawt_sandbox_add_mount_path(ClawtSandbox *self, const gchar *path);
+void clawt_sandbox_add_mount_path(ClawtSandbox *self, const gchar *path,
+                                  gboolean writable);
 void clawt_sandbox_add_deny_path(ClawtSandbox *self, const gchar *path);
 void clawt_sandbox_set_allow_network(ClawtSandbox *self, gboolean allow);
 void clawt_sandbox_set_allow_sudo(ClawtSandbox *self, gboolean allow);

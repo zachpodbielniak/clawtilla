@@ -563,8 +563,9 @@ host_provision(ClawtComputer *computer, GError **error)
     for (i = 0; mounts != NULL && i < mounts->len; i++) {
         ClawtMount *mount = g_ptr_array_index(mounts, i);
 
-        clawt_sandbox_add_mount_path(self->sandbox,
-                                     clawt_mount_get_source(mount));
+        clawt_sandbox_add_mount_path(
+            self->sandbox, clawt_mount_get_source(mount),
+            clawt_mount_get_mode(mount) == CLAWT_MOUNT_MODE_RW);
     }
 
     if (!clawt_sandbox_is_available(self->sandbox, error)) {

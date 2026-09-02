@@ -20,6 +20,7 @@ struct _ClawtSandbox {
     gchar            *root;
     GPtrArray        *allow_paths;
     GPtrArray        *mount_paths;
+    GArray           *mount_writable;   /* gboolean, parallel to mount_paths */
     GPtrArray        *deny_paths;
     gboolean          allow_network;
     gboolean          allow_sudo;
@@ -139,7 +140,8 @@ clawt_sandbox_is_remote(ClawtSandbox *self)
 }
 
 void
-clawt_sandbox_add_mount_path(ClawtSandbox *self, const gchar *path)
+clawt_sandbox_add_mount_path(ClawtSandbox *self, const gchar *path,
+                             gboolean writable)
 {
     g_return_if_fail(CLAWT_IS_SANDBOX(self));
 
@@ -147,6 +149,7 @@ clawt_sandbox_add_mount_path(ClawtSandbox *self, const gchar *path)
         return;
 
     g_ptr_array_add(self->mount_paths, sandbox_normalize(self, path));
+    g_array_append_val(self->mount_writable, writable);
 }
 
 /*
@@ -488,6 +491,17 @@ bwrap_path_is_visible(ClawtSandbox *self, const gchar *path)
             return TRUE;
     }
 
+    /*
+     * Mounts too, now that they are bound: a denial under one names
+     * something the sandbox really does contain, and skipping it as
+     * "already absent" left it reachable.
+     */
+    for (i = 0; i < self->mount_paths->len; i++) {
+        if (clawt_path_is_within(path, g_ptr_array_index(self->mount_paths,
+                                                         i)))
+            return TRUE;
+    }
+
     return FALSE;
 }
 
@@ -555,6 +569,34 @@ clawt_sandbox_wrap_argv(ClawtSandbox *self, const gchar * const *argv)
         const gchar *path = g_ptr_array_index(self->allow_paths, i);
 
         g_ptr_array_add(out, g_strdup("--bind"));
+        g_ptr_array_add(out, g_strdup(path));
+        g_ptr_array_add(out, g_strdup(path));
+    }
+
+    /*
+     * And the mounts, which used to be bound nowhere.
+     *
+     * clawt_sandbox_path_is_allowed() honours a mount in every mode --
+     * "declaring one is an explicit grant" -- and this wall was built
+     * without a door for it, so under `confine: bwrap` the argument
+     * check passed the path, clawt_computer_describe_mounts() told the
+     * agent it was there, and the sandbox did not contain it at all.
+     * `computer.exchange` is on by default, so that was every bwrap
+     * agent ever handed a file: "No such file or directory", which
+     * reads as the exchange being broken rather than as a mount that was
+     * never applied.  The identical shape as the deny_paths gap below,
+     * one list along.
+     *
+     * Read-only when the operator wrote `mode: ro`, because a grant
+     * bound wider than it was declared is the one direction that costs
+     * something.
+     */
+    for (i = 0; i < self->mount_paths->len; i++) {
+        const gchar *path = g_ptr_array_index(self->mount_paths, i);
+        gboolean writable = (i < self->mount_writable->len)
+            ? g_array_index(self->mount_writable, gboolean, i) : FALSE;
+
+        g_ptr_array_add(out, g_strdup(writable ? "--bind" : "--ro-bind"));
         g_ptr_array_add(out, g_strdup(path));
         g_ptr_array_add(out, g_strdup(path));
     }
@@ -744,6 +786,7 @@ clawt_sandbox_finalize(GObject *object)
     g_clear_pointer(&self->root, g_free);
     g_clear_pointer(&self->allow_paths, g_ptr_array_unref);
     g_clear_pointer(&self->mount_paths, g_ptr_array_unref);
+    g_clear_pointer(&self->mount_writable, g_array_unref);
     g_clear_pointer(&self->deny_paths, g_ptr_array_unref);
 
     G_OBJECT_CLASS(clawt_sandbox_parent_class)->finalize(object);
@@ -760,6 +803,7 @@ clawt_sandbox_init(ClawtSandbox *self)
 {
     self->allow_paths = g_ptr_array_new_with_free_func(g_free);
     self->mount_paths = g_ptr_array_new_with_free_func(g_free);
+    self->mount_writable = g_array_new(FALSE, FALSE, sizeof(gboolean));
     self->deny_paths = g_ptr_array_new_with_free_func(g_free);
     self->allow_network = TRUE;
     self->allow_sudo = FALSE;
