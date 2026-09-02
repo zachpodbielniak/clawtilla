@@ -88,12 +88,32 @@ LIBRECLAW_CFLAGS = -I$(LIBRECLAW_DIR)/src -I$(LIBRECLAW_OUTDIR) \
                    -I$(LR_HTMX_GLIB_DIR)/src/extensions \
                    -I$(LR_HTMX_GLIB_DIR)/build/release
 
-LIBRECLAW_LIBS = $(LIBRECLAW_STATIC) \
+#
+# Wrapped in a link group, because these six archives reference each
+# other in both directions and a static archive is scanned exactly once,
+# left to right.
+#
+# yaml-glib sat ahead of podomation here, so anything pulling
+# podomation's pod-config.o *without* also pulling clawtilla's own config
+# code -- which happens to drag yaml-glib in later -- failed to link with
+# 557 undefined `yaml_mapping_*` references.  Every consumer that exists
+# today is saved by that accident, so the order was wrong and nothing
+# said so; the first test to reach podomation's config reader on its own
+# found it.
+#
+# A group rather than a repeated archive: repeating one fixes the pair
+# somebody noticed and leaves the next pair to be discovered the same
+# way.  The cost is that ld re-scans the group until it settles, which
+# for six archives is not measurable.
+#
+LIBRECLAW_LIBS = -Wl,--start-group \
+                 $(LIBRECLAW_STATIC) \
                  $(LR_AI_GLIB_DIR)/build/release/libai-glib-1.0.a \
                  $(LR_YAML_GLIB_DIR)/build/release/libyaml-glib-1.0.a \
                  $(LR_PODOMATION_DIR)/build/release/libpodomation-1.0.a \
                  $(LR_MCP_GLIB_DIR)/build/libmcp-glib-1.0.a \
                  $(LR_HTMX_GLIB_DIR)/build/release/libhtmx-glib-1.0.a \
+                 -Wl,--end-group \
                  $(shell pkg-config --libs yaml-0.1)
 
 # Where libreclaw drops the podomation loadable modules.  The container and
