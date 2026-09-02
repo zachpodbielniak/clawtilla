@@ -1306,7 +1306,19 @@ gboolean
 clawt_log_level_permits(ClawtLogLevel  ceiling,
                         GLogLevelFlags level)
 {
-    GLogLevelFlags bound;
+    /*
+     * Initialised, even though the switch below is exhaustive: GCC
+     * cannot prove an enum-typed *parameter* only ever holds declared
+     * members, so a release build warns, and this project's builds have
+     * to be warning-free.
+     *
+     * The initialiser is the most permissive level rather than the
+     * quietest, so a member the switch has not been taught about writes
+     * too much rather than silently writing nothing. -Wswitch still
+     * names it at compile time, which is the check that actually
+     * catches it.
+     */
+    GLogLevelFlags bound = G_LOG_LEVEL_DEBUG;
 
     /*
      * The ceiling as a GLib flag. Written as a switch with no default:
