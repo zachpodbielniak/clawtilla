@@ -179,6 +179,48 @@ clawt_skill_provision_paths(ClawtAgentConfig *agent, gboolean kind_commands)
 /* ── Symlinks ────────────────────────────────────────────────────── */
 
 /*
+ * Does @target -- a path somebody else may have written -- point inside
+ * the skill library?
+ *
+ * Canonicalised on both sides before the comparison, per path, which is
+ * the same rule clawt_remove_tree() applies to every child it deletes.
+ * clawt_path_is_within() is a string test, so
+ * `<skills_dir>/../../../.ssh` has `<skills_dir>` as a prefix with a
+ * separator after it and answered "inside": a hand-made link spelled
+ * that way was counted as one of ours and prune_links() unlinked it.
+ * Only the link went, never what it pointed at -- but a path that walks
+ * out of the root is the whole reason the root is checked at all, and
+ * this file was checking the spelling rather than the place.
+ *
+ * clawt_canonicalize_missing() rather than realpath(), because a
+ * dangling link is a case that has to keep working: it resolves as far
+ * as the path exists and re-appends the rest, so a link to a skill
+ * directory that has been deleted still resolves into the library.
+ */
+static gboolean
+points_into_library(const gchar *target, const gchar *skills_dir)
+{
+    g_autofree gchar *resolved = NULL;
+    g_autofree gchar *root = NULL;
+
+    if (target == NULL || skills_dir == NULL)
+        return FALSE;
+
+    resolved = clawt_canonicalize_missing(target);
+    root = clawt_canonicalize_missing(skills_dir);
+
+    if (resolved == NULL || root == NULL)
+        return FALSE;
+
+    /*
+     * No separate equality test: clawt_path_is_within() already answers
+     * TRUE when the two are the same path, and canonicalising both is
+     * what makes that comparison mean anything.
+     */
+    return clawt_path_is_within(resolved, root);
+}
+
+/*
  * Is this entry one clawtilla made?
  *
  * Decided by where it points, and deliberately not by a manifest.  A
@@ -206,6 +248,11 @@ link_is_ours(const gchar *path, const gchar *skills_dir)
     if (target == NULL)
         return FALSE;
 
+    /*
+     * Resolved against the link's own directory, not the process's cwd
+     * -- which is what a relative symlink target means, and what
+     * canonicalising it straight would get wrong.
+     */
     if (!g_path_is_absolute(target)) {
         g_autofree gchar *dir = g_path_get_dirname(path);
         gchar *joined = g_build_filename(dir, target, NULL);
@@ -214,8 +261,7 @@ link_is_ours(const gchar *path, const gchar *skills_dir)
         target = joined;
     }
 
-    return clawt_path_is_within(target, skills_dir) ||
-           g_strcmp0(target, skills_dir) == 0;
+    return points_into_library(target, skills_dir);
 }
 
 /*
@@ -503,12 +549,13 @@ write_manifest(const gchar  *directory,
                      ? json_object_get_string_member(object, "path") : NULL;
 
         /*
-         * Ours by where it points, exactly as a symlink is.  Dropping
-         * it here is what makes an unassigned skill disappear from the
-         * file rather than lingering as an entry naming a directory
-         * this agent is no longer meant to see.
+         * Ours by where it points, exactly as a symlink is -- through
+         * the same function, because two answers to one question is how
+         * one of them ends up more permissive.  A manifest entry is
+         * written by somebody else's CLI, so its `path` gets the same
+         * canonicalisation a link target does.
          */
-        if (entry_path != NULL && clawt_path_is_within(entry_path, skills_dir))
+        if (points_into_library(entry_path, skills_dir))
             continue;
 
         json_builder_add_value(builder, json_node_ref(element));

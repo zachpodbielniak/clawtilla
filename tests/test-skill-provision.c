@@ -504,6 +504,62 @@ test_unassigning_removes_only_our_link(void)
 }
 
 /*
+ * And a link whose target is *spelled* through the library and then
+ * walks back out of it is not ours either.
+ *
+ * link_is_ours() asked clawt_path_is_within(), which is a string test:
+ * "<skills_dir>/../elsewhere" has the library as a prefix and a
+ * separator after it, so it answered "inside" and prune_links() unlinked
+ * a symlink nobody here made.  The canonical path is what says where a
+ * path actually is, and it is what clawt_remove_tree() has always
+ * compared against its own root.
+ */
+static void
+test_a_link_that_escapes_the_library_is_not_ours(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *workspace = NULL;
+    g_autofree gchar *theirs = NULL;
+    g_autofree gchar *outside = NULL;
+    g_autofree gchar *escaping = NULL;
+    g_autofree gchar *read_back = NULL;
+    g_autoptr(GPtrArray) warnings = NULL;
+    g_autoptr(GPtrArray) again = NULL;
+
+    fixture_setup(&fixture, "claude-code");
+    write_skill(&fixture, "release");
+    g_assert_true(provision(&fixture, &warnings));
+
+    workspace = clawt_agent_config_get_workspace(builder(&fixture));
+    theirs = g_build_filename(workspace, ".claude/skills/handwritten", NULL);
+
+    outside = g_build_filename(fixture.dir, "elsewhere", NULL);
+    g_assert_true(clawt_ensure_dir(outside, 0700, NULL));
+
+    /*
+     * g_build_filename() joins, it does not resolve, so the ".." stays
+     * in the string -- which is the point: the spelling is inside the
+     * library and the place is not.
+     */
+    escaping = g_build_filename(fixture.skills_dir, "..", "elsewhere", NULL);
+    g_assert_cmpint(symlink(escaping, theirs), ==, 0);
+
+    /*
+     * "handwritten" is on no assignment list, so anything prune_links()
+     * believes is ours goes.
+     */
+    g_assert_true(provision(&fixture, &again));
+
+    g_assert_true(g_file_test(theirs, G_FILE_TEST_IS_SYMLINK));
+
+    /* And it was left as written, not repointed at the library. */
+    read_back = g_file_read_link(theirs, NULL);
+    g_assert_cmpstr(read_back, ==, escaping);
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * A real directory at one of these paths is somebody's own work.  It is
  * left exactly as it is, and reported -- deleting it because it was not
  * on a list would be destroying something nobody asked us to manage.
@@ -848,6 +904,8 @@ main(int argc, char *argv[])
                     test_provisioning_twice_changes_nothing);
     g_test_add_func("/skill-provision/revoke",
                     test_unassigning_removes_only_our_link);
+    g_test_add_func("/skill-provision/escaping-link",
+                    test_a_link_that_escapes_the_library_is_not_ours);
     g_test_add_func("/skill-provision/real-directory",
                     test_a_real_directory_is_left_alone_and_reported);
     g_test_add_func("/skill-provision/dangling-repaired",
