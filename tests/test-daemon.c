@@ -9663,6 +9663,280 @@ test_the_listing_says_when_nothing_is_listening(void)
     fixture_teardown(&fixture);
 }
 
+/* ── control.shutdown ─────────────────────────────────────────────── */
+
+typedef struct {
+    ClawtDaemon *daemon;
+    gint         returned;    /* atomic: clawt_daemon_run() came back */
+    gint         exit_code;
+} RunThread;
+
+static gpointer
+run_the_daemon(gpointer user_data)
+{
+    RunThread *run = user_data;
+
+    run->exit_code = clawt_daemon_run(run->daemon);
+    g_atomic_int_set(&run->returned, 1);
+
+    return NULL;
+}
+
+/*
+ * control.shutdown stops a daemon whose loop is not the global default.
+ *
+ * The handler answered and then queued the quit with g_idle_add(), which
+ * attaches to the global default context.  clawtillad runs on that
+ * context, so the standalone daemon quit and the bug had nowhere to
+ * show.  An embedded daemon -- and every fixture in this file -- runs
+ * on a context of its own, and nobody iterates the global default
+ * there: the client was told "ok" and the daemon carried on for ever.
+ *
+ * The daemon is run the way clawtillad runs it, on a thread, so that
+ * clawt_daemon_run() can be observed returning.  The request goes over
+ * the raw socket with blocking reads and nothing in this thread iterates
+ * any context: with the quit on the global default, the only way the
+ * loop can end is the watchdog below, and that is the failure.
+ */
+static void
+test_control_shutdown_quits_a_daemon_on_its_own_context(void)
+{
+    Fixture fixture = { 0 };
+    RunThread run = { 0 };
+    GThread *thread;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GSocketClient) raw = NULL;
+    g_autoptr(GSocketAddress) address = NULL;
+    g_autoptr(GSocketConnection) connection = NULL;
+    g_autoptr(GDataInputStream) reader = NULL;
+    g_autoptr(JsonNode) frame = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *socket_path = NULL;
+    g_autofree gchar *line = NULL;
+    g_autofree gchar *wire = NULL;
+    g_autofree gchar *answer = NULL;
+    GOutputStream *out;
+    gint64 deadline;
+    gboolean quit_on_its_own;
+
+    fixture_setup(&fixture, NULL);
+
+    run.daemon = fixture.daemon;
+    thread = g_thread_new("clawtillad", run_the_daemon, &run);
+
+    /*
+     * The socket appears once the thread's clawt_daemon_start() has run.
+     * A connect refused before then is the thread not having got there
+     * yet, not a failure, so it is retried up to the deadline.
+     */
+    socket_path = g_build_filename(fixture.dir, "daemon.sock", NULL);
+    raw = g_socket_client_new();
+    address = g_unix_socket_address_new(socket_path);
+    deadline = g_get_monotonic_time() + 10 * G_USEC_PER_SEC;
+
+    while (connection == NULL && g_get_monotonic_time() < deadline) {
+        g_clear_error(&error);
+        connection = g_socket_client_connect(raw,
+                                             G_SOCKET_CONNECTABLE(address),
+                                             NULL, &error);
+
+        if (connection == NULL)
+            g_usleep(20 * 1000);
+    }
+
+    g_assert_no_error(error);
+    g_assert_nonnull(connection);
+
+    frame = clawt_ipc_request_new("control.shutdown", "bye-1");
+    line = clawt_ipc_frame_to_line(frame);
+    wire = g_strconcat(line, "\n", NULL);
+
+    out = g_io_stream_get_output_stream(G_IO_STREAM(connection));
+    g_assert_true(g_output_stream_write_all(out, wire, strlen(wire), NULL,
+                                            NULL, &error));
+    g_assert_no_error(error);
+
+    /*
+     * A blocking read is right here: the answer is produced by the
+     * daemon's own thread, which is running its loop.
+     */
+    reader = g_data_input_stream_new(
+        g_io_stream_get_input_stream(G_IO_STREAM(connection)));
+    answer = g_data_input_stream_read_line_utf8(reader, NULL, NULL, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(answer);
+
+    reply = clawt_ipc_frame_from_line(answer, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(reply);
+    g_assert_false(clawt_ipc_frame_is_error(reply));
+    g_assert_cmpstr(clawt_ipc_frame_get_id(reply), ==, "bye-1");
+
+    /*
+     * Answered.  Now the daemon has to actually leave.  Polled rather
+     * than joined, because a join on a loop that never quits is a test
+     * that hangs instead of failing.
+     */
+    deadline = g_get_monotonic_time() + 10 * G_USEC_PER_SEC;
+
+    while (!g_atomic_int_get(&run.returned) &&
+           g_get_monotonic_time() < deadline)
+        g_usleep(10 * 1000);
+
+    quit_on_its_own = g_atomic_int_get(&run.returned) != 0;
+
+    /*
+     * The watchdog.  g_main_loop_quit() is safe from another thread, and
+     * without it a daemon that ignored its own shutdown would hold the
+     * join for ever.  The assertion comes after the join so the thread
+     * is gone before the fixture is torn down under it.
+     */
+    if (!quit_on_its_own)
+        clawt_daemon_quit(fixture.daemon);
+
+    g_thread_join(thread);
+
+    g_assert_true(quit_on_its_own);
+    g_assert_cmpint(run.exit_code, ==, 0);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * teach.synthesize answers on a daemon whose loop is not the global
+ * default.
+ *
+ * The handler defers, runs the model on a worker and replies from the
+ * worker's completion callback.  That callback lands on whatever
+ * g_task_new() captured as thread-default, and the handler pushed
+ * nothing: it was reached through the IPC reader's own GTask callback,
+ * which happens to push the daemon's context around it.  That is the
+ * "works by luck" case, and this test is what turns it into a
+ * commitment -- a deferred reply on an embedded daemon has to arrive
+ * while nothing but the daemon's own context is iterated, whichever
+ * way the handler was reached.
+ *
+ * Hermetic because the provider is a CLI one: the synthesizer refuses
+ * those before any call is made, so the worker finishes at once and the
+ * refusal is the reply.
+ */
+static void
+test_teach_synthesize_answers_on_the_daemons_own_context(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GSocketClient) raw = NULL;
+    g_autoptr(GSocketAddress) address = NULL;
+    g_autoptr(GSocketConnection) connection = NULL;
+    g_autoptr(ClawtTeachTrace) trace = NULL;
+    g_autoptr(JsonNode) frame = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autofree gchar *trace_dir = NULL;
+    g_autofree gchar *socket_path = NULL;
+    g_autofree gchar *line = NULL;
+    g_autofree gchar *wire = NULL;
+    GOutputStream *out;
+    GSocket *socket;
+    GString *answer = g_string_new(NULL);
+    gchar buffer[4096];
+    gint64 deadline;
+
+    fixture_setup(&fixture,
+                  "ai_assist:\n"
+                  "  enabled: true\n"
+                  "  provider: claude-code\n");
+
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    /*
+     * A saved recording, written where the daemon looks for one, so the
+     * request reaches the deferral rather than "no recording of that
+     * name".
+     */
+    trace_dir = g_build_filename(fixture.dir, "state", "teach", "demo",
+                                 NULL);
+    trace = clawt_teach_trace_new("demo", CLAWT_TEACH_SOURCE_HOST_DEMO);
+    clawt_teach_trace_set_goal(trace, "cut a release");
+    clawt_teach_trace_add_step(
+        trace, clawt_teach_step_new(CLAWT_TEACH_STEP_EXEC, "make test"));
+    clawt_teach_trace_set_directory(trace, trace_dir);
+    g_assert_true(clawt_teach_trace_save(trace, &error));
+    g_assert_no_error(error);
+
+    socket_path = g_build_filename(fixture.dir, "daemon.sock", NULL);
+    raw = g_socket_client_new();
+    address = g_unix_socket_address_new(socket_path);
+    connection = g_socket_client_connect(raw, G_SOCKET_CONNECTABLE(address),
+                                         NULL, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(connection);
+
+    frame = clawt_ipc_request_new("teach.synthesize", "synth-1");
+    g_assert_true(json_parser_load_from_data(parser, "{\"id\": \"demo\"}",
+                                             -1, NULL));
+    clawt_ipc_frame_set_payload(frame,
+                                json_node_copy(json_parser_get_root(parser)));
+
+    line = clawt_ipc_frame_to_line(frame);
+    wire = g_strconcat(line, "\n", NULL);
+
+    out = g_io_stream_get_output_stream(G_IO_STREAM(connection));
+    g_assert_true(g_output_stream_write_all(out, wire, strlen(wire), NULL,
+                                            NULL, &error));
+    g_assert_no_error(error);
+
+    /*
+     * Non-blocking reads between iterations of the daemon's context and
+     * of nothing else.  A reply queued anywhere but that context never
+     * arrives, and the deadline is the failure.
+     */
+    socket = g_socket_connection_get_socket(connection);
+    g_socket_set_blocking(socket, FALSE);
+
+    deadline = g_get_monotonic_time() + 10 * G_USEC_PER_SEC;
+
+    while (strchr(answer->str, '\n') == NULL &&
+           g_get_monotonic_time() < deadline) {
+        gssize got;
+
+        g_main_context_iteration(fixture.context, FALSE);
+
+        got = g_socket_receive(socket, buffer, sizeof buffer, NULL, NULL);
+
+        if (got > 0)
+            g_string_append_len(answer, buffer, got);
+        else
+            g_usleep(5 * 1000);
+    }
+
+    g_assert_nonnull(strchr(answer->str, '\n'));
+    *strchr(answer->str, '\n') = '\0';
+
+    reply = clawt_ipc_frame_from_line(answer->str, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(reply);
+    g_assert_cmpstr(clawt_ipc_frame_get_id(reply), ==, "synth-1");
+
+    /*
+     * And it is the synthesizer's own refusal, so the answer came from
+     * the worker's completion and not from some check ahead of the
+     * deferral -- a build where the deferral is never reached would
+     * otherwise pass this.
+     */
+    g_assert_true(clawt_ipc_frame_is_error(reply));
+    {
+        g_autoptr(GError) refusal = clawt_ipc_frame_to_error(reply);
+
+        g_assert_nonnull(refusal);
+        g_assert_nonnull(strstr(refusal->message, "command-line tool"));
+    }
+
+    g_string_free(answer, TRUE);
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -9988,6 +10262,10 @@ main(int argc, char *argv[])
                     test_a_task_starts_running_when_its_turn_does);
     g_test_add_func("/daemon/computer-exec/a-shell-line-is-refused",
                     test_the_exec_verb_refuses_a_shell_line);
+    g_test_add_func("/daemon/control/shutdown-quits-a-daemon-on-its-own-context",
+                    test_control_shutdown_quits_a_daemon_on_its_own_context);
+    g_test_add_func("/daemon/teach/synthesize-answers-on-the-daemons-own-context",
+                    test_teach_synthesize_answers_on_the_daemons_own_context);
 
     status = g_test_run();
 

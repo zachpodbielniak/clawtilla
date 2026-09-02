@@ -804,8 +804,22 @@ clawt_daemon_handle_teach(
          * still does the same work on the daemon's own context, which
          * is why pressing its button stalls the whole fleet; this one
          * does not repeat that.
+         *
+         * The context is pushed around g_task_new() by name, as every
+         * other g_task_new() the daemon makes does.  It captures the
+         * thread-default, and the only reason that was the right loop
+         * here is that the IPC reader reaches this handler from a GTask
+         * callback of its own, which pushes it.  A reply scheduled on
+         * the global default is a reply an embedded daemon never sends.
          */
+        if (self->main_context != NULL)
+            g_main_context_push_thread_default(self->main_context);
+
         task = g_task_new(self, NULL, on_synthesised, job);
+
+        if (self->main_context != NULL)
+            g_main_context_pop_thread_default(self->main_context);
+
         g_task_set_task_data(task, job, NULL);
         g_task_run_in_thread(task, synthesis_worker);
 

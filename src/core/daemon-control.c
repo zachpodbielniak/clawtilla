@@ -81,13 +81,22 @@ clawt_daemon_handle_control(
 
     if (g_strcmp0(kind, "control.shutdown") == 0) {
         JsonNode *reply = clawt_ipc_response_new(request, NULL);
+        GSource *quit = g_idle_source_new();
 
         /*
          * Answered first, then queued.  Quitting the loop inside this
          * call would close the socket before the reply reached the client,
          * which looks to them like the daemon crashed.
+         *
+         * Attached to the daemon's own context by name.  g_idle_add()
+         * takes the global default, which is the loop clawtillad runs
+         * and not the one an embedded daemon does -- so the standalone
+         * daemon quit, and an embedded one answered "ok" and carried on
+         * for ever, with nobody iterating the context the quit was on.
          */
-        g_idle_add((GSourceFunc)clawt_daemon_quit_idle, self);
+        g_source_set_callback(quit, clawt_daemon_quit_idle, self, NULL);
+        g_source_attach(quit, self->main_context);
+        g_source_unref(quit);
 
         return reply;
     }
