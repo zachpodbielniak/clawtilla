@@ -105,6 +105,29 @@ clawt_automation_load(ClawtAutomation *self, const gchar *directory,
 
     g_return_val_if_fail(CLAWT_IS_AUTOMATION(self), FALSE);
 
+    /*
+     * One load per object, said here rather than left to podomation.
+     *
+     * pod_engine_start_embedded() refuses an engine that is already
+     * running, with "Engine is not in IDLE state (current: 1)" -- a
+     * sentence naming nothing a reader of clawtilla's log has a word
+     * for, arriving under the "automation:" prefix as though a pod file
+     * were at fault.  The daemon never reaches it because
+     * release_components() drops the whole #ClawtAutomation and the next
+     * clawt_daemon_start() builds a new one.
+     *
+     * Refused *before* the problems array is cleared: a second call that
+     * cannot succeed must not take the first call's report with it, and
+     * clearing first is what it used to do.
+     */
+    if (self->running) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                            "the automation engine is already running; a "
+                            "ClawtAutomation loads once, and reloading "
+                            "means building a new one");
+        return FALSE;
+    }
+
     g_ptr_array_set_size(self->problems, 0);
 
     if (directory == NULL)

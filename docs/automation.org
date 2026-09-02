@@ -436,6 +436,16 @@ surface lists the pods that loaded or the files that did not, so a pod
 that stopped working is found in the daemon's log or not at all --
 ~journalctl --user -u clawtilla~ if it runs under systemd.
 
+The daemon does keep both lists in memory:
+~clawt_automation_get_problems()~ holds one string per file that would
+not load and ~clawt_automation_list_pods()~ holds the names of the ones
+that did.  Neither has a caller, because a client owns no
+~ClawtAutomation~ -- it talks to the daemon over IPC -- so surfacing
+either needs a verb that reports them, and that verb does not exist yet.
+The two accessors are the door for whoever adds it; the header on
+~clawt_automation_get_problems()~ used to claim a client already read it,
+which was never possible.
+
 And a failure to start the engine at all disables the automation and
 nothing else.  Pods are a convenience on top of a fleet; a fleet that
 would not start because one of them had a syntax error would be the
