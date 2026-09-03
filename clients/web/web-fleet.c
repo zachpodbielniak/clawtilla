@@ -261,6 +261,18 @@ agent_row(JsonObject *agent, const gchar *selected, ClawtPage view,
         g_autofree gchar *work = clawt_agent_activity_label(
             clawt_web_member_bool(agent, "busy", FALSE),
             clawt_web_member(agent, "peer", NULL));
+        g_autofree gchar *hold = clawt_hold_label(
+            clawt_web_member_bool(agent, "held", FALSE),
+            clawt_web_member_bool(agent, "draining", FALSE));
+
+        /*
+         * The hold first and in a colour that is not the working one: a
+         * draining agent is finishing its last turn and will not start
+         * another, which is the opposite of what "busy" usually means
+         * about whether more is coming.
+         */
+        if (hold != NULL)
+            clawt_web_add(meta, clawt_web_badge(hold, "warn"));
 
         if (work != NULL)
             clawt_web_add(meta, clawt_web_badge(work, "info"));

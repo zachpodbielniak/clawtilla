@@ -498,9 +498,19 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
     {
         ClawtAgentRuntime *runtime = clawt_agent_get_runtime(agent);
 
+        /*
+         * Two reasons, asked separately because they are two reasons.
+         * An account out of session allowance clears at a time we know;
+         * an operator's hold clears when they say so, and must not be
+         * lifted by the first.  The effect here is the same and the
+         * effect elsewhere is not -- the restart accounting reads only
+         * the first, and calling a held agent's death a rate limit
+         * would send whoever reads that log to the wrong layer.
+         */
         if (runtime != NULL &&
-            clawt_agent_runtime_is_paused(
-                runtime, g_get_real_time() / G_USEC_PER_SEC))
+            (clawt_agent_runtime_is_held(runtime) ||
+             clawt_agent_runtime_is_paused(
+                 runtime, g_get_real_time() / G_USEC_PER_SEC)))
             return 0;
     }
 

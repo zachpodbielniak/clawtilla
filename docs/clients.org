@@ -41,7 +41,9 @@ licence, send nothing, and exit 0.
 | ~daemon~ | run the daemon in the foreground (same code as ~clawtillad~) |
 | ~daemon token~ | print the bearer token a remote client must present |
 | ~remote list/add/rm~ | saved daemons on other machines |
-| ~status~ | version, config path, agent and client counts |
+| ~status~ | version, build, hold, update, agent and client counts |
+| ~pause [agent]~ | hold the fleet: stop delivery, let running turns finish |
+| ~resume [agent]~ | take the hold off; queued work goes out in order |
 | ~agent list~ | id, state, queue depth, link, description |
 | ~agent show <id>~ | everything about one agent |
 | ~agent create --id X [--name…] [--model…] [--computer…] [--image…] [--vm-image PATH] [--no-start]~ | |

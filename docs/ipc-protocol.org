@@ -74,6 +74,8 @@ anyway.
 | ~control.status~ | | ~version~, ~config~, ~agents~, ~connected~, ~clients~, ~cursor~ |
 | ~control.subscribe~ | ~cursor~ | ~cursor~, ~resumed~, then a replay |
 | ~control.reload~ | | ~refused~ -- see below |
+| ~control.pause~ | ~agent~ (optional) | ~hold~ |
+| ~control.resume~ | ~agent~ (optional) | ~hold~ |
 | ~control.shutdown~ | | answered before the daemon quits |
 
 ~control.status~ answers with two counts of agents and they mean
@@ -82,6 +84,28 @@ different things: ~agents~ is how many the configuration declares,
 is configured and not connected is the ordinary case -- it is stopped, or
 it is starting -- so a client showing only one of them would report
 either a fleet that is always broken or a fleet that is always fine.
+
+**** hold
+
+~control.status~ also carries a ~hold~ object, and ~control.pause~ and
+~control.resume~ answer with the same one: ~held~, ~fleet~, ~draining~,
+~since~ and ~agents~.
+
+It is present whether or not anything is held, because it is the answer
+to "is it safe to restart" -- a client inferring that from an absent
+member cannot tell a daemon that is not held from one too old to say.
+~draining~ is written even at zero for the same reason: "held, nothing
+in flight" is the answer somebody is waiting for.
+
+Neither verb waits.  ~control.pause~ answers immediately with the number
+of turns still in flight, and the count falls as they finish.  Agents
+report ~held~ and ~draining~ of their own beside ~busy~ -- not as a
+~state~, because a held agent is running and only delivery has stopped.
+
+Omitting ~agent~ means the whole fleet.  ~control.resume~ *refuses* a
+named agent while the fleet is held, rather than accepting it and
+changing nothing: the fleet hold would still cover it, so a caller told
+it worked would sit watching an agent that never moves.
 
 **** refused
 
@@ -1185,7 +1209,7 @@ Every kind published, by subject:
 
 | Subject | Kinds |
 |---------+-------|
-| the daemon | ~daemon.started~, ~daemon.stopped~, ~daemon.reloaded~, ~config.changed~ |
+| the daemon | ~daemon.started~, ~daemon.stopped~, ~daemon.reloaded~, ~config.changed~, ~hold.changed~ |
 | an agent | ~agent.created~, ~agent.removed~, ~agent.changed~, ~agent.started~, ~agent.stopped~, ~agent.interrupted~, ~agent.state~, ~agent.connected~, ~agent.disconnected~, ~agent.typing~, ~agent.identity~, ~agent.contested~ (~evictions~) |
 | a room | ~message~, ~message.refused~, ~exchange.stalled~, ~room.created~, ~room.changed~ |
 | an agent's mailbox | ~mailbox.queued~, ~mailbox.delivered~ |

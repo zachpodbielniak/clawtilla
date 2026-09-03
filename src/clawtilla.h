@@ -144,6 +144,7 @@
 #include "ipc/clawt-client.h"
 #include "ipc/clawt-connection.h"
 
+#include "agent/clawt-hold.h"
 #include "core/clawt-update.h"
 #include "core/clawt-daemon.h"
 

@@ -5109,6 +5109,32 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
         GSimpleAction *settings_action = g_simple_action_new("settings",
                                                              NULL);
 
+        /*
+         * Holding the fleet lives here rather than beside an agent,
+         * because it is about all of them: it stops delivery everywhere
+         * and lets the turns that are running finish, which is what
+         * makes a restart a bounded operation instead of an unbounded
+         * loss.  Two entries rather than one toggle -- a menu item that
+         * says "Pause" while the fleet is already held is a control
+         * whose label is the opposite of the truth, and the banner is
+         * what says which state you are in.
+         */
+        {
+            g_autoptr(GSimpleAction) pause =
+                g_simple_action_new("pause-fleet", NULL);
+            g_autoptr(GSimpleAction) resume =
+                g_simple_action_new("resume-fleet", NULL);
+
+            g_signal_connect(pause, "activate",
+                             G_CALLBACK(clawt_gtk_on_pause_fleet), self);
+            g_signal_connect(resume, "activate",
+                             G_CALLBACK(clawt_gtk_on_resume_fleet), self);
+            g_action_map_add_action(G_ACTION_MAP(self), G_ACTION(pause));
+            g_action_map_add_action(G_ACTION_MAP(self), G_ACTION(resume));
+        }
+
+        g_menu_append(menu, "Hold the fleet", "win.pause-fleet");
+        g_menu_append(menu, "Resume the fleet", "win.resume-fleet");
         g_menu_append(menu, "Settings\342\200\246", "win.settings");
 
         gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(menu_button),

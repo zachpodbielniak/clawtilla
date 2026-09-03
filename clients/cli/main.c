@@ -753,10 +753,21 @@ cmd_agent(int argc, char *argv[])
 
         for (i = 0; i < json_array_get_length(agents); i++) {
             JsonObject *agent = json_array_get_object_element(agents, i);
-            g_autofree gchar *work = clawt_agent_activity_label(
+            g_autofree gchar *activity = clawt_agent_activity_label(
                 json_object_has_member(agent, "busy") &&
                     json_object_get_boolean_member(agent, "busy"),
                 member_or(agent, "peer", NULL));
+            g_autofree gchar *hold = clawt_hold_label(
+                json_object_has_member(agent, "held") &&
+                    json_object_get_boolean_member(agent, "held"),
+                json_object_has_member(agent, "draining") &&
+                    json_object_get_boolean_member(agent, "draining"));
+            /*
+             * A hold outranks what the agent is doing, because it
+             * changes what "working" means: a draining agent is
+             * finishing its last turn and will not start another.
+             */
+            const gchar *work = (hold != NULL) ? hold : activity;
 
             g_print("%-20s %-10s %-18s %-6" G_GINT64_FORMAT " %-8s %s\n",
                     member_or(agent, "id", "?"),
@@ -849,12 +860,19 @@ cmd_agent(int argc, char *argv[])
          * whole block exists to answer, so it must not be silent.
          */
         {
-            g_autofree gchar *work = clawt_agent_activity_label(
+            g_autofree gchar *activity = clawt_agent_activity_label(
                 json_object_has_member(agent, "busy") &&
                     json_object_get_boolean_member(agent, "busy"),
                 member_or(agent, "peer", NULL));
+            g_autofree gchar *hold = clawt_hold_label(
+                json_object_has_member(agent, "held") &&
+                    json_object_get_boolean_member(agent, "held"),
+                json_object_has_member(agent, "draining") &&
+                    json_object_get_boolean_member(agent, "draining"));
 
-            g_print("work:        %s\n", work != NULL ? work : "idle");
+            g_print("work:        %s\n",
+                    hold != NULL ? hold
+                                 : (activity != NULL ? activity : "idle"));
         }
 
         /*
@@ -7107,6 +7125,26 @@ cmd_status(int argc, char *argv[])
      * default: not checking and checking-and-finding-nothing are
      * different states and only one of them deserves a line.
      */
+    /*
+     * Whether the fleet is held, and whether it has finished draining.
+     * Printed above the counts because it changes what they mean: 24
+     * agents under a hold are 24 agents that are not taking anything.
+     */
+    if (json_object_has_member(status, "hold")) {
+        JsonObject *hold = json_object_get_object_member(status, "hold");
+
+        if (json_object_get_boolean_member(hold, "held")) {
+            gint64 draining = json_object_get_int_member(hold, "draining");
+
+            if (draining > 0)
+                g_print("hold:      draining -- %" G_GINT64_FORMAT
+                        " turn(s) still in flight\n", draining);
+            else
+                g_print("hold:      held, nothing in flight -- safe to "
+                        "restart\n");
+        }
+    }
+
     if (json_object_has_member(status, "update")) {
         JsonObject *update = json_object_get_object_member(status, "update");
 
@@ -7173,6 +7211,63 @@ cmd_status(int argc, char *argv[])
             }
         }
     }
+
+    return EXIT_SUCCESS;
+}
+
+/*
+ * `clawtilla pause [agent]` and `clawtilla resume [agent]`.
+ *
+ * One function, because the two are the same shape and the only thing
+ * that differs is the verb and the sentence -- and a second copy of the
+ * "which agent, and did it work" handling is a second place for them to
+ * disagree about the fleet case.
+ */
+static gint
+cmd_hold(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    gboolean pausing = g_strcmp0(argv[1], "pause") == 0;
+    const gchar *agent = (argc > 2) ? argv[2] : NULL;
+    JsonObject *hold;
+    gint64 draining;
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    reply = call(client, pausing ? "control.pause" : "control.resume",
+                 agent != NULL ? build_payload("agent", agent, NULL) : NULL);
+
+    if (reply == NULL)
+        return EXIT_FAILURE;
+
+    hold = json_object_get_object_member(json_node_get_object(reply), "hold");
+
+    if (!pausing) {
+        g_print("Resumed. Anything queued goes out now, in order.\n");
+        return EXIT_SUCCESS;
+    }
+
+    draining = json_object_get_int_member(hold, "draining");
+
+    /*
+     * The count is the answer, and the point of the whole feature: it
+     * turns "restarting loses whatever everything happened to be doing"
+     * into a number that reaches zero, which is a defined moment at
+     * which a restart is safe.  Nothing here waits for it -- an IPC
+     * handler must not, and neither should a command somebody may want
+     * to walk away from.
+     */
+    if (draining > 0)
+        g_print("Held. Draining: %" G_GINT64_FORMAT " turn(s) still in "
+                "flight.\nRun `clawtilla status` until it reaches zero; "
+                "queued work stays queued.\n", draining);
+    else
+        g_print("Held, with nothing in flight. It is safe to restart; "
+                "queued work stays queued and\nwhat was running comes "
+                "back by itself.\n");
 
     return EXIT_SUCCESS;
 }
@@ -7446,6 +7541,10 @@ static const ClawtVerb verbs[] = {
       cmd_remote },
     { "status",  "",         "What this daemon is running right now",
       cmd_status },
+    { "pause",   "[agent]",  "Hold the fleet: stop delivery, let turns finish",
+      cmd_hold },
+    { "resume",  "[agent]",  "Take the hold off and deliver what queued up",
+      cmd_hold },
     { "agent",   "<verb>",   "Manage agents (list, show, create, ...)",
       cmd_agent },
     { "send",    "<target> <message>", "Send a message to an agent or room",

@@ -24,6 +24,9 @@ typedef struct {
 } SettingsPage;
 
 static const SettingsPage settings_pages[] = {
+    { "fleet",        "Fleet",
+      "Hold the fleet before a restart: stop delivery, let the turns "
+      "that are running finish." },
     { "images",       "VM images",
       "Disk images a VM agent can boot. clawtilla ships none: a VM with "
       "no image defines, starts, and boots nothing." },
@@ -1728,6 +1731,94 @@ on_settings_index(HtmxRequest *request, GHashTable *params, gpointer user_data)
     return clawt_web_redirect(request, "/settings/images");
 }
 
+/*
+ * Holding the fleet.
+ *
+ * Two buttons rather than one toggle: a control labelled "Pause" while
+ * the fleet is already held is a control whose label is the opposite of
+ * the truth, and the state above them is what says which one to press.
+ *
+ * The whole page is about the difference between a hold and a stop,
+ * because that difference is the only thing somebody needs to know
+ * before pressing it -- and "pause" carries the wrong promise in most
+ * software, so an operator who thinks it kills work will not use it.
+ */
+static HtmxElement *
+fleet_content(ClawtWebApp *app)
+{
+    g_autoptr(HtmxDiv) box = htmx_div_new();
+    g_autoptr(JsonNode) reply = clawt_web_app_call(app, "control.status",
+                                                   NULL);
+    JsonObject *hold = clawt_web_member_object(clawt_web_root(reply), "hold");
+    gboolean held = hold != NULL &&
+                    clawt_web_member_bool(hold, "held", FALSE);
+    gint64 draining = (hold != NULL)
+        ? clawt_web_member_int(hold, "draining", 0) : 0;
+    g_autoptr(HtmxDiv) card = clawt_web_card("Hold", NULL);
+    HtmxElement *body = clawt_web_card_body(card);
+
+    if (!held) {
+        clawt_web_add(body, clawt_web_row("State", "running"));
+    } else if (draining > 0) {
+        g_autofree gchar *text = g_strdup_printf(
+            "draining -- %" G_GINT64_FORMAT " turn(s) still in flight",
+            draining);
+
+        clawt_web_add(body, clawt_web_row("State", text));
+    } else {
+        clawt_web_add(body,
+                      clawt_web_row("State",
+                                    "held, nothing in flight -- safe to "
+                                    "restart"));
+    }
+
+    clawt_web_add(body, clawt_web_row(
+        "What a hold does",
+        "Stops delivery and leaves every process alive. The turn that is "
+        "running finishes; nothing new starts; queued work stays queued. "
+        "It survives a restart, and what was running comes back."));
+
+    {
+        g_autoptr(HtmxForm) form = clawt_web_form(
+            held ? "/settings/fleet/resume" : "/settings/fleet/pause");
+        g_autoptr(HtmxButton) button = clawt_web_button(
+            held ? "Resume the fleet" : "Hold the fleet",
+            held ? "primary" : "danger");
+
+        htmx_element_set_attribute(HTMX_ELEMENT(button), "type", "submit");
+        clawt_web_add(form, g_steal_pointer(&button));
+        clawt_web_add(body, g_steal_pointer(&form));
+    }
+
+    clawt_web_add(box, g_steal_pointer(&card));
+
+    return HTMX_ELEMENT(g_steal_pointer(&box));
+}
+
+static HtmxResponse *
+on_fleet_hold(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    gboolean pausing = strstr(htmx_request_get_path(request),
+                              "/pause") != NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *failure = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+
+    (void)params;
+
+    reply = clawt_web_app_call(app,
+                               pausing ? "control.pause" : "control.resume",
+                               NULL);
+
+    if (reply == NULL)
+        failure = g_strdup(clawt_web_app_last_error(app));
+
+    content = fleet_content(app);
+
+    return settings_response(app, request, "fleet", content, failure, TRUE);
+}
+
 static HtmxResponse *
 on_settings_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
@@ -1735,7 +1826,9 @@ on_settings_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
     g_autofree gchar *slug = clawt_web_param(params, "page");
     g_autoptr(HtmxElement) content = NULL;
 
-    if (g_strcmp0(slug, "images") == 0)
+    if (g_strcmp0(slug, "fleet") == 0)
+        content = fleet_content(app);
+    else if (g_strcmp0(slug, "images") == 0)
         content = images_content(app);
     else if (g_strcmp0(slug, "teams") == 0)
         content = teams_content(app);
@@ -1754,7 +1847,7 @@ on_settings_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
     else if (g_strcmp0(slug, "connections") == 0)
         content = connections_content(app);
     else
-        return clawt_web_redirect(request, "/settings/images");
+        return clawt_web_redirect(request, "/settings/fleet");
 
     return settings_response(app, request, slug, content, NULL, FALSE);
 }
@@ -2389,6 +2482,9 @@ clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_get(router, "/settings", on_settings_index, app);
     htmx_router_get(router, "/settings/:page", on_settings_page, app);
+
+    htmx_router_post(router, "/settings/fleet/pause", on_fleet_hold, app);
+    htmx_router_post(router, "/settings/fleet/resume", on_fleet_hold, app);
 
     htmx_router_post(router, "/settings/images/download", on_image_download,
                      app);

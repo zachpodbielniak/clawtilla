@@ -72,6 +72,16 @@ typedef struct {
      * turns that into a wait.
      */
     gint64             paused_until;
+
+    /*
+     * An operator's hold: a pause with no deadline.
+     *
+     * Its own field rather than a very large `paused_until`, because the
+     * two mean different things to everything that reads them -- and a
+     * reset arriving from the account would otherwise lift a hold
+     * somebody took deliberately.
+     */
+    gboolean           held;
 } ClawtAgentRuntimePrivate;
 
 G_DEFINE_ABSTRACT_TYPE_WITH_PRIVATE(ClawtAgentRuntime, clawt_agent_runtime,
@@ -292,6 +302,22 @@ clawt_agent_runtime_get_paused_until(
     g_return_val_if_fail(CLAWT_IS_AGENT_RUNTIME(self), 0);
 
     return PRIV(self)->paused_until;
+}
+
+void
+clawt_agent_runtime_set_held(ClawtAgentRuntime *self, gboolean held)
+{
+    g_return_if_fail(CLAWT_IS_AGENT_RUNTIME(self));
+
+    PRIV(self)->held = held;
+}
+
+gboolean
+clawt_agent_runtime_is_held(ClawtAgentRuntime *self)
+{
+    g_return_val_if_fail(CLAWT_IS_AGENT_RUNTIME(self), FALSE);
+
+    return PRIV(self)->held;
 }
 
 gboolean

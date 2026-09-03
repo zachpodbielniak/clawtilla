@@ -223,8 +223,21 @@ agent_row(ClawtWindow *self, JsonObject *agent, guint unread)
              * nowhere else to put it.
              */
             g_autofree gchar *doing = clawt_agent_activity_label(busy, peer);
+            g_autofree gchar *hold = clawt_hold_label(
+                clawt_json_boolean(agent, "held", FALSE),
+                clawt_json_boolean(agent, "draining", FALSE));
 
-            if (doing != NULL && depth > 0)
+            /*
+             * A hold outranks what the agent is doing, because it
+             * changes what "working" means: a draining agent is
+             * finishing its last turn and will not start another.
+             */
+            if (hold != NULL && depth > 0)
+                activity = g_strdup_printf(
+                    "%s \302\267 %" G_GINT64_FORMAT " waiting", hold, depth);
+            else if (hold != NULL)
+                activity = g_steal_pointer(&hold);
+            else if (doing != NULL && depth > 0)
                 activity = g_strdup_printf(
                     "%s · %" G_GINT64_FORMAT " waiting", doing, depth);
             else if (doing != NULL)

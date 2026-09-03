@@ -138,6 +138,16 @@ clawt_daemon_handle_control(
         if (self->updates != NULL)
             clawt_update_check_describe(self->updates, builder);
 
+        /*
+         * And whether the fleet is being held.
+         *
+         * Always, including "not held", because this is the answer to
+         * "is it safe to restart" -- a client that has to infer it from
+         * an absent member cannot tell a daemon that is not held from
+         * one too old to say.
+         */
+        clawt_daemon_hold_describe(self, builder);
+
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));

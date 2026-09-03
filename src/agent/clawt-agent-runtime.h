@@ -230,6 +230,45 @@ gint64 clawt_agent_runtime_get_paused_until(ClawtAgentRuntime *self);
 gboolean clawt_agent_runtime_is_paused(ClawtAgentRuntime *self, gint64 now);
 
 /**
+ * clawt_agent_runtime_set_held:
+ * @self: a #ClawtAgentRuntime
+ * @held: whether delivery to this agent is being held
+ *
+ * A pause with no deadline, which is what an operator's hold is.
+ *
+ * Beside clawt_agent_runtime_is_paused() and deliberately not folded
+ * into it: that one refuses a pause with no known reset, on the grounds
+ * that holding an agent down indefinitely because an account limit gave
+ * no reset time is worse than letting it try.  That reasoning is about
+ * a wall somebody else put up.  A hold is a person deciding, so the two
+ * cannot share a field -- an account reset must not lift an operator's
+ * hold, and a hold must not look like an account limit in a log.
+ *
+ * It stops *delivery* only.  The process stays up, the link stays
+ * attached and the turn already running finishes: killing a mid-turn
+ * agent is the loss this exists to avoid, so a hold that killed would
+ * not be one.
+ *
+ * Deliberately *not* folded into is_paused() so that one predicate
+ * answers both.  Its other two callers are the restart accounting,
+ * which does not count an exit that happened while the account was out
+ * of allowance and says so in a g_message() -- an agent that dies while
+ * an operator holds it is a real failure, and reporting it as somebody
+ * else's rate limit sends the reader to the wrong layer.  The router
+ * asks both questions because the router is the one that wants either
+ * answer.
+ */
+void clawt_agent_runtime_set_held(ClawtAgentRuntime *self, gboolean held);
+
+/**
+ * clawt_agent_runtime_is_held:
+ * @self: a #ClawtAgentRuntime
+ *
+ * Returns: %TRUE when an operator has held this agent
+ */
+gboolean clawt_agent_runtime_is_held(ClawtAgentRuntime *self);
+
+/**
  * clawt_agent_runtime_get_last_error:
  * @self: a #ClawtAgentRuntime
  *

@@ -3464,6 +3464,20 @@ start_agent_launch(ClawtDaemon *self, const gchar *agent_id,
                                               "runtime.backoff_seconds"),
             (guint)clawt_agent_config_get_int(config,
                                               "runtime.max_restarts"));
+
+        /*
+         * And the hold, if one is on.
+         *
+         * A runtime is built at an agent's first start and a fleet hold
+         * outlives that, so an agent started while the fleet is held
+         * would otherwise come up with its gate open -- making `agent
+         * start` a way to take work out of a hold, silently.  Set here
+         * rather than only in hold_reapply(), because at daemon start
+         * there is no runtime yet to set it on.
+         */
+        if (self->hold != NULL)
+            clawt_agent_runtime_set_held(
+                runtime, clawt_hold_covers(self->hold, agent_id));
     }
 
     if (!clawt_agent_start(agent, error))
@@ -3904,6 +3918,8 @@ release_components(ClawtDaemon *self)
         clawt_update_check_stop(self->updates);
 
     g_clear_object(&self->updates);
+
+    g_clear_object(&self->hold);
 
     if (self->automation != NULL)
         clawt_automation_stop(self->automation);
@@ -5192,12 +5208,30 @@ autostart_schedule(ClawtDaemon *self)
         if (!clawt_agent_config_get_boolean(config, "enabled"))
             continue;
 
-        if (!clawt_agent_config_get_boolean(config, "runtime.autostart"))
+        /*
+         * A hold records what was actually running, and that set wins
+         * over this one for the agents it names.
+         *
+         * The two are different sets and the difference is the point:
+         * after a restart, which agents come back was decided by
+         * configuration rather than by what was running a second
+         * earlier, so an operator running six of twenty-four got back
+         * whatever the config listed -- a different six.
+         */
+        if (!clawt_agent_config_get_boolean(config, "runtime.autostart") &&
+            !clawt_daemon_hold_was_running(self, clawt_agent_get_id(agent)))
             continue;
 
         g_ptr_array_add(self->autostart_queue,
                         g_strdup(clawt_agent_get_id(agent)));
     }
+
+    /*
+     * Spent once it has been queued.  Left in place it would resurrect
+     * that set at the *next* unrelated start -- a note about a moment
+     * outliving the moment.
+     */
+    clawt_daemon_hold_forget_running(self);
 
     if (self->autostart_queue->len == 0) {
         g_clear_pointer(&self->autostart_queue, g_ptr_array_unref);
@@ -5489,6 +5523,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
         clawt_routine_runner_start(self->routines, self->main_context);
     }
 
+    clawt_daemon_hold_start(self);
     clawt_daemon_updates_start(self);
     clawt_daemon_triggers_start(self);
     clawt_daemon_venture_start(self);
@@ -6908,6 +6943,33 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
     }
 
     /*
+     * Whether an operator is holding it, and whether it is still
+     * finishing a turn under that hold.
+     *
+     * Not an agent *state*.  A held agent is running -- its process is
+     * up and its link is attached -- and folding that into the state
+     * enum would put it beside `stopped`, which is the pair this
+     * codebase has already been bitten by: "STATE stopped + LINK up" is
+     * not a state an agent can be in, and neither is "held" a substitute
+     * for "running".  So it rides beside `busy`, which describes the
+     * same agent the same way, and the clients draw it the same way they
+     * draw that.
+     *
+     * `draining` is derived rather than remembered: it is exactly "held
+     * and still busy", and a remembered copy is a thing that outlives
+     * what it describes -- which for this one would mean telling
+     * somebody a restart is unsafe long after the turn ended.
+     */
+    if (clawt_daemon_agent_held(agent)) {
+        json_builder_set_member_name(builder, "held");
+        json_builder_add_boolean_value(builder, TRUE);
+
+        json_builder_set_member_name(builder, "draining");
+        json_builder_add_boolean_value(builder,
+                                       clawt_agent_get_busy(agent));
+    }
+
+    /*
      * And which OS process is serving it.
      *
      * clawt_agent_runtime_get_pid() was declared, documented and
@@ -8120,6 +8182,7 @@ clawt_daemon_on_ipc_lifecycle_finished(GObject *source, GAsyncResult *result,
  */
 static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_control,
+    clawt_daemon_handle_hold,
     clawt_daemon_handle_misc,
     clawt_daemon_handle_agent,
     clawt_daemon_handle_memory,
@@ -8257,6 +8320,7 @@ clawt_daemon_finalize(GObject *object)
     g_clear_object(&self->notifier);
     g_clear_object(&self->routines);
     g_clear_object(&self->updates);
+    g_clear_object(&self->hold);
     g_clear_object(&self->automation);
     g_clear_object(&self->skills);
     g_clear_pointer(&self->model_cache, g_hash_table_unref);

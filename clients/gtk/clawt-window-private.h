@@ -887,6 +887,17 @@ void
 clawt_gtk_on_conversation_chosen(GSimpleAction *action, GVariant *parameter,
                                  gpointer user_data);
 
+/*
+ * Hold the fleet, and take the hold off.  See gtk-hold.c.
+ */
+void
+clawt_gtk_on_pause_fleet(GSimpleAction *action, GVariant *parameter,
+                         gpointer user_data);
+
+void
+clawt_gtk_on_resume_fleet(GSimpleAction *action, GVariant *parameter,
+                          gpointer user_data);
+
 void
 clawt_gtk_push_chat_measure(ClawtWindow *self);
 

@@ -258,6 +258,121 @@ journalctl --user -u clawtilla --since "1 hour ago"
 journalctl --user -u clawtilla --disk-usage
 #+end_src
 
+** Holding the fleet before a restart
+:PROPERTIES:
+:CUSTOM_ID: quiesce
+:END:
+
+Restarting the daemon kills every agent mid-turn, and a turn in progress
+is lost work.  The practical result is that operators stop restarting:
+changes get batched and deferred because the cost of applying one is
+"whatever every agent happened to be doing is gone", and that cost is
+unbounded and unknowable at the moment you press the button.
+
+#+begin_src bash
+clawtilla pause              # the whole fleet
+clawtilla pause researcher   # one agent
+clawtilla status             # until draining reaches zero
+systemctl --user restart clawtilla
+#+end_src
+
+There is no third step.  The hold and the set of agents that were
+running are written to =<state_dir>/hold.yaml=, so the restart brings
+back exactly what was running -- and ~clawtilla resume~ is the only
+thing left to do, once you are ready.
+
+*** Pause is not stop
+
+This is the whole feature and it is worth being blunt about, because
+"pause" carries the wrong promise in most software:
+
+| Stop                                | Pause                             |
+|-------------------------------------+-----------------------------------|
+| closes the link, kills the process  | leaves both alone                 |
+| the running turn is lost            | the running turn finishes         |
+| a container is *destroyed* unless ~keep~ | nothing touches the computer  |
+| queued work stays queued            | queued work stays queued          |
+
+An agent that lost its container is not paused, it is broken, so nothing
+in this path touches a computer at all.
+
+*** Draining is the number you are waiting for
+
+#+begin_example
+  $ clawtilla pause
+  Held. Draining: 3 turn(s) still in flight.
+  Run `clawtilla status` until it reaches zero; queued work stays queued.
+
+  $ clawtilla status
+  hold:      draining -- 1 turn(s) still in flight
+
+  $ clawtilla status
+  hold:      held, nothing in flight -- safe to restart
+#+end_example
+
+That zero is a defined moment at which a restart is safe, and it did not
+exist before.  ~draining~ is *derived* -- it is exactly "held and still
+busy" -- rather than a counter something decrements, because a
+remembered count outlives what it describes, and this one would then
+tell somebody a restart is unsafe long after the turn ended.
+
+Nothing waits for it.  ~control.pause~ answers immediately with the
+count: an IPC handler must not wait on anything, and neither should a
+command you may want to walk away from.
+
+*** Resume puts back what was running, not what autostart says
+
+Those are different sets, and the difference is the point.  After a
+restart, which agents come back is decided by each agent's
+~runtime.autostart~ -- that is, by configuration rather than by what was
+actually running a second earlier.  An operator running six of
+twenty-four gets back whatever the config lists, which is a different
+six.
+
+The record is written when the hold lands and is *spent* once it has
+been queued, so it cannot resurrect that set at some later unrelated
+start.  An agent named in it that has since been removed is skipped and
+said, not refused: the record is a note about a moment that has passed,
+and a fleet edited between the pause and the restart is ordinary.
+
+Pausing twice does not overwrite it.  Under a hold the running set only
+shrinks, so a second pause would quietly drop agents from what gets
+resumed.
+
+*** Two things it deliberately does not do
+
+- **It is not an agent state.**  A held agent is *running* -- process up,
+  link attached -- and only delivery has stopped.  Folding "held" into
+  ~ClawtAgentState~ would put it beside ~stopped~, and those mean
+  opposite things about whether work was lost.  It rides beside ~busy~
+  instead, and both graphical clients draw it the way they draw that.
+- **Releasing one agent while the fleet is held is refused**, rather than
+  accepted and ignored.  The fleet hold would still cover it, so a caller
+  told it worked would sit watching an agent that never moves.  The
+  refusal names the command that does work.
+
+*** Where the mechanism came from
+
+~clawt_agent_runtime_is_paused()~ was already honoured by
+~clawt_mailbox_router_drain()~, which returns without delivering and
+leaves every item queued.  It was written for an account running out of
+session allowance, and the comment above it already described these
+semantics.  Three things stopped it being reusable: it was a deadline
+rather than a hold, it lived only in memory, and nothing could set it.
+
+The hold is a *separate field* from that deadline rather than a very
+large one, because ~is_paused()~ has two other callers in the restart
+accounting: it does not count an exit that happened while the account
+was out of allowance, and says so.  An agent that dies while an operator
+holds it is a real failure, and reporting it as somebody else's rate
+limit sends whoever reads that log to the wrong layer.
+
+*** From the clients
+
+The GTK client has "Hold the fleet" and "Resume the fleet" in the
+primary menu; the web client has a Fleet page under Settings.  Both show
+~held~ or ~draining~ beside the agent it applies to.
+
 ** Upgrading clawtilla
 
 #+begin_src bash

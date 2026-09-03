@@ -213,6 +213,16 @@ struct _ClawtDaemon {
     ClawtRoutineRunner *routines;
 
     /*
+     * Which agents are being held, and what to put back afterwards.
+     *
+     * Always built, never NULL: "there is no hold" is a state this
+     * object holds rather than an absence a reader has to check for, and
+     * it is what remembers the running set across the restart the hold
+     * exists to serve.  See src/agent/clawt-hold.c.
+     */
+    ClawtHold *hold;
+
+    /*
      * Whether a newer clawtilla exists.
      *
      * Built only when daemon.update_check is on, because it is the one
@@ -667,6 +677,76 @@ void clawt_daemon_triggers_start(ClawtDaemon *self);
  * no network socket at all.
  */
 void clawt_daemon_updates_start(ClawtDaemon *self);
+
+/*
+ * Loads any recorded hold, puts the gate on the agents it names, and
+ * says what is being resumed.
+ *
+ * Called from clawt_daemon_start() after the agents exist, because the
+ * gate lives on each agent's runtime and there is nothing to set it on
+ * before that.
+ */
+void clawt_daemon_hold_start(ClawtDaemon *self);
+
+/*
+ * Re-applies the gate to every agent the hold covers.
+ *
+ * A computer is derived from the config and so is a runtime: an agent
+ * started after a hold landed builds a fresh one, which knows nothing
+ * about it.  Called wherever an agent starts, so a fleet hold covers
+ * agents that appear while it is on -- otherwise `agent start` under a
+ * hold is a way to take work out of it.
+ */
+void clawt_daemon_hold_reapply(ClawtDaemon *self);
+
+/*
+ * How many of the held agents are still finishing a turn.
+ *
+ * Derived from clawt_agent_get_busy() rather than remembered, because a
+ * remembered count is a thing that outlives what it describes -- and
+ * this one decides when an operator is told it is safe to restart.
+ */
+guint clawt_daemon_hold_draining(ClawtDaemon *self);
+
+/*
+ * Writes the hold's `held`/`draining` view into an object.
+ */
+void clawt_daemon_hold_describe(ClawtDaemon *self, JsonBuilder *builder);
+
+/*
+ * Whether @agent_id was running when the fleet was held.
+ *
+ * Read by autostart_schedule(), which is the one place agents come up.
+ * A hold's record wins over `runtime.autostart` for the agents it names,
+ * because the two are different sets: after a restart, which agents came
+ * back was decided by configuration rather than by what was running a
+ * second earlier.
+ */
+gboolean clawt_daemon_hold_was_running(ClawtDaemon *self,
+                                       const gchar *agent_id);
+
+/*
+ * Drops the remembered running set, once it has been queued.
+ *
+ * Left in place it would resurrect that set at the next unrelated start
+ * -- a note about a moment outliving the moment.
+ */
+void clawt_daemon_hold_forget_running(ClawtDaemon *self);
+
+/*
+ * Whether this agent's runtime is gated by a hold.
+ */
+gboolean clawt_daemon_agent_held(ClawtAgent *agent);
+
+/*
+ * control.pause and control.resume.  See src/core/daemon-hold.c.
+ */
+JsonNode *
+clawt_daemon_handle_hold(ClawtDaemon  *self,
+                         const gchar  *kind,
+                         JsonNode     *request,
+                         JsonObject   *payload,
+                         gboolean     *handled);
 void clawt_daemon_triggers_stop(ClawtDaemon *self);
 
 /*

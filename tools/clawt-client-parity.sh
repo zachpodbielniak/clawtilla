@@ -269,6 +269,14 @@ declare -A AFFORDANCES=(
     #
     ["an available update"]="daemon_update|daemon_update"
     #
+    # Holding the fleet, and saying which agents are held.
+    #
+    # The frame kinds are caught by layer 1 -- both clients send
+    # control.pause and control.resume as literals -- but the *badge*
+    # that says an agent is held is not a frame, so it is declared.
+    #
+    ["a held agent is drawn as held"]="clawt_hold_label|clawt_hold_label"
+    #
     # A skill's `/name` is dynamic, so layer 2 cannot see it.
     #
     # That layer compares `"/name"` string literals, which is exactly
