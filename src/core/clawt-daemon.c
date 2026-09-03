@@ -3894,6 +3894,17 @@ release_components(ClawtDaemon *self)
 
     g_clear_object(&self->routines);
 
+    /*
+     * Stopped before it is dropped: a request in flight holds a
+     * reference to the checker and completes on this context, so
+     * unreffing without cancelling leaves a callback to arrive after
+     * the daemon has gone.
+     */
+    if (self->updates != NULL)
+        clawt_update_check_stop(self->updates);
+
+    g_clear_object(&self->updates);
+
     if (self->automation != NULL)
         clawt_automation_stop(self->automation);
 
@@ -5478,6 +5489,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
         clawt_routine_runner_start(self->routines, self->main_context);
     }
 
+    clawt_daemon_updates_start(self);
     clawt_daemon_triggers_start(self);
     clawt_daemon_venture_start(self);
 
@@ -8244,6 +8256,7 @@ clawt_daemon_finalize(GObject *object)
     g_clear_pointer(&self->drafts, g_hash_table_unref);
     g_clear_object(&self->notifier);
     g_clear_object(&self->routines);
+    g_clear_object(&self->updates);
     g_clear_object(&self->automation);
     g_clear_object(&self->skills);
     g_clear_pointer(&self->model_cache, g_hash_table_unref);

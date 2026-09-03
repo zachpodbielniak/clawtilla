@@ -144,6 +144,7 @@
 #include "ipc/clawt-client.h"
 #include "ipc/clawt-connection.h"
 
+#include "core/clawt-update.h"
 #include "core/clawt-daemon.h"
 
 #include "mailbox/clawt-mailbox-item.h"

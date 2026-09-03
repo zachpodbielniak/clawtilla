@@ -194,6 +194,38 @@ daemon:
   # because an address was missing.
   webhook_port: 8788
 
+  # Whether to ask, on a timer, if a newer clawtilla exists.
+  #
+  # Off by default, because it is the only thing in the daemon that
+  # reaches the network without somebody asking it to.
+  #
+  # It checks and reports; it does not install anything. An unattended
+  # update must not restart the daemon under running turns, so applying
+  # one waits on a hold that can drain first.
+  #
+  # The result reaches every client through control.status, including
+  # when the check itself failed -- a check that has been quietly
+  # erroring for a month is worse than none, because nothing to draw
+  # reads as up to date.
+  update_check: false
+
+  # Where daemon.update_check asks.
+  #
+  # Three answer shapes are understood, because three are real and none
+  # of them is ours: a bare version as text or as a JSON string, an
+  # object carrying version, tag_name or name, and an array of those --
+  # which is what Forgejo, Gitea and GitLab all return from a releases
+  # endpoint. Point it at a self-hosted forge or a file you publish;
+  # nothing here is tied to a particular host.
+  update_url: "https://gitlab.com/api/v4/projects/zachpodbielniak%2Fclawtilla/releases"
+
+  # How often to ask, in hours. Clamped to at least one.
+  #
+  # Nothing is asked at daemon start: the first check happens one
+  # interval in. Starting a daemon must not reach the network, or every
+  # test fixture that builds one does too.
+  update_interval_hours: 24
+
 # What a new agent gets when its own block does not say.
 #
 # Every key here can be overridden per agent.

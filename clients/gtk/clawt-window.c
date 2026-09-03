@@ -3258,7 +3258,8 @@ update_connection_banner(ClawtWindow *self)
 
     link = clawt_daemon_link_state(self->client, self->connected_once);
     text = clawt_connection_notice_text(link, self->active_connection,
-                                        self->daemon_version);
+                                        self->daemon_version,
+                                        self->daemon_update);
 
     /*
      * Cleared unless this state wants it.  AdwBanner keeps a button
@@ -3297,16 +3298,35 @@ note_daemon_version(ClawtWindow *self)
     g_autoptr(JsonNode) reply = NULL;
 
     g_clear_pointer(&self->daemon_version, g_free);
+    g_clear_pointer(&self->daemon_update, g_free);
 
     if (self->client == NULL)
         return;
 
     reply = clawt_window_request(self, "control.status", NULL);
 
-    if (reply != NULL)
+    if (reply != NULL) {
+        JsonObject *payload = clawt_payload_of(reply);
+        JsonObject *update = NULL;
+
         self->daemon_version =
-            g_strdup(clawt_json_string(clawt_payload_of(reply), "version",
-                                       NULL));
+            g_strdup(clawt_json_string(payload, "version", NULL));
+
+        if (json_object_has_member(payload, "update"))
+            update = json_object_get_object_member(payload, "update");
+
+        /*
+         * Only when the daemon says one is available.  Reading `latest`
+         * on its own would draw a banner about the version already
+         * running: the comparison belongs to the daemon, where it is
+         * written once, rather than to each of three clients.
+         */
+        if (update != NULL &&
+            json_object_has_member(update, "available") &&
+            json_object_get_boolean_member(update, "available"))
+            self->daemon_update =
+                g_strdup(clawt_json_string(update, "latest", NULL));
+    }
 
     update_connection_banner(self);
 }
@@ -5570,6 +5590,7 @@ clawt_window_dispose(GObject *object)
     g_clear_pointer(&self->connections, g_ptr_array_unref);
     g_clear_pointer(&self->connection_status, g_hash_table_unref);
     g_clear_pointer(&self->daemon_version, g_free);
+    g_clear_pointer(&self->daemon_update, g_free);
     g_clear_pointer(&self->active_connection, clawt_connection_free);
     g_clear_pointer(&self->local_socket, g_free);
     g_clear_pointer(&self->team_ids, g_strfreev);

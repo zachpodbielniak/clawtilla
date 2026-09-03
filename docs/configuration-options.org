@@ -273,6 +273,53 @@ loopback alone when there is not -- the same rule the web client
 follows, and for the same reason: a listener is never widened
 because an address was missing.
 
+*** =daemon.update_check=
+
+- Type :: boolean
+- Default :: =false=
+- Since :: 0.2.0
+
+Whether to ask, on a timer, if a newer clawtilla exists.
+
+Off by default, because it is the only thing in the daemon that
+reaches the network without somebody asking it to.
+
+It checks and reports; it does not install anything. An unattended
+update must not restart the daemon under running turns, so applying
+one waits on a hold that can drain first.
+
+The result reaches every client through control.status, including
+when the check itself failed -- a check that has been quietly
+erroring for a month is worse than none, because nothing to draw
+reads as up to date.
+
+*** =daemon.update_url=
+
+- Type :: string
+- Default :: =https://gitlab.com/api/v4/projects/zachpodbielniak%2Fclawtilla/releases=
+- Since :: 0.2.0
+
+Where daemon.update_check asks.
+
+Three answer shapes are understood, because three are real and none
+of them is ours: a bare version as text or as a JSON string, an
+object carrying version, tag_name or name, and an array of those --
+which is what Forgejo, Gitea and GitLab all return from a releases
+endpoint. Point it at a self-hosted forge or a file you publish;
+nothing here is tied to a particular host.
+
+*** =daemon.update_interval_hours=
+
+- Type :: integer
+- Default :: =24=
+- Since :: 0.2.0
+
+How often to ask, in hours. Clamped to at least one.
+
+Nothing is asked at daemon start: the first check happens one
+interval in. Starting a daemon must not reach the network, or every
+test fixture that builds one does too.
+
 ** =defaults=
 
 What a new agent gets when its own block does not say.

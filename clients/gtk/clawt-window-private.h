@@ -147,6 +147,7 @@ struct _ClawtWindow {
      */
     GtkWidget         *connection_banner;
     gchar             *daemon_version;      /* what control.status said */
+    gchar             *daemon_update;       /* a newer version, or NULL */
 
     /*
      * Whether this window has ever had a daemon on the other end.

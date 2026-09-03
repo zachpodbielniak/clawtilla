@@ -224,6 +224,42 @@ static const ClawtSchemaEntry schema[] = {
   "follows, and for the same reason: a listener is never widened\n"
   "because an address was missing.", "0.2.0" },
 
+{ "daemon.update_check", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_COMMENTED,
+  "false", NULL,
+  "Whether to ask, on a timer, if a newer clawtilla exists.\n"
+  "\n"
+  "Off by default, because it is the only thing in the daemon that\n"
+  "reaches the network without somebody asking it to.\n"
+  "\n"
+  "It checks and reports; it does not install anything. An unattended\n"
+  "update must not restart the daemon under running turns, so applying\n"
+  "one waits on a hold that can drain first.\n"
+  "\n"
+  "The result reaches every client through control.status, including\n"
+  "when the check itself failed -- a check that has been quietly\n"
+  "erroring for a month is worse than none, because nothing to draw\n"
+  "reads as up to date.", "0.2.0" },
+
+{ "daemon.update_url", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_COMMENTED,
+  "https://gitlab.com/api/v4/projects/zachpodbielniak%2Fclawtilla/releases",
+  NULL,
+  "Where daemon.update_check asks.\n"
+  "\n"
+  "Three answer shapes are understood, because three are real and none\n"
+  "of them is ours: a bare version as text or as a JSON string, an\n"
+  "object carrying version, tag_name or name, and an array of those --\n"
+  "which is what Forgejo, Gitea and GitLab all return from a releases\n"
+  "endpoint. Point it at a self-hosted forge or a file you publish;\n"
+  "nothing here is tied to a particular host.", "0.2.0" },
+
+{ "daemon.update_interval_hours", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_COMMENTED, "24", NULL,
+  "How often to ask, in hours. Clamped to at least one.\n"
+  "\n"
+  "Nothing is asked at daemon start: the first check happens one\n"
+  "interval in. Starting a daemon must not reach the network, or every\n"
+  "test fixture that builds one does too.", "0.2.0" },
+
 { "defaults", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "What a new agent gets when its own block does not say.\n"
   "\n"

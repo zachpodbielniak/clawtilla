@@ -31,6 +31,7 @@ struct _ClawtWebApp {
      * person happened to open.
      */
     gchar       *daemon_version;
+    gchar       *daemon_update;   /* a newer version, or NULL */
 
     /*
      * What arrived while the reader was somewhere else.
@@ -513,16 +514,31 @@ note_daemon_version(ClawtWebApp *self)
     g_autoptr(JsonNode) reply = NULL;
 
     g_clear_pointer(&self->daemon_version, g_free);
+    g_clear_pointer(&self->daemon_update, g_free);
 
     if (self->client == NULL)
         return;
 
     reply = clawt_web_app_call(self, "control.status", NULL);
 
-    if (reply != NULL)
+    if (reply != NULL) {
+        JsonObject *root = clawt_web_root(reply);
+        JsonObject *update = clawt_web_member_object(root, "update");
+
         self->daemon_version =
-            g_strdup(clawt_web_member(clawt_web_root(reply), "version",
-                                      NULL));
+            g_strdup(clawt_web_member(root, "version", NULL));
+
+        /*
+         * Only when the daemon says one is available.  Reading `latest`
+         * on its own would draw a banner for the version we are already
+         * on -- the comparison belongs to the daemon, which is the only
+         * place it is written once.
+         */
+        if (update != NULL &&
+            clawt_web_member_bool(update, "available", FALSE))
+            self->daemon_update =
+                g_strdup(clawt_web_member(update, "latest", NULL));
+    }
 }
 
 gchar *
@@ -538,7 +554,7 @@ clawt_web_app_connection_notice(ClawtWebApp *self)
      */
     return clawt_connection_notice_text(
         clawt_daemon_link_state(self->client, self->reached_once),
-        self->connection, self->daemon_version);
+        self->connection, self->daemon_version, self->daemon_update);
 }
 
 gboolean
@@ -896,6 +912,7 @@ clawt_web_app_finalize(GObject *object)
     g_clear_pointer(&self->alerts, g_ptr_array_unref);
     g_clear_pointer(&self->connection, clawt_connection_free);
     g_clear_pointer(&self->daemon_version, g_free);
+    g_clear_pointer(&self->daemon_update, g_free);
 
     g_clear_pointer(&self->connection_status, g_hash_table_unref);
 

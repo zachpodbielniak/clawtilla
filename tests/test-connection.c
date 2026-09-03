@@ -1168,9 +1168,10 @@ test_the_advice_matches_where_the_daemon_is(void)
     g_autofree gchar *here = NULL;
     g_autofree gchar *there = NULL;
 
-    here = clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, local, NULL);
+    here = clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, local,
+                                        NULL, NULL);
     there = clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, remote,
-                                         NULL);
+                                         NULL, NULL);
 
     g_assert_nonnull(here);
     g_assert_nonnull(there);
@@ -1205,8 +1206,10 @@ test_a_connection_never_made_was_not_lost(void)
     g_autofree gchar *never = NULL;
     g_autofree gchar *lost = NULL;
 
-    never = clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, local, NULL);
-    lost = clawt_connection_notice_text(CLAWT_DAEMON_LINK_LOST, local, NULL);
+    never = clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, local,
+                                         NULL, NULL);
+    lost = clawt_connection_notice_text(CLAWT_DAEMON_LINK_LOST, local,
+                                        NULL, NULL);
 
     g_assert_nonnull(never);
     g_assert_nonnull(lost);
@@ -1244,14 +1247,15 @@ test_a_broken_connection_outranks_a_version(void)
      * clawt_version_mismatch_text() definitely has something to say --
      * checked, so the test cannot pass by there being no mismatch.
      */
-    up = clawt_connection_notice_text(CLAWT_DAEMON_LINK_UP, local, "99.0.0");
+    up = clawt_connection_notice_text(CLAWT_DAEMON_LINK_UP, local, "99.0.0",
+                                      NULL);
     g_assert_nonnull(up);
     g_assert_nonnull(strstr(up, "99.0.0"));
 
     never = clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, local,
-                                         "99.0.0");
+                                         "99.0.0", NULL);
     lost = clawt_connection_notice_text(CLAWT_DAEMON_LINK_LOST, local,
-                                        "99.0.0");
+                                        "99.0.0", NULL);
 
     g_assert_null(strstr(never, "99.0.0"));
     g_assert_null(strstr(lost, "99.0.0"));
@@ -1266,11 +1270,12 @@ test_a_healthy_connection_says_nothing(void)
     g_autofree gchar *quiet = NULL;
 
     quiet = clawt_connection_notice_text(CLAWT_DAEMON_LINK_UP, local,
-                                         CLAWT_VERSION_STRING);
+                                         CLAWT_VERSION_STRING, NULL);
     g_assert_null(quiet);
 
     /* An unknown version is not a complaint either. */
-    quiet = clawt_connection_notice_text(CLAWT_DAEMON_LINK_UP, local, NULL);
+    quiet = clawt_connection_notice_text(CLAWT_DAEMON_LINK_UP, local, NULL,
+                                         NULL);
     g_assert_null(quiet);
 }
 
@@ -1285,9 +1290,9 @@ static void
 test_a_notice_without_a_connection_still_reads(void)
 {
     g_autofree gchar *never =
-        clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, NULL, NULL);
+        clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, NULL, NULL, NULL);
     g_autofree gchar *lost =
-        clawt_connection_notice_text(CLAWT_DAEMON_LINK_LOST, NULL, NULL);
+        clawt_connection_notice_text(CLAWT_DAEMON_LINK_LOST, NULL, NULL, NULL);
 
     g_assert_nonnull(never);
     g_assert_nonnull(lost);

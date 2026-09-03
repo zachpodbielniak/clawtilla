@@ -170,9 +170,20 @@ clawt_notify_events_from_strv(const gchar *const *names, GError **error)
 
         if (!clawt_flags_from_nick(CLAWT_TYPE_NOTIFY_EVENTS, names[i],
                                    &value)) {
+            /*
+             * The list of what is available comes from the type, not
+             * from this sentence.  It was written out by hand and had
+             * already stopped being the whole list -- every
+             * hand-maintained copy of an option's values in this tree
+             * has drifted, and one inside a message telling somebody
+             * what to type is the worst place for it to.
+             */
+            g_autofree gchar *offered =
+                clawt_flags_list_nicks(CLAWT_TYPE_NOTIFY_EVENTS);
+
             g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
                         "'%s' is not something to be notified about: use "
-                        "question, done, error or routine", names[i]);
+                        "%s", names[i], offered);
             return CLAWT_NOTIFY_EVENTS_NONE;
         }
 

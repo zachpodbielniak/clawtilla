@@ -213,6 +213,15 @@ struct _ClawtDaemon {
     ClawtRoutineRunner *routines;
 
     /*
+     * Whether a newer clawtilla exists.
+     *
+     * Built only when daemon.update_check is on, because it is the one
+     * thing here that reaches the network without somebody asking it to.
+     * NULL is the ordinary case and every reader has to expect it.
+     */
+    ClawtUpdateCheck *updates;
+
+    /*
      * Work started by something happening elsewhere.
      *
      * The store is built whether or not the receiver is: it holds each
@@ -648,6 +657,16 @@ typedef JsonNode *(*ClawtDaemonFamilyFunc)(
  * rather than a subsystem.
  */
 void clawt_daemon_triggers_start(ClawtDaemon *self);
+
+/*
+ * Arms the update check, when daemon.update_check says to.
+ *
+ * Nothing leaves the machine here: the timer is set and the first
+ * request happens one interval later.  A check at start would make every
+ * fixture that builds a daemon reach the network, and `make test` opens
+ * no network socket at all.
+ */
+void clawt_daemon_updates_start(ClawtDaemon *self);
 void clawt_daemon_triggers_stop(ClawtDaemon *self);
 
 /*

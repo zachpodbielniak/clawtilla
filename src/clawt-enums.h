@@ -762,6 +762,7 @@ typedef enum {
  * @CLAWT_NOTIFY_EVENTS_DONE: a task finished
  * @CLAWT_NOTIFY_EVENTS_ERROR: an agent stopped in a way nobody asked for
  * @CLAWT_NOTIFY_EVENTS_ROUTINE: a routine failed to run
+ * @CLAWT_NOTIFY_EVENTS_UPDATE: a newer clawtilla exists
  *
  * What is worth interrupting somebody for.
  *
@@ -777,7 +778,8 @@ typedef enum {
     CLAWT_NOTIFY_EVENTS_QUESTION = 1 << 0,
     CLAWT_NOTIFY_EVENTS_DONE     = 1 << 1,
     CLAWT_NOTIFY_EVENTS_ERROR    = 1 << 2,
-    CLAWT_NOTIFY_EVENTS_ROUTINE  = 1 << 3
+    CLAWT_NOTIFY_EVENTS_ROUTINE  = 1 << 3,
+    CLAWT_NOTIFY_EVENTS_UPDATE   = 1 << 4
 } ClawtNotifyEvents;
 
 /**
@@ -1223,6 +1225,23 @@ gboolean clawt_flags_from_nick(GType flags_type, const gchar *nick,
  * Returns: (transfer full): a newly allocated string
  */
 gchar *clawt_flags_to_string(GType flags_type, guint value);
+
+/**
+ * clawt_flags_list_nicks:
+ * @flags_type: a registered flags #GType
+ *
+ * Every nickname the type carries, as prose: "a, b, c or d".
+ *
+ * For a refusal that has to tell somebody what they may write instead.
+ * Every hand-written copy of an option's values in this tree has drifted
+ * from the type it describes -- three key tables, two colour-scheme
+ * lists, three integration key lists -- and one living inside the
+ * sentence that tells a person what to type is the worst place for it
+ * to, because the message is the only thing they will read.
+ *
+ * Returns: (transfer full): a newly allocated string
+ */
+gchar *clawt_flags_list_nicks(GType flags_type);
 
 /**
  * ClawtMemoryScope:

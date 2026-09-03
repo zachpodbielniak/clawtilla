@@ -260,6 +260,15 @@ declare -A AFFORDANCES=(
     #
     ["a broken routine says why"]="will never run|routine, \"problem\""
     #
+    # An update the daemon found.
+    #
+    # Both clients read it out of control.status and hand it to the same
+    # library sentence, so the marker is the field each keeps it in.
+    # Layer 1 cannot see it -- control.status is a frame both already
+    # send, and this is a member inside its reply.
+    #
+    ["an available update"]="daemon_update|daemon_update"
+    #
     # A skill's `/name` is dynamic, so layer 2 cannot see it.
     #
     # That layer compares `"/name"` string literals, which is exactly

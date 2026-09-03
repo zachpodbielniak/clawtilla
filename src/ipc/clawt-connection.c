@@ -770,7 +770,8 @@ clawt_daemon_link_state(ClawtClient *client, gboolean reached_once)
 gchar *
 clawt_connection_notice_text(ClawtDaemonLink        link,
                              const ClawtConnection *connection,
-                             const gchar           *daemon_version)
+                             const gchar           *daemon_version,
+                             const gchar           *available_update)
 {
     const gchar *name = (connection != NULL)
                         ? clawt_connection_get_name(
@@ -806,6 +807,24 @@ clawt_connection_notice_text(ClawtDaemonLink        link,
 
     case CLAWT_DAEMON_LINK_UP:
     default:
-        return clawt_version_mismatch_text(daemon_version);
+        {
+            gchar *mismatch = clawt_version_mismatch_text(daemon_version);
+
+            /*
+             * A client and a daemon that disagree is broken now; an
+             * update is better later.  Saying the second over the first
+             * would answer the wrong question, so the mismatch wins and
+             * the update waits until there is nothing else to say.
+             */
+            if (mismatch != NULL)
+                return mismatch;
+        }
+
+        if (available_update != NULL && *available_update != '\0')
+            return g_strdup_printf(
+                "clawtilla %s is available. Nothing has been installed -- "
+                "update when it suits you.", available_update);
+
+        return NULL;
     }
 }

@@ -315,11 +315,19 @@ ClawtDaemonLink clawt_daemon_link_state(ClawtClient *client,
  * this machine.  Somebody told to start a daemon for a workstation they
  * cannot reach will start one here and be no closer.
  *
+ * @available_update is a newer clawtilla that `control.status`
+ * reported, or %NULL when none is known or the check is off.  It is
+ * last, below the version mismatch, because a client and daemon that
+ * disagree is a thing that is broken now and an update is a thing that
+ * could be better later.  Saying the second while the first is true
+ * answers the wrong question.
+ *
  * Returns: (transfer full) (nullable): the sentence, or %NULL
  */
 gchar *clawt_connection_notice_text(ClawtDaemonLink        link,
                                     const ClawtConnection *connection,
-                                    const gchar           *daemon_version);
+                                    const gchar           *daemon_version,
+                                    const gchar           *available_update);
 
 /**
  * clawt_connection_new_local:

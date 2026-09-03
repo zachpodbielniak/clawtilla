@@ -273,6 +273,117 @@ disables one agent -- as a shadow, with the reason -- rather than the
 daemon.  So a config written by a newer clawtilla round-trips through an
 older one without losing anything.
 
+*** Knowing that there is one
+:PROPERTIES:
+:CUSTOM_ID: update-tracking
+:END:
+
+The daemon knew its own version and nothing ever asked whether it was
+the current one.  That is not a theoretical gap: a defect was diagnosed,
+worked around, and written up as unfixed while the fix had been sitting
+upstream for seven commits.
+
+Three keys, all commented out by default:
+
+#+begin_src yaml
+daemon:
+  update_check: true
+  update_url: "https://gitlab.com/api/v4/projects/zachpodbielniak%2Fclawtilla/releases"
+  update_interval_hours: 24
+#+end_src
+
+Off by default because it is the only thing in the daemon that reaches
+the network without somebody asking it to.  Nothing is asked at daemon
+*start* either -- the first check happens one interval in.  A check at
+start would make every test fixture that builds a daemon reach out, and
+~make test~ opens no network socket at all.
+
+**** What it accepts back
+
+Three shapes, because three are real and none of them is ours:
+
+| Answer                                        | Where it comes from                    |
+|-----------------------------------------------+----------------------------------------|
+| a bare version, as text or a JSON string      | a file you publish                     |
+| an object with =version=, =tag_name= or =name= | one release                            |
+| an array of those                             | Forgejo, Gitea and GitLab, newest first |
+
+So it points at a self-hosted forge, a public one, or a text file.  An
+array is *walked* rather than read at element zero: a draft or a
+malformed entry at the front must not answer for the whole list.
+
+A leading =v= is ignored, because a release tag almost always has one
+and the compiled-in version never does -- comparing them as plain text
+would make every tagged release look like a different version for ever,
+including immediately after updating.
+
+An answer that does not parse as a version is never newer.  That
+direction is the point rather than tidiness: a source that returned an
+error page, an empty body or the word "latest" must not be able to
+produce a notification and a banner in every client about nothing.
+
+**** What it reports
+
+~control.status~ gains a ~commit~ -- so "am I actually on that fix" is
+answerable without a rebuild -- and, when the check is on, an ~update~
+object:
+
+#+begin_src bash
+$ clawtilla status
+clawtillad 0.1.0 (f0dfe7334631)
+config:    /home/zach/.clawtilla/config.yaml
+update:    0.3.0 is available
+agents:    24 (2 connected)
+clients:   1
+#+end_src
+
+~checked_at~ is written even when it is zero, and ~error~ whenever the
+last attempt failed.  That is deliberate: a client with nothing to draw
+draws nothing, and nothing reads as "up to date" -- so a check that has
+been quietly erroring for a month would be worse than having no check.
+The CLI prints "the check is failing: ..." for exactly that case, and
+both graphical clients show the available version as a banner, which is
+the shape for a condition the window is *in* rather than an answer to a
+question somebody just asked.
+
+The comparison is done by the daemon, once.  Three clients each
+comparing two version strings is three chances to decide 0.10.0 is older
+than 0.9.0, and that answer looks exactly like a right one.
+
+Add ~update~ to a notifier's ~events~ to be told where you already are:
+
+#+begin_src yaml
+integrations:
+  - name: phone
+    type: ntfy
+    events: [question, error, update]
+#+end_src
+
+It fires once per version, not once per check.  The timer keeps going
+for as long as the daemon is up, and a buzz every interval about the
+same release is how somebody turns a notifier off -- and then it is not
+there for the two events it exists for.
+
+**** It does not install anything
+
+Deliberately, and this is the ordering rather than a gap.  An unattended
+update must not restart the daemon under running turns: that is the same
+loss a restart already costs, automated and unsupervised.  Applying an
+update means check → notify → hold the fleet → wait for the drain →
+restart → resume, so it waits on a hold that can drain.
+
+There is a second thing an updater has to get right, measured rather
+than assumed: overwriting a mapped shared object *in place* invalidates
+the pages the kernel is still demand-paging and the process takes
+SIGBUS.  Copying a smaller file over a mapped =.so= gives ~Bus error
+(core dumped)~, exit 135; writing to a temporary name in the same
+directory and ~rename()~-ing it finishes cleanly, because rename swaps
+the directory entry and leaves the old inode alive for anything still
+mapping it.  A running *executable* is protected by ~ETXTBSY~, so the
+exposure is specifically the shared objects -- and an updater reaching
+for a plain copy looks correct in testing and takes the daemon down in
+the field.
+
 ** Upgrading libreclaw
 
 ~deps/libreclaw~ is clawtilla's only submodule, and it brings five of its

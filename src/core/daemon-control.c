@@ -15,6 +15,68 @@
 #include "core/clawt-daemon.h"
 #include "core/clawt-daemon-private.h"
 
+/*
+ * Told when the check finds a version we are not on.
+ *
+ * Once per version, not once per check: the timer keeps firing for as
+ * long as the daemon is up, and a buzz every interval about the same
+ * release is how somebody turns the notifier off -- and then it is not
+ * there for the two events it exists for.
+ */
+static void
+on_update_found(ClawtUpdateCheck *check,
+                const gchar      *version,
+                gpointer          user_data)
+{
+    ClawtDaemon *self = user_data;
+    g_autoptr(ClawtNotification) notification = NULL;
+
+    (void)check;
+
+    g_message("clawtilla %s is available (running %s)", version,
+              CLAWT_VERSION_STRING);
+
+    if (self->notifier == NULL)
+        return;
+
+    notification = clawt_notification_new(
+        CLAWT_NOTIFY_EVENTS_UPDATE, NULL, NULL,
+        "A newer clawtilla is available",
+        version);
+
+    clawt_notifier_notify(self->notifier, notification);
+}
+
+void
+clawt_daemon_updates_start(ClawtDaemon *self)
+{
+    g_autofree gchar *url = NULL;
+
+    g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+    if (!clawt_config_get_boolean(self->config, "daemon.update_check"))
+        return;
+
+    url = g_strdup(clawt_config_get_string(self->config,
+                                           "daemon.update_url"));
+
+    if (url == NULL || *url == '\0') {
+        g_warning("daemon.update_check is on but daemon.update_url is "
+                  "empty; nothing will be checked");
+        return;
+    }
+
+    self->updates = clawt_update_check_new(
+        CLAWT_VERSION_STRING, url,
+        (gint)clawt_config_get_int(self->config,
+                                   "daemon.update_interval_hours"));
+
+    g_signal_connect(self->updates, "found", G_CALLBACK(on_update_found),
+                     self);
+
+    clawt_update_check_start(self->updates);
+}
+
 JsonNode *
 clawt_daemon_handle_control(
     ClawtDaemon  *self,
@@ -49,6 +111,33 @@ clawt_daemon_handle_control(
         json_builder_set_member_name(builder, "cursor");
         json_builder_add_int_value(
             builder, (gint64)clawt_event_bus_get_cursor(self->bus));
+
+        /*
+         * Which build this actually is.
+         *
+         * "0.1.0" is the number three releases can share while somebody
+         * is asking whether they are on the fix -- and answering that
+         * without it meant rebuilding to find out.  Compiled in beside
+         * the version it qualifies.
+         */
+        json_builder_set_member_name(builder, "commit");
+        json_builder_add_string_value(builder, CLAWT_GIT_SHA);
+
+        /*
+         * And whether a newer one exists.  Reported by the daemon rather
+         * than checked by each client: three clients comparing two
+         * version strings is three chances to decide 0.10.0 is older
+         * than 0.9.0, and a wrong answer there looks exactly like a
+         * right one.
+         *
+         * Absent when daemon.update_check is off, which is the default.
+         * A client seeing no `update` member knows nothing is being
+         * checked -- which is a different thing from a check that ran
+         * and found nothing, and has to read differently.
+         */
+        if (self->updates != NULL)
+            clawt_update_check_describe(self->updates, builder);
+
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));

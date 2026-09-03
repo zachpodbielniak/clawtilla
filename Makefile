@@ -66,6 +66,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/config/clawt-secret-ref.h \
 	$(SRCDIR)/core/clawt-event.h \
 	$(SRCDIR)/core/clawt-daemon.h \
+	$(SRCDIR)/core/clawt-update.h \
 	$(SRCDIR)/core/clawt-event-bus.h \
 	$(SRCDIR)/core/clawt-event-log.h \
 	$(SRCDIR)/integration/clawt-connector.h \
@@ -327,7 +328,8 @@ LIB_SOURCES = \
 	$(SRCDIR)/teach/clawt-gowl-demo-recorder.c \
 	$(SRCDIR)/teach/clawt-guest-demo-recorder.c \
 	$(SRCDIR)/teach/clawt-skill-synthesizer.c \
-	$(SRCDIR)/core/daemon-teach.c
+	$(SRCDIR)/core/daemon-teach.c \
+	$(SRCDIR)/core/clawt-update.c
 
 # Object files
 LIB_OBJECTS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(LIB_SOURCES))

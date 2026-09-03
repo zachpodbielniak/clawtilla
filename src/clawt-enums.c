@@ -845,6 +845,7 @@ clawt_notify_events_get_type(void)
             { CLAWT_NOTIFY_EVENTS_DONE, "CLAWT_NOTIFY_EVENTS_DONE", "done" },
             { CLAWT_NOTIFY_EVENTS_ERROR, "CLAWT_NOTIFY_EVENTS_ERROR", "error" },
             { CLAWT_NOTIFY_EVENTS_ROUTINE, "CLAWT_NOTIFY_EVENTS_ROUTINE", "routine" },
+            { CLAWT_NOTIFY_EVENTS_UPDATE, "CLAWT_NOTIFY_EVENTS_UPDATE", "update" },
             { 0, NULL, NULL }
         };
         GType g_define_type_id = g_flags_register_static("ClawtNotifyEvents", values);
@@ -1152,6 +1153,30 @@ clawt_flags_to_string(GType flags_type, guint value)
      */
     if (out->len == 0)
         g_string_append(out, "none");
+
+    return g_string_free(out, FALSE);
+}
+
+gchar *
+clawt_flags_list_nicks(GType flags_type)
+{
+    g_autoptr(GFlagsClass) klass = NULL;
+    GString *out;
+    guint i;
+
+    klass = g_type_class_ref(flags_type);
+
+    if (klass == NULL)
+        return g_strdup("");
+
+    out = g_string_new(NULL);
+
+    for (i = 0; i < klass->n_values; i++) {
+        if (out->len > 0)
+            g_string_append(out, i + 1 == klass->n_values ? " or " : ", ");
+
+        g_string_append(out, klass->values[i].value_nick);
+    }
 
     return g_string_free(out, FALSE);
 }

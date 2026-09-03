@@ -7093,8 +7093,34 @@ cmd_status(int argc, char *argv[])
 
     status = json_node_get_object(reply);
 
-    g_print("clawtillad %s\n", member_or(status, "version", "?"));
+    g_print("clawtillad %s (%s)\n", member_or(status, "version", "?"),
+            member_or(status, "commit", "unknown build"));
     g_print("config:    %s\n", member_or(status, "config", "?"));
+
+    /*
+     * Whether a newer one exists, and -- just as important -- whether
+     * the check itself is working.  A check that has been erroring for a
+     * month is worse than no check, because a client with nothing to
+     * draw draws nothing and that reads as "up to date".
+     *
+     * Nothing at all is printed when the member is absent, which is the
+     * default: not checking and checking-and-finding-nothing are
+     * different states and only one of them deserves a line.
+     */
+    if (json_object_has_member(status, "update")) {
+        JsonObject *update = json_object_get_object_member(status, "update");
+
+        if (json_object_get_boolean_member(update, "available"))
+            g_print("update:    %s is available\n",
+                    member_or(update, "latest", "?"));
+        else if (member_or(update, "error", NULL) != NULL)
+            g_print("update:    the check is failing: %s\n",
+                    member_or(update, "error", ""));
+        else if (json_object_get_int_member(update, "checked_at") == 0)
+            g_print("update:    on, but it has not run yet\n");
+        else
+            g_print("update:    up to date\n");
+    }
     g_print("agents:    %" G_GINT64_FORMAT " (%" G_GINT64_FORMAT
             " connected)\n",
             json_object_get_int_member(status, "agents"),
