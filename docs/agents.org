@@ -937,6 +937,93 @@ clawtilla agent interrupt researcher
 clawtilla agent logs researcher
 #+end_src
 
+*** What it is doing, and which process is doing it
+:PROPERTIES:
+:CUSTOM_ID: agent-introspection
+:END:
+
+A state is a fact about a process.  ~running~ is the same word for an
+agent that has been thinking for four minutes and one that has been idle
+for four hours, and for a long time it was the only word a headless
+surface had -- the daemon has computed ~busy~ and ~peer~ since the fields
+were added, the two graphical clients rendered them, and the CLI read
+neither.
+
+Both halves are now on ~agent list~ and ~agent show~:
+
+#+begin_example
+  $ clawtilla agent list
+  ID                   STATE      WORK               QUEUE  LINK     DESCRIPTION
+  buff-gravy           running    working for kudu   0      up       Builds things
+  springbok            running    -                  2      up       Reads things
+#+end_example
+
+~WORK~ is empty for an idle agent rather than carrying a word for
+nothing happening, and ~clawtilla agent show~ spells that case out as
+~idle~ -- a blank column is readable, a missing line reads as a field
+the client does not know about.
+
+An agent working for the operator says ~working~, not ~working for
+user~.  "user" is a real sender id on the wire and means the person
+reading the output.
+
+~agent show~ adds the process:
+
+#+begin_example
+  work:        working for kudu
+  pid:         3693235
+  uptime:      0h 12m 55s
+  restarts:    2 (the daemon has replaced this agent's process)
+#+end_example
+
+~pid~ and ~uptime~ appear only when there is a process.  An absent
+member says "no process" once; a ~pid: 0~ invites a client to render it
+as though it were one, and 0 is a pid a caller could hand to ~kill(2)~
+meaning its own process group.
+
+~restarts~ counts how many times the daemon has replaced the child
+underneath this agent.  It is reported only when it is not zero, and it
+is *not* the consecutive-failure streak the restart policy keeps -- that
+one resets on a clean exit and after a long enough run, because it
+decides whether to give up.  This one only climbs, because the question
+it answers is "has the process under this agent been swapped since I
+last looked", and a runtime that respawns in place is exactly how an
+agent came to be reported stopped while it was alive, connected and
+answering nothing.  A start that *failed* is not counted: it replaced nothing, and
+counting it would make a misconfigured agent look like a flapping one.
+
+Uptime is reported as a duration rather than as the stamp behind it,
+which is monotonic and means nothing to a client on another machine.
+
+**** Not offered to agents
+
+~clawtilla_list_agents~ does not report a pid.  An agent's own ~bash~
+runs on the daemon's host -- that is true for a container and VM agent
+too, since only ~clawtilla_computer_exec~ enters the machine -- so a
+sibling's pid there is a signal number away from being an action.  The
+operator gets it through the CLI and the inspector; an agent gets what
+it needs for routing, which is who is busy, not what to signal.
+
+**** ~clawtilla status~ names them
+
+#+begin_example
+  $ clawtilla status
+  clawtillad 0.1.0
+  config:    /home/zach/.clawtilla/config.yaml
+  agents:    24 (2 connected)
+  clients:   1
+
+    buff-gravy           working for kudu
+    springbok            idle
+#+end_example
+
+"24 (2 connected)" cannot be acted on: it says the fleet is partly up
+without saying which part, so the next question was always another
+command.  The list comes from a second call to ~agent.list~, and a
+failure of that call is passed over rather than turned into a failed
+~status~ -- the counts above it are that command's answer and have
+already been printed.
+
 *** Stopping the work is not stopping the agent
 
 ~agent interrupt~ ends what an agent is doing *now*. It is not a gentler

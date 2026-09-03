@@ -90,6 +90,40 @@ GPid           clawt_agent_runtime_get_pid(ClawtAgentRuntime *self);
 ClawtAgentCaps clawt_agent_runtime_get_caps(ClawtAgentRuntime *self);
 
 /**
+ * clawt_agent_runtime_get_uptime_seconds:
+ * @self: a #ClawtAgentRuntime
+ *
+ * How long the process serving this agent has been up.
+ *
+ * Seconds rather than the stamp it is derived from, because that stamp
+ * is monotonic: it counts from an arbitrary origin this process picked
+ * at boot and means nothing to a client on another machine, or to the
+ * same machine after a reboot.  A duration survives the trip.
+ *
+ * Returns: seconds since the current process started, or 0 when there
+ *   is none -- a stopped agent has no uptime rather than an uptime of
+ *   however long ago its last child happened to start
+ */
+gint64 clawt_agent_runtime_get_uptime_seconds(ClawtAgentRuntime *self);
+
+/**
+ * clawt_agent_runtime_get_restarts:
+ * @self: a #ClawtAgentRuntime
+ *
+ * How many times this runtime has replaced its child.
+ *
+ * Distinct from the consecutive-failure streak the restart policy keeps,
+ * which resets on a clean exit and after a long enough run.  This one
+ * only ever climbs, because the question it answers is "has the process
+ * under this agent been swapped since I last looked" -- and a runtime
+ * that respawns in place is precisely how an agent came to be reported
+ * stopped while alive.
+ *
+ * Returns: 0 for a runtime still serving its first child
+ */
+guint clawt_agent_runtime_get_restarts(ClawtAgentRuntime *self);
+
+/**
  * clawt_agent_runtime_interrupt:
  * @self: a #ClawtAgentRuntime
  * @out_killed: (out) (optional): how many processes were signalled

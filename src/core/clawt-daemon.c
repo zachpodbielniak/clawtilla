@@ -6895,6 +6895,53 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
                                       clawt_agent_get_activity_peer(agent));
     }
 
+    /*
+     * And which OS process is serving it.
+     *
+     * clawt_agent_runtime_get_pid() was declared, documented and
+     * implemented by both runtimes, and had no caller anywhere outside
+     * the test suite -- so diagnosing a stuck agent meant leaving
+     * clawtilla for pgrep and /proc and then guessing which of N
+     * identical libreclaw children belonged to which agent.
+     *
+     * Emitted only when there is a process to name.  An absent member
+     * says "no process" once; a `pid: 0` invites a client to render it
+     * as though it were one, and 0 is a pid the caller could hand to
+     * kill(2) meaning its own process group.
+     *
+     * Deliberately not offered to agents: clawt_mcp_tools_call() builds
+     * its own listing rather than going through this function, and an
+     * agent whose bash tool runs on the daemon's host has no business
+     * being handed a sibling's pid.
+     */
+    {
+        ClawtAgentRuntime *runtime = clawt_agent_get_runtime(agent);
+        GPid pid = (runtime != NULL) ? clawt_agent_runtime_get_pid(runtime)
+                                     : 0;
+
+        if (pid > 0) {
+            json_builder_set_member_name(builder, "pid");
+            json_builder_add_int_value(builder, (gint64)pid);
+
+            json_builder_set_member_name(builder, "uptime");
+            json_builder_add_int_value(
+                builder, clawt_agent_runtime_get_uptime_seconds(runtime));
+        }
+
+        /*
+         * The respawn count stands on its own, and is reported even at
+         * zero: "this child has never been replaced" is the answer that
+         * makes the others trustworthy, and an absent member cannot say
+         * it.
+         */
+        if (runtime != NULL) {
+            json_builder_set_member_name(builder, "restarts");
+            json_builder_add_int_value(
+                builder,
+                (gint64)clawt_agent_runtime_get_restarts(runtime));
+        }
+    }
+
     json_builder_end_object(builder);
 }
 

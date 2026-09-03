@@ -52,6 +52,7 @@ typedef struct {
     guint              backoff_seconds;
     guint              max_restarts;
     guint              consecutive_failures;
+    guint              restarts;
     gint64             started_at;
     GSource           *restart_source;
 
@@ -105,6 +106,16 @@ clawt_agent_runtime_start(ClawtAgentRuntime *self, GError **error)
             priv->last_error = g_strdup((*error)->message);
         return FALSE;
     }
+
+    /*
+     * Counted before the stamp is overwritten, because the stamp is the
+     * only record that there was an earlier child: one runtime object
+     * serves an agent for its whole life and start() replaces the
+     * process underneath itself, so nothing else here distinguishes a
+     * first start from the fourth.
+     */
+    if (priv->started_at > 0)
+        priv->restarts++;
 
     priv->started_at = g_get_monotonic_time();
 
@@ -161,6 +172,36 @@ clawt_agent_runtime_get_pid(ClawtAgentRuntime *self)
     klass = CLAWT_AGENT_RUNTIME_GET_CLASS(self);
 
     return (klass->get_pid != NULL) ? klass->get_pid(self) : 0;
+}
+
+gint64
+clawt_agent_runtime_get_uptime_seconds(ClawtAgentRuntime *self)
+{
+    ClawtAgentRuntimePrivate *priv;
+
+    g_return_val_if_fail(CLAWT_IS_AGENT_RUNTIME(self), 0);
+
+    priv = PRIV(self);
+
+    /*
+     * `started_at` is never cleared -- the restart streak needs the
+     * stamp of the last start to tell a crash loop from a process that
+     * ran for a week -- so it outlives the child it describes.  Asking
+     * the runtime whether anything is actually alive is what stops a
+     * stopped agent reporting the uptime of its corpse.
+     */
+    if (priv->started_at <= 0 || !clawt_agent_runtime_is_alive(self))
+        return 0;
+
+    return (g_get_monotonic_time() - priv->started_at) / G_USEC_PER_SEC;
+}
+
+guint
+clawt_agent_runtime_get_restarts(ClawtAgentRuntime *self)
+{
+    g_return_val_if_fail(CLAWT_IS_AGENT_RUNTIME(self), 0);
+
+    return PRIV(self)->restarts;
 }
 
 ClawtAgentCaps

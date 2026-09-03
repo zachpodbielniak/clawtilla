@@ -213,6 +213,26 @@ lets a client tell a message meant for the person from the fleet's own
 peer traffic, and it is answered for agents whose room does not exist
 yet, which is exactly the agent an unread count is for.
 
+Each agent also carries what it is *doing* and what is doing it.  ~busy~
+and ~peer~ describe the current turn; ~pid~, ~uptime~ (seconds) and
+~restarts~ describe the process serving the agent.
+
+~pid~ and ~uptime~ are present only when there is a process, because a
+~pid: 0~ invites a client to render it as one and 0 is a pid a caller
+could hand to ~kill(2)~ meaning its own process group.  ~restarts~ is
+present whenever there is a runtime, including at zero: "this child has
+never been replaced" is the answer that makes the other two worth
+trusting, and an absent member cannot say it.
+
+Every client renders ~busy~ and ~peer~ through
+~clawt_agent_activity_label()~ rather than its own sentence -- the CLI
+read neither field for as long as they existed, and the web client drew
+a bare "busy" badge that dropped ~peer~ on the floor.
+
+None of these three reach ~clawtilla_list_agents~.  An agent's own
+~bash~ runs on the daemon's host whatever computer it has, so a
+sibling's pid there is a signal number away from being an action.
+
 ~agent.reorder~ takes ~agents~, the ids comma separated in the order
 wanted, and numbers them in tens.  An id it does not know is skipped
 rather than refused: the list comes from a client's view, which may be a

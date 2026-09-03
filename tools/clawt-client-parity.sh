@@ -236,6 +236,15 @@ declare -A AFFORDANCES=(
     ["composer drafts"]="clawt_gtk_persist_draft|draft_key_for"
     ["steer a busy agent"]="\"steered\"|\"steered\""
     #
+    # What an agent is doing, as opposed to whether its process is up.
+    #
+    # Both clients call the same library function, so the marker is that
+    # call in each -- layer 3 does not see it because the rule is a
+    # helper rather than a _count()/_nth() enumeration, and layer 4 does
+    # not because neither client spells any of its output out.
+    #
+    ["agent activity"]="clawt_agent_activity_label|clawt_agent_activity_label"
+    #
     # A skill's `/name` is dynamic, so layer 2 cannot see it.
     #
     # That layer compares `"/name"` string literals, which is exactly

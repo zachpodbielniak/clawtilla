@@ -505,6 +505,29 @@ clawt_agent_get_activity_peer(ClawtAgent *self)
     return self->activity_peer;
 }
 
+/*
+ * Deliberately takes the two scalars rather than a #ClawtAgent: the
+ * clients that need it hold a JSON object off the wire and have no
+ * agent, and a rule both clients apply belongs where it can be tested
+ * without a window or a browser.
+ */
+gchar *
+clawt_agent_activity_label(gboolean busy, const gchar *peer)
+{
+    if (!busy)
+        return NULL;
+
+    /*
+     * The operator arrives as the literal sender id "user", so this is
+     * not a NULL check.  Rendering it would put "working for user" in
+     * front of the user.
+     */
+    if (peer != NULL && *peer != '\0' && g_strcmp0(peer, "user") != 0)
+        return g_strdup_printf("working for %s", peer);
+
+    return g_strdup("working");
+}
+
 gboolean
 clawt_agent_is_chief_of_staff(ClawtAgent *self)
 {

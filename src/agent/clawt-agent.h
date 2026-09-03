@@ -147,6 +147,34 @@ gboolean          clawt_agent_get_busy(ClawtAgent *self);
 const gchar      *clawt_agent_get_activity_peer(ClawtAgent *self);
 
 /**
+ * clawt_agent_activity_label:
+ * @busy: whether a turn is in progress
+ * @peer: (nullable): who that turn is for, or %NULL for the operator
+ *
+ * What an agent is doing right now, in the one spelling every surface
+ * uses.
+ *
+ * `running` is a fact about a process; it is the same word for an agent
+ * thinking for four minutes and an agent idle for four hours.  This is
+ * the other half, and it was reported by the daemon and rendered three
+ * different ways: the GTK sidebar built its own sentence, the web client
+ * drew a bare "busy" badge and dropped @peer entirely, and the CLI --
+ * the one used over ssh, from scripts and by an agent introspecting the
+ * fleet -- read neither field at all.
+ *
+ * "user" is treated as no peer.  It arrives on the wire as a real value
+ * and means the operator, so a caller that passed it through would
+ * render "working for user" at the person reading it.
+ *
+ * Returns: (transfer full) (nullable): a short phrase, or %NULL when the
+ *   agent is not working -- so an idle agent costs a caller no row, no
+ *   badge and no column text rather than being labelled with a word for
+ *   nothing happening
+ */
+gchar            *clawt_agent_activity_label(gboolean     busy,
+                                             const gchar *peer);
+
+/**
  * clawt_agent_is_chief_of_staff:
  * @self: a #ClawtAgent
  *

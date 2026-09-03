@@ -251,8 +251,20 @@ agent_row(JsonObject *agent, const gchar *selected, ClawtPage view,
     if (caps != NULL && strstr(caps, "host-control") != NULL)
         clawt_web_add(meta, clawt_web_badge("host", "bad"));
 
-    if (clawt_web_member_bool(agent, "busy", FALSE))
-        clawt_web_add(meta, clawt_web_badge("busy", "info"));
+    /*
+     * What it is doing, through the same rule the GTK sidebar and the
+     * CLI use.  This badge said "busy" and dropped `peer` on the floor,
+     * so a page that had the answer on the wire could not say who an
+     * agent was working for.
+     */
+    {
+        g_autofree gchar *work = clawt_agent_activity_label(
+            clawt_web_member_bool(agent, "busy", FALSE),
+            clawt_web_member(agent, "peer", NULL));
+
+        if (work != NULL)
+            clawt_web_add(meta, clawt_web_badge(work, "info"));
+    }
 
     htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(meta));
 

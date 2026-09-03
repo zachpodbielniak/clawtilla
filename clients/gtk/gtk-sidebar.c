@@ -213,16 +213,26 @@ agent_row(ClawtWindow *self, JsonObject *agent, guint unread)
          * durable mailboxes exist for, and that row had no subtitle at
          * all.
          */
-        if (busy && depth > 0)
-            activity = g_strdup_printf(
-                "working… · %" G_GINT64_FORMAT " waiting", depth);
-        else if (busy && peer != NULL && g_strcmp0(peer, "user") != 0)
-            activity = g_strdup_printf("working — for %s", peer);
-        else if (busy)
-            activity = g_strdup("working…");
-        else if (depth > 0)
-            activity = g_strdup_printf(
-                "%" G_GINT64_FORMAT " waiting to be read", depth);
+        {
+            /*
+             * What it is doing comes from the library, so that this row,
+             * the web client's badge and the CLI's WORK column cannot
+             * drift into three descriptions of one field.  What is
+             * *waiting* stays here: the queue is merged into the
+             * subtitle only in this client, because only this client has
+             * nowhere else to put it.
+             */
+            g_autofree gchar *doing = clawt_agent_activity_label(busy, peer);
+
+            if (doing != NULL && depth > 0)
+                activity = g_strdup_printf(
+                    "%s · %" G_GINT64_FORMAT " waiting", doing, depth);
+            else if (doing != NULL)
+                activity = g_steal_pointer(&doing);
+            else if (depth > 0)
+                activity = g_strdup_printf(
+                    "%" G_GINT64_FORMAT " waiting to be read", depth);
+        }
 
         /*
          * The description under the name, unless somebody has turned

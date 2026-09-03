@@ -737,15 +737,31 @@ cmd_agent(int argc, char *argv[])
             return EXIT_SUCCESS;
         }
 
-        g_print("%-20s %-10s %-6s %-8s %s\n", "ID", "STATE", "QUEUE",
-                "LINK", "DESCRIPTION");
+        /*
+         * WORK, between STATE and QUEUE.
+         *
+         * `running` means the process is up, not that it is doing
+         * anything: an agent thinking for four minutes and one idle for
+         * four hours were the same word here.  The daemon has computed
+         * `busy` and `peer` for exactly this since the field was added,
+         * and the graphical clients have rendered them the whole time --
+         * this one, the one used over ssh and from scripts, read
+         * neither.
+         */
+        g_print("%-20s %-10s %-18s %-6s %-8s %s\n", "ID", "STATE", "WORK",
+                "QUEUE", "LINK", "DESCRIPTION");
 
         for (i = 0; i < json_array_get_length(agents); i++) {
             JsonObject *agent = json_array_get_object_element(agents, i);
+            g_autofree gchar *work = clawt_agent_activity_label(
+                json_object_has_member(agent, "busy") &&
+                    json_object_get_boolean_member(agent, "busy"),
+                member_or(agent, "peer", NULL));
 
-            g_print("%-20s %-10s %-6" G_GINT64_FORMAT " %-8s %s\n",
+            g_print("%-20s %-10s %-18s %-6" G_GINT64_FORMAT " %-8s %s\n",
                     member_or(agent, "id", "?"),
                     member_or(agent, "state", "?"),
+                    work != NULL ? work : "-",
                     json_object_get_int_member(agent, "mailbox_depth"),
                     json_object_get_boolean_member(agent, "connected")
                         ? "up" : "-",
@@ -823,6 +839,51 @@ cmd_agent(int argc, char *argv[])
         g_print("can:         %s\n", member_or(agent, "caps", "-"));
         g_print("queue:       %" G_GINT64_FORMAT "\n",
                 json_object_get_int_member(agent, "mailbox_depth"));
+
+        /*
+         * What it is doing, and which process is doing it.
+         *
+         * Always printed, including "idle" -- unlike the listing, where
+         * a blank column is readable, a missing line here reads as a
+         * field the CLI does not know about.  That is the question this
+         * whole block exists to answer, so it must not be silent.
+         */
+        {
+            g_autofree gchar *work = clawt_agent_activity_label(
+                json_object_has_member(agent, "busy") &&
+                    json_object_get_boolean_member(agent, "busy"),
+                member_or(agent, "peer", NULL));
+
+            g_print("work:        %s\n", work != NULL ? work : "idle");
+        }
+
+        /*
+         * The process, when there is one.  `state` says whether an agent
+         * is meant to be running; this says what is actually serving it,
+         * and the two disagreeing is a real and previously undiagnosable
+         * condition.
+         */
+        if (json_object_has_member(agent, "pid")) {
+            gint64 uptime = json_object_get_int_member(agent, "uptime");
+
+            g_print("pid:         %" G_GINT64_FORMAT "\n",
+                    json_object_get_int_member(agent, "pid"));
+            g_print("uptime:      %" G_GINT64_FORMAT "h %" G_GINT64_FORMAT
+                    "m %" G_GINT64_FORMAT "s\n",
+                    uptime / 3600, (uptime % 3600) / 60, uptime % 60);
+        }
+
+        /*
+         * And whether that process is the first one.  Said only when it
+         * is not: a respawn count of zero is the ordinary case and does
+         * not need a line, while any other number is the thing somebody
+         * chasing a flapping agent came here to find.
+         */
+        if (json_object_has_member(agent, "restarts") &&
+            json_object_get_int_member(agent, "restarts") > 0)
+            g_print("restarts:    %" G_GINT64_FORMAT " (the daemon has "
+                    "replaced this agent's process)\n",
+                    json_object_get_int_member(agent, "restarts"));
 
         if (json_object_has_member(agent, "credentials")) {
             JsonObject *credentials =
@@ -7019,6 +7080,52 @@ cmd_status(int argc, char *argv[])
             json_object_get_int_member(status, "connected"));
     g_print("clients:   %" G_GINT64_FORMAT "\n",
             json_object_get_int_member(status, "clients"));
+
+    /*
+     * Which agents those are, and what each is doing.
+     *
+     * "24 (2 connected)" cannot be acted on: it says the fleet is partly
+     * up without saying which part, so the next question is always
+     * another command.  A second call rather than a wider control.status
+     * -- the count is what that verb is for, and every client already
+     * calls agent.list.
+     *
+     * A failure here is not a failure of `status`: the counts above are
+     * this command's answer and they have already been printed.  So the
+     * reply is used when it arrives and passed over when it does not,
+     * rather than turning a working status into an error.
+     */
+    {
+        g_autoptr(JsonNode) fleet = call(client, "agent.list", NULL);
+
+        if (fleet != NULL) {
+            JsonArray *agents = json_object_get_array_member(
+                json_node_get_object(fleet), "agents");
+            guint i;
+            gboolean any = FALSE;
+
+            for (i = 0; i < json_array_get_length(agents); i++) {
+                JsonObject *agent = json_array_get_object_element(agents, i);
+                g_autofree gchar *work = NULL;
+
+                if (!json_object_get_boolean_member(agent, "connected"))
+                    continue;
+
+                work = clawt_agent_activity_label(
+                    json_object_has_member(agent, "busy") &&
+                        json_object_get_boolean_member(agent, "busy"),
+                    member_or(agent, "peer", NULL));
+
+                if (!any) {
+                    g_print("\n");
+                    any = TRUE;
+                }
+
+                g_print("  %-20s %s\n", member_or(agent, "id", "?"),
+                        work != NULL ? work : "idle");
+            }
+        }
+    }
 
     return EXIT_SUCCESS;
 }
