@@ -277,6 +277,16 @@ declare -A AFFORDANCES=(
     #
     ["a held agent is drawn as held"]="clawt_hold_label|clawt_hold_label"
     #
+    # Integration forms drawn from the shared field table.
+    #
+    # Not a frame kind and not an enumeration -- both clients send
+    # integration.update either way -- so layers 1 to 4 are blind to it,
+    # and the web client spent a long time rendering three of the eight
+    # types as "this type declares no settings of its own" while GTK had
+    # full editors for them.
+    #
+    ["integration fields"]="clawt_integration_fields|clawt_integration_fields"
+    #
     # A skill's `/name` is dynamic, so layer 2 cannot see it.
     #
     # That layer compares `"/name"` string literals, which is exactly

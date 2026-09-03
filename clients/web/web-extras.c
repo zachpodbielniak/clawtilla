@@ -496,69 +496,241 @@ on_attach_remove(HtmxRequest *request, GHashTable *params, gpointer user_data)
 /* ── The integration editor ──────────────────────────────────────── */
 
 /*
- * Every key an integration of this type has, from the schema.
+ * A string-list member, joined for a text input.
  *
- * The daemon keeps no hand-written list of these and neither does this:
- * `integrations.matrix.*` in the schema *is* the list, and adding a key
- * there makes it appear in this form with no edit here. A copy would be
- * a setting that is accepted, reported as saved, and read from nowhere.
+ * The daemon sends these as JSON arrays and a form field holds one
+ * line, so the two need a spelling in common -- comma-and-space, which
+ * is what clawt_ipc_payload_strv() splits back apart.
+ */
+static gchar *
+list_member_joined(JsonObject *values, const gchar *key)
+{
+    JsonArray *array = clawt_web_member_array(values, key);
+    GString *out;
+    guint i;
+
+    if (array == NULL)
+        return g_strdup("");
+
+    out = g_string_new(NULL);
+
+    for (i = 0; i < json_array_get_length(array); i++) {
+        JsonNode *element = json_array_get_element(array, i);
+
+        if (element == NULL || !JSON_NODE_HOLDS_VALUE(element))
+            continue;
+
+        if (out->len > 0)
+            g_string_append(out, ", ");
+
+        g_string_append(out, json_node_get_string(element));
+    }
+
+    return g_string_free(out, FALSE);
+}
+
+/*
+ * Whether a string-list member holds one particular value.
+ */
+static gboolean
+list_member_contains(JsonObject *values, const gchar *key,
+                     const gchar *wanted)
+{
+    JsonArray *array = clawt_web_member_array(values, key);
+    guint i;
+
+    if (array == NULL)
+        return FALSE;
+
+    for (i = 0; i < json_array_get_length(array); i++) {
+        JsonNode *element = json_array_get_element(array, i);
+
+        if (element == NULL || !JSON_NODE_HOLDS_VALUE(element))
+            continue;
+
+        if (g_strcmp0(json_node_get_string(element), wanted) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+/*
+ * The value a `when_key` currently holds, resolved.
+ *
+ * An instance that has never had one written is on the field's default,
+ * and passing NULL through would hide every conditional field of the
+ * backend it is actually using -- so the resolution happens here rather
+ * than being left to whatever each caller remembers.
+ */
+static const gchar *
+field_when_value(const gchar *type, const gchar *when_key,
+                 JsonObject *values)
+{
+    const ClawtIntegrationField *list;
+    gsize n = 0;
+    gsize i;
+
+    if (when_key == NULL)
+        return NULL;
+
+    for (i = 0, list = clawt_integration_fields(type, &n); i < n; i++) {
+        const gchar *current;
+
+        if (g_strcmp0(list[i].key, when_key) != 0)
+            continue;
+
+        current = clawt_web_member(values, when_key, NULL);
+
+        if (current != NULL && *current != '\0')
+            return current;
+
+        return clawt_integration_field_default(&list[i]);
+    }
+
+    return clawt_web_member(values, when_key, NULL);
+}
+
+/*
+ * The form for one integration type.
+ *
+ * This used to walk the schema for `agents.integrations.<type>.*` and
+ * label every input with the raw key -- `imap_host`, `smtp_port`,
+ * `access_token` -- using the schema's whole documentation paragraph as
+ * the placeholder.  For `mcp`, `notify` and `connector` that prefix does
+ * not exist at all, so all three rendered "This type declares no
+ * settings of its own" and could not be configured from this client
+ * however long you looked at them.
+ *
+ * It walks clawt_integration_fields() now, which is the same table the
+ * GTK client draws from -- so the two cannot come to call a field two
+ * different things, and a type added to it appears in both.
  */
 static void
 add_integration_fields(HtmxElement *form, const gchar *type,
                        JsonObject *values)
 {
-    g_autofree gchar *prefix = g_strdup_printf("integrations.%s.", type);
-    g_autofree gchar *schema_prefix = g_strdup_printf("agents.%s", prefix);
-    const ClawtSchemaEntry *schema;
-    gsize n_entries = 0;
+    const ClawtIntegrationField *list;
+    gsize n = 0;
     gsize i;
-    gboolean any = FALSE;
 
-    schema = clawt_config_schema_get(&n_entries);
+    list = clawt_integration_fields(type, &n);
 
-    for (i = 0; i < n_entries; i++) {
-        const ClawtSchemaEntry *entry = &schema[i];
-        const gchar *leaf;
-        const gchar *value;
-
-        if (!g_str_has_prefix(entry->key, schema_prefix))
-            continue;
-
-        leaf = entry->key + strlen(schema_prefix);
-
-        if (*leaf == '\0' || strchr(leaf, '.') != NULL)
-            continue;
-
-        if (entry->type == CLAWT_SCHEMA_SECTION)
-            continue;
-
-        any = TRUE;
-        value = clawt_web_member(values, leaf, NULL);
-
-        if (entry->type == CLAWT_SCHEMA_BOOLEAN) {
-            clawt_web_add(form, clawt_web_switch_field(
-                leaf, leaf, entry->doc,
-                clawt_web_schema_flag(values, leaf)));
-            continue;
-        }
-
-        if (entry->type == CLAWT_SCHEMA_SECRET) {
-            clawt_web_add(form, clawt_web_field(
-                leaf, leaf, NULL,
-                "a secret reference; leave empty to keep what is set"));
-            continue;
-        }
-
-        clawt_web_add(form, clawt_web_field(leaf, leaf, value, entry->doc));
+    if (n == 0) {
+        clawt_web_add(form, clawt_web_text(
+            "This one needs no settings of its own.", "small muted"));
+        return;
     }
 
-    if (!any)
-        clawt_web_add(form, clawt_web_text(
-            "This type declares no settings of its own.", "small muted"));
+    for (i = 0; i < n; i++) {
+        const ClawtIntegrationField *field = &list[i];
+        const gchar *when = field_when_value(type, field->when_key, values);
+        const gchar *value = clawt_web_member(values, field->key, NULL);
+
+        /*
+         * A field that does not apply to what has been chosen is left
+         * out rather than disabled.  One that is present and irrelevant
+         * reads as something you have failed to fill in -- which is what
+         * made a desktop notification ask for a Matrix homeserver.
+         */
+        if (!clawt_integration_field_applies(field, when))
+            continue;
+
+        switch (field->kind) {
+        case CLAWT_FIELD_BOOLEAN:
+            clawt_web_add(form, clawt_web_switch_field(
+                field->label, field->key, field->hint,
+                clawt_web_schema_flag(values, field->key)));
+            break;
+
+        case CLAWT_FIELD_SECRET:
+            /*
+             * Never the value.  The daemon writes a secret by naming its
+             * reference and there is no path that could put one in the
+             * file, so a form showing the current value would be showing
+             * a reference at best and inviting a live token at worst.
+             */
+            clawt_web_add(form, clawt_web_field(
+                field->label, field->key, NULL, field->hint));
+            break;
+
+        case CLAWT_FIELD_CHOICE:
+            clawt_web_add(form, clawt_web_select_field(
+                field->label, field->key, field->choices,
+                field->choice_labels,
+                value != NULL && *value != '\0'
+                    ? value : clawt_integration_field_default(field)));
+            break;
+
+        case CLAWT_FIELD_FLAGS: {
+            gsize c;
+
+            clawt_web_add(form, clawt_web_text(field->label, "field-label"));
+
+            for (c = 0; field->choices != NULL && field->choices[c] != NULL;
+                 c++) {
+                g_autofree gchar *member =
+                    g_strdup_printf("%s.%s", field->key, field->choices[c]);
+
+                clawt_web_add(form, clawt_web_switch_field(
+                    field->choice_labels[c], member, NULL,
+                    list_member_contains(values, field->key,
+                                         field->choices[c])));
+            }
+
+            break;
+        }
+
+        case CLAWT_FIELD_LIST: {
+            g_autofree gchar *joined =
+                list_member_joined(values, field->key);
+
+            clawt_web_add(form, clawt_web_field(
+                field->label, field->key, joined, field->hint));
+            break;
+        }
+
+        case CLAWT_FIELD_INT: {
+            /*
+             * Formatted rather than read as a string.  A port is a JSON
+             * int on the wire and clawt_web_member() answers one with
+             * its fallback, so every port would have rendered empty and
+             * been saved back as zero.
+             */
+            g_autofree gchar *text = NULL;
+
+            if (values != NULL && json_object_has_member(values, field->key))
+                text = g_strdup_printf(
+                    "%" G_GINT64_FORMAT,
+                    clawt_web_member_int(values, field->key, 0));
+
+            clawt_web_add(form, clawt_web_field(
+                field->label, field->key, text,
+                field->example != NULL ? field->example : field->hint));
+
+            if (field->hint != NULL && field->example != NULL)
+                clawt_web_add(form, clawt_web_text(field->hint,
+                                                   "small muted"));
+            break;
+        }
+
+        case CLAWT_FIELD_TEXT:
+        default:
+            clawt_web_add(form, clawt_web_field(
+                field->label, field->key, value,
+                field->example != NULL ? field->example : field->hint));
+
+            if (field->hint != NULL && field->example != NULL)
+                clawt_web_add(form, clawt_web_text(field->hint,
+                                                   "small muted"));
+            break;
+        }
+    }
 }
 
 static HtmxElement *
-integration_editor(ClawtWebApp *app, const gchar *name)
+integration_editor(ClawtWebApp *app, const gchar *name,
+                   const gchar *notice)
 {
     g_autoptr(HtmxDiv) box = htmx_div_new();
     g_autoptr(JsonNode) reply = clawt_web_app_call(app, "integration.list",
@@ -586,6 +758,13 @@ integration_editor(ClawtWebApp *app, const gchar *name)
 
         return HTMX_ELEMENT(g_steal_pointer(&box));
     }
+
+    /*
+     * Above the form, because it is about what was just refused and the
+     * form below it is where the fix goes.
+     */
+    if (notice != NULL && *notice != '\0')
+        clawt_web_add(box, clawt_web_notice(notice, "bad"));
 
     type = clawt_web_member(found, "type", "");
     action = g_strdup_printf("/settings/integrations/%s/save", escaped);
@@ -986,11 +1165,10 @@ on_integration_editor(HtmxRequest *request, GHashTable *params,
 {
     ClawtWebApp *app = user_data;
     g_autofree gchar *name = clawt_web_param(params, "integration");
-    g_autoptr(HtmxElement) content = integration_editor(app, name);
+    g_autoptr(HtmxElement) content = integration_editor(
+        app, name, htmx_request_get_query_param(request, "problem"));
     g_autofree gchar *html = NULL;
     g_autoptr(HtmxDiv) wrap = htmx_div_new();
-
-    (void)request;
 
     htmx_element_add_class(HTMX_ELEMENT(wrap), "view");
 
@@ -1018,6 +1196,65 @@ on_integration_editor(HtmxRequest *request, GHashTable *params,
     return clawt_web_html_response(html);
 }
 
+/*
+ * A `when_key`'s value as the form being saved has it.
+ *
+ * Read from the submitted form rather than from the stored instance:
+ * somebody who changed the backend and pressed Save in one go would
+ * otherwise have their new fields judged against the old backend, and
+ * every one of them dropped.
+ */
+static const gchar *
+form_when_value(HtmxRequest *request, const gchar *type,
+                const gchar *when_key)
+{
+    const ClawtIntegrationField *list;
+    gsize n = 0;
+    gsize i;
+    const gchar *submitted;
+
+    if (when_key == NULL)
+        return NULL;
+
+    submitted = clawt_web_form_value(request, when_key);
+
+    if (submitted != NULL && *submitted != '\0')
+        return submitted;
+
+    for (i = 0, list = clawt_integration_fields(type, &n); i < n; i++) {
+        if (g_strcmp0(list[i].key, when_key) == 0)
+            return clawt_integration_field_default(&list[i]);
+    }
+
+    return NULL;
+}
+
+/*
+ * Splits `env:NAME` into the three members the daemon writes a secret
+ * from.
+ *
+ * There is deliberately no path that puts a secret's *value* into
+ * clawtilla.yaml, so a client that sent one as a plain member would have
+ * it silently dropped -- which is what this one did.
+ *
+ * Returns: %FALSE when it is not a reference at all
+ */
+static gboolean
+set_secret_reference(ClawtWebPayload *payload, const gchar *key,
+                     const gchar *text)
+{
+    g_auto(GStrv) parts = g_strsplit(text, ":", 2);
+
+    if (parts[0] == NULL || parts[1] == NULL || *parts[1] == '\0')
+        return FALSE;
+
+    clawt_web_payload_set(payload, "secret_key", key);
+    clawt_web_payload_set(payload, "secret_backend", parts[0]);
+    clawt_web_payload_set(payload, "secret_locator", parts[1]);
+
+    return TRUE;
+}
+
 static HtmxResponse *
 on_integration_save(HtmxRequest *request, GHashTable *params,
                     gpointer user_data)
@@ -1031,9 +1268,6 @@ on_integration_save(HtmxRequest *request, GHashTable *params,
                                                 "integrations");
     g_autoptr(JsonNode) reply = NULL;
     const gchar *type = "";
-    g_autofree gchar *schema_prefix = NULL;
-    const ClawtSchemaEntry *schema;
-    gsize n_entries = 0;
     gsize i;
     g_autofree gchar *url = NULL;
 
@@ -1048,44 +1282,121 @@ on_integration_save(HtmxRequest *request, GHashTable *params,
     clawt_web_payload_set_bool(payload, "enabled",
                                clawt_web_form_flag(request, "enabled"));
 
-    schema_prefix = g_strdup_printf("agents.integrations.%s.", type);
-    schema = clawt_config_schema_get(&n_entries);
+    /*
+     * The same table the form was drawn from.
+     *
+     * This used to walk the schema for `agents.integrations.<type>.*`,
+     * which does not exist for mcp, notify or connector -- so those
+     * three saved nothing at all, silently, having also rendered no
+     * fields to save.  It skipped BOOLEAN outright, so matrix's
+     * `require_mention` could never be turned on either, and it sent a
+     * secret as a plain member, which the daemon drops on the floor
+     * because a secret is written by naming its reference.
+     *
+     * Reading the fields rather than the schema also means only what was
+     * *shown* is saved: a conditional field left out of the form is left
+     * out of the payload, instead of arriving as an empty string that
+     * clears whatever was there.
+     */
+    {
+        const ClawtIntegrationField *form_fields;
+        gsize n = 0;
 
-    for (i = 0; i < n_entries; i++) {
-        const ClawtSchemaEntry *entry = &schema[i];
-        const gchar *leaf;
-        const gchar *value;
+        form_fields = clawt_integration_fields(type, &n);
 
-        if (!g_str_has_prefix(entry->key, schema_prefix))
-            continue;
+        for (i = 0; i < n; i++) {
+            const ClawtIntegrationField *field = &form_fields[i];
+            const gchar *when = form_when_value(request, type,
+                                                field->when_key);
+            const gchar *value;
 
-        leaf = entry->key + strlen(schema_prefix);
+            if (!clawt_integration_field_applies(field, when))
+                continue;
 
-        if (*leaf == '\0' || strchr(leaf, '.') != NULL ||
-            entry->type == CLAWT_SCHEMA_SECTION ||
-            entry->type == CLAWT_SCHEMA_BOOLEAN)
-            continue;
+            if (field->kind == CLAWT_FIELD_BOOLEAN) {
+                clawt_web_payload_set_bool(
+                    payload, field->key,
+                    clawt_web_form_flag(request, field->key));
+                continue;
+            }
 
-        value = clawt_web_form_value(request, leaf);
+            if (field->kind == CLAWT_FIELD_FLAGS) {
+                g_autoptr(GPtrArray) chosen = g_ptr_array_new();
+                gsize c;
 
-        if (value == NULL)
-            continue;
+                for (c = 0; field->choices != NULL &&
+                            field->choices[c] != NULL; c++) {
+                    g_autofree gchar *member = g_strdup_printf(
+                        "%s.%s", field->key, field->choices[c]);
 
-        /*
-         * An empty secret field means "keep what is set" rather than
-         * "clear it". Clearing one by accident costs an authorization
-         * nobody can see the reason for.
-         */
-        if (entry->type == CLAWT_SCHEMA_SECRET && *value == '\0')
-            continue;
+                    if (clawt_web_form_flag(request, member))
+                        g_ptr_array_add(chosen,
+                                        (gpointer)field->choices[c]);
+                }
 
-        if (entry->type == CLAWT_SCHEMA_INT) {
-            clawt_web_payload_set_int(payload, leaf,
-                                      g_ascii_strtoll(value, NULL, 10));
-            continue;
+                g_ptr_array_add(chosen, NULL);
+                clawt_web_payload_set_list(
+                    payload, field->key,
+                    (const gchar *const *)chosen->pdata);
+                continue;
+            }
+
+            value = clawt_web_form_value(request, field->key);
+
+            if (value == NULL)
+                continue;
+
+            if (field->kind == CLAWT_FIELD_SECRET) {
+                /*
+                 * An empty secret field means "keep what is set" rather
+                 * than "clear it".  Clearing one by accident costs an
+                 * authorization nobody can see the reason for.
+                 */
+                if (*value == '\0')
+                    continue;
+
+                if (!set_secret_reference(payload, field->key, value)) {
+                    /*
+                     * Refused rather than saved as-is.  The daemon would
+                     * drop a plain value silently, so saving would
+                     * report success and lose what somebody typed --
+                     * and they would go looking for a broken
+                     * integration rather than a rejected field.
+                     */
+                    g_autofree gchar *escaped =
+                        g_uri_escape_string(name, NULL, FALSE);
+                    g_autofree gchar *back = g_strdup_printf(
+                        "/settings/integrations/%s?problem=%s", escaped,
+                        "A%20secret%20is%20a%20reference%20like%20"
+                        "env%3ANAME%2C%20file%3APATH%20or%20command%3A"
+                        "...%20--%20not%20the%20value%20itself.");
+
+                    return clawt_web_redirect(request, back);
+                }
+
+                continue;
+            }
+
+            if (field->kind == CLAWT_FIELD_LIST) {
+                g_auto(GStrv) parts = g_strsplit(value, ",", -1);
+                guint k;
+
+                for (k = 0; parts[k] != NULL; k++)
+                    g_strstrip(parts[k]);
+
+                clawt_web_payload_set_list(payload, field->key,
+                                           (const gchar *const *)parts);
+                continue;
+            }
+
+            if (field->kind == CLAWT_FIELD_INT) {
+                clawt_web_payload_set_int(payload, field->key,
+                                          g_ascii_strtoll(value, NULL, 10));
+                continue;
+            }
+
+            clawt_web_payload_set(payload, field->key, value);
         }
-
-        clawt_web_payload_set(payload, leaf, value);
     }
 
     reply = clawt_web_app_call(app, "integration.update",

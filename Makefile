@@ -68,6 +68,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/core/clawt-daemon.h \
 	$(SRCDIR)/core/clawt-update.h \
 	$(SRCDIR)/agent/clawt-hold.h \
+	$(SRCDIR)/integration/clawt-integration-field.h \
 	$(SRCDIR)/core/clawt-event-bus.h \
 	$(SRCDIR)/core/clawt-event-log.h \
 	$(SRCDIR)/integration/clawt-connector.h \
@@ -222,6 +223,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/integration/clawt-connector-relay.c \
 	$(SRCDIR)/integration/clawt-connector-registry.c \
 	$(SRCDIR)/integration/clawt-integration.c \
+	$(SRCDIR)/integration/clawt-integration-field.c \
 	$(SRCDIR)/integration/clawt-venture.c \
 	$(SRCDIR)/integration/clawt-venture-bridge.c \
 	$(SRCDIR)/integration/clawt-oauth.c \

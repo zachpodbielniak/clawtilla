@@ -691,18 +691,57 @@ integrations_content(ClawtWebApp *app)
                 continue;
 
             g_ptr_array_add(ids, g_strdup(id));
+
+            /*
+             * The name a person would say, then what it is for.  This
+             * read "mcp — Give agents the tools of any MCP server":
+             * a lowercase config value in front of the sentence that
+             * explains it.
+             */
             g_ptr_array_add(labels, g_strdup_printf(
-                "%s — %s", id, clawt_web_member(type, "summary", "")));
+                "%s — %s", clawt_integration_type_label(id),
+                clawt_web_member(type, "summary", "")));
         }
 
         g_ptr_array_add(ids, NULL);
         g_ptr_array_add(labels, NULL);
 
-        clawt_web_add(form, clawt_web_field("Name", "name", NULL,
-                                            "work-matrix"));
+        clawt_web_add(form, clawt_web_field(
+            "Name", "name", NULL, "work-matrix"));
+        clawt_web_add(form, clawt_web_text(
+            "How you refer to it later. For an MCP server it is also the "
+            "key it gets in every agent's .mcp.json.", "small muted"));
         clawt_web_add(form, clawt_web_select_field(
-            "Type", "type", (const gchar *const *)ids->pdata,
+            "What it is", "type", (const gchar *const *)ids->pdata,
             (const gchar *const *)labels->pdata, NULL));
+
+        /*
+         * What each one will ask for, before it is chosen.
+         *
+         * A select shows one option at a time, so the summary beside a
+         * type is only visible while the list is open -- and what it
+         * *needs* was not said anywhere until the editor was already
+         * open.
+         */
+        for (i = 0; type_list != NULL && i < json_array_get_length(type_list);
+             i++) {
+            JsonObject *type = json_array_get_object_element(type_list, i);
+            const gchar *id = clawt_web_member(type, "id", NULL);
+            g_autofree gchar *needs = NULL;
+            g_autofree gchar *line = NULL;
+
+            if (id == NULL)
+                continue;
+
+            needs = clawt_integration_needs_summary(id);
+
+            if (needs == NULL)
+                continue;
+
+            line = g_strdup_printf("%s: %s",
+                                   clawt_integration_type_label(id), needs);
+            clawt_web_add(form, clawt_web_text(line, "small muted"));
+        }
 
         {
             g_autoptr(HtmxDiv) row = htmx_div_new();

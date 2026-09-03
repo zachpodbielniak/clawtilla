@@ -119,6 +119,7 @@
 #include "config/clawt-config-render.h"
 #include "integration/clawt-connector.h"
 #include "integration/clawt-integration.h"
+#include "integration/clawt-integration-field.h"
 #include "integration/clawt-oauth.h"
 #include "integration/clawt-connector-relay.h"
 #include "integration/clawt-connector-registry.h"

@@ -673,17 +673,94 @@ causes is silent.  An agent whose Matrix block has no homeserver starts
 perfectly cleanly and then never receives anything -- much worse than
 being told which line to fix.
 
+** The form, and where it comes from
+:PROPERTIES:
+:CUSTOM_ID: integration-form
+:END:
+
+Both clients draw the editor from one table, ~clawt_integration_fields()~
+in =src/integration/clawt-integration-field.c=: a label, a hint, an
+example, which control to use, and -- for the ones that depend on another
+answer -- when it applies at all.
+
+It exists because both clients were rendering configuration keys straight
+at people.  The web editor labelled its inputs =imap_host=, =smtp_port=,
+=access_token= and =user_id=, and used the schema's whole documentation
+paragraph as the placeholder.  The GTK notify editor built every
+backend's fields at once, so choosing "Desktop notification" still asked
+for a Matrix homeserver, a room, an ntfy URL, a token and a command line.
+Neither is a mistake in any one place; they are what a form looks like
+when it is generated from a data model instead of written for the person
+filling it in.
+
+*** A field can depend on another
+
+Two entries may share a config key when it means two things.  notify's
+=url= is a *Topic URL* under ntfy and a *Server URL* under Gotify, with
+different hints and different examples, and exactly one of them is ever
+on screen.  Calling both "URL" with one hint is a form that is accurate
+and useless.
+
+A field that does not apply is left out rather than disabled.  One that
+is present and irrelevant reads as something you have failed to fill in.
+
+Both clients resolve the deciding field to its *effective* value before
+comparing -- an instance that has never had a =backend= written is on the
+schema default, and treating that as unset would hide every field of the
+backend it is actually using.
+
+*** It is not a second copy of the schema
+
+Every key in it must be a real =integrations.*= schema key, because that
+is exactly what ~integration.update~ accepts:
+~clawt_daemon_apply_integration_fields()~ walks the schema and applies
+any payload member that is one of its leaves.  A field naming anything
+else would be a control somebody fills in, a save that reports success,
+and a value read from nowhere.
+
+=tests/test-integration-field.c= fails when a field is not a config key,
+when a type's ~required_keys~ or ~credential_keys~ has no field, when a
+credential is described as anything but a secret, or when a type has no
+human name.  That last one is why a type added later cannot quietly
+appear in both pickers as its own lowercase id.
+
+There is deliberately no *Bind address* on a webhook instance:
+=bind_address= exists only as =agents.integrations.webhook.bind_address=,
+an inline per-agent key, so a named instance has nowhere to put one and
+the daemon would drop it.
+
+*** Secrets are labelled as references
+
+A credential field says what it wants -- =env:NAME=, =file:PATH= or
+=command:...= -- and never shows a value, because there is no path that
+puts a secret into ~clawtilla.yaml~.  Typing a live token into one is
+*refused*, with the reason, rather than saved: the daemon would drop it
+silently and you would go looking for a broken integration instead of a
+rejected field.
+
+An empty secret field means "keep what is set", not "clear it".  Clearing
+one by accident costs an authorization nobody can see the reason for.
+
 ** From the GTK client
 
 *Settings → Integrations* lists every instance with its type, who it
 reaches, and any warning about two agents sharing one account.  The =+=
 adds one; clicking a row opens the editor.
 
-The editor shows only the fields that type has, a scope selector, and a
-switch per agent.  Matrix gets a *Sign in* button beside the homeserver
+The editor shows only the fields that type has -- and, for a type whose
+fields depend on a choice, only the ones that apply to the choice you
+have made, updated as you change it.  Below that is a scope selector and
+a switch per agent.  Matrix gets a *Sign in* button beside the homeserver
 and a *Choose…* button beside the rooms, which lists the account's rooms
 by name rather than making anybody paste a room id.  *Check* runs the
 health check.
+
+The picker in *Add an integration* names each type the way a person would
+-- "Matrix", "MCP server", "Connected account" -- and says underneath
+what the chosen one is for and what it will ask for, before you commit to
+it.  It used to be labelled *Kind*, which is a different concept in this
+codebase: ~ClawtIntegrationKind~ is which *direction* an integration runs
+in, and there are three of those, not eight.
 
 An agent's own inspector has an *Integrations* group: a switch per shared
 instance, plus a read-only row for anything configured inside that agent.

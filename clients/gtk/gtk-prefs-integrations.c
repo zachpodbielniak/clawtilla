@@ -21,10 +21,17 @@
 /*
  * One integration being edited.
  *
- * The widgets are held rather than looked up because which of them exist
- * depends on the type: a Matrix instance has a homeserver and a room
- * picker, an MCP one has a command line, and building both and hiding
- * half is how a dialog ends up saving a field nobody could see.
+ * The per-type rows are keyed by config key rather than held in named
+ * members, because there used to be twenty of those and three places
+ * that had to agree about them: the builder, the saver, and the Matrix
+ * sign-in flow.  They did not -- the saver wrote `require_mention` and
+ * the builder was the only thing that knew `folders` existed at all.
+ *
+ * What is *in* the table comes from clawt_integration_fields(), which
+ * the web client draws from too, so the two cannot come to call a field
+ * two different things.
+ *
+ * Values are unowned: the widgets belong to their preferences group.
  */
 typedef struct {
     ClawtWindow *window;
@@ -38,34 +45,35 @@ typedef struct {
     GtkWidget   *agents_group;
     GPtrArray   *agent_rows;     /* AdwSwitchRow*, unowned */
 
-    GtkWidget   *homeserver_row;
-    GtkWidget   *user_row;
-    GtkWidget   *rooms_row;
-    GtkWidget   *mention_row;
-
-    GtkWidget   *imap_host_row;
-    GtkWidget   *imap_port_row;
-    GtkWidget   *smtp_host_row;
-    GtkWidget   *smtp_port_row;
-    GtkWidget   *username_row;
-    GtkWidget   *secret_row;
-
-    GtkWidget   *port_row;
-    GtkWidget   *command_row;
-    GtkWidget   *args_row;
-    GtkWidget   *url_row;
-
-    GtkWidget   *backend_row;
-    GtkWidget   *quiet_row;
-    GtkWidget   *notify_title_row;
-    GtkWidget   *priority_row;
-    GPtrArray   *event_rows;     /* AdwSwitchRow*, unowned */
+    /*
+     * key -> GtkWidget*.  A flags field's choices are keyed
+     * "events.question" and so on, so one table holds every control.
+     */
+    GHashTable  *rows;
 
     GStrv        rooms;          /* what the picker last agreed on */
 } IntegrationDialog;
 
+/*
+ * The control for one config key, or %NULL when this type has none.
+ *
+ * NULL rather than an assertion because a type's fields depend on the
+ * type: asking a webhook for its homeserver is a question with a real
+ * answer, and the answer is "there isn't one".
+ */
+static GtkWidget *
+field_row(IntegrationDialog *dialog, const gchar *key)
+{
+    if (dialog->rows == NULL)
+        return NULL;
+
+    return g_hash_table_lookup(dialog->rows, key);
+}
+
 static void open_integration_editor(ClawtWindow *self, const gchar *name,
                                     const gchar *type_id);
+static const gchar *current_when_value(IntegrationDialog *dialog,
+                                      const gchar       *when_key);
 
 static void
 integration_dialog_free(gpointer data)
@@ -76,7 +84,7 @@ integration_dialog_free(gpointer data)
     g_free(dialog->type_id);
     g_strfreev(dialog->rooms);
     g_clear_pointer(&dialog->agent_rows, g_ptr_array_unref);
-    g_clear_pointer(&dialog->event_rows, g_ptr_array_unref);
+    g_clear_pointer(&dialog->rows, g_hash_table_unref);
     g_free(dialog);
 }
 
@@ -234,100 +242,131 @@ on_integration_saved(GtkButton *button, gpointer user_data)
 
     json_builder_end_array(builder);
 
-    if (g_strcmp0(dialog->type_id, "matrix") == 0) {
-        add_string_member(builder, "homeserver", dialog->homeserver_row);
-        add_string_member(builder, "user_id", dialog->user_row);
-        add_list_member(builder, "rooms",
-                        gtk_editable_get_text(
-                            GTK_EDITABLE(dialog->rooms_row)));
-        json_builder_set_member_name(builder, "require_mention");
-        json_builder_add_boolean_value(
-            builder,
-            adw_switch_row_get_active(ADW_SWITCH_ROW(dialog->mention_row)));
-    } else if (g_strcmp0(dialog->type_id, "email") == 0) {
-        add_string_member(builder, "imap_host", dialog->imap_host_row);
-        add_int_member(builder, "imap_port", dialog->imap_port_row);
-        add_string_member(builder, "smtp_host", dialog->smtp_host_row);
-        add_int_member(builder, "smtp_port", dialog->smtp_port_row);
-        add_string_member(builder, "username", dialog->username_row);
-    } else if (g_strcmp0(dialog->type_id, "webhook") == 0) {
-        add_int_member(builder, "port", dialog->port_row);
-    } else if (g_strcmp0(dialog->type_id, "mcp") == 0) {
-        add_string_member(builder, "command", dialog->command_row);
-        add_list_member(builder, "args",
-                        gtk_editable_get_text(GTK_EDITABLE(dialog->args_row)));
-        add_string_member(builder, "url", dialog->url_row);
-    } else if (g_strcmp0(dialog->type_id, "notify") == 0) {
-        static const gchar *const backend_ids[] = {
-            "desktop", "ntfy", "gotify", "matrix", "command"
-        };
-        static const gchar *const priorities[] = {
-            "low", "normal", "high", "urgent"
-        };
-        guint backend = adw_combo_row_get_selected(
-            ADW_COMBO_ROW(dialog->backend_row));
-        guint priority = adw_combo_row_get_selected(
-            ADW_COMBO_ROW(dialog->priority_row));
-
-        json_builder_set_member_name(builder, "backend");
-        json_builder_add_string_value(builder, backend_ids[MIN(backend, 4)]);
-        json_builder_set_member_name(builder, "priority");
-        json_builder_add_string_value(builder, priorities[MIN(priority, 3)]);
-
-        add_string_member(builder, "url", dialog->url_row);
-        add_string_member(builder, "homeserver", dialog->homeserver_row);
-        add_string_member(builder, "room", dialog->rooms_row);
-        add_string_member(builder, "command", dialog->command_row);
-        add_list_member(builder, "args",
-                        gtk_editable_get_text(GTK_EDITABLE(dialog->args_row)));
-        add_string_member(builder, "title", dialog->notify_title_row);
-        add_string_member(builder, "quiet_hours", dialog->quiet_row);
-
-        json_builder_set_member_name(builder, "events");
-        json_builder_begin_array(builder);
-
-        for (i = 0; i < dialog->event_rows->len; i++) {
-            GtkWidget *row = g_ptr_array_index(dialog->event_rows, i);
-
-            if (adw_switch_row_get_active(ADW_SWITCH_ROW(row)))
-                json_builder_add_string_value(
-                    builder, g_object_get_data(G_OBJECT(row), "event"));
-        }
-
-        json_builder_end_array(builder);
-    }
-
     /*
-     * A secret is sent as a reference -- `env:NAME`, `file:PATH` --
-     * because there is no way to put a secret's value into clawtilla.yaml
-     * and this dialog is not going to be the first.  Matrix has its own
-     * sign-in button instead, which is the only place a password is ever
-     * typed.
+     * The same table the form was built from, and the same predicate for
+     * what applies -- so a field that was not shown is not saved, and
+     * the two cannot come to disagree about which those were.
+     *
+     * This used to be a second `if (type == ...)` chain beside the
+     * builder's, and they had already drifted: the saver wrote
+     * `require_mention` for matrix and knew nothing about `folders`,
+     * which the builder had never offered either.
      */
-    if (dialog->secret_row != NULL) {
-        const gchar *text =
-            gtk_editable_get_text(GTK_EDITABLE(dialog->secret_row));
+    {
+        const ClawtIntegrationField *list;
+        gsize n = 0;
+        gsize f;
 
-        if (text != NULL && *text != '\0') {
-            g_auto(GStrv) parts = g_strsplit(text, ":", 2);
+        list = clawt_integration_fields(dialog->type_id, &n);
 
-            if (parts[1] == NULL) {
-                clawt_window_toast(dialog->window,
-                                   "A secret is env:NAME, file:PATH or "
-                                   "command:...");
-                return;
+        for (f = 0; f < n; f++) {
+            const ClawtIntegrationField *field = &list[f];
+            const gchar *when = current_when_value(dialog, field->when_key);
+            GtkWidget *row;
+
+            if (!clawt_integration_field_applies(field, when))
+                continue;
+
+            if (field->kind == CLAWT_FIELD_FLAGS) {
+                gsize c;
+
+                json_builder_set_member_name(builder, field->key);
+                json_builder_begin_array(builder);
+
+                for (c = 0; field->choices[c] != NULL; c++) {
+                    g_autofree gchar *key = g_strdup_printf(
+                        "%s.%s", field->key, field->choices[c]);
+                    GtkWidget *one = field_row(dialog, key);
+
+                    if (one != NULL &&
+                        adw_switch_row_get_active(ADW_SWITCH_ROW(one)))
+                        json_builder_add_string_value(builder,
+                                                      field->choices[c]);
+                }
+
+                json_builder_end_array(builder);
+                continue;
             }
 
-            json_builder_set_member_name(builder, "secret_key");
-            json_builder_add_string_value(
-                builder,
-                g_strcmp0(dialog->type_id, "email") == 0 ? "password"
-                    : (g_strcmp0(dialog->type_id, "notify") == 0 ? "token"
-                                                                 : "access_token"));
-            json_builder_set_member_name(builder, "secret_backend");
-            json_builder_add_string_value(builder, parts[0]);
-            json_builder_set_member_name(builder, "secret_locator");
-            json_builder_add_string_value(builder, parts[1]);
+            row = field->when_key != NULL
+                ? g_hash_table_lookup(dialog->rows, field->label)
+                : field_row(dialog, field->key);
+
+            if (row == NULL)
+                continue;
+
+            switch (field->kind) {
+            case CLAWT_FIELD_BOOLEAN:
+                json_builder_set_member_name(builder, field->key);
+                json_builder_add_boolean_value(
+                    builder, adw_switch_row_get_active(ADW_SWITCH_ROW(row)));
+                break;
+
+            case CLAWT_FIELD_CHOICE: {
+                guint selected =
+                    adw_combo_row_get_selected(ADW_COMBO_ROW(row));
+                gsize c;
+                const gchar *value = field->choices[0];
+
+                for (c = 0; field->choices[c] != NULL; c++) {
+                    if (c == selected)
+                        value = field->choices[c];
+                }
+
+                json_builder_set_member_name(builder, field->key);
+                json_builder_add_string_value(builder, value);
+                break;
+            }
+
+            case CLAWT_FIELD_LIST:
+                add_list_member(builder, field->key,
+                                gtk_editable_get_text(GTK_EDITABLE(row)));
+                break;
+
+            case CLAWT_FIELD_INT:
+                add_int_member(builder, field->key, row);
+                break;
+
+            case CLAWT_FIELD_SECRET: {
+                /*
+                 * A secret is sent as a reference -- env:NAME, file:PATH
+                 * -- because there is no way to put a secret's value into
+                 * clawtilla.yaml and this dialog is not going to be the
+                 * first.  Empty means keep what is set: clearing one by
+                 * accident costs an authorization nobody can see the
+                 * reason for.
+                 */
+                const gchar *text =
+                    gtk_editable_get_text(GTK_EDITABLE(row));
+                g_auto(GStrv) parts = NULL;
+
+                if (text == NULL || *text == '\0')
+                    break;
+
+                parts = g_strsplit(text, ":", 2);
+
+                if (parts[1] == NULL || *parts[1] == '\0') {
+                    clawt_window_toast(dialog->window,
+                                       "A secret is a reference: env:NAME, "
+                                       "file:PATH or command:... -- not the "
+                                       "value itself.");
+                    return;
+                }
+
+                json_builder_set_member_name(builder, "secret_key");
+                json_builder_add_string_value(builder, field->key);
+                json_builder_set_member_name(builder, "secret_backend");
+                json_builder_add_string_value(builder, parts[0]);
+                json_builder_set_member_name(builder, "secret_locator");
+                json_builder_add_string_value(builder, parts[1]);
+                break;
+            }
+
+            case CLAWT_FIELD_TEXT:
+            default:
+                add_string_member(builder, field->key, row);
+                break;
+            }
         }
     }
 
@@ -484,7 +523,9 @@ on_matrix_signed_in(GtkButton *button, gpointer user_data)
     json_builder_add_string_value(builder, editor->name);
     json_builder_set_member_name(builder, "homeserver");
     json_builder_add_string_value(
-        builder, gtk_editable_get_text(GTK_EDITABLE(editor->homeserver_row)));
+        builder,
+        gtk_editable_get_text(
+            GTK_EDITABLE(field_row(editor, "homeserver"))));
     json_builder_set_member_name(builder, "user");
     json_builder_add_string_value(
         builder, gtk_editable_get_text(GTK_EDITABLE(sign_in->user_row)));
@@ -508,7 +549,7 @@ on_matrix_signed_in(GtkButton *button, gpointer user_data)
     {
         JsonObject *root = json_node_get_object(reply);
 
-        gtk_editable_set_text(GTK_EDITABLE(editor->user_row),
+        gtk_editable_set_text(GTK_EDITABLE(field_row(editor, "user_id")),
                               clawt_json_string(root, "user_id", ""));
     }
 
@@ -603,7 +644,7 @@ on_rooms_chosen(GtkButton *button, gpointer user_data)
     }
 
     text = g_string_free(chosen, FALSE);
-    gtk_editable_set_text(GTK_EDITABLE(editor->rooms_row), text);
+    gtk_editable_set_text(GTK_EDITABLE(field_row(editor, "rooms")), text);
 
     adw_dialog_close(ADW_DIALOG(g_object_get_data(G_OBJECT(button),
                                                   "dialog")));
@@ -655,8 +696,9 @@ on_choose_rooms(GtkButton *button, gpointer user_data)
         "Choose none to listen in every room this account is in, including "
         "ones it is invited to later.");
 
-    current = g_strsplit(gtk_editable_get_text(GTK_EDITABLE(editor->rooms_row)),
-                         ",", -1);
+    current = g_strsplit(
+        gtk_editable_get_text(GTK_EDITABLE(field_row(editor, "rooms"))),
+        ",", -1);
     rows = g_ptr_array_new();
 
     for (i = 0; i < json_array_get_length(rooms); i++) {
@@ -725,19 +767,6 @@ clawt_gtk_add_entry(GtkWidget *group, const gchar *title, const gchar *value)
     return row;
 }
 
-static GtkWidget *
-add_int_entry(GtkWidget *group, const gchar *title, JsonObject *object,
-              const gchar *member)
-{
-    g_autofree gchar *text = NULL;
-
-    if (object != NULL && json_object_has_member(object, member))
-        text = g_strdup_printf("%" G_GINT64_FORMAT,
-                               json_object_get_int_member(object, member));
-
-    return clawt_gtk_add_entry(group, title, text);
-}
-
 /*
  * The agent list, one switch each.
  *
@@ -795,212 +824,336 @@ build_agent_group(IntegrationDialog *dialog, JsonObject *integration)
     }
 }
 
-static void
-build_matrix_rows(IntegrationDialog *dialog, GtkWidget *group,
-                  JsonObject *integration)
-{
-    GtkWidget *sign_in;
-    GtkWidget *choose;
-
-    dialog->homeserver_row = clawt_gtk_add_entry(
-        group, "Homeserver",
-        clawt_json_string(integration, "homeserver", ""));
-
-    sign_in = gtk_button_new_with_label("Sign in\342\200\246");
-    gtk_widget_set_valign(sign_in, GTK_ALIGN_CENTER);
-    g_signal_connect(sign_in, "clicked", G_CALLBACK(on_matrix_sign_in),
-                     dialog);
-    adw_entry_row_add_suffix(ADW_ENTRY_ROW(dialog->homeserver_row), sign_in);
-
-    dialog->user_row = clawt_gtk_add_entry(group, "User id",
-                                           clawt_json_string(integration, "user_id",
-                                                             ""));
-    adw_entry_row_set_show_apply_button(ADW_ENTRY_ROW(dialog->user_row),
-                                        FALSE);
-
-    dialog->rooms_row = clawt_gtk_add_entry(group, "Rooms",
-                                            NULL);
-    {
-        g_autofree gchar *rooms = join_strings(integration, "rooms", ", ");
-
-        gtk_editable_set_text(GTK_EDITABLE(dialog->rooms_row), rooms);
-    }
-
-    choose = gtk_button_new_with_label("Choose\342\200\246");
-    gtk_widget_set_valign(choose, GTK_ALIGN_CENTER);
-    g_signal_connect(choose, "clicked", G_CALLBACK(on_choose_rooms), dialog);
-    adw_entry_row_add_suffix(ADW_ENTRY_ROW(dialog->rooms_row), choose);
-
-    dialog->mention_row = adw_switch_row_new();
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->mention_row),
-                                  "Only when mentioned");
-    adw_action_row_set_subtitle(
-        ADW_ACTION_ROW(dialog->mention_row),
-        "Off means a turn for every message in these rooms, including ones "
-        "between two other people.");
-    adw_switch_row_set_active(
-        ADW_SWITCH_ROW(dialog->mention_row),
-        integration == NULL ||
-        !json_object_has_member(integration, "require_mention") ||
-        json_object_get_boolean_member(integration, "require_mention"));
-    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
-                              dialog->mention_row);
-}
-
 /*
- * A notifier's rows.
+ * Whichever value decides what else is shown, resolved.
  *
- * Which of them make sense depends on the backend, and they are all
- * built rather than swapped as it changes: a dialog that rebuilds itself
- * under somebody's cursor loses whatever they were typing, and an unused
- * entry left empty costs nothing.
+ * An instance that has never had a backend written is on the field's
+ * default, and passing NULL through would hide every field of the
+ * backend it is actually using -- which is the old bug facing the other
+ * way.
  */
-static void
-build_notify_rows(IntegrationDialog *dialog, GtkWidget *group,
-                  JsonObject *integration)
+static const gchar *
+current_when_value(IntegrationDialog *dialog, const gchar *when_key)
 {
-    static const gchar *const backends[] = {
-        "Desktop notification", "ntfy", "Gotify", "Matrix room",
-        "Run a command", NULL
-    };
-    static const gchar *const backend_ids[] = {
-        "desktop", "ntfy", "gotify", "matrix", "command"
-    };
-    static const gchar *const priorities[] = {
-        "Low", "Normal", "High", "Urgent", NULL
-    };
-    static const struct {
-        const gchar *id;
-        const gchar *title;
-        const gchar *subtitle;
-    } events[] = {
-        { "question", "Blocked on you",
-          "An agent said something and is waiting" },
-        { "error",    "Broken",
-          "An agent stopped in a way nobody asked for" },
-        { "done",     "Finished a task",
-          "Off by default: a fleet that works finishes tasks all day" },
-        { "routine",  "A routine failed",
-          "A scheduled run that could not be started" }
-    };
-    g_autofree gchar *chosen = join_strings(integration, "events", ",");
-    const gchar *backend = clawt_json_string(integration, "backend",
-                                             "desktop");
-    const gchar *priority = clawt_json_string(integration, "priority",
-                                              "normal");
+    const ClawtIntegrationField *list;
+    gsize n = 0;
     gsize i;
+    GtkWidget *row;
 
-    dialog->backend_row = adw_combo_row_new();
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->backend_row),
-                                  "How it reaches you");
-    adw_combo_row_set_model(ADW_COMBO_ROW(dialog->backend_row),
-                            G_LIST_MODEL(gtk_string_list_new(backends)));
+    if (when_key == NULL)
+        return NULL;
 
-    for (i = 0; i < G_N_ELEMENTS(backend_ids); i++) {
-        if (g_strcmp0(backend_ids[i], backend) == 0)
-            adw_combo_row_set_selected(ADW_COMBO_ROW(dialog->backend_row),
-                                       (guint)i);
-    }
+    list = clawt_integration_fields(dialog->type_id, &n);
 
-    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
-                              dialog->backend_row);
-
-    dialog->url_row = clawt_gtk_add_entry(group, "URL",
-                                          clawt_json_string(integration, "url", ""));
-    clawt_gtk_set_row_hint(
-        dialog->url_row,
-        "ntfy: the topic, https://ntfy.sh/your-topic. Gotify: the server.");
-
-    dialog->homeserver_row = clawt_gtk_add_entry(
-        group, "Homeserver",
-        clawt_json_string(integration, "homeserver", ""));
-    dialog->rooms_row = clawt_gtk_add_entry(group, "Room",
-                                            clawt_json_string(integration, "room", ""));
-    clawt_gtk_set_row_hint(dialog->rooms_row,
-                           "Matrix only. A room with nobody else in it "
-                           "works well.");
-
-    dialog->secret_row = clawt_gtk_add_entry(group, "Token",
-                                             clawt_json_string(integration, "token",
-                                                               ""));
-    clawt_gtk_set_row_hint(dialog->secret_row,
-                           "A reference: env:NAME, file:PATH or "
-                           "command:...");
-
-    dialog->command_row = clawt_gtk_add_entry(
-        group, "Command", clawt_json_string(integration, "command", ""));
-    clawt_gtk_set_row_hint(
-        dialog->command_row,
-        "Gets the title and the body as two arguments, or wherever you "
-        "write {{title}} and {{body}}.");
-
-    {
-        g_autofree gchar *args = join_strings(integration, "args", ", ");
-
-        dialog->args_row = clawt_gtk_add_entry(group, "Arguments", args);
-    }
-
-    dialog->priority_row = adw_combo_row_new();
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->priority_row),
-                                  "Priority");
-    adw_combo_row_set_model(ADW_COMBO_ROW(dialog->priority_row),
-                            G_LIST_MODEL(gtk_string_list_new(priorities)));
-    adw_combo_row_set_selected(
-        ADW_COMBO_ROW(dialog->priority_row),
-        g_strcmp0(priority, "low") == 0 ? 0
-            : (g_strcmp0(priority, "high") == 0 ? 2
-                : (g_strcmp0(priority, "urgent") == 0 ? 3 : 1)));
-    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
-                              dialog->priority_row);
-
-    dialog->notify_title_row = clawt_gtk_add_entry(
-        group, "Say it is from",
-        clawt_json_string(integration, "title", ""));
-    clawt_gtk_set_row_hint(dialog->notify_title_row,
-                           "Worth setting when several fleets notify "
-                           "the same phone");
-
-    dialog->quiet_row = clawt_gtk_add_entry(
-        group, "Quiet hours",
-        clawt_json_string(integration, "quiet_hours", ""));
-    clawt_gtk_set_row_hint(
-        dialog->quiet_row,
-        "Such as 23:00-07:00. Silences this one completely -- to be woken "
-        "only for a broken agent, make a second notifier without it.");
-
-    dialog->event_rows = g_ptr_array_new();
-
-    for (i = 0; i < G_N_ELEMENTS(events); i++) {
-        GtkWidget *row = adw_switch_row_new();
-        g_auto(GStrv) parts = g_strsplit(chosen, ",", -1);
-        guint k;
-
-        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
-                                      events[i].title);
-        adw_action_row_set_subtitle(ADW_ACTION_ROW(row), events[i].subtitle);
+    for (i = 0; i < n; i++) {
+        if (g_strcmp0(list[i].key, when_key) != 0)
+            continue;
 
         /*
-         * An instance with no `events` of its own is on the schema
-         * default, which is question and error -- so an empty list here
-         * would show two switches off that the daemon has on.
+         * By label when the deciding field is itself conditional, since
+         * that is how build_type_rows() keyed it.  Nothing is today, and
+         * a lookup that silently returned NULL would fall back to the
+         * default and hide every dependent field.
          */
-        if (*chosen == '\0') {
-            adw_switch_row_set_active(
-                ADW_SWITCH_ROW(row),
-                g_strcmp0(events[i].id, "question") == 0 ||
-                g_strcmp0(events[i].id, "error") == 0);
-        } else {
-            for (k = 0; parts[k] != NULL; k++) {
-                if (g_strcmp0(g_strstrip(parts[k]), events[i].id) == 0)
-                    adw_switch_row_set_active(ADW_SWITCH_ROW(row), TRUE);
+        row = list[i].when_key != NULL
+            ? g_hash_table_lookup(dialog->rows, list[i].label)
+            : field_row(dialog, when_key);
+
+        if (list[i].kind == CLAWT_FIELD_CHOICE && row != NULL) {
+            guint selected =
+                adw_combo_row_get_selected(ADW_COMBO_ROW(row));
+            gsize c;
+
+            for (c = 0; list[i].choices[c] != NULL; c++) {
+                if (c == selected)
+                    return list[i].choices[c];
             }
         }
 
-        g_object_set_data_full(G_OBJECT(row), "event",
-                               g_strdup(events[i].id), g_free);
-        g_ptr_array_add(dialog->event_rows, row);
-        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+        return clawt_integration_field_default(&list[i]);
     }
+
+    return NULL;
+}
+
+/*
+ * Hides the rows that do not apply to what is currently chosen.
+ *
+ * Hidden rather than destroyed and rebuilt: AdwPreferencesGroup cannot
+ * enumerate its own rows, so a rebuild means keeping a second list of
+ * them and is a second place to forget one.  A hidden AdwPreferencesRow
+ * is a hidden GtkListBoxRow, which the list simply skips.
+ *
+ * The save reads the same predicate rather than the widget's visibility,
+ * so the two cannot disagree about whether a field counted.
+ */
+static void
+apply_field_visibility(IntegrationDialog *dialog)
+{
+    const ClawtIntegrationField *list;
+    gsize n = 0;
+    gsize i;
+
+    list = clawt_integration_fields(dialog->type_id, &n);
+
+    for (i = 0; i < n; i++) {
+        const gchar *when = current_when_value(dialog, list[i].when_key);
+        gboolean applies = clawt_integration_field_applies(&list[i], when);
+        GtkWidget *row;
+
+        /*
+         * A flags field is several rows, one per choice, so it is hidden
+         * by hiding each of them.  No flags field has a condition today
+         * and this costs nothing until one does -- the alternative is a
+         * branch that silently does not run, which is how a rule ends up
+         * threaded through and never read.
+         */
+        if (list[i].kind == CLAWT_FIELD_FLAGS) {
+            gsize c;
+
+            for (c = 0; list[i].choices != NULL &&
+                        list[i].choices[c] != NULL; c++) {
+                g_autofree gchar *key = g_strdup_printf(
+                    "%s.%s", list[i].key, list[i].choices[c]);
+                GtkWidget *one = field_row(dialog, key);
+
+                if (one != NULL)
+                    gtk_widget_set_visible(one, applies);
+            }
+
+            continue;
+        }
+
+        /*
+         * Two fields can share a key -- notify's `url` is an ntfy topic
+         * and a Gotify server -- so those are keyed by label, which is
+         * what made them two entries in the first place.
+         */
+        row = list[i].when_key != NULL
+            ? g_hash_table_lookup(dialog->rows, list[i].label)
+            : field_row(dialog, list[i].key);
+
+        if (row != NULL)
+            gtk_widget_set_visible(row, applies);
+    }
+}
+
+static void
+on_choice_changed(GObject *object, GParamSpec *spec, gpointer user_data)
+{
+    (void)object;
+    (void)spec;
+
+    apply_field_visibility(user_data);
+}
+
+/*
+ * Builds the form for one type, from the table both clients share.
+ *
+ * This used to be a chain of `if (type == "matrix") ... else if
+ * (type == "email")` with a named widget per field, and a matching chain
+ * in the saver.  The notify half built every backend's fields at once,
+ * so choosing "Desktop notification" still asked for a Matrix homeserver,
+ * a room, an ntfy URL, a token and a command line.
+ */
+static void
+build_type_rows(IntegrationDialog *dialog, GtkWidget *group,
+                JsonObject *integration)
+{
+    const ClawtIntegrationField *list;
+    gsize n = 0;
+    gsize i;
+
+    list = clawt_integration_fields(dialog->type_id, &n);
+
+    for (i = 0; i < n; i++) {
+        const ClawtIntegrationField *field = &list[i];
+        GtkWidget *row = NULL;
+
+        switch (field->kind) {
+        case CLAWT_FIELD_BOOLEAN:
+            row = adw_switch_row_new();
+            adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                          field->label);
+            adw_switch_row_set_active(
+                ADW_SWITCH_ROW(row),
+                integration == NULL ||
+                !json_object_has_member(integration, field->key) ||
+                json_object_get_boolean_member(integration, field->key));
+            adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+            break;
+
+        case CLAWT_FIELD_CHOICE: {
+            g_autoptr(GtkStringList) labels = gtk_string_list_new(NULL);
+            const gchar *chosen = clawt_json_string(
+                integration, field->key,
+                clawt_integration_field_default(field));
+            gsize c;
+
+            row = adw_combo_row_new();
+            adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                          field->label);
+
+            for (c = 0; field->choices[c] != NULL; c++)
+                gtk_string_list_append(labels, field->choice_labels[c]);
+
+            /*
+             * The model before the selection, which is not a style
+             * preference: a position set on a combo with no items has
+             * nothing to land on, and every one of these would have
+             * opened showing its first choice -- then saved that back
+             * over whatever was configured.
+             */
+            adw_combo_row_set_model(ADW_COMBO_ROW(row),
+                                    G_LIST_MODEL(g_steal_pointer(&labels)));
+
+            for (c = 0; field->choices[c] != NULL; c++) {
+                if (g_strcmp0(field->choices[c], chosen) == 0)
+                    adw_combo_row_set_selected(ADW_COMBO_ROW(row),
+                                               (guint)c);
+            }
+
+            adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+
+            /*
+             * Connected after the selection is in place, so building the
+             * form does not count as somebody changing it.
+             */
+            g_signal_connect(row, "notify::selected",
+                             G_CALLBACK(on_choice_changed), dialog);
+            break;
+        }
+
+        case CLAWT_FIELD_FLAGS: {
+            g_autofree gchar *chosen =
+                join_strings(integration, field->key, ",");
+            gsize c;
+
+            for (c = 0; field->choices[c] != NULL; c++) {
+                GtkWidget *one = adw_switch_row_new();
+                g_autofree gchar *key = g_strdup_printf(
+                    "%s.%s", field->key, field->choices[c]);
+                g_auto(GStrv) parts = g_strsplit(chosen, ",", -1);
+                guint k;
+
+                adw_preferences_row_set_title(ADW_PREFERENCES_ROW(one),
+                                              field->choice_labels[c]);
+
+                /*
+                 * An instance with no list of its own is on the schema
+                 * default, which is question and error -- so an empty
+                 * list would show switches off that the daemon has on.
+                 */
+                if (*chosen == '\0') {
+                    adw_switch_row_set_active(
+                        ADW_SWITCH_ROW(one),
+                        g_strcmp0(field->choices[c], "question") == 0 ||
+                        g_strcmp0(field->choices[c], "error") == 0);
+                } else {
+                    for (k = 0; parts[k] != NULL; k++) {
+                        if (g_strcmp0(g_strstrip(parts[k]),
+                                      field->choices[c]) == 0)
+                            adw_switch_row_set_active(ADW_SWITCH_ROW(one),
+                                                      TRUE);
+                    }
+                }
+
+                adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), one);
+                g_hash_table_insert(dialog->rows, g_steal_pointer(&key), one);
+            }
+
+            continue;
+        }
+
+        case CLAWT_FIELD_LIST: {
+            g_autofree gchar *joined =
+                join_strings(integration, field->key, ", ");
+
+            row = clawt_gtk_add_entry(group, field->label, joined);
+            break;
+        }
+
+        case CLAWT_FIELD_SECRET:
+            /*
+             * Never the value.  There is no path that puts a secret into
+             * clawtilla.yaml, so a box showing one would be showing a
+             * reference at best and inviting a live token at worst.
+             */
+            row = clawt_gtk_add_entry(group, field->label, "");
+            break;
+
+        case CLAWT_FIELD_INT: {
+            /*
+             * Formatted rather than read as a string.  A port is a JSON
+             * int on the wire, and the string reader answers a JSON int
+             * with its fallback -- so every port would have opened this
+             * dialog empty and been saved back as zero.
+             */
+            g_autofree gchar *text = NULL;
+
+            if (integration != NULL &&
+                json_object_has_member(integration, field->key))
+                text = g_strdup_printf(
+                    "%" G_GINT64_FORMAT,
+                    json_object_get_int_member(integration, field->key));
+
+            row = clawt_gtk_add_entry(group, field->label, text);
+            break;
+        }
+
+        case CLAWT_FIELD_TEXT:
+        default:
+            row = clawt_gtk_add_entry(
+                group, field->label,
+                clawt_json_string(integration, field->key, ""));
+            break;
+        }
+
+        if (row == NULL)
+            continue;
+
+        if (field->hint != NULL)
+            clawt_gtk_set_row_hint(row, field->hint);
+
+        /*
+         * Keyed by label when two fields share a config key, so both
+         * rows exist and only the applicable one is shown -- and by key
+         * otherwise, which is what the Matrix flows and the saver look
+         * things up by.
+         */
+        g_hash_table_insert(dialog->rows,
+                            g_strdup(field->when_key != NULL ? field->label
+                                                             : field->key),
+                            row);
+
+        if (field->when_key != NULL)
+            continue;
+
+        /* The two Matrix conveniences hang off their own rows. */
+        if (g_strcmp0(dialog->type_id, "matrix") == 0 &&
+            g_strcmp0(field->key, "homeserver") == 0) {
+            GtkWidget *sign_in =
+                gtk_button_new_with_label("Sign in\342\200\246");
+
+            gtk_widget_set_valign(sign_in, GTK_ALIGN_CENTER);
+            g_signal_connect(sign_in, "clicked",
+                             G_CALLBACK(on_matrix_sign_in), dialog);
+            adw_entry_row_add_suffix(ADW_ENTRY_ROW(row), sign_in);
+        }
+
+        if (g_strcmp0(dialog->type_id, "matrix") == 0 &&
+            g_strcmp0(field->key, "rooms") == 0) {
+            GtkWidget *choose =
+                gtk_button_new_with_label("Choose\342\200\246");
+
+            gtk_widget_set_valign(choose, GTK_ALIGN_CENTER);
+            g_signal_connect(choose, "clicked", G_CALLBACK(on_choose_rooms),
+                             dialog);
+            adw_entry_row_add_suffix(ADW_ENTRY_ROW(row), choose);
+        }
+    }
+
+    apply_field_visibility(dialog);
 }
 
 static void
@@ -1028,6 +1181,8 @@ open_integration_editor(ClawtWindow *self, const gchar *name,
 
     dialog->window = self;
     dialog->dialog = window;
+    dialog->rows = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                         NULL);
     dialog->name = g_strdup(name);
     dialog->type_id = g_strdup(
         integration != NULL ? clawt_json_string(integration, "type", type_id)
@@ -1037,8 +1192,9 @@ open_integration_editor(ClawtWindow *self, const gchar *name,
     adw_dialog_set_content_width(window, 560);
     adw_dialog_set_content_height(window, 680);
 
-    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group),
-                                    dialog->type_id);
+    adw_preferences_group_set_title(
+        ADW_PREFERENCES_GROUP(group),
+        clawt_integration_type_label(dialog->type_id));
     adw_preferences_group_set_description(
         ADW_PREFERENCES_GROUP(group),
         integration != NULL ? clawt_json_string(integration, "summary", "")
@@ -1078,45 +1234,7 @@ open_integration_editor(ClawtWindow *self, const gchar *name,
 
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), dialog->scope_row);
 
-    if (g_strcmp0(dialog->type_id, "matrix") == 0) {
-        build_matrix_rows(dialog, group, integration);
-    } else if (g_strcmp0(dialog->type_id, "email") == 0) {
-        dialog->imap_host_row = clawt_gtk_add_entry(
-            group, "IMAP host", clawt_json_string(integration, "imap_host",
-                                                  ""));
-        dialog->imap_port_row = add_int_entry(group, "IMAP port", integration,
-                                              "imap_port");
-        dialog->smtp_host_row = clawt_gtk_add_entry(
-            group, "SMTP host", clawt_json_string(integration, "smtp_host",
-                                                  ""));
-        dialog->smtp_port_row = add_int_entry(group, "SMTP port", integration,
-                                              "smtp_port");
-        dialog->username_row = clawt_gtk_add_entry(
-            group, "Mailbox", clawt_json_string(integration, "username", ""));
-        dialog->secret_row = clawt_gtk_add_entry(
-            group, "Password",
-            clawt_json_string(integration, "password", ""));
-        clawt_gtk_set_row_hint(dialog->secret_row,
-                               "A reference: env:NAME, file:PATH or "
-                               "command:...");
-    } else if (g_strcmp0(dialog->type_id, "webhook") == 0) {
-        dialog->port_row = add_int_entry(group, "Port", integration, "port");
-        clawt_gtk_set_row_hint(dialog->port_row,
-                               "Must differ per agent -- two cannot "
-                               "bind the same one");
-    } else if (g_strcmp0(dialog->type_id, "mcp") == 0) {
-        g_autofree gchar *args = join_strings(integration, "args", ", ");
-
-        dialog->command_row = clawt_gtk_add_entry(
-            group, "Command", clawt_json_string(integration, "command", ""));
-        dialog->args_row = clawt_gtk_add_entry(group, "Arguments", args);
-        dialog->url_row = clawt_gtk_add_entry(
-            group, "Or a URL", clawt_json_string(integration, "url", ""));
-        clawt_gtk_set_row_hint(dialog->url_row,
-                               "One or the other, never both");
-    } else if (g_strcmp0(dialog->type_id, "notify") == 0) {
-        build_notify_rows(dialog, group, integration);
-    }
+    build_type_rows(dialog, group, integration);
 
     build_agent_group(dialog, integration);
 
@@ -1168,8 +1286,33 @@ typedef struct {
     AdwDialog   *dialog;
     GtkWidget   *name_row;
     GtkWidget   *type_row;
+    GtkWidget   *summary_label;
     GStrv        types;
+    GStrv        summaries;      /* parallel to `types` */
 } AddIntegration;
+
+/*
+ * Says what the chosen type is for, and what it will need.
+ *
+ * Neither client said anything at all here, so picking one was a guess
+ * and finding out what it wanted meant creating it first and reading the
+ * form.
+ */
+static void
+on_add_type_changed(GObject *object, GParamSpec *spec, gpointer user_data)
+{
+    AddIntegration *add = user_data;
+    guint selected = adw_combo_row_get_selected(ADW_COMBO_ROW(object));
+
+    (void)spec;
+
+    if (add->summaries == NULL ||
+        selected >= g_strv_length(add->summaries))
+        return;
+
+    gtk_label_set_text(GTK_LABEL(add->summary_label),
+                       add->summaries[selected]);
+}
 
 static void
 add_integration_free(gpointer data)
@@ -1177,6 +1320,7 @@ add_integration_free(gpointer data)
     AddIntegration *add = data;
 
     g_strfreev(add->types);
+    g_strfreev(add->summaries);
     g_free(add);
 }
 
@@ -1238,6 +1382,7 @@ on_add_integration(GtkButton *button, gpointer user_data)
     GtkWidget *group = adw_preferences_group_new();
     GtkWidget *toolbar = adw_toolbar_view_new();
     GtkStringList *labels = gtk_string_list_new(NULL);
+    g_autoptr(GPtrArray) summaries = NULL;
     GtkWidget *create;
     JsonArray *types;
     guint i;
@@ -1255,18 +1400,34 @@ on_add_integration(GtkButton *button, gpointer user_data)
     types = json_object_get_array_member(json_node_get_object(reply),
                                          "types");
     ids = g_ptr_array_new();
+    summaries = g_ptr_array_new_with_free_func(g_free);
 
     for (i = 0; i < json_array_get_length(types); i++) {
         JsonObject *type = json_array_get_object_element(types, i);
         const gchar *id = clawt_json_string(type, "id", "");
-        g_autofree gchar *label = g_strdup_printf(
-            "%s \342\200\224 %s", id, clawt_json_string(type, "summary", ""));
 
-        gtk_string_list_append(labels, label);
+        /*
+         * The name a person would say, not the config value.  This read
+         * "mcp -- Give agents the tools of any MCP server" in a combo
+         * that shows one line at a time, so the summary was invisible
+         * until you opened the list and the visible part was a lowercase
+         * identifier.
+         */
+        gtk_string_list_append(labels, clawt_integration_type_label(id));
         g_ptr_array_add(ids, g_strdup(id));
+
+        {
+            g_autofree gchar *needs = clawt_integration_needs_summary(id);
+
+            g_ptr_array_add(summaries, g_strdup_printf(
+                "%s%s%s", clawt_json_string(type, "summary", ""),
+                needs != NULL ? "\n\n" : "",
+                needs != NULL ? needs : ""));
+        }
     }
 
     g_ptr_array_add(ids, NULL);
+    g_ptr_array_add(summaries, NULL);
     add->types = (GStrv)g_ptr_array_free(g_steal_pointer(&ids), FALSE);
 
     adw_dialog_set_title(dialog, "Add an integration");
@@ -1284,11 +1445,41 @@ on_add_integration(GtkButton *button, gpointer user_data)
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(add->name_row), "Name");
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), add->name_row);
 
+    /*
+     * "What it is", not "Kind".  ClawtIntegrationKind is a real thing in
+     * this codebase and means something else -- which direction an
+     * integration runs in -- so a picker of types labelled Kind was
+     * naming the wrong concept.
+     */
     add->type_row = adw_combo_row_new();
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(add->type_row), "Kind");
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(add->type_row),
+                                  "What it is");
     adw_combo_row_set_model(ADW_COMBO_ROW(add->type_row),
                             G_LIST_MODEL(labels));
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), add->type_row);
+
+    /*
+     * What the chosen one does, and what it will ask for.
+     *
+     * Under the picker rather than inside it, because a combo shows one
+     * line and this is two sentences -- and because the question
+     * somebody is actually asking here is "which of these do I want",
+     * which needs the description of the one they are looking at.
+     */
+    add->summary_label = gtk_label_new(NULL);
+    gtk_label_set_wrap(GTK_LABEL(add->summary_label), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(add->summary_label), 0.0f);
+    gtk_widget_add_css_class(add->summary_label, "dim-label");
+    gtk_widget_set_margin_top(add->summary_label, 6);
+    gtk_widget_set_margin_start(add->summary_label, 6);
+    gtk_widget_set_margin_end(add->summary_label, 6);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              add->summary_label);
+
+    add->summaries = g_strdupv((GStrv)summaries->pdata);
+    g_signal_connect(add->type_row, "notify::selected",
+                     G_CALLBACK(on_add_type_changed), add);
+    on_add_type_changed(G_OBJECT(add->type_row), NULL, add);
 
     create = gtk_button_new_with_label("Add");
     gtk_widget_add_css_class(create, "suggested-action");
