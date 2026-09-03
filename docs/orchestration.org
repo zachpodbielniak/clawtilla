@@ -962,6 +962,36 @@ beside the hop depth and dropped by the same turn boundary: a turn no
 delivery preceded (Matrix, a webhook, the person typing into libreclaw)
 has no origin the daemon can name, so the tool works as it always did.
 
+***** And one turn can be more than one message back
+
+The other direction, added later and worth reading beside the above so
+the two are not confused.  An AI CLI executes tools inside its own
+subprocess, so one turn can carry text, then tool calls, then more text
+-- a preamble and then the answer.  Those are two replies, and they used
+to arrive as one message with the two concatenated and *nothing* between
+them:
+
+#+begin_example
+I'll check how routing is actually configured before confirming.Yes. Live session.routing_mode is agent.
+#+end_example
+
+Nothing had gone wrong at clawtilla's layer; the model wrote two segments
+and the harness below collapsed them.  ai-glib's streamed deltas
+accumulated into a single content block, and ~ai_response_get_text()~
+puts its newline *between* blocks -- so with only one block there was
+nowhere for a separator to go, let alone a message boundary.
+
+Fixed where it broke: a tool call now closes the text block it
+interrupted, and libreclaw sends one message per block.  It is opted into
+per backend and only ~grok-build~ has it, because the rule that appends
+the accumulated text at end-of-stream is "only if no content block exists
+yet" -- which is what keeps a backend that assembles its answer from a
+final envelope from having the deltas added twice.
+
+Nothing in clawtilla changed for it.  Each segment arrives on the
+clawtilla channel as its own message, so the turn state above describes
+them the way it describes any other reply.
+
 ***** A message is a turn, and a burst is that many turns
 
 Delivery acknowledges at the socket, so an agent's mailbox is empty
