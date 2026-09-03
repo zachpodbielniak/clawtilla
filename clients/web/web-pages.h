@@ -25,6 +25,9 @@ G_BEGIN_DECLS
  * @app: a #ClawtWebApp
  * @selected: (nullable): the agent being looked at
  * @view: the current view, so the links keep it
+ * @look: (nullable): what this browser asked for, or %NULL for the
+ *   shipped defaults -- the sidebar reads whether to write each
+ *   agent's description under its name
  *
  * The fleet, grouped by team, in the order the daemon returns.
  *
@@ -36,9 +39,10 @@ G_BEGIN_DECLS
  *
  * Returns: (transfer full): the sidebar
  */
-HtmxElement *clawt_web_sidebar(ClawtWebApp  *app,
-                               const gchar  *selected,
-                               ClawtPage  view);
+HtmxElement *clawt_web_sidebar(ClawtWebApp        *app,
+                               const gchar        *selected,
+                               ClawtPage           view,
+                               const ClawtWebLook *look);
 
 /**
  * clawt_web_topbar:

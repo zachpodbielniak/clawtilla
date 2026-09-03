@@ -150,6 +150,26 @@ JsonNode *clawt_build_payload(const gchar *first_key, ...) G_GNUC_NULL_TERMINATE
 #define CLAWT_AVATAR_DECODE_SIZE 128
 
 /**
+ * CLAWT_AVATAR_PREVIEW_SIZE:
+ *
+ * The pixel size a profile picture is decoded at when somebody clicks
+ * one to look at it properly.
+ *
+ * A separate number from %CLAWT_AVATAR_DECODE_SIZE, and deliberately
+ * not just a larger value for both: the cached texture is drawn at 24
+ * to 48 pixels several dozen times a redraw, and decoding every agent's
+ * picture at preview size to serve a face nobody has clicked would pay
+ * the whole cost on the common path for the rare one.
+ *
+ * Bounded rather than "full resolution" for the reason the constant
+ * above records -- #GtkPicture takes its natural size from its
+ * paintable and GTK has no maximum size -- but far enough above any
+ * plausible preview window that the picture is not what runs out of
+ * detail first, including on a HiDPI screen.
+ */
+#define CLAWT_AVATAR_PREVIEW_SIZE 1024
+
+/**
  * CLAWT_SCREEN_DECODE_WIDTH:
  *
  * The width a screen frame is decoded at before it becomes a texture.
@@ -215,6 +235,28 @@ GdkTexture *clawt_gtk_avatar_texture(ClawtClient *client,
  * made wrong.
  */
 void clawt_gtk_avatar_invalidate(const gchar *agent_id);
+
+/**
+ * clawt_gtk_avatar_preview_texture:
+ * @client: the daemon connection
+ * @agent_id: the agent to fetch a picture for
+ *
+ * The same picture at %CLAWT_AVATAR_PREVIEW_SIZE, for the window a
+ * click on a face opens.
+ *
+ * Deliberately *not* cached.  Two reasons, and the second is the one
+ * that matters: a preview-sized texture per agent would sit in memory
+ * for the life of the client to serve a window somebody opened once,
+ * and a click is the one moment where a fresh fetch is both affordable
+ * and correct -- the cached row texture can be a picture the agent has
+ * since replaced, and nothing invalidates it until `agent.changed`
+ * arrives.
+ *
+ * Returns: (transfer full) (nullable): a texture, or %NULL if this
+ *   agent has no picture to show
+ */
+GdkTexture *clawt_gtk_avatar_preview_texture(ClawtClient *client,
+                                             const gchar *agent_id);
 
 /**
  * clawt_gtk_build_avatar:

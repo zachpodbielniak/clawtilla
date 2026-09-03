@@ -1394,6 +1394,132 @@ test_the_palette_clears_aa(void)
     g_assert_cmpuint(checked, ==, G_N_ELEMENTS(pairs) - 1);
 }
 
+/* ── Descriptions in the agent list ────────────────────────────── */
+
+/*
+ * The one field here whose zero does not mean "defer".
+ *
+ * A boolean has no third state to spend on deferring, so the choice is
+ * which of the two costs nothing -- and it has to be the behaviour the
+ * clients already had, or an appearance nobody has touched would start
+ * hiding text that has been on screen since the sidebar was written.
+ * Asserted on a *fresh* appearance rather than on a parsed one, because
+ * g_new0() is what actually decides this.
+ */
+static void
+test_descriptions_are_shown_by_default(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+
+    g_assert_true(clawt_appearance_get_show_descriptions(appearance));
+}
+
+static void
+test_descriptions_round_trip(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+    g_autofree gchar *off = NULL;
+    g_autofree gchar *on = NULL;
+    g_autoptr(ClawtAppearance) back_off = NULL;
+    g_autoptr(ClawtAppearance) back_on = NULL;
+    g_autoptr(ClawtAppearance) copy = NULL;
+
+    clawt_appearance_set_show_descriptions(appearance, FALSE);
+    g_assert_false(clawt_appearance_get_show_descriptions(appearance));
+
+    /*
+     * Through the file, not only through the setter.  The setting is
+     * written by one client and read by the next process to start, so
+     * a serialiser that never learned about the field would look
+     * perfect in memory and lose the choice on every restart.
+     */
+    off = clawt_appearance_to_data(appearance);
+    back_off = clawt_appearance_parse(off, NULL);
+    g_assert_nonnull(back_off);
+    g_assert_false(clawt_appearance_get_show_descriptions(back_off));
+
+    clawt_appearance_set_show_descriptions(appearance, TRUE);
+    on = clawt_appearance_to_data(appearance);
+    back_on = clawt_appearance_parse(on, NULL);
+    g_assert_nonnull(back_on);
+    g_assert_true(clawt_appearance_get_show_descriptions(back_on));
+
+    /*
+     * And the copy carries it.  clawt_appearance_copy() is a
+     * field-by-field list, so a field added to the struct and not to
+     * that list is silently dropped the moment the preferences dialog
+     * copies the appearance to edit it -- which looks like the switch
+     * not sticking.
+     */
+    clawt_appearance_set_show_descriptions(appearance, FALSE);
+    copy = clawt_appearance_copy(appearance);
+    g_assert_false(clawt_appearance_get_show_descriptions(copy));
+}
+
+/*
+ * A file written before this key existed keeps its descriptions.
+ *
+ * Absent has to be "show" rather than "off", or upgrading would empty
+ * every row in the sidebar for everybody who had ever opened the
+ * Appearance page -- with nothing on screen to say why, since the
+ * setting would read as correct.
+ */
+static void
+test_an_absent_key_shows_descriptions(void)
+{
+    g_autoptr(ClawtAppearance) appearance =
+        clawt_appearance_parse("theme: 'dark'\nrun_spacing: 18\n", NULL);
+
+    g_assert_nonnull(appearance);
+    g_assert_true(clawt_appearance_get_show_descriptions(appearance));
+}
+
+/*
+ * ...and so does a value nobody can read.
+ *
+ * This file is edited by hand.  Refusing to draw the descriptions
+ * because somebody typed `yse` would look exactly like the setting
+ * working, which is the worst of the three possible answers.
+ */
+static void
+test_an_unreadable_value_shows_descriptions(void)
+{
+    g_autoptr(ClawtAppearance) typo =
+        clawt_appearance_parse("agent_descriptions: 'yse'\n", NULL);
+    g_autoptr(ClawtAppearance) off =
+        clawt_appearance_parse("agent_descriptions: 'no'\n", NULL);
+
+    g_assert_nonnull(typo);
+    g_assert_true(clawt_appearance_get_show_descriptions(typo));
+
+    /* The spellings that are honoured are honoured. */
+    g_assert_nonnull(off);
+    g_assert_false(clawt_appearance_get_show_descriptions(off));
+}
+
+/*
+ * It reaches no stylesheet.
+ *
+ * Both clients act on this by drawing a row differently, not by
+ * emitting a rule -- the GTK sidebar moves the text to a tooltip and
+ * the web one moves it to a `title`.  A CSS declaration here would be a
+ * second implementation, and the one that hid the text with
+ * `display:none` would leave it in the page for anything that reads the
+ * page rather than looks at it.
+ */
+static void
+test_descriptions_emit_no_css(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+    g_autofree gchar *css = NULL;
+
+    clawt_appearance_set_show_descriptions(appearance, FALSE);
+    css = clawt_appearance_to_css(appearance);
+
+    g_assert_null(strstr(css, "agent-desc"));
+    g_assert_null(strstr(css, "description"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1510,6 +1636,17 @@ main(int argc, char *argv[])
                     test_markdown_uses_the_chosen_code_font);
     g_test_add_func("/appearance/markdown-font-escaping",
                     test_a_font_name_cannot_break_the_markup);
+
+    g_test_add_func("/appearance/descriptions-shown-by-default",
+                    test_descriptions_are_shown_by_default);
+    g_test_add_func("/appearance/descriptions-round-trip",
+                    test_descriptions_round_trip);
+    g_test_add_func("/appearance/absent-key-shows-descriptions",
+                    test_an_absent_key_shows_descriptions);
+    g_test_add_func("/appearance/unreadable-value-shows-descriptions",
+                    test_an_unreadable_value_shows_descriptions);
+    g_test_add_func("/appearance/descriptions-emit-no-css",
+                    test_descriptions_emit_no_css);
 
     result = g_test_run();
 

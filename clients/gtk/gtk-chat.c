@@ -859,6 +859,76 @@ on_preview_clicked(GtkButton *button, gpointer user_data)
 }
 
 /*
+ * Opens an agent's profile picture full size.
+ *
+ * The same window as an attachment's, and deliberately not the same
+ * function: that one takes a *path*, which only ever works when the
+ * client and the daemon share a filesystem, and an avatar's bytes come
+ * over IPC precisely because they often do not.  What is shared is the
+ * shape -- a plain window, not a modal dialog, so the conversation
+ * stays readable beside it, and Escape closes it.
+ *
+ * Fetched here rather than reusing the cached row texture: that one is
+ * decoded at %CLAWT_AVATAR_DECODE_SIZE for a 48px slot, and blowing it
+ * up to fill a window is exactly the "larger" that is not larger.
+ */
+static void
+on_avatar_preview_clicked(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *agent_id = g_object_get_data(G_OBJECT(button), "agent-id");
+    const gchar *name = g_object_get_data(G_OBJECT(button), "agent-name");
+    g_autoptr(GdkTexture) texture = NULL;
+    GtkWidget *window;
+    GtkWidget *scroll;
+    GtkWidget *picture;
+    GtkEventController *keys;
+
+    if (agent_id == NULL)
+        return;
+
+    texture = clawt_gtk_avatar_preview_texture(self->client, agent_id);
+
+    /*
+     * A picture that has gone since the row was drawn.  Said out loud
+     * rather than opening an empty window: `has_avatar` was true when
+     * the transcript was built, so silence here reads as the click not
+     * having registered.
+     */
+    if (texture == NULL) {
+        clawt_window_toast(self, "That picture is no longer there.");
+        return;
+    }
+
+    window = gtk_window_new();
+    gtk_window_set_title(GTK_WINDOW(window),
+                         name != NULL ? name : agent_id);
+    gtk_window_set_transient_for(GTK_WINDOW(window), GTK_WINDOW(self));
+    gtk_window_set_default_size(GTK_WINDOW(window), 640, 640);
+
+    picture = gtk_picture_new_for_paintable(GDK_PAINTABLE(texture));
+    gtk_picture_set_can_shrink(GTK_PICTURE(picture), TRUE);
+
+    /*
+     * SCALE_DOWN, not CONTAIN, for the reason the attachment window
+     * records: a small picture is shown at its own size rather than
+     * blown up to fill the window, which looks like a mistake.
+     */
+    gtk_picture_set_content_fit(GTK_PICTURE(picture),
+                                GTK_CONTENT_FIT_SCALE_DOWN);
+
+    scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), picture);
+    gtk_window_set_child(GTK_WINDOW(window), scroll);
+
+    keys = gtk_event_controller_key_new();
+    g_signal_connect(keys, "key-pressed", G_CALLBACK(on_preview_key), window);
+    gtk_widget_add_controller(window, keys);
+
+    gtk_window_present(GTK_WINDOW(window));
+}
+
+/*
  * A file that is not an image: a name, a size, and the same menu.
  *
  * Clicking opens it with the desktop's handler, which is what makes a
@@ -1128,7 +1198,20 @@ append_attachment_previews(ClawtWindow *self, GtkWidget *row,
  * came from, and it would go stale the first time either changed.
  */
 #define CHAT_ROW_MARGIN  12
-#define CHAT_AVATAR      32
+/*
+ * Half again the 32px it was.  A face in a transcript is the one place
+ * an avatar is *looked at* rather than scanned past -- the sidebar's is
+ * a locator in a list and stays at 32 -- and at 32 a photograph in a
+ * circle is small enough that it reads as a coloured dot with something
+ * in it.
+ *
+ * The gutter follows it, which is what makes this one number rather
+ * than three: bodies indent past the face, the composer stands on the
+ * same line through CHAT_BODY_INSET, and the continuation times sit in
+ * the slot the face left.  Those times gained room rather than losing
+ * it -- 31 to 34px of caption measured, in what is now a 60px slot.
+ */
+#define CHAT_AVATAR      48
 #define CHAT_GUTTER      (CHAT_AVATAR + CHAT_ROW_MARGIN)
 
 /*
@@ -1638,6 +1721,40 @@ clawt_gtk_append_message_to(ClawtWindow *self, const TranscriptView *view,
             gtk_widget_set_margin_start(at, 8);
 
             gtk_widget_set_valign(avatar, GTK_ALIGN_CENTER);
+
+            /*
+             * Clickable, but only when there is a picture behind it.
+             *
+             * An agent with no picture draws its initials, and a button
+             * around those would offer to enlarge a letter -- an
+             * affordance that answers nothing, on the majority of
+             * agents, which is how a control teaches people not to
+             * press it.  So the face stays a bare AdwAvatar there and
+             * becomes a button only when clawt_gtk_build_avatar() had
+             * real bytes to draw.
+             *
+             * A GtkButton rather than a click gesture: a gesture is
+             * invisible to the keyboard and to a screen reader, and
+             * this is the same "open it full size" the attachment
+             * thumbnails already offer as buttons.
+             */
+            if (view->has_avatar && view->agent_id != NULL) {
+                GtkWidget *open = gtk_button_new();
+
+                gtk_button_set_child(GTK_BUTTON(open), avatar);
+                gtk_widget_add_css_class(open, "flat");
+                gtk_widget_add_css_class(open, "clawt-avatar-button");
+                gtk_widget_set_valign(open, GTK_ALIGN_CENTER);
+                gtk_widget_set_tooltip_text(open, "See this picture larger");
+                g_object_set_data_full(G_OBJECT(open), "agent-id",
+                                       g_strdup(view->agent_id), g_free);
+                g_object_set_data_full(G_OBJECT(open), "agent-name",
+                                       g_strdup(sender), g_free);
+                g_signal_connect(open, "clicked",
+                                 G_CALLBACK(on_avatar_preview_clicked), self);
+                avatar = open;
+            }
+
             gtk_box_append(GTK_BOX(header), avatar);
             gtk_box_append(GTK_BOX(header), who);
             gtk_box_append(GTK_BOX(header), at);

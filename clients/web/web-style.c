@@ -231,6 +231,27 @@ clawt_web_stylesheet(void)
       "white-space:nowrap}"
     ".agent-meta{display:flex;align-items:center;gap:6px;margin-top:2px;"
       "flex-wrap:wrap}"
+    /*
+     * What the agent is for, under its name -- the line the GTK
+     * sidebar has always drawn as a row subtitle and this client did
+     * not draw at all.
+     *
+     * Clipped to two lines rather than one.  A description is a
+     * sentence about what to ask this agent, and one line of a 280px
+     * column cuts most of them before the verb; three would make a
+     * fleet of ten longer than a screen, which is the complaint the
+     * setting that hides this exists to answer.
+     *
+     * `min-width:0` on the row's flex child is what actually lets the
+     * ellipsis happen: without it the text sets the column's width and
+     * the sidebar scrolls sideways instead of clipping, which is the
+     * same trap a wrapping label sets for a GtkScrolledWindow left at
+     * POLICY_AUTOMATIC.
+     */
+    ".agent-desc{margin-top:3px;font-size:12px;line-height:1.35;"
+      "color:var(--muted);min-width:0;overflow:hidden;"
+      "display:-webkit-box;-webkit-box-orient:vertical;"
+      "-webkit-line-clamp:2;line-clamp:2}"
     ".dot{width:7px;height:7px;border-radius:9999px;flex:none}"
     ".dot-good{background:var(--good-fg)}"
     ".dot-warn{background:var(--warn-fg)}"
@@ -501,10 +522,53 @@ clawt_web_stylesheet(void)
      */
     ".msg-who{display:flex;align-items:center;gap:8px;font-size:13px;"
       "color:var(--ink-2);margin-bottom:3px;font-weight:600}"
+    /*
+     * Half again the 28px it was, matching the GTK transcript's own
+     * step from 32 to 48.  A face here is looked at rather than
+     * scanned past -- the sidebar's 24px is a locator in a list -- and
+     * at 28 a photograph in a circle reads as a coloured dot with
+     * something in it.
+     *
+     * The gutter under it is unchanged on purpose: `.msg-body`'s
+     * indent is the *text* column, and it was already wider than the
+     * old face.
+     */
     ".msg-avatar{display:inline-flex;align-items:center;"
-      "justify-content:center;width:28px;height:28px;border-radius:50%;"
-      "font-size:12px;font-weight:700;flex:0 0 auto;"
+      "justify-content:center;width:42px;height:42px;border-radius:50%;"
+      "font-size:16px;font-weight:700;flex:0 0 auto;"
       "background:var(--neutral-bg);color:var(--neutral-fg)}"
+    /*
+     * A face with a real picture behind it opens that picture; one
+     * showing initials does not, so the cursor only changes where
+     * there is something to enlarge.  Offering it on every agent would
+     * be an affordance that answers nothing on most of them, which is
+     * how a control teaches people not to press it.
+     */
+    ".avatar-zoom{display:inline-flex;padding:0;border:0;background:none;"
+      "cursor:zoom-in;flex:0 0 auto;border-radius:50%}"
+    ".avatar-zoom:focus-visible{outline:2px solid var(--info-fg);"
+      "outline-offset:2px}"
+    /*
+     * The window a click opens.
+     *
+     * A fixed overlay driven by one delegated handler rather than a
+     * `:target` lightbox per face: a run header is emitted once per run,
+     * so a conversation with thirty turns from one agent would repeat
+     * the same element id thirty times.
+     *
+     * The picture inside is the same `/a/:id/avatar` the face already
+     * loaded, so opening it fetches nothing -- which is what keeps this
+     * honest on a tailnet with no route out.  `max-*` rather than a
+     * size: a small picture is shown at its own size instead of being
+     * blown up to fill the screen, the same rule the GTK window
+     * follows through GTK_CONTENT_FIT_SCALE_DOWN.
+     */
+    "#avatar-zoom{display:none;position:fixed;inset:0;z-index:60;"
+      "align-items:center;justify-content:center;padding:24px;"
+      "background:rgba(0,0,0,0.72);cursor:zoom-out}"
+    "#avatar-zoom.on{display:flex}"
+    "#avatar-zoom img{max-width:min(90vw,720px);max-height:90vh;"
+      "border-radius:12px;background:var(--surface-1)}"
     /*
      * The `<img>` half of clawt_web_avatar(): decoded and cropped to
      * fill its circle rather than stretched to it, whatever the

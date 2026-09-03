@@ -44,6 +44,15 @@ struct _ClawtAppearance {
     gint       run_spacing;
 
     /*
+     * Stored as the negation, so that a zeroed appearance shows
+     * descriptions -- which is what every client did before this was a
+     * setting, and is what the "zeroed means the shipped behaviour"
+     * rule above requires.  A boolean has no third state to spend on
+     * deferring, so the choice is which of the two costs nothing.
+     */
+    gboolean   hide_descriptions;
+
+    /*
      * Set only when the chosen scheme came from a file, because a
      * palette on disk has no ClawtTheme value.  The built-in schemes go
      * on `theme` as they always did, so nothing about how a choice is
@@ -83,6 +92,7 @@ clawt_appearance_copy(ClawtAppearance *self)
     copy->measure_unit = self->measure_unit;
     copy->measure = self->measure;
     copy->run_spacing = self->run_spacing;
+    copy->hide_descriptions = self->hide_descriptions;
     copy->palette = g_strdup(self->palette);
 
     return copy;
@@ -575,6 +585,22 @@ clawt_appearance_set_run_spacing(ClawtAppearance *self, gint pixels)
     }
 
     self->run_spacing = MIN(pixels, CLAWT_APPEARANCE_MAX_RUN_SPACING);
+}
+
+gboolean
+clawt_appearance_get_show_descriptions(ClawtAppearance *self)
+{
+    g_return_val_if_fail(self != NULL, TRUE);
+
+    return !self->hide_descriptions;
+}
+
+void
+clawt_appearance_set_show_descriptions(ClawtAppearance *self, gboolean show)
+{
+    g_return_if_fail(self != NULL);
+
+    self->hide_descriptions = !show;
 }
 
 /* ── Themes ──────────────────────────────────────────────────────── */
@@ -1601,6 +1627,24 @@ clawt_appearance_parse(const gchar *text, GError **error)
         clawt_appearance_set_run_spacing(
             self, (gint)g_ascii_strtoll(value, NULL, 10));
 
+    /*
+     * Absent is "show", which is what the field's zero already says --
+     * so a file written before this key existed keeps the behaviour it
+     * had rather than quietly losing every description.
+     *
+     * Anything that is not a recognisable "off" is "show" too.  A
+     * preference file is edited by hand, and refusing to draw the
+     * descriptions because somebody typed `agent_descriptions: yse`
+     * would look exactly like the setting working.
+     */
+    value = member_string(mapping, "agent_descriptions");
+
+    if (value != NULL)
+        clawt_appearance_set_show_descriptions(
+            self, !(g_ascii_strcasecmp(value, "false") == 0 ||
+                    g_ascii_strcasecmp(value, "no") == 0 ||
+                    g_strcmp0(value, "0") == 0));
+
     return self;
 }
 
@@ -1692,6 +1736,19 @@ clawt_appearance_to_data(ClawtAppearance *self)
     }
 
     g_string_append_printf(out, "run_spacing: %d\n", self->run_spacing);
+
+    g_string_append(out,
+        "\n"
+        "# Whether the agent list writes each agent's description under\n"
+        "# its name. Off keeps it for the pointer -- the description is\n"
+        "# still there, on the row's tooltip, which is the point: a fleet\n"
+        "# of ten agents with a paragraph each does not fit on a screen.\n"
+        "#\n"
+        "# Unlike the sizes above this has no 'follow the shipped value':\n"
+        "# a boolean has no third state, so an absent key is 'true'.\n");
+
+    g_string_append_printf(out, "agent_descriptions: %s\n",
+                           self->hide_descriptions ? "false" : "true");
 
     return g_string_free(out, FALSE);
 }

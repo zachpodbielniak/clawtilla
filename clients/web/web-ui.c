@@ -748,6 +748,27 @@ cookie_value(const gchar *header, const gchar *name)
     return NULL;
 }
 
+/*
+ * Whether `clawt_agent_desc` says to keep descriptions off the rows.
+ *
+ * Its own function so a test can reach the decision: building a
+ * request that carries a Cookie header needs a SoupServerMessage,
+ * which is not something a test can make, and the interesting half of
+ * this is not the header parsing -- it is what an unreadable value
+ * means.
+ *
+ * Absent is "show", which the zeroed field already says.  Only an
+ * explicit "0" turns them off, so a cookie somebody has mangled leaves
+ * the list as it has always been rather than silently emptying every
+ * row of its description -- which would read as the descriptions being
+ * gone rather than as a preference that did not survive.
+ */
+static gboolean
+descriptions_hidden(const gchar *cookie)
+{
+    return cookie != NULL && g_strcmp0(cookie, "0") == 0;
+}
+
 ClawtWebLook *
 clawt_web_look_from_request(HtmxRequest *request)
 {
@@ -798,6 +819,13 @@ clawt_web_look_from_request(HtmxRequest *request)
 
         look->run_gap = (run_gap != NULL)
                         ? (gint)g_ascii_strtoll(run_gap, NULL, 10) : 0;
+    }
+
+    {
+        g_autofree gchar *descriptions =
+            cookie_value(cookies, "clawt_agent_desc");
+
+        look->hide_descriptions = descriptions_hidden(descriptions);
     }
 
     return look;
@@ -1205,6 +1233,37 @@ open_document(HtmxBuilder *builder, const gchar *title,
         "var a=document.getElementById('composer-body');"
         "if(a){a.value=(it.dataset.command||'')+' ';a.focus();}"
         "var p=slash();if(p){p.classList.remove('on');}});"
+        /*
+         * A profile picture, larger.
+         *
+         * Delegated for the reason everything else here is: htmx
+         * replaces the whole transcript on every fleet event, so a
+         * listener bound to a face survives until the next arrival --
+         * which is the moment it stops working, and the first swap is
+         * also the first thing anybody tests.
+         *
+         * The `src` is set from the button's own attribute rather than
+         * being present in the markup, so the overlay costs no request
+         * until somebody opens it -- and then costs none either, since
+         * it is the URL the face beside it already fetched.  Cleared
+         * again on close so a picture that has since changed is
+         * re-asked for rather than served from a node holding the old
+         * one.
+         */
+        "function zoom(){return document.getElementById('avatar-zoom');}"
+        "function unzoom(){var z=zoom();if(!z){return;}"
+        "z.classList.remove('on');var i=z.querySelector('img');"
+        "if(i){i.removeAttribute('src');}}"
+        "document.addEventListener('click',function(e){"
+        "var b=e.target.closest?e.target.closest('.avatar-zoom'):null;"
+        "var z=zoom();if(!z){return;}"
+        "if(b){e.preventDefault();var i=z.querySelector('img');"
+        "if(i){i.src=b.dataset.zoom||'';i.alt=b.dataset.zoomAlt||'';}"
+        "z.classList.add('on');return;}"
+        "if(e.target===z||z.contains(e.target)){unzoom();}});"
+        /* Escape closes it, the way it closes the GTK window. */
+        "document.addEventListener('keydown',function(e){"
+        "if(e.key==='Escape'){unzoom();}});"
         "})();");
     htmx_builder_end(builder);
 
@@ -1213,6 +1272,26 @@ open_document(HtmxBuilder *builder, const gchar *title,
     htmx_builder_begin(builder, "body");
     htmx_builder_attr(builder, "hx-ext", "sse");
     htmx_builder_attr(builder, "sse-connect", "/events");
+
+    /*
+     * One picture viewer for the whole document.
+     *
+     * Here rather than beside each face because a run header is drawn
+     * once per run: a conversation with thirty turns from one agent
+     * would otherwise carry thirty elements with the same id, which is
+     * invalid and which the first `getElementById` resolves in favour
+     * of whichever came first.
+     *
+     * It is also outside the transcript on purpose.  htmx swaps that
+     * element whole on every fleet event, and an overlay somebody had
+     * open would vanish mid-look.
+     */
+    htmx_builder_begin(builder, "div");
+    htmx_builder_attr(builder, "id", "avatar-zoom");
+    htmx_builder_begin(builder, "img");
+    htmx_builder_attr(builder, "alt", "");
+    htmx_builder_end(builder);
+    htmx_builder_end(builder);
 }
 
 static void
@@ -1276,7 +1355,7 @@ clawt_web_page(ClawtWebApp *app, const gchar *agent_id, ClawtPage view,
         clawt_web_add(frame, nav);
     }
 
-    clawt_web_add(frame, clawt_web_sidebar(app, agent_id, view));
+    clawt_web_add(frame, clawt_web_sidebar(app, agent_id, view, look));
 
     htmx_element_add_class(HTMX_ELEMENT(content), "content");
     clawt_web_add(content, clawt_web_topbar(app, agent_id, view));

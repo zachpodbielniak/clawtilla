@@ -1288,6 +1288,37 @@ appearance_content(HtmxRequest *request)
     }
 
     {
+        g_autoptr(HtmxDiv) card = clawt_web_card(
+            "Agent list",
+            "A description is what tells you which agent to ask. A fleet "
+            "of them is also the reason the list stops fitting on a "
+            "screen.");
+        HtmxElement *body = clawt_web_card_body(card);
+        static const gchar *const nicks[] = { "1", "0", NULL };
+        static const gchar *const labels[] = {
+            "Under each name", "On hover only", NULL
+        };
+
+        /*
+         * A select rather than a checkbox, because an unchecked box
+         * sends no field at all -- so "off" and "the form did not carry
+         * this" would arrive identically, and the handler could not
+         * tell somebody turning descriptions off from a request that
+         * never mentioned them.
+         */
+        clawt_web_add(body, clawt_web_select_field(
+            "Descriptions", "agent_desc", nicks, labels,
+            look->hide_descriptions ? "0" : "1"));
+
+        clawt_web_add(body, clawt_web_text(
+            "On hover only keeps the description on the row's tooltip "
+            "rather than losing it.",
+            "small muted"));
+
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(card));
+    }
+
+    {
         g_autoptr(HtmxDiv) row = htmx_div_new();
         g_autoptr(HtmxButton) save = clawt_web_button("Apply", "primary");
         g_autoptr(HtmxButton) reset = clawt_web_post_button(
@@ -2204,6 +2235,20 @@ on_appearance(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
         set_look_cookie(response, "clawt_measure", stored);
     }
+    /*
+     * "1" is not written as a cookie at all -- an absent cookie already
+     * means "show", which is the shipped behaviour, so choosing the
+     * default leaves nothing behind rather than pinning it.  The same
+     * reason an empty font is stored as no cookie rather than as the
+     * browser's current family.
+     */
+    {
+        const gchar *choice = clawt_web_form_value(request, "agent_desc");
+
+        set_look_cookie(response, "clawt_agent_desc",
+                        g_strcmp0(choice, "0") == 0 ? "0" : NULL);
+    }
+
     set_look_cookie(response, "clawt_run_gap",
                     clawt_web_form_value(request, "run_gap"));
 
@@ -2226,7 +2271,7 @@ on_appearance_reset(HtmxRequest *request, GHashTable *params,
     static const gchar *const names[] = {
         "clawt_theme", "clawt_font", "clawt_font_size",
         "clawt_mono", "clawt_mono_size",
-        "clawt_measure", "clawt_run_gap"
+        "clawt_measure", "clawt_run_gap", "clawt_agent_desc"
     };
     guint i;
 

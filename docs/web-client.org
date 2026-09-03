@@ -365,6 +365,28 @@ edited as easily as a config file, and a spelling this build cannot
 place -- ~80em~, say -- falls back to the shipped column rather than
 failing.
 
+*** Agent list
+
+Whether the sidebar writes each agent's ~description~ under its name, or
+keeps it for the pointer. On by default; see
+[[file:clients.org::#sidebar-descriptions][Descriptions, and the setting that moves them to the pointer]] for why
+that default is what a browser with /no/ cookie gets.
+
+A ~<select>~ rather than a checkbox, and not for style: an unchecked box
+sends no field at all, so "off" and "this form never mentioned it" would
+arrive identically and the handler could not tell them apart. The
+shipped choice writes *no cookie* --- choosing the default leaves nothing
+behind rather than pinning it, the same reason an empty font is stored
+as no cookie instead of as the browser's current family.
+
+The sidebar reads the cookie in two places, and both are load-bearing.
+~clawt_web_page()~ passes it when a page is rendered, and the
+~/f/sidebar~ fragment reads it again --- htmx replaces the sidebar
+outright on every fleet event and nothing about that swap goes through
+the page renderer, so without the second read the setting would hold
+until the first event arrived and then silently revert. That reads as a
+preference that does not stick.
+
 *** A font family is sanitised, not escaped
 
 It comes out of a cookie, which is a string anybody can set to anything,

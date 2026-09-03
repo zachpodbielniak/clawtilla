@@ -258,9 +258,44 @@ message_element(JsonObject *message, const gchar *agent_id,
      */
     if (run_start && !from_user) {
         g_autoptr(HtmxSpan) name = htmx_span_new();
+        HtmxElement *face = clawt_web_avatar(sender, agent_id, has_avatar,
+                                             color, "msg-avatar");
 
-        clawt_web_add(who, clawt_web_avatar(sender, agent_id, has_avatar,
-                                            color, "msg-avatar"));
+        /*
+         * A face with a real picture behind it opens that picture.
+         *
+         * Only then: an agent with none draws its initials, and a
+         * control offering to enlarge a letter answers nothing on the
+         * majority of agents -- which is how an affordance teaches
+         * people not to press it.
+         *
+         * A <button> rather than a click handler on the <img>, because
+         * an image is not focusable and this has to be reachable from
+         * the keyboard.  The overlay it opens is one element for the
+         * whole page, driven from the page-head script: a run header is
+         * emitted once per run, so a per-face lightbox would repeat one
+         * element id down the length of a conversation.
+         */
+        if (has_avatar && agent_id != NULL) {
+            g_autoptr(HtmxButton) zoom = htmx_button_new();
+            g_autofree gchar *escaped =
+                g_uri_escape_string(agent_id, NULL, FALSE);
+            g_autofree gchar *url =
+                g_strdup_printf("/a/%s/avatar", escaped);
+
+            htmx_element_set_attribute(HTMX_ELEMENT(zoom), "type", "button");
+            htmx_element_add_class(HTMX_ELEMENT(zoom), "avatar-zoom");
+            htmx_element_set_attribute(HTMX_ELEMENT(zoom), "data-zoom", url);
+            htmx_element_set_attribute(HTMX_ELEMENT(zoom), "data-zoom-alt",
+                                       sender);
+            htmx_element_set_attribute(HTMX_ELEMENT(zoom), "title",
+                                       "See this picture larger");
+            clawt_web_add(zoom, face);
+            htmx_node_add_child(HTMX_NODE(who), HTMX_NODE(zoom));
+        } else {
+            clawt_web_add(who, face);
+        }
+
         htmx_node_set_text_content(HTMX_NODE(name), sender);
         htmx_node_add_child(HTMX_NODE(who), HTMX_NODE(name));
     }

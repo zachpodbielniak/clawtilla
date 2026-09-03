@@ -61,6 +61,52 @@ gboolean clawt_team_may_assign(ClawtAgentConfig  *from,
                                gchar            **reason);
 
 /**
+ * ClawtTeamBadge:
+ * @CLAWT_TEAM_BADGE_NONE: nothing to say -- an ordinary member
+ * @CLAWT_TEAM_BADGE_LEAD: may hand work to its own team
+ * @CLAWT_TEAM_BADGE_CHIEF: may hand work to anybody
+ *
+ * Which standing a client draws beside an agent's name in a list.
+ */
+typedef enum {
+    CLAWT_TEAM_BADGE_NONE = 0,
+    CLAWT_TEAM_BADGE_LEAD,
+    CLAWT_TEAM_BADGE_CHIEF
+} ClawtTeamBadge;
+
+/**
+ * clawt_team_badge_for:
+ * @chief_of_staff: `agent.list`'s own `chief_of_staff` boolean
+ * @team_role: (nullable): `agent.list`'s own `team_role` nick, or %NULL
+ *
+ * Which of the two standings, if either, a row should say out loud.
+ *
+ * Here rather than in each client for the reason this codebase keeps
+ * relearning: a rule both clients apply is one they will eventually
+ * apply differently, and this one is invisible when it goes wrong -- a
+ * badge nobody draws looks exactly like an agent that does not have
+ * the role.  That is how `team_role` came to be in the daemon's reply
+ * from the day the sidebar learned to group by team, and drawn by
+ * neither client for as long: the chief was marked and every lead
+ * under it was not.
+ *
+ * Never both.  The chief of staff is the lead of every team, so an
+ * agent that is both is completely described by the stronger of the
+ * two, and drawing the weaker one beside it reads as a second fact
+ * rather than as the same one.
+ *
+ * Takes the reply's own spellings rather than a #ClawtAgentConfig,
+ * because the callers are clients and a client has the JSON and not
+ * the fleet.  A @team_role the daemon did not send -- or one from a
+ * daemon newer than this build -- is %CLAWT_TEAM_BADGE_NONE, which is
+ * the answer that claims least.
+ *
+ * Returns: the badge to draw
+ */
+ClawtTeamBadge clawt_team_badge_for(gboolean     chief_of_staff,
+                                    const gchar *team_role);
+
+/**
  * clawt_team_validate_fleet:
  * @config: the fleet configuration
  * @warnings: (out) (optional) (transfer full) (array zero-terminated=1):

@@ -685,6 +685,42 @@ above anything either draws it at, and cache the result -- the
 ~GtkPicture~/~AdwAvatar~-has-no-maximum-size trap CLAUDE.md already
 records for a full-resolution decode landing in a 32-pixel slot.
 
+*** Clicking a face in a conversation
+
+The face in a transcript's run header opens the picture properly: a
+window in the GTK client, an overlay in the web one, dismissed with
+=Escape= in both. It is the one place an avatar is /looked at/ rather
+than scanned past, which is also why the transcript draws it half again
+the size of the sidebar's --- 48px against 32 in GTK, 42 against 24 in
+the browser. The sidebar's stayed small on purpose: there it is a
+locator in a list.
+
+Only a face with a real picture behind it is clickable. An agent with
+none draws its initials, and offering to enlarge a letter is an
+affordance that answers nothing on the majority of a fleet --- which is
+how a control teaches people not to press it. In both clients the plain
+face is a bare element and the clickable one is a =<button>=, so it is
+reachable from the keyboard rather than only from a pointer.
+
+The window does not reuse the cached row texture.
+~clawt_gtk_avatar_preview_texture()~ fetches and decodes at
+~CLAWT_AVATAR_PREVIEW_SIZE~, separately and without caching: blowing a
+128-pixel texture up to fill a window is the "larger" that is not
+larger, and keeping a preview-sized texture per agent for the life of
+the client would pay the whole cost on the common path for the rare
+one. A click is also the one moment a stale "this agent has no picture"
+is worth re-asking, since nothing invalidates that answer until
+~agent.changed~ arrives.
+
+The web overlay is one element per /document/, outside the transcript,
+and both halves of that matter. A run header is drawn once per run, so
+an overlay beside each face would repeat one element id down the length
+of a conversation --- and htmx swaps ~#transcript~ whole on every fleet
+event, so an overlay inside it would vanish mid-look. It carries no
+~src~ until it is opened, and the URL it then loads is the one the face
+beside it already fetched, so looking at a picture costs no request on a
+tailnet with no route out.
+
 *** CLI
 
 #+begin_src sh

@@ -85,6 +85,30 @@ static const gchar CLAWT_STRUCTURE_CSS[] =
     "  font-weight: bold;\n"
     "}\n"
     /*
+     * The button around a transcript face, when there is a picture to
+     * enlarge.
+     *
+     * Everything here is undoing what a GtkButton is: libadwaita gives
+     * one a minimum size, padding and a border radius of its own, and
+     * all three would move the face out of the gutter the bodies below
+     * it are indented past -- the composer stands on that same line
+     * through CHAT_BODY_INSET, so a few pixels here are visible as a
+     * kink down the whole column.
+     *
+     * `min-width`/`min-height` are set to 0 rather than to the avatar's
+     * size: the child already asks for exactly that, and naming 48 here
+     * would be a second copy of CHAT_AVATAR in a language that cannot
+     * see it change.
+     */
+    ".clawt-avatar-button {\n"
+    "  padding: 0;\n"
+    "  min-width: 0;\n"
+    "  min-height: 0;\n"
+    "  border-radius: 9999px;\n"
+    "  background: none;\n"
+    "  box-shadow: none;\n"
+    "}\n"
+    /*
      * The unread pill.  Filled, because everything else in that row is a
      * coloured caption: filled means for you, text means about the
      * agent.
@@ -333,6 +357,31 @@ on_theme_selected(GObject *row, GParamSpec *spec, gpointer user_data)
  * a person dragging down from 400 lands on the minimum rather than
  * silently on "follow the shipped value".
  */
+/*
+ * Whether the agent list writes descriptions under the names.
+ *
+ * clawt_gtk_refresh_agents() rather than only saving: the sidebar is
+ * built from the last `agent.list` reply and nothing about that reply
+ * has changed, so without a redraw the switch would write the file, be
+ * correct on the next start, and appear to do nothing now -- which this
+ * page has already been fixed for once, over the measure.
+ */
+static void
+on_show_descriptions_changed(GObject *row, GParamSpec *spec,
+                             gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    (void)spec;
+
+    clawt_appearance_set_show_descriptions(
+        self->appearance,
+        adw_switch_row_get_active(ADW_SWITCH_ROW(row)));
+
+    appearance_changed(self);
+    clawt_gtk_refresh_agents(self);
+}
+
 static void
 on_reading_size_changed(GtkSpinButton *spin, gpointer user_data)
 {
@@ -767,6 +816,54 @@ build_reading_group(ClawtWindow *self)
     return group;
 }
 
+/*
+ * How much of each agent the list writes down.
+ *
+ * Its own group rather than a row in Reading: Reading is about the
+ * conversation column, and this is about the fleet beside it.
+ *
+ * An AdwSwitchRow, which *is* an AdwActionRow -- so the subtitle below
+ * reaches the screen.  AdwEntryRow and AdwExpanderRow are not, and
+ * twenty-two explanatory lines went missing across this client before
+ * anybody noticed that the cast compiles either way.
+ */
+static GtkWidget *
+build_fleet_list_group(ClawtWindow *self)
+{
+    GtkWidget *group = adw_preferences_group_new();
+    GtkWidget *row = adw_switch_row_new();
+
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group),
+                                    "Agent list");
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(group),
+        "A description is what tells you which agent to ask. A fleet of "
+        "them is also the reason the list stops fitting on a screen.");
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                  "Descriptions in the list");
+    adw_action_row_set_subtitle(
+        ADW_ACTION_ROW(row),
+        "Off keeps them on the pointer rather than losing them");
+
+    adw_switch_row_set_active(
+        ADW_SWITCH_ROW(row),
+        clawt_appearance_get_show_descriptions(self->appearance));
+
+    /*
+     * Connected after the initial state is set, or setting it would
+     * fire the handler and save the file every time this page opens --
+     * the same reason the colour scheme combo below is wired in this
+     * order.
+     */
+    g_signal_connect(row, "notify::active",
+                     G_CALLBACK(on_show_descriptions_changed), self);
+
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+
+    return group;
+}
+
 GtkWidget *
 clawt_gtk_build_appearance_page(ClawtWindow *self)
 {
@@ -839,6 +936,9 @@ clawt_gtk_build_appearance_page(ClawtWindow *self)
 
     adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
                              ADW_PREFERENCES_GROUP(build_reading_group(self)));
+
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(build_fleet_list_group(self)));
 
     return page;
 }

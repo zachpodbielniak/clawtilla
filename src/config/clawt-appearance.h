@@ -694,6 +694,33 @@ gint clawt_appearance_get_run_spacing(ClawtAppearance *self);
 void clawt_appearance_set_run_spacing(ClawtAppearance *self, gint pixels);
 
 /**
+ * clawt_appearance_get_show_descriptions:
+ * @self: a #ClawtAppearance
+ *
+ * Whether the agent list writes each agent's description under its
+ * name, or keeps it for the pointer.
+ *
+ * On by default, which is the one field here that does *not* mean
+ * "defer to the system" when it is zeroed -- a boolean has no third
+ * state to spend on deferring.  So what is stored is the negation:
+ * an appearance nobody has touched shows descriptions, exactly as the
+ * clients always have, and a field added later still defaults to the
+ * shipped behaviour rather than to whatever the author had in mind.
+ *
+ * Off does not mean the description is gone.  It moves to the row's
+ * tooltip in the GTK client and its `title` in the web one, because
+ * a description somebody wrote and cannot reach is worse than a list
+ * that is a little long: the reason this setting exists is that a
+ * fleet of ten agents with a paragraph each does not fit on a screen,
+ * not that the paragraphs are unwanted.
+ *
+ * Returns: %TRUE when the description is drawn in the row
+ */
+gboolean clawt_appearance_get_show_descriptions(ClawtAppearance *self);
+void     clawt_appearance_set_show_descriptions(ClawtAppearance *self,
+                                                gboolean         show);
+
+/**
  * clawt_appearance_to_css:
  * @self: a #ClawtAppearance
  *

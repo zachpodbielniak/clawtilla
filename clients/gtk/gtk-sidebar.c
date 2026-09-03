@@ -196,6 +196,10 @@ agent_row(ClawtWindow *self, JsonObject *agent, guint unread)
         gboolean busy = json_object_has_member(agent, "busy") &&
                         json_object_get_boolean_member(agent, "busy");
         const gchar *peer = clawt_json_string(agent, "peer", NULL);
+        const gchar *description =
+            clawt_json_string(agent, "description", "");
+        gboolean show_descriptions =
+            clawt_appearance_get_show_descriptions(self->appearance);
         g_autofree gchar *activity = NULL;
 
         /*
@@ -220,12 +224,29 @@ agent_row(ClawtWindow *self, JsonObject *agent, guint unread)
             activity = g_strdup_printf(
                 "%" G_GINT64_FORMAT " waiting to be read", depth);
 
+        /*
+         * The description under the name, unless somebody has turned
+         * that off -- at which point it becomes the row's tooltip
+         * rather than disappearing.  A description is written to be
+         * read; what this setting is about is a fleet of ten agents
+         * with a paragraph each not fitting on a screen.
+         *
+         * The *activity* is never hidden.  It is transient status
+         * rather than the description -- the comment above already
+         * says it stands "in place of its description while it is
+         * doing it" -- and a list that stops saying which agents are
+         * working answers a different question from the one this
+         * setting was turned off to answer.
+         */
         clawt_gtk_set_row_text(row,
                                clawt_json_string(agent, "name",
                                                  clawt_json_string(agent, "id", "?")),
                                activity != NULL
                          ? activity
-                         : clawt_json_string(agent, "description", ""));
+                         : (show_descriptions ? description : NULL));
+
+        if (!show_descriptions && *description != '\0')
+            gtk_widget_set_tooltip_text(row, description);
 
         /*
          * A spinner beside the dot, because a colour that means "busy"
@@ -287,11 +308,38 @@ agent_row(ClawtWindow *self, JsonObject *agent, guint unread)
                        clawt_gtk_badge("HOST", "error",
                                        "this agent can run commands on this machine"));
 
-    if (json_object_has_member(agent, "chief_of_staff") &&
-        json_object_get_boolean_member(agent, "chief_of_staff"))
+    /*
+     * Who may put work on somebody's list.
+     *
+     * Which of the two badges -- and that it is never both -- is
+     * clawt_team_badge_for()'s, in the library, because the web
+     * sidebar draws the same pair and two answers to "is this agent a
+     * lead" would differ exactly once.  `team_role` has been in
+     * `agent.list` since the sidebar learned to group by team and
+     * neither client drew it, so the chief was marked and every lead
+     * under it was not.
+     *
+     * No `default:`, so a standing added to the enum draws a -Wswitch
+     * warning here rather than silently going unmarked -- which is the
+     * failure this whole badge has already had once, and it reports
+     * itself to nobody.
+     */
+    switch (clawt_team_badge_for(
+                clawt_json_boolean(agent, "chief_of_staff", FALSE),
+                clawt_json_string(agent, "team_role", NULL))) {
+    case CLAWT_TEAM_BADGE_CHIEF:
         gtk_box_append(GTK_BOX(box),
                        clawt_gtk_badge("CHIEF", "accent",
                                        "hands work to the other agents"));
+        break;
+    case CLAWT_TEAM_BADGE_LEAD:
+        gtk_box_append(GTK_BOX(box),
+                       clawt_gtk_badge("LEAD", "success",
+                                       "hands work to its own team"));
+        break;
+    case CLAWT_TEAM_BADGE_NONE:
+        break;
+    }
 
     adw_action_row_add_suffix(ADW_ACTION_ROW(row), box);
 

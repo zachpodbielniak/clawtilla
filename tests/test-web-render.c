@@ -33,11 +33,13 @@
  * be exercised without one; nothing here asserts on the frame.
  */
 HtmxElement *
-clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view)
+clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view,
+                  const ClawtWebLook *look)
 {
     (void)app;
     (void)selected;
     (void)view;
+    (void)look;
 
     return HTMX_ELEMENT(htmx_div_new());
 }
@@ -1635,6 +1637,173 @@ test_an_enabled_routine_renders_a_ticked_switch(void)
     g_assert_nonnull(strstr(html, "checked=\"checked\""));
 }
 
+/* ── Looking at a face properly ────────────────────────────────── */
+
+/*
+ * The viewer is emitted once per document, outside the transcript.
+ *
+ * Both halves matter and both are invisible when wrong.  A run header
+ * is drawn once per run, so an overlay beside each face would repeat
+ * one element id down the length of a conversation -- and
+ * `getElementById` resolves that in favour of whichever came first, so
+ * every face after the top of the page would open the top of the
+ * page's picture.  And htmx swaps `#transcript` whole on every fleet
+ * event, so an overlay inside it would vanish mid-look.
+ */
+static void
+test_the_picture_viewer_is_one_element_outside_the_transcript(void)
+{
+    g_autofree gchar *html =
+        clawt_web_page(NULL, "alpha", CLAWT_PAGE_CHAT, NULL, NULL);
+    const gchar *first = strstr(html, "id=\"avatar-zoom\"");
+
+    g_assert_nonnull(first);
+    g_assert_null(strstr(first + 1, "id=\"avatar-zoom\""));
+
+    /*
+     * And it carries no `src`.  The overlay costs no request until
+     * somebody opens one, which is what keeps a page that must work on
+     * a tailnet with no route out honest -- and the script fills it
+     * from the button's own attribute at click time.
+     */
+    g_assert_null(strstr(html, "id=\"avatar-zoom\"><img src"));
+}
+
+/*
+ * Escape closes it, and so does clicking the backdrop.
+ *
+ * The GTK window this mirrors takes Escape through a
+ * GtkEventControllerKey, and an overlay with no way out but a control
+ * somebody has to find is a modal dialog by accident.
+ */
+static void
+test_the_picture_viewer_can_be_dismissed(void)
+{
+    g_autofree gchar *html =
+        clawt_web_page(NULL, "alpha", CLAWT_PAGE_CHAT, NULL, NULL);
+
+    g_assert_nonnull(strstr(html, "function unzoom()"));
+    g_assert_nonnull(strstr(html, "e.key==='Escape'"));
+    g_assert_nonnull(strstr(html, "z.contains(e.target)"));
+
+    /*
+     * ...and closing clears the `src`, so a picture the agent has
+     * replaced since is re-asked for rather than served out of a node
+     * still holding the old one.
+     */
+    g_assert_nonnull(strstr(html, "i.removeAttribute('src')"));
+}
+
+/*
+ * The transcript's face is half again the sidebar's step, and the
+ * cursor only offers to enlarge where there is something to enlarge.
+ *
+ * A face in a transcript is looked at; the sidebar's is a locator in a
+ * list, and stays small.  The zoom affordance is on `.avatar-zoom`
+ * rather than on `.msg-avatar` because an agent with no picture draws
+ * its initials, and offering to enlarge a letter is an affordance that
+ * answers nothing on most of the fleet.
+ */
+static void
+test_the_transcript_face_is_larger_and_only_zooms_with_a_picture(void)
+{
+    const gchar *css = clawt_web_stylesheet();
+
+    g_assert_nonnull(strstr(css, ".msg-avatar{"));
+    g_assert_nonnull(strstr(css, "width:42px;height:42px"));
+
+    /* The sidebar's did not move with it. */
+    g_assert_nonnull(strstr(css, ".agent-face{"));
+    g_assert_nonnull(strstr(css, "width:24px;height:24px"));
+
+    g_assert_nonnull(strstr(css, ".avatar-zoom{"));
+    g_assert_nonnull(strstr(css, "cursor:zoom-in"));
+    g_assert_nonnull(strstr(css, "#avatar-zoom.on{display:flex}"));
+
+    /*
+     * Hidden until it is opened.  A `display:none` that was never
+     * written would leave a full-screen black square over the page from
+     * the moment it loaded, which is the kind of failure that is
+     * obvious in a browser and invisible in a diff.
+     */
+    g_assert_nonnull(strstr(css, "#avatar-zoom{display:none"));
+}
+
+/* ── Descriptions in the agent list ────────────────────────────── */
+
+/*
+ * A browser that has said nothing gets descriptions.
+ *
+ * The same rule the GTK client's appearance file follows, and it has to
+ * be, or the two clients would answer one preference differently -- the
+ * cookie's absence is the common case, since it is only written when
+ * somebody turns the setting off.
+ */
+static void
+test_a_browser_with_no_cookie_shows_descriptions(void)
+{
+    g_autoptr(ClawtWebLook) look = clawt_web_look_from_request(NULL);
+
+    g_assert_false(look->hide_descriptions);
+}
+
+/*
+ * Only an explicit "0" turns them off.
+ *
+ * A cookie is edited as easily as a config file, and a value nobody can
+ * read has to leave the list as it has always been rather than silently
+ * emptying every row -- which would read as the descriptions being
+ * gone rather than as a mangled preference.
+ */
+static void
+test_only_an_explicit_zero_hides_descriptions(void)
+{
+    g_assert_true(descriptions_hidden("0"));
+
+    g_assert_false(descriptions_hidden("1"));
+    g_assert_false(descriptions_hidden("maybe"));
+    g_assert_false(descriptions_hidden(""));
+    g_assert_false(descriptions_hidden(NULL));
+
+    /*
+     * And the header parser reaches it whole.  "clawt_agent_desc" is a
+     * prefix of nothing here, but the reverse has already been a bug
+     * in this file -- looking for "clawt_font" and finding
+     * "clawt_font_size" -- so the pairing is asserted rather than
+     * assumed.
+     */
+    {
+        g_autofree gchar *value = cookie_value(
+            "clawt_theme=dark; clawt_agent_desc=0; clawt_run_gap=18",
+            "clawt_agent_desc");
+
+        g_assert_cmpstr(value, ==, "0");
+        g_assert_true(descriptions_hidden(value));
+    }
+}
+
+/*
+ * The line the sidebar draws clips rather than widening the column.
+ *
+ * A description is a sentence, and a sentence sets its element's
+ * natural width -- so without the clamp and the `min-width:0` beside it
+ * the sidebar scrolls sideways instead of ellipsising, with nothing
+ * logged and nothing to say why.  The same trap a wrapping GtkLabel
+ * sets for a GtkScrolledWindow left at POLICY_AUTOMATIC, which this
+ * codebase has already been bitten by.
+ */
+static void
+test_the_sidebar_description_clips(void)
+{
+    const gchar *css = clawt_web_stylesheet();
+    const gchar *rule = strstr(css, ".agent-desc{");
+
+    g_assert_nonnull(rule);
+    g_assert_nonnull(strstr(rule, "min-width:0"));
+    g_assert_nonnull(strstr(rule, "overflow:hidden"));
+    g_assert_nonnull(strstr(rule, "line-clamp:2"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1688,6 +1857,19 @@ main(int argc, char *argv[])
                     test_no_auto_fit_track_has_a_hard_floor);
     g_test_add_func("/web/the-page-emits-the-drawer-toggle",
                     test_the_page_emits_the_drawer_toggle);
+    g_test_add_func("/web/picture-viewer-is-one-element",
+                    test_the_picture_viewer_is_one_element_outside_the_transcript);
+    g_test_add_func("/web/picture-viewer-can-be-dismissed",
+                    test_the_picture_viewer_can_be_dismissed);
+    g_test_add_func("/web/transcript-face-is-larger",
+                    test_the_transcript_face_is_larger_and_only_zooms_with_a_picture);
+    g_test_add_func("/web/no-cookie-shows-descriptions",
+                    test_a_browser_with_no_cookie_shows_descriptions);
+    g_test_add_func("/web/only-an-explicit-zero-hides-descriptions",
+                    test_only_an_explicit_zero_hides_descriptions);
+    g_test_add_func("/web/sidebar-description-clips",
+                    test_the_sidebar_description_clips);
+
     g_test_add_func("/web/the-narrow-sidebar-is-a-drawer",
                     test_the_narrow_sidebar_is_a_drawer);
     g_test_add_func("/web/the-palette-is-defined-outside-a-media-query",

@@ -202,6 +202,35 @@ declare -A AFFORDANCES=(
     ["decision options stack"]="decision_option_button|decision-options"
     ["sidebar face"]="clawt_gtk_build_avatar|agent-face"
     ["picture editor"]="build_avatar_group|on_avatar_set"
+    #
+    # A description under each agent's name, and the setting that keeps
+    # it for the pointer instead.
+    #
+    # The GTK sidebar has drawn this as a row subtitle since it was
+    # written and the web sidebar drew nothing at all -- for as long,
+    # and reported by nothing, because a subtitle sends no frame,
+    # answers no command and spells out no library value.  Layer 5 is
+    # the only one that can see it, which is exactly what layer 5 is
+    # for.
+    #
+    ["agent descriptions"]="clawt-agent-row|agent-desc"
+    ["hide agent descriptions"]="build_fleet_list_group|clawt_agent_desc"
+    #
+    # Which standing is drawn beside a name.  The rule itself is in the
+    # library, so layer 3 would catch a client that stopped walking it
+    # -- but neither client walked it for a year while `team_role` sat
+    # unread in every `agent.list` reply, so the *drawing* is declared
+    # too.
+    #
+    ["team standing badges"]="CLAWT_TEAM_BADGE_LEAD|CLAWT_TEAM_BADGE_LEAD"
+    #
+    # Clicking a face to see the picture properly.
+    #
+    # Neither half shares a symbol with the other -- one opens a
+    # GtkWindow, the other toggles an overlay from the page-head script
+    # -- so layers 1 to 4 are all blind to it.
+    #
+    ["enlarge a profile picture"]="on_avatar_preview_clicked|avatar-zoom"
     ["trigger secret shown once"]="secret_shown_once|secret_shown_once"
     ["trigger verification capture"]="on_trigger_capture|on_trigger_capture"
     ["composer drafts"]="clawt_gtk_persist_draft|draft_key_for"

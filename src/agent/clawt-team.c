@@ -19,6 +19,32 @@ clawt_team_role_of(ClawtAgentConfig *agent)
     return (ClawtTeamRole)clawt_agent_config_get_enum(agent, "team_role");
 }
 
+ClawtTeamBadge
+clawt_team_badge_for(gboolean chief_of_staff, const gchar *team_role)
+{
+    if (chief_of_staff)
+        return CLAWT_TEAM_BADGE_CHIEF;
+
+    /*
+     * Resolved through the enum rather than compared against a spelled
+     * out "lead".  A nickname written into a client is a nickname that
+     * can drift from the one the type produces, and this codebase has
+     * already drawn every completed task grey for exactly that -- a
+     * comparison against two strings neither of which the enum emits,
+     * reported by nothing, because a missing colour looks like a
+     * design decision.
+     */
+    {
+        gint value = 0;
+
+        if (clawt_enum_from_nick(CLAWT_TYPE_TEAM_ROLE, team_role, &value) &&
+            (ClawtTeamRole)value == CLAWT_TEAM_LEAD)
+            return CLAWT_TEAM_BADGE_LEAD;
+    }
+
+    return CLAWT_TEAM_BADGE_NONE;
+}
+
 /* The team an agent belongs to, or NULL when it belongs to none. */
 static const gchar *
 team_of(ClawtAgentConfig *agent)

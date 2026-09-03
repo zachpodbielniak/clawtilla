@@ -132,7 +132,7 @@ clawt_web_find_agent(ClawtWebApp *app, const gchar *agent_id)
 
 static HtmxElement *
 agent_row(JsonObject *agent, const gchar *selected, ClawtPage view,
-          guint unread)
+          guint unread, gboolean show_description)
 {
     const gchar *id = clawt_web_member(agent, "id", "?");
     const gchar *name = clawt_web_member(agent, "name", id);
@@ -176,8 +176,30 @@ agent_row(JsonObject *agent, const gchar *selected, ClawtPage view,
     htmx_node_set_text_content(HTMX_NODE(label), name);
     htmx_node_add_child(HTMX_NODE(line), HTMX_NODE(label));
 
-    if (clawt_web_member_bool(agent, "chief_of_staff", FALSE))
+    /*
+     * Who may put work on somebody's list.
+     *
+     * Through the library, which is where the "never both, the chief
+     * wins" rule lives -- the GTK sidebar draws the same pair, and two
+     * answers to "is this agent a lead" would differ exactly once and
+     * report it to nobody, since a badge that is not drawn looks like
+     * an agent that does not have the role.
+     *
+     * No `default:`: a standing added to the enum draws a -Wswitch
+     * warning here rather than quietly going unmarked.
+     */
+    switch (clawt_team_badge_for(
+                clawt_web_member_bool(agent, "chief_of_staff", FALSE),
+                clawt_web_member(agent, "team_role", NULL))) {
+    case CLAWT_TEAM_BADGE_CHIEF:
         clawt_web_add(line, clawt_web_badge("chief", "info"));
+        break;
+    case CLAWT_TEAM_BADGE_LEAD:
+        clawt_web_add(line, clawt_web_badge("lead", "good"));
+        break;
+    case CLAWT_TEAM_BADGE_NONE:
+        break;
+    }
 
     /*
      * What has arrived from this agent since its conversation was last
@@ -233,6 +255,40 @@ agent_row(JsonObject *agent, const gchar *selected, ClawtPage view,
         clawt_web_add(meta, clawt_web_badge("busy", "info"));
 
     htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(meta));
+
+    /*
+     * What the agent is for, under its name.
+     *
+     * New here.  The GTK sidebar has written the description under
+     * every row since it was first drawn and this client never did, so
+     * the two answered "which of these do I ask about the build?"
+     * differently -- and `make parity` could not see it, because a
+     * subtitle sends no frame, answers no command and spells out no
+     * library value.  It is drawn from the same `description` the GTK
+     * row reads and clipped by the stylesheet rather than here, so the
+     * two cannot disagree about where a sentence stops.
+     *
+     * Off, it becomes the row's `title` rather than disappearing: the
+     * complaint this setting answers is that ten paragraphs do not fit
+     * on a screen, not that the paragraphs are unwanted.
+     */
+    {
+        const gchar *description = clawt_web_member(agent, "description",
+                                                    "");
+
+        if (*description != '\0') {
+            if (show_description) {
+                g_autoptr(HtmxDiv) about = htmx_div_new();
+
+                htmx_element_add_class(HTMX_ELEMENT(about), "agent-desc");
+                htmx_node_set_text_content(HTMX_NODE(about), description);
+                htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(about));
+            } else {
+                htmx_element_set_attribute(HTMX_ELEMENT(row), "title",
+                                           description);
+            }
+        }
+    }
 
     return HTMX_ELEMENT(g_steal_pointer(&row));
 }
@@ -439,8 +495,16 @@ team_picker(JsonArray *teams, JsonObject *agent)
 }
 
 HtmxElement *
-clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view)
+clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view,
+                  const ClawtWebLook *look)
 {
+    /*
+     * A NULL look is the shipped behaviour, not "hide": this is
+     * reachable from a request built with no message at all, and the
+     * field's zero already means show.
+     */
+    gboolean show_description = (look == NULL || !look->hide_descriptions);
+
     g_autoptr(HtmxElement) aside = HTMX_ELEMENT(htmx_aside_new());
     g_autoptr(HtmxDiv) head = htmx_div_new();
     g_autoptr(HtmxDiv) scroll = htmx_div_new();
@@ -595,7 +659,8 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view)
         clawt_web_add(scroll,
                       agent_row(agent, selected, view,
                                 clawt_web_app_unread(
-                                    app, clawt_web_member(agent, "id", ""))));
+                                    app, clawt_web_member(agent, "id", "")),
+                                show_description));
 
         /*
          * Shown only for the row somebody is looking at, so the sidebar
@@ -1062,12 +1127,20 @@ on_sidebar_fragment(HtmxRequest *request, GHashTable *params,
     ClawtWebApp *app = user_data;
     const gchar *selected = htmx_request_get_query_param(request, "agent");
     const gchar *slug = htmx_request_get_query_param(request, "view");
+    g_autoptr(ClawtWebLook) look = clawt_web_look_from_request(request);
     g_autoptr(HtmxElement) sidebar = NULL;
 
     (void)params;
 
+    /*
+     * The look is read here as well as in clawt_web_page(), because
+     * this fragment replaces the sidebar on every fleet event and
+     * nothing about that swap goes through the page renderer.  Without
+     * it the setting would hold until the first event arrived and then
+     * silently revert -- which reads as the setting not sticking.
+     */
     sidebar = clawt_web_sidebar(app, selected,
-                                clawt_page_from_nick(slug));
+                                clawt_page_from_nick(slug), look);
 
     return clawt_web_fragment_response(sidebar);
 }

@@ -224,6 +224,90 @@ test_an_empty_team_is_not_a_warning(void)
     g_assert_true(clawt_team_validate_fleet(config, &warnings));
 }
 
+/* ── What a client draws beside the name ───────────────────────── */
+
+/*
+ * The chief wins, and never draws both.
+ *
+ * A chief of staff is the lead of every team, so an agent that is both
+ * is completely described by the stronger of the two -- and it is
+ * ordinarily both, because `team_role` defaults to `member` only for
+ * agents nobody has given a standing.
+ */
+static void
+test_the_chief_outranks_a_lead(void)
+{
+    g_assert_cmpint(clawt_team_badge_for(TRUE, "lead"), ==,
+                    CLAWT_TEAM_BADGE_CHIEF);
+    g_assert_cmpint(clawt_team_badge_for(TRUE, "member"), ==,
+                    CLAWT_TEAM_BADGE_CHIEF);
+    g_assert_cmpint(clawt_team_badge_for(TRUE, NULL), ==,
+                    CLAWT_TEAM_BADGE_CHIEF);
+}
+
+static void
+test_a_lead_is_marked_and_a_member_is_not(void)
+{
+    g_assert_cmpint(clawt_team_badge_for(FALSE, "lead"), ==,
+                    CLAWT_TEAM_BADGE_LEAD);
+    g_assert_cmpint(clawt_team_badge_for(FALSE, "member"), ==,
+                    CLAWT_TEAM_BADGE_NONE);
+}
+
+/*
+ * Every nick the type carries is classified, walked out of the enum
+ * rather than listed here.
+ *
+ * The point is the *absence* of a fallthrough: a standing added to
+ * ClawtTeamRole and not to this function would be silently unmarked in
+ * both clients, and a badge nobody draws looks exactly like an agent
+ * that does not have the role -- which is how `team_role` came to be in
+ * the daemon's reply for a year with neither client drawing it.
+ */
+static void
+test_every_role_the_enum_carries_is_classified(void)
+{
+    g_autoptr(GEnumClass) klass = g_type_class_ref(CLAWT_TYPE_TEAM_ROLE);
+    guint i;
+
+    for (i = 0; i < klass->n_values; i++) {
+        const gchar *nick = klass->values[i].value_nick;
+        ClawtTeamBadge badge = clawt_team_badge_for(FALSE, nick);
+
+        /*
+         * `member` is the one role that is deliberately unmarked, so it
+         * is named rather than exempted by a rule that would also
+         * exempt the next role somebody forgets.
+         */
+        if (g_strcmp0(nick, "member") == 0)
+            g_assert_cmpint(badge, ==, CLAWT_TEAM_BADGE_NONE);
+        else
+            g_assert_cmpint(badge, !=, CLAWT_TEAM_BADGE_NONE);
+    }
+}
+
+/*
+ * A nick the type does not have claims nothing.
+ *
+ * It reaches here from a daemon newer than the client, and drawing a
+ * standing on an agent whose standing this build cannot read would be
+ * a confident wrong answer about who may hand out work.  Resolved
+ * through the enum rather than compared against a spelled-out "lead"
+ * for the same reason: every hand-written copy of an option's values
+ * in this tree has drifted, and one of them drew every completed task
+ * grey for months.
+ */
+static void
+test_a_role_this_build_cannot_read_claims_nothing(void)
+{
+    g_assert_cmpint(clawt_team_badge_for(FALSE, "principal"), ==,
+                    CLAWT_TEAM_BADGE_NONE);
+    g_assert_cmpint(clawt_team_badge_for(FALSE, ""), ==,
+                    CLAWT_TEAM_BADGE_NONE);
+    g_assert_cmpint(clawt_team_badge_for(FALSE, NULL), ==,
+                    CLAWT_TEAM_BADGE_NONE);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -251,6 +335,15 @@ main(int argc, char *argv[])
                     test_a_team_with_no_lead_is_reported);
     g_test_add_func("/team/empty-team-is-fine",
                     test_an_empty_team_is_not_a_warning);
+
+    g_test_add_func("/team/chief-outranks-a-lead",
+                    test_the_chief_outranks_a_lead);
+    g_test_add_func("/team/lead-marked-member-not",
+                    test_a_lead_is_marked_and_a_member_is_not);
+    g_test_add_func("/team/every-role-is-classified",
+                    test_every_role_the_enum_carries_is_classified);
+    g_test_add_func("/team/unknown-role-claims-nothing",
+                    test_a_role_this_build_cannot_read_claims_nothing);
 
     return g_test_run();
 }

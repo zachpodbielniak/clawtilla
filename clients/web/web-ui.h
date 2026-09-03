@@ -399,6 +399,19 @@ typedef struct {
     ClawtMeasureUnit measure_unit;
     gint   measure;
     gint   run_gap;
+
+    /*
+     * Whether the sidebar keeps each agent's description for the
+     * pointer instead of writing it under the name.
+     *
+     * Stored as the negation, so the zero above still means "what the
+     * client has always done" -- a boolean has no third state to spend
+     * on deferring, so the choice is which of the two is free.  The
+     * same shape, and the same reasoning, as the GTK client's
+     * appearance file; read clawt_appearance_get_show_descriptions()
+     * for the whole of it.
+     */
+    gboolean hide_descriptions;
 } ClawtWebLook;
 
 /**

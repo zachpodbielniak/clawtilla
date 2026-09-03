@@ -1058,12 +1058,13 @@ unreadable and therefore unable to fix itself.
 
 *** The sidebar
 
-Each agent shows a state dot, what it is doing, and badges:
+Each agent shows a face, a state dot, what it is doing, and badges:
 
 - a filled *unread count* when that agent has said something to you that
   you have not opened -- see below
 - a red *HOST* badge when the agent can run commands on the real machine
 - a *CHIEF* badge on the chief of staff
+- a green *LEAD* badge on a team lead
 
 Mail waiting for the *agent* is in the subtitle -- =3 waiting to be
 read=, or =working… · 3 waiting= when it is mid-turn -- rather than as a
@@ -1073,6 +1074,67 @@ both about "messages" and meaning opposite things, is not readable.
 Colour is never the only signal: the state is in the tooltip and in the
 inspector, and a row with unread messages has its name in *bold* as well
 as the pill.
+
+**** CHIEF and LEAD are one question, answered once
+:PROPERTIES:
+:CUSTOM_ID: standing-badges
+:END:
+
+Both badges answer *who may put work on somebody's list*. The chief of
+staff may assign to anybody; a team lead may assign within its own team;
+everybody else may assign to nobody --- the three rules in
+~clawt_team_may_assign()~, and no more.
+
+An agent is never given both. The chief of staff /is/ the lead of every
+team, so it is completely described by the stronger of the two, and
+drawing the weaker one beside it would read as a second fact rather than
+as the same one. Which badge to draw --- including that precedence --- is
+~clawt_team_badge_for()~ in the library, read by both clients through a
+~switch~ with no ~default:~, so a standing added to ~ClawtTeamRole~ draws
+a ~-Wswitch~ warning rather than going quietly unmarked.
+
+That last part is not hypothetical. ~team_role~ has been in every
+~agent.list~ reply since the sidebar learned to group by team, and
+/neither client drew it/ for as long: the chief was marked and every lead
+under it looked like an ordinary member. Nothing reported it, because a
+badge nobody draws looks exactly like an agent that does not have the
+role.
+
+**** Descriptions, and the setting that moves them to the pointer
+:PROPERTIES:
+:CUSTOM_ID: sidebar-descriptions
+:END:
+
+Under each name is the agent's ~description~ --- the line that tells you
+which agent to ask. Both clients draw it now; the web sidebar drew
+nothing at all until this was added, which is a gap ~make parity~ could
+not see, because a subtitle sends no frame, answers no slash command and
+spells out no library value. It is a declared affordance for exactly
+that reason.
+
+A fleet of ten agents with a paragraph each is also why the list stops
+fitting on a screen. So *Appearance → Agent list → Descriptions* turns
+them off --- and off does not mean gone: the description moves to the
+row's tooltip in the GTK client and its ~title~ in the web one. The
+complaint this answers is the height, not the text.
+
+It is on by default, and the default is what a /zeroed/ appearance
+means, deliberately: a preference file written before this key existed
+keeps its descriptions rather than silently emptying every row on
+upgrade. It is the one field in ~ClawtAppearance~ whose zero does not
+mean "defer to the system" --- a boolean has no third state to spend on
+deferring, so the choice is which of the two costs nothing, and it has to
+be the behaviour the clients already had.
+
+Like the fonts and the folded teams, it lives in the /client's/ config
+(~agent_descriptions~ in the appearance file; a ~clawt_agent_desc~ cookie
+in the browser) and not in ~clawtilla.yaml~. It is about the person at
+this screen, not about the fleet.
+
+What it does /not/ hide is what an agent is doing. =working…= and =3
+waiting to be read= stand in place of the description while they apply,
+and a list that stopped saying which agents are working would answer a
+different question from the one the setting was turned off to answer.
 
 *** Alerts
 

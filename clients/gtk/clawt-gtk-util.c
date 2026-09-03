@@ -111,10 +111,18 @@ clawt_build_payload(const gchar *first_key, ...)
 static GHashTable *avatar_textures = NULL; /* agent id -> GdkTexture, owned */
 static GHashTable *avatar_absent = NULL;   /* agent id -> nothing; a set */
 
-GdkTexture *
-clawt_gtk_avatar_texture(ClawtClient *client, const gchar *agent_id)
+/*
+ * The bytes, decoded to @decode_size.
+ *
+ * Shared by the cached row texture and the uncached preview, because
+ * the only difference between them is that number and where the answer
+ * is kept -- and two copies of "fetch, base64-decode, scale, wrap"
+ * would drift the first time one of them learned something.
+ */
+static GdkTexture *
+fetch_avatar_texture(ClawtClient *client, const gchar *agent_id,
+                     gint decode_size)
 {
-    GdkTexture *cached;
     g_autoptr(JsonNode) reply = NULL;
     g_autoptr(GError) error = NULL;
     JsonObject *result;
@@ -125,6 +133,62 @@ clawt_gtk_avatar_texture(ClawtClient *client, const gchar *agent_id)
     g_autoptr(GInputStream) stream = NULL;
     g_autoptr(GdkPixbuf) pixbuf = NULL;
     g_autoptr(GBytes) pixels = NULL;
+
+    /*
+     * clawt_client_request() rather than clawt_window_request(): the
+     * common case here is an agent with no picture, and that answers
+     * NOT_FOUND -- which clawt_window_request() would toast on every
+     * single call, for every agent, on every redraw that has not
+     * populated the cache yet.
+     */
+    reply = clawt_client_request(
+        client, "agent.avatar",
+        clawt_build_payload("agent", agent_id, NULL), &error);
+
+    if (reply == NULL)
+        return NULL;
+
+    result = clawt_payload_of(reply);
+    base64 = clawt_json_string(result, "base64", NULL);
+
+    if (base64 == NULL)
+        return NULL;
+
+    raw = g_base64_decode(base64, &raw_length);
+    bytes = g_bytes_new_take(g_steal_pointer(&raw), raw_length);
+    stream = g_memory_input_stream_new_from_bytes(bytes);
+
+    /*
+     * Decoded straight to @decode_size rather than at full resolution
+     * and shrunk by a widget afterwards -- a size request is a minimum
+     * in GTK, never a maximum, so a widget never actually shrinks
+     * anything.
+     */
+    pixbuf = gdk_pixbuf_new_from_stream_at_scale(
+        stream, decode_size, decode_size, TRUE, NULL, &error);
+
+    if (pixbuf == NULL)
+        return NULL;
+
+    /*
+     * A memory texture from the pixbuf's own pixels.
+     * gdk_texture_new_for_pixbuf() would say this in one line and is
+     * deprecated.
+     */
+    pixels = g_bytes_new(gdk_pixbuf_get_pixels(pixbuf),
+                         gdk_pixbuf_get_byte_length(pixbuf));
+
+    return gdk_memory_texture_new(
+        gdk_pixbuf_get_width(pixbuf), gdk_pixbuf_get_height(pixbuf),
+        gdk_pixbuf_get_has_alpha(pixbuf) ? GDK_MEMORY_R8G8B8A8
+                                        : GDK_MEMORY_R8G8B8,
+        pixels, (gsize)gdk_pixbuf_get_rowstride(pixbuf));
+}
+
+GdkTexture *
+clawt_gtk_avatar_texture(ClawtClient *client, const gchar *agent_id)
+{
+    GdkTexture *cached;
     GdkTexture *texture;
 
     g_return_val_if_fail(client != NULL, NULL);
@@ -146,66 +210,34 @@ clawt_gtk_avatar_texture(ClawtClient *client, const gchar *agent_id)
     if (g_hash_table_contains(avatar_absent, agent_id))
         return NULL;
 
-    /*
-     * clawt_client_request() rather than clawt_window_request(): the
-     * common case here is an agent with no picture, and that answers
-     * NOT_FOUND -- which clawt_window_request() would toast on every
-     * single call, for every agent, on every redraw that has not
-     * populated the cache yet.
-     */
-    reply = clawt_client_request(
-        client, "agent.avatar",
-        clawt_build_payload("agent", agent_id, NULL), &error);
+    texture = fetch_avatar_texture(client, agent_id,
+                                   CLAWT_AVATAR_DECODE_SIZE);
 
-    if (reply == NULL) {
+    if (texture == NULL) {
         g_hash_table_add(avatar_absent, g_strdup(agent_id));
         return NULL;
     }
-
-    result = clawt_payload_of(reply);
-    base64 = clawt_json_string(result, "base64", NULL);
-
-    if (base64 == NULL) {
-        g_hash_table_add(avatar_absent, g_strdup(agent_id));
-        return NULL;
-    }
-
-    raw = g_base64_decode(base64, &raw_length);
-    bytes = g_bytes_new_take(g_steal_pointer(&raw), raw_length);
-    stream = g_memory_input_stream_new_from_bytes(bytes);
-
-    /*
-     * Decoded straight to CLAWT_AVATAR_DECODE_SIZE rather than at full
-     * resolution and shrunk by a widget afterwards -- a size request is
-     * a minimum in GTK, never a maximum, so a widget never actually
-     * shrinks anything.
-     */
-    pixbuf = gdk_pixbuf_new_from_stream_at_scale(
-        stream, CLAWT_AVATAR_DECODE_SIZE, CLAWT_AVATAR_DECODE_SIZE, TRUE,
-        NULL, &error);
-
-    if (pixbuf == NULL) {
-        g_hash_table_add(avatar_absent, g_strdup(agent_id));
-        return NULL;
-    }
-
-    /*
-     * A memory texture from the pixbuf's own pixels.
-     * gdk_texture_new_for_pixbuf() would say this in one line and is
-     * deprecated.
-     */
-    pixels = g_bytes_new(gdk_pixbuf_get_pixels(pixbuf),
-                         gdk_pixbuf_get_byte_length(pixbuf));
-    texture = gdk_memory_texture_new(
-        gdk_pixbuf_get_width(pixbuf), gdk_pixbuf_get_height(pixbuf),
-        gdk_pixbuf_get_has_alpha(pixbuf) ? GDK_MEMORY_R8G8B8A8
-                                        : GDK_MEMORY_R8G8B8,
-        pixels, (gsize)gdk_pixbuf_get_rowstride(pixbuf));
 
     g_hash_table_insert(avatar_textures, g_strdup(agent_id),
                         g_object_ref(texture));
 
     return texture;
+}
+
+GdkTexture *
+clawt_gtk_avatar_preview_texture(ClawtClient *client, const gchar *agent_id)
+{
+    g_return_val_if_fail(client != NULL, NULL);
+    g_return_val_if_fail(agent_id != NULL, NULL);
+
+    /*
+     * Neither table is consulted nor written.  The absent set would be
+     * a false negative here -- it remembers that the *row* fetch found
+     * nothing, which is the same answer, but a click is also the moment
+     * somebody most wants a stale "no picture" re-asked.
+     */
+    return fetch_avatar_texture(client, agent_id,
+                                CLAWT_AVATAR_PREVIEW_SIZE);
 }
 
 void
