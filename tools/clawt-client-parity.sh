@@ -437,19 +437,19 @@ client_commands () {
 # one client and not the other, which is a real failure mode being
 # announced about an API that does not exist.
 #
-# Built once and reused, since enumerations() consults it twice per
-# family.
+# Built once, in main(), beside every other temporary file this script
+# makes -- and *not* here, which is where it used to be.
 #
-public_api () {
-    if [[ -z "${api_text}" ]]
-    then
-        api_text="$(mktemp)"
-        strip_comments < <(cat "${ROOT}"/src/*.h "${ROOT}"/src/*/*.h) \
-            > "${api_text}"
-    fi
-
-    echo "${api_text}"
-}
+# It was created lazily inside a `public_api()` that every caller invoked
+# as `api="$(public_api)"`.  A command substitution is a subshell, so the
+# assignment never reached the parent: the memoisation it was written for
+# never once took effect, and -- worse -- the EXIT trap below saw an
+# empty `api_text` and removed nothing.  Each run left two 330KB copies
+# of every public header in /tmp, and 202 of them had accumulated before
+# anybody counted.  The comment ten lines up about locals and the EXIT
+# trap is the same hazard, spotted for the other eleven files and missed
+# for this one.
+#
 
 #
 # The choice enumerations the public API offers.
@@ -462,7 +462,7 @@ enumerations () {
     local api
     local family
 
-    api="$(public_api)"
+    api="${api_text}"
 
     for family in $(grep -ohE '\bclawt_[a-z0-9_]+_count[[:space:]]*\(' \
                         "${api}" \
@@ -688,11 +688,43 @@ main () {
     web_code="$(mktemp)"
     gtk_render="$(mktemp)"
     web_render="$(mktemp)"
+    api_text="$(mktemp)"
 
     client_code "${GTK_DIR}" > "${gtk_code}"
     client_code "${WEB_DIR}" > "${web_code}"
     client_render_code "${GTK_DIR}" > "${gtk_render}"
     client_render_code "${WEB_DIR}" > "${web_render}"
+
+    #
+    # The public API's own text, for the enumeration layer.  Here rather
+    # than where it is read, so that the EXIT trap can reach it -- see
+    # the note above enumerations().
+    #
+    strip_comments < <(cat "${ROOT}"/src/*.h "${ROOT}"/src/*/*.h) \
+        > "${api_text}"
+
+    #
+    # And it has to have found something.
+    #
+    # Layer 3 walks whatever is in here, so an empty corpus makes it
+    # compare nothing and report OK -- which is indistinguishable from
+    # every enumeration agreeing.  Demonstrated rather than imagined:
+    # emptying this file leaves "0 enumeration(s)" in an otherwise
+    # cheerful success line.
+    #
+    # A moved header, a changed glob or a strip_comments that stopped
+    # matching would all land here, and each would quietly retire a whole
+    # layer of the check.  Saying ok about the wrong thing is worse than
+    # saying nothing, because it sends the reader somewhere else.
+    #
+    if [[ ! -s "${api_text}" ]]
+    then
+        echo "client parity: the public API corpus came out empty." >&2
+        echo "  Nothing was read from ${ROOT}/src/*.h or ${ROOT}/src/*/*.h," >&2
+        echo "  so the enumeration layer would have compared nothing and" >&2
+        echo "  said OK.  Refusing rather than reporting a pass." >&2
+        exit 1
+    fi
 
     #
     # Every layer reads the same stripped corpus, built once above.
@@ -859,10 +891,27 @@ $(wc -l < "${web_cmds}") in web"
         exit 1
     fi
 
+    #
+    # Read once here rather than inside the summary, so that a layer
+    # which found nothing to compare can refuse instead of being printed
+    # as a cheerful zero.
+    #
+    local n_enums
+    n_enums="$(enumerations | wc -l)"
+
+    if [[ "${n_enums}" -eq 0 ]]
+    then
+        echo "client parity: no enumerations were found to compare." >&2
+        echo "  Every _count()/_nth() pair in the public API is one, and" >&2
+        echo "  this tree has a dozen -- so zero means the layer stopped" >&2
+        echo "  looking rather than that the clients agree." >&2
+        exit 1
+    fi
+
     echo "client parity: OK ($(wc -l < "${gtk}") kinds and \
 $(wc -l < "${gtk_cmds}") commands in gtk, $(wc -l < "${web}") kinds and \
 $(wc -l < "${web_cmds}") commands in web; \
-$(enumerations | wc -l) enumeration(s), \
+${n_enums} enumeration(s), \
 ${#VOCABULARIES[@]} vocabulary(ies), \
 ${#AFFORDANCES[@]} affordance(s))"
 }

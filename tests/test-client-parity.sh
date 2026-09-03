@@ -148,6 +148,38 @@ main () {
     expect_line "a slash command in code does count" \
         no '/parityprobe' "${output}"
 
+    #
+    # Arm three: it does not litter.
+    #
+    # The public API corpus used to be created inside a function every
+    # caller invoked as `api="$(public_api)"`.  A command substitution is
+    # a subshell, so the assignment never reached the parent and the EXIT
+    # trap -- which lists that variable -- removed nothing.  Two 330KB
+    # copies of every public header were left in /tmp per run, and 202 of
+    # them had piled up before anybody counted.
+    #
+    # clawt-test-litter.sh cannot see this: it looks for *directories*
+    # matching the g_dir_make_tmp() prefixes the C tests use, and these
+    # are files from mktemp.  So the check goes here, beside the thing
+    # that leaked.
+    #
+    # Counted in a directory of this test's own rather than in /tmp, so
+    # that a parallel build cannot make it a false failure.
+    #
+    litter_before="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'tmp.*' \
+                         -newer "${WORK}" 2>/dev/null | wc -l)"
+    run_parity > /dev/null
+    litter_after="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'tmp.*' \
+                        -newer "${WORK}" 2>/dev/null | wc -l)"
+
+    if [ "${litter_after}" -le "${litter_before}" ]
+    then
+        echo "  ok    the parity script cleans up after itself"
+    else
+        echo "  FAIL  the parity script left $(( litter_after - litter_before )) file(s) in ${TMPDIR:-/tmp}"
+        FAIL=1
+    fi
+
     if [ "${FAIL}" -ne 0 ]
     then
         echo "test-client-parity: FAILED"
