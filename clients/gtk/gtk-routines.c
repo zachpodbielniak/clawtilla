@@ -618,10 +618,26 @@ clawt_gtk_refresh_routines(ClawtWindow *self)
         for (i = 0; i < json_array_get_length(routines); i++) {
             JsonObject *routine = json_array_get_object_element(routines, i);
             const gchar *next = clawt_json_string(routine, "next_run", NULL);
+            const gchar *problem = clawt_json_string(routine, "problem",
+                                                     NULL);
             GtkWidget *row = adw_action_row_new();
             g_autofree gchar *subtitle = NULL;
             g_autofree gchar *when = NULL;
 
+            /*
+             * A schedule that cannot be read is said, not hidden.
+             *
+             * This row used to draw "only when you ask" for it -- the
+             * same words it draws for a `manual` routine -- so a routine
+             * that would never fire was indistinguishable from one
+             * deliberately set to run on demand.  That is worse than
+             * saying nothing: it is a wrong answer that looks like a
+             * working configuration, which is why nobody noticed for as
+             * long as one had been broken.
+             *
+             * The daemon has reported this as `problem` since
+             * routine.list was written; only the web client drew it.
+             */
             if (next != NULL) {
                 g_autoptr(GDateTime) parsed =
                     g_date_time_new_from_iso8601(next, NULL);
@@ -629,6 +645,9 @@ clawt_gtk_refresh_routines(ClawtWindow *self)
                 when = (parsed != NULL)
                     ? g_date_time_format(parsed, "next %a %d %b at %H:%M")
                     : g_strdup(next);
+            } else if (problem != NULL) {
+                when = g_strdup_printf("will never run \342\200\224 %s",
+                                       problem);
             } else if (json_object_get_boolean_member(routine, "enabled")) {
                 when = g_strdup("only when you ask");
             } else {

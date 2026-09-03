@@ -93,6 +93,25 @@ struct _ClawtRoutineRunner {
      */
     GHashTable *records;         /* routine id -> RunRecord* */
 
+    /*
+     * The last schedule failure announced for each routine, so the same
+     * one is not announced again.
+     *
+     * A malformed schedule is re-derived on every tick -- next_run() and
+     * the due check both ask for the cron -- and each failure used to
+     * take a g_warning() with it.  One routine whose `at:` could not be
+     * read produced roughly a line a minute for as long as the daemon
+     * was up: 1,368 a day, on a daemon nobody restarts, and it was the
+     * dominant line in the unit's log while somebody was diagnosing an
+     * unrelated fault.
+     *
+     * Keyed by routine and holding the message rather than a flag,
+     * because an edit that changes *how* a schedule is wrong is news
+     * and must not be swallowed by "already said something about this
+     * one".
+     */
+    GHashTable *announced;       /* routine id -> gchar* message */
+
     ClawtRoutineRunFunc run_func;
     gpointer            run_data;
 
@@ -269,6 +288,7 @@ clawt_routine_runner_finalize(GObject *object)
     g_clear_object(&self->config);
     g_clear_pointer(&self->state_path, g_free);
     g_clear_pointer(&self->records, g_hash_table_unref);
+    g_clear_pointer(&self->announced, g_hash_table_unref);
 
     G_OBJECT_CLASS(clawt_routine_runner_parent_class)->finalize(object);
 }
@@ -284,6 +304,8 @@ clawt_routine_runner_init(ClawtRoutineRunner *self)
 {
     self->records = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                           (GDestroyNotify)run_record_free);
+    self->announced = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                            g_free);
 }
 
 ClawtRoutineRunner *
@@ -326,8 +348,52 @@ clawt_routine_runner_set_config(ClawtRoutineRunner *self, ClawtConfig *config)
  * refusal to schedule anything else: one routine that cannot be parsed
  * should not take the rest down with it.
  */
+/*
+ * Says a routine's schedule failure once, and again only if it changes.
+ *
+ * The failure itself is re-derived on every tick, because the schedule
+ * is read from the config each time and nothing caches it.  Announcing
+ * it every time turned one unreadable `at:` into roughly a line a
+ * minute for as long as the daemon was up -- and a warning nobody can
+ * act on differently the second time is not telling the operator
+ * anything new.
+ *
+ * The message is compared rather than a flag being set, so a routine
+ * edited from one broken schedule to a differently broken one is
+ * announced again.
+ */
+static void
+announce_once(ClawtRoutineRunner *self, const gchar *id, const gchar *message)
+{
+    /*
+     * A NULL runner is the read path -- clawt_routine_runner_next_run(),
+     * which routine.list calls once per routine per refresh -- and it
+     * says nothing at all.  A client polling a page is not an occasion
+     * to write to the daemon's log, and warning there would reproduce
+     * the once-a-minute defect this exists to end, with the period set
+     * by whoever left a window open.  The reason still reaches that
+     * caller: it is in the GError, and the reply carries it as
+     * `problem`.
+     */
+    if (self == NULL)
+        return;
+
+    if (g_strcmp0(g_hash_table_lookup(self->announced, id), message) == 0)
+        return;
+
+    g_hash_table_insert(self->announced, g_strdup(id), g_strdup(message));
+
+    g_warning("routine '%s' will never run until this is fixed: %s", id,
+              message);
+}
+
+/*
+ * @self may be %NULL: clawt_routine_runner_next_run() is also reached
+ * from routine.list, where the caller wants the answer and the daemon
+ * has already said whatever there was to say at load.
+ */
 static ClawtCron *
-cron_for(ClawtRoutine *routine)
+cron_for(ClawtRoutineRunner *self, ClawtRoutine *routine)
 {
     g_autofree gchar *expression = NULL;
     g_autoptr(GError) error = NULL;
@@ -337,8 +403,8 @@ cron_for(ClawtRoutine *routine)
 
     if (expression == NULL) {
         if (error != NULL)
-            g_warning("routine '%s': %s", clawt_routine_get_id(routine),
-                      error->message);
+            announce_once(self, clawt_routine_get_id(routine),
+                          error->message);
 
         return NULL;
     }
@@ -346,8 +412,7 @@ cron_for(ClawtRoutine *routine)
     cron = clawt_cron_parse(expression, &error);
 
     if (cron == NULL)
-        g_warning("routine '%s': %s", clawt_routine_get_id(routine),
-                  error->message);
+        announce_once(self, clawt_routine_get_id(routine), error->message);
 
     return cron;
 }
@@ -367,7 +432,13 @@ clawt_routine_runner_next_run(ClawtRoutineRunner *self,
     if (routine == NULL || !clawt_routine_get_boolean(routine, "enabled"))
         return NULL;
 
-    cron = cron_for(routine);
+    /*
+     * NULL rather than `self`: this is the read path `routine.list`
+     * calls, once per routine per refresh, and a client opening a page
+     * is not an occasion to say anything to the log.  What the client
+     * needs is the reason, and it gets that from `problem` in the reply.
+     */
+    cron = cron_for(NULL, routine);
 
     if (cron == NULL)
         return NULL;
@@ -659,7 +730,7 @@ clawt_routine_runner_tick(ClawtRoutineRunner *self)
         if (!clawt_routine_get_boolean(routine, "enabled"))
             continue;
 
-        cron = cron_for(routine);
+        cron = cron_for(self, routine);
 
         if (cron == NULL)
             continue;
@@ -783,7 +854,7 @@ clawt_routine_runner_catch_up(ClawtRoutineRunner *self)
         if (!clawt_routine_get_boolean(routine, "enabled"))
             continue;
 
-        cron = cron_for(routine);
+        cron = cron_for(self, routine);
 
         if (cron == NULL)
             continue;

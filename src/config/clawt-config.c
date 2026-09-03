@@ -4360,6 +4360,38 @@ reload_routines(ClawtConfig *self)
         g_hash_table_add(seen, (gpointer)id);
         g_ptr_array_add(self->routines,
                         clawt_routine_new(self, id, element));
+
+        /*
+         * And whether the schedule it names can be turned into one.
+         *
+         * Checked here because a value that cannot be parsed is a
+         * load-time fact.  It used to be discovered at every tick
+         * instead: clawt_routine_runner's cron_for() warned each time it
+         * failed, so one routine whose `at:` could not be read logged
+         * roughly once a minute for as long as the daemon was up --
+         * 1,368 lines a day from a single config value, on a daemon
+         * nobody restarts, burying everything else in the unit's log.
+         *
+         * A warning rather than a refusal, like every other fleet-level
+         * mistake here: a config is edited by hand and half-built states
+         * are ordinary.  What is *not* acceptable is the routine then
+         * reading as healthy, which is why `routine.list` reports the
+         * same failure as `problem` and all three clients now draw it.
+         */
+        {
+            ClawtRoutine *added = g_ptr_array_index(
+                self->routines, self->routines->len - 1);
+            g_autofree gchar *expression = NULL;
+            g_autoptr(GError) schedule_error = NULL;
+
+            expression = clawt_routine_get_cron(added, &schedule_error);
+
+            if (expression == NULL && schedule_error != NULL)
+                g_ptr_array_add(
+                    self->warnings,
+                    g_strdup_printf("routine '%s' will never run: %s", id,
+                                    schedule_error->message));
+        }
     }
 }
 

@@ -159,6 +159,61 @@ accepting both would make a five-field expression ambiguous -- =0 9 * * *=
 would be either nine in the morning or every ninth minute depending on
 which we guessed.
 
+**** A hand-edited config is the way in
+:PROPERTIES:
+:CUSTOM_ID: broken-schedule-said-once
+:END:
+
+That refusal covers ~routine add~ and ~routine set~, which is every
+client -- the daemon walks the schema, writes each key by its declared
+type, and then asks for the cron before saving.  It does not cover
+somebody editing ~clawtilla.yaml~ directly, which is the documented way
+to edit a fleet.
+
+So a routine can exist that will never fire.  When it does, three things
+happen and one thing deliberately does not:
+
+- The load says so once, as a fleet warning: ~routine 'overnight-log'
+  will never run: '1425' is not a time of day such as 09:00~.  It goes
+  in the same array as a routine with no id or two routines sharing one,
+  so ~config check~ reports it and the daemon prints it at startup.
+- The tick says so once, and again only if the failure *changes*.  It
+  used to say so every time: the schedule is re-derived on every tick,
+  and each failure took a warning with it, so one unreadable ~at:~
+  produced roughly a line a minute for as long as the daemon was up --
+  1,368 a day, on a daemon nobody restarts, burying everything else in
+  the unit's log.  The message is compared rather than a flag being set,
+  so a time that gets fixed into a bad weekday is announced again.
+- ~routine.list~ carries the reason as ~problem~, and all three clients
+  now draw it.  ~clawtilla routine list~ shows ~never~ under NEXT and
+  prints the reason; the GTK row says "will never run — ..."; the web
+  client draws a red badge, which it already did.
+- It is *not* refused, and the routine is not deleted.  A fleet is
+  edited by hand and half-built states are ordinary; losing somebody's
+  routine because a colon was in the wrong place is worse than the
+  routine not running.
+
+The GTK row is worth calling out because it was not merely silent.  It
+drew "only when you ask" -- the same words it uses for a ~manual~
+routine -- so a routine that would never fire was indistinguishable from
+one deliberately set to run on demand.  A wrong answer that looks like a
+working configuration reports itself to nobody, which is how one sat
+broken long enough to fill a log.
+
+**** Quoting the time is fine
+
+=at: "14:25"= and =at: '09:05'= and =at: 06:45= are the same value.
+Quoting is the natural thing to write, because a bare scalar containing
+a colon is exactly the shape people quote out of habit and YAML's own
+rules make it correct.
+
+Worth stating because it was reported as the cause of a schedule that
+arrived at the parser as =1425=, with the colon gone.  It is not: the
+quoted form keeps its colon through the YAML parser, through
+~ClawtConfig~, and through a save-and-reload round trip, and
+~tests/test-routine-schedule.c~ pins all three forms against each other
+so the question does not have to be asked twice.
+
 *** How far ahead "next" looks
 
 Four years, not one.  =0 0 29 2 *= is a legitimate schedule that fires

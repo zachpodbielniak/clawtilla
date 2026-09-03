@@ -245,6 +245,21 @@ declare -A AFFORDANCES=(
     #
     ["agent activity"]="clawt_agent_activity_label|clawt_agent_activity_label"
     #
+    # A routine that can never fire says why.
+    #
+    # The daemon has answered this as `problem` since routine.list was
+    # written and only the web client drew it -- and the GTK row was not
+    # merely silent, it drew "only when you ask", which is what it draws
+    # for a `manual` routine.  Layers 1 to 4 are all blind to it: the
+    # frame kind is shared, no command names it, it is not an
+    # enumeration, and neither client spells the message out.
+    #
+    # Matched on each client's own rendering rather than on the member
+    # name, because `"problem"` is also how an integration binding
+    # reports its own trouble in three other files.
+    #
+    ["a broken routine says why"]="will never run|routine, \"problem\""
+    #
     # A skill's `/name` is dynamic, so layer 2 cannot see it.
     #
     # That layer compares `"/name"` string literals, which is exactly

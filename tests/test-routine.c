@@ -224,6 +224,16 @@ test_manual_and_disabled_have_no_next_run(void)
 /*
  * A routine whose schedule cannot be parsed disables itself with a
  * warning naming it, rather than taking the rest of them down.
+ *
+ * The warning belongs to the *tick*, not to the read.  This test used to
+ * assert it on clawt_routine_runner_next_run(), which is the path
+ * routine.list takes -- once per routine, per client refresh -- so a
+ * client left open on the routines page wrote to the daemon's log for as
+ * long as somebody was looking at it.  Asserting on the read encoded
+ * that as the intention.
+ *
+ * The reason still reaches that caller; it is in the GError, and
+ * routine.list carries it to every client as `problem`.
  */
 static void
 test_a_broken_schedule_is_named_and_skipped(void)
@@ -238,9 +248,15 @@ test_a_broken_schedule_is_named_and_skipped(void)
         "    schedule: custom\n"
         "    cron: \"0 9 * *\"\n");
 
+    /*
+     * Silent, and this line is the assertion: the harness makes a
+     * warning fatal, so one emitted here aborts the test.
+     */
+    g_assert_null(clawt_routine_runner_next_run(fixture.runner, "broken"));
+
     g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING,
                           "*routine 'broken'*");
-    g_assert_null(clawt_routine_runner_next_run(fixture.runner, "broken"));
+    clawt_routine_runner_tick(fixture.runner);
     g_test_assert_expected_messages();
 
     fixture_teardown(&fixture);

@@ -6495,6 +6495,15 @@ cmd_routine(int argc, char *argv[])
                 schedule = g_strdup(member_or(routine, "expression", "?"));
             }
 
+            /*
+             * A routine that cannot be scheduled says so here rather
+             * than showing "-" under NEXT, which is also what a manual
+             * routine shows.  The daemon has answered this as `problem`
+             * since routine.list was written and this client never read
+             * it, so a routine that would never fire read as healthy --
+             * the reason one sat broken long enough to write 1,368 log
+             * lines a day.
+             */
             if (next != NULL) {
                 g_autoptr(GDateTime) parsed =
                     g_date_time_new_from_iso8601(next, NULL);
@@ -6502,6 +6511,8 @@ cmd_routine(int argc, char *argv[])
                 when = (parsed != NULL)
                     ? g_date_time_format(parsed, "%a %d %b %H:%M")
                     : g_strdup(next);
+            } else if (member_or(routine, "problem", NULL) != NULL) {
+                when = g_strdup("never");
             } else {
                 when = g_strdup("-");
             }
@@ -6513,6 +6524,16 @@ cmd_routine(int argc, char *argv[])
                     member_or(routine, "last_detail", NULL) != NULL
                         ? ": " : "",
                     member_or(routine, "last_detail", ""));
+
+            /*
+             * On its own line, at full width: the message names the
+             * value that could not be read, and truncating it into a
+             * column would take away the only thing that says which
+             * character to fix.
+             */
+            if (member_or(routine, "problem", NULL) != NULL)
+                g_printerr("  %s: %s\n", member_or(routine, "id", "?"),
+                           member_or(routine, "problem", ""));
         }
 
         return EXIT_SUCCESS;
