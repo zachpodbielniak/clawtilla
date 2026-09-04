@@ -50,6 +50,7 @@ struct _ClawtAgentConfig {
     ClawtConfig *config;      /* unowned; the config outlives its agents */
     gchar       *id;
     YamlNode    *node;        /* the agent's mapping, unowned */
+    YamlNode    *snapshot;    /* owned; set between begin and commit/rollback */
     gchar       *shadow_reason;
 };
 
@@ -257,6 +258,7 @@ clawt_agent_config_unref(ClawtAgentConfig *self)
     if (!g_atomic_int_dec_and_test(&self->ref_count))
         return;
 
+    g_clear_pointer(&self->snapshot, yaml_node_unref);
     g_free(self->id);
     g_free(self->shadow_reason);
     g_free(self);
@@ -1891,6 +1893,103 @@ clawt_agent_config_set_from_string(ClawtAgentConfig *self,
         return clawt_agent_config_set_string_list(
             self, key, (const gchar *const *)values);
     }
+}
+
+/*
+ * Replaces everything in @target with a copy of everything in @source.
+ *
+ * The node itself is not swapped, because it is not ours: it hangs off
+ * the document the whole fleet's configuration was parsed into, and the
+ * agent holds it unowned.  Only its contents move.
+ *
+ * The member names are duplicated before anything is removed.  The list
+ * yaml_mapping_get_members() hands back borrows its strings from the
+ * mapping, so removing a member frees a name still on the list -- which
+ * is a use-after-free on the very next iteration and reads, from the
+ * outside, as a rollback that dropped a random subset of the keys.
+ */
+static void
+replace_mapping_contents(YamlNode *target, YamlNode *source)
+{
+    YamlMapping *destination;
+    YamlMapping *origin;
+    g_auto(GStrv) names = NULL;
+    GList *members;
+    GList *l;
+    guint count;
+    guint i;
+
+    if (target == NULL || source == NULL)
+        return;
+
+    if (yaml_node_get_node_type(target) != YAML_NODE_MAPPING ||
+        yaml_node_get_node_type(source) != YAML_NODE_MAPPING)
+        return;
+
+    destination = yaml_node_get_mapping(target);
+    origin = yaml_node_get_mapping(source);
+
+    members = yaml_mapping_get_members(destination);
+    names = g_new0(gchar *, g_list_length(members) + 1);
+
+    for (l = members, i = 0; l != NULL; l = l->next, i++)
+        names[i] = g_strdup(l->data);
+
+    g_list_free(members);
+
+    for (i = 0; names[i] != NULL; i++)
+        yaml_mapping_remove_member(destination, names[i]);
+
+    /*
+     * By index rather than by name, so the keys go back in the order the
+     * copy has them.  A mapping keeps its insertion order and the file is
+     * written from it, so re-adding them in any other order would rewrite
+     * somebody's agent block on the next save for no reason.
+     */
+    count = yaml_mapping_get_size(origin);
+
+    for (i = 0; i < count; i++) {
+        const gchar *name = yaml_mapping_get_key(origin, i);
+        YamlNode *value = yaml_mapping_get_value(origin, i);
+        g_autoptr(YamlNode) copy = NULL;
+
+        if (name == NULL || value == NULL)
+            continue;
+
+        copy = yaml_node_copy(value);
+        yaml_mapping_set_member(destination, name, copy);
+    }
+}
+
+void
+clawt_agent_config_begin_change(ClawtAgentConfig *self)
+{
+    g_return_if_fail(self != NULL);
+
+    g_clear_pointer(&self->snapshot, yaml_node_unref);
+
+    if (self->node != NULL)
+        self->snapshot = yaml_node_copy(self->node);
+}
+
+void
+clawt_agent_config_commit_change(ClawtAgentConfig *self)
+{
+    g_return_if_fail(self != NULL);
+
+    g_clear_pointer(&self->snapshot, yaml_node_unref);
+}
+
+void
+clawt_agent_config_rollback_change(ClawtAgentConfig *self)
+{
+    g_return_if_fail(self != NULL);
+
+    if (self->snapshot == NULL)
+        return;
+
+    replace_mapping_contents(self->node, self->snapshot);
+    g_clear_pointer(&self->snapshot, yaml_node_unref);
 }
 
 gboolean

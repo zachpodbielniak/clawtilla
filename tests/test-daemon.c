@@ -1439,6 +1439,107 @@ test_reload_reports_a_refused_render(void)
 }
 
 /*
+ * A refusal and a write are alternatives, not a pair.
+ *
+ * `agent set` wrote the value to clawtilla.yaml, re-rendered the fleet,
+ * and only then discovered that the value it had just saved was one the
+ * renderer refuses.  It reported the refusal -- accurately -- and kept
+ * the write, so the operator read an error, believed nothing had
+ * happened, and moved on leaving the agent's config.yaml frozen at
+ * whatever it held before.  Every later `agent set` on that agent then
+ * failed to render too, for the value nobody knew was still there.
+ *
+ * The key here is the one that found it: `ai:` is a section clawtilla
+ * renders itself, so a `libreclaw:` passthrough declaring it is refused.
+ */
+static void
+test_a_refused_set_writes_nothing(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *before = NULL;
+    g_autofree gchar *after = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    g_assert_true(g_file_get_contents(fixture.config_path, &before, NULL,
+                                      NULL));
+
+    reply = request(&fixture, "agent.set",
+                    "{\"agent\": \"chief\","
+                    " \"key\": \"libreclaw.ai.process_timeout_ms\","
+                    " \"value\": \"3600000\"}");
+
+    /*
+     * An error rather than a success carrying a refusal: the whole point
+     * of the call is that the agent ends up running on what was asked
+     * for, and it did not.
+     */
+    g_assert_true(clawt_ipc_frame_is_error(reply));
+    g_assert_nonnull(strstr(json_object_get_string_member(
+                                json_node_get_object(reply), "error"),
+                            "redeclares"));
+
+    /* And the fleet's own file is byte-identical. */
+    g_assert_true(g_file_get_contents(fixture.config_path, &after, NULL,
+                                      NULL));
+    g_assert_cmpstr(before, ==, after);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * ...but a value that renders is still written, even on an agent whose
+ * config already does not.
+ *
+ * Refusing every set whose render fails would be the easy version and
+ * the wrong one: an agent left with a bad passthrough could then not be
+ * changed at all, including to take the passthrough back out, and the
+ * only remedy would be hand-editing the file the CLI exists to avoid.
+ * So the question asked is whether *this change* broke the render, not
+ * whether the render works.
+ */
+static void
+test_a_good_set_survives_an_agent_that_already_fails_to_render(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *saved = NULL;
+    GLogLevelFlags was_fatal;
+    guint handler;
+
+    was_fatal = g_log_set_always_fatal(G_LOG_FATAL_MASK);
+    handler = g_log_set_handler("Clawtilla",
+                                G_LOG_LEVEL_WARNING | G_LOG_FLAG_FATAL |
+                                G_LOG_FLAG_RECURSION,
+                                swallow_warnings, NULL);
+
+    fixture_setup(&fixture,
+        "agents:\n"
+        "  - id: chief\n"
+        "    libreclaw:\n"
+        "      session:\n"
+        "        persist_dir: \"/tmp/somewhere-else\"\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    reply = request(&fixture, "agent.set",
+                    "{\"agent\": \"chief\", \"key\": \"model.model\","
+                    " \"value\": \"opus\"}");
+
+    g_assert_false(clawt_ipc_frame_is_error(reply));
+
+    g_assert_true(g_file_get_contents(fixture.config_path, &saved, NULL,
+                                      NULL));
+    g_assert_nonnull(strstr(saved, "opus"));
+
+    g_log_remove_handler("Clawtilla", handler);
+    g_log_set_always_fatal(was_fatal);
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * A client that disconnects while a read is in flight must not take the
  * daemon with it.
  *
@@ -12900,6 +13001,10 @@ main(int argc, char *argv[])
                     test_a_broken_reload_keeps_the_old_config);
     g_test_add_func("/daemon/reload/refused-render",
                     test_reload_reports_a_refused_render);
+    g_test_add_func("/daemon/agent-set/refused-writes-nothing",
+                    test_a_refused_set_writes_nothing);
+    g_test_add_func("/daemon/agent-set/good-set-on-a-broken-agent",
+                    test_a_good_set_survives_an_agent_that_already_fails_to_render);
 
     g_test_add_func("/daemon/agents-talking-stays-between-them",
                     test_agents_talking_stays_out_of_the_users_chat);

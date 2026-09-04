@@ -4709,6 +4709,34 @@ refresh_agent_regions(ClawtDaemon      *self,
     }
 }
 
+/*
+ * Would this agent render, as it stands right now?
+ *
+ * Nothing is written: the YAML is built and thrown away.  That is the
+ * whole value of it -- it lets a caller ask the renderer's question
+ * before committing to the answer, which is the difference between
+ * refusing a change and reporting one it has already made.
+ */
+gboolean
+clawt_daemon_agent_renders(ClawtDaemon      *self,
+                           ClawtAgentConfig *agent,
+                           GError          **error)
+{
+    g_autofree gchar *state_dir = NULL;
+    g_autofree gchar *rendered = NULL;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(agent != NULL, FALSE);
+
+    state_dir = clawt_config_agent_state_dir(self->config,
+                                             clawt_agent_config_get_id(agent));
+    rendered = clawt_config_render_agent(self->config, agent,
+                                         self->link_socket, state_dir,
+                                         error);
+
+    return rendered != NULL;
+}
+
 void
 clawt_daemon_render_all_agents_into(ClawtDaemon *self, GPtrArray *refusals)
 {

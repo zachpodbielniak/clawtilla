@@ -1261,6 +1261,51 @@ gboolean clawt_agent_config_set_int(ClawtAgentConfig *self,
                                     gint64            value);
 
 /**
+ * clawt_agent_config_begin_change:
+ * @self: an agent's configuration
+ *
+ * Takes a copy of everything under this agent, so a change made after it
+ * can be undone with clawt_agent_config_rollback_change().
+ *
+ * Some values are only known to be bad once the whole agent is rendered:
+ * a `libreclaw:` passthrough redeclaring a section clawtilla renders
+ * itself is the standing example, and it cannot be judged from the value
+ * alone.  Writing first and finding out afterwards left the value in
+ * clawtilla.yaml with the caller told, accurately, that it had been
+ * refused -- which reads as "nothing happened" and is not.
+ *
+ * Undoing it a key at a time is not enough: writing `libreclaw.ai.x`
+ * creates the `libreclaw:` and `ai:` mappings on the way down, and
+ * removing only the leaf leaves an empty `ai:` behind, which is the very
+ * thing that was refused.  So the whole subtree is copied, comments and
+ * all.
+ *
+ * Not nestable, and every caller must end with either
+ * clawt_agent_config_commit_change() or
+ * clawt_agent_config_rollback_change().
+ */
+void clawt_agent_config_begin_change(ClawtAgentConfig *self);
+
+/**
+ * clawt_agent_config_commit_change:
+ * @self: an agent's configuration
+ *
+ * Keeps the change and drops the copy taken by
+ * clawt_agent_config_begin_change().  Does nothing if no change was
+ * begun.
+ */
+void clawt_agent_config_commit_change(ClawtAgentConfig *self);
+
+/**
+ * clawt_agent_config_rollback_change:
+ * @self: an agent's configuration
+ *
+ * Puts the agent back to what clawt_agent_config_begin_change() copied,
+ * and drops the copy.  Does nothing if no change was begun.
+ */
+void clawt_agent_config_rollback_change(ClawtAgentConfig *self);
+
+/**
  * clawt_agent_config_get_workspace:
  * @self: a #ClawtAgentConfig
  *

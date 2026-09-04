@@ -2074,7 +2074,46 @@ clawt_daemon_handle_agent(
                 self, self->config, agent_id, levels);
         }
 
-        clawt_agent_config_set_from_string(config, key, value);
+        /*
+         * Rendered before it is saved, and put back if the render is
+         * refused.
+         *
+         * Some values are only wrong in the context of the whole agent:
+         * a `libreclaw:` passthrough redeclaring `ai:` is refused by the
+         * renderer and cannot be judged from the value on its own.  This
+         * used to save first and render second, so a refused value was
+         * written to clawtilla.yaml and the caller was told -- truthfully
+         * -- that it had been refused.  An operator reads an error and
+         * concludes nothing happened; what actually happened is that the
+         * agent's config.yaml froze at its previous contents, and every
+         * later `agent set` on that agent was refused too, for a value
+         * nobody knew was still in the file.
+         *
+         * The question asked is whether *this change* broke the render,
+         * not whether the render works: an agent whose config is already
+         * refused has to stay editable, or the only way to take a bad
+         * passthrough back out would be to hand-edit the file the CLI
+         * exists to avoid.
+         */
+        {
+            g_autoptr(GError) render_error = NULL;
+            gboolean rendered_before =
+                clawt_daemon_agent_renders(self, config, NULL);
+
+            clawt_agent_config_begin_change(config);
+            clawt_agent_config_set_from_string(config, key, value);
+
+            if (rendered_before &&
+                !clawt_daemon_agent_renders(self, config, &render_error)) {
+                clawt_agent_config_rollback_change(config);
+
+                return clawt_ipc_error_new(request,
+                                           CLAWT_ERROR_CONFIG_INVALID,
+                                           render_error->message);
+            }
+
+            clawt_agent_config_commit_change(config);
+        }
 
         if (!clawt_config_save(self->config, &error))
             return clawt_ipc_error_new(request, error->code, error->message);

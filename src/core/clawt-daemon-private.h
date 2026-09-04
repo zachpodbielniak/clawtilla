@@ -1075,6 +1075,15 @@ clawt_daemon_reload_skills(ClawtDaemon *self);
 void
 clawt_daemon_render_all_agents_into(ClawtDaemon *self, GPtrArray *refusals);
 
+/*
+ * Renders @agent and discards the result, purely to find out whether it
+ * would be refused.  See the definition for why anything wants that.
+ */
+gboolean
+clawt_daemon_agent_renders(ClawtDaemon      *self,
+                           ClawtAgentConfig *agent,
+                           GError          **error);
+
 GPtrArray *
 clawt_daemon_render_refusals_new(void);
 

@@ -2439,7 +2439,14 @@ cmd_agent(int argc, char *argv[])
 
         /*
          * ...but the point of the call is the render, so a refusal means
-         * the setting reached clawtilla.yaml and nothing the agent reads.
+         * an agent is running on a stale config.yaml.
+         *
+         * Not this one: a change that stops its own agent rendering is
+         * refused before it is written and comes back as an error, so
+         * the reply never gets this far.  What is left here is the other
+         * agents, which this call re-rendered as well -- one of them
+         * already carrying a passthrough the renderer will not take, and
+         * this is where somebody finds out.
          */
         if (report_refusals(reply))
             return EXIT_FAILURE;
