@@ -4414,6 +4414,24 @@ on_manage_connections(GtkButton *button, gpointer user_data)
  * signature bent to fit both, because the alternative is a cast that is
  * wrong on one of the two paths.
  */
+/*
+ * The New room item on the + button's menu.
+ *
+ * A room is made the same way an agent is -- from the one control that
+ * adds things to the sidebar -- rather than from a separate corner, so
+ * somebody looking for "how do I make one of these" finds both in the
+ * same place.
+ */
+static void
+on_new_room_activate(GSimpleAction *action, GVariant *parameter,
+                     gpointer user_data)
+{
+    (void)action;
+    (void)parameter;
+
+    clawt_gtk_on_new_room(NULL, user_data);
+}
+
 static void
 on_new_agent_activate(GSimpleAction *action, GVariant *parameter,
                       gpointer user_data)
@@ -5304,6 +5322,7 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
                       "win.agent-create");
         g_menu_append(menu, "Import an agent\342\200\246",
                       "win.agent-import");
+        g_menu_append(menu, "New room\342\200\246", "win.room-create");
 
         new_button = adw_split_button_new();
         adw_split_button_set_icon_name(ADW_SPLIT_BUTTON(new_button),
@@ -5314,6 +5333,17 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
 
         g_signal_connect(new_button, "clicked", G_CALLBACK(clawt_gtk_on_new_agent),
                          self);
+
+        {
+            GSimpleAction *room_action =
+                g_simple_action_new("room-create", NULL);
+
+            g_signal_connect(room_action, "activate",
+                             G_CALLBACK(on_new_room_activate), self);
+            g_action_map_add_action(G_ACTION_MAP(self),
+                                    G_ACTION(room_action));
+            g_object_unref(room_action);
+        }
 
         g_signal_connect(create_action, "activate",
                          G_CALLBACK(on_new_agent_activate), self);

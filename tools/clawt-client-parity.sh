@@ -206,6 +206,19 @@ declare -A AFFORDANCES=(
     ["stop the running turn"]="on_stop_turn|stop_turn_button"
     ["decision options stack"]="decision_option_button|decision-options"
     ["sidebar face"]="clawt_gtk_build_avatar|agent-face"
+    #
+    # A group room drawn beside the agents, and the two things you can
+    # only do to one from a client.
+    #
+    # None of this is visible to the other layers: a room row sends no
+    # frame of its own -- it opens with the same room.history every
+    # agent chat uses -- and "the composer works here" is the absence of
+    # a rule rather than a call.  Layer 5 is the only one that can see
+    # that a client draws rooms at all.
+    #
+    ["rooms in the sidebar"]="room_row|room_row"
+    ["making a room"]="clawt_gtk_on_new_room|on_new_room_submit"
+    ["a room says how it delivers"]="answers when named|answers when named"
     ["picture editor"]="build_avatar_group|on_avatar_set"
     #
     # A description under each agent's name, and the setting that keeps

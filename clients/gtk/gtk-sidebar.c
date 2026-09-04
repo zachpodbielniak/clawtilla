@@ -1250,6 +1250,204 @@ make_row_draggable(ClawtWindow *self, GtkWidget *row)
  * agent's name.  ::row-selected also covers arrow-key navigation, which
  * activation never did.
  */
+/* ── Making a room ───────────────────────────────────────────────── */
+
+typedef struct {
+    ClawtWindow *window;
+    AdwDialog   *dialog;
+    GtkWidget   *id_entry;
+    GtkWidget   *name_entry;
+    GPtrArray   *checks;   /* GtkCheckButton*, borrowed */
+} NewRoomDialog;
+
+static void
+new_room_dialog_free(gpointer data, GClosure *closure)
+{
+    NewRoomDialog *dialog = data;
+
+    (void)closure;
+
+    g_clear_pointer(&dialog->checks, g_ptr_array_unref);
+    g_free(dialog);
+}
+
+/*
+ * Creates the room and, when it has more than two members, says how it
+ * delivers.
+ *
+ * The second half is not decoration: a room of three reaches only the
+ * members a message names, and somebody who made one and then typed a
+ * greeting into it would otherwise conclude it was broken.
+ */
+static void
+on_new_room_create(GtkButton *button, gpointer user_data)
+{
+    NewRoomDialog *dialog = user_data;
+    ClawtWindow *self = dialog->window;
+    const gchar *id = gtk_editable_get_text(GTK_EDITABLE(dialog->id_entry));
+    const gchar *name =
+        gtk_editable_get_text(GTK_EDITABLE(dialog->name_entry));
+    g_autoptr(GString) members = g_string_new(NULL);
+    g_autoptr(JsonNode) reply = NULL;
+    guint chosen = 0;
+    guint i;
+
+    (void)button;
+
+    if (id == NULL || *id == '\0') {
+        clawt_window_toast(self, "A room needs a name to be addressed by.");
+        return;
+    }
+
+    for (i = 0; i < dialog->checks->len; i++) {
+        GtkWidget *check = g_ptr_array_index(dialog->checks, i);
+        const gchar *agent_id;
+
+        if (!gtk_check_button_get_active(GTK_CHECK_BUTTON(check)))
+            continue;
+
+        agent_id = g_object_get_data(G_OBJECT(check), "agent-id");
+
+        if (members->len > 0)
+            g_string_append_c(members, ',');
+
+        g_string_append(members, agent_id);
+        chosen++;
+    }
+
+    if (chosen < 2) {
+        clawt_window_toast(self, "Pick at least two agents -- a room with "
+                                 "one is the conversation you already have "
+                                 "with it.");
+        return;
+    }
+
+    reply = clawt_window_request(
+        self, "room.create",
+        clawt_build_payload("room", id, "name",
+                            (name != NULL && *name != '\0') ? name : id,
+                            "members", members->str, NULL));
+
+    if (reply == NULL)
+        return;
+
+    /*
+     * More than two members is a group, and a group delivers by
+     * mention.  Said now rather than left in the sidebar's subtitle,
+     * because this is the moment somebody is about to type in it.
+     */
+    if (chosen > 2)
+        clawt_window_toast(self,
+                           "Created. A message there reaches only the "
+                           "members you name with @their-id -- everyone "
+                           "can still read everything.");
+    else
+        clawt_window_toast(self, "Created.");
+
+    adw_dialog_close(dialog->dialog);
+    clawt_gtk_refresh_agents(self);
+}
+
+void
+clawt_gtk_on_new_room(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    NewRoomDialog *dialog = g_new0(NewRoomDialog, 1);
+    AdwDialog *window = adw_dialog_new();
+    GtkWidget *page = adw_preferences_page_new();
+    GtkWidget *group = adw_preferences_group_new();
+    GtkWidget *members = adw_preferences_group_new();
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    GtkWidget *create = gtk_button_new_with_label("Create");
+    g_autoptr(JsonNode) reply = NULL;
+    JsonArray *agents;
+    guint i;
+
+    (void)button;
+
+    dialog->window = self;
+    dialog->dialog = window;
+    dialog->checks = g_ptr_array_new();
+
+    adw_dialog_set_title(window, "New room");
+    adw_dialog_set_content_width(window, 460);
+
+    dialog->id_entry = adw_entry_row_new();
+    adw_preferences_row_set_use_markup(
+        ADW_PREFERENCES_ROW(dialog->id_entry), FALSE);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->id_entry),
+                                  "Id");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              dialog->id_entry);
+
+    dialog->name_entry = adw_entry_row_new();
+    adw_preferences_row_set_use_markup(
+        ADW_PREFERENCES_ROW(dialog->name_entry), FALSE);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->name_entry),
+                                  "Name (optional)");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              dialog->name_entry);
+
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(members),
+        "Everyone here can read everything said in the room. With more "
+        "than two, a message is only delivered to the members it names "
+        "with @their-id -- so being in a room does not mean answering "
+        "everything in it.");
+
+    reply = clawt_window_request(self, "agent.list", NULL);
+
+    if (reply != NULL) {
+        agents = json_object_get_array_member(clawt_payload_of(reply),
+                                              "agents");
+
+        for (i = 0; i < json_array_get_length(agents); i++) {
+            JsonObject *agent = json_array_get_object_element(agents, i);
+            const gchar *id = clawt_json_string(agent, "id", "");
+            GtkWidget *row = adw_action_row_new();
+            GtkWidget *check = gtk_check_button_new();
+
+            clawt_gtk_set_row_text(row, clawt_json_string(agent, "name", id),
+                                   id);
+            g_object_set_data_full(G_OBJECT(check), "agent-id",
+                                   g_strdup(id), g_free);
+
+            /*
+             * The switch is the activatable widget rather than the row
+             * itself: adw_action_row_set_activatable_widget(row, row)
+             * recurses to a segfault while looking exactly right.
+             */
+            adw_action_row_add_prefix(ADW_ACTION_ROW(row), check);
+            adw_action_row_set_activatable_widget(ADW_ACTION_ROW(row),
+                                                  check);
+
+            adw_preferences_group_add(ADW_PREFERENCES_GROUP(members), row);
+            g_ptr_array_add(dialog->checks, check);
+        }
+    }
+
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(group));
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(members));
+
+    gtk_widget_add_css_class(create, "suggested-action");
+    gtk_widget_set_halign(create, GTK_ALIGN_END);
+    gtk_widget_set_margin_end(create, 12);
+    gtk_widget_set_margin_bottom(create, 12);
+
+    g_signal_connect_data(create, "clicked",
+                          G_CALLBACK(on_new_room_create), dialog,
+                          new_room_dialog_free, 0);
+
+    gtk_widget_set_vexpand(page, TRUE);
+    gtk_box_append(GTK_BOX(box), page);
+    gtk_box_append(GTK_BOX(box), create);
+
+    adw_dialog_set_child(window, box);
+    adw_dialog_present(window, GTK_WIDGET(self));
+}
+
 void
 clawt_gtk_on_row_selected(GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
 {

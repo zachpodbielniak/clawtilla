@@ -871,6 +871,14 @@ void
 clawt_gtk_select_room(ClawtWindow *self, const gchar *room_id);
 
 /*
+ * The New room dialog: an id, an optional name, and which agents are in
+ * it.  Refuses fewer than two, because a room with one member is the
+ * conversation somebody already has with it.
+ */
+void
+clawt_gtk_on_new_room(GtkButton *button, gpointer user_data);
+
+/*
  * Composer text that has not been sent, in the client's own config
  * beside connections.yaml.  A half-typed message belongs to the person
  * rather than to the fleet, and a laptop reaching a workstation may have
